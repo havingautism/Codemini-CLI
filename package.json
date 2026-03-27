@@ -1,7 +1,7 @@
 {
   "name": "codemini-cli",
   "version": "0.1.0",
-  "description": "Small-model-first coding CLI optimized for Windows PowerShell",
+  "description": "Coding CLI optimized for small-model workflows and Windows PowerShell",
   "type": "module",
   "bin": {
     "codemini": "bin/coder.js",

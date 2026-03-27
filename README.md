@@ -5,7 +5,7 @@
 
 ## English
 
-CodeMini CLI is a small-model-first coding assistant built for practical developer workflows, with a strong focus on Windows and PowerShell.
+CodeMini CLI is a coding assistant CLI optimized for small-model workflows, with a strong focus on Windows and PowerShell.
 
 Instead of assuming frontier-sized models, long context windows, and Unix-first environments, CodeMini CLI is designed around what smaller coding models actually do well:
 - minimal tool surface
@@ -24,7 +24,7 @@ Most coding CLIs are optimized for very large models and Unix-heavy setups. Code
 
 ### Highlights
 
-- Small-model first: default tools are intentionally minimal: `run_command`, `read_file`, `write_file`
+- Optimized for small models: default tools are intentionally minimal: `run_command`, `read_file`, `write_file`
 - Windows optimized: `shell.default=powershell` switches prompt guidance and command allowlist to a PowerShell-friendly profile
 - Search first: prefer `rg` for repo search, then local context commands, then file reads
 - Safer by default: safe mode is on, with shell-aware allowlists and blocked command patterns
@@ -105,7 +105,7 @@ CodeMini CLI is a better fit if you want:
 
 ## 简体中文
 
-CodeMini CLI 是一个专门为小模型优化的代码助手 CLI，重点针对 Windows 和 PowerShell 做了打磨。
+CodeMini CLI 是一个为小模型工作流优化过的代码助手 CLI，重点针对 Windows 和 PowerShell 做了打磨。
 
 它不是假设你在用超大模型、超长上下文、Unix-first 环境，而是围绕“小模型真正擅长什么”来设计：
 - 更小的工具暴露面

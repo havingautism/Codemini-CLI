@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 
 const h = React.createElement;
-const BANNER = ['CODEMINI', 'CLI'];
+const BANNER = ['CODEMINI CLI'];
 const ROLE_STYLES = {
   you: {
     accent: 'blueBright',
@@ -460,7 +460,7 @@ function Header({ sessionId, model, shellName }) {
       ),
       ...BANNER.map((line, idx) => h(Text, { key: `b-${idx}`, color: 'cyanBright' }, line)),
       h(Box, { height: 1 }),
-      h(Text, { color: 'gray' }, 'small-model coding cockpit'),
+      h(Text, { color: 'gray' }, 'optimized for small-model workflows'),
       h(Box, { height: 1 }),
       h(
         Box,
