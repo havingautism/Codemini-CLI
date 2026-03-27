@@ -1,0 +1,34 @@
+node_modules/
+.npm-cache/
+
+# Local runtime/state
+.company-coder/
+.codemini-cli/
+.npm-pack-cache/
+.coder/
+
+# Local reference clone
+nanocoder-upstream/
+
+# Build/package artifacts
+*.tgz
+dist/
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local scratch docs
+test.md
+测试.md
+新测试.md

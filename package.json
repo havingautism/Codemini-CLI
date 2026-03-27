@@ -1,0 +1,31 @@
+{
+  "name": "codemini-cli",
+  "version": "0.1.0",
+  "description": "Small-model-first coding CLI optimized for Windows PowerShell",
+  "type": "module",
+  "bin": {
+    "codemini": "bin/coder.js",
+    "coder": "bin/coder.js"
+  },
+  "scripts": {
+    "start": "node bin/coder.js",
+    "test": "node --test tests/*.test.js",
+    "pack:offline": "npm pack"
+  },
+  "files": [
+    "bin",
+    "src",
+    "souls",
+    "templates",
+    "skills",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ink": "^6.3.1",
+    "react": "^19.0.0"
+  },
+  "license": "UNLICENSED"
+}
