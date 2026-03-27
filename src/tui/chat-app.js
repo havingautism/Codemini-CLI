@@ -1106,11 +1106,30 @@ function InputBar({
   );
 }
 
+function SignatureBar({ version = '0.1.0' }) {
+  return h(
+    Box,
+    {
+      marginTop: 1,
+      width: '100%',
+      justifyContent: 'space-between'
+    },
+    h(Text, { color: 'gray' }, ' '),
+    h(
+      Box,
+      { flexGrow: 1, justifyContent: 'center' },
+      h(Text, { color: 'gray' }, 'developed by '),
+      h(Text, { color: 'magentaBright' }, '@havingautism')
+    ),
+    h(Text, { color: 'gray' }, `v${version}`)
+  );
+}
+
 function makeStatus(title, detail = '', color = 'gray') {
   return { title, detail, color };
 }
 
-export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName = 'powershell' }) {
+export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName = 'powershell', version = '0.1.0' }) {
   const copy = getCopy(language);
   const stdoutCols = Number(process.stdout?.columns || 120);
   const [inputValue, setInputValue] = useState('');
@@ -1989,6 +2008,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
       commandSuggestions,
       suggestionNav,
       copy
-    })
+    }),
+    h(SignatureBar, { version })
   );
 }

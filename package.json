@@ -18,7 +18,9 @@
     "souls",
     "templates",
     "skills",
-    "README.md"
+    "README.md",
+    "OPERATIONS.md",
+    "deployment.md"
   ],
   "engines": {
     "node": ">=20"
@@ -27,5 +29,5 @@
     "ink": "^6.3.1",
     "react": "^19.0.0"
   },
-  "license": "UNLICENSED"
+  "license": "MIT"
 }
