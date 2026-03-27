@@ -285,6 +285,20 @@ function parseToolDisplayName(name) {
   };
 }
 
+function getToolNameBadgeStyle(name) {
+  const { base } = parseToolDisplayName(name);
+  if (base === 'read_file') {
+    return { bg: 'blueBright', text: 'black', label: 'read' };
+  }
+  if (base === 'write_file') {
+    return { bg: 'magentaBright', text: 'black', label: 'write' };
+  }
+  if (base === 'run_command') {
+    return { bg: 'cyan', text: 'black', label: 'run' };
+  }
+  return { bg: 'gray', text: 'black', label: base || 'tool' };
+}
+
 function describeToolActivity(name, copy, { done = false, blocked = false } = {}) {
   const { raw, base, target } = parseToolDisplayName(name);
   const safeTarget = trimText(target, 72);
@@ -735,15 +749,20 @@ function renderToolEntry(msg, tool, idx, showToolDetails, isLatestTool) {
   const statusColor =
     tool.status === 'done' ? 'greenBright' : tool.status === 'blocked' || tool.status === 'error' ? 'redBright' : 'yellow';
   const pillBg = tool.status === 'done' ? 'green' : tool.status === 'blocked' || tool.status === 'error' ? 'red' : 'yellow';
+  const nameBadge = getToolNameBadgeStyle(tool.name);
   const durationText =
     typeof tool.durationMs === 'number' ? `${(tool.durationMs / 1000).toFixed(1)}s` : '';
   const header = h(
     Box,
-    { key: `toolbox-${msg.id}-${idx}`, marginTop: 1, flexDirection: 'column' },
+    { key: `toolbox-${msg.id}-${idx}`, flexDirection: 'column' },
     h(
       Box,
       null,
-      h(Text, { color: 'gray' }, '  tool '),
+      h(Text, { color: 'gray' }, '  ↳ '),
+      h(Text, { color: 'black', backgroundColor: 'gray' }, ' tool '),
+      h(Text, { color: 'gray' }, ' '),
+      h(Text, { color: nameBadge.text, backgroundColor: nameBadge.bg }, ` ${nameBadge.label} `),
+      h(Text, { color: 'gray' }, ' '),
       h(Text, { color: 'black', backgroundColor: 'gray' }, ` ${tool.name} `),
       h(Text, { color: 'gray' }, ' '),
       h(Text, { color: 'black', backgroundColor: pillBg }, ` ${statusIcon} `),
@@ -755,7 +774,7 @@ function renderToolEntry(msg, tool, idx, showToolDetails, isLatestTool) {
     header,
     h(
       Box,
-      { key: `tool-${msg.id}-${idx}-summary-box`, marginLeft: 2 },
+      { key: `tool-${msg.id}-${idx}-summary-box`, marginLeft: 1 },
       h(Text, { key: `tool-${msg.id}-${idx}-summary`, color: 'gray' }, tool.summary)
     )
   ];
@@ -807,10 +826,15 @@ function MessageBubble({ msg, loaderTick, showToolDetails, rowWindow = null, con
   const rendered = visibleRows.map((row, idx) => {
     if (row.kind === 'tool') {
       const pillBg = row.status === 'done' ? 'green' : row.status === 'blocked' || row.status === 'error' ? 'red' : 'yellow';
+      const nameBadge = getToolNameBadgeStyle(row.name);
       return h(
         Box,
-        { key: `row-tool-${msg.id}-${idx}`, marginTop: 1 },
-        h(Text, { color: 'gray' }, '  tool '),
+        { key: `row-tool-${msg.id}-${idx}` },
+        h(Text, { color: 'gray' }, '  ↳ '),
+        h(Text, { color: 'black', backgroundColor: 'gray' }, ' tool '),
+        h(Text, { color: 'gray' }, ' '),
+        h(Text, { color: nameBadge.text, backgroundColor: nameBadge.bg }, ` ${nameBadge.label} `),
+        h(Text, { color: 'gray' }, ' '),
         h(Text, { color: 'black', backgroundColor: 'gray' }, ` ${row.name} `),
         h(Text, { color: 'gray' }, ' '),
         h(Text, { color: 'black', backgroundColor: pillBg }, ` ${row.statusIcon} `),
@@ -820,7 +844,7 @@ function MessageBubble({ msg, loaderTick, showToolDetails, rowWindow = null, con
     if (row.kind === 'tool-summary') {
       return h(
         Box,
-        { key: `row-tool-summary-${msg.id}-${idx}`, marginLeft: 2 },
+        { key: `row-tool-summary-${msg.id}-${idx}`, marginLeft: 1 },
         h(Text, { color: 'gray' }, row.text)
       );
     }

@@ -84,7 +84,24 @@ async function readFile(root, args) {
 }
 
 async function writeFile(root, args) {
-  const target = resolveInWorkspace(root, args?.path);
+  const rawPath = String(args?.path || '').trim();
+  if (!rawPath) {
+    throw new Error('write_file requires a file path like weather/WeatherForecast.js');
+  }
+  if (rawPath === '.' || rawPath === './') {
+    throw new Error('write_file requires a file path, not the workspace root');
+  }
+  const target = resolveInWorkspace(root, rawPath);
+  try {
+    const stat = await fs.stat(target);
+    if (stat.isDirectory()) {
+      throw new Error(`write_file target is a directory: ${rawPath}`);
+    }
+  } catch (error) {
+    if (error?.code && error.code !== 'ENOENT') {
+      throw error;
+    }
+  }
   let before = '';
   let existed = true;
   try {
@@ -113,7 +130,7 @@ async function writeFile(root, args) {
   const previewLines = afterLines.slice(previewStart, previewStart + 6);
   return {
     ok: true,
-    path: args?.path,
+    path: rawPath,
     action: args?.append ? 'append' : existed ? 'overwrite' : 'create',
     changed_line: changeLine || Math.max(1, afterLines.length),
     diff_preview: previewLines.map((line, idx) => `${previewStart + idx + 1}| ${line}`).join('\n')
@@ -174,7 +191,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, session
       type: 'function',
       function: {
         name: 'write_file',
-        description: 'Write a UTF-8 text file in workspace',
+        description: 'Write a UTF-8 text file in workspace. Always provide a full file path, not a directory.',
         parameters: {
           type: 'object',
           properties: {

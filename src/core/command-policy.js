@@ -16,13 +16,13 @@ function suggestionForToken(token, config) {
   const shell = String(config?.shell?.default || '').toLowerCase();
   if (token === 'find' || token === 'grep') {
     return shell === 'powershell'
-      ? 'Use rg <pattern> <path> for code search, Select-String for file-local filtering, or Get-Content for local context.'
-      : 'Use rg <pattern> <path> for code search, rg --files for file listing, or sed/cat for local context.';
+      ? 'Use allowed search and context commands such as Get-ChildItem, Select-String, Get-Content, or rg when available.'
+      : 'Use allowed search and context commands such as rg, find, grep, sed, cat, or ls.';
   }
   if (shell === 'powershell') {
-    return 'Prefer rg for repo search, then Get-ChildItem, Get-Content, or Select-String for local context.';
+    return 'Use allowed shell commands for search and local context such as Get-ChildItem, Get-Content, Select-String, or rg when available.';
   }
-  return 'Prefer rg for repo search, then sed, cat, or ls for local context.';
+  return 'Use allowed shell commands for search and local context such as rg, find, grep, sed, cat, or ls.';
 }
 
 export function evaluateCommandPolicy(command, config, workspaceRoot = process.cwd()) {

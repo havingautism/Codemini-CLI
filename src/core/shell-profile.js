@@ -62,6 +62,8 @@ const SHELL_PROFILES = {
     label: 'bash',
     command_allowlist: [
       'rg',
+      'find',
+      'grep',
       'git',
       'node',
       'npm',
@@ -116,5 +118,5 @@ export function getEffectivePolicy(config) {
 
 export function getShellSystemPrompt(value) {
   const profile = getShellProfile(value);
-  return `You are CodeMini CLI working in a ${profile.label} shell environment. For codebase exploration, prefer high-signal shell commands first: use rg for repo search, then local context-view commands, then read_file only when command output is not enough. Do not use find or grep as the primary code search path. Use write_file for edits and avoid unnecessary tool calls.`;
+  return `You are CodeMini CLI working in a ${profile.label} shell environment. For codebase exploration, use the allowed shell search and context commands that best fit the task, then use read_file only when command output is not enough. Use write_file for edits and always provide a concrete file path, not a directory. Avoid unnecessary tool calls.`;
 }
