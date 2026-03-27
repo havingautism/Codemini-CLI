@@ -7,29 +7,24 @@
 
 CodeMini CLI is a coding assistant CLI optimized for small-model workflows, with a strong focus on Windows and PowerShell.
 
-Instead of assuming frontier-sized models, long context windows, and Unix-first environments, CodeMini CLI is designed around what smaller coding models actually do well:
-- minimal tool surface
-- shell-first code exploration
-- `rg`-driven search workflow
-- PowerShell-aware command policy
-- sub-agent isolation to reduce attention overload
+It is designed for teams that want a coding assistant that feels practical, controllable, and fast in real development environments, especially when smaller internal models are part of the workflow.
 
-### Why It Exists
+### Why CodeMini CLI
 
-Most coding CLIs are optimized for very large models and Unix-heavy setups. CodeMini CLI takes a different path:
-- optimized for smaller internal models such as 7B to 30B
-- tuned for Windows and PowerShell instead of treating them as second-class
-- encourages high-signal command usage before falling back to heavier abstractions
-- keeps the execution surface small and controllable
+- Optimized for small-model workflows rather than assuming frontier-scale reasoning
+- Built with Windows and PowerShell as first-class environments
+- Keeps the default tool surface intentionally small and easier to control
+- Uses shell-aware execution policy instead of exposing unrestricted system access
+- Supports sub-agent workflows without forcing full-history context sharing
 
 ### Highlights
 
-- Optimized for small models: default tools are intentionally minimal: `run_command`, `read_file`, `write_file`
-- Windows optimized: `shell.default=powershell` switches prompt guidance and command allowlist to a PowerShell-friendly profile
-- Search first: prefer `rg` for repo search, then local context commands, then file reads
-- Safer by default: safe mode is on, with shell-aware allowlists and blocked command patterns
-- Better sub-agents: child agents get scoped context packets instead of the full conversation history
-- Tone customization: `soul` presets change reply tone without changing plans, code style, or execution logic
+- Minimal default tools: `run_command`, `read_file`, `write_file`
+- Windows-aware shell profile with PowerShell-focused defaults
+- Safe mode enabled by default
+- Built-in lite skills for planning, execution, and collaboration
+- Tone presets through `soul`, without changing plans or code behavior
+- Sub-agents for planning, coding, review, and testing
 
 ### Quick Start
 
@@ -39,7 +34,7 @@ codemini config set gateway.api_key your_token
 codemini config set shell.default powershell
 codemini config set model.name your-30b-model
 codemini doctor
-codemini chat
+codemini
 ```
 
 For macOS or Linux:
@@ -48,9 +43,10 @@ For macOS or Linux:
 codemini config set shell.default bash
 ```
 
-### Commands
+### Command Overview
 
 ```text
+codemini [prompt]
 codemini chat [prompt]
 codemini run <task>
 codemini config set|get|list <key> [value]
@@ -58,34 +54,10 @@ codemini doctor
 codemini skill list|install|enable|disable|inspect|reindex
 ```
 
-### Default Behavior
+### Documentation
 
-- Default shell profile: `powershell` on Windows, `bash` elsewhere
-- Default tools: `run_command`, `read_file`, `write_file`
-- Default search strategy: `rg` first
-- Default bundled skills:
-  - `superpowers-lite`
-  - `brainstorming-lite`
-  - `executing-plan-lite`
-- Default soul preset: `default`
-
-### Safety
-
-- `policy.safe_mode=true` by default
-- command execution is filtered through shell-aware allowlists
-- dangerous command patterns and protected paths are blocked
-- `soul` affects reply tone only, not code generation logic
-
-### Install
-
-Offline package install:
-
-```bash
-npm i -g .\\codemini-cli-0.1.0.tgz
-```
-
-More packaging notes:
-- [TGZ-README.md](/mnt/e/Git%20Projects/qurio-coder/TGZ-README.md)
+- Operator guide and common command patterns: [OPERATIONS.md](/mnt/e/Git%20Projects/qurio-coder/OPERATIONS.md)
+- Packaging and deployment guide: [deployment.md](/mnt/e/Git%20Projects/qurio-coder/deployment.md)
 
 ### Data Layout
 
@@ -96,10 +68,10 @@ More packaging notes:
 ### Positioning
 
 CodeMini CLI is a better fit if you want:
-- stronger results from smaller coding models
+- a coding CLI that behaves well with smaller models
 - a Windows and PowerShell-friendly workflow
-- command-line speed without exposing every possible tool to the model
-- sub-agents that reduce noise instead of multiplying it
+- a more controlled execution surface
+- multi-agent execution with stronger review and verification steps
 
 ---
 
@@ -107,34 +79,24 @@ CodeMini CLI is a better fit if you want:
 
 CodeMini CLI 是一个为小模型工作流优化过的代码助手 CLI，重点针对 Windows 和 PowerShell 做了打磨。
 
-它不是假设你在用超大模型、超长上下文、Unix-first 环境，而是围绕“小模型真正擅长什么”来设计：
-- 更小的工具暴露面
-- 更偏命令优先的代码检索方式
-- `rg` 优先搜索
-- PowerShell 感知的命令策略
-- 更适合多 sub-agent，减少上下文注意力污染
+它更适合那些希望代码助手在真实开发环境里更稳、更可控、更实用的团队，尤其是在内部小模型参与日常工作的场景下。
 
 ### 为什么做这个
 
-很多 coder CLI 更偏向：
-- 超大模型
-- macOS / Linux 优先
-- 工具越多越好
-
-CodeMini CLI 走的是另一条路：
-- 更适合公司内部 7B 到 30B 级模型
-- 把 Windows / PowerShell 当一等公民
-- 先鼓励高信号命令，再按需读取文件
-- 尽量缩小 LLM 的执行面，让行为更稳、更可控
+- 面向小模型工作流优化，而不是默认假设超大模型能力
+- 把 Windows 和 PowerShell 当作一等公民
+- 默认工具面更小，更容易控制
+- 使用 shell-aware 的执行策略，而不是无边界暴露系统能力
+- 支持 sub-agent 协作，但不会强制共享整段上下文历史
 
 ### 主要特点
 
-- 小模型优先：默认只暴露 `run_command`、`read_file`、`write_file`
-- Windows 优化：`shell.default=powershell` 时自动切到 PowerShell 友好的提示词和 allowlist
-- 搜索优先：优先用 `rg` 搜代码，再看局部上下文，最后才大段读取
-- 默认更安全：safe mode 默认开启，按 shell 配置限制命令能力
-- sub-agent 更干净：子代理默认拿受控上下文包，不继承整段会话历史
-- 可定制语气：`soul` 只改回答风格，不改 plan、代码和执行逻辑
+- 默认工具极简：`run_command`、`read_file`、`write_file`
+- 面向 Windows 的 PowerShell 默认配置
+- safe mode 默认开启
+- 内置 lite skills，覆盖规划、执行和协作
+- `soul` 只影响语气，不影响计划和代码行为
+- 支持 planner、coder、reviewer、tester 多角色 sub-agent
 
 ### 快速开始
 
@@ -144,7 +106,7 @@ codemini config set gateway.api_key your_token
 codemini config set shell.default powershell
 codemini config set model.name your-30b-model
 codemini doctor
-codemini chat
+codemini
 ```
 
 如果你在 macOS 或 Linux：
@@ -153,9 +115,10 @@ codemini chat
 codemini config set shell.default bash
 ```
 
-### 常用命令
+### 命令概览
 
 ```text
+codemini [prompt]
 codemini chat [prompt]
 codemini run <task>
 codemini config set|get|list <key> [value]
@@ -163,47 +126,13 @@ codemini doctor
 codemini skill list|install|enable|disable|inspect|reindex
 ```
 
-### 默认行为
+### 文档入口
 
-- 默认 shell profile：Windows 下优先 `powershell`，其他环境优先 `bash`
-- 默认工具：`run_command`、`read_file`、`write_file`
-- 默认搜索策略：优先 `rg`
-- 默认内置 lite skills：
-  - `superpowers-lite`
-  - `brainstorming-lite`
-  - `executing-plan-lite`
-- 默认 soul：`default`
-
-### 安全边界
-
-- `policy.safe_mode=true`
-- 命令执行会经过 shell-aware allowlist
-- 危险命令模式和敏感系统路径会被拦截
-- `soul` 只影响回答语气，不影响代码执行逻辑
-
-### 安装
-
-离线安装：
-
-```bash
-npm i -g .\\codemini-cli-0.1.0.tgz
-```
-
-详细打包说明：
-- [TGZ-README.md](/mnt/e/Git%20Projects/qurio-coder/TGZ-README.md)
+- 操作手册与常见命令组合：[OPERATIONS.md](/mnt/e/Git%20Projects/qurio-coder/OPERATIONS.md)
+- 打包与部署手册：[deployment.md](/mnt/e/Git%20Projects/qurio-coder/deployment.md)
 
 ### 数据目录
 
 - 项目工作区数据：`.coder/`
 - Windows 全局用户数据：`%APPDATA%\\codemini-cli\\`
 - 受限环境回退目录：`.codemini-cli/`
-
-### 适合谁
-
-如果你想要的是：
-- 小模型也能更稳定地写代码
-- Windows / PowerShell 不再是二等公民
-- 命令行工作流足够快，而且可控
-- sub-agent 真正帮你减轻注意力负担
-
-那 CodeMini CLI 会更适合你。

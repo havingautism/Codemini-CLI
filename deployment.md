@@ -1,4 +1,4 @@
-# TGZ Usage Guide
+# Deployment Guide
 
 This document describes how to package, copy, install, configure, and verify `codemini-cli` from a `.tgz` file.
 
@@ -125,7 +125,7 @@ codemini doctor
 Then launch the TUI:
 
 ```powershell
-codemini chat
+codemini
 ```
 
 Inside the TUI, test these:
@@ -139,17 +139,7 @@ Inside the TUI, test these:
 读取 hello.js
 ```
 
-## 8. Useful TUI Keys
-
-- `Tab`: command autocomplete
-- `Tab` with multiple candidates: enter candidate switching mode
-- `Up/Down`: input history switching
-- `PgUp/PgDn`: scroll conversation
-- `Ctrl+Up/Ctrl+Down`: smaller conversation scroll
-- `Ctrl+T`: expand or collapse tool details
-- `Ctrl+C`: exit
-
-## 9. Installed Data Locations
+## 8. Installed Data Locations
 
 Project-scoped data:
 
@@ -170,7 +160,7 @@ Typical contents:
 - `skills\`
 - `input-history.json`
 
-## 10. Skills
+## 9. Skills
 
 List installed skills:
 
@@ -190,7 +180,7 @@ Rebuild the local registry:
 codemini skill reindex
 ```
 
-## 11. Uninstall
+## 10. Uninstall
 
 Global uninstall:
 
@@ -204,7 +194,7 @@ Local uninstall inside a test directory:
 npm uninstall codemini-cli
 ```
 
-## 12. Known Limitation
+## 11. Known Limitation
 
 This `.tgz` package is suitable for package distribution, but it is not a fully self-contained offline dependency bundle.
 

@@ -9,6 +9,7 @@ const VERSION = '0.1.0';
 function printHelp() {
   console.log(`codemini ${VERSION}
 Usage:
+  codemini [prompt] [--plain]
   codemini chat [prompt] [--plain]
   codemini run <task> [--max-steps N]
   codemini config set|get|list <key> [value]
@@ -20,14 +21,24 @@ Usage:
 
 export async function runCli(args) {
   const [command, ...rest] = args;
+  const knownCommands = new Set(['chat', 'run', 'config', 'doctor', 'skill']);
 
   if (!command || command === '--help' || command === '-h') {
+    if (!command) {
+      await handleChat([]);
+      return;
+    }
     printHelp();
     return;
   }
 
   if (command === '--version' || command === '-v' || command === 'version') {
     console.log(VERSION);
+    return;
+  }
+
+  if (!knownCommands.has(command)) {
+    await handleChat(args);
     return;
   }
 
@@ -47,7 +58,5 @@ export async function runCli(args) {
     case 'skill':
       await handleSkill(rest);
       return;
-    default:
-      throw new Error(`Unknown command: ${command}`);
   }
 }

@@ -60,10 +60,11 @@ function nowStamp() {
   return new Date().toISOString().replace(/[:.]/g, '-');
 }
 
-const SUB_AGENT_ROLES = ['planner', 'coder', 'reviewer'];
+const SUB_AGENT_ROLES = ['planner', 'coder', 'reviewer', 'tester'];
 const SUB_AGENT_CONTEXT_MAX_MESSAGES = 4;
 const SUB_AGENT_CONTEXT_MAX_CHARS = 1200;
 const SUB_AGENT_EVIDENCE_MAX_ITEMS = 3;
+const SUB_AGENT_HANDOFF_MAX_ITEMS = 6;
 const AUTO_SKILL_NAMES = ['superpowers-lite', 'brainstorming-lite', 'executing-plan-lite'];
 
 function getSubAgentRolePrompt(role) {
@@ -71,7 +72,35 @@ function getSubAgentRolePrompt(role) {
     return 'You are a planning sub-agent. Produce a concrete implementation plan with risks and verification.';
   }
   if (role === 'reviewer') {
-    return 'You are a review sub-agent. Focus on bugs, regressions, edge cases, and missing tests.';
+    return [
+      'You are a review sub-agent. Focus on bugs, regressions, edge cases, and missing tests.',
+      'Start with the focused files or directories handed to you. Do not roam unrelated parts of the repo unless the handed-off evidence is insufficient.',
+      'Use this exact output structure:',
+      'Findings:',
+      '- <bug, regression, risk, or "none">',
+      'Verified:',
+      '- <what you checked>',
+      'Not Verified:',
+      '- <what remains uncertain>',
+      'Next Action:',
+      '- <single best next step>'
+    ].join('\n');
+  }
+  if (role === 'tester') {
+    return [
+      'You are a testing sub-agent. Focus on verification strategy, real test execution evidence, missing coverage, and whether the work was actually validated.',
+      'Prefer running concrete verification commands over only suggesting them.',
+      'Start with the focused files or directories handed to you. Verify those artifacts first before scanning the wider repo.',
+      'Use this exact output structure:',
+      'Verified:',
+      '- <commands run and evidence>',
+      'Not Verified:',
+      '- <what could not be validated>',
+      'Failures:',
+      '- <failed command or "none">',
+      'Next Action:',
+      '- <single best next step>'
+    ].join('\n');
   }
   return 'You are an execution sub-agent. Produce practical implementation guidance with code-level detail.';
 }
@@ -161,6 +190,192 @@ function buildSubAgentEvidencePacket(session) {
   return ['Scoped file evidence (recent tool outputs only):', ...lines].join('\n');
 }
 
+function extractLikelyPathsFromText(rawText, out, seen) {
+  const text = String(rawText || '');
+  if (!text) return;
+  const matches = text.matchAll(
+    /(?:^|[\s("'`])([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+|[A-Za-z0-9_.-]+\.[A-Za-z0-9_]+)(?=$|[\s)"'`:,`])/g
+  );
+  for (const match of matches) {
+    const value = String(match[1] || '').replace(/\/+$/, '');
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+    if (out.length >= SUB_AGENT_HANDOFF_MAX_ITEMS) break;
+  }
+}
+
+function summarizeStepOutput(step) {
+  const text = trimInlineText(step?.output || step?.task || '', 220);
+  return text || 'No concise output captured.';
+}
+
+function collectStepArtifacts(runItems, role) {
+  if (!Array.isArray(runItems) || runItems.length === 0) return '';
+
+  const relevantSteps =
+    role === 'reviewer' || role === 'tester'
+      ? runItems.filter((step) => step && !step.failed && step.role !== 'reviewer' && step.role !== 'tester')
+      : runItems.filter((step) => step && !step.failed);
+  if (relevantSteps.length === 0) return '';
+
+  const focusPaths = [];
+  const seenPaths = new Set();
+  const summaries = [];
+
+  for (const step of relevantSteps.slice(-4)) {
+    if (Array.isArray(step.artifactPaths)) {
+      for (const artifactPath of step.artifactPaths) {
+        if (!artifactPath || seenPaths.has(artifactPath)) continue;
+        seenPaths.add(artifactPath);
+        focusPaths.push(artifactPath);
+        if (focusPaths.length >= SUB_AGENT_HANDOFF_MAX_ITEMS) break;
+      }
+    }
+    extractLikelyPathsFromText(step.output, focusPaths, seenPaths);
+    const summary = summarizeStepOutput(step);
+    summaries.push(`- [${step.role}] ${step.title}: ${summary}`);
+    if (focusPaths.length >= SUB_AGENT_HANDOFF_MAX_ITEMS && summaries.length >= 3) break;
+  }
+
+  return { focusPaths, summaries };
+}
+
+function buildStepArtifactPacket(runItems, role) {
+  const collected = collectStepArtifacts(runItems, role);
+  if (!collected) return '';
+  const { focusPaths, summaries } = collected;
+
+  if (focusPaths.length === 0 && summaries.length === 0) return '';
+
+  const lines = ['Implementation handoff from earlier plan steps:'];
+  if (focusPaths.length > 0) {
+    lines.push('Focus paths first:');
+    for (const value of focusPaths.slice(0, SUB_AGENT_HANDOFF_MAX_ITEMS)) {
+      lines.push(`- ${value}`);
+    }
+    if (role === 'reviewer' || role === 'tester') {
+      lines.push('Start with these files/directories before exploring unrelated repo areas.');
+    }
+  }
+  if (summaries.length > 0) {
+    lines.push('Prior step summaries:');
+    lines.push(...summaries.slice(-3));
+  }
+  return lines.join('\n');
+}
+
+function buildFocusedTaskNote(role, focusPaths) {
+  if (!Array.isArray(focusPaths) || focusPaths.length === 0) return '';
+  const head = focusPaths.slice(0, 4).join(', ');
+  if (role === 'reviewer') {
+    return `Focus review on these artifacts first: ${head}. Only inspect unrelated repo areas if these artifacts do not provide enough evidence.`;
+  }
+  if (role === 'tester') {
+    return `Focus verification on these artifacts first: ${head}. Prefer commands and reads that directly validate these paths before wider repo exploration.`;
+  }
+  return '';
+}
+
+async function pathExists(targetPath) {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readJsonSafe(targetPath) {
+  try {
+    return JSON.parse(await fs.readFile(targetPath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+async function buildTesterVerificationPacket(focusPaths = []) {
+  const cwd = process.cwd();
+  const primary = [];
+  const secondary = [];
+  const fallback = [];
+  const packageJsonPath = path.join(cwd, 'package.json');
+  const pyprojectPath = path.join(cwd, 'pyproject.toml');
+  const cargoPath = path.join(cwd, 'Cargo.toml');
+  const goModPath = path.join(cwd, 'go.mod');
+  const focusTargets = Array.isArray(focusPaths) ? focusPaths.filter(Boolean).slice(0, 4) : [];
+
+  if (await pathExists(packageJsonPath)) {
+    const pkg = await readJsonSafe(packageJsonPath);
+    const scripts = pkg?.scripts || {};
+    if (typeof scripts.test === 'string' && scripts.test.trim()) {
+      primary.push(`- npm test :: package.json script = ${trimInlineText(scripts.test, 140)}`);
+    }
+    if (typeof scripts.build === 'string' && scripts.build.trim()) {
+      secondary.push(`- npm run build :: package.json script = ${trimInlineText(scripts.build, 140)}`);
+    }
+    if (typeof scripts.lint === 'string' && scripts.lint.trim()) {
+      secondary.push(`- npm run lint :: package.json script = ${trimInlineText(scripts.lint, 140)}`);
+    }
+    fallback.push('- If test/build scripts are not usable, inspect package.json scripts and run the narrowest relevant check.');
+  }
+
+  if (await pathExists(pyprojectPath)) {
+    primary.push('- pytest');
+  }
+  if (await pathExists(cargoPath)) {
+    primary.push('- cargo test');
+  }
+  if (await pathExists(goModPath)) {
+    primary.push('- go test ./...');
+  }
+
+  if (primary.length === 0 && secondary.length === 0) {
+    return [
+      'Verification guidance:',
+      '- No obvious project-level test command was detected automatically.',
+      '- Prefer running at least one concrete verification command when possible.',
+      '- Fall back to the lightest real check you can justify for the files involved.',
+      '- If no runnable checks exist, explicitly say what you tried and what remains unverified.'
+    ].join('\n');
+  }
+
+  const lines = [
+    'Verification guidance:',
+    'Prefer executing real verification commands before concluding the work is done.',
+    'Use the strongest available evidence first, then fall back in order.',
+    'Start with artifact-scoped checks for the handed-off files/directories before broad repo discovery.',
+    'Read package.json scripts before inventing commands. If a test or build script exists, prefer that exact script name first.',
+    'Priority order:'
+  ];
+
+  if (focusTargets.length > 0) {
+    lines.push('Artifact focus:');
+    for (const target of focusTargets) {
+      lines.push(`- ${target}`);
+    }
+  }
+
+  if (primary.length > 0) {
+    lines.push('1. Primary verification commands:');
+    lines.push(...primary);
+  }
+  if (secondary.length > 0) {
+    lines.push(`${primary.length > 0 ? '2' : '1'}. Secondary verification commands:`);
+    lines.push(...secondary);
+  }
+  lines.push(`${primary.length > 0 || secondary.length > 0 ? '3' : '2'}. Fallback rules:`);
+  lines.push('- If the top command fails because the repo is not set up for it, report that clearly and try the next best command.');
+  lines.push('- Prefer narrow checks that mention the handed-off path (for example the target directory or file) before scanning the full repository.');
+  lines.push('- Do not use unrelated directories as a starting point if focused artifacts were handed to you.');
+  lines.push('- Do not treat ls/find/grep directory discovery as verification evidence by itself.');
+  lines.push('- Prefer concrete execution evidence over narrative claims.');
+  lines.push('- End with two explicit sections: "Verified" and "Not Verified".');
+  lines.push(...fallback);
+
+  return lines.join('\n');
+}
+
 function isSkillEnabled(config, name) {
   return config.skills?.enabled?.[name] !== false;
 }
@@ -229,23 +444,73 @@ function normalizeAutoPlan(parsed, goal) {
     }))
     .filter((s) => s.title && s.task && SUB_AGENT_ROLES.includes(s.role));
 
-  if (cleaned.length === 0) {
-    return {
-      summary: `Auto plan for: ${goal}`,
-      steps: [
-        {
-          title: 'Initial analysis',
-          role: 'planner',
-          task: `Break down and propose implementation steps for: ${goal}`
+  const basePlan =
+    cleaned.length === 0
+      ? {
+          summary: `Auto plan for: ${goal}`,
+          steps: [
+            {
+              title: 'Initial analysis',
+              role: 'planner',
+              task: `Break down and propose implementation steps for: ${goal}`
+            }
+          ]
         }
-      ]
-    };
-  }
+      : {
+          summary: String(parsed?.summary || `Auto plan for: ${goal}`).trim(),
+          steps: cleaned
+        };
+
+  return enforceAutoPlanGuardrailSteps(basePlan, goal);
+}
+
+function enforceAutoPlanGuardrailSteps(plan, goal) {
+  const source = Array.isArray(plan?.steps) ? plan.steps : [];
+  const implementationSteps = source.filter((step) => step.role !== 'reviewer' && step.role !== 'tester');
+  const reviewerStep = source.find((step) => step.role === 'reviewer') || {
+    title: 'Review implementation',
+    role: 'reviewer',
+    task: `Review the completed work for: ${goal}. Start with the files and directories produced by earlier implementation steps, then check bugs, regressions, risky assumptions, edge cases, and missing tests.`
+  };
+  const testerStep = source.find((step) => step.role === 'tester') || {
+    title: 'Test and verify',
+    role: 'tester',
+    task: `Test and verify the completed work for: ${goal}. Start with the artifacts produced by earlier implementation steps, run the most relevant checks available, report concrete evidence, and call out anything still unverified.`
+  };
 
   return {
-    summary: String(parsed?.summary || `Auto plan for: ${goal}`).trim(),
-    steps: cleaned.slice(0, 8)
+    summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
+    steps: [...implementationSteps.slice(0, 6), reviewerStep, testerStep]
   };
+}
+
+function looksLikeSuccessfulStepOutput(text = '') {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  if (/(^|\n)\s*(error|failures?)\s*:\s*(?!none\b)/i.test(value)) return false;
+  if (/(^|\n)\s*next action\s*:\s*-\s*retry\b/i.test(value)) return false;
+  return true;
+}
+
+function buildAutoPlanSystemSummary(auto) {
+  const statusTitle =
+    auto.failedCount > 0 ? 'Auto plan finished with failures' : auto.warningCount > 0 ? 'Auto plan finished with warnings' : 'Auto plan finished';
+  const lines = [
+    statusTitle,
+    `File: ${auto.filePath}`,
+    `Summary: ${auto.summary || '-'}`,
+    `Steps: ${auto.steps.length} total`,
+    `Completed: ${auto.completedCount}`,
+    `Warnings: ${auto.warningCount}`,
+    `Failed: ${auto.failedCount}`
+  ];
+  if (auto.warningTitles?.length) {
+    lines.push(`Warning steps: ${auto.warningTitles.slice(0, 5).join(', ')}`);
+  }
+  if (auto.failedTitles?.length) {
+    lines.push(`Failed steps: ${auto.failedTitles.slice(0, 5).join(', ')}`);
+  }
+  return lines.join('\n');
 }
 
 async function writeMarkdownInCoderDir(subDir, title, body, fallbackName, sessionId) {
@@ -669,6 +934,7 @@ async function askModel({
 async function runSubAgentTask({
   role,
   task,
+  priorSteps = [],
   parentSession,
   config,
   model,
@@ -679,12 +945,35 @@ async function runSubAgentTask({
   const rolePrompt = getSubAgentRolePrompt(role);
   const contextPacket = buildSubAgentContextPacket(parentSession);
   const evidencePacket = buildSubAgentEvidencePacket(parentSession);
-  const scopedTask = [contextPacket, evidencePacket, 'Task:', task].filter(Boolean).join('\n\n');
+  const handoffPacket = buildStepArtifactPacket(priorSteps, role);
+  const handoffFocusPaths = collectStepArtifacts(priorSteps, role)?.focusPaths || [];
+  const focusedTaskNote = buildFocusedTaskNote(role, handoffFocusPaths);
+  const verificationPacket = role === 'tester' ? await buildTesterVerificationPacket(handoffFocusPaths) : '';
+  const scopedTask = [contextPacket, evidencePacket, handoffPacket, verificationPacket, focusedTaskNote, 'Task:', task]
+    .filter(Boolean)
+    .join('\n\n');
   let blockedCount = 0;
   let toolErrorCount = 0;
+  const artifactPaths = [];
+  const seenArtifactPaths = new Set();
   const wrappedOnAgentEvent = (evt) => {
     if (evt?.type === 'tool:blocked') blockedCount += 1;
     if (evt?.type === 'tool:error') toolErrorCount += 1;
+    if (evt?.type === 'tool:result' && evt.content) {
+      try {
+        const parsed = JSON.parse(String(evt.content));
+        if (parsed?.path) {
+          const artifactPath = String(parsed.path);
+          if (!seenArtifactPaths.has(artifactPath)) {
+            seenArtifactPaths.add(artifactPath);
+            artifactPaths.push(artifactPath);
+          }
+        }
+        if (typeof parsed?.stdout === 'string') {
+          extractLikelyPathsFromText(parsed.stdout, artifactPaths, seenArtifactPaths);
+        }
+      } catch {}
+    }
     if (onAgentEvent) onAgentEvent(evt);
   };
   const subResult = await askModel({
@@ -703,7 +992,8 @@ async function runSubAgentTask({
     text,
     blockedCount,
     toolErrorCount,
-    hasErrorLine
+    hasErrorLine,
+    artifactPaths: artifactPaths.slice(0, SUB_AGENT_HANDOFF_MAX_ITEMS)
   };
 }
 
@@ -717,7 +1007,7 @@ async function buildAutoPlanAndRun({
   sessionId
 }) {
   const plannerPrompt =
-    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer","task":"..."}]}. No markdown.';
+    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester","task":"..."}]}. No markdown. Always include final reviewer and tester steps.';
   let autoPlan = {
     summary: `Auto plan for: ${goal}`,
     steps: [
@@ -738,7 +1028,7 @@ async function buildAutoPlanAndRun({
         { role: 'system', content: `${systemPrompt}\n${plannerPrompt}` },
         {
           role: 'user',
-          content: `Create an execution plan and assign best sub-agent role for each step.\nGoal: ${goal}`
+          content: `Create an execution plan and assign best sub-agent role for each step.\nGoal: ${goal}\nThe final steps must include review and testing/verification.`
         }
       ],
       timeoutMs: config.gateway.timeout_ms || 90000,
@@ -763,34 +1053,49 @@ async function buildAutoPlanAndRun({
       const stepResult = await runSubAgentTask({
         role: step.role,
         task: step.task,
+        priorSteps: runItems,
         parentSession: session,
         config,
         model,
         systemPrompt,
         onAgentEvent
       });
-      const failed =
-        stepResult.blockedCount > 0 || stepResult.toolErrorCount > 0 || stepResult.hasErrorLine;
+      const outputLooksSuccessful = looksLikeSuccessfulStepOutput(stepResult.text);
+      const warningParts = [];
+      if (stepResult.blockedCount > 0) warningParts.push(`${stepResult.blockedCount} blocked tool call(s)`);
+      if (stepResult.toolErrorCount > 0) warningParts.push(`${stepResult.toolErrorCount} tool error(s)`);
+      const warning = warningParts.length > 0 ? `sub-agent recovered after ${warningParts.join(', ')}` : '';
+      const failed = stepResult.hasErrorLine || (!outputLooksSuccessful && (stepResult.blockedCount > 0 || stepResult.toolErrorCount > 0));
       let error = '';
-      if (stepResult.blockedCount > 0) {
-        error = `sub-agent had ${stepResult.blockedCount} blocked tool call(s)`;
-      } else if (stepResult.toolErrorCount > 0) {
-        error = `sub-agent had ${stepResult.toolErrorCount} tool error(s)`;
-      } else if (stepResult.hasErrorLine) {
+      if (stepResult.hasErrorLine) {
         error = 'sub-agent output contains error line(s)';
+      } else if (failed && stepResult.blockedCount > 0) {
+        error = `sub-agent ended with ${stepResult.blockedCount} blocked tool call(s)`;
+      } else if (failed && stepResult.toolErrorCount > 0) {
+        error = `sub-agent ended with ${stepResult.toolErrorCount} tool error(s)`;
       }
-      runItems.push({ ...step, output: stepResult.text, error, failed });
+      runItems.push({
+        ...step,
+        output: stepResult.text,
+        error,
+        warning,
+        failed,
+        artifactPaths: stepResult.artifactPaths || []
+      });
     } catch (err) {
       runItems.push({
         ...step,
         output: '',
         error: String(err?.message || err || 'sub-agent step failed'),
+        warning: '',
         failed: true
       });
     }
   }
 
   const failedItems = runItems.filter((s) => s.failed || s.error);
+  const warningItems = runItems.filter((s) => !s.failed && s.warning);
+  const completedItems = runItems.filter((s) => !s.failed);
 
   const lines = [];
   lines.push(`# Auto Plan: ${goal}`);
@@ -820,6 +1125,10 @@ async function buildAutoPlanAndRun({
       lines.push('');
       return;
     }
+    if (s.warning) {
+      lines.push(`Note: ${s.warning}`);
+      lines.push('');
+    }
     lines.push(s.output || '(empty)');
     lines.push('');
   });
@@ -835,7 +1144,10 @@ async function buildAutoPlanAndRun({
     filePath,
     summary: autoPlan.summary,
     steps: autoPlan.steps,
+    completedCount: completedItems.length,
+    warningCount: warningItems.length,
     failedCount: failedItems.length,
+    warningTitles: warningItems.map((s) => `${s.role}:${s.title}`),
     failedTitles: failedItems.map((s) => `${s.role}:${s.title}`)
   };
 }
@@ -973,7 +1285,7 @@ export async function createChatRuntime({
   ];
   const specTemplates = ['/spec <topic>'];
   const planTemplates = ['/plan <goal>', '/plan auto <goal>', '/plan from-spec <spec-path?>'];
-  const agentTemplates = ['/agents list', '/agents run planner <task>', '/agents run coder <task>', '/agents run reviewer <task>'];
+  const agentTemplates = ['/agents list', '/agents run planner <task>', '/agents run coder <task>', '/agents run reviewer <task>', '/agents run tester <task>'];
   const debugTemplates = ['/debug keys on', '/debug keys off', '/debug keys status'];
   const compactTemplates = compactOptions.map((opt) => `/compact ${opt}`);
   const slashTemplates = [
@@ -1118,7 +1430,7 @@ export async function createChatRuntime({
       }
       if (tokens[1] === 'run') {
         const rolePrefix = tokens[2] || '';
-        return ['planner', 'coder', 'reviewer']
+        return ['planner', 'coder', 'reviewer', 'tester']
           .filter((r) => r.startsWith(rolePrefix))
           .map((r) => `/agents run ${r} `);
       }
@@ -1403,16 +1715,7 @@ export async function createChatRuntime({
             onAgentEvent,
             sessionId: currentSession.id
           });
-          if (auto.failedCount > 0) {
-            const failedLine = auto.failedTitles.slice(0, 5).join(', ');
-            const text = `Auto plan completed with failures: ${auto.filePath}\nSteps: ${auto.steps.length}\nFailed: ${auto.failedCount}${failedLine ? `\nFailed steps: ${failedLine}` : ''}\nSummary: ${auto.summary || '-'}`;
-            await persistLocalExchange(line, text);
-            return {
-              type: 'system',
-              text
-            };
-          }
-          const text = `Auto plan executed: ${auto.filePath}\nSteps: ${auto.steps.length}\nSummary: ${auto.summary || '-'}`;
+          const text = buildAutoPlanSystemSummary(auto);
           await persistLocalExchange(line, text);
           return {
             type: 'system',
@@ -1472,7 +1775,7 @@ export async function createChatRuntime({
         if (sub === 'list') {
           return {
             type: 'system',
-            text: 'Sub-agent roles: planner, coder, reviewer\nUse: /agents run <role> <task>'
+            text: 'Sub-agent roles: planner, coder, reviewer, tester\nUse: /agents run <role> <task>'
           };
         }
         if (sub === 'run') {
@@ -1480,7 +1783,7 @@ export async function createChatRuntime({
           const task = parsedInput.args.slice(2).join(' ').trim();
           if (!role || !task) return { type: 'system', text: 'Usage: /agents run <role> <task>' };
           if (!SUB_AGENT_ROLES.includes(role)) {
-            return { type: 'system', text: 'Unknown role. Allowed: planner|coder|reviewer' };
+            return { type: 'system', text: 'Unknown role. Allowed: planner|coder|reviewer|tester' };
           }
           const output = await runSubAgentTask({
             role,
