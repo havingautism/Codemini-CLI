@@ -6,6 +6,12 @@ version: 0.1.0
 
 Use this skill as the default lightweight operating style for coding work.
 
+Primary behavior:
+- keep momentum on clear tasks
+- slow down before coding when the request is ambiguous
+- keep edits local
+- verify before claiming success
+
 Core rules:
 
 1. Search first.
@@ -21,15 +27,19 @@ When a task can be split cleanly, use sub-agents for bounded subtasks so the mai
 - a tiny file evidence packet
 - a concrete expected output
 
-4. Read and write with intent.
+4. Do not code against unclear requirements.
+If the requested behavior, scope, or acceptance is unclear, do not jump into implementation. Ask the next best question or use `brainstorm` to compare a few small options and converge first.
+
+5. Read and write with intent.
 Use `read_file` only when shell output is not enough. Use `write_file` for edits. Avoid unnecessary tool calls and avoid rereading the same file without a reason.
 
-5. Verify before claiming success.
+6. Verify before claiming success.
 Run the relevant test, check, or command before saying work is fixed or complete.
 
 Default workflow:
 - Search with `rg`
 - Inspect local context
+- If the request is unclear, pause for clarification or brainstorm
 - Plan the next smallest step
 - Delegate if the work is independent
 - Edit

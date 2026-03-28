@@ -228,6 +228,42 @@ test('locate, open_target, and edit_target provide a compact high-level workflow
   });
 });
 
+test('edit_target accepts top-level edit fields as a compatibility fallback', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'math.js'),
+      ['export function add(a, b) {', '  return a + b;', '}'].join('\n'),
+      'utf8'
+    );
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const opened = await handlers.open_target({
+      file: 'src/math.js',
+      symbol: 'add'
+    });
+
+    const edited = await handlers.edit_target({
+      file: 'src/math.js',
+      kind: 'replace_block',
+      target: opened.edit_target,
+      new_content: [
+        'export function add(a, b) {',
+        '  return a + b;',
+        '}',
+        '',
+        'export function subtract(a, b) {',
+        '  return a - b;',
+        '}'
+      ].join('\n')
+    });
+
+    assert.equal(edited.ok, true);
+    const after = await fs.readFile(path.join(workspaceRoot, 'src', 'math.js'), 'utf8');
+    assert.match(after, /export function subtract/);
+  });
+});
+
 test('run_command rejects long-running service commands and points callers to start_service', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {

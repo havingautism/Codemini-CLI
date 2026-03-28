@@ -1105,17 +1105,55 @@ async function openTarget(root, args) {
   };
 }
 
-async function editTarget(root, args) {
+function normalizeEditTargetArgs(args = {}) {
   const file = String(args?.file || args?.path || '').trim();
-  const edit = args?.edit || {};
+  const nestedEdit = args?.edit && typeof args.edit === 'object' ? args.edit : null;
+  if (nestedEdit) {
+    return {
+      file,
+      edit: nestedEdit
+    };
+  }
+  return {
+    file,
+    edit: {
+      kind: args?.kind,
+      target: args?.target,
+      new_content: args?.new_content ?? args?.content,
+      old_text: args?.old_text,
+      new_text: args?.new_text,
+      anchor_text: args?.anchor_text,
+      content: args?.content
+    }
+  };
+}
+
+async function editTarget(root, args) {
+  const normalized = normalizeEditTargetArgs(args);
+  const file = normalized.file;
+  const edit = normalized.edit || {};
   const kind = String(edit.kind || '').trim();
   if (!file || !kind) throw new Error('edit_target requires file and edit.kind');
   if (kind === 'replace_block') {
-    return replaceBlock(root, {
-      path: file,
-      target: edit.target,
-      new_content: edit.new_content
-    });
+    try {
+      return await replaceBlock(root, {
+        path: file,
+        target: edit.target,
+        new_content: edit.new_content
+      });
+    } catch (error) {
+      if (!/old_hash mismatch/i.test(String(error?.message || ''))) throw error;
+      const validation = await validateEdit(root, {
+        path: file,
+        kind: 'replace_block',
+        target: edit.target
+      });
+      return replaceBlock(root, {
+        path: file,
+        target: validation.target,
+        new_content: edit.new_content
+      });
+    }
   }
   if (kind === 'replace_text') {
     return replaceText(root, {

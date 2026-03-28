@@ -110,6 +110,7 @@ Use this when you want to separate:
 ```text
 /help
 /commands
+/brainstorm <question>
 /config list
 /config get <key>
 /history list
@@ -144,6 +145,14 @@ Continue into the relevant files and explain how skill loading works.
 Find where shell.default is used and summarize the config path.
 ```
 
+### Brainstorm before coding
+
+```text
+/brainstorm Should login retry stay local or become a shared helper?
+```
+
+Use this when the implementation path is still fuzzy and you want the CLI to compare a few approaches before any code change.
+
 ### Spec and plan flow
 
 ```text
@@ -170,12 +179,18 @@ Execute this plan step by step.
 ```powershell
 codemini skill list
 codemini skill inspect superpowers-lite
-codemini skill enable brainstorming-lite
-codemini skill disable brainstorming-lite
+codemini skill enable brainstorm
+codemini skill disable brainstorm
 codemini skill reindex
 ```
 
 ## Better Prompt Patterns
+## Release Management
+
+### Release Checklist
+
+For information on how to perform a release, please see the [Release Checklist](RELEASE_CHECKLIST.md) document.
+
 
 These usually work better:
 

@@ -63,6 +63,7 @@ codemini skill list|install|enable|disable|inspect|reindex
 
 - `ui.reply_language` controls the assistant reply language at the prompt layer and also nudges generated docs and code comments to match
 - Slash completion now prioritizes important commands and config keys, shows short descriptions, and supports `←/→` page switching
+- Ambiguous feature requests can pause for lightweight brainstorming first, and `/brainstorm <question>` gives an explicit way to compare options before coding
 - `plan auto` now turns the original goal into an acceptance checklist, uses a lighter chain only for truly tiny tasks, and treats unmet checklist items as failure signals
 - Structured code tools reduce shell-noise for small models by preferring `locate -> open_target -> edit_target`
 
@@ -83,7 +84,19 @@ The base config directory is resolved in this order:
 - Linux/XDG: `$XDG_CONFIG_HOME/codemini-cli`
 - Fallback in restricted environments: `.codemini-cli/`
 
+### Brainstorming
+
+Use `/brainstorm <question>` when you want the assistant to stop before coding, compare 2-3 approaches, and choose one direction first.
+
+```text
+/brainstorm Should login retry stay local or become a shared helper?
+```
+
 ### Documentation
+### Release Checklist
+
+For information on how to perform a release, please see the [Release Checklist](RELEASE_CHECKLIST.md) document.
+
 
 - Operator guide and common command patterns: [OPERATIONS.md](/mnt/e/Git%20Projects/qurio-coder/OPERATIONS.md)
 - Packaging and deployment guide: [deployment.md](/mnt/e/Git%20Projects/qurio-coder/deployment.md)
@@ -164,6 +177,7 @@ codemini skill list|install|enable|disable|inspect|reindex
 
 - `ui.reply_language` 通过 prompt 层控制模型回复语言，也会尽量让生成文档和代码注释跟随该语言
 - slash 补全会优先展示更重要的命令和配置项，显示简短说明，并支持 `←/→` 翻页
+- 对于需求仍不明确的功能请求，CLI 会先偏向轻量 brainstorm；也可以显式使用 `/brainstorm <问题>` 先比较方案再决定是否编码
 - `plan auto` 会先把原始目标展开成验收清单；只有真正很小的任务才会走轻量链路；如果 reviewer 或 tester 标记了未满足或未验证的验收项，就不会按成功处理
 - 为了减少小模型被 shell 原始输出干扰，新增了 `locate -> open_target -> edit_target` 这套结构化代码工具流
 
@@ -183,6 +197,14 @@ CodeMini CLI 会从这些位置读取 skill：
 - macOS：`~/Library/Preferences/codemini-cli`
 - Linux / XDG：`$XDG_CONFIG_HOME/codemini-cli`
 - 受限环境回退：`.codemini-cli/`
+
+### Brainstorm 用法
+
+当你希望助手先收敛方向、不要立即写代码时，可以使用：
+
+```text
+/brainstorm Should login retry stay local or become a shared helper?
+```
 
 ### 文档入口
 

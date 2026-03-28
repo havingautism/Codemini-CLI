@@ -106,8 +106,6 @@ const SUB_AGENT_CONTEXT_MAX_MESSAGES = 4;
 const SUB_AGENT_CONTEXT_MAX_CHARS = 1200;
 const SUB_AGENT_EVIDENCE_MAX_ITEMS = 3;
 const SUB_AGENT_HANDOFF_MAX_ITEMS = 6;
-const AUTO_SKILL_NAMES = ['superpowers-lite', 'brainstorming-lite', 'executing-plan-lite'];
-
 function getSubAgentRolePrompt(role) {
   if (role === 'planner') {
     return 'You are a planning sub-agent. Produce a concrete implementation plan with risks and verification.';
@@ -430,6 +428,40 @@ function buildGoalRequirementPacket(goal, role) {
   return lines.join('\n');
 }
 
+function buildAutoPlanPlannerGuidance() {
+  return [
+    'Auto-plan planning rules:',
+    '- If the goal still leaves room for multiple approaches, choose one practical direction before planning execution.',
+    '- Prefer the smallest local approach that satisfies the goal.',
+    '- Do not output multiple alternative branches in the final plan.',
+    '- Turn the chosen direction into concrete execution steps for coder, reviewer, and tester.',
+    '- Keep the plan ordered, implementation-oriented, and easy for small sub-agents to follow.'
+  ].join('\n');
+}
+
+function buildAutoPlanExecutionGuidance(role) {
+  const common = [
+    'Auto-plan execution rules:',
+    '- Work in the smallest useful step.',
+    '- Read the target code before editing.',
+    '- Prefer local changes over broad refactors.',
+    '- Prefer narrow verification with concrete evidence before claiming success.'
+  ];
+
+  if (role === 'coder') {
+    common.push('- Keep edits tightly scoped to the chosen plan direction.');
+    common.push('- Avoid speculative cleanup or unrelated improvements.');
+  } else if (role === 'reviewer') {
+    common.push('- Review against the chosen plan direction and the acceptance checklist.');
+    common.push('- Call out missing requested behavior, regression risk, and unverified claims.');
+  } else if (role === 'tester') {
+    common.push('- Prefer running the narrowest real verification command that matches the changed area.');
+    common.push('- Distinguish clearly between verified behavior and assumptions.');
+  }
+
+  return common.join('\n');
+}
+
 async function pathExists(targetPath) {
   try {
     await fs.access(targetPath);
@@ -536,15 +568,19 @@ function isSkillEnabled(config, name) {
 function selectAutoSkillNames(text = '') {
   const input = String(text || '').toLowerCase();
   const selected = ['superpowers-lite'];
-  if (
-    /(brainstorm|头脑风暴|方案|思路|设计一下|设计方案|怎么做|如何做|approach|options?)/i.test(input)
-  ) {
-    selected.push('brainstorming-lite');
-  }
-  if (
-    /(按计划|执行计划|继续执行|下一步|implement|execute|carry out|完成验证|verify|plan)/i.test(input)
-  ) {
-    selected.push('executing-plan-lite');
+
+  const explicitBrainstorm =
+    /(brainstorm|头脑风暴|方案|思路|设计一下|设计方案|怎么做|如何做|approach|options?)/i.test(input);
+  const ambiguitySignals =
+    /(not sure|unsure|unclear|help me think|let'?s think|should we|which (?:approach|option|way)|best way|trade-?off|vs\b|versus|or should|要不要|不确定|不明确|先别写|先不要写|先讨论|先想一下|哪个方案|怎么设计|如何设计|取舍|还是)/i.test(
+      input
+    );
+  const featureRequest =
+    /\b(add|build|create|implement|support|introduce|design|refactor|change|update)\b/i.test(input) ||
+    /(新增|增加|实现|支持|设计|重构|改造|调整)/i.test(input);
+
+  if (explicitBrainstorm || (ambiguitySignals && featureRequest)) {
+    selected.push('brainstorm');
   }
   return selected;
 }
@@ -953,6 +989,7 @@ async function buildPlanFromSpecWithModel({
   model,
   systemPrompt
 }) {
+  const projectConstraints = await inferProjectImplementationConstraints(process.cwd());
   const prompt = [
     'Convert the provided engineering spec into an implementation plan in markdown.',
     'Use this structure exactly:',
@@ -972,13 +1009,91 @@ async function buildPlanFromSpecWithModel({
       { role: 'system', content: `${systemPrompt}\n${prompt}` },
       {
         role: 'user',
-        content: `Spec path: ${specPath || '(inline)'}\n\n${specText}`
+        content: `Spec path: ${specPath || '(inline)'}\n\nProject implementation constraints:\n${projectConstraints}\n\n${specText}`
       }
     ],
     timeoutMs: config.gateway.timeout_ms || 90000,
     maxRetries: config.gateway.max_retries ?? 2
   });
   return String(result.text || '').trim();
+}
+
+async function collectLikelyImplementationFiles(cwd) {
+  const candidates = [];
+  const roots = ['src', 'app', 'lib'];
+  const preferredExts = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs']);
+
+  async function visit(dir) {
+    let entries = [];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === '.coder') continue;
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await visit(abs);
+        continue;
+      }
+      if (!preferredExts.has(path.extname(entry.name).toLowerCase())) continue;
+      candidates.push(path.relative(cwd, abs).replace(/\\/g, '/'));
+      if (candidates.length >= 8) return;
+    }
+  }
+
+  for (const root of roots) {
+    const absRoot = path.join(cwd, root);
+    if (!(await pathExists(absRoot))) continue;
+    await visit(absRoot);
+    if (candidates.length >= 8) break;
+  }
+  return candidates.slice(0, 8);
+}
+
+async function inferProjectImplementationConstraints(cwd) {
+  const hints = [];
+  const packageJsonPath = path.join(cwd, 'package.json');
+  const pyprojectPath = path.join(cwd, 'pyproject.toml');
+  const cargoPath = path.join(cwd, 'Cargo.toml');
+  const goModPath = path.join(cwd, 'go.mod');
+
+  if (await pathExists(packageJsonPath)) {
+    hints.push('- Detected package.json in the workspace.');
+    hints.push('- Prefer JavaScript/TypeScript style paths and file names that fit the existing repo.');
+    hints.push('- Reuse existing src/*.js, src/*.ts, or neighboring modules before inventing new utility modules.');
+  }
+  if (await pathExists(pyprojectPath)) {
+    hints.push('- Detected pyproject.toml in the workspace.');
+    hints.push('- Prefer Python modules and package layout that already exist in this repo.');
+  }
+  if (await pathExists(cargoPath)) {
+    hints.push('- Detected Cargo.toml in the workspace.');
+    hints.push('- Prefer Rust crate/module layout that matches the current workspace.');
+  }
+  if (await pathExists(goModPath)) {
+    hints.push('- Detected go.mod in the workspace.');
+    hints.push('- Prefer Go package paths and file names already present in the repo.');
+  }
+
+  if (hints.length === 0) {
+    hints.push('- No strong language marker was detected automatically.');
+    hints.push('- Infer the implementation language from the referenced files in the spec and preserve that language family.');
+  }
+
+  const likelyFiles = await collectLikelyImplementationFiles(cwd);
+  if (likelyFiles.length > 0) {
+    hints.push('- Likely existing implementation files to reuse first:');
+    for (const file of likelyFiles) {
+      hints.push(`  - ${file}`);
+    }
+    hints.push('- Prefer updating one of the listed files when the feature naturally fits there before inventing new modules.');
+  }
+
+  hints.push('- Do not invent files in another language family unless the spec explicitly requires it.');
+  hints.push('- If the spec references existing files, keep the plan anchored to those exact files or their immediate neighbors.');
+  return hints.join('\n');
 }
 
 function clampRange(start, end, max) {
@@ -1268,7 +1383,8 @@ async function runSubAgentTask({
   config,
   model,
   systemPrompt,
-  onAgentEvent
+  onAgentEvent,
+  extraRolePrompt = ''
 }) {
   const subSession = { id: `sub-${Date.now()}`, messages: [] };
   const rolePrompt = getSubAgentRolePrompt(role);
@@ -1320,7 +1436,7 @@ async function runSubAgentTask({
     session: subSession,
     config,
     model,
-    systemPrompt: `${systemPrompt}\n${rolePrompt}`,
+    systemPrompt: `${systemPrompt}\n${rolePrompt}${extraRolePrompt ? `\n${extraRolePrompt}` : ''}`,
     onAgentEvent: wrappedOnAgentEvent,
     persistSession: false,
     executionMode: 'auto'
@@ -1346,8 +1462,10 @@ async function buildAutoPlanAndRun({
   sessionId
 }) {
   const requirementPacket = buildGoalRequirementPacket(goal, 'planner');
-  const plannerPrompt =
-    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester","task":"..."}]}. No markdown. Always include final reviewer and tester steps.';
+  const plannerPrompt = [
+    buildAutoPlanPlannerGuidance(),
+    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester","task":"..."}]}. No markdown. Always include final reviewer and tester steps.'
+  ].join('\n');
   let autoPlan = {
     summary: `Auto plan for: ${goal}`,
     steps: [
@@ -1406,7 +1524,8 @@ async function buildAutoPlanAndRun({
         config,
         model,
         systemPrompt,
-        onAgentEvent
+        onAgentEvent,
+        extraRolePrompt: buildAutoPlanExecutionGuidance(step.role)
       });
       const outputLooksSuccessful = looksLikeSuccessfulStepOutput(stepResult.text);
       const outputHasFailureSignals = stepOutputHasFailureSignals(step.role, stepResult.text);
@@ -2414,10 +2533,16 @@ export async function createChatRuntime({
         return { type: 'system', text: `Skill is disabled: ${custom.name}` };
       }
 
-      const rendered = await expandFileMentions(
-        renderCommandPrompt(custom, parsedInput.args),
-        process.cwd()
-      );
+      const customPrompt =
+        custom.name === 'brainstorm'
+          ? [
+              renderCommandPrompt(custom, []),
+              parsedInput.args.length > 0 ? `Current question:\n${parsedInput.args.join(' ')}` : ''
+            ]
+              .filter(Boolean)
+              .join('\n\n')
+          : renderCommandPrompt(custom, parsedInput.args);
+      const rendered = await expandFileMentions(customPrompt, process.cwd());
       if (custom.metadata.type === 'skill' && onAgentEvent) {
         onAgentEvent({ type: 'skill:start', name: custom.name });
       }
