@@ -2,7 +2,24 @@
   "name": "codemini-cli",
   "version": "0.1.1",
   "description": "Coding CLI optimized for small-model workflows and Windows PowerShell",
+  "keywords": [
+    "cli",
+    "ai",
+    "coding-assistant",
+    "developer-tools",
+    "terminal",
+    "windows",
+    "powershell"
+  ],
   "type": "module",
+  "homepage": "https://github.com/havingautism/Codemini-CLI#readme",
+  "bugs": {
+    "url": "https://github.com/havingautism/Codemini-CLI/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/havingautism/Codemini-CLI.git"
+  },
   "bin": {
     "codemini": "bin/coder.js",
     "coder": "bin/coder.js"
@@ -24,6 +41,9 @@
   ],
   "engines": {
     "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "ink": "^6.3.1",
