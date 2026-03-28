@@ -33,7 +33,23 @@ const DEFAULT_CONFIG = {
   },
   execution: {
     mode: 'auto',
-    always_allow_tools: ['run_command', 'read_file', 'write_file'],
+    always_allow_tools: [
+      'locate',
+      'open_target',
+      'edit_target',
+      'search_code',
+      'read_block',
+      'read_symbol_context',
+      'validate_edit',
+      'replace_block',
+      'replace_text',
+      'insert_before',
+      'insert_after',
+      'generate_diff',
+      'run_command',
+      'read_file',
+      'write_file'
+    ],
     max_steps: 16
   },
   sessions: {
@@ -112,7 +128,24 @@ function normalizePolicyLists(config) {
     ? next.execution.always_allow_tools
     : [];
   next.execution.always_allow_tools = uniqueStrings(
-    ['run_command', 'read_file', 'write_file', ...rawTools].filter((name) => String(name) !== 'list_files')
+    [
+      'locate',
+      'open_target',
+      'edit_target',
+      'search_code',
+      'read_block',
+      'read_symbol_context',
+      'validate_edit',
+      'replace_block',
+      'replace_text',
+      'insert_before',
+      'insert_after',
+      'generate_diff',
+      'run_command',
+      'read_file',
+      'write_file',
+      ...rawTools
+    ].filter((name) => String(name) !== 'list_files')
   );
   next.ui = next.ui || {};
   next.ui.language = normalizeUiLanguage(next.ui.language);

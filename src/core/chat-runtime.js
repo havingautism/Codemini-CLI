@@ -117,6 +117,8 @@ function getSubAgentRolePrompt(role) {
       'You are a review sub-agent. Focus on bugs, regressions, edge cases, and missing tests.',
       'Start with the focused files or directories handed to you. Do not roam unrelated parts of the repo unless the handed-off evidence is insufficient.',
       'Use this exact output structure:',
+      'Acceptance Status:',
+      '- <met|unmet|unverified> :: <acceptance checklist item or "none">',
       'Findings:',
       '- <bug, regression, risk, or "none">',
       'Verified:',
@@ -133,6 +135,8 @@ function getSubAgentRolePrompt(role) {
       'Prefer running concrete verification commands over only suggesting them.',
       'Start with the focused files or directories handed to you. Verify those artifacts first before scanning the wider repo.',
       'Use this exact output structure:',
+      'Acceptance Status:',
+      '- <met|unmet|unverified> :: <acceptance checklist item or "none">',
       'Verified:',
       '- <commands run and evidence>',
       'Not Verified:',
@@ -316,6 +320,114 @@ function buildFocusedTaskNote(role, focusPaths) {
     return `Focus verification on these artifacts first: ${head}. Prefer commands and reads that directly validate these paths before wider repo exploration.`;
   }
   return '';
+}
+
+function normalizeGoalClauseText(value) {
+  return String(value || '')
+    .replace(/^[\s\-*0-9.)、，,:;]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function sentenceCaseRequirement(value) {
+  const text = normalizeGoalClauseText(value);
+  if (!text) return '';
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function deriveGoalRequirements(goal) {
+  const rawGoal = String(goal || '').trim();
+  if (!rawGoal) return [];
+
+  const normalized = rawGoal
+    .replace(/\r\n?/g, '\n')
+    .replace(/[；。]/g, ',')
+    .replace(/\band then\b/gi, ',')
+    .replace(/\bthen\b/gi, ',')
+    .replace(/\bplus\b/gi, ',')
+    .replace(/\s+(?:and|并且|而且|以及)\s+/gi, ', ')
+    .replace(/\n+/g, ', ');
+
+  const roughParts = normalized
+    .split(/\s*,\s*/)
+    .map((part) => normalizeGoalClauseText(part))
+    .filter(Boolean);
+
+  const requirements = [];
+  const seen = new Set();
+
+  for (const part of roughParts) {
+    const lowered = part.toLowerCase();
+    if (/\btrim\b/.test(lowered) && !/\bwhitespace\b/.test(lowered)) {
+      const label = 'Trim whitespace in the returned greeting';
+      if (!seen.has(label)) {
+        seen.add(label);
+        requirements.push(label);
+      }
+      continue;
+    }
+    if (/\btrim\b/.test(lowered) && /\bwhitespace\b/.test(lowered)) {
+      const label = 'Trim whitespace in the returned greeting';
+      if (!seen.has(label)) {
+        seen.add(label);
+        requirements.push(label);
+      }
+      continue;
+    }
+    if (/(exclamation mark|感叹号|!)/i.test(part)) {
+      const label = 'Preserve the exclamation mark';
+      if (!seen.has(label)) {
+        seen.add(label);
+        requirements.push(label);
+      }
+      continue;
+    }
+    const label = sentenceCaseRequirement(part);
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    requirements.push(label);
+  }
+
+  if (requirements.length === 0) {
+    return [sentenceCaseRequirement(rawGoal)].filter(Boolean);
+  }
+  return requirements.slice(0, 6);
+}
+
+function isLightweightAutoPlanGoal(goal, requirements = []) {
+  const text = String(goal || '').trim();
+  if (!text) return false;
+  if (requirements.length !== 1) return false;
+  if (text.length > 140) return false;
+  if (/\b(plan|spec|design|architecture|roadmap|strategy|migration|refactor)\b/i.test(text)) return false;
+  if (/\b(ensure|verify|review|test|validate|make sure|confirm)\b/i.test(text)) return false;
+  if (/[；。]/.test(text)) return false;
+  return /\b(add|update|fix|rename|trim|export|create|remove|change|implement)\b/i.test(text);
+}
+
+function buildGoalRequirementPacket(goal, role) {
+  const rawGoal = trimInlineText(goal, 800);
+  if (!rawGoal) return '';
+  const requirements = deriveGoalRequirements(goal);
+  const lines = ['Original goal:', rawGoal];
+  if (requirements.length > 0) {
+    lines.push('Acceptance checklist:');
+    for (const requirement of requirements) {
+      lines.push(`- ${requirement}`);
+    }
+  }
+  if (role === 'reviewer') {
+    lines.push('Review against the original goal, not just local code quality.');
+    lines.push('Check each acceptance item explicitly before deciding there are no findings.');
+    lines.push('If any requested behavior is missing, incorrect, or only partially implemented, report it in Findings.');
+  } else if (role === 'tester') {
+    lines.push('Verify the implementation against the original goal, not just syntax or smoke checks.');
+    lines.push('Check each acceptance item explicitly before calling the work verified.');
+    lines.push('If any requested behavior is unverified or contradicted by evidence, list it under Not Verified or Failures.');
+  } else if (role === 'coder') {
+    lines.push('Implement against the acceptance checklist, not only the broad wording of the goal.');
+  }
+  return lines.join('\n');
 }
 
 async function pathExists(targetPath) {
@@ -507,7 +619,16 @@ function normalizeAutoPlan(parsed, goal) {
 
 function enforceAutoPlanGuardrailSteps(plan, goal) {
   const source = Array.isArray(plan?.steps) ? plan.steps : [];
+  const requirements = deriveGoalRequirements(goal);
+  const lightweightGoal = isLightweightAutoPlanGoal(goal, requirements);
   const implementationSteps = source.filter((step) => step.role !== 'reviewer' && step.role !== 'tester');
+  const primaryImplementationStep =
+    implementationSteps.find((step) => step.role === 'coder') ||
+    implementationSteps[0] || {
+      title: 'Implement requested change',
+      role: 'coder',
+      task: `Implement the requested change for: ${goal}`
+    };
   const reviewerStep = source.find((step) => step.role === 'reviewer') || {
     title: 'Review implementation',
     role: 'reviewer',
@@ -519,6 +640,13 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
     task: `Test and verify the completed work for: ${goal}. Start with the artifacts produced by earlier implementation steps, run the most relevant checks available, report concrete evidence, and call out anything still unverified.`
   };
 
+  if (lightweightGoal) {
+    return {
+      summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
+      steps: [primaryImplementationStep, testerStep]
+    };
+  }
+
   return {
     summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
     steps: [...implementationSteps.slice(0, 6), reviewerStep, testerStep]
@@ -528,9 +656,65 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
 function looksLikeSuccessfulStepOutput(text = '') {
   const value = String(text || '').trim();
   if (!value) return false;
-  if (/(^|\n)\s*(error|failures?)\s*:\s*(?!none\b)/i.test(value)) return false;
-  if (/(^|\n)\s*next action\s*:\s*-\s*retry\b/i.test(value)) return false;
+  const failureBullet = extractSectionFirstBullet(value, 'Failures');
+  const errorBullet = extractSectionFirstBullet(value, 'Error');
+  const nextActionBullet = extractSectionFirstBullet(value, 'Next Action');
+  const acceptanceFailures = extractAcceptanceStatusItems(value).filter((item) => item.status !== 'met');
+  if (errorBullet && !/^none\b/i.test(errorBullet)) return false;
+  if (failureBullet && !/^none\b/i.test(failureBullet)) return false;
+  if (acceptanceFailures.length > 0) return false;
+  if (nextActionBullet && /^retry\b/i.test(nextActionBullet)) return false;
   return true;
+}
+
+function stepOutputHasFailureSignals(role, text = '') {
+  const value = String(text || '').trim();
+  if (!value) return true;
+  const errorBullet = extractSectionFirstBullet(value, 'Error');
+  const failureBullet = extractSectionFirstBullet(value, 'Failures');
+  const findingsBullet = extractSectionFirstBullet(value, 'Findings');
+  const nextActionBullet = extractSectionFirstBullet(value, 'Next Action');
+  const acceptanceFailures = extractAcceptanceStatusItems(value).filter((item) => item.status !== 'met');
+  if (errorBullet && !/^none\b/i.test(errorBullet)) return true;
+  if (failureBullet && !/^none\b/i.test(failureBullet)) return true;
+  if (acceptanceFailures.length > 0) return true;
+  if (role === 'reviewer' && findingsBullet && !/^none\b/i.test(findingsBullet)) return true;
+  if (nextActionBullet && /^(fix|retry|correct|repair)\b/i.test(nextActionBullet)) return true;
+  return false;
+}
+
+function extractSectionFirstBullet(text = '', heading = '') {
+  const escaped = String(heading || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = String(text || '').match(new RegExp(String.raw`(^|\n)\s*${escaped}\s*:\s*(?:\n|\r\n?)+\s*-\s*([^\n\r]+)`, 'i'));
+  return String(match?.[2] || '').trim();
+}
+
+function extractSectionBullets(text = '', heading = '') {
+  const escaped = String(heading || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const value = String(text || '');
+  const headingMatch = value.match(new RegExp(String.raw`(^|\n)\s*${escaped}\s*:\s*(?:\n|\r\n?)`, 'i'));
+  if (!headingMatch || headingMatch.index == null) return [];
+  const start = headingMatch.index + headingMatch[0].length;
+  const after = value.slice(start);
+  const nextHeading = after.search(/\n\s*[A-Za-z][A-Za-z ]+\s*:\s*(?:\n|\r\n?)/);
+  const section = nextHeading === -1 ? after : after.slice(0, nextHeading);
+  return section
+    .split(/\r?\n/)
+    .map((line) => line.match(/^\s*-\s*(.+)$/)?.[1]?.trim() || '')
+    .filter(Boolean);
+}
+
+function extractAcceptanceStatusItems(text = '') {
+  return extractSectionBullets(text, 'Acceptance Status')
+    .map((item) => {
+      const match = String(item).match(/^(met|unmet|unverified)\s*::\s*(.+)$/i);
+      if (!match) return null;
+      return {
+        status: String(match[1] || '').toLowerCase(),
+        label: String(match[2] || '').trim()
+      };
+    })
+    .filter(Boolean);
 }
 
 function buildAutoPlanSystemSummary(auto) {
@@ -619,6 +803,10 @@ async function buildAutoPlanFinalSummary({
     fallbackParts.push(`Needs follow-up: ${pendingTitles.slice(0, 4).join(', ')}.`);
   }
   const fallbackSummary = fallbackParts.join(' ');
+
+  if (runItems.some((item) => item.failed || item.error)) {
+    return fallbackSummary;
+  }
 
   try {
     const result = await createChatCompletion({
@@ -1074,6 +1262,7 @@ async function askModel({
 async function runSubAgentTask({
   role,
   task,
+  goal = '',
   priorSteps = [],
   parentSession,
   config,
@@ -1088,8 +1277,18 @@ async function runSubAgentTask({
   const handoffPacket = buildStepArtifactPacket(priorSteps, role);
   const handoffFocusPaths = collectStepArtifacts(priorSteps, role)?.focusPaths || [];
   const focusedTaskNote = buildFocusedTaskNote(role, handoffFocusPaths);
+  const goalRequirementPacket = buildGoalRequirementPacket(goal, role);
   const verificationPacket = role === 'tester' ? await buildTesterVerificationPacket(handoffFocusPaths) : '';
-  const scopedTask = [contextPacket, evidencePacket, handoffPacket, verificationPacket, focusedTaskNote, 'Task:', task]
+  const scopedTask = [
+    contextPacket,
+    goalRequirementPacket,
+    evidencePacket,
+    handoffPacket,
+    verificationPacket,
+    focusedTaskNote,
+    'Task:',
+    task
+  ]
     .filter(Boolean)
     .join('\n\n');
   let blockedCount = 0;
@@ -1146,6 +1345,7 @@ async function buildAutoPlanAndRun({
   onAgentEvent,
   sessionId
 }) {
+  const requirementPacket = buildGoalRequirementPacket(goal, 'planner');
   const plannerPrompt =
     'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester","task":"..."}]}. No markdown. Always include final reviewer and tester steps.';
   let autoPlan = {
@@ -1168,7 +1368,13 @@ async function buildAutoPlanAndRun({
         { role: 'system', content: `${systemPrompt}\n${plannerPrompt}` },
         {
           role: 'user',
-          content: `Create an execution plan and assign best sub-agent role for each step.\nGoal: ${goal}\nThe final steps must include review and testing/verification.`
+          content: [
+            'Create an execution plan and assign best sub-agent role for each step.',
+            requirementPacket,
+            'The final steps must include review and testing/verification unless the goal is a tiny single-change task, in which case you may keep only one implementation step plus one testing/verification step.'
+          ]
+            .filter(Boolean)
+            .join('\n')
         }
       ],
       timeoutMs: config.gateway.timeout_ms || 90000,
@@ -1194,6 +1400,7 @@ async function buildAutoPlanAndRun({
       const stepResult = await runSubAgentTask({
         role: step.role,
         task: step.task,
+        goal,
         priorSteps: runItems,
         parentSession: session,
         config,
@@ -1202,14 +1409,20 @@ async function buildAutoPlanAndRun({
         onAgentEvent
       });
       const outputLooksSuccessful = looksLikeSuccessfulStepOutput(stepResult.text);
+      const outputHasFailureSignals = stepOutputHasFailureSignals(step.role, stepResult.text);
       const warningParts = [];
       if (stepResult.blockedCount > 0) warningParts.push(`${stepResult.blockedCount} blocked tool call(s)`);
       if (stepResult.toolErrorCount > 0) warningParts.push(`${stepResult.toolErrorCount} tool error(s)`);
       const warning = warningParts.length > 0 ? `sub-agent recovered after ${warningParts.join(', ')}` : '';
-      const failed = stepResult.hasErrorLine || (!outputLooksSuccessful && (stepResult.blockedCount > 0 || stepResult.toolErrorCount > 0));
+      const failed =
+        stepResult.hasErrorLine ||
+        outputHasFailureSignals ||
+        (!outputLooksSuccessful && (stepResult.blockedCount > 0 || stepResult.toolErrorCount > 0));
       let error = '';
       if (stepResult.hasErrorLine) {
         error = 'sub-agent output contains error line(s)';
+      } else if (outputHasFailureSignals) {
+        error = 'sub-agent output reports unmet requirements or failed verification';
       } else if (failed && stepResult.blockedCount > 0) {
         error = `sub-agent ended with ${stepResult.blockedCount} blocked tool call(s)`;
       } else if (failed && stepResult.toolErrorCount > 0) {

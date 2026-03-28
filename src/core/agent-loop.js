@@ -96,6 +96,23 @@ function formatToolDisplayName(name, args) {
     const command = trimInline(args?.command || '', 96);
     return command ? `${name}(${command})` : name;
   }
+  if (
+    name === 'locate' ||
+    name === 'open_target' ||
+    name === 'edit_target' ||
+    name === 'search_code' ||
+    name === 'read_block' ||
+    name === 'read_symbol_context' ||
+    name === 'validate_edit' ||
+    name === 'replace_block' ||
+    name === 'replace_text' ||
+    name === 'insert_before' ||
+    name === 'insert_after' ||
+    name === 'generate_diff'
+  ) {
+    const target = trimInline(args?.path || args?.query || args?.symbol || '', 96);
+    return target ? `${name}(${target})` : name;
+  }
   return name;
 }
 
