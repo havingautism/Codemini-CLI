@@ -5,6 +5,7 @@ import {
   findActivityUpdateIndex,
   formatSuggestionDescription,
   getSuggestionPageState,
+  mergeActivitySummary,
   moveSuggestionSelection,
   normalizeActivitySpacingRows
 } from '../src/tui/chat-app.js';
@@ -62,6 +63,28 @@ test('findActivityUpdateIndex merges consecutive duplicate read activities', () 
       { type: 'tool', name: 'Read(src/App.js)', status: 'running', id: 'whitespace-read' }
     ),
     1
+  );
+  assert.equal(
+    findActivityUpdateIndex(
+      [{ type: 'tool', name: 'read_file(README.md)', status: 'done' }],
+      { type: 'tool', name: 'read_file(README.md)', status: 'running', id: 'raw-read' }
+    ),
+    0
+  );
+});
+
+test('mergeActivitySummary preserves metadata and content summaries for merged read activity', () => {
+  assert.equal(
+    mergeActivitySummary(
+      'metadata for README.md lines 1-197 of 197',
+      'content from README.md lines 1-197 of 197',
+      'read_file(README.md)'
+    ),
+    'metadata for README.md lines 1-197 of 197\ncontent from README.md lines 1-197 of 197'
+  );
+  assert.equal(
+    mergeActivitySummary('metadata for README.md lines 1-197 of 197', 'metadata for README.md lines 1-197 of 197', 'read_file(README.md)'),
+    'metadata for README.md lines 1-197 of 197'
   );
 });
 

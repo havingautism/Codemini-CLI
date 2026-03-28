@@ -862,7 +862,8 @@ export function normalizeActivitySpacingRows(inputRows) {
 }
 
 function isReadActivityName(name) {
-  return /^Read\(/.test(String(name || ''));
+  const parsed = parseToolDisplayName(name);
+  return parsed.base === 'read_file' || parsed.base === 'Read';
 }
 
 function isIgnorableSegmentAfterRead(item, activityType, activityName) {
@@ -898,6 +899,22 @@ export function findActivityUpdateIndex(items, toolEvent) {
   }
 
   return -1;
+}
+
+export function mergeActivitySummary(previousSummary, nextSummary, activityName) {
+  const prev = String(previousSummary || '').trim();
+  const next = String(nextSummary || '').trim();
+  if (!next) return prev;
+  if (!prev) return next;
+  if (!isReadActivityName(activityName) || prev === next) return next;
+
+  const lines = [];
+  for (const line of `${prev}\n${next}`.split('\n')) {
+    const trimmed = String(line || '').trim();
+    if (!trimmed) continue;
+    if (!lines.includes(trimmed)) lines.push(trimmed);
+  }
+  return lines.join('\n');
 }
 
 function buildMessageRows(msg, showToolDetails, contentWidth = 72) {
@@ -1644,7 +1661,9 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
             id: toolEvent.id || toolCalls[idx].id,
             status: toolEvent.status,
             ...(toolEvent.durationMs !== undefined ? { durationMs: toolEvent.durationMs } : {}),
-            ...(toolEvent.summary ? { summary: toolEvent.summary } : {})
+            ...(toolEvent.summary
+              ? { summary: mergeActivitySummary(toolCalls[idx].summary, toolEvent.summary, toolEvent.name) }
+              : {})
           };
         }
         const segments = Array.isArray(m.segments) ? [...m.segments] : [];
@@ -1662,7 +1681,10 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
         } else {
           segments[segmentIdx] = {
             ...segments[segmentIdx],
-            ...patch
+            ...patch,
+            ...(toolEvent.summary
+              ? { summary: mergeActivitySummary(segments[segmentIdx].summary, toolEvent.summary, toolEvent.name) }
+              : {})
           };
         }
         return { ...m, toolCalls, segments };
