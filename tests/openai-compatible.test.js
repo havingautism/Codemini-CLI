@@ -93,6 +93,49 @@ test('createChatCompletion returns text and tool calls from an OpenAI-compatible
   }
 });
 
+test('MiniMax payload keeps leading system message and rewrites later system history entries as user notes', async () => {
+  const restoreFetch = withMockFetch(async (_url, init) => {
+    const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+    assert.deepEqual(body.messages, [
+      { role: 'system', content: 'top system prompt' },
+      { role: 'user', content: 'hello' },
+      { role: 'user', content: '[system-note]\nlocal command output' },
+      { role: 'assistant', content: 'hi' },
+      { role: 'user', content: '[system-note]\nanother local note' },
+      { role: 'user', content: 'next question' }
+    ]);
+    return makeJsonResponse({
+      choices: [
+        {
+          message: {
+            content: 'ok'
+          }
+        }
+      ]
+    });
+  });
+
+  try {
+    const result = await createChatCompletion({
+      baseUrl: 'https://gateway.example/v1',
+      apiKey: 'test-key',
+      model: 'minimax',
+      messages: [
+        { role: 'system', content: 'top system prompt' },
+        { role: 'user', content: 'hello' },
+        { role: 'system', content: 'local command output' },
+        { role: 'assistant', content: 'hi' },
+        { role: 'system', content: 'another local note' },
+        { role: 'user', content: 'next question' }
+      ]
+    });
+
+    assert.equal(result.text, 'ok');
+  } finally {
+    await restoreFetch();
+  }
+});
+
 test('createChatCompletionStream emits text deltas and final tool calls from SSE gateway', async () => {
   const restoreFetch = withMockFetch(async (_url, init) => {
     const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));

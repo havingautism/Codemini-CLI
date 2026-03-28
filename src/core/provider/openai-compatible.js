@@ -36,11 +36,38 @@ function isMiniMaxModel(model) {
   return String(model || '').toLowerCase().includes('minimax');
 }
 
+function sanitizeMiniMaxMessages(messages) {
+  const source = Array.isArray(messages) ? messages : [];
+  const out = [];
+  let seenNonSystem = false;
+  let keptLeadingSystem = false;
+
+  for (const message of source) {
+    if (!message || typeof message !== 'object') continue;
+    if (message.role === 'system') {
+      if (!seenNonSystem && !keptLeadingSystem) {
+        out.push(message);
+        keptLeadingSystem = true;
+      } else {
+        out.push({
+          role: 'user',
+          content: `[system-note]\n${extractTextContent(message.content)}`
+        });
+      }
+      continue;
+    }
+    seenNonSystem = true;
+    out.push(message);
+  }
+
+  return out;
+}
+
 function buildPayload({ model, temperature, messages, tools, stream = false }) {
   const payload = {
     model,
     temperature,
-    messages
+    messages: isMiniMaxModel(model) ? sanitizeMiniMaxMessages(messages) : messages
   };
   if (stream) {
     payload.stream = true;
