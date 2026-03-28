@@ -4,34 +4,53 @@ description: Lightweight brainstorming skill for 30B-class models. Use when a fe
 version: 0.1.0
 ---
 
-Use this skill before adding new behavior, new features, or meaningful workflow changes.
+Use this skill only after the controller has decided the task needs clarification or option comparison before coding.
 
 Primary purpose:
-- stop premature coding when the request is still fuzzy
-- narrow the decision to a small number of approaches
-- leave with one chosen direction
+- ask one high-value question when a key constraint is missing
+- compare 2-3 short options when the goal is clear but the approach is not
+- stop at a clear decision point
 
 Rules:
 
 1. Ask one question at a time.
 Do not dump a long questionnaire. Pick the most important uncertainty and resolve it first.
 
-2. Stay concrete.
-Focus on purpose, constraints, success criteria, and what should be intentionally left out.
+1a. If a key uncertainty remains, stop after one question.
+Do not ask multiple numbered questions in the same reply. Do not continue into options, decisions, code, or file edits until that question is answered.
 
-3. Offer 2-3 approaches.
-Keep each option short. Lead with the recommended option and say why.
+2. Stay concrete.
+Focus only on the uncertainty that blocks execution.
+
+3. Offer 2-3 approaches only when the key constraint is already clear.
+Keep each option short and focused on the main tradeoff.
 
 4. Keep the design small.
-Write only enough design for the current scope. Do not inflate a simple task into a full spec process unless needed.
+Do not expand a simple task into a long design discussion.
 
 5. Confirm before implementation.
-Summarize the chosen direction in a few bullets or a short paragraph, then move to execution only after alignment.
+If options were given, wait for the user to choose unless the user explicitly asks for a recommendation.
 
 6. No code before convergence.
 Do not write implementation code, pseudo-code, or file edits while the direction is still being chosen.
 
+7. Do not decide for the user when the request is still under-specified.
+If the user has not provided enough information to choose confidently, ask the next best question and wait.
+
+8. Do not inspect the repo unless existing project context is directly relevant.
+For greenfield brainstorming, stay in conversation mode first.
+
 Output format:
+
+Mode A: key constraint missing
+
+Question:
+- ask:
+- why this matters:
+
+Wait for the user's answer.
+
+Mode B: goal is clear but approach choice remains
 
 Option 1:
 - idea:
@@ -57,9 +76,7 @@ After decision:
 
 Suggested flow:
 - Restate the task briefly
-- Ask the next best question when a key uncertainty blocks implementation
-- Propose options with tradeoffs
-- Confirm the chosen approach
+- Choose one mode only: Question or Options
 - Stop at a clear decision point
 
 Avoid:

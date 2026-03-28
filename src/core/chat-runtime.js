@@ -572,14 +572,19 @@ function selectAutoSkillNames(text = '') {
   const explicitBrainstorm =
     /(brainstorm|头脑风暴|方案|思路|设计一下|设计方案|怎么做|如何做|approach|options?)/i.test(input);
   const ambiguitySignals =
-    /(not sure|unsure|unclear|help me think|let'?s think|should we|which (?:approach|option|way)|best way|trade-?off|vs\b|versus|or should|要不要|不确定|不明确|先别写|先不要写|先讨论|先想一下|哪个方案|怎么设计|如何设计|取舍|还是)/i.test(
+    /(not sure|unsure|unclear|help me think|let'?s think|should we|which (?:approach|option|way)|best way|trade-?off|vs\b|versus|or should|maybe|roughly|just something simple|要不要|不确定|不明确|先别写|先不要写|先讨论|先想一下|哪个方案|怎么设计|如何设计|取舍|还是|大概|先做个|做一个简单的|先来个)/i.test(
       input
     );
   const featureRequest =
-    /\b(add|build|create|implement|support|introduce|design|refactor|change|update)\b/i.test(input) ||
-    /(新增|增加|实现|支持|设计|重构|改造|调整)/i.test(input);
+    /\b(add|build|create|generate|make|implement|support|introduce|design|refactor|change|update)\b/i.test(input) ||
+    /(新增|增加|实现|支持|设计|重构|改造|调整|生成|做一个|做个|创建)/i.test(input);
+  const greenfieldBuildRequest =
+    (/\b(build|create|generate|make)\b/i.test(input) || /(生成|做一个|做个|创建)/i.test(input)) &&
+    /(\b(project|app|site|website|page|dashboard|tool|component|landing page|html page)\b|项目|应用|网页|页面|网站|工具|组件|看板)/i.test(
+      input
+    );
 
-  if (explicitBrainstorm || (ambiguitySignals && featureRequest)) {
+  if (explicitBrainstorm || (ambiguitySignals && featureRequest) || greenfieldBuildRequest) {
     selected.push('brainstorm');
   }
   return selected;
@@ -2537,6 +2542,10 @@ export async function createChatRuntime({
         custom.name === 'brainstorm'
           ? [
               renderCommandPrompt(custom, []),
+              'Explicit brainstorm mode:',
+              '- Ask exactly one clarifying question first if any important uncertainty remains.',
+              '- Do not inspect the repo or generate code unless the user explicitly asks for that.',
+              '- Do not choose an option on the first reply unless the request is already specific enough or the user explicitly asks you to recommend one.',
               parsedInput.args.length > 0 ? `Current question:\n${parsedInput.args.join(' ')}` : ''
             ]
               .filter(Boolean)

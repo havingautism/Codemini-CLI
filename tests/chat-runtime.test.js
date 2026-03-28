@@ -275,6 +275,46 @@ test('chat runtime auto-injects brainstorm for ambiguous feature requests', { co
   });
 });
 
+test('chat runtime auto-injects brainstorm for greenfield generation requests', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    let inspected = false;
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+      const systemText = String(body.messages?.[0]?.content || '');
+      inspected = true;
+      assert.match(systemText, /\[Auto skill: brainstorm\]/);
+      return makeSseResponse([
+        { choices: [{ delta: { content: 'Question:\n- ask: 这个页面需要静态展示还是需要可编辑功能？\n- why this matters: 它会决定结构和交互范围。' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] }
+      ]);
+    });
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-greenfield-brainstorm',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const result = await runtime.submit('帮我生成一个日记 HTML 网页。');
+      assert.match(result.text, /Question:/);
+      assert.equal(inspected, true);
+    } finally {
+      await restoreFetch();
+    }
+  });
+});
+
 test('slash brainstorm includes the user question in the rendered prompt', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let inspected = false;
@@ -283,6 +323,7 @@ test('slash brainstorm includes the user question in the rendered prompt', { con
       const userText = String(body.messages?.[1]?.content || '');
       inspected = true;
       assert.match(userText, /\[Executing skill: \/brainstorm\]/);
+      assert.match(userText, /Explicit brainstorm mode:/);
       assert.match(userText, /Current question:\nShould login retry stay local or become a shared helper\?/);
       return makeSseResponse([
         { choices: [{ delta: { content: '先比较方案。' } }] },
