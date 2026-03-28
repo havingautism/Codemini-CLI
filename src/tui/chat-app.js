@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
+import { shouldCaptureEscapeSequence } from './input-escape.js';
 
 const h = React.createElement;
 const BANNER = [
@@ -1029,7 +1030,7 @@ function InputBar({
   );
 }
 
-function SignatureBar({ version = '0.1.0' }) {
+function SignatureBar({ version = '' }) {
   return h(
     Box,
     {
@@ -1070,7 +1071,7 @@ function makeIdleStatus(copy, snapshot, variant = 'ready') {
   );
 }
 
-export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName = 'powershell', version = '0.1.0' }) {
+export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName = 'powershell', version = '' }) {
   const copy = getCopy(language);
   const stdoutCols = Number(process.stdout?.columns || 120);
   const [inputValue, setInputValue] = useState('');
@@ -1661,7 +1662,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
       setLastKeyDebug(`key=${printable} flags=${flags || '-'}`);
     }
 
-    if (value === '\u001b' || escSeqRef.current || value === '[' || value === '3' || value === '~' || value === ';' || value === '2' || value === '5') {
+    if (shouldCaptureEscapeSequence(value, escSeqRef.current)) {
       escSeqRef.current += value || '';
       const seq = escSeqRef.current;
       if (seq === '\u001b[3~' || seq === '\u001b[3;2~' || seq === '\u001b[3;5~') {
