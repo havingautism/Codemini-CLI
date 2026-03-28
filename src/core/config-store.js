@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getConfigFilePath, getLegacyConfigDir } from './paths.js';
+import { normalizeReplyLanguage } from './reply-language.js';
 import { normalizeShellName } from './shell-profile.js';
 
 function normalizeUiLanguage(value) {
@@ -44,7 +45,8 @@ const DEFAULT_CONFIG = {
     timeout_ms: 120000
   },
   ui: {
-    language: 'zh'
+    language: 'zh',
+    reply_language: 'zh'
   },
   soul: {
     preset: 'default',
@@ -114,6 +116,7 @@ function normalizePolicyLists(config) {
   );
   next.ui = next.ui || {};
   next.ui.language = normalizeUiLanguage(next.ui.language);
+  next.ui.reply_language = normalizeReplyLanguage(next.ui.reply_language);
   next.policy = next.policy || {};
   next.policy.command_allowlist = uniqueStrings(
     Array.isArray(next.policy.command_allowlist) ? next.policy.command_allowlist : []

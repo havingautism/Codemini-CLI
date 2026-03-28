@@ -26,6 +26,7 @@ import {
   estimateMessagesTokens,
   parseCompactArgs
 } from './context-compact.js';
+import { buildSystemPromptWithReplyLanguage } from './reply-language.js';
 import { buildSystemPromptWithSoul } from './soul.js';
 
 function toOpenAIMessages(sessionMessages) {
@@ -58,6 +59,46 @@ function slugify(input) {
 
 function nowStamp() {
   return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+function prioritizeByPreferredOrder(items, preferredOrder) {
+  const source = Array.isArray(items) ? items : [];
+  const priorities = new Map((Array.isArray(preferredOrder) ? preferredOrder : []).map((value, index) => [value, index]));
+  return [...source].sort((left, right) => {
+    const leftRank = priorities.has(left) ? priorities.get(left) : Number.MAX_SAFE_INTEGER;
+    const rightRank = priorities.has(right) ? priorities.get(right) : Number.MAX_SAFE_INTEGER;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+    return source.indexOf(left) - source.indexOf(right);
+  });
+}
+
+function describeConfigKey(key, mode = 'set') {
+  const labelMap = {
+    'gateway.base_url': 'gateway base URL',
+    'gateway.api_key': 'gateway API key',
+    'gateway.timeout_ms': 'gateway timeout in milliseconds',
+    'gateway.max_retries': 'gateway retry count',
+    'model.name': 'active model name',
+    'model.max_context_tokens': 'model context token limit',
+    'ui.reply_language': 'reply language',
+    'execution.mode': 'execution mode',
+    'execution.always_allow_tools': 'always-allowed tools',
+    'execution.max_steps': 'maximum tool steps',
+    'context.preflight_trigger_pct': 'preflight compact threshold',
+    'context.hard_limit_pct': 'hard compact threshold',
+    'context.tool_result_max_chars': 'tool result character limit',
+    'context.read_file_default_lines': 'default read_file line window',
+    'context.read_file_max_chars': 'read_file character limit',
+    'sessions.max_sessions': 'stored session limit',
+    'sessions.retention_days': 'session retention days',
+    'shell.default': 'default shell',
+    'shell.timeout_ms': 'shell timeout in milliseconds',
+    'context.max_tokens': 'context token budget',
+    'policy.safe_mode': 'safe mode switch',
+    'policy.allow_dangerous_commands': 'dangerous command allowance'
+  };
+  const label = labelMap[key] || key;
+  return mode === 'get' ? `show the ${label}` : `set the ${label}`;
 }
 
 const SUB_AGENT_ROLES = ['planner', 'coder', 'reviewer', 'tester'];
@@ -1324,11 +1365,13 @@ export async function createChatRuntime({
   const configKeyHints = [
     'gateway.base_url',
     'gateway.api_key',
+    'model.name',
+    'ui.reply_language',
+    'execution.mode',
+    'shell.default',
     'gateway.timeout_ms',
     'gateway.max_retries',
-    'model.name',
     'model.max_context_tokens',
-    'execution.mode',
     'execution.always_allow_tools',
     'execution.max_steps',
     'context.preflight_trigger_pct',
@@ -1338,12 +1381,33 @@ export async function createChatRuntime({
     'context.read_file_max_chars',
     'sessions.max_sessions',
     'sessions.retention_days',
-    'shell.default',
     'shell.timeout_ms',
     'context.max_tokens',
     'policy.safe_mode',
     'policy.allow_dangerous_commands'
   ];
+
+  const commandPriorityOrder = [
+    '/help',
+    '/status',
+    '/config',
+    '/mode',
+    '/plan',
+    '/tasks',
+    '/history',
+    '/checkpoint',
+    '/agents',
+    '/compact',
+    '/debug',
+    '/retry'
+  ];
+  const configSubcommandPriority = ['/config set', '/config get', '/config list', '/config reset'];
+  const configSubcommandDescriptions = {
+    '/config set': 'update a config value',
+    '/config get': 'show a config value',
+    '/config list': 'print the full config',
+    '/config reset': 'reset config to defaults'
+  };
 
   const listCommandNames = () => {
     const builtins = [
@@ -1423,10 +1487,23 @@ export async function createChatRuntime({
     '/status'
   ];
   const compactKey = (value) => String(value || '').toLowerCase().replace(/[\/\s<>?]/g, '');
+  const commandDescriptions = new Map();
+  const registerSuggestion = (value, description = '') => {
+    commandDescriptions.set(value, description);
+    return { value, description };
+  };
+  const materializeSuggestions = (items) =>
+    (Array.isArray(items) ? items : []).map((item) => {
+      if (item && typeof item === 'object' && 'value' in item) return item;
+      const value = String(item || '');
+      return { value, description: commandDescriptions.get(value) || '' };
+    });
   const matchCompactTemplates = (value) => {
     const needle = compactKey(value);
     if (!needle) return [];
-    return slashTemplates.filter((template) => compactKey(template).startsWith(needle));
+    return materializeSuggestions(
+      slashTemplates.filter((template) => compactKey(template).startsWith(needle))
+    );
   };
 
   const getCompletionOptions = (rawInput) => {
@@ -1438,26 +1515,53 @@ export async function createChatRuntime({
     const tokens = body.trim().split(/\s+/).filter(Boolean);
     const commandPart = tokens[0] || '';
 
-    const allCommands = listCommandNames().map((c) => c.name);
+    const allCommandEntries = listCommandNames();
+    const allCommands = allCommandEntries.map((c) => c.name);
+    for (const entry of allCommandEntries) {
+      registerSuggestion(`/${entry.name}`, entry.description || '');
+    }
+    for (const template of configTemplates) {
+      registerSuggestion(template, configSubcommandDescriptions[template] || 'config command');
+    }
+    for (const template of historyTemplates) registerSuggestion(template, 'history command');
+    for (const template of modeTemplates) registerSuggestion(template, 'switch execution mode');
+    for (const template of taskTemplates) registerSuggestion(template, 'task board command');
+    for (const template of checkpointTemplates) registerSuggestion(template, 'checkpoint command');
+    for (const template of specTemplates) registerSuggestion(template, 'create a spec file');
+    for (const template of planTemplates) registerSuggestion(template, 'planning command');
+    for (const template of agentTemplates) registerSuggestion(template, 'sub-agent command');
+    for (const template of debugTemplates) registerSuggestion(template, 'debug command');
+    for (const template of compactTemplates) registerSuggestion(template, 'context compaction command');
+    registerSuggestion('/retry', 'retry the last user request');
+    registerSuggestion('/status', 'show runtime status');
 
     if (!commandPart) {
-      return allCommands.map((name) => `/${name}`);
+      return materializeSuggestions(prioritizeByPreferredOrder(
+        allCommands.map((name) => `/${name}`),
+        commandPriorityOrder
+      ));
     }
 
     if (tokens.length === 1 && !hasTrailingSpace) {
-      const direct = allCommands
-        .filter((name) => name.startsWith(commandPart))
-        .map((name) => `/${name}`);
-      if (direct.length > 0) return direct;
+      const direct = prioritizeByPreferredOrder(
+        allCommands
+          .filter((name) => name.startsWith(commandPart))
+          .map((name) => `/${name}`),
+        commandPriorityOrder
+      );
+      if (direct.length > 0) return materializeSuggestions(direct);
       return matchCompactTemplates(input);
     }
 
     if (commandPart === 'config') {
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         const sub = tokens[1] || '';
-        return ['list', 'get', 'set', 'reset']
-          .filter((s) => s.startsWith(sub))
-          .map((s) => `/config ${s}`);
+        return materializeSuggestions(prioritizeByPreferredOrder(
+          ['set', 'get', 'list', 'reset']
+            .filter((s) => s.startsWith(sub))
+            .map((s) => registerSuggestion(`/config ${s}`, configSubcommandDescriptions[`/config ${s}`] || 'config command').value),
+          configSubcommandPriority
+        ));
       }
 
       const sub = tokens[1] || '';
@@ -1465,96 +1569,98 @@ export async function createChatRuntime({
         const keyPrefix = tokens[2] || '';
         return configKeyHints
           .filter((k) => k.startsWith(keyPrefix))
-          .map((k) => `/config get ${k}`);
+          .map((k) => registerSuggestion(`/config get ${k}`, describeConfigKey(k, 'get')));
       }
       if (sub === 'set') {
         const keyPrefix = tokens[2] || '';
         return configKeyHints
           .filter((k) => k.startsWith(keyPrefix))
-          .map((k) => `/config set ${k} `);
+          .map((k) => registerSuggestion(`/config set ${k} `, describeConfigKey(k, 'set')));
       }
 
-      return configTemplates;
+      return materializeSuggestions(configTemplates);
     }
 
     if (commandPart === 'compact') {
       const joined = tokens.slice(1).join(' ');
       return compactOptions
         .filter((opt) => opt.includes(joined) || joined === '')
-        .map((opt) => `/compact ${opt}`);
+        .map((opt) => registerSuggestion(`/compact ${opt}`, 'context compaction command'));
     }
 
     if (commandPart === 'retry') {
-      return ['/retry'];
+      return [registerSuggestion('/retry', 'retry the last user request')];
     }
     if (commandPart === 'status') {
-      return ['/status'];
+      return [registerSuggestion('/status', 'show runtime status')];
     }
     if (commandPart === 'mode') {
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         const sub = tokens[1] || '';
         return ['normal', 'auto', 'plan']
           .filter((m) => m.startsWith(sub))
-          .map((m) => `/mode ${m}`);
+          .map((m) => registerSuggestion(`/mode ${m}`, 'switch execution mode'));
       }
-      return modeTemplates;
+      return materializeSuggestions(modeTemplates);
     }
     if (commandPart === 'tasks') {
       if (tokens.length <= 2 && !hasTrailingSpace) {
         const sub = tokens[1] || '';
         return ['add', 'start', 'done', 'remove', 'rm', 'clear']
           .filter((s) => s.startsWith(sub))
-          .map((s) => `/tasks ${s}`);
+          .map((s) => registerSuggestion(`/tasks ${s}`, 'task board command'));
       }
-      return taskTemplates;
+      return materializeSuggestions(taskTemplates);
     }
     if (commandPart === 'checkpoint') {
       if (tokens.length <= 2 && !hasTrailingSpace) {
         const sub = tokens[1] || '';
         return ['create', 'list', 'load']
           .filter((s) => s.startsWith(sub))
-          .map((s) => `/checkpoint ${s}`);
+          .map((s) => registerSuggestion(`/checkpoint ${s}`, 'checkpoint command'));
       }
       if (tokens[1] === 'list') {
         const hint = tokens[2] || '';
-        return ['--all'].filter((v) => v.startsWith(hint)).map((v) => `/checkpoint list ${v}`);
+        return ['--all']
+          .filter((v) => v.startsWith(hint))
+          .map((v) => registerSuggestion(`/checkpoint list ${v}`, 'checkpoint command'));
       }
       if (tokens[1] === 'load') {
         if (tokens.length >= 3) {
           const hint = tokens[3] || '';
           return ['--all']
             .filter((v) => v.startsWith(hint))
-            .map((v) => `/checkpoint load ${tokens[2]} ${v}`);
+            .map((v) => registerSuggestion(`/checkpoint load ${tokens[2]} ${v}`, 'checkpoint command'));
         }
       }
-      return checkpointTemplates;
+      return materializeSuggestions(checkpointTemplates);
     }
     if (commandPart === 'spec') {
-      return specTemplates;
+      return materializeSuggestions(specTemplates);
     }
     if (commandPart === 'plan') {
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         const sub = tokens[1] || '';
         return ['auto', 'from-spec']
           .filter((s) => s.startsWith(sub))
-          .map((s) => `/plan ${s}`);
+          .map((s) => registerSuggestion(`/plan ${s}`, 'planning command'));
       }
-      return planTemplates;
+      return materializeSuggestions(planTemplates);
     }
     if (commandPart === 'agents') {
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         const sub = tokens[1] || '';
         return ['list', 'run']
           .filter((s) => s.startsWith(sub))
-          .map((s) => `/agents ${s}`);
+          .map((s) => registerSuggestion(`/agents ${s}`, 'sub-agent command'));
       }
       if (tokens[1] === 'run') {
         const rolePrefix = tokens[2] || '';
         return ['planner', 'coder', 'reviewer', 'tester']
           .filter((r) => r.startsWith(rolePrefix))
-          .map((r) => `/agents run ${r} `);
+          .map((r) => registerSuggestion(`/agents run ${r} `, 'sub-agent command'));
       }
-      return agentTemplates;
+      return materializeSuggestions(agentTemplates);
     }
 
     if (commandPart === 'history') {
@@ -1571,12 +1677,13 @@ export async function createChatRuntime({
           .filter((session) => String(session.id || '').startsWith(idPrefix))
           .map((session) => ({
             value: `/history resume ${session.id}`,
-            display: `/history resume ${session.id}  ·  ${Number(session.messageCount || 0)} msgs`
+            display: `/history resume ${session.id}  ·  ${Number(session.messageCount || 0)} msgs`,
+            description: 'resume a saved session'
           }));
         if (dynamic.length > 0) return dynamic;
-        return historyTemplates;
+        return materializeSuggestions(historyTemplates);
       }
-      return historyTemplates;
+      return materializeSuggestions(historyTemplates);
     }
 
     if (commandPart === 'debug') {
@@ -1586,9 +1693,9 @@ export async function createChatRuntime({
         const action = tokens[2] || '';
         return ['on', 'off', 'status']
           .filter((v) => v.startsWith(action))
-          .map((v) => `/debug keys ${v}`);
+          .map((v) => registerSuggestion(`/debug keys ${v}`, 'keyboard debug command'));
       }
-      return debugTemplates;
+      return materializeSuggestions(debugTemplates);
     }
 
     return [];
@@ -1630,7 +1737,7 @@ export async function createChatRuntime({
   };
 
   const submit = async (line, onAgentEvent) => {
-    const activeBaseSystemPrompt = baseSystemPrompt;
+    const activeBaseSystemPrompt = buildSystemPromptWithReplyLanguage(baseSystemPrompt, config);
     const activeReplySystemPrompt = await buildSystemPromptWithSoul(baseSystemPrompt, config);
     try {
       await appendInputHistory(line);

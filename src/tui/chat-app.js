@@ -3,6 +3,7 @@ import { Box, Text, useApp, useInput } from 'ink';
 import { shouldCaptureEscapeSequence } from './input-escape.js';
 
 const h = React.createElement;
+const SUGGESTION_PAGE_SIZE = 8;
 const BANNER = [
   ' ██████  ██████  ██████  ███████ ███    ███ ██ ███    ██ ██ ',
   '██      ██    ██ ██   ██ ██      ████  ████ ██ ████   ██ ██ ',
@@ -122,13 +123,13 @@ const TUI_COPY = {
     },
     suggestion: {
       singleTab: 'Tab 补全当前命令',
-      navFill: 'Tab 保持切换模式，↑↓选择，Enter 填入',
-      navEnter: 'Tab 进入切换模式，再用 ↑↓ 选择',
+      navFill: 'Tab 保持切换模式，↑↓选择，←→翻页，Enter 填入',
+      navEnter: 'Tab 进入切换模式，再用 ↑↓ 选择，←→翻页',
       noSuggestions: '/ 查看命令，Tab 自动补全，↑↓ 历史，Ctrl+T 展开工具',
       oneNav: 'Tab 或 Enter 填入当前命令，↑↓ 历史',
       oneIdle: 'Tab 补全当前唯一候选，Enter 直接发送，↑↓ 历史',
-      manyNav: (count) => `Tab 切换候选，↑↓选择，Enter 填入 (${count} 项)`,
-      manyIdle: (count) => `Tab 进入候选切换 (${count} 项)，↑↓ 历史`
+      manyNav: (count) => `Tab 切换候选，↑↓选择，←→翻页，Enter 填入 (${count} 项)`,
+      manyIdle: (count) => `Tab 进入候选切换 (${count} 项)，↑↓ 历史，←→翻页`
     },
     runtime: {
       sendingToGateway: '正在发送到网关',
@@ -224,13 +225,13 @@ const TUI_COPY = {
     },
     suggestion: {
       singleTab: 'Tab completes the current command',
-      navFill: 'Tab stays in pick mode, ↑↓ select, Enter applies',
-      navEnter: 'Tab enters pick mode, then use ↑↓ to choose',
+      navFill: 'Tab stays in pick mode, ↑↓ select, ←→ page, Enter applies',
+      navEnter: 'Tab enters pick mode, then use ↑↓ to choose, ←→ page',
       noSuggestions: '/ shows commands, Tab autocompletes, ↑↓ history, Ctrl+T tools',
       oneNav: 'Tab or Enter applies the current command, ↑↓ history',
       oneIdle: 'Tab completes the only candidate, Enter sends, ↑↓ history',
-      manyNav: (count) => `Tab cycles candidates, ↑↓ select, Enter applies (${count} items)`,
-      manyIdle: (count) => `Tab enters candidate mode (${count} items), ↑↓ history`
+      manyNav: (count) => `Tab cycles candidates, ↑↓ select, ←→ page, Enter applies (${count} items)`,
+      manyIdle: (count) => `Tab enters candidate mode (${count} items), ↑↓ history, ←→ page`
     },
     runtime: {
       sendingToGateway: 'sending to gateway',
@@ -883,6 +884,66 @@ function getSuggestionDisplay(item) {
   return typeof item === 'string' ? item : String(item?.display || item?.value || '');
 }
 
+function getSuggestionDescription(item) {
+  return typeof item === 'string' ? '' : String(item?.description || '');
+}
+
+export function formatSuggestionDescription(text, maxChars = 40) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!value) return '';
+  const limit = Math.max(4, Number(maxChars) || 40);
+  if (value.length <= limit) return value;
+  return `${value.slice(0, limit - 3)}...`;
+}
+
+export function getSuggestionPageState(commandSuggestions, menuIndex, pageSize = SUGGESTION_PAGE_SIZE) {
+  const items = Array.isArray(commandSuggestions) ? commandSuggestions : [];
+  const normalizedPageSize = Math.max(1, Number(pageSize) || SUGGESTION_PAGE_SIZE);
+  const safeIndex = items.length === 0 ? 0 : Math.max(0, Math.min(Number(menuIndex) || 0, items.length - 1));
+  const pageIndex = Math.floor(safeIndex / normalizedPageSize);
+  const pageCount = Math.max(1, Math.ceil(items.length / normalizedPageSize));
+  const pageStart = pageIndex * normalizedPageSize;
+  const pageEnd = Math.min(items.length, pageStart + normalizedPageSize);
+  return {
+    pageSize: normalizedPageSize,
+    safeIndex,
+    pageIndex,
+    pageCount,
+    pageStart,
+    pageEnd,
+    pageItems: items.slice(pageStart, pageEnd)
+  };
+}
+
+export function moveSuggestionSelection(currentIndex, itemCount, direction, pageSize = SUGGESTION_PAGE_SIZE) {
+  const total = Math.max(0, Number(itemCount) || 0);
+  if (total <= 0) return 0;
+  const normalizedPageSize = Math.max(1, Number(pageSize) || SUGGESTION_PAGE_SIZE);
+  const safeIndex = Math.max(0, Math.min(Number(currentIndex) || 0, total - 1));
+
+  if (direction === 'left') {
+    if (safeIndex < normalizedPageSize) return 0;
+    return Math.max(0, safeIndex - normalizedPageSize);
+  }
+
+  if (direction === 'right') {
+    const currentPageStart = Math.floor(safeIndex / normalizedPageSize) * normalizedPageSize;
+    const currentPageEnd = Math.min(total, currentPageStart + normalizedPageSize);
+    if (currentPageEnd >= total) return safeIndex;
+    return Math.min(total - 1, safeIndex + normalizedPageSize);
+  }
+
+  if (direction === 'up') {
+    return Math.max(0, safeIndex - 1);
+  }
+
+  if (direction === 'down') {
+    return Math.min(total - 1, safeIndex + 1);
+  }
+
+  return safeIndex;
+}
+
 function MessageBubble({ msg, loaderTick, showToolDetails, rowWindow = null, contentWidth = 72, copy }) {
   if (msg?.planSummary || parseAutoPlanSummaryMessage(msg?.text)) {
     return h(PlanSummaryBubble, { msg, copy });
@@ -1028,7 +1089,8 @@ function MessageList({ messages, loaderTick, showToolDetails, contentWidth = 72,
 
 function SuggestionPanel({ commandSuggestions, suggestionNav, menuIndex, copy }) {
   if (commandSuggestions.length === 0) return null;
-  const grouped = groupCommandSuggestions(commandSuggestions);
+  const pageState = getSuggestionPageState(commandSuggestions, menuIndex);
+  const grouped = groupCommandSuggestions(pageState.pageItems);
   let flatIndex = -1;
   const panelHint =
     commandSuggestions.length === 1
@@ -1050,7 +1112,7 @@ function SuggestionPanel({ commandSuggestions, suggestionNav, menuIndex, copy })
       Box,
       { marginBottom: 1 },
       h(Text, { color: 'magentaBright' }, suggestionNav ? copy.generic.commandPaletteGroupedSelect : copy.generic.commandPaletteGroupedSuggestions),
-      h(Text, { color: 'gray' }, `  ${panelHint}`)
+      h(Text, { color: 'gray' }, `  ${panelHint}  ·  ${pageState.pageIndex + 1}/${pageState.pageCount}`)
     ),
     ...grouped.flatMap(([group, items]) => {
       const nodes = [
@@ -1063,13 +1125,17 @@ function SuggestionPanel({ commandSuggestions, suggestionNav, menuIndex, copy })
       ];
       items.forEach((c) => {
         flatIndex += 1;
-        const active = suggestionNav && menuIndex === flatIndex;
+        const active = suggestionNav && menuIndex === pageState.pageStart + flatIndex;
         const label = getSuggestionDisplay(c);
+        const description = formatSuggestionDescription(getSuggestionDescription(c), 42);
         nodes.push(
           h(
             Box,
             { key: `opt-${group}-${getSuggestionValue(c)}` },
-            h(Text, { color: active ? 'black' : 'magenta', backgroundColor: active ? 'magentaBright' : undefined }, `${active ? ' > ' : '   '}${label}`)
+            h(Text, { color: active ? 'black' : 'magenta', backgroundColor: active ? 'magentaBright' : undefined }, `${active ? ' > ' : '   '}${label}`),
+            description
+              ? h(Text, { color: active ? 'black' : 'gray', backgroundColor: active ? 'magentaBright' : undefined }, `  ${description}`)
+              : null
           )
         );
       });
@@ -1301,7 +1367,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
 
   const commandSuggestions =
     inputValue.startsWith('/')
-      ? (runtime.getCompletionOptions(inputValue) || []).slice(0, 8)
+      ? runtime.getCompletionOptions(inputValue) || []
       : [];
   const hasTransientPanels =
     commandSuggestions.length > 0 || pendingQueue.length > 0 || debugKeys || Boolean(planState?.total);
@@ -1853,7 +1919,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
 
     if (key.upArrow) {
       if (suggestionNav && commandSuggestions.length > 0) {
-        setMenuIndex((prev) => Math.max(0, prev - 1));
+        setMenuIndex((prev) => moveSuggestionSelection(prev, commandSuggestions.length, 'up'));
         return;
       }
       if (history.length === 0) return;
@@ -1879,7 +1945,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
 
     if (key.downArrow) {
       if (suggestionNav && commandSuggestions.length > 0) {
-        setMenuIndex((prev) => Math.min(commandSuggestions.length - 1, prev + 1));
+        setMenuIndex((prev) => moveSuggestionSelection(prev, commandSuggestions.length, 'down'));
         return;
       }
       if (history.length === 0 || historyIndex === null) return;
@@ -1900,6 +1966,10 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
       return;
     }
     if (key.leftArrow) {
+      if (suggestionNav && commandSuggestions.length > 0) {
+        setMenuIndex((prev) => moveSuggestionSelection(prev, commandSuggestions.length, 'left'));
+        return;
+      }
       setSuggestionNav(false);
       const next = Math.max(0, cursorIndexRef.current - 1);
       cursorIndexRef.current = next;
@@ -1907,6 +1977,10 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
       return;
     }
     if (key.rightArrow) {
+      if (suggestionNav && commandSuggestions.length > 0) {
+        setMenuIndex((prev) => moveSuggestionSelection(prev, commandSuggestions.length, 'right'));
+        return;
+      }
       setSuggestionNav(false);
       const next = Math.min(inputValue.length, cursorIndexRef.current + 1);
       cursorIndexRef.current = next;

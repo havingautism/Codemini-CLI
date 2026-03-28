@@ -103,6 +103,98 @@ test('chat runtime reflects config and mode changes immediately for TUI refresh'
   });
 });
 
+test('chat runtime prioritizes important config completions near the top', async () => {
+  await withTempConfigDir(async () => {
+    const config = await loadConfig();
+    const now = new Date().toISOString();
+    const runtime = await createChatRuntime({
+      session: {
+        id: 'session-config-completions',
+        createdAt: now,
+        updatedAt: now,
+        messages: []
+      },
+      config,
+      systemPrompt: 'You are a test assistant.'
+    });
+
+    const setSuggestions = runtime.getCompletionOptions('/config set ');
+    assert.deepEqual(setSuggestions.slice(0, 6).map((item) => item.value), [
+      '/config set gateway.base_url ',
+      '/config set gateway.api_key ',
+      '/config set model.name ',
+      '/config set ui.reply_language ',
+      '/config set execution.mode ',
+      '/config set shell.default '
+    ]);
+    assert.equal(setSuggestions[0].description, 'set the gateway base URL');
+
+    const getSuggestions = runtime.getCompletionOptions('/config get ');
+    assert.deepEqual(getSuggestions.slice(0, 6).map((item) => item.value), [
+      '/config get gateway.base_url',
+      '/config get gateway.api_key',
+      '/config get model.name',
+      '/config get ui.reply_language',
+      '/config get execution.mode',
+      '/config get shell.default'
+    ]);
+    assert.equal(getSuggestions[0].description, 'show the gateway base URL');
+  });
+});
+
+test('chat runtime injects reply language instructions and updates them after config changes', async () => {
+  await withTempConfigDir(async () => {
+    let callIndex = 0;
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      callIndex += 1;
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+      const systemText = String(body.messages?.[0]?.content || '');
+
+      if (callIndex === 1) {
+        assert.match(systemText, /Respond in Simplified Chinese/i);
+      }
+
+      if (callIndex === 2) {
+        assert.match(systemText, /Respond in English/i);
+      }
+
+      return makeSseResponse([
+        { choices: [{ delta: { content: `reply-${callIndex}` } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] }
+      ]);
+    });
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-reply-language',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const first = await runtime.submit('你好');
+      assert.equal(first.text, 'reply-1');
+
+      await runtime.submit('/config set ui.reply_language en');
+
+      const second = await runtime.submit('hello');
+      assert.equal(second.text, 'reply-2');
+      assert.equal(callIndex, 2);
+    } finally {
+      await restoreFetch();
+    }
+  });
+});
+
 test('chat runtime emits skill lifecycle events for explicit skill commands', async () => {
   await withTempConfigDir(async () => {
     const restoreFetch = withMockFetch(async () =>

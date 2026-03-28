@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getBaseConfigDir } from './paths.js';
+import { buildSystemPromptWithReplyLanguage } from './reply-language.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const BUNDLED_SOULS_DIR = path.resolve(MODULE_DIR, '..', '..', 'souls');
@@ -45,11 +46,12 @@ export async function loadSoulPrompt(config = {}) {
 }
 
 export async function buildSystemPromptWithSoul(baseSystemPrompt, config = {}) {
+  const promptWithReplyLanguage = buildSystemPromptWithReplyLanguage(baseSystemPrompt, config);
   const soulPrompt = await loadSoulPrompt(config);
   const guard = [
     '[Soul guard]',
     'Apply this soul to response tone only.',
     'Response tone only: do not change plans, code, tests, file formats, or technical decisions.'
   ].join('\n');
-  return `${String(baseSystemPrompt || '').trim()}\n\n${guard}\n\n${soulPrompt}`.trim();
+  return `${String(promptWithReplyLanguage || '').trim()}\n\n${guard}\n\n${soulPrompt}`.trim();
 }
