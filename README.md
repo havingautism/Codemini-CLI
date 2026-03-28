@@ -23,6 +23,10 @@ It is designed for teams that want a coding assistant that feels practical, cont
 - Windows-aware shell profile with PowerShell-focused defaults
 - Safe mode enabled by default
 - Built-in lite skills for planning, execution, and collaboration
+- Configurable reply language through `ui.reply_language` (`zh` / `en`)
+- Richer slash completion with priority sorting, inline descriptions, and left/right paging
+- Structured code tools for small models: `locate`, `open_target`, `edit_target`
+- More conservative `plan auto` acceptance checks with reviewer/tester goal checklists
 - Tone presets through `soul`, without changing plans or code behavior
 - Sub-agents for planning, coding, review, and testing
 
@@ -32,6 +36,7 @@ It is designed for teams that want a coding assistant that feels practical, cont
 codemini config set gateway.base_url http://your-internal-gateway/v1
 codemini config set gateway.api_key your_token
 codemini config set shell.default powershell
+codemini config set ui.reply_language zh
 codemini config set model.name your-30b-model
 codemini doctor
 codemini
@@ -53,6 +58,30 @@ codemini config set|get|list <key> [value]
 codemini doctor
 codemini skill list|install|enable|disable|inspect|reindex
 ```
+
+### Notable Workflow Features
+
+- `ui.reply_language` controls the assistant reply language at the prompt layer and also nudges generated docs and code comments to match
+- Slash completion now prioritizes important commands and config keys, shows short descriptions, and supports `←/→` page switching
+- `plan auto` now turns the original goal into an acceptance checklist, uses a lighter chain only for truly tiny tasks, and treats unmet checklist items as failure signals
+- Structured code tools reduce shell-noise for small models by preferring `locate -> open_target -> edit_target`
+
+### Skill Loading
+
+CodeMini CLI loads skills from these locations:
+
+- Bundled repo skills: `skills/<name>/SKILL.md`
+- Installed global skills: `<base-config-dir>/skills/<name>/SKILL.md`
+- Project-scoped legacy skills: `.coder/skills/<name>/SKILL.md`
+
+The base config directory is resolved in this order:
+
+- `CODEMINI_CONFIG_DIR`
+- `COMPANY_CODER_CONFIG_DIR`
+- Windows: `%APPDATA%\\codemini-cli\\`
+- macOS: `~/Library/Preferences/codemini-cli`
+- Linux/XDG: `$XDG_CONFIG_HOME/codemini-cli`
+- Fallback in restricted environments: `.codemini-cli/`
 
 ### Documentation
 
@@ -95,6 +124,10 @@ CodeMini CLI 是一个为小模型工作流优化过的代码助手 CLI，重点
 - 面向 Windows 的 PowerShell 默认配置
 - safe mode 默认开启
 - 内置 lite skills，覆盖规划、执行和协作
+- 支持通过 `ui.reply_language` 配置回复语言，当前支持 `zh` / `en`
+- slash 补全支持优先级排序、右侧简短说明和左右分页
+- 为小模型补了结构化代码工具：`locate`、`open_target`、`edit_target`
+- `plan auto` 会基于原始目标生成验收清单，并更保守地处理 reviewer/tester 结果
 - `soul` 只影响语气，不影响计划和代码行为
 - 支持 planner、coder、reviewer、tester 多角色 sub-agent
 
@@ -104,6 +137,7 @@ CodeMini CLI 是一个为小模型工作流优化过的代码助手 CLI，重点
 codemini config set gateway.base_url http://your-internal-gateway/v1
 codemini config set gateway.api_key your_token
 codemini config set shell.default powershell
+codemini config set ui.reply_language zh
 codemini config set model.name your-30b-model
 codemini doctor
 codemini
@@ -125,6 +159,30 @@ codemini config set|get|list <key> [value]
 codemini doctor
 codemini skill list|install|enable|disable|inspect|reindex
 ```
+
+### 近期工作流增强
+
+- `ui.reply_language` 通过 prompt 层控制模型回复语言，也会尽量让生成文档和代码注释跟随该语言
+- slash 补全会优先展示更重要的命令和配置项，显示简短说明，并支持 `←/→` 翻页
+- `plan auto` 会先把原始目标展开成验收清单；只有真正很小的任务才会走轻量链路；如果 reviewer 或 tester 标记了未满足或未验证的验收项，就不会按成功处理
+- 为了减少小模型被 shell 原始输出干扰，新增了 `locate -> open_target -> edit_target` 这套结构化代码工具流
+
+### Skill 加载位置
+
+CodeMini CLI 会从这些位置读取 skill：
+
+- 仓库内置 skill：`skills/<name>/SKILL.md`
+- 全局已安装 skill：`<base-config-dir>/skills/<name>/SKILL.md`
+- 项目级旧式 skill：`.coder/skills/<name>/SKILL.md`
+
+`base-config-dir` 的解析顺序是：
+
+- `CODEMINI_CONFIG_DIR`
+- `COMPANY_CODER_CONFIG_DIR`
+- Windows：`%APPDATA%\\codemini-cli\\`
+- macOS：`~/Library/Preferences/codemini-cli`
+- Linux / XDG：`$XDG_CONFIG_HOME/codemini-cli`
+- 受限环境回退：`.codemini-cli/`
 
 ### 文档入口
 

@@ -61,6 +61,24 @@ function summarizeToolResult(result) {
       if (stderr) return `${lead}exit ${obj.code ?? 0}\nstderr: ${stderr}`;
       return `${lead}exit ${obj.code ?? 0}`;
     }
+    if ('task_id' in obj && 'startup_confirmed' in obj) {
+      const status = trimInline(obj.status || 'unknown', 32);
+      const taskId = trimInline(obj.task_id || '', 24);
+      const source = trimInline(obj.startup_source || '', 24);
+      const logs = Array.isArray(obj.recent_logs) ? trimInline(obj.recent_logs.slice(-1)[0] || '', 96) : '';
+      return `${taskId || 'service'} ${status}${source ? ` (${source})` : ''}${logs ? `\n${logs}` : ''}`;
+    }
+    if ('services' in obj && Array.isArray(obj.services)) {
+      const count = obj.services.length;
+      const first = obj.services[0];
+      const lead = first?.task_id ? `${trimInline(first.task_id, 24)} ${trimInline(first.status || 'unknown', 24)}` : '';
+      return `services(${count})${lead ? `\n${lead}` : ''}`;
+    }
+    if ('task_id' in obj && 'recent_logs' in obj) {
+      const taskId = trimInline(obj.task_id || '', 24);
+      const logs = Array.isArray(obj.recent_logs) ? trimInline(obj.recent_logs.slice(-1)[0] || '', 96) : '';
+      return `${taskId || 'service logs'}${logs ? `\n${logs}` : ''}`;
+    }
     if ('created' in obj && Array.isArray(obj.created)) {
       return `created ${obj.created.length} task(s)`;
     }
@@ -95,6 +113,17 @@ function formatToolDisplayName(name, args) {
   if (name === 'run_command') {
     const command = trimInline(args?.command || '', 96);
     return command ? `${name}(${command})` : name;
+  }
+  if (name === 'start_service') {
+    const command = trimInline(args?.command || args?.cmd || '', 96);
+    return command ? `${name}(${command})` : name;
+  }
+  if (name === 'list_services') {
+    return name;
+  }
+  if (name === 'get_service_status' || name === 'get_service_logs' || name === 'stop_service') {
+    const taskId = trimInline(args?.task_id || args?.taskId || '', 96);
+    return taskId ? `${name}(${taskId})` : name;
   }
   if (
     name === 'locate' ||

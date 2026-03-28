@@ -21,6 +21,12 @@ async function makeTools(workspaceRoot) {
   return getBuiltinTools({ workspaceRoot, config });
 }
 
+async function makeToolsWithConfig(workspaceRoot, mutate) {
+  const config = await loadConfig();
+  if (typeof mutate === 'function') mutate(config);
+  return getBuiltinTools({ workspaceRoot, config });
+}
+
 test('search_code returns structured top matches with basic classification', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     await fs.mkdir(path.join(workspaceRoot, 'src', 'auth'), { recursive: true });
@@ -219,6 +225,212 @@ test('locate, open_target, and edit_target provide a compact high-level workflow
 
     assert.equal(edited.ok, true);
     assert.match(edited.diff, /\+  const response = await api\.login/);
+  });
+});
+
+test('run_command rejects long-running service commands and points callers to start_service', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {
+      config.shell.default = 'bash';
+      config.policy.command_allowlist = ['npm'];
+    });
+
+    await assert.rejects(
+      () => handlers.run_command({ command: 'npm start --silent' }),
+      /start_service/i
+    );
+  });
+});
+
+test('service tools manage a long-running process lifecycle with compact status', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {
+      config.shell.default = 'bash';
+      config.shell.timeout_ms = 1200;
+      config.policy.command_allowlist = ['node'];
+    });
+
+    const started = await handlers.start_service({
+      command:
+        "node -e 'console.log(\"Service ready on http://127.0.0.1:4310\"); setInterval(() => console.log(\"tick\"), 200)'",
+      startup_timeout_ms: 1200,
+      success_matchers: ['Service ready'],
+      port_probe: 4310
+    });
+
+    assert.equal(started.status, 'running');
+    assert.equal(started.startup_confirmed, true);
+    assert.ok(started.task_id);
+    assert.ok(Array.isArray(started.recent_logs));
+    assert.ok(['output', 'startup_window', 'port_probe'].includes(started.startup_source));
+    assert.equal(typeof started.log_cursor, 'number');
+
+    const status = await handlers.get_service_status({ task_id: started.task_id });
+    assert.equal(status.task_id, started.task_id);
+    assert.equal(status.status, 'running');
+
+    const listed = await handlers.list_services({});
+    assert.ok(Array.isArray(listed.services));
+    assert.ok(listed.services.some((item) => item.task_id === started.task_id));
+
+    const logs = await handlers.get_service_logs({ task_id: started.task_id, tail: 10 });
+    assert.equal(logs.task_id, started.task_id);
+    assert.ok(Array.isArray(logs.recent_logs));
+    assert.equal(typeof logs.next_cursor, 'number');
+
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const incrementalLogs = await handlers.get_service_logs({
+      task_id: started.task_id,
+      tail: 10,
+      after_cursor: logs.next_cursor
+    });
+    assert.equal(incrementalLogs.task_id, started.task_id);
+    assert.ok(Array.isArray(incrementalLogs.recent_logs));
+    assert.equal(typeof incrementalLogs.next_cursor, 'number');
+
+    const stopped = await handlers.stop_service({ task_id: started.task_id });
+    assert.equal(stopped.task_id, started.task_id);
+    assert.equal(stopped.stopped, true);
+  });
+});
+
+test('start_service confirms dev-server style startup without blocking on process exit', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.writeFile(
+      path.join(workspaceRoot, 'package.json'),
+      JSON.stringify(
+        {
+          name: 'codemini-dev-server-test',
+          private: true,
+          scripts: {
+            start: "node -e 'console.log(\"dev server ready on http://127.0.0.1:3000\"); setInterval(() => {}, 1000)'"
+          }
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+
+    const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {
+      config.shell.default = 'bash';
+      config.shell.timeout_ms = 1200;
+    });
+
+    const startedAt = Date.now();
+    const result = await handlers.start_service({
+      command: 'npm start --silent',
+      startup_timeout_ms: 1200,
+      success_matchers: ['dev server ready']
+    });
+    const elapsedMs = Date.now() - startedAt;
+
+    assert.equal(result.status, 'running');
+    assert.equal(result.startup_confirmed, true);
+    assert.ok(result.task_id);
+    assert.ok(['output', 'startup_window', 'port_probe'].includes(result.startup_source));
+    assert.ok(elapsedMs < 1300, `expected startup confirmation before startup timeout, got ${elapsedMs}ms`);
+
+    const stopped = await handlers.stop_service({ task_id: result.task_id });
+    assert.equal(stopped.stopped, true);
+  });
+});
+
+test('start_service exposes configured http_probe metadata on service snapshots', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {
+      config.shell.default = 'bash';
+      config.shell.timeout_ms = 1200;
+      config.policy.command_allowlist = ['node'];
+    });
+
+    const started = await handlers.start_service({
+      command:
+        "node -e 'console.log(\"HTTP probe placeholder service\"); setInterval(() => {}, 1000)'",
+      startup_timeout_ms: 1200,
+      http_probe: {
+        url: 'http://127.0.0.1:4310/health',
+        expect_status: 200
+      }
+    });
+
+    assert.deepEqual(started.http_probe, {
+      url: 'http://127.0.0.1:4310/health',
+      expect_status: 200
+    });
+
+    const status = await handlers.get_service_status({ task_id: started.task_id });
+    assert.deepEqual(status.http_probe, {
+      url: 'http://127.0.0.1:4310/health',
+      expect_status: 200
+    });
+
+    await handlers.stop_service({ task_id: started.task_id });
+  });
+});
+
+test('start_service confirms java-style startup output', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {
+      config.shell.default = 'bash';
+      config.shell.timeout_ms = 1200;
+      config.policy.command_allowlist = ['node'];
+    });
+
+    const startedAt = Date.now();
+    const result = await handlers.start_service({
+      command:
+        "node -e 'console.log(\"Tomcat started on port(s): 8080 (http) with context path \\\"\\\"\"); setInterval(() => {}, 1000)' # java -jar demo.jar",
+      startup_timeout_ms: 1200
+    });
+    const elapsedMs = Date.now() - startedAt;
+
+    assert.equal(result.status, 'running');
+    assert.equal(result.startup_confirmed, true);
+    assert.ok(['output', 'startup_window', 'port_probe'].includes(result.startup_source));
+    assert.ok(elapsedMs < 1300, `expected java-style startup confirmation before startup timeout, got ${elapsedMs}ms`);
+
+    const stopped = await handlers.stop_service({ task_id: result.task_id });
+    assert.equal(stopped.stopped, true);
+  });
+});
+
+test('start_service confirms dotnet and go-style startup output', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {
+      config.shell.default = 'bash';
+      config.shell.timeout_ms = 1200;
+      config.policy.command_allowlist = ['node'];
+    });
+
+    const dotnetStartedAt = Date.now();
+    const dotnetResult = await handlers.start_service({
+      command:
+        "node -e 'console.log(\"Now listening on: http://localhost:5099\"); setInterval(() => {}, 1000)' # dotnet run",
+      startup_timeout_ms: 1200
+    });
+    const dotnetElapsedMs = Date.now() - dotnetStartedAt;
+
+    assert.equal(dotnetResult.status, 'running');
+    assert.equal(dotnetResult.startup_confirmed, true);
+    assert.ok(['output', 'startup_window', 'port_probe'].includes(dotnetResult.startup_source));
+    assert.ok(dotnetElapsedMs < 1300, `expected dotnet-style startup confirmation before startup timeout, got ${dotnetElapsedMs}ms`);
+
+    const goStartedAt = Date.now();
+    const goResult = await handlers.start_service({
+      command:
+        "node -e 'console.log(\"Starting development server at http://127.0.0.1:8080\"); setInterval(() => {}, 1000)' # go run ./cmd/server",
+      startup_timeout_ms: 1200
+    });
+    const goElapsedMs = Date.now() - goStartedAt;
+
+    assert.equal(goResult.status, 'running');
+    assert.equal(goResult.startup_confirmed, true);
+    assert.ok(['output', 'startup_window', 'port_probe'].includes(goResult.startup_source));
+    assert.ok(goElapsedMs < 1300, `expected go-style startup confirmation before startup timeout, got ${goElapsedMs}ms`);
+
+    await handlers.stop_service({ task_id: dotnetResult.task_id });
+    await handlers.stop_service({ task_id: goResult.task_id });
   });
 });
 

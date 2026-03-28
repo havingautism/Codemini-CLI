@@ -316,6 +316,11 @@ function getActivityDisplayParts(activity) {
     read_file: 'Read',
     write_file: 'Write',
     run_command: 'Command',
+    start_service: 'Service',
+    list_services: 'Service',
+    get_service_status: 'Service',
+    get_service_logs: 'Service',
+    stop_service: 'Service',
     list_files: 'Glob',
     create_task: 'Task',
     update_task: 'Task'
@@ -356,6 +361,13 @@ function describeToolActivity(name, copy, { done = false, blocked = false } = {}
       : done
         ? `${copy.toolActivity.doneCommand}: ${safeTarget || 'run_command'}`
         : `${copy.toolActivity.doingCommand}: ${safeTarget || 'run_command'}`;
+  }
+  if (base === 'start_service' || base === 'list_services' || base === 'get_service_status' || base === 'get_service_logs' || base === 'stop_service') {
+    return blocked
+      ? `${copy.toolActivity.blocked}: ${safeTarget || base}`
+      : done
+        ? `${copy.toolActivity.doneGeneric}: ${safeTarget || base}`
+        : `${copy.toolActivity.doingGeneric}: ${safeTarget || base}`;
   }
   if (base === 'create_task') {
     return blocked ? `${copy.toolActivity.blocked}: create_task` : done ? copy.toolActivity.doneCreateTask : copy.toolActivity.doingCreateTask;
@@ -472,9 +484,13 @@ function PlanStrip({ planState, copy }) {
           ...planState.steps.slice(-4).map((step, idx) =>
             h(
               Box,
-              { key: `plan-step-${idx}` },
+              { key: `plan-step-${idx}`, marginTop: idx === 0 ? 0 : 1 },
               h(Text, { color: step.status === 'active' ? 'cyanBright' : step.status === 'failed' ? 'redBright' : 'gray' }, `${step.status === 'active' ? '>' : step.status === 'failed' ? 'x' : '·'} `),
-              h(Text, { color: step.status === 'active' ? 'white' : step.status === 'failed' ? 'redBright' : 'gray' }, `${step.index}/${step.total} ${step.role}: ${step.title}`)
+              h(Text, { color: step.status === 'active' ? 'yellowBright' : step.status === 'failed' ? 'redBright' : 'gray' }, `${step.index}/${step.total}`),
+              h(Text, { color: 'gray' }, '  '),
+              h(Text, { color: step.status === 'active' ? 'magentaBright' : step.status === 'failed' ? 'redBright' : 'gray' }, String(step.role || 'agent').toUpperCase()),
+              h(Text, { color: 'gray' }, '  '),
+              h(Text, { color: step.status === 'active' ? 'white' : step.status === 'failed' ? 'redBright' : 'gray' }, step.title)
             )
           )
         )
@@ -581,6 +597,39 @@ export function parseAutoPlanSummaryMessage(text) {
   }
 
   return parsed;
+}
+
+export function parsePlanProgressLine(text) {
+  const raw = String(text || '').trim();
+  const match = raw.match(/^\[plan\]\s+Step\s+(\d+)\/(\d+)\s+->\s+([^:]+):\s+(.+)$/i);
+  if (!match) return null;
+  return {
+    current: Number(match[1]),
+    total: Number(match[2]),
+    role: String(match[3] || '').trim(),
+    title: String(match[4] || '').trim()
+  };
+}
+
+export function injectPlanStateMessage(messages, planState, activeUserMessageId, activeAssistantId) {
+  const source = Array.isArray(messages) ? messages : [];
+  if (!planState || !planState.total) return source;
+  const synthetic = {
+    id: `plan-state-${planState.current}-${planState.total}-${planState.role || 'agent'}`,
+    label: 'system',
+    planStrip: true,
+    planState
+  };
+  const withNoPlanStrip = source.filter((message) => !message?.planStrip);
+  const userIdx = withNoPlanStrip.findIndex((message) => message.id === activeUserMessageId);
+  if (userIdx !== -1) {
+    return [...withNoPlanStrip.slice(0, userIdx + 1), synthetic, ...withNoPlanStrip.slice(userIdx + 1)];
+  }
+  const assistantIdx = withNoPlanStrip.findIndex((message) => message.id === activeAssistantId);
+  if (assistantIdx !== -1) {
+    return [...withNoPlanStrip.slice(0, assistantIdx), synthetic, ...withNoPlanStrip.slice(assistantIdx)];
+  }
+  return [...withNoPlanStrip, synthetic];
 }
 
 function PlanSummaryBubble({ msg, copy }) {
@@ -760,6 +809,97 @@ function pushWrappedRow(rows, baseRow, contentWidth) {
   });
 }
 
+function isActivityRow(row) {
+  return row?.kind === 'activity' || row?.kind === 'activity-summary';
+}
+
+function isBlankTextRow(row) {
+  return row?.kind === 'text' && String(row?.text || '').trim() === '';
+}
+
+export function normalizeActivitySpacingRows(inputRows) {
+  const rows = Array.isArray(inputRows) ? inputRows : [];
+  const normalized = [];
+
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    const prev = normalized.at(-1);
+    const next = rows[index + 1];
+
+    if (isBlankTextRow(row)) {
+      let lookahead = index + 1;
+      while (lookahead < rows.length && isBlankTextRow(rows[lookahead])) {
+        lookahead += 1;
+      }
+      if (isActivityRow(rows[lookahead])) {
+        continue;
+      }
+    }
+
+    if (isBlankTextRow(row) && isActivityRow(next)) {
+      continue;
+    }
+
+    normalized.push(row);
+
+    if (isActivityRow(row) && !isActivityRow(next) && next) {
+      const last = normalized.at(-1);
+      if (!isBlankTextRow(last) && !(next.kind === 'status')) {
+        normalized.push({
+          kind: 'text',
+          text: ' ',
+          color: 'white'
+        });
+      }
+    }
+
+    if (isBlankTextRow(row) && isBlankTextRow(prev)) {
+      normalized.pop();
+    }
+  }
+
+  return normalized;
+}
+
+function isReadActivityName(name) {
+  return /^Read\(/.test(String(name || ''));
+}
+
+function isIgnorableSegmentAfterRead(item, activityType, activityName) {
+  if (!item) return true;
+  if (item.type === 'text') {
+    return String(item.text || '').trim() === '';
+  }
+  return (item.type || 'tool') === activityType && item.name === activityName;
+}
+
+export function findActivityUpdateIndex(items, toolEvent) {
+  const source = Array.isArray(items) ? items : [];
+  const activityType = toolEvent?.type || 'tool';
+  const byId = toolEvent?.id
+    ? source.findIndex((item) => item.type === activityType && item.id && item.id === toolEvent.id)
+    : -1;
+  if (byId !== -1) return byId;
+
+  const byNameRunning = source.findIndex(
+    (item) => (item.type || 'tool') === activityType && item.name === toolEvent?.name && item.status !== 'done'
+  );
+  if (byNameRunning !== -1) return byNameRunning;
+
+  if (isReadActivityName(toolEvent?.name)) {
+    for (let index = source.length - 1; index >= 0; index -= 1) {
+      const item = source[index];
+      if ((item?.type || 'tool') !== activityType || item?.name !== toolEvent?.name) continue;
+      const trailing = source.slice(index + 1);
+      if (trailing.every((entry) => isIgnorableSegmentAfterRead(entry, activityType, toolEvent?.name))) {
+        return index;
+      }
+    }
+  }
+
+  return -1;
+}
+
 function buildMessageRows(msg, showToolDetails, contentWidth = 72) {
   const rows = [];
   const pushTextRows = (text) => {
@@ -767,6 +907,17 @@ function buildMessageRows(msg, showToolDetails, contentWidth = 72) {
     let codeFence = false;
     for (const line of lines) {
       const trimmed = line.trim();
+      const planProgress = parsePlanProgressLine(trimmed);
+      if (planProgress) {
+        rows.push({
+          kind: 'plan-progress',
+          current: planProgress.current,
+          total: planProgress.total,
+          role: planProgress.role,
+          title: trimText(planProgress.title, Math.max(12, contentWidth - 18))
+        });
+        continue;
+      }
       if (trimmed.startsWith('```')) {
         codeFence = !codeFence;
         continue;
@@ -843,7 +994,7 @@ function buildMessageRows(msg, showToolDetails, contentWidth = 72) {
     );
   }
 
-  return rows;
+  return normalizeActivitySpacingRows(rows);
 }
 
 
@@ -945,6 +1096,13 @@ export function moveSuggestionSelection(currentIndex, itemCount, direction, page
 }
 
 function MessageBubble({ msg, loaderTick, showToolDetails, rowWindow = null, contentWidth = 72, copy }) {
+  if (msg?.planStrip) {
+    return h(
+      Box,
+      { marginBottom: 1 },
+      h(PlanStrip, { planState: msg.planState, copy })
+    );
+  }
   if (msg?.planSummary || parseAutoPlanSummaryMessage(msg?.text)) {
     return h(PlanSummaryBubble, { msg, copy });
   }
@@ -989,6 +1147,18 @@ function MessageBubble({ msg, loaderTick, showToolDetails, rowWindow = null, con
         Box,
         { key: `row-tool-summary-${msg.id}-${idx}`, marginLeft: 2 },
         h(Text, { color: 'gray' }, `└ ${row.text}`)
+      );
+    }
+    if (row.kind === 'plan-progress') {
+      return h(
+        Box,
+        { key: `row-plan-progress-${msg.id}-${idx}`, marginTop: 1, marginBottom: 1 },
+        h(Text, { color: 'cyanBright' }, '[plan] '),
+        h(Text, { color: 'yellowBright' }, `Step ${row.current}/${row.total}`),
+        h(Text, { color: 'gray' }, '  ->  '),
+        h(Text, { color: 'magentaBright' }, String(row.role || 'agent').toUpperCase()),
+        h(Text, { color: 'gray' }, ': '),
+        h(Text, { color: 'white' }, row.title)
       );
     }
     if (row.kind === 'status') {
@@ -1456,13 +1626,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
         if (m.id !== targetId) return m;
         const toolCalls = Array.isArray(m.toolCalls) ? [...m.toolCalls] : [];
         const activityType = toolEvent.type || 'tool';
-        const byId = toolEvent.id
-          ? toolCalls.findIndex((t) => t.type === activityType && t.id && t.id === toolEvent.id)
-          : -1;
-        const byNameRunning = toolCalls.findIndex(
-          (t) => (t.type || 'tool') === activityType && t.name === toolEvent.name && t.status !== 'done'
-        );
-        const idx = byId !== -1 ? byId : byNameRunning;
+        const idx = findActivityUpdateIndex(toolCalls, toolEvent);
 
         if (idx === -1) {
           toolCalls.push({
@@ -1484,13 +1648,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
           };
         }
         const segments = Array.isArray(m.segments) ? [...m.segments] : [];
-        const bySegmentId = toolEvent.id
-          ? segments.findIndex((segment) => segment.type === activityType && segment.id === toolEvent.id)
-          : -1;
-        const bySegmentName = segments.findIndex(
-          (segment) => segment.type === activityType && segment.name === toolEvent.name && segment.status !== 'done'
-        );
-        const segmentIdx = bySegmentId !== -1 ? bySegmentId : bySegmentName;
+        const segmentIdx = findActivityUpdateIndex(segments, toolEvent);
         const patch = {
           type: activityType,
           id: toolEvent.id || '',
@@ -2192,16 +2350,21 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
   const hasConversationStarted = messages.some((m) =>
     ['you', 'coder', 'pending', 'error'].includes(m.label)
   );
-  const visibleMessages = hasConversationStarted
+  const baseVisibleMessages = hasConversationStarted
     ? messages.filter((m) => !(m.label === 'system' && m.text === startupHint))
     : messages;
+  const visibleMessages = injectPlanStateMessage(
+    baseVisibleMessages,
+    planState,
+    activeUserMessageIdRef.current,
+    activeAssistantIdRef.current
+  );
 
   return h(
     Box,
     { flexDirection: 'column' },
     h(Header, { sessionId: displaySessionId, model: displayModel, shellName }),
     h(RuntimeStrip, { busy, runtimeStatus, loaderTick, copy }),
-    h(PlanStrip, { planState, copy }),
     h(MessageList, {
       messages: visibleMessages,
       loaderTick,

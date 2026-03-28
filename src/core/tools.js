@@ -1,7 +1,16 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { isDangerousCommand, runShellCommand } from './shell.js';
+import { spawn } from 'node:child_process';
+import net from 'node:net';
+import {
+  hasReadyOutput,
+  isDangerousCommand,
+  isLikelyLongRunningCommand,
+  resolveShell,
+  runShellCommand,
+  terminateChild
+} from './shell.js';
 import { evaluateCommandPolicy } from './command-policy.js';
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.coder', '.codemini-cli', 'dist', 'coverage']);
@@ -46,6 +55,11 @@ const LANGUAGE_FILE_TYPES = {
   shell: ['sh', 'ps1'],
   yaml: ['yml', 'yaml']
 };
+const SERVICE_RECENT_LOG_LIMIT = 80;
+const SERVICE_STARTUP_POLL_MS = 150;
+const serviceRegistry = new Map();
+let serviceCounter = 0;
+let serviceLogCursorCounter = 0;
 
 function resolveInWorkspace(root, targetPath = '.') {
   const absRoot = path.resolve(root);
@@ -509,6 +523,9 @@ async function runCommand(root, config, args) {
   if (!command.trim()) {
     throw new Error('run_command requires command');
   }
+  if (isLikelyLongRunningCommand(command)) {
+    throw new Error('Command looks like a long-running service. Use start_service instead of run_command.');
+  }
   if (
     !config.policy.allow_dangerous_commands &&
     isDangerousCommand(command, config.policy.blocked_command_patterns)
@@ -530,6 +547,300 @@ async function runCommand(root, config, args) {
     timeoutMs: config.shell.timeout_ms
   });
   return { ...result, command };
+}
+
+function nextServiceId() {
+  serviceCounter += 1;
+  return `svc_${String(serviceCounter).padStart(3, '0')}`;
+}
+
+function normalizeSuccessMatchers(items = []) {
+  if (!Array.isArray(items)) return [];
+  return items.map((item) => String(item || '').trim()).filter(Boolean);
+}
+
+function shellCommandForService(command, shellSpec) {
+  return process.platform !== 'win32' && /(?:^|\/)bash(?:\.exe)?$/i.test(shellSpec.command)
+    ? `exec ${command}`
+    : command;
+}
+
+function appendRecentLogs(service, chunk) {
+  const lines = String(chunk || '')
+    .split(/\r?\n/)
+    .map((line) => trimLinePreview(line, 220))
+    .filter(Boolean);
+  if (lines.length === 0) return;
+  for (const line of lines) {
+    serviceLogCursorCounter += 1;
+    service.recentLogs.push({ cursor: serviceLogCursorCounter, line });
+  }
+  if (service.recentLogs.length > SERVICE_RECENT_LOG_LIMIT) {
+    service.recentLogs.splice(0, service.recentLogs.length - SERVICE_RECENT_LOG_LIMIT);
+  }
+}
+
+function matchesServiceSuccess(service, text) {
+  const value = String(text || '');
+  if (!value) return false;
+  if (hasReadyOutput(value)) return true;
+  return service.successMatchers.some((matcher) => value.toLowerCase().includes(matcher.toLowerCase()));
+}
+
+function markServiceReady(service, source = 'output') {
+  if (service.startupConfirmed) return;
+  service.startupConfirmed = true;
+  service.startupSource = source;
+  service.status = 'running';
+}
+
+function serviceUrlForPort(port) {
+  const portNumber = Number(port);
+  return Number.isInteger(portNumber) && portNumber > 0 ? `http://127.0.0.1:${portNumber}` : '';
+}
+
+function normalizeHttpProbe(value) {
+  if (!value || typeof value !== 'object') return null;
+  const url = String(value.url || '').trim();
+  if (!url) return null;
+  const expectStatus = Number(value.expect_status ?? value.expectStatus ?? 200);
+  return {
+    url,
+    expect_status: Number.isInteger(expectStatus) ? expectStatus : 200
+  };
+}
+
+function snapshotService(service, tail = 12) {
+  const recentLogs = Array.isArray(service.recentLogs)
+    ? service.recentLogs.slice(-Math.max(1, tail)).map((item) => item.line)
+    : [];
+  const latestCursor =
+    Array.isArray(service.recentLogs) && service.recentLogs.length > 0
+      ? service.recentLogs[service.recentLogs.length - 1].cursor
+      : 0;
+  return {
+    task_id: service.taskId,
+    pid: service.child?.pid || null,
+    command: service.command,
+    cwd: service.cwd,
+    status: service.status,
+    startup_confirmed: service.startupConfirmed,
+    startup_source: service.startupSource || '',
+    http_probe: service.httpProbe || undefined,
+    url: serviceUrlForPort(service.portProbe) || undefined,
+    recent_logs: recentLogs,
+    log_cursor: latestCursor,
+    exit_code: service.exitCode ?? undefined,
+    signal: service.signal ?? undefined,
+    duration_ms: Date.now() - service.startedAt
+  };
+}
+
+function listServiceSnapshots() {
+  return Array.from(serviceRegistry.values()).map((service) => snapshotService(service, 4));
+}
+
+function probePortOnce(port, host = '127.0.0.1', timeoutMs = 250) {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(value);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+    socket.connect(Number(port), host);
+  });
+}
+
+async function probeHttpOnce(httpProbe, timeoutMs = 400) {
+  if (!httpProbe?.url) return false;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(httpProbe.url, {
+      method: 'GET',
+      signal: controller.signal
+    });
+    return response.status === Number(httpProbe.expect_status || 200);
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function startService(root, config, args) {
+  const command = String(args?.command || args?.cmd || '').trim();
+  if (!command) throw new Error('start_service requires command');
+  if (
+    !config.policy.allow_dangerous_commands &&
+    isDangerousCommand(command, config.policy.blocked_command_patterns)
+  ) {
+    throw new Error('Command blocked by policy');
+  }
+  const check = evaluateCommandPolicy(command, config, root);
+  if (!check.allowed) {
+    throw new Error(
+      `Command blocked by safe mode: ${check.reason}${check.suggestion ? ` | ${check.suggestion}` : ''}`
+    );
+  }
+
+  const shellSpec = resolveShell(config.shell.default);
+  const taskId = nextServiceId();
+  const startupTimeoutMs = Math.max(250, Number(args?.startup_timeout_ms || args?.startupTimeoutMs || 20000));
+  const successMatchers = normalizeSuccessMatchers(args?.success_matchers || args?.successMatchers);
+  const portProbe = Number(args?.port_probe || args?.portProbe || 0) || 0;
+  const httpProbe = normalizeHttpProbe(args?.http_probe || args?.httpProbe);
+  const service = {
+    taskId,
+    command,
+    cwd: root,
+    child: spawn(shellSpec.command, [...shellSpec.args, shellCommandForService(command, shellSpec)], {
+      cwd: root,
+      stdio: ['ignore', 'pipe', 'pipe']
+    }),
+    startedAt: Date.now(),
+    status: 'starting',
+    startupConfirmed: false,
+    startupSource: '',
+    successMatchers,
+    portProbe,
+    httpProbe,
+    recentLogs: [],
+    exitCode: null,
+    signal: null
+  };
+  serviceRegistry.set(taskId, service);
+
+  service.closePromise = new Promise((resolve) => {
+    service.child.on('close', (code, signal) => {
+      service.exitCode = code;
+      service.signal = signal;
+      service.status = service.status === 'stopped' ? 'stopped' : 'exited';
+      resolve();
+    });
+  });
+
+  const onOutput = (chunk) => {
+    appendRecentLogs(service, chunk);
+    if (matchesServiceSuccess(service, chunk)) {
+      markServiceReady(service, 'output');
+      if (service._finishStartup) service._finishStartup();
+    }
+  };
+  service.child.stdout.on('data', onOutput);
+  service.child.stderr.on('data', onOutput);
+  service.child.on('error', (error) => {
+    appendRecentLogs(service, error?.message || String(error));
+    service.status = 'exited';
+    if (service._finishStartup) service._finishStartup();
+  });
+
+  await new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutHandle);
+      clearInterval(portHandle);
+      clearInterval(httpHandle);
+      service._finishStartup = null;
+      resolve();
+    };
+    service._finishStartup = finish;
+    if (service.startupConfirmed || service.status === 'exited') {
+      finish();
+      return;
+    }
+    const timeoutHandle = setTimeout(() => {
+      if (service.status === 'starting') {
+        if (!service.startupConfirmed) {
+          markServiceReady(service, 'startup_window');
+        } else {
+          service.status = 'running';
+        }
+      }
+      finish();
+    }, startupTimeoutMs);
+    const portHandle =
+      portProbe > 0
+        ? setInterval(async () => {
+            const open = await probePortOnce(portProbe);
+            if (open) {
+              markServiceReady(service, 'port_probe');
+              finish();
+            }
+          }, SERVICE_STARTUP_POLL_MS)
+        : null;
+    const httpHandle =
+      httpProbe
+        ? setInterval(async () => {
+            const ok = await probeHttpOnce(httpProbe);
+            if (ok) {
+              markServiceReady(service, 'http_probe');
+              finish();
+            }
+          }, SERVICE_STARTUP_POLL_MS)
+        : null;
+    service.child.once('close', () => finish());
+  });
+
+  if (service.status === 'starting') {
+    service.status = 'running';
+  }
+  return snapshotService(service);
+}
+
+function getServiceOrThrow(taskId) {
+  const service = serviceRegistry.get(String(taskId || '').trim());
+  if (!service) throw new Error(`Unknown service task: ${taskId}`);
+  return service;
+}
+
+async function getServiceStatus(_root, args) {
+  const service = getServiceOrThrow(args?.task_id || args?.taskId);
+  return snapshotService(service);
+}
+
+async function listServices() {
+  return {
+    services: listServiceSnapshots()
+  };
+}
+
+async function getServiceLogs(_root, args) {
+  const service = getServiceOrThrow(args?.task_id || args?.taskId);
+  const tail = Math.max(1, Math.min(200, Number(args?.tail || 40)));
+  const afterCursor = Math.max(0, Number(args?.after_cursor || args?.afterCursor || 0));
+  const filtered = afterCursor > 0 ? service.recentLogs.filter((item) => item.cursor > afterCursor) : service.recentLogs;
+  const selected = filtered.slice(-tail);
+  return {
+    task_id: service.taskId,
+    status: service.status,
+    recent_logs: selected.map((item) => item.line),
+    next_cursor: selected.length > 0 ? selected[selected.length - 1].cursor : afterCursor
+  };
+}
+
+async function stopService(_root, args) {
+  const service = getServiceOrThrow(args?.task_id || args?.taskId);
+  if (service.status === 'stopped' || service.status === 'exited') {
+    return { ...snapshotService(service), stopped: true };
+  }
+  service.status = 'stopped';
+  terminateChild(service.child, 'SIGTERM');
+  setTimeout(() => terminateChild(service.child, 'SIGKILL'), 200);
+  await Promise.race([
+    service.closePromise,
+    new Promise((resolve) => setTimeout(resolve, 500))
+  ]);
+  return { ...snapshotService(service), stopped: true };
 }
 
 async function searchCode(root, args) {
@@ -1071,13 +1382,95 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
       type: 'function',
       function: {
         name: 'run_command',
-        description: 'Execute a shell command in workspace',
+        description: 'Execute a one-shot shell command in workspace. Do not use for long-running services.',
         parameters: {
           type: 'object',
           properties: {
             command: { type: 'string' }
           },
           required: ['command']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'start_service',
+        description: 'Start a long-running local service and return a compact service handle instead of blocking on process exit.',
+        parameters: {
+          type: 'object',
+          properties: {
+            command: { type: 'string' },
+            startup_timeout_ms: { type: 'number' },
+            success_matchers: {
+              type: 'array',
+              items: { type: 'string' }
+            },
+            port_probe: { type: 'number' },
+            http_probe: {
+              type: 'object',
+              properties: {
+                url: { type: 'string' },
+                expect_status: { type: 'number' }
+              }
+            }
+          },
+          required: ['command']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'list_services',
+        description: 'List all tracked local services and their compact current status.',
+        parameters: {
+          type: 'object',
+          properties: {}
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'get_service_status',
+        description: 'Get the current status of a previously started service.',
+        parameters: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'string' }
+          },
+          required: ['task_id']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'get_service_logs',
+        description: 'Read recent logs from a previously started service.',
+        parameters: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'string' },
+            tail: { type: 'number' },
+            after_cursor: { type: 'number' }
+          },
+          required: ['task_id']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'stop_service',
+        description: 'Stop a previously started service.',
+        parameters: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'string' }
+          },
+          required: ['task_id']
         }
       }
     }
@@ -1096,6 +1489,11 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
     insert_before: (args) => insertRelative(workspaceRoot, args, 'insert_before'),
     insert_after: (args) => insertRelative(workspaceRoot, args, 'insert_after'),
     generate_diff: (args) => generateDiff(workspaceRoot, args),
+    start_service: (args) => startService(workspaceRoot, config, args),
+    list_services: () => listServices(workspaceRoot),
+    get_service_status: (args) => getServiceStatus(workspaceRoot, args),
+    get_service_logs: (args) => getServiceLogs(workspaceRoot, args),
+    stop_service: (args) => stopService(workspaceRoot, args),
     read_file: (args) =>
       readFile(workspaceRoot, {
         ...args,
