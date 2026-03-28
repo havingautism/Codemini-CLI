@@ -498,7 +498,8 @@ function buildAutoPlanSystemSummary(auto) {
   const lines = [
     statusTitle,
     `File: ${auto.filePath}`,
-    `Summary: ${auto.summary || '-'}`,
+    `Plan Summary: ${auto.summary || '-'}`,
+    `Final Summary: ${auto.finalSummary || auto.summary || '-'}`,
     `Steps: ${auto.steps.length} total`,
     `Completed: ${auto.completedCount}`,
     `Warnings: ${auto.warningCount}`,
@@ -511,6 +512,95 @@ function buildAutoPlanSystemSummary(auto) {
     lines.push(`Failed steps: ${auto.failedTitles.slice(0, 5).join(', ')}`);
   }
   return lines.join('\n');
+}
+
+function buildAutoPlanFinalSummaryUserPrompt({ goal, autoPlan, runItems, planningError }) {
+  const lines = [];
+  lines.push('Create a final execution summary for an auto-generated implementation/test plan.');
+  lines.push('Keep it concise, high-signal, and outcome-focused.');
+  lines.push('Include: overall result, what was verified, what is still pending, and the best next action.');
+  lines.push('Use plain text only. Do not use markdown fences.');
+  lines.push('');
+  lines.push(`Goal: ${goal}`);
+  lines.push(`Plan Summary: ${autoPlan?.summary || `Auto plan for: ${goal}`}`);
+  if (planningError) {
+    lines.push(`Planning Error: ${planningError}`);
+  }
+  lines.push('');
+  lines.push('Executed Steps:');
+  runItems.forEach((item, idx) => {
+    lines.push(`${idx + 1}. [${item.role}] ${item.title}`);
+    if (item.failed) {
+      lines.push(`Status: failed`);
+    } else if (item.warning) {
+      lines.push(`Status: warning`);
+    } else {
+      lines.push(`Status: completed`);
+    }
+    if (item.error) {
+      lines.push(`Error: ${item.error}`);
+    }
+    if (item.warning) {
+      lines.push(`Warning: ${item.warning}`);
+    }
+    lines.push(`Output: ${trimInlineText(item.output || '(empty)', 500)}`);
+    if (Array.isArray(item.artifactPaths) && item.artifactPaths.length > 0) {
+      lines.push(`Artifacts: ${item.artifactPaths.slice(0, 5).join(', ')}`);
+    }
+    lines.push('');
+  });
+  return lines.join('\n').trim();
+}
+
+async function buildAutoPlanFinalSummary({
+  goal,
+  autoPlan,
+  runItems,
+  planningError,
+  config,
+  model,
+  systemPrompt
+}) {
+  const fallbackParts = [];
+  if (runItems.some((item) => item.failed || item.error)) {
+    fallbackParts.push('Execution finished with failed steps.');
+  } else if (runItems.some((item) => item.warning)) {
+    fallbackParts.push('Execution finished with warnings.');
+  } else {
+    fallbackParts.push('Execution finished successfully.');
+  }
+  const verifiedTitles = runItems.filter((item) => !item.failed).map((item) => item.title);
+  const pendingTitles = runItems.filter((item) => item.failed || item.warning).map((item) => item.title);
+  if (verifiedTitles.length > 0) {
+    fallbackParts.push(`Completed: ${verifiedTitles.slice(0, 4).join(', ')}.`);
+  }
+  if (pendingTitles.length > 0) {
+    fallbackParts.push(`Needs follow-up: ${pendingTitles.slice(0, 4).join(', ')}.`);
+  }
+  const fallbackSummary = fallbackParts.join(' ');
+
+  try {
+    const result = await createChatCompletion({
+      baseUrl: config.gateway.base_url,
+      apiKey: config.gateway.api_key,
+      model: model || config.model.name,
+      messages: [
+        {
+          role: 'system',
+          content: `${systemPrompt}\nYou are writing the final execution summary for a completed auto plan. Focus on closure, verification status, and the next action.`
+        },
+        {
+          role: 'user',
+          content: buildAutoPlanFinalSummaryUserPrompt({ goal, autoPlan, runItems, planningError })
+        }
+      ],
+      timeoutMs: config.gateway.timeout_ms || 90000,
+      maxRetries: config.gateway.max_retries ?? 2
+    });
+    return trimInlineText(result.text || '', 600) || fallbackSummary;
+  } catch {
+    return fallbackSummary;
+  }
 }
 
 async function writeMarkdownInCoderDir(subDir, title, body, fallbackName, sessionId) {
@@ -1050,12 +1140,13 @@ async function buildAutoPlanAndRun({
   }
 
   const runItems = [];
+  const totalPlanSteps = autoPlan.steps.length + 1;
   for (let i = 0; i < autoPlan.steps.length; i += 1) {
     const step = autoPlan.steps[i];
     if (onAgentEvent) {
       onAgentEvent({
         type: 'assistant:delta',
-        text: `\n[plan] Step ${i + 1}/${autoPlan.steps.length} -> ${step.role}: ${step.title}\n`
+        text: `\n[plan] Step ${i + 1}/${totalPlanSteps} -> ${step.role}: ${step.title}\n`
       });
     }
     try {
@@ -1106,11 +1197,30 @@ async function buildAutoPlanAndRun({
   const warningItems = runItems.filter((s) => !s.failed && s.warning);
   const completedItems = runItems.filter((s) => !s.failed);
 
+  if (onAgentEvent) {
+    onAgentEvent({
+      type: 'assistant:delta',
+      text: `\n[plan] Step ${totalPlanSteps}/${totalPlanSteps} -> summarizer: Final summary\n`
+    });
+  }
+  const finalSummary = await buildAutoPlanFinalSummary({
+    goal,
+    autoPlan,
+    runItems,
+    planningError,
+    config,
+    model,
+    systemPrompt
+  });
+
   const lines = [];
   lines.push(`# Auto Plan: ${goal}`);
   lines.push('');
   lines.push(`## Summary`);
   lines.push(autoPlan.summary || `Auto plan for: ${goal}`);
+  lines.push('');
+  lines.push('## Final Summary');
+  lines.push(finalSummary || '(empty)');
   if (planningError) {
     lines.push('');
     lines.push(`Planning Error: ${planningError}`);
@@ -1152,6 +1262,7 @@ async function buildAutoPlanAndRun({
   return {
     filePath,
     summary: autoPlan.summary,
+    finalSummary,
     steps: autoPlan.steps,
     completedCount: completedItems.length,
     warningCount: warningItems.length,

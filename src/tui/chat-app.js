@@ -546,6 +546,161 @@ function renderTextLine(msg, line, idx, color) {
   );
 }
 
+export function parseAutoPlanSummaryMessage(text) {
+  const raw = String(text || '').trim();
+  if (!/^Auto plan finished\b/i.test(raw)) return null;
+
+  const lines = raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const parsed = {
+    statusTitle: lines[0] || '',
+    filePath: '',
+    planSummary: '',
+    finalSummary: '',
+    stepsTotal: '',
+    completed: '',
+    warnings: '',
+    failed: '',
+    warningSteps: '',
+    failedSteps: ''
+  };
+
+  for (const line of lines.slice(1)) {
+    if (line.startsWith('File: ')) parsed.filePath = line.slice('File: '.length).trim();
+    else if (line.startsWith('Plan Summary: ')) parsed.planSummary = line.slice('Plan Summary: '.length).trim();
+    else if (line.startsWith('Final Summary: ')) parsed.finalSummary = line.slice('Final Summary: '.length).trim();
+    else if (line.startsWith('Steps: ')) parsed.stepsTotal = line.slice('Steps: '.length).trim();
+    else if (line.startsWith('Completed: ')) parsed.completed = line.slice('Completed: '.length).trim();
+    else if (line.startsWith('Warnings: ')) parsed.warnings = line.slice('Warnings: '.length).trim();
+    else if (line.startsWith('Failed: ')) parsed.failed = line.slice('Failed: '.length).trim();
+    else if (line.startsWith('Warning steps: ')) parsed.warningSteps = line.slice('Warning steps: '.length).trim();
+    else if (line.startsWith('Failed steps: ')) parsed.failedSteps = line.slice('Failed steps: '.length).trim();
+  }
+
+  return parsed;
+}
+
+function PlanSummaryBubble({ msg, copy }) {
+  const theme = roleStyle(msg.label);
+  const summary = msg.planSummary || parseAutoPlanSummaryMessage(msg.text);
+  if (!summary) return null;
+
+  const statusColor =
+    Number(summary.failed || 0) > 0 ? 'redBright' : Number(summary.warnings || 0) > 0 ? 'yellowBright' : 'greenBright';
+  const isEnglish = copy?.roleLabels?.system === 'SYSTEM';
+  const labels = isEnglish
+    ? {
+        conclusion: 'Conclusion',
+        plan: 'Plan',
+        warnings: 'Warnings',
+        failed: 'Failed',
+        file: 'File',
+        steps: 'steps',
+        done: 'done',
+        warn: 'warn',
+        fail: 'fail'
+      }
+    : {
+        conclusion: '结论',
+        plan: '计划',
+        warnings: '警告',
+        failed: '失败',
+        file: '文件',
+        steps: '步骤',
+        done: '完成',
+        warn: '警告',
+        fail: '失败'
+      };
+  const metaItems = [
+    summary.stepsTotal ? `${labels.steps} ${summary.stepsTotal}` : '',
+    summary.completed ? `${labels.done} ${summary.completed}` : '',
+    summary.warnings ? `${labels.warn} ${summary.warnings}` : '',
+    summary.failed ? `${labels.fail} ${summary.failed}` : ''
+  ].filter(Boolean);
+  const shortFile = summary.filePath ? trimText(summary.filePath, 96) : '';
+
+  return h(
+    Box,
+    { marginBottom: 1, flexDirection: 'row' },
+    h(Box, { width: 2 }, h(Text, { color: theme.accent }, '│')),
+    h(
+      Box,
+      {
+        flexDirection: 'column',
+        borderStyle: 'round',
+        borderColor: theme.border,
+        paddingX: 1,
+        paddingY: 0,
+        width: '100%'
+      },
+      h(
+        Box,
+        { justifyContent: 'space-between', marginBottom: summary.finalSummary ? 1 : 0 },
+        h(
+          Box,
+          null,
+          h(Text, { color: theme.badgeText, backgroundColor: theme.badgeBg }, ` ${messageLabel(msg.label, copy)} `),
+          h(Text, { color: 'gray' }, '  '),
+          h(Text, { color: statusColor }, summary.statusTitle)
+        ),
+        h(Text, { color: theme.chrome }, ' ')
+      ),
+      summary.finalSummary
+        ? h(
+            Box,
+            { marginBottom: summary.planSummary || metaItems.length > 0 || summary.warningSteps || summary.failedSteps || shortFile ? 1 : 0, flexDirection: 'column' },
+            h(Text, { color: statusColor }, labels.conclusion),
+            h(Text, { color: 'white' }, summary.finalSummary)
+          )
+        : null,
+      summary.planSummary
+        ? h(
+            Box,
+            { marginBottom: metaItems.length > 0 || summary.warningSteps || summary.failedSteps || shortFile ? 1 : 0, flexDirection: 'column' },
+            h(Text, { color: 'cyanBright' }, labels.plan),
+            h(Text, { color: 'gray' }, summary.planSummary)
+          )
+        : null,
+      metaItems.length > 0
+        ? h(
+            Box,
+            { marginBottom: summary.warningSteps || summary.failedSteps || shortFile ? 1 : 0 },
+            ...metaItems.flatMap((item, idx) => [
+              idx > 0 ? h(Text, { key: `sep-${idx}`, color: 'gray' }, '  ') : null,
+              h(Text, { key: `meta-${idx}`, color: 'gray' }, item)
+            ])
+          )
+        : null,
+      summary.warningSteps
+        ? h(
+            Box,
+            { marginBottom: summary.failedSteps || shortFile ? 1 : 0, flexDirection: 'column' },
+            h(Text, { color: 'yellowBright' }, labels.warnings),
+            h(Text, { color: 'gray' }, summary.warningSteps)
+          )
+        : null,
+      summary.failedSteps
+        ? h(
+            Box,
+            { marginBottom: shortFile ? 1 : 0, flexDirection: 'column' },
+            h(Text, { color: 'redBright' }, labels.failed),
+            h(Text, { color: 'gray' }, summary.failedSteps)
+          )
+        : null,
+      shortFile
+        ? h(
+            Box,
+            { flexDirection: 'column' },
+            h(Text, { color: 'gray' }, labels.file),
+            h(Text, { color: 'gray' }, shortFile)
+          )
+        : null
+    )
+  );
+}
+
 const BUBBLE_CHROME_ROWS = 4;
 
 function charDisplayWidth(ch) {
@@ -729,6 +884,9 @@ function getSuggestionDisplay(item) {
 }
 
 function MessageBubble({ msg, loaderTick, showToolDetails, rowWindow = null, contentWidth = 72, copy }) {
+  if (msg?.planSummary || parseAutoPlanSummaryMessage(msg?.text)) {
+    return h(PlanSummaryBubble, { msg, copy });
+  }
   const theme = roleStyle(msg.label);
   const allRows = buildMessageRows(msg, showToolDetails, contentWidth);
   const start = rowWindow ? Math.max(0, rowWindow.start || 0) : 0;
@@ -1338,9 +1496,16 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
       }
       return;
     }
+    const parsedPlanSummary = result.type === 'system' ? parseAutoPlanSummaryMessage(result.text || '') : null;
     setMessages((prev) => [
       ...prev,
-      { id: nextId(), label: 'system', text: result.text || '', color: 'yellowBright' }
+      {
+        id: nextId(),
+        label: 'system',
+        text: result.text || '',
+        color: 'yellowBright',
+        ...(parsedPlanSummary ? { planSummary: parsedPlanSummary } : {})
+      }
     ]);
   };
 

@@ -31,6 +31,13 @@ function withMockFetch(handler) {
   };
 }
 
+function makeJsonResponse(payload) {
+  return new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
 function makeSseResponse(events) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -129,6 +136,113 @@ test('chat runtime emits skill lifecycle events for explicit skill commands', as
       assert.equal(result.text, 'skill output');
       assert.ok(events.some((event) => event?.type === 'skill:start' && event?.name === 'superpowers-lite'));
       assert.ok(events.some((event) => event?.type === 'skill:end' && event?.name === 'superpowers-lite'));
+    } finally {
+      await restoreFetch();
+    }
+  });
+});
+
+test('plan auto appends a final summary step and returns summarized feedback', async () => {
+  await withTempConfigDir(async () => {
+    let callIndex = 0;
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      callIndex += 1;
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+
+      if (callIndex === 1) {
+        assert.equal(body.stream, undefined);
+        return makeJsonResponse({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: 'Build and verify a login test plan.',
+                  steps: [
+                    {
+                      title: 'Implement login test cases',
+                      role: 'coder',
+                      task: 'Create the login test plan and supporting notes.'
+                    },
+                    {
+                      title: 'Review the test plan',
+                      role: 'reviewer',
+                      task: 'Review the plan for gaps and risky assumptions.'
+                    },
+                    {
+                      title: 'Verify test coverage',
+                      role: 'tester',
+                      task: 'Check whether the plan covers the critical login flows.'
+                    }
+                  ]
+                })
+              }
+            }
+          ]
+        });
+      }
+
+      if (callIndex >= 2 && callIndex <= 4) {
+        assert.equal(body.stream, true);
+        const responses = [
+          'Implemented the requested login test plan with edge cases.',
+          'Findings:\n- none\nVerified:\n- reviewed login flow coverage\nNot Verified:\n- real backend execution\nNext Action:\n- run manual smoke tests',
+          'Verified:\n- inspected the test checklist\nNot Verified:\n- end-to-end execution on staging\nFailures:\n- none\nNext Action:\n- run staging validation'
+        ];
+        return makeSseResponse([
+          { choices: [{ delta: { content: responses[callIndex - 2] } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 5) {
+        assert.equal(body.stream, undefined);
+        assert.equal(body.tools, undefined);
+        assert.match(body.messages[0].content, /final execution summary/i);
+        assert.match(body.messages[1].content, /Implemented the requested login test plan/i);
+        return makeJsonResponse({
+          choices: [
+            {
+              message: {
+                content: 'The login test plan is drafted and reviewed, but staging validation is still pending.'
+              }
+            }
+          ]
+        });
+      }
+
+      throw new Error(`unexpected fetch call ${callIndex}`);
+    });
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-plan-summary',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const events = [];
+      const result = await runtime.submit('/plan auto create a login test plan', (event) => events.push(event));
+
+      assert.equal(result.type, 'system');
+      assert.match(result.text, /Final Summary: The login test plan is drafted and reviewed/i);
+      assert.ok(
+        events.some(
+          (event) =>
+            event?.type === 'assistant:delta' &&
+            String(event.text || '').includes('[plan] Step 4/4 -> summarizer: Final summary')
+        )
+      );
+      assert.equal(callIndex, 5);
     } finally {
       await restoreFetch();
     }
