@@ -2,7 +2,14 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 
 const h = React.createElement;
-const BANNER = ['CODEMINI CLI'];
+const BANNER = [
+  ' ██████  ██████  ██████  ███████ ███    ███ ██ ███    ██ ██ ',
+  '██      ██    ██ ██   ██ ██      ████  ████ ██ ████   ██ ██ ',
+  '██      ██    ██ ██   ██ █████   ██ ████ ██ ██ ██ ██  ██ ██ ',
+  '██      ██    ██ ██   ██ ██      ██  ██  ██ ██ ██  ██ ██ ██ ',
+  ' ██████  ██████  ██████  ███████ ██      ██ ██ ██   ████ ██ '
+];
+const BANNER_COLORS = ['magentaBright', 'redBright', 'yellowBright', 'cyanBright', 'magentaBright'];
 const ROLE_STYLES = {
   you: {
     accent: 'blueBright',
@@ -106,6 +113,8 @@ const TUI_COPY = {
       doingUpdateTask: '正在更新任务',
       doneGeneric: '已完成工具',
       doingGeneric: '正在执行工具',
+      doneSkill: '已完成技能',
+      doingSkill: '正在执行技能',
       toolFailed: (name) => `工具执行失败: ${name}`,
       waitingModelContinue: (detail) => `${detail}，等待模型继续`,
       waitingModelAdjust: (detail) => `${detail}，等待模型调整`
@@ -133,6 +142,9 @@ const TUI_COPY = {
       toolCompleted: '工具已完成',
       toolBlocked: '工具被拦截',
       toolFailed: '工具执行失败',
+      skillRunning: '技能执行中',
+      skillCompleted: '技能已完成',
+      skillFailed: '技能执行失败',
       compactingContext: '正在压缩上下文',
       autoCompactTriggered: (mode, threshold) => `自动压缩已触发（${mode}，阈值 ${threshold}%）`,
       requestFailed: '请求失败',
@@ -203,6 +215,8 @@ const TUI_COPY = {
       doingUpdateTask: 'Updating task',
       doneGeneric: 'Completed tool',
       doingGeneric: 'Running tool',
+      doneSkill: 'Completed skill',
+      doingSkill: 'Running skill',
       toolFailed: (name) => `Tool failed: ${name}`,
       waitingModelContinue: (detail) => `${detail}, waiting for model to continue`,
       waitingModelAdjust: (detail) => `${detail}, waiting for model to adjust`
@@ -230,6 +244,9 @@ const TUI_COPY = {
       toolCompleted: 'tool completed',
       toolBlocked: 'tool blocked',
       toolFailed: 'tool failed',
+      skillRunning: 'skill running',
+      skillCompleted: 'skill completed',
+      skillFailed: 'skill failed',
       compactingContext: 'compacting context',
       autoCompactTriggered: (mode, threshold) => `auto-compact triggered (${mode}, threshold ${threshold}%)`,
       requestFailed: 'request failed',
@@ -285,18 +302,26 @@ function parseToolDisplayName(name) {
   };
 }
 
-function getToolNameBadgeStyle(name) {
-  const { base } = parseToolDisplayName(name);
-  if (base === 'read_file') {
-    return { bg: 'blueBright', text: 'black', label: 'read' };
+function getActivityDisplayParts(activity) {
+  if ((activity?.type || 'tool') === 'skill') {
+    return {
+      primary: `Skill`,
+      secondary: `(${activity?.name || 'unknown'})`
+    };
   }
-  if (base === 'write_file') {
-    return { bg: 'magentaBright', text: 'black', label: 'write' };
-  }
-  if (base === 'run_command') {
-    return { bg: 'cyan', text: 'black', label: 'run' };
-  }
-  return { bg: 'gray', text: 'black', label: base || 'tool' };
+  const parsed = parseToolDisplayName(activity?.name);
+  const labels = {
+    read_file: 'Read',
+    write_file: 'Write',
+    run_command: 'Command',
+    list_files: 'Glob',
+    create_task: 'Task',
+    update_task: 'Task'
+  };
+  return {
+    primary: labels[parsed.base] || parsed.base || 'Tool',
+    secondary: parsed.target ? `(${parsed.target})` : ''
+  };
 }
 
 function describeToolActivity(name, copy, { done = false, blocked = false } = {}) {
@@ -337,6 +362,12 @@ function describeToolActivity(name, copy, { done = false, blocked = false } = {}
     return blocked ? `${copy.toolActivity.blocked}: update_task` : done ? copy.toolActivity.doneUpdateTask : copy.toolActivity.doingUpdateTask;
   }
   return blocked ? `${copy.toolActivity.blocked}: ${raw}` : done ? `${copy.toolActivity.doneGeneric}: ${raw}` : `${copy.toolActivity.doingGeneric}: ${raw}`;
+}
+
+function describeSkillActivity(name, copy, { done = false, failed = false } = {}) {
+  if (failed) return `${copy.runtime.skillFailed}: /${name}`;
+  if (done) return `${copy.toolActivity.doneSkill}: /${name}`;
+  return `${copy.toolActivity.doingSkill}: /${name}`;
 }
 
 function normalizeRuntimeStatus(status, copy) {
@@ -402,8 +433,7 @@ function RuntimeStrip({ busy, runtimeStatus, loaderTick, copy }) {
     h(Text, { color: 'gray' }, '  '),
     h(Text, { color: busy ? 'cyanBright' : 'gray' }, dots),
     h(Text, { color: 'gray' }, '  '),
-    h(Text, { color: busy ? 'white' : 'gray' }, status.title || copy.generic.waitingForInput),
-    status.detail ? h(Text, { color: 'gray' }, `  ${status.detail}`) : null
+    h(Text, { color: busy ? 'white' : 'gray' }, status.title || copy.generic.waitingForInput)
   );
 }
 
@@ -469,10 +499,16 @@ function Header({ sessionId, model, shellName }) {
       h(
         Box,
         { width: '100%', justifyContent: 'space-between', marginBottom: 1 },
-        h(Text, { color: 'cyan' }, ':: CODEMINI CLI ::'),
+        h(Text, { color: 'cyan' }, 'CLI'),
         h(Text, { color: 'greenBright' }, 'SAFE')
       ),
-      ...BANNER.map((line, idx) => h(Text, { key: `b-${idx}`, color: 'cyanBright' }, line)),
+      ...BANNER.map((line, idx) =>
+        h(
+          Box,
+          { key: `b-${idx}`, justifyContent: 'center' },
+          h(Text, { color: BANNER_COLORS[idx] || 'cyanBright' }, line)
+        )
+      ),
       h(Box, { height: 1 }),
       h(Text, { color: 'gray' }, 'optimized for small-model workflows'),
       h(Box, { height: 1 }),
@@ -599,14 +635,15 @@ function buildMessageRows(msg, showToolDetails, contentWidth = 72) {
     }
   };
 
-  const pushToolRows = (tool, idx, total) => {
+  const pushActivityRows = (tool, idx, total) => {
     const statusIcon = tool.status === 'done' ? '✓' : tool.status === 'blocked' || tool.status === 'error' ? '×' : '…';
     const statusColor =
       tool.status === 'done' ? 'greenBright' : tool.status === 'blocked' || tool.status === 'error' ? 'redBright' : 'yellow';
     const durationText =
       typeof tool.durationMs === 'number' ? `${(tool.durationMs / 1000).toFixed(1)}s` : '';
     rows.push({
-      kind: 'tool',
+      kind: 'activity',
+      activityType: tool.type || 'tool',
       name: tool.name,
       statusIcon,
       statusColor,
@@ -616,17 +653,17 @@ function buildMessageRows(msg, showToolDetails, contentWidth = 72) {
     });
     if ((showToolDetails || idx === total - 1) && tool.summary && tool.status !== 'running') {
       for (const line of String(tool.summary).split('\n')) {
-        pushWrappedRow(rows, { kind: 'tool-summary', text: line || ' ', color: 'gray' }, Math.max(8, contentWidth - 2));
+        pushWrappedRow(rows, { kind: 'activity-summary', text: line || ' ', color: 'gray' }, Math.max(8, contentWidth - 4));
       }
     }
   };
 
   if (Array.isArray(msg?.segments) && msg.segments.length > 0) {
-    const totalTools = msg.segments.filter((segment) => segment.type === 'tool').length;
+    const totalTools = msg.segments.filter((segment) => segment.type === 'tool' || segment.type === 'skill').length;
     let toolIndex = 0;
     for (const segment of msg.segments) {
-      if (segment.type === 'tool') {
-        pushToolRows(segment, toolIndex, totalTools);
+      if (segment.type === 'tool' || segment.type === 'skill') {
+        pushActivityRows(segment, toolIndex, totalTools);
         toolIndex += 1;
       } else {
         pushTextRows(segment.text || '');
@@ -635,7 +672,7 @@ function buildMessageRows(msg, showToolDetails, contentWidth = 72) {
   } else {
     pushTextRows(msg?.text || '');
     const toolCalls = Array.isArray(msg?.toolCalls) ? msg.toolCalls : [];
-    toolCalls.forEach((tool, idx) => pushToolRows(tool, idx, toolCalls.length));
+    toolCalls.forEach((tool, idx) => pushActivityRows(tool, idx, toolCalls.length));
   }
 
   if (msg?.loading && (msg?.liveStatus || msg?.phase)) {
@@ -652,133 +689,6 @@ function buildMessageRows(msg, showToolDetails, contentWidth = 72) {
   return rows;
 }
 
-function renderRichTextBlock(msg, text, copy, keyPrefix = 'body') {
-  const lines = String(text || '').split('\n');
-  const rendered = [];
-  let codeFence = false;
-  let codeBuffer = [];
-  let codeStart = 0;
-  const flushCodeBlock = () => {
-    if (codeBuffer.length === 0) return;
-    rendered.push(
-      h(
-        Box,
-        {
-          key: `${keyPrefix}-code-${msg.id}-${codeStart}`,
-          marginTop: 1,
-          marginBottom: 1,
-          marginLeft: 1,
-          flexDirection: 'column',
-          borderStyle: 'round',
-          borderColor: 'gray',
-          paddingX: 1,
-          paddingY: 0
-        },
-        h(Text, { color: 'gray' }, copy.generic.code),
-        ...codeBuffer.map((codeLine, idx) =>
-          h(Text, { key: `${keyPrefix}-code-ln-${msg.id}-${codeStart + idx}`, color: 'gray' }, codeLine || ' ')
-        )
-      )
-    );
-    codeBuffer = [];
-  };
-
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
-    const trimmed = line.trim();
-    if (trimmed.startsWith('```')) {
-      if (!codeFence) {
-        codeFence = true;
-        codeStart = i;
-        codeBuffer = [];
-      } else {
-        codeFence = false;
-        flushCodeBlock();
-      }
-      continue;
-    }
-    if (codeFence) {
-      codeBuffer.push(line);
-      continue;
-    }
-    let color = msg.color || roleStyle(msg.label).text || 'white';
-    if (line.startsWith('#')) color = 'cyanBright';
-    else if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) color = 'magentaBright';
-    else if (trimmed.startsWith('>')) color = 'yellow';
-    else if (/^[|└├│]/.test(trimmed)) color = 'gray';
-    if (trimmed.startsWith('>')) {
-      rendered.push(
-        h(
-          Box,
-          {
-            key: `${keyPrefix}-quote-${msg.id}-${i}`,
-            marginTop: 1,
-            marginLeft: 1,
-            paddingLeft: 1
-          },
-          h(Text, { color: 'yellow' }, '▍ '),
-          h(Text, { color }, ...renderInlineCode(line, color))
-        )
-      );
-      continue;
-    }
-    if (/^[|└├│]/.test(trimmed)) {
-      rendered.push(
-        h(
-          Box,
-          { key: `${keyPrefix}-tree-${msg.id}-${i}`, marginLeft: 1 },
-          h(Text, { color }, line)
-        )
-      );
-      continue;
-    }
-    rendered.push(
-      h(
-        Box,
-        { key: `${keyPrefix}-ln-wrap-${msg.id}-${i}` },
-        h(Text, { color }, ...renderInlineCode(line, color))
-      )
-    );
-  }
-  flushCodeBlock();
-  return rendered;
-}
-
-function renderToolEntry(msg, tool, idx, showToolDetails, isLatestTool) {
-  const statusIcon = tool.status === 'done' ? '✓' : tool.status === 'blocked' || tool.status === 'error' ? '×' : '…';
-  const statusColor =
-    tool.status === 'done' ? 'greenBright' : tool.status === 'blocked' || tool.status === 'error' ? 'redBright' : 'yellow';
-  const pillBg = tool.status === 'done' ? 'green' : tool.status === 'blocked' || tool.status === 'error' ? 'red' : 'yellow';
-  const nameBadge = getToolNameBadgeStyle(tool.name);
-  const durationText =
-    typeof tool.durationMs === 'number' ? `${(tool.durationMs / 1000).toFixed(1)}s` : '';
-  const header = h(
-    Box,
-    { key: `toolbox-${msg.id}-${idx}`, flexDirection: 'column' },
-    h(
-      Box,
-      null,
-      h(Text, { color: 'gray' }, '  ↳ '),
-      h(Text, { color: 'black', backgroundColor: 'gray' }, ' tool '),
-      h(Text, { color: 'gray' }, ' '),
-      h(Text, { color: nameBadge.text, backgroundColor: nameBadge.bg }, ` ${nameBadge.label} `),
-      h(Text, { color: 'gray' }, ' '),
-      h(Text, { color: 'black', backgroundColor: 'gray' }, ` ${tool.name} `),
-      h(Text, { color: 'gray' }, ' '),
-      h(Text, { color: 'black', backgroundColor: pillBg }, ` ${statusIcon} `),
-      durationText ? h(Text, { color: statusColor }, ` ${durationText}`) : null
-    )
-  );
-  if ((!showToolDetails && !isLatestTool) || !tool.summary || tool.status === 'running') return [header];
-  return [
-    header,
-    h(
-      Box,
-      { key: `tool-${msg.id}-${idx}-summary-box`, marginLeft: 1 },
-      h(Text, { key: `tool-${msg.id}-${idx}-summary`, color: 'gray' }, tool.summary)
-    )
-  ];
-}
 
 function groupCommandSuggestions(items) {
   const categoryMap = {
@@ -824,28 +734,41 @@ function MessageBubble({ msg, loaderTick, showToolDetails, rowWindow = null, con
   const end = rowWindow ? Math.max(start, rowWindow.end || allRows.length) : allRows.length;
   const visibleRows = allRows.slice(start, end);
   const rendered = visibleRows.map((row, idx) => {
-    if (row.kind === 'tool') {
-      const pillBg = row.status === 'done' ? 'green' : row.status === 'blocked' || row.status === 'error' ? 'red' : 'yellow';
-      const nameBadge = getToolNameBadgeStyle(row.name);
+    if (row.kind === 'activity') {
+      const activity = { type: row.activityType, name: row.name, status: row.status };
+      const display = getActivityDisplayParts(activity);
+      const dotColor =
+        activity.type === 'skill'
+          ? row.status === 'error'
+            ? 'redBright'
+            : 'blueBright'
+          : row.status === 'error' || row.status === 'blocked'
+            ? 'redBright'
+            : 'greenBright';
+      const textColor =
+        activity.type === 'skill'
+          ? row.status === 'error'
+            ? 'redBright'
+            : 'cyanBright'
+          : row.status === 'error' || row.status === 'blocked'
+            ? 'redBright'
+            : 'greenBright';
       return h(
         Box,
         { key: `row-tool-${msg.id}-${idx}` },
-        h(Text, { color: 'gray' }, '  ↳ '),
-        h(Text, { color: 'black', backgroundColor: 'gray' }, ' tool '),
+        h(Text, { color: 'gray' }, '  '),
+        h(Text, { color: dotColor }, '●'),
         h(Text, { color: 'gray' }, ' '),
-        h(Text, { color: nameBadge.text, backgroundColor: nameBadge.bg }, ` ${nameBadge.label} `),
-        h(Text, { color: 'gray' }, ' '),
-        h(Text, { color: 'black', backgroundColor: 'gray' }, ` ${row.name} `),
-        h(Text, { color: 'gray' }, ' '),
-        h(Text, { color: 'black', backgroundColor: pillBg }, ` ${row.statusIcon} `),
+        h(Text, { color: textColor }, display.primary),
+        h(Text, { color: 'gray' }, display.secondary),
         row.durationText ? h(Text, { color: row.statusColor }, ` ${row.durationText}`) : null
       );
     }
-    if (row.kind === 'tool-summary') {
+    if (row.kind === 'activity-summary') {
       return h(
         Box,
-        { key: `row-tool-summary-${msg.id}-${idx}`, marginLeft: 1 },
-        h(Text, { color: 'gray' }, row.text)
+        { key: `row-tool-summary-${msg.id}-${idx}`, marginLeft: 2 },
+        h(Text, { color: 'gray' }, `└ ${row.text}`)
       );
     }
     if (row.kind === 'status') {
@@ -1129,6 +1052,24 @@ function makeStatus(title, detail = '', color = 'gray') {
   return { title, detail, color };
 }
 
+function formatRuntimeSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return '';
+  return [
+    `mode=${snapshot.mode || '-'}`,
+    `model=${snapshot.model || '-'}`,
+    `max_ctx=${snapshot.maxContextTokens || '-'}`,
+    `session=${snapshot.sessionId || '-'}`
+  ].join(' | ');
+}
+
+function makeIdleStatus(copy, snapshot, variant = 'ready') {
+  return makeStatus(
+    variant === 'after' ? copy.runtime.idleAfterTurn : copy.runtime.idleReady,
+    formatRuntimeSnapshot(snapshot) || (variant === 'after' ? copy.runtime.idleAfterTurnDetail : copy.runtime.idleReadyDetail),
+    'gray'
+  );
+}
+
 export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName = 'powershell', version = '0.1.0' }) {
   const copy = getCopy(language);
   const stdoutCols = Number(process.stdout?.columns || 120);
@@ -1144,10 +1085,11 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
   const [suggestionNav, setSuggestionNav] = useState(false);
   const [cursorVisible, setCursorVisible] = useState(true);
   const [displaySessionId, setDisplaySessionId] = useState(sessionId);
+  const [displayModel, setDisplayModel] = useState(model);
   const [pendingQueue, setPendingQueue] = useState([]);
   const [loaderTick, setLoaderTick] = useState(0);
   const [runtimeStatus, setRuntimeStatus] = useState(
-    makeStatus(copy.runtime.idleReady, copy.runtime.idleReadyDetail, 'gray')
+    makeIdleStatus(copy, runtime.getRuntimeState?.(), 'ready')
   );
   const [inputStage, setInputStage] = useState('idle');
   const [planState, setPlanState] = useState({
@@ -1205,6 +1147,18 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
   const hasTransientPanels =
     commandSuggestions.length > 0 || pendingQueue.length > 0 || debugKeys || Boolean(planState?.total);
   const messageContentWidth = Math.max(24, stdoutCols - 18);
+
+  const syncRuntimeVisualState = (variant = 'ready') => {
+    const snapshot = runtime.getRuntimeState?.();
+    if (!snapshot) return;
+    setDisplaySessionId(snapshot.sessionId || sessionId);
+    setDisplayModel(snapshot.model || model);
+    setRuntimeStatus(makeIdleStatus(copy, snapshot, variant));
+  };
+
+  useEffect(() => {
+    syncRuntimeVisualState('ready');
+  }, []);
 
   const updatePlanProgressFromText = (chunk) => {
     if (!chunk) return;
@@ -1269,23 +1223,25 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
     }, 40);
   };
 
-  const updateToolStatusOnActiveAssistant = (toolEvent) => {
+  const updateActivityStatusOnActiveAssistant = (toolEvent) => {
     const targetId = activeAssistantIdRef.current;
     if (!targetId) return;
     setMessages((prev) =>
       prev.map((m) => {
         if (m.id !== targetId) return m;
         const toolCalls = Array.isArray(m.toolCalls) ? [...m.toolCalls] : [];
+        const activityType = toolEvent.type || 'tool';
         const byId = toolEvent.id
-          ? toolCalls.findIndex((t) => t.id && t.id === toolEvent.id)
+          ? toolCalls.findIndex((t) => t.type === activityType && t.id && t.id === toolEvent.id)
           : -1;
         const byNameRunning = toolCalls.findIndex(
-          (t) => t.name === toolEvent.name && t.status !== 'done'
+          (t) => (t.type || 'tool') === activityType && t.name === toolEvent.name && t.status !== 'done'
         );
         const idx = byId !== -1 ? byId : byNameRunning;
 
         if (idx === -1) {
           toolCalls.push({
+            type: activityType,
             id: toolEvent.id || '',
             name: toolEvent.name,
             status: toolEvent.status,
@@ -1295,6 +1251,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
         } else {
           toolCalls[idx] = {
             ...toolCalls[idx],
+            type: activityType,
             id: toolEvent.id || toolCalls[idx].id,
             status: toolEvent.status,
             ...(toolEvent.durationMs !== undefined ? { durationMs: toolEvent.durationMs } : {}),
@@ -1303,14 +1260,14 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
         }
         const segments = Array.isArray(m.segments) ? [...m.segments] : [];
         const bySegmentId = toolEvent.id
-          ? segments.findIndex((segment) => segment.type === 'tool' && segment.id === toolEvent.id)
+          ? segments.findIndex((segment) => segment.type === activityType && segment.id === toolEvent.id)
           : -1;
         const bySegmentName = segments.findIndex(
-          (segment) => segment.type === 'tool' && segment.name === toolEvent.name && segment.status !== 'done'
+          (segment) => segment.type === activityType && segment.name === toolEvent.name && segment.status !== 'done'
         );
         const segmentIdx = bySegmentId !== -1 ? bySegmentId : bySegmentName;
         const patch = {
-          type: 'tool',
+          type: activityType,
           id: toolEvent.id || '',
           name: toolEvent.name,
           status: toolEvent.status,
@@ -1467,7 +1424,8 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
           setRuntimeStatus(makeStatus(copy.runtime.toolRunning, detail, 'magentaBright'));
           setInputStage('tooling');
           setActiveAssistantMeta({ loading: true, phase: 'tooling', liveStatus: detail });
-          updateToolStatusOnActiveAssistant({
+          updateActivityStatusOnActiveAssistant({
+            type: 'tool',
             id: event.id,
             name: event.name,
             status: 'running'
@@ -1478,7 +1436,8 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
           setRuntimeStatus(makeStatus(copy.runtime.toolCompleted, copy.toolActivity.waitingModelContinue(detail), 'cyanBright'));
           setInputStage('thinking');
           setActiveAssistantMeta({ loading: true, phase: 'thinking', liveStatus: copy.toolActivity.waitingModelContinue(detail) });
-          updateToolStatusOnActiveAssistant({
+          updateActivityStatusOnActiveAssistant({
+            type: 'tool',
             id: event.id,
             name: event.name,
             status: 'done',
@@ -1498,7 +1457,8 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
               step.index === prev.current ? { ...step, status: 'failed' } : step
             )
           }));
-          updateToolStatusOnActiveAssistant({
+          updateActivityStatusOnActiveAssistant({
+            type: 'tool',
             id: event.id,
             name: event.name,
             status: 'blocked'
@@ -1516,11 +1476,47 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
               step.index === prev.current ? { ...step, status: 'failed' } : step
             )
           }));
-          updateToolStatusOnActiveAssistant({
+          updateActivityStatusOnActiveAssistant({
+            type: 'tool',
             id: event.id,
             name: event.name,
             status: 'error',
             durationMs: event.durationMs,
+            summary: event.summary
+          });
+        }
+        if (event?.type === 'skill:start') {
+          ensureActiveAssistant();
+          const detail = describeSkillActivity(event.name, copy);
+          setRuntimeStatus(makeStatus(copy.runtime.skillRunning, detail, 'blueBright'));
+          setInputStage('tooling');
+          setActiveAssistantMeta({ loading: true, phase: 'tooling', liveStatus: detail });
+          updateActivityStatusOnActiveAssistant({
+            type: 'skill',
+            name: event.name,
+            status: 'running'
+          });
+        }
+        if (event?.type === 'skill:end') {
+          const detail = describeSkillActivity(event.name, copy, { done: true });
+          setRuntimeStatus(makeStatus(copy.runtime.skillCompleted, detail, 'blueBright'));
+          setInputStage('thinking');
+          setActiveAssistantMeta({ loading: true, phase: 'thinking', liveStatus: detail });
+          updateActivityStatusOnActiveAssistant({
+            type: 'skill',
+            name: event.name,
+            status: 'done'
+          });
+        }
+        if (event?.type === 'skill:error') {
+          const detail = describeSkillActivity(event.name, copy, { failed: true });
+          setRuntimeStatus(makeStatus(copy.runtime.skillFailed, event.summary || detail, 'redBright'));
+          setInputStage('thinking');
+          setActiveAssistantMeta({ loading: true, phase: 'thinking', liveStatus: detail });
+          updateActivityStatusOnActiveAssistant({
+            type: 'skill',
+            name: event.name,
+            status: 'error',
             summary: event.summary
           });
         }
@@ -1539,7 +1535,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
       })
       .then((result) => {
         try {
-          setDisplaySessionId(runtime.getCurrentSessionId?.() || sessionId);
+          syncRuntimeVisualState('after');
         } catch {
           setDisplaySessionId(sessionId);
         }
@@ -1561,11 +1557,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
             )
           }));
         }
-        setRuntimeStatus(
-          result.type === 'noop'
-            ? makeStatus(copy.runtime.idleReady, copy.runtime.idleReadyDetail, 'gray')
-            : makeStatus(copy.runtime.idleAfterTurn, copy.runtime.idleAfterTurnDetail, 'gray')
-        );
+        syncRuntimeVisualState(result.type === 'noop' ? 'ready' : 'after');
         if (result.type === 'noop') return;
         appendResultMessage(result);
       })
@@ -1604,7 +1596,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
           setInputStage('idle');
         }
         if (pendingQueueRef.current.length === 0) {
-          setRuntimeStatus(makeStatus(copy.runtime.idleReady, copy.runtime.idleReadyDetail, 'gray'));
+          syncRuntimeVisualState('ready');
         }
 
         if (pendingQueueRef.current.length > 0) {
@@ -1636,7 +1628,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
           liveStatus: undefined
         });
         try {
-          setDisplaySessionId(runtime.getCurrentSessionId?.() || sessionId);
+          syncRuntimeVisualState('after');
         } catch {
           setDisplaySessionId(sessionId);
         }
@@ -1967,7 +1959,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
   return h(
     Box,
     { flexDirection: 'column' },
-    h(Header, { sessionId: displaySessionId, model, shellName }),
+    h(Header, { sessionId: displaySessionId, model: displayModel, shellName }),
     h(RuntimeStrip, { busy, runtimeStatus, loaderTick, copy }),
     h(PlanStrip, { planState, copy }),
     h(MessageList, {

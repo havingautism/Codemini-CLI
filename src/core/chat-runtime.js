@@ -676,6 +676,15 @@ function effectiveMaxContextTokens(config) {
   return 32000;
 }
 
+function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode }) {
+  return {
+    sessionId: currentSession?.id || '',
+    mode: executionMode || config.execution?.mode || 'auto',
+    model: model || config.model?.name || '',
+    maxContextTokens: effectiveMaxContextTokens(config)
+  };
+}
+
 function estimatePromptTokensForRequest(sessionMessages, userText = '') {
   const tokenMsgs = [
     ...(Array.isArray(sessionMessages) ? sessionMessages : []),
@@ -1978,15 +1987,33 @@ export async function createChatRuntime({
         renderCommandPrompt(custom, parsedInput.args),
         process.cwd()
       );
-      const result = await askModel({
-        text: rendered,
-        session: currentSession,
-        config,
-        model,
-        systemPrompt: activeBaseSystemPrompt,
-        onAgentEvent,
-        executionMode
-      });
+      if (custom.metadata.type === 'skill' && onAgentEvent) {
+        onAgentEvent({ type: 'skill:start', name: custom.name });
+      }
+      let result;
+      try {
+        result = await askModel({
+          text: rendered,
+          session: currentSession,
+          config,
+          model,
+          systemPrompt: activeBaseSystemPrompt,
+          onAgentEvent,
+          executionMode
+        });
+      } catch (error) {
+        if (custom.metadata.type === 'skill' && onAgentEvent) {
+          onAgentEvent({
+            type: 'skill:error',
+            name: custom.name,
+            summary: error instanceof Error ? error.message : String(error)
+          });
+        }
+        throw error;
+      }
+      if (custom.metadata.type === 'skill' && onAgentEvent) {
+        onAgentEvent({ type: 'skill:end', name: custom.name });
+      }
       return { type: 'assistant', text: result.text };
     }
 
@@ -2036,6 +2063,13 @@ export async function createChatRuntime({
     isImmediateLocalInput,
     submit,
     getInputHistory: () => loadInputHistory(),
-    getCurrentSessionId: () => currentSession.id
+    getCurrentSessionId: () => currentSession.id,
+    getRuntimeState: () =>
+      buildRuntimeStateSnapshot({
+        currentSession,
+        config,
+        model,
+        executionMode
+      })
   };
 }
