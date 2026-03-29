@@ -85,6 +85,7 @@ codemini config list
 codemini config set shell.default powershell
 codemini config set ui.language en
 codemini config set soul.preset professional
+codemini config set soul.preset pirate
 ```
 
 ```bash

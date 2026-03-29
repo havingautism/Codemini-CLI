@@ -324,6 +324,8 @@ test('slash brainstorm includes the user question in the rendered prompt', { con
       inspected = true;
       assert.match(userText, /\[Executing skill: \/brainstorm\]/);
       assert.match(userText, /Explicit brainstorm mode:/);
+      assert.match(userText, /Suggested decision:/);
+      assert.match(userText, /recommended:/);
       assert.match(userText, /Current question:\nShould login retry stay local or become a shared helper\?/);
       return makeSseResponse([
         { choices: [{ delta: { content: '先比较方案。' } }] },

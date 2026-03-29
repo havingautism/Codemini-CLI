@@ -2545,7 +2545,7 @@ export async function createChatRuntime({
               'Explicit brainstorm mode:',
               '- Ask exactly one clarifying question first if any important uncertainty remains.',
               '- Do not inspect the repo or generate code unless the user explicitly asks for that.',
-              '- Do not choose an option on the first reply unless the request is already specific enough or the user explicitly asks you to recommend one.',
+              '- If you recommend an option, present it as a suggested decision rather than a final choice for the user.',
               parsedInput.args.length > 0 ? `Current question:\n${parsedInput.args.join(' ')}` : ''
             ]
               .filter(Boolean)

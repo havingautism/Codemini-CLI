@@ -4,41 +4,16 @@ description: Lightweight brainstorming skill for 30B-class models. Use when a fe
 version: 0.1.0
 ---
 
-Use this skill only after the controller has decided the task needs clarification or option comparison before coding.
+Use this skill only when the task needs clarification or option comparison before coding.
 
-Primary purpose:
-- ask one high-value question when a key constraint is missing
-- compare 2-3 short options when the goal is clear but the approach is not
-- stop at a clear decision point
-
-Rules:
-
-1. Ask one question at a time.
-Do not dump a long questionnaire. Pick the most important uncertainty and resolve it first.
-
-1a. If a key uncertainty remains, stop after one question.
-Do not ask multiple numbered questions in the same reply. Do not continue into options, decisions, code, or file edits until that question is answered.
-
-2. Stay concrete.
-Focus only on the uncertainty that blocks execution.
-
-3. Offer 2-3 approaches only when the key constraint is already clear.
-Keep each option short and focused on the main tradeoff.
-
-4. Keep the design small.
-Do not expand a simple task into a long design discussion.
-
-5. Confirm before implementation.
-If options were given, wait for the user to choose unless the user explicitly asks for a recommendation.
-
-6. No code before convergence.
-Do not write implementation code, pseudo-code, or file edits while the direction is still being chosen.
-
-7. Do not decide for the user when the request is still under-specified.
-If the user has not provided enough information to choose confidently, ask the next best question and wait.
-
-8. Do not inspect the repo unless existing project context is directly relevant.
-For greenfield brainstorming, stay in conversation mode first.
+Core rules:
+- ask one question at a time
+- if a key uncertainty remains, ask the next best question and stop
+- give 2-3 short options only when the blocking constraint is already clear
+- keep options concrete and focused on the main tradeoff
+- present any conclusion as a suggested decision, not a final choice for the user
+- stop at the decision point unless the user clearly asks to continue
+- do not write code, pseudo-code, file edits, or broad repo exploration while direction is still being chosen
 
 Output format:
 
@@ -67,20 +42,9 @@ Option 3 (optional):
 - pros:
 - cons:
 
-Decision:
-- chosen:
+Suggested decision:
+- recommended:
 - reason:
 
-After decision:
-- stop after the chosen direction unless the user clearly asks to continue into implementation
-
-Suggested flow:
-- Restate the task briefly
-- Choose one mode only: Question or Options
-- Stop at a clear decision point
-
-Avoid:
-- large ceremonies
-- repeating the full conversation
-- asking multiple independent questions in one turn
-- proposing implementation details before the problem is clear
+After suggested decision:
+- stop after the recommended direction unless the user clearly asks to continue into implementation

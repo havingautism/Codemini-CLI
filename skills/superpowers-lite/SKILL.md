@@ -1,6 +1,6 @@
 ---
 name: superpowers-lite
-description: Concise workflow skill tuned for 30B-class models: search first, keep context tight, use sub-agents for narrow tasks, and verify before claiming success.
+description: Concise workflow skill tuned for 30B-class models: prefer structured code tools first, keep context tight, use sub-agents for narrow tasks, and verify before claiming success.
 version: 0.1.0
 ---
 
@@ -33,10 +33,17 @@ Routing:
 - ask one high-value question before coding
 - do not assume features, storage model, or scope unless the user already gave them
 
+Tool order:
+- prefer `locate` first for repo search and candidate discovery
+- use `open_target` to inspect the smallest useful code block with edit metadata
+- use `edit_target` for minimal validated edits
+- use `search_code`, `read_block`, and `read_symbol_context` when lower-level structured context is needed
+- use shell search such as `rg` only as a fallback when structured tools are not enough
+
 Core rules:
 
 1. Search first.
-Use `rg` for repo search before broad file reads. Prefer local context commands and read only the smallest useful slice.
+Prefer structured search before broad file reads. Start with `locate`, then inspect with `open_target`, and only fall back to shell search such as `rg` when the structured tools are not enough.
 
 2. Keep context tight.
 Do not carry full conversation history into every step. Summarize, narrow scope, and work from the most recent relevant evidence.
@@ -55,18 +62,18 @@ If the requested behavior, scope, or acceptance is unclear, do not jump into imp
 - clear enough to build -> proceed
 
 5. Read and write with intent.
-Use `read_file` only when shell output is not enough. Use `write_file` for edits. Avoid unnecessary tool calls and avoid rereading the same file without a reason.
+Use `open_target`, `read_block`, and `read_symbol_context` before `read_file` when possible. Use `edit_target` for focused edits. Use `write_file` only for full-file writes. Avoid unnecessary tool calls and avoid rereading the same file without a reason.
 
 6. Verify before claiming success.
 Run the relevant test, check, or command before saying work is fixed or complete.
 
 Default workflow:
-- Search with `rg`
-- Inspect local context
+- Search with `locate`
+- Inspect local context with `open_target`
 - If the request is unclear, first decide: ask one question, brainstorm, or proceed
 - Plan the next smallest step
 - Delegate if the work is independent
-- Edit
+- Edit with `edit_target`
 - Verify
 - Summarize briefly
 

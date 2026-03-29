@@ -278,6 +278,25 @@ test('run_command rejects long-running service commands and points callers to st
   });
 });
 
+test('run_command blocked suggestions prefer structured tools before shell fallback', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {
+      config.shell.default = 'bash';
+      config.policy.command_allowlist = ['node'];
+    });
+
+    await assert.rejects(
+      () => handlers.run_command({ command: 'perl -e "print 1"' }),
+      (error) => {
+        assert.match(String(error?.message || ''), /locate/i);
+        assert.match(String(error?.message || ''), /open_target/i);
+        assert.match(String(error?.message || ''), /shell fallback/i);
+        return true;
+      }
+    );
+  });
+});
+
 test('service tools manage a long-running process lifecycle with compact status', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {

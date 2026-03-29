@@ -28,6 +28,7 @@ It is designed for teams that want a coding assistant that feels practical, cont
 - Structured code tools for small models: `locate`, `open_target`, `edit_target`
 - More conservative `plan auto` acceptance checks with reviewer/tester goal checklists
 - Tone presets through `soul`, without changing plans or code behavior
+- Example soul presets include `professional`, `playful`, `anime`, `pirate`, `caveman`, and `ceo`
 - Sub-agents for planning, coding, review, and testing
 
 ### Quick Start
@@ -142,6 +143,7 @@ CodeMini CLI 是一个为小模型工作流优化过的代码助手 CLI，重点
 - 为小模型补了结构化代码工具：`locate`、`open_target`、`edit_target`
 - `plan auto` 会基于原始目标生成验收清单，并更保守地处理 reviewer/tester 结果
 - `soul` 只影响语气，不影响计划和代码行为
+- 可用的 `soul` 示例包括 `professional`、`playful`、`anime`、`pirate`、`caveman`、`ceo`
 - 支持 planner、coder、reviewer、tester 多角色 sub-agent
 
 ### 快速开始
