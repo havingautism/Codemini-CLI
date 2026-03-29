@@ -179,6 +179,50 @@ test('generate_diff compares current file with proposed content', async () => {
   });
 });
 
+test('write_file blocks full overwrite for existing code files unless explicitly allowed', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    const targetPath = path.join(workspaceRoot, 'src', 'demo.ts');
+    await fs.writeFile(targetPath, 'export const value = 1;\n', 'utf8');
+
+    const { handlers } = await makeTools(workspaceRoot);
+
+    await assert.rejects(
+      () =>
+        handlers.write_file({
+          path: 'src/demo.ts',
+          content: 'export const value = 2;\n'
+        }),
+      /full_file_rewrite|edit_target|open_target|locate/i
+    );
+  });
+});
+
+test('write_file still allows new files and explicit full rewrites for code files', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, 'src', 'demo.ts'), 'export const value = 1;\n', 'utf8');
+
+    const { handlers } = await makeTools(workspaceRoot);
+
+    const created = await handlers.write_file({
+      path: 'src/new-file.ts',
+      content: 'export const created = true;\n'
+    });
+    assert.equal(created.action, 'create');
+
+    const overwritten = await handlers.write_file({
+      path: 'src/demo.ts',
+      content: 'export const value = 2;\n',
+      full_file_rewrite: true
+    });
+    assert.equal(overwritten.action, 'overwrite');
+
+    const afterText = await fs.readFile(path.join(workspaceRoot, 'src', 'demo.ts'), 'utf8');
+    assert.match(afterText, /value = 2/);
+  });
+});
+
 test('locate, open_target, and edit_target provide a compact high-level workflow', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     await fs.mkdir(path.join(workspaceRoot, 'src', 'auth'), { recursive: true });

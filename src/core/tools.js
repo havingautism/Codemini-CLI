@@ -37,6 +37,25 @@ const TEXT_EXTENSIONS = new Set([
   '.sh',
   '.ps1'
 ]);
+const CODE_WRITE_GUARD_EXTENSIONS = new Set([
+  '.js',
+  '.jsx',
+  '.ts',
+  '.tsx',
+  '.mjs',
+  '.cjs',
+  '.py',
+  '.rb',
+  '.go',
+  '.rs',
+  '.java',
+  '.cs',
+  '.css',
+  '.scss',
+  '.html',
+  '.sh',
+  '.ps1'
+]);
 const LANGUAGE_FILE_TYPES = {
   js: ['js', 'jsx', 'mjs', 'cjs'],
   ts: ['ts', 'tsx'],
@@ -98,6 +117,10 @@ function splitLines(text) {
 
 function detectTextFile(filePath) {
   return TEXT_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+function isCodeLikePath(filePath) {
+  return CODE_WRITE_GUARD_EXTENSIONS.has(path.extname(String(filePath || '')).toLowerCase());
 }
 
 function normalizeFileTypes(args = {}) {
@@ -489,6 +512,11 @@ async function writeFile(root, args) {
     before = await fs.readFile(target, 'utf8');
   } catch {
     existed = false;
+  }
+  if (existed && !args?.append && !args?.full_file_rewrite && isCodeLikePath(rawPath)) {
+    throw new Error(
+      'write_file blocks full overwrite for existing code files by default. Use locate -> open_target -> edit_target for minimal edits, or pass full_file_rewrite=true when a full-file rewrite is truly intended.'
+    );
   }
   await fs.mkdir(path.dirname(target), { recursive: true });
   if (args?.append) {
@@ -1404,13 +1432,15 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
       type: 'function',
       function: {
         name: 'write_file',
-        description: 'Write a UTF-8 text file in workspace. Always provide a full file path, not a directory.',
+        description:
+          'Write a UTF-8 text file in workspace. Always provide a full file path, not a directory. Existing code files require full_file_rewrite=true for whole-file overwrites.',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string' },
             content: { type: 'string' },
-            append: { type: 'boolean' }
+            append: { type: 'boolean' },
+            full_file_rewrite: { type: 'boolean' }
           },
           required: ['path', 'content']
         }
