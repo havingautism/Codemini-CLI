@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import { getBuiltinTools } from '../src/core/tools.js';
 import { loadConfig } from '../src/core/config-store.js';
+import { classifyCommandIntent } from '../src/core/shell.js';
 
 async function withTempWorkspace(run) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-tools-'));
@@ -492,7 +493,22 @@ test('run rejects long-running service commands and points callers to start_serv
       () => handlers.run({ command: 'npm start --silent' }),
       /start_service/i
     );
+    await assert.rejects(
+      () => handlers.run({ command: 'vite' }),
+      /frontend service/i
+    );
   });
+});
+
+test('classifyCommandIntent separates install, service, and generic commands', () => {
+  assert.deepEqual(classifyCommandIntent('npm install'), { kind: 'install', longRunning: false });
+  assert.deepEqual(classifyCommandIntent('npm run dev'), { kind: 'service', longRunning: true });
+  assert.deepEqual(classifyCommandIntent('npm run build'), { kind: 'build', longRunning: false });
+  assert.deepEqual(classifyCommandIntent('npm test'), { kind: 'test', longRunning: false });
+  assert.deepEqual(classifyCommandIntent('vite'), { kind: 'frontend-service', longRunning: true });
+  assert.deepEqual(classifyCommandIntent('uvicorn app:app'), { kind: 'backend-service', longRunning: true });
+  assert.deepEqual(classifyCommandIntent('docker compose up'), { kind: 'docker-service', longRunning: true });
+  assert.deepEqual(classifyCommandIntent('echo hello'), { kind: 'generic', longRunning: false });
 });
 
 test('run blocked suggestions prefer structured tools before shell fallback', async () => {

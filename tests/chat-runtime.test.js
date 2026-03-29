@@ -266,6 +266,7 @@ test('chat runtime emits skill lifecycle events for explicit skill commands', { 
 test('chat runtime auto-injects brainstorm for ambiguous feature requests', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let inspected = false;
+    const events = [];
     const restoreFetch = withMockFetch(async (_url, init) => {
       const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
       const systemText = String(body.messages?.[0]?.content || '');
@@ -295,9 +296,17 @@ test('chat runtime auto-injects brainstorm for ambiguous feature requests', { co
         systemPrompt: 'You are a test assistant.'
       });
 
-      const result = await runtime.submit('Add login retry support, but I am not sure whether it should stay local or become a shared helper.');
+      const result = await runtime.submit(
+        'Add login retry support, but I am not sure whether it should stay local or become a shared helper.',
+        (event) => events.push(event)
+      );
       assert.equal(result.text, '先收敛需求，再决定实现方式。');
       assert.equal(inspected, true);
+      assert.ok(events.some((event) => event?.type === 'skill:auto'));
+      assert.deepEqual(
+        events.find((event) => event?.type === 'skill:auto')?.names,
+        ['superpowers-lite', 'brainstorm']
+      );
     } finally {
       await restoreFetch();
     }

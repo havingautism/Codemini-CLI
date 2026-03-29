@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import {
+  classifyCommandIntent,
   hasReadyOutput,
   isDangerousCommand,
   isLikelyLongRunningCommand,
@@ -793,7 +794,16 @@ async function runCommand(root, config, args) {
     throw new Error('run requires command');
   }
   if (isLikelyLongRunningCommand(command)) {
-    throw new Error('Command looks like a long-running service. Use start_service instead of run.');
+    const intent = classifyCommandIntent(command);
+    const labelMap = {
+      'frontend-service': 'frontend service',
+      'backend-service': 'backend service',
+      'database-service': 'database service',
+      'docker-service': 'Docker service',
+      service: 'long-running service'
+    };
+    const label = labelMap[intent.kind] || 'long-running service';
+    throw new Error(`Command looks like a ${label}. Use start_service instead of run.`);
   }
   if (
     !config.policy.allow_dangerous_commands &&
@@ -1727,7 +1737,8 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
       type: 'function',
       function: {
         name: 'run',
-        description: 'Primary run tool. Execute a one-shot shell command in workspace. Do not use for long-running services.',
+        description:
+          'Primary run tool. Execute a one-shot shell command in workspace such as install, build, test, or other finite tasks. Do not use for long-running services or watchers.',
         parameters: {
           type: 'object',
           properties: {
@@ -1771,7 +1782,8 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
       type: 'function',
       function: {
         name: 'start_service',
-        description: 'Start a long-running local service and return a compact service handle instead of blocking on process exit.',
+        description:
+          'Start a long-running local service, such as a frontend, backend, database, or dev watcher, and return a compact service handle instead of blocking on process exit.',
         parameters: {
           type: 'object',
           properties: {

@@ -205,6 +205,7 @@ export async function createChatCompletionStream({
   temperature = 0.2,
   tools,
   onTextDelta,
+  onToolCallDelta,
   timeoutMs = 90000,
   maxRetries = 2
 }) {
@@ -248,6 +249,14 @@ export async function createChatCompletionStream({
       if (td.function?.name) current.name = `${current.name}${td.function.name}`;
       if (td.function?.arguments) current.arguments = `${current.arguments}${td.function.arguments}`;
       toolCallsByIndex.set(idx, current);
+      if (onToolCallDelta) {
+        onToolCallDelta({
+          index: idx,
+          id: current.id || `tc-${idx + 1}`,
+          name: current.name,
+          arguments: current.arguments || '{}'
+        });
+      }
     }
   }
 

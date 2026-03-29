@@ -1377,6 +1377,9 @@ async function askModel({
         maxRetries: config.gateway.max_retries ?? 2,
         onTextDelta: (delta) => {
           if (onAgentEvent) onAgentEvent({ type: 'assistant:delta', text: delta });
+        },
+        onToolCallDelta: (toolCall) => {
+          if (onAgentEvent) onAgentEvent({ type: 'assistant:tool_call_delta', toolCall });
         }
       });
     }
@@ -2672,6 +2675,13 @@ export async function createChatRuntime({
     }
 
     const expandedText = await expandFileMentions(parsedInput.text, process.cwd());
+    const selectedAutoSkills = selectAutoSkillNames(expandedText).filter((name) => isSkillEnabled(config, name));
+    if (selectedAutoSkills.length > 0 && onAgentEvent) {
+      onAgentEvent({
+        type: 'skill:auto',
+        names: selectedAutoSkills
+      });
+    }
     const routedSystemPrompt = buildAutoSkillSystemPrompt(activeReplySystemPrompt, commands, config, expandedText);
     const result = await askModel({
       text: expandedText,

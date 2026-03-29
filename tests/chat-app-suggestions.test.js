@@ -2,14 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  ensureCodeGenerationTiming,
   findActivityUpdateIndex,
   formatSuggestionDescription,
+  getCodeGenerationActivityRows,
+  getGeneratingCodePlaceholderRows,
   getSuggestionPageState,
   isCodeLikeRow,
+  insertRowsAfterLastCodeRow,
   mergeActivitySummary,
   moveSuggestionSelection,
   normalizeActivitySpacingRows,
-  splitMessageRows
+  shouldAppendAssistantResult,
+  splitMessageRows,
+  formatActivityDurationText
 } from '../src/tui/chat-app.js';
 
 test('getSuggestionPageState paginates suggestions in fixed-size pages', () => {
@@ -132,4 +138,156 @@ test('splitMessageRows separates narrative text from code-like activity rows', (
 
   assert.deepEqual(textRows.map((row) => row.kind), ['text', 'quote']);
   assert.deepEqual(codeRows.map((row) => row.kind), ['activity', 'activity-summary', 'status', 'code']);
+});
+
+test('insertRowsAfterLastCodeRow keeps generating code preview anchored to the code block', () => {
+  const rows = [
+    { kind: 'text', text: '先写代码。', color: 'greenBright' },
+    { kind: 'code', text: 'const answer = 42;' },
+    { kind: 'text', text: '然后再补一句说明。', color: 'greenBright' }
+  ];
+  const inserted = insertRowsAfterLastCodeRow(rows, [
+    { kind: 'activity', name: 'Code generation', status: 'running' },
+    { kind: 'code-placeholder', lineNo: 1, text: 'const answer = 42;' }
+  ]);
+
+  assert.deepEqual(inserted.map((row) => row.kind), ['text', 'code', 'activity', 'code-placeholder', 'text']);
+});
+
+test('getGeneratingCodePlaceholderRows returns grey placeholder rows only while generating code', () => {
+  const copy = { runtime: { generatingCode: '正在生成代码中' } };
+
+  const rows = getGeneratingCodePlaceholderRows({ loading: true, phase: 'generating', liveStatus: '正在生成代码中' }, copy, 60);
+  assert.equal(rows.length, 0);
+  assert.equal(
+    getGeneratingCodePlaceholderRows({ loading: true, phase: 'thinking', liveStatus: '正在生成代码中' }, copy, 60).length,
+    0
+  );
+  assert.equal(
+    getGeneratingCodePlaceholderRows({ loading: true, phase: 'generating', liveStatus: '正在生成回复' }, copy, 60).length,
+    0
+  );
+
+  const proseOnlyRows = getGeneratingCodePlaceholderRows(
+    {
+      loading: true,
+      phase: 'generating',
+      liveStatus: '正在生成代码中',
+      text: '我来为你创建weather文件夹和一个简单的天气展示HTML文件。'
+    },
+    copy,
+    60
+  );
+  assert.equal(proseOnlyRows.length, 0);
+
+  const previewRowsFromToolArgs = getGeneratingCodePlaceholderRows(
+    {
+      loading: true,
+      phase: 'tooling',
+      liveStatus: '正在生成代码中',
+      toolCalls: [
+        {
+          type: 'tool',
+          name: 'write(weather/index.html)',
+          status: 'running',
+          arguments: {
+            path: 'weather/index.html',
+            content: ['<main>', '  <h1>Hello</h1>', '</main>'].join('\n')
+          }
+        }
+      ]
+    },
+    copy,
+    60
+  );
+  assert.deepEqual(previewRowsFromToolArgs.map((row) => row.text), ['<main>', '  <h1>Hello</h1>', '</main>']);
+
+  const previewRowsFromRawToolArgs = getGeneratingCodePlaceholderRows(
+    {
+      loading: true,
+      phase: 'tooling',
+      liveStatus: '正在生成代码中',
+      pendingToolCalls: [
+        {
+          type: 'tool',
+          name: 'write(weather/index.html)',
+          status: 'pending',
+          arguments:
+            '{"path":"weather/index.html","content":"<!DOCTYPE html>\\n<html>\\n  <body>\\n    <h1>Hello</h1>\\n  </body>\\n</html>'
+        }
+      ]
+    },
+    copy,
+    60
+  );
+  assert.deepEqual(previewRowsFromRawToolArgs.map((row) => row.text), ['    <h1>Hello</h1>', '  </body>', '</html>']);
+
+  const longPreviewRows = getGeneratingCodePlaceholderRows(
+    {
+      loading: true,
+      phase: 'tooling',
+      liveStatus: '正在生成代码中',
+      toolCalls: [
+        {
+          type: 'tool',
+          name: 'write(weather/index.html)',
+          status: 'running',
+          arguments: {
+            content: 'const veryLongLine = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz";'
+          }
+        }
+      ]
+    },
+    copy,
+    60
+  );
+  assert.equal(longPreviewRows.length, 1);
+  assert.equal(longPreviewRows[0].text.endsWith('...'), true);
+
+  const proseOnlyToolRows = getGeneratingCodePlaceholderRows(
+    {
+      loading: true,
+      phase: 'tooling',
+      liveStatus: '正在生成代码中',
+      text: '我来创建一个简单页面。'
+    },
+    copy,
+    60
+  );
+  assert.equal(proseOnlyToolRows.length, 0);
+});
+
+test('getCodeGenerationActivityRows returns a tool-like timer row while code generation is active', () => {
+  const active = getCodeGenerationActivityRows({ loading: true, codeGenerationStartedAt: 1000 });
+  assert.equal(active.length, 1);
+  assert.equal(active[0].kind, 'activity');
+  assert.equal(active[0].name, 'Code generation');
+  assert.equal(active[0].status, 'running');
+  assert.equal(active[0].durationMs >= 0, true);
+
+  const done = getCodeGenerationActivityRows({ loading: true, codeGenerationStartedAt: 1000, codeGenerationEndedAt: 2500 });
+  assert.equal(done.length, 0);
+
+  const closed = getCodeGenerationActivityRows({ loading: false, codeGenerationStartedAt: 1000, codeGenerationEndedAt: 2500 });
+  assert.equal(closed.length, 0);
+});
+
+test('ensureCodeGenerationTiming only sets the start time once', () => {
+  const started = ensureCodeGenerationTiming({ id: 'm-1' }, 1000);
+  assert.equal(started.codeGenerationStartedAt, 1000);
+
+  const preserved = ensureCodeGenerationTiming(started, 2500);
+  assert.equal(preserved.codeGenerationStartedAt, 1000);
+});
+
+test('shouldAppendAssistantResult skips duplicate final assistant append while streaming bubble is active', () => {
+  assert.equal(shouldAppendAssistantResult({ type: 'assistant', text: 'done' }, 'm-1'), false);
+  assert.equal(shouldAppendAssistantResult({ type: 'assistant', text: 'done' }, '', true), false);
+  assert.equal(shouldAppendAssistantResult({ type: 'assistant', text: 'done' }, ''), true);
+  assert.equal(shouldAppendAssistantResult({ type: 'system', text: 'note' }, 'm-1'), true);
+});
+
+test('formatActivityDurationText uses live elapsed time for running activities', () => {
+  assert.equal(formatActivityDurationText({ status: 'running', startedAt: 1000 }, 2500), '1.5s');
+  assert.equal(formatActivityDurationText({ status: 'done', durationMs: 2500 }), '2.5s');
 });

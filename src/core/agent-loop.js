@@ -262,7 +262,7 @@ export async function runAgentLoop({
       }
 
       if (!approved) {
-        if (onEvent) onEvent({ type: 'tool:blocked', name: displayName, id: call.id });
+        if (onEvent) onEvent({ type: 'tool:blocked', name: displayName, id: call.id, arguments: args });
         const blockedMessage = {
           role: 'tool',
           tool_call_id: call.id,
@@ -274,6 +274,7 @@ export async function runAgentLoop({
             type: 'tool:result',
             name: displayName,
             id: call.id,
+            arguments: args,
             content: blockedMessage.content,
             blocked: true
           });
@@ -281,7 +282,7 @@ export async function runAgentLoop({
         continue;
       }
 
-      if (onEvent) onEvent({ type: 'tool:start', name: displayName, id: call.id });
+      if (onEvent) onEvent({ type: 'tool:start', name: displayName, id: call.id, arguments: args });
       const handler = toolHandlers[toolName];
       if (!handler) {
         throw new Error(`Unknown tool: ${call.name}`);
@@ -297,6 +298,7 @@ export async function runAgentLoop({
             type: 'tool:error',
             name: displayName,
             id: call.id,
+            arguments: args,
             durationMs,
             summary: trimInline(message, 120)
           });
@@ -312,6 +314,7 @@ export async function runAgentLoop({
             type: 'tool:result',
             name: displayName,
             id: call.id,
+            arguments: args,
             content: toolMessage.content,
             error: true
           });
@@ -324,6 +327,7 @@ export async function runAgentLoop({
           type: 'tool:end',
           name: displayName,
           id: call.id,
+          arguments: args,
           durationMs,
           summary: summarizeToolResult(toolResult)
         });
@@ -339,6 +343,7 @@ export async function runAgentLoop({
           type: 'tool:result',
           name: displayName,
           id: call.id,
+          arguments: args,
           content: toolMessage.content
         });
       }

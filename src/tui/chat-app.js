@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import { shouldCaptureEscapeSequence } from './input-escape.js';
+import { classifyCommandIntent } from '../core/shell.js';
 
 const h = React.createElement;
 const SUGGESTION_PAGE_SIZE = 8;
@@ -121,6 +122,22 @@ const TUI_COPY = {
       doingUpdateTask: '正在更新任务',
       doneGeneric: '已完成工具',
       doingGeneric: '正在执行工具',
+      doneInstall: '已安装依赖',
+      doingInstall: '正在安装依赖',
+      doneBuild: '已完成构建',
+      doingBuild: '正在构建',
+      doneTest: '已完成测试',
+      doingTest: '正在运行测试',
+      doneFrontend: '已启动前端服务',
+      doingFrontend: '正在启动前端服务',
+      doneBackend: '已启动后端服务',
+      doingBackend: '正在启动后端服务',
+      doneDatabase: '已启动数据库服务',
+      doingDatabase: '正在启动数据库服务',
+      doneDocker: '已完成 Docker 命令',
+      doingDocker: '正在执行 Docker 命令',
+      doneCodeGeneration: '已生成代码',
+      doingCodeGeneration: '正在生成代码',
       doneSkill: '已完成技能',
       doingSkill: '正在执行技能',
       toolFailed: (name) => `工具执行失败: ${name}`,
@@ -154,6 +171,7 @@ const TUI_COPY = {
       skillRunning: '技能执行中',
       skillCompleted: '技能已完成',
       skillFailed: '技能执行失败',
+      autoSkillInjected: (names) => `自动启用技能: ${names.map((name) => `/${name}`).join(', ')}`,
       compactingContext: '正在压缩上下文',
       autoCompactTriggered: (mode, threshold) => `自动压缩已触发（${mode}，阈值 ${threshold}%）`,
       requestFailed: '请求失败',
@@ -230,6 +248,22 @@ const TUI_COPY = {
       doingUpdateTask: 'Updating task',
       doneGeneric: 'Completed tool',
       doingGeneric: 'Running tool',
+      doneInstall: 'Dependencies installed',
+      doingInstall: 'Installing dependencies',
+      doneBuild: 'Build completed',
+      doingBuild: 'Building',
+      doneTest: 'Tests completed',
+      doingTest: 'Running tests',
+      doneFrontend: 'Frontend started',
+      doingFrontend: 'Starting frontend service',
+      doneBackend: 'Backend started',
+      doingBackend: 'Starting backend service',
+      doneDatabase: 'Database started',
+      doingDatabase: 'Starting database service',
+      doneDocker: 'Docker command completed',
+      doingDocker: 'Running Docker command',
+      doneCodeGeneration: 'Code generated',
+      doingCodeGeneration: 'Generating code',
       doneSkill: 'Completed skill',
       doingSkill: 'Running skill',
       toolFailed: (name) => `Tool failed: ${name}`,
@@ -263,6 +297,7 @@ const TUI_COPY = {
       skillRunning: 'skill running',
       skillCompleted: 'skill completed',
       skillFailed: 'skill failed',
+      autoSkillInjected: (names) => `auto-enabled skills: ${names.map((name) => `/${name}`).join(', ')}`,
       compactingContext: 'compacting context',
       autoCompactTriggered: (mode, threshold) => `auto-compact triggered (${mode}, threshold ${threshold}%)`,
       requestFailed: 'request failed',
@@ -308,6 +343,14 @@ function trimText(value, maxLen = 88) {
   return `${text.slice(0, maxLen - 3)}...`;
 }
 
+function safeJsonParse(raw) {
+  try {
+    return JSON.parse(String(raw || '{}'));
+  } catch {
+    return null;
+  }
+}
+
 function parseToolDisplayName(name) {
   const raw = String(name || '').trim();
   const match = raw.match(/^([^(]+)\((.*)\)$/);
@@ -318,14 +361,76 @@ function parseToolDisplayName(name) {
   };
 }
 
+function isCodeGenerationActivityName(name) {
+  return String(name || '').trim() === 'Code generation';
+}
+
+function formatDurationMs(ms) {
+  const safeMs = Math.max(0, Number(ms) || 0);
+  return `${(safeMs / 1000).toFixed(1)}s`;
+}
+
+function getIntentLabel(kind) {
+  switch (kind) {
+    case 'install':
+      return 'Install';
+    case 'build':
+      return 'Build';
+    case 'test':
+      return 'Test';
+    case 'frontend-service':
+      return 'Frontend';
+    case 'backend-service':
+      return 'Backend';
+    case 'database-service':
+      return 'Database';
+    case 'docker-service':
+      return 'Docker';
+    case 'service':
+      return 'Service';
+    default:
+      return 'Run';
+  }
+}
+
+export function formatActivityDurationText(row, nowMs = Date.now()) {
+  if (!row) return '';
+  if (row.status === 'running' && Number.isFinite(Number(row.startedAt))) {
+    const startedAt = Number(row.startedAt);
+    const endedAt = Number(row.endedAt);
+    const elapsed = Number.isFinite(endedAt) && endedAt > startedAt ? endedAt - startedAt : Math.max(0, Number(nowMs) - startedAt);
+    return formatDurationMs(elapsed);
+  }
+  if (typeof row.durationText === 'string' && row.durationText.trim()) {
+    return row.durationText.trim();
+  }
+  if (Number.isFinite(Number(row.durationMs))) {
+    return formatDurationMs(Number(row.durationMs));
+  }
+  return '';
+}
+
 function getActivityDisplayParts(activity) {
+  if (isCodeGenerationActivityName(activity?.name)) {
+    return {
+      primary: 'Code',
+      secondary: ' (generation)'
+    };
+  }
+  const parsed = parseToolDisplayName(activity?.name);
+  if (parsed.base === 'run' || parsed.base === 'start_service') {
+    const intent = classifyCommandIntent(parsed.target);
+    return {
+      primary: getIntentLabel(intent.kind),
+      secondary: parsed.target ? `(${parsed.target})` : ''
+    };
+  }
   if ((activity?.type || 'tool') === 'skill') {
     return {
       primary: `Skill`,
       secondary: `(${activity?.name || 'unknown'})`
     };
   }
-  const parsed = parseToolDisplayName(activity?.name);
   const labels = {
     read: 'Read',
     edit: 'Edit',
@@ -351,6 +456,74 @@ function getActivityDisplayParts(activity) {
 }
 
 function describeToolActivity(name, copy, { done = false, blocked = false } = {}) {
+  const parsed = parseToolDisplayName(name);
+  if (parsed.base === 'run' || parsed.base === 'start_service') {
+    const intent = classifyCommandIntent(parsed.target);
+    const target = parsed.target || intent.kind || 'command';
+    if (intent.kind === 'install') {
+      return blocked
+        ? `${copy.toolActivity.blocked}: ${target}`
+        : done
+          ? `${copy.toolActivity.doneInstall}: ${target}`
+          : `${copy.toolActivity.doingInstall}: ${target}`;
+    }
+    if (intent.kind === 'build') {
+      return blocked
+        ? `${copy.toolActivity.blocked}: ${target}`
+        : done
+          ? `${copy.toolActivity.doneBuild}: ${target}`
+          : `${copy.toolActivity.doingBuild}: ${target}`;
+    }
+    if (intent.kind === 'test') {
+      return blocked
+        ? `${copy.toolActivity.blocked}: ${target}`
+        : done
+          ? `${copy.toolActivity.doneTest}: ${target}`
+          : `${copy.toolActivity.doingTest}: ${target}`;
+    }
+    if (intent.kind === 'frontend-service') {
+      return blocked
+        ? `${copy.toolActivity.blocked}: ${target}`
+        : done
+          ? `${copy.toolActivity.doneFrontend}: ${target}`
+          : `${copy.toolActivity.doingFrontend}: ${target}`;
+    }
+    if (intent.kind === 'backend-service') {
+      return blocked
+        ? `${copy.toolActivity.blocked}: ${target}`
+        : done
+          ? `${copy.toolActivity.doneBackend}: ${target}`
+          : `${copy.toolActivity.doingBackend}: ${target}`;
+    }
+    if (intent.kind === 'database-service') {
+      return blocked
+        ? `${copy.toolActivity.blocked}: ${target}`
+        : done
+          ? `${copy.toolActivity.doneDatabase}: ${target}`
+          : `${copy.toolActivity.doingDatabase}: ${target}`;
+    }
+    if (intent.kind === 'docker-service') {
+      return blocked
+        ? `${copy.toolActivity.blocked}: ${target}`
+        : done
+          ? `${copy.toolActivity.doneDocker}: ${target}`
+          : `${copy.toolActivity.doingDocker}: ${target}`;
+    }
+    if (intent.kind === 'service') {
+      return blocked
+        ? `${copy.toolActivity.blocked}: ${target}`
+        : done
+          ? `${copy.toolActivity.doneGeneric}: ${target}`
+          : `${copy.toolActivity.doingGeneric}: ${target}`;
+    }
+  }
+  if (isCodeGenerationActivityName(name)) {
+    return blocked
+      ? `${copy.toolActivity.blocked}: code generation`
+      : done
+        ? copy.toolActivity.doneCodeGeneration
+        : copy.toolActivity.doingCodeGeneration;
+  }
   const { raw, base, target } = parseToolDisplayName(name);
   const safeTarget = trimText(target, 72);
   if (base === 'read') {
@@ -415,6 +588,21 @@ function describeSkillActivity(name, copy, { done = false, failed = false } = {}
   if (failed) return `${copy.runtime.skillFailed}: /${name}`;
   if (done) return `${copy.toolActivity.doneSkill}: /${name}`;
   return `${copy.toolActivity.doingSkill}: /${name}`;
+}
+
+function describeAutoSkillActivity(names, copy) {
+  const safeNames = Array.isArray(names) ? names.filter(Boolean) : [];
+  if (safeNames.length === 0) return '';
+  return copy.runtime.autoSkillInjected(safeNames);
+}
+
+function formatAutoSkillBadge(names, copy) {
+  const safeNames = Array.isArray(names) ? names.filter(Boolean) : [];
+  if (safeNames.length === 0) return '';
+  const [first, ...rest] = safeNames;
+  const suffix = rest.length > 0 ? ` +${rest.length}` : '';
+  const prefix = copy?.roleLabels?.system === 'SYSTEM' ? 'AUTO' : '自动';
+  return `${prefix} /${first}${suffix}`;
 }
 
 function normalizeRuntimeStatus(status, copy) {
@@ -690,6 +878,188 @@ export function parsePlanProgressLine(text) {
   };
 }
 
+function getTailPreviewLines(text, maxLines = 3) {
+  const source = String(text || '');
+  if (!source.trim()) return [];
+
+  const lines = source.split('\n').map((line) => line.replace(/\r$/, ''));
+  let insideFence = false;
+  let fenceLines = [];
+  let latestClosedFenceLines = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('```')) {
+      if (insideFence) {
+        latestClosedFenceLines = fenceLines.slice();
+        insideFence = false;
+        fenceLines = [];
+        continue;
+      }
+      insideFence = true;
+      fenceLines = [];
+      continue;
+    }
+    if (insideFence) {
+      fenceLines.push(line);
+    }
+  }
+
+  if (insideFence) {
+    const codeLines = fenceLines.filter((line) => line.trim().length > 0);
+    if (codeLines.length > 0) {
+      return codeLines.slice(-Math.max(1, maxLines));
+    }
+  }
+
+  const closedFenceLines = latestClosedFenceLines.filter((line) => line.trim().length > 0);
+  if (closedFenceLines.length > 0) {
+    return closedFenceLines.slice(-Math.max(1, maxLines));
+  }
+
+  const tailLines = source
+    .split('\n')
+    .map((line) => line.replace(/\r$/, ''))
+    .filter((line) => line.trim().length > 0);
+  if (tailLines.length === 0) return [];
+  return tailLines.slice(-Math.max(1, maxLines));
+}
+
+function collectPreviewStrings(value, out = []) {
+  if (out.length >= 3 || value == null) return out;
+  if (typeof value === 'string') {
+    if (value.trim()) out.push(value);
+    return out;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectPreviewStrings(item, out);
+      if (out.length >= 3) break;
+    }
+    return out;
+  }
+  if (typeof value !== 'object') return out;
+
+  const priorityKeys = ['content', 'new_content', 'new_text', 'patch', 'text', 'code', 'body', 'script', 'source', 'value'];
+  if (value.edit && typeof value.edit === 'object') {
+    collectPreviewStrings(value.edit, out);
+  }
+  for (const key of priorityKeys) {
+    if (out.length >= 3) break;
+    collectPreviewStrings(value[key], out);
+  }
+  return out;
+}
+
+function extractPreviewTextFromRawArguments(raw) {
+  const source = String(raw || '');
+  if (!source.trim()) return '';
+
+  const contentMatch = source.match(/"(content|new_content|new_text|patch|code|body|script|source|value)"\s*:\s*"([\s\S]*)$/);
+  if (!contentMatch) return '';
+
+  return contentMatch[2]
+    .replace(/\\n/g, '\n')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\')
+    .replace(/",?\s*$/g, '')
+    .trim();
+}
+
+function compactPreviewLine(line, maxChars = 56) {
+  const text = String(line || '').replace(/\t/g, '  ').trimEnd();
+  if (!text) return '';
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(1, maxChars - 3))}...`;
+}
+
+function getLatestToolPreviewLines(msg, maxLines = 3) {
+  const toolCalls = [
+    ...(Array.isArray(msg?.pendingToolCalls) ? msg.pendingToolCalls : []),
+    ...(Array.isArray(msg?.toolCalls) ? msg.toolCalls : [])
+  ];
+  const codeTools = new Set(['edit', 'write', 'patch', 'generate_diff']);
+  for (let index = toolCalls.length - 1; index >= 0; index -= 1) {
+    const tool = toolCalls[index];
+    const parsed = parseToolDisplayName(tool?.name);
+    if (!codeTools.has(parsed.base)) continue;
+    const rawArgumentPreview =
+      typeof tool?.arguments === 'string' ? extractPreviewTextFromRawArguments(tool.arguments) : '';
+    const previewSource = rawArgumentPreview
+      ? [rawArgumentPreview]
+      : collectPreviewStrings(tool?.arguments || tool?.content || tool?.summary || []);
+    if (previewSource.length === 0) continue;
+    const combined = previewSource.join('\n');
+    const previewLines = getTailPreviewLines(combined, maxLines);
+    if (previewLines.length > 0) return previewLines.map((line) => compactPreviewLine(line));
+  }
+  return [];
+}
+
+export function getGeneratingCodePlaceholderRows(msg, copy, contentWidth = 72) {
+  const liveStatus = String(msg?.liveStatus || '').trim();
+  if (!msg?.loading || (msg?.phase !== 'generating' && msg?.phase !== 'tooling')) return [];
+  if (liveStatus !== String(copy?.runtime?.generatingCode || '').trim()) return [];
+
+  const previewLines = getLatestToolPreviewLines(msg, 3);
+  if (previewLines.length === 0) return [];
+
+  return previewLines.map((line, idx) => ({
+    kind: 'code-placeholder',
+    lineNo: idx + 1,
+    text: line,
+    color: 'gray'
+  }));
+}
+
+export function getCodeGenerationActivityRows(msg) {
+  const startedAt = Number(msg?.codeGenerationStartedAt);
+  const endedAt = Number(msg?.codeGenerationEndedAt);
+  if (!startedAt || !msg?.loading || endedAt > 0) return [];
+
+  const status = 'running';
+  const durationMs = Math.max(0, Date.now() - startedAt);
+
+  return [
+    {
+      kind: 'activity',
+      activityType: 'tool',
+      name: 'Code generation',
+      status,
+      statusIcon: status === 'done' ? '✓' : '…',
+      statusColor: status === 'done' ? 'greenBright' : 'yellow',
+      durationMs,
+      durationText: formatDurationMs(durationMs),
+      isLatestTool: true,
+      synthetic: true
+    }
+  ];
+}
+
+export function ensureCodeGenerationTiming(msg, now = Date.now()) {
+  if (!msg || msg.codeGenerationStartedAt) return msg;
+  return {
+    ...msg,
+    codeGenerationStartedAt: now,
+    codeGenerationEndedAt: undefined
+  };
+}
+
+export function shouldAppendAssistantResult(result, activeAssistantId, streamedAssistantHandled = false) {
+  if (result?.type !== 'assistant') return true;
+  if (streamedAssistantHandled) return false;
+  return !activeAssistantId;
+}
+
+function finishCodeGeneration(msg, now = Date.now()) {
+  if (!msg?.codeGenerationStartedAt || msg?.codeGenerationEndedAt) return msg;
+  return {
+    ...msg,
+    codeGenerationEndedAt: now,
+    pendingToolCalls: []
+  };
+}
+
 export function injectPlanStateMessage(messages, planState, activeUserMessageId, activeAssistantId) {
   const source = Array.isArray(messages) ? messages : [];
   if (!planState || !planState.total) return source;
@@ -915,6 +1285,7 @@ function isCodeActivityName(name) {
   const parsed = parseToolDisplayName(name);
   return new Set([
     'edit',
+    'write',
     'write_file',
     'patch',
     'replace_text',
@@ -941,6 +1312,23 @@ export function splitMessageRows(rows) {
     else textRows.push(row);
   }
   return { textRows, codeRows };
+}
+
+export function insertRowsAfterLastCodeRow(rows, extraRows) {
+  const source = Array.isArray(rows) ? rows : [];
+  const inserts = Array.isArray(extraRows) ? extraRows.filter(Boolean) : [];
+  if (inserts.length === 0) return source.slice();
+
+  let insertIndex = -1;
+  for (let index = source.length - 1; index >= 0; index -= 1) {
+    if (source[index]?.kind === 'code') {
+      insertIndex = index + 1;
+      break;
+    }
+  }
+
+  if (insertIndex === -1) return [...source, ...inserts];
+  return [...source.slice(0, insertIndex), ...inserts, ...source.slice(insertIndex)];
 }
 
 export function normalizeActivitySpacingRows(inputRows) {
@@ -1043,7 +1431,7 @@ export function mergeActivitySummary(previousSummary, nextSummary, activityName)
   return lines.join('\n');
 }
 
-function buildMessageRows(msg, showToolDetails, contentWidth = 72) {
+function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) {
   const rows = [];
   const pushTextRows = (text) => {
     const lines = String(text || '').split('\n');
@@ -1126,18 +1514,23 @@ function buildMessageRows(msg, showToolDetails, contentWidth = 72) {
     toolCalls.forEach((tool, idx) => pushActivityRows(tool, idx, toolCalls.length));
   }
 
+  const codeGenerationRows = getCodeGenerationActivityRows(msg);
+  const generatingCodeRows = getGeneratingCodePlaceholderRows(msg, copy, contentWidth);
+  const syntheticRows = [...codeGenerationRows, ...generatingCodeRows];
   if (msg?.loading && (msg?.liveStatus || msg?.phase)) {
+    const statusRows = [];
     pushWrappedRow(
-      rows,
+      statusRows,
       {
         kind: 'status',
         text: trimText(msg.liveStatus || msg.phase, 144)
       },
       Math.max(8, contentWidth - 2)
     );
+    syntheticRows.push(...statusRows);
   }
 
-  return normalizeActivitySpacingRows(rows);
+  return normalizeActivitySpacingRows(insertRowsAfterLastCodeRow(rows, syntheticRows));
 }
 
 function renderMessageRow(msg, row, idx, loaderTick) {
@@ -1145,13 +1538,11 @@ function renderMessageRow(msg, row, idx, loaderTick) {
     const activity = { type: row.activityType, name: row.name, status: row.status };
     const display = getActivityDisplayParts(activity);
     const dotColor =
-      activity.type === 'skill'
-        ? row.status === 'error'
-          ? 'redBright'
-          : 'blueBright'
-        : row.status === 'error' || row.status === 'blocked'
-          ? 'redBright'
-          : 'greenBright';
+      row.status === 'error' || row.status === 'blocked'
+        ? 'redBright'
+        : row.status === 'done'
+          ? 'greenBright'
+          : 'yellowBright';
     const textColor =
       activity.type === 'skill'
         ? row.status === 'error'
@@ -1159,7 +1550,8 @@ function renderMessageRow(msg, row, idx, loaderTick) {
           : 'cyanBright'
         : row.status === 'error' || row.status === 'blocked'
           ? 'redBright'
-          : 'greenBright';
+          : 'cyanBright';
+    const durationText = formatActivityDurationText(row);
     return h(
       Box,
       { key: `row-tool-${msg.id}-${idx}` },
@@ -1168,7 +1560,7 @@ function renderMessageRow(msg, row, idx, loaderTick) {
       h(Text, { color: 'gray' }, ' '),
       h(Text, { color: textColor }, display.primary),
       h(Text, { color: 'gray' }, display.secondary),
-      row.durationText ? h(Text, { color: row.statusColor }, ` ${row.durationText}`) : null
+      durationText ? h(Text, { color: row.statusColor }, ` ${durationText}`) : null
     );
   }
   if (row.kind === 'activity-summary') {
@@ -1230,6 +1622,15 @@ function renderMessageRow(msg, row, idx, loaderTick) {
       Box,
       { key: `row-code-${msg.id}-${idx}`, marginLeft: 1 },
       h(Text, { color: 'gray' }, row.text)
+    );
+  }
+  if (row.kind === 'code-placeholder') {
+    return h(
+      Box,
+      { key: `row-code-placeholder-${msg.id}-${idx}`, marginLeft: 1 },
+      h(Text, { color: 'gray', dimColor: true }, String(row.lineNo || idx + 1).padStart(2, ' ')),
+      h(Text, { color: 'gray' }, ' │ '),
+      h(Text, { color: 'gray', dimColor: true }, row.text)
     );
   }
   return renderTextLine(msg, row.text, idx, row.color);
@@ -1349,11 +1750,12 @@ function MessageBubble({ msg, loaderTick, showToolDetails, rowWindow = null, con
     return h(PlanSummaryBubble, { msg, copy });
   }
   const theme = roleStyle(msg.label);
-  const allRows = buildMessageRows(msg, showToolDetails, contentWidth);
+  const allRows = buildMessageRows(msg, showToolDetails, contentWidth, copy);
   const start = rowWindow ? Math.max(0, rowWindow.start || 0) : 0;
   const end = rowWindow ? Math.max(start, rowWindow.end || allRows.length) : allRows.length;
   const visibleRows = allRows.slice(start, end);
   const rendered = renderMessageRowsInOrder(msg, visibleRows, loaderTick, copy);
+  const autoSkillBadge = formatAutoSkillBadge(msg.autoSkillNames, copy);
 
   return h(
     Box,
@@ -1377,7 +1779,9 @@ function MessageBubble({ msg, loaderTick, showToolDetails, rowWindow = null, con
           null,
           h(Text, { color: theme.badgeText, backgroundColor: theme.badgeBg }, ` ${messageLabel(msg.label, copy)} `)
         ),
-        h(Text, { color: theme.chrome }, ' ')
+        autoSkillBadge
+          ? h(Text, { color: 'blueBright' }, autoSkillBadge)
+          : h(Text, { color: theme.chrome }, ' ')
       ),
       ...rendered
     )
@@ -1530,7 +1934,7 @@ function InputBar({
   return h(
     Box,
     {
-      marginTop: 1,
+      marginTop: 0,
       flexDirection: 'column',
       borderStyle: 'round',
       borderColor: 'cyan',
@@ -1648,6 +2052,8 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
   const [lastKeyDebug, setLastKeyDebug] = useState('');
   const [showToolDetails, setShowToolDetails] = useState(false);
   const activeAssistantIdRef = useRef(null);
+  const activeAssistantAutoSkillNamesRef = useRef([]);
+  const streamedAssistantHandledRef = useRef(false);
   const activeUserMessageIdRef = useRef(null);
   const cursorIndexRef = useRef(0);
   const inFlightRef = useRef(false);
@@ -1758,7 +2164,12 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
         } else {
           segments.push({ type: 'text', text: delta });
         }
-        return { ...m, text: `${m.text}${delta}`, segments };
+        const nextText = `${m.text}${delta}`;
+        return {
+          ...m,
+          text: nextText,
+          segments
+        };
       })
     );
   };
@@ -1782,6 +2193,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
         const toolCalls = Array.isArray(m.toolCalls) ? [...m.toolCalls] : [];
         const activityType = toolEvent.type || 'tool';
         const idx = findActivityUpdateIndex(toolCalls, toolEvent);
+        const startedAt = toolEvent.status === 'running' ? Date.now() : undefined;
 
         if (idx === -1) {
           toolCalls.push({
@@ -1789,6 +2201,8 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
             id: toolEvent.id || '',
             name: toolEvent.name,
             status: toolEvent.status,
+            ...(toolEvent.arguments !== undefined ? { arguments: toolEvent.arguments } : {}),
+            ...(startedAt ? { startedAt } : {}),
             ...(toolEvent.durationMs !== undefined ? { durationMs: toolEvent.durationMs } : {}),
             ...(toolEvent.summary ? { summary: toolEvent.summary } : {})
           });
@@ -1798,6 +2212,8 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
             type: activityType,
             id: toolEvent.id || toolCalls[idx].id,
             status: toolEvent.status,
+            ...(toolEvent.arguments !== undefined ? { arguments: toolEvent.arguments } : {}),
+            ...(startedAt ? { startedAt } : {}),
             ...(toolEvent.durationMs !== undefined ? { durationMs: toolEvent.durationMs } : {}),
             ...(toolEvent.summary
               ? { summary: mergeActivitySummary(toolCalls[idx].summary, toolEvent.summary, toolEvent.name) }
@@ -1811,6 +2227,8 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
           id: toolEvent.id || '',
           name: toolEvent.name,
           status: toolEvent.status,
+          ...(toolEvent.arguments !== undefined ? { arguments: toolEvent.arguments } : {}),
+          ...(startedAt ? { startedAt } : {}),
           ...(toolEvent.durationMs !== undefined ? { durationMs: toolEvent.durationMs } : {}),
           ...(toolEvent.summary ? { summary: toolEvent.summary } : {})
         };
@@ -1875,7 +2293,13 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
       if (!activeAssistantIdRef.current && result.text) {
         setMessages((prev) => [
           ...prev,
-          { id: nextId(), label: 'coder', text: result.text, color: 'greenBright' }
+          {
+            id: nextId(),
+            label: 'coder',
+            text: result.text,
+            color: 'greenBright',
+            autoSkillNames: activeAssistantAutoSkillNamesRef.current
+          }
         ]);
       }
       return;
@@ -1899,8 +2323,38 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
     setMessages((prev) => prev.map((m) => (m.id === targetId ? { ...m, ...patch } : m)));
   };
 
+  const updatePendingToolCallOnActiveAssistant = (toolCall) => {
+    const targetId = activeAssistantIdRef.current;
+    if (!targetId || !toolCall) return;
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (m.id !== targetId) return m;
+        const pendingToolCalls = Array.isArray(m.pendingToolCalls) ? [...m.pendingToolCalls] : [];
+        const nextCall = {
+          id: toolCall.id || '',
+          name: toolCall.name || '',
+          arguments: typeof toolCall.arguments === 'string' ? safeJsonParse(toolCall.arguments) ?? toolCall.arguments : toolCall.arguments,
+          status: 'pending',
+          type: 'tool'
+        };
+        const idx = pendingToolCalls.findIndex((entry) => entry.id && entry.id === nextCall.id);
+        if (idx === -1) pendingToolCalls.push(nextCall);
+        else pendingToolCalls[idx] = { ...pendingToolCalls[idx], ...nextCall };
+        return { ...m, pendingToolCalls };
+      })
+    );
+  };
+
   const finalizeActiveAssistant = () => {
-    setActiveAssistantMeta({ loading: false, phase: undefined, liveStatus: undefined, planStep: undefined });
+    setActiveAssistantMeta({
+      loading: false,
+      phase: undefined,
+      liveStatus: undefined,
+      planStep: undefined,
+      pendingToolCalls: [],
+      codeGenerationEndedAt: undefined,
+      autoSkillNames: activeAssistantAutoSkillNamesRef.current
+    });
   };
 
   const ensureActiveAssistant = () => {
@@ -1918,7 +2372,8 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
         segments: [],
         loading: true,
         phase: 'thinking',
-        liveStatus: copy.runtime.modelThinking
+        liveStatus: copy.runtime.modelThinking,
+        autoSkillNames: activeAssistantAutoSkillNamesRef.current
       }
     ]);
     return aid;
@@ -1933,11 +2388,14 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
     setPlanState({ current: 0, total: 0, role: '', title: '', failed: false, steps: [] });
     planTextBufferRef.current = '';
     activeAssistantIdRef.current = null;
+    activeAssistantAutoSkillNamesRef.current = [];
+    streamedAssistantHandledRef.current = false;
     deltaBufferRef.current = '';
 
     runtime
       .submit(line, (event) => {
         if (event?.type === 'assistant:start') {
+          streamedAssistantHandledRef.current = true;
           setRuntimeStatus(makeStatus(copy.runtime.modelThinking, copy.runtime.requestDelivered, 'cyanBright'));
           setInputStage('thinking');
           updateMessageMeta(activeUserMessageIdRef.current, {
@@ -1958,8 +2416,8 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
             let liveStatus = copy.runtime.generatingReply;
             if (targetId) {
               const current = messagesRef.current?.find?.((m) => m.id === targetId);
-              const segments = Array.isArray(current?.segments) ? current.segments : [];
-              if (segments.some((segment) => (segment.type === 'tool' || segment.type === 'skill') && isCodeActivityName(segment.name))) {
+              const pendingToolCalls = Array.isArray(current?.pendingToolCalls) ? current.pendingToolCalls : [];
+              if (pendingToolCalls.length > 0) {
                 liveStatus = copy.runtime.generatingCode;
               }
             }
@@ -1967,12 +2425,71 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
           })());
           queueAssistantDelta(event.text);
         }
+        if (event?.type === 'assistant:tool_call_delta') {
+          ensureActiveAssistant();
+          const parsed = parseToolDisplayName(event.toolCall?.name);
+          const isCodeTool = new Set(['write', 'edit', 'patch', 'generate_diff']).has(parsed.base);
+          if (isCodeTool) {
+            setRuntimeStatus(makeStatus(copy.runtime.generatingCode, copy.runtime.streamingReply, 'greenBright'));
+            setInputStage('streaming');
+            const startedAt = Date.now();
+            const targetId = activeAssistantIdRef.current;
+            if (targetId) {
+              setMessages((prev) =>
+                prev.map((m) => {
+                  if (m.id !== targetId) return m;
+                  return ensureCodeGenerationTiming(
+                    {
+                      ...m,
+                      loading: true,
+                      phase: 'generating',
+                      liveStatus: copy.runtime.generatingCode
+                    },
+                    startedAt
+                  );
+                })
+              );
+            }
+          }
+          updatePendingToolCallOnActiveAssistant(event.toolCall);
+        }
         if (event?.type === 'assistant:response') {
-          setRuntimeStatus(makeStatus(copy.runtime.replyCompleted, copy.runtime.outputFinished, 'greenBright'));
-          setInputStage('idle');
+          const hasPlannedTools = Array.isArray(event.toolCalls) && event.toolCalls.length > 0;
+          if (hasPlannedTools) {
+            setRuntimeStatus(makeStatus(copy.runtime.toolRunning, copy.runtime.waitingToolStart || copy.runtime.streamingReply, 'magentaBright'));
+            setInputStage('thinking');
+          } else {
+            setRuntimeStatus(makeStatus(copy.runtime.replyCompleted, copy.runtime.outputFinished, 'greenBright'));
+            setInputStage('idle');
+          }
           flushAssistantDelta();
-          finalizeActiveAssistant();
-          if (!activeAssistantIdRef.current && event.text) {
+          const targetId = activeAssistantIdRef.current;
+          const hadActiveAssistant = Boolean(targetId);
+          if (hadActiveAssistant) {
+            streamedAssistantHandledRef.current = true;
+          }
+          if (targetId && !hasPlannedTools) {
+            setMessages((prev) =>
+              prev.map((m) => {
+                if (m.id !== targetId) return m;
+                return {
+                  ...m,
+                  ...(typeof event.text === 'string' && event.text.length > 0 ? { text: event.text } : {}),
+                  loading: false,
+                  phase: undefined,
+                  liveStatus: undefined,
+                  planStep: undefined,
+                  pendingToolCalls: [],
+                  autoSkillNames: activeAssistantAutoSkillNamesRef.current,
+                  ...(m.codeGenerationStartedAt && !m.codeGenerationEndedAt ? { codeGenerationEndedAt: Date.now() } : {})
+                };
+              })
+            );
+          }
+          if (!hasPlannedTools) {
+            activeAssistantIdRef.current = null;
+          }
+          if (!hadActiveAssistant && !hasPlannedTools && event.text) {
             setMessages((prev) => [
               ...prev,
               { id: nextId(), label: 'coder', text: event.text, color: 'greenBright' }
@@ -1984,16 +2501,28 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
           const detail = describeToolActivity(event.name, copy);
           setRuntimeStatus(makeStatus(copy.runtime.toolRunning, detail, 'magentaBright'));
           setInputStage('tooling');
-          setActiveAssistantMeta({
-            loading: true,
-            phase: 'tooling',
-            liveStatus: isCodeActivityName(event.name) ? copy.runtime.generatingCode : detail
-          });
+          const targetId = activeAssistantIdRef.current;
+          if (targetId) {
+            const finishedAt = Date.now();
+            setMessages((prev) =>
+              prev.map((m) => {
+                if (m.id !== targetId) return m;
+                const nextMessage = isCodeActivityName(event.name) ? finishCodeGeneration(m, finishedAt) : m;
+                return {
+                  ...nextMessage,
+                  loading: true,
+                  phase: 'tooling',
+                  liveStatus: detail
+                };
+              })
+            );
+          }
           updateActivityStatusOnActiveAssistant({
             type: 'tool',
             id: event.id,
             name: event.name,
-            status: 'running'
+            status: 'running',
+            arguments: event.arguments
           });
         }
         if (event?.type === 'tool:end') {
@@ -2007,7 +2536,8 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
             name: event.name,
             status: 'done',
             durationMs: event.durationMs,
-            summary: event.summary
+            summary: event.summary,
+            arguments: event.arguments
           });
         }
         if (event?.type === 'tool:blocked') {
@@ -2026,7 +2556,8 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
             type: 'tool',
             id: event.id,
             name: event.name,
-            status: 'blocked'
+            status: 'blocked',
+            arguments: event.arguments
           });
         }
         if (event?.type === 'tool:error') {
@@ -2047,7 +2578,8 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
             name: event.name,
             status: 'error',
             durationMs: event.durationMs,
-            summary: event.summary
+            summary: event.summary,
+            arguments: event.arguments
           });
         }
         if (event?.type === 'skill:start') {
@@ -2084,6 +2616,21 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
             status: 'error',
             summary: event.summary
           });
+        }
+        if (event?.type === 'skill:auto') {
+          const detail = describeAutoSkillActivity(event.names, copy);
+          if (Array.isArray(event.names) && event.names.length > 0) {
+            activeAssistantAutoSkillNamesRef.current = event.names.filter(Boolean);
+            const targetId = activeAssistantIdRef.current;
+            if (targetId) {
+              setMessages((prev) =>
+                prev.map((m) => (m.id === targetId ? { ...m, autoSkillNames: activeAssistantAutoSkillNamesRef.current } : m))
+              );
+            }
+          }
+          if (detail) {
+            setRuntimeStatus(makeStatus(copy.runtime.skillRunning, detail, 'blueBright'));
+          }
         }
         if (event?.type === 'compact:auto') {
           setRuntimeStatus(makeStatus(copy.runtime.compactingContext, `auto compact ${event.mode}`, 'yellowBright'));
@@ -2124,6 +2671,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
         }
         syncRuntimeVisualState(result.type === 'noop' ? 'ready' : 'after');
         if (result.type === 'noop') return;
+        if (!shouldAppendAssistantResult(result, activeAssistantIdRef.current, streamedAssistantHandledRef.current)) return;
         appendResultMessage(result);
       })
       .catch((err) => {
@@ -2150,6 +2698,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
         flushAssistantDelta();
         finalizeActiveAssistant();
         activeAssistantIdRef.current = null;
+        streamedAssistantHandledRef.current = false;
         activeUserMessageIdRef.current = null;
         if (deltaFlushTimerRef.current) {
           clearTimeout(deltaFlushTimerRef.current);

@@ -26,9 +26,129 @@ const READY_OUTPUT_PATTERNS = [
 const AUTO_STOP_GRACE_MS = 150;
 const LONG_RUNNING_STARTUP_WINDOW_MS = 1500;
 
+function normalizeCommand(command) {
+  return String(command || '').trim();
+}
+
+function matchesAny(value, patterns) {
+  return patterns.some((pattern) => pattern.test(value));
+}
+
+export function classifyCommandIntent(command) {
+  const value = normalizeCommand(command);
+
+  if (!value) {
+    return { kind: 'generic', longRunning: false };
+  }
+
+  if (
+    /\b(?:npm|pnpm|yarn|bun)\s+install\b/i.test(value) ||
+    /\b(?:npm|pnpm|yarn|bun)\s+(?:ci|i|add)\b/i.test(value) ||
+    /\buv\s+pip\s+install\b/i.test(value) ||
+    /\bpip\s+install\b/i.test(value) ||
+    /\bcargo\s+install\b/i.test(value) ||
+    /\bbundle\s+install\b/i.test(value) ||
+    /\bcomposer\s+install\b/i.test(value)
+  ) {
+    return { kind: 'install', longRunning: false };
+  }
+
+  if (/\b(?:build|compile|bundle|pack|transpile)\b/i.test(value)) {
+    return { kind: 'build', longRunning: false };
+  }
+
+  if (
+    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|lint|check|typecheck)\b/i.test(value) ||
+    /\b(?:jest|vitest|mocha|ava|pytest|go\s+test|cargo\s+test|dotnet\s+test)\b/i.test(value)
+  ) {
+    return { kind: 'test', longRunning: false };
+  }
+
+  const frontendServicePatterns = [
+    /\bvite\b/i,
+    /\bnext\s+dev\b/i,
+    /\bnuxt\s+dev\b/i,
+    /\bastro\s+dev\b/i,
+    /\bremix\s+dev\b/i,
+    /\bsvelte-kit\s+dev\b/i,
+    /\bwebpack\s+serve\b/i,
+    /\bvue-cli-service\s+serve\b/i,
+    /\breact-scripts\s+start\b/i,
+    /\bstorybook\b/i,
+    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|preview)\b.*\b(?:client|frontend|front-end|web|ui)\b/i,
+    /\b(?:client|frontend|front-end|web|ui)\b.*\b(?:dev|start|serve|preview)\b/i
+  ];
+  if (matchesAny(value, frontendServicePatterns)) {
+    return { kind: 'frontend-service', longRunning: true };
+  }
+
+  const backendServicePatterns = [
+    /\bpython\s+-m\s+http\.server\b/i,
+    /\buvicorn\b/i,
+    /\bgunicorn\b/i,
+    /\bflask\s+run\b/i,
+    /\bdjango\s+runserver\b/i,
+    /\brails\s+(?:s|server)\b/i,
+    /\bmvn(?:w)?\s+spring-boot:run\b/i,
+    /\bgradle(?:w)?\s+bootRun\b/i,
+    /\bgradle(?:w)?\s+run\b/i,
+    /\bjava\b.*\bserver\b/i,
+    /\bdotnet\s+run\b/i,
+    /\bgo\s+run\b.*\b(server|cmd\/server|main\.go)\b/i,
+    /\bnest\s+start\b/i,
+    /\bnodemon\b/i,
+    /\bts-node-dev\b/i,
+    /\bair\b/i,
+    /\bphp\s+artisan\s+serve\b/i,
+    /\bsymfony\s+server:start\b/i,
+    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|preview)\b.*\b(?:server|api|backend)\b/i,
+    /\b(?:server|api|backend)\b.*\b(?:dev|start|serve|preview)\b/i
+  ];
+  if (matchesAny(value, backendServicePatterns)) {
+    return { kind: 'backend-service', longRunning: true };
+  }
+
+  const databaseServicePatterns = [
+    /\bpostgres(?:ql)?\b/i,
+    /\bmysql\b/i,
+    /\bmariadb\b/i,
+    /\bmongod\b/i,
+    /\bredis-server\b/i,
+    /\b(?:docker|docker-compose|docker compose)\s+.*\b(?:db|database|postgres|mysql|mongo|redis)\b/i,
+    /\b(?:db|database|postgres|mysql|mongo|redis)\b.*\b(?:start|up|serve|run)\b/i
+  ];
+  if (matchesAny(value, databaseServicePatterns)) {
+    return { kind: 'database-service', longRunning: true };
+  }
+
+  const dockerServicePatterns = [
+    /\bdocker\s+compose\s+up\b/i,
+    /\bdocker-compose\s+up\b/i,
+    /\bdocker\s+run\b/i,
+    /\bdocker\s+start\b/i
+  ];
+  if (matchesAny(value, dockerServicePatterns)) {
+    return { kind: 'docker-service', longRunning: true };
+  }
+
+  if (
+    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|preview|watch)\b/i.test(value) ||
+    /\b(?:vite|serve)\b/i.test(value) ||
+    /\b(?:watch|serve|server|dev|preview)\b/i.test(value)
+  ) {
+    return { kind: 'service', longRunning: true };
+  }
+
+  if (/\b(?:watch|serve|server|dev|preview)\b/i.test(value)) {
+    return { kind: 'service', longRunning: true };
+  }
+
+  return { kind: 'generic', longRunning: false };
+}
+
 export function isLikelyLongRunningCommand(command) {
-  const value = String(command || '');
-  return LONG_RUNNING_COMMAND_RE.test(value) || GENERIC_LONG_RUNNING_HINT_RE.test(value);
+  const { longRunning } = classifyCommandIntent(command);
+  return longRunning || LONG_RUNNING_COMMAND_RE.test(normalizeCommand(command)) || GENERIC_LONG_RUNNING_HINT_RE.test(normalizeCommand(command));
 }
 
 export function hasReadyOutput(text) {
