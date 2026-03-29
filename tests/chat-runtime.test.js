@@ -128,6 +128,12 @@ test('chat runtime prioritizes important config completions near the top', { con
       '/config set shell.default '
     ]);
     assert.equal(setSuggestions[0].description, 'set the gateway base URL');
+    assert.ok(setSuggestions.some((item) => item.value === '/config set soul.preset '));
+    assert.ok(setSuggestions.some((item) => item.value === '/config set soul.custom_path '));
+
+    const setNoSpaceSuggestions = runtime.getCompletionOptions('/config set');
+    assert.ok(setNoSpaceSuggestions.some((item) => item.value === '/config set soul.preset '));
+    assert.ok(setNoSpaceSuggestions.some((item) => item.value === '/config set soul.custom_path '));
 
     const getSuggestions = runtime.getCompletionOptions('/config get ');
     assert.deepEqual(getSuggestions.slice(0, 6).map((item) => item.value), [
@@ -139,6 +145,29 @@ test('chat runtime prioritizes important config completions near the top', { con
       '/config get shell.default'
     ]);
     assert.equal(getSuggestions[0].description, 'show the gateway base URL');
+    assert.ok(getSuggestions.some((item) => item.value === '/config get soul.preset'));
+    assert.ok(getSuggestions.some((item) => item.value === '/config get soul.custom_path'));
+
+    const getNoSpaceSuggestions = runtime.getCompletionOptions('/config get');
+    assert.ok(getNoSpaceSuggestions.some((item) => item.value === '/config get soul.preset'));
+    assert.ok(getNoSpaceSuggestions.some((item) => item.value === '/config get soul.custom_path'));
+
+    assert.ok(runtime.getCompletionOptions('/mode').some((item) => item.value === '/mode auto'));
+    assert.ok(runtime.getCompletionOptions('/plan').some((item) => item.value === '/plan auto'));
+    assert.ok(runtime.getCompletionOptions('/tasks').some((item) => item.value === '/tasks add'));
+    assert.ok(runtime.getCompletionOptions('/agents').some((item) => item.value === '/agents run'));
+    assert.ok(runtime.getCompletionOptions('/agents run').some((item) => item.value === '/agents run planner '));
+    assert.ok(runtime.getCompletionOptions('/checkpoint').some((item) => item.value === '/checkpoint create'));
+    assert.ok(runtime.getCompletionOptions('/checkpoint list').some((item) => item.value === '/checkpoint list --all'));
+    assert.ok(runtime.getCompletionOptions('/history').some((item) => item.value === '/history resume'));
+    assert.ok(
+      runtime
+        .getCompletionOptions('/history resume')
+        .some((item) => item.value.includes('session-config-completions'))
+    );
+    assert.ok(runtime.getCompletionOptions('/debug').some((item) => item.value === '/debug keys'));
+    assert.ok(runtime.getCompletionOptions('/debug keys').some((item) => item.value === '/debug keys on'));
+    assert.ok(runtime.getCompletionOptions('/compact').some((item) => item.value === '/compact --preview'));
   });
 });
 

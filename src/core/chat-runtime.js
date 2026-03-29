@@ -94,6 +94,8 @@ function describeConfigKey(key, mode = 'set') {
     'shell.default': 'default shell',
     'shell.timeout_ms': 'shell timeout in milliseconds',
     'context.max_tokens': 'context token budget',
+    'soul.preset': 'soul preset',
+    'soul.custom_path': 'custom soul prompt path',
     'policy.safe_mode': 'safe mode switch',
     'policy.allow_dangerous_commands': 'dangerous command allowance'
   };
@@ -1116,12 +1118,28 @@ function effectiveMaxContextTokens(config) {
 }
 
 function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode }) {
-  return {
+  const currentContextTokens = estimateMessagesTokens(currentSession?.messages || []);
+  const maxContextTokens = effectiveMaxContextTokens(config);
+  const contextUsagePct = maxContextTokens > 0 ? Math.min(100, Math.max(0, (currentContextTokens / maxContextTokens) * 100)) : 0;
+  const snapshot = {
     sessionId: currentSession?.id || '',
     mode: executionMode || config.execution?.mode || 'auto',
     model: model || config.model?.name || '',
-    maxContextTokens: effectiveMaxContextTokens(config)
+    maxContextTokens
   };
+  Object.defineProperties(snapshot, {
+    currentContextTokens: {
+      value: currentContextTokens,
+      enumerable: false,
+      writable: false
+    },
+    contextUsagePct: {
+      value: contextUsagePct,
+      enumerable: false,
+      writable: false
+    }
+  });
+  return snapshot;
 }
 
 function estimatePromptTokensForRequest(sessionMessages, userText = '') {
@@ -1345,7 +1363,7 @@ async function askModel({
     onEvent: wrappedAgentEvent,
     executionMode: executionMode || config.execution?.mode || 'auto',
     alwaysAllowTools:
-      alwaysAllowTools || config.execution?.always_allow_tools || ['run_command', 'read_file', 'write_file'],
+      alwaysAllowTools || config.execution?.always_allow_tools || ['run', 'read', 'write'],
     toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
     requestCompletion: async ({ messages, tools, model: selectedModel }) => {
       if (onAgentEvent) onAgentEvent({ type: 'assistant:start' });
@@ -1720,6 +1738,8 @@ export async function createChatRuntime({
     'sessions.retention_days',
     'shell.timeout_ms',
     'context.max_tokens',
+    'soul.preset',
+    'soul.custom_path',
     'policy.safe_mode',
     'policy.allow_dangerous_commands'
   ];
@@ -1851,9 +1871,21 @@ export async function createChatRuntime({
     const body = input.slice(1);
     const tokens = body.trim().split(/\s+/).filter(Boolean);
     const commandPart = tokens[0] || '';
+    const commandHasSubcommands = new Set([
+      'config',
+      'compact',
+      'mode',
+      'tasks',
+      'checkpoint',
+      'plan',
+      'agents',
+      'history',
+      'debug'
+    ]);
 
     const allCommandEntries = listCommandNames();
     const allCommands = allCommandEntries.map((c) => c.name);
+    const exactCommand = Boolean(commandPart) && allCommands.includes(commandPart);
     for (const entry of allCommandEntries) {
       registerSuggestion(`/${entry.name}`, entry.description || '');
     }
@@ -1879,7 +1911,7 @@ export async function createChatRuntime({
       ));
     }
 
-    if (tokens.length === 1 && !hasTrailingSpace) {
+    if (tokens.length === 1 && !hasTrailingSpace && !(exactCommand && commandHasSubcommands.has(commandPart))) {
       const direct = prioritizeByPreferredOrder(
         allCommands
           .filter((name) => name.startsWith(commandPart))
@@ -1891,25 +1923,26 @@ export async function createChatRuntime({
     }
 
     if (commandPart === 'config') {
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        const sub = tokens[1] || '';
+      const subcommand = tokens[1] || '';
+      const subcommandIsExact = ['set', 'get', 'list', 'reset'].includes(subcommand);
+
+      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace && !subcommandIsExact)) {
         return materializeSuggestions(prioritizeByPreferredOrder(
           ['set', 'get', 'list', 'reset']
-            .filter((s) => s.startsWith(sub))
+            .filter((s) => s.startsWith(subcommand))
             .map((s) => registerSuggestion(`/config ${s}`, configSubcommandDescriptions[`/config ${s}`] || 'config command').value),
           configSubcommandPriority
         ));
       }
 
-      const sub = tokens[1] || '';
-      if (sub === 'get') {
-        const keyPrefix = tokens[2] || '';
+      if (subcommand === 'get') {
+        const keyPrefix = tokens.length >= 3 ? tokens[2] || '' : '';
         return configKeyHints
           .filter((k) => k.startsWith(keyPrefix))
           .map((k) => registerSuggestion(`/config get ${k}`, describeConfigKey(k, 'get')));
       }
-      if (sub === 'set') {
-        const keyPrefix = tokens[2] || '';
+      if (subcommand === 'set') {
+        const keyPrefix = tokens.length >= 3 ? tokens[2] || '' : '';
         return configKeyHints
           .filter((k) => k.startsWith(keyPrefix))
           .map((k) => registerSuggestion(`/config set ${k} `, describeConfigKey(k, 'set')));
@@ -1920,6 +1953,11 @@ export async function createChatRuntime({
 
     if (commandPart === 'compact') {
       const joined = tokens.slice(1).join(' ');
+      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
+        return compactOptions
+          .filter((opt) => opt.startsWith(joined) || joined === '')
+          .map((opt) => registerSuggestion(`/compact ${opt}`, 'context compaction command'));
+      }
       return compactOptions
         .filter((opt) => opt.includes(joined) || joined === '')
         .map((opt) => registerSuggestion(`/compact ${opt}`, 'context compaction command'));
@@ -1952,6 +1990,10 @@ export async function createChatRuntime({
     if (commandPart === 'checkpoint') {
       if (tokens.length <= 2 && !hasTrailingSpace) {
         const sub = tokens[1] || '';
+        if (sub === 'list') {
+          return ['--all']
+            .map((v) => registerSuggestion(`/checkpoint list ${v}`, 'checkpoint command'));
+        }
         return ['create', 'list', 'load']
           .filter((s) => s.startsWith(sub))
           .map((s) => registerSuggestion(`/checkpoint ${s}`, 'checkpoint command'));
@@ -1987,6 +2029,10 @@ export async function createChatRuntime({
     if (commandPart === 'agents') {
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         const sub = tokens[1] || '';
+        if (sub === 'run') {
+          return ['planner', 'coder', 'reviewer', 'tester']
+            .map((r) => registerSuggestion(`/agents run ${r} `, 'sub-agent command'));
+        }
         return ['list', 'run']
           .filter((s) => s.startsWith(sub))
           .map((s) => registerSuggestion(`/agents ${s}`, 'sub-agent command'));
@@ -2001,13 +2047,22 @@ export async function createChatRuntime({
     }
 
     if (commandPart === 'history') {
+      const sub = tokens[1] || '';
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        const sub = tokens[1] || '';
+        if (sub === 'resume') {
+          const dynamic = historySessionCache
+            .filter((session) => String(session.id || '').startsWith(''))
+            .map((session) => ({
+              value: `/history resume ${session.id}`,
+              display: `/history resume ${session.id}  ·  ${Number(session.messageCount || 0)} msgs`,
+              description: 'resume a saved session'
+            }));
+          if (dynamic.length > 0) return dynamic;
+        }
         return ['list', 'current', 'resume']
           .filter((s) => s.startsWith(sub))
-          .map((s) => `/history ${s}`);
+          .map((s) => registerSuggestion(`/history ${s}`, 'history command'));
       }
-      const sub = tokens[1] || '';
       if (sub === 'resume') {
         const idPrefix = tokens[2] || '';
         const dynamic = historySessionCache
@@ -2025,7 +2080,15 @@ export async function createChatRuntime({
 
     if (commandPart === 'debug') {
       const sub = tokens[1] || '';
-      if (!sub) return debugTemplates;
+      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
+        if (sub === 'keys') {
+          return ['on', 'off', 'status']
+            .map((v) => registerSuggestion(`/debug keys ${v}`, 'keyboard debug command'));
+        }
+        return ['keys']
+          .filter((s) => s.startsWith(sub))
+          .map((s) => registerSuggestion(`/debug ${s}`, 'debug command'));
+      }
       if (sub === 'keys') {
         const action = tokens[2] || '';
         return ['on', 'off', 'status']

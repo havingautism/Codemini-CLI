@@ -63,6 +63,8 @@ const TUI_COPY = {
       ready: '就绪',
       noMessagesYet: '还没有消息',
       code: '代码',
+      codeActivity: '代码活动',
+      textNotes: '说明文本',
       live: '运行中',
       idle: '空闲',
       plan: '计划',
@@ -81,7 +83,7 @@ const TUI_COPY = {
       pendingQueue: '等待队列',
       commandPaletteGroupedSelect: '命令面板 | 分组选择模式',
       commandPaletteGroupedSuggestions: '命令面板 | 分组候选',
-      startupHint: '使用 /help、/commands、/exit、!<shell>。Tab 可自动补全 slash 命令。',
+      startupHint: '使用 /help、/commands、/compact、/exit、!<shell>。Tab 可自动补全 slash 命令。',
       toolSummaryExpanded: '工具摘要：已展开',
       toolSummaryCollapsed: '工具摘要：已收起',
       toggleToolSummary: 'Ctrl+T 切换',
@@ -103,8 +105,12 @@ const TUI_COPY = {
       blocked: '工具被拦截',
       doneRead: '已读取文件',
       doingRead: '正在读取文件',
+      doneEdit: '已编辑文件',
+      doingEdit: '正在编辑文件',
       doneWrite: '已写入文件',
       doingWrite: '正在写入文件',
+      donePatch: '已应用补丁',
+      doingPatch: '正在应用补丁',
       doneList: '已查看目录',
       doingList: '正在查看目录',
       doneCommand: '已执行命令',
@@ -137,6 +143,7 @@ const TUI_COPY = {
       modelThinking: '模型正在思考',
       requestDelivered: '请求已送达，等待首个 token',
       generatingReply: '正在生成回复',
+      generatingCode: '正在生成代码中',
       streamingReply: '回复正在流式输出',
       replyCompleted: '回复已完成',
       outputFinished: '本轮输出结束',
@@ -165,6 +172,8 @@ const TUI_COPY = {
       ready: 'ready',
       noMessagesYet: 'No messages yet',
       code: 'code',
+      codeActivity: 'CODE ACTIVITY',
+      textNotes: 'NOTES',
       live: 'LIVE',
       idle: 'IDLE',
       plan: 'PLAN',
@@ -183,7 +192,7 @@ const TUI_COPY = {
       pendingQueue: 'pending queue',
       commandPaletteGroupedSelect: 'command palette | grouped select mode',
       commandPaletteGroupedSuggestions: 'command palette | grouped suggestions',
-      startupHint: 'Use /help, /commands, /exit, !<shell>. Tab for slash autocomplete.',
+      startupHint: 'Use /help, /commands, /compact, /exit, !<shell>. Tab for slash autocomplete.',
       toolSummaryExpanded: 'Tool summary: expanded',
       toolSummaryCollapsed: 'Tool summary: collapsed',
       toggleToolSummary: 'Ctrl+T to toggle',
@@ -205,8 +214,12 @@ const TUI_COPY = {
       blocked: 'Tool blocked',
       doneRead: 'Read file',
       doingRead: 'Reading file',
+      doneEdit: 'Edited file',
+      doingEdit: 'Editing file',
       doneWrite: 'Wrote file',
       doingWrite: 'Writing file',
+      donePatch: 'Applied patch',
+      doingPatch: 'Applying patch',
       doneList: 'Listed directory',
       doingList: 'Listing directory',
       doneCommand: 'Ran command',
@@ -239,6 +252,7 @@ const TUI_COPY = {
       modelThinking: 'model is thinking',
       requestDelivered: 'request sent, waiting for first token',
       generatingReply: 'generating reply',
+      generatingCode: 'generating code',
       streamingReply: 'reply is streaming',
       replyCompleted: 'reply completed',
       outputFinished: 'turn output finished',
@@ -313,9 +327,14 @@ function getActivityDisplayParts(activity) {
   }
   const parsed = parseToolDisplayName(activity?.name);
   const labels = {
-    read_file: 'Read',
-    write_file: 'Write',
-    run_command: 'Command',
+    read: 'Read',
+    edit: 'Edit',
+    write: 'Write',
+    patch: 'Patch',
+    run: 'Run',
+    grep: 'Grep',
+    glob: 'Glob',
+    list: 'List',
     start_service: 'Service',
     list_services: 'Service',
     get_service_status: 'Service',
@@ -334,33 +353,47 @@ function getActivityDisplayParts(activity) {
 function describeToolActivity(name, copy, { done = false, blocked = false } = {}) {
   const { raw, base, target } = parseToolDisplayName(name);
   const safeTarget = trimText(target, 72);
-  if (base === 'read_file') {
+  if (base === 'read') {
     return blocked
-      ? `${copy.toolActivity.blocked}: read_file(${safeTarget || '.'})`
+      ? `${copy.toolActivity.blocked}: ${base}(${safeTarget || '.'})`
       : done
         ? `${copy.toolActivity.doneRead}: ${safeTarget || '.'}`
         : `${copy.toolActivity.doingRead}: ${safeTarget || '.'}`;
   }
-  if (base === 'write_file') {
+  if (base === 'edit') {
     return blocked
-      ? `${copy.toolActivity.blocked}: write_file(${safeTarget || '.'})`
+      ? `${copy.toolActivity.blocked}: ${base}(${safeTarget || '.'})`
+      : done
+        ? `${copy.toolActivity.doneEdit}: ${safeTarget || '.'}`
+        : `${copy.toolActivity.doingEdit}: ${safeTarget || '.'}`;
+  }
+  if (base === 'write') {
+    return blocked
+      ? `${copy.toolActivity.blocked}: ${base}(${safeTarget || '.'})`
       : done
         ? `${copy.toolActivity.doneWrite}: ${safeTarget || '.'}`
         : `${copy.toolActivity.doingWrite}: ${safeTarget || '.'}`;
   }
-  if (base === 'list_files') {
+  if (base === 'patch') {
     return blocked
-      ? `${copy.toolActivity.blocked}: list_files(${safeTarget || '.'})`
+      ? `${copy.toolActivity.blocked}: ${base}(${safeTarget || '.'})`
+      : done
+        ? `${copy.toolActivity.donePatch}: ${safeTarget || '.'}`
+        : `${copy.toolActivity.doingPatch}: ${safeTarget || '.'}`;
+  }
+  if (base === 'list' || base === 'glob' || base === 'grep') {
+    return blocked
+      ? `${copy.toolActivity.blocked}: ${base}(${safeTarget || '.'})`
       : done
         ? `${copy.toolActivity.doneList}: ${safeTarget || '.'}`
         : `${copy.toolActivity.doingList}: ${safeTarget || '.'}`;
   }
-  if (base === 'run_command') {
+  if (base === 'run') {
     return blocked
-      ? `${copy.toolActivity.blocked}: ${safeTarget || 'run_command'}`
+      ? `${copy.toolActivity.blocked}: ${safeTarget || base}`
       : done
-        ? `${copy.toolActivity.doneCommand}: ${safeTarget || 'run_command'}`
-        : `${copy.toolActivity.doingCommand}: ${safeTarget || 'run_command'}`;
+        ? `${copy.toolActivity.doneCommand}: ${safeTarget || base}`
+        : `${copy.toolActivity.doingCommand}: ${safeTarget || base}`;
   }
   if (base === 'start_service' || base === 'list_services' || base === 'get_service_status' || base === 'get_service_logs' || base === 'stop_service') {
     return blocked
@@ -448,6 +481,52 @@ function RuntimeStrip({ busy, runtimeStatus, loaderTick, copy }) {
     h(Text, { color: busy ? 'cyanBright' : 'gray' }, dots),
     h(Text, { color: 'gray' }, '  '),
     h(Text, { color: busy ? 'white' : 'gray' }, status.title || copy.generic.waitingForInput)
+  );
+}
+
+function ContextProgressMeter({ runtimeState, runtimeStatus, compact = false }) {
+  const maxContextTokens = Number(runtimeState?.maxContextTokens || 0);
+  const currentContextTokens = Number(runtimeState?.currentContextTokens || 0);
+  const pctRaw =
+    Number.isFinite(runtimeState?.contextUsagePct) && runtimeState.contextUsagePct >= 0
+      ? runtimeState.contextUsagePct
+      : maxContextTokens > 0
+        ? (currentContextTokens / maxContextTokens) * 100
+        : 0;
+  const pct = Math.min(100, Math.max(0, pctRaw));
+  const filled = Math.min(12, Math.max(0, Math.round((pct / 100) * 12)));
+  const activeColor = pct < 40 ? 'greenBright' : pct < 75 ? 'yellowBright' : 'redBright';
+  const statusColor = runtimeStatus?.color || activeColor;
+  const chunks = Array.from({ length: 12 }, (_, idx) => {
+    const zoneColor = idx < 5 ? 'greenBright' : idx < 9 ? 'yellowBright' : 'redBright';
+    const color = idx < filled ? zoneColor : 'gray';
+    return h(Text, { key: `context-meter-${idx}`, color }, '|');
+  });
+
+  if (compact) {
+    return h(
+      Box,
+      { justifyContent: 'flex-end', alignItems: 'center' },
+      h(Text, { color: 'gray' }, '上下文 '),
+      h(Text, { color: statusColor }, `${Math.round(pct)}% `),
+      h(
+        Box,
+        { flexDirection: 'row' },
+        ...chunks
+      )
+    );
+  }
+
+  return h(
+    Box,
+    { justifyContent: 'flex-end', alignItems: 'center' },
+    h(Text, { color: 'gray' }, '上下文 '),
+    h(Text, { color: statusColor }, `${Math.round(pct)}% `),
+    h(
+      Box,
+      null,
+      ...chunks
+    )
   );
 }
 
@@ -630,6 +709,21 @@ export function injectPlanStateMessage(messages, planState, activeUserMessageId,
     return [...withNoPlanStrip.slice(0, assistantIdx), synthetic, ...withNoPlanStrip.slice(assistantIdx)];
   }
   return [...withNoPlanStrip, synthetic];
+}
+
+export function injectRuntimeStateMessage(messages, runtimeState, runtimeStatus, busy, activeUserMessageId, activeAssistantId) {
+  const source = Array.isArray(messages) ? messages : [];
+  if (!runtimeState) return source;
+  const withoutRuntimeStrip = source.filter((message) => !message?.runtimeStrip);
+  const userIdx = withoutRuntimeStrip.findIndex((message) => message.id === activeUserMessageId);
+  if (userIdx !== -1) {
+    return withoutRuntimeStrip;
+  }
+  const assistantIdx = withoutRuntimeStrip.findIndex((message) => message.id === activeAssistantId);
+  if (assistantIdx !== -1) {
+    return withoutRuntimeStrip;
+  }
+  return withoutRuntimeStrip;
 }
 
 function PlanSummaryBubble({ msg, copy }) {
@@ -817,6 +911,38 @@ function isBlankTextRow(row) {
   return row?.kind === 'text' && String(row?.text || '').trim() === '';
 }
 
+function isCodeActivityName(name) {
+  const parsed = parseToolDisplayName(name);
+  return new Set([
+    'edit',
+    'write_file',
+    'patch',
+    'replace_text',
+    'replace_block',
+    'insert_before',
+    'insert_after',
+    'validate_edit',
+    'generate_diff'
+  ]).has(parsed.base);
+}
+
+export function isCodeLikeRow(row) {
+  if (!row) return false;
+  if (row.kind === 'code' || row.kind === 'activity' || row.kind === 'activity-summary') return true;
+  if (row.kind === 'status') return true;
+  return false;
+}
+
+export function splitMessageRows(rows) {
+  const textRows = [];
+  const codeRows = [];
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (isCodeLikeRow(row)) codeRows.push(row);
+    else textRows.push(row);
+  }
+  return { textRows, codeRows };
+}
+
 export function normalizeActivitySpacingRows(inputRows) {
   const rows = Array.isArray(inputRows) ? inputRows : [];
   const normalized = [];
@@ -863,7 +989,7 @@ export function normalizeActivitySpacingRows(inputRows) {
 
 function isReadActivityName(name) {
   const parsed = parseToolDisplayName(name);
-  return parsed.base === 'read_file' || parsed.base === 'Read';
+  return parsed.base === 'read' || parsed.base === 'Read';
 }
 
 function isIgnorableSegmentAfterRead(item, activityType, activityName) {
@@ -1014,6 +1140,105 @@ function buildMessageRows(msg, showToolDetails, contentWidth = 72) {
   return normalizeActivitySpacingRows(rows);
 }
 
+function renderMessageRow(msg, row, idx, loaderTick) {
+  if (row.kind === 'activity') {
+    const activity = { type: row.activityType, name: row.name, status: row.status };
+    const display = getActivityDisplayParts(activity);
+    const dotColor =
+      activity.type === 'skill'
+        ? row.status === 'error'
+          ? 'redBright'
+          : 'blueBright'
+        : row.status === 'error' || row.status === 'blocked'
+          ? 'redBright'
+          : 'greenBright';
+    const textColor =
+      activity.type === 'skill'
+        ? row.status === 'error'
+          ? 'redBright'
+          : 'cyanBright'
+        : row.status === 'error' || row.status === 'blocked'
+          ? 'redBright'
+          : 'greenBright';
+    return h(
+      Box,
+      { key: `row-tool-${msg.id}-${idx}` },
+      h(Text, { color: 'gray' }, ' '),
+      h(Text, { color: dotColor }, '●'),
+      h(Text, { color: 'gray' }, ' '),
+      h(Text, { color: textColor }, display.primary),
+      h(Text, { color: 'gray' }, display.secondary),
+      row.durationText ? h(Text, { color: row.statusColor }, ` ${row.durationText}`) : null
+    );
+  }
+  if (row.kind === 'activity-summary') {
+    return h(
+      Box,
+      { key: `row-tool-summary-${msg.id}-${idx}`, marginLeft: 1 },
+      h(Text, { color: 'gray' }, `└ ${row.text}`)
+    );
+  }
+  if (row.kind === 'plan-progress') {
+    return h(
+      Box,
+      { key: `row-plan-progress-${msg.id}-${idx}`, marginTop: 1, marginBottom: 1 },
+      h(Text, { color: 'cyanBright' }, '[plan] '),
+      h(Text, { color: 'yellowBright' }, `Step ${row.current}/${row.total}`),
+      h(Text, { color: 'gray' }, '  ->  '),
+      h(Text, { color: 'magentaBright' }, String(row.role || 'agent').toUpperCase()),
+      h(Text, { color: 'gray' }, ': '),
+      h(Text, { color: 'white' }, row.title)
+    );
+  }
+  if (row.kind === 'status') {
+    const dots = '.'.repeat((loaderTick % 3) + 1);
+    const phase = msg.phase;
+    const color =
+      phase === 'sending'
+        ? 'yellowBright'
+        : phase === 'queued'
+          ? 'cyanBright'
+          : phase === 'tooling'
+            ? 'magentaBright'
+          : phase === 'generating'
+            ? 'greenBright'
+          : 'cyanBright';
+    return h(
+      Box,
+      { key: `row-status-${msg.id}-${idx}`, marginTop: 1 },
+      h(Text, { color: 'gray' }, '  '),
+      h(Text, { color }, `${row.text}${dots}`)
+    );
+  }
+  if (row.kind === 'quote') {
+    return h(
+      Box,
+      { key: `row-quote-${msg.id}-${idx}`, marginTop: 1, marginLeft: 1, paddingLeft: 1 },
+      h(Text, { color: 'yellow' }, '▍ '),
+      h(Text, { color: row.color }, ...renderInlineCode(row.text, row.color))
+    );
+  }
+  if (row.kind === 'tree') {
+    return h(
+      Box,
+      { key: `row-tree-${msg.id}-${idx}`, marginLeft: 1 },
+      h(Text, { color: row.color }, row.text)
+    );
+  }
+  if (row.kind === 'code') {
+    return h(
+      Box,
+      { key: `row-code-${msg.id}-${idx}`, marginLeft: 1 },
+      h(Text, { color: 'gray' }, row.text)
+    );
+  }
+  return renderTextLine(msg, row.text, idx, row.color);
+}
+
+function renderMessageRowsInOrder(msg, rows, loaderTick, copy) {
+  return rows.map((row, idx) => renderMessageRow(msg, row, idx, loaderTick));
+}
+
 
 function groupCommandSuggestions(items) {
   const categoryMap = {
@@ -1128,100 +1353,7 @@ function MessageBubble({ msg, loaderTick, showToolDetails, rowWindow = null, con
   const start = rowWindow ? Math.max(0, rowWindow.start || 0) : 0;
   const end = rowWindow ? Math.max(start, rowWindow.end || allRows.length) : allRows.length;
   const visibleRows = allRows.slice(start, end);
-  const rendered = visibleRows.map((row, idx) => {
-    if (row.kind === 'activity') {
-      const activity = { type: row.activityType, name: row.name, status: row.status };
-      const display = getActivityDisplayParts(activity);
-      const dotColor =
-        activity.type === 'skill'
-          ? row.status === 'error'
-            ? 'redBright'
-            : 'blueBright'
-          : row.status === 'error' || row.status === 'blocked'
-            ? 'redBright'
-            : 'greenBright';
-      const textColor =
-        activity.type === 'skill'
-          ? row.status === 'error'
-            ? 'redBright'
-            : 'cyanBright'
-          : row.status === 'error' || row.status === 'blocked'
-            ? 'redBright'
-            : 'greenBright';
-      return h(
-        Box,
-        { key: `row-tool-${msg.id}-${idx}` },
-        h(Text, { color: 'gray' }, '  '),
-        h(Text, { color: dotColor }, '●'),
-        h(Text, { color: 'gray' }, ' '),
-        h(Text, { color: textColor }, display.primary),
-        h(Text, { color: 'gray' }, display.secondary),
-        row.durationText ? h(Text, { color: row.statusColor }, ` ${row.durationText}`) : null
-      );
-    }
-    if (row.kind === 'activity-summary') {
-      return h(
-        Box,
-        { key: `row-tool-summary-${msg.id}-${idx}`, marginLeft: 2 },
-        h(Text, { color: 'gray' }, `└ ${row.text}`)
-      );
-    }
-    if (row.kind === 'plan-progress') {
-      return h(
-        Box,
-        { key: `row-plan-progress-${msg.id}-${idx}`, marginTop: 1, marginBottom: 1 },
-        h(Text, { color: 'cyanBright' }, '[plan] '),
-        h(Text, { color: 'yellowBright' }, `Step ${row.current}/${row.total}`),
-        h(Text, { color: 'gray' }, '  ->  '),
-        h(Text, { color: 'magentaBright' }, String(row.role || 'agent').toUpperCase()),
-        h(Text, { color: 'gray' }, ': '),
-        h(Text, { color: 'white' }, row.title)
-      );
-    }
-    if (row.kind === 'status') {
-      const dots = '.'.repeat((loaderTick % 3) + 1);
-      const phase = msg.phase;
-      const color =
-        phase === 'sending'
-          ? 'yellowBright'
-          : phase === 'queued'
-            ? 'cyanBright'
-            : phase === 'tooling'
-              ? 'magentaBright'
-            : phase === 'generating'
-              ? 'greenBright'
-            : 'cyanBright';
-      return h(
-        Box,
-        { key: `row-status-${msg.id}-${idx}`, marginTop: 1 },
-        h(Text, { color: 'gray' }, '  '),
-        h(Text, { color }, `${row.text}${dots}`)
-      );
-    }
-    if (row.kind === 'quote') {
-      return h(
-        Box,
-        { key: `row-quote-${msg.id}-${idx}`, marginTop: 1, marginLeft: 1, paddingLeft: 1 },
-        h(Text, { color: 'yellow' }, '▍ '),
-        h(Text, { color: row.color }, ...renderInlineCode(row.text, row.color))
-      );
-    }
-    if (row.kind === 'tree') {
-      return h(
-        Box,
-        { key: `row-tree-${msg.id}-${idx}`, marginLeft: 1 },
-        h(Text, { color: row.color }, row.text)
-      );
-    }
-    if (row.kind === 'code') {
-      return h(
-        Box,
-        { key: `row-code-${msg.id}-${idx}`, marginLeft: 1 },
-        h(Text, { color: 'gray' }, row.text)
-      );
-    }
-    return renderTextLine(msg, row.text, idx, row.color);
-  });
+  const rendered = renderMessageRowsInOrder(msg, visibleRows, loaderTick, copy);
 
   return h(
     Box,
@@ -1336,7 +1468,7 @@ function PendingPanel({ pendingQueue, copy }) {
   return h(
     Box,
     {
-      marginTop: 1,
+      marginTop: 0,
       flexDirection: 'column',
       borderStyle: 'round',
       borderColor: 'cyan',
@@ -1416,11 +1548,10 @@ function InputBar({
       ),
       h(
         Box,
-        null,
-        h(Text, { color: 'black', backgroundColor: 'greenBright' }, ` ${copy.generic.safeMode} `),
-        inputStage !== 'idle' || busy ? h(Text, { color: status.color }, `  ${status.tag}`) : null,
-        pendingQueueLength > 0 ? h(Text, { color: 'cyanBright' }, `  ${copy.generic.queued} ${pendingQueueLength}`) : null,
-        h(Text, { color: showToolDetails ? 'greenBright' : 'gray' }, `  ${copy.generic.tools} ${showToolDetails ? copy.generic.open : copy.generic.collapsed}`)
+        { flexDirection: 'column', alignItems: 'flex-end' },
+        h(Text, { color: showToolDetails ? 'greenBright' : 'gray' }, ` ${copy.generic.tools} ${showToolDetails ? copy.generic.open : copy.generic.collapsed}`),
+        pendingQueueLength > 0 ? h(Text, { color: 'cyanBright' }, ` ${copy.generic.queued} ${pendingQueueLength}`) : null,
+        inputStage !== 'idle' || busy ? h(Text, { color: status.color }, ` ${status.tag}`) : null
       )
     ),
     h(
@@ -1503,6 +1634,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
   const [runtimeStatus, setRuntimeStatus] = useState(
     makeIdleStatus(copy, runtime.getRuntimeState?.(), 'ready')
   );
+  const [runtimeState, setRuntimeState] = useState(runtime.getRuntimeState?.() || null);
   const [inputStage, setInputStage] = useState('idle');
   const [planState, setPlanState] = useState({
     current: 0,
@@ -1519,12 +1651,17 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
   const activeUserMessageIdRef = useRef(null);
   const cursorIndexRef = useRef(0);
   const inFlightRef = useRef(false);
+  const messagesRef = useRef([]);
   const pendingQueueRef = useRef([]);
   const deltaBufferRef = useRef('');
   const deltaFlushTimerRef = useRef(null);
   const escSeqRef = useRef('');
   const planTextBufferRef = useRef('');
   const { exit } = useApp();
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
   const startupHint = copy.generic.startupHint;
   const isBackspaceKey = (value, key) =>
     Boolean(key?.backspace) || value === '\u0008' || value === '\u007f' || (key?.ctrl && value === 'h');
@@ -1565,6 +1702,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
     if (!snapshot) return;
     setDisplaySessionId(snapshot.sessionId || sessionId);
     setDisplayModel(snapshot.model || model);
+    setRuntimeState(snapshot);
     setRuntimeStatus(makeIdleStatus(copy, snapshot, variant));
   };
 
@@ -1815,7 +1953,18 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
           updatePlanProgressFromText(event.text);
           setRuntimeStatus(makeStatus(copy.runtime.generatingReply, copy.runtime.streamingReply, 'greenBright'));
           setInputStage('streaming');
-          setActiveAssistantMeta({ loading: true, phase: 'generating', liveStatus: copy.runtime.generatingReply });
+          setActiveAssistantMeta((() => {
+            const targetId = activeAssistantIdRef.current;
+            let liveStatus = copy.runtime.generatingReply;
+            if (targetId) {
+              const current = messagesRef.current?.find?.((m) => m.id === targetId);
+              const segments = Array.isArray(current?.segments) ? current.segments : [];
+              if (segments.some((segment) => (segment.type === 'tool' || segment.type === 'skill') && isCodeActivityName(segment.name))) {
+                liveStatus = copy.runtime.generatingCode;
+              }
+            }
+            return { loading: true, phase: 'generating', liveStatus };
+          })());
           queueAssistantDelta(event.text);
         }
         if (event?.type === 'assistant:response') {
@@ -1835,7 +1984,11 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
           const detail = describeToolActivity(event.name, copy);
           setRuntimeStatus(makeStatus(copy.runtime.toolRunning, detail, 'magentaBright'));
           setInputStage('tooling');
-          setActiveAssistantMeta({ loading: true, phase: 'tooling', liveStatus: detail });
+          setActiveAssistantMeta({
+            loading: true,
+            phase: 'tooling',
+            liveStatus: isCodeActivityName(event.name) ? copy.runtime.generatingCode : detail
+          });
           updateActivityStatusOnActiveAssistant({
             type: 'tool',
             id: event.id,
@@ -2386,7 +2539,6 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
     Box,
     { flexDirection: 'column' },
     h(Header, { sessionId: displaySessionId, model: displayModel, shellName }),
-    h(RuntimeStrip, { busy, runtimeStatus, loaderTick, copy }),
     h(MessageList, {
       messages: visibleMessages,
       loaderTick,
@@ -2396,12 +2548,17 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
     }),
     h(
       Box,
-      { marginTop: 1 },
+      { marginTop: 0, marginBottom: 0, justifyContent: 'space-between', width: '100%' },
       h(
-        Text,
-        { color: 'gray' },
-        `${showToolDetails ? copy.generic.toolSummaryExpanded : copy.generic.toolSummaryCollapsed} (${copy.generic.toggleToolSummary})  ·  ${copy.generic.scrollHint}`
-      )
+        Box,
+        { flexGrow: 1 },
+        h(
+          Text,
+          { color: 'gray' },
+          `${showToolDetails ? copy.generic.toolSummaryExpanded : copy.generic.toolSummaryCollapsed} (${copy.generic.toggleToolSummary})  ·  ${copy.generic.scrollHint}`
+        )
+      ),
+      h(ContextProgressMeter, { runtimeState, runtimeStatus, compact: true })
     ),
     h(SuggestionPanel, { commandSuggestions, suggestionNav, menuIndex, copy }),
     h(PendingPanel, { pendingQueue, copy }),

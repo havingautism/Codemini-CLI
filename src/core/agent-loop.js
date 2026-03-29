@@ -26,11 +26,19 @@ function summarizeToolResult(result) {
       const p = String(obj.path || '');
       const action = String(obj.action || 'write');
       const line = Number(obj.changed_line || 1);
-      const preview = String(obj.diff_preview || '')
-        .split('\n')
-        .slice(0, 3)
-        .join('\n');
-      return `${action} ${p} @L${line}${preview ? `\n${preview}` : ''}`;
+      const suffix =
+        action === 'delete'
+          ? 'deleted'
+          : action === 'create'
+            ? 'created'
+            : action === 'patch'
+              ? 'patched'
+              : action === 'replace_block' || action === 'replace_text'
+                ? 'edited'
+                : action === 'append'
+                  ? 'appended'
+                  : 'updated';
+      return p ? `${suffix} ${p}${line > 0 ? ` @L${line}` : ''}` : suffix;
     }
     if ('path' in obj && 'phase' in obj) {
       const phase = String(obj.phase || '');
@@ -79,6 +87,13 @@ function summarizeToolResult(result) {
       const logs = Array.isArray(obj.recent_logs) ? trimInline(obj.recent_logs.slice(-1)[0] || '', 96) : '';
       return `${taskId || 'service logs'}${logs ? `\n${logs}` : ''}`;
     }
+    if ('files' in obj && Array.isArray(obj.files)) {
+      return `patched ${obj.files.length} file(s)`;
+    }
+    if ('diff' in obj && 'new_hash' in obj && 'path' in obj) {
+      const p = String(obj.path || '');
+      return p ? `diff preview for ${p}` : 'diff preview';
+    }
     if ('created' in obj && Array.isArray(obj.created)) {
       return `created ${obj.created.length} task(s)`;
     }
@@ -98,21 +113,45 @@ function trimInline(value, maxLen = 72) {
   return `${s.slice(0, maxLen - 3)}...`;
 }
 
+function normalizeToolCallName(name) {
+  return String(name || '').trim();
+}
+
 function formatToolDisplayName(name, args) {
-  if (name === 'read_file' || name === 'write_file') {
+  if (name === 'grep') {
+    const query = trimInline(args?.pattern || args?.query || args?.symbol || '', 96);
+    return query ? `grep("${query}")` : 'grep';
+  }
+  if (name === 'glob') {
+    const pattern = trimInline(args?.pattern || '', 96);
+    return pattern ? `glob("${pattern}")` : 'glob';
+  }
+  if (name === 'list') {
     const target = trimInline(args?.path || '.', 96) || '.';
-    if (name === 'read_file') {
+    return `list(${target})`;
+  }
+  if (name === 'read' || name === 'write') {
+    const target = trimInline(args?.path || '.', 96) || '.';
+    if (name === 'read') {
       const start = Number(args?.start_line);
       const end = Number(args?.end_line);
       const hasRange = Number.isFinite(start) && start > 0;
       const suffix = hasRange ? `:${start}-${Number.isFinite(end) && end >= start ? end : start}` : '';
-      return `${name}(${target}${suffix})`;
+      return `read(${target}${suffix})`;
     }
-    return `${name}(${target})`;
+    return `write(${target})`;
   }
-  if (name === 'run_command') {
+  if (name === 'run') {
     const command = trimInline(args?.command || '', 96);
-    return command ? `${name}(${command})` : name;
+    return command ? `run(${command})` : name;
+  }
+  if (name === 'edit') {
+    const target = trimInline(args?.path || args?.file || '.', 96) || '.';
+    return `edit(${target})`;
+  }
+  if (name === 'patch') {
+    const target = trimInline(args?.path || args?.file || args?.patch || '', 96) || '.';
+    return `patch(${target})`;
   }
   if (name === 'start_service') {
     const command = trimInline(args?.command || args?.cmd || '', 96);
@@ -125,20 +164,7 @@ function formatToolDisplayName(name, args) {
     const taskId = trimInline(args?.task_id || args?.taskId || '', 96);
     return taskId ? `${name}(${taskId})` : name;
   }
-  if (
-    name === 'locate' ||
-    name === 'open_target' ||
-    name === 'edit_target' ||
-    name === 'search_code' ||
-    name === 'read_block' ||
-    name === 'read_symbol_context' ||
-    name === 'validate_edit' ||
-    name === 'replace_block' ||
-    name === 'replace_text' ||
-    name === 'insert_before' ||
-    name === 'insert_after' ||
-    name === 'generate_diff'
-  ) {
+  if (name === 'read' || name === 'write' || name === 'run' || name === 'grep' || name === 'glob' || name === 'list' || name === 'edit' || name === 'patch' || name === 'generate_diff') {
     const target = trimInline(args?.path || args?.query || args?.symbol || '', 96);
     return target ? `${name}(${target})` : name;
   }
@@ -218,15 +244,16 @@ export async function runAgentLoop({
 
     for (const call of toolCalls) {
       const args = safeJsonParse(call.arguments);
-      const displayName = formatToolDisplayName(call.name, args);
+      const toolName = normalizeToolCallName(call.name);
+      const displayName = formatToolDisplayName(toolName, args);
       const startedAt = Date.now();
       let approved = true;
-      if (executionMode === 'normal' && !alwaysAllowSet.has(call.name)) {
+      if (executionMode === 'normal' && !alwaysAllowSet.has(toolName)) {
         approved = false;
         if (typeof requestToolApproval === 'function') {
           const decision = await requestToolApproval({
             id: call.id,
-            name: call.name,
+            name: toolName,
             displayName,
             arguments: args
           });
@@ -255,7 +282,7 @@ export async function runAgentLoop({
       }
 
       if (onEvent) onEvent({ type: 'tool:start', name: displayName, id: call.id });
-      const handler = toolHandlers[call.name];
+      const handler = toolHandlers[toolName];
       if (!handler) {
         throw new Error(`Unknown tool: ${call.name}`);
       }

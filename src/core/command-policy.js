@@ -16,13 +16,13 @@ function suggestionForToken(token, config) {
   const shell = String(config?.shell?.default || '').toLowerCase();
   if (token === 'find' || token === 'grep') {
     return shell === 'powershell'
-      ? 'Prefer structured tools like locate and open_target first. If you need shell fallback, use allowed search and context commands such as Get-ChildItem, Select-String, Get-Content, or rg when available.'
-      : 'Prefer structured tools like locate and open_target first. If you need shell fallback, use allowed search and context commands such as rg, find, grep, sed, cat, or ls.';
+      ? 'Prefer structured tools like grep, list, read, and edit first. If you need shell fallback, use allowed search and context commands such as Get-ChildItem, Select-String, Get-Content, or rg when available.'
+      : 'Prefer structured tools like grep, glob, list, read, and edit first. If you need shell fallback, use allowed search and context commands such as rg, find, grep, sed, cat, or ls.';
   }
   if (shell === 'powershell') {
-    return 'Prefer structured tools like locate, open_target, and edit_target first. If you need shell fallback, use allowed shell commands for search and local context such as Get-ChildItem, Get-Content, Select-String, or rg when available.';
+    return 'Prefer structured tools like read, edit, write, grep, and list first. If you need shell fallback, use allowed shell commands for search and local context such as Get-ChildItem, Get-Content, Select-String, or rg when available.';
   }
-  return 'Prefer structured tools like locate, open_target, and edit_target first. If you need shell fallback, use allowed shell commands for search and local context such as rg, find, grep, sed, cat, or ls.';
+  return 'Prefer structured tools like read, edit, write, grep, glob, and list first. If you need shell fallback, use allowed shell commands for search and local context such as rg, find, grep, sed, cat, or ls.';
 }
 
 export function evaluateCommandPolicy(command, config, workspaceRoot = process.cwd()) {

@@ -19,13 +19,13 @@ It is designed for teams that want a coding assistant that feels practical, cont
 
 ### Highlights
 
-- Minimal default tools: `run_command`, `read_file`, `write_file`
+- Minimal default tools: `run`, `read`, `write`
 - Windows-aware shell profile with PowerShell-focused defaults
 - Safe mode enabled by default
 - Built-in lite skills for planning, execution, and collaboration
 - Configurable reply language through `ui.reply_language` (`zh` / `en`)
 - Richer slash completion with priority sorting, inline descriptions, and left/right paging
-- Structured code tools for small models: `locate`, `open_target`, `edit_target`
+- Structured code tools for small models: `grep`, `read`, `edit`
 - More conservative `plan auto` acceptance checks with reviewer/tester goal checklists
 - Tone presets through `soul`, without changing plans or code behavior
 - Example soul presets include `professional`, `playful`, `anime`, `pirate`, `caveman`, and `ceo`
@@ -66,7 +66,7 @@ codemini skill list|install|enable|disable|inspect|reindex
 - Slash completion now prioritizes important commands and config keys, shows short descriptions, and supports `←/→` page switching
 - Ambiguous feature requests can pause for lightweight brainstorming first, and `/brainstorm <question>` gives an explicit way to compare options before coding
 - `plan auto` now turns the original goal into an acceptance checklist, uses a lighter chain only for truly tiny tasks, and treats unmet checklist items as failure signals
-- Structured code tools reduce shell-noise for small models by preferring `locate -> open_target -> edit_target`
+- Structured code tools reduce shell-noise for small models by preferring `grep/read -> edit`
 
 ### Skill Loading
 
@@ -134,13 +134,13 @@ CodeMini CLI 是一个为小模型工作流优化过的代码助手 CLI，重点
 
 ### 主要特点
 
-- 默认工具极简：`run_command`、`read_file`、`write_file`
+- 默认工具极简：`run`、`read`、`write`
 - 面向 Windows 的 PowerShell 默认配置
 - safe mode 默认开启
 - 内置 lite skills，覆盖规划、执行和协作
 - 支持通过 `ui.reply_language` 配置回复语言，当前支持 `zh` / `en`
 - slash 补全支持优先级排序、右侧简短说明和左右分页
-- 为小模型补了结构化代码工具：`locate`、`open_target`、`edit_target`
+- 为小模型补了结构化代码工具：`grep`、`read`、`edit`
 - `plan auto` 会基于原始目标生成验收清单，并更保守地处理 reviewer/tester 结果
 - `soul` 只影响语气，不影响计划和代码行为
 - 可用的 `soul` 示例包括 `professional`、`playful`、`anime`、`pirate`、`caveman`、`ceo`
@@ -181,7 +181,7 @@ codemini skill list|install|enable|disable|inspect|reindex
 - slash 补全会优先展示更重要的命令和配置项，显示简短说明，并支持 `←/→` 翻页
 - 对于需求仍不明确的功能请求，CLI 会先偏向轻量 brainstorm；也可以显式使用 `/brainstorm <问题>` 先比较方案再决定是否编码
 - `plan auto` 会先把原始目标展开成验收清单；只有真正很小的任务才会走轻量链路；如果 reviewer 或 tester 标记了未满足或未验证的验收项，就不会按成功处理
-- 为了减少小模型被 shell 原始输出干扰，新增了 `locate -> open_target -> edit_target` 这套结构化代码工具流
+- 为了减少小模型被 shell 原始输出干扰，新增了 `grep/read -> edit` 这套结构化代码工具流
 
 ### Skill 加载位置
 

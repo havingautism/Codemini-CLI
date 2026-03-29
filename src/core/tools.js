@@ -115,6 +115,67 @@ function splitLines(text) {
   return String(text || '').split('\n');
 }
 
+function findUniqueLineBlock(lines, blockContent) {
+  const probeLines = splitLines(blockContent);
+  if (probeLines.length === 0 || (probeLines.length === 1 && probeLines[0] === '')) return null;
+  const matches = [];
+  const lastStart = lines.length - probeLines.length;
+  for (let start = 0; start <= lastStart; start += 1) {
+    let ok = true;
+    for (let offset = 0; offset < probeLines.length; offset += 1) {
+      if (lines[start + offset] !== probeLines[offset]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) {
+      matches.push({
+        start_line: start + 1,
+        end_line: start + probeLines.length,
+        content: probeLines.join('\n')
+      });
+      if (matches.length > 1) break;
+    }
+  }
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function resolveReplaceBlockTarget(state, target) {
+  const startLine = Number(target?.start_line);
+  const endLine = Number(target?.end_line);
+  const oldHash = String(target?.old_hash || '');
+  const currentBlock =
+    Number.isFinite(startLine) && Number.isFinite(endLine) && startLine > 0 && endLine >= startLine
+      ? state.lines.slice(startLine - 1, endLine).join('\n')
+      : '';
+
+  if (oldHash && currentBlock && oldHash === sha256(currentBlock)) {
+    return {
+      start_line: startLine,
+      end_line: endLine,
+      old_hash: oldHash,
+      old_content: currentBlock,
+      relocated: false
+    };
+  }
+
+  const oldContent = String(target?.old_content || '');
+  if (oldContent) {
+    const relocated = findUniqueLineBlock(state.lines, oldContent);
+    if (relocated) {
+      return {
+        start_line: relocated.start_line,
+        end_line: relocated.end_line,
+        old_hash: sha256(relocated.content),
+        old_content: relocated.content,
+        relocated: true
+      };
+    }
+  }
+
+  return null;
+}
+
 function detectTextFile(filePath) {
   return TEXT_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
@@ -154,6 +215,63 @@ async function walkTextFiles(root, startPath = '.', fileTypes = []) {
 
   await visit(abs);
   return out;
+}
+
+async function walkWorkspaceEntries(root, startPath = '.', { includeHidden = false } = {}) {
+  const abs = resolveInWorkspace(root, startPath);
+  const out = [];
+
+  async function visit(current) {
+    const stat = await fs.stat(current);
+    const relative = toWorkspaceRelative(root, current) || '.';
+    const name = path.basename(current);
+
+    if (!includeHidden && name.startsWith('.') && relative !== '.') return;
+    if (stat.isDirectory()) {
+      if (SKIP_DIRS.has(name) && relative !== '.') return;
+      out.push({ path: relative, name, type: 'dir' });
+      const entries = await fs.readdir(current);
+      for (const entry of entries) {
+        await visit(path.join(current, entry));
+      }
+      return;
+    }
+
+    out.push({ path: relative, name, type: 'file' });
+  }
+
+  await visit(abs);
+  return out;
+}
+
+function globToRegex(pattern) {
+  const normalized = String(pattern || '').replace(/\\/g, '/').trim();
+  let regexBody = '';
+  for (let i = 0; i < normalized.length; i += 1) {
+    const ch = normalized[i];
+    const next = normalized[i + 1];
+    const afterNext = normalized[i + 2];
+    if (ch === '*' && next === '*' && afterNext === '/') {
+      regexBody += '(?:.*/)?';
+      i += 2;
+      continue;
+    }
+    if (ch === '*' && next === '*') {
+      regexBody += '.*';
+      i += 1;
+      continue;
+    }
+    if (ch === '*') {
+      regexBody += '[^/]*';
+      continue;
+    }
+    if (ch === '?') {
+      regexBody += '[^/]';
+      continue;
+    }
+    regexBody += /[-/\\^$+?.()|[\]{}]/.test(ch) ? `\\${ch}` : ch;
+  }
+  return new RegExp(`^${regexBody}$`);
 }
 
 function getLineColumnForMatch(line, query, caseSensitive = false) {
@@ -407,6 +525,129 @@ function buildUnifiedDiff(oldContent, newContent, filePath = 'file') {
   return body.join('\n');
 }
 
+function parseUnifiedPatch(patchText) {
+  const lines = splitLines(String(patchText || ''));
+  const files = [];
+  let current = null;
+
+  const pushCurrent = () => {
+    if (current) files.push(current);
+  };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line.startsWith('--- ')) {
+      pushCurrent();
+      current = {
+        oldPath: line.slice(4).trim(),
+        newPath: '',
+        hunks: []
+      };
+      continue;
+    }
+    if (!current) continue;
+    if (line.startsWith('+++ ')) {
+      current.newPath = line.slice(4).trim();
+      continue;
+    }
+    if (line.startsWith('@@ ')) {
+      const match = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+      if (!match) {
+        throw new Error(`invalid patch hunk header: ${line}`);
+      }
+      const hunk = {
+        oldStart: Number(match[1]),
+        oldCount: Number(match[2] || '1'),
+        newStart: Number(match[3]),
+        newCount: Number(match[4] || '1'),
+        lines: []
+      };
+      i += 1;
+      while (i < lines.length) {
+        const hunkLine = lines[i];
+        if (hunkLine.startsWith('@@ ') || hunkLine.startsWith('--- ')) {
+          i -= 1;
+          break;
+        }
+        if (hunkLine.startsWith('\\ No newline at end of file')) {
+          i += 1;
+          continue;
+        }
+        if (hunkLine === '') {
+          hunk.lines.push(' ');
+          i += 1;
+          continue;
+        }
+        if (!/^[ +\-]/.test(hunkLine)) {
+          hunk.lines.push(` ${hunkLine}`);
+          i += 1;
+          continue;
+        }
+        if (!/^[ +\-]/.test(hunkLine)) {
+          throw new Error(`invalid patch line: ${hunkLine}`);
+        }
+        hunk.lines.push(hunkLine);
+        i += 1;
+      }
+      current.hunks.push(hunk);
+    }
+  }
+
+  pushCurrent();
+  return files.filter((file) => file.oldPath || file.newPath);
+}
+
+function applyHunkToLines(lines, hunk) {
+  const oldChunk = [];
+  const newChunk = [];
+  for (const line of hunk.lines) {
+    if (line.startsWith(' ')) {
+      const text = line.slice(1);
+      oldChunk.push(text);
+      newChunk.push(text);
+      continue;
+    }
+    if (line.startsWith('-')) {
+      oldChunk.push(line.slice(1));
+      continue;
+    }
+    if (line.startsWith('+')) {
+      newChunk.push(line.slice(1));
+    }
+  }
+
+  if (oldChunk.length === 0) {
+    const insertAt = Math.max(0, Number(hunk.oldStart || 1) - 1);
+    return [...lines.slice(0, insertAt), ...newChunk, ...lines.slice(insertAt)];
+  }
+
+  const lastStart = Math.max(0, lines.length - oldChunk.length);
+  const matches = [];
+  for (let start = 0; start <= lastStart; start += 1) {
+    let ok = true;
+    for (let offset = 0; offset < oldChunk.length; offset += 1) {
+      if (lines[start + offset] !== oldChunk[offset]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) {
+      matches.push(start);
+      if (matches.length > 1) break;
+    }
+  }
+
+  if (matches.length === 0) {
+    throw new Error('patch hunk context not found');
+  }
+  if (matches.length > 1) {
+    throw new Error('patch hunk context not unique');
+  }
+
+  const start = matches[0];
+  return [...lines.slice(0, start), ...newChunk, ...lines.slice(start + oldChunk.length)];
+}
+
 async function getFileState(root, relativePath) {
   const target = resolveInWorkspace(root, relativePath);
   const stat = await fs.stat(target);
@@ -452,7 +693,7 @@ async function readFile(root, args) {
       suggested_start_line: startLine,
       suggested_end_line: endLine,
       read_token: readToken,
-      next: 'Call read_file again with include_content=true and this read_token'
+      next: 'Call read again with include_content=true and this read_token'
     };
   }
 
@@ -492,16 +733,16 @@ async function readFile(root, args) {
 async function writeFile(root, args) {
   const rawPath = String(args?.path || '').trim();
   if (!rawPath) {
-    throw new Error('write_file requires a file path like weather/WeatherForecast.js');
+    throw new Error('write requires a file path like weather/WeatherForecast.js');
   }
   if (rawPath === '.' || rawPath === './') {
-    throw new Error('write_file requires a file path, not the workspace root');
+    throw new Error('write requires a file path, not the workspace root');
   }
   const target = resolveInWorkspace(root, rawPath);
   try {
     const stat = await fs.stat(target);
     if (stat.isDirectory()) {
-      throw new Error(`write_file target is a directory: ${rawPath}`);
+      throw new Error(`write target is a directory: ${rawPath}`);
     }
   } catch (error) {
     if (error?.code && error.code !== 'ENOENT') throw error;
@@ -515,7 +756,7 @@ async function writeFile(root, args) {
   }
   if (existed && !args?.append && !args?.full_file_rewrite && isCodeLikePath(rawPath)) {
     throw new Error(
-      'write_file blocks full overwrite for existing code files by default. Use locate -> open_target -> edit_target for minimal edits, or pass full_file_rewrite=true when a full-file rewrite is truly intended.'
+      'write blocks full overwrite for existing code files by default. Use grep/read -> edit for minimal edits, or pass full_file_rewrite=true when a whole-file rewrite is truly intended.'
     );
   }
   await fs.mkdir(path.dirname(target), { recursive: true });
@@ -549,10 +790,10 @@ async function writeFile(root, args) {
 async function runCommand(root, config, args) {
   const command = args?.command || '';
   if (!command.trim()) {
-    throw new Error('run_command requires command');
+    throw new Error('run requires command');
   }
   if (isLikelyLongRunningCommand(command)) {
-    throw new Error('Command looks like a long-running service. Use start_service instead of run_command.');
+    throw new Error('Command looks like a long-running service. Use start_service instead of run.');
   }
   if (
     !config.policy.allow_dangerous_commands &&
@@ -933,6 +1174,81 @@ async function searchCode(root, args) {
   };
 }
 
+async function grep(root, args) {
+  const pattern = String(args?.pattern || args?.query || '').trim();
+  if (!pattern) throw new Error('grep requires pattern');
+  const maxResults = Math.max(1, Math.min(200, Number(args?.max_results || 50)));
+  const caseSensitive = Boolean(args?.case_sensitive);
+  const files = await walkTextFiles(root, args?.path || '.', normalizeFileTypes(args));
+  const regex = args?.regex
+    ? new RegExp(pattern, caseSensitive ? 'g' : 'gi')
+    : new RegExp(escapeRegex(pattern), caseSensitive ? 'g' : 'gi');
+  const matches = [];
+
+  for (const filePath of files) {
+    const content = await fs.readFile(filePath, 'utf8');
+    const lines = splitLines(content);
+    for (let idx = 0; idx < lines.length; idx += 1) {
+      const line = String(lines[idx] || '');
+      regex.lastIndex = 0;
+      const found = regex.exec(line);
+      if (!found) continue;
+      matches.push({
+        path: toWorkspaceRelative(root, filePath),
+        line: idx + 1,
+        column: Math.max(1, Number(found.index || 0) + 1),
+        preview: trimLinePreview(line)
+      });
+      if (matches.length >= maxResults) {
+        return { pattern, matches, truncated: true };
+      }
+    }
+  }
+
+  return { pattern, matches, truncated: false };
+}
+
+async function glob(root, args) {
+  const pattern = String(args?.pattern || '').trim();
+  if (!pattern) throw new Error('glob requires pattern');
+  const maxResults = Math.max(1, Math.min(500, Number(args?.max_results || 200)));
+  const regex = globToRegex(pattern);
+  const entries = await walkWorkspaceEntries(root, args?.path || '.', {
+    includeHidden: Boolean(args?.include_hidden)
+  });
+  const matches = entries
+    .filter((entry) => entry.type === 'file' && regex.test(entry.path))
+    .slice(0, maxResults)
+    .map((entry) => entry.path);
+  return {
+    pattern,
+    matches,
+    truncated: entries.filter((entry) => entry.type === 'file' && regex.test(entry.path)).length > matches.length
+  };
+}
+
+async function list(root, args) {
+  const relativePath = String(args?.path || '.').trim() || '.';
+  const target = resolveInWorkspace(root, relativePath);
+  const entries = await fs.readdir(target, { withFileTypes: true });
+  const includeHidden = Boolean(args?.include_hidden);
+  const items = entries
+    .filter((entry) => includeHidden || !entry.name.startsWith('.'))
+    .map((entry) => ({
+      name: entry.name,
+      path: path.posix.join(relativePath === '.' ? '' : relativePath.replace(/\\/g, '/'), entry.name) || entry.name,
+      type: entry.isDirectory() ? 'dir' : 'file'
+    }))
+    .sort((left, right) => {
+      if (left.type !== right.type) return left.type === 'dir' ? -1 : 1;
+      return left.path.localeCompare(right.path);
+    });
+  return {
+    path: relativePath,
+    items
+  };
+}
+
 async function readBlock(root, args) {
   const relativePath = String(args?.path || '').trim();
   if (!relativePath) throw new Error('read_block requires path');
@@ -985,17 +1301,25 @@ async function validateEdit(root, args) {
     if (!Number.isFinite(startLine) || !Number.isFinite(endLine) || startLine <= 0 || endLine < startLine) {
       throw new Error('replace_block validation requires target.start_line and target.end_line');
     }
-    const oldBlock = lines.slice(startLine - 1, endLine).join('\n');
+    const resolved = resolveReplaceBlockTarget({ content, lines }, {
+      start_line: startLine,
+      end_line: endLine,
+      old_hash: args?.target?.old_hash,
+      old_content: args?.target?.old_content
+    });
+    const oldBlock = resolved?.old_content || lines.slice(startLine - 1, endLine).join('\n');
     return {
       ok: true,
       path: relativePath,
       kind,
       target: {
-        start_line: startLine,
-        end_line: endLine,
-        old_hash: sha256(oldBlock)
+        start_line: resolved?.start_line || startLine,
+        end_line: resolved?.end_line || endLine,
+        old_hash: sha256(oldBlock),
+        old_content: oldBlock
       },
-      file_hash: sha256(content)
+      file_hash: sha256(content),
+      relocated: Boolean(resolved?.relocated)
     };
   }
 
@@ -1035,18 +1359,19 @@ async function replaceBlock(root, args) {
   const relativePath = String(args?.path || '').trim();
   const newContent = String(args?.new_content || args?.content || '');
   const target = args?.target || {};
-  const startLine = Number(target.start_line);
-  const endLine = Number(target.end_line);
-  const oldHash = String(target.old_hash || '');
   const state = await getFileState(root, relativePath);
-  const oldBlock = state.lines.slice(startLine - 1, endLine).join('\n');
-  if (!oldHash || oldHash !== sha256(oldBlock)) {
-    throw new Error('replace_block old_hash mismatch');
+  const resolved = resolveReplaceBlockTarget(state, target);
+  if (!resolved) {
+    throw new Error('replace_block old_hash mismatch; retry through edit with a symbol or line hint');
   }
-  const nextLines = [...state.lines.slice(0, startLine - 1), ...splitLines(newContent), ...state.lines.slice(endLine)];
+  const nextLines = [
+    ...state.lines.slice(0, resolved.start_line - 1),
+    ...splitLines(newContent),
+    ...state.lines.slice(resolved.end_line)
+  ];
   const afterContent = nextLines.join('\n');
   await fs.writeFile(state.target, afterContent, 'utf8');
-  return editResult(relativePath, 'replace_block', state.content, afterContent, startLine);
+  return editResult(relativePath, 'replace_block', state.content, afterContent, resolved.start_line);
 }
 
 async function replaceText(root, args) {
@@ -1056,7 +1381,11 @@ async function replaceText(root, args) {
   const state = await getFileState(root, relativePath);
   const occurrences = state.content.split(oldText).length - 1;
   if (occurrences !== 1) {
-    throw new Error(occurrences === 0 ? 'replace_text old_text not found' : 'replace_text old_text not unique');
+    throw new Error(
+      occurrences === 0
+        ? 'replace_text old_text not found; use edit with a symbol or line hint for block edits'
+        : 'replace_text old_text not unique; use a larger unique fragment or retry through edit'
+    );
   }
   const afterContent = state.content.replace(oldText, newText);
   await fs.writeFile(state.target, afterContent, 'utf8');
@@ -1093,16 +1422,55 @@ async function generateDiff(root, args) {
   };
 }
 
-async function locate(root, args) {
-  const result = await searchCode(root, args);
-  return {
-    query: result.query,
-    matches: result.matches,
-    definitions: result.definitions,
-    references: result.references,
-    text_matches: result.text_matches,
-    truncated: result.truncated
-  };
+async function applyPatch(root, args) {
+  const patchText = String(args?.patch || args?.content || '').trim();
+  if (!patchText) throw new Error('patch requires patch content');
+  const files = parseUnifiedPatch(patchText);
+  if (files.length === 0) throw new Error('patch contains no file changes');
+
+  const results = [];
+  for (const fileChange of files) {
+    const newPath = String(fileChange.newPath || '').trim();
+    const oldPath = String(fileChange.oldPath || '').trim();
+    const targetPath = newPath && newPath !== '/dev/null' ? newPath : oldPath;
+    if (!targetPath || targetPath === '/dev/null') {
+      throw new Error('patch requires a target file path');
+    }
+    const absTarget = resolveInWorkspace(root, targetPath);
+    let beforeContent = '';
+    let beforeLines = [];
+    try {
+      beforeContent = await fs.readFile(absTarget, 'utf8');
+      beforeLines = splitLines(beforeContent);
+    } catch (error) {
+      if (!(error && error.code === 'ENOENT')) throw error;
+    }
+
+    let nextLines = beforeLines;
+    for (const hunk of fileChange.hunks) {
+      nextLines = applyHunkToLines(nextLines, hunk);
+    }
+    const afterContent = nextLines.join('\n');
+
+    if (newPath === '/dev/null') {
+      await fs.rm(absTarget, { force: true });
+      results.push({
+        path: targetPath,
+        action: 'delete',
+        changed_line: 1,
+        diff_preview: `deleted ${targetPath}`,
+        diff: buildUnifiedDiff(beforeContent, '', targetPath),
+        new_hash: sha256('')
+      });
+      continue;
+    }
+
+    await fs.mkdir(path.dirname(absTarget), { recursive: true });
+    await fs.writeFile(absTarget, afterContent, 'utf8');
+    results.push(editResult(targetPath, beforeContent ? 'patch' : 'create', beforeContent, afterContent, 1));
+  }
+
+  return results.length === 1 ? results[0] : { ok: true, files: results };
 }
 
 async function openTarget(root, args) {
@@ -1125,10 +1493,11 @@ async function openTarget(root, args) {
     symbol: symbol || undefined,
     main_block: block,
     related: mainBlock.related || { imports: [], local_symbols: [] },
-    edit_target: {
+    edit: {
       start_line: block.start_line,
       end_line: block.end_line,
-      old_hash: sha256(block.content)
+      old_hash: sha256(block.content),
+      old_content: block.content
     }
   };
 }
@@ -1137,9 +1506,16 @@ function normalizeEditTargetArgs(args = {}) {
   const file = String(args?.file || args?.path || '').trim();
   const nestedEdit = args?.edit && typeof args.edit === 'object' ? args.edit : null;
   if (nestedEdit) {
+    const normalizedEdit = { ...nestedEdit };
+    if (normalizedEdit.new_content == null && normalizedEdit.content != null) {
+      normalizedEdit.new_content = normalizedEdit.content;
+    }
+    if (normalizedEdit.new_text == null && normalizedEdit.content != null && normalizedEdit.old_text != null) {
+      normalizedEdit.new_text = normalizedEdit.content;
+    }
     return {
       file,
-      edit: nestedEdit
+      edit: normalizedEdit
     };
   }
   return {
@@ -1160,13 +1536,35 @@ async function editTarget(root, args) {
   const normalized = normalizeEditTargetArgs(args);
   const file = normalized.file;
   const edit = normalized.edit || {};
-  const kind = String(edit.kind || '').trim();
-  if (!file || !kind) throw new Error('edit_target requires file and edit.kind');
+  let kind = String(edit.kind || '').trim();
+  const hasContent = edit.new_content != null || edit.content != null;
+  const hasTargetHint = Boolean(edit.symbol || args?.symbol || edit.line || args?.line || edit.target);
+  if (!kind) {
+    if (hasContent && hasTargetHint) {
+      kind = 'replace_block';
+    } else if (edit.old_text != null && (edit.new_text != null || edit.content != null)) {
+      kind = 'replace_text';
+    } else if ((edit.anchor_text != null || edit.target_text != null) && (edit.content != null || edit.new_content != null)) {
+      kind = String(edit.position || edit.mode || args?.position || '').trim() === 'after' ? 'insert_after' : 'insert_before';
+    } else if (hasContent) {
+      kind = 'rewrite_file';
+    }
+  }
+  if (!file || !kind) throw new Error('edit requires file and edit.kind');
   if (kind === 'replace_block') {
+    const resolvedTarget =
+      edit.target ||
+      (
+        await openTarget(root, {
+          file,
+          symbol: edit.symbol || args?.symbol,
+          line: edit.line || args?.line
+        })
+      ).edit;
     try {
       return await replaceBlock(root, {
         path: file,
-        target: edit.target,
+        target: resolvedTarget,
         new_content: edit.new_content
       });
     } catch (error) {
@@ -1174,7 +1572,7 @@ async function editTarget(root, args) {
       const validation = await validateEdit(root, {
         path: file,
         kind: 'replace_block',
-        target: edit.target
+        target: resolvedTarget
       });
       return replaceBlock(root, {
         path: file,
@@ -1196,7 +1594,14 @@ async function editTarget(root, args) {
   if (kind === 'insert_after') {
     return insertRelative(root, { path: file, anchor_text: edit.anchor_text, content: edit.content }, 'insert_after');
   }
-  throw new Error(`edit_target does not support kind: ${kind}`);
+  if (kind === 'rewrite_file') {
+    return writeFile(root, {
+      path: file,
+      content: edit.new_content ?? edit.content ?? '',
+      full_file_rewrite: true
+    });
+  }
+  throw new Error(`edit does not support kind: ${kind}`);
 }
 
 export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
@@ -1204,88 +1609,18 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
     {
       type: 'function',
       function: {
-        name: 'locate',
-        description: 'High-level search that returns compact candidate code locations',
-        parameters: {
-          type: 'object',
-          properties: {
-            query: { type: 'string' },
-            path: { type: 'string' },
-            max_results: { type: 'number' },
-            language: { type: 'string' },
-            file_types: { type: 'array', items: { type: 'string' } }
-          },
-          required: ['query']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'open_target',
-        description: 'Open a candidate location and return the smallest useful code block plus edit metadata',
-        parameters: {
-          type: 'object',
-          properties: {
-            file: { type: 'string' },
-            path: { type: 'string' },
-            line: { type: 'number' },
-            symbol: { type: 'string' },
-            max_related_calls: { type: 'number' },
-            max_related_imports: { type: 'number' },
-            max_related_types: { type: 'number' }
-          },
-          required: ['file']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'edit_target',
-        description: 'Apply a validated high-level edit against an opened target',
-        parameters: {
-          type: 'object',
-          properties: {
-            file: { type: 'string' },
-            path: { type: 'string' },
-            edit: { type: 'object' }
-          },
-          required: ['file', 'edit']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'search_code',
-        description: 'Search code and return structured top matches with file, line, preview, and basic match kind',
-        parameters: {
-          type: 'object',
-          properties: {
-            query: { type: 'string' },
-            path: { type: 'string' },
-            max_results: { type: 'number' },
-            case_sensitive: { type: 'boolean' },
-            language: { type: 'string' },
-            file_types: { type: 'array', items: { type: 'string' } }
-          },
-          required: ['query']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'read_block',
-        description: 'Read the smallest likely code block around a symbol or line from a file',
+        name: 'read',
+        description:
+          'Primary read tool. First call returns metadata+read_token, second call with include_content=true and matching read_token returns content',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string' },
-            symbol: { type: 'string' },
-            line: { type: 'number' },
-            anchor_line: { type: 'number' }
+            start_line: { type: 'number' },
+            end_line: { type: 'number' },
+            max_chars: { type: 'number' },
+            include_content: { type: 'boolean' },
+            read_token: { type: 'string' }
           },
           required: ['path']
         }
@@ -1294,102 +1629,111 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
     {
       type: 'function',
       function: {
-        name: 'read_symbol_context',
-        description: 'Read a symbol block plus import and local symbol summaries',
+        name: 'grep',
+        description: 'Search file contents using a plain string or regex pattern and return compact matches',
         parameters: {
           type: 'object',
           properties: {
+            pattern: { type: 'string' },
+            query: { type: 'string' },
             path: { type: 'string' },
-            symbol: { type: 'string' },
-            max_related_calls: { type: 'number' },
-            max_related_imports: { type: 'number' },
-            max_related_types: { type: 'number' }
+            regex: { type: 'boolean' },
+            case_sensitive: { type: 'boolean' },
+            max_results: { type: 'number' },
+            language: { type: 'string' },
+            file_types: { type: 'array', items: { type: 'string' } }
           },
-          required: ['path', 'symbol']
+          required: ['pattern']
         }
       }
     },
     {
       type: 'function',
       function: {
-        name: 'validate_edit',
-        description: 'Validate whether an edit target is stable before applying it',
+        name: 'glob',
+        description: 'Find files by glob pattern such as **/*.ts or src/**/*.tsx',
+        parameters: {
+          type: 'object',
+          properties: {
+            pattern: { type: 'string' },
+            path: { type: 'string' },
+            include_hidden: { type: 'boolean' },
+            max_results: { type: 'number' }
+          },
+          required: ['pattern']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'list',
+        description: 'List files and directories in a workspace path',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string' },
+            include_hidden: { type: 'boolean' }
+          }
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'edit',
+        description:
+          'Preferred edit tool for existing files. Accepts natural forms such as file + new_content for whole-file rewrites, file + symbol/line + new_content for block edits, file + old_text + new_text for exact replacements, and file + anchor_text + content for anchored inserts. A nested edit object is also supported.',
+        parameters: {
+          type: 'object',
+          properties: {
+            file: { type: 'string' },
+            path: { type: 'string' },
+            new_content: { type: 'string' },
+            old_text: { type: 'string' },
+            new_text: { type: 'string' },
+            anchor_text: { type: 'string' },
+            content: { type: 'string' },
+            position: { type: 'string' },
             kind: { type: 'string' },
             target: { type: 'object' },
-            start_line: { type: 'number' },
-            end_line: { type: 'number' },
-            old_text: { type: 'string' },
-            anchor_text: { type: 'string' }
+            symbol: { type: 'string' },
+            line: { type: 'number' },
+            edit: { type: 'object' },
           },
-          required: ['path', 'kind']
+          required: ['file']
         }
       }
     },
     {
       type: 'function',
       function: {
-        name: 'replace_block',
-        description: 'Replace a validated line block using an old_hash guard',
+        name: 'write',
+        description:
+          'Primary write tool. Create a UTF-8 text file or overwrite an existing file. Existing code files require full_file_rewrite=true for whole-file overwrites.',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string' },
-            target: { type: 'object' },
-            new_content: { type: 'string' }
+            content: { type: 'string' },
+            append: { type: 'boolean' },
+            full_file_rewrite: { type: 'boolean' }
           },
-          required: ['path', 'target', 'new_content']
+          required: ['path', 'content']
         }
       }
     },
     {
       type: 'function',
       function: {
-        name: 'replace_text',
-        description: 'Replace a unique text fragment in a file',
+        name: 'run',
+        description: 'Primary run tool. Execute a one-shot shell command in workspace. Do not use for long-running services.',
         parameters: {
           type: 'object',
           properties: {
-            path: { type: 'string' },
-            old_text: { type: 'string' },
-            new_text: { type: 'string' }
+            command: { type: 'string' }
           },
-          required: ['path', 'old_text', 'new_text']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'insert_before',
-        description: 'Insert text before a unique anchor string',
-        parameters: {
-          type: 'object',
-          properties: {
-            path: { type: 'string' },
-            anchor_text: { type: 'string' },
-            content: { type: 'string' }
-          },
-          required: ['path', 'anchor_text', 'content']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'insert_after',
-        description: 'Insert text after a unique anchor string',
-        parameters: {
-          type: 'object',
-          properties: {
-            path: { type: 'string' },
-            anchor_text: { type: 'string' },
-            content: { type: 'string' }
-          },
-          required: ['path', 'anchor_text', 'content']
+          required: ['command']
         }
       }
     },
@@ -1411,52 +1755,15 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
     {
       type: 'function',
       function: {
-        name: 'read_file',
-        description:
-          'Two-phase read: first call returns metadata+read_token; second call with include_content=true and matching read_token returns content',
+        name: 'patch',
+        description: 'Apply one or more unified diff hunks to files in the workspace',
         parameters: {
           type: 'object',
           properties: {
-            path: { type: 'string' },
-            start_line: { type: 'number' },
-            end_line: { type: 'number' },
-            max_chars: { type: 'number' },
-            include_content: { type: 'boolean' },
-            read_token: { type: 'string' }
+            patch: { type: 'string' },
+            content: { type: 'string' }
           },
-          required: ['path']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'write_file',
-        description:
-          'Write a UTF-8 text file in workspace. Always provide a full file path, not a directory. Existing code files require full_file_rewrite=true for whole-file overwrites.',
-        parameters: {
-          type: 'object',
-          properties: {
-            path: { type: 'string' },
-            content: { type: 'string' },
-            append: { type: 'boolean' },
-            full_file_rewrite: { type: 'boolean' }
-          },
-          required: ['path', 'content']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'run_command',
-        description: 'Execute a one-shot shell command in workspace. Do not use for long-running services.',
-        parameters: {
-          type: 'object',
-          properties: {
-            command: { type: 'string' }
-          },
-          required: ['command']
+          required: ['patch']
         }
       }
     },
@@ -1542,27 +1849,10 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
         }
       }
     }
-  ];
+  ].filter(Boolean);
 
   const handlers = {
-    locate: (args) => locate(workspaceRoot, args),
-    open_target: (args) => openTarget(workspaceRoot, args),
-    edit_target: (args) => editTarget(workspaceRoot, args),
-    search_code: (args) => searchCode(workspaceRoot, args),
-    read_block: (args) => readBlock(workspaceRoot, args),
-    read_symbol_context: (args) => readSymbolContext(workspaceRoot, args),
-    validate_edit: (args) => validateEdit(workspaceRoot, args),
-    replace_block: (args) => replaceBlock(workspaceRoot, args),
-    replace_text: (args) => replaceText(workspaceRoot, args),
-    insert_before: (args) => insertRelative(workspaceRoot, args, 'insert_before'),
-    insert_after: (args) => insertRelative(workspaceRoot, args, 'insert_after'),
-    generate_diff: (args) => generateDiff(workspaceRoot, args),
-    start_service: (args) => startService(workspaceRoot, config, args),
-    list_services: () => listServices(workspaceRoot),
-    get_service_status: (args) => getServiceStatus(workspaceRoot, args),
-    get_service_logs: (args) => getServiceLogs(workspaceRoot, args),
-    stop_service: (args) => stopService(workspaceRoot, args),
-    read_file: (args) =>
+    read: (args) =>
       readFile(workspaceRoot, {
         ...args,
         default_lines: config.context?.read_file_default_lines ?? 220,
@@ -1571,8 +1861,19 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
             ? args.max_chars
             : config.context?.read_file_max_chars ?? 24000
       }),
-    write_file: (args) => writeFile(workspaceRoot, args),
-    run_command: (args) => runCommand(workspaceRoot, config, args)
+    grep: (args) => grep(workspaceRoot, args),
+    glob: (args) => glob(workspaceRoot, args),
+    list: (args) => list(workspaceRoot, args),
+    edit: (args) => editTarget(workspaceRoot, args),
+    generate_diff: (args) => generateDiff(workspaceRoot, args),
+    patch: (args) => applyPatch(workspaceRoot, args),
+    write: (args) => writeFile(workspaceRoot, args),
+    run: (args) => runCommand(workspaceRoot, config, args),
+    start_service: (args) => startService(workspaceRoot, config, args),
+    list_services: () => listServices(workspaceRoot),
+    get_service_status: (args) => getServiceStatus(workspaceRoot, args),
+    get_service_logs: (args) => getServiceLogs(workspaceRoot, args),
+    stop_service: (args) => stopService(workspaceRoot, args)
   };
 
   return { definitions, handlers };

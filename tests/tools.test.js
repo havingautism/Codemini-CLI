@@ -27,7 +27,7 @@ async function makeToolsWithConfig(workspaceRoot, mutate) {
   return getBuiltinTools({ workspaceRoot, config });
 }
 
-test('search_code returns structured top matches with basic classification', async () => {
+test('grep returns structured top matches for content discovery', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     await fs.mkdir(path.join(workspaceRoot, 'src', 'auth'), { recursive: true });
     await fs.writeFile(
@@ -58,22 +58,56 @@ test('search_code returns structured top matches with basic classification', asy
     );
 
     const { handlers } = await makeTools(workspaceRoot);
-    const result = await handlers.search_code({ query: 'login', path: 'src', max_results: 10 });
+    const result = await handlers.grep({ pattern: 'login', path: 'src', max_results: 10 });
 
-    assert.equal(result.query, 'login');
+    assert.equal(result.pattern, 'login');
     assert.ok(Array.isArray(result.matches));
-    assert.ok(Array.isArray(result.definitions));
-    assert.ok(Array.isArray(result.references));
-    assert.ok(Array.isArray(result.text_matches));
-    assert.equal(result.matches[0].file, 'src/auth/service.ts');
-    assert.equal(result.matches[0].kind, 'definition');
-    assert.equal(result.matches[1].kind, 'reference');
-    assert.equal(result.definitions[0].file, 'src/auth/service.ts');
-    assert.equal(result.references[0].file, 'src/auth/controller.ts');
+    assert.ok(result.matches.some((item) => item.path === 'src/auth/service.ts' && item.line === 3));
+    assert.ok(result.matches.some((item) => item.path === 'src/auth/controller.ts' && item.line === 1));
   });
 });
 
-test('read_block and read_symbol_context return minimal structured code context', async () => {
+test('opencode-style primary tools read grep glob and list work for discovery flows', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src', 'auth'), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'auth', 'service.ts'),
+      ['export async function login(user) {', "  return `hi ${user}`;", '}'].join('\n'),
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'index.ts'),
+      ["export * from './auth/service';"].join('\n'),
+      'utf8'
+    );
+
+    const { handlers } = await makeTools(workspaceRoot);
+
+    const listed = await handlers.list({ path: 'src' });
+    assert.equal(listed.path, 'src');
+    assert.ok(listed.items.some((item) => item.type === 'dir' && item.name === 'auth'));
+
+    const globbed = await handlers.glob({ pattern: 'src/**/*.ts' });
+    assert.ok(globbed.matches.includes('src/auth/service.ts'));
+    assert.ok(globbed.matches.includes('src/index.ts'));
+
+    const grepped = await handlers.grep({ pattern: 'login', path: 'src' });
+    assert.ok(grepped.matches.some((item) => item.path === 'src/auth/service.ts'));
+
+    const metadata = await handlers.read({ path: 'src/auth/service.ts' });
+    assert.equal(metadata.phase, 'metadata');
+
+    const content = await handlers.read({
+      path: 'src/auth/service.ts',
+      include_content: true,
+      read_token: metadata.read_token
+    });
+    assert.equal(content.phase, 'content');
+    assert.match(content.content, /login/);
+  });
+});
+
+test('read returns minimal structured code context windows', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     await fs.mkdir(path.join(workspaceRoot, 'src', 'auth'), { recursive: true });
     await fs.writeFile(
@@ -95,22 +129,22 @@ test('read_block and read_symbol_context return minimal structured code context'
     );
 
     const { handlers } = await makeTools(workspaceRoot);
-    const block = await handlers.read_block({ path: 'src/auth/service.ts', symbol: 'login' });
-    assert.equal(block.file, 'src/auth/service.ts');
-    assert.equal(block.symbol, 'login');
-    assert.match(block.content, /export async function login/);
-    assert.ok(block.end_line >= block.start_line);
-
-    const context = await handlers.read_symbol_context({ path: 'src/auth/service.ts', symbol: 'login' });
-    assert.equal(context.file, 'src/auth/service.ts');
-    assert.equal(context.symbol, 'login');
-    assert.match(context.main_block.content, /hashPassword/);
-    assert.equal(context.related.imports.length, 2);
-    assert.ok(context.related.local_symbols.some((item) => item.name === 'helperValue'));
+    const meta = await handlers.read({ path: 'src/auth/service.ts', start_line: 1, end_line: 11 });
+    assert.equal(meta.phase, 'metadata');
+    const context = await handlers.read({
+      path: 'src/auth/service.ts',
+      start_line: 1,
+      end_line: 11,
+      include_content: true,
+      read_token: meta.read_token
+    });
+    assert.equal(context.phase, 'content');
+    assert.match(context.content, /export async function login/);
+    assert.match(context.content, /helperValue/);
   });
 });
 
-test('edit tools apply stable minimal edits and produce validation metadata', async () => {
+test('edit applies stable minimal edits through symbol-targeted block replacement', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
     const targetPath = path.join(workspaceRoot, 'src', 'service.ts');
@@ -127,33 +161,24 @@ test('edit tools apply stable minimal edits and produce validation metadata', as
     );
 
     const { handlers } = await makeTools(workspaceRoot);
-    const validation = await handlers.validate_edit({
-      path: 'src/service.ts',
-      kind: 'replace_block',
-      target: { start_line: 3, end_line: 5 }
-    });
-    assert.equal(validation.ok, true);
-    assert.ok(validation.target.old_hash.startsWith('sha256:'));
-
-    const replaced = await handlers.replace_block({
-      path: 'src/service.ts',
-      target: { start_line: 3, end_line: 5, old_hash: validation.target.old_hash },
-      new_content: ['export function loginResult(value) {', '  return { ok: true, value };', '}'].join('\n')
+    const replaced = await handlers.edit({
+      file: 'src/service.ts',
+      symbol: 'loginResult',
+      edit: {
+        kind: 'replace_block',
+        new_content: ['export function loginResult(value) {', '  return { ok: true, value };', '}'].join('\n')
+      }
     });
     assert.equal(replaced.ok, true);
     assert.match(replaced.diff, /\+  return \{ ok: true, value \};/);
 
-    const inserted = await handlers.insert_after({
-      path: 'src/service.ts',
-      anchor_text: "import { api } from './api';",
-      content: "\nimport { normalize } from './normalize';"
-    });
-    assert.equal(inserted.ok, true);
-
-    const textReplaced = await handlers.replace_text({
-      path: 'src/service.ts',
-      old_text: 'return { ok: true, value };',
-      new_text: 'return normalize({ ok: true, value });'
+    const textReplaced = await handlers.edit({
+      file: 'src/service.ts',
+      edit: {
+        kind: 'replace_text',
+        old_text: 'return { ok: true, value };',
+        new_text: 'return normalize({ ok: true, value });'
+      }
     });
     assert.equal(textReplaced.ok, true);
 
@@ -179,7 +204,43 @@ test('generate_diff compares current file with proposed content', async () => {
   });
 });
 
-test('write_file blocks full overwrite for existing code files unless explicitly allowed', async () => {
+test('patch applies a unified diff to a file', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'demo.tsx'),
+      [
+        "import React from 'react';",
+        '',
+        'export function Demo() {',
+        '  return <div className="demo">Old</div>;',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const result = await handlers.patch({
+      patch: [
+        '--- src/demo.tsx',
+        '+++ src/demo.tsx',
+        '@@ -1,5 +1,5 @@',
+        " import React from 'react';",
+        '',
+        ' export function Demo() {',
+        '-  return <div className="demo">Old</div>;',
+        '+  return <div className="demo">New</div>;',
+        '}'
+      ].join('\n')
+    });
+
+    assert.equal(result.ok, true);
+    const after = await fs.readFile(path.join(workspaceRoot, 'src', 'demo.tsx'), 'utf8');
+    assert.match(after, /New/);
+  });
+});
+
+test('write blocks full overwrite for existing code files unless explicitly allowed', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
     const targetPath = path.join(workspaceRoot, 'src', 'demo.ts');
@@ -189,29 +250,29 @@ test('write_file blocks full overwrite for existing code files unless explicitly
 
     await assert.rejects(
       () =>
-        handlers.write_file({
+        handlers.write({
           path: 'src/demo.ts',
           content: 'export const value = 2;\n'
         }),
-      /full_file_rewrite|edit_target|open_target|locate/i
+      /full_file_rewrite|edit|grep|read/i
     );
   });
 });
 
-test('write_file still allows new files and explicit full rewrites for code files', async () => {
+test('write still allows new files and explicit full rewrites for code files', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
     await fs.writeFile(path.join(workspaceRoot, 'src', 'demo.ts'), 'export const value = 1;\n', 'utf8');
 
     const { handlers } = await makeTools(workspaceRoot);
 
-    const created = await handlers.write_file({
+    const created = await handlers.write({
       path: 'src/new-file.ts',
       content: 'export const created = true;\n'
     });
     assert.equal(created.action, 'create');
 
-    const overwritten = await handlers.write_file({
+    const overwritten = await handlers.write({
       path: 'src/demo.ts',
       content: 'export const value = 2;\n',
       full_file_rewrite: true
@@ -223,7 +284,27 @@ test('write_file still allows new files and explicit full rewrites for code file
   });
 });
 
-test('locate, open_target, and edit_target provide a compact high-level workflow', async () => {
+test('opencode-style write and run tools execute through the existing runtime', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {
+      config.shell.default = 'bash';
+      config.policy.command_allowlist = ['printf'];
+    });
+
+    const written = await handlers.write({
+      path: 'notes.txt',
+      content: 'hello\n'
+    });
+    assert.equal(written.action, 'create');
+
+    const result = await handlers.run({
+      command: 'printf ok'
+    });
+    assert.equal(result.stdout, 'ok');
+  });
+});
+
+test('grep and edit provide a compact high-level workflow', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     await fs.mkdir(path.join(workspaceRoot, 'src', 'auth'), { recursive: true });
     await fs.writeFile(
@@ -239,25 +320,15 @@ test('locate, open_target, and edit_target provide a compact high-level workflow
     );
 
     const { handlers } = await makeTools(workspaceRoot);
-    const located = await handlers.locate({ query: 'login', path: 'src' });
+    const located = await handlers.grep({ pattern: 'login', path: 'src', max_results: 5 });
     assert.ok(Array.isArray(located.matches));
-    assert.ok(Array.isArray(located.definitions));
-    assert.equal(located.matches[0].file, 'src/auth/service.ts');
+    assert.equal(located.matches[0].path, 'src/auth/service.ts');
 
-    const opened = await handlers.open_target({
-      file: located.matches[0].file,
-      line: located.matches[0].line,
-      symbol: 'login'
-    });
-    assert.equal(opened.file, 'src/auth/service.ts');
-    assert.match(opened.main_block.content, /api\.login/);
-    assert.ok(opened.edit_target.old_hash.startsWith('sha256:'));
-
-    const edited = await handlers.edit_target({
-      file: opened.file,
+    const edited = await handlers.edit({
+      file: located.matches[0].path,
+      symbol: 'login',
       edit: {
         kind: 'replace_block',
-        target: opened.edit_target,
         new_content: [
           'export async function login(user, password) {',
           '  const response = await api.login(user, password);',
@@ -272,7 +343,39 @@ test('locate, open_target, and edit_target provide a compact high-level workflow
   });
 });
 
-test('edit_target accepts top-level edit fields as a compatibility fallback', async () => {
+test('builtin tool definitions expose only current primary and structured tools', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const config = await loadConfig();
+    const { definitions, handlers } = getBuiltinTools({ workspaceRoot, config });
+    const names = definitions.map((tool) => tool.function.name);
+
+    assert.ok(names.includes('read'));
+    assert.ok(names.includes('grep'));
+    assert.ok(names.includes('glob'));
+    assert.ok(names.includes('list'));
+    assert.ok(names.includes('edit'));
+    assert.ok(names.includes('write'));
+    assert.ok(names.includes('run'));
+    assert.ok(!names.includes('locate'));
+    assert.ok(!names.includes('search_code'));
+    assert.ok(!names.includes('read_block'));
+    assert.ok(!names.includes('read_symbol_context'));
+    assert.ok(!names.includes('open_target'));
+    assert.ok(!names.includes('edit_target'));
+    assert.ok(!names.includes('replace_block'));
+    assert.ok(!names.includes('replace_text'));
+    assert.ok(!names.includes('insert_before'));
+    assert.ok(!names.includes('insert_after'));
+    assert.ok(!names.includes('validate_edit'));
+    assert.equal(typeof handlers.replace_block, 'undefined');
+    assert.equal(typeof handlers.read, 'function');
+    assert.equal(typeof handlers.edit, 'function');
+    assert.equal(typeof handlers.write, 'function');
+    assert.equal(typeof handlers.run, 'function');
+  });
+});
+
+test('edit modifies existing files through symbol-targeted blocks', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
     await fs.writeFile(
@@ -282,33 +385,103 @@ test('edit_target accepts top-level edit fields as a compatibility fallback', as
     );
 
     const { handlers } = await makeTools(workspaceRoot);
-    const opened = await handlers.open_target({
+    const edited = await handlers.edit({
       file: 'src/math.js',
-      symbol: 'add'
-    });
-
-    const edited = await handlers.edit_target({
-      file: 'src/math.js',
-      kind: 'replace_block',
-      target: opened.edit_target,
-      new_content: [
-        'export function add(a, b) {',
-        '  return a + b;',
-        '}',
-        '',
-        'export function subtract(a, b) {',
-        '  return a - b;',
-        '}'
-      ].join('\n')
+      symbol: 'add',
+      edit: {
+        kind: 'replace_block',
+        new_content: ['export function add(a, b) {', '  return a + b + 1;', '}'].join('\n')
+      }
     });
 
     assert.equal(edited.ok, true);
     const after = await fs.readFile(path.join(workspaceRoot, 'src', 'math.js'), 'utf8');
-    assert.match(after, /export function subtract/);
+    assert.match(after, /return a \+ b \+ 1;/);
   });
 });
 
-test('run_command rejects long-running service commands and points callers to start_service', async () => {
+test('edit can rewrite a file when given only new_content', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    const targetPath = path.join(workspaceRoot, 'src', 'ProfileCard.tsx');
+    await fs.writeFile(targetPath, [
+      "import React from 'react';",
+      '',
+      'export function ProfileCard() {',
+      '  return <article className="profile-card">Hi</article>;',
+      '}'
+    ].join('\n'), 'utf8');
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const edited = await handlers.edit({
+      file: 'src/ProfileCard.tsx',
+      edit: {
+        new_content: [
+          "import React from 'react';",
+          '',
+          'export function ProfileCard({ compact }: { compact?: boolean }) {',
+          '  return (',
+          '    <article className={compact ? "profile-card compact" : "profile-card"}>',
+          '      Hi',
+          '    </article>',
+          '  );',
+          '}'
+        ].join('\n')
+      }
+    });
+
+    assert.equal(edited.ok, true);
+    const after = await fs.readFile(targetPath, 'utf8');
+    assert.match(after, /compact\?: boolean/);
+    assert.match(after, /profile-card compact/);
+  });
+});
+
+test('edit can recover when the target block shifts to a new line range', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'page.html'),
+      [
+        '<style>',
+        '.hero {',
+        '  color: red;',
+        '}',
+        '</style>',
+        '<div class="hero">',
+        '  Hello',
+        '</div>'
+      ].join('\n'),
+      'utf8'
+    );
+
+    const { handlers } = await makeTools(workspaceRoot);
+
+    await handlers.edit({
+      file: 'src/page.html',
+      edit: {
+        kind: 'insert_before',
+        anchor_text: '<div class="hero">',
+        content: '<section>\n'
+      }
+    });
+
+    const replaced = await handlers.edit({
+      file: 'src/page.html',
+      line: 6,
+      edit: {
+        kind: 'replace_block',
+        new_content: ['<div class="hero">', '  Updated', '</div>'].join('\n')
+      }
+    });
+
+    assert.equal(replaced.ok, true);
+    const after = await fs.readFile(path.join(workspaceRoot, 'src', 'page.html'), 'utf8');
+    assert.match(after, /Updated/);
+  });
+});
+
+test('run rejects long-running service commands and points callers to start_service', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {
       config.shell.default = 'bash';
@@ -316,13 +489,13 @@ test('run_command rejects long-running service commands and points callers to st
     });
 
     await assert.rejects(
-      () => handlers.run_command({ command: 'npm start --silent' }),
+      () => handlers.run({ command: 'npm start --silent' }),
       /start_service/i
     );
   });
 });
 
-test('run_command blocked suggestions prefer structured tools before shell fallback', async () => {
+test('run blocked suggestions prefer structured tools before shell fallback', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {
       config.shell.default = 'bash';
@@ -330,10 +503,10 @@ test('run_command blocked suggestions prefer structured tools before shell fallb
     });
 
     await assert.rejects(
-      () => handlers.run_command({ command: 'perl -e "print 1"' }),
+      () => handlers.run({ command: 'perl -e "print 1"' }),
       (error) => {
-        assert.match(String(error?.message || ''), /locate/i);
-        assert.match(String(error?.message || ''), /open_target/i);
+        assert.match(String(error?.message || ''), /read/i);
+        assert.match(String(error?.message || ''), /edit/i);
         assert.match(String(error?.message || ''), /shell fallback/i);
         return true;
       }
@@ -533,7 +706,7 @@ test('start_service confirms dotnet and go-style startup output', async () => {
   });
 });
 
-test('read_block detects JSX component blocks and indentation-based Python functions', async () => {
+test('edit resolves JSX and Python blocks from symbol hints', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     await fs.mkdir(path.join(workspaceRoot, 'src', 'ui'), { recursive: true });
     await fs.mkdir(path.join(workspaceRoot, 'backend'), { recursive: true });
@@ -573,25 +746,44 @@ test('read_block detects JSX component blocks and indentation-based Python funct
     );
 
     const { handlers } = await makeTools(workspaceRoot);
-    const jsxBlock = await handlers.read_block({ path: 'src/ui/LoginForm.tsx', symbol: 'LoginForm' });
-    assert.equal(jsxBlock.start_line, 3);
-    assert.equal(jsxBlock.end_line, 10);
-    assert.match(jsxBlock.content, /<section>/);
-    assert.doesNotMatch(jsxBlock.content, /OtherView/);
+    const jsxEdit = await handlers.edit({
+      file: 'src/ui/LoginForm.tsx',
+      symbol: 'LoginForm',
+      edit: {
+        kind: 'replace_block',
+        new_content: [
+          'export function LoginForm() {',
+          '  return (',
+          '    <section>',
+          '      <h1>Sign in</h1>',
+          '      <button>Submit</button>',
+          '    </section>',
+          '  );',
+          '}'
+        ].join('\n')
+      }
+    });
+    assert.equal(jsxEdit.ok, true);
 
-    const pythonBlock = await handlers.read_block({ path: 'backend/auth.py', symbol: 'login' });
-    assert.equal(pythonBlock.start_line, 1);
-    assert.equal(pythonBlock.end_line, 5);
-    assert.match(pythonBlock.content, /raise ValueError/);
-    assert.doesNotMatch(pythonBlock.content, /def logout/);
-
-    const opened = await handlers.open_target({ file: 'src/ui/LoginForm.tsx', symbol: 'LoginForm' });
-    assert.equal(opened.main_block.start_line, 3);
-    assert.equal(opened.main_block.end_line, 10);
+    const pythonEdit = await handlers.edit({
+      file: 'backend/auth.py',
+      symbol: 'login',
+      edit: {
+        kind: 'replace_block',
+        new_content: [
+          'def login(user, password):',
+          '    token = issue_token(user)',
+          '    if not token:',
+          "        raise ValueError('missing token')",
+          '    return token.strip()'
+        ].join('\n')
+      }
+    });
+    assert.equal(pythonEdit.ok, true);
   });
 });
 
-test('search filters by language and open_target returns bounded call summaries', async () => {
+test('grep filters by language and glob narrows candidate files', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     await fs.mkdir(path.join(workspaceRoot, 'src', 'auth'), { recursive: true });
     await fs.mkdir(path.join(workspaceRoot, 'backend'), { recursive: true });
@@ -644,26 +836,17 @@ test('search filters by language and open_target returns bounded call summaries'
     );
 
     const { handlers } = await makeTools(workspaceRoot);
-    const tsOnly = await handlers.search_code({ query: 'login', path: '.', language: 'ts' });
-    assert.ok(tsOnly.matches.every((item) => item.file.endsWith('.ts')));
+    const tsOnly = await handlers.grep({ pattern: 'login', path: '.', language: 'ts' });
+    assert.ok(tsOnly.matches.every((item) => item.path.endsWith('.ts')));
 
-    const pyOnly = await handlers.search_code({ query: 'login', path: '.', file_types: ['py'] });
-    assert.ok(pyOnly.matches.every((item) => item.file.endsWith('.py')));
+    const pyOnly = await handlers.grep({ pattern: 'login', path: '.', file_types: ['py'] });
+    assert.ok(pyOnly.matches.every((item) => item.path.endsWith('.py')));
 
-    const javaOnly = await handlers.search_code({ query: 'login', path: '.', language: 'java' });
-    assert.ok(javaOnly.matches.every((item) => item.file.endsWith('.java')));
+    const javaOnly = await handlers.grep({ pattern: 'login', path: '.', language: 'java' });
+    assert.ok(javaOnly.matches.every((item) => item.path.endsWith('.java')));
 
-    const opened = await handlers.open_target({
-      file: 'src/auth/service.ts',
-      symbol: 'login',
-      max_related_calls: 2
-    });
-    assert.ok(Array.isArray(opened.related.calls));
-    assert.equal(opened.related.calls.length, 2);
-    assert.equal(opened.related.calls[0].symbol, 'runLoginFlow');
-    assert.ok(Array.isArray(opened.related.import_signatures));
-    assert.ok(Array.isArray(opened.related.type_signatures));
-    assert.match(opened.related.import_signatures[0], /api/);
-    assert.ok(opened.related.type_signatures.some((item) => /LoginResponse/.test(item)));
+    const tsFiles = await handlers.glob({ pattern: '**/*.ts', path: '.' });
+    assert.ok(tsFiles.matches.includes('src/auth/service.ts'));
+    assert.ok(!tsFiles.matches.includes('backend/auth.py'));
   });
 });

@@ -5,9 +5,11 @@ import {
   findActivityUpdateIndex,
   formatSuggestionDescription,
   getSuggestionPageState,
+  isCodeLikeRow,
   mergeActivitySummary,
   moveSuggestionSelection,
-  normalizeActivitySpacingRows
+  normalizeActivitySpacingRows,
+  splitMessageRows
 } from '../src/tui/chat-app.js';
 
 test('getSuggestionPageState paginates suggestions in fixed-size pages', () => {
@@ -66,8 +68,8 @@ test('findActivityUpdateIndex merges consecutive duplicate read activities', () 
   );
   assert.equal(
     findActivityUpdateIndex(
-      [{ type: 'tool', name: 'read_file(README.md)', status: 'done' }],
-      { type: 'tool', name: 'read_file(README.md)', status: 'running', id: 'raw-read' }
+      [{ type: 'tool', name: 'Read(README.md)', status: 'done' }],
+      { type: 'tool', name: 'Read(README.md)', status: 'running', id: 'raw-read' }
     ),
     0
   );
@@ -78,12 +80,12 @@ test('mergeActivitySummary preserves metadata and content summaries for merged r
     mergeActivitySummary(
       'metadata for README.md lines 1-197 of 197',
       'content from README.md lines 1-197 of 197',
-      'read_file(README.md)'
+      'Read(README.md)'
     ),
     'metadata for README.md lines 1-197 of 197\ncontent from README.md lines 1-197 of 197'
   );
   assert.equal(
-    mergeActivitySummary('metadata for README.md lines 1-197 of 197', 'metadata for README.md lines 1-197 of 197', 'read_file(README.md)'),
+    mergeActivitySummary('metadata for README.md lines 1-197 of 197', 'metadata for README.md lines 1-197 of 197', 'Read(README.md)'),
     'metadata for README.md lines 1-197 of 197'
   );
 });
@@ -106,4 +108,28 @@ test('normalizeActivitySpacingRows trims blank lines before tools and leaves one
   assert.equal(rows[3].text, ' ');
   assert.equal(rows[4].kind, 'text');
   assert.equal(rows[4].text, '现在继续检查 CSS 文件。');
+});
+
+test('isCodeLikeRow classifies tool, code, summary, and status rows together', () => {
+  assert.equal(isCodeLikeRow({ kind: 'activity' }), true);
+  assert.equal(isCodeLikeRow({ kind: 'activity-summary' }), true);
+  assert.equal(isCodeLikeRow({ kind: 'code' }), true);
+  assert.equal(isCodeLikeRow({ kind: 'status' }), true);
+  assert.equal(isCodeLikeRow({ kind: 'text' }), false);
+});
+
+test('splitMessageRows separates narrative text from code-like activity rows', () => {
+  const rows = [
+    { kind: 'text', text: '先读取文件。', color: 'greenBright' },
+    { kind: 'activity', activityType: 'tool', name: 'Write(src/App.js)', status: 'running' },
+    { kind: 'activity-summary', text: '准备写入', color: 'gray' },
+    { kind: 'status', text: '正在生成代码中' },
+    { kind: 'code', text: 'const a = 1;' },
+    { kind: 'quote', text: '> note', color: 'yellow' }
+  ];
+
+  const { textRows, codeRows } = splitMessageRows(rows);
+
+  assert.deepEqual(textRows.map((row) => row.kind), ['text', 'quote']);
+  assert.deepEqual(codeRows.map((row) => row.kind), ['activity', 'activity-summary', 'status', 'code']);
 });
