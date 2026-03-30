@@ -2,13 +2,11 @@ node_modules/
 .npm-cache/
 
 # Local runtime/state
-.company-coder/
-.codemini-cli/
-.npm-pack-cache/
-.coder/
 
-# Local reference clone
-nanocoder-upstream/
+.codemini/
+.npm-pack-cache/
+.codemini-global/
+.codemini-project/
 
 # Build/package artifacts
 *.tgz
@@ -21,7 +19,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-
+.tmp/
+tmp/
 # OS/editor
 .DS_Store
 Thumbs.db

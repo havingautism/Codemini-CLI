@@ -8,16 +8,16 @@ import { createChatRuntime } from '../src/core/chat-runtime.js';
 import { loadConfig } from '../src/core/config-store.js';
 
 async function withTempConfigDir(run) {
-  const prev = process.env.CODEMINI_CONFIG_DIR;
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-config-'));
-  process.env.CODEMINI_CONFIG_DIR = dir;
+  const prev = process.env.CODEMINI_GLOBAL_DIR;
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-global-'));
+  process.env.CODEMINI_GLOBAL_DIR = dir;
   try {
     await run(dir);
   } finally {
     if (prev === undefined) {
-      delete process.env.CODEMINI_CONFIG_DIR;
+      delete process.env.CODEMINI_GLOBAL_DIR;
     } else {
-      process.env.CODEMINI_CONFIG_DIR = prev;
+      process.env.CODEMINI_GLOBAL_DIR = prev;
     }
     await fs.rm(dir, { recursive: true, force: true });
   }
@@ -220,6 +220,55 @@ test('chat runtime injects reply language instructions and updates them after co
       assert.equal(callIndex, 2);
     } finally {
       await restoreFetch();
+    }
+  });
+});
+
+test('chat runtime injects lightweight project index context into the system prompt', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-project-context-'));
+    const previousCwd = process.cwd();
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+      const systemText = String(body.messages?.[0]?.content || '');
+      assert.match(systemText, /Project Context:/);
+      assert.match(systemText, /project_root:/);
+      assert.match(systemText, /languages: ts/);
+      assert.match(systemText, /src\/auth\.ts/);
+      return makeSseResponse([
+        { choices: [{ delta: { content: 'ok' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] }
+      ]);
+    });
+
+    try {
+      process.chdir(cwd);
+      await fs.writeFile(path.join(cwd, 'package.json'), JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2));
+      await fs.mkdir(path.join(cwd, 'src'), { recursive: true });
+      await fs.writeFile(path.join(cwd, 'src', 'auth.ts'), 'export function loginUser(name) { return name; }\n', 'utf8');
+
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-project-context',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const result = await runtime.submit('update loginUser in src/auth.ts');
+      assert.equal(result.text, 'ok');
+    } finally {
+      process.chdir(previousCwd);
+      await restoreFetch();
+      await fs.rm(cwd, { recursive: true, force: true });
     }
   });
 });
@@ -644,7 +693,7 @@ test('plan from-spec includes project implementation constraints in the model pr
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-plan-from-spec-'));
     process.chdir(cwd);
     try {
-      await fs.mkdir(path.join(cwd, '.coder', 'specs'), { recursive: true });
+      await fs.mkdir(path.join(cwd, '.codemini', 'specs'), { recursive: true });
       await fs.mkdir(path.join(cwd, 'src'), { recursive: true });
       await fs.writeFile(
         path.join(cwd, 'package.json'),
@@ -653,7 +702,7 @@ test('plan from-spec includes project implementation constraints in the model pr
       );
       await fs.writeFile(path.join(cwd, 'src', 'math.js'), 'export function add(a, b) { return a + b; }\n', 'utf8');
       await fs.writeFile(path.join(cwd, 'src', 'user.js'), 'export function getUserName(user) { return user?.name || "Guest"; }\n', 'utf8');
-      const specPath = path.join(cwd, '.coder', 'specs', 'demo-spec.md');
+      const specPath = path.join(cwd, '.codemini', 'specs', 'demo-spec.md');
       await fs.writeFile(
         specPath,
         ['# Spec: Demo feature', '', '## 1. Background', 'Need a JS feature extension.'].join('\n'),
@@ -707,6 +756,160 @@ test('plan from-spec includes project implementation constraints in the model pr
       }
     } finally {
       process.chdir(originalCwd);
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('chat runtime bootstraps lightweight project index in .codemini', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const originalCwd = process.cwd();
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-index-bootstrap-'));
+    process.chdir(cwd);
+    try {
+      await fs.mkdir(path.join(cwd, 'src'), { recursive: true });
+      await fs.mkdir(path.join(cwd, 'tests'), { recursive: true });
+      await fs.writeFile(
+        path.join(cwd, 'package.json'),
+        JSON.stringify({ name: 'demo', type: 'module', scripts: { test: 'node --test' } }, null, 2),
+        'utf8'
+      );
+      await fs.writeFile(path.join(cwd, 'src', 'main.ts'), 'export function runApp() { return true; }\n', 'utf8');
+
+      const config = await loadConfig();
+      const now = new Date().toISOString();
+      await createChatRuntime({
+        session: {
+          id: 'session-index-bootstrap',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const projectMap = JSON.parse(await fs.readFile(path.join(cwd, '.codemini-project', 'project-map.json'), 'utf8'));
+      const fileIndex = JSON.parse(await fs.readFile(path.join(cwd, '.codemini-project', 'file-index.json'), 'utf8'));
+
+      assert.equal(projectMap.projectRoot, cwd);
+      assert.ok(projectMap.languages.includes('ts'));
+      assert.ok(projectMap.importantFiles.includes('package.json'));
+      assert.ok(projectMap.sourceRoots.includes('src'));
+      assert.ok(Array.isArray(fileIndex.files));
+      assert.ok(fileIndex.files.some((entry) => entry.file === 'src/main.ts'));
+    } finally {
+      process.chdir(originalCwd);
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('chat runtime exposes startup system tool events for project indexing', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-runtime-index-events-'));
+    const previousCwd = process.cwd();
+    await fs.writeFile(path.join(cwd, 'package.json'), JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2));
+    await fs.mkdir(path.join(cwd, 'src'), { recursive: true });
+    await fs.writeFile(path.join(cwd, 'src', 'main.ts'), 'export const value = 1;\n', 'utf8');
+
+    try {
+      process.chdir(cwd);
+      const config = await loadConfig();
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-startup-index-events',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const startupEvents = runtime.consumeStartupEvents();
+      assert.equal(startupEvents.length, 1);
+      assert.equal(startupEvents[0].type, 'system_tool');
+      assert.equal(startupEvents[0].status, 'done');
+      assert.match(String(startupEvents[0].summary || ''), /\.codemini-project/i);
+      assert.deepEqual(runtime.consumeStartupEvents(), []);
+    } finally {
+      process.chdir(previousCwd);
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('chat runtime skips project indexing in non-project directories', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-runtime-non-project-'));
+    const previousCwd = process.cwd();
+
+    try {
+      process.chdir(cwd);
+      const config = await loadConfig();
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-non-project',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      assert.deepEqual(runtime.consumeStartupEvents(), []);
+      const workspaceStat = await fs.stat(path.join(cwd, '.codemini'));
+      assert.equal(workspaceStat.isDirectory(), true);
+      await assert.rejects(fs.readFile(path.join(cwd, '.codemini-project', 'project-map.json'), 'utf8'));
+      await assert.rejects(fs.readFile(path.join(cwd, '.codemini-project', 'file-index.json'), 'utf8'));
+    } finally {
+      process.chdir(previousCwd);
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('chat runtime project index respects .gitignore for source files', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-runtime-gitignore-'));
+    const previousCwd = process.cwd();
+
+    try {
+      process.chdir(cwd);
+      await fs.writeFile(path.join(cwd, 'package.json'), JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2));
+      await fs.writeFile(path.join(cwd, '.gitignore'), ['ignored/', 'src/secret.ts'].join('\n'), 'utf8');
+      await fs.mkdir(path.join(cwd, 'src'), { recursive: true });
+      await fs.mkdir(path.join(cwd, 'ignored'), { recursive: true });
+      await fs.writeFile(path.join(cwd, 'src', 'main.ts'), 'export const visible = true;\n', 'utf8');
+      await fs.writeFile(path.join(cwd, 'src', 'secret.ts'), 'export const hidden = true;\n', 'utf8');
+      await fs.writeFile(path.join(cwd, 'ignored', 'skip.ts'), 'export const skip = true;\n', 'utf8');
+
+      const config = await loadConfig();
+      const now = new Date().toISOString();
+      await createChatRuntime({
+        session: {
+          id: 'session-gitignore',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const projectMap = JSON.parse(await fs.readFile(path.join(cwd, '.codemini-project', 'project-map.json'), 'utf8'));
+      const fileIndex = JSON.parse(await fs.readFile(path.join(cwd, '.codemini-project', 'file-index.json'), 'utf8'));
+
+      assert.equal(projectMap.gitignoreEnabled, true);
+      assert.ok(fileIndex.files.some((entry) => entry.file === 'src/main.ts'));
+      assert.ok(!fileIndex.files.some((entry) => entry.file === 'src/secret.ts'));
+      assert.ok(!fileIndex.files.some((entry) => entry.file === 'ignored/skip.ts'));
+    } finally {
+      process.chdir(previousCwd);
       await fs.rm(cwd, { recursive: true, force: true });
     }
   });

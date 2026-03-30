@@ -99,6 +99,7 @@ export async function handleChat(args) {
       model: parsed.model || config.model.name,
       language: config.ui?.language || 'zh',
       shellName: config.shell?.default || 'powershell',
+      safeMode: config.policy?.safe_mode !== false,
       version: pkg.version
     })
   );

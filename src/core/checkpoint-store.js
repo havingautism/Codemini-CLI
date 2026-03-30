@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { getProjectCheckpointsDir } from './paths.js';
 
 function checkpointsDir(cwd = process.cwd()) {
-  return path.join(cwd, '.coder', 'checkpoints');
+  return getProjectCheckpointsDir(cwd);
 }
 
 function makeId(name = '') {

@@ -22,6 +22,11 @@ async function makeTools(workspaceRoot) {
   return getBuiltinTools({ workspaceRoot, config });
 }
 
+async function makeToolsWithSystemEvents(workspaceRoot, onSystemEvent) {
+  const config = await loadConfig();
+  return getBuiltinTools({ workspaceRoot, config, onSystemEvent });
+}
+
 async function makeToolsWithConfig(workspaceRoot, mutate) {
   const config = await loadConfig();
   if (typeof mutate === 'function') mutate(config);
@@ -1249,5 +1254,149 @@ test('edit rejects stale AST targets and unsupported AST edit kinds', async () =
         }),
       /range_hash|stale|changed/i
     );
+  });
+});
+
+test('edit refreshes the lightweight project file index after code changes', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, 'package.json'), JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2));
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'math.js'),
+      ['export function add(a, b) {', '  return a + b;', '}'].join('\n'),
+      'utf8'
+    );
+
+    const { handlers } = await makeTools(workspaceRoot);
+    await handlers.edit({
+      file: 'src/math.js',
+      symbol: 'add',
+      edit: {
+        kind: 'replace_block',
+        new_content: ['export function add(a, b) {', '  return a + b + 1;', '}'].join('\n')
+      }
+    });
+
+    const fileIndex = JSON.parse(await fs.readFile(path.join(workspaceRoot, '.codemini-project', 'file-index.json'), 'utf8'));
+    const entry = fileIndex.files.find((item) => item.file === 'src/math.js');
+    assert.ok(entry);
+    assert.ok(entry.exports.includes('add'));
+    assert.ok(entry.functions.includes('add'));
+    assert.ok(entry.hash);
+  });
+});
+
+test('edit emits system tool events for project and file indexing', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, 'package.json'), JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2));
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'service.ts'),
+      ['export function greet(name) {', '  return name;', '}'].join('\n'),
+      'utf8'
+    );
+
+    const events = [];
+    const { handlers } = await makeToolsWithSystemEvents(workspaceRoot, (event) => events.push(event));
+    const result = await handlers.edit({
+      file: 'src/service.ts',
+      symbol: 'greet',
+      edit: {
+        kind: 'replace_block',
+        new_content: ['export function greet(name) {', "  return `hi ${name}`;", '}'].join('\n')
+      }
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(
+      events.map((event) => `${event.type}:${event.name}`),
+      [
+        'system_tool:end:project_index(.codemini-project/project-map.json,.codemini-project/file-index.json)',
+        'system_tool:end:file_index(src/service.ts)'
+      ]
+    );
+    assert.match(String(events[0]?.summary || ''), /\.codemini-project/i);
+    assert.match(String(events[1]?.summary || ''), /\.codemini-project.*src\/service\.ts/i);
+  });
+});
+
+test('ast_query caches the selected node for follow-up read and edit calls', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, 'package.json'),
+      JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2),
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'auth.ts'),
+      [
+        'export function loginUser(name: string) {',
+        '  return name;',
+        '}',
+        '',
+        'export function logoutUser(name: string) {',
+        '  return name.toUpperCase();',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const query = await handlers.ast_query({
+      path: 'src/auth.ts',
+      query: '(function_declaration (identifier) @loginUser)',
+      capture_name: 'loginUser'
+    });
+    const selected = query.matches[0].ast_target;
+
+    const read = await handlers.read_ast_node({
+      path: 'src/auth.ts'
+    });
+    assert.match(read.content, /loginUser/);
+
+    const edited = await handlers.edit({
+      file: 'src/auth.ts',
+      edit: {
+        kind: 'replace_block',
+        new_content: ['export function loginUser(name: string) {', '  return name.trim().toLowerCase();', '}'].join('\n')
+      }
+    });
+
+    assert.equal(edited.ok, true);
+    const after = await fs.readFile(path.join(workspaceRoot, 'src', 'auth.ts'), 'utf8');
+    assert.match(after, /trim\(\)\.toLowerCase\(\)/);
+    assert.match(after, /logoutUser/);
+    assert.ok(selected);
+  });
+});
+
+test('ast_query can satisfy a follow-up read_ast_node call without repeating path', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, 'package.json'),
+      JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2),
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'auth.ts'),
+      [
+        'export function loginUser(name: string) {',
+        '  return name;',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+
+    const { handlers } = await makeTools(workspaceRoot);
+    await handlers.ast_query({
+      path: 'src/auth.ts',
+      query: '(function_declaration (identifier) @loginUser)',
+      capture_name: 'loginUser'
+    });
+
+    const read = await handlers.read_ast_node({});
+    assert.match(read.content, /loginUser/);
   });
 });

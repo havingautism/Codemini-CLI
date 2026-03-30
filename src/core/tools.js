@@ -14,8 +14,9 @@ import {
 } from './shell.js';
 import { evaluateCommandPolicy } from './command-policy.js';
 import { queryAst, readAstNode, resolveAstTarget } from './ast.js';
+import { initializeProjectIndex, refreshIndexedFile } from './project-index.js';
 
-const SKIP_DIRS = new Set(['.git', 'node_modules', '.coder', '.codemini-cli', 'dist', 'coverage']);
+const SKIP_DIRS = new Set(['.git', 'node_modules', '.codemini', '.codemini-global', 'dist', 'coverage']);
 const TEXT_EXTENSIONS = new Set([
   '.js',
   '.jsx',
@@ -1631,7 +1632,85 @@ async function editTarget(root, args) {
   throw new Error(`edit does not support kind: ${kind}`);
 }
 
-export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
+export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSystemEvent }) {
+  const emitSystemTool = (event) => {
+    if (typeof onSystemEvent === 'function' && event) onSystemEvent(event);
+  };
+  const astSelectionCache = new Map();
+  let lastAstTarget = null;
+  const rememberAstSelection = (filePath, astTarget) => {
+    const key = String(filePath || '').trim();
+    if (!key || !astTarget) return;
+    lastAstTarget = astTarget;
+    astSelectionCache.set(key, astTarget);
+  };
+  const hasExplicitBlockHints = (args = {}) =>
+    Boolean(
+      args?.ast_target ||
+        args?.symbol ||
+        args?.line ||
+        args?.target ||
+        args?.edit?.ast_target ||
+        args?.edit?.symbol ||
+        args?.edit?.line ||
+        args?.edit?.target
+    );
+  const resolveCachedAstTarget = (args = {}, { requireAstScope = false } = {}) => {
+    const file = String(args?.path || args?.file || args?.ast_target?.path || '').trim();
+    if (args?.ast_target) return args.ast_target;
+    if (file) {
+      if (requireAstScope && hasExplicitBlockHints(args)) return null;
+      return astSelectionCache.get(file) || lastAstTarget || null;
+    }
+    return lastAstTarget || null;
+  };
+  const ensureProjectIndex = async () => {
+    const eventId = `project-index:${Date.now()}`;
+    const name = 'project_index(.codemini-project/project-map.json,.codemini-project/file-index.json)';
+    try {
+      const result = await initializeProjectIndex(workspaceRoot);
+      if (result?.skipped || !result?.summary) {
+        return result;
+      }
+      emitSystemTool({ type: 'system_tool:end', id: eventId, name, summary: result?.summary });
+      return result;
+    } catch (error) {
+      emitSystemTool({
+        type: 'system_tool:error',
+        id: eventId,
+        name,
+        summary: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
+  };
+  const refreshProjectFile = async (filePath) => {
+    const relativePath = String(filePath || '').trim();
+    if (!relativePath) return null;
+    const eventId = `file-index:${relativePath}:${Date.now()}`;
+    const name = `file_index(${relativePath})`;
+    try {
+      const result = await refreshIndexedFile(workspaceRoot, relativePath);
+      if (!result?.summary) {
+        return result;
+      }
+      emitSystemTool({
+        type: 'system_tool:end',
+        id: eventId,
+        name,
+        summary: result?.summary || `updated .codemini-project for ${relativePath}`
+      });
+      return result;
+    } catch (error) {
+      emitSystemTool({
+        type: 'system_tool:error',
+        id: eventId,
+        name,
+        summary: error instanceof Error ? error.message : String(error)
+      });
+      return null;
+    }
+  };
   const definitions = [
     {
       type: 'function',
@@ -1710,7 +1789,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
       function: {
         name: 'edit',
         description:
-          'Preferred edit tool for existing files. Accepts natural forms such as file + new_content for whole-file rewrites, file + symbol/line + new_content for block edits, file + old_text + new_text for exact replacements, and file + anchor_text + content for anchored inserts. When ast_target is provided, only replace_block is allowed and the write is constrained to that exact syntax node.',
+          'Preferred edit tool for existing files. Accepts natural forms such as file + new_content for whole-file rewrites, file + symbol/line + new_content for block edits, file + old_text + new_text for exact replacements, and file + anchor_text + content for anchored inserts. When ast_target is provided, only replace_block is allowed and the write is constrained to that exact syntax node. If a file has just been selected via ast_query, the cached ast_target may be reused when omitted.',
         parameters: {
           type: 'object',
           properties: {
@@ -1738,7 +1817,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
       function: {
         name: 'ast_query',
         description:
-          'Run a Tree-sitter query against a code file and return explicit ast_target objects that can be passed into read_ast_node or edit for node-scoped changes.',
+          'Run a Tree-sitter query against a code file and return explicit ast_target objects that can be passed into read_ast_node or edit for node-scoped changes. Prefer the returned ast_target verbatim in the next read_ast_node or edit call.',
         parameters: {
           type: 'object',
           properties: {
@@ -1757,7 +1836,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
       function: {
         name: 'read_ast_node',
         description:
-          'Read the current source and compact structural context for a previously selected AST node using ast_target.',
+          'Read the current source and compact structural context for a previously selected AST node using ast_target. If omitted, the most recent ast_query selection for the same file may be reused.',
         parameters: {
           type: 'object',
           properties: {
@@ -1930,12 +2009,44 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
     grep: (args) => grep(workspaceRoot, args),
     glob: (args) => glob(workspaceRoot, args),
     list: (args) => list(workspaceRoot, args),
-    ast_query: (args) => queryAst(workspaceRoot, args),
-    read_ast_node: (args) => readAstNode(workspaceRoot, args),
-    edit: (args) => editTarget(workspaceRoot, args),
+    ast_query: async (args) => {
+      const result = await queryAst(workspaceRoot, args);
+      const firstTarget = result?.matches?.[0]?.ast_target;
+      if (firstTarget?.path) rememberAstSelection(firstTarget.path, firstTarget);
+      return result;
+    },
+    read_ast_node: (args) => {
+      const astTarget = resolveCachedAstTarget(args);
+      if (!astTarget) throw new Error('read_ast_node requires ast_target or a prior ast_query on the same file');
+      if (astTarget.path) rememberAstSelection(astTarget.path, astTarget);
+      return readAstNode(workspaceRoot, { ...args, ast_target: astTarget });
+    },
+    edit: async (args) => {
+      await ensureProjectIndex();
+      const normalizedKind = String(args?.edit?.kind || args?.kind || '').trim();
+      const astTarget = resolveCachedAstTarget(args, { requireAstScope: normalizedKind === 'replace_block' });
+      const result = await editTarget(workspaceRoot, astTarget ? { ...args, ast_target: astTarget } : args);
+      if (result?.path) await refreshProjectFile(result.path);
+      return result;
+    },
     generate_diff: (args) => generateDiff(workspaceRoot, args),
-    patch: (args) => applyPatch(workspaceRoot, args),
-    write: (args) => writeFile(workspaceRoot, args),
+    patch: async (args) => {
+      await ensureProjectIndex();
+      const result = await applyPatch(workspaceRoot, args);
+      if (result?.path) await refreshProjectFile(result.path);
+      if (Array.isArray(result?.files)) {
+        for (const item of result.files) {
+          if (item?.path) await refreshProjectFile(item.path);
+        }
+      }
+      return result;
+    },
+    write: async (args) => {
+      await ensureProjectIndex();
+      const result = await writeFile(workspaceRoot, args);
+      if (result?.path) await refreshProjectFile(result.path);
+      return result;
+    },
     run: (args) => runCommand(workspaceRoot, config, args),
     start_service: (args) => startService(workspaceRoot, config, args),
     list_services: () => listServices(workspaceRoot),

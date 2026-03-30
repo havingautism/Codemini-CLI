@@ -140,6 +140,10 @@ const TUI_COPY = {
       doingCodeGeneration: '正在生成代码',
       doneSkill: '已完成技能',
       doingSkill: '正在执行技能',
+      doneProjectIndex: '已初始化项目索引',
+      doingProjectIndex: '正在初始化项目索引',
+      doneFileIndex: '已刷新文件索引',
+      doingFileIndex: '正在刷新文件索引',
       toolFailed: (name) => `工具执行失败: ${name}`,
       waitingModelContinue: (detail) => `${detail}，等待模型继续`,
       waitingModelAdjust: (detail) => `${detail}，等待模型调整`
@@ -266,6 +270,10 @@ const TUI_COPY = {
       doingCodeGeneration: 'Generating code',
       doneSkill: 'Completed skill',
       doingSkill: 'Running skill',
+      doneProjectIndex: 'Project index initialized',
+      doingProjectIndex: 'Initializing project index',
+      doneFileIndex: 'File index refreshed',
+      doingFileIndex: 'Refreshing file index',
       toolFailed: (name) => `Tool failed: ${name}`,
       waitingModelContinue: (detail) => `${detail}, waiting for model to continue`,
       waitingModelAdjust: (detail) => `${detail}, waiting for model to adjust`
@@ -431,6 +439,12 @@ function getActivityDisplayParts(activity) {
       secondary: `(${activity?.name || 'unknown'})`
     };
   }
+  if ((activity?.type || 'tool') === 'system_tool') {
+    return {
+      primary: 'Index',
+      secondary: parsed.target ? `(${parsed.target})` : parsed.base ? `(${parsed.base})` : ''
+    };
+  }
   const labels = {
     read: 'Read',
     edit: 'Edit',
@@ -457,6 +471,21 @@ function getActivityDisplayParts(activity) {
 
 function describeToolActivity(name, copy, { done = false, blocked = false } = {}) {
   const parsed = parseToolDisplayName(name);
+  if (parsed.base === 'project_index') {
+    return blocked
+      ? `${copy.toolActivity.blocked}: project index`
+      : done
+        ? copy.toolActivity.doneProjectIndex
+        : copy.toolActivity.doingProjectIndex;
+  }
+  if (parsed.base === 'file_index') {
+    const safeTarget = trimText(parsed.target || '.codemini-project/file-index.json', 72);
+    return blocked
+      ? `${copy.toolActivity.blocked}: ${safeTarget}`
+      : done
+        ? `${copy.toolActivity.doneFileIndex}: ${safeTarget}`
+        : `${copy.toolActivity.doingFileIndex}: ${safeTarget}`;
+  }
   if (parsed.base === 'run' || parsed.base === 'start_service') {
     const intent = classifyCommandIntent(parsed.target);
     const target = parsed.target || intent.kind || 'command';
@@ -765,8 +794,11 @@ function PlanStrip({ planState, copy }) {
   );
 }
 
-function Header({ sessionId, model, shellName }) {
+function Header({ sessionId, model, shellName, safeMode = true }) {
   const shortSession = String(sessionId || '').slice(-12) || '-';
+  const modeValue = safeMode ? 'SAFE' : 'OPEN';
+  const modeColor = safeMode ? 'greenBright' : 'redBright';
+  const modeTextColor = safeMode ? 'black' : 'white';
   return h(
     Box,
     { width: '100%', justifyContent: 'center', marginTop: 1, marginBottom: 2 },
@@ -781,12 +813,6 @@ function Header({ sessionId, model, shellName }) {
         alignItems: 'center',
         minWidth: 88
       },
-      h(
-        Box,
-        { width: '100%', justifyContent: 'space-between', marginBottom: 1 },
-        h(Text, { color: 'cyan' }, 'CLI'),
-        h(Text, { color: 'greenBright' }, 'SAFE')
-      ),
       ...BANNER.map((line, idx) =>
         h(
           Box,
@@ -801,8 +827,9 @@ function Header({ sessionId, model, shellName }) {
         Box,
         { flexDirection: 'row', justifyContent: 'center' },
         h(StatusPill, { label: 'MODEL', value: model, color: 'cyanBright', textColor: 'black' }),
-        h(StatusPill, { label: 'SHELL', value: shellName || 'powershell', color: 'greenBright', textColor: 'black' }),
-        h(StatusPill, { label: 'SESSION', value: shortSession, color: 'magentaBright', textColor: 'black' })
+        h(StatusPill, { label: 'SHELL', value: shellName || 'powershell', color: 'yellowBright', textColor: 'black' }),
+        h(StatusPill, { label: 'SESSION', value: shortSession, color: 'magentaBright', textColor: 'black' }),
+        h(StatusPill, { label: 'MODE', value: modeValue, color: modeColor, textColor: modeTextColor })
       )
     )
   );
@@ -1498,10 +1525,12 @@ function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) {
   };
 
   if (Array.isArray(msg?.segments) && msg.segments.length > 0) {
-    const totalTools = msg.segments.filter((segment) => segment.type === 'tool' || segment.type === 'skill').length;
+    const totalTools = msg.segments.filter(
+      (segment) => segment.type === 'tool' || segment.type === 'skill' || segment.type === 'system_tool'
+    ).length;
     let toolIndex = 0;
     for (const segment of msg.segments) {
-      if (segment.type === 'tool' || segment.type === 'skill') {
+      if (segment.type === 'tool' || segment.type === 'skill' || segment.type === 'system_tool') {
         pushActivityRows(segment, toolIndex, totalTools);
         toolIndex += 1;
       } else {
@@ -1548,6 +1577,10 @@ function renderMessageRow(msg, row, idx, loaderTick) {
         ? row.status === 'error'
           ? 'redBright'
           : 'cyanBright'
+        : activity.type === 'system_tool'
+          ? row.status === 'error' || row.status === 'blocked'
+            ? 'redBright'
+            : 'blueBright'
         : row.status === 'error' || row.status === 'blocked'
           ? 'redBright'
           : 'cyanBright';
@@ -2017,7 +2050,7 @@ function makeIdleStatus(copy, snapshot, variant = 'ready') {
   );
 }
 
-export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName = 'powershell', version = '' }) {
+export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName = 'powershell', version = '', safeMode = true }) {
   const copy = getCopy(language);
   const stdoutCols = Number(process.stdout?.columns || 120);
   const [inputValue, setInputValue] = useState('');
@@ -2060,6 +2093,23 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
   const messagesRef = useRef([]);
   const pendingQueueRef = useRef([]);
   const deltaBufferRef = useRef('');
+
+  useEffect(() => {
+    const rawStartupActivities = runtime.consumeStartupEvents?.();
+    const startupActivities = Array.isArray(rawStartupActivities) ? rawStartupActivities : [];
+    if (startupActivities.length === 0) return;
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: nextId(),
+        label: 'system',
+        text: '',
+        color: 'yellowBright',
+        toolCalls: startupActivities,
+        segments: startupActivities
+      }
+    ]);
+  }, [runtime]);
   const deltaFlushTimerRef = useRef(null);
   const escSeqRef = useRef('');
   const planTextBufferRef = useRef('');
@@ -2582,6 +2632,54 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
             arguments: event.arguments
           });
         }
+        if (event?.type === 'system_tool:start') {
+          ensureActiveAssistant();
+          const detail = describeToolActivity(event.name, copy);
+          setRuntimeStatus(makeStatus(copy.runtime.toolRunning, detail, 'blueBright'));
+          setInputStage('tooling');
+          updateActivityStatusOnActiveAssistant({
+            type: 'system_tool',
+            id: event.id,
+            name: event.name,
+            status: 'running',
+            summary: event.summary
+          });
+          setActiveAssistantMeta({ loading: true, phase: 'tooling', liveStatus: detail });
+        }
+        if (event?.type === 'system_tool:end') {
+          const detail = describeToolActivity(event.name, copy, { done: true });
+          setRuntimeStatus(makeStatus(copy.runtime.toolCompleted, copy.toolActivity.waitingModelContinue(detail), 'blueBright'));
+          setInputStage('thinking');
+          updateActivityStatusOnActiveAssistant({
+            type: 'system_tool',
+            id: event.id,
+            name: event.name,
+            status: 'done',
+            summary: event.summary
+          });
+          setActiveAssistantMeta({
+            loading: true,
+            phase: 'thinking',
+            liveStatus: copy.toolActivity.waitingModelContinue(detail)
+          });
+        }
+        if (event?.type === 'system_tool:error') {
+          const detail = copy.toolActivity.toolFailed(event.name);
+          setRuntimeStatus(makeStatus(copy.runtime.toolFailed, event.summary || detail, 'redBright'));
+          setInputStage('thinking');
+          updateActivityStatusOnActiveAssistant({
+            type: 'system_tool',
+            id: event.id,
+            name: event.name,
+            status: 'error',
+            summary: event.summary
+          });
+          setActiveAssistantMeta({
+            loading: true,
+            phase: 'thinking',
+            liveStatus: copy.toolActivity.waitingModelAdjust(detail)
+          });
+        }
         if (event?.type === 'skill:start') {
           ensureActiveAssistant();
           const detail = describeSkillActivity(event.name, copy);
@@ -3087,7 +3185,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
   return h(
     Box,
     { flexDirection: 'column' },
-    h(Header, { sessionId: displaySessionId, model: displayModel, shellName }),
+    h(Header, { sessionId: displaySessionId, model: displayModel, shellName, safeMode }),
     h(MessageList, {
       messages: visibleMessages,
       loaderTick,

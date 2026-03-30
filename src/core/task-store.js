@@ -1,14 +1,15 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { getProjectLegacyTasksFilePath, getProjectTasksDir } from './paths.js';
 
 function legacyTasksFilePath(cwd = process.cwd()) {
-  return path.join(cwd, '.coder', 'tasks.json');
+  return getProjectLegacyTasksFilePath(cwd);
 }
 
 function tasksFilePath(cwd = process.cwd(), sessionId = '') {
   const sid = String(sessionId || '').trim();
   if (!sid) return legacyTasksFilePath(cwd);
-  return path.join(cwd, '.coder', 'tasks', `${sid}.json`);
+  return path.join(getProjectTasksDir(cwd), `${sid}.json`);
 }
 
 async function ensureDir(filePath) {

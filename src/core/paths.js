@@ -1,75 +1,33 @@
-import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const APP_DIR = 'codemini-cli';
-const LEGACY_APP_DIR = 'company-coder';
-
-function getPreferredBaseConfigDir() {
-  if (process.env.CODEMINI_CONFIG_DIR) {
-    return process.env.CODEMINI_CONFIG_DIR;
-  }
-
-  if (process.env.COMPANY_CODER_CONFIG_DIR) {
-    return process.env.COMPANY_CODER_CONFIG_DIR;
-  }
-
-  if (process.platform === 'win32') {
-    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-    return path.join(appData, APP_DIR);
-  }
-
-  if (process.platform === 'darwin') {
-    return path.join(os.homedir(), 'Library', 'Preferences', APP_DIR);
-  }
-
-  if (process.env.XDG_CONFIG_HOME) {
-    return path.join(process.env.XDG_CONFIG_HOME, APP_DIR);
-  }
-
-  // Fallback for restricted/sandboxed non-Windows environments.
-  return path.join(process.cwd(), '.codemini-cli');
-}
-
-function getLegacyBaseConfigDir() {
-  if (process.platform === 'win32') {
-    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-    return path.join(appData, LEGACY_APP_DIR);
-  }
-
-  if (process.platform === 'darwin') {
-    return path.join(os.homedir(), 'Library', 'Preferences', LEGACY_APP_DIR);
-  }
-
-  if (process.env.XDG_CONFIG_HOME) {
-    return path.join(process.env.XDG_CONFIG_HOME, LEGACY_APP_DIR);
-  }
-
-  return path.join(process.cwd(), '.company-coder');
-}
-
-function tryMigrateLegacyDir(preferred, legacy) {
-  if (!preferred || !legacy || preferred === legacy) return preferred;
-  if (fs.existsSync(preferred) || !fs.existsSync(legacy)) return preferred;
-  try {
-    fs.renameSync(legacy, preferred);
-    return preferred;
-  } catch {
-    return preferred;
-  }
-}
+const GLOBAL_APP_DIR = 'codemini-global';
+const PROJECT_APP_DIR = '.codemini';
+const PROJECT_INDEX_DIR = '.codemini-project';
 
 export function getBaseConfigDir() {
-  const preferred = getPreferredBaseConfigDir();
-  if (process.env.CODEMINI_CONFIG_DIR || process.env.COMPANY_CODER_CONFIG_DIR) {
-    return preferred;
+  if (process.env.CODEMINI_GLOBAL_DIR) {
+    return process.env.CODEMINI_GLOBAL_DIR;
   }
-  const legacy = getLegacyBaseConfigDir();
-  return tryMigrateLegacyDir(preferred, legacy);
+
+  if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+    return path.join(appData, GLOBAL_APP_DIR);
+  }
+
+  if (process.platform === 'darwin') {
+    return path.join(os.homedir(), 'Library', 'Preferences', GLOBAL_APP_DIR);
+  }
+
+  if (process.env.XDG_CONFIG_HOME) {
+    return path.join(process.env.XDG_CONFIG_HOME, GLOBAL_APP_DIR);
+  }
+
+  return path.join(process.cwd(), '.codemini-global');
 }
 
 export function getLegacyConfigDir() {
-  return getLegacyBaseConfigDir();
+  return getBaseConfigDir();
 }
 
 export function getConfigFilePath() {
@@ -96,14 +54,50 @@ export function getInputHistoryFilePath() {
   return path.join(getBaseConfigDir(), 'input-history.json');
 }
 
+export function getProjectWorkspaceDir(cwd = process.cwd()) {
+  return path.join(cwd, PROJECT_APP_DIR);
+}
+
 export function getProjectCommandsDir(cwd = process.cwd()) {
-  return path.join(cwd, '.coder', 'commands');
+  return path.join(getProjectWorkspaceDir(cwd), 'commands');
 }
 
-export function getLegacyProjectSkillsDir(cwd = process.cwd()) {
-  return path.join(cwd, '.coder', 'skills');
+export function getProjectSkillsDir(cwd = process.cwd()) {
+  return path.join(getProjectWorkspaceDir(cwd), 'skills');
 }
 
-export function getLegacyGlobalSkillsDir() {
-  return path.join(getBaseConfigDir(), 'skills');
+export function getProjectSpecsDir(cwd = process.cwd(), sessionId = '') {
+  return sessionId
+    ? path.join(getProjectWorkspaceDir(cwd), 'specs', String(sessionId))
+    : path.join(getProjectWorkspaceDir(cwd), 'specs');
+}
+
+export function getProjectPlansDir(cwd = process.cwd(), sessionId = '') {
+  return sessionId
+    ? path.join(getProjectWorkspaceDir(cwd), 'plans', String(sessionId))
+    : path.join(getProjectWorkspaceDir(cwd), 'plans');
+}
+
+export function getProjectCheckpointsDir(cwd = process.cwd()) {
+  return path.join(getProjectWorkspaceDir(cwd), 'checkpoints');
+}
+
+export function getProjectTasksDir(cwd = process.cwd()) {
+  return path.join(getProjectWorkspaceDir(cwd), 'tasks');
+}
+
+export function getProjectLegacyTasksFilePath(cwd = process.cwd()) {
+  return path.join(getProjectWorkspaceDir(cwd), 'tasks.json');
+}
+
+export function getProjectMapPath(cwd = process.cwd()) {
+  return path.join(cwd, PROJECT_INDEX_DIR, 'project-map.json');
+}
+
+export function getFileIndexPath(cwd = process.cwd()) {
+  return path.join(cwd, PROJECT_INDEX_DIR, 'file-index.json');
+}
+
+export function getProjectIndexDir(cwd = process.cwd()) {
+  return path.join(cwd, PROJECT_INDEX_DIR);
 }

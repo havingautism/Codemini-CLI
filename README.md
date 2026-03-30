@@ -69,6 +69,7 @@ codemini skill list|install|enable|disable|inspect|reindex
 - `plan auto` now turns the original goal into an acceptance checklist, uses a lighter chain only for truly tiny tasks, and treats unmet checklist items as failure signals
 - Structured code tools reduce shell-noise for small models by preferring `grep/read -> edit`
 - Tree-sitter-aware code tools support `grep/read -> ast_query/read_ast_node -> edit(ast_target)` for function/class-level edits with explicit node range limits
+- Current Tree-sitter language support includes JavaScript/JSX, TypeScript/TSX, Python, Go, C, C++, Bash, Java, Rust, C#, PHP, and Ruby
 
 ### Skill Loading
 
@@ -76,16 +77,15 @@ CodeMini CLI loads skills from these locations:
 
 - Bundled repo skills: `skills/<name>/SKILL.md`
 - Installed global skills: `<base-config-dir>/skills/<name>/SKILL.md`
-- Project-scoped legacy skills: `.coder/skills/<name>/SKILL.md`
+- Project-scoped skills: `.codemini/skills/<name>/SKILL.md`
 
 The base config directory is resolved in this order:
 
-- `CODEMINI_CONFIG_DIR`
-- `COMPANY_CODER_CONFIG_DIR`
-- Windows: `%APPDATA%\\codemini-cli\\`
-- macOS: `~/Library/Preferences/codemini-cli`
-- Linux/XDG: `$XDG_CONFIG_HOME/codemini-cli`
-- Fallback in restricted environments: `.codemini-cli/`
+- `CODEMINI_GLOBAL_DIR`
+- Windows: `%APPDATA%\\codemini-global\\`
+- macOS: `~/Library/Preferences/codemini-global`
+- Linux/XDG: `$XDG_CONFIG_HOME/codemini-global`
+- Fallback in restricted environments: `.codemini-global/`
 
 ### Brainstorming
 
@@ -106,9 +106,19 @@ For information on how to perform a release, please see the [Release Checklist](
 
 ### Data Layout
 
-- Project-scoped workspace data: `.coder/`
-- Global user data on Windows: `%APPDATA%\\codemini-cli\\`
-- Restricted-environment fallback: `.codemini-cli/`
+- Project-scoped workspace data: `.codemini/`
+- Global user data on Windows: `%APPDATA%\\codemini-global\\`
+- Restricted-environment fallback: `.codemini-global/`
+
+### Project Index
+
+CodeMini CLI now maintains a lightweight project index inside `.codemini-project/`:
+
+- `project-map.json` for project skeleton metadata such as languages, important files, source roots, test roots, and entry candidates
+- `file-index.json` for per-file symbols, imports, exports, functions, classes, and basic call hints
+
+The index is initialized once when entering a project and refreshed incrementally after code edits, writes, and patches. Session data stays in `.codemini/`; project structure lives in `.codemini-project/`. The index is intentionally lightweight and fact-based rather than an LLM-generated project report.
+At request time, CodeMini injects a short project-context summary from this index into the model prompt instead of dumping the full index.
 
 ### Positioning
 
@@ -186,6 +196,7 @@ codemini skill list|install|enable|disable|inspect|reindex
 - `plan auto` 会先把原始目标展开成验收清单；只有真正很小的任务才会走轻量链路；如果 reviewer 或 tester 标记了未满足或未验证的验收项，就不会按成功处理
 - 为了减少小模型被 shell 原始输出干扰，新增了 `grep/read -> edit` 这套结构化代码工具流
 - 现在也支持 `grep/read -> ast_query/read_ast_node -> edit(ast_target)` 这套 AST 工作流，适合函数级/类级精准编辑，并且能限制小模型只能修改显式选中的 node 范围
+- 当前内置的 Tree-sitter 语言支持包括 JavaScript/JSX、TypeScript/TSX、Python、Go、C、C++、Bash、Java、Rust、C#、PHP、Ruby
 
 ### Skill 加载位置
 
@@ -193,16 +204,15 @@ CodeMini CLI 会从这些位置读取 skill：
 
 - 仓库内置 skill：`skills/<name>/SKILL.md`
 - 全局已安装 skill：`<base-config-dir>/skills/<name>/SKILL.md`
-- 项目级旧式 skill：`.coder/skills/<name>/SKILL.md`
+- 项目级 skill：`.codemini/skills/<name>/SKILL.md`
 
 `base-config-dir` 的解析顺序是：
 
-- `CODEMINI_CONFIG_DIR`
-- `COMPANY_CODER_CONFIG_DIR`
-- Windows：`%APPDATA%\\codemini-cli\\`
-- macOS：`~/Library/Preferences/codemini-cli`
-- Linux / XDG：`$XDG_CONFIG_HOME/codemini-cli`
-- 受限环境回退：`.codemini-cli/`
+- `CODEMINI_GLOBAL_DIR`
+- Windows：`%APPDATA%\\codemini-global\\`
+- macOS：`~/Library/Preferences/codemini-global`
+- Linux / XDG：`$XDG_CONFIG_HOME/codemini-global`
+- 受限环境回退：`.codemini-global/`
 
 ### Brainstorm 用法
 
@@ -219,6 +229,16 @@ CodeMini CLI 会从这些位置读取 skill：
 
 ### 数据目录
 
-- 项目工作区数据：`.coder/`
-- Windows 全局用户数据：`%APPDATA%\\codemini-cli\\`
-- 受限环境回退目录：`.codemini-cli/`
+- 项目工作区数据：`.codemini/`
+- Windows 全局用户数据：`%APPDATA%\\codemini-global\\`
+- 受限环境回退目录：`.codemini-global/`
+
+### 项目索引
+
+CodeMini CLI 现在会在 `.codemini-project/` 下维护一份轻量项目索引：
+
+- `project-map.json`：记录项目骨架信息，例如语言、关键文件、源码目录、测试目录、入口候选
+- `file-index.json`：记录文件级结构信息，例如 symbols、imports、exports、functions、classes、基础 calls
+
+这份索引会在进入项目时初始化一次，在 `edit`、`write`、`patch` 后做增量刷新。`.codemini/` 继续保存会话态数据，`.codemini-project/` 保存项目结构索引。它是程序维护的轻量事实索引，不是模型生成的项目总结。
+在真正请求模型时，CodeMini 会从这份索引里裁一小段项目摘要注入 prompt，而不是把整份索引直接塞进去。

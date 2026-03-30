@@ -3,9 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   getCommandsDir,
-  getLegacyGlobalSkillsDir,
-  getLegacyProjectSkillsDir,
   getProjectCommandsDir,
+  getProjectSkillsDir,
   getSkillsDir
 } from './paths.js';
 import { readSkillRegistry } from './skill-registry.js';
@@ -188,8 +187,8 @@ export async function loadCommandsAndSkills(cwd = process.cwd()) {
   loadBundledSkillsFromDir(BUNDLED_SKILLS_DIR, commands);
   loadMarkdownCommandsFromDir(getCommandsDir(), 'global', commands);
   loadMarkdownCommandsFromDir(getProjectCommandsDir(cwd), 'project', commands);
-  loadLegacySkillsFromDir(getLegacyGlobalSkillsDir(), 'global', commands);
-  loadLegacySkillsFromDir(getLegacyProjectSkillsDir(cwd), 'project', commands);
+  loadLegacySkillsFromDir(getSkillsDir(), 'global', commands);
+  loadLegacySkillsFromDir(getProjectSkillsDir(cwd), 'project', commands);
   const registry = await readSkillRegistry();
   loadInstalledSkillsFromRegistry(getSkillsDir(), registry, commands);
 

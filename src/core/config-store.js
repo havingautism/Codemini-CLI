@@ -193,8 +193,10 @@ export async function loadConfig() {
     const parsed = JSON.parse(raw);
     return normalizePolicyLists(deepMerge(DEFAULT_CONFIG, parsed));
   } catch {
-    if (process.env.CODEMINI_CONFIG_DIR || process.env.COMPANY_CODER_CONFIG_DIR) {
-      return normalizePolicyLists(structuredClone(DEFAULT_CONFIG));
+    const defaultConfig = normalizePolicyLists(structuredClone(DEFAULT_CONFIG));
+    if (process.env.CODEMINI_GLOBAL_DIR) {
+      await saveConfig(defaultConfig);
+      return defaultConfig;
     }
     try {
       const legacyPath = path.join(getLegacyConfigDir(), 'config.json');
@@ -202,7 +204,8 @@ export async function loadConfig() {
       const parsed = JSON.parse(raw);
       return normalizePolicyLists(deepMerge(DEFAULT_CONFIG, parsed));
     } catch {
-      return normalizePolicyLists(structuredClone(DEFAULT_CONFIG));
+      await saveConfig(defaultConfig);
+      return defaultConfig;
     }
   }
 }

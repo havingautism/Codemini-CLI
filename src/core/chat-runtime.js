@@ -28,6 +28,8 @@ import {
 } from './context-compact.js';
 import { buildSystemPromptWithReplyLanguage } from './reply-language.js';
 import { buildSystemPromptWithSoul } from './soul.js';
+import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir } from './paths.js';
+import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 
 function toOpenAIMessages(sessionMessages) {
   const mapped = [];
@@ -875,10 +877,13 @@ async function buildAutoPlanFinalSummary({
   }
 }
 
-async function writeMarkdownInCoderDir(subDir, title, body, fallbackName, sessionId) {
-  const parts = [process.cwd(), '.coder', subDir];
-  if (sessionId) parts.push(String(sessionId));
-  const dir = path.join(...parts);
+async function writeMarkdownInProjectDir(subDir, title, body, fallbackName, sessionId) {
+  const dir =
+    subDir === 'specs'
+      ? getProjectSpecsDir(process.cwd(), sessionId)
+      : subDir === 'plans'
+        ? getProjectPlansDir(process.cwd(), sessionId)
+        : path.join(getProjectWorkspaceDir(process.cwd()), subDir, ...(sessionId ? [String(sessionId)] : []));
   await fs.mkdir(dir, { recursive: true });
   const slug = slugify(title).slice(0, 64);
   const fileName = `${nowStamp()}-${slug || fallbackName}.md`;
@@ -1038,7 +1043,7 @@ async function collectLikelyImplementationFiles(cwd) {
       return;
     }
     for (const entry of entries) {
-      if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === '.coder') continue;
+      if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === '.codemini') continue;
       const abs = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         await visit(abs);
@@ -1162,8 +1167,8 @@ function stampedMessage(role, content, extra = {}) {
 async function resolveSpecPath(rawArg = '', sessionId = '') {
   const input = String(rawArg || '').trim();
   const roots = [
-    path.join(process.cwd(), '.coder', 'specs', String(sessionId || '')),
-    path.join(process.cwd(), '.coder', 'specs')
+    getProjectSpecsDir(process.cwd(), String(sessionId || '')),
+    getProjectSpecsDir(process.cwd())
   ];
 
   if (input) {
@@ -1304,10 +1309,16 @@ async function askModel({
     await saveSession(session);
   }
 
+  const projectContextSnippet = await buildProjectContextSnippet(process.cwd(), text).catch(() => '');
+  const effectiveSystemPrompt = projectContextSnippet
+    ? `${systemPrompt}\n\n${projectContextSnippet}\n\nUse this project context as lightweight guidance. Prefer tools for fresh verification before assuming details.`
+    : systemPrompt;
+
   const { definitions, handlers } = getBuiltinTools({
     workspaceRoot: process.cwd(),
     config,
-    sessionId: session.id
+    sessionId: session.id,
+    onSystemEvent: onAgentEvent
   });
 
   let activeAssistantIndex = -1;
@@ -1353,7 +1364,7 @@ async function askModel({
 
   const loopUserPrompt = persistSession ? '' : text;
   const loopResult = await runAgentLoop({
-    systemPrompt,
+    systemPrompt: effectiveSystemPrompt,
     userPrompt: loopUserPrompt,
     model: model || config.model.name,
     maxSteps: Number(config.execution?.max_steps || 16),
@@ -1651,7 +1662,7 @@ async function buildAutoPlanAndRun({
     lines.push('');
   });
 
-  const filePath = await writeMarkdownInCoderDir(
+  const filePath = await writeMarkdownInProjectDir(
     'plans',
     `${goal}-auto`,
     lines.join('\n'),
@@ -1701,6 +1712,16 @@ export async function createChatRuntime({
   model,
   systemPrompt
 }) {
+  const startupEvents = [];
+  const initialIndex = await initializeProjectIndex(process.cwd()).catch(() => null);
+  if (initialIndex?.summary) {
+    startupEvents.push({
+      type: 'system_tool',
+      name: 'project_index(.codemini-project/project-map.json,.codemini-project/file-index.json)',
+      status: 'done',
+      summary: initialIndex.summary
+    });
+  }
   let currentSession = session;
   let config = initialConfig;
   const baseSystemPrompt = systemPrompt;
@@ -1779,8 +1800,8 @@ export async function createChatRuntime({
       { name: 'compact', description: 'compress message context' },
       { name: 'tasks', description: 'task board management' },
       { name: 'checkpoint', description: 'create/list/load conversation checkpoints' },
-      { name: 'spec', description: 'create a spec markdown file in .coder/specs' },
-      { name: 'plan', description: 'create an implementation plan markdown file in .coder/plans' },
+      { name: 'spec', description: 'create a spec markdown file in .codemini/specs' },
+      { name: 'plan', description: 'create an implementation plan markdown file in .codemini/plans' },
       { name: 'agents', description: 'run/list sub-agent roles' },
       { name: 'config', description: 'set/get/list/reset config values' },
       { name: 'history', description: 'list/resume sessions' },
@@ -2320,7 +2341,7 @@ export async function createChatRuntime({
           content = buildSpecTemplate(topic);
           buildNote = `\nGenerated with fallback template because model spec generation failed: ${String(err?.message || err)}`;
         }
-        const filePath = await writeMarkdownInCoderDir(
+        const filePath = await writeMarkdownInProjectDir(
           'specs',
           topic,
           content,
@@ -2374,7 +2395,7 @@ export async function createChatRuntime({
             planContent = buildPlanTemplate(specTitle);
             buildNote = `\nGenerated with fallback template because model plan generation failed: ${String(err?.message || err)}`;
           }
-          const filePath = await writeMarkdownInCoderDir(
+          const filePath = await writeMarkdownInProjectDir(
             'plans',
             `${specTitle}-from-spec`,
             planContent,
@@ -2389,7 +2410,7 @@ export async function createChatRuntime({
         const goal = parsedInput.args.join(' ').trim();
         if (!goal) return { type: 'system', text: 'Usage: /plan <goal> | /plan auto <goal> | /plan from-spec <spec-path?>' };
         const content = buildPlanTemplate(goal);
-        const filePath = await writeMarkdownInCoderDir(
+        const filePath = await writeMarkdownInProjectDir(
           'plans',
           goal,
           content,
@@ -2700,6 +2721,7 @@ export async function createChatRuntime({
     getCompletionOptions,
     isImmediateLocalInput,
     submit,
+    consumeStartupEvents: () => startupEvents.splice(0, startupEvents.length),
     getInputHistory: () => loadInputHistory(),
     getCurrentSessionId: () => currentSession.id,
     getRuntimeState: () =>
