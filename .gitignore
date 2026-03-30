@@ -14,7 +14,7 @@ nanocoder-upstream/
 *.tgz
 dist/
 coverage/
-
+./docs/
 # Logs
 *.log
 npm-debug.log*

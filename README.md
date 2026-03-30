@@ -26,6 +26,7 @@ It is designed for teams that want a coding assistant that feels practical, cont
 - Configurable reply language through `ui.reply_language` (`zh` / `en`)
 - Richer slash completion with priority sorting, inline descriptions, and left/right paging
 - Structured code tools for small models: `grep`, `read`, `edit`
+- Tree-sitter AST tools for small models: `ast_query`, `read_ast_node`, node-scoped `edit`
 - More conservative `plan auto` acceptance checks with reviewer/tester goal checklists
 - Tone presets through `soul`, without changing plans or code behavior
 - Example soul presets include `professional`, `playful`, `anime`, `pirate`, `caveman`, and `ceo`
@@ -67,6 +68,7 @@ codemini skill list|install|enable|disable|inspect|reindex
 - Ambiguous feature requests can pause for lightweight brainstorming first, and `/brainstorm <question>` gives an explicit way to compare options before coding
 - `plan auto` now turns the original goal into an acceptance checklist, uses a lighter chain only for truly tiny tasks, and treats unmet checklist items as failure signals
 - Structured code tools reduce shell-noise for small models by preferring `grep/read -> edit`
+- Tree-sitter-aware code tools support `grep/read -> ast_query/read_ast_node -> edit(ast_target)` for function/class-level edits with explicit node range limits
 
 ### Skill Loading
 
@@ -141,6 +143,7 @@ CodeMini CLI 是一个为小模型工作流优化过的代码助手 CLI，重点
 - 支持通过 `ui.reply_language` 配置回复语言，当前支持 `zh` / `en`
 - slash 补全支持优先级排序、右侧简短说明和左右分页
 - 为小模型补了结构化代码工具：`grep`、`read`、`edit`
+- 为小模型补了 Tree-sitter AST 工具：`ast_query`、`read_ast_node`，以及带 node 范围限制的 `edit`
 - `plan auto` 会基于原始目标生成验收清单，并更保守地处理 reviewer/tester 结果
 - `soul` 只影响语气，不影响计划和代码行为
 - 可用的 `soul` 示例包括 `professional`、`playful`、`anime`、`pirate`、`caveman`、`ceo`
@@ -182,6 +185,7 @@ codemini skill list|install|enable|disable|inspect|reindex
 - 对于需求仍不明确的功能请求，CLI 会先偏向轻量 brainstorm；也可以显式使用 `/brainstorm <问题>` 先比较方案再决定是否编码
 - `plan auto` 会先把原始目标展开成验收清单；只有真正很小的任务才会走轻量链路；如果 reviewer 或 tester 标记了未满足或未验证的验收项，就不会按成功处理
 - 为了减少小模型被 shell 原始输出干扰，新增了 `grep/read -> edit` 这套结构化代码工具流
+- 现在也支持 `grep/read -> ast_query/read_ast_node -> edit(ast_target)` 这套 AST 工作流，适合函数级/类级精准编辑，并且能限制小模型只能修改显式选中的 node 范围
 
 ### Skill 加载位置
 

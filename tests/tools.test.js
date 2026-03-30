@@ -355,6 +355,8 @@ test('builtin tool definitions expose only current primary and structured tools'
     assert.ok(names.includes('glob'));
     assert.ok(names.includes('list'));
     assert.ok(names.includes('edit'));
+    assert.ok(names.includes('ast_query'));
+    assert.ok(names.includes('read_ast_node'));
     assert.ok(names.includes('write'));
     assert.ok(names.includes('run'));
     assert.ok(!names.includes('locate'));
@@ -371,6 +373,8 @@ test('builtin tool definitions expose only current primary and structured tools'
     assert.equal(typeof handlers.replace_block, 'undefined');
     assert.equal(typeof handlers.read, 'function');
     assert.equal(typeof handlers.edit, 'function');
+    assert.equal(typeof handlers.ast_query, 'function');
+    assert.equal(typeof handlers.read_ast_node, 'function');
     assert.equal(typeof handlers.write, 'function');
     assert.equal(typeof handlers.run, 'function');
   });
@@ -864,5 +868,386 @@ test('grep filters by language and glob narrows candidate files', async () => {
     const tsFiles = await handlers.glob({ pattern: '**/*.ts', path: '.' });
     assert.ok(tsFiles.matches.includes('src/auth/service.ts'));
     assert.ok(!tsFiles.matches.includes('backend/auth.py'));
+  });
+});
+
+test('ast_query returns AST targets across supported languages', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.mkdir(path.join(workspaceRoot, 'backend'), { recursive: true });
+    await fs.mkdir(path.join(workspaceRoot, 'scripts'), { recursive: true });
+    await fs.mkdir(path.join(workspaceRoot, 'native'), { recursive: true });
+    await fs.mkdir(path.join(workspaceRoot, 'server'), { recursive: true });
+    await fs.mkdir(path.join(workspaceRoot, 'dotnet'), { recursive: true });
+    await fs.mkdir(path.join(workspaceRoot, 'php'), { recursive: true });
+    await fs.mkdir(path.join(workspaceRoot, 'ruby'), { recursive: true });
+
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'auth.ts'),
+      [
+        'export class AuthService {',
+        '  login(user: string) {',
+        '    return user.trim();',
+        '  }',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, 'backend', 'auth.py'),
+      [
+        'def login(user, password):',
+        '    return issue_token(user)'
+      ].join('\n'),
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, 'backend', 'main.go'),
+      [
+        'package main',
+        '',
+        'func login(user string) string {',
+        '    return user',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, 'native', 'auth.c'),
+      [
+        'int login(const char *user) {',
+        '  return user != 0;',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, 'native', 'auth.cpp'),
+      [
+        'class AuthService {',
+        'public:',
+        '  int login() { return 1; }',
+        '};'
+      ].join('\n'),
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, 'scripts', 'login.sh'),
+      [
+        'login() {',
+        '  echo "$1"',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, 'server', 'AuthService.java'),
+      [
+        'class AuthService {',
+        '  String login(String user) {',
+        '    return user;',
+        '  }',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, 'server', 'auth.rs'),
+      [
+        'fn login(user: &str) -> &str {',
+        '    user',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, 'dotnet', 'AuthService.cs'),
+      [
+        'class AuthService {',
+        '    string Login(string user) {',
+        '        return user;',
+        '    }',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, 'php', 'auth.php'),
+      [
+        '<?php',
+        'function login($user) {',
+        '    return $user;',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, 'ruby', 'auth.rb'),
+      [
+        'def login(user)',
+        '  user',
+        'end'
+      ].join('\n'),
+      'utf8'
+    );
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const cases = [
+      {
+        path: 'src/auth.ts',
+        query: '(class_declaration name: (type_identifier) @target)',
+        nodeType: 'class_declaration',
+        language: 'ts'
+      },
+      {
+        path: 'backend/auth.py',
+        query: '(function_definition name: (identifier) @target)',
+        nodeType: 'function_definition',
+        language: 'python'
+      },
+      {
+        path: 'backend/main.go',
+        query: '(function_declaration name: (identifier) @target)',
+        nodeType: 'function_declaration',
+        language: 'go'
+      },
+      {
+        path: 'native/auth.c',
+        query: '(function_definition declarator: (function_declarator declarator: (identifier) @target))',
+        nodeType: 'function_definition',
+        language: 'c'
+      },
+      {
+        path: 'native/auth.cpp',
+        query: '(class_specifier name: (type_identifier) @target)',
+        nodeType: 'class_specifier',
+        language: 'cpp'
+      },
+      {
+        path: 'scripts/login.sh',
+        query: '(function_definition name: (word) @target)',
+        nodeType: 'function_definition',
+        language: 'bash'
+      },
+      {
+        path: 'server/AuthService.java',
+        query: '(method_declaration name: (identifier) @target)',
+        nodeType: 'method_declaration',
+        language: 'java'
+      },
+      {
+        path: 'server/auth.rs',
+        query: '(function_item name: (identifier) @target)',
+        nodeType: 'function_item',
+        language: 'rust'
+      },
+      {
+        path: 'dotnet/AuthService.cs',
+        query: '(method_declaration name: (identifier) @target)',
+        nodeType: 'method_declaration',
+        language: 'csharp'
+      },
+      {
+        path: 'php/auth.php',
+        query: '(function_definition name: (name) @target)',
+        nodeType: 'function_definition',
+        language: 'php'
+      },
+      {
+        path: 'ruby/auth.rb',
+        query: '(method name: (identifier) @target)',
+        nodeType: 'method',
+        language: 'ruby'
+      }
+    ];
+
+    for (const testCase of cases) {
+      const result = await handlers.ast_query({
+        path: testCase.path,
+        query: testCase.query,
+        capture_name: 'target'
+      });
+      assert.equal(result.path, testCase.path);
+      assert.equal(result.language, testCase.language);
+      assert.ok(Array.isArray(result.matches));
+      assert.ok(result.matches.length >= 1);
+      assert.equal(result.matches[0].capture, 'target');
+      assert.equal(result.matches[0].node_type, testCase.nodeType);
+      assert.equal(result.matches[0].ast_target.path, testCase.path);
+      assert.equal(typeof result.matches[0].ast_target.range_hash, 'string');
+      assert.ok(result.matches[0].ast_target.range_hash.length > 0);
+    }
+  });
+});
+
+test('read_ast_node returns localized node content and summaries', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'auth.ts'),
+      [
+        'export class AuthService {',
+        '  login(user: string) {',
+        '    return user.trim();',
+        '  }',
+        '',
+        '  logout() {',
+        "    return 'ok';",
+        '  }',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const query = await handlers.ast_query({
+      path: 'src/auth.ts',
+      query: '(method_definition name: (property_identifier) @target)',
+      capture_name: 'target'
+    });
+
+    const result = await handlers.read_ast_node({
+      path: 'src/auth.ts',
+      ast_target: query.matches[0].ast_target
+    });
+
+    assert.equal(result.path, 'src/auth.ts');
+    assert.equal(result.node.node_type, 'method_definition');
+    assert.match(result.content, /login/);
+    assert.equal(typeof result.parent_summary, 'string');
+    assert.ok(Array.isArray(result.child_summaries));
+  });
+});
+
+test('edit replaces only the selected AST node for functions and classes', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    const filePath = path.join(workspaceRoot, 'src', 'auth.ts');
+    await fs.writeFile(
+      filePath,
+      [
+        'export class AuthService {',
+        '  login(user: string) {',
+        '    return user.trim();',
+        '  }',
+        '}',
+        '',
+        'export function loginUser(user: string) {',
+        '  return user;',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const classQuery = await handlers.ast_query({
+      path: 'src/auth.ts',
+      query: '(class_declaration name: (type_identifier) @target)',
+      capture_name: 'target'
+    });
+    const functionQuery = await handlers.ast_query({
+      path: 'src/auth.ts',
+      query: '(function_declaration name: (identifier) @target)',
+      capture_name: 'target'
+    });
+
+    const classEdit = await handlers.edit({
+      file: 'src/auth.ts',
+      ast_target: classQuery.matches[0].ast_target,
+      edit: {
+        kind: 'replace_block',
+        new_content: [
+          'class AuthService {',
+          '  login(user: string) {',
+          '    return user.toLowerCase().trim();',
+          '  }',
+          '}'
+        ].join('\n')
+      }
+    });
+    assert.equal(classEdit.ok, true);
+
+    const functionEdit = await handlers.edit({
+      file: 'src/auth.ts',
+      ast_target: functionQuery.matches[0].ast_target,
+      edit: {
+        kind: 'replace_block',
+        new_content: [
+          'function loginUser(user: string) {',
+          '  return user.trim();',
+          '}'
+        ].join('\n')
+      }
+    });
+    assert.equal(functionEdit.ok, true);
+
+    const after = await fs.readFile(filePath, 'utf8');
+    assert.match(after, /toLowerCase\(\)\.trim/);
+    assert.match(after, /return user\.trim\(\);/);
+  });
+});
+
+test('edit rejects stale AST targets and unsupported AST edit kinds', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    const filePath = path.join(workspaceRoot, 'src', 'auth.ts');
+    await fs.writeFile(
+      filePath,
+      [
+        'export function loginUser(user: string) {',
+        '  return user;',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const query = await handlers.ast_query({
+      path: 'src/auth.ts',
+      query: '(function_declaration name: (identifier) @target)',
+      capture_name: 'target'
+    });
+    const astTarget = query.matches[0].ast_target;
+
+    await assert.rejects(
+      () =>
+        handlers.edit({
+          file: 'src/auth.ts',
+          ast_target: astTarget,
+          edit: {
+            kind: 'replace_text',
+            old_text: 'return user;',
+            new_text: 'return user.trim();'
+          }
+        }),
+      /replace_block/i
+    );
+
+    await fs.writeFile(
+      filePath,
+      [
+        'export function loginUser(user: string) {',
+        '  return user.trim();',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+
+    await assert.rejects(
+      () =>
+        handlers.edit({
+          file: 'src/auth.ts',
+          ast_target: astTarget,
+          edit: {
+            kind: 'replace_block',
+            new_content: [
+              'function loginUser(user: string) {',
+              '  return user.toLowerCase();',
+              '}'
+            ].join('\n')
+          }
+        }),
+      /range_hash|stale|changed/i
+    );
   });
 });

@@ -13,6 +13,7 @@ import {
   terminateChild
 } from './shell.js';
 import { evaluateCommandPolicy } from './command-policy.js';
+import { queryAst, readAstNode, resolveAstTarget } from './ast.js';
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.coder', '.codemini-cli', 'dist', 'coverage']);
 const TEXT_EXTENSIONS = new Set([
@@ -1525,11 +1526,13 @@ function normalizeEditTargetArgs(args = {}) {
     }
     return {
       file,
+      ast_target: normalizedEdit.ast_target ?? args?.ast_target,
       edit: normalizedEdit
     };
   }
   return {
     file,
+    ast_target: args?.ast_target,
     edit: {
       kind: args?.kind,
       target: args?.target,
@@ -1545,6 +1548,7 @@ function normalizeEditTargetArgs(args = {}) {
 async function editTarget(root, args) {
   const normalized = normalizeEditTargetArgs(args);
   const file = normalized.file;
+  const astTarget = normalized.ast_target;
   const edit = normalized.edit || {};
   let kind = String(edit.kind || '').trim();
   const hasContent = edit.new_content != null || edit.content != null;
@@ -1561,6 +1565,19 @@ async function editTarget(root, args) {
     }
   }
   if (!file || !kind) throw new Error('edit requires file and edit.kind');
+  if (astTarget) {
+    if (kind !== 'replace_block') {
+      throw new Error('AST-scoped edit only supports replace_block');
+    }
+    const resolved = await resolveAstTarget(root, file, astTarget);
+    const beforeContent = resolved.content;
+    const node = resolved.node;
+    const afterContent = `${beforeContent.slice(0, node.startIndex)}${edit.new_content || ''}${beforeContent.slice(node.endIndex)}`;
+    await fs.writeFile(resolved.absolutePath, afterContent, 'utf8');
+    resolved.tree.delete();
+    resolved.parser.delete();
+    return editResult(file, 'replace_block', beforeContent, afterContent, node.startPosition.row + 1);
+  }
   if (kind === 'replace_block') {
     const resolvedTarget =
       edit.target ||
@@ -1693,7 +1710,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
       function: {
         name: 'edit',
         description:
-          'Preferred edit tool for existing files. Accepts natural forms such as file + new_content for whole-file rewrites, file + symbol/line + new_content for block edits, file + old_text + new_text for exact replacements, and file + anchor_text + content for anchored inserts. A nested edit object is also supported.',
+          'Preferred edit tool for existing files. Accepts natural forms such as file + new_content for whole-file rewrites, file + symbol/line + new_content for block edits, file + old_text + new_text for exact replacements, and file + anchor_text + content for anchored inserts. When ast_target is provided, only replace_block is allowed and the write is constrained to that exact syntax node.',
         parameters: {
           type: 'object',
           properties: {
@@ -1707,11 +1724,48 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
             position: { type: 'string' },
             kind: { type: 'string' },
             target: { type: 'object' },
+            ast_target: { type: 'object' },
             symbol: { type: 'string' },
             line: { type: 'number' },
             edit: { type: 'object' },
           },
           required: ['file']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'ast_query',
+        description:
+          'Run a Tree-sitter query against a code file and return explicit ast_target objects that can be passed into read_ast_node or edit for node-scoped changes.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string' },
+            language: { type: 'string' },
+            query: { type: 'string' },
+            capture_name: { type: 'string' },
+            max_results: { type: 'number' }
+          },
+          required: ['path', 'query']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'read_ast_node',
+        description:
+          'Read the current source and compact structural context for a previously selected AST node using ast_target.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string' },
+            language: { type: 'string' },
+            ast_target: { type: 'object' }
+          },
+          required: ['path', 'ast_target']
         }
       }
     },
@@ -1876,6 +1930,8 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config }) {
     grep: (args) => grep(workspaceRoot, args),
     glob: (args) => glob(workspaceRoot, args),
     list: (args) => list(workspaceRoot, args),
+    ast_query: (args) => queryAst(workspaceRoot, args),
+    read_ast_node: (args) => readAstNode(workspaceRoot, args),
     edit: (args) => editTarget(workspaceRoot, args),
     generate_diff: (args) => generateDiff(workspaceRoot, args),
     patch: (args) => applyPatch(workspaceRoot, args),

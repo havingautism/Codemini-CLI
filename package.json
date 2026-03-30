@@ -1,6 +1,6 @@
 {
   "name": "codemini-cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Coding CLI optimized for small-model workflows and Windows PowerShell",
   "keywords": [
     "cli",
@@ -46,9 +46,11 @@
     "access": "public"
   },
   "dependencies": {
+    "@cursorless/tree-sitter-wasms": "^0.5.0",
     "ink": "^6.3.1",
     "openai": "^6.33.0",
-    "react": "^19.0.0"
+    "react": "^19.0.0",
+    "web-tree-sitter": "^0.26.7"
   },
   "license": "MIT"
 }
