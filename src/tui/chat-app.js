@@ -63,6 +63,7 @@ const TUI_COPY = {
       waitingForInput: '等待输入',
       ready: '就绪',
       noMessagesYet: '还没有消息',
+      taskCompleted: '已完成任务',
       code: '代码',
       codeActivity: '代码活动',
       textNotes: '说明文本',
@@ -193,6 +194,7 @@ const TUI_COPY = {
       waitingForInput: 'waiting for input',
       ready: 'ready',
       noMessagesYet: 'No messages yet',
+      taskCompleted: 'Task completed',
       code: 'code',
       codeActivity: 'CODE ACTIVITY',
       textNotes: 'NOTES',
@@ -467,6 +469,15 @@ function getActivityDisplayParts(activity) {
     primary: labels[parsed.base] || parsed.base || 'Tool',
     secondary: parsed.target ? `(${parsed.target})` : ''
   };
+}
+
+export function isIndexSystemToolName(name) {
+  const parsed = parseToolDisplayName(name);
+  return parsed.base === 'project_index' || parsed.base === 'file_index';
+}
+
+export function shouldShowCompletionFooter(msg) {
+  return Boolean(msg && msg.label === 'coder' && !msg.loading && !(msg.phase || '').trim());
 }
 
 function describeToolActivity(name, copy, { done = false, blocked = false } = {}) {
@@ -905,9 +916,16 @@ export function parsePlanProgressLine(text) {
   };
 }
 
-function getTailPreviewLines(text, maxLines = 3) {
+function getTailPreviewWindow(text, maxLines = 3) {
   const source = String(text || '');
-  if (!source.trim()) return [];
+  if (!source.trim()) return { lines: [], startLine: 1 };
+  const sliceTail = (lines) => {
+    const tail = lines.slice(-Math.max(1, maxLines));
+    return {
+      lines: tail,
+      startLine: Math.max(1, lines.length - tail.length + 1)
+    };
+  };
 
   const lines = source.split('\n').map((line) => line.replace(/\r$/, ''));
   let insideFence = false;
@@ -935,21 +953,21 @@ function getTailPreviewLines(text, maxLines = 3) {
   if (insideFence) {
     const codeLines = fenceLines.filter((line) => line.trim().length > 0);
     if (codeLines.length > 0) {
-      return codeLines.slice(-Math.max(1, maxLines));
+      return sliceTail(codeLines);
     }
   }
 
   const closedFenceLines = latestClosedFenceLines.filter((line) => line.trim().length > 0);
   if (closedFenceLines.length > 0) {
-    return closedFenceLines.slice(-Math.max(1, maxLines));
+    return sliceTail(closedFenceLines);
   }
 
   const tailLines = source
     .split('\n')
     .map((line) => line.replace(/\r$/, ''))
     .filter((line) => line.trim().length > 0);
-  if (tailLines.length === 0) return [];
-  return tailLines.slice(-Math.max(1, maxLines));
+  if (tailLines.length === 0) return { lines: [], startLine: 1 };
+  return sliceTail(tailLines);
 }
 
 function collectPreviewStrings(value, out = []) {
@@ -981,7 +999,6 @@ function collectPreviewStrings(value, out = []) {
 function extractPreviewTextFromRawArguments(raw) {
   const source = String(raw || '');
   if (!source.trim()) return '';
-
   const contentMatch = source.match(/"(content|new_content|new_text|patch|code|body|script|source|value)"\s*:\s*"([\s\S]*)$/);
   if (!contentMatch) return '';
 
@@ -989,7 +1006,7 @@ function extractPreviewTextFromRawArguments(raw) {
     .replace(/\\n/g, '\n')
     .replace(/\\"/g, '"')
     .replace(/\\\\/g, '\\')
-    .replace(/",?\s*$/g, '')
+    .replace(/"\s*[,}\]]*\s*$/g, '')
     .trim();
 }
 
@@ -1000,40 +1017,76 @@ function compactPreviewLine(line, maxChars = 56) {
   return `${text.slice(0, Math.max(1, maxChars - 3))}...`;
 }
 
-function getLatestToolPreviewLines(msg, maxLines = 3) {
-  const toolCalls = [
-    ...(Array.isArray(msg?.pendingToolCalls) ? msg.pendingToolCalls : []),
-    ...(Array.isArray(msg?.toolCalls) ? msg.toolCalls : [])
-  ];
-  const codeTools = new Set(['edit', 'write', 'patch', 'generate_diff']);
-  for (let index = toolCalls.length - 1; index >= 0; index -= 1) {
-    const tool = toolCalls[index];
-    const parsed = parseToolDisplayName(tool?.name);
-    if (!codeTools.has(parsed.base)) continue;
-    const rawArgumentPreview =
-      typeof tool?.arguments === 'string' ? extractPreviewTextFromRawArguments(tool.arguments) : '';
-    const previewSource = rawArgumentPreview
-      ? [rawArgumentPreview]
+function extractPreviewLinesFromTool(tool, maxLines = 3) {
+  const previewSource =
+    typeof tool?.arguments === 'string'
+      ? (() => {
+          const parsedArguments = safeJsonParse(tool.arguments);
+          if (parsedArguments) {
+            const parsedPreview = collectPreviewStrings(parsedArguments);
+            if (parsedPreview.length > 0) return parsedPreview;
+          }
+          const rawArgumentPreview = extractPreviewTextFromRawArguments(tool.arguments);
+          return rawArgumentPreview ? [rawArgumentPreview] : [];
+        })()
       : collectPreviewStrings(tool?.arguments || tool?.content || tool?.summary || []);
-    if (previewSource.length === 0) continue;
-    const combined = previewSource.join('\n');
-    const previewLines = getTailPreviewLines(combined, maxLines);
-    if (previewLines.length > 0) return previewLines.map((line) => compactPreviewLine(line));
+
+  if (previewSource.length === 0) return { lines: [], startLine: 1 };
+  const combined = previewSource.join('\n');
+  const previewWindow = getTailPreviewWindow(combined, maxLines);
+  return {
+    lines: previewWindow.lines.map((line) => compactPreviewLine(line)),
+    startLine: previewWindow.startLine
+  };
+}
+
+function getLatestToolPreviewLines(msg, maxLines = 3) {
+  const codeTools = new Set(['edit', 'write', 'patch', 'generate_diff']);
+  const extractFromCalls = (calls) => {
+    for (let index = calls.length - 1; index >= 0; index -= 1) {
+      const tool = calls[index];
+      const parsed = parseToolDisplayName(tool?.name);
+      if (!codeTools.has(parsed.base)) continue;
+      const previewWindow = extractPreviewLinesFromTool(tool, maxLines);
+      if (previewWindow.lines.length > 0) return previewWindow;
+    }
+    return { lines: [], startLine: 1 };
+  };
+
+  const pendingCodeCalls = (Array.isArray(msg?.pendingToolCalls) ? msg.pendingToolCalls : []).filter((tool) =>
+    codeTools.has(parseToolDisplayName(tool?.name).base)
+  );
+  if (pendingCodeCalls.length > 0) {
+    const latestPendingPreview = extractPreviewLinesFromTool(pendingCodeCalls.at(-1), maxLines);
+    if (latestPendingPreview.lines.length > 0) return latestPendingPreview;
+    return { lines: [], startLine: 1 };
   }
-  return [];
+
+  const toolCalls = (Array.isArray(msg?.toolCalls) ? msg.toolCalls : []).filter(
+    (tool) => tool?.status === 'running' && codeTools.has(parseToolDisplayName(tool?.name).base)
+  );
+  if (toolCalls.length > 0) {
+    return extractFromCalls(toolCalls);
+  }
+
+  return { lines: [], startLine: 1 };
 }
 
 export function getGeneratingCodePlaceholderRows(msg, copy, contentWidth = 72) {
   const liveStatus = String(msg?.liveStatus || '').trim();
   if (!msg?.loading || (msg?.phase !== 'generating' && msg?.phase !== 'tooling')) return [];
-  if (liveStatus !== String(copy?.runtime?.generatingCode || '').trim()) return [];
 
-  const previewLines = getLatestToolPreviewLines(msg, 3);
-  if (previewLines.length === 0) return [];
+  const previewWindow = getLatestToolPreviewLines(msg, 3);
+  if (previewWindow.lines.length === 0) return [];
+  const hasRunningCodeTool = (Array.isArray(msg?.toolCalls) ? msg.toolCalls : []).some(
+    (tool) => tool?.status === 'running' && new Set(['edit', 'write', 'patch', 'generate_diff']).has(parseToolDisplayName(tool?.name).base)
+  );
+  const isCodeGenerationStatus = liveStatus === String(copy?.runtime?.generatingCode || '').trim();
+  if (!isCodeGenerationStatus && !(msg?.phase === 'tooling' && hasRunningCodeTool)) return [];
 
-  return previewLines.map((line, idx) => ({
+  return previewWindow.lines.map((line, idx) => ({
     kind: 'code-placeholder',
-    lineNo: idx + 1,
+    lineNo: previewWindow.startLine + idx,
     text: line,
     color: 'gray'
   }));
@@ -1348,7 +1401,7 @@ export function insertRowsAfterLastCodeRow(rows, extraRows) {
 
   let insertIndex = -1;
   for (let index = source.length - 1; index >= 0; index -= 1) {
-    if (source[index]?.kind === 'code') {
+    if (source[index]?.kind === 'code' || source[index]?.kind === 'code-placeholder') {
       insertIndex = index + 1;
       break;
     }
@@ -1526,11 +1579,17 @@ function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) {
 
   if (Array.isArray(msg?.segments) && msg.segments.length > 0) {
     const totalTools = msg.segments.filter(
-      (segment) => segment.type === 'tool' || segment.type === 'skill' || segment.type === 'system_tool'
+      (segment) =>
+        segment.type === 'tool' ||
+        segment.type === 'skill' ||
+        (segment.type === 'system_tool' && (showToolDetails || !isIndexSystemToolName(segment.name)))
     ).length;
     let toolIndex = 0;
     for (const segment of msg.segments) {
       if (segment.type === 'tool' || segment.type === 'skill' || segment.type === 'system_tool') {
+        if (segment.type === 'system_tool' && !showToolDetails && isIndexSystemToolName(segment.name)) {
+          continue;
+        }
         pushActivityRows(segment, toolIndex, totalTools);
         toolIndex += 1;
       } else {
@@ -1816,7 +1875,14 @@ function MessageBubble({ msg, loaderTick, showToolDetails, rowWindow = null, con
           ? h(Text, { color: 'blueBright' }, autoSkillBadge)
           : h(Text, { color: theme.chrome }, ' ')
       ),
-      ...rendered
+      ...rendered,
+      shouldShowCompletionFooter(msg)
+        ? h(
+            Box,
+            { marginTop: 1, marginLeft: 1, key: `row-completion-${msg.id}` },
+            h(Text, { color: 'gray', dimColor: true }, copy.generic.taskCompleted)
+          )
+        : null
     )
   );
 }
@@ -2241,6 +2307,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
       prev.map((m) => {
         if (m.id !== targetId) return m;
         const toolCalls = Array.isArray(m.toolCalls) ? [...m.toolCalls] : [];
+        const pendingToolCalls = Array.isArray(m.pendingToolCalls) ? [...m.pendingToolCalls] : [];
         const activityType = toolEvent.type || 'tool';
         const idx = findActivityUpdateIndex(toolCalls, toolEvent);
         const startedAt = toolEvent.status === 'running' ? Date.now() : undefined;
@@ -2293,7 +2360,16 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
               : {})
           };
         }
-        return { ...m, toolCalls, segments };
+        const shouldClearPending =
+          activityType === 'tool' && ['running', 'done', 'blocked', 'error'].includes(toolEvent.status);
+        const nextPendingToolCalls = shouldClearPending
+          ? pendingToolCalls.filter((entry) => {
+              if (!entry) return false;
+              if (toolEvent.id && entry.id) return entry.id !== toolEvent.id;
+              return parseToolDisplayName(entry.name).base !== parseToolDisplayName(toolEvent.name).base;
+            })
+          : pendingToolCalls;
+        return { ...m, toolCalls, segments, pendingToolCalls: nextPendingToolCalls };
       })
     );
   };

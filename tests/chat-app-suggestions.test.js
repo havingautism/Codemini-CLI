@@ -9,11 +9,13 @@ import {
   getGeneratingCodePlaceholderRows,
   getSuggestionPageState,
   isCodeLikeRow,
+  isIndexSystemToolName,
   insertRowsAfterLastCodeRow,
   mergeActivitySummary,
   moveSuggestionSelection,
   normalizeActivitySpacingRows,
   shouldAppendAssistantResult,
+  shouldShowCompletionFooter,
   splitMessageRows,
   formatActivityDurationText
 } from '../src/tui/chat-app.js';
@@ -140,7 +142,7 @@ test('splitMessageRows separates narrative text from code-like activity rows', (
   assert.deepEqual(codeRows.map((row) => row.kind), ['activity', 'activity-summary', 'status', 'code']);
 });
 
-test('insertRowsAfterLastCodeRow keeps generating code preview anchored to the code block', () => {
+test('insertRowsAfterLastCodeRow can place synthetic preview rows after the last code row when used directly', () => {
   const rows = [
     { kind: 'text', text: '先写代码。', color: 'greenBright' },
     { kind: 'code', text: 'const answer = 42;' },
@@ -152,6 +154,31 @@ test('insertRowsAfterLastCodeRow keeps generating code preview anchored to the c
   ]);
 
   assert.deepEqual(inserted.map((row) => row.kind), ['text', 'code', 'activity', 'code-placeholder', 'text']);
+});
+
+test('insertRowsAfterLastCodeRow treats code-placeholder as the last code anchor', () => {
+  const rows = [
+    { kind: 'text', text: '先写代码。', color: 'greenBright' },
+    { kind: 'code-placeholder', lineNo: 1, text: 'const answer = 42;' },
+    { kind: 'text', text: '然后再补一句说明。', color: 'greenBright' }
+  ];
+  const inserted = insertRowsAfterLastCodeRow(rows, [
+    { kind: 'activity', name: 'Code generation', status: 'running' }
+  ]);
+
+  assert.deepEqual(inserted.map((row) => row.kind), ['text', 'code-placeholder', 'activity', 'text']);
+});
+
+test('isIndexSystemToolName matches index system tool events', () => {
+  assert.equal(isIndexSystemToolName('project_index(.codemini-project/project-map.json,.codemini-project/file-index.json)'), true);
+  assert.equal(isIndexSystemToolName('file_index(src/app.ts)'), true);
+  assert.equal(isIndexSystemToolName('read(src/app.ts)'), false);
+});
+
+test('shouldShowCompletionFooter only shows for completed coder replies', () => {
+  assert.equal(shouldShowCompletionFooter({ label: 'coder', loading: false, phase: undefined }), true);
+  assert.equal(shouldShowCompletionFooter({ label: 'coder', loading: true, phase: 'thinking' }), false);
+  assert.equal(shouldShowCompletionFooter({ label: 'system', loading: false, phase: undefined }), false);
 });
 
 test('getGeneratingCodePlaceholderRows returns grey placeholder rows only while generating code', () => {
@@ -221,6 +248,129 @@ test('getGeneratingCodePlaceholderRows returns grey placeholder rows only while 
     60
   );
   assert.deepEqual(previewRowsFromRawToolArgs.map((row) => row.text), ['    <h1>Hello</h1>', '  </body>', '</html>']);
+  assert.deepEqual(previewRowsFromRawToolArgs.map((row) => row.lineNo), [4, 5, 6]);
+
+  const previewRowsPreferPendingCall = getGeneratingCodePlaceholderRows(
+    {
+      loading: true,
+      phase: 'tooling',
+      liveStatus: '正在生成代码中',
+      pendingToolCalls: [
+        {
+          type: 'tool',
+          name: 'write(src/algorithms/bucketSort.js)',
+          status: 'pending',
+          arguments:
+            '{"path":"src/algorithms/bucketSort.js","content":"export function bucketSort(arr) {\\n  return [...arr].sort((a, b) => a - b);\\n}"}'
+        }
+      ],
+      toolCalls: [
+        {
+          type: 'tool',
+          name: 'write(tests/bucketSort.test.js)',
+          status: 'done',
+          arguments: {
+            path: 'tests/bucketSort.test.js',
+            content: 'expect(sorted).toEqual([0.57, 1.41, 2.23]);\n});\n});'
+          }
+        }
+      ]
+    },
+    copy,
+    60
+  );
+  assert.deepEqual(previewRowsPreferPendingCall.map((row) => row.text), [
+    'export function bucketSort(arr) {',
+    '  return [...arr].sort((a, b) => a - b);',
+    '}'
+  ]);
+
+  const noPreviewRowsWhenPendingHasNoContent = getGeneratingCodePlaceholderRows(
+    {
+      loading: true,
+      phase: 'tooling',
+      liveStatus: '正在生成代码中',
+      pendingToolCalls: [
+        {
+          type: 'tool',
+          name: 'write(src/algorithms/bucketSort.js)',
+          status: 'pending',
+          arguments: '{"path":"src/algorithms/bucketSort.js"}'
+        }
+      ],
+      toolCalls: [
+        {
+          type: 'tool',
+          name: 'write(tests/bucketSort.test.js)',
+          status: 'done',
+          arguments: {
+            path: 'tests/bucketSort.test.js',
+            content: 'expect(sorted).toEqual([0.57, 1.41, 2.23]);\n});\n});'
+          }
+        }
+      ]
+    },
+    copy,
+    60
+  );
+  assert.equal(noPreviewRowsWhenPendingHasNoContent.length, 0);
+
+  const noFallbackToOlderPendingRows = getGeneratingCodePlaceholderRows(
+    {
+      loading: true,
+      phase: 'tooling',
+      liveStatus: '正在生成代码中',
+      pendingToolCalls: [
+        {
+          type: 'tool',
+          name: 'write(src/algorithms/bucketSort.js)',
+          status: 'pending',
+          arguments:
+            '{"path":"src/algorithms/bucketSort.js","content":"export function bucketSort(arr) {\\n  return [...arr].sort((a, b) => a - b);\\n}"}'
+        },
+        {
+          type: 'tool',
+          name: 'write(tests/bucketSort.test.js)',
+          status: 'pending',
+          arguments: '{"path":"tests/bucketSort.test.js"}'
+        }
+      ]
+    },
+    copy,
+    60
+  );
+  assert.equal(noFallbackToOlderPendingRows.length, 0);
+
+  const latestPendingWinsRows = getGeneratingCodePlaceholderRows(
+    {
+      loading: true,
+      phase: 'tooling',
+      liveStatus: '正在生成代码中',
+      pendingToolCalls: [
+        {
+          type: 'tool',
+          name: 'write(src/algorithms/bucketSort.js)',
+          status: 'pending',
+          arguments:
+            '{"path":"src/algorithms/bucketSort.js","content":"export function bucketSort(arr) {\\n  return [...arr].sort((a, b) => a - b);\\n}"}'
+        },
+        {
+          type: 'tool',
+          name: 'write(tests/bucketSort.test.js)',
+          status: 'pending',
+          arguments:
+            '{"path":"tests/bucketSort.test.js","content":"import test from node:test;\\n\\ntest(\\"bucketSort\\", () => {\\n  assert.equal(1, 1);\\n});"}'
+        }
+      ]
+    },
+    copy,
+    60
+  );
+  assert.deepEqual(latestPendingWinsRows.map((row) => row.text), [
+    'test("bucketSort", () => {',
+    '  assert.equal(1, 1);',
+    '});'
+  ]);
 
   const longPreviewRows = getGeneratingCodePlaceholderRows(
     {
@@ -243,6 +393,33 @@ test('getGeneratingCodePlaceholderRows returns grey placeholder rows only while 
   );
   assert.equal(longPreviewRows.length, 1);
   assert.equal(longPreviewRows[0].text.endsWith('...'), true);
+
+  const runningWritePreviewRows = getGeneratingCodePlaceholderRows(
+    {
+      loading: true,
+      phase: 'tooling',
+      liveStatus: '正在写入文件',
+      toolCalls: [
+        {
+          type: 'tool',
+          name: 'write(src/algorithms/bucketSort.js)',
+          status: 'running',
+          arguments: {
+            path: 'src/algorithms/bucketSort.js',
+            content: 'export function bucketSort(arr) {\n  return [...arr].sort((a, b) => a - b);\n}'
+          }
+        }
+      ]
+    },
+    copy,
+    60
+  );
+  assert.deepEqual(runningWritePreviewRows.map((row) => row.text), [
+    'export function bucketSort(arr) {',
+    '  return [...arr].sort((a, b) => a - b);',
+    '}'
+  ]);
+  assert.deepEqual(runningWritePreviewRows.map((row) => row.lineNo), [1, 2, 3]);
 
   const proseOnlyToolRows = getGeneratingCodePlaceholderRows(
     {
