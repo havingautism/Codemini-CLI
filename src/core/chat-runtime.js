@@ -1,6 +1,6 @@
 import { parseInput } from './input-parser.js';
 import { loadCommandsAndSkills, renderCommandPrompt } from './command-loader.js';
-import { runAgentLoop } from './agent-loop.js';
+import { runAgentLoop, setResultDir, clearResultStore } from './agent-loop.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -28,7 +28,7 @@ import {
 } from './context-compact.js';
 import { buildSystemPromptWithReplyLanguage } from './reply-language.js';
 import { buildSystemPromptWithSoul } from './soul.js';
-import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir } from './paths.js';
+import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir } from './paths.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 
 function toOpenAIMessages(sessionMessages) {
@@ -1314,7 +1314,7 @@ async function askModel({
     ? `${systemPrompt}\n\n${projectContextSnippet}\n\nUse this project context as lightweight guidance. Prefer tools for fresh verification before assuming details.`
     : systemPrompt;
 
-  const { definitions, handlers } = getBuiltinTools({
+  const { definitions, handlers, formatters, deferredDefinitions } = getBuiltinTools({
     workspaceRoot: process.cwd(),
     config,
     sessionId: session.id,
@@ -1376,6 +1376,8 @@ async function askModel({
     alwaysAllowTools:
       alwaysAllowTools || config.execution?.always_allow_tools || ['run', 'read', 'write'],
     toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
+    toolFormatters: formatters,
+    deferredDefinitions,
     requestCompletion: async ({ messages, tools, model: selectedModel }) => {
       if (onAgentEvent) onAgentEvent({ type: 'assistant:start' });
       return createChatCompletionStream({
@@ -1727,6 +1729,10 @@ export async function createChatRuntime({
   const baseSystemPrompt = systemPrompt;
   let executionMode = config.execution?.mode || 'auto';
   const commands = await loadCommandsAndSkills();
+
+  // Set up tool result store under session directory
+  const sessionResultsDir = path.join(getSessionsDir(), String(currentSession.id));
+  setResultDir(sessionResultsDir);
   const compactState = {
     backupMessages: null,
     autoEnabled: true,
@@ -2492,6 +2498,7 @@ export async function createChatRuntime({
           if (!targetId) return { type: 'system', text: 'Usage: /history resume <session_id>' };
           const loaded = await loadSession(targetId);
           currentSession = loaded;
+          setResultDir(path.join(getSessionsDir(), String(targetId)));
           if (!historyIdCache.includes(targetId)) historyIdCache.unshift(targetId);
           historySessionCache = [
             { id: targetId, messageCount: Array.isArray(loaded.messages) ? loaded.messages.length : 0 },

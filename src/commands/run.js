@@ -35,7 +35,7 @@ export async function handleRun(args) {
   }
 
   const config = await loadConfig();
-  const { definitions, handlers } = getBuiltinTools({
+  const { definitions, handlers, formatters, deferredDefinitions } = getBuiltinTools({
     workspaceRoot: process.cwd(),
     config
   });
@@ -47,6 +47,8 @@ export async function handleRun(args) {
     model: parsed.model || config.model.name,
     toolDefinitions: definitions,
     toolHandlers: handlers,
+    toolFormatters: formatters,
+    deferredDefinitions,
     maxSteps: parsed.maxSteps,
     requestCompletion: async ({ messages, tools, model }) =>
       createChatCompletion({

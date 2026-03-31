@@ -26,7 +26,7 @@ tmp/
 Thumbs.db
 .vscode/
 .idea/
-.cli-demo-example/
+/cli-demo-example/
 # Local scratch docs
 test.md
 测试.md

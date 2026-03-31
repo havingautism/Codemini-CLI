@@ -15,6 +15,7 @@ import {
 import { evaluateCommandPolicy } from './command-policy.js';
 import { queryAst, readAstNode, resolveAstTarget } from './ast.js';
 import { initializeProjectIndex, refreshIndexedFile } from './project-index.js';
+import { checkReadDedup } from './agent-loop.js';
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.codemini', '.codemini-global', 'dist', 'coverage']);
 const TEXT_EXTENSIONS = new Set([
@@ -720,6 +721,26 @@ async function readFile(root, args) {
   if (maxChars > 0 && content.length > maxChars) {
     content = `${content.slice(0, maxChars)}\n... [truncated by max_chars]`;
     truncated = true;
+  }
+
+  // Read deduplication: if same path+range+mtime was read before, return a short stub
+  const isDuplicate = checkReadDedup(
+    args?.path,
+    startLine,
+    endLine,
+    stat.mtimeMs
+  );
+  if (isDuplicate) {
+    return {
+      path: args?.path,
+      phase: 'content',
+      start_line: startLine,
+      end_line: endLine,
+      total_lines: totalLines,
+      truncated: false,
+      unchanged: true,
+      content: `File unchanged since last read. The content from the earlier read tool_result in this conversation is still current -- refer to that instead of re-reading.`
+    };
   }
 
   return {
@@ -1711,22 +1732,22 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       return null;
     }
   };
-  const definitions = [
+  const primaryDefinitions = [
     {
       type: 'function',
       function: {
         name: 'read',
         description:
-          'Primary read tool. First call returns metadata+read_token, second call with include_content=true and matching read_token returns content',
+          'Read a file. Call once for metadata and a read_token, then again with include_content=true and the same token to get content. Use this before editing.',
         parameters: {
           type: 'object',
           properties: {
-            path: { type: 'string' },
-            start_line: { type: 'number' },
-            end_line: { type: 'number' },
-            max_chars: { type: 'number' },
-            include_content: { type: 'boolean' },
-            read_token: { type: 'string' }
+            path: { type: 'string', description: 'File path to read' },
+            start_line: { type: 'number', description: '1-based start line' },
+            end_line: { type: 'number', description: 'Inclusive end line' },
+            max_chars: { type: 'number', description: 'Max chars to return' },
+            include_content: { type: 'boolean', description: 'Set true on the second call' },
+            read_token: { type: 'string', description: 'Token from the first call' }
           },
           required: ['path']
         }
@@ -1736,18 +1757,19 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       type: 'function',
       function: {
         name: 'grep',
-        description: 'Search file contents using a plain string or regex pattern and return compact matches',
+        description:
+          'Search file contents. Use this for code search instead of grep or rg in run.',
         parameters: {
           type: 'object',
           properties: {
-            pattern: { type: 'string' },
-            query: { type: 'string' },
-            path: { type: 'string' },
-            regex: { type: 'boolean' },
-            case_sensitive: { type: 'boolean' },
-            max_results: { type: 'number' },
-            language: { type: 'string' },
-            file_types: { type: 'array', items: { type: 'string' } }
+            pattern: { type: 'string', description: 'Search pattern' },
+            query: { type: 'string', description: 'Alias for pattern' },
+            path: { type: 'string', description: 'Directory or file to search' },
+            regex: { type: 'boolean', description: 'Treat pattern as regex' },
+            case_sensitive: { type: 'boolean', description: 'Case-sensitive matching' },
+            max_results: { type: 'number', description: 'Max matches to return' },
+            language: { type: 'string', description: 'Filter by language' },
+            file_types: { type: 'array', items: { type: 'string' }, description: 'Filter by file glob' }
           },
           required: ['pattern']
         }
@@ -1757,14 +1779,15 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       type: 'function',
       function: {
         name: 'glob',
-        description: 'Find files by glob pattern such as **/*.ts or src/**/*.tsx',
+        description:
+          'Find files by glob pattern. Use this for file discovery instead of find in run.',
         parameters: {
           type: 'object',
           properties: {
-            pattern: { type: 'string' },
-            path: { type: 'string' },
-            include_hidden: { type: 'boolean' },
-            max_results: { type: 'number' }
+            pattern: { type: 'string', description: 'Glob pattern' },
+            path: { type: 'string', description: 'Directory to search' },
+            include_hidden: { type: 'boolean', description: 'Include dotfiles' },
+            max_results: { type: 'number', description: 'Max results' }
           },
           required: ['pattern']
         }
@@ -1774,12 +1797,12 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       type: 'function',
       function: {
         name: 'list',
-        description: 'List files and directories in a workspace path',
+        description: 'List files and directories in a workspace path.',
         parameters: {
           type: 'object',
           properties: {
-            path: { type: 'string' },
-            include_hidden: { type: 'boolean' }
+            path: { type: 'string', description: 'Directory path to list' },
+            include_hidden: { type: 'boolean', description: 'Include dotfiles' }
           }
         }
       }
@@ -1789,24 +1812,24 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'edit',
         description:
-          'Preferred edit tool for existing files. Accepts natural forms such as file + new_content for whole-file rewrites, file + symbol/line + new_content for block edits, file + old_text + new_text for exact replacements, and file + anchor_text + content for anchored inserts. When ast_target is provided, only replace_block is allowed and the write is constrained to that exact syntax node. If a file has just been selected via ast_query, the cached ast_target may be reused when omitted.',
+          'Edit existing files. Use block edits, exact replacements, or anchored inserts. When ast_target is provided, keep the edit constrained to that node. Prefer this over write for code changes.',
         parameters: {
           type: 'object',
           properties: {
-            file: { type: 'string' },
-            path: { type: 'string' },
-            new_content: { type: 'string' },
-            old_text: { type: 'string' },
-            new_text: { type: 'string' },
-            anchor_text: { type: 'string' },
-            content: { type: 'string' },
-            position: { type: 'string' },
-            kind: { type: 'string' },
-            target: { type: 'object' },
-            ast_target: { type: 'object' },
-            symbol: { type: 'string' },
-            line: { type: 'number' },
-            edit: { type: 'object' },
+            file: { type: 'string', description: 'File path to edit' },
+            path: { type: 'string', description: 'Alias for file' },
+            new_content: { type: 'string', description: 'Replacement content' },
+            old_text: { type: 'string', description: 'Exact text to replace' },
+            new_text: { type: 'string', description: 'Replacement text' },
+            anchor_text: { type: 'string', description: 'Anchor text for inserts' },
+            content: { type: 'string', description: 'Content to insert or append' },
+            position: { type: 'string', description: 'before or after' },
+            kind: { type: 'string', description: 'replace_block, replace_text, insert_before, insert_after, or rewrite_file' },
+            target: { type: 'object', description: 'Location object with symbol or line info' },
+            ast_target: { type: 'object', description: 'AST target from ast_query' },
+            symbol: { type: 'string', description: 'Symbol to target' },
+            line: { type: 'number', description: 'Line to target' },
+            edit: { type: 'object', description: 'Structured edit input' }
           },
           required: ['file']
         }
@@ -1815,9 +1838,61 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     {
       type: 'function',
       function: {
+        name: 'write',
+        description:
+          'Create a new file or overwrite a file. Use this for new files or full rewrites. Prefer edit for existing code.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'File path to create or overwrite' },
+            content: { type: 'string', description: 'Content to write' },
+            append: { type: 'boolean', description: 'Append instead of overwrite' },
+            full_file_rewrite: { type: 'boolean', description: 'Set true for whole-file rewrites' }
+          },
+          required: ['path', 'content']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'run',
+        description:
+          'Run a one-shot shell command such as install, build, or test. Do not use for long-running services or file search.',
+        parameters: {
+          type: 'object',
+          properties: {
+            command: { type: 'string', description: 'Shell command to execute' },
+            timeout: { type: 'number', description: 'Timeout in milliseconds' }
+          },
+          required: ['command']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'tool_search',
+        description:
+          'Load one deferred tool schema by name. Use this when a needed tool is not in the current tool list.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Tool name to load, or "all"' }
+          },
+          required: ['query']
+        }
+      }
+    }
+  ];
+
+  const deferredDefinitions = {
+    ast_query: {
+      type: 'function',
+      function: {
         name: 'ast_query',
         description:
-          'Run a Tree-sitter query against a code file and return explicit ast_target objects that can be passed into read_ast_node or edit for node-scoped changes. Prefer the returned ast_target verbatim in the next read_ast_node or edit call.',
+          'Run a Tree-sitter query on a code file and return ast_target objects for node-scoped reads or edits.',
         parameters: {
           type: 'object',
           properties: {
@@ -1831,12 +1906,12 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         }
       }
     },
-    {
+    read_ast_node: {
       type: 'function',
       function: {
         name: 'read_ast_node',
         description:
-          'Read the current source and compact structural context for a previously selected AST node using ast_target. If omitted, the most recent ast_query selection for the same file may be reused.',
+          'Read a previously selected AST node with compact structural context.',
         parameters: {
           type: 'object',
           properties: {
@@ -1848,44 +1923,11 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         }
       }
     },
-    {
-      type: 'function',
-      function: {
-        name: 'write',
-        description:
-          'Primary write tool. Create a UTF-8 text file or overwrite an existing file. Existing code files require full_file_rewrite=true for whole-file overwrites.',
-        parameters: {
-          type: 'object',
-          properties: {
-            path: { type: 'string' },
-            content: { type: 'string' },
-            append: { type: 'boolean' },
-            full_file_rewrite: { type: 'boolean' }
-          },
-          required: ['path', 'content']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'run',
-        description:
-          'Primary run tool. Execute a one-shot shell command in workspace such as install, build, test, or other finite tasks. Do not use for long-running services or watchers.',
-        parameters: {
-          type: 'object',
-          properties: {
-            command: { type: 'string' }
-          },
-          required: ['command']
-        }
-      }
-    },
-    {
+    generate_diff: {
       type: 'function',
       function: {
         name: 'generate_diff',
-        description: 'Generate a unified diff between the current file and proposed content',
+        description: 'Generate a unified diff for proposed content',
         parameters: {
           type: 'object',
           properties: {
@@ -1896,11 +1938,11 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         }
       }
     },
-    {
+    patch: {
       type: 'function',
       function: {
         name: 'patch',
-        description: 'Apply one or more unified diff hunks to files in the workspace',
+        description: 'Apply one or more unified diff hunks to workspace files',
         parameters: {
           type: 'object',
           properties: {
@@ -1911,12 +1953,12 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         }
       }
     },
-    {
+    start_service: {
       type: 'function',
       function: {
         name: 'start_service',
         description:
-          'Start a long-running local service, such as a frontend, backend, database, or dev watcher, and return a compact service handle instead of blocking on process exit.',
+          'Start a long-running local service and return a compact handle.',
         parameters: {
           type: 'object',
           properties: {
@@ -1939,22 +1981,22 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         }
       }
     },
-    {
+    list_services: {
       type: 'function',
       function: {
         name: 'list_services',
-        description: 'List all tracked local services and their compact current status.',
+        description: 'List tracked local services and their current status.',
         parameters: {
           type: 'object',
           properties: {}
         }
       }
     },
-    {
+    get_service_status: {
       type: 'function',
       function: {
         name: 'get_service_status',
-        description: 'Get the current status of a previously started service.',
+        description: 'Get the status of a started service.',
         parameters: {
           type: 'object',
           properties: {
@@ -1964,11 +2006,11 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         }
       }
     },
-    {
+    get_service_logs: {
       type: 'function',
       function: {
         name: 'get_service_logs',
-        description: 'Read recent logs from a previously started service.',
+        description: 'Read recent logs from a started service.',
         parameters: {
           type: 'object',
           properties: {
@@ -1980,11 +2022,11 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         }
       }
     },
-    {
+    stop_service: {
       type: 'function',
       function: {
         name: 'stop_service',
-        description: 'Stop a previously started service.',
+        description: 'Stop a started service.',
         parameters: {
           type: 'object',
           properties: {
@@ -1994,7 +2036,9 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         }
       }
     }
-  ].filter(Boolean);
+  };
+
+  const definitions = [...primaryDefinitions];
 
   const handlers = {
     read: (args) =>
@@ -2052,8 +2096,205 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     list_services: () => listServices(workspaceRoot),
     get_service_status: (args) => getServiceStatus(workspaceRoot, args),
     get_service_logs: (args) => getServiceLogs(workspaceRoot, args),
-    stop_service: (args) => stopService(workspaceRoot, args)
+    stop_service: (args) => stopService(workspaceRoot, args),
+    tool_search: (args) => {
+      const query = String(args?.query || '').trim().toLowerCase();
+      if (query === 'all') {
+        const all = Object.values(deferredDefinitions);
+        return {
+          loaded: Object.keys(deferredDefinitions),
+          schemas: all,
+          message: `Loaded all ${all.length} deferred tools. You can now call them directly.`
+        };
+      }
+      const match = Object.entries(deferredDefinitions).find(([name]) => name === query);
+      if (!match) {
+        const available = Object.keys(deferredDefinitions).join(', ');
+        return { error: `Unknown tool: "${query}". Available deferred tools: ${available}` };
+      }
+      return {
+        loaded: [match[0]],
+        schemas: [match[1]],
+        message: `Loaded tool "${match[0]}". You can now call it in your next response.`
+      };
+    }
   };
 
-  return { definitions, handlers };
+  const formatters = {
+    read(result) {
+      if (typeof result === 'string') return result;
+      if (!result || typeof result !== 'object') return String(result);
+      // Phase 1 metadata: small, return as-is
+      if (result.phase === 'metadata') {
+        return JSON.stringify(result);
+      }
+      // Phase 2 content: structured header + head/tail content
+      if (result.phase === 'content') {
+        const header = `[File: ${result.path}, lines ${result.start_line || 1}-${result.end_line || '?'}${result.total_lines ? ` of ${result.total_lines}` : ''}${result.truncated ? ', truncated' : ''}]`;
+        const content = result.content || '';
+        if (typeof content !== 'string' || content.length <= 3000) {
+          return `${header}\n${content}`;
+        }
+        const headLen = 1800;
+        const tailLen = 800;
+        return `${header}\n${content.slice(0, headLen)}\n... [omitted ${content.length - headLen - tailLen} chars] ...\n${content.slice(-tailLen)}`;
+      }
+      return JSON.stringify(result);
+    },
+
+    grep(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      const { pattern, matches, truncated } = result;
+      const header = pattern ? `[grep: "${pattern}"]` : '';
+      if (!Array.isArray(matches) || matches.length === 0) return `${header}\nNo matches found.`;
+      if (matches.length <= 30) {
+        const lines = matches.map((m) => `${m.path}:${m.line}: ${String(m.preview || '').slice(0, 120)}`);
+        return `${header}\n${lines.join('\n')}`;
+      }
+      const shown = matches.slice(0, 30).map((m) => `${m.path}:${m.line}: ${String(m.preview || '').slice(0, 120)}`);
+      return `${header}\n${shown.join('\n')}\n... and ${matches.length - 30} more matches [total: ${matches.length}${truncated ? ', results were truncated' : ''}]`;
+    },
+
+    glob(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      const { pattern, matches, truncated } = result;
+      const header = pattern ? `[glob: "${pattern}"]` : '';
+      if (!Array.isArray(matches) || matches.length === 0) return `${header}\nNo files found.`;
+      if (matches.length <= 50) {
+        return `${header}\n${matches.join('\n')}`;
+      }
+      const shown = matches.slice(0, 50);
+      return `${header}\n${shown.join('\n')}\n... and ${matches.length - 50} more files [total: ${matches.length}${truncated ? ', results were truncated' : ''}]`;
+    },
+
+    list(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      if (!Array.isArray(result.items)) return JSON.stringify(result);
+      const header = result.path ? `[${result.path}]` : '';
+      const dirs = result.items.filter((i) => i.type === 'dir').map((i) => `${i.name}/`);
+      const files = result.items.filter((i) => i.type === 'file').map((i) => i.name);
+      return `${header}\n${dirs.join('\n')}${dirs.length && files.length ? '\n' : ''}${files.join('\n')}`;
+    },
+
+    edit(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      const p = result.path || '';
+      const action = result.action || '';
+      const line = result.changed_line || 0;
+      const summary = `${action} ${p}${line > 0 ? ` @L${line}` : ''}`;
+      const diffPreview = result.diff_preview || '';
+      if (diffPreview) {
+        const trimmed = diffPreview.length > 600 ? `${diffPreview.slice(0, 597)}...` : diffPreview;
+        return `${summary}\n${trimmed}`;
+      }
+      return summary + (result.ok !== false ? '' : ` [FAILED: ${result.error || 'unknown'}]`);
+    },
+
+    write(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      const p = result.path || '';
+      const action = result.action || 'write';
+      const line = result.changed_line || 0;
+      const summary = `${action} ${p}${line > 0 ? ` @L${line}` : ''}`;
+      const diffPreview = result.diff_preview || '';
+      if (diffPreview) {
+        const trimmed = diffPreview.length > 600 ? `${diffPreview.slice(0, 597)}...` : diffPreview;
+        return `${summary}\n${trimmed}`;
+      }
+      return summary;
+    },
+
+    run(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      const command = String(result.command || '').slice(0, 200);
+      const stdout = String(result.stdout || '').slice(0, 500);
+      const stderr = String(result.stderr || '').slice(0, 500);
+      const code = result.code ?? 0;
+      const parts = [`[exit: ${code}]`];
+      if (command) parts.push(`command: ${command}`);
+      if (stdout) parts.push(`stdout:\n${stdout}`);
+      if (stderr) parts.push(`stderr:\n${stderr}`);
+      return parts.join('\n');
+    },
+
+    generate_diff(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      const p = result.path || '';
+      const diff = result.diff || '';
+      if (diff.length <= 2000) return `${p ? `[${p}]\n` : ''}${diff}`;
+      return `${p ? `[${p}]\n` : ''}${diff.slice(0, 1997)}...\n[diff truncated: ${diff.length} chars total]`;
+    },
+
+    patch(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      if (Array.isArray(result.files)) {
+        const names = result.files.slice(0, 10).map((f) => typeof f === 'string' ? f : f.path || '?');
+        return `patched ${result.files.length} file(s): ${names.join(', ')}${result.files.length > 10 ? ` ... +${result.files.length - 10} more` : ''}`;
+      }
+      const p = result.path || '';
+      const line = result.changed_line || 0;
+      return `patched ${p}${line > 0 ? ` @L${line}` : ''}${result.ok === false ? ` [FAILED: ${result.error || ''}]` : ''}`;
+    },
+
+    ast_query(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      if (!Array.isArray(result.matches)) return JSON.stringify(result);
+      const header = `[ast_query: ${result.matches.length} match(es)]`;
+      const lines = result.matches.slice(0, 20).map((m) => {
+        const name = m.name || m.ast_target?.name || '?';
+        const kind = m.kind || m.ast_target?.kind || '?';
+        return `  ${kind} ${name}`;
+      });
+      return `${header}\n${lines.join('\n')}${result.matches.length > 20 ? `\n... +${result.matches.length - 20} more` : ''}`;
+    },
+
+    read_ast_node(result) {
+      if (typeof result === 'string') return result;
+      if (!result || typeof result !== 'object') return String(result);
+      const name = result.name || '';
+      const kind = result.kind || '';
+      const content = result.content || result.source || '';
+      const header = `${kind} ${name}`;
+      if (typeof content !== 'string' || content.length <= 2000) return `${header}\n${content}`;
+      return `${header}\n${content.slice(0, 1200)}\n... [omitted ${content.length - 1600} chars] ...\n${content.slice(-400)}`;
+    },
+
+    start_service(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      const tid = result.task_id || '';
+      const status = result.status || 'unknown';
+      const confirmed = result.startup_confirmed ? 'ready' : 'starting';
+      const url = result.url || '';
+      return `${tid} ${status} (${confirmed})${url ? ` -> ${url}` : ''}`;
+    },
+
+    list_services(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      if (!Array.isArray(result.services)) return JSON.stringify(result);
+      if (result.services.length === 0) return 'No services running.';
+      return result.services.map((s) => `${s.task_id || '?'} ${s.status || 'unknown'}${s.command ? ` (${s.command.slice(0, 60)})` : ''}`).join('\n');
+    },
+
+    get_service_status(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      const tid = result.task_id || '';
+      const status = result.status || 'unknown';
+      const url = result.url || '';
+      const logs = Array.isArray(result.recent_logs) ? result.recent_logs.slice(-3).join('\n') : '';
+      return `${tid} ${status}${url ? ` -> ${url}` : ''}${logs ? `\n${logs}` : ''}`;
+    },
+
+    get_service_logs(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      const logs = Array.isArray(result.recent_logs) ? result.recent_logs.join('\n') : '';
+      return logs || 'No recent logs.';
+    },
+
+    stop_service(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      return `${result.task_id || '?'} stopped${result.exit_code != null ? ` (exit ${result.exit_code})` : ''}`;
+    }
+  };
+
+  return { definitions, handlers, formatters, deferredDefinitions };
 }

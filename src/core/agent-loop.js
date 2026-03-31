@@ -1,3 +1,7 @@
+import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs/promises';
+
 function safeJsonParse(raw) {
   if (!raw || typeof raw !== 'string') return {};
   try {
@@ -13,7 +17,198 @@ function clipToolResult(result, maxChars = 12000) {
   return `${raw.slice(0, maxChars)}\n... [tool result truncated ${raw.length - maxChars} chars]`;
 }
 
-function summarizeToolResult(result) {
+function compactToolResult(result, toolName, args, maxChars = 12000) {
+  if (result === null || result === undefined) return 'no output';
+  if (typeof result === 'string') {
+    if (result.length <= maxChars) return result;
+    return `${result.slice(0, maxChars)}\n... [tool result truncated ${result.length - maxChars} chars, original: ${result.length}]`;
+  }
+  if (typeof result !== 'object') return String(result);
+
+  const obj = result;
+  const rawLen = JSON.stringify(obj).length;
+
+  // Read file result: { path, phase, content, ... }
+  if ('path' in obj && 'phase' in obj && obj.phase === 'content') {
+    const header = `[File: ${obj.path}, lines ${obj.start_line || 1}-${obj.end_line || '?'}${obj.total_lines ? ` of ${obj.total_lines}` : ''}${obj.truncated ? ', truncated' : ''}]`;
+    const content = obj.content || obj.text || '';
+    if (typeof content !== 'string' || content.length <= maxChars) {
+      const body = typeof content === 'string' ? content : JSON.stringify(content);
+      return body.length <= maxChars ? `${header}\n${body}` : `${header}\n${body.slice(0, maxChars)}\n... [omitted ${body.length - maxChars} chars, original: ${rawLen}]`;
+    }
+    // Keep head + tail
+    const headLen = Math.floor(maxChars * 0.6);
+    const tailLen = Math.floor(maxChars * 0.3);
+    return `${header}\n${content.slice(0, headLen)}\n... [omitted ${content.length - headLen - tailLen} chars] ...\n${content.slice(-tailLen)}\n[original: ${rawLen} chars]`;
+  }
+
+  // File edit/write result: { path, action, ... }
+  if ('path' in obj && 'action' in obj) {
+    const summary = summarizeToolResult(obj);
+    const diff = obj.diff || obj.patch || obj.content_preview || '';
+    if (diff && typeof diff === 'string' && diff.length <= 800) {
+      return `${summary}\n${diff}`;
+    }
+    if (diff) {
+      return `${summary}\n${diff.slice(0, 800)}\n... [diff truncated, original: ${rawLen}]`;
+    }
+    return `${summary} [original: ${rawLen} chars]`;
+  }
+
+  // Shell command result: { stdout, stderr, code, ... }
+  if ('stdout' in obj || 'stderr' in obj || 'code' in obj) {
+    const command = String(obj.command || '').slice(0, 200);
+    const stdout = String(obj.stdout || '').slice(0, 500);
+    const stderr = String(obj.stderr || '').slice(0, 500);
+    const code = obj.code ?? 0;
+    const parts = [`[exit: ${code}]`];
+    if (command) parts.push(`command: ${command}`);
+    if (stdout) parts.push(`stdout:\n${stdout}`);
+    if (stderr) parts.push(`stderr:\n${stderr}`);
+    if (rawLen > 2000) parts.push(`[original: ${rawLen} chars]`);
+    return parts.join('\n');
+  }
+
+  // Array results (file lists, grep results, etc.)
+  if (Array.isArray(obj)) {
+    const maxItems = 50;
+    if (obj.length <= maxItems) {
+      const serialized = JSON.stringify(obj);
+      return serialized.length <= maxChars ? serialized : clipToolResult(obj, maxChars);
+    }
+    const kept = obj.slice(0, maxItems);
+    const items = typeof kept[0] === 'string'
+      ? kept.join('\n')
+      : kept.map((item) => JSON.stringify(item)).join('\n');
+    return `${items}\n... and ${obj.length - maxItems} more items [total: ${obj.length}, original: ${rawLen} chars]`;
+  }
+
+  // Patch result: { files: [...] }
+  if ('files' in obj && Array.isArray(obj.files)) {
+    return `patched ${obj.files.length} file(s): ${obj.files.slice(0, 10).join(', ')}${obj.files.length > 10 ? ` ... and ${obj.files.length - 10} more` : ''} [original: ${rawLen}]`;
+  }
+
+  // Task results
+  if ('created' in obj && Array.isArray(obj.created)) {
+    return `created ${obj.created.length} task(s)`;
+  }
+  if ('tasks' in obj && Array.isArray(obj.tasks)) {
+    return `${obj.tasks.length} task(s)`;
+  }
+
+  // Fallback: clip with reduced limit
+  return clipToolResult(obj, Math.min(maxChars, 4000));
+}
+
+// ─── P0: Large result disk store ─────────────────────────────────────
+
+const TOOL_RESULT_DISK_THRESHOLD = 6000;
+const PREVIEW_SIZE_BYTES = 2000;
+const TOOL_RESULTS_SUBDIR = 'tool-results';
+
+let currentResultDir = null;
+let resultDirReady = false;
+const storedResults = new Map(); // callId -> { filePath, summary }
+const readCache = new Map();     // "path:startLine:endLine:mtimeMs" -> true
+
+function generatePreview(content) {
+  if (content.length <= PREVIEW_SIZE_BYTES) {
+    return { preview: content, hasMore: false };
+  }
+  const truncated = content.slice(0, PREVIEW_SIZE_BYTES);
+  const lastNewline = truncated.lastIndexOf('\n');
+  const cutPoint = lastNewline > PREVIEW_SIZE_BYTES * 0.5 ? lastNewline : PREVIEW_SIZE_BYTES;
+  return { preview: content.slice(0, cutPoint), hasMore: true };
+}
+
+function formatFileSize(chars) {
+  if (chars < 1024) return `${chars} B`;
+  return `${(chars / 1024).toFixed(1)} KB`;
+}
+
+export function setResultDir(dir) {
+  currentResultDir = dir ? path.join(dir, TOOL_RESULTS_SUBDIR) : null;
+  resultDirReady = false;
+}
+
+async function ensureResultDir() {
+  if (!currentResultDir) return false;
+  if (!resultDirReady) {
+    await fs.mkdir(currentResultDir, { recursive: true });
+    resultDirReady = true;
+  }
+  return true;
+}
+
+async function storeResultIfNeeded(callId, formattedContent, rawResult) {
+  if (formattedContent.length <= TOOL_RESULT_DISK_THRESHOLD) {
+    return formattedContent;
+  }
+  try {
+    const ready = await ensureResultDir();
+    const dir = ready ? currentResultDir : path.join(os.tmpdir(), 'codemini-results');
+    if (!resultDirReady && dir === currentResultDir) {
+      await fs.mkdir(dir, { recursive: true });
+    } else if (!resultDirReady) {
+      await fs.mkdir(dir, { recursive: true });
+    }
+    const filePath = path.join(dir, `${callId}.txt`);
+    const payload = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult, null, 2);
+    await fs.writeFile(filePath, payload, 'utf-8');
+    const summary = summarizeToolResult(rawResult);
+    const { preview, hasMore } = generatePreview(payload);
+    storedResults.set(callId, { filePath, summary });
+
+    return `<persisted-output>
+Output too large (${formatFileSize(payload.length)}). Full output saved to: ${filePath}
+
+Preview (first ${formatFileSize(PREVIEW_SIZE_BYTES)}):
+${preview}${hasMore ? '\n...' : ''}
+
+Summary: ${summary}
+</persisted-output>`;
+  } catch {
+    return formattedContent;
+  }
+}
+
+export function clearResultStore() {
+  const files = [];
+  for (const [, val] of storedResults) {
+    files.push(val.filePath);
+  }
+  storedResults.clear();
+  readCache.clear();
+  return Promise.allSettled(files.map((f) => fs.unlink(f).catch(() => {})));
+}
+
+// ─── Read deduplication ─────────────────────────────────────────────
+
+export function checkReadDedup(filePath, startLine, endLine, mtimeMs) {
+  const key = `${filePath}:${startLine || 0}:${endLine || 0}:${mtimeMs}`;
+  if (readCache.has(key)) {
+    return true;
+  }
+  readCache.set(key, true);
+  // Keep cache bounded
+  if (readCache.size > 100) {
+    const firstKey = readCache.keys().next().value;
+    readCache.delete(firstKey);
+  }
+  return false;
+}
+
+// ─── P1a: Read-only tool classification ──────────────────────────────
+
+const READ_ONLY_TOOLS = new Set([
+  'read', 'grep', 'glob', 'list',
+  'ast_query', 'read_ast_node', 'generate_diff',
+  'list_services', 'get_service_status', 'get_service_logs'
+]);
+
+// ─── Exported helpers ────────────────────────────────────────────────
+
+export function summarizeToolResult(result) {
   if (result === null || result === undefined) return 'no output';
   if (typeof result === 'string') {
     const oneLine = result.replace(/\s+/g, ' ').trim();
@@ -106,7 +301,7 @@ function summarizeToolResult(result) {
   return String(result);
 }
 
-function trimInline(value, maxLen = 72) {
+export function trimInline(value, maxLen = 72) {
   const s = String(value || '').replace(/\s+/g, ' ').trim();
   if (!s) return '';
   if (s.length <= maxLen) return s;
@@ -171,6 +366,18 @@ function formatToolDisplayName(name, args) {
   return name;
 }
 
+// ─── Format a single tool result using per-tool formatter or fallback ──
+
+function formatToolResult(toolResult, toolName, args, toolFormatters, toolResultMaxChars) {
+  if (toolFormatters && typeof toolFormatters[toolName] === 'function') {
+    const formatted = toolFormatters[toolName](toolResult, args);
+    if (typeof formatted === 'string') return formatted;
+  }
+  return compactToolResult(toolResult, toolName, args, toolResultMaxChars);
+}
+
+// ─── Main agent loop ────────────────────────────────────────────────
+
 export async function runAgentLoop({
   systemPrompt,
   userPrompt,
@@ -184,7 +391,9 @@ export async function runAgentLoop({
   executionMode = 'auto',
   alwaysAllowTools = [],
   requestToolApproval,
-  toolResultMaxChars = 12000
+  toolResultMaxChars = 12000,
+  toolFormatters = {},
+  deferredDefinitions = {}
 }) {
   const messages = [];
   if (systemPrompt) {
@@ -201,12 +410,15 @@ export async function runAgentLoop({
   let lastAssistantText = '';
   const alwaysAllowSet = new Set((Array.isArray(alwaysAllowTools) ? alwaysAllowTools : []).map((t) => String(t)));
 
+  // Mutable tool list — grows as tool_search loads deferred tools
+  const activeTools = [...toolDefinitions];
+
   for (let step = 0; step < maxSteps; step += 1) {
     if (onEvent) onEvent({ type: 'step:start', step: step + 1 });
     const completion = await requestCompletion({
       model,
       messages,
-      tools: toolDefinitions
+      tools: activeTools
     });
 
     const toolCalls = Array.isArray(completion.toolCalls) ? completion.toolCalls : [];
@@ -242,11 +454,19 @@ export async function runAgentLoop({
       return { text: finalText.trim(), messages, steps: step + 1 };
     }
 
-    for (const call of toolCalls) {
+    // ─── P1a: Partition into read-only (parallel) and write (serial) ──
+
+    const callsWithMeta = toolCalls.map((call) => {
       const args = safeJsonParse(call.arguments);
       const toolName = normalizeToolCallName(call.name);
       const displayName = formatToolDisplayName(toolName, args);
-      const startedAt = Date.now();
+      const isReadOnly = READ_ONLY_TOOLS.has(toolName);
+      return { call, args, toolName, displayName, isReadOnly };
+    });
+
+    // Approval checks first — must be done synchronously before any execution
+    const approvalResults = new Map();
+    for (const { call, toolName, displayName, args } of callsWithMeta) {
       let approved = true;
       if (executionMode === 'normal' && !alwaysAllowSet.has(toolName)) {
         approved = false;
@@ -260,26 +480,23 @@ export async function runAgentLoop({
           approved = Boolean(decision?.approved);
         }
       }
+      approvalResults.set(call.id, approved);
+    }
 
-      if (!approved) {
+    // Collect results keyed by call.id, then write to messages in original order
+    const resultEntries = new Map(); // call.id -> { content, error? }
+
+    // Helper to execute a single tool call
+    async function executeOne({ call, args, toolName, displayName, isReadOnly }) {
+      const startedAt = Date.now();
+
+      if (!approvalResults.get(call.id)) {
         if (onEvent) onEvent({ type: 'tool:blocked', name: displayName, id: call.id, arguments: args });
-        const blockedMessage = {
-          role: 'tool',
-          tool_call_id: call.id,
-          content: JSON.stringify({ blocked: true, reason: 'Tool call requires approval in normal mode' })
+        return {
+          callId: call.id,
+          content: JSON.stringify({ blocked: true, reason: 'Tool call requires approval in normal mode' }),
+          blocked: true
         };
-        messages.push(blockedMessage);
-        if (onEvent) {
-          onEvent({
-            type: 'tool:result',
-            name: displayName,
-            id: call.id,
-            arguments: args,
-            content: blockedMessage.content,
-            blocked: true
-          });
-        }
-        continue;
       }
 
       if (onEvent) onEvent({ type: 'tool:start', name: displayName, id: call.id, arguments: args });
@@ -287,6 +504,7 @@ export async function runAgentLoop({
       if (!handler) {
         throw new Error(`Unknown tool: ${call.name}`);
       }
+
       let toolResult;
       try {
         toolResult = await handler(args);
@@ -294,58 +512,81 @@ export async function runAgentLoop({
         const durationMs = Date.now() - startedAt;
         const message = error instanceof Error ? error.message : String(error);
         if (onEvent) {
-          onEvent({
-            type: 'tool:error',
-            name: displayName,
-            id: call.id,
-            arguments: args,
-            durationMs,
-            summary: trimInline(message, 120)
-          });
+          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: args, durationMs, summary: trimInline(message, 120) });
         }
-        const toolMessage = {
-          role: 'tool',
-          tool_call_id: call.id,
-          content: clipToolResult({ error: message }, toolResultMaxChars)
+        return {
+          callId: call.id,
+          content: clipToolResult({ error: message }, toolResultMaxChars),
+          error: true
         };
-        messages.push(toolMessage);
+      }
+
+      const durationMs = Date.now() - startedAt;
+      if (onEvent) {
+        onEvent({ type: 'tool:end', name: displayName, id: call.id, arguments: args, durationMs, summary: summarizeToolResult(toolResult) });
+      }
+
+      // P1b: Use per-tool formatter if available, else fallback
+      let formatted = formatToolResult(toolResult, toolName, args, toolFormatters, toolResultMaxChars);
+
+      // P2: If tool_search loaded deferred tools, inject their schemas into activeTools
+      if (toolName === 'tool_search' && toolResult && Array.isArray(toolResult.schemas)) {
+        for (const schema of toolResult.schemas) {
+          const name = schema?.function?.name;
+          if (name && !activeTools.some((t) => t?.function?.name === name)) {
+            activeTools.push(schema);
+          }
+        }
+      }
+
+      // P0: Persist to disk if still large
+      formatted = await storeResultIfNeeded(call.id, formatted, toolResult);
+
+      return { callId: call.id, content: formatted };
+    }
+
+    // Separate read-only and write calls, preserving order
+    const readOnlyCalls = callsWithMeta.filter((c) => c.isReadOnly && approvalResults.get(c.call.id));
+    const writeCalls = callsWithMeta.filter((c) => !c.isReadOnly || !approvalResults.get(c.call.id));
+
+    // Execute read-only calls in parallel
+    if (readOnlyCalls.length > 0) {
+      const readOnlyResults = await Promise.all(readOnlyCalls.map((c) => executeOne(c)));
+      for (const r of readOnlyResults) {
+        resultEntries.set(r.callId, r);
+      }
+    }
+
+    // Execute write calls serially
+    for (const c of writeCalls) {
+      const r = await executeOne(c);
+      resultEntries.set(r.callId, r);
+    }
+
+    // Write results to messages in original tool call order
+    for (const { call, displayName, args } of callsWithMeta) {
+      const entry = resultEntries.get(call.id);
+      if (!entry) continue;
+
+      if (entry.blocked) {
+        messages.push({ role: 'tool', tool_call_id: call.id, content: entry.content });
         if (onEvent) {
-          onEvent({
-            type: 'tool:result',
-            name: displayName,
-            id: call.id,
-            arguments: args,
-            content: toolMessage.content,
-            error: true
-          });
+          onEvent({ type: 'tool:result', name: displayName, id: call.id, arguments: args, content: entry.content, blocked: true });
         }
         continue;
       }
-      const durationMs = Date.now() - startedAt;
-      if (onEvent) {
-        onEvent({
-          type: 'tool:end',
-          name: displayName,
-          id: call.id,
-          arguments: args,
-          durationMs,
-          summary: summarizeToolResult(toolResult)
-        });
+
+      if (entry.error) {
+        messages.push({ role: 'tool', tool_call_id: call.id, content: entry.content });
+        if (onEvent) {
+          onEvent({ type: 'tool:result', name: displayName, id: call.id, arguments: args, content: entry.content, error: true });
+        }
+        continue;
       }
-      const toolMessage = {
-        role: 'tool',
-        tool_call_id: call.id,
-        content: clipToolResult(toolResult, toolResultMaxChars)
-      };
-      messages.push(toolMessage);
+
+      messages.push({ role: 'tool', tool_call_id: call.id, content: entry.content });
       if (onEvent) {
-        onEvent({
-          type: 'tool:result',
-          name: displayName,
-          id: call.id,
-          arguments: args,
-          content: toolMessage.content
-        });
+        onEvent({ type: 'tool:result', name: displayName, id: call.id, arguments: args, content: entry.content });
       }
     }
   }

@@ -20,18 +20,21 @@ Routing:
 
 2. If the goal is clear but there are multiple reasonable implementation paths:
 - use `brainstorm`
-- give 2-3 short options
-- do not choose for the user unless the user explicitly asks for a recommendation
+- ask exactly one clarifying question first
+- do not give options, recommendations, or a tentative solution in the same response
+- stop after the question and wait for the user's answer before continuing
 
 3. If the request is still missing a key constraint or success condition:
 - ask exactly one clarifying question
 - do not give options yet
 - do not write code yet
+- stop after the question and wait for the user's answer
 
 4. If the request is greenfield and underspecified, such as "build a page", "make a site", "generate an app", or similar:
 - treat it as missing key constraints by default
 - ask one high-value question before coding
 - do not assume features, storage model, or scope unless the user already gave them
+- stop after the question and wait for the user's answer
 
 Tool order:
 - prefer `grep` first for content search and candidate discovery

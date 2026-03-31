@@ -352,18 +352,26 @@ test('grep and edit provide a compact high-level workflow', async () => {
 test('builtin tool definitions expose only current primary and structured tools', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const config = await loadConfig();
-    const { definitions, handlers } = getBuiltinTools({ workspaceRoot, config });
+    const { definitions, handlers, deferredDefinitions } = getBuiltinTools({ workspaceRoot, config });
     const names = definitions.map((tool) => tool.function.name);
 
+    // Primary tools are always in definitions
     assert.ok(names.includes('read'));
     assert.ok(names.includes('grep'));
     assert.ok(names.includes('glob'));
     assert.ok(names.includes('list'));
     assert.ok(names.includes('edit'));
-    assert.ok(names.includes('ast_query'));
-    assert.ok(names.includes('read_ast_node'));
     assert.ok(names.includes('write'));
     assert.ok(names.includes('run'));
+    assert.ok(names.includes('tool_search'));
+
+    // AST and service tools are deferred — not in definitions but available via tool_search
+    assert.ok(!names.includes('ast_query'));
+    assert.ok(!names.includes('read_ast_node'));
+    assert.ok('ast_query' in deferredDefinitions);
+    assert.ok('read_ast_node' in deferredDefinitions);
+
+    // Removed tools are absent
     assert.ok(!names.includes('locate'));
     assert.ok(!names.includes('search_code'));
     assert.ok(!names.includes('read_block'));
@@ -375,6 +383,8 @@ test('builtin tool definitions expose only current primary and structured tools'
     assert.ok(!names.includes('insert_before'));
     assert.ok(!names.includes('insert_after'));
     assert.ok(!names.includes('validate_edit'));
+
+    // Handlers for all tools (primary + deferred) are always available
     assert.equal(typeof handlers.replace_block, 'undefined');
     assert.equal(typeof handlers.read, 'function');
     assert.equal(typeof handlers.edit, 'function');
@@ -382,6 +392,7 @@ test('builtin tool definitions expose only current primary and structured tools'
     assert.equal(typeof handlers.read_ast_node, 'function');
     assert.equal(typeof handlers.write, 'function');
     assert.equal(typeof handlers.run, 'function');
+    assert.equal(typeof handlers.tool_search, 'function');
   });
 });
 
