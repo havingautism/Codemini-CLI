@@ -1840,11 +1840,11 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'write',
         description:
-          'Create a new file or overwrite a file. Use this for new files or explicit full rewrites. Prefer edit for existing code changes.',
+          'Create a new file or overwrite a file. Always include path and content. Use this for new files or explicit full rewrites only. If the file path is not decided yet, do not call write yet. Prefer edit for existing code changes.',
         parameters: {
           type: 'object',
           properties: {
-            path: { type: 'string', description: 'File path to create or overwrite' },
+            path: { type: 'string', description: 'Required file path like src/app.js or pages/index.html. Never omit this.' },
             content: { type: 'string', description: 'Content to write' },
             append: { type: 'boolean', description: 'Append instead of overwrite' },
             full_file_rewrite: { type: 'boolean', description: 'Set true for whole-file rewrites' }
