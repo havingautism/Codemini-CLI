@@ -7,7 +7,10 @@ function safeJsonParse(raw) {
   try {
     return JSON.parse(raw);
   } catch {
-    return {};
+    return {
+      _raw: String(raw),
+      _invalid_json: true
+    };
   }
 }
 

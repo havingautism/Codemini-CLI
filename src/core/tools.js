@@ -755,7 +755,7 @@ async function readFile(root, args) {
 }
 
 async function writeFile(root, args) {
-  const rawPath = String(args?.path || '').trim();
+  const rawPath = String(args?.path || args?.file_path || '').trim();
   if (!rawPath) {
     throw new Error('write requires a file path like weather/WeatherForecast.js');
   }
@@ -1536,7 +1536,7 @@ async function openTarget(root, args) {
 }
 
 function normalizeEditTargetArgs(args = {}) {
-  const file = String(args?.file || args?.path || '').trim();
+  const file = String(args?.file || args?.path || args?.file_path || '').trim();
   const nestedEdit = args?.edit && typeof args.edit === 'object' ? args.edit : null;
   if (nestedEdit) {
     const normalizedEdit = { ...nestedEdit };
@@ -1561,6 +1561,8 @@ function normalizeEditTargetArgs(args = {}) {
       new_content: args?.new_content ?? args?.content,
       old_text: args?.old_text,
       new_text: args?.new_text,
+      old_string: args?.old_string,
+      new_string: args?.new_string,
       anchor_text: args?.anchor_text,
       content: args?.content
     }
@@ -1573,6 +1575,12 @@ async function editTarget(root, args) {
   const astTarget = normalized.ast_target;
   const edit = normalized.edit || {};
   let kind = String(edit.kind || '').trim();
+  if (edit.old_text == null && edit.old_string != null) {
+    edit.old_text = edit.old_string;
+  }
+  if (edit.new_text == null && edit.new_string != null) {
+    edit.new_text = edit.new_string;
+  }
   const hasContent = edit.new_content != null || edit.content != null;
   const hasTargetHint = Boolean(edit.symbol || args?.symbol || edit.line || args?.line || edit.target);
   if (!kind) {
@@ -1586,7 +1594,14 @@ async function editTarget(root, args) {
       kind = 'rewrite_file';
     }
   }
-  if (!file || !kind) throw new Error('edit requires file and edit.kind');
+  if (!file || !kind) {
+    const recentFile = String(args?.recent_file || '').trim();
+    const rawArgs = typeof args?._raw === 'string' && args._raw.trim() ? ` Raw tool arguments: ${args._raw.trim()}.` : '';
+    const hint = recentFile
+      ? ` If you meant the recently read file ${recentFile}, use edit with {file:"${recentFile}", old_text:"...", new_text:"..."} for a text replacement, or {file:"${recentFile}", edit:{kind:"rewrite_file", new_content:"..."}} for a full rewrite.`
+      : ' Use edit with {file:"path", old_text:"...", new_text:"..."} for a text replacement, or {file:"path", edit:{kind:"rewrite_file", new_content:"..."}} for a full rewrite.';
+    throw new Error(`edit requires file and edit.kind.${rawArgs}${hint}`);
+  }
   if (astTarget) {
     if (kind !== 'replace_block') {
       throw new Error('AST-scoped edit only supports replace_block');
@@ -1659,6 +1674,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
   };
   const astSelectionCache = new Map();
   let lastAstTarget = null;
+  let lastReadPath = '';
   const rememberAstSelection = (filePath, astTarget) => {
     const key = String(filePath || '').trim();
     if (!key || !astTarget) return;
@@ -1812,15 +1828,18 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'edit',
         description:
-          'Edit existing files. Use block edits, exact replacements, or anchored inserts. When ast_target is provided, keep the edit constrained to that node. Read first unless the exact target is already known. Prefer this over write for code changes.',
+          'Edit existing files. Prefer one of these shapes: 1) {file, old_text, new_text} for exact text replacement, 2) {file, symbol, edit:{kind:"replace_block", new_content:"..."}} for block replacement, 3) {file, anchor_text, position:"before"|"after", content:"..."} for inserts. Demo-style aliases {file_path, old_string, new_string} are also accepted. Read first unless the exact target is already known. Prefer this over write for existing code changes.',
         parameters: {
           type: 'object',
           properties: {
             file: { type: 'string', description: 'File path to edit' },
             path: { type: 'string', description: 'Alias for file' },
+            file_path: { type: 'string', description: 'Alias for file, compatible with simpler demo-style tool calls' },
             new_content: { type: 'string', description: 'Replacement content' },
             old_text: { type: 'string', description: 'Exact text to replace' },
             new_text: { type: 'string', description: 'Replacement text' },
+            old_string: { type: 'string', description: 'Alias for old_text' },
+            new_string: { type: 'string', description: 'Alias for new_text' },
             anchor_text: { type: 'string', description: 'Anchor text for inserts' },
             content: { type: 'string', description: 'Content to insert or append' },
             position: { type: 'string', description: 'before or after' },
@@ -1840,11 +1859,12 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'write',
         description:
-          'Create a new file or overwrite a file. Always include path and content. Use this for new files or explicit full rewrites only. If the file path is not decided yet, do not call write yet. Prefer edit for existing code changes.',
+          'Create a new file or overwrite a file. Always include path (or file_path) and content. Use this for new files or explicit full rewrites only. Example: {path:"src/page.html", content:"..."} . If the file path is not decided yet, do not call write yet. Prefer edit for existing code changes.',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string', description: 'Required file path like src/app.js or pages/index.html. Never omit this.' },
+            file_path: { type: 'string', description: 'Alias for path, compatible with simpler demo-style tool calls' },
             content: { type: 'string', description: 'Content to write' },
             append: { type: 'boolean', description: 'Append instead of overwrite' },
             full_file_rewrite: { type: 'boolean', description: 'Set true for whole-file rewrites' }
@@ -2049,6 +2069,10 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
           typeof args?.max_chars === 'number'
             ? args.max_chars
             : config.context?.read_file_max_chars ?? 24000
+      }).then((result) => {
+        const readPath = String(result?.path || args?.path || '').trim();
+        if (readPath) lastReadPath = readPath;
+        return result;
       }),
     grep: (args) => grep(workspaceRoot, args),
     glob: (args) => glob(workspaceRoot, args),
@@ -2069,7 +2093,10 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       await ensureProjectIndex();
       const normalizedKind = String(args?.edit?.kind || args?.kind || '').trim();
       const astTarget = resolveCachedAstTarget(args, { requireAstScope: normalizedKind === 'replace_block' });
-      const result = await editTarget(workspaceRoot, astTarget ? { ...args, ast_target: astTarget } : args);
+      const result = await editTarget(
+        workspaceRoot,
+        astTarget ? { ...args, ast_target: astTarget, recent_file: lastReadPath } : { ...args, recent_file: lastReadPath }
+      );
       if (result?.path) await refreshProjectFile(result.path);
       return result;
     },

@@ -7,6 +7,7 @@ import path from 'node:path';
 import { getBuiltinTools } from '../src/core/tools.js';
 import { loadConfig } from '../src/core/config-store.js';
 import { classifyCommandIntent } from '../src/core/shell.js';
+import { runAgentLoop } from '../src/core/agent-loop.js';
 
 async function withTempWorkspace(run) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-tools-'));
@@ -418,6 +419,98 @@ test('edit modifies existing files through symbol-targeted blocks', async () => 
     assert.equal(edited.ok, true);
     const after = await fs.readFile(path.join(workspaceRoot, 'src', 'math.js'), 'utf8');
     assert.match(after, /return a \+ b \+ 1;/);
+  });
+});
+
+test('edit accepts demo-style file_path old_string and new_string input', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    const targetPath = path.join(workspaceRoot, 'src', 'demo.ts');
+    await fs.writeFile(targetPath, 'export const value = 1;\n', 'utf8');
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const edited = await handlers.edit({
+      file_path: 'src/demo.ts',
+      old_string: 'value = 1',
+      new_string: 'value = 2'
+    });
+
+    assert.equal(edited.ok, true);
+    const after = await fs.readFile(targetPath, 'utf8');
+    assert.match(after, /value = 2/);
+  });
+});
+
+test('write accepts demo-style file_path alias', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { handlers } = await makeTools(workspaceRoot);
+    const written = await handlers.write({
+      file_path: 'demo.txt',
+      content: 'hello demo\n'
+    });
+
+    assert.equal(written.ok, true);
+    assert.equal(written.path, 'demo.txt');
+    const after = await fs.readFile(path.join(workspaceRoot, 'demo.txt'), 'utf8');
+    assert.equal(after, 'hello demo\n');
+  });
+});
+
+test('edit missing arguments suggests a repair shape using the most recently read file', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, 'src', 'demo.ts'), 'export const value = 1;\n', 'utf8');
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const meta = await handlers.read({ path: 'src/demo.ts' });
+    assert.equal(meta.phase, 'metadata');
+
+    await assert.rejects(
+      () => handlers.edit({}),
+      /src\/demo\.ts|old_text|new_text|rewrite_file/i
+    );
+  });
+});
+
+test('agent loop preserves raw invalid tool arguments so tool errors can explain the bad payload', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const config = await loadConfig();
+    const { definitions, handlers, formatters, deferredDefinitions } = getBuiltinTools({ workspaceRoot, config });
+
+    const result = await runAgentLoop({
+      systemPrompt: 'You are a test agent.',
+      userPrompt: 'test invalid tool args',
+      model: 'test-model',
+      maxSteps: 2,
+      toolDefinitions: definitions,
+      toolHandlers: handlers,
+      toolFormatters: formatters,
+      deferredDefinitions,
+      requestCompletion: async ({ messages }) => {
+        const hasToolResult = messages.some((msg) => msg.role === 'tool');
+        if (!hasToolResult) {
+          return {
+            text: '',
+            toolCalls: [
+              {
+                id: 'call_bad_edit',
+                name: 'edit',
+                arguments: '.'
+              }
+            ]
+          };
+        }
+        return {
+          text: 'done',
+          toolCalls: []
+        };
+      }
+    });
+
+    const toolMessage = result.messages.find((msg) => msg.role === 'tool' && msg.tool_call_id === 'call_bad_edit');
+    assert.ok(toolMessage);
+    assert.match(String(toolMessage.content), /Raw tool arguments: \./i);
+    assert.match(String(toolMessage.content), /old_text|new_text|rewrite_file/i);
   });
 });
 
