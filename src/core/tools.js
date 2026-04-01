@@ -1738,7 +1738,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'read',
         description:
-          'Read a file. Call once for metadata and a read_token, then again with include_content=true and the same token to get content. Use this before editing.',
+          'Inspect a file. Call once for metadata and a read_token, then again with include_content=true and the same token to get content. Use this before editing. Do not use run with cat, head, or tail for file reads.',
         parameters: {
           type: 'object',
           properties: {
@@ -1758,7 +1758,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'grep',
         description:
-          'Search file contents. Use this for code search instead of grep or rg in run.',
+          'Search file contents. Use this for code search before read or edit. Do not use run with grep or rg for normal code search.',
         parameters: {
           type: 'object',
           properties: {
@@ -1780,7 +1780,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'glob',
         description:
-          'Find files by glob pattern. Use this for file discovery instead of find in run.',
+          'Find files by glob pattern. Use this for file discovery before read. Do not use run with find for normal file lookup.',
         parameters: {
           type: 'object',
           properties: {
@@ -1797,7 +1797,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       type: 'function',
       function: {
         name: 'list',
-        description: 'List files and directories in a workspace path.',
+        description: 'List files and directories in a workspace path. Use this for quick directory discovery before deeper reads.',
         parameters: {
           type: 'object',
           properties: {
@@ -1812,7 +1812,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'edit',
         description:
-          'Edit existing files. Use block edits, exact replacements, or anchored inserts. When ast_target is provided, keep the edit constrained to that node. Prefer this over write for code changes.',
+          'Edit existing files. Use block edits, exact replacements, or anchored inserts. When ast_target is provided, keep the edit constrained to that node. Read first unless the exact target is already known. Prefer this over write for code changes.',
         parameters: {
           type: 'object',
           properties: {
@@ -1840,7 +1840,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'write',
         description:
-          'Create a new file or overwrite a file. Use this for new files or full rewrites. Prefer edit for existing code.',
+          'Create a new file or overwrite a file. Use this for new files or explicit full rewrites. Prefer edit for existing code changes.',
         parameters: {
           type: 'object',
           properties: {
@@ -1892,7 +1892,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'ast_query',
         description:
-          'Run a Tree-sitter query on a code file and return ast_target objects for node-scoped reads or edits.',
+          'Run a Tree-sitter query on a code file and return ast_target objects. Use this when you need node-scoped reads or edits for functions, classes, or methods.',
         parameters: {
           type: 'object',
           properties: {
@@ -1911,7 +1911,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'read_ast_node',
         description:
-          'Read a previously selected AST node with compact structural context.',
+          'Read a previously selected AST node with compact structural context. Use this after ast_query before a scoped structural edit.',
         parameters: {
           type: 'object',
           properties: {
@@ -1927,7 +1927,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       type: 'function',
       function: {
         name: 'generate_diff',
-        description: 'Generate a unified diff for proposed content',
+        description: 'Generate a unified diff for proposed content. Use this when you want to preview or prepare a patch before applying it.',
         parameters: {
           type: 'object',
           properties: {
@@ -1942,7 +1942,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       type: 'function',
       function: {
         name: 'patch',
-        description: 'Apply one or more unified diff hunks to workspace files',
+        description: 'Apply one or more unified diff hunks to workspace files. Use this for prepared unified diffs instead of ad-hoc shell patching.',
         parameters: {
           type: 'object',
           properties: {
@@ -1958,7 +1958,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'start_service',
         description:
-          'Start a long-running local service and return a compact handle.',
+          'Start a long-running local service and return a compact handle. Do not use run for watchers, dev servers, or other persistent processes.',
         parameters: {
           type: 'object',
           properties: {
@@ -1985,7 +1985,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       type: 'function',
       function: {
         name: 'list_services',
-        description: 'List tracked local services and their current status.',
+        description: 'List tracked local services and their current status. Use this to find existing service handles before starting another one.',
         parameters: {
           type: 'object',
           properties: {}
@@ -1996,7 +1996,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       type: 'function',
       function: {
         name: 'get_service_status',
-        description: 'Get the status of a started service.',
+        description: 'Get the status of a started service. Use this to confirm startup or diagnose a stalled service.',
         parameters: {
           type: 'object',
           properties: {
@@ -2010,7 +2010,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       type: 'function',
       function: {
         name: 'get_service_logs',
-        description: 'Read recent logs from a started service.',
+        description: 'Read recent logs from a started service. Use this for targeted diagnosis instead of restarting blindly.',
         parameters: {
           type: 'object',
           properties: {
@@ -2026,7 +2026,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       type: 'function',
       function: {
         name: 'stop_service',
-        description: 'Stop a started service.',
+        description: 'Stop a started service when it is no longer needed or when you need a clean restart.',
         parameters: {
           type: 'object',
           properties: {

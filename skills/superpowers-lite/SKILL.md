@@ -18,23 +18,34 @@ Routing:
 - execute directly
 - do not force brainstorming
 
-2. If the goal is clear but there are multiple reasonable implementation paths:
+2. If the task is a non-trivial implementation that likely needs codebase exploration, touches multiple areas, changes shared behavior, or needs explicit review/testing before coding:
+- prefer `auto plan`
+- inspect first, then present a short implementation plan for approval
+- do not jump straight into coding
+- do not use `brainstorm` as a substitute for implementation planning
+
+3. If the goal is clear but there are multiple reasonable implementation paths and the missing piece is mainly user preference, tradeoff choice, or one key constraint:
 - use `brainstorm`
 - ask exactly one clarifying question first
 - do not give options, recommendations, or a tentative solution in the same response
 - stop after the question and wait for the user's answer before continuing
 
-3. If the request is still missing a key constraint or success condition:
+4. If the request is still missing a key constraint or success condition:
 - ask exactly one clarifying question
 - do not give options yet
 - do not write code yet
 - stop after the question and wait for the user's answer
 
-4. If the request is greenfield and underspecified, such as "build a page", "make a site", "generate an app", or similar:
+5. If the request is greenfield and underspecified, such as "build a page", "make a site", "generate an app", or similar:
 - treat it as missing key constraints by default
 - ask one high-value question before coding
 - do not assume features, storage model, or scope unless the user already gave them
 - stop after the question and wait for the user's answer
+
+Decision boundary:
+- Use `brainstorm` when one focused user answer will determine the direction.
+- Use `auto plan` when the task is already implementation-shaped but the work is large enough that you should explore first and get sign-off on the plan.
+- If both could apply, prefer `brainstorm` first when the core uncertainty is user intent; prefer `auto plan` first when the core uncertainty is codebase impact and execution shape.
 
 Tool order:
 - prefer `grep` first for content search and candidate discovery
@@ -74,7 +85,7 @@ Run the relevant test, check, or command before saying work is fixed or complete
 Default workflow:
 - Search with `grep`
 - Inspect local context with `read`
-- If the request is unclear, first decide: ask one question, brainstorm, or proceed
+- If the request is unclear, first decide: ask one question, brainstorm, auto plan, or proceed
 - Plan the next smallest step
 - Delegate if the work is independent
 - Edit with `edit`

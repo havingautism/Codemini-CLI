@@ -434,11 +434,15 @@ function buildGoalRequirementPacket(goal, role) {
 
 function buildAutoPlanPlannerGuidance() {
   return [
+    'Design a short implementation plan for a small model.',
     'Auto-plan planning rules:',
+    '- Start with a discovery or clarification step when the current implementation is not yet verified.',
     '- If the goal still leaves room for multiple approaches, choose one practical direction before planning execution.',
     '- Prefer the smallest local approach that satisfies the goal.',
     '- Do not output multiple alternative branches in the final plan.',
-    '- Turn the chosen direction into concrete execution steps for coder, reviewer, and tester.',
+    '- Do not assume implementation should begin before the plan is coherent.',
+    '- Turn the chosen direction into concrete execution steps for planner, coder, reviewer, and tester.',
+    '- Prefer 3-5 steps total unless the task is clearly larger.',
     '- Keep the plan ordered, implementation-oriented, and easy for small sub-agents to follow.'
   ].join('\n');
 }
@@ -594,8 +598,79 @@ function selectAutoSkillNames(text = '') {
   return selected;
 }
 
+function shouldAutoPlan(text = '') {
+  const input = String(text || '').trim();
+  if (!input) return false;
+
+  const lower = input.toLowerCase();
+  const explicitPlanning =
+    /(\/plan\b|plan first|make a plan|implementation plan|先做计划|先出方案|先规划|先计划)/i.test(lower);
+  if (explicitPlanning) return false;
+
+  const simpleSkip =
+    /(typo|readme|console\.log|log this|rename\s+\w+|one line|small tweak|tiny fix|格式化|拼写|注释|文案|小改|微调)/i.test(
+      lower
+    );
+  if (simpleSkip) return false;
+
+  const discussionFirst =
+    /(brainstorm|头脑风暴|方案|思路|怎么做|如何做|which (?:approach|option|way)|best way|trade-?off|not sure|unsure|unclear|whether it should|要不要|不确定|先别写|先不要写|先讨论|先想一下)/i.test(
+      lower
+    );
+  if (discussionFirst) return false;
+
+  const implementationRequest =
+    /\b(add|build|create|implement|support|introduce|design|refactor|rework|migrate|change|update|rewrite|restructure)\b/i.test(
+      lower
+    ) ||
+    /(新增|增加|实现|支持|设计|重构|改造|迁移|调整|重写|重做)/i.test(lower);
+  if (!implementationRequest) return false;
+
+  const nonTrivialSignals =
+    /\b(auth|authentication|workflow|flow|system|architecture|api|endpoint|state management|cache|caching|database|migration|service|shared helper|helper module|refactor|multi[- ]file|across files|with tests?|and tests?|with validation|error handling)\b/i.test(
+      lower
+    ) ||
+    /(架构|流程|系统|接口|缓存|数据库|迁移|服务|共享|模块|跨文件|测试|校验|错误处理)/i.test(lower);
+
+  const multipleActions = /\b(and|plus|also|while|along with)\b/i.test(lower) || /[，、；;].+/.test(input);
+  const singleFileScoped =
+    /\b(?:in|inside|within|only in)\s+[-_/.\w]+\.(?:[cm]?[jt]sx?|py|go|rb|java|rs|php|md)\b/i.test(lower) ||
+    /\b(?:src|app|lib|tests?)\/[-_/.\w]+\.(?:[cm]?[jt]sx?|py|go|rb|java|rs|php|md)\b/i.test(lower);
+
+  if (singleFileScoped && !multipleActions) return false;
+  if (singleFileScoped && !nonTrivialSignals) return false;
+
+  return nonTrivialSignals || (multipleActions && !singleFileScoped);
+}
+
+function classifyAutoRoute(text = '') {
+  const selectedSkills = selectAutoSkillNames(text);
+  const hasBrainstorm = selectedSkills.includes('brainstorm');
+  if (hasBrainstorm) {
+    return {
+      mode: 'brainstorm',
+      autoPlan: false,
+      selectedSkills
+    };
+  }
+
+  if (shouldAutoPlan(text)) {
+    return {
+      mode: 'auto_plan',
+      autoPlan: true,
+      selectedSkills: ['superpowers-lite']
+    };
+  }
+
+  return {
+    mode: 'direct',
+    autoPlan: false,
+    selectedSkills
+  };
+}
+
 function buildAutoSkillSystemPrompt(baseSystemPrompt, commands, config, text) {
-  const selected = selectAutoSkillNames(text).filter((name) => isSkillEnabled(config, name));
+  const selected = classifyAutoRoute(text).selectedSkills.filter((name) => isSkillEnabled(config, name));
   if (selected.length === 0) return baseSystemPrompt;
 
   const blocks = [];
@@ -660,6 +735,74 @@ function normalizeAutoPlan(parsed, goal) {
         };
 
   return enforceAutoPlanGuardrailSteps(basePlan, goal);
+}
+
+function summarizeGoalForStepTitle(goal, fallback = 'requested change') {
+  const text = String(goal || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return fallback;
+  const compact = text.length > 72 ? `${text.slice(0, 69).trimEnd()}...` : text;
+  return compact;
+}
+
+function buildFallbackAutoPlan(goal) {
+  const requirements = deriveGoalRequirements(goal);
+  const lightweightGoal = isLightweightAutoPlanGoal(goal, requirements);
+  const focus = summarizeGoalForStepTitle(goal);
+  const summary =
+    requirements.length > 0
+      ? `Auto fallback plan for: ${requirements.join('; ')}`
+      : `Auto fallback plan for: ${goal}`;
+
+  if (lightweightGoal) {
+    return {
+      summary,
+      steps: [
+        {
+          title: `Implement ${focus}`,
+          role: 'coder',
+          task: `Implement the requested change for: ${goal}. Follow the acceptance checklist and keep the change narrowly scoped.`
+        },
+        {
+          title: 'Verify the change',
+          role: 'tester',
+          task: `Verify the completed change for: ${goal}. Run the most relevant focused checks available and report concrete evidence plus anything still unverified.`
+        }
+      ]
+    };
+  }
+
+  return {
+    summary,
+    steps: [
+      {
+        title: 'Inspect the target area',
+        role: 'planner',
+        task: `Inspect the existing code paths, affected files, and current behavior for: ${goal}. Identify constraints, dependencies, and any compatibility risks before implementation.`
+      },
+      {
+        title: `Implement ${focus}`,
+        role: 'coder',
+        task: `Implement the requested changes for: ${goal}. Keep the behavior aligned with the acceptance checklist and preserve existing external behavior unless the goal explicitly changes it.`
+      },
+      {
+        title: 'Update or add focused verification',
+        role: 'coder',
+        task: `Add or update the most relevant tests and focused verification coverage for: ${goal}. Prefer narrow checks tied to the changed files and flows.`
+      },
+      {
+        title: 'Review for regressions and gaps',
+        role: 'reviewer',
+        task: `Review the completed work for: ${goal}. Start with the changed files, then check regressions, risky assumptions, backward compatibility, and missing edge cases.`
+      },
+      {
+        title: 'Verify the changed flows',
+        role: 'tester',
+        task: `Verify the completed work for: ${goal}. Run the most relevant checks available, report concrete evidence, and call out anything still not verified.`
+      }
+    ]
+  };
 }
 
 function enforceAutoPlanGuardrailSteps(plan, goal) {
@@ -770,6 +913,7 @@ function buildAutoPlanSystemSummary(auto) {
     `File: ${auto.filePath}`,
     `Plan Summary: ${auto.summary || '-'}`,
     `Final Summary: ${auto.finalSummary || auto.summary || '-'}`,
+    `Approval: ${auto.approvalStatus || 'not_required'}`,
     `Steps: ${auto.steps.length} total`,
     `Completed: ${auto.completedCount}`,
     `Warnings: ${auto.warningCount}`,
@@ -780,6 +924,9 @@ function buildAutoPlanSystemSummary(auto) {
   }
   if (auto.failedTitles?.length) {
     lines.push(`Failed steps: ${auto.failedTitles.slice(0, 5).join(', ')}`);
+  }
+  if (auto.approvalStatus === 'pending') {
+    lines.push('Next: review the plan summary, then use /plan approve to start implementation or /plan stay to keep planning.');
   }
   return lines.join('\n');
 }
@@ -1142,6 +1289,11 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
       value: contextUsagePct,
       enumerable: false,
       writable: false
+    },
+    pendingPlanApproval: {
+      value: currentSession?.planState?.status === 'pending_approval',
+      enumerable: false,
+      writable: false
     }
   });
   return snapshot;
@@ -1162,6 +1314,61 @@ function stampedMessage(role, content, extra = {}) {
     at: new Date().toISOString(),
     ...extra
   };
+}
+
+function hasPendingPlanApproval(session) {
+  return session?.planState?.status === 'pending_approval';
+}
+
+function isApprovalText(text = '') {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  return /^(yes|y|ok|okay|approve|approved|continue|proceed|go ahead|start|开始|继续|可以|同意|批准|通过|按这个做)$/.test(value);
+}
+
+function isStayInPlanText(text = '') {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  return /^(stay|keep planning|keep in plan mode|not yet|wait|先别|先等等|继续计划|继续讨论|继续规划|暂不批准)$/.test(value);
+}
+
+function buildPendingPlanApprovalMessage(planState) {
+  const lines = [
+    'Plan approval is still pending.',
+    `Goal: ${planState?.goal || '-'}`,
+    `Plan file: ${planState?.filePath || '-'}`,
+    `Summary: ${planState?.finalSummary || planState?.summary || '-'}`,
+    'Use /plan approve to start implementation, or /plan stay to keep refining the plan first.'
+  ];
+  return lines.join('\n');
+}
+
+function buildApprovedPlanExecutionPrompt(planState, approvalText = '') {
+  const lines = [
+    'Approved implementation plan:',
+    `Original goal: ${planState?.goal || '-'}`,
+    `Plan file: ${planState?.filePath || '-'}`,
+    `Plan summary: ${planState?.summary || '-'}`,
+    `Final planning summary: ${planState?.finalSummary || planState?.summary || '-'}`,
+    `User approval: ${String(approvalText || '').trim() || 'approved'}`,
+    Array.isArray(planState?.steps) && planState.steps.length > 0 ? 'Planned steps:' : '',
+    ...(Array.isArray(planState?.steps)
+      ? planState.steps.slice(0, 8).map((step, index) => `${index + 1}. [${step.role}] ${step.title} :: ${step.task}`)
+      : []),
+    'Proceed with implementation now.',
+    'Follow the approved direction unless a blocking contradiction appears.',
+    'Output rules for this implementation phase:',
+    '- Be concise and practical.',
+    '- Do not celebrate, praise, or use emojis.',
+    '- Do not restate the full plan back to the user.',
+    '- If the work is already done, say so briefly and cite the verification evidence.',
+    '- After implementation or verification, prefer a short result summary in 3-6 lines.',
+    '- If the work is complete, use this exact structure:',
+    'Status: <done|partial|blocked>',
+    'Verified: <tests, checks, or evidence>',
+    'Next: <none or the single next action>'
+  ];
+  return lines.join('\n');
 }
 
 async function resolveSpecPath(rawArg = '', sessionId = '') {
@@ -1493,7 +1700,6 @@ async function runSubAgentTask({
 
 async function buildAutoPlanAndRun({
   goal,
-  session,
   config,
   model,
   systemPrompt,
@@ -1527,8 +1733,12 @@ async function buildAutoPlanAndRun({
           role: 'user',
           content: [
             'Create an execution plan and assign best sub-agent role for each step.',
+            'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester","task":"..."}]}. No markdown.',
+            'Always include final reviewer and tester steps unless the task is explicitly tiny.',
             requirementPacket,
-            'The final steps must include review and testing/verification unless the goal is a tiny single-change task, in which case you may keep only one implementation step plus one testing/verification step.'
+            'The first step should usually inspect or clarify the target area before implementation.',
+            'The final steps must include review and testing/verification unless the goal is a tiny single-change task, in which case you may keep only one implementation step plus one testing/verification step.',
+            'Prefer 3-5 steps total.'
           ]
             .filter(Boolean)
             .join('\n')
@@ -1541,89 +1751,22 @@ async function buildAutoPlanAndRun({
     autoPlan = normalizeAutoPlan(parsed, goal);
   } catch (err) {
     planningError = String(err?.message || err || 'planning failed');
+    autoPlan = buildFallbackAutoPlan(goal);
   }
 
-  const runItems = [];
-  const totalPlanSteps = autoPlan.steps.length + 1;
   for (let i = 0; i < autoPlan.steps.length; i += 1) {
     const step = autoPlan.steps[i];
     if (onAgentEvent) {
       onAgentEvent({
         type: 'assistant:delta',
-        text: `\n[plan] Step ${i + 1}/${totalPlanSteps} -> ${step.role}: ${step.title}\n`
-      });
-    }
-    try {
-      const stepResult = await runSubAgentTask({
-        role: step.role,
-        task: step.task,
-        goal,
-        priorSteps: runItems,
-        parentSession: session,
-        config,
-        model,
-        systemPrompt,
-        onAgentEvent,
-        extraRolePrompt: buildAutoPlanExecutionGuidance(step.role)
-      });
-      const outputLooksSuccessful = looksLikeSuccessfulStepOutput(stepResult.text);
-      const outputHasFailureSignals = stepOutputHasFailureSignals(step.role, stepResult.text);
-      const warningParts = [];
-      if (stepResult.blockedCount > 0) warningParts.push(`${stepResult.blockedCount} blocked tool call(s)`);
-      if (stepResult.toolErrorCount > 0) warningParts.push(`${stepResult.toolErrorCount} tool error(s)`);
-      const warning = warningParts.length > 0 ? `sub-agent recovered after ${warningParts.join(', ')}` : '';
-      const failed =
-        stepResult.hasErrorLine ||
-        outputHasFailureSignals ||
-        (!outputLooksSuccessful && (stepResult.blockedCount > 0 || stepResult.toolErrorCount > 0));
-      let error = '';
-      if (stepResult.hasErrorLine) {
-        error = 'sub-agent output contains error line(s)';
-      } else if (outputHasFailureSignals) {
-        error = 'sub-agent output reports unmet requirements or failed verification';
-      } else if (failed && stepResult.blockedCount > 0) {
-        error = `sub-agent ended with ${stepResult.blockedCount} blocked tool call(s)`;
-      } else if (failed && stepResult.toolErrorCount > 0) {
-        error = `sub-agent ended with ${stepResult.toolErrorCount} tool error(s)`;
-      }
-      runItems.push({
-        ...step,
-        output: stepResult.text,
-        error,
-        warning,
-        failed,
-        artifactPaths: stepResult.artifactPaths || []
-      });
-    } catch (err) {
-      runItems.push({
-        ...step,
-        output: '',
-        error: String(err?.message || err || 'sub-agent step failed'),
-        warning: '',
-        failed: true
+        text: `\n[plan] Step ${i + 1}/${autoPlan.steps.length} -> ${step.role}: ${step.title}\n`
       });
     }
   }
 
-  const failedItems = runItems.filter((s) => s.failed || s.error);
-  const warningItems = runItems.filter((s) => !s.failed && s.warning);
-  const completedItems = runItems.filter((s) => !s.failed);
-
-  if (onAgentEvent) {
-    onAgentEvent({
-      type: 'assistant:delta',
-      text: `\n[plan] Step ${totalPlanSteps}/${totalPlanSteps} -> summarizer: Final summary\n`
-    });
-  }
-  const finalSummary = await buildAutoPlanFinalSummary({
-    goal,
-    autoPlan,
-    runItems,
-    planningError,
-    config,
-    model,
-    systemPrompt
-  });
+  const finalSummary = planningError
+    ? `Plan created with fallback guidance because planning hit an error: ${planningError}`
+    : 'Plan created and waiting for approval before implementation.';
 
   const lines = [];
   lines.push(`# Auto Plan: ${goal}`);
@@ -1644,25 +1787,8 @@ async function buildAutoPlanAndRun({
     lines.push(`   - task: ${s.task}`);
   });
   lines.push('');
-  lines.push('## Sub-Agent Outputs');
-  runItems.forEach((s, idx) => {
-    lines.push(`### ${idx + 1}. [${s.role}] ${s.title}`);
-    if (s.error) {
-      lines.push(`Error: ${s.error}`);
-      if (s.output) {
-        lines.push('');
-        lines.push(s.output);
-      }
-      lines.push('');
-      return;
-    }
-    if (s.warning) {
-      lines.push(`Note: ${s.warning}`);
-      lines.push('');
-    }
-    lines.push(s.output || '(empty)');
-    lines.push('');
-  });
+  lines.push('## Approval');
+  lines.push('Pending user approval before implementation.');
 
   const filePath = await writeMarkdownInProjectDir(
     'plans',
@@ -1675,12 +1801,13 @@ async function buildAutoPlanAndRun({
     filePath,
     summary: autoPlan.summary,
     finalSummary,
+    approvalStatus: 'pending',
     steps: autoPlan.steps,
-    completedCount: completedItems.length,
-    warningCount: warningItems.length,
-    failedCount: failedItems.length,
-    warningTitles: warningItems.map((s) => `${s.role}:${s.title}`),
-    failedTitles: failedItems.map((s) => `${s.role}:${s.title}`)
+    completedCount: 0,
+    warningCount: planningError ? 1 : 0,
+    failedCount: 0,
+    warningTitles: planningError ? ['planner:fallback-plan'] : [],
+    failedTitles: []
   };
 }
 
@@ -1728,6 +1855,9 @@ export async function createChatRuntime({
   let config = initialConfig;
   const baseSystemPrompt = systemPrompt;
   let executionMode = config.execution?.mode || 'auto';
+  if (hasPendingPlanApproval(currentSession)) {
+    executionMode = 'plan';
+  }
   const commands = await loadCommandsAndSkills();
 
   // Set up tool result store under session directory
@@ -2372,12 +2502,49 @@ export async function createChatRuntime({
             onAgentEvent,
             sessionId: currentSession.id
           });
+          currentSession.planState = {
+            status: 'pending_approval',
+            source: 'auto',
+            goal,
+            filePath: auto.filePath,
+            summary: auto.summary || '',
+            finalSummary: auto.finalSummary || auto.summary || '',
+            steps: Array.isArray(auto.steps) ? auto.steps : []
+          };
+          executionMode = 'plan';
           const text = buildAutoPlanSystemSummary(auto);
           await persistLocalExchange(line, text);
           return {
             type: 'system',
             text
           };
+        }
+        if (sub === 'approve') {
+          if (!hasPendingPlanApproval(currentSession)) {
+            return { type: 'system', text: 'No pending plan approval. Use /plan auto <goal> or /plan <goal> first.' };
+          }
+          const planState = { ...currentSession.planState };
+          const result = await askModel({
+            text: buildApprovedPlanExecutionPrompt(planState, '/plan approve'),
+            session: currentSession,
+            config,
+            model,
+            systemPrompt: activeReplySystemPrompt,
+            onAgentEvent,
+            executionMode: 'auto'
+          });
+          currentSession.planState = null;
+          executionMode = 'auto';
+          await saveSession(currentSession);
+          return { type: 'assistant', text: result.text };
+        }
+        if (sub === 'stay') {
+          if (!hasPendingPlanApproval(currentSession)) {
+            return { type: 'system', text: 'No pending plan approval.' };
+          }
+          const text = buildPendingPlanApprovalMessage(currentSession.planState);
+          await persistLocalExchange(line, text);
+          return { type: 'system', text };
         }
         if (sub === 'from-spec') {
           const specArg = parsedInput.args.slice(1).join(' ').trim();
@@ -2499,6 +2666,9 @@ export async function createChatRuntime({
           const loaded = await loadSession(targetId);
           currentSession = loaded;
           setResultDir(path.join(getSessionsDir(), String(targetId)));
+          if (hasPendingPlanApproval(currentSession)) {
+            executionMode = 'plan';
+          }
           if (!historyIdCache.includes(targetId)) historyIdCache.unshift(targetId);
           historySessionCache = [
             { id: targetId, messageCount: Array.isArray(loaded.messages) ? loaded.messages.length : 0 },
@@ -2638,6 +2808,7 @@ export async function createChatRuntime({
               renderCommandPrompt(custom, []),
               'Explicit brainstorm mode:',
               '- Ask exactly one clarifying question first if any important uncertainty remains.',
+              '- Stop after the question and wait for the user\'s answer before continuing.',
               '- Do not inspect the repo or generate code unless the user explicitly asks for that.',
               '- If you recommend an option, present it as a suggested decision rather than a final choice for the user.',
               parsedInput.args.length > 0 ? `Current question:\n${parsedInput.args.join(' ')}` : ''
@@ -2676,6 +2847,34 @@ export async function createChatRuntime({
       return { type: 'assistant', text: result.text };
     }
 
+    if (hasPendingPlanApproval(currentSession)) {
+      if (isApprovalText(parsedInput.text)) {
+        const planState = { ...currentSession.planState };
+        const result = await askModel({
+          text: buildApprovedPlanExecutionPrompt(planState, parsedInput.text),
+          session: currentSession,
+          config,
+          model,
+          systemPrompt: activeReplySystemPrompt,
+          onAgentEvent,
+          executionMode: 'auto'
+        });
+        currentSession.planState = null;
+        executionMode = 'auto';
+        await saveSession(currentSession);
+        return { type: 'assistant', text: result.text };
+      }
+      if (isStayInPlanText(parsedInput.text)) {
+        const text = buildPendingPlanApprovalMessage(currentSession.planState);
+        await persistLocalExchange(line, text);
+        return { type: 'system', text };
+      }
+      return {
+        type: 'system',
+        text: buildPendingPlanApprovalMessage(currentSession.planState)
+      };
+    }
+
     if (compactState.autoEnabled) {
       const currentTokens = estimateMessagesTokens(currentSession.messages);
       const maxTokens = effectiveMaxContextTokens(config);
@@ -2703,7 +2902,33 @@ export async function createChatRuntime({
     }
 
     const expandedText = await expandFileMentions(parsedInput.text, process.cwd());
-    const selectedAutoSkills = selectAutoSkillNames(expandedText).filter((name) => isSkillEnabled(config, name));
+    const autoRoute = classifyAutoRoute(expandedText);
+    if (autoRoute.autoPlan) {
+      const auto = await buildAutoPlanAndRun({
+        goal: expandedText,
+        session: currentSession,
+        config,
+        model,
+        systemPrompt: activeBaseSystemPrompt,
+        onAgentEvent,
+        sessionId: currentSession.id
+      });
+      currentSession.planState = {
+        status: 'pending_approval',
+        source: 'auto',
+        goal: expandedText,
+        filePath: auto.filePath,
+        summary: auto.summary || '',
+        finalSummary: auto.finalSummary || auto.summary || '',
+        steps: Array.isArray(auto.steps) ? auto.steps : []
+      };
+      executionMode = 'plan';
+      const text = buildAutoPlanSystemSummary(auto);
+      await persistLocalExchange(line, text);
+      return { type: 'system', text };
+    }
+
+    const selectedAutoSkills = autoRoute.selectedSkills.filter((name) => isSkillEnabled(config, name));
     if (selectedAutoSkills.length > 0 && onAgentEvent) {
       onAgentEvent({
         type: 'skill:auto',

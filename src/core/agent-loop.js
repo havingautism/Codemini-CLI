@@ -450,7 +450,16 @@ export async function runAgentLoop({
     }
 
     if (executionMode === 'plan') {
-      finalText = `${assistantText || ''}\n\n[plan mode] ${toolCalls.length} tool call(s) were planned but not executed.`;
+      const plannedLines = callsToPlanSummary(toolCalls);
+      finalText = [
+        assistantText || '',
+        '',
+        `[plan mode] ${toolCalls.length} tool call(s) were planned but not executed.`,
+        plannedLines.length > 0 ? 'Planned exploration:' : '',
+        ...plannedLines
+      ]
+        .filter(Boolean)
+        .join('\n');
       return { text: finalText.trim(), messages, steps: step + 1 };
     }
 
@@ -597,4 +606,13 @@ export async function runAgentLoop({
     messages,
     steps: maxSteps
   };
+}
+
+function callsToPlanSummary(toolCalls = []) {
+  return toolCalls
+    .slice(0, 8)
+    .map((call) => {
+      const args = safeJsonParse(call?.arguments);
+      return `- ${formatToolDisplayName(normalizeToolCallName(call?.name), args)}`;
+    });
 }
