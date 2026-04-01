@@ -375,6 +375,39 @@ function isCodeGenerationActivityName(name) {
   return String(name || '').trim() === 'Code generation';
 }
 
+export function buildPreToolNotice(name, copy) {
+  const parsed = parseToolDisplayName(name);
+  const base = parsed.base;
+  const target = parsed.target ? trimText(parsed.target, 48) : '';
+  const isEnglish = String(copy?.roleLabels?.coder || '').trim() === 'CODER' && String(copy?.roleLabels?.you || '').trim() === 'YOU';
+
+  if (isEnglish) {
+    if (base === 'read') return target ? `I'll inspect ${target} first.` : `I'll inspect the relevant file first.`;
+    if (base === 'list' || base === 'glob') return target ? `I'll inspect the ${target} directory first.` : `I'll inspect the relevant directory first.`;
+    if (base === 'grep') return `I'll search the relevant code first.`;
+    if (base === 'edit' || base === 'write' || base === 'patch' || base === 'generate_diff') {
+      return `I'll inspect the current code first, then make the change.`;
+    }
+    if (base === 'run') return `I'll verify the current project state first.`;
+    return `I'll check the relevant project context first.`;
+  }
+
+  if (base === 'read') return target ? `我先查看 ${target} 的内容。` : '我先查看相关文件内容。';
+  if (base === 'list' || base === 'glob') return target ? `我先查看 ${target} 目录里的内容。` : '我先查看相关目录内容。';
+  if (base === 'grep') return '我先搜索相关代码位置。';
+  if (base === 'edit' || base === 'write' || base === 'patch' || base === 'generate_diff') return '我先确认当前代码上下文，再动手修改。';
+  if (base === 'run') return '我先检查当前项目状态。';
+  return '我先查看相关上下文。';
+}
+
+export function shouldInjectPreToolNotice(msg) {
+  if (!msg) return false;
+  const text = String(msg.text || '').trim();
+  const segments = Array.isArray(msg.segments) ? msg.segments : [];
+  const hasTextSegment = segments.some((segment) => segment?.type === 'text' && String(segment.text || '').trim());
+  return !text && !hasTextSegment;
+}
+
 function formatDurationMs(ms) {
   const safeMs = Math.max(0, Number(ms) || 0);
   return `${(safeMs / 1000).toFixed(1)}s`;
@@ -2280,11 +2313,12 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
         } else {
           segments.push({ type: 'text', text: delta });
         }
-        const nextText = `${m.text}${delta}`;
+        const nextText = m.syntheticPrelude ? delta : `${m.text}${delta}`;
         return {
           ...m,
           text: nextText,
-          segments
+          segments,
+          syntheticPrelude: false
         };
       })
     );
@@ -2634,8 +2668,15 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
               prev.map((m) => {
                 if (m.id !== targetId) return m;
                 const nextMessage = isCodeActivityName(event.name) ? finishCodeGeneration(m, finishedAt) : m;
+                const withPrelude = shouldInjectPreToolNotice(nextMessage)
+                  ? {
+                      ...nextMessage,
+                      text: buildPreToolNotice(event.name, copy),
+                      syntheticPrelude: true
+                    }
+                  : nextMessage;
                 return {
-                  ...nextMessage,
+                  ...withPrelude,
                   loading: true,
                   phase: 'tooling',
                   liveStatus: detail

@@ -36,6 +36,38 @@ function isMiniMaxModel(model) {
   return String(model || '').toLowerCase().includes('minimax');
 }
 
+function normalizeToolCallArguments(argumentsText) {
+  const raw = typeof argumentsText === 'string' ? argumentsText : JSON.stringify(argumentsText ?? {});
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return JSON.stringify(parsed);
+    }
+  } catch {}
+  return '{}';
+}
+
+function sanitizeGatewayMessages(messages) {
+  const source = Array.isArray(messages) ? messages : [];
+  return source
+    .filter((message) => message && typeof message === 'object')
+    .map((message) => {
+      if (!Array.isArray(message.tool_calls) || message.tool_calls.length === 0) {
+        return message;
+      }
+      return {
+        ...message,
+        tool_calls: message.tool_calls.map((toolCall) => ({
+          ...toolCall,
+          function: {
+            ...toolCall?.function,
+            arguments: normalizeToolCallArguments(toolCall?.function?.arguments)
+          }
+        }))
+      };
+    });
+}
+
 function sanitizeMiniMaxMessages(messages) {
   const source = Array.isArray(messages) ? messages : [];
   const out = [];
@@ -64,10 +96,11 @@ function sanitizeMiniMaxMessages(messages) {
 }
 
 function buildPayload({ model, temperature, messages, tools, stream = false }) {
+  const sanitizedMessages = sanitizeGatewayMessages(messages);
   const payload = {
     model,
     temperature,
-    messages: isMiniMaxModel(model) ? sanitizeMiniMaxMessages(messages) : messages
+    messages: isMiniMaxModel(model) ? sanitizeMiniMaxMessages(sanitizedMessages) : sanitizedMessages
   };
   if (stream) {
     payload.stream = true;

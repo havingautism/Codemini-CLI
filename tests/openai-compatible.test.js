@@ -235,3 +235,58 @@ test('createChatCompletion does not send MiniMax-only extra_body for other provi
     await restoreFetch();
   }
 });
+
+test('createChatCompletion sanitizes invalid historical tool call arguments before sending', async () => {
+  const restoreFetch = withMockFetch(async (_url, init) => {
+    const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+    assert.equal(
+      body.messages[1].tool_calls[0].function.arguments,
+      '{}',
+      'expected invalid tool call arguments to be normalized for gateway compatibility'
+    );
+    return makeJsonResponse({
+      choices: [
+        {
+          message: {
+            content: 'recovered'
+          }
+        }
+      ]
+    });
+  });
+
+  try {
+    const result = await createChatCompletion({
+      baseUrl: 'https://gateway.example/v1',
+      apiKey: 'test-key',
+      model: 'Qwen/Qwen3-Coder-30B-A3B-Instruct',
+      messages: [
+        { role: 'user', content: 'Use the edit tool.' },
+        {
+          role: 'assistant',
+          content: 'Let me try.',
+          tool_calls: [
+            {
+              id: 'call_bad_1',
+              type: 'function',
+              function: {
+                name: 'edit',
+                arguments: '.'
+              }
+            }
+          ]
+        },
+        {
+          role: 'tool',
+          tool_call_id: 'call_bad_1',
+          content: '{"error":"edit requires file and edit.kind"}'
+        }
+      ],
+      tools: [{ type: 'function', function: { name: 'edit', parameters: { type: 'object' } } }]
+    });
+
+    assert.equal(result.text, 'recovered');
+  } finally {
+    await restoreFetch();
+  }
+});

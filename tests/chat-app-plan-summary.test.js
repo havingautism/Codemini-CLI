@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  buildPreToolNotice,
   injectPlanStateMessage,
   parseAutoPlanSummaryMessage,
   parsePlanProgressLine
@@ -64,4 +65,20 @@ test('injectPlanStateMessage anchors plan strip after the active user message', 
   assert.equal(injected[1].id, 'user-1');
   assert.equal(injected[2].planStrip, true);
   assert.equal(injected[3].id, 'coder-1');
+});
+
+test('buildPreToolNotice gives the user a visible pre-tool progress hint', () => {
+  const zhNotice = buildPreToolNotice('read(src/auth.ts)', {
+    roleLabels: { you: '你', coder: 'CODER' },
+    toolActivity: { doingRead: '正在读取文件', doingList: '正在查看目录', doingCommand: '正在执行命令' }
+  });
+  assert.match(zhNotice, /我先/);
+  assert.match(zhNotice, /src\/auth\.ts|文件/);
+
+  const enNotice = buildPreToolNotice('list(src)', {
+    roleLabels: { you: 'YOU', coder: 'CODER' },
+    toolActivity: { doingRead: 'Reading file', doingList: 'Inspecting directory', doingCommand: 'Running command' }
+  });
+  assert.match(enNotice, /I'll/i);
+  assert.match(enNotice, /directory/i);
 });
