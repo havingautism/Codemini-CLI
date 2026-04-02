@@ -208,15 +208,70 @@ test('formatMarkdownTableBlock renders compact box-style rows', () => {
     54
   );
 
-  assert.equal(rows[0].kind, 'table');
-  assert.equal(rows[0].isHeader, true);
-  assert.match(rows[0].text, /^│ /);
-  assert.equal(rows[1].kind, 'table-separator');
-  assert.match(rows[1].text, /^├/);
-  assert.equal(rows[2].kind, 'table');
-  assert.match(rows[2].text, /命令数量/);
+  assert.equal(rows[0].kind, 'table-separator');
+  assert.match(rows[0].text, /^┌/);
+  assert.equal(rows[1].kind, 'table');
+  assert.equal(rows[1].isHeader, true);
+  assert.match(rows[1].text, /维度/);
+  assert.equal(rows[2].kind, 'table-separator');
+  assert.match(rows[2].text, /^├/);
   assert.equal(rows[3].kind, 'table');
-  assert.match(rows[3].text, /GitHub\/OAuth\/Slack/);
+  assert.match(rows[3].text, /命令数量/);
+  assert.match(rows[5].text, /GitHub/);
+  assert.equal(rows.at(-1)?.kind, 'table-separator');
+  assert.match(rows.at(-1)?.text || '', /^└/);
+});
+
+test('formatMarkdownTableBlock falls back to vertical rows for narrow layouts', () => {
+  const rows = formatMarkdownTableBlock(
+    [
+      '| 维度 | 当前CLI | Demo |',
+      '| --- | --- | --- |',
+      '| 集成能力 | 无 | GitHub OAuth Slack integrations with many external services |'
+    ],
+    24
+  );
+
+  assert.equal(rows[0].kind, 'table-vertical');
+  assert.equal(rows[0].label, '维度');
+  assert.equal(rows[1].kind, 'table-vertical');
+  assert.equal(rows[1].label, '当前CLI');
+  assert.equal(rows[2].kind, 'table-vertical');
+  assert.equal(rows[2].label, 'Demo');
+  assert.ok(rows.some((row) => row.kind === 'table-vertical-continuation'));
+});
+
+test('formatMarkdownTableBlock treats CJK content as wide and avoids overflowing box rows', () => {
+  const rows = formatMarkdownTableBlock(
+    [
+      '| 项目 | 说明 |',
+      '| --- | --- |',
+      '| **定位** | 为小模型工作流优化的编码助手 CLI，专注 Windows 和 PowerShell 环境 |'
+    ],
+    48
+  );
+
+  const horizontal = rows.filter((row) => row.kind === 'table' || row.kind === 'table-separator');
+  const vertical = rows.filter((row) => String(row.kind).startsWith('table-vertical'));
+
+  assert.ok(horizontal.length > 0 || vertical.length > 0);
+});
+
+test('formatMarkdownTableBlock keeps a medium-width three-column table horizontal', () => {
+  const rows = formatMarkdownTableBlock(
+    [
+      '| 章节 | 关键点 | 详细说明 |',
+      '| --- | --- | --- |',
+      '| **文档入口** | 相关文档 | `OPERATIONS.md`（操作手册）、`deployment.md`（打包部署） |',
+      '| **项目索引** | 索引文件 | `project-map.json`（项目骨架）、`file-index.json`（文件级结构） |'
+    ],
+    88
+  );
+
+  assert.equal(rows.some((row) => row.kind === 'table-vertical'), false);
+  assert.equal(rows[0].kind, 'table-separator');
+  assert.equal(rows[1].kind, 'table');
+  assert.match(rows[1].text, /章节/);
 });
 
 test('isCodeLikeRow classifies tool, code, summary, and status rows together', () => {

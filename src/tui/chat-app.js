@@ -375,51 +375,269 @@ export function isMarkdownTableHeader(line, nextLine) {
   return cells.length > 1 && isMarkdownTableSeparator(nextLine);
 }
 
-export function formatMarkdownTableBlock(lines, contentWidth = 72) {
-  const cellRows = lines
-    .filter((line) => !isMarkdownTableSeparator(line))
-    .map(splitMarkdownTableCells)
-    .filter((cells) => cells.length > 0);
-  if (cellRows.length === 0) return [];
+function getMarkdownTableAlignments(separatorLine, columnCount) {
+  const cells = splitMarkdownTableCells(separatorLine);
+  return Array.from({ length: columnCount }, (_, index) => {
+    const cell = String(cells[index] || '').trim();
+    if (/^:-{3,}:$/.test(cell)) return 'center';
+    if (/^-{3,}:$/.test(cell)) return 'right';
+    return 'left';
+  });
+}
 
-  const columnCount = Math.max(...cellRows.map((cells) => cells.length));
-  const normalizedRows = cellRows.map((cells) =>
-    Array.from({ length: columnCount }, (_, index) => trimText(cells[index] || '', 28))
-  );
-  const widths = Array.from({ length: columnCount }, (_, index) =>
-    Math.min(
-      28,
-      Math.max(...normalizedRows.map((cells) => String(cells[index] || '').length), 3)
-    )
-  );
+function stringWidthLite(value) {
+  return Array.from(String(value || '')).reduce((sum, ch) => sum + charDisplayWidth(ch), 0);
+}
 
-  const totalWidth = widths.reduce((sum, width) => sum + width, 0) + (columnCount - 1) * 3;
-  if (totalWidth > contentWidth - 2) {
-    let overflow = totalWidth - (contentWidth - 2);
-    for (let index = widths.length - 1; index >= 0 && overflow > 0; index -= 1) {
-      const shrinkable = Math.max(0, widths[index] - 6);
-      const shrink = Math.min(shrinkable, overflow);
-      widths[index] -= shrink;
-      overflow -= shrink;
+function splitTableWrapUnits(text) {
+  return String(text || '')
+    .split(/([\s,.;:!?/\\|()[\]{}<>，。；：！？、（）【】《》]+)/)
+    .filter(Boolean);
+}
+
+function wrapPlainText(text, width, hard = false) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return [''];
+  if (width <= 1) return [normalized];
+
+  const words = splitTableWrapUnits(normalized);
+  const lines = [];
+  let current = '';
+
+  const pushWord = (word) => {
+    if (stringWidthLite(word) <= width) {
+      if (!current) {
+        current = word;
+        return;
+      }
+      const needsSpacer =
+        !/\s$/.test(current) &&
+        !/^\s/.test(word) &&
+        !/^[,.;:!?/\\|)\]}，。；：！？、】【》]/.test(word);
+      const next = needsSpacer ? `${current} ${word}` : `${current}${word}`;
+      if (stringWidthLite(next) <= width) {
+        current = next;
+      } else {
+        lines.push(current);
+        current = word;
+      }
+      return;
     }
+
+    if (!hard) {
+      if (current) {
+        lines.push(current);
+        current = '';
+      }
+      lines.push(word);
+      return;
+    }
+
+    if (current) {
+      lines.push(current);
+      current = '';
+    }
+    let rest = word;
+    while (stringWidthLite(rest) > width) {
+      lines.push(Array.from(rest).slice(0, width).join(''));
+      rest = Array.from(rest).slice(width).join('');
+    }
+    current = rest;
+  };
+
+  for (const word of words) pushWord(word);
+  if (current) lines.push(current);
+  return lines.length > 0 ? lines : [''];
+}
+
+function padAlignedText(text, width, align = 'left') {
+  const value = String(text || '');
+  const visible = stringWidthLite(value);
+  if (visible >= width) return value;
+  const gap = width - visible;
+  if (align === 'right') return `${' '.repeat(gap)}${value}`;
+  if (align === 'center') {
+    const left = Math.floor(gap / 2);
+    const right = gap - left;
+    return `${' '.repeat(left)}${value}${' '.repeat(right)}`;
+  }
+  return `${value}${' '.repeat(gap)}`;
+}
+
+function normalizeTableCellText(value) {
+  return String(value || '')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .trim();
+}
+
+export function formatMarkdownTableBlock(lines, contentWidth = 72) {
+  const sourceLines = Array.isArray(lines) ? lines : [];
+  if (sourceLines.length < 2) return [];
+
+  const headerCells = splitMarkdownTableCells(sourceLines[0]);
+  const separatorLine = sourceLines[1];
+  const bodyRows = sourceLines.slice(2).map(splitMarkdownTableCells).filter((cells) => cells.length > 0);
+  if (headerCells.length === 0) return [];
+
+  const columnCount = Math.max(headerCells.length, ...bodyRows.map((cells) => cells.length));
+  const headers = Array.from({ length: columnCount }, (_, index) => normalizeTableCellText(headerCells[index] || ''));
+  const rows = bodyRows.map((cells) =>
+    Array.from({ length: columnCount }, (_, index) => normalizeTableCellText(cells[index] || ''))
+  );
+  const alignments = getMarkdownTableAlignments(separatorLine, columnCount);
+
+  const minColumnWidth = 3;
+  const maxRowLines = 6;
+  const safetyMargin = 4;
+  const borderOverhead = 1 + columnCount * 3;
+  const availableWidth = Math.max(contentWidth - borderOverhead - safetyMargin, columnCount * minColumnWidth);
+
+  const getMinWidth = (text) => {
+    const words = splitTableWrapUnits(String(text || '')).filter((word) => !/^\s+$/.test(word));
+    if (words.length === 0) return minColumnWidth;
+    return Math.max(...words.map((word) => stringWidthLite(word)), minColumnWidth);
+  };
+
+  const getIdealWidth = (text) => Math.max(stringWidthLite(String(text || '').trim()), minColumnWidth);
+
+  const minWidths = headers.map((header, index) =>
+    Math.max(getMinWidth(header), ...rows.map((row) => getMinWidth(row[index])))
+  );
+  const idealWidths = headers.map((header, index) =>
+    Math.max(getIdealWidth(header), ...rows.map((row) => getIdealWidth(row[index])))
+  );
+
+  const totalMin = minWidths.reduce((sum, width) => sum + width, 0);
+  const totalIdeal = idealWidths.reduce((sum, width) => sum + width, 0);
+  let needsHardWrap = false;
+  let columnWidths;
+
+  if (totalIdeal <= availableWidth) {
+    columnWidths = idealWidths.slice();
+  } else if (totalMin <= availableWidth) {
+    const extraSpace = availableWidth - totalMin;
+    const overflows = idealWidths.map((ideal, index) => ideal - minWidths[index]);
+    const totalOverflow = overflows.reduce((sum, width) => sum + width, 0);
+    columnWidths = minWidths.map((min, index) => {
+      if (totalOverflow === 0) return min;
+      return min + Math.floor((overflows[index] / totalOverflow) * extraSpace);
+    });
+  } else {
+    needsHardWrap = true;
+    const scale = availableWidth / Math.max(totalMin, 1);
+    columnWidths = minWidths.map((width) => Math.max(Math.floor(width * scale), minColumnWidth));
   }
 
-  const rows = [];
-  normalizedRows.forEach((cells, rowIndex) => {
-    const padded = cells.map((cell, index) => trimText(cell, widths[index]).padEnd(widths[index], ' '));
-    rows.push({
-      kind: 'table',
-      text: `│ ${padded.join(' │ ')} │`,
-      isHeader: rowIndex === 0
+  const wrapCell = (text, width) => wrapPlainText(text, width, needsHardWrap);
+
+  const computeMaxWrappedLines = () => {
+    let maxLines = 1;
+    for (let index = 0; index < headers.length; index += 1) {
+      maxLines = Math.max(maxLines, wrapCell(headers[index], columnWidths[index]).length);
+    }
+    for (const row of rows) {
+      for (let index = 0; index < columnCount; index += 1) {
+        maxLines = Math.max(maxLines, wrapCell(row[index], columnWidths[index]).length);
+      }
+    }
+    return maxLines;
+  };
+
+  const renderVerticalRows = () => {
+    const rendered = [];
+    const separatorWidth = Math.min(Math.max(contentWidth - 2, 12), 40);
+    const separator = '─'.repeat(separatorWidth);
+    rows.forEach((row, rowIndex) => {
+      if (rowIndex > 0) rendered.push({ kind: 'table-vertical-separator', text: separator });
+      row.forEach((cell, cellIndex) => {
+        const label = headers[cellIndex] || `Column ${cellIndex + 1}`;
+        const firstWidth = Math.max(contentWidth - stringWidthLite(label) - 3, 10);
+        const nextWidth = Math.max(contentWidth - 3, 10);
+        const firstPass = wrapPlainText(cell, firstWidth, true);
+        const firstLine = firstPass[0] || '';
+        const remaining = firstPass.slice(1).join(' ');
+        const rest = remaining ? wrapPlainText(remaining, nextWidth, true) : [];
+        const wrapped = [firstLine, ...rest].filter((line, idx) => idx === 0 || line.trim());
+        rendered.push({
+          kind: 'table-vertical',
+          label,
+          text: wrapped[0] || ''
+        });
+        for (const line of wrapped.slice(1)) {
+          rendered.push({
+            kind: 'table-vertical-continuation',
+            text: line
+          });
+        }
+      });
     });
-    if (rowIndex === 0) {
-      rows.push({
-        kind: 'table-separator',
-        text: `├${widths.map((width) => '─'.repeat(width + 2)).join('┼')}┤`
+    return rendered;
+  };
+
+  if (computeMaxWrappedLines() > maxRowLines && contentWidth < 80) {
+    return renderVerticalRows();
+  }
+
+  const renderBorder = (type) => {
+    const chars = {
+      top: ['┌', '─', '┬', '┐'],
+      middle: ['├', '─', '┼', '┤'],
+      bottom: ['└', '─', '┴', '┘']
+    }[type];
+    let line = chars[0];
+    columnWidths.forEach((width, index) => {
+      line += chars[1].repeat(width + 2);
+      line += index < columnWidths.length - 1 ? chars[2] : chars[3];
+    });
+    return line;
+  };
+
+  const renderRowLines = (cells, isHeader = false) => {
+    const wrappedColumns = cells.map((cell, index) => wrapCell(cell, columnWidths[index]));
+    const maxLines = Math.max(...wrappedColumns.map((entry) => entry.length), 1);
+    const verticalOffsets = wrappedColumns.map((entry) => Math.floor((maxLines - entry.length) / 2));
+    const rendered = [];
+    for (let lineIndex = 0; lineIndex < maxLines; lineIndex += 1) {
+      let line = '│';
+      for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
+        const wrapped = wrappedColumns[columnIndex];
+        const offset = verticalOffsets[columnIndex];
+        const contentIndex = lineIndex - offset;
+        const text = contentIndex >= 0 && contentIndex < wrapped.length ? wrapped[contentIndex] : '';
+        const align = isHeader ? 'center' : alignments[columnIndex];
+        line += ` ${padAlignedText(text, columnWidths[columnIndex], align)} │`;
+      }
+      rendered.push({
+        kind: 'table',
+        text: line,
+        isHeader
       });
     }
+    return rendered;
+  };
+
+  const tableLines = [
+    { kind: 'table-separator', text: renderBorder('top') },
+    ...renderRowLines(headers, true),
+    { kind: 'table-separator', text: renderBorder('middle') }
+  ];
+
+  rows.forEach((row, index) => {
+    tableLines.push(...renderRowLines(row, false));
+    if (index < rows.length - 1) {
+      tableLines.push({ kind: 'table-separator', text: renderBorder('middle') });
+    }
   });
-  return rows;
+  tableLines.push({ kind: 'table-separator', text: renderBorder('bottom') });
+
+  const maxLineWidth = Math.max(...tableLines.map((entry) => stringWidthLite(entry.text)));
+  if (maxLineWidth > contentWidth - safetyMargin) {
+    return renderVerticalRows();
+  }
+
+  return tableLines;
 }
 
 function parseRichTextSegments(line, baseColor) {
@@ -1873,6 +2091,28 @@ function renderMessageRow(msg, row, idx, loaderTick) {
     return h(
       Box,
       { key: `row-table-sep-${msg.id}-${idx}`, marginLeft: 1 },
+      h(Text, { color: 'gray' }, row.text)
+    );
+  }
+  if (row.kind === 'table-vertical') {
+    return h(
+      Box,
+      { key: `row-table-v-${msg.id}-${idx}`, marginLeft: 1 },
+      h(Text, { color: 'cyanBright', bold: true }, `${row.label}:`),
+      h(Text, { color: 'gray' }, row.text ? ` ${row.text}` : '')
+    );
+  }
+  if (row.kind === 'table-vertical-continuation') {
+    return h(
+      Box,
+      { key: `row-table-vc-${msg.id}-${idx}`, marginLeft: 3 },
+      h(Text, { color: 'gray' }, row.text)
+    );
+  }
+  if (row.kind === 'table-vertical-separator') {
+    return h(
+      Box,
+      { key: `row-table-vs-${msg.id}-${idx}`, marginLeft: 1 },
       h(Text, { color: 'gray' }, row.text)
     );
   }
