@@ -47,6 +47,16 @@ function normalizeToolCallArguments(argumentsText) {
   return '{}';
 }
 
+function normalizeIncomingToolCallArguments(argumentsValue) {
+  if (typeof argumentsValue === 'string') return argumentsValue;
+  if (argumentsValue == null) return '{}';
+  try {
+    return JSON.stringify(argumentsValue);
+  } catch {
+    return '{}';
+  }
+}
+
 function sanitizeGatewayMessages(messages) {
   const source = Array.isArray(messages) ? messages : [];
   return source
@@ -115,7 +125,18 @@ function buildPayload({ model, temperature, messages, tools, stream = false }) {
   return payload;
 }
 
-function buildFinalStreamResult(text, toolCallsByIndex, usage) {
+function hasTrailingToolContext(messages) {
+  const source = Array.isArray(messages) ? messages : [];
+  for (let index = source.length - 1; index >= 0; index -= 1) {
+    const message = source[index];
+    if (!message || typeof message !== 'object') continue;
+    if (message.role === 'tool') return true;
+    if (message.role === 'assistant' || message.role === 'user') return false;
+  }
+  return false;
+}
+
+function buildFinalStreamResult(text, toolCallsByIndex, usage, messages) {
   const toolCalls = Array.from(toolCallsByIndex.entries())
     .sort((a, b) => a[0] - b[0])
     .map(([, tc], i) => ({
@@ -126,6 +147,13 @@ function buildFinalStreamResult(text, toolCallsByIndex, usage) {
     .filter((tc) => tc.name);
 
   if (!text && toolCalls.length === 0) {
+    if (hasTrailingToolContext(messages)) {
+      return {
+        text: '',
+        toolCalls: [],
+        usage
+      };
+    }
     throw new Error('Gateway stream returned empty assistant response');
   }
 
@@ -216,7 +244,7 @@ export async function createChatCompletion({
   const toolCalls = (message.tool_calls || []).map((tc) => ({
     id: tc.id,
     name: tc.function?.name,
-    arguments: tc.function?.arguments || '{}'
+    arguments: normalizeIncomingToolCallArguments(tc.function?.arguments)
   }));
 
   if (!text && toolCalls.length === 0) {
@@ -280,7 +308,9 @@ export async function createChatCompletionStream({
       const current = toolCallsByIndex.get(idx) || emptyToolCall(idx);
       if (td.id) current.id = td.id;
       if (td.function?.name) current.name = `${current.name}${td.function.name}`;
-      if (td.function?.arguments) current.arguments = `${current.arguments}${td.function.arguments}`;
+      if (td.function?.arguments !== undefined) {
+        current.arguments = `${current.arguments}${normalizeIncomingToolCallArguments(td.function.arguments)}`;
+      }
       toolCallsByIndex.set(idx, current);
       if (onToolCallDelta) {
         onToolCallDelta({
@@ -293,5 +323,5 @@ export async function createChatCompletionStream({
     }
   }
 
-  return buildFinalStreamResult(text, toolCallsByIndex, usage);
+  return buildFinalStreamResult(text, toolCallsByIndex, usage, messages);
 }

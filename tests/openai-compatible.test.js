@@ -204,6 +204,47 @@ test('createChatCompletionStream emits text deltas and final tool calls from SSE
   }
 });
 
+test('createChatCompletionStream normalizes object-shaped streamed tool arguments', async () => {
+  const restoreFetch = withMockFetch(async (_url, _init) => {
+    return makeSseResponse([
+      {
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'call_stream_obj',
+                  function: { name: 'write', arguments: { file: 'notes.txt', text: 'hello' } }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ]);
+  });
+
+  try {
+    const result = await createChatCompletionStream({
+      baseUrl: 'https://gateway.example/v1',
+      apiKey: 'test-key',
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: 'stream please' }]
+    });
+
+    assert.deepEqual(result.toolCalls, [
+      {
+        id: 'call_stream_obj',
+        name: 'write',
+        arguments: '{"file":"notes.txt","text":"hello"}'
+      }
+    ]);
+  } finally {
+    await restoreFetch();
+  }
+});
+
 test('createChatCompletion does not send MiniMax-only extra_body for other providers', async () => {
   const restoreFetch = withMockFetch(async (_url, init) => {
     const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
@@ -231,6 +272,48 @@ test('createChatCompletion does not send MiniMax-only extra_body for other provi
     assert.equal(result.text, 'plain response');
     assert.deepEqual(result.toolCalls, []);
     assert.equal(result.usage, null);
+  } finally {
+    await restoreFetch();
+  }
+});
+
+test('createChatCompletion normalizes object-shaped tool call arguments from gateways', async () => {
+  const restoreFetch = withMockFetch(async (_url, _init) => {
+    return makeJsonResponse({
+      choices: [
+        {
+          message: {
+            content: 'ok',
+            tool_calls: [
+              {
+                id: 'call_obj_1',
+                function: {
+                  name: 'read',
+                  arguments: { file_path: 'src/app.ts', offset: 5, limit: 10 }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    });
+  });
+
+  try {
+    const result = await createChatCompletion({
+      baseUrl: 'https://gateway.example/v1',
+      apiKey: 'test-key',
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: 'hello' }]
+    });
+
+    assert.deepEqual(result.toolCalls, [
+      {
+        id: 'call_obj_1',
+        name: 'read',
+        arguments: '{"file_path":"src/app.ts","offset":5,"limit":10}'
+      }
+    ]);
   } finally {
     await restoreFetch();
   }
@@ -286,6 +369,41 @@ test('createChatCompletion sanitizes invalid historical tool call arguments befo
     });
 
     assert.equal(result.text, 'recovered');
+  } finally {
+    await restoreFetch();
+  }
+});
+
+test('createChatCompletionStream tolerates an empty post-tool assistant turn', async () => {
+  const restoreFetch = withMockFetch(async (_url, _init) => {
+    return makeSseResponse([
+      {
+        choices: [
+          {
+            delta: {},
+            finish_reason: 'stop'
+          }
+        ],
+        usage: { prompt_tokens: 5, completion_tokens: 0, total_tokens: 5 }
+      }
+    ]);
+  });
+
+  try {
+    const result = await createChatCompletionStream({
+      baseUrl: 'https://gateway.example/v1',
+      apiKey: 'test-key',
+      model: 'gpt-4.1-mini',
+      messages: [
+        { role: 'user', content: 'inspect auth flow' },
+        { role: 'assistant', content: '', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read', arguments: '{"path":"src/auth.ts"}' } }] },
+        { role: 'tool', tool_call_id: 'call_1', content: '[File: src/auth.ts]\nexport const auth = true;' }
+      ]
+    });
+
+    assert.equal(result.text, '');
+    assert.deepEqual(result.toolCalls, []);
+    assert.deepEqual(result.usage, { prompt_tokens: 5, completion_tokens: 0, total_tokens: 5 });
   } finally {
     await restoreFetch();
   }

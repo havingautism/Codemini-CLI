@@ -101,14 +101,7 @@ test('opencode-style primary tools read grep glob and list work for discovery fl
     const grepped = await handlers.grep({ pattern: 'login', path: 'src' });
     assert.ok(grepped.matches.some((item) => item.path === 'src/auth/service.ts'));
 
-    const metadata = await handlers.read({ path: 'src/auth/service.ts' });
-    assert.equal(metadata.phase, 'metadata');
-
-    const content = await handlers.read({
-      path: 'src/auth/service.ts',
-      include_content: true,
-      read_token: metadata.read_token
-    });
+    const content = await handlers.read({ path: 'src/auth/service.ts' });
     assert.equal(content.phase, 'content');
     assert.match(content.content, /login/);
   });
@@ -136,18 +129,80 @@ test('read returns minimal structured code context windows', async () => {
     );
 
     const { handlers } = await makeTools(workspaceRoot);
-    const meta = await handlers.read({ path: 'src/auth/service.ts', start_line: 1, end_line: 11 });
-    assert.equal(meta.phase, 'metadata');
-    const context = await handlers.read({
-      path: 'src/auth/service.ts',
-      start_line: 1,
-      end_line: 11,
-      include_content: true,
-      read_token: meta.read_token
-    });
+    const context = await handlers.read({ path: 'src/auth/service.ts', start_line: 1, end_line: 11 });
     assert.equal(context.phase, 'content');
     assert.match(context.content, /export async function login/);
     assert.match(context.content, /helperValue/);
+  });
+});
+
+test('read accepts demo-style file_path plus offset and limit aliases', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'demo.ts'),
+      ['line 1', 'line 2', 'line 3', 'line 4'].join('\n'),
+      'utf8'
+    );
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const result = await handlers.read({
+      file_path: 'src/demo.ts',
+      offset: 2,
+      limit: 2
+    });
+
+    assert.equal(result.phase, 'content');
+    assert.equal(result.start_line, 2);
+    assert.equal(result.end_line, 3);
+    assert.match(result.content, /line 2/);
+    assert.match(result.content, /line 3/);
+    assert.doesNotMatch(result.content, /line 1/);
+  });
+});
+
+test('read repairs inline path ranges into start and end lines', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'demo.ts'),
+      ['alpha', 'beta', 'gamma', 'delta'].join('\n'),
+      'utf8'
+    );
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const result = await handlers.read({ path: 'src/demo.ts:2-3' });
+
+    assert.equal(result.phase, 'content');
+    assert.equal(result.path, 'src/demo.ts');
+    assert.equal(result.start_line, 2);
+    assert.equal(result.end_line, 3);
+    assert.match(result.content, /beta/);
+    assert.match(result.content, /gamma/);
+    assert.doesNotMatch(result.content, /alpha/);
+  });
+});
+
+test('glob, grep, and list accept simpler demo-style aliases', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src', 'auth'), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'auth', 'service.ts'),
+      ['export function loginUser() {', "  return 'ok';", '}'].join('\n'),
+      'utf8'
+    );
+
+    const { handlers } = await makeTools(workspaceRoot);
+
+    const listed = await handlers.list('src');
+    assert.equal(listed.path, 'src');
+    assert.ok(listed.items.some((item) => item.path === 'src/auth'));
+
+    const globbed = await handlers.glob('src/**/*.ts');
+    assert.ok(globbed.matches.includes('src/auth/service.ts'));
+
+    const grepped = await handlers.grep({ query: 'loginUser', directory: 'src' });
+    assert.ok(grepped.matches.some((item) => item.path === 'src/auth/service.ts'));
   });
 });
 
@@ -456,14 +511,58 @@ test('write accepts demo-style file_path alias', async () => {
   });
 });
 
+test('write accepts file and text-style aliases', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { handlers } = await makeTools(workspaceRoot);
+
+    const written = await handlers.write({
+      file: 'demo.txt',
+      text: 'hello text alias\n'
+    });
+    assert.equal(written.ok, true);
+    assert.equal(written.path, 'demo.txt');
+
+    const created = await handlers.write({
+      file: 'demo-2.txt',
+      new_content: 'hello new_content alias\n'
+    });
+    assert.equal(created.ok, true);
+    assert.equal(created.path, 'demo-2.txt');
+
+    const first = await fs.readFile(path.join(workspaceRoot, 'demo.txt'), 'utf8');
+    const second = await fs.readFile(path.join(workspaceRoot, 'demo-2.txt'), 'utf8');
+    assert.equal(first, 'hello text alias\n');
+    assert.equal(second, 'hello new_content alias\n');
+  });
+});
+
+test('edit infers replace_text when old_text and content are provided', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    const targetPath = path.join(workspaceRoot, 'src', 'demo.ts');
+    await fs.writeFile(targetPath, 'export const value = 1;\n', 'utf8');
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const edited = await handlers.edit({
+      path: 'src/demo.ts',
+      old_text: 'value = 1',
+      content: 'value = 3'
+    });
+
+    assert.equal(edited.ok, true);
+    const after = await fs.readFile(targetPath, 'utf8');
+    assert.match(after, /value = 3/);
+  });
+});
+
 test('edit missing arguments suggests a repair shape using the most recently read file', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
     await fs.writeFile(path.join(workspaceRoot, 'src', 'demo.ts'), 'export const value = 1;\n', 'utf8');
 
     const { handlers } = await makeTools(workspaceRoot);
-    const meta = await handlers.read({ path: 'src/demo.ts' });
-    assert.equal(meta.phase, 'metadata');
+    const read = await handlers.read({ path: 'src/demo.ts' });
+    assert.equal(read.phase, 'content');
 
     await assert.rejects(
       () => handlers.edit({}),
@@ -511,6 +610,199 @@ test('agent loop preserves raw invalid tool arguments so tool errors can explain
     assert.ok(toolMessage);
     assert.match(String(toolMessage.content), /Raw tool arguments: \./i);
     assert.match(String(toolMessage.content), /old_text|new_text|rewrite_file/i);
+  });
+});
+
+test('agent loop repairs raw read tool arguments into a usable file path and line range', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'demo.ts'),
+      ['zero', 'one', 'two', 'three'].join('\n'),
+      'utf8'
+    );
+
+    const config = await loadConfig();
+    const { definitions, handlers, formatters, deferredDefinitions } = getBuiltinTools({ workspaceRoot, config });
+
+    const result = await runAgentLoop({
+      systemPrompt: 'You are a test agent.',
+      userPrompt: 'read a file',
+      model: 'test-model',
+      maxSteps: 2,
+      toolDefinitions: definitions,
+      toolHandlers: handlers,
+      toolFormatters: formatters,
+      deferredDefinitions,
+      requestCompletion: async ({ messages }) => {
+        const hasToolResult = messages.some((msg) => msg.role === 'tool');
+        if (!hasToolResult) {
+          return {
+            text: '',
+            toolCalls: [
+              {
+                id: 'call_read_raw',
+                name: 'read',
+                arguments: 'src/demo.ts:2-3'
+              }
+            ]
+          };
+        }
+        return {
+          text: 'done',
+          toolCalls: []
+        };
+      }
+    });
+
+    const toolMessage = result.messages.find((msg) => msg.role === 'tool' && msg.tool_call_id === 'call_read_raw');
+    assert.ok(toolMessage);
+    assert.match(String(toolMessage.content), /src\/demo\.ts/);
+    assert.match(String(toolMessage.content), /one/);
+    assert.match(String(toolMessage.content), /two/);
+  });
+});
+
+test('agent loop repairs raw list and glob tool arguments', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src', 'nested'), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, 'src', 'nested', 'demo.ts'), 'export const demo = true;\n', 'utf8');
+
+    const config = await loadConfig();
+    const { definitions, handlers, formatters, deferredDefinitions } = getBuiltinTools({ workspaceRoot, config });
+
+    const responses = [
+      {
+        text: '',
+        toolCalls: [
+          { id: 'call_list_raw', name: 'list', arguments: 'src' },
+          { id: 'call_glob_raw', name: 'glob', arguments: 'src/**/*.ts' }
+        ]
+      },
+      {
+        text: 'done',
+        toolCalls: []
+      }
+    ];
+
+    const result = await runAgentLoop({
+      systemPrompt: 'You are a test agent.',
+      userPrompt: 'inspect files',
+      model: 'test-model',
+      maxSteps: 2,
+      toolDefinitions: definitions,
+      toolHandlers: handlers,
+      toolFormatters: formatters,
+      deferredDefinitions,
+      requestCompletion: async () => responses.shift() || { text: 'done', toolCalls: [] }
+    });
+
+    const listMessage = result.messages.find((msg) => msg.role === 'tool' && msg.tool_call_id === 'call_list_raw');
+    const globMessage = result.messages.find((msg) => msg.role === 'tool' && msg.tool_call_id === 'call_glob_raw');
+    assert.ok(listMessage);
+    assert.ok(globMessage);
+    assert.match(String(listMessage.content), /\[src\]/);
+    assert.match(String(listMessage.content), /nested\//);
+    assert.match(String(globMessage.content), /src\/nested\/demo\.ts/);
+  });
+});
+
+test('agent loop replaces empty tool results with a short completion marker', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const config = await loadConfig();
+    const { definitions, formatters, deferredDefinitions } = getBuiltinTools({ workspaceRoot, config });
+
+    const result = await runAgentLoop({
+      systemPrompt: 'You are a test agent.',
+      userPrompt: 'run a quiet command',
+      model: 'test-model',
+      maxSteps: 2,
+      toolDefinitions: definitions,
+      toolHandlers: {
+        quiet: async () => ''
+      },
+      toolFormatters: formatters,
+      deferredDefinitions,
+      requestCompletion: async ({ messages }) => {
+        const hasToolResult = messages.some((msg) => msg.role === 'tool');
+        if (!hasToolResult) {
+          return {
+            text: '',
+            toolCalls: [
+              {
+                id: 'call_quiet',
+                name: 'quiet',
+                arguments: '{}'
+              }
+            ]
+          };
+        }
+        return {
+          text: 'done',
+          toolCalls: []
+        };
+      }
+    });
+
+    const toolMessage = result.messages.find((msg) => msg.role === 'tool' && msg.tool_call_id === 'call_quiet');
+    assert.ok(toolMessage);
+    assert.match(String(toolMessage.content), /\(quiet completed with no output\)/i);
+  });
+});
+
+test('agent loop accepts write aliases and edit content shorthand', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, 'src', 'demo.ts'), 'export const value = 1;\n', 'utf8');
+
+    const config = await loadConfig();
+    const { definitions, handlers, formatters, deferredDefinitions } = getBuiltinTools({ workspaceRoot, config });
+
+    const responses = [
+      {
+        text: '',
+        toolCalls: [
+          {
+            id: 'call_write_alias',
+            name: 'write',
+            arguments: JSON.stringify({ file: 'notes.txt', text: 'hello from alias\n' })
+          },
+          {
+            id: 'call_edit_alias',
+            name: 'edit',
+            arguments: JSON.stringify({ file_path: 'src/demo.ts', old_string: 'value = 1', content: 'value = 4' })
+          }
+        ]
+      },
+      {
+        text: 'done',
+        toolCalls: []
+      }
+    ];
+
+    const result = await runAgentLoop({
+      systemPrompt: 'You are a test agent.',
+      userPrompt: 'write and edit files',
+      model: 'test-model',
+      maxSteps: 2,
+      toolDefinitions: definitions,
+      toolHandlers: handlers,
+      toolFormatters: formatters,
+      deferredDefinitions,
+      requestCompletion: async () => responses.shift() || { text: 'done', toolCalls: [] }
+    });
+
+    const writeMessage = result.messages.find((msg) => msg.role === 'tool' && msg.tool_call_id === 'call_write_alias');
+    const editMessage = result.messages.find((msg) => msg.role === 'tool' && msg.tool_call_id === 'call_edit_alias');
+    assert.ok(writeMessage);
+    assert.ok(editMessage);
+    assert.match(String(writeMessage.content), /notes\.txt/);
+    assert.match(String(editMessage.content), /src\/demo\.ts/);
+
+    const created = await fs.readFile(path.join(workspaceRoot, 'notes.txt'), 'utf8');
+    const updated = await fs.readFile(path.join(workspaceRoot, 'src', 'demo.ts'), 'utf8');
+    assert.equal(created, 'hello from alias\n');
+    assert.match(updated, /value = 4/);
   });
 });
 

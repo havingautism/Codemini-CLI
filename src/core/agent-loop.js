@@ -14,6 +14,101 @@ function safeJsonParse(raw) {
   }
 }
 
+function parseInlineRangePath(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const match = text.match(/^(.*?):(\d+)(?:-(\d+))?$/);
+  if (!match) return null;
+  const [, maybePath, startRaw, endRaw] = match;
+  if (!maybePath || /^(?:[A-Za-z])$/.test(maybePath)) return null;
+  const start = Number(startRaw);
+  const end = Number(endRaw || startRaw);
+  if (!Number.isFinite(start) || start <= 0) return null;
+  if (!Number.isFinite(end) || end < start) return null;
+  return { path: maybePath, start_line: start, end_line: end };
+}
+
+function normalizeToolArguments(toolName, args, rawArguments) {
+  const rawText = typeof rawArguments === 'string' ? rawArguments.trim() : '';
+  const primitive =
+    args == null || Array.isArray(args) || typeof args !== 'object'
+      ? args
+      : null;
+  const source =
+    args && typeof args === 'object' && !Array.isArray(args)
+      ? { ...args }
+      : {};
+
+  if (primitive != null && typeof primitive !== 'object') {
+    source._raw = rawText || String(primitive);
+  } else if (!source._raw && rawText && source._invalid_json) {
+    source._raw = rawText;
+  }
+
+  const stringValue =
+    typeof primitive === 'string'
+      ? primitive.trim()
+      : String(source._raw || '').trim();
+
+  if (toolName === 'read') {
+    const value = String(source.path || source.file_path || source.file || stringValue || '').trim();
+    if (value) source.path = value;
+    if (source.offset != null && source.start_line == null) source.start_line = source.offset;
+    if (source.limit != null && source.end_line == null && Number(source.start_line) > 0) {
+      source.end_line = Number(source.start_line) + Number(source.limit) - 1;
+    }
+    const range = parseInlineRangePath(source.path);
+    if (range) {
+      source.path = range.path;
+      if (source.start_line == null) source.start_line = range.start_line;
+      if (source.end_line == null) source.end_line = range.end_line;
+    }
+    return source;
+  }
+
+  if (toolName === 'list') {
+    const value = String(source.path || source.dir || source.directory || stringValue || '.').trim();
+    return { ...source, path: value || '.' };
+  }
+
+  if (toolName === 'glob') {
+    const pattern = String(source.pattern || source.glob || source.query || stringValue || '').trim();
+    if (pattern) source.pattern = pattern;
+    if (!source.path && source.directory) source.path = source.directory;
+    return source;
+  }
+
+  if (toolName === 'grep') {
+    const pattern = String(source.pattern || source.query || source.symbol || source.q || stringValue || '').trim();
+    if (pattern) source.pattern = pattern;
+    if (!source.path && (source.directory || source.dir || source.cwd)) {
+      source.path = source.directory || source.dir || source.cwd;
+    }
+    return source;
+  }
+
+  if (toolName === 'write') {
+    const value = String(source.path || source.file_path || source.file || stringValue || '').trim();
+    if (value) source.path = value;
+    if (source.content == null && source.text != null) source.content = source.text;
+    if (source.content == null && source.new_content != null) source.content = source.new_content;
+    return source;
+  }
+
+  if (toolName === 'edit') {
+    const value = String(source.path || source.file || source.file_path || '').trim();
+    if (value && !source.path) source.path = value;
+    return source;
+  }
+
+  return source;
+}
+
+function emptyToolResultMarker(toolName) {
+  const name = String(toolName || 'tool').trim() || 'tool';
+  return `(${name} completed with no output)`;
+}
+
 function clipToolResult(result, maxChars = 12000) {
   const raw = typeof result === 'string' ? result : JSON.stringify(result);
   if (!maxChars || raw.length <= maxChars) return raw;
@@ -374,9 +469,12 @@ function formatToolDisplayName(name, args) {
 function formatToolResult(toolResult, toolName, args, toolFormatters, toolResultMaxChars) {
   if (toolFormatters && typeof toolFormatters[toolName] === 'function') {
     const formatted = toolFormatters[toolName](toolResult, args);
-    if (typeof formatted === 'string') return formatted;
+    if (typeof formatted === 'string') {
+      return formatted.trim() ? formatted : emptyToolResultMarker(toolName);
+    }
   }
-  return compactToolResult(toolResult, toolName, args, toolResultMaxChars);
+  const fallback = compactToolResult(toolResult, toolName, args, toolResultMaxChars);
+  return String(fallback || '').trim() ? fallback : emptyToolResultMarker(toolName);
 }
 
 // ─── Main agent loop ────────────────────────────────────────────────
@@ -469,8 +567,8 @@ export async function runAgentLoop({
     // ─── P1a: Partition into read-only (parallel) and write (serial) ──
 
     const callsWithMeta = toolCalls.map((call) => {
-      const args = safeJsonParse(call.arguments);
       const toolName = normalizeToolCallName(call.name);
+      const args = normalizeToolArguments(toolName, safeJsonParse(call.arguments), call.arguments);
       const displayName = formatToolDisplayName(toolName, args);
       const isReadOnly = READ_ONLY_TOOLS.has(toolName);
       return { call, args, toolName, displayName, isReadOnly };

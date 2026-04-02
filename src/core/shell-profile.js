@@ -123,11 +123,11 @@ export function getShellSystemPrompt(value) {
 # Using your tools
 
 ALWAYS prefer dedicated tools over raw shell commands:
-- Use read to inspect files — NEVER use cat, head, or tail via run
+- Use read to inspect files — NEVER use cat, head, or tail via run. read returns content directly by default; demo-style shapes like {file_path:"src/app.ts"}, {path:"src/app.ts:10-40"}, or {file_path:"src/app.ts", offset:10, limit:30} are accepted
 - Use grep to search file contents — NEVER use grep or rg via run
 - Use glob to find files by pattern — NEVER use find via run
-- Use edit to modify existing files — this is the DEFAULT path for code changes
-- Use write only for creating new files or complete rewrites (set full_file_rewrite=true for existing code files)
+- Use edit to modify existing files — this is the DEFAULT path for code changes. Demo-style aliases like {file_path:"src/app.ts", old_string:"foo", new_string:"bar"} are accepted
+- Use write only for creating new files or complete rewrites (set full_file_rewrite=true for existing code files). Aliases like {file:"notes.txt", text:"..."} are accepted
 - Use patch to apply unified diffs
 - Use run for one-shot shell commands: install, build, test, or other finite tasks
 - For long-running processes (dev servers, watchers), use start_service instead of run
@@ -139,6 +139,17 @@ Fall back to plain grep/read/edit only when AST is not appropriate.
 For services: use start_service to launch, list_services/get_service_status/get_service_logs to monitor, stop_service to stop.
 
 Some tools are loaded on demand. If a needed tool is not listed, call tool_search first to load it.
+
+Common tool call patterns:
+- Read a file: {path:"src/app.ts"} or {file_path:"src/app.ts", offset:20, limit:40}
+- Read a specific range inline: {path:"src/app.ts:20-60"}
+- Search text: {pattern:"loginUser", path:"src"} or {query:"loginUser", directory:"src"}
+- Find files: {pattern:"src/**/*.ts"} or {query:"src/**/*.ts"}
+- Edit exact text: {file_path:"src/app.ts", old_string:"foo", new_string:"bar"}
+- Edit with shorthand: {path:"src/app.ts", old_text:"foo", content:"bar"}
+- Write a new file: {file:"notes.txt", text:"..."} or {path:"src/page.tsx", content:"..."}
+- When the environment provides a Working directory, prefer absolute file_path values rooted there instead of guessing prefixes
+- If the user gives a relative path like src/app.ts, resolve it from the current Working directory rather than inventing ../ or sibling folders
 
 # Doing tasks
 

@@ -2,6 +2,42 @@ import os from 'node:os';
 import fs from 'node:fs';
 import { getShellSystemPrompt } from './shell-profile.js';
 
+function getToolFewShotBlock() {
+  const cwd = process.cwd();
+  return `# Tool Examples
+
+Use these as style examples for tool calls:
+
+Current working directory: ${cwd}
+When a tool takes file_path, build it from the current working directory and prefer absolute paths.
+If the user mentions a project-relative path like src/app.ts, resolve it from ${cwd} instead of guessing parent directories.
+
+1. File discovery then read
+User: compare the auth flow
+Assistant: first locate the relevant files
+Tool: glob({"pattern":"src/**/*auth*.ts"})
+Tool: read({"file_path":"${cwd}/src/auth/service.ts"})
+
+2. Targeted search then exact text edit
+User: rename loginUser to signInUser
+Assistant: first find the exact occurrences
+Tool: grep({"pattern":"loginUser","path":"src"})
+Tool: edit({"file_path":"${cwd}/src/auth/service.ts","old_string":"loginUser","new_string":"signInUser"})
+
+3. Read a specific range
+User: inspect the reducer around line 120
+Assistant: read only the needed range
+Tool: read({"path":"${cwd}/src/store/reducer.ts:110-150"})
+
+4. Create a new file
+User: add a notes file
+Assistant: create the file directly
+Tool: write({"file":"${cwd}/notes.txt","text":"todo\\n"})
+
+Prefer these direct tool shapes over multi-step metadata reads or shell fallbacks.
+Prefer explicit absolute file_path values when the current working directory is known.`;
+}
+
 function getEnvBlock() {
   const cwd = process.cwd();
   let isGitRepo = false;
@@ -21,6 +57,8 @@ OS Version: ${os.version || os.release()}
 
 export function buildDefaultSystemPrompt(config = {}) {
   return `${getShellSystemPrompt(config?.shell?.default)}
+
+${getToolFewShotBlock()}
 
 ${getEnvBlock()}`;
 }

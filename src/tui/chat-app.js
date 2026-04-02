@@ -88,6 +88,7 @@ const TUI_COPY = {
       startupHint: '使用 /help、/commands、/compact、/exit、!<shell>。Tab 可自动补全 slash 命令。',
       toolSummaryExpanded: '工具摘要：已展开',
       toolSummaryCollapsed: '工具摘要：已收起',
+      toolChainCollapsed: (count) => `已折叠更早的 ${count} 个工具调用，按 Ctrl+T 展开全部`,
       toggleToolSummary: 'Ctrl+T 切换',
       scrollHint: '使用终端自己的滚动条或 scrollback',
       keyboardDebugEnabled: '键盘调试已开启',
@@ -219,6 +220,7 @@ const TUI_COPY = {
       startupHint: 'Use /help, /commands, /compact, /exit, !<shell>. Tab for slash autocomplete.',
       toolSummaryExpanded: 'Tool summary: expanded',
       toolSummaryCollapsed: 'Tool summary: collapsed',
+      toolChainCollapsed: (count) => `${count} earlier tool calls hidden, press Ctrl+T to expand`,
       toggleToolSummary: 'Ctrl+T to toggle',
       scrollHint: 'Scroll with your terminal scrollbar or scrollback',
       keyboardDebugEnabled: 'Keyboard debug enabled',
@@ -351,6 +353,90 @@ function trimText(value, maxLen = 88) {
   if (!text) return '';
   if (text.length <= maxLen) return text;
   return `${text.slice(0, maxLen - 3)}...`;
+}
+
+export function splitMarkdownTableCells(line) {
+  const text = String(line || '').trim();
+  if (!text.includes('|')) return [];
+  return text
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => String(cell || '').trim());
+}
+
+export function isMarkdownTableSeparator(line) {
+  const cells = splitMarkdownTableCells(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+export function isMarkdownTableHeader(line, nextLine) {
+  const cells = splitMarkdownTableCells(line);
+  return cells.length > 1 && isMarkdownTableSeparator(nextLine);
+}
+
+export function formatMarkdownTableBlock(lines, contentWidth = 72) {
+  const cellRows = lines
+    .filter((line) => !isMarkdownTableSeparator(line))
+    .map(splitMarkdownTableCells)
+    .filter((cells) => cells.length > 0);
+  if (cellRows.length === 0) return [];
+
+  const columnCount = Math.max(...cellRows.map((cells) => cells.length));
+  const normalizedRows = cellRows.map((cells) =>
+    Array.from({ length: columnCount }, (_, index) => trimText(cells[index] || '', 28))
+  );
+  const widths = Array.from({ length: columnCount }, (_, index) =>
+    Math.min(
+      28,
+      Math.max(...normalizedRows.map((cells) => String(cells[index] || '').length), 3)
+    )
+  );
+
+  const totalWidth = widths.reduce((sum, width) => sum + width, 0) + (columnCount - 1) * 3;
+  if (totalWidth > contentWidth - 2) {
+    let overflow = totalWidth - (contentWidth - 2);
+    for (let index = widths.length - 1; index >= 0 && overflow > 0; index -= 1) {
+      const shrinkable = Math.max(0, widths[index] - 6);
+      const shrink = Math.min(shrinkable, overflow);
+      widths[index] -= shrink;
+      overflow -= shrink;
+    }
+  }
+
+  const rows = [];
+  normalizedRows.forEach((cells, rowIndex) => {
+    const padded = cells.map((cell, index) => trimText(cell, widths[index]).padEnd(widths[index], ' '));
+    rows.push({
+      kind: 'table',
+      text: `│ ${padded.join(' │ ')} │`,
+      isHeader: rowIndex === 0
+    });
+    if (rowIndex === 0) {
+      rows.push({
+        kind: 'table-separator',
+        text: `├${widths.map((width) => '─'.repeat(width + 2)).join('┼')}┤`
+      });
+    }
+  });
+  return rows;
+}
+
+function parseRichTextSegments(line, baseColor) {
+  const parts = String(line || '').split(/(`[^`]+`|\*\*[^*]+\*\*)/g);
+  return parts.map((part, idx) => {
+    if (part.startsWith('`') && part.endsWith('`') && part.length >= 2) {
+      return h(
+        Text,
+        { key: `ic-${idx}`, color: 'black', backgroundColor: 'yellow' },
+        part.slice(1, -1)
+      );
+    }
+    if (part.startsWith('**') && part.endsWith('**') && part.length >= 4) {
+      return h(Text, { key: `bd-${idx}`, color: 'cyanBright', bold: true }, part.slice(2, -2));
+    }
+    return h(Text, { key: `tx-${idx}`, color: baseColor }, part);
+  });
 }
 
 function safeJsonParse(raw) {
@@ -880,20 +966,31 @@ function Header({ sessionId, model, shellName, safeMode = true }) {
 }
 
 function renderInlineCode(line, baseColor) {
-  const parts = line.split(/(`[^`]+`)/g);
-  return parts.map((part, idx) => {
-    if (part.startsWith('`') && part.endsWith('`') && part.length >= 2) {
-      return h(
-        Text,
-        { key: `ic-${idx}`, color: 'black', backgroundColor: 'yellow' },
-        part.slice(1, -1)
-      );
-    }
-    return h(Text, { key: `tx-${idx}`, color: baseColor }, part);
-  });
+  return parseRichTextSegments(line, baseColor);
 }
 
 function renderTextLine(msg, line, idx, color) {
+  const headingMatch = String(line || '').match(/^\s{0,3}(#{1,3})\s+(.*)$/);
+  if (headingMatch) {
+    const level = headingMatch[1].length;
+    const title = headingMatch[2].trim();
+    const accent = level === 1 ? 'cyanBright' : level === 2 ? 'greenBright' : 'yellowBright';
+    return h(
+      Box,
+      { key: `ln-wrap-${msg.id}-${idx}` },
+      h(Text, { color: accent, bold: true }, title)
+    );
+  }
+
+  const boldTitleMatch = String(line || '').match(/^\s*\*\*(.+)\*\*\s*$/);
+  if (boldTitleMatch) {
+    return h(
+      Box,
+      { key: `ln-wrap-${msg.id}-${idx}` },
+      h(Text, { key: `ln-${msg.id}-${idx}`, color: 'cyanBright', bold: true }, boldTitleMatch[1].trim())
+    );
+  }
+
   return h(
     Box,
     { key: `ln-wrap-${msg.id}-${idx}` },
@@ -1544,12 +1641,70 @@ export function mergeActivitySummary(previousSummary, nextSummary, activityName)
   return lines.join('\n');
 }
 
+export function collapseActivityChainRows(inputRows, showToolDetails, copy, maxVisibleActivities = 3) {
+  const rows = Array.isArray(inputRows) ? inputRows : [];
+  if (showToolDetails) return rows.slice();
+  const maxVisible = Math.max(1, Number(maxVisibleActivities) || 3);
+  const collapsed = [];
+
+  const isCollapsibleActivity = (row) =>
+    row?.kind === 'activity' &&
+    ['tool', 'skill', 'system_tool'].includes(String(row?.activityType || 'tool'));
+
+  let index = 0;
+  while (index < rows.length) {
+    const row = rows[index];
+    if (!isCollapsibleActivity(row)) {
+      collapsed.push(row);
+      index += 1;
+      continue;
+    }
+
+    const group = [];
+    while (index < rows.length) {
+      const next = rows[index];
+      if (isCollapsibleActivity(next)) {
+        group.push([next]);
+        index += 1;
+        continue;
+      }
+      if (next?.kind === 'activity-summary' && group.length > 0) {
+        group[group.length - 1].push(next);
+        index += 1;
+        continue;
+      }
+      break;
+    }
+
+    if (group.length <= maxVisible) {
+      for (const item of group) collapsed.push(...item);
+      continue;
+    }
+
+    const hiddenCount = group.length - maxVisible;
+    collapsed.push({
+      kind: 'activity-collapsed',
+      hiddenCount,
+      text:
+        copy?.generic?.toolChainCollapsed != null
+          ? copy.generic.toolChainCollapsed(hiddenCount)
+          : `${hiddenCount} earlier tool calls hidden`
+    });
+    for (const item of group.slice(-maxVisible)) {
+      collapsed.push(...item);
+    }
+  }
+
+  return collapsed;
+}
+
 function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) {
   const rows = [];
   const pushTextRows = (text) => {
     const lines = String(text || '').split('\n');
     let codeFence = false;
-    for (const line of lines) {
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+      const line = lines[lineIndex];
       const trimmed = line.trim();
       const planProgress = parsePlanProgressLine(trimmed);
       if (planProgress) {
@@ -1568,6 +1723,16 @@ function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) {
       }
       if (codeFence) {
         pushWrappedRow(rows, { kind: 'code', text: line || ' ', color: 'gray' }, contentWidth);
+        continue;
+      }
+      if (isMarkdownTableHeader(line, lines[lineIndex + 1])) {
+        const tableLines = [line];
+        lineIndex += 1; // skip separator
+        while (lineIndex + 1 < lines.length && splitMarkdownTableCells(lines[lineIndex + 1]).length > 1) {
+          tableLines.push(lines[lineIndex + 1]);
+          lineIndex += 1;
+        }
+        rows.push(...formatMarkdownTableBlock(tableLines, contentWidth));
         continue;
       }
       let color = msg.color || roleStyle(msg.label).text || 'white';
@@ -1651,7 +1816,9 @@ function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) {
     syntheticRows.push(...statusRows);
   }
 
-  return normalizeActivitySpacingRows(insertRowsAfterLastCodeRow(rows, syntheticRows));
+  return normalizeActivitySpacingRows(
+    insertRowsAfterLastCodeRow(collapseActivityChainRows(rows, showToolDetails, copy), syntheticRows)
+  );
 }
 
 function renderMessageRow(msg, row, idx, loaderTick) {
@@ -1692,6 +1859,27 @@ function renderMessageRow(msg, row, idx, loaderTick) {
     return h(
       Box,
       { key: `row-tool-summary-${msg.id}-${idx}`, marginLeft: 1 },
+      h(Text, { color: 'gray' }, `└ ${row.text}`)
+    );
+  }
+  if (row.kind === 'table') {
+    return h(
+      Box,
+      { key: `row-table-${msg.id}-${idx}`, marginLeft: 1 },
+      h(Text, { color: row.isHeader ? 'cyanBright' : 'gray', bold: Boolean(row.isHeader) }, row.text)
+    );
+  }
+  if (row.kind === 'table-separator') {
+    return h(
+      Box,
+      { key: `row-table-sep-${msg.id}-${idx}`, marginLeft: 1 },
+      h(Text, { color: 'gray' }, row.text)
+    );
+  }
+  if (row.kind === 'activity-collapsed') {
+    return h(
+      Box,
+      { key: `row-tool-collapsed-${msg.id}-${idx}`, marginLeft: 1 },
       h(Text, { color: 'gray' }, `└ ${row.text}`)
     );
   }

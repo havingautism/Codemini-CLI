@@ -119,6 +119,111 @@ function splitLines(text) {
   return String(text || '').split('\n');
 }
 
+function parseInlineReadRange(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const match = text.match(/^(.*?):(\d+)(?:-(\d+))?$/);
+  if (!match) return null;
+  const [, maybePath, startRaw, endRaw] = match;
+  if (!maybePath || /^(?:[A-Za-z])$/.test(maybePath)) return null;
+  const startLine = Number(startRaw);
+  const endLine = Number(endRaw || startRaw);
+  if (!Number.isFinite(startLine) || startLine <= 0) return null;
+  if (!Number.isFinite(endLine) || endLine < startLine) return null;
+  return {
+    path: maybePath,
+    start_line: startLine,
+    end_line: endLine
+  };
+}
+
+function normalizeReadArgs(rawArgs) {
+  const source =
+    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+      ? { ...rawArgs }
+      : { path: typeof rawArgs === 'string' ? rawArgs : '' };
+
+  const normalized = { ...source };
+  const aliasPath = String(source.path || source.file_path || source.file || source.target || '').trim();
+  if (aliasPath) normalized.path = aliasPath;
+
+  if (!Number.isFinite(Number(normalized.start_line)) && Number.isFinite(Number(source.offset))) {
+    normalized.start_line = Number(source.offset);
+  }
+
+  if (!Number.isFinite(Number(normalized.end_line)) && Number.isFinite(Number(source.limit))) {
+    const startLine = Number(normalized.start_line);
+    const limit = Number(source.limit);
+    if (startLine > 0 && limit > 0) {
+      normalized.end_line = startLine + limit - 1;
+    }
+  }
+
+  const inlineRange = parseInlineReadRange(normalized.path);
+  if (inlineRange) {
+    normalized.path = inlineRange.path;
+    if (!Number.isFinite(Number(normalized.start_line))) normalized.start_line = inlineRange.start_line;
+    if (!Number.isFinite(Number(normalized.end_line))) normalized.end_line = inlineRange.end_line;
+  }
+
+  return normalized;
+}
+
+function normalizePathArgs(rawArgs, aliases = []) {
+  const source =
+    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+      ? { ...rawArgs }
+      : { path: typeof rawArgs === 'string' ? rawArgs : '' };
+  const normalized = { ...source };
+  const keys = ['path', ...aliases];
+  for (const key of keys) {
+    const value = String(source?.[key] || '').trim();
+    if (value) {
+      normalized.path = value;
+      break;
+    }
+  }
+  return normalized;
+}
+
+function normalizePatternArgs(rawArgs, aliases = [], defaultPathAliases = []) {
+  const source =
+    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+      ? { ...rawArgs }
+      : { pattern: typeof rawArgs === 'string' ? rawArgs : '' };
+  const normalized = { ...source };
+  for (const key of ['pattern', ...aliases]) {
+    const value = String(source?.[key] || '').trim();
+    if (value) {
+      normalized.pattern = value;
+      break;
+    }
+  }
+  for (const key of ['path', ...defaultPathAliases]) {
+    const value = String(source?.[key] || '').trim();
+    if (value) {
+      normalized.path = value;
+      break;
+    }
+  }
+  return normalized;
+}
+
+function normalizeWriteArgs(rawArgs) {
+  const source =
+    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+      ? { ...rawArgs }
+      : { path: typeof rawArgs === 'string' ? rawArgs : '' };
+  const normalized = { ...source };
+  const filePath = String(source.path || source.file_path || source.file || '').trim();
+  if (filePath) normalized.path = filePath;
+  if (normalized.content == null) {
+    if (source.text != null) normalized.content = source.text;
+    if (source.new_content != null) normalized.content = source.new_content;
+  }
+  return normalized;
+}
+
 function findUniqueLineBlock(lines, blockContent) {
   const probeLines = splitLines(blockContent);
   if (probeLines.length === 0 || (probeLines.length === 1 && probeLines[0] === '')) return null;
@@ -665,16 +770,17 @@ async function getFileState(root, relativePath) {
 }
 
 async function readFile(root, args) {
-  const target = resolveInWorkspace(root, args?.path);
+  const normalizedArgs = normalizeReadArgs(args);
+  const target = resolveInWorkspace(root, normalizedArgs?.path);
   const stat = await fs.stat(target);
   const text = await fs.readFile(target, 'utf8');
   const lines = splitLines(text);
   const totalLines = lines.length;
-  const startLineRaw = Number(args?.start_line);
-  const endLineRaw = Number(args?.end_line);
-  const defaultLines = Number(args?.default_lines || 220);
-  const maxChars = Number(args?.max_chars || 24000);
-  const includeContent = Boolean(args?.include_content);
+  const startLineRaw = Number(normalizedArgs?.start_line);
+  const endLineRaw = Number(normalizedArgs?.end_line);
+  const defaultLines = Number(normalizedArgs?.default_lines || 220);
+  const maxChars = Number(normalizedArgs?.max_chars || 24000);
+  const wantsMetadataOnly = normalizedArgs?.metadata_only === true || normalizedArgs?.include_content === false;
 
   let startLine = Number.isFinite(startLineRaw) && startLineRaw > 0 ? startLineRaw : 1;
   let endLine =
@@ -684,12 +790,12 @@ async function readFile(root, args) {
   startLine = Math.max(1, Math.min(startLine, totalLines));
   endLine = Math.max(startLine, Math.min(endLine, totalLines));
 
-  const tokenSeed = `${args?.path}|${stat.size}|${stat.mtimeMs}|${startLine}|${endLine}`;
+  const tokenSeed = `${normalizedArgs?.path}|${stat.size}|${stat.mtimeMs}|${startLine}|${endLine}`;
   const readToken = sha1(tokenSeed).slice(0, 16);
 
-  if (!includeContent) {
+  if (wantsMetadataOnly) {
     return {
-      path: args?.path,
+      path: normalizedArgs?.path,
       phase: 'metadata',
       size_bytes: stat.size,
       modified_at: new Date(stat.mtimeMs).toISOString(),
@@ -698,21 +804,6 @@ async function readFile(root, args) {
       suggested_end_line: endLine,
       read_token: readToken,
       next: 'Call read again with include_content=true and this read_token'
-    };
-  }
-
-  if (String(args?.read_token || '') !== readToken) {
-    return {
-      path: args?.path,
-      phase: 'metadata',
-      error: 'read_token mismatch or missing',
-      size_bytes: stat.size,
-      modified_at: new Date(stat.mtimeMs).toISOString(),
-      total_lines: totalLines,
-      suggested_start_line: startLine,
-      suggested_end_line: endLine,
-      read_token: readToken,
-      next: 'Retry with include_content=true and read_token from latest metadata'
     };
   }
 
@@ -725,14 +816,14 @@ async function readFile(root, args) {
 
   // Read deduplication: if same path+range+mtime was read before, return a short stub
   const isDuplicate = checkReadDedup(
-    args?.path,
+    normalizedArgs?.path,
     startLine,
     endLine,
     stat.mtimeMs
   );
   if (isDuplicate) {
     return {
-      path: args?.path,
+      path: normalizedArgs?.path,
       phase: 'content',
       start_line: startLine,
       end_line: endLine,
@@ -744,7 +835,7 @@ async function readFile(root, args) {
   }
 
   return {
-    path: args?.path,
+    path: normalizedArgs?.path,
     phase: 'content',
     start_line: startLine,
     end_line: endLine,
@@ -755,7 +846,8 @@ async function readFile(root, args) {
 }
 
 async function writeFile(root, args) {
-  const rawPath = String(args?.path || args?.file_path || '').trim();
+  const normalizedArgs = normalizeWriteArgs(args);
+  const rawPath = String(normalizedArgs?.path || '').trim();
   if (!rawPath) {
     throw new Error('write requires a file path like weather/WeatherForecast.js');
   }
@@ -778,18 +870,18 @@ async function writeFile(root, args) {
   } catch {
     existed = false;
   }
-  if (existed && !args?.append && !args?.full_file_rewrite && isCodeLikePath(rawPath)) {
+  if (existed && !normalizedArgs?.append && !normalizedArgs?.full_file_rewrite && isCodeLikePath(rawPath)) {
     throw new Error(
       'write blocks full overwrite for existing code files by default. Use grep/read -> edit for minimal edits, or pass full_file_rewrite=true when a whole-file rewrite is truly intended.'
     );
   }
   await fs.mkdir(path.dirname(target), { recursive: true });
-  if (args?.append) {
-    await fs.appendFile(target, args?.content || '', 'utf8');
+  if (normalizedArgs?.append) {
+    await fs.appendFile(target, normalizedArgs?.content || '', 'utf8');
   } else {
-    await fs.writeFile(target, args?.content || '', 'utf8');
+    await fs.writeFile(target, normalizedArgs?.content || '', 'utf8');
   }
-  const after = args?.append ? `${before}${args?.content || ''}` : args?.content || '';
+  const after = normalizedArgs?.append ? `${before}${normalizedArgs?.content || ''}` : normalizedArgs?.content || '';
   const beforeLines = splitLines(before);
   const afterLines = splitLines(after);
   let changeLine = 0;
@@ -805,7 +897,7 @@ async function writeFile(root, args) {
   return {
     ok: true,
     path: rawPath,
-    action: args?.append ? 'append' : existed ? 'overwrite' : 'create',
+    action: normalizedArgs?.append ? 'append' : existed ? 'overwrite' : 'create',
     changed_line: changeLine || Math.max(1, afterLines.length),
     diff_preview: previewLines.map((line, idx) => `${previewStart + idx + 1}| ${line}`).join('\n')
   };
@@ -1208,12 +1300,13 @@ async function searchCode(root, args) {
 }
 
 async function grep(root, args) {
-  const pattern = String(args?.pattern || args?.query || '').trim();
+  const normalizedArgs = normalizePatternArgs(args, ['query', 'symbol', 'q'], ['directory', 'dir', 'cwd']);
+  const pattern = String(normalizedArgs?.pattern || '').trim();
   if (!pattern) throw new Error('grep requires pattern');
-  const maxResults = Math.max(1, Math.min(200, Number(args?.max_results || 50)));
-  const caseSensitive = Boolean(args?.case_sensitive);
-  const files = await walkTextFiles(root, args?.path || '.', normalizeFileTypes(args));
-  const regex = args?.regex
+  const maxResults = Math.max(1, Math.min(200, Number(normalizedArgs?.max_results || 50)));
+  const caseSensitive = Boolean(normalizedArgs?.case_sensitive);
+  const files = await walkTextFiles(root, normalizedArgs?.path || '.', normalizeFileTypes(normalizedArgs));
+  const regex = normalizedArgs?.regex
     ? new RegExp(pattern, caseSensitive ? 'g' : 'gi')
     : new RegExp(escapeRegex(pattern), caseSensitive ? 'g' : 'gi');
   const matches = [];
@@ -1242,12 +1335,13 @@ async function grep(root, args) {
 }
 
 async function glob(root, args) {
-  const pattern = String(args?.pattern || '').trim();
+  const normalizedArgs = normalizePatternArgs(args, ['glob', 'query'], ['directory', 'dir', 'cwd']);
+  const pattern = String(normalizedArgs?.pattern || '').trim();
   if (!pattern) throw new Error('glob requires pattern');
-  const maxResults = Math.max(1, Math.min(500, Number(args?.max_results || 200)));
+  const maxResults = Math.max(1, Math.min(500, Number(normalizedArgs?.max_results || 200)));
   const regex = globToRegex(pattern);
-  const entries = await walkWorkspaceEntries(root, args?.path || '.', {
-    includeHidden: Boolean(args?.include_hidden)
+  const entries = await walkWorkspaceEntries(root, normalizedArgs?.path || '.', {
+    includeHidden: Boolean(normalizedArgs?.include_hidden)
   });
   const matches = entries
     .filter((entry) => entry.type === 'file' && regex.test(entry.path))
@@ -1261,10 +1355,11 @@ async function glob(root, args) {
 }
 
 async function list(root, args) {
-  const relativePath = String(args?.path || '.').trim() || '.';
+  const normalizedArgs = normalizePathArgs(args, ['dir', 'directory', 'target']);
+  const relativePath = String(normalizedArgs?.path || '.').trim() || '.';
   const target = resolveInWorkspace(root, relativePath);
   const entries = await fs.readdir(target, { withFileTypes: true });
-  const includeHidden = Boolean(args?.include_hidden);
+  const includeHidden = Boolean(normalizedArgs?.include_hidden);
   const items = entries
     .filter((entry) => includeHidden || !entry.name.startsWith('.'))
     .map((entry) => ({
@@ -1552,6 +1647,8 @@ function normalizeEditTargetArgs(args = {}) {
       edit: normalizedEdit
     };
   }
+  const topLevelOldText = args?.old_text ?? args?.old_string;
+  const topLevelContent = args?.content;
   return {
     file,
     ast_target: args?.ast_target,
@@ -1560,7 +1657,7 @@ function normalizeEditTargetArgs(args = {}) {
       target: args?.target,
       new_content: args?.new_content ?? args?.content,
       old_text: args?.old_text,
-      new_text: args?.new_text,
+      new_text: args?.new_text ?? (topLevelOldText != null && topLevelContent != null ? topLevelContent : undefined),
       old_string: args?.old_string,
       new_string: args?.new_string,
       anchor_text: args?.anchor_text,
@@ -1754,18 +1851,22 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'read',
         description:
-          'Inspect a file. Call once for metadata and a read_token, then again with include_content=true and the same token to get content. Use this before editing. Do not use run with cat, head, or tail for file reads.',
+          'Inspect a file and return content directly by default. Demo-style aliases like file_path, offset, and limit are accepted. Use metadata_only=true only when you want file metadata without content. Do not use run with cat, head, or tail for file reads.',
         parameters: {
           type: 'object',
           properties: {
-            path: { type: 'string', description: 'File path to read' },
+            path: { type: 'string', description: 'File path to read. You can also include an inline range like src/app.ts:10-40.' },
+            file_path: { type: 'string', description: 'Alias for path' },
             start_line: { type: 'number', description: '1-based start line' },
             end_line: { type: 'number', description: 'Inclusive end line' },
+            offset: { type: 'number', description: 'Alias for start_line' },
+            limit: { type: 'number', description: 'Number of lines to read starting from offset/start_line' },
             max_chars: { type: 'number', description: 'Max chars to return' },
-            include_content: { type: 'boolean', description: 'Set true on the second call' },
-            read_token: { type: 'string', description: 'Token from the first call' }
+            include_content: { type: 'boolean', description: 'Legacy compatibility flag. Content is returned by default.' },
+            read_token: { type: 'string', description: 'Legacy compatibility token. No longer required for content reads.' },
+            metadata_only: { type: 'boolean', description: 'Set true to return metadata without content.' }
           },
-          required: ['path']
+          required: []
         }
       }
     },
@@ -1774,13 +1875,14 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'grep',
         description:
-          'Search file contents. Use this for code search before read or edit. Do not use run with grep or rg for normal code search.',
+          'Search file contents. Use this for code search before read or edit. Aliases like query and directory are accepted. Do not use run with grep or rg for normal code search.',
         parameters: {
           type: 'object',
           properties: {
             pattern: { type: 'string', description: 'Search pattern' },
             query: { type: 'string', description: 'Alias for pattern' },
             path: { type: 'string', description: 'Directory or file to search' },
+            directory: { type: 'string', description: 'Alias for path' },
             regex: { type: 'boolean', description: 'Treat pattern as regex' },
             case_sensitive: { type: 'boolean', description: 'Case-sensitive matching' },
             max_results: { type: 'number', description: 'Max matches to return' },
@@ -1796,12 +1898,14 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'glob',
         description:
-          'Find files by glob pattern. Use this for file discovery before read. Do not use run with find for normal file lookup.',
+          'Find files by glob pattern. Use this for file discovery before read. Aliases like query and directory are accepted. Do not use run with find for normal file lookup.',
         parameters: {
           type: 'object',
           properties: {
             pattern: { type: 'string', description: 'Glob pattern' },
             path: { type: 'string', description: 'Directory to search' },
+            query: { type: 'string', description: 'Alias for pattern' },
+            directory: { type: 'string', description: 'Alias for path' },
             include_hidden: { type: 'boolean', description: 'Include dotfiles' },
             max_results: { type: 'number', description: 'Max results' }
           },
@@ -1813,11 +1917,12 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       type: 'function',
       function: {
         name: 'list',
-        description: 'List files and directories in a workspace path. Use this for quick directory discovery before deeper reads.',
+        description: 'List files and directories in a workspace path. Use this for quick directory discovery before deeper reads. Aliases like directory are accepted, and plain string paths are tolerated by the runtime.',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string', description: 'Directory path to list' },
+            directory: { type: 'string', description: 'Alias for path' },
             include_hidden: { type: 'boolean', description: 'Include dotfiles' }
           }
         }
@@ -1859,13 +1964,16 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'write',
         description:
-          'Create a new file or overwrite a file. Always include path (or file_path) and content. Use this for new files or explicit full rewrites only. Example: {path:"src/page.html", content:"..."} . If the file path is not decided yet, do not call write yet. Prefer edit for existing code changes.',
+          'Create a new file or overwrite a file. Always include path and content. Aliases like file, file_path, text, and new_content are accepted. Use this for new files or explicit full rewrites only. Example: {path:"src/page.html", content:"..."} . If the file path is not decided yet, do not call write yet. Prefer edit for existing code changes.',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string', description: 'Required file path like src/app.js or pages/index.html. Never omit this.' },
             file_path: { type: 'string', description: 'Alias for path, compatible with simpler demo-style tool calls' },
+            file: { type: 'string', description: 'Alias for path' },
             content: { type: 'string', description: 'Content to write' },
+            text: { type: 'string', description: 'Alias for content' },
+            new_content: { type: 'string', description: 'Alias for content' },
             append: { type: 'boolean', description: 'Append instead of overwrite' },
             full_file_rewrite: { type: 'boolean', description: 'Set true for whole-file rewrites' }
           },

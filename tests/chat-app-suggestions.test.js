@@ -2,13 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  collapseActivityChainRows,
   ensureCodeGenerationTiming,
   findActivityUpdateIndex,
+  formatMarkdownTableBlock,
   formatSuggestionDescription,
   getCodeGenerationActivityRows,
   getGeneratingCodePlaceholderRows,
   getSuggestionPageState,
   isCodeLikeRow,
+  isMarkdownTableHeader,
+  isMarkdownTableSeparator,
   isIndexSystemToolName,
   insertRowsAfterLastCodeRow,
   mergeActivitySummary,
@@ -116,6 +120,103 @@ test('normalizeActivitySpacingRows trims blank lines before tools and leaves one
   assert.equal(rows[3].text, ' ');
   assert.equal(rows[4].kind, 'text');
   assert.equal(rows[4].text, '现在继续检查 CSS 文件。');
+});
+
+test('collapseActivityChainRows keeps only the latest three tool activities when collapsed', () => {
+  const copy = {
+    generic: {
+      toolChainCollapsed: (count) => `${count} earlier tool calls hidden, press Ctrl+T to expand`
+    }
+  };
+  const rows = [
+    { kind: 'activity', activityType: 'tool', name: 'List(src)', status: 'done' },
+    { kind: 'activity-summary', text: 'first', color: 'gray' },
+    { kind: 'activity', activityType: 'tool', name: 'Glob(src/**/*.ts)', status: 'done' },
+    { kind: 'activity', activityType: 'tool', name: 'Read(src/a.ts)', status: 'done' },
+    { kind: 'activity', activityType: 'tool', name: 'Read(src/b.ts)', status: 'done' },
+    { kind: 'activity-summary', text: 'last b', color: 'gray' },
+    { kind: 'activity', activityType: 'tool', name: 'Edit(src/c.ts)', status: 'done' },
+    { kind: 'text', text: 'done', color: 'greenBright' }
+  ];
+
+  const collapsed = collapseActivityChainRows(rows, false, copy, 3);
+
+  assert.equal(collapsed[0].kind, 'activity-collapsed');
+  assert.match(collapsed[0].text, /2 earlier tool calls hidden/i);
+  assert.equal(collapsed[1].name, 'Read(src/a.ts)');
+  assert.equal(collapsed[2].name, 'Read(src/b.ts)');
+  assert.equal(collapsed[3].kind, 'activity-summary');
+  assert.equal(collapsed[4].name, 'Edit(src/c.ts)');
+  assert.equal(collapsed[5].kind, 'text');
+});
+
+test('collapseActivityChainRows keeps all tool activities when expanded', () => {
+  const rows = [
+    { kind: 'activity', activityType: 'tool', name: 'List(src)', status: 'done' },
+    { kind: 'activity', activityType: 'tool', name: 'Glob(src/**/*.ts)', status: 'done' },
+    { kind: 'activity', activityType: 'tool', name: 'Read(src/a.ts)', status: 'done' },
+    { kind: 'activity', activityType: 'tool', name: 'Edit(src/c.ts)', status: 'done' }
+  ];
+
+  const expanded = collapseActivityChainRows(rows, true, { generic: {} }, 3);
+  assert.deepEqual(expanded, rows);
+});
+
+test('collapseActivityChainRows resets after narrative text and does not collapse across sections', () => {
+  const copy = {
+    generic: {
+      toolChainCollapsed: (count) => `${count} earlier tool calls hidden, press Ctrl+T to expand`
+    }
+  };
+  const rows = [
+    { kind: 'activity', activityType: 'tool', name: 'List(src)', status: 'done' },
+    { kind: 'activity', activityType: 'tool', name: 'Glob(src/**/*.ts)', status: 'done' },
+    { kind: 'activity', activityType: 'tool', name: 'Read(src/a.ts)', status: 'done' },
+    { kind: 'activity', activityType: 'tool', name: 'Read(src/b.ts)', status: 'done' },
+    { kind: 'text', text: '先解释一下为什么要这样查找。', color: 'greenBright' },
+    { kind: 'activity', activityType: 'tool', name: 'Read(src/c.ts)', status: 'done' },
+    { kind: 'activity', activityType: 'tool', name: 'Edit(src/c.ts)', status: 'done' }
+  ];
+
+  const collapsed = collapseActivityChainRows(rows, false, copy, 3);
+
+  assert.equal(collapsed[0].kind, 'activity-collapsed');
+  assert.match(collapsed[0].text, /1 earlier tool calls hidden/i);
+  assert.equal(collapsed[1].name, 'Glob(src/**/*.ts)');
+  assert.equal(collapsed[2].name, 'Read(src/a.ts)');
+  assert.equal(collapsed[3].name, 'Read(src/b.ts)');
+  assert.equal(collapsed[4].kind, 'text');
+  assert.equal(collapsed[5].name, 'Read(src/c.ts)');
+  assert.equal(collapsed[6].name, 'Edit(src/c.ts)');
+});
+
+test('markdown table helpers detect headers and separators', () => {
+  assert.equal(isMarkdownTableHeader('| 维度 | Demo | 差距 |', '| --- | --- | --- |'), true);
+  assert.equal(isMarkdownTableHeader('| only one cell |', '| --- |'), false);
+  assert.equal(isMarkdownTableSeparator('| --- | :---: | ---: |'), true);
+  assert.equal(isMarkdownTableSeparator('| value | value |'), false);
+});
+
+test('formatMarkdownTableBlock renders compact box-style rows', () => {
+  const rows = formatMarkdownTableBlock(
+    [
+      '| 维度 | 当前CLI | Demo |',
+      '| --- | --- | --- |',
+      '| 命令数量 | 5个 | 50+个 |',
+      '| 集成能力 | 无 | GitHub/OAuth/Slack |'
+    ],
+    54
+  );
+
+  assert.equal(rows[0].kind, 'table');
+  assert.equal(rows[0].isHeader, true);
+  assert.match(rows[0].text, /^│ /);
+  assert.equal(rows[1].kind, 'table-separator');
+  assert.match(rows[1].text, /^├/);
+  assert.equal(rows[2].kind, 'table');
+  assert.match(rows[2].text, /命令数量/);
+  assert.equal(rows[3].kind, 'table');
+  assert.match(rows[3].text, /GitHub\/OAuth\/Slack/);
 });
 
 test('isCodeLikeRow classifies tool, code, summary, and status rows together', () => {
