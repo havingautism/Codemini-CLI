@@ -416,6 +416,7 @@ test('builtin tool definitions expose only current primary and structured tools'
     assert.ok(names.includes('grep'));
     assert.ok(names.includes('glob'));
     assert.ok(names.includes('list'));
+    assert.ok(names.includes('query_project_index'));
     assert.ok(names.includes('edit'));
     assert.ok(names.includes('write'));
     assert.ok(names.includes('run'));
@@ -443,12 +444,63 @@ test('builtin tool definitions expose only current primary and structured tools'
     // Handlers for all tools (primary + deferred) are always available
     assert.equal(typeof handlers.replace_block, 'undefined');
     assert.equal(typeof handlers.read, 'function');
+    assert.equal(typeof handlers.query_project_index, 'function');
     assert.equal(typeof handlers.edit, 'function');
     assert.equal(typeof handlers.ast_query, 'function');
     assert.equal(typeof handlers.read_ast_node, 'function');
     assert.equal(typeof handlers.write, 'function');
     assert.equal(typeof handlers.run, 'function');
     assert.equal(typeof handlers.tool_search, 'function');
+  });
+});
+
+test('query_project_index returns project-map overview and file-index matches', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.writeFile(
+      path.join(workspaceRoot, 'package.json'),
+      JSON.stringify(
+        {
+          name: 'demo',
+          version: '1.0.0',
+          dependencies: { react: '^19.0.0' }
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+    await fs.mkdir(path.join(workspaceRoot, 'src', 'auth'), { recursive: true });
+    await fs.mkdir(path.join(workspaceRoot, 'tests'), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'auth', 'service.ts'),
+      [
+        'export async function loginUser(name) {',
+        '  return name.trim().toLowerCase();',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'main.ts'),
+      ["export * from './auth/service';"].join('\n'),
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, 'tests', 'auth.test.ts'),
+      ["import { loginUser } from '../src/auth/service';", "test('loginUser', () => {});"].join('\n'),
+      'utf8'
+    );
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const result = await handlers.query_project_index({ query: 'login auth', max_results: 3 });
+
+    assert.equal(result.query, 'login auth');
+    assert.equal(result.project_map.languages.includes('ts'), true);
+    assert.equal(result.project_map.framework_hints.includes('react'), true);
+    assert.equal(result.project_map.source_roots.includes('src'), true);
+    assert.ok(Array.isArray(result.matches));
+    assert.ok(result.matches.some((item) => item.file === 'src/auth/service.ts'));
+    assert.ok(result.matches.some((item) => Array.isArray(item.functions) && item.functions.includes('loginUser')));
   });
 });
 
@@ -747,6 +799,355 @@ test('agent loop replaces empty tool results with a short completion marker', as
     const toolMessage = result.messages.find((msg) => msg.role === 'tool' && msg.tool_call_id === 'call_quiet');
     assert.ok(toolMessage);
     assert.match(String(toolMessage.content), /\(quiet completed with no output\)/i);
+  });
+});
+
+test('agent loop retries when the model returns an empty post-tool response', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const config = await loadConfig();
+    const { definitions, formatters, deferredDefinitions } = getBuiltinTools({ workspaceRoot, config });
+
+    const responses = [
+      {
+        text: '',
+        toolCalls: [
+          {
+            id: 'call_quiet',
+            name: 'quiet',
+            arguments: '{}'
+          }
+        ]
+      },
+      {
+        text: '',
+        toolCalls: [],
+        incomplete: true
+      },
+      {
+        text: 'final summary',
+        toolCalls: []
+      }
+    ];
+
+    const result = await runAgentLoop({
+      systemPrompt: 'You are a test agent.',
+      userPrompt: 'run a quiet command',
+      model: 'test-model',
+      maxSteps: 4,
+      toolDefinitions: definitions,
+      toolHandlers: {
+        quiet: async () => ''
+      },
+      toolFormatters: formatters,
+      deferredDefinitions,
+      requestCompletion: async () => responses.shift() || { text: 'done', toolCalls: [] }
+    });
+
+    const assistantMessages = result.messages.filter((msg) => msg.role === 'assistant');
+    assert.equal(result.text, 'final summary');
+    assert.equal(assistantMessages.length, 2);
+    assert.equal(assistantMessages.at(-1)?.content, 'final summary');
+  });
+});
+
+test('agent loop asks for a summary again when post-tool answer is only whitespace', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const config = await loadConfig();
+    const { definitions, formatters, deferredDefinitions } = getBuiltinTools({ workspaceRoot, config });
+
+    const calls = [];
+    const responses = [
+      {
+        text: '',
+        toolCalls: [
+          {
+            id: 'call_quiet',
+            name: 'quiet',
+            arguments: '{}'
+          }
+        ]
+      },
+      {
+        text: '   \n',
+        toolCalls: []
+      },
+      {
+        text: 'Summary: inspected the tool output and found no issues.',
+        toolCalls: []
+      }
+    ];
+
+    const result = await runAgentLoop({
+      systemPrompt: 'You are a test agent.',
+      userPrompt: 'inspect and summarize',
+      model: 'test-model',
+      maxSteps: 4,
+      toolDefinitions: definitions,
+      toolHandlers: {
+        quiet: async () => ''
+      },
+      toolFormatters: formatters,
+      deferredDefinitions,
+      requestCompletion: async ({ messages }) => {
+        calls.push(messages.at(-1));
+        return responses.shift() || { text: 'done', toolCalls: [] };
+      }
+    });
+
+    assert.equal(result.text, 'Summary: inspected the tool output and found no issues.');
+    assert.equal(calls.length, 3);
+    assert.equal(calls[2]?.role, 'user');
+    assert.match(String(calls[2]?.content || ''), /provide a concise final answer/i);
+  });
+});
+
+test('agent loop asks for a more concrete summary after generic completion text', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const config = await loadConfig();
+    const { definitions, formatters, deferredDefinitions } = getBuiltinTools({ workspaceRoot, config });
+
+    const calls = [];
+    const responses = [
+      {
+        text: '',
+        toolCalls: [
+          {
+            id: 'call_quiet',
+            name: 'quiet',
+            arguments: '{}'
+          }
+        ]
+      },
+      {
+        text: '已完成任务',
+        toolCalls: []
+      },
+      {
+        text: '发现两个优化点：减少重复读取，并在分析结束后补充明确结论。',
+        toolCalls: []
+      }
+    ];
+
+    const result = await runAgentLoop({
+      systemPrompt: 'You are a test agent.',
+      userPrompt: 'inspect and summarize',
+      model: 'test-model',
+      maxSteps: 4,
+      toolDefinitions: definitions,
+      toolHandlers: {
+        quiet: async () => ''
+      },
+      toolFormatters: formatters,
+      deferredDefinitions,
+      requestCompletion: async ({ messages }) => {
+        calls.push(messages.at(-1));
+        return responses.shift() || { text: 'done', toolCalls: [] };
+      }
+    });
+
+    assert.equal(result.text, '发现两个优化点：减少重复读取，并在分析结束后补充明确结论。');
+    assert.equal(calls[2]?.role, 'user');
+    assert.match(String(calls[2]?.content || ''), /specific findings|concrete findings|final answer/i);
+  });
+});
+
+test('agent loop enforces query_project_index first for broad repo analysis tasks', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const config = await loadConfig();
+    const { definitions, formatters, deferredDefinitions } = getBuiltinTools({ workspaceRoot, config });
+
+    let stage = 0;
+
+    const result = await runAgentLoop({
+      systemPrompt: 'You are a test agent.',
+      userPrompt: '现在我的项目有什么可优化的地方',
+      model: 'test-model',
+      maxSteps: 6,
+      toolDefinitions: definitions,
+      toolHandlers: {
+        glob: async () => ({ pattern: 'tests/*command*.test.js', matches: ['tests/command-loader.test.js'] }),
+        query_project_index: async () => ({
+          query: '项目优化 project optimize',
+          project_root: workspaceRoot,
+          project_map: {
+            languages: ['js'],
+            source_roots: ['src'],
+            test_roots: ['tests'],
+            entry_candidates: ['src/index.js'],
+            framework_hints: []
+          },
+          matches: [
+            { file: 'src/core/agent-loop.js', score: 9, exports: [], functions: ['runAgentLoop'], classes: [] },
+            { file: 'src/core/tools.js', score: 8, exports: [], functions: ['getBuiltinTools'], classes: [] }
+          ]
+        }),
+        read: async (args) => ({
+          phase: 'content',
+          path: String(args.path || '').split(':')[0],
+          start_line: 1,
+          end_line: 40,
+          total_lines: 40,
+          content: 'export function demo() {}\n'
+        })
+      },
+      toolFormatters: formatters,
+      deferredDefinitions,
+      requestCompletion: async ({ messages }) => {
+        const last = messages.at(-1);
+        if (last?.role === 'tool' && String(last.content || '').includes('query_project_index before broad repository exploration')) {
+          stage = 2;
+          return {
+            text: '',
+            toolCalls: [
+              {
+                id: 'call_index',
+                name: 'query_project_index',
+                arguments: JSON.stringify({ query: '项目优化 project optimize', path: 'src', max_results: 3 })
+              }
+            ]
+          };
+        }
+        stage += 1;
+        if (stage === 1) {
+          return {
+            text: '',
+            toolCalls: [
+              {
+                id: 'call_glob_first',
+                name: 'glob',
+                arguments: JSON.stringify({ pattern: 'tests/*command*.test.js' })
+              }
+            ]
+          };
+        }
+        if (stage === 3) {
+          return {
+            text: '',
+            toolCalls: [
+              {
+                id: 'call_read_src',
+                name: 'read',
+                arguments: JSON.stringify({ path: 'src/core/agent-loop.js:1-40' })
+              },
+              {
+                id: 'call_read_src_2',
+                name: 'read',
+                arguments: JSON.stringify({ path: 'src/core/tools.js:1-40' })
+              }
+            ]
+          };
+        }
+        if (stage === 4) {
+          return {
+            text: '发现两个可优化点：先查索引再读源码，并减少泛目录探索。',
+            toolCalls: []
+          };
+        }
+        return { text: 'done', toolCalls: [] };
+      }
+    });
+
+    const blockedToolMessage = result.messages.find((msg) => msg.role === 'tool' && msg.tool_call_id === 'call_glob_first');
+    assert.ok(blockedToolMessage);
+    assert.match(String(blockedToolMessage.content), /query_project_index before broad repository exploration/i);
+    assert.equal(result.text, '发现两个可优化点：先查索引再读源码，并减少泛目录探索。');
+  });
+});
+
+test('agent loop rejects premature completion when broad analysis skipped relevant source files', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const config = await loadConfig();
+    const { definitions, formatters, deferredDefinitions } = getBuiltinTools({ workspaceRoot, config });
+
+    const prompts = [];
+    const responses = [
+      {
+        text: '',
+        toolCalls: [
+          {
+            id: 'call_index',
+            name: 'query_project_index',
+            arguments: JSON.stringify({ query: '项目优化', path: 'src', max_results: 3 })
+          }
+        ]
+      },
+      {
+        text: '',
+        toolCalls: [
+          {
+            id: 'call_read_test',
+            name: 'read',
+            arguments: JSON.stringify({ path: 'tests/config-store.test.js:1-40' })
+          }
+        ]
+      },
+      {
+        text: '已完成任务',
+        toolCalls: []
+      },
+      {
+        text: '',
+        toolCalls: [
+          {
+            id: 'call_read_src_a',
+            name: 'read',
+            arguments: JSON.stringify({ path: 'src/core/agent-loop.js:1-40' })
+          },
+          {
+            id: 'call_read_src_b',
+            name: 'read',
+            arguments: JSON.stringify({ path: 'src/core/tools.js:1-40' })
+          }
+        ]
+      },
+      {
+        text: '可以先优化两点：限制无关目录探索，并把项目索引作为宽泛分析的第一入口。',
+        toolCalls: []
+      }
+    ];
+
+    const result = await runAgentLoop({
+      systemPrompt: 'You are a test agent.',
+      userPrompt: '帮我分析这个项目有什么可优化的地方',
+      model: 'test-model',
+      maxSteps: 7,
+      toolDefinitions: definitions,
+      toolHandlers: {
+        query_project_index: async () => ({
+          query: '项目优化',
+          project_root: workspaceRoot,
+          project_map: {
+            languages: ['js'],
+            source_roots: ['src'],
+            test_roots: ['tests'],
+            entry_candidates: ['src/index.js'],
+            framework_hints: []
+          },
+          matches: [
+            { file: 'src/core/agent-loop.js', score: 9, exports: [], functions: ['runAgentLoop'], classes: [] },
+            { file: 'src/core/tools.js', score: 8, exports: [], functions: ['getBuiltinTools'], classes: [] }
+          ]
+        }),
+        read: async (args) => ({
+          phase: 'content',
+          path: String(args.path || '').split(':')[0],
+          start_line: 1,
+          end_line: 40,
+          total_lines: 40,
+          content: 'export function demo() {}\n'
+        })
+      },
+      toolFormatters: formatters,
+      deferredDefinitions,
+      requestCompletion: async ({ messages }) => {
+        const last = messages.at(-1);
+        if (last?.role === 'user') prompts.push(String(last.content || ''));
+        return responses.shift() || { text: 'done', toolCalls: [] };
+      }
+    });
+
+    assert.equal(result.text, '可以先优化两点：限制无关目录探索，并把项目索引作为宽泛分析的第一入口。');
+    assert.ok(prompts.some((text) => /inspect the next relevant source files|relevant source files/i.test(text)));
   });
 });
 

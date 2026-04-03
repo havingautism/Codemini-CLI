@@ -915,6 +915,85 @@ test('chat runtime project index respects .gitignore for source files', { concur
   });
 });
 
+test('chat runtime project index skips default noise directories like sessions', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-runtime-default-ignore-'));
+    const previousCwd = process.cwd();
+
+    try {
+      process.chdir(cwd);
+      await fs.writeFile(path.join(cwd, 'package.json'), JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2));
+      await fs.mkdir(path.join(cwd, 'src'), { recursive: true });
+      await fs.mkdir(path.join(cwd, 'sessions'), { recursive: true });
+      await fs.writeFile(path.join(cwd, 'src', 'main.ts'), 'export const visible = true;\n', 'utf8');
+      await fs.writeFile(path.join(cwd, 'sessions', 'chat.ts'), 'export const noisy = true;\n', 'utf8');
+
+      const config = await loadConfig();
+      const now = new Date().toISOString();
+      await createChatRuntime({
+        session: {
+          id: 'session-default-ignore',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const fileIndex = JSON.parse(await fs.readFile(path.join(cwd, '.codemini-project', 'file-index.json'), 'utf8'));
+
+      assert.ok(fileIndex.files.some((entry) => entry.file === 'src/main.ts'));
+      assert.ok(!fileIndex.files.some((entry) => entry.file === 'sessions/chat.ts'));
+    } finally {
+      process.chdir(previousCwd);
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('chat runtime project index respects .llmignore for source files', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-runtime-llmignore-'));
+    const previousCwd = process.cwd();
+
+    try {
+      process.chdir(cwd);
+      await fs.writeFile(path.join(cwd, 'package.json'), JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2));
+      await fs.writeFile(path.join(cwd, '.llmignore'), ['artifacts/', 'src/generated.ts'].join('\n'), 'utf8');
+      await fs.mkdir(path.join(cwd, 'src'), { recursive: true });
+      await fs.mkdir(path.join(cwd, 'artifacts'), { recursive: true });
+      await fs.writeFile(path.join(cwd, 'src', 'main.ts'), 'export const visible = true;\n', 'utf8');
+      await fs.writeFile(path.join(cwd, 'src', 'generated.ts'), 'export const hidden = true;\n', 'utf8');
+      await fs.writeFile(path.join(cwd, 'artifacts', 'report.ts'), 'export const artifact = true;\n', 'utf8');
+
+      const config = await loadConfig();
+      const now = new Date().toISOString();
+      await createChatRuntime({
+        session: {
+          id: 'session-llmignore',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const projectMap = JSON.parse(await fs.readFile(path.join(cwd, '.codemini-project', 'project-map.json'), 'utf8'));
+      const fileIndex = JSON.parse(await fs.readFile(path.join(cwd, '.codemini-project', 'file-index.json'), 'utf8'));
+
+      assert.equal(projectMap.gitignoreEnabled, false);
+      assert.ok(fileIndex.files.some((entry) => entry.file === 'src/main.ts'));
+      assert.ok(!fileIndex.files.some((entry) => entry.file === 'src/generated.ts'));
+      assert.ok(!fileIndex.files.some((entry) => entry.file === 'artifacts/report.ts'));
+    } finally {
+      process.chdir(previousCwd);
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
 test('plan auto uses a lightweight execution chain for simple goals', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let callIndex = 0;

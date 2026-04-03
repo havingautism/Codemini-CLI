@@ -14,7 +14,7 @@ import {
 } from './shell.js';
 import { evaluateCommandPolicy } from './command-policy.js';
 import { queryAst, readAstNode, resolveAstTarget } from './ast.js';
-import { initializeProjectIndex, refreshIndexedFile } from './project-index.js';
+import { initializeProjectIndex, queryProjectIndex, refreshIndexedFile } from './project-index.js';
 import { checkReadDedup } from './agent-loop.js';
 
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.codemini', '.codemini-global', 'dist', 'coverage']);
@@ -1931,6 +1931,24 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     {
       type: 'function',
       function: {
+        name: 'query_project_index',
+        description:
+          'Query the lightweight project index before broad file reads. Uses both project-map metadata and file-index symbols to suggest the most relevant files for the current task.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Task or code search phrase such as "login auth" or "tui presenters"' },
+            path: { type: 'string', description: 'Optional path prefix like src or src/auth to narrow results' },
+            path_prefix: { type: 'string', description: 'Alias for path' },
+            language: { type: 'string', description: 'Optional language filter such as ts, js, python, or go' },
+            max_results: { type: 'number', description: 'Max result files to return' }
+          }
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'edit',
         description:
           'Edit existing files. Prefer one of these shapes: 1) {file, old_text, new_text} for exact text replacement, 2) {file, symbol, edit:{kind:"replace_block", new_content:"..."}} for block replacement, 3) {file, anchor_text, position:"before"|"after", content:"..."} for inserts. Demo-style aliases {file_path, old_string, new_string} are also accepted. Read first unless the exact target is already known. Prefer this over write for existing code changes.',
@@ -2182,6 +2200,10 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         if (readPath) lastReadPath = readPath;
         return result;
       }),
+    query_project_index: async (args) => {
+      await ensureProjectIndex();
+      return queryProjectIndex(workspaceRoot, args);
+    },
     grep: (args) => grep(workspaceRoot, args),
     glob: (args) => glob(workspaceRoot, args),
     list: (args) => list(workspaceRoot, args),
@@ -2309,6 +2331,33 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       const dirs = result.items.filter((i) => i.type === 'dir').map((i) => `${i.name}/`);
       const files = result.items.filter((i) => i.type === 'file').map((i) => i.name);
       return `${header}\n${dirs.join('\n')}${dirs.length && files.length ? '\n' : ''}${files.join('\n')}`;
+    },
+
+    query_project_index(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      const lines = [];
+      if (result.query) lines.push(`[project_index: "${result.query}"]`);
+      if (result.project_root) lines.push(`project_root: ${result.project_root}`);
+      const projectMap = result.project_map;
+      if (projectMap) {
+        lines.push(`languages: ${(projectMap.languages || []).join(', ') || 'unknown'}`);
+        lines.push(`source_roots: ${(projectMap.source_roots || []).join(', ') || 'none'}`);
+        lines.push(`test_roots: ${(projectMap.test_roots || []).join(', ') || 'none'}`);
+        lines.push(`entry_candidates: ${(projectMap.entry_candidates || []).join(', ') || 'none'}`);
+        lines.push(`framework_hints: ${(projectMap.framework_hints || []).join(', ') || 'none'}`);
+      }
+      const matches = Array.isArray(result.matches) ? result.matches : [];
+      if (matches.length === 0) {
+        lines.push('No indexed file matches found.');
+        return lines.join('\n');
+      }
+      lines.push('matches:');
+      for (const item of matches) {
+        lines.push(
+          `- ${item.file} [score=${item.score}] exports=[${(item.exports || []).join(', ')}] functions=[${(item.functions || []).join(', ')}] classes=[${(item.classes || []).join(', ')}]`
+        );
+      }
+      return lines.join('\n');
     },
 
     edit(result) {

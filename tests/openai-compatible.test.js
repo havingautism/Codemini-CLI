@@ -245,6 +245,36 @@ test('createChatCompletionStream normalizes object-shaped streamed tool argument
   }
 });
 
+test('createChatCompletionStream marks empty post-tool responses as incomplete instead of final', async () => {
+  const restoreFetch = withMockFetch(async (_url, _init) => {
+    return makeSseResponse([
+      {
+        choices: [{ delta: {}, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 }
+      }
+    ]);
+  });
+
+  try {
+    const result = await createChatCompletionStream({
+      baseUrl: 'https://gateway.example/v1',
+      apiKey: 'test-key',
+      model: 'gpt-4.1-mini',
+      messages: [
+        { role: 'assistant', content: '', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read', arguments: '{}' } }] },
+        { role: 'tool', tool_call_id: 'call_1', content: 'file contents' }
+      ]
+    });
+
+    assert.equal(result.text, '');
+    assert.deepEqual(result.toolCalls, []);
+    assert.equal(result.incomplete, true);
+    assert.deepEqual(result.usage, { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 });
+  } finally {
+    await restoreFetch();
+  }
+});
+
 test('createChatCompletion does not send MiniMax-only extra_body for other providers', async () => {
   const restoreFetch = withMockFetch(async (_url, init) => {
     const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
@@ -403,7 +433,42 @@ test('createChatCompletionStream tolerates an empty post-tool assistant turn', a
 
     assert.equal(result.text, '');
     assert.deepEqual(result.toolCalls, []);
+    assert.equal(result.incomplete, true);
     assert.deepEqual(result.usage, { prompt_tokens: 5, completion_tokens: 0, total_tokens: 5 });
+  } finally {
+    await restoreFetch();
+  }
+});
+
+test('createChatCompletionStream marks whitespace-only post-tool responses as incomplete', async () => {
+  const restoreFetch = withMockFetch(async (_url, _init) => {
+    return makeSseResponse([
+      {
+        choices: [
+          {
+            delta: { content: '   \n\n' },
+            finish_reason: 'stop'
+          }
+        ],
+        usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 }
+      }
+    ]);
+  });
+
+  try {
+    const result = await createChatCompletionStream({
+      baseUrl: 'https://gateway.example/v1',
+      apiKey: 'test-key',
+      model: 'gpt-4.1-mini',
+      messages: [
+        { role: 'assistant', content: '', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read', arguments: '{}' } }] },
+        { role: 'tool', tool_call_id: 'call_1', content: 'file contents' }
+      ]
+    });
+
+    assert.equal(result.text, '');
+    assert.deepEqual(result.toolCalls, []);
+    assert.equal(result.incomplete, true);
   } finally {
     await restoreFetch();
   }

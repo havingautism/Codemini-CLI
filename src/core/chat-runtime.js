@@ -1518,7 +1518,7 @@ async function askModel({
 
   const projectContextSnippet = await buildProjectContextSnippet(process.cwd(), text).catch(() => '');
   const effectiveSystemPrompt = projectContextSnippet
-    ? `${systemPrompt}\n\n${projectContextSnippet}\n\nUse this project context as lightweight guidance. Prefer tools for fresh verification before assuming details.`
+    ? `${systemPrompt}\n\n${projectContextSnippet}\n\nUse this project context as lightweight guidance. Query the project index before broad globs or reading many files, then use targeted reads for fresh verification.`
     : systemPrompt;
 
   const { definitions, handlers, formatters, deferredDefinitions } = getBuiltinTools({
@@ -1586,8 +1586,15 @@ async function askModel({
     toolFormatters: formatters,
     deferredDefinitions,
     requestCompletion: async ({ messages, tools, model: selectedModel }) => {
-      if (onAgentEvent) onAgentEvent({ type: 'assistant:start' });
-      return createChatCompletionStream({
+      let started = false;
+      const startAssistantStream = () => {
+        if (!started && onAgentEvent) {
+          started = true;
+          onAgentEvent({ type: 'assistant:start' });
+        }
+      };
+
+      const result = await createChatCompletionStream({
         baseUrl: config.gateway.base_url,
         apiKey: config.gateway.api_key,
         model: selectedModel,
@@ -1596,12 +1603,20 @@ async function askModel({
         timeoutMs: config.gateway.timeout_ms || 90000,
         maxRetries: config.gateway.max_retries ?? 2,
         onTextDelta: (delta) => {
+          startAssistantStream();
           if (onAgentEvent) onAgentEvent({ type: 'assistant:delta', text: delta });
         },
         onToolCallDelta: (toolCall) => {
+          startAssistantStream();
           if (onAgentEvent) onAgentEvent({ type: 'assistant:tool_call_delta', toolCall });
         }
       });
+
+      if (!started && !result?.incomplete && (result?.text || result?.toolCalls?.length)) {
+        startAssistantStream();
+      }
+
+      return result;
     }
   });
 

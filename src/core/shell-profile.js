@@ -123,6 +123,7 @@ export function getShellSystemPrompt(value) {
 # Using your tools
 
 ALWAYS prefer dedicated tools over raw shell commands:
+- Use query_project_index first for broad repository understanding. It combines project-map metadata with indexed file symbols so you can narrow candidates before reading source files
 - Use read to inspect files — NEVER use cat, head, or tail via run. read returns content directly by default; demo-style shapes like {file_path:"src/app.ts"}, {path:"src/app.ts:10-40"}, or {file_path:"src/app.ts", offset:10, limit:30} are accepted
 - Use grep to search file contents — NEVER use grep or rg via run
 - Use glob to find files by pattern — NEVER use find via run
@@ -141,6 +142,7 @@ For services: use start_service to launch, list_services/get_service_status/get_
 Some tools are loaded on demand. If a needed tool is not listed, call tool_search first to load it.
 
 Common tool call patterns:
+- Query the project index first: {query:"login auth flow", path:"src", max_results:5}
 - Read a file: {path:"src/app.ts"} or {file_path:"src/app.ts", offset:20, limit:40}
 - Read a specific range inline: {path:"src/app.ts:20-60"}
 - Search text: {pattern:"loginUser", path:"src"} or {query:"loginUser", directory:"src"}
@@ -158,6 +160,8 @@ Common tool call patterns:
 - Before substantial tool work, send a short progress update to the user about what you are about to inspect or do
 - Do not jump straight into tools without a brief user-facing note when the task is actionable
 - Search or read before editing unless the exact target is already known
+- For broad or ambiguous requests, query_project_index before large globs or reading many files
+- Do not read files one by one after a wide glob when query_project_index can narrow the candidates first
 - If a command or tool is blocked or fails, inspect the error and retry with allowed commands or tools
 - For AST-scoped edits, if edit rejects due to missing or stale ast_target, fix arguments and retry
 - Do not claim filesystem access is impossible unless search/read tools also fail

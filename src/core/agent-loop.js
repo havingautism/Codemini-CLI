@@ -406,6 +406,161 @@ export function trimInline(value, maxLen = 72) {
   return `${s.slice(0, maxLen - 3)}...`;
 }
 
+function normalizeAssistantText(value) {
+  return String(value || '').trim();
+}
+
+function hasTrailingToolContext(messages = []) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message || typeof message !== 'object') continue;
+    if (message.role === 'tool') return true;
+    if (message.role === 'assistant' || message.role === 'user') return false;
+  }
+  return false;
+}
+
+function isGenericCompletionText(text) {
+  const normalized = normalizeAssistantText(text).toLowerCase();
+  if (!normalized) return false;
+  const genericPhrases = new Set([
+    'done',
+    'completed',
+    'complete',
+    'finished',
+    'task completed',
+    'all done',
+    'ok',
+    'okay',
+    '已完成',
+    '已完成任务',
+    '完成',
+    '任务完成'
+  ]);
+  return genericPhrases.has(normalized);
+}
+
+function shouldAskForConcreteFinalAnswer(text, messages = []) {
+  if (!hasTrailingToolContext(messages)) return false;
+  const normalized = normalizeAssistantText(text);
+  if (!normalized) return true;
+  return isGenericCompletionText(normalized);
+}
+
+function isBroadRepositoryAnalysisTask(text) {
+  const normalized = String(text || '').trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    /optimi|improve|analy[sz]e|audit|review|overview|architecture|codebase|repository|repo/.test(normalized) ||
+    /项目.*优化|项目.*问题|可优化|分析这个项目|看看.*项目|代码库|仓库/.test(String(text || ''))
+  );
+}
+
+function parseProjectIndexSummary(text) {
+  const sourceRoots = [];
+  const entryCandidates = [];
+  const candidateFiles = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('source_roots:')) {
+      sourceRoots.push(
+        ...String(trimmed.slice('source_roots:'.length))
+          .split(',')
+          .map((value) => value.trim())
+          .filter(Boolean)
+      );
+    } else if (trimmed.startsWith('entry_candidates:')) {
+      entryCandidates.push(
+        ...String(trimmed.slice('entry_candidates:'.length))
+          .split(',')
+          .map((value) => value.trim())
+          .filter(Boolean)
+      );
+    } else if (trimmed.startsWith('- ')) {
+      const match = trimmed.match(/^- ([^ ]+)/);
+      if (match?.[1]) candidateFiles.push(match[1].trim());
+    }
+  }
+  return { sourceRoots, entryCandidates, candidateFiles };
+}
+
+function createAnalysisGuardState(userPrompt) {
+  return {
+    active: isBroadRepositoryAnalysisTask(userPrompt),
+    indexQueried: false,
+    sourceRoots: new Set(),
+    entryCandidates: new Set(),
+    candidateFiles: new Set(),
+    relevantSourceReads: new Set(),
+    blockedExplorations: 0
+  };
+}
+
+function topLevelPath(value) {
+  const normalized = String(value || '').replace(/\\/g, '/').replace(/^\.\/+/, '').trim();
+  return normalized.split('/')[0] || '';
+}
+
+function isRelevantSourcePath(filePath, state) {
+  const normalized = String(filePath || '').replace(/\\/g, '/').trim();
+  if (!normalized) return false;
+  if (state.candidateFiles.has(normalized) || state.entryCandidates.has(normalized)) return true;
+  for (const root of state.sourceRoots) {
+    if (normalized === root || normalized.startsWith(`${root}/`)) return true;
+  }
+  return false;
+}
+
+function blockedExplorationReason(toolName, args, state) {
+  if (!state.active) return '';
+  if (!state.indexQueried && toolName !== 'query_project_index') {
+    return 'Use query_project_index before broad repository exploration so the next reads stay focused on relevant source files.';
+  }
+
+  const target = String(args?.path || args?.pattern || args?.query || '').replace(/\\/g, '/').trim();
+  const top = topLevelPath(target);
+  if (!top) return '';
+
+  if (['skills', 'souls', 'templates', '.codemini', '.codemini-project'].includes(top)) {
+    return `Skip ${top}/ for broad repository analysis unless the user explicitly asks for it. Inspect relevant source files first.`;
+  }
+  if (top === 'tests' && state.relevantSourceReads.size < 2) {
+    return 'Inspect the next relevant source files before reading tests. Broad analysis should be grounded in production code first.';
+  }
+  return '';
+}
+
+function noteAnalysisEvidence(state, toolName, args, toolResult) {
+  if (!state.active) return;
+  if (toolName === 'query_project_index') {
+    state.indexQueried = true;
+    const summary = parseProjectIndexSummary(JSON.stringify(toolResult));
+    for (const root of summary.sourceRoots) state.sourceRoots.add(root);
+    for (const entry of summary.entryCandidates) state.entryCandidates.add(entry);
+    for (const file of summary.candidateFiles) state.candidateFiles.add(file);
+    const projectMap = toolResult?.project_map || {};
+    for (const root of projectMap.source_roots || []) state.sourceRoots.add(String(root));
+    for (const entry of projectMap.entry_candidates || []) state.entryCandidates.add(String(entry));
+    for (const match of toolResult?.matches || []) {
+      if (match?.file) state.candidateFiles.add(String(match.file));
+    }
+    return;
+  }
+
+  if (toolName === 'read') {
+    const filePath = String(toolResult?.path || args?.path || '').split(':')[0];
+    if (isRelevantSourcePath(filePath, state)) {
+      state.relevantSourceReads.add(filePath);
+    }
+  }
+}
+
+function needsMoreAnalysisEvidence(state) {
+  if (!state.active) return false;
+  if (!state.indexQueried) return true;
+  return state.relevantSourceReads.size < 2;
+}
+
 function normalizeToolCallName(name) {
   return String(name || '').trim();
 }
@@ -509,6 +664,8 @@ export async function runAgentLoop({
 
   let finalText = '';
   let lastAssistantText = '';
+  let pendingSummaryNudges = 0;
+  const analysisGuard = createAnalysisGuardState(userPrompt);
   const alwaysAllowSet = new Set((Array.isArray(alwaysAllowTools) ? alwaysAllowTools : []).map((t) => String(t)));
 
   // Mutable tool list — grows as tool_search loads deferred tools
@@ -521,6 +678,10 @@ export async function runAgentLoop({
       messages,
       tools: activeTools
     });
+
+    if (completion?.incomplete) {
+      continue;
+    }
 
     const toolCalls = Array.isArray(completion.toolCalls) ? completion.toolCalls : [];
     const assistantText = completion.text || '';
@@ -546,9 +707,29 @@ export async function runAgentLoop({
     }
 
     if (toolCalls.length === 0) {
+      if (needsMoreAnalysisEvidence(analysisGuard) && pendingSummaryNudges < 2) {
+        pendingSummaryNudges += 1;
+        messages.push({
+          role: 'user',
+          content:
+            'You have not inspected enough relevant source files yet. Query the project index if needed, then inspect the next relevant source files before concluding. Do not stop after unrelated directories, tests, skills, souls, or templates.'
+        });
+        continue;
+      }
+      if (shouldAskForConcreteFinalAnswer(assistantText, messages.slice(0, -1)) && pendingSummaryNudges < 2) {
+        pendingSummaryNudges += 1;
+        messages.push({
+          role: 'user',
+          content:
+            'You have already inspected tool results. Before stopping, check whether the task is actually complete. If it is, provide a concise final answer with specific findings or concrete next steps. If it is not, continue with the next tool call.'
+        });
+        continue;
+      }
       finalText = assistantText;
       return { text: finalText, messages, steps: step + 1 };
     }
+
+    pendingSummaryNudges = 0;
 
     if (executionMode === 'plan') {
       const plannedLines = callsToPlanSummary(toolCalls);
@@ -615,6 +796,20 @@ export async function runAgentLoop({
         throw new Error(`Unknown tool: ${call.name}`);
       }
 
+      const blockedReason = blockedExplorationReason(toolName, args, analysisGuard);
+      if (blockedReason) {
+        analysisGuard.blockedExplorations += 1;
+        const content = clipToolResult({ error: blockedReason }, toolResultMaxChars);
+        if (onEvent) {
+          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: args, durationMs: 0, summary: trimInline(blockedReason, 120) });
+        }
+        return {
+          callId: call.id,
+          content,
+          error: true
+        };
+      }
+
       let toolResult;
       try {
         toolResult = await handler(args);
@@ -638,6 +833,7 @@ export async function runAgentLoop({
 
       // P1b: Use per-tool formatter if available, else fallback
       let formatted = formatToolResult(toolResult, toolName, args, toolFormatters, toolResultMaxChars);
+      noteAnalysisEvidence(analysisGuard, toolName, args, toolResult);
 
       // P2: If tool_search loaded deferred tools, inject their schemas into activeTools
       if (toolName === 'tool_search' && toolResult && Array.isArray(toolResult.schemas)) {

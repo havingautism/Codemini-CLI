@@ -3,7 +3,25 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { getFileIndexPath, getProjectIndexDir, getProjectMapPath, getProjectWorkspaceDir } from './paths.js';
 
-const SKIP_DIRS = new Set(['.git', 'node_modules', '.codemini', '.codemini-project', '.codemini-global', 'dist', 'coverage']);
+const SKIP_DIRS = new Set([
+  '.git',
+  'node_modules',
+  '.codemini',
+  '.codemini-project',
+  '.codemini-global',
+  'dist',
+  'coverage',
+  'sessions',
+  'tmp',
+  'temp',
+  '.cache',
+  '.turbo',
+  '.next',
+  'build',
+  'out',
+  'logs',
+  'artifacts'
+]);
 const PROJECT_MARKER_FILES = new Set([
   'package.json',
   'tsconfig.json',
@@ -115,9 +133,9 @@ function gitignorePatternToRegex(pattern) {
   return new RegExp(`^${regexBody}$`);
 }
 
-async function readGitignoreRules(cwd) {
+async function readIgnoreFileRules(cwd, fileName) {
   try {
-    const raw = await fs.readFile(path.join(cwd, '.gitignore'), 'utf8');
+    const raw = await fs.readFile(path.join(cwd, fileName), 'utf8');
     return raw
       .split(/\r?\n/)
       .map((line) => line.trim())
@@ -141,6 +159,18 @@ async function readGitignoreRules(cwd) {
   } catch {
     return [];
   }
+}
+
+async function readProjectIgnoreRules(cwd) {
+  const [gitignoreRules, llmignoreRules] = await Promise.all([
+    readIgnoreFileRules(cwd, '.gitignore'),
+    readIgnoreFileRules(cwd, '.llmignore')
+  ]);
+  return {
+    gitignoreRules,
+    llmignoreRules,
+    combinedRules: [...gitignoreRules, ...llmignoreRules]
+  };
 }
 
 function matchesGitignoreRule(rule, relativePath, isDirectory) {
@@ -212,17 +242,17 @@ async function findNearestIndexedProjectRoot(startDir, workspaceRoot) {
   return null;
 }
 
-async function walkFiles(cwd, start = cwd, out = [], gitignoreRules = []) {
+async function walkFiles(cwd, start = cwd, out = [], ignoreRules = []) {
   const entries = await fs.readdir(start, { withFileTypes: true });
   for (const entry of entries) {
     const absolutePath = path.join(start, entry.name);
     const relativePath = rel(cwd, absolutePath);
     if (entry.isDirectory()) {
-      if (shouldIgnorePath(relativePath, true, gitignoreRules)) continue;
-      await walkFiles(cwd, absolutePath, out, gitignoreRules);
+      if (shouldIgnorePath(relativePath, true, ignoreRules)) continue;
+      await walkFiles(cwd, absolutePath, out, ignoreRules);
       continue;
     }
-    if (shouldIgnorePath(relativePath, false, gitignoreRules)) continue;
+    if (shouldIgnorePath(relativePath, false, ignoreRules)) continue;
     out.push(absolutePath);
   }
   return out;
@@ -298,12 +328,12 @@ async function scanProject(cwd) {
       workspaceKind,
       projectMap: null,
       fileIndex: null,
-      gitignoreRules: []
+      ignoreRules: []
     };
   }
 
-  const gitignoreRules = await readGitignoreRules(cwd);
-  const allFiles = await walkFiles(cwd, cwd, [], gitignoreRules);
+  const { gitignoreRules, llmignoreRules, combinedRules } = await readProjectIgnoreRules(cwd);
+  const allFiles = await walkFiles(cwd, cwd, [], combinedRules);
   const relativeFiles = allFiles.map((filePath) => rel(cwd, filePath));
   const sourceFiles = allFiles.filter((filePath) => SOURCE_EXTENSIONS.has(path.extname(filePath).toLowerCase()));
 
@@ -362,13 +392,14 @@ async function scanProject(cwd) {
       frameworkHints,
       directories,
       gitignoreEnabled: gitignoreRules.length > 0,
+      llmignoreEnabled: llmignoreRules.length > 0,
       updatedAt: new Date().toISOString()
     },
     fileIndex: {
       updatedAt: new Date().toISOString(),
       files
     },
-    gitignoreRules
+    ignoreRules: combinedRules
   };
 }
 
@@ -417,7 +448,7 @@ export async function refreshIndexedFile(cwd = process.cwd(), relativePath = '')
   const projectRoot = await findProjectRootFromFile(cwd, relativePath);
   if (!projectRoot) return null;
   const fileIndexPath = getFileIndexPath(projectRoot);
-  const gitignoreRules = await readGitignoreRules(projectRoot);
+  const { combinedRules } = await readProjectIgnoreRules(projectRoot);
   const absolutePath = path.join(cwd, relativePath);
   const stat = await safeStat(absolutePath);
   let action = 'updated';
@@ -426,7 +457,7 @@ export async function refreshIndexedFile(cwd = process.cwd(), relativePath = '')
   const files = Array.isArray(current.files) ? [...current.files] : [];
   const index = files.findIndex((entry) => entry.file === projectRelativePath);
 
-  if (shouldIgnorePath(projectRelativePath, Boolean(stat?.isDirectory?.()), gitignoreRules)) {
+  if (shouldIgnorePath(projectRelativePath, Boolean(stat?.isDirectory?.()), combinedRules)) {
     if (index >= 0) files.splice(index, 1);
     action = 'removed';
   } else if (!stat || !stat.isFile()) {
@@ -507,4 +538,100 @@ export async function buildProjectContextSnippet(cwd = process.cwd(), userText =
 
   const snippet = trimMultiline(lines.join('\n'));
   return snippet;
+}
+
+export async function queryProjectIndex(cwd = process.cwd(), args = {}) {
+  const indexedRoot = await findNearestIndexedProjectRoot(cwd, cwd);
+  if (!indexedRoot) {
+    return {
+      query: String(args?.query || '').trim(),
+      project_root: '',
+      project_map: null,
+      matches: []
+    };
+  }
+
+  const projectMap = await safeReadJson(getProjectMapPath(indexedRoot), null);
+  const fileIndex = await safeReadJson(getFileIndexPath(indexedRoot), null);
+  const query = String(args?.query || '').trim();
+  const pathPrefix = normalizeRelativePath(args?.path || args?.path_prefix || '');
+  const languageFilter = String(args?.language || '').trim().toLowerCase();
+  const maxResults = Math.max(1, Math.min(20, Number(args?.max_results || 8) || 8));
+  const files = Array.isArray(fileIndex?.files) ? fileIndex.files : [];
+  const tokens = tokenizeQuery(query);
+
+  const matches = [];
+  for (const entry of files) {
+    const relativePath = String(entry?.file || '');
+    if (!relativePath) continue;
+    if (pathPrefix && !relativePath.startsWith(pathPrefix)) continue;
+    if (languageFilter && String(entry?.language || '').toLowerCase() !== languageFilter) continue;
+
+    let score = 0;
+    const reasons = [];
+    const fileText = relativePath.toLowerCase();
+    for (const token of tokens) {
+      if (!token) continue;
+      if (fileText.includes(token)) {
+        score += 5;
+        reasons.push(`path:${token}`);
+      }
+      if ((entry.exports || []).some((value) => String(value).toLowerCase() === token)) {
+        score += 4;
+        reasons.push(`export:${token}`);
+      }
+      if ((entry.functions || []).some((value) => String(value).toLowerCase().includes(token))) {
+        score += 4;
+        reasons.push(`function:${token}`);
+      }
+      if ((entry.classes || []).some((value) => String(value).toLowerCase().includes(token))) {
+        score += 4;
+        reasons.push(`class:${token}`);
+      }
+      if ((entry.imports || []).some((value) => String(value).toLowerCase().includes(token))) {
+        score += 2;
+        reasons.push(`import:${token}`);
+      }
+    }
+
+    if (!query) {
+      if ((projectMap?.entryCandidates || []).includes(relativePath)) score += 3;
+      if ((projectMap?.importantFiles || []).includes(relativePath)) score += 2;
+      if (String(relativePath).startsWith('src/')) score += 1;
+    }
+
+    if (score <= 0 && query) continue;
+    matches.push({
+      file: relativePath,
+      language: entry.language || 'text',
+      score,
+      reasons: clipList(reasons, 8),
+      exports: clipList(entry.exports || [], 6),
+      functions: clipList(entry.functions || [], 6),
+      classes: clipList(entry.classes || [], 6),
+      imports: clipList(entry.imports || [], 6)
+    });
+  }
+
+  matches.sort((left, right) => right.score - left.score || String(left.file).localeCompare(String(right.file)));
+
+  return {
+    query,
+    project_root: indexedRoot,
+    project_map: projectMap
+      ? {
+          workspace_kind: projectMap.workspaceKind || 'project',
+          languages: clipList(projectMap.languages || [], 8),
+          package_managers: clipList(projectMap.packageManagers || [], 8),
+          important_files: clipList(projectMap.importantFiles || [], 8),
+          source_roots: clipList(projectMap.sourceRoots || [], 8),
+          test_roots: clipList(projectMap.testRoots || [], 8),
+          entry_candidates: clipList(projectMap.entryCandidates || [], 8),
+          framework_hints: clipList(projectMap.frameworkHints || [], 8),
+          gitignore_enabled: Boolean(projectMap.gitignoreEnabled),
+          llmignore_enabled: Boolean(projectMap.llmignoreEnabled)
+        }
+      : null,
+    matches: matches.slice(0, maxResults)
+  };
 }

@@ -145,13 +145,15 @@ function buildFinalStreamResult(text, toolCallsByIndex, usage, messages) {
       arguments: tc.arguments || '{}'
     }))
     .filter((tc) => tc.name);
+  const normalizedText = String(text || '').trim();
 
-  if (!text && toolCalls.length === 0) {
+  if (!normalizedText && toolCalls.length === 0) {
     if (hasTrailingToolContext(messages)) {
       return {
         text: '',
         toolCalls: [],
-        usage
+        usage,
+        incomplete: true
       };
     }
     throw new Error('Gateway stream returned empty assistant response');
@@ -160,7 +162,8 @@ function buildFinalStreamResult(text, toolCallsByIndex, usage, messages) {
   return {
     text,
     toolCalls,
-    usage
+    usage,
+    incomplete: false
   };
 }
 
@@ -246,8 +249,17 @@ export async function createChatCompletion({
     name: tc.function?.name,
     arguments: normalizeIncomingToolCallArguments(tc.function?.arguments)
   }));
+  const normalizedText = String(text || '').trim();
 
-  if (!text && toolCalls.length === 0) {
+  if (!normalizedText && toolCalls.length === 0) {
+    if (hasTrailingToolContext(messages)) {
+      return {
+        text: '',
+        toolCalls: [],
+        usage: data?.usage || null,
+        incomplete: true
+      };
+    }
     throw new Error('Gateway returned empty assistant response');
   }
 

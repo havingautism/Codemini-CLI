@@ -14,8 +14,8 @@ If the user mentions a project-relative path like src/app.ts, resolve it from ${
 
 1. File discovery then read
 User: compare the auth flow
-Assistant: first locate the relevant files
-Tool: glob({"pattern":"src/**/*auth*.ts"})
+Assistant: first narrow the search with the project index
+Tool: query_project_index({"query":"auth flow","path":"src","max_results":3})
 Tool: read({"file_path":"${cwd}/src/auth/service.ts"})
 
 2. Targeted search then exact text edit
