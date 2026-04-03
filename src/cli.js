@@ -4,7 +4,7 @@ import { handleConfig } from './commands/config.js';
 import { handleDoctor } from './commands/doctor.js';
 import { handleSkill } from './commands/skill.js';
 
-const VERSION = '0.2.7';
+const VERSION = '0.2.8';
 
 function printHelp() {
   console.log(`codemini ${VERSION}
