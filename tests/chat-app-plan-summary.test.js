@@ -7,6 +7,7 @@ import {
   parseAutoPlanSummaryMessage,
   parsePlanProgressLine
 } from '../src/tui/chat-app.js';
+import { describeAutoSkillActivity, describeSkillActivity, formatAutoSkillBadge } from '../src/tui/skill-activity/index.js';
 
 test('parseAutoPlanSummaryMessage extracts structured fields from auto-plan summary text', () => {
   const parsed = parseAutoPlanSummaryMessage(`
@@ -81,4 +82,23 @@ test('buildPreToolNotice gives the user a visible pre-tool progress hint', () =>
   });
   assert.match(enNotice, /I'll/i);
   assert.match(enNotice, /directory/i);
+});
+
+test('skill activity helpers produce concise skill status text', () => {
+  const zhCopy = {
+    runtime: { skillFailed: '技能执行失败', autoSkillInjected: (names) => `自动启用技能: ${names.map((name) => `/${name}`).join(', ')}` },
+    toolActivity: { doingSkill: '正在执行技能', doneSkill: '已完成技能' },
+    roleLabels: { system: '系统' }
+  };
+  assert.equal(describeSkillActivity(zhCopy, 'brainstorm'), '正在执行技能: /brainstorm');
+  assert.equal(describeSkillActivity(zhCopy, 'brainstorm', { done: true }), '已完成技能: /brainstorm');
+  assert.equal(describeAutoSkillActivity(zhCopy, ['superpowers-lite', 'brainstorm']), '自动启用技能: /superpowers-lite, /brainstorm');
+  assert.equal(formatAutoSkillBadge(zhCopy, ['superpowers-lite', 'brainstorm']), '自动 /superpowers-lite +1');
+
+  const enCopy = {
+    runtime: { skillFailed: 'skill failed', autoSkillInjected: (names) => `auto-enabled skills: ${names.map((name) => `/${name}`).join(', ')}` },
+    toolActivity: { doingSkill: 'running skill', doneSkill: 'completed skill' },
+    roleLabels: { system: 'SYSTEM' }
+  };
+  assert.equal(formatAutoSkillBadge(enCopy, ['superpowers-lite']), 'AUTO /superpowers-lite');
 });

@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  buildInterToolNotice,
+  buildPreToolNotice,
+  buildSyntheticCompletionText,
   collapseActivityChainRows,
   ensureCodeGenerationTiming,
   findActivityUpdateIndex,
@@ -335,6 +338,65 @@ test('shouldShowCompletionFooter only shows for completed coder replies', () => 
   assert.equal(shouldShowCompletionFooter({ label: 'coder', loading: false, phase: undefined }), true);
   assert.equal(shouldShowCompletionFooter({ label: 'coder', loading: true, phase: 'thinking' }), false);
   assert.equal(shouldShowCompletionFooter({ label: 'system', loading: false, phase: undefined }), false);
+});
+
+test('buildPreToolNotice uses a more natural README transition', () => {
+  const copy = { roleLabels: { coder: 'CODER', you: 'YOU' } };
+  assert.equal(buildPreToolNotice('write(README.md)', copy), 'I\'ll inspect the project structure first, then write the README.');
+
+  const zhCopy = { roleLabels: { coder: '编码器', you: '你' } };
+  assert.equal(buildPreToolNotice('write(README.md)', zhCopy), '我先看一下项目内容和结构，再开始写 README。');
+});
+
+test('buildPreToolNotice dispatches by exact tool before falling back to shared narration', () => {
+  const zhCopy = { roleLabels: { coder: '编码器', you: '你' } };
+  assert.equal(buildPreToolNotice('glob(src/**/*.ts)', zhCopy), '我先查看 src/**/*.ts 目录里的内容。');
+
+  const enCopy = { roleLabels: { coder: 'CODER', you: 'YOU' } };
+  assert.equal(buildPreToolNotice('edit(src/auth/service.ts)', enCopy), 'I\'ll inspect src/auth/service.ts first, then update it.');
+});
+
+test('buildSyntheticCompletionText turns silent README tool runs into a natural close', () => {
+  const copy = { roleLabels: { coder: '编码器', you: '你' } };
+  const text = buildSyntheticCompletionText(
+    {
+      syntheticPrelude: true,
+      segments: [{ type: 'tool', name: 'write(README.md)', status: 'done' }]
+    },
+    copy
+  );
+  assert.match(text, /README 已经写好了/);
+  assert.match(text, /快速开始|功能概览|使用示例/);
+});
+
+test('buildSyntheticCompletionText asks for the next action after read-only exploration', () => {
+  const copy = { roleLabels: { coder: 'CODER', you: 'YOU' } };
+  const text = buildSyntheticCompletionText(
+    {
+      syntheticPrelude: true,
+      segments: [{ type: 'tool', name: 'read(src/auth.ts)', status: 'done' }]
+    },
+    copy
+  );
+  assert.match(text, /make the change next|summarize the findings first/);
+});
+
+test('buildInterToolNotice bridges read to README write naturally', () => {
+  const copy = { roleLabels: { coder: '编码器', you: '你' } };
+  const text = buildInterToolNotice({ name: 'read(package.json)', status: 'done' }, 'write(README.md)', copy);
+  assert.equal(text, '相关内容我已经看过了，现在开始写 README。');
+});
+
+test('buildInterToolNotice bridges read to edit with explicit target', () => {
+  const copy = { roleLabels: { coder: 'CODER', you: 'YOU' } };
+  const text = buildInterToolNotice({ name: 'grep(loginUser)', status: 'done' }, 'edit(src/auth/service.ts)', copy);
+  assert.match(text, /update src\/auth\/service\.ts\./);
+});
+
+test('buildInterToolNotice uses the next tool presenter for run to write transitions', () => {
+  const copy = { roleLabels: { coder: '编码器', you: '你' } };
+  const text = buildInterToolNotice({ name: 'run(npm test)', status: 'done' }, 'write(README.md)', copy);
+  assert.equal(text, '结果我已经拿到了，现在开始写 README。');
 });
 
 test('getGeneratingCodePlaceholderRows returns grey placeholder rows only while generating code', () => {

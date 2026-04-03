@@ -2,6 +2,20 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import { shouldCaptureEscapeSequence } from './input-escape.js';
 import { classifyCommandIntent } from '../core/shell.js';
+import {
+  buildInterToolNotice as buildRegisteredInterToolNotice,
+  buildPreToolNotice as buildRegisteredPreToolNotice,
+  buildSyntheticCompletionText as buildRegisteredSyntheticCompletionText
+} from './tool-narration.js';
+import {
+  describeToolActivity as describeRegisteredToolActivity,
+  isCodeGenerationActivityName
+} from './tool-activity/index.js';
+import {
+  describeAutoSkillActivity as describeRegisteredAutoSkillActivity,
+  describeSkillActivity as describeRegisteredSkillActivity,
+  formatAutoSkillBadge as formatRegisteredAutoSkillBadge
+} from './skill-activity/index.js';
 
 const h = React.createElement;
 const SUGGESTION_PAGE_SIZE = 8;
@@ -675,33 +689,8 @@ function parseToolDisplayName(name) {
   };
 }
 
-function isCodeGenerationActivityName(name) {
-  return String(name || '').trim() === 'Code generation';
-}
-
 export function buildPreToolNotice(name, copy) {
-  const parsed = parseToolDisplayName(name);
-  const base = parsed.base;
-  const target = parsed.target ? trimText(parsed.target, 48) : '';
-  const isEnglish = String(copy?.roleLabels?.coder || '').trim() === 'CODER' && String(copy?.roleLabels?.you || '').trim() === 'YOU';
-
-  if (isEnglish) {
-    if (base === 'read') return target ? `I'll inspect ${target} first.` : `I'll inspect the relevant file first.`;
-    if (base === 'list' || base === 'glob') return target ? `I'll inspect the ${target} directory first.` : `I'll inspect the relevant directory first.`;
-    if (base === 'grep') return `I'll search the relevant code first.`;
-    if (base === 'edit' || base === 'write' || base === 'patch' || base === 'generate_diff') {
-      return `I'll inspect the current code first, then make the change.`;
-    }
-    if (base === 'run') return `I'll verify the current project state first.`;
-    return `I'll check the relevant project context first.`;
-  }
-
-  if (base === 'read') return target ? `我先查看 ${target} 的内容。` : '我先查看相关文件内容。';
-  if (base === 'list' || base === 'glob') return target ? `我先查看 ${target} 目录里的内容。` : '我先查看相关目录内容。';
-  if (base === 'grep') return '我先搜索相关代码位置。';
-  if (base === 'edit' || base === 'write' || base === 'patch' || base === 'generate_diff') return '我先确认当前代码上下文，再动手修改。';
-  if (base === 'run') return '我先检查当前项目状态。';
-  return '我先查看相关上下文。';
+  return buildRegisteredPreToolNotice(name, copy);
 }
 
 export function shouldInjectPreToolNotice(msg) {
@@ -710,6 +699,33 @@ export function shouldInjectPreToolNotice(msg) {
   const segments = Array.isArray(msg.segments) ? msg.segments : [];
   const hasTextSegment = segments.some((segment) => segment?.type === 'text' && String(segment.text || '').trim());
   return !text && !hasTextSegment;
+}
+
+function getLastToolActivity(msg, statuses = []) {
+  const allowed = new Set((Array.isArray(statuses) ? statuses : []).map((status) => String(status)));
+  const segments = Array.isArray(msg?.segments) ? msg.segments : [];
+  for (let idx = segments.length - 1; idx >= 0; idx -= 1) {
+    const segment = segments[idx];
+    if (segment?.type !== 'tool' && segment?.type !== 'system_tool') continue;
+    if (allowed.size === 0 || allowed.has(String(segment.status || ''))) return segment;
+  }
+  return null;
+}
+
+function hasOnlySyntheticNarration(msg) {
+  if (!msg?.syntheticPrelude) return false;
+  const segments = Array.isArray(msg?.segments) ? msg.segments : [];
+  const hasToolRows = segments.some((segment) => segment?.type === 'tool' || segment?.type === 'system_tool');
+  const textSegments = segments.filter((segment) => segment?.type === 'text' && String(segment.text || '').trim());
+  return hasToolRows && textSegments.length <= 1;
+}
+
+export function buildInterToolNotice(previousActivity, nextToolName, copy) {
+  return buildRegisteredInterToolNotice(previousActivity, nextToolName, copy);
+}
+
+export function buildSyntheticCompletionText(msg, copy) {
+  return buildRegisteredSyntheticCompletionText(msg, copy);
 }
 
 function formatDurationMs(ms) {
@@ -818,168 +834,19 @@ export function shouldShowCompletionFooter(msg) {
 }
 
 function describeToolActivity(name, copy, { done = false, blocked = false } = {}) {
-  const parsed = parseToolDisplayName(name);
-  if (parsed.base === 'project_index') {
-    return blocked
-      ? `${copy.toolActivity.blocked}: project index`
-      : done
-        ? copy.toolActivity.doneProjectIndex
-        : copy.toolActivity.doingProjectIndex;
-  }
-  if (parsed.base === 'file_index') {
-    const safeTarget = trimText(parsed.target || '.codemini-project/file-index.json', 72);
-    return blocked
-      ? `${copy.toolActivity.blocked}: ${safeTarget}`
-      : done
-        ? `${copy.toolActivity.doneFileIndex}: ${safeTarget}`
-        : `${copy.toolActivity.doingFileIndex}: ${safeTarget}`;
-  }
-  if (parsed.base === 'run' || parsed.base === 'start_service') {
-    const intent = classifyCommandIntent(parsed.target);
-    const target = parsed.target || intent.kind || 'command';
-    if (intent.kind === 'install') {
-      return blocked
-        ? `${copy.toolActivity.blocked}: ${target}`
-        : done
-          ? `${copy.toolActivity.doneInstall}: ${target}`
-          : `${copy.toolActivity.doingInstall}: ${target}`;
-    }
-    if (intent.kind === 'build') {
-      return blocked
-        ? `${copy.toolActivity.blocked}: ${target}`
-        : done
-          ? `${copy.toolActivity.doneBuild}: ${target}`
-          : `${copy.toolActivity.doingBuild}: ${target}`;
-    }
-    if (intent.kind === 'test') {
-      return blocked
-        ? `${copy.toolActivity.blocked}: ${target}`
-        : done
-          ? `${copy.toolActivity.doneTest}: ${target}`
-          : `${copy.toolActivity.doingTest}: ${target}`;
-    }
-    if (intent.kind === 'frontend-service') {
-      return blocked
-        ? `${copy.toolActivity.blocked}: ${target}`
-        : done
-          ? `${copy.toolActivity.doneFrontend}: ${target}`
-          : `${copy.toolActivity.doingFrontend}: ${target}`;
-    }
-    if (intent.kind === 'backend-service') {
-      return blocked
-        ? `${copy.toolActivity.blocked}: ${target}`
-        : done
-          ? `${copy.toolActivity.doneBackend}: ${target}`
-          : `${copy.toolActivity.doingBackend}: ${target}`;
-    }
-    if (intent.kind === 'database-service') {
-      return blocked
-        ? `${copy.toolActivity.blocked}: ${target}`
-        : done
-          ? `${copy.toolActivity.doneDatabase}: ${target}`
-          : `${copy.toolActivity.doingDatabase}: ${target}`;
-    }
-    if (intent.kind === 'docker-service') {
-      return blocked
-        ? `${copy.toolActivity.blocked}: ${target}`
-        : done
-          ? `${copy.toolActivity.doneDocker}: ${target}`
-          : `${copy.toolActivity.doingDocker}: ${target}`;
-    }
-    if (intent.kind === 'service') {
-      return blocked
-        ? `${copy.toolActivity.blocked}: ${target}`
-        : done
-          ? `${copy.toolActivity.doneGeneric}: ${target}`
-          : `${copy.toolActivity.doingGeneric}: ${target}`;
-    }
-  }
-  if (isCodeGenerationActivityName(name)) {
-    return blocked
-      ? `${copy.toolActivity.blocked}: code generation`
-      : done
-        ? copy.toolActivity.doneCodeGeneration
-        : copy.toolActivity.doingCodeGeneration;
-  }
-  const { raw, base, target } = parseToolDisplayName(name);
-  const safeTarget = trimText(target, 72);
-  if (base === 'read') {
-    return blocked
-      ? `${copy.toolActivity.blocked}: ${base}(${safeTarget || '.'})`
-      : done
-        ? `${copy.toolActivity.doneRead}: ${safeTarget || '.'}`
-        : `${copy.toolActivity.doingRead}: ${safeTarget || '.'}`;
-  }
-  if (base === 'edit') {
-    return blocked
-      ? `${copy.toolActivity.blocked}: ${base}(${safeTarget || '.'})`
-      : done
-        ? `${copy.toolActivity.doneEdit}: ${safeTarget || '.'}`
-        : `${copy.toolActivity.doingEdit}: ${safeTarget || '.'}`;
-  }
-  if (base === 'write') {
-    return blocked
-      ? `${copy.toolActivity.blocked}: ${base}(${safeTarget || '.'})`
-      : done
-        ? `${copy.toolActivity.doneWrite}: ${safeTarget || '.'}`
-        : `${copy.toolActivity.doingWrite}: ${safeTarget || '.'}`;
-  }
-  if (base === 'patch') {
-    return blocked
-      ? `${copy.toolActivity.blocked}: ${base}(${safeTarget || '.'})`
-      : done
-        ? `${copy.toolActivity.donePatch}: ${safeTarget || '.'}`
-        : `${copy.toolActivity.doingPatch}: ${safeTarget || '.'}`;
-  }
-  if (base === 'list' || base === 'glob' || base === 'grep') {
-    return blocked
-      ? `${copy.toolActivity.blocked}: ${base}(${safeTarget || '.'})`
-      : done
-        ? `${copy.toolActivity.doneList}: ${safeTarget || '.'}`
-        : `${copy.toolActivity.doingList}: ${safeTarget || '.'}`;
-  }
-  if (base === 'run') {
-    return blocked
-      ? `${copy.toolActivity.blocked}: ${safeTarget || base}`
-      : done
-        ? `${copy.toolActivity.doneCommand}: ${safeTarget || base}`
-        : `${copy.toolActivity.doingCommand}: ${safeTarget || base}`;
-  }
-  if (base === 'start_service' || base === 'list_services' || base === 'get_service_status' || base === 'get_service_logs' || base === 'stop_service') {
-    return blocked
-      ? `${copy.toolActivity.blocked}: ${safeTarget || base}`
-      : done
-        ? `${copy.toolActivity.doneGeneric}: ${safeTarget || base}`
-        : `${copy.toolActivity.doingGeneric}: ${safeTarget || base}`;
-  }
-  if (base === 'create_task') {
-    return blocked ? `${copy.toolActivity.blocked}: create_task` : done ? copy.toolActivity.doneCreateTask : copy.toolActivity.doingCreateTask;
-  }
-  if (base === 'update_task') {
-    return blocked ? `${copy.toolActivity.blocked}: update_task` : done ? copy.toolActivity.doneUpdateTask : copy.toolActivity.doingUpdateTask;
-  }
-  return blocked ? `${copy.toolActivity.blocked}: ${raw}` : done ? `${copy.toolActivity.doneGeneric}: ${raw}` : `${copy.toolActivity.doingGeneric}: ${raw}`;
+  return describeRegisteredToolActivity(copy, name, { done, blocked });
 }
 
 function describeSkillActivity(name, copy, { done = false, failed = false } = {}) {
-  if (failed) return `${copy.runtime.skillFailed}: /${name}`;
-  if (done) return `${copy.toolActivity.doneSkill}: /${name}`;
-  return `${copy.toolActivity.doingSkill}: /${name}`;
+  return describeRegisteredSkillActivity(copy, name, { done, failed });
 }
 
 function describeAutoSkillActivity(names, copy) {
-  const safeNames = Array.isArray(names) ? names.filter(Boolean) : [];
-  if (safeNames.length === 0) return '';
-  return copy.runtime.autoSkillInjected(safeNames);
+  return describeRegisteredAutoSkillActivity(copy, names);
 }
 
 function formatAutoSkillBadge(names, copy) {
-  const safeNames = Array.isArray(names) ? names.filter(Boolean) : [];
-  if (safeNames.length === 0) return '';
-  const [first, ...rest] = safeNames;
-  const suffix = rest.length > 0 ? ` +${rest.length}` : '';
-  const prefix = copy?.roleLabels?.system === 'SYSTEM' ? 'AUTO' : '自动';
-  return `${prefix} /${first}${suffix}`;
+  return formatRegisteredAutoSkillBadge(copy, names);
 }
 
 function normalizeRuntimeStatus(status, copy) {
@@ -2967,6 +2834,26 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
     return aid;
   };
 
+  const maybeRefreshSyntheticNarration = (nextToolName) => {
+    const targetId = activeAssistantIdRef.current;
+    if (!targetId || !nextToolName) return;
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (m.id !== targetId) return m;
+        if (!hasOnlySyntheticNarration(m)) return m;
+        const previousActivity = getLastToolActivity(m, ['done', 'running']);
+        if (!previousActivity) return m;
+        const bridge = buildInterToolNotice(previousActivity, nextToolName, copy);
+        if (!bridge) return m;
+        return {
+          ...m,
+          text: bridge,
+          syntheticPrelude: true
+        };
+      })
+    );
+  };
+
   const runSubmission = (line, userMessageId = null) => {
     inFlightRef.current = true;
     activeUserMessageIdRef.current = userMessageId;
@@ -3060,9 +2947,15 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
             setMessages((prev) =>
               prev.map((m) => {
                 if (m.id !== targetId) return m;
+                const responseText = typeof event.text === 'string' ? event.text.trim() : '';
+                const shouldSynthesizeCompletion = !responseText && m.syntheticPrelude;
                 return {
                   ...m,
-                  ...(typeof event.text === 'string' && event.text.length > 0 ? { text: event.text } : {}),
+                  ...(responseText
+                    ? { text: event.text, syntheticPrelude: false }
+                    : shouldSynthesizeCompletion
+                      ? { text: buildSyntheticCompletionText(m, copy), syntheticPrelude: false }
+                      : {}),
                   loading: false,
                   phase: undefined,
                   liveStatus: undefined,
@@ -3086,6 +2979,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
         }
         if (event?.type === 'tool:start') {
           ensureActiveAssistant();
+          maybeRefreshSyntheticNarration(event.name);
           const detail = describeToolActivity(event.name, copy);
           setRuntimeStatus(makeStatus(copy.runtime.toolRunning, detail, 'magentaBright'));
           setInputStage('tooling');
