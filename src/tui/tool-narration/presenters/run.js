@@ -1,7 +1,7 @@
 export const runPresenter = {
   prelude: {
-    en: () => `I'll verify the current project state first.`,
-    zh: () => '我先检查当前项目状态。'
+    en: ({ target }) => (target ? `I'll run ${target} first and check the result.` : `I'll run the relevant command first and check the result.`),
+    zh: ({ target }) => (target ? `我先执行 ${target}，再看一下结果。` : '我先执行相关命令，再看一下结果。')
   },
   completion: {
     en: () => 'That step is finished. Do you want me to act on the result next, or summarize what it means first?',

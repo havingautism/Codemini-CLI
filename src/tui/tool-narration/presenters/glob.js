@@ -1,7 +1,7 @@
 export const globPresenter = {
   prelude: {
-    en: ({ target }) => (target ? `I'll inspect the ${target} directory first.` : 'I\'ll inspect the relevant directory first.'),
-    zh: ({ target }) => (target ? `我先查看 ${target} 目录里的内容。` : '我先查看相关目录内容。')
+    en: ({ target }) => (target ? `I'll find files matching ${target} first.` : 'I\'ll find the relevant files by pattern first.'),
+    zh: ({ target }) => (target ? `我先按模式查找匹配 ${target} 的文件。` : '我先按模式查找相关文件。')
   },
   completion: {
     en: () => 'I have the relevant context now. Do you want me to make the change next, or summarize the findings first?',

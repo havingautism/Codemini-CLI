@@ -1,8 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { createRequire } from 'node:module';
 import { Parser, Language, Query } from 'web-tree-sitter';
+import { LANGUAGE_ALIASES, EXTENSION_LANGUAGE_MAP } from './constants.js';
+import { sha256Prefixed as sha256 } from './crypto-utils.js';
 
 const require = createRequire(import.meta.url);
 
@@ -20,56 +21,6 @@ const WRAPPER_NODE_TYPES = new Set([
   'template_function',
   'template_type'
 ]);
-const LANGUAGE_ALIASES = {
-  javascript: 'js',
-  js: 'js',
-  jsx: 'js',
-  typescript: 'ts',
-  ts: 'ts',
-  tsx: 'tsx',
-  python: 'python',
-  py: 'python',
-  go: 'go',
-  c: 'c',
-  cpp: 'cpp',
-  'c++': 'cpp',
-  bash: 'bash',
-  sh: 'bash',
-  shell: 'bash',
-  java: 'java',
-  rust: 'rust',
-  rs: 'rust',
-  csharp: 'csharp',
-  'c#': 'csharp',
-  cs: 'csharp',
-  php: 'php',
-  ruby: 'ruby',
-  rb: 'ruby'
-};
-const EXTENSION_LANGUAGE_MAP = {
-  '.js': 'js',
-  '.jsx': 'js',
-  '.mjs': 'js',
-  '.cjs': 'js',
-  '.ts': 'ts',
-  '.tsx': 'tsx',
-  '.py': 'python',
-  '.go': 'go',
-  '.c': 'c',
-  '.h': 'c',
-  '.cpp': 'cpp',
-  '.cc': 'cpp',
-  '.cxx': 'cpp',
-  '.hpp': 'cpp',
-  '.hh': 'cpp',
-  '.java': 'java',
-  '.rs': 'rust',
-  '.cs': 'csharp',
-  '.php': 'php',
-  '.rb': 'ruby',
-  '.sh': 'bash',
-  '.bash': 'bash'
-};
 const LANGUAGE_WASM_PATHS = {
   js: require.resolve('@cursorless/tree-sitter-wasms/out/tree-sitter-javascript.wasm'),
   ts: require.resolve('@cursorless/tree-sitter-wasms/out/tree-sitter-typescript.wasm'),
@@ -93,10 +44,6 @@ const parserInitPromise = Parser.init({
   }
 });
 const languageCache = new Map();
-
-function sha256(input) {
-  return `sha256:${crypto.createHash('sha256').update(String(input || '')).digest('hex')}`;
-}
 
 function clipText(text, maxLen = 220) {
   const normalized = String(text || '').replace(/\s+/g, ' ').trim();

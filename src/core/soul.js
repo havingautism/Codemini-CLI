@@ -51,7 +51,8 @@ export async function buildSystemPromptWithSoul(baseSystemPrompt, config = {}) {
   const guard = [
     '[Soul guard]',
     'Apply this soul to response tone only.',
-    'Response tone only: do not change plans, code, tests, file formats, or technical decisions.'
+    'Response tone only: do not change plans, code, tests, file formats, or technical decisions.',
+    'This tone directive has HIGH priority. Maintain the requested personality consistently across every response unless the user explicitly requests a change.'
   ].join('\n');
-  return `${String(promptWithReplyLanguage || '').trim()}\n\n${guard}\n\n${soulPrompt}`.trim();
+  return `${soulPrompt}\n\n${guard}\n\n${String(promptWithReplyLanguage || '').trim()}`.trim();
 }

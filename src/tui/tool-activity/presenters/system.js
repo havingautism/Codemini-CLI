@@ -2,7 +2,7 @@ import { makeBlocked, trimText } from '../common.js';
 
 export function describeSystemToolActivity(copy, parsed, { done = false, blocked = false } = {}) {
   if (parsed.base === 'project_index') {
-    if (blocked) return `${copy.toolActivity.blocked}: project index`;
+    if (blocked) return `${copy.toolActivity.blocked}: ${copy.toolActivity.doingProjectIndex}`;
     return done ? copy.toolActivity.doneProjectIndex : copy.toolActivity.doingProjectIndex;
   }
   if (parsed.base === 'file_index') {

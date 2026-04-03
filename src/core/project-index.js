@@ -1,27 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { getFileIndexPath, getProjectIndexDir, getProjectMapPath, getProjectWorkspaceDir } from './paths.js';
+import { INDEX_SKIP_DIRS as SKIP_DIRS, SOURCE_EXTENSIONS, EXTENSION_LANGUAGE_MAP } from './constants.js';
+import { sha1 } from './crypto-utils.js';
+import { BoundedCache } from './bounded-cache.js';
 
-const SKIP_DIRS = new Set([
-  '.git',
-  'node_modules',
-  '.codemini',
-  '.codemini-project',
-  '.codemini-global',
-  'dist',
-  'coverage',
-  'sessions',
-  'tmp',
-  'temp',
-  '.cache',
-  '.turbo',
-  '.next',
-  'build',
-  'out',
-  'logs',
-  'artifacts'
-]);
 const PROJECT_MARKER_FILES = new Set([
   'package.json',
   'tsconfig.json',
@@ -37,22 +20,11 @@ const PROJECT_MARKER_FILES = new Set([
   'Makefile',
   '.gitignore'
 ]);
-const SOURCE_EXTENSIONS = new Set([
-  '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.py', '.go', '.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh',
-  '.sh', '.bash', '.java', '.rs', '.cs', '.php', '.rb'
-]);
-const LANGUAGE_BY_EXT = {
-  '.js': 'js', '.jsx': 'jsx', '.mjs': 'js', '.cjs': 'js', '.ts': 'ts', '.tsx': 'tsx', '.py': 'python',
-  '.go': 'go', '.c': 'c', '.h': 'c', '.cpp': 'cpp', '.cc': 'cpp', '.cxx': 'cpp', '.hpp': 'cpp', '.hh': 'cpp',
-  '.sh': 'bash', '.bash': 'bash', '.java': 'java', '.rs': 'rust', '.cs': 'csharp', '.php': 'php', '.rb': 'ruby'
-};
 
-const initCache = new Map();
+const LANGUAGE_BY_EXT = EXTENSION_LANGUAGE_MAP;
+
+const initCache = new BoundedCache({ maxSize: 32, ttlMs: 10 * 60 * 1000 });
 const PROJECT_CONTEXT_MAX_FILES = 6;
-
-function sha1(input) {
-  return crypto.createHash('sha1').update(String(input || '')).digest('hex');
-}
 
 function clipList(values, max = 32) {
   return [...new Set((Array.isArray(values) ? values : []).filter(Boolean))].slice(0, max);

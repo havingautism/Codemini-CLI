@@ -21,7 +21,20 @@ export function describeCommandToolActivity(copy, parsed, { done = false, blocke
     if (parsed.base === 'run') return phaseText(copy, blocked, done, trimText(target, 72) || parsed.base, copy.toolActivity.doingCommand, copy.toolActivity.doneCommand);
   }
 
-  if (parsed.base === 'start_service' || parsed.base === 'list_services' || parsed.base === 'get_service_status' || parsed.base === 'get_service_logs' || parsed.base === 'stop_service') {
+  if (parsed.base === 'list_services') {
+    return phaseText(copy, blocked, done, trimText(parsed.target, 72) || parsed.base, copy.toolActivity.doingListServices, copy.toolActivity.doneListServices);
+  }
+  if (parsed.base === 'get_service_status') {
+    return phaseText(copy, blocked, done, trimText(parsed.target, 72) || parsed.base, copy.toolActivity.doingServiceStatus, copy.toolActivity.doneServiceStatus);
+  }
+  if (parsed.base === 'get_service_logs') {
+    return phaseText(copy, blocked, done, trimText(parsed.target, 72) || parsed.base, copy.toolActivity.doingServiceLogs, copy.toolActivity.doneServiceLogs);
+  }
+  if (parsed.base === 'stop_service') {
+    return phaseText(copy, blocked, done, trimText(parsed.target, 72) || parsed.base, copy.toolActivity.doingStopService, copy.toolActivity.doneStopService);
+  }
+
+  if (parsed.base === 'start_service') {
     return phaseText(copy, blocked, done, trimText(parsed.target, 72) || parsed.base, copy.toolActivity.doingGeneric, copy.toolActivity.doneGeneric);
   }
 

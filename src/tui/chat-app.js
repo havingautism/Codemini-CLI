@@ -128,8 +128,12 @@ const TUI_COPY = {
       doingWrite: '正在写入文件',
       donePatch: '已应用补丁',
       doingPatch: '正在应用补丁',
-      doneList: '已查看目录',
-      doingList: '正在查看目录',
+      doneList: '已列出目录',
+      doingList: '正在列出目录',
+      doneGlob: '已按模式查找文件',
+      doingGlob: '正在按模式查找文件',
+      doneGrep: '已搜索关键词',
+      doingGrep: '正在搜索关键词',
       doneCommand: '已执行命令',
       doingCommand: '正在执行命令',
       doneCreateTask: '已创建任务',
@@ -152,6 +156,14 @@ const TUI_COPY = {
       doingDatabase: '正在启动数据库服务',
       doneDocker: '已完成 Docker 命令',
       doingDocker: '正在执行 Docker 命令',
+      doneListServices: '已列出服务',
+      doingListServices: '正在列出服务',
+      doneServiceStatus: '已查看服务状态',
+      doingServiceStatus: '正在查看服务状态',
+      doneServiceLogs: '已查看服务日志',
+      doingServiceLogs: '正在查看服务日志',
+      doneStopService: '已停止服务',
+      doingStopService: '正在停止服务',
       doneCodeGeneration: '已生成代码',
       doingCodeGeneration: '正在生成代码',
       doneSkill: '已完成技能',
@@ -177,6 +189,7 @@ const TUI_COPY = {
     runtime: {
       sendingToGateway: '正在发送到网关',
       preparingRequest: '准备本轮请求',
+      submittedWaiting: '已提交，等待开始处理',
       modelThinking: '模型正在思考',
       requestDelivered: '请求已送达，等待首个 token',
       generatingReply: '正在生成回复',
@@ -262,6 +275,10 @@ const TUI_COPY = {
       doingPatch: 'Applying patch',
       doneList: 'Listed directory',
       doingList: 'Listing directory',
+      doneGlob: 'Matched files by pattern',
+      doingGlob: 'Matching files by pattern',
+      doneGrep: 'Searched keywords',
+      doingGrep: 'Searching keywords',
       doneCommand: 'Ran command',
       doingCommand: 'Running command',
       doneCreateTask: 'Created task',
@@ -284,6 +301,14 @@ const TUI_COPY = {
       doingDatabase: 'Starting database service',
       doneDocker: 'Docker command completed',
       doingDocker: 'Running Docker command',
+      doneListServices: 'Listed services',
+      doingListServices: 'Listing services',
+      doneServiceStatus: 'Checked service status',
+      doingServiceStatus: 'Checking service status',
+      doneServiceLogs: 'Viewed service logs',
+      doingServiceLogs: 'Viewing service logs',
+      doneStopService: 'Stopped service',
+      doingStopService: 'Stopping service',
       doneCodeGeneration: 'Code generated',
       doingCodeGeneration: 'Generating code',
       doneSkill: 'Completed skill',
@@ -309,6 +334,7 @@ const TUI_COPY = {
     runtime: {
       sendingToGateway: 'sending to gateway',
       preparingRequest: 'preparing this turn',
+      submittedWaiting: 'submitted, waiting to start',
       modelThinking: 'model is thinking',
       requestDelivered: 'request sent, waiting for first token',
       generatingReply: 'generating reply',
@@ -773,6 +799,27 @@ export function formatActivityDurationText(row, nowMs = Date.now()) {
   return '';
 }
 
+export function getPendingUserMessageMeta(copy, { immediateLocal = false, inFlight = false } = {}) {
+  if (immediateLocal) {
+    return {
+      phase: 'sending',
+      liveStatus: copy.runtime.localCommandRunning
+    };
+  }
+
+  if (inFlight) {
+    return {
+      phase: 'queued',
+      liveStatus: copy.runtime.queuedWaiting
+    };
+  }
+
+  return {
+    phase: 'sending',
+    liveStatus: copy.runtime.submittedWaiting || copy.runtime.sendingToGateway
+  };
+}
+
 function getActivityDisplayParts(activity) {
   if (isCodeGenerationActivityName(activity?.name)) {
     return {
@@ -795,6 +842,12 @@ function getActivityDisplayParts(activity) {
     };
   }
   if ((activity?.type || 'tool') === 'system_tool') {
+    if (parsed.base === 'project_index') {
+      return { primary: 'Project Index', secondary: '' };
+    }
+    if (parsed.base === 'file_index') {
+      return { primary: 'File Index', secondary: parsed.target ? `(${parsed.target})` : '' };
+    }
     return {
       primary: 'Index',
       secondary: parsed.target ? `(${parsed.target})` : parsed.base ? `(${parsed.base})` : ''
@@ -806,14 +859,14 @@ function getActivityDisplayParts(activity) {
     write: 'Write',
     patch: 'Patch',
     run: 'Run',
-    grep: 'Grep',
+    grep: 'Search',
     glob: 'Glob',
     list: 'List',
     start_service: 'Service',
-    list_services: 'Service',
-    get_service_status: 'Service',
-    get_service_logs: 'Service',
-    stop_service: 'Service',
+    list_services: 'Services',
+    get_service_status: 'Status',
+    get_service_logs: 'Logs',
+    stop_service: 'Stop',
     list_files: 'Glob',
     create_task: 'Task',
     update_task: 'Task'
@@ -3257,7 +3310,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
           updateMessageMeta(next.messageId, {
             loading: true,
             phase: 'sending',
-            liveStatus: copy.runtime.sendingToGateway
+            liveStatus: copy.runtime.submittedWaiting || copy.runtime.sendingToGateway
           });
           runSubmission(next.line, next.messageId);
         }
@@ -3449,6 +3502,10 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
       const immediateLocal =
         typeof runtime.isImmediateLocalInput === 'function' &&
         runtime.isImmediateLocalInput(line);
+      const pendingUserMeta = getPendingUserMessageMeta(copy, {
+        immediateLocal,
+        inFlight: inFlightRef.current
+      });
       setMessages((prev) => [
         ...prev,
         {
@@ -3457,12 +3514,8 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
           text: line,
           color: 'white',
           loading: true,
-          phase: immediateLocal ? 'sending' : inFlightRef.current ? 'queued' : 'sending',
-          liveStatus: immediateLocal
-            ? copy.runtime.localCommandRunning
-            : inFlightRef.current
-              ? copy.runtime.queuedWaiting
-              : copy.runtime.sendingToGateway
+          phase: pendingUserMeta.phase,
+          liveStatus: pendingUserMeta.liveStatus
         }
       ]);
       if (immediateLocal) {

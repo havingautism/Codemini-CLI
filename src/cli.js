@@ -3,8 +3,9 @@ import { handleRun } from './commands/run.js';
 import { handleConfig } from './commands/config.js';
 import { handleDoctor } from './commands/doctor.js';
 import { handleSkill } from './commands/skill.js';
+import pkg from '../package.json' with { type: 'json' };
 
-const VERSION = '0.3.0';
+const VERSION = pkg.version;
 
 function printHelp() {
   console.log(`codemini ${VERSION}

@@ -92,6 +92,7 @@ export async function handleChat(args) {
   const React = (await import('react')).default;
   const { render } = await import('ink');
   const { ChatApp } = await import('../tui/chat-app.js');
+
   const instance = render(
     React.createElement(ChatApp, {
       runtime,
@@ -103,5 +104,6 @@ export async function handleChat(args) {
       version: pkg.version
     })
   );
+
   await instance.waitUntilExit();
 }

@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import {
@@ -16,68 +15,8 @@ import { evaluateCommandPolicy } from './command-policy.js';
 import { queryAst, readAstNode, resolveAstTarget } from './ast.js';
 import { initializeProjectIndex, queryProjectIndex, refreshIndexedFile } from './project-index.js';
 import { checkReadDedup } from './agent-loop.js';
-
-const SKIP_DIRS = new Set(['.git', 'node_modules', '.codemini', '.codemini-global', 'dist', 'coverage']);
-const TEXT_EXTENSIONS = new Set([
-  '.js',
-  '.jsx',
-  '.ts',
-  '.tsx',
-  '.json',
-  '.md',
-  '.mjs',
-  '.cjs',
-  '.py',
-  '.rb',
-  '.go',
-  '.rs',
-  '.java',
-  '.cs',
-  '.css',
-  '.scss',
-  '.html',
-  '.yml',
-  '.yaml',
-  '.sh',
-  '.ps1'
-]);
-const CODE_WRITE_GUARD_EXTENSIONS = new Set([
-  '.js',
-  '.jsx',
-  '.ts',
-  '.tsx',
-  '.mjs',
-  '.cjs',
-  '.py',
-  '.rb',
-  '.go',
-  '.rs',
-  '.java',
-  '.cs',
-  '.css',
-  '.scss',
-  '.html',
-  '.sh',
-  '.ps1'
-]);
-const LANGUAGE_FILE_TYPES = {
-  js: ['js', 'jsx', 'mjs', 'cjs'],
-  ts: ['ts', 'tsx'],
-  py: ['py'],
-  python: ['py'],
-  md: ['md'],
-  json: ['json'],
-  css: ['css', 'scss'],
-  html: ['html'],
-  java: ['java'],
-  csharp: ['cs'],
-  cs: ['cs'],
-  go: ['go'],
-  rust: ['rs'],
-  ruby: ['rb'],
-  shell: ['sh', 'ps1'],
-  yaml: ['yml', 'yaml']
-};
+import { TOOL_SKIP_DIRS as SKIP_DIRS, TEXT_EXTENSIONS, CODE_WRITE_GUARD_EXTENSIONS, LANGUAGE_FILE_TYPES } from './constants.js';
+import { sha256Prefixed as sha256, sha1 } from './crypto-utils.js';
 const SERVICE_RECENT_LOG_LIMIT = 80;
 const SERVICE_STARTUP_POLL_MS = 150;
 const serviceRegistry = new Map();
@@ -95,14 +34,6 @@ function resolveInWorkspace(root, targetPath = '.') {
 
 function toWorkspaceRelative(root, absPath) {
   return path.relative(path.resolve(root), absPath).replace(/\\/g, '/');
-}
-
-function sha256(input) {
-  return `sha256:${crypto.createHash('sha256').update(String(input || '')).digest('hex')}`;
-}
-
-function sha1(input) {
-  return crypto.createHash('sha1').update(String(input || '')).digest('hex');
 }
 
 function trimLinePreview(line, maxLen = 180) {

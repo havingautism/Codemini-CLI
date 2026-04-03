@@ -19,8 +19,30 @@ export function describeFileToolActivity(copy, parsed, options = {}) {
   if (parsed.base === 'patch') {
     return describePathTool(copy, parsed, { done: copy.toolActivity.donePatch, doing: copy.toolActivity.doingPatch }, options);
   }
-  if (parsed.base === 'list' || parsed.base === 'glob' || parsed.base === 'grep') {
+  if (parsed.base === 'list') {
     return describePathTool(copy, parsed, { done: copy.toolActivity.doneList, doing: copy.toolActivity.doingList }, options);
+  }
+  if (parsed.base === 'glob') {
+    return describePathTool(
+      copy,
+      parsed,
+      {
+        done: copy.toolActivity.doneGlob || copy.toolActivity.doneList,
+        doing: copy.toolActivity.doingGlob || copy.toolActivity.doingList
+      },
+      options
+    );
+  }
+  if (parsed.base === 'grep') {
+    return describePathTool(
+      copy,
+      parsed,
+      {
+        done: copy.toolActivity.doneGrep || copy.toolActivity.doneList,
+        doing: copy.toolActivity.doingGrep || copy.toolActivity.doingList
+      },
+      options
+    );
   }
   return '';
 }

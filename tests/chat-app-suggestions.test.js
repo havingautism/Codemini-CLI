@@ -12,6 +12,7 @@ import {
   formatSuggestionDescription,
   getCodeGenerationActivityRows,
   getGeneratingCodePlaceholderRows,
+  getPendingUserMessageMeta,
   getSuggestionPageState,
   isCodeLikeRow,
   isMarkdownTableHeader,
@@ -55,6 +56,30 @@ test('formatSuggestionDescription trims and ellipsizes long descriptions', () =>
     'This is a much ...'
   );
   assert.equal(formatSuggestionDescription('', 18), '');
+});
+
+test('getPendingUserMessageMeta distinguishes submitted turns from queued turns', () => {
+  const copy = {
+    runtime: {
+      localCommandRunning: '正在执行本地命令',
+      queuedWaiting: '排队中，等待上一轮完成',
+      submittedWaiting: '已提交，等待开始处理',
+      sendingToGateway: '正在发送到网关'
+    }
+  };
+
+  assert.deepEqual(getPendingUserMessageMeta(copy, { immediateLocal: true, inFlight: false }), {
+    phase: 'sending',
+    liveStatus: '正在执行本地命令'
+  });
+  assert.deepEqual(getPendingUserMessageMeta(copy, { immediateLocal: false, inFlight: true }), {
+    phase: 'queued',
+    liveStatus: '排队中，等待上一轮完成'
+  });
+  assert.deepEqual(getPendingUserMessageMeta(copy, { immediateLocal: false, inFlight: false }), {
+    phase: 'sending',
+    liveStatus: '已提交，等待开始处理'
+  });
 });
 
 test('findActivityUpdateIndex merges consecutive duplicate read activities', () => {
@@ -350,7 +375,9 @@ test('buildPreToolNotice uses a more natural README transition', () => {
 
 test('buildPreToolNotice dispatches by exact tool before falling back to shared narration', () => {
   const zhCopy = { roleLabels: { coder: '编码器', you: '你' } };
-  assert.equal(buildPreToolNotice('glob(src/**/*.ts)', zhCopy), '我先查看 src/**/*.ts 目录里的内容。');
+  assert.equal(buildPreToolNotice('glob(src/**/*.ts)', zhCopy), '我先按模式查找匹配 src/**/*.ts 的文件。');
+  assert.equal(buildPreToolNotice('grep(loginUser)', zhCopy), '我先按关键词搜索 loginUser 相关的代码位置。');
+  assert.equal(buildPreToolNotice('run(npm test)', zhCopy), '我先执行 npm test，再看一下结果。');
 
   const enCopy = { roleLabels: { coder: 'CODER', you: 'YOU' } };
   assert.equal(buildPreToolNotice('edit(src/auth/service.ts)', enCopy), 'I\'ll inspect src/auth/service.ts first, then update it.');

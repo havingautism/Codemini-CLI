@@ -2312,7 +2312,6 @@ export async function createChatRuntime({
   };
 
   const submit = async (line, onAgentEvent) => {
-    const activeBaseSystemPrompt = buildSystemPromptWithReplyLanguage(baseSystemPrompt, config);
     const activeReplySystemPrompt = await buildSystemPromptWithSoul(baseSystemPrompt, config);
     try {
       await appendInputHistory(line);
@@ -2486,7 +2485,7 @@ export async function createChatRuntime({
             topic,
             config,
             model,
-            systemPrompt: activeBaseSystemPrompt
+            systemPrompt: activeReplySystemPrompt
           });
         } catch (err) {
           content = buildSpecTemplate(topic);
@@ -2513,7 +2512,7 @@ export async function createChatRuntime({
             session: currentSession,
             config,
             model,
-            systemPrompt: activeBaseSystemPrompt,
+            systemPrompt: activeReplySystemPrompt,
             onAgentEvent,
             sessionId: currentSession.id
           });
@@ -2577,7 +2576,7 @@ export async function createChatRuntime({
               specPath,
               config,
               model,
-              systemPrompt: activeBaseSystemPrompt
+              systemPrompt: activeReplySystemPrompt
             });
           } catch (err) {
             planContent = buildPlanTemplate(specTitle);
@@ -2630,7 +2629,7 @@ export async function createChatRuntime({
             parentSession: currentSession,
             config,
             model,
-            systemPrompt: activeBaseSystemPrompt,
+            systemPrompt: activeReplySystemPrompt,
             onAgentEvent
           });
           const text = `[sub-agent:${role}]\n${output.text || output}`;
@@ -2842,7 +2841,7 @@ export async function createChatRuntime({
           session: currentSession,
           config,
           model,
-          systemPrompt: activeBaseSystemPrompt,
+          systemPrompt: activeReplySystemPrompt,
           onAgentEvent,
           executionMode
         });
@@ -2924,7 +2923,7 @@ export async function createChatRuntime({
         session: currentSession,
         config,
         model,
-        systemPrompt: activeBaseSystemPrompt,
+        systemPrompt: activeReplySystemPrompt,
         onAgentEvent,
         sessionId: currentSession.id
       });

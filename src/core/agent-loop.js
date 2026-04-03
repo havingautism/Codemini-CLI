@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { BoundedCache } from './bounded-cache.js';
 
 function safeJsonParse(raw) {
   if (!raw || typeof raw !== 'string') return {};
@@ -206,8 +207,16 @@ const TOOL_RESULTS_SUBDIR = 'tool-results';
 
 let currentResultDir = null;
 let resultDirReady = false;
-const storedResults = new Map(); // callId -> { filePath, summary }
-const readCache = new Map();     // "path:startLine:endLine:mtimeMs" -> true
+const storedResults = new BoundedCache({
+  maxSize: 64,
+  ttlMs: 30 * 60 * 1000,
+  onEvict(key, value) {
+    if (value?.filePath) {
+      fs.unlink(value.filePath).catch(() => {});
+    }
+  }
+}); // callId -> { filePath, summary }
+const readCache = new BoundedCache({ maxSize: 128, ttlMs: 10 * 60 * 1000 });   // "path:startLine:endLine:mtimeMs" -> true
 
 function generatePreview(content) {
   if (content.length <= PREVIEW_SIZE_BYTES) {
@@ -272,7 +281,7 @@ Summary: ${summary}
 
 export function clearResultStore() {
   const files = [];
-  for (const [, val] of storedResults) {
+  for (const [, val] of storedResults.entries()) {
     files.push(val.filePath);
   }
   storedResults.clear();
@@ -288,11 +297,6 @@ export function checkReadDedup(filePath, startLine, endLine, mtimeMs) {
     return true;
   }
   readCache.set(key, true);
-  // Keep cache bounded
-  if (readCache.size > 100) {
-    const firstKey = readCache.keys().next().value;
-    readCache.delete(firstKey);
-  }
   return false;
 }
 

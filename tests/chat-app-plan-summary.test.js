@@ -8,6 +8,7 @@ import {
   parsePlanProgressLine
 } from '../src/tui/chat-app.js';
 import { describeAutoSkillActivity, describeSkillActivity, formatAutoSkillBadge } from '../src/tui/skill-activity/index.js';
+import { describeToolActivity } from '../src/tui/tool-activity/index.js';
 
 test('parseAutoPlanSummaryMessage extracts structured fields from auto-plan summary text', () => {
   const parsed = parseAutoPlanSummaryMessage(`
@@ -82,6 +83,42 @@ test('buildPreToolNotice gives the user a visible pre-tool progress hint', () =>
   });
   assert.match(enNotice, /I'll/i);
   assert.match(enNotice, /directory/i);
+});
+
+test('describeToolActivity uses more precise labels for list, glob, and grep', () => {
+  const zhCopy = {
+    toolActivity: {
+      blocked: '工具被拦截',
+      doneList: '已列出目录',
+      doingList: '正在列出目录',
+      doneGlob: '已按模式查找文件',
+      doingGlob: '正在按模式查找文件',
+      doneGrep: '已搜索关键词',
+      doingGrep: '正在搜索关键词',
+      doneListServices: '已列出服务',
+      doingListServices: '正在列出服务',
+      doneServiceStatus: '已查看服务状态',
+      doingServiceStatus: '正在查看服务状态',
+      doneServiceLogs: '已查看服务日志',
+      doingServiceLogs: '正在查看服务日志',
+      doneStopService: '已停止服务',
+      doingStopService: '正在停止服务',
+      doneProjectIndex: '已初始化项目索引',
+      doingProjectIndex: '正在初始化项目索引',
+      doneFileIndex: '已刷新文件索引',
+      doingFileIndex: '正在刷新文件索引'
+    }
+  };
+
+  assert.equal(describeToolActivity(zhCopy, 'list(src)', { done: true }), '已列出目录: src');
+  assert.equal(describeToolActivity(zhCopy, 'glob(src/**/*.ts)'), '正在按模式查找文件: src/**/*.ts');
+  assert.equal(describeToolActivity(zhCopy, 'grep(loginUser)'), '正在搜索关键词: loginUser');
+  assert.equal(describeToolActivity(zhCopy, 'list_services', { done: true }), '已列出服务: list_services');
+  assert.equal(describeToolActivity(zhCopy, 'get_service_status(task-1)'), '正在查看服务状态: task-1');
+  assert.equal(describeToolActivity(zhCopy, 'get_service_logs(task-1)'), '正在查看服务日志: task-1');
+  assert.equal(describeToolActivity(zhCopy, 'stop_service(task-1)', { done: true }), '已停止服务: task-1');
+  assert.equal(describeToolActivity(zhCopy, 'project_index', { done: true }), '已初始化项目索引');
+  assert.equal(describeToolActivity(zhCopy, 'file_index(src/app.ts)'), '正在刷新文件索引: src/app.ts');
 });
 
 test('skill activity helpers produce concise skill status text', () => {
