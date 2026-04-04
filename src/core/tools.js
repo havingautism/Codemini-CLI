@@ -17,6 +17,7 @@ import { initializeProjectIndex, queryProjectIndex, refreshIndexedFile } from '.
 import { checkReadDedup } from './agent-loop.js';
 import { TOOL_SKIP_DIRS as SKIP_DIRS, TEXT_EXTENSIONS, CODE_WRITE_GUARD_EXTENSIONS, LANGUAGE_FILE_TYPES } from './constants.js';
 import { sha256Prefixed as sha256, sha1 } from './crypto-utils.js';
+import { forgetMemory, listMemories, rememberMemory, searchMemories } from './memory-store.js';
 const SERVICE_RECENT_LOG_LIMIT = 80;
 const SERVICE_STARTUP_POLL_MS = 150;
 const serviceRegistry = new Map();
@@ -1960,6 +1961,101 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
           required: ['query']
         }
       }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'remember_user',
+        description: 'Store a durable user preference, communication habit, or long-term instruction for future sessions. Use this for things like reply style, language, explanation depth, or stable guardrails. Never store secrets, tokens, passwords, or one-off task details.',
+        parameters: {
+          type: 'object',
+          properties: {
+            content: { type: 'string', description: 'Stable preference or instruction to remember' },
+            kind: { type: 'string', description: 'preference, workflow, constraint, or warning' },
+            summary: { type: 'string', description: 'Short summary for the memory index' },
+            replace_similar: { type: 'boolean', description: 'Replace an existing similar memory when true' }
+          },
+          required: ['content']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'remember_global',
+        description: 'Store a durable cross-project workflow, environment fact, or generally reusable lesson that can help across many repositories. Use this for stable habits like preferred search tools or repeatable debugging workflow. Never store secrets.',
+        parameters: {
+          type: 'object',
+          properties: {
+            content: { type: 'string' },
+            kind: { type: 'string' },
+            summary: { type: 'string' },
+            replace_similar: { type: 'boolean' }
+          },
+          required: ['content']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'remember_project',
+        description: 'Store a durable project-specific convention, architecture note, key module warning, or local workflow expectation. Use this for repository-specific rules, important files, testing conventions, or architectural boundaries. Never store secrets or transient task state.',
+        parameters: {
+          type: 'object',
+          properties: {
+            content: { type: 'string' },
+            kind: { type: 'string' },
+            summary: { type: 'string' },
+            replace_similar: { type: 'boolean' }
+          },
+          required: ['content']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'list_memory',
+        description: 'List stored persistent memories for one scope.',
+        parameters: {
+          type: 'object',
+          properties: {
+            scope: { type: 'string', description: 'user, global, or project' }
+          },
+          required: ['scope']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'search_memory',
+        description: 'Search stored persistent memories for one scope.',
+        parameters: {
+          type: 'object',
+          properties: {
+            scope: { type: 'string', description: 'user, global, or project' },
+            query: { type: 'string', description: 'Search phrase' }
+          },
+          required: ['scope', 'query']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'forget_memory',
+        description: 'Delete a stored persistent memory by id.',
+        parameters: {
+          type: 'object',
+          properties: {
+            scope: { type: 'string', description: 'user, global, or project' },
+            id: { type: 'string', description: 'Memory id to delete' }
+          },
+          required: ['scope', 'id']
+        }
+      }
     }
   ];
 
@@ -2180,6 +2276,55 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       return result;
     },
     run: (args) => runCommand(workspaceRoot, config, args),
+    remember_user: async (args = {}) => {
+      const saved = await rememberMemory({
+        scope: 'user',
+        content: args.content,
+        kind: args.kind,
+        summary: args.summary,
+        replaceSimilar: args.replace_similar !== false,
+        workspaceRoot,
+        config
+      });
+      return { ok: true, scope: 'user', memory: saved };
+    },
+    remember_global: async (args = {}) => {
+      const saved = await rememberMemory({
+        scope: 'global',
+        content: args.content,
+        kind: args.kind,
+        summary: args.summary,
+        replaceSimilar: args.replace_similar !== false,
+        workspaceRoot,
+        config
+      });
+      return { ok: true, scope: 'global', memory: saved };
+    },
+    remember_project: async (args = {}) => {
+      const saved = await rememberMemory({
+        scope: 'project',
+        content: args.content,
+        kind: args.kind,
+        summary: args.summary,
+        replaceSimilar: args.replace_similar !== false,
+        workspaceRoot,
+        config
+      });
+      return { ok: true, scope: 'project', memory: saved };
+    },
+    list_memory: async (args = {}) => ({
+      scope: String(args.scope || ''),
+      items: await listMemories({ scope: args.scope, workspaceRoot })
+    }),
+    search_memory: async (args = {}) => ({
+      scope: String(args.scope || ''),
+      query: String(args.query || ''),
+      items: await searchMemories({ scope: args.scope, query: args.query, workspaceRoot })
+    }),
+    forget_memory: async (args = {}) => ({
+      ok: true,
+      ...(await forgetMemory({ scope: args.scope, id: args.id, workspaceRoot }))
+    }),
     start_service: (args) => startService(workspaceRoot, config, args),
     list_services: () => listServices(workspaceRoot),
     get_service_status: (args) => getServiceStatus(workspaceRoot, args),
@@ -2330,6 +2475,34 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       if (stdout) parts.push(`stdout:\n${stdout}`);
       if (stderr) parts.push(`stderr:\n${stderr}`);
       return parts.join('\n');
+    },
+
+    remember_user(result) {
+      return result?.memory?.content ? `stored user memory: ${result.memory.content}` : JSON.stringify(result);
+    },
+
+    remember_global(result) {
+      return result?.memory?.content ? `stored global memory: ${result.memory.content}` : JSON.stringify(result);
+    },
+
+    remember_project(result) {
+      return result?.memory?.content ? `stored project memory: ${result.memory.content}` : JSON.stringify(result);
+    },
+
+    list_memory(result) {
+      if (!result || typeof result !== 'object' || !Array.isArray(result.items)) return JSON.stringify(result);
+      if (result.items.length === 0) return `No ${result.scope || ''} memories found.`;
+      return result.items.map((item) => `${item.id} [${item.kind}] ${item.content}`).join('\n');
+    },
+
+    search_memory(result) {
+      if (!result || typeof result !== 'object' || !Array.isArray(result.items)) return JSON.stringify(result);
+      if (result.items.length === 0) return `No ${result.scope || ''} memories matched "${result.query || ''}".`;
+      return result.items.map((item) => `${item.id} [${item.kind}] ${item.content}`).join('\n');
+    },
+
+    forget_memory(result) {
+      return `removed ${Number(result?.removed || 0)} memory item(s)`;
     },
 
     generate_diff(result) {

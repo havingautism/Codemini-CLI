@@ -57,6 +57,9 @@ test('config defaults sdk provider to openai-compatible and persists anthropic o
   await withTempConfigDir(async () => {
     const initial = await loadConfig();
     assert.equal(initial.sdk.provider, 'openai-compatible');
+    assert.equal(initial.memory.enabled, true);
+    assert.equal(initial.memory.auto_write, true);
+    assert.equal(initial.memory.inject_on_session_start, true);
 
     await setConfigValue('sdk.provider', 'anthropic');
     const updated = await loadConfig();

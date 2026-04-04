@@ -4,6 +4,7 @@ import { runAgentLoop } from '../core/agent-loop.js';
 import { createChatCompletion } from '../core/provider/index.js';
 import { buildSystemPromptWithSoul } from '../core/soul.js';
 import { getBuiltinTools } from '../core/tools.js';
+import { buildMemorySnapshot } from '../core/memory-prompt.js';
 
 function parseRunArgs(args) {
   const parsed = {
@@ -39,7 +40,9 @@ export async function handleRun(args) {
     workspaceRoot: process.cwd(),
     config
   });
-  const systemPrompt = await buildSystemPromptWithSoul(buildDefaultSystemPrompt(config), config);
+  const soulPrompt = await buildSystemPromptWithSoul(buildDefaultSystemPrompt(config), config);
+  const memorySnapshot = await buildMemorySnapshot({ config, workspaceRoot: process.cwd() }).catch(() => '');
+  const systemPrompt = [soulPrompt, memorySnapshot].filter(Boolean).join('\n\n');
 
   const result = await runAgentLoop({
     systemPrompt,

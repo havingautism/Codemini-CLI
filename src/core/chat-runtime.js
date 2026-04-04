@@ -30,6 +30,8 @@ import { buildSystemPromptWithReplyLanguage } from './reply-language.js';
 import { buildSystemPromptWithSoul } from './soul.js';
 import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir } from './paths.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
+import { buildMemorySnapshot } from './memory-prompt.js';
+import { forgetMemory, listMemories, searchMemories } from './memory-store.js';
 
 function toOpenAIMessages(sessionMessages) {
   const mapped = [];
@@ -140,6 +142,7 @@ function getCompletionCopy(language = 'zh') {
         plan: '在 .codemini/plans 中创建实施计划',
         agents: '列出/运行子代理角色',
         config: '设置/读取/列出/重置配置',
+        memory: '查看/搜索/删除持久记忆',
         history: '查看/恢复会话',
         debug: '运行时调试开关',
         retry: '重试上一条用户请求'
@@ -153,6 +156,7 @@ function getCompletionCopy(language = 'zh') {
         specCommand: '创建 spec 文件',
         planCommand: '规划命令',
         agentCommand: '子代理命令',
+        memoryCommand: '记忆命令',
         debugCommand: '调试命令',
         keyboardDebugCommand: '键盘调试命令',
         compactCommand: '上下文压缩命令',
@@ -220,6 +224,7 @@ function getCompletionCopy(language = 'zh') {
         plan: 'create an implementation plan markdown file in .codemini/plans',
         agents: 'run/list sub-agent roles',
         config: 'set/get/list/reset config values',
+        memory: 'list/search/delete persistent memories',
         history: 'list/resume sessions',
         debug: 'runtime debug switches',
         retry: 'retry the last user request'
@@ -233,6 +238,7 @@ function getCompletionCopy(language = 'zh') {
         specCommand: 'create a spec file',
         planCommand: 'planning command',
         agentCommand: 'sub-agent command',
+        memoryCommand: 'memory command',
         debugCommand: 'debug command',
         keyboardDebugCommand: 'keyboard debug command',
         compactCommand: 'context compaction command',
@@ -2104,6 +2110,7 @@ export async function createChatRuntime({
     '/help',
     '/status',
     '/config',
+    '/memory',
     '/mode',
     '/plan',
     '/tasks',
@@ -2131,6 +2138,7 @@ export async function createChatRuntime({
       { name: 'plan', description: completionCopy.commands.plan },
       { name: 'agents', description: completionCopy.commands.agents },
       { name: 'config', description: completionCopy.commands.config },
+      { name: 'memory', description: completionCopy.commands.memory },
       { name: 'history', description: completionCopy.commands.history },
       { name: 'debug', description: completionCopy.commands.debug },
       { name: 'retry', description: completionCopy.commands.retry }
@@ -2167,6 +2175,7 @@ export async function createChatRuntime({
   ];
 
   const historyTemplates = ['/history list', '/history current', '/history resume <session_id>'];
+  const memoryTemplates = ['/memory list <scope>', '/memory search <scope> <query>', '/memory forget <scope> <id>'];
   const modeTemplates = ['/mode normal', '/mode auto', '/mode plan'];
   const taskTemplates = ['/tasks', '/tasks add <title>', '/tasks start <id>', '/tasks done <id>', '/tasks remove <id>', '/tasks clear'];
   const checkpointTemplates = [
@@ -2182,6 +2191,7 @@ export async function createChatRuntime({
   const compactTemplates = compactOptions.map((opt) => `/compact ${opt}`);
   const slashTemplates = [
     ...configTemplates,
+    ...memoryTemplates,
     ...historyTemplates,
     ...modeTemplates,
     ...taskTemplates,
@@ -2226,6 +2236,7 @@ export async function createChatRuntime({
     const commandPart = tokens[0] || '';
     const commandHasSubcommands = new Set([
       'config',
+      'memory',
       'compact',
       'mode',
       'tasks',
@@ -2245,6 +2256,7 @@ export async function createChatRuntime({
     for (const template of configTemplates) {
       registerSuggestion(template, configSubcommandDescriptions[template] || completionCopy.generic.configCommand);
     }
+    for (const template of memoryTemplates) registerSuggestion(template, completionCopy.generic.memoryCommand);
     for (const template of historyTemplates) registerSuggestion(template, completionCopy.generic.historyCommand);
     for (const template of modeTemplates) registerSuggestion(template, completionCopy.generic.modeCommand);
     for (const template of taskTemplates) registerSuggestion(template, completionCopy.generic.taskCommand);
@@ -2302,6 +2314,22 @@ export async function createChatRuntime({
       }
 
       return materializeSuggestions(configTemplates);
+    }
+
+    if (commandPart === 'memory') {
+      const sub = tokens[1] || '';
+      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
+        return ['list', 'search', 'forget']
+          .filter((item) => item.startsWith(sub))
+          .map((item) => registerSuggestion(`/memory ${item}`, completionCopy.generic.memoryCommand));
+      }
+      const scope = tokens[2] || '';
+      if (['list', 'search', 'forget'].includes(sub) && (tokens.length === 2 || (tokens.length === 3 && !hasTrailingSpace))) {
+        return ['user', 'global', 'project']
+          .filter((item) => item.startsWith(scope))
+          .map((item) => registerSuggestion(`/memory ${sub} ${item}${sub === 'list' ? '' : ' '}`, completionCopy.generic.memoryCommand));
+      }
+      return materializeSuggestions(memoryTemplates);
     }
 
     if (commandPart === 'compact') {
@@ -2464,6 +2492,17 @@ export async function createChatRuntime({
     await saveSession(currentSession);
   };
 
+  const buildActiveSystemPrompt = async () => {
+    const soulPrompt = await buildSystemPromptWithSoul(baseSystemPrompt, config);
+    const memorySnapshot = await buildMemorySnapshot({
+      config,
+      workspaceRoot: process.cwd()
+    }).catch(() => '');
+    const memoryGuide =
+      'Persistent memory is for durable preferences, project conventions, and stable workflow knowledge. Use fresh file reads when the code can verify details. Only write memory when the fact is likely to matter in future sessions, is stable over time, and is not sensitive. Do not store temporary task details, speculative guesses, or secrets. Choose remember_user for user preferences, communication habits, and long-term constraints. Choose remember_global for reusable workflow knowledge that helps across many projects. Choose remember_project for repository-specific conventions, architecture notes, important modules, and local workflow expectations.';
+    return [soulPrompt, memorySnapshot, memoryGuide].filter(Boolean).join('\n\n');
+  };
+
   const isImmediateLocalInput = (line) => {
     const parsedInput = parseInput(line);
     if (parsedInput.type !== 'slash') return false;
@@ -2482,6 +2521,7 @@ export async function createChatRuntime({
       'tasks',
       'checkpoint',
       'history',
+      'memory',
       'config',
       'compact',
       'debug'
@@ -2490,7 +2530,7 @@ export async function createChatRuntime({
   };
 
   const submit = async (line, onAgentEvent) => {
-    const activeReplySystemPrompt = await buildSystemPromptWithSoul(baseSystemPrompt, config);
+    const activeReplySystemPrompt = await buildActiveSystemPrompt();
     try {
       await appendInputHistory(line);
     } catch {
@@ -2509,7 +2549,7 @@ export async function createChatRuntime({
       if (parsedInput.command === 'help') {
         return {
           type: 'system',
-          text: 'Commands: /help /exit /commands /status /mode /compact /tasks /checkpoint /spec /plan /agents /config /history /debug /retry /<custom> !<shell>'
+          text: 'Commands: /help /exit /commands /status /mode /compact /tasks /checkpoint /spec /plan /agents /config /memory /history /debug /retry /<custom> !<shell>'
         };
       }
       if (parsedInput.command === 'status') {
@@ -2873,6 +2913,49 @@ export async function createChatRuntime({
           };
         }
         return { type: 'system', text: `Unknown /history subcommand: ${sub}` };
+      }
+      if (parsedInput.command === 'memory') {
+        const sub = String(parsedInput.args[0] || '').trim().toLowerCase();
+        if (!sub) {
+          return { type: 'system', text: 'Usage: /memory list <user|global|project> | /memory search <scope> <query> | /memory forget <scope> <id>' };
+        }
+        if (sub === 'list') {
+          const scope = String(parsedInput.args[1] || '').trim().toLowerCase();
+          if (!['user', 'global', 'project'].includes(scope)) {
+            return { type: 'system', text: 'Usage: /memory list <user|global|project>' };
+          }
+          const items = await listMemories({ scope, workspaceRoot: process.cwd() });
+          if (items.length === 0) return { type: 'system', text: `No ${scope} memories found.` };
+          return {
+            type: 'system',
+            text: items.map((item) => `${item.id} | ${item.kind} | ${item.content}`).join('\n')
+          };
+        }
+        if (sub === 'search') {
+          const scope = String(parsedInput.args[1] || '').trim().toLowerCase();
+          const query = parsedInput.args.slice(2).join(' ').trim();
+          if (!['user', 'global', 'project'].includes(scope) || !query) {
+            return { type: 'system', text: 'Usage: /memory search <user|global|project> <query>' };
+          }
+          const items = await searchMemories({ scope, query, workspaceRoot: process.cwd() });
+          if (items.length === 0) return { type: 'system', text: `No ${scope} memories matched: ${query}` };
+          return {
+            type: 'system',
+            text: items.map((item) => `${item.id} | ${item.kind} | ${item.content}`).join('\n')
+          };
+        }
+        if (sub === 'forget') {
+          const scope = String(parsedInput.args[1] || '').trim().toLowerCase();
+          const id = String(parsedInput.args[2] || '').trim();
+          if (!['user', 'global', 'project'].includes(scope) || !id) {
+            return { type: 'system', text: 'Usage: /memory forget <user|global|project> <id>' };
+          }
+          const result = await forgetMemory({ scope, id, workspaceRoot: process.cwd() });
+          const text = `Removed ${Number(result.removed || 0)} ${scope} memory item(s)`;
+          await persistLocalExchange(line, text, { includeUser: false });
+          return { type: 'system', text };
+        }
+        return { type: 'system', text: `Unknown /memory subcommand: ${sub}` };
       }
       if (parsedInput.command === 'retry') {
         const lastUser = [...currentSession.messages].reverse().find((m) => m.role === 'user');

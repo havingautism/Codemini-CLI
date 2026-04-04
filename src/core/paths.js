@@ -50,6 +50,10 @@ export function getCommandsDir() {
   return path.join(getBaseConfigDir(), 'commands');
 }
 
+export function getMemoryDir() {
+  return path.join(getBaseConfigDir(), 'memory');
+}
+
 export function getInputHistoryFilePath() {
   return path.join(getBaseConfigDir(), 'input-history.json');
 }
@@ -100,4 +104,8 @@ export function getFileIndexPath(cwd = process.cwd()) {
 
 export function getProjectIndexDir(cwd = process.cwd()) {
   return path.join(cwd, PROJECT_INDEX_DIR);
+}
+
+export function getProjectMemoryDir(cwd = process.cwd()) {
+  return path.join(getProjectIndexDir(cwd), 'memory');
 }

@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import { createChatRuntime } from '../src/core/chat-runtime.js';
 import { loadConfig } from '../src/core/config-store.js';
+import { listMemories, rememberMemory } from '../src/core/memory-store.js';
 import { saveSession } from '../src/core/session-store.js';
 
 async function withTempConfigDir(run) {
@@ -390,6 +391,139 @@ test('chat runtime injects lightweight project index context into the system pro
     } finally {
       process.chdir(previousCwd);
       await restoreFetch();
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('chat runtime injects persistent memory into the system prompt', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-memory-context-'));
+    const previousCwd = process.cwd();
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+      const systemText = String(body.messages?.[0]?.content || '');
+      assert.match(systemText, /Persistent Memory:/);
+      assert.match(systemText, /User Memory:/);
+      assert.match(systemText, /Global Memory:/);
+      assert.match(systemText, /Project Memory:/);
+      assert.match(systemText, /Only write memory when the fact is likely to matter in future sessions/i);
+      assert.match(systemText, /Do not store temporary task details, speculative guesses, or secrets/i);
+      assert.match(systemText, /remember_user for user preferences/i);
+      assert.match(systemText, /remember_project for repository-specific conventions/i);
+      assert.match(systemText, /用户偏好中文回复/);
+      assert.match(systemText, /优先使用 rg 搜索代码/);
+      assert.match(systemText, /src\/auth\.ts 是登录核心模块/);
+      return makeSseResponse([
+        { choices: [{ delta: { content: 'ok' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] }
+      ]);
+    });
+
+    try {
+      process.chdir(cwd);
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+      await rememberMemory({ scope: 'user', content: '用户偏好中文回复。', kind: 'preference', workspaceRoot: cwd, config });
+      await rememberMemory({ scope: 'global', content: '优先使用 rg 搜索代码。', kind: 'workflow', workspaceRoot: cwd, config });
+      await rememberMemory({ scope: 'project', content: 'src/auth.ts 是登录核心模块。', kind: 'module', workspaceRoot: cwd, config });
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-memory-context',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const result = await runtime.submit('查看当前约定');
+      assert.equal(result.text, 'ok');
+    } finally {
+      process.chdir(previousCwd);
+      await restoreFetch();
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('config preference changes do not auto-write durable memories', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-memory-config-'));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(cwd);
+      const config = await loadConfig();
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-memory-auto-write',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      await runtime.submit('/config set ui.reply_language en');
+      await runtime.submit('/config set sdk.provider anthropic');
+
+      const userMemories = await listMemories({ scope: 'user', workspaceRoot: cwd });
+      assert.equal(userMemories.length, 0);
+    } finally {
+      process.chdir(previousCwd);
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('memory slash commands list search and forget stored memories', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-memory-command-'));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(cwd);
+      const config = await loadConfig();
+      await rememberMemory({
+        scope: 'project',
+        content: 'src/auth.ts 是登录核心模块。',
+        kind: 'module',
+        workspaceRoot: cwd,
+        config
+      });
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-memory-commands',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const listResult = await runtime.submit('/memory list project');
+      assert.match(listResult.text, /src\/auth\.ts 是登录核心模块/);
+
+      const searchResult = await runtime.submit('/memory search project 登录');
+      assert.match(searchResult.text, /src\/auth\.ts 是登录核心模块/);
+
+      const beforeForget = await listMemories({ scope: 'project', workspaceRoot: cwd });
+      const forgetResult = await runtime.submit(`/memory forget project ${beforeForget[0].id}`);
+      assert.match(forgetResult.text, /Removed 1|removed 1/i);
+
+      const afterForget = await listMemories({ scope: 'project', workspaceRoot: cwd });
+      assert.equal(afterForget.length, 0);
+      assert.ok(runtime.getCompletionOptions('/memory').some((item) => item.value === '/memory list'));
+    } finally {
+      process.chdir(previousCwd);
       await fs.rm(cwd, { recursive: true, force: true });
     }
   });

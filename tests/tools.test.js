@@ -8,6 +8,7 @@ import { getBuiltinTools } from '../src/core/tools.js';
 import { loadConfig } from '../src/core/config-store.js';
 import { classifyCommandIntent } from '../src/core/shell.js';
 import { runAgentLoop } from '../src/core/agent-loop.js';
+import { listMemories } from '../src/core/memory-store.js';
 
 async function withTempWorkspace(run) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-tools-'));
@@ -104,6 +105,23 @@ test('opencode-style primary tools read grep glob and list work for discovery fl
     const content = await handlers.read({ path: 'src/auth/service.ts' });
     assert.equal(content.phase, 'content');
     assert.match(content.content, /login/);
+  });
+});
+
+test('remember_project tool persists project memory entries', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { handlers } = await makeTools(workspaceRoot);
+
+    const saved = await handlers.remember_project({
+      content: 'src/auth.ts 是登录核心模块，改动时先补测试。',
+      kind: 'module'
+    });
+    const memories = await listMemories({ scope: 'project', workspaceRoot });
+
+    assert.equal(saved.ok, true);
+    assert.equal(memories.length, 1);
+    assert.equal(memories[0].kind, 'module');
+    assert.match(memories[0].content, /src\/auth\.ts/);
   });
 });
 

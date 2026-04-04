@@ -66,6 +66,17 @@ const DEFAULT_CONFIG = {
     language: 'zh',
     reply_language: 'zh'
   },
+  memory: {
+    enabled: true,
+    auto_write: true,
+    inject_on_session_start: true,
+    max_items_per_scope: 12,
+    max_prompt_chars: 4000,
+    max_user_chars: 1375,
+    max_global_chars: 2200,
+    max_project_chars: 2200,
+    project_binding: 'path-or-alias'
+  },
   soul: {
     preset: 'default',
     custom_path: ''
@@ -154,6 +165,18 @@ function normalizePolicyLists(config) {
   next.ui = next.ui || {};
   next.ui.language = normalizeUiLanguage(next.ui.language);
   next.ui.reply_language = normalizeReplyLanguage(next.ui.reply_language);
+  next.memory = next.memory || {};
+  next.memory.enabled = next.memory.enabled !== false;
+  next.memory.auto_write = next.memory.auto_write !== false;
+  next.memory.inject_on_session_start = next.memory.inject_on_session_start !== false;
+  next.memory.max_items_per_scope = Math.max(1, Number(next.memory.max_items_per_scope || 12));
+  next.memory.max_prompt_chars = Math.max(200, Number(next.memory.max_prompt_chars || 4000));
+  next.memory.max_user_chars = Math.max(80, Number(next.memory.max_user_chars || 1375));
+  next.memory.max_global_chars = Math.max(80, Number(next.memory.max_global_chars || 2200));
+  next.memory.max_project_chars = Math.max(80, Number(next.memory.max_project_chars || 2200));
+  next.memory.project_binding = ['path', 'alias', 'path-or-alias'].includes(String(next.memory.project_binding || ''))
+    ? String(next.memory.project_binding)
+    : 'path-or-alias';
   next.policy = next.policy || {};
   next.policy.command_allowlist = uniqueStrings(
     Array.isArray(next.policy.command_allowlist) ? next.policy.command_allowlist : []
