@@ -173,6 +173,21 @@ test('chat runtime prioritizes important config completions near the top', { con
 
     assert.ok(runtime.getCompletionOptions('/mode').some((item) => item.value === '/mode auto'));
     assert.ok(runtime.getCompletionOptions('/plan').some((item) => item.value === '/plan auto'));
+    assert.ok(runtime.getCompletionOptions('/plan').some((item) => item.value === '/plan approve'));
+    assert.ok(!runtime.getCompletionOptions('/plan').some((item) => item.value === '/plan stay'));
+    assert.ok(runtime.getCompletionOptions('/plan auto').some((item) => item.value === '/plan auto run '));
+    assert.equal(
+      runtime.getCompletionOptions('/plan').find((item) => item.value === '/plan auto')?.description,
+      '自动生成计划并等待你确认执行'
+    );
+    assert.equal(
+      runtime.getCompletionOptions('/plan').find((item) => item.value === '/plan approve')?.description,
+      '批准当前待确认的计划并开始执行'
+    );
+    assert.equal(
+      runtime.getCompletionOptions('/plan auto').find((item) => item.value === '/plan auto run ')?.description,
+      '自动生成计划后立即继续执行'
+    );
     assert.ok(runtime.getCompletionOptions('/tasks').some((item) => item.value === '/tasks add'));
     assert.ok(runtime.getCompletionOptions('/agents').some((item) => item.value === '/agents run'));
     assert.ok(runtime.getCompletionOptions('/agents run').some((item) => item.value === '/agents run planner '));
@@ -411,6 +426,8 @@ test('chat runtime injects persistent memory into the system prompt', { concurre
       assert.match(systemText, /Do not store temporary task details, speculative guesses, or secrets/i);
       assert.match(systemText, /remember_user for user preferences/i);
       assert.match(systemText, /remember_project for repository-specific conventions/i);
+      assert.match(systemText, /preserve command names, file paths, identifiers, and punctuation exactly/i);
+      assert.match(systemText, /exact_text=/);
       assert.match(systemText, /用户偏好中文回复/);
       assert.match(systemText, /优先使用 rg 搜索代码/);
       assert.match(systemText, /src\/auth\.ts 是登录核心模块/);
@@ -743,7 +760,272 @@ test('chat runtime does not auto-inject executing-plan-lite for ordinary impleme
   });
 });
 
-test('plan auto appends a final summary step and returns summarized feedback', { concurrency: false }, async () => {
+test('chat runtime adds execution guidance for medium tasks without entering plan mode', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    let inspected = false;
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+      const systemText = String(body.messages?.[0]?.content || '');
+      inspected = true;
+      assert.match(systemText, /Task Mode: medium/i);
+      assert.match(systemText, /Execution guidance:/i);
+      assert.match(systemText, /Give a brief execution outline before coding/i);
+      return makeSseResponse([
+        { choices: [{ delta: { content: '先说明执行要点，再修改代码并验证。' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] }
+      ]);
+    });
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-medium-task-guidance',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const result = await runtime.submit('Update login flow across src/auth.ts and src/session.ts, then add focused tests.');
+      assert.equal(result.type, 'assistant');
+      assert.match(result.text, /执行要点/);
+      assert.equal(inspected, true);
+    } finally {
+      await restoreFetch();
+    }
+  });
+});
+
+test('chat runtime auto-plans complex tasks from ordinary chat input', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    let callIndex = 0;
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      callIndex += 1;
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+
+      if (callIndex === 1) {
+        return makeJsonResponse({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: 'Coordinate a broad auth workflow update.',
+                  steps: [
+                    {
+                      title: 'Implement auth workflow update',
+                      role: 'coder',
+                      task: 'Update the auth workflow across server, client, and tests.'
+                    },
+                    {
+                      title: 'Review auth workflow update',
+                      role: 'reviewer',
+                      task: 'Review the auth workflow changes.'
+                    },
+                    {
+                      title: 'Verify auth workflow update',
+                      role: 'tester',
+                      task: 'Verify the auth workflow changes.'
+                    }
+                  ]
+                })
+              }
+            }
+          ]
+        });
+      }
+
+      throw new Error(`unexpected fetch call ${callIndex}`);
+    });
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-auto-plan-complex-chat',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const result = await runtime.submit('Refactor authentication workflow across API handlers, session state, error recovery, and tests.');
+      assert.equal(result.type, 'system');
+      assert.match(result.text, /Approval: pending/i);
+      assert.match(result.text, /Auto plan finished.*waiting for \/plan approve/i);
+      assert.match(result.text, /Next: review the plan summary, then use \/plan approve/i);
+      assert.doesNotMatch(result.text, /Steps:\s+\d+\s+total/i);
+      assert.match(result.text, /Plan File:/i);
+      assert.equal(callIndex, 1);
+    } finally {
+      await restoreFetch();
+    }
+  });
+});
+
+test('plan auto keeps advisory plans lean instead of forcing reviewer and tester steps', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+      assert.equal(body.stream, undefined);
+      assert.match(String(body.messages?.[1]?.content || ''), /Task class: advisory/i);
+      return makeJsonResponse({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                summary: 'Analyze the project and summarize optimization ideas.',
+                steps: [
+                  {
+                    title: 'Inspect project structure',
+                    role: 'planner',
+                    task: 'Inspect the project layout and identify likely hot spots.'
+                  },
+                  {
+                    title: 'Summarize optimization ideas',
+                    role: 'coder',
+                    task: 'Summarize the highest-value optimization opportunities.'
+                  }
+                ]
+              })
+            }
+          }
+        ]
+      });
+    });
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-advisory-plan-role-selection',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const result = await runtime.submit('/plan auto 帮我看看目前项目有什么可以优化的点');
+      assert.equal(result.type, 'system');
+      assert.match(result.text, /Approval: pending/i);
+      assert.doesNotMatch(result.text, /reviewer/i);
+      assert.doesNotMatch(result.text, /tester/i);
+    } finally {
+      await restoreFetch();
+    }
+  });
+});
+
+test('plan auto run immediately executes the generated plan without pending approval', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    let callIndex = 0;
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      callIndex += 1;
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+
+      if (callIndex === 1) {
+        assert.equal(body.stream, undefined);
+        assert.match(String(body.messages?.[0]?.content || ''), /Planning policy:/i);
+        assert.match(String(body.messages?.[1]?.content || ''), /Task class: advisory/i);
+        assert.match(String(body.messages?.[1]?.content || ''), /usually limit it to planner\/coder/i);
+        return makeJsonResponse({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: 'Inspect and improve project structure.',
+                  steps: [
+                    {
+                      title: 'Inspect project structure',
+                      role: 'planner',
+                      task: 'Inspect the main modules and identify likely optimization areas.'
+                    },
+                    {
+                      title: 'Summarize optimization ideas',
+                      role: 'coder',
+                      task: 'Summarize the most valuable optimization opportunities.'
+                    },
+                    {
+                      title: 'Review recommendations',
+                      role: 'reviewer',
+                      task: 'Review the recommendations for completeness and risk.'
+                    },
+                    {
+                      title: 'Verify recommendations',
+                      role: 'tester',
+                      task: 'Verify that the recommendations are grounded in the repository.'
+                    }
+                  ]
+                })
+              }
+            }
+          ]
+        });
+      }
+
+      if (callIndex === 2) {
+        assert.equal(body.stream, true);
+        assert.match(String(body.messages?.[1]?.content || ''), /User approval: \/plan auto run/i);
+        assert.match(String(body.messages?.[1]?.content || ''), /Plan file:/i);
+        assert.doesNotMatch(String(body.messages?.[1]?.content || ''), /\[tester\]/i);
+        assert.doesNotMatch(String(body.messages?.[1]?.content || ''), /reviewer/i);
+        assert.doesNotMatch(String(body.messages?.[1]?.content || ''), /tester/i);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Here is the completed optimization review.' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      throw new Error(`unexpected fetch call ${callIndex}`);
+    });
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-plan-auto-run',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const result = await runtime.submit('/plan auto run review the current project and recommend optimizations');
+
+      assert.equal(result.type, 'assistant');
+      assert.match(result.text, /completed optimization review/i);
+      assert.equal(callIndex, 2);
+    } finally {
+      await restoreFetch();
+    }
+  });
+});
+
+test('plan auto run executes the approved plan prompt immediately', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let callIndex = 0;
     const restoreFetch = withMockFetch(async (_url, init) => {
@@ -782,33 +1064,14 @@ test('plan auto appends a final summary step and returns summarized feedback', {
         });
       }
 
-      if (callIndex >= 2 && callIndex <= 4) {
+      if (callIndex === 2) {
         assert.equal(body.stream, true);
-        const responses = [
-          'Implemented the requested login test plan with edge cases.',
-          'Findings:\n- none\nVerified:\n- reviewed login flow coverage\nNot Verified:\n- real backend execution\nNext Action:\n- run manual smoke tests',
-          'Verified:\n- inspected the test checklist\nNot Verified:\n- end-to-end execution on staging\nFailures:\n- none\nNext Action:\n- run staging validation'
-        ];
+        assert.match(String(body.messages?.[1]?.content || ''), /Acceptance checklist:/i);
+        assert.match(String(body.messages?.[1]?.content || ''), /Plan summary: Build and verify a login test plan\./i);
         return makeSseResponse([
-          { choices: [{ delta: { content: responses[callIndex - 2] } }] },
+          { choices: [{ delta: { content: 'Status: done\nVerified: reviewed the login plan structure\nNext: none' } }] },
           { choices: [{ delta: {}, finish_reason: 'stop' }] }
         ]);
-      }
-
-      if (callIndex === 5) {
-        assert.equal(body.stream, undefined);
-        assert.equal(body.tools, undefined);
-        assert.match(body.messages[0].content, /final execution summary/i);
-        assert.match(body.messages[1].content, /Implemented the requested login test plan/i);
-        return makeJsonResponse({
-          choices: [
-            {
-              message: {
-                content: 'The login test plan is drafted and reviewed, but staging validation is still pending.'
-              }
-            }
-          ]
-        });
       }
 
       throw new Error(`unexpected fetch call ${callIndex}`);
@@ -832,25 +1095,109 @@ test('plan auto appends a final summary step and returns summarized feedback', {
       });
 
       const events = [];
-      const result = await runtime.submit('/plan auto create a login test plan', (event) => events.push(event));
+      const result = await runtime.submit('/plan auto run create a login test plan', (event) => events.push(event));
 
-      assert.equal(result.type, 'system');
-      assert.match(result.text, /Final Summary: The login test plan is drafted and reviewed/i);
+      assert.equal(result.type, 'assistant');
+      assert.match(result.text, /Status: done/i);
       assert.ok(
         events.some(
           (event) =>
-            event?.type === 'assistant:delta' &&
-            String(event.text || '').includes('[plan] Step 4/4 -> summarizer: Final summary')
+            event?.type === 'assistant:delta' && String(event.text || '').includes('[plan] Step 1/3 -> coder: Implement login test cases')
         )
       );
-      assert.equal(callIndex, 5);
+      assert.equal(callIndex, 2);
     } finally {
       await restoreFetch();
     }
   });
 });
 
-test('plan auto uses conservative fallback final summary when a verification step fails', { concurrency: false }, async () => {
+test('plan auto run appends a valid tester step instead of emitting undefined metadata', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    let callIndex = 0;
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      callIndex += 1;
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+
+      if (callIndex === 1) {
+        assert.equal(body.stream, undefined);
+        return makeJsonResponse({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: 'Refactor the auth flow and then review it.',
+                  steps: [
+                    {
+                      title: 'Refactor the auth flow',
+                      role: 'coder',
+                      task: 'Refactor the auth flow across the target files.'
+                    },
+                    {
+                      title: 'Review the auth refactor',
+                      role: 'reviewer',
+                      task: 'Review the refactor for regressions and gaps.'
+                    }
+                  ]
+                })
+              }
+            }
+          ]
+        });
+      }
+
+      if (callIndex === 2) {
+        assert.equal(body.stream, true);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Status: done\nVerified: exercised the refactor flow\nNext: none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      throw new Error(`unexpected fetch call ${callIndex}`);
+    });
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-plan-auto-run-tester-fallback',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const events = [];
+      const result = await runtime.submit('/plan auto run refactor the auth flow and verify it', (event) => events.push(event));
+
+      assert.equal(result.type, 'assistant');
+      assert.match(result.text, /Status: done/i);
+      assert.ok(
+        events.some(
+          (event) =>
+            event?.type === 'assistant:delta' && String(event.text || '').includes('[plan] Step 3/3 -> tester: Test and verify')
+        )
+      );
+      assert.ok(
+        events.every(
+          (event) => event?.type !== 'assistant:delta' || !/\bundefined\b/i.test(String(event.text || ''))
+        )
+      );
+      assert.equal(callIndex, 2);
+    } finally {
+      await restoreFetch();
+    }
+  });
+});
+
+test('plan auto run sends the approved plan prompt with the generated plan details', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let callIndex = 0;
     const restoreFetch = withMockFetch(async (_url, init) => {
@@ -889,24 +1236,11 @@ test('plan auto uses conservative fallback final summary when a verification ste
       }
 
       if (callIndex === 2) {
+        assert.match(String(body.messages?.[1]?.content || ''), /Original goal:/i);
+        assert.match(String(body.messages?.[1]?.content || ''), /Acceptance checklist:/i);
+        assert.match(String(body.messages?.[1]?.content || ''), /trim/i);
         return makeSseResponse([
-          { choices: [{ delta: { content: 'Implemented helper update.' } }] },
-          { choices: [{ delta: {}, finish_reason: 'stop' }] }
-        ]);
-      }
-
-      if (callIndex === 3) {
-        assert.match(body.messages[1].content, /Original goal:/i);
-        return makeSseResponse([
-          { choices: [{ delta: { content: 'Findings:\n- none\nVerified:\n- reviewed helper file\nNot Verified:\n- runtime behavior\nNext Action:\n- run tests' } }] },
-          { choices: [{ delta: {}, finish_reason: 'stop' }] }
-        ]);
-      }
-
-      if (callIndex === 4) {
-        assert.match(body.messages[1].content, /Original goal:/i);
-        return makeSseResponse([
-          { choices: [{ delta: { content: 'Verified:\n- attempted verification\nNot Verified:\n- goal requirement still unmet\nFailures:\n- command failed\nNext Action:\n- fix implementation' } }] },
+          { choices: [{ delta: { content: 'Status: partial\nVerified: reviewed helper file\nNext: run focused tests' } }] },
           { choices: [{ delta: {}, finish_reason: 'stop' }] }
         ]);
       }
@@ -931,12 +1265,11 @@ test('plan auto uses conservative fallback final summary when a verification ste
         systemPrompt: 'You are a test assistant.'
       });
 
-      const result = await runtime.submit('/plan auto update auth helper and ensure names are trimmed');
+      const result = await runtime.submit('/plan auto run update auth helper and ensure names are trimmed');
 
-      assert.equal(result.type, 'system');
-      assert.match(result.text, /Auto plan finished with failures/);
-      assert.match(result.text, /Execution finished with failed steps\./);
-      assert.equal(callIndex, 4);
+      assert.equal(result.type, 'assistant');
+      assert.match(result.text, /Status: partial/i);
+      assert.equal(callIndex, 2);
     } finally {
       await restoreFetch();
     }
@@ -1250,7 +1583,7 @@ test('chat runtime project index respects .llmignore for source files', { concur
   });
 });
 
-test('plan auto uses a lightweight execution chain for simple goals', { concurrency: false }, async () => {
+test('plan auto run includes acceptance checklist for lightweight goals', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let callIndex = 0;
     const restoreFetch = withMockFetch(async (_url, init) => {
@@ -1290,41 +1623,13 @@ test('plan auto uses a lightweight execution chain for simple goals', { concurre
 
       if (callIndex === 2) {
         assert.match(body.messages[1].content, /Acceptance checklist:/i);
-        return makeSseResponse([
-          { choices: [{ delta: { content: 'Implemented trimName(name) and exported it.' } }] },
-          { choices: [{ delta: {}, finish_reason: 'stop' }] }
-        ]);
-      }
-
-      if (callIndex === 3) {
-        assert.match(body.messages[1].content, /Acceptance checklist:/i);
-        assert.doesNotMatch(body.messages[0].content, /review sub-agent/i);
-        assert.match(body.messages[0].content, /testing sub-agent/i);
+        assert.match(body.messages[1].content, /Add trimName\(name\) helper in src\/user\.js/i);
         return makeSseResponse([
           {
-            choices: [
-              {
-                delta: {
-                  content:
-                    'Verified:\n- confirmed trimName(name) is exported\nNot Verified:\n- integration usage in callers\nFailures:\n- none\nNext Action:\n- none'
-                }
-              }
-            ]
+            choices: [{ delta: { content: 'Status: done\nVerified: confirmed trimName(name) is exported\nNext: none' } }]
           },
           { choices: [{ delta: {}, finish_reason: 'stop' }] }
         ]);
-      }
-
-      if (callIndex === 4) {
-        return makeJsonResponse({
-          choices: [
-            {
-              message: {
-                content: 'The helper change was implemented and directly verified, with only integration usage still unverified.'
-              }
-            }
-          ]
-        });
       }
 
       throw new Error(`unexpected fetch call ${callIndex}`);
@@ -1347,19 +1652,18 @@ test('plan auto uses a lightweight execution chain for simple goals', { concurre
         systemPrompt: 'You are a test assistant.'
       });
 
-      const result = await runtime.submit('/plan auto add trimName(name) helper in src/user.js');
+      const result = await runtime.submit('/plan auto run add trimName(name) helper in src/user.js');
 
-      assert.equal(result.type, 'system');
-      assert.match(result.text, /Steps: 2 total/);
-      assert.match(result.text, /Final Summary: The helper change was implemented and directly verified/i);
-      assert.equal(callIndex, 4);
+      assert.equal(result.type, 'assistant');
+      assert.match(result.text, /Status: done/i);
+      assert.equal(callIndex, 2);
     } finally {
       await restoreFetch();
     }
   });
 });
 
-test('plan auto expands the original goal into checklist-style acceptance guidance', { concurrency: false }, async () => {
+test('plan auto run forwards checklist-style acceptance guidance into execution', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let callIndex = 0;
     const restoreFetch = withMockFetch(async (_url, init) => {
@@ -1404,45 +1708,9 @@ test('plan auto expands the original goal into checklist-style acceptance guidan
         assert.match(scopedTask, /trim whitespace/i);
         assert.match(scopedTask, /preserve the exclamation mark/i);
         return makeSseResponse([
-          { choices: [{ delta: { content: 'Implemented the requested auth updates.' } }] },
+          { choices: [{ delta: { content: 'Status: done\nVerified: aligned with the checklist in the approved plan prompt\nNext: none' } }] },
           { choices: [{ delta: {}, finish_reason: 'stop' }] }
         ]);
-      }
-
-      if (callIndex === 3) {
-        const scopedTask = String(body.messages[1].content || '');
-        assert.match(scopedTask, /Acceptance checklist:/i);
-        assert.match(scopedTask, /Add greetUser\(name\)/i);
-        assert.match(scopedTask, /trim whitespace/i);
-        assert.match(scopedTask, /preserve the exclamation mark/i);
-        return makeSseResponse([
-          { choices: [{ delta: { content: 'Findings:\n- none\nVerified:\n- reviewed auth helper logic against the checklist\nNot Verified:\n- runtime output\nNext Action:\n- run tests' } }] },
-          { choices: [{ delta: {}, finish_reason: 'stop' }] }
-        ]);
-      }
-
-      if (callIndex === 4) {
-        const scopedTask = String(body.messages[1].content || '');
-        assert.match(scopedTask, /Acceptance checklist:/i);
-        assert.match(scopedTask, /Add greetUser\(name\)/i);
-        assert.match(scopedTask, /trim whitespace/i);
-        assert.match(scopedTask, /preserve the exclamation mark/i);
-        return makeSseResponse([
-          { choices: [{ delta: { content: 'Verified:\n- checked the described auth behavior against the checklist\nNot Verified:\n- staging validation\nFailures:\n- none\nNext Action:\n- none' } }] },
-          { choices: [{ delta: {}, finish_reason: 'stop' }] }
-        ]);
-      }
-
-      if (callIndex === 5) {
-        return makeJsonResponse({
-          choices: [
-            {
-              message: {
-                content: 'The auth changes match the requested checklist, with staging validation still pending.'
-              }
-            }
-          ]
-        });
       }
 
       throw new Error(`unexpected fetch call ${callIndex}`);
@@ -1466,19 +1734,19 @@ test('plan auto expands the original goal into checklist-style acceptance guidan
       });
 
       const result = await runtime.submit(
-        '/plan auto add greetUser(name), trim whitespace in the returned greeting, and preserve the exclamation mark'
+        '/plan auto run add greetUser(name), trim whitespace in the returned greeting, and preserve the exclamation mark'
       );
 
-      assert.equal(result.type, 'system');
-      assert.match(result.text, /Final Summary: The auth changes match the requested checklist/i);
-      assert.equal(callIndex, 5);
+      assert.equal(result.type, 'assistant');
+      assert.match(result.text, /Status: done/i);
+      assert.equal(callIndex, 2);
     } finally {
       await restoreFetch();
     }
   });
 });
 
-test('plan auto asks reviewer and tester for structured acceptance status', { concurrency: false }, async () => {
+test('plan auto run carries acceptance checklist into the approved execution prompt', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let callIndex = 0;
     const restoreFetch = withMockFetch(async (_url, init) => {
@@ -1517,16 +1785,7 @@ test('plan auto asks reviewer and tester for structured acceptance status', { co
       }
 
       if (callIndex === 2) {
-        return makeSseResponse([
-          { choices: [{ delta: { content: 'Implemented the auth greeting update.' } }] },
-          { choices: [{ delta: {}, finish_reason: 'stop' }] }
-        ]);
-      }
-
-      if (callIndex === 3 || callIndex === 4) {
-        const systemText = String(body.messages[0].content || '');
         const scopedTask = String(body.messages[1].content || '');
-        assert.match(systemText, /Acceptance Status:/i);
         assert.match(scopedTask, /Acceptance checklist:/i);
         assert.match(scopedTask, /Add greetUser\(name\)/i);
         assert.match(scopedTask, /Trim whitespace/i);
@@ -1535,10 +1794,7 @@ test('plan auto asks reviewer and tester for structured acceptance status', { co
             choices: [
               {
                 delta: {
-                  content:
-                    callIndex === 3
-                      ? 'Acceptance Status:\n- met :: Add greetUser(name)\n- unmet :: Trim whitespace in the returned greeting\nFindings:\n- greeting still keeps surrounding whitespace\nVerified:\n- reviewed greetUser implementation\nNot Verified:\n- runtime output\nNext Action:\n- fix trimming'
-                      : 'Acceptance Status:\n- met :: Add greetUser(name)\n- unverified :: Trim whitespace in the returned greeting\nVerified:\n- inspected the greeting behavior request\nNot Verified:\n- trimming behavior remains unverified\nFailures:\n- none\nNext Action:\n- run focused verification after fixing trimming'
+                  content: 'Status: partial\nVerified: checklist was included in the approved execution prompt\nNext: run focused verification'
                 }
               }
             ]
@@ -1568,20 +1824,19 @@ test('plan auto asks reviewer and tester for structured acceptance status', { co
       });
 
       const result = await runtime.submit(
-        '/plan auto add greetUser(name) and trim whitespace in the returned greeting'
+        '/plan auto run add greetUser(name) and trim whitespace in the returned greeting'
       );
 
-      assert.equal(result.type, 'system');
-      assert.match(result.text, /Auto plan finished with failures/);
-      assert.match(result.text, /Needs follow-up:/i);
-      assert.equal(callIndex, 4);
+      assert.equal(result.type, 'assistant');
+      assert.match(result.text, /Status: partial/i);
+      assert.equal(callIndex, 2);
     } finally {
       await restoreFetch();
     }
   });
 });
 
-test('plan auto treats unmet acceptance checklist items as failure signals', { concurrency: false }, async () => {
+test('plan auto run preserves the approved plan summary and goal in the execution prompt', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let callIndex = 0;
     const restoreFetch = withMockFetch(async (_url, init) => {
@@ -1620,36 +1875,16 @@ test('plan auto treats unmet acceptance checklist items as failure signals', { c
       }
 
       if (callIndex === 2) {
-        return makeSseResponse([
-          { choices: [{ delta: { content: 'Implemented the auth helper update.' } }] },
-          { choices: [{ delta: {}, finish_reason: 'stop' }] }
-        ]);
-      }
-
-      if (callIndex === 3) {
+        const scopedTask = String(body.messages[1].content || '');
+        assert.match(scopedTask, /Original goal:/i);
+        assert.match(scopedTask, /Plan summary: Update auth helper safely\./i);
+        assert.match(scopedTask, /Preserve the exclamation mark/i);
         return makeSseResponse([
           {
             choices: [
               {
                 delta: {
-                  content:
-                    'Acceptance Status:\n- met :: Add greetUser(name)\n- unmet :: Preserve the exclamation mark\nFindings:\n- exclamation mark is missing\nVerified:\n- reviewed greetUser implementation\nNot Verified:\n- runtime output\nNext Action:\n- fix greeting suffix'
-                }
-              }
-            ]
-          },
-          { choices: [{ delta: {}, finish_reason: 'stop' }] }
-        ]);
-      }
-
-      if (callIndex === 4) {
-        return makeSseResponse([
-          {
-            choices: [
-              {
-                delta: {
-                  content:
-                    'Acceptance Status:\n- met :: Add greetUser(name)\n- unmet :: Preserve the exclamation mark\nVerified:\n- attempted focused verification\nNot Verified:\n- final greeting punctuation remains wrong\nFailures:\n- none\nNext Action:\n- repair the greeting output'
+                  content: 'Status: blocked\nVerified: approved prompt preserved the requested punctuation requirement\nNext: implement the actual code path'
                 }
               }
             ]
@@ -1679,13 +1914,12 @@ test('plan auto treats unmet acceptance checklist items as failure signals', { c
       });
 
       const result = await runtime.submit(
-        '/plan auto add greetUser(name) and preserve the exclamation mark'
+        '/plan auto run add greetUser(name) and preserve the exclamation mark'
       );
 
-      assert.equal(result.type, 'system');
-      assert.match(result.text, /Auto plan finished with failures/);
-      assert.match(result.text, /Failed: 2/);
-      assert.equal(callIndex, 4);
+      assert.equal(result.type, 'assistant');
+      assert.match(result.text, /Status: blocked/i);
+      assert.equal(callIndex, 2);
     } finally {
       await restoreFetch();
     }

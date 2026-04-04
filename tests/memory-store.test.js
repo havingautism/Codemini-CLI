@@ -62,9 +62,11 @@ test('rememberMemory stores user, global, and project memories and renders a com
       assert.equal(project.length, 1);
       assert.equal(projectEntries.length, 1);
       assert.match(snapshot, /Persistent Memory:/);
+      assert.match(snapshot, /preserve command names, file paths, identifiers, and punctuation exactly/i);
       assert.match(snapshot, /User Memory:/);
       assert.match(snapshot, /Global Memory:/);
       assert.match(snapshot, /Project Memory:/);
+      assert.match(snapshot, /exact_text=/);
       assert.match(snapshot, /用户偏好中文回复/);
       assert.match(snapshot, /优先使用 rg 搜索代码/);
       assert.match(snapshot, /chat-runtime\.js 是核心编排入口/);

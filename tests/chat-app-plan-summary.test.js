@@ -4,18 +4,21 @@ import assert from 'node:assert/strict';
 import {
   buildPreToolNotice,
   injectPlanStateMessage,
+  parsePlanExecutionResult,
   parseAutoPlanSummaryMessage,
-  parsePlanProgressLine
+  parsePlanProgressLine,
+  stripPlanExecutionResult
 } from '../src/tui/chat-app.js';
 import { describeAutoSkillActivity, describeSkillActivity, formatAutoSkillBadge } from '../src/tui/skill-activity/index.js';
 import { describeToolActivity } from '../src/tui/tool-activity/index.js';
 
 test('parseAutoPlanSummaryMessage extracts structured fields from auto-plan summary text', () => {
   const parsed = parseAutoPlanSummaryMessage(`
-Auto plan finished with warnings
-File: E:\\repo\\.codemini\\plans\\plan.md
+Auto plan finished with warnings (waiting for /plan approve)
+Plan File: E:\\repo\\.codemini\\plans\\plan.md
 Plan Summary: 创建并执行测试计划
 Final Summary: 测试计划已完成审查，但 staging 验证仍待执行。
+Approval: pending
 Steps: 5 total
 Completed: 5
 Warnings: 2
@@ -24,10 +27,11 @@ Warning steps: planner:分析现有代码, tester:编写测试用例
   `);
 
   assert.deepEqual(parsed, {
-    statusTitle: 'Auto plan finished with warnings',
+    statusTitle: 'Auto plan finished with warnings (waiting for /plan approve)',
     filePath: 'E:\\repo\\.codemini\\plans\\plan.md',
     planSummary: '创建并执行测试计划',
     finalSummary: '测试计划已完成审查，但 staging 验证仍待执行。',
+    approval: 'pending',
     stepsTotal: '5 total',
     completed: '5',
     warnings: '2',
@@ -51,6 +55,46 @@ test('parsePlanProgressLine extracts plan step metadata from streamed text', () 
   assert.equal(parsePlanProgressLine('普通文本'), null);
 });
 
+test('parsePlanExecutionResult extracts status, verified, and next fields', () => {
+  assert.deepEqual(
+    parsePlanExecutionResult('Status: done\nVerified: inspected target files and checks\nNext: none'),
+    {
+      status: 'done',
+      verified: 'inspected target files and checks',
+      next: 'none'
+    }
+  );
+  assert.equal(parsePlanExecutionResult('普通文本'), null);
+});
+
+test('stripPlanExecutionResult removes status lines from assistant text body', () => {
+  const source = [
+    '问题描述：',
+    '- agent-loop.js 中存在同步 JSON 序列化用于 hash 计算',
+    '',
+    'Status: done',
+    'Verified: 完整分析了 src/core/ 下 20+ 核心模块',
+    'Next: 如需进一步深挖可以继续说明'
+  ].join('\n');
+
+  assert.equal(
+    stripPlanExecutionResult(source),
+    ['问题描述：', '- agent-loop.js 中存在同步 JSON 序列化用于 hash 计算'].join('\n')
+  );
+});
+
+test('stripPlanExecutionResult also cleans a body that only contains trailing execution result lines', () => {
+  const source = [
+    '最值得优先处理的是 #1、#4 和 #7。',
+    '',
+    'Status: done',
+    'Verified: 逐文件审查了 src/core、src/commands、src/tui 关键文件',
+    'Next: none - 如需继续实施，可以继续'
+  ].join('\n');
+
+  assert.equal(stripPlanExecutionResult(source), '最值得优先处理的是 #1、#4 和 #7。');
+});
+
 test('injectPlanStateMessage anchors plan strip after the active user message', () => {
   const messages = [
     { id: 'sys-1', label: 'system', text: 'startup' },
@@ -67,6 +111,21 @@ test('injectPlanStateMessage anchors plan strip after the active user message', 
   assert.equal(injected[1].id, 'user-1');
   assert.equal(injected[2].planStrip, true);
   assert.equal(injected[3].id, 'coder-1');
+});
+
+test('injectPlanStateMessage hides the strip while a plan is waiting for approval', () => {
+  const messages = [
+    { id: 'user-1', label: 'you', text: '/plan auto 修复天气页' },
+    { id: 'system-1', label: 'system', text: 'Auto plan finished (waiting for /plan approve)' }
+  ];
+  const injected = injectPlanStateMessage(
+    messages,
+    { current: 1, total: 4, role: 'planner', title: '分析项目', failed: false, steps: [], pendingApproval: true },
+    'user-1',
+    null
+  );
+
+  assert.equal(injected.some((message) => message.planStrip), false);
 });
 
 test('buildPreToolNotice gives the user a visible pre-tool progress hint', () => {

@@ -129,6 +129,13 @@ function getCompletionCopy(language = 'zh') {
         '/config list': '查看完整配置',
         '/config reset': '重置为默认配置'
       },
+      planSubcommands: {
+        '/plan <goal>': '创建一个人工审阅的实施计划',
+        '/plan auto <goal>': '自动生成计划并等待你确认执行',
+        '/plan auto run <goal>': '自动生成计划后立即继续执行',
+        '/plan approve': '批准当前待确认的计划并开始执行',
+        '/plan from-spec <spec-path?>': '从 spec 文件生成实施计划'
+      },
       commands: {
         help: '显示聊天帮助',
         exit: '退出聊天',
@@ -210,6 +217,13 @@ function getCompletionCopy(language = 'zh') {
         '/config get': 'show a config value',
         '/config list': 'print the full config',
         '/config reset': 'reset config to defaults'
+      },
+      planSubcommands: {
+        '/plan <goal>': 'create an implementation plan for manual review',
+        '/plan auto <goal>': 'generate a plan and wait for your approval',
+        '/plan auto run <goal>': 'generate a plan and continue execution immediately',
+        '/plan approve': 'approve the pending plan and start execution',
+        '/plan from-spec <spec-path?>': 'generate an implementation plan from a spec file'
       },
       commands: {
         help: 'show chat help',
@@ -559,6 +573,24 @@ function isLightweightAutoPlanGoal(goal, requirements = []) {
   return /\b(add|update|fix|rename|trim|export|create|remove|change|implement)\b/i.test(text);
 }
 
+function classifyPlanTaskClass(goal = '') {
+  const text = String(goal || '').trim();
+  const lowerGoal = text.toLowerCase();
+  const advisory =
+    /\b(analyze|analysis|review|audit|inspect|assess|recommend|recommendation|optimization|optimize|improve|suggest|brainstorm|plan|feedback)\b/i.test(lowerGoal) ||
+    /(分析|审查|审计|检查|评估|建议|优化|优化点|优化建议|改进|改进点|规划|方案|看一下|看看|有哪些问题|有什么问题)/.test(text);
+  const implementation =
+    /\b(add|build|create|implement|support|introduce|refactor|rewrite|rework|migrate|change|update|fix)\b/i.test(lowerGoal) ||
+    /(新增|增加|实现|支持|重构|重写|改造|迁移|修改|更新|修复)/.test(text);
+  const verificationHeavy =
+    /\b(test|verify|validation|validate|prove|confirm|reproduce|check coverage)\b/i.test(lowerGoal) ||
+    /(测试|验证|校验|确认|复现|覆盖率)/.test(text);
+
+  if (verificationHeavy) return 'verification-heavy';
+  if (advisory && !implementation) return 'advisory';
+  return 'implementation';
+}
+
 function buildGoalRequirementPacket(goal, role) {
   const rawGoal = trimInlineText(goal, 800);
   if (!rawGoal) return '';
@@ -593,7 +625,9 @@ function buildAutoPlanPlannerGuidance() {
     '- Prefer the smallest local approach that satisfies the goal.',
     '- Do not output multiple alternative branches in the final plan.',
     '- Do not assume implementation should begin before the plan is coherent.',
-    '- Turn the chosen direction into concrete execution steps for planner, coder, reviewer, and tester.',
+    '- Available sub-agent roles are planner, coder, reviewer, and tester. Use only the roles the task actually needs.',
+    '- For implementation-heavy or risky changes, prefer adding review and/or verification steps.',
+    '- For analysis, recommendation, or planning-only goals, you may omit reviewer/tester if they do not add value.',
     '- Prefer 3-5 steps total unless the task is clearly larger.',
     '- Keep the plan ordered, implementation-oriented, and easy for small sub-agents to follow.'
   ].join('\n');
@@ -750,49 +784,56 @@ function selectAutoSkillNames(text = '') {
   return selected;
 }
 
-function shouldAutoPlan(text = '') {
+function classifyTaskComplexity(text = '') {
   const input = String(text || '').trim();
-  if (!input) return false;
+  if (!input) return 'simple';
 
   const lower = input.toLowerCase();
   const explicitPlanning =
     /(\/plan\b|plan first|make a plan|implementation plan|先做计划|先出方案|先规划|先计划)/i.test(lower);
-  if (explicitPlanning) return false;
+  if (explicitPlanning) return 'complex';
 
   const simpleSkip =
     /(typo|readme|console\.log|log this|rename\s+\w+|one line|small tweak|tiny fix|格式化|拼写|注释|文案|小改|微调)/i.test(
       lower
     );
-  if (simpleSkip) return false;
+  if (simpleSkip) return 'simple';
 
   const discussionFirst =
     /(brainstorm|头脑风暴|方案|思路|怎么做|如何做|which (?:approach|option|way)|best way|trade-?off|not sure|unsure|unclear|whether it should|要不要|不确定|先别写|先不要写|先讨论|先想一下)/i.test(
       lower
     );
-  if (discussionFirst) return false;
+  if (discussionFirst) return 'simple';
 
   const implementationRequest =
     /\b(add|build|create|implement|support|introduce|design|refactor|rework|migrate|change|update|rewrite|restructure)\b/i.test(
       lower
     ) ||
     /(新增|增加|实现|支持|设计|重构|改造|迁移|调整|重写|重做)/i.test(lower);
-  if (!implementationRequest) return false;
+  if (!implementationRequest) return 'simple';
 
-  const nonTrivialSignals =
-    /\b(auth|authentication|workflow|flow|system|architecture|api|endpoint|state management|cache|caching|database|migration|service|shared helper|helper module|refactor|multi[- ]file|across files|with tests?|and tests?|with validation|error handling)\b/i.test(
-      lower
-    ) ||
-    /(架构|流程|系统|接口|缓存|数据库|迁移|服务|共享|模块|跨文件|测试|校验|错误处理)/i.test(lower);
-
+  const broadSignalPattern =
+    /\b(auth|authentication|workflow|flow|system|architecture|api|endpoint|state management|session state|cache|caching|database|migration|service|integration|error handling|error recovery|shared helper|helper module)\b/gi;
+  const broadSignals = lower.match(broadSignalPattern) || [];
   const multipleActions = /\b(and|plus|also|while|along with)\b/i.test(lower) || /[，、；;].+/.test(input);
   const singleFileScoped =
     /\b(?:in|inside|within|only in)\s+[-_/.\w]+\.(?:[cm]?[jt]sx?|py|go|rb|java|rs|php|md)\b/i.test(lower) ||
     /\b(?:src|app|lib|tests?)\/[-_/.\w]+\.(?:[cm]?[jt]sx?|py|go|rb|java|rs|php|md)\b/i.test(lower);
+  const fileMentions = (lower.match(/[-_/.\w]+\.(?:[cm]?[jt]sx?|py|go|rb|java|rs|php|md)\b/g) || []).length;
+  const multiFileScope =
+    fileMentions >= 2 ||
+    /\b(across|multiple files?|cross-file|cross file)\b/i.test(lower) ||
+    /跨文件|多文件/.test(input);
+  const verificationHeavy = /\b(with tests?|and tests?|verify|validation|error handling|error recovery)\b/i.test(lower) || /测试|验证|校验|错误处理|错误恢复/.test(input);
+  const architectureHeavy =
+    broadSignals.length >= 3 ||
+    /\b(architecture|workflow|migration|state management|session state|integration)\b/i.test(lower) ||
+    /架构|流程|迁移|状态/.test(input);
 
-  if (singleFileScoped && !multipleActions) return false;
-  if (singleFileScoped && !nonTrivialSignals) return false;
-
-  return nonTrivialSignals || (multipleActions && !singleFileScoped);
+  if (singleFileScoped && !multipleActions && !verificationHeavy) return 'simple';
+  if (architectureHeavy && (multiFileScope || multipleActions || verificationHeavy)) return 'complex';
+  if (multiFileScope || verificationHeavy || multipleActions) return 'medium';
+  return 'simple';
 }
 
 function classifyAutoRoute(text = '') {
@@ -802,23 +843,40 @@ function classifyAutoRoute(text = '') {
     return {
       mode: 'brainstorm',
       autoPlan: false,
-      selectedSkills
+      selectedSkills,
+      complexity: 'discussion'
     };
   }
 
-  if (shouldAutoPlan(text)) {
+  const complexity = classifyTaskComplexity(text);
+  if (complexity === 'complex') {
     return {
       mode: 'auto_plan',
       autoPlan: true,
-      selectedSkills: ['superpowers-lite']
+      selectedSkills: ['superpowers-lite'],
+      complexity
     };
   }
 
   return {
-    mode: 'direct',
+    mode: complexity === 'medium' ? 'direct_medium' : 'direct',
     autoPlan: false,
-    selectedSkills
+    selectedSkills,
+    complexity
   };
+}
+
+function buildMediumTaskSystemPrompt(systemPrompt) {
+  const guidance = [
+    'Task Mode: medium',
+    'Execution guidance:',
+    '- Give a brief execution outline before coding.',
+    '- Keep the outline concise and focused on touched files/behaviors.',
+    '- Then implement directly instead of entering pending plan approval.',
+    '- Verify the changed behavior before finishing.',
+    '- If major ambiguity appears mid-task, say so clearly and ask for a plan instead of guessing.'
+  ].join('\n');
+  return `${systemPrompt}\n\n${guidance}`;
 }
 
 function buildAutoSkillSystemPrompt(baseSystemPrompt, commands, config, text) {
@@ -961,6 +1019,7 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
   const source = Array.isArray(plan?.steps) ? plan.steps : [];
   const requirements = deriveGoalRequirements(goal);
   const lightweightGoal = isLightweightAutoPlanGoal(goal, requirements);
+  const taskClass = classifyPlanTaskClass(goal);
   const implementationSteps = source.filter((step) => step.role !== 'reviewer' && step.role !== 'tester');
   const primaryImplementationStep =
     implementationSteps.find((step) => step.role === 'coder') ||
@@ -979,17 +1038,31 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
     role: 'tester',
     task: `Test and verify the completed work for: ${goal}. Start with the artifacts produced by earlier implementation steps, run the most relevant checks available, report concrete evidence, and call out anything still unverified.`
   };
+  const hasReviewer = source.some((step) => step.role === 'reviewer');
+  const hasTester = source.some((step) => step.role === 'tester');
+
+  if (taskClass === 'advisory') {
+    const advisorySteps = source.filter((step) => step.role === 'planner' || step.role === 'coder');
+    return {
+      summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
+      steps: advisorySteps.length > 0 ? advisorySteps.slice(0, 6) : [primaryImplementationStep]
+    };
+  }
 
   if (lightweightGoal) {
     return {
       summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
-      steps: [primaryImplementationStep, testerStep]
+      steps: hasTester ? [primaryImplementationStep, testerStep] : [primaryImplementationStep]
     };
   }
 
   return {
     summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
-    steps: [...implementationSteps.slice(0, 6), reviewerStep, testerStep]
+    steps: [
+      ...implementationSteps.slice(0, 6),
+      ...(hasReviewer ? [reviewerStep] : []),
+      ...(testerStep ? [testerStep] : [])
+    ]
   };
 }
 
@@ -1058,19 +1131,23 @@ function extractAcceptanceStatusItems(text = '') {
 }
 
 function buildAutoPlanSystemSummary(auto) {
-  const statusTitle =
+  const baseStatusTitle =
     auto.failedCount > 0 ? 'Auto plan finished with failures' : auto.warningCount > 0 ? 'Auto plan finished with warnings' : 'Auto plan finished';
+  const statusTitle =
+    auto.approvalStatus === 'pending' ? `${baseStatusTitle} (waiting for /plan approve)` : baseStatusTitle;
   const lines = [
     statusTitle,
-    `File: ${auto.filePath}`,
+    `Plan File: ${auto.filePath}`,
     `Plan Summary: ${auto.summary || '-'}`,
     `Final Summary: ${auto.finalSummary || auto.summary || '-'}`,
-    `Approval: ${auto.approvalStatus || 'not_required'}`,
-    `Steps: ${auto.steps.length} total`,
-    `Completed: ${auto.completedCount}`,
-    `Warnings: ${auto.warningCount}`,
-    `Failed: ${auto.failedCount}`
+    `Approval: ${auto.approvalStatus || 'not_required'}`
   ];
+  if (auto.approvalStatus !== 'pending') {
+    lines.push(`Steps: ${auto.steps.length} total`);
+    lines.push(`Completed: ${auto.completedCount}`);
+    lines.push(`Warnings: ${auto.warningCount}`);
+    lines.push(`Failed: ${auto.failedCount}`);
+  }
   if (auto.warningTitles?.length) {
     lines.push(`Warning steps: ${auto.warningTitles.slice(0, 5).join(', ')}`);
   }
@@ -1078,7 +1155,7 @@ function buildAutoPlanSystemSummary(auto) {
     lines.push(`Failed steps: ${auto.failedTitles.slice(0, 5).join(', ')}`);
   }
   if (auto.approvalStatus === 'pending') {
-    lines.push('Next: review the plan summary, then use /plan approve to start implementation or /plan stay to keep planning.');
+    lines.push('Next: review the plan summary, then use /plan approve to start implementation, /plan auto run <goal> to plan and run in one step next time, or /plan stay to keep planning.');
   }
   return lines.join('\n');
 }
@@ -1492,7 +1569,7 @@ function buildPendingPlanApprovalMessage(planState) {
   const lines = [
     'Plan approval is still pending.',
     `Goal: ${planState?.goal || '-'}`,
-    `Plan file: ${planState?.filePath || '-'}`,
+    `Plan File: ${planState?.filePath || '-'}`,
     `Summary: ${planState?.finalSummary || planState?.summary || '-'}`,
     'Use /plan approve to start implementation, or /plan stay to keep refining the plan first.'
   ];
@@ -1500,6 +1577,7 @@ function buildPendingPlanApprovalMessage(planState) {
 }
 
 function buildApprovedPlanExecutionPrompt(planState, approvalText = '') {
+  const requirementPacket = buildGoalRequirementPacket(planState?.goal || '', 'coder');
   const lines = [
     'Approved implementation plan:',
     `Original goal: ${planState?.goal || '-'}`,
@@ -1507,6 +1585,7 @@ function buildApprovedPlanExecutionPrompt(planState, approvalText = '') {
     `Plan summary: ${planState?.summary || '-'}`,
     `Final planning summary: ${planState?.finalSummary || planState?.summary || '-'}`,
     `User approval: ${String(approvalText || '').trim() || 'approved'}`,
+    requirementPacket,
     Array.isArray(planState?.steps) && planState.steps.length > 0 ? 'Planned steps:' : '',
     ...(Array.isArray(planState?.steps)
       ? planState.steps.slice(0, 8).map((step, index) => `${index + 1}. [${step.role}] ${step.title} :: ${step.task}`)
@@ -1876,12 +1955,26 @@ async function buildAutoPlanAndRun({
   model,
   systemPrompt,
   onAgentEvent,
-  sessionId
+  sessionId,
+  taskClass
 }) {
+  const normalizedTaskClass = taskClass || classifyPlanTaskClass(goal);
   const requirementPacket = buildGoalRequirementPacket(goal, 'planner');
   const plannerPrompt = [
     buildAutoPlanPlannerGuidance(),
-    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester","task":"..."}]}. No markdown. Always include final reviewer and tester steps.'
+    'Planning policy:',
+    '- First classify the user goal as one of: advisory, implementation, or verification-heavy.',
+    '- advisory = analysis, review, audit, optimization suggestions, architecture feedback, brainstorming, planning, or recommendation requests.',
+    '- implementation = add/build/create/implement/refactor/fix/update/change behavior in code or files.',
+    '- verification-heavy = the user explicitly asks to run tests, verify findings, reproduce a bug, prove a claim, or validate a result.',
+    '- For advisory goals, prefer only planner and coder roles. Do not use reviewer or tester unless the user explicitly asks for verification or review as a separate deliverable.',
+    '- For advisory goals, do not emit generic filler steps such as "Test and verify", "Review recommendations", or other template-only steps.',
+    '- For implementation goals, reviewer and tester are optional support roles, not defaults. Only include them when they clearly add value.',
+    '- Every step title must be concrete and tied to the goal. Avoid vague titles like "Initial analysis", "Review recommendations", or "Test and verify" unless the user explicitly requested those activities.',
+    '- If the task is purely to inspect the current project and suggest improvements, a lean 2-step or 3-step plan is preferred.',
+    '- Example advisory roles: planner -> inspect project shape, coder -> synthesize findings and prioritized recommendations.',
+    '- Example implementation roles: planner -> inspect target area, coder -> implement change, tester -> verify changed behavior.',
+    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester","task":"..."}]}. No markdown.'
   ].join('\n');
   let autoPlan = {
     summary: `Auto plan for: ${goal}`,
@@ -1907,10 +2000,15 @@ async function buildAutoPlanAndRun({
           content: [
             'Create an execution plan and assign best sub-agent role for each step.',
             'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester","task":"..."}]}. No markdown.',
-            'Always include final reviewer and tester steps unless the task is explicitly tiny.',
+            'The available roles are planner, coder, reviewer, and tester. Use only the roles the task actually needs.',
+            `Task class: ${normalizedTaskClass}`,
+            'Before choosing roles, decide whether the request is advisory, implementation, or verification-heavy.',
             requirementPacket,
             'The first step should usually inspect or clarify the target area before implementation.',
-            'The final steps must include review and testing/verification unless the goal is a tiny single-change task, in which case you may keep only one implementation step plus one testing/verification step.',
+            'For analysis, recommendation, optimization, audit, or project-review goals, keep the plan lean and usually limit it to planner/coder.',
+            'Do not include reviewer/tester for advisory goals unless the user explicitly asks to validate, verify, or independently review the findings.',
+            'Avoid template-only titles like "Initial analysis", "Review recommendations", or "Test and verify" for advisory goals.',
+            'For implementation-heavy changes, prefer review and/or testing steps near the end only when they materially improve confidence.',
             'Prefer 3-5 steps total.'
           ]
             .filter(Boolean)
@@ -2185,7 +2283,7 @@ export async function createChatRuntime({
     '/checkpoint load <id>'
   ];
   const specTemplates = ['/spec <topic>'];
-  const planTemplates = ['/plan <goal>', '/plan auto <goal>', '/plan from-spec <spec-path?>'];
+  const planTemplates = ['/plan <goal>', '/plan auto <goal>', '/plan auto run <goal>', '/plan approve', '/plan from-spec <spec-path?>'];
   const agentTemplates = ['/agents list', '/agents run planner <task>', '/agents run coder <task>', '/agents run reviewer <task>', '/agents run tester <task>'];
   const debugTemplates = ['/debug keys on', '/debug keys off', '/debug keys status'];
   const compactTemplates = compactOptions.map((opt) => `/compact ${opt}`);
@@ -2229,6 +2327,7 @@ export async function createChatRuntime({
     if (!input.startsWith('/')) return [];
     const completionCopy = getCompletionCopy(config.ui?.language);
     const configSubcommandDescriptions = completionCopy.configSubcommands;
+    const planSubcommandDescriptions = completionCopy.planSubcommands || {};
 
     const hasTrailingSpace = /\s$/.test(input);
     const body = input.slice(1);
@@ -2262,7 +2361,9 @@ export async function createChatRuntime({
     for (const template of taskTemplates) registerSuggestion(template, completionCopy.generic.taskCommand);
     for (const template of checkpointTemplates) registerSuggestion(template, completionCopy.generic.checkpointCommand);
     for (const template of specTemplates) registerSuggestion(template, completionCopy.generic.specCommand);
-    for (const template of planTemplates) registerSuggestion(template, completionCopy.generic.planCommand);
+    for (const template of planTemplates) {
+      registerSuggestion(template, planSubcommandDescriptions[template] || completionCopy.generic.planCommand);
+    }
     for (const template of agentTemplates) registerSuggestion(template, completionCopy.generic.agentCommand);
     for (const template of debugTemplates) registerSuggestion(template, completionCopy.generic.debugCommand);
     for (const template of compactTemplates) registerSuggestion(template, completionCopy.generic.compactCommand);
@@ -2399,11 +2500,25 @@ export async function createChatRuntime({
       return materializeSuggestions(specTemplates);
     }
     if (commandPart === 'plan') {
+      if (tokens[1] === 'auto' && (tokens.length === 2 || (tokens.length === 3 && !hasTrailingSpace))) {
+        const sub = tokens[2] || '';
+        return ['run']
+          .filter((s) => s.startsWith(sub))
+          .map((s) => registerSuggestion(`/plan auto ${s} `, planSubcommandDescriptions[`/plan auto ${s} <goal>`] || completionCopy.generic.planCommand));
+      }
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         const sub = tokens[1] || '';
-        return ['auto', 'from-spec']
+        return ['auto', 'approve', 'from-spec']
           .filter((s) => s.startsWith(sub))
-          .map((s) => registerSuggestion(`/plan ${s}`, completionCopy.generic.planCommand));
+          .map((s) =>
+            registerSuggestion(
+              `/plan ${s}`,
+              planSubcommandDescriptions[`/plan ${s}`] ||
+                planSubcommandDescriptions[`/plan ${s} <goal>`] ||
+                planSubcommandDescriptions[`/plan ${s} <spec-path?>`] ||
+                completionCopy.generic.planCommand
+            )
+          );
       }
       return materializeSuggestions(planTemplates);
     }
@@ -2499,7 +2614,7 @@ export async function createChatRuntime({
       workspaceRoot: process.cwd()
     }).catch(() => '');
     const memoryGuide =
-      'Persistent memory is for durable preferences, project conventions, and stable workflow knowledge. Use fresh file reads when the code can verify details. Only write memory when the fact is likely to matter in future sessions, is stable over time, and is not sensitive. Do not store temporary task details, speculative guesses, or secrets. Choose remember_user for user preferences, communication habits, and long-term constraints. Choose remember_global for reusable workflow knowledge that helps across many projects. Choose remember_project for repository-specific conventions, architecture notes, important modules, and local workflow expectations.';
+      'Persistent memory is for durable preferences, project conventions, and stable workflow knowledge. Use fresh file reads when the code can verify details. Only write memory when the fact is likely to matter in future sessions, is stable over time, and is not sensitive. Do not store temporary task details, speculative guesses, or secrets. Choose remember_user for user preferences, communication habits, and long-term constraints. Choose remember_global for reusable workflow knowledge that helps across many projects. Choose remember_project for repository-specific conventions, architecture notes, important modules, and local workflow expectations. When memory includes command names, file paths, identifiers, or exact wording, preserve those tokens exactly instead of paraphrasing them.';
     return [soulPrompt, memorySnapshot, memoryGuide].filter(Boolean).join('\n\n');
   };
 
@@ -2723,8 +2838,9 @@ export async function createChatRuntime({
       if (parsedInput.command === 'plan') {
         const sub = (parsedInput.args[0] || '').trim().toLowerCase();
         if (sub === 'auto') {
-          const goal = parsedInput.args.slice(1).join(' ').trim();
-          if (!goal) return { type: 'system', text: 'Usage: /plan auto <goal>' };
+          const runImmediately = (parsedInput.args[1] || '').trim().toLowerCase() === 'run';
+          const goal = parsedInput.args.slice(runImmediately ? 2 : 1).join(' ').trim();
+          if (!goal) return { type: 'system', text: 'Usage: /plan auto <goal> | /plan auto run <goal>' };
           const auto = await buildAutoPlanAndRun({
             goal,
             session: currentSession,
@@ -2732,8 +2848,35 @@ export async function createChatRuntime({
             model,
             systemPrompt: activeReplySystemPrompt,
             onAgentEvent,
-            sessionId: currentSession.id
+            sessionId: currentSession.id,
+            taskClass: classifyPlanTaskClass(goal)
           });
+          if (runImmediately) {
+            const result = await askModel({
+              text: buildApprovedPlanExecutionPrompt(
+                {
+                  status: 'approved',
+                  source: 'auto',
+                  goal,
+                  filePath: auto.filePath,
+                  summary: auto.summary || '',
+                  finalSummary: auto.finalSummary || auto.summary || '',
+                  steps: Array.isArray(auto.steps) ? auto.steps : []
+                },
+                '/plan auto run'
+              ),
+              session: currentSession,
+              config,
+              model,
+              systemPrompt: activeReplySystemPrompt,
+              onAgentEvent,
+              executionMode: 'auto'
+            });
+            currentSession.planState = null;
+            executionMode = 'auto';
+            await saveSession(currentSession);
+            return { type: 'assistant', text: result.text };
+          }
           currentSession.planState = {
             status: 'pending_approval',
             source: 'auto',
@@ -2813,7 +2956,7 @@ export async function createChatRuntime({
         }
 
         const goal = parsedInput.args.join(' ').trim();
-        if (!goal) return { type: 'system', text: 'Usage: /plan <goal> | /plan auto <goal> | /plan from-spec <spec-path?>' };
+        if (!goal) return { type: 'system', text: 'Usage: /plan <goal> | /plan auto <goal> | /plan auto run <goal> | /plan from-spec <spec-path?>' };
         const content = buildPlanTemplate(goal);
         const filePath = await writeMarkdownInProjectDir(
           'plans',
@@ -3187,7 +3330,8 @@ export async function createChatRuntime({
         model,
         systemPrompt: activeReplySystemPrompt,
         onAgentEvent,
-        sessionId: currentSession.id
+        sessionId: currentSession.id,
+        taskClass: classifyPlanTaskClass(expandedText)
       });
       currentSession.planState = {
         status: 'pending_approval',
@@ -3211,7 +3355,11 @@ export async function createChatRuntime({
         names: selectedAutoSkills
       });
     }
-    const routedSystemPrompt = buildAutoSkillSystemPrompt(activeReplySystemPrompt, commands, config, expandedText);
+    const skillPrompt = buildAutoSkillSystemPrompt(activeReplySystemPrompt, commands, config, expandedText);
+    const routedSystemPrompt =
+      autoRoute.mode === 'direct_medium'
+        ? buildMediumTaskSystemPrompt(skillPrompt)
+        : skillPrompt;
     const result = await askModel({
       text: expandedText,
       session: currentSession,

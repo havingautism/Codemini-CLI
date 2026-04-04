@@ -2,7 +2,12 @@ import { listMemories } from './memory-store.js';
 
 function renderScope(title, items = []) {
   if (!Array.isArray(items) || items.length === 0) return '';
-  const lines = items.map((item) => `- [${item.kind}] ${item.content}`);
+  const lines = items.map((item) =>
+    [
+      `- [${item.kind}] summary=${JSON.stringify(String(item.summary || item.content || ''))}`,
+      `  exact_text=${JSON.stringify(String(item.content || ''))}`
+    ].join('\n')
+  );
   return `${title}\n${lines.join('\n')}`;
 }
 
@@ -30,6 +35,7 @@ export async function buildMemorySnapshot({
   const snapshot = [
     'Persistent Memory:',
     'Use these durable notes only as stable guidance. Prefer fresh reads when code or files can verify the answer.',
+    'When recalling memory, preserve command names, file paths, identifiers, and punctuation exactly. Do not rewrite exact_text values.',
     ...sections
   ].join('\n\n');
 

@@ -102,7 +102,7 @@ const TUI_COPY = {
       startupHint: '使用 /help、/commands、/compact、/exit、!<shell>。Tab 可自动补全 slash 命令。',
       toolSummaryExpanded: '工具摘要：已展开',
       toolSummaryCollapsed: '工具摘要：已收起',
-      toolChainCollapsed: (count) => `已折叠更早的 ${count} 个工具调用，按 Ctrl+T 展开全部`,
+      toolChainCollapsed: (count) => `已折叠更早的 ${count} 个工具调用`,
       toggleToolSummary: 'Ctrl+T 切换',
       scrollHint: '使用终端自己的滚动条或 scrollback',
       keyboardDebugEnabled: '键盘调试已开启',
@@ -247,7 +247,7 @@ const TUI_COPY = {
       startupHint: 'Use /help, /commands, /compact, /exit, !<shell>. Tab for slash autocomplete.',
       toolSummaryExpanded: 'Tool summary: expanded',
       toolSummaryCollapsed: 'Tool summary: collapsed',
-      toolChainCollapsed: (count) => `${count} earlier tool calls hidden, press Ctrl+T to expand`,
+      toolChainCollapsed: (count) => `${count} earlier tool calls hidden`,
       toggleToolSummary: 'Ctrl+T to toggle',
       scrollHint: 'Scroll with your terminal scrollbar or scrollback',
       keyboardDebugEnabled: 'Keyboard debug enabled',
@@ -1073,6 +1073,21 @@ function ContextProgressMeter({ runtimeState, runtimeStatus, compact = false }) 
 function PlanStrip({ planState, copy }) {
   if (!planState || !planState.total) return null;
   const progress = `${planState.current}/${planState.total}`;
+  const stripComplete = Boolean(planState.completed) && !planState.failed;
+  const statusLabel = planState.failed ? copy.generic.attention : stripComplete ? copy.generic.taskCompleted : copy.generic.active;
+  const statusColor = planState.failed ? 'redBright' : stripComplete ? 'cyanBright' : 'greenBright';
+  const roleLabel =
+    planState.resultStatus || stripComplete || planState.failed
+      ? copy?.roleLabels?.system === 'SYSTEM'
+        ? 'RESULT'
+        : '结果'
+      : String(planState.role || 'agent').toUpperCase();
+  const titleLabel =
+    planState.resultStatus || stripComplete || planState.failed
+      ? copy?.roleLabels?.system === 'SYSTEM'
+        ? 'Plan execution result'
+        : '计划执行结果'
+      : planState.title || 'running plan step';
   return h(
     Box,
     {
@@ -1091,11 +1106,18 @@ function PlanStrip({ planState, copy }) {
         null,
         h(Text, { color: 'black', backgroundColor: planState.failed ? 'red' : 'cyanBright' }, ` ${copy.generic.plan} ${progress} `),
         h(Text, { color: 'gray' }, '  '),
-        h(Text, { color: 'magentaBright' }, String(planState.role || 'agent').toUpperCase())
+        h(Text, { color: 'magentaBright' }, roleLabel)
       ),
-      h(Text, { color: planState.failed ? 'redBright' : 'greenBright' }, planState.failed ? copy.generic.attention : copy.generic.active)
+      h(Text, { color: statusColor }, statusLabel)
     ),
-    h(Text, { color: 'white' }, planState.title || 'running plan step'),
+    h(Text, { color: 'white' }, titleLabel),
+    planState.resultVerified
+      ? h(
+          Box,
+          { marginTop: 1 },
+          h(Text, { color: 'gray' }, trimText(planState.resultVerified, 120))
+        )
+      : null,
     planState.steps.length > 0
       ? h(
           Box,
@@ -1112,6 +1134,14 @@ function PlanStrip({ planState, copy }) {
               h(Text, { color: step.status === 'active' ? 'white' : step.status === 'failed' ? 'redBright' : 'gray' }, step.title)
             )
           )
+        )
+      : null,
+    planState.resultNext
+      ? h(
+          Box,
+          { marginTop: 1 },
+          h(Text, { color: 'black', backgroundColor: 'yellowBright' }, ' NEXT '),
+          h(Text, { color: 'gray' }, ` ${trimText(planState.resultNext, 108)}`)
         )
       : null
   );
@@ -1206,6 +1236,7 @@ export function parseAutoPlanSummaryMessage(text) {
     filePath: '',
     planSummary: '',
     finalSummary: '',
+    approval: '',
     stepsTotal: '',
     completed: '',
     warnings: '',
@@ -1216,8 +1247,10 @@ export function parseAutoPlanSummaryMessage(text) {
 
   for (const line of lines.slice(1)) {
     if (line.startsWith('File: ')) parsed.filePath = line.slice('File: '.length).trim();
+    else if (line.startsWith('Plan File: ')) parsed.filePath = line.slice('Plan File: '.length).trim();
     else if (line.startsWith('Plan Summary: ')) parsed.planSummary = line.slice('Plan Summary: '.length).trim();
     else if (line.startsWith('Final Summary: ')) parsed.finalSummary = line.slice('Final Summary: '.length).trim();
+    else if (line.startsWith('Approval: ')) parsed.approval = line.slice('Approval: '.length).trim();
     else if (line.startsWith('Steps: ')) parsed.stepsTotal = line.slice('Steps: '.length).trim();
     else if (line.startsWith('Completed: ')) parsed.completed = line.slice('Completed: '.length).trim();
     else if (line.startsWith('Warnings: ')) parsed.warnings = line.slice('Warnings: '.length).trim();
@@ -1239,6 +1272,31 @@ export function parsePlanProgressLine(text) {
     role: String(match[3] || '').trim(),
     title: String(match[4] || '').trim()
   };
+}
+
+export function parsePlanExecutionResult(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  const statusMatch = raw.match(/(?:^|\n)\s*Status:\s*(done|partial|blocked)\s*$/im);
+  const verifiedMatch = raw.match(/(?:^|\n)\s*Verified:\s*(.+)\s*$/im);
+  const nextMatch = raw.match(/(?:^|\n)\s*Next:\s*(.+)\s*$/im);
+  if (!statusMatch && !verifiedMatch && !nextMatch) return null;
+  return {
+    status: String(statusMatch?.[1] || '').trim().toLowerCase(),
+    verified: String(verifiedMatch?.[1] || '').trim(),
+    next: String(nextMatch?.[1] || '').trim()
+  };
+}
+
+export function stripPlanExecutionResult(text) {
+  const raw = String(text || '');
+  if (!parsePlanExecutionResult(raw)) return raw;
+  return raw
+    .replace(/(?:^|\n)\s*Status:\s*(done|partial|blocked)\s*$/im, '')
+    .replace(/(?:^|\n)\s*Verified:\s*.+\s*$/im, '')
+    .replace(/(?:^|\n)\s*Next:\s*.+\s*$/im, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function getTailPreviewWindow(text, maxLines = 3) {
@@ -1467,7 +1525,7 @@ function finishCodeGeneration(msg, now = Date.now()) {
 
 export function injectPlanStateMessage(messages, planState, activeUserMessageId, activeAssistantId) {
   const source = Array.isArray(messages) ? messages : [];
-  if (!planState || !planState.total) return source;
+  if (!planState || !planState.total || planState.pendingApproval) return source;
   const synthetic = {
     id: `plan-state-${planState.current}-${planState.total}-${planState.role || 'agent'}`,
     label: 'system',
@@ -1513,6 +1571,7 @@ function PlanSummaryBubble({ msg, copy }) {
     ? {
         conclusion: 'Conclusion',
         plan: 'Plan',
+        approval: 'Approval',
         warnings: 'Warnings',
         failed: 'Failed',
         file: 'File',
@@ -1524,6 +1583,7 @@ function PlanSummaryBubble({ msg, copy }) {
     : {
         conclusion: '结论',
         plan: '计划',
+        approval: '审批',
         warnings: '警告',
         failed: '失败',
         file: '文件',
@@ -1577,9 +1637,17 @@ function PlanSummaryBubble({ msg, copy }) {
       summary.planSummary
         ? h(
             Box,
-            { marginBottom: metaItems.length > 0 || summary.warningSteps || summary.failedSteps || shortFile ? 1 : 0, flexDirection: 'column' },
+            { marginBottom: summary.approval || metaItems.length > 0 || summary.warningSteps || summary.failedSteps || shortFile ? 1 : 0, flexDirection: 'column' },
             h(Text, { color: 'cyanBright' }, labels.plan),
             h(Text, { color: 'gray' }, summary.planSummary)
+          )
+        : null,
+      summary.approval
+        ? h(
+            Box,
+            { marginBottom: metaItems.length > 0 || summary.warningSteps || summary.failedSteps || shortFile ? 1 : 0, flexDirection: 'column' },
+            h(Text, { color: 'yellowBright' }, labels.approval),
+            h(Text, { color: 'gray' }, summary.approval)
           )
         : null,
       metaItems.length > 0
@@ -2584,7 +2652,12 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     role: '',
     title: '',
     failed: false,
-    steps: []
+    steps: [],
+    pendingApproval: false,
+    completed: false,
+    resultStatus: '',
+    resultVerified: '',
+    resultNext: ''
   });
   const [debugKeys, setDebugKeys] = useState(false);
   const [lastKeyDebug, setLastKeyDebug] = useState('');
@@ -2700,6 +2773,11 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
         role,
         title,
         failed: false,
+        pendingApproval: false,
+        completed: false,
+        resultStatus: '',
+        resultVerified: '',
+        resultNext: '',
         steps: [...withoutCurrent, { index: current, total, role, title, status: 'active' }].sort((a, b) => a.index - b.index)
       };
     });
@@ -2861,13 +2939,14 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       }
     }
     if (result.type === 'assistant') {
-      if (!activeAssistantIdRef.current && result.text) {
+      const { displayText } = applyPlanExecutionResult(result.text);
+      if (!activeAssistantIdRef.current && displayText) {
         setMessages((prev) => [
           ...prev,
           {
             id: nextId(),
             label: 'coder',
-            text: sanitizeRenderableText(result.text),
+            text: sanitizeRenderableText(displayText),
             color: 'greenBright',
             autoSkillNames: activeAssistantAutoSkillNamesRef.current
           }
@@ -2876,6 +2955,21 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       return;
     }
     const parsedPlanSummary = result.type === 'system' ? parseAutoPlanSummaryMessage(result.text || '') : null;
+    if (parsedPlanSummary?.approval === 'pending') {
+      setPlanState({
+        current: 0,
+        total: 0,
+        role: '',
+        title: '',
+        failed: false,
+        steps: [],
+        pendingApproval: true,
+        completed: false,
+        resultStatus: '',
+        resultVerified: '',
+        resultNext: ''
+      });
+    }
     setMessages((prev) => [
       ...prev,
       {
@@ -2928,6 +3022,31 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     });
   };
 
+  const applyPlanExecutionResult = (rawText) => {
+    const parsedExecution = parsePlanExecutionResult(rawText);
+    if (!parsedExecution || !planTextBufferRef.current) return { parsedExecution: null, displayText: rawText };
+    setPlanState((prev) => {
+      if (!prev.total) return prev;
+      return {
+        ...prev,
+        completed: parsedExecution.status === 'done',
+        failed: parsedExecution.status === 'blocked',
+        resultStatus: parsedExecution.status || prev.resultStatus,
+        resultVerified: parsedExecution.verified || prev.resultVerified,
+        resultNext: parsedExecution.next || prev.resultNext,
+        steps: (prev.steps || []).map((step) =>
+          step.index === prev.current && step.status === 'active'
+            ? { ...step, status: parsedExecution.status === 'blocked' ? 'failed' : 'done' }
+            : step
+        )
+      };
+    });
+    return {
+      parsedExecution,
+      displayText: stripPlanExecutionResult(rawText)
+    };
+  };
+
   const ensureActiveAssistant = () => {
     if (activeAssistantIdRef.current) return activeAssistantIdRef.current;
     const aid = nextId();
@@ -2976,7 +3095,19 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     setBusy(true);
     setInputStage('sending');
     setRuntimeStatus(makeStatus(copy.runtime.sendingToGateway, copy.runtime.preparingRequest, 'yellowBright'));
-    setPlanState({ current: 0, total: 0, role: '', title: '', failed: false, steps: [] });
+    setPlanState({
+      current: 0,
+      total: 0,
+      role: '',
+      title: '',
+      failed: false,
+      steps: [],
+      pendingApproval: false,
+      completed: false,
+      resultStatus: '',
+      resultVerified: '',
+      resultNext: ''
+    });
     planTextBufferRef.current = '';
     activeAssistantIdRef.current = null;
     activeAssistantAutoSkillNamesRef.current = [];
@@ -3059,16 +3190,19 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
           if (hadActiveAssistant) {
             streamedAssistantHandledRef.current = true;
           }
+          const { displayText } = applyPlanExecutionResult(event.text);
           if (targetId && !hasPlannedTools) {
             setMessages((prev) =>
               prev.map((m) => {
                 if (m.id !== targetId) return m;
-                const responseText = typeof event.text === 'string' ? event.text.trim() : '';
-                const shouldSynthesizeCompletion = !responseText && m.syntheticPrelude;
+                const responseText = typeof displayText === 'string' ? displayText.trim() : '';
+                const cleanedExistingText = stripPlanExecutionResult(String(m.text || '')).trim();
+                const finalText = responseText || cleanedExistingText;
+                const shouldSynthesizeCompletion = !finalText && m.syntheticPrelude;
                 return {
                   ...m,
-                  ...(responseText
-                    ? { text: event.text, syntheticPrelude: false }
+                  ...(finalText
+                    ? { text: finalText, syntheticPrelude: false }
                     : shouldSynthesizeCompletion
                       ? { text: buildSyntheticCompletionText(m, copy), syntheticPrelude: false }
                       : {}),
@@ -3087,9 +3221,10 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
             activeAssistantIdRef.current = null;
           }
           if (!hadActiveAssistant && !hasPlannedTools && event.text) {
+            const cleanedStandaloneText = stripPlanExecutionResult(String(displayText || event.text)).trim();
             setMessages((prev) => [
               ...prev,
-              { id: nextId(), label: 'coder', text: event.text, color: 'greenBright' }
+              { id: nextId(), label: 'coder', text: cleanedStandaloneText, color: 'greenBright' }
             ]);
           }
         }
