@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import { createChatRuntime } from '../src/core/chat-runtime.js';
 import { loadConfig } from '../src/core/config-store.js';
+import { saveSession } from '../src/core/session-store.js';
 
 async function withTempConfigDir(run) {
   const prev = process.env.CODEMINI_GLOBAL_DIR;
@@ -73,6 +74,7 @@ test('chat runtime reflects config and mode changes immediately for TUI refresh'
     assert.deepEqual(runtime.getRuntimeState(), {
       sessionId: 'session-config-refresh',
       mode: 'auto',
+      sdkProvider: 'openai-compatible',
       model: 'gpt-4.1-mini',
       maxContextTokens: 202752
     });
@@ -81,6 +83,7 @@ test('chat runtime reflects config and mode changes immediately for TUI refresh'
     assert.deepEqual(runtime.getRuntimeState(), {
       sessionId: 'session-config-refresh',
       mode: 'auto',
+      sdkProvider: 'openai-compatible',
       model: 'minimax',
       maxContextTokens: 202752
     });
@@ -89,6 +92,16 @@ test('chat runtime reflects config and mode changes immediately for TUI refresh'
     assert.deepEqual(runtime.getRuntimeState(), {
       sessionId: 'session-config-refresh',
       mode: 'auto',
+      sdkProvider: 'openai-compatible',
+      model: 'minimax',
+      maxContextTokens: 12345
+    });
+
+    await runtime.submit('/config set sdk.provider anthropic');
+    assert.deepEqual(runtime.getRuntimeState(), {
+      sessionId: 'session-config-refresh',
+      mode: 'auto',
+      sdkProvider: 'anthropic',
       model: 'minimax',
       maxContextTokens: 12345
     });
@@ -97,6 +110,7 @@ test('chat runtime reflects config and mode changes immediately for TUI refresh'
     assert.deepEqual(runtime.getRuntimeState(), {
       sessionId: 'session-config-refresh',
       mode: 'plan',
+      sdkProvider: 'anthropic',
       model: 'minimax',
       maxContextTokens: 12345
     });
@@ -123,11 +137,15 @@ test('chat runtime prioritizes important config completions near the top', { con
       '/config set gateway.base_url ',
       '/config set gateway.api_key ',
       '/config set model.name ',
+      '/config set ui.language ',
       '/config set ui.reply_language ',
-      '/config set execution.mode ',
-      '/config set shell.default '
+      '/config set execution.mode '
     ]);
-    assert.equal(setSuggestions[0].description, 'set the gateway base URL');
+    assert.equal(setSuggestions[0].description, '设置网关基础 URL');
+    assert.equal(
+      setSuggestions.find((item) => item.value === '/config set sdk.provider ')?.description,
+      '设置SDK provider（可选：openai-compatible | anthropic）'
+    );
     assert.ok(setSuggestions.some((item) => item.value === '/config set soul.preset '));
     assert.ok(setSuggestions.some((item) => item.value === '/config set soul.custom_path '));
 
@@ -140,11 +158,11 @@ test('chat runtime prioritizes important config completions near the top', { con
       '/config get gateway.base_url',
       '/config get gateway.api_key',
       '/config get model.name',
+      '/config get ui.language',
       '/config get ui.reply_language',
-      '/config get execution.mode',
-      '/config get shell.default'
+      '/config get execution.mode'
     ]);
-    assert.equal(getSuggestions[0].description, 'show the gateway base URL');
+    assert.equal(getSuggestions[0].description, '查看网关基础 URL');
     assert.ok(getSuggestions.some((item) => item.value === '/config get soul.preset'));
     assert.ok(getSuggestions.some((item) => item.value === '/config get soul.custom_path'));
 
@@ -168,6 +186,110 @@ test('chat runtime prioritizes important config completions near the top', { con
     assert.ok(runtime.getCompletionOptions('/debug').some((item) => item.value === '/debug keys'));
     assert.ok(runtime.getCompletionOptions('/debug keys').some((item) => item.value === '/debug keys on'));
     assert.ok(runtime.getCompletionOptions('/compact').some((item) => item.value === '/compact --preview'));
+  });
+});
+
+test('chat runtime localizes completion descriptions using UI language', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const config = await loadConfig();
+    config.ui.language = 'en';
+    const now = new Date().toISOString();
+    const runtime = await createChatRuntime({
+      session: {
+        id: 'session-config-completions-en',
+        createdAt: now,
+        updatedAt: now,
+        messages: []
+      },
+      config,
+      systemPrompt: 'You are a test assistant.'
+    });
+
+    const setSuggestions = runtime.getCompletionOptions('/config set ');
+    assert.equal(setSuggestions[0].description, 'set the gateway base URL');
+    assert.equal(
+      setSuggestions.find((item) => item.value === '/config set sdk.provider ')?.description,
+      'set the SDK provider (options: openai-compatible | anthropic)'
+    );
+    assert.equal(
+      runtime.getCompletionOptions('/history resume')[0]?.description,
+      'resume a saved session'
+    );
+  });
+});
+
+test('history resume completions preload saved sessions sorted by recency', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    await saveSession({
+      id: 'session-older',
+      createdAt: '2026-04-01T10:00:00.000Z',
+      updatedAt: '2026-04-01T10:05:00.000Z',
+      messages: [{ role: 'user', content: 'older session message' }]
+    });
+    await saveSession({
+      id: 'session-newer',
+      createdAt: '2026-04-02T10:00:00.000Z',
+      updatedAt: '2026-04-02T10:05:00.000Z',
+      messages: [{ role: 'user', content: 'newer session message' }]
+    });
+
+    const config = await loadConfig();
+    const now = new Date().toISOString();
+    const runtime = await createChatRuntime({
+      session: {
+        id: 'session-current',
+        createdAt: now,
+        updatedAt: now,
+        messages: []
+      },
+      config,
+      systemPrompt: 'You are a test assistant.'
+    });
+
+    const suggestions = runtime
+      .getCompletionOptions('/history resume')
+      .filter((item) => item.value.startsWith('/history resume session-') && !item.value.includes('session-current'));
+
+    assert.deepEqual(
+      suggestions.slice(0, 2).map((item) => item.value),
+      ['/history resume session-newer', '/history resume session-older']
+    );
+  });
+});
+
+test('history resume returns loaded session messages for UI restore', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    await saveSession({
+      id: 'session-restore-target',
+      createdAt: '2026-04-02T10:00:00.000Z',
+      updatedAt: '2026-04-02T10:05:00.000Z',
+      messages: [
+        { role: 'user', content: '你好' },
+        { role: 'assistant', content: '你好，请问我可以帮你做什么？' }
+      ]
+    });
+
+    const config = await loadConfig();
+    const now = new Date().toISOString();
+    const runtime = await createChatRuntime({
+      session: {
+        id: 'session-current',
+        createdAt: now,
+        updatedAt: now,
+        messages: []
+      },
+      config,
+      systemPrompt: 'You are a test assistant.'
+    });
+
+    const result = await runtime.submit('/history resume session-restore-target');
+
+    assert.equal(result.type, 'system');
+    assert.match(result.text, /Switched to session: session-restore-target/);
+    assert.deepEqual(result.restoredMessages, [
+      { role: 'user', content: '你好' },
+      { role: 'assistant', content: '你好，请问我可以帮你做什么？' }
+    ]);
   });
 });
 

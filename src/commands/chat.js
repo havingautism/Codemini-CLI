@@ -98,6 +98,7 @@ export async function handleChat(args) {
       runtime,
       sessionId: session.id,
       model: parsed.model || config.model.name,
+      sdkProvider: config.sdk?.provider || 'openai-compatible',
       language: config.ui?.language || 'zh',
       shellName: config.shell?.default || 'powershell',
       safeMode: config.policy?.safe_mode !== false,

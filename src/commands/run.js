@@ -1,7 +1,7 @@
 import { loadConfig } from '../core/config-store.js';
 import { buildDefaultSystemPrompt } from '../core/default-system-prompt.js';
 import { runAgentLoop } from '../core/agent-loop.js';
-import { createChatCompletion } from '../core/provider/openai-compatible.js';
+import { createChatCompletion } from '../core/provider/index.js';
 import { buildSystemPromptWithSoul } from '../core/soul.js';
 import { getBuiltinTools } from '../core/tools.js';
 
@@ -52,6 +52,7 @@ export async function handleRun(args) {
     maxSteps: parsed.maxSteps,
     requestCompletion: async ({ messages, tools, model }) =>
       createChatCompletion({
+        sdkProvider: config.sdk?.provider,
         baseUrl: config.gateway.base_url,
         apiKey: config.gateway.api_key,
         model,

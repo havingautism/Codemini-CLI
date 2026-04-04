@@ -6,7 +6,7 @@ import path from 'node:path';
 import {
   createChatCompletion,
   createChatCompletionStream
-} from './provider/openai-compatible.js';
+} from './provider/index.js';
 import { isDangerousCommand, runShellCommand } from './shell.js';
 import { getBuiltinTools } from './tools.js';
 import { listSessions, loadSession, pruneSessions, saveSession } from './session-store.js';
@@ -74,35 +74,181 @@ function prioritizeByPreferredOrder(items, preferredOrder) {
   });
 }
 
-function describeConfigKey(key, mode = 'set') {
-  const labelMap = {
-    'gateway.base_url': 'gateway base URL',
-    'gateway.api_key': 'gateway API key',
-    'gateway.timeout_ms': 'gateway timeout in milliseconds',
-    'gateway.max_retries': 'gateway retry count',
-    'model.name': 'active model name',
-    'model.max_context_tokens': 'model context token limit',
-    'ui.reply_language': 'reply language',
-    'execution.mode': 'execution mode',
-    'execution.always_allow_tools': 'always-allowed tools',
-    'execution.max_steps': 'maximum tool steps',
-    'context.preflight_trigger_pct': 'preflight compact threshold',
-    'context.hard_limit_pct': 'hard compact threshold',
-    'context.tool_result_max_chars': 'tool result character limit',
-    'context.read_file_default_lines': 'default read_file line window',
-    'context.read_file_max_chars': 'read_file character limit',
-    'sessions.max_sessions': 'stored session limit',
-    'sessions.retention_days': 'session retention days',
-    'shell.default': 'default shell',
-    'shell.timeout_ms': 'shell timeout in milliseconds',
-    'context.max_tokens': 'context token budget',
-    'soul.preset': 'soul preset',
-    'soul.custom_path': 'custom soul prompt path',
-    'policy.safe_mode': 'safe mode switch',
-    'policy.allow_dangerous_commands': 'dangerous command allowance'
-  };
-  const label = labelMap[key] || key;
-  return mode === 'get' ? `show the ${label}` : `set the ${label}`;
+function normalizeUiLocale(value) {
+  return String(value || '').toLowerCase().startsWith('en') ? 'en' : 'zh';
+}
+
+function getCompletionCopy(language = 'zh') {
+  const lang = normalizeUiLocale(language);
+  return {
+    zh: {
+      configLabels: {
+        'gateway.base_url': '网关基础 URL',
+        'gateway.api_key': '网关 API Key',
+        'sdk.provider': 'SDK provider',
+        'gateway.timeout_ms': '网关超时时间（毫秒）',
+        'gateway.max_retries': '网关重试次数',
+        'model.name': '当前模型名称',
+        'model.max_context_tokens': '模型上下文 token 上限',
+        'ui.language': '界面语言',
+        'ui.reply_language': '回复语言',
+        'execution.mode': '执行模式',
+        'execution.always_allow_tools': '始终允许的工具列表',
+        'execution.max_steps': '最大工具步骤数',
+        'context.preflight_trigger_pct': '预压缩阈值',
+        'context.hard_limit_pct': '硬压缩阈值',
+        'context.tool_result_max_chars': '工具结果字符上限',
+        'context.read_file_default_lines': 'read_file 默认行数窗口',
+        'context.read_file_max_chars': 'read_file 字符上限',
+        'sessions.max_sessions': '会话保留上限',
+        'sessions.retention_days': '会话保留天数',
+        'shell.default': '默认 shell',
+        'shell.timeout_ms': 'shell 超时时间（毫秒）',
+        'context.max_tokens': '上下文 token 预算',
+        'soul.preset': 'soul 预设',
+        'soul.custom_path': '自定义 soul 路径',
+        'policy.safe_mode': '安全模式开关',
+        'policy.allow_dangerous_commands': '危险命令开关'
+      },
+      optionHints: {
+        'sdk.provider': '可选：openai-compatible | anthropic',
+        'ui.language': '可选：zh | en',
+        'ui.reply_language': '可选：zh | en',
+        'execution.mode': '可选：auto | normal | plan',
+        'shell.default': '常用：bash | powershell',
+        'policy.safe_mode': '可选：true | false',
+        'policy.allow_dangerous_commands': '可选：true | false'
+      },
+      describeSet: (label, hint) => `设置${label}${hint ? `（${hint}）` : ''}`,
+      describeGet: (label, hint) => `查看${label}${hint ? `（${hint}）` : ''}`,
+      configSubcommands: {
+        '/config set': '设置配置项',
+        '/config get': '查看配置项',
+        '/config list': '查看完整配置',
+        '/config reset': '重置为默认配置'
+      },
+      commands: {
+        help: '显示聊天帮助',
+        exit: '退出聊天',
+        commands: '列出 slash/自定义命令',
+        status: '查看运行状态（mode/model/session）',
+        mode: '设置执行模式：normal|auto|plan',
+        compact: '压缩消息上下文',
+        tasks: '任务面板管理',
+        checkpoint: '创建/查看/加载检查点',
+        spec: '在 .codemini/specs 中创建 spec',
+        plan: '在 .codemini/plans 中创建实施计划',
+        agents: '列出/运行子代理角色',
+        config: '设置/读取/列出/重置配置',
+        history: '查看/恢复会话',
+        debug: '运行时调试开关',
+        retry: '重试上一条用户请求'
+      },
+      generic: {
+        configCommand: '配置命令',
+        historyCommand: '历史会话命令',
+        modeCommand: '切换执行模式',
+        taskCommand: '任务面板命令',
+        checkpointCommand: '检查点命令',
+        specCommand: '创建 spec 文件',
+        planCommand: '规划命令',
+        agentCommand: '子代理命令',
+        debugCommand: '调试命令',
+        keyboardDebugCommand: '键盘调试命令',
+        compactCommand: '上下文压缩命令',
+        retryCommand: '重试上一条用户请求',
+        statusCommand: '查看运行状态',
+        resumeSession: '恢复一个已保存的会话'
+      }
+    },
+    en: {
+      configLabels: {
+        'gateway.base_url': 'gateway base URL',
+        'gateway.api_key': 'gateway API key',
+        'sdk.provider': 'SDK provider',
+        'gateway.timeout_ms': 'gateway timeout in milliseconds',
+        'gateway.max_retries': 'gateway retry count',
+        'model.name': 'active model name',
+        'model.max_context_tokens': 'model context token limit',
+        'ui.language': 'UI language',
+        'ui.reply_language': 'reply language',
+        'execution.mode': 'execution mode',
+        'execution.always_allow_tools': 'always-allowed tools',
+        'execution.max_steps': 'maximum tool steps',
+        'context.preflight_trigger_pct': 'preflight compact threshold',
+        'context.hard_limit_pct': 'hard compact threshold',
+        'context.tool_result_max_chars': 'tool result character limit',
+        'context.read_file_default_lines': 'default read_file line window',
+        'context.read_file_max_chars': 'read_file character limit',
+        'sessions.max_sessions': 'stored session limit',
+        'sessions.retention_days': 'session retention days',
+        'shell.default': 'default shell',
+        'shell.timeout_ms': 'shell timeout in milliseconds',
+        'context.max_tokens': 'context token budget',
+        'soul.preset': 'soul preset',
+        'soul.custom_path': 'custom soul prompt path',
+        'policy.safe_mode': 'safe mode switch',
+        'policy.allow_dangerous_commands': 'dangerous command allowance'
+      },
+      optionHints: {
+        'sdk.provider': 'options: openai-compatible | anthropic',
+        'ui.language': 'options: zh | en',
+        'ui.reply_language': 'options: zh | en',
+        'execution.mode': 'options: auto | normal | plan',
+        'shell.default': 'common: bash | powershell',
+        'policy.safe_mode': 'options: true | false',
+        'policy.allow_dangerous_commands': 'options: true | false'
+      },
+      describeSet: (label, hint) => `set the ${label}${hint ? ` (${hint})` : ''}`,
+      describeGet: (label, hint) => `show the ${label}${hint ? ` (${hint})` : ''}`,
+      configSubcommands: {
+        '/config set': 'update a config value',
+        '/config get': 'show a config value',
+        '/config list': 'print the full config',
+        '/config reset': 'reset config to defaults'
+      },
+      commands: {
+        help: 'show chat help',
+        exit: 'exit chat',
+        commands: 'list slash/custom commands',
+        status: 'show runtime status (mode/model/session)',
+        mode: 'set execution mode: normal|auto|plan',
+        compact: 'compress message context',
+        tasks: 'task board management',
+        checkpoint: 'create/list/load conversation checkpoints',
+        spec: 'create a spec markdown file in .codemini/specs',
+        plan: 'create an implementation plan markdown file in .codemini/plans',
+        agents: 'run/list sub-agent roles',
+        config: 'set/get/list/reset config values',
+        history: 'list/resume sessions',
+        debug: 'runtime debug switches',
+        retry: 'retry the last user request'
+      },
+      generic: {
+        configCommand: 'config command',
+        historyCommand: 'history command',
+        modeCommand: 'switch execution mode',
+        taskCommand: 'task board command',
+        checkpointCommand: 'checkpoint command',
+        specCommand: 'create a spec file',
+        planCommand: 'planning command',
+        agentCommand: 'sub-agent command',
+        debugCommand: 'debug command',
+        keyboardDebugCommand: 'keyboard debug command',
+        compactCommand: 'context compaction command',
+        retryCommand: 'retry the last user request',
+        statusCommand: 'show runtime status',
+        resumeSession: 'resume a saved session'
+      }
+    }
+  }[lang];
+}
+
+function describeConfigKey(key, mode = 'set', language = 'zh') {
+  const copy = getCompletionCopy(language);
+  const label = copy.configLabels[key] || key;
+  const hint = copy.optionHints[key] || '';
+  return mode === 'get' ? copy.describeGet(label, hint) : copy.describeSet(label, hint);
 }
 
 const SUB_AGENT_ROLES = ['planner', 'coder', 'reviewer', 'tester'];
@@ -1002,6 +1148,7 @@ async function buildAutoPlanFinalSummary({
 
   try {
     const result = await createChatCompletion({
+      sdkProvider: config.sdk?.provider,
       baseUrl: config.gateway.base_url,
       apiKey: config.gateway.api_key,
       model: model || config.model.name,
@@ -1102,6 +1249,7 @@ async function buildSpecWithModel({
   ].join('\n');
 
   const result = await createChatCompletion({
+    sdkProvider: config.sdk?.provider,
     baseUrl: config.gateway.base_url,
     apiKey: config.gateway.api_key,
     model: model || config.model.name,
@@ -1161,6 +1309,7 @@ async function buildPlanFromSpecWithModel({
   ].join('\n');
 
   const result = await createChatCompletion({
+    sdkProvider: config.sdk?.provider,
     baseUrl: config.gateway.base_url,
     apiKey: config.gateway.api_key,
     model: model || config.model.name,
@@ -1276,6 +1425,7 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
   const snapshot = {
     sessionId: currentSession?.id || '',
     mode: executionMode || config.execution?.mode || 'auto',
+    sdkProvider: config.sdk?.provider || 'openai-compatible',
     model: model || config.model?.name || '',
     maxContextTokens
   };
@@ -1595,6 +1745,7 @@ async function askModel({
       };
 
       const result = await createChatCompletionStream({
+        sdkProvider: config.sdk?.provider,
         baseUrl: config.gateway.base_url,
         apiKey: config.gateway.api_key,
         model: selectedModel,
@@ -1739,6 +1890,7 @@ async function buildAutoPlanAndRun({
   let planningError = '';
   try {
     const planning = await createChatCompletion({
+      sdkProvider: config.sdk?.provider,
       baseUrl: config.gateway.base_url,
       apiKey: config.gateway.api_key,
       model: model || config.model.name,
@@ -1891,14 +2043,43 @@ export async function createChatRuntime({
       messageCount: Array.isArray(currentSession.messages) ? currentSession.messages.length : 0
     }
   ];
+  try {
+    const initialSessions = await listSessions(100);
+    if (initialSessions.length > 0) {
+      const merged = [
+        {
+          id: currentSession.id,
+          messageCount: Array.isArray(currentSession.messages) ? currentSession.messages.length : 0
+        },
+        ...initialSessions.map((session) => ({
+          id: session.id,
+          messageCount: Number(session.messageCount || 0)
+        }))
+      ];
+      const deduped = [];
+      const seen = new Set();
+      for (const session of merged) {
+        const id = String(session.id || '').trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        deduped.push(session);
+      }
+      historySessionCache = deduped;
+      historyIdCache = deduped.map((session) => session.id);
+    }
+  } catch {
+    // keep startup resilient even if historical sessions cannot be listed
+  }
 
   const configKeyHints = [
     'gateway.base_url',
     'gateway.api_key',
     'model.name',
+    'ui.language',
     'ui.reply_language',
     'execution.mode',
     'shell.default',
+    'sdk.provider',
     'gateway.timeout_ms',
     'gateway.max_retries',
     'model.max_context_tokens',
@@ -1934,30 +2115,25 @@ export async function createChatRuntime({
     '/retry'
   ];
   const configSubcommandPriority = ['/config set', '/config get', '/config list', '/config reset'];
-  const configSubcommandDescriptions = {
-    '/config set': 'update a config value',
-    '/config get': 'show a config value',
-    '/config list': 'print the full config',
-    '/config reset': 'reset config to defaults'
-  };
 
   const listCommandNames = () => {
+    const completionCopy = getCompletionCopy(config.ui?.language);
     const builtins = [
-      { name: 'help', description: 'show chat help' },
-      { name: 'exit', description: 'exit chat' },
-      { name: 'commands', description: 'list slash/custom commands' },
-      { name: 'status', description: 'show runtime status (mode/model/session)' },
-      { name: 'mode', description: 'set execution mode: normal|auto|plan' },
-      { name: 'compact', description: 'compress message context' },
-      { name: 'tasks', description: 'task board management' },
-      { name: 'checkpoint', description: 'create/list/load conversation checkpoints' },
-      { name: 'spec', description: 'create a spec markdown file in .codemini/specs' },
-      { name: 'plan', description: 'create an implementation plan markdown file in .codemini/plans' },
-      { name: 'agents', description: 'run/list sub-agent roles' },
-      { name: 'config', description: 'set/get/list/reset config values' },
-      { name: 'history', description: 'list/resume sessions' },
-      { name: 'debug', description: 'runtime debug switches' },
-      { name: 'retry', description: 'retry the last user request' }
+      { name: 'help', description: completionCopy.commands.help },
+      { name: 'exit', description: completionCopy.commands.exit },
+      { name: 'commands', description: completionCopy.commands.commands },
+      { name: 'status', description: completionCopy.commands.status },
+      { name: 'mode', description: completionCopy.commands.mode },
+      { name: 'compact', description: completionCopy.commands.compact },
+      { name: 'tasks', description: completionCopy.commands.tasks },
+      { name: 'checkpoint', description: completionCopy.commands.checkpoint },
+      { name: 'spec', description: completionCopy.commands.spec },
+      { name: 'plan', description: completionCopy.commands.plan },
+      { name: 'agents', description: completionCopy.commands.agents },
+      { name: 'config', description: completionCopy.commands.config },
+      { name: 'history', description: completionCopy.commands.history },
+      { name: 'debug', description: completionCopy.commands.debug },
+      { name: 'retry', description: completionCopy.commands.retry }
     ];
     const out = [];
     for (const cmd of commands.values()) {
@@ -2041,6 +2217,8 @@ export async function createChatRuntime({
   const getCompletionOptions = (rawInput) => {
     const input = String(rawInput || '');
     if (!input.startsWith('/')) return [];
+    const completionCopy = getCompletionCopy(config.ui?.language);
+    const configSubcommandDescriptions = completionCopy.configSubcommands;
 
     const hasTrailingSpace = /\s$/.test(input);
     const body = input.slice(1);
@@ -2065,19 +2243,19 @@ export async function createChatRuntime({
       registerSuggestion(`/${entry.name}`, entry.description || '');
     }
     for (const template of configTemplates) {
-      registerSuggestion(template, configSubcommandDescriptions[template] || 'config command');
+      registerSuggestion(template, configSubcommandDescriptions[template] || completionCopy.generic.configCommand);
     }
-    for (const template of historyTemplates) registerSuggestion(template, 'history command');
-    for (const template of modeTemplates) registerSuggestion(template, 'switch execution mode');
-    for (const template of taskTemplates) registerSuggestion(template, 'task board command');
-    for (const template of checkpointTemplates) registerSuggestion(template, 'checkpoint command');
-    for (const template of specTemplates) registerSuggestion(template, 'create a spec file');
-    for (const template of planTemplates) registerSuggestion(template, 'planning command');
-    for (const template of agentTemplates) registerSuggestion(template, 'sub-agent command');
-    for (const template of debugTemplates) registerSuggestion(template, 'debug command');
-    for (const template of compactTemplates) registerSuggestion(template, 'context compaction command');
-    registerSuggestion('/retry', 'retry the last user request');
-    registerSuggestion('/status', 'show runtime status');
+    for (const template of historyTemplates) registerSuggestion(template, completionCopy.generic.historyCommand);
+    for (const template of modeTemplates) registerSuggestion(template, completionCopy.generic.modeCommand);
+    for (const template of taskTemplates) registerSuggestion(template, completionCopy.generic.taskCommand);
+    for (const template of checkpointTemplates) registerSuggestion(template, completionCopy.generic.checkpointCommand);
+    for (const template of specTemplates) registerSuggestion(template, completionCopy.generic.specCommand);
+    for (const template of planTemplates) registerSuggestion(template, completionCopy.generic.planCommand);
+    for (const template of agentTemplates) registerSuggestion(template, completionCopy.generic.agentCommand);
+    for (const template of debugTemplates) registerSuggestion(template, completionCopy.generic.debugCommand);
+    for (const template of compactTemplates) registerSuggestion(template, completionCopy.generic.compactCommand);
+    registerSuggestion('/retry', completionCopy.generic.retryCommand);
+    registerSuggestion('/status', completionCopy.generic.statusCommand);
 
     if (!commandPart) {
       return materializeSuggestions(prioritizeByPreferredOrder(
@@ -2105,7 +2283,7 @@ export async function createChatRuntime({
         return materializeSuggestions(prioritizeByPreferredOrder(
           ['set', 'get', 'list', 'reset']
             .filter((s) => s.startsWith(subcommand))
-            .map((s) => registerSuggestion(`/config ${s}`, configSubcommandDescriptions[`/config ${s}`] || 'config command').value),
+            .map((s) => registerSuggestion(`/config ${s}`, configSubcommandDescriptions[`/config ${s}`] || completionCopy.generic.configCommand).value),
           configSubcommandPriority
         ));
       }
@@ -2114,13 +2292,13 @@ export async function createChatRuntime({
         const keyPrefix = tokens.length >= 3 ? tokens[2] || '' : '';
         return configKeyHints
           .filter((k) => k.startsWith(keyPrefix))
-          .map((k) => registerSuggestion(`/config get ${k}`, describeConfigKey(k, 'get')));
+          .map((k) => registerSuggestion(`/config get ${k}`, describeConfigKey(k, 'get', config.ui?.language)));
       }
       if (subcommand === 'set') {
         const keyPrefix = tokens.length >= 3 ? tokens[2] || '' : '';
         return configKeyHints
           .filter((k) => k.startsWith(keyPrefix))
-          .map((k) => registerSuggestion(`/config set ${k} `, describeConfigKey(k, 'set')));
+          .map((k) => registerSuggestion(`/config set ${k} `, describeConfigKey(k, 'set', config.ui?.language)));
       }
 
       return materializeSuggestions(configTemplates);
@@ -2131,25 +2309,25 @@ export async function createChatRuntime({
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         return compactOptions
           .filter((opt) => opt.startsWith(joined) || joined === '')
-          .map((opt) => registerSuggestion(`/compact ${opt}`, 'context compaction command'));
+          .map((opt) => registerSuggestion(`/compact ${opt}`, completionCopy.generic.compactCommand));
       }
       return compactOptions
         .filter((opt) => opt.includes(joined) || joined === '')
-        .map((opt) => registerSuggestion(`/compact ${opt}`, 'context compaction command'));
+        .map((opt) => registerSuggestion(`/compact ${opt}`, completionCopy.generic.compactCommand));
     }
 
     if (commandPart === 'retry') {
-      return [registerSuggestion('/retry', 'retry the last user request')];
+      return [registerSuggestion('/retry', completionCopy.generic.retryCommand)];
     }
     if (commandPart === 'status') {
-      return [registerSuggestion('/status', 'show runtime status')];
+      return [registerSuggestion('/status', completionCopy.generic.statusCommand)];
     }
     if (commandPart === 'mode') {
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         const sub = tokens[1] || '';
         return ['normal', 'auto', 'plan']
           .filter((m) => m.startsWith(sub))
-          .map((m) => registerSuggestion(`/mode ${m}`, 'switch execution mode'));
+          .map((m) => registerSuggestion(`/mode ${m}`, completionCopy.generic.modeCommand));
       }
       return materializeSuggestions(modeTemplates);
     }
@@ -2158,7 +2336,7 @@ export async function createChatRuntime({
         const sub = tokens[1] || '';
         return ['add', 'start', 'done', 'remove', 'rm', 'clear']
           .filter((s) => s.startsWith(sub))
-          .map((s) => registerSuggestion(`/tasks ${s}`, 'task board command'));
+          .map((s) => registerSuggestion(`/tasks ${s}`, completionCopy.generic.taskCommand));
       }
       return materializeSuggestions(taskTemplates);
     }
@@ -2167,24 +2345,24 @@ export async function createChatRuntime({
         const sub = tokens[1] || '';
         if (sub === 'list') {
           return ['--all']
-            .map((v) => registerSuggestion(`/checkpoint list ${v}`, 'checkpoint command'));
+            .map((v) => registerSuggestion(`/checkpoint list ${v}`, completionCopy.generic.checkpointCommand));
         }
         return ['create', 'list', 'load']
           .filter((s) => s.startsWith(sub))
-          .map((s) => registerSuggestion(`/checkpoint ${s}`, 'checkpoint command'));
+          .map((s) => registerSuggestion(`/checkpoint ${s}`, completionCopy.generic.checkpointCommand));
       }
       if (tokens[1] === 'list') {
         const hint = tokens[2] || '';
         return ['--all']
           .filter((v) => v.startsWith(hint))
-          .map((v) => registerSuggestion(`/checkpoint list ${v}`, 'checkpoint command'));
+          .map((v) => registerSuggestion(`/checkpoint list ${v}`, completionCopy.generic.checkpointCommand));
       }
       if (tokens[1] === 'load') {
         if (tokens.length >= 3) {
           const hint = tokens[3] || '';
           return ['--all']
             .filter((v) => v.startsWith(hint))
-            .map((v) => registerSuggestion(`/checkpoint load ${tokens[2]} ${v}`, 'checkpoint command'));
+            .map((v) => registerSuggestion(`/checkpoint load ${tokens[2]} ${v}`, completionCopy.generic.checkpointCommand));
         }
       }
       return materializeSuggestions(checkpointTemplates);
@@ -2197,7 +2375,7 @@ export async function createChatRuntime({
         const sub = tokens[1] || '';
         return ['auto', 'from-spec']
           .filter((s) => s.startsWith(sub))
-          .map((s) => registerSuggestion(`/plan ${s}`, 'planning command'));
+          .map((s) => registerSuggestion(`/plan ${s}`, completionCopy.generic.planCommand));
       }
       return materializeSuggestions(planTemplates);
     }
@@ -2206,17 +2384,17 @@ export async function createChatRuntime({
         const sub = tokens[1] || '';
         if (sub === 'run') {
           return ['planner', 'coder', 'reviewer', 'tester']
-            .map((r) => registerSuggestion(`/agents run ${r} `, 'sub-agent command'));
+            .map((r) => registerSuggestion(`/agents run ${r} `, completionCopy.generic.agentCommand));
         }
         return ['list', 'run']
           .filter((s) => s.startsWith(sub))
-          .map((s) => registerSuggestion(`/agents ${s}`, 'sub-agent command'));
+          .map((s) => registerSuggestion(`/agents ${s}`, completionCopy.generic.agentCommand));
       }
       if (tokens[1] === 'run') {
         const rolePrefix = tokens[2] || '';
         return ['planner', 'coder', 'reviewer', 'tester']
           .filter((r) => r.startsWith(rolePrefix))
-          .map((r) => registerSuggestion(`/agents run ${r} `, 'sub-agent command'));
+          .map((r) => registerSuggestion(`/agents run ${r} `, completionCopy.generic.agentCommand));
       }
       return materializeSuggestions(agentTemplates);
     }
@@ -2230,13 +2408,13 @@ export async function createChatRuntime({
             .map((session) => ({
               value: `/history resume ${session.id}`,
               display: `/history resume ${session.id}  ·  ${Number(session.messageCount || 0)} msgs`,
-              description: 'resume a saved session'
+              description: completionCopy.generic.resumeSession
             }));
           if (dynamic.length > 0) return dynamic;
         }
         return ['list', 'current', 'resume']
           .filter((s) => s.startsWith(sub))
-          .map((s) => registerSuggestion(`/history ${s}`, 'history command'));
+          .map((s) => registerSuggestion(`/history ${s}`, completionCopy.generic.historyCommand));
       }
       if (sub === 'resume') {
         const idPrefix = tokens[2] || '';
@@ -2245,7 +2423,7 @@ export async function createChatRuntime({
           .map((session) => ({
             value: `/history resume ${session.id}`,
             display: `/history resume ${session.id}  ·  ${Number(session.messageCount || 0)} msgs`,
-            description: 'resume a saved session'
+            description: completionCopy.generic.resumeSession
           }));
         if (dynamic.length > 0) return dynamic;
         return materializeSuggestions(historyTemplates);
@@ -2258,17 +2436,17 @@ export async function createChatRuntime({
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         if (sub === 'keys') {
           return ['on', 'off', 'status']
-            .map((v) => registerSuggestion(`/debug keys ${v}`, 'keyboard debug command'));
+            .map((v) => registerSuggestion(`/debug keys ${v}`, completionCopy.generic.keyboardDebugCommand));
         }
         return ['keys']
           .filter((s) => s.startsWith(sub))
-          .map((s) => registerSuggestion(`/debug ${s}`, 'debug command'));
+          .map((s) => registerSuggestion(`/debug ${s}`, completionCopy.generic.debugCommand));
       }
       if (sub === 'keys') {
         const action = tokens[2] || '';
         return ['on', 'off', 'status']
           .filter((v) => v.startsWith(action))
-          .map((v) => registerSuggestion(`/debug keys ${v}`, 'keyboard debug command'));
+          .map((v) => registerSuggestion(`/debug keys ${v}`, completionCopy.generic.keyboardDebugCommand));
       }
       return materializeSuggestions(debugTemplates);
     }
@@ -2690,7 +2868,8 @@ export async function createChatRuntime({
           ];
           return {
             type: 'system',
-            text: `Switched to session: ${targetId} (${loaded.messages.length} messages)`
+            text: `Switched to session: ${targetId} (${loaded.messages.length} messages)`,
+            restoredMessages: structuredClone(loaded.messages || [])
           };
         }
         return { type: 'system', text: `Unknown /history subcommand: ${sub}` };

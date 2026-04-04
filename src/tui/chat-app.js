@@ -697,6 +697,61 @@ function parseRichTextSegments(line, baseColor) {
   });
 }
 
+export function sanitizeRenderableText(value) {
+  const input = String(value ?? '');
+  if (!input) return '';
+
+  return input
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, '')
+    .replace(/[\u001b\u009b][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[a-zA-Z\d]*)*)?\u0007)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g, '')
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, '');
+}
+
+function textFromSessionContent(content) {
+  if (typeof content === 'string') return sanitizeRenderableText(content);
+  if (Array.isArray(content)) {
+    return sanitizeRenderableText(
+      content
+        .map((part) => {
+          if (typeof part === 'string') return part;
+          if (part?.type === 'text') return part.text || '';
+          return '';
+        })
+        .join('')
+    );
+  }
+  return sanitizeRenderableText(String(content || ''));
+}
+
+function buildUiMessagesFromSessionHistory(sessionMessages, nextId) {
+  const source = Array.isArray(sessionMessages) ? sessionMessages : [];
+  const out = [];
+
+  for (const message of source) {
+    if (!message || typeof message !== 'object') continue;
+    if (message.role === 'tool') continue;
+
+    const text = textFromSessionContent(message.content);
+    if (!text.trim() && message.role !== 'assistant') continue;
+
+    if (message.role === 'user') {
+      out.push({ id: nextId(), label: 'you', text, color: 'blueBright' });
+      continue;
+    }
+    if (message.role === 'assistant') {
+      out.push({ id: nextId(), label: 'coder', text, color: 'greenBright' });
+      continue;
+    }
+    if (message.role === 'system') {
+      out.push({ id: nextId(), label: 'system', text, color: 'yellowBright' });
+    }
+  }
+
+  return out;
+}
+
 function safeJsonParse(raw) {
   try {
     return JSON.parse(String(raw || '{}'));
@@ -1062,11 +1117,12 @@ function PlanStrip({ planState, copy }) {
   );
 }
 
-function Header({ sessionId, model, shellName, safeMode = true }) {
+function Header({ sessionId, model, sdkProvider, shellName, safeMode = true }) {
   const shortSession = String(sessionId || '').slice(-12) || '-';
   const modeValue = safeMode ? 'SAFE' : 'OPEN';
   const modeColor = safeMode ? 'greenBright' : 'redBright';
   const modeTextColor = safeMode ? 'black' : 'white';
+  const sdkValue = String(sdkProvider || 'openai-compatible');
   return h(
     Box,
     { width: '100%', justifyContent: 'center', marginTop: 1, marginBottom: 2 },
@@ -1094,6 +1150,7 @@ function Header({ sessionId, model, shellName, safeMode = true }) {
       h(
         Box,
         { flexDirection: 'row', justifyContent: 'center' },
+        h(StatusPill, { label: 'SDK', value: sdkValue, color: 'blueBright', textColor: 'white' }),
         h(StatusPill, { label: 'MODEL', value: model, color: 'cyanBright', textColor: 'black' }),
         h(StatusPill, { label: 'SHELL', value: shellName || 'powershell', color: 'yellowBright', textColor: 'black' }),
         h(StatusPill, { label: 'SESSION', value: shortSession, color: 'magentaBright', textColor: 'black' }),
@@ -2497,7 +2554,7 @@ function makeIdleStatus(copy, snapshot, variant = 'ready') {
   );
 }
 
-export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName = 'powershell', version = '', safeMode = true }) {
+export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compatible', language = 'zh', shellName = 'powershell', version = '', safeMode = true }) {
   const copy = getCopy(language);
   const stdoutCols = Number(process.stdout?.columns || 120);
   const [inputValue, setInputValue] = useState('');
@@ -2513,6 +2570,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
   const [cursorVisible, setCursorVisible] = useState(true);
   const [displaySessionId, setDisplaySessionId] = useState(sessionId);
   const [displayModel, setDisplayModel] = useState(model);
+  const [displaySdkProvider, setDisplaySdkProvider] = useState(sdkProvider);
   const [pendingQueue, setPendingQueue] = useState([]);
   const [loaderTick, setLoaderTick] = useState(0);
   const [runtimeStatus, setRuntimeStatus] = useState(
@@ -2605,6 +2663,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
     if (!snapshot) return;
     setDisplaySessionId(snapshot.sessionId || sessionId);
     setDisplayModel(snapshot.model || model);
+    setDisplaySdkProvider(snapshot.sdkProvider || sdkProvider);
     setRuntimeState(snapshot);
     setRuntimeStatus(makeIdleStatus(copy, snapshot, variant));
   };
@@ -2763,6 +2822,10 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
 
   const appendResultMessage = (result) => {
     if (result.type === 'noop') return;
+    if (Array.isArray(result.restoredMessages)) {
+      setMessages(buildUiMessagesFromSessionHistory(result.restoredMessages, nextId));
+      syncRuntimeVisualState('after');
+    }
     if (
       result.type === 'system' &&
       typeof result.text === 'string' &&
@@ -2790,7 +2853,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
           {
             id: nextId(),
             label: 'system',
-            text: copy.generic.keyboardDebugStatus(debugKeys),
+            text: sanitizeRenderableText(copy.generic.keyboardDebugStatus(debugKeys)),
             color: 'yellowBright'
           }
         ]);
@@ -2804,7 +2867,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
           {
             id: nextId(),
             label: 'coder',
-            text: result.text,
+            text: sanitizeRenderableText(result.text),
             color: 'greenBright',
             autoSkillNames: activeAssistantAutoSkillNamesRef.current
           }
@@ -2818,7 +2881,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
       {
         id: nextId(),
         label: 'system',
-        text: result.text || '',
+        text: sanitizeRenderableText(result.text || ''),
         color: 'yellowBright',
         ...(parsedPlanSummary ? { planSummary: parsedPlanSummary } : {})
       }
@@ -3265,7 +3328,8 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
         appendResultMessage(result);
       })
       .catch((err) => {
-        setRuntimeStatus(makeStatus(copy.runtime.requestFailed, err.message, 'redBright'));
+        const message = sanitizeRenderableText(err?.message || String(err));
+        setRuntimeStatus(makeStatus(copy.runtime.requestFailed, message, 'redBright'));
         setInputStage('idle');
         updateMessageMeta(activeUserMessageIdRef.current, {
           loading: false,
@@ -3281,7 +3345,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
         }));
         setMessages((prev) => [
           ...prev,
-          { id: nextId(), label: 'error', text: err.message, color: 'redBright' }
+          { id: nextId(), label: 'error', text: message, color: 'redBright' }
         ]);
       })
       .finally(() => {
@@ -3343,6 +3407,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
         appendResultMessage(result);
       })
       .catch((err) => {
+        const message = sanitizeRenderableText(err?.message || String(err));
         updateMessageMeta(userMessageId, {
           loading: false,
           phase: undefined,
@@ -3350,7 +3415,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
         });
         setMessages((prev) => [
           ...prev,
-          { id: nextId(), label: 'error', text: err.message, color: 'redBright' }
+          { id: nextId(), label: 'error', text: message, color: 'redBright' }
         ]);
       });
   };
@@ -3677,7 +3742,7 @@ export function ChatApp({ runtime, sessionId, model, language = 'zh', shellName 
   return h(
     Box,
     { flexDirection: 'column' },
-    h(Header, { sessionId: displaySessionId, model: displayModel, shellName, safeMode }),
+    h(Header, { sessionId: displaySessionId, model: displayModel, sdkProvider: displaySdkProvider, shellName, safeMode }),
     h(MessageList, {
       messages: visibleMessages,
       loaderTick,

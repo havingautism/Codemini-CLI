@@ -21,6 +21,7 @@ import {
   insertRowsAfterLastCodeRow,
   mergeActivitySummary,
   moveSuggestionSelection,
+  sanitizeRenderableText,
   normalizeActivitySpacingRows,
   shouldAppendAssistantResult,
   shouldShowCompletionFooter,
@@ -56,6 +57,11 @@ test('formatSuggestionDescription trims and ellipsizes long descriptions', () =>
     'This is a much ...'
   );
   assert.equal(formatSuggestionDescription('', 18), '');
+});
+
+test('sanitizeRenderableText strips ANSI escape codes and unsafe control characters', () => {
+  const raw = 'Error:\u001b[31m boom\u001b[0m\r\nnext\u0007 line\u001b]8;;https://x.example\u0007link\u001b]8;;\u0007';
+  assert.equal(sanitizeRenderableText(raw), 'Error: boom\nnext linelink');
 });
 
 test('getPendingUserMessageMeta distinguishes submitted turns from queued turns', () => {

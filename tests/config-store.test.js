@@ -52,3 +52,14 @@ test('loadConfig creates the default global config file on first initialization'
     assert.equal(persisted.execution.mode, 'auto');
   });
 });
+
+test('config defaults sdk provider to openai-compatible and persists anthropic override', async () => {
+  await withTempConfigDir(async () => {
+    const initial = await loadConfig();
+    assert.equal(initial.sdk.provider, 'openai-compatible');
+
+    await setConfigValue('sdk.provider', 'anthropic');
+    const updated = await loadConfig();
+    assert.equal(updated.sdk.provider, 'anthropic');
+  });
+});

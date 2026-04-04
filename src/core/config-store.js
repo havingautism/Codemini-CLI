@@ -13,6 +13,9 @@ function normalizeUiLanguage(value) {
 }
 
 const DEFAULT_CONFIG = {
+  sdk: {
+    provider: 'openai-compatible'
+  },
   gateway: {
     base_url: 'http://127.0.0.1:8000/v1',
     api_key: '',
@@ -117,6 +120,10 @@ function uniqueStrings(items = []) {
 
 function normalizePolicyLists(config) {
   const next = structuredClone(config);
+  next.sdk = next.sdk || {};
+  next.sdk.provider = ['openai-compatible', 'anthropic'].includes(String(next.sdk.provider || '').toLowerCase())
+    ? String(next.sdk.provider).toLowerCase()
+    : 'openai-compatible';
   next.shell = next.shell || {};
   next.shell.default = normalizeShellName(next.shell.default);
   next.execution = next.execution || {};
