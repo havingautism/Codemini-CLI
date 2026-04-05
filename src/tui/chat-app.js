@@ -136,10 +136,8 @@ const TUI_COPY = {
       doingGrep: '正在搜索关键词',
       doneCommand: '已执行命令',
       doingCommand: '正在执行命令',
-      doneCreateTask: '已创建任务',
-      doingCreateTask: '正在创建任务',
-      doneUpdateTask: '已更新任务',
-      doingUpdateTask: '正在更新任务',
+      doneUpdateTodos: '已更新待办',
+      doingUpdateTodos: '正在更新待办',
       doneGeneric: '已完成工具',
       doingGeneric: '正在执行工具',
       doneInstall: '已安装依赖',
@@ -156,14 +154,12 @@ const TUI_COPY = {
       doingDatabase: '正在启动数据库服务',
       doneDocker: '已完成 Docker 命令',
       doingDocker: '正在执行 Docker 命令',
-      doneListServices: '已列出服务',
-      doingListServices: '正在列出服务',
-      doneServiceStatus: '已查看服务状态',
-      doingServiceStatus: '正在查看服务状态',
-      doneServiceLogs: '已查看服务日志',
-      doingServiceLogs: '正在查看服务日志',
-      doneStopService: '已停止服务',
-      doingStopService: '正在停止服务',
+      doneListBackgroundTasks: '已列出后台任务',
+      doingListBackgroundTasks: '正在列出后台任务',
+      doneBackgroundTaskStatus: '已查看后台任务',
+      doingBackgroundTaskStatus: '正在查看后台任务',
+      doneStopBackgroundTask: '已停止后台任务',
+      doingStopBackgroundTask: '正在停止后台任务',
       doneCodeGeneration: '已生成代码',
       doingCodeGeneration: '正在生成代码',
       doneSkill: '已完成技能',
@@ -281,10 +277,8 @@ const TUI_COPY = {
       doingGrep: 'Searching keywords',
       doneCommand: 'Ran command',
       doingCommand: 'Running command',
-      doneCreateTask: 'Created task',
-      doingCreateTask: 'Creating task',
-      doneUpdateTask: 'Updated task',
-      doingUpdateTask: 'Updating task',
+      doneUpdateTodos: 'Updated todos',
+      doingUpdateTodos: 'Updating todos',
       doneGeneric: 'Completed tool',
       doingGeneric: 'Running tool',
       doneInstall: 'Dependencies installed',
@@ -301,14 +295,12 @@ const TUI_COPY = {
       doingDatabase: 'Starting database service',
       doneDocker: 'Docker command completed',
       doingDocker: 'Running Docker command',
-      doneListServices: 'Listed services',
-      doingListServices: 'Listing services',
-      doneServiceStatus: 'Checked service status',
-      doingServiceStatus: 'Checking service status',
-      doneServiceLogs: 'Viewed service logs',
-      doingServiceLogs: 'Viewing service logs',
-      doneStopService: 'Stopped service',
-      doingStopService: 'Stopping service',
+      doneListBackgroundTasks: 'Listed background tasks',
+      doingListBackgroundTasks: 'Listing background tasks',
+      doneBackgroundTaskStatus: 'Checked background task',
+      doingBackgroundTaskStatus: 'Checking background task',
+      doneStopBackgroundTask: 'Stopped background task',
+      doingStopBackgroundTask: 'Stopping background task',
       doneCodeGeneration: 'Code generated',
       doingCodeGeneration: 'Generating code',
       doneSkill: 'Completed skill',
@@ -883,7 +875,7 @@ function getActivityDisplayParts(activity) {
     };
   }
   const parsed = parseToolDisplayName(activity?.name);
-  if (parsed.base === 'run' || parsed.base === 'start_service') {
+  if (parsed.base === 'run') {
     const intent = classifyCommandIntent(parsed.target);
     return {
       primary: getIntentLabel(intent.kind),
@@ -917,14 +909,11 @@ function getActivityDisplayParts(activity) {
     grep: 'Search',
     glob: 'Glob',
     list: 'List',
-    start_service: 'Service',
-    list_services: 'Services',
-    get_service_status: 'Status',
-    get_service_logs: 'Logs',
-    stop_service: 'Stop',
+    list_background_tasks: 'Tasks',
+    get_background_task: 'Task',
+    stop_background_task: 'Stop',
     list_files: 'Glob',
-    create_task: 'Task',
-    update_task: 'Task'
+    update_todos: 'Update Todos'
   };
   return {
     primary: labels[parsed.base] || parsed.base || 'Tool',
@@ -1831,7 +1820,7 @@ export function normalizeActivitySpacingRows(inputRows) {
 
     if (isActivityRow(row) && !isActivityRow(next) && next) {
       const last = normalized.at(-1);
-      if (!isBlankTextRow(last) && !(next.kind === 'status')) {
+      if (!isBlankTextRow(last) && !(next.kind === 'status') && !isTodoRow(next)) {
         normalized.push({
           kind: 'text',
           text: ' ',
@@ -1846,6 +1835,10 @@ export function normalizeActivitySpacingRows(inputRows) {
   }
 
   return normalized;
+}
+
+function isTodoRow(row) {
+  return row?.kind === 'todo-item';
 }
 
 function isReadActivityName(name) {
@@ -2031,6 +2024,19 @@ function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) {
       durationText,
       isLatestTool: idx === total - 1
     });
+    const todoItems = parseToolDisplayName(tool.name).base === 'update_todos' ? tool?.arguments?.todos : null;
+    if (Array.isArray(todoItems) && todoItems.length > 0 && tool.status !== 'running') {
+      for (const item of todoItems) {
+        const status = String(item?.status || 'pending').trim();
+        rows.push({
+          kind: 'todo-item',
+          status,
+          text: String(item?.content || '').trim(),
+          activeForm: String(item?.activeForm || '').trim()
+        });
+      }
+      return;
+    }
     if ((showToolDetails || idx === total - 1) && tool.summary && tool.status !== 'running') {
       for (const line of String(tool.summary).split('\n')) {
         pushWrappedRow(rows, { kind: 'activity-summary', text: line || ' ', color: 'gray' }, Math.max(8, contentWidth - 4));
@@ -2123,6 +2129,21 @@ function renderMessageRow(msg, row, idx, loaderTick) {
       Box,
       { key: `row-tool-summary-${msg.id}-${idx}`, marginLeft: 1 },
       h(Text, { color: 'gray' }, `└ ${row.text}`)
+    );
+  }
+  if (row.kind === 'todo-item') {
+    const marker =
+      row.status === 'completed' ? '[✓]' : row.status === 'in_progress' ? '[*]' : '[ ]';
+    const color =
+      row.status === 'completed' ? 'gray' : row.status === 'in_progress' ? 'white' : 'gray';
+    const dimColor = row.status === 'completed';
+    return h(
+      Box,
+      { key: `row-todo-${msg.id}-${idx}`, marginLeft: 2, marginBottom: 1 },
+      h(Text, { color: 'gray' }, '  '),
+      h(Text, { color }, marker),
+      h(Text, { color: 'gray' }, ' '),
+      h(Text, { color, dimColor }, row.text || row.activeForm || ' ')
     );
   }
   if (row.kind === 'table') {

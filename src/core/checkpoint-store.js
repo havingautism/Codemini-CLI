@@ -16,7 +16,7 @@ function makeId(name = '') {
   return `${stamp}-${slug || 'checkpoint'}`;
 }
 
-export async function createCheckpoint({ name, session, config, tasks }, cwd = process.cwd()) {
+export async function createCheckpoint({ name, session, config }, cwd = process.cwd()) {
   const dir = checkpointsDir(cwd);
   await fs.mkdir(dir, { recursive: true });
   const id = makeId(name);
@@ -26,8 +26,7 @@ export async function createCheckpoint({ name, session, config, tasks }, cwd = p
     name: String(name || ''),
     createdAt: new Date().toISOString(),
     session,
-    config,
-    tasks: Array.isArray(tasks) ? tasks : []
+    config
   };
   await fs.writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
   return payload;

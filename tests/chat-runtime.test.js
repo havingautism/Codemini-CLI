@@ -188,7 +188,7 @@ test('chat runtime prioritizes important config completions near the top', { con
       runtime.getCompletionOptions('/plan auto').find((item) => item.value === '/plan auto run ')?.description,
       '自动生成计划后立即继续执行'
     );
-    assert.ok(runtime.getCompletionOptions('/tasks').some((item) => item.value === '/tasks add'));
+    assert.equal(runtime.getCompletionOptions('/tasks').length, 0);
     assert.ok(runtime.getCompletionOptions('/agents').some((item) => item.value === '/agents run'));
     assert.ok(runtime.getCompletionOptions('/agents run').some((item) => item.value === '/agents run planner '));
     assert.ok(runtime.getCompletionOptions('/checkpoint').some((item) => item.value === '/checkpoint create'));
@@ -422,10 +422,9 @@ test('chat runtime injects persistent memory into the system prompt', { concurre
       assert.match(systemText, /User Memory:/);
       assert.match(systemText, /Global Memory:/);
       assert.match(systemText, /Project Memory:/);
-      assert.match(systemText, /Only write memory when the fact is likely to matter in future sessions/i);
-      assert.match(systemText, /Do not store temporary task details, speculative guesses, or secrets/i);
-      assert.match(systemText, /remember_user for user preferences/i);
-      assert.match(systemText, /remember_project for repository-specific conventions/i);
+      assert.match(systemText, /Persistent memory stores durable preferences and stable workflow knowledge/i);
+      assert.match(systemText, /Verify changeable details from files/i);
+      assert.match(systemText, /only write memory for future-useful, non-sensitive facts/i);
       assert.match(systemText, /preserve command names, file paths, identifiers, and punctuation exactly/i);
       assert.match(systemText, /exact_text=/);
       assert.match(systemText, /用户偏好中文回复/);

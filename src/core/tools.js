@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
@@ -18,19 +19,60 @@ import { checkReadDedup } from './agent-loop.js';
 import { TOOL_SKIP_DIRS as SKIP_DIRS, TEXT_EXTENSIONS, CODE_WRITE_GUARD_EXTENSIONS, LANGUAGE_FILE_TYPES } from './constants.js';
 import { sha256Prefixed as sha256, sha1 } from './crypto-utils.js';
 import { forgetMemory, listMemories, rememberMemory, searchMemories } from './memory-store.js';
-const SERVICE_RECENT_LOG_LIMIT = 80;
-const SERVICE_STARTUP_POLL_MS = 150;
-const serviceRegistry = new Map();
-let serviceCounter = 0;
-let serviceLogCursorCounter = 0;
+import { normalizeTodos } from './todo-state.js';
+const BACKGROUND_TASK_RECENT_OUTPUT_LIMIT = 80;
+const BACKGROUND_TASK_POLL_MS = 150;
+const backgroundTaskRegistry = new Map();
+let backgroundTaskCounter = 0;
+let backgroundTaskLogCursorCounter = 0;
+
+function realpathIfExists(targetPath) {
+  try {
+    return fsSync.realpathSync.native(targetPath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function isWithinResolvedRoot(resolvedRoot, candidatePath) {
+  const relative = path.relative(resolvedRoot, candidatePath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
 
 function resolveInWorkspace(root, targetPath = '.') {
   const absRoot = path.resolve(root);
+  const realRoot = fsSync.realpathSync.native(absRoot);
   const absTarget = path.resolve(absRoot, targetPath);
-  if (!absTarget.startsWith(absRoot)) {
+  const realTarget = realpathIfExists(absTarget);
+  if (realTarget) {
+    if (!isWithinResolvedRoot(realRoot, realTarget)) {
+      throw new Error(`Path escapes workspace: ${targetPath}`);
+    }
+    return realTarget;
+  }
+
+  let probe = path.dirname(absTarget);
+  while (!realpathIfExists(probe)) {
+    const parent = path.dirname(probe);
+    if (parent === probe) break;
+    probe = parent;
+  }
+
+  const resolvedProbe = realpathIfExists(probe);
+  if (!resolvedProbe) {
     throw new Error(`Path escapes workspace: ${targetPath}`);
   }
-  return absTarget;
+
+  const resolvedTarget = path.join(resolvedProbe, path.relative(probe, absTarget));
+  if (!isWithinResolvedRoot(realRoot, resolvedTarget)) {
+    throw new Error(`Path escapes workspace: ${targetPath}`);
+  }
+  return resolvedTarget;
+}
+
+function getBackgroundTasksDir(root) {
+  return path.join(resolveInWorkspace(root, '.codemini'), 'tasks');
 }
 
 function toWorkspaceRelative(root, absPath) {
@@ -233,56 +275,68 @@ function normalizeFileTypes(args = {}) {
   return [...new Set(merged)];
 }
 
+async function mapLimit(items, limit, worker) {
+  const list = Array.isArray(items) ? items : [];
+  if (list.length === 0) return [];
+  const maxConcurrent = Math.max(1, Math.min(Number(limit) || 1, list.length));
+  const results = new Array(list.length);
+  let nextIndex = 0;
+
+  async function runNext() {
+    while (nextIndex < list.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await worker(list[currentIndex], currentIndex);
+    }
+  }
+
+  await Promise.all(Array.from({ length: maxConcurrent }, () => runNext()));
+  return results;
+}
+
+const WALKER_CONCURRENCY = 8;
+
 async function walkTextFiles(root, startPath = '.', fileTypes = []) {
   const abs = resolveInWorkspace(root, startPath);
-  const out = [];
   const allowedExts = new Set((Array.isArray(fileTypes) ? fileTypes : []).map((item) => `.${String(item || '').replace(/^\./, '')}`));
 
   async function visit(current) {
     const stat = await fs.stat(current);
     if (stat.isDirectory()) {
       const name = path.basename(current);
-      if (SKIP_DIRS.has(name)) return;
+      if (SKIP_DIRS.has(name)) return [];
       const entries = await fs.readdir(current);
-      for (const entry of entries) {
-        await visit(path.join(current, entry));
-      }
-      return;
+      const nested = await mapLimit(entries, WALKER_CONCURRENCY, async (entry) => visit(path.join(current, entry)));
+      return nested.flat();
     }
-    if (!detectTextFile(current)) return;
-    if (allowedExts.size > 0 && !allowedExts.has(path.extname(current).toLowerCase())) return;
-    out.push(current);
+    if (!detectTextFile(current)) return [];
+    if (allowedExts.size > 0 && !allowedExts.has(path.extname(current).toLowerCase())) return [];
+    return [current];
   }
 
-  await visit(abs);
-  return out;
+  return visit(abs);
 }
 
 async function walkWorkspaceEntries(root, startPath = '.', { includeHidden = false } = {}) {
   const abs = resolveInWorkspace(root, startPath);
-  const out = [];
 
   async function visit(current) {
     const stat = await fs.stat(current);
     const relative = toWorkspaceRelative(root, current) || '.';
     const name = path.basename(current);
 
-    if (!includeHidden && name.startsWith('.') && relative !== '.') return;
+    if (!includeHidden && name.startsWith('.') && relative !== '.') return [];
     if (stat.isDirectory()) {
-      if (SKIP_DIRS.has(name) && relative !== '.') return;
-      out.push({ path: relative, name, type: 'dir' });
+      if (SKIP_DIRS.has(name) && relative !== '.') return [];
       const entries = await fs.readdir(current);
-      for (const entry of entries) {
-        await visit(path.join(current, entry));
-      }
-      return;
+      const nested = await mapLimit(entries, WALKER_CONCURRENCY, async (entry) => visit(path.join(current, entry)));
+      return [{ path: relative, name, type: 'dir' }, ...nested.flat()];
     }
 
-    out.push({ path: relative, name, type: 'file' });
+    return [{ path: relative, name, type: 'file' }];
   }
 
-  await visit(abs);
-  return out;
+  return visit(abs);
 }
 
 function globToRegex(pattern) {
@@ -840,18 +894,6 @@ async function runCommand(root, config, args) {
   if (!command.trim()) {
     throw new Error('run requires command');
   }
-  if (isLikelyLongRunningCommand(command)) {
-    const intent = classifyCommandIntent(command);
-    const labelMap = {
-      'frontend-service': 'frontend service',
-      'backend-service': 'backend service',
-      'database-service': 'database service',
-      'docker-service': 'Docker service',
-      service: 'long-running service'
-    };
-    const label = labelMap[intent.kind] || 'long-running service';
-    throw new Error(`Command looks like a ${label}. Use start_service instead of run.`);
-  }
   if (
     !config.policy.allow_dangerous_commands &&
     isDangerousCommand(command, config.policy.blocked_command_patterns)
@@ -866,6 +908,16 @@ async function runCommand(root, config, args) {
     );
   }
 
+  const shouldBackground =
+    args?.run_in_background === true ||
+    args?.runInBackground === true ||
+    args?.background === true ||
+    isLikelyLongRunningCommand(command);
+
+  if (shouldBackground) {
+    return startBackgroundTask(root, config, args);
+  }
+
   const result = await runShellCommand({
     command,
     cwd: root,
@@ -875,9 +927,9 @@ async function runCommand(root, config, args) {
   return { ...result, command };
 }
 
-function nextServiceId() {
-  serviceCounter += 1;
-  return `svc_${String(serviceCounter).padStart(3, '0')}`;
+function nextBackgroundTaskId() {
+  backgroundTaskCounter += 1;
+  return `task_${String(backgroundTaskCounter).padStart(3, '0')}`;
 }
 
 function normalizeSuccessMatchers(items = []) {
@@ -885,39 +937,39 @@ function normalizeSuccessMatchers(items = []) {
   return items.map((item) => String(item || '').trim()).filter(Boolean);
 }
 
-function shellCommandForService(command, shellSpec) {
+function shellCommandForBackgroundTask(command, shellSpec) {
   return process.platform !== 'win32' && /(?:^|\/)bash(?:\.exe)?$/i.test(shellSpec.command)
     ? `exec ${command}`
     : command;
 }
 
-function appendRecentLogs(service, chunk) {
+function appendRecentOutput(task, chunk) {
   const lines = String(chunk || '')
     .split(/\r?\n/)
     .map((line) => trimLinePreview(line, 220))
     .filter(Boolean);
   if (lines.length === 0) return;
   for (const line of lines) {
-    serviceLogCursorCounter += 1;
-    service.recentLogs.push({ cursor: serviceLogCursorCounter, line });
+    backgroundTaskLogCursorCounter += 1;
+    task.recentLogs.push({ cursor: backgroundTaskLogCursorCounter, line });
   }
-  if (service.recentLogs.length > SERVICE_RECENT_LOG_LIMIT) {
-    service.recentLogs.splice(0, service.recentLogs.length - SERVICE_RECENT_LOG_LIMIT);
+  if (task.recentLogs.length > BACKGROUND_TASK_RECENT_OUTPUT_LIMIT) {
+    task.recentLogs.splice(0, task.recentLogs.length - BACKGROUND_TASK_RECENT_OUTPUT_LIMIT);
   }
 }
 
-function matchesServiceSuccess(service, text) {
+function matchesTaskStartupSuccess(task, text) {
   const value = String(text || '');
   if (!value) return false;
   if (hasReadyOutput(value)) return true;
-  return service.successMatchers.some((matcher) => value.toLowerCase().includes(matcher.toLowerCase()));
+  return task.successMatchers.some((matcher) => value.toLowerCase().includes(matcher.toLowerCase()));
 }
 
-function markServiceReady(service, source = 'output') {
-  if (service.startupConfirmed) return;
-  service.startupConfirmed = true;
-  service.startupSource = source;
-  service.status = 'running';
+function markTaskReady(task, source = 'output') {
+  if (task.startupConfirmed) return;
+  task.startupConfirmed = true;
+  task.startupSource = source;
+  task.status = 'running';
 }
 
 function serviceUrlForPort(port) {
@@ -936,34 +988,38 @@ function normalizeHttpProbe(value) {
   };
 }
 
-function snapshotService(service, tail = 12) {
-  const recentLogs = Array.isArray(service.recentLogs)
-    ? service.recentLogs.slice(-Math.max(1, tail)).map((item) => item.line)
+function snapshotBackgroundTask(task, tail = 12) {
+  const recentOutput = Array.isArray(task.recentLogs)
+    ? task.recentLogs.slice(-Math.max(1, tail)).map((item) => item.line)
     : [];
   const latestCursor =
-    Array.isArray(service.recentLogs) && service.recentLogs.length > 0
-      ? service.recentLogs[service.recentLogs.length - 1].cursor
+    Array.isArray(task.recentLogs) && task.recentLogs.length > 0
+      ? task.recentLogs[task.recentLogs.length - 1].cursor
       : 0;
   return {
-    task_id: service.taskId,
-    pid: service.child?.pid || null,
-    command: service.command,
-    cwd: service.cwd,
-    status: service.status,
-    startup_confirmed: service.startupConfirmed,
-    startup_source: service.startupSource || '',
-    http_probe: service.httpProbe || undefined,
-    url: serviceUrlForPort(service.portProbe) || undefined,
-    recent_logs: recentLogs,
+    task_id: task.taskId,
+    pid: task.child?.pid || null,
+    command: task.command,
+    cwd: task.cwd,
+    status: task.status,
+    background: true,
+    kind: task.intentKind,
+    startup_confirmed: task.startupConfirmed,
+    startup_source: task.startupSource || '',
+    http_probe: task.httpProbe || undefined,
+    url: serviceUrlForPort(task.portProbe) || undefined,
+    output_file: task.outputFile,
+    recent_output: recentOutput,
+    recent_logs: recentOutput,
     log_cursor: latestCursor,
-    exit_code: service.exitCode ?? undefined,
-    signal: service.signal ?? undefined,
-    duration_ms: Date.now() - service.startedAt
+    exit_code: task.exitCode ?? undefined,
+    signal: task.signal ?? undefined,
+    duration_ms: Date.now() - task.startedAt
   };
 }
 
-function listServiceSnapshots() {
-  return Array.from(serviceRegistry.values()).map((service) => snapshotService(service, 4));
+function listBackgroundTaskSnapshots() {
+  return Array.from(backgroundTaskRegistry.values()).map((task) => snapshotBackgroundTask(task, 4));
 }
 
 function probePortOnce(port, host = '127.0.0.1', timeoutMs = 250) {
@@ -1001,9 +1057,16 @@ async function probeHttpOnce(httpProbe, timeoutMs = 400) {
   }
 }
 
-async function startService(root, config, args) {
+function queueBackgroundTaskOutputWrite(task, chunk) {
+  if (!task?.outputFileAbs) return;
+  task.outputWrite = (task.outputWrite || Promise.resolve())
+    .then(() => fs.appendFile(task.outputFileAbs, String(chunk || ''), 'utf8'))
+    .catch(() => {});
+}
+
+async function startBackgroundTask(root, config, args) {
   const command = String(args?.command || args?.cmd || '').trim();
-  if (!command) throw new Error('start_service requires command');
+  if (!command) throw new Error('run requires command');
   if (
     !config.policy.allow_dangerous_commands &&
     isDangerousCommand(command, config.policy.blocked_command_patterns)
@@ -1018,54 +1081,65 @@ async function startService(root, config, args) {
   }
 
   const shellSpec = resolveShell(config.shell.default);
-  const taskId = nextServiceId();
+  const taskId = nextBackgroundTaskId();
   const startupTimeoutMs = Math.max(250, Number(args?.startup_timeout_ms || args?.startupTimeoutMs || 20000));
   const successMatchers = normalizeSuccessMatchers(args?.success_matchers || args?.successMatchers);
   const portProbe = Number(args?.port_probe || args?.portProbe || 0) || 0;
   const httpProbe = normalizeHttpProbe(args?.http_probe || args?.httpProbe);
-  const service = {
+  const outputDir = getBackgroundTasksDir(root);
+  await fs.mkdir(outputDir, { recursive: true });
+  const outputFileAbs = path.join(outputDir, `${taskId}.log`);
+  await fs.writeFile(outputFileAbs, '', 'utf8');
+
+  const task = {
     taskId,
     command,
     cwd: root,
-    child: spawn(shellSpec.command, [...shellSpec.args, shellCommandForService(command, shellSpec)], {
+    child: spawn(shellSpec.command, [...shellSpec.args, shellCommandForBackgroundTask(command, shellSpec)], {
       cwd: root,
       stdio: ['ignore', 'pipe', 'pipe']
     }),
     startedAt: Date.now(),
     status: 'starting',
+    intentKind: classifyCommandIntent(command).kind,
     startupConfirmed: false,
     startupSource: '',
     successMatchers,
     portProbe,
     httpProbe,
+    outputFileAbs,
+    outputFile: toWorkspaceRelative(root, outputFileAbs),
     recentLogs: [],
     exitCode: null,
-    signal: null
+    signal: null,
+    outputWrite: Promise.resolve()
   };
-  serviceRegistry.set(taskId, service);
+  backgroundTaskRegistry.set(taskId, task);
 
-  service.closePromise = new Promise((resolve) => {
-    service.child.on('close', (code, signal) => {
-      service.exitCode = code;
-      service.signal = signal;
-      service.status = service.status === 'stopped' ? 'stopped' : 'exited';
+  task.closePromise = new Promise((resolve) => {
+    task.child.on('close', (code, signal) => {
+      task.exitCode = code;
+      task.signal = signal;
+      task.status = task.status === 'stopped' ? 'stopped' : 'exited';
       resolve();
     });
   });
 
   const onOutput = (chunk) => {
-    appendRecentLogs(service, chunk);
-    if (matchesServiceSuccess(service, chunk)) {
-      markServiceReady(service, 'output');
-      if (service._finishStartup) service._finishStartup();
+    appendRecentOutput(task, chunk);
+    queueBackgroundTaskOutputWrite(task, chunk);
+    if (matchesTaskStartupSuccess(task, chunk)) {
+      markTaskReady(task, 'output');
+      if (task._finishStartup) task._finishStartup();
     }
   };
-  service.child.stdout.on('data', onOutput);
-  service.child.stderr.on('data', onOutput);
-  service.child.on('error', (error) => {
-    appendRecentLogs(service, error?.message || String(error));
-    service.status = 'exited';
-    if (service._finishStartup) service._finishStartup();
+  task.child.stdout.on('data', onOutput);
+  task.child.stderr.on('data', onOutput);
+  task.child.on('error', (error) => {
+    appendRecentOutput(task, error?.message || String(error));
+    queueBackgroundTaskOutputWrite(task, error?.message || String(error));
+    task.status = 'exited';
+    if (task._finishStartup) task._finishStartup();
   });
 
   await new Promise((resolve) => {
@@ -1076,20 +1150,20 @@ async function startService(root, config, args) {
       clearTimeout(timeoutHandle);
       clearInterval(portHandle);
       clearInterval(httpHandle);
-      service._finishStartup = null;
+      task._finishStartup = null;
       resolve();
     };
-    service._finishStartup = finish;
-    if (service.startupConfirmed || service.status === 'exited') {
+    task._finishStartup = finish;
+    if (task.startupConfirmed || task.status === 'exited') {
       finish();
       return;
     }
     const timeoutHandle = setTimeout(() => {
-      if (service.status === 'starting') {
-        if (!service.startupConfirmed) {
-          markServiceReady(service, 'startup_window');
+      if (task.status === 'starting') {
+        if (!task.startupConfirmed) {
+          markTaskReady(task, 'startup_window');
         } else {
-          service.status = 'running';
+          task.status = 'running';
         }
       }
       finish();
@@ -1099,74 +1173,60 @@ async function startService(root, config, args) {
         ? setInterval(async () => {
             const open = await probePortOnce(portProbe);
             if (open) {
-              markServiceReady(service, 'port_probe');
+              markTaskReady(task, 'port_probe');
               finish();
             }
-          }, SERVICE_STARTUP_POLL_MS)
+          }, BACKGROUND_TASK_POLL_MS)
         : null;
     const httpHandle =
       httpProbe
         ? setInterval(async () => {
             const ok = await probeHttpOnce(httpProbe);
             if (ok) {
-              markServiceReady(service, 'http_probe');
+              markTaskReady(task, 'http_probe');
               finish();
             }
-          }, SERVICE_STARTUP_POLL_MS)
+          }, BACKGROUND_TASK_POLL_MS)
         : null;
-    service.child.once('close', () => finish());
+    task.child.once('close', () => finish());
   });
 
-  if (service.status === 'starting') {
-    service.status = 'running';
+  if (task.status === 'starting') {
+    task.status = 'running';
   }
-  return snapshotService(service);
+  return snapshotBackgroundTask(task);
 }
 
-function getServiceOrThrow(taskId) {
-  const service = serviceRegistry.get(String(taskId || '').trim());
-  if (!service) throw new Error(`Unknown service task: ${taskId}`);
-  return service;
+function getBackgroundTaskOrThrow(taskId) {
+  const task = backgroundTaskRegistry.get(String(taskId || '').trim());
+  if (!task) throw new Error(`Unknown background task: ${taskId}`);
+  return task;
 }
 
-async function getServiceStatus(_root, args) {
-  const service = getServiceOrThrow(args?.task_id || args?.taskId);
-  return snapshotService(service);
+async function getBackgroundTask(_root, args) {
+  const task = getBackgroundTaskOrThrow(args?.task_id || args?.taskId);
+  return snapshotBackgroundTask(task);
 }
 
-async function listServices() {
+async function listBackgroundTasks() {
   return {
-    services: listServiceSnapshots()
+    tasks: listBackgroundTaskSnapshots()
   };
 }
 
-async function getServiceLogs(_root, args) {
-  const service = getServiceOrThrow(args?.task_id || args?.taskId);
-  const tail = Math.max(1, Math.min(200, Number(args?.tail || 40)));
-  const afterCursor = Math.max(0, Number(args?.after_cursor || args?.afterCursor || 0));
-  const filtered = afterCursor > 0 ? service.recentLogs.filter((item) => item.cursor > afterCursor) : service.recentLogs;
-  const selected = filtered.slice(-tail);
-  return {
-    task_id: service.taskId,
-    status: service.status,
-    recent_logs: selected.map((item) => item.line),
-    next_cursor: selected.length > 0 ? selected[selected.length - 1].cursor : afterCursor
-  };
-}
-
-async function stopService(_root, args) {
-  const service = getServiceOrThrow(args?.task_id || args?.taskId);
-  if (service.status === 'stopped' || service.status === 'exited') {
-    return { ...snapshotService(service), stopped: true };
+async function stopBackgroundTask(_root, args) {
+  const task = getBackgroundTaskOrThrow(args?.task_id || args?.taskId);
+  if (task.status === 'stopped' || task.status === 'exited') {
+    return { ...snapshotBackgroundTask(task), stopped: true };
   }
-  service.status = 'stopped';
-  terminateChild(service.child, 'SIGTERM');
-  setTimeout(() => terminateChild(service.child, 'SIGKILL'), 200);
+  task.status = 'stopped';
+  terminateChild(task.child, 'SIGTERM');
+  setTimeout(() => terminateChild(task.child, 'SIGKILL'), 200);
   await Promise.race([
-    service.closePromise,
+    task.closePromise,
     new Promise((resolve) => setTimeout(resolve, 500))
   ]);
-  return { ...snapshotService(service), stopped: true };
+  return { ...snapshotBackgroundTask(task), stopped: true };
 }
 
 async function searchCode(root, args) {
@@ -1697,7 +1757,7 @@ async function editTarget(root, args) {
   throw new Error(`edit does not support kind: ${kind}`);
 }
 
-export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSystemEvent }) {
+export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSystemEvent, getTodos, onTodosUpdate }) {
   const emitSystemTool = (event) => {
     if (typeof onSystemEvent === 'function' && event) onSystemEvent(event);
   };
@@ -1828,26 +1888,6 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     {
       type: 'function',
       function: {
-        name: 'glob',
-        description:
-          'Find files by glob pattern. Use this for file discovery before read. Aliases like query and directory are accepted. Do not use run with find for normal file lookup.',
-        parameters: {
-          type: 'object',
-          properties: {
-            pattern: { type: 'string', description: 'Glob pattern' },
-            path: { type: 'string', description: 'Directory to search' },
-            query: { type: 'string', description: 'Alias for pattern' },
-            directory: { type: 'string', description: 'Alias for path' },
-            include_hidden: { type: 'boolean', description: 'Include dotfiles' },
-            max_results: { type: 'number', description: 'Max results' }
-          },
-          required: ['pattern']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
         name: 'list',
         description: 'List files and directories in a workspace path. Use this for quick directory discovery before deeper reads. Aliases like directory are accepted, and plain string paths are tolerated by the runtime.',
         parameters: {
@@ -1934,14 +1974,57 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     {
       type: 'function',
       function: {
+        name: 'update_todos',
+        description:
+          'Create or replace the structured todo checklist for the current session. Use this proactively for complex single-task work to track progress. Provide the full current list each time, and keep exactly one item in_progress when work is actively underway.',
+        parameters: {
+          type: 'object',
+          properties: {
+            todos: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  content: { type: 'string', description: 'Imperative task text such as "Run tests"' },
+                  activeForm: { type: 'string', description: 'Present continuous form such as "Running tests"' },
+                  status: { type: 'string', description: 'pending, in_progress, or completed' }
+                },
+                required: ['content', 'activeForm', 'status']
+              },
+              description: 'The full current todo checklist for this session'
+            }
+          },
+          required: ['todos']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'run',
         description:
-          'Run a one-shot shell command such as install, build, or test. Do not use for long-running services or file search.',
+          'Run a shell command. Use this for one-shot commands like install/build/test, and also for long-running commands by setting run_in_background=true. Long-running commands may also be backgrounded automatically.',
         parameters: {
           type: 'object',
           properties: {
             command: { type: 'string', description: 'Shell command to execute' },
-            timeout: { type: 'number', description: 'Timeout in milliseconds' }
+            timeout: { type: 'number', description: 'Timeout in milliseconds' },
+            run_in_background: { type: 'boolean', description: 'Run in the background and return a task handle immediately' },
+            startup_timeout_ms: { type: 'number', description: 'Background startup wait window in milliseconds' },
+            success_matchers: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional startup success phrases to look for in command output'
+            },
+            port_probe: { type: 'number', description: 'Optional localhost port to probe for readiness' },
+            http_probe: {
+              type: 'object',
+              properties: {
+                url: { type: 'string' },
+                expect_status: { type: 'number' }
+              },
+              description: 'Optional HTTP readiness probe for a background task'
+            }
           },
           required: ['command']
         }
@@ -1959,101 +2042,6 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
             query: { type: 'string', description: 'Tool name to load, or "all"' }
           },
           required: ['query']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'remember_user',
-        description: 'Store a durable user preference, communication habit, or long-term instruction for future sessions. Use this for things like reply style, language, explanation depth, or stable guardrails. Never store secrets, tokens, passwords, or one-off task details.',
-        parameters: {
-          type: 'object',
-          properties: {
-            content: { type: 'string', description: 'Stable preference or instruction to remember' },
-            kind: { type: 'string', description: 'preference, workflow, constraint, or warning' },
-            summary: { type: 'string', description: 'Short summary for the memory index' },
-            replace_similar: { type: 'boolean', description: 'Replace an existing similar memory when true' }
-          },
-          required: ['content']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'remember_global',
-        description: 'Store a durable cross-project workflow, environment fact, or generally reusable lesson that can help across many repositories. Use this for stable habits like preferred search tools or repeatable debugging workflow. Never store secrets.',
-        parameters: {
-          type: 'object',
-          properties: {
-            content: { type: 'string' },
-            kind: { type: 'string' },
-            summary: { type: 'string' },
-            replace_similar: { type: 'boolean' }
-          },
-          required: ['content']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'remember_project',
-        description: 'Store a durable project-specific convention, architecture note, key module warning, or local workflow expectation. Use this for repository-specific rules, important files, testing conventions, or architectural boundaries. Never store secrets or transient task state.',
-        parameters: {
-          type: 'object',
-          properties: {
-            content: { type: 'string' },
-            kind: { type: 'string' },
-            summary: { type: 'string' },
-            replace_similar: { type: 'boolean' }
-          },
-          required: ['content']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'list_memory',
-        description: 'List stored persistent memories for one scope.',
-        parameters: {
-          type: 'object',
-          properties: {
-            scope: { type: 'string', description: 'user, global, or project' }
-          },
-          required: ['scope']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'search_memory',
-        description: 'Search stored persistent memories for one scope.',
-        parameters: {
-          type: 'object',
-          properties: {
-            scope: { type: 'string', description: 'user, global, or project' },
-            query: { type: 'string', description: 'Search phrase' }
-          },
-          required: ['scope', 'query']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'forget_memory',
-        description: 'Delete a stored persistent memory by id.',
-        parameters: {
-          type: 'object',
-          properties: {
-            scope: { type: 'string', description: 'user, global, or project' },
-            id: { type: 'string', description: 'Memory id to delete' }
-          },
-          required: ['scope', 'id']
         }
       }
     }
@@ -2076,6 +2064,26 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
             max_results: { type: 'number' }
           },
           required: ['path', 'query']
+        }
+      }
+    },
+    glob: {
+      type: 'function',
+      function: {
+        name: 'glob',
+        description:
+          'Find files by glob pattern. Use this when you already know a filename pattern such as src/**/*.ts. Aliases like query and directory are accepted.',
+        parameters: {
+          type: 'object',
+          properties: {
+            pattern: { type: 'string', description: 'Glob pattern' },
+            path: { type: 'string', description: 'Directory to search' },
+            query: { type: 'string', description: 'Alias for pattern' },
+            directory: { type: 'string', description: 'Alias for path' },
+            include_hidden: { type: 'boolean', description: 'Include dotfiles' },
+            max_results: { type: 'number', description: 'Max results' }
+          },
+          required: ['pattern']
         }
       }
     },
@@ -2126,50 +2134,118 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         }
       }
     },
-    start_service: {
+    remember_user: {
       type: 'function',
       function: {
-        name: 'start_service',
-        description:
-          'Start a long-running local service and return a compact handle. Do not use run for watchers, dev servers, or other persistent processes.',
+        name: 'remember_user',
+        description: 'Store a durable user preference, communication habit, or long-term instruction for future sessions. Use this for things like reply style, language, explanation depth, or stable guardrails. Never store secrets, tokens, passwords, or one-off task details.',
         parameters: {
           type: 'object',
           properties: {
-            command: { type: 'string' },
-            startup_timeout_ms: { type: 'number' },
-            success_matchers: {
-              type: 'array',
-              items: { type: 'string' }
-            },
-            port_probe: { type: 'number' },
-            http_probe: {
-              type: 'object',
-              properties: {
-                url: { type: 'string' },
-                expect_status: { type: 'number' }
-              }
-            }
+            content: { type: 'string', description: 'Stable preference or instruction to remember' },
+            kind: { type: 'string', description: 'preference, workflow, constraint, or warning' },
+            summary: { type: 'string', description: 'Short summary for the memory index' },
+            replace_similar: { type: 'boolean', description: 'Replace an existing similar memory when true' }
           },
-          required: ['command']
+          required: ['content']
         }
       }
     },
-    list_services: {
+    remember_global: {
       type: 'function',
       function: {
-        name: 'list_services',
-        description: 'List tracked local services and their current status. Use this to find existing service handles before starting another one.',
+        name: 'remember_global',
+        description: 'Store a durable cross-project workflow, environment fact, or generally reusable lesson that can help across many repositories. Use this for stable habits like preferred search tools or repeatable debugging workflow. Never store secrets.',
+        parameters: {
+          type: 'object',
+          properties: {
+            content: { type: 'string' },
+            kind: { type: 'string' },
+            summary: { type: 'string' },
+            replace_similar: { type: 'boolean' }
+          },
+          required: ['content']
+        }
+      }
+    },
+    remember_project: {
+      type: 'function',
+      function: {
+        name: 'remember_project',
+        description: 'Store a durable project-specific convention, architecture note, key module warning, or local workflow expectation. Use this for repository-specific rules, important files, testing conventions, or architectural boundaries. Never store secrets or transient task state.',
+        parameters: {
+          type: 'object',
+          properties: {
+            content: { type: 'string' },
+            kind: { type: 'string' },
+            summary: { type: 'string' },
+            replace_similar: { type: 'boolean' }
+          },
+          required: ['content']
+        }
+      }
+    },
+    list_memory: {
+      type: 'function',
+      function: {
+        name: 'list_memory',
+        description: 'List stored persistent memories for one scope.',
+        parameters: {
+          type: 'object',
+          properties: {
+            scope: { type: 'string', description: 'user, global, or project' }
+          },
+          required: ['scope']
+        }
+      }
+    },
+    search_memory: {
+      type: 'function',
+      function: {
+        name: 'search_memory',
+        description: 'Search stored persistent memories for one scope.',
+        parameters: {
+          type: 'object',
+          properties: {
+            scope: { type: 'string', description: 'user, global, or project' },
+            query: { type: 'string', description: 'Search phrase' }
+          },
+          required: ['scope', 'query']
+        }
+      }
+    },
+    forget_memory: {
+      type: 'function',
+      function: {
+        name: 'forget_memory',
+        description: 'Delete a stored persistent memory by id.',
+        parameters: {
+          type: 'object',
+          properties: {
+            scope: { type: 'string', description: 'user, global, or project' },
+            id: { type: 'string', description: 'Memory id to delete' }
+          },
+          required: ['scope', 'id']
+        }
+      }
+    },
+    list_background_tasks: {
+      type: 'function',
+      function: {
+        name: 'list_background_tasks',
+        description:
+          'List background shell tasks started by run(..., run_in_background=true) or auto-backgrounded by run.',
         parameters: {
           type: 'object',
           properties: {}
         }
       }
     },
-    get_service_status: {
+    get_background_task: {
       type: 'function',
       function: {
-        name: 'get_service_status',
-        description: 'Get the status of a started service. Use this to confirm startup or diagnose a stalled service.',
+        name: 'get_background_task',
+        description: 'Get the current status for one background shell task.',
         parameters: {
           type: 'object',
           properties: {
@@ -2179,27 +2255,11 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         }
       }
     },
-    get_service_logs: {
+    stop_background_task: {
       type: 'function',
       function: {
-        name: 'get_service_logs',
-        description: 'Read recent logs from a started service. Use this for targeted diagnosis instead of restarting blindly.',
-        parameters: {
-          type: 'object',
-          properties: {
-            task_id: { type: 'string' },
-            tail: { type: 'number' },
-            after_cursor: { type: 'number' }
-          },
-          required: ['task_id']
-        }
-      }
-    },
-    stop_service: {
-      type: 'function',
-      function: {
-        name: 'stop_service',
-        description: 'Stop a started service when it is no longer needed or when you need a clean restart.',
+        name: 'stop_background_task',
+        description: 'Stop a running background shell task when it is no longer needed.',
         parameters: {
           type: 'object',
           properties: {
@@ -2275,6 +2335,18 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       if (result?.path) await refreshProjectFile(result.path);
       return result;
     },
+    update_todos: async (args = {}) => {
+      const oldTodos = normalizeTodos(typeof getTodos === 'function' ? getTodos() : []);
+      const nextTodos = normalizeTodos(args?.todos);
+      if (typeof onTodosUpdate === 'function') {
+        onTodosUpdate(nextTodos);
+      }
+      return {
+        ok: true,
+        oldTodos,
+        newTodos: nextTodos
+      };
+    },
     run: (args) => runCommand(workspaceRoot, config, args),
     remember_user: async (args = {}) => {
       const saved = await rememberMemory({
@@ -2325,11 +2397,9 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       ok: true,
       ...(await forgetMemory({ scope: args.scope, id: args.id, workspaceRoot }))
     }),
-    start_service: (args) => startService(workspaceRoot, config, args),
-    list_services: () => listServices(workspaceRoot),
-    get_service_status: (args) => getServiceStatus(workspaceRoot, args),
-    get_service_logs: (args) => getServiceLogs(workspaceRoot, args),
-    stop_service: (args) => stopService(workspaceRoot, args),
+    list_background_tasks: () => listBackgroundTasks(workspaceRoot),
+    get_background_task: (args) => getBackgroundTask(workspaceRoot, args),
+    stop_background_task: (args) => stopBackgroundTask(workspaceRoot, args),
     tool_search: (args) => {
       const query = String(args?.query || '').trim().toLowerCase();
       if (query === 'all') {
@@ -2409,6 +2479,17 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       return `${header}\n${dirs.join('\n')}${dirs.length && files.length ? '\n' : ''}${files.join('\n')}`;
     },
 
+    update_todos(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      const nextTodos = normalizeTodos(result.newTodos);
+      if (nextTodos.length === 0) return 'Todo list cleared.';
+      const lines = nextTodos.map((item) => {
+        const box = item.status === 'completed' ? '[x]' : item.status === 'in_progress' ? '[~]' : '[ ]';
+        return `${box} ${item.content}`;
+      });
+      return ['Updated todo list:', ...lines].join('\n');
+    },
+
     query_project_index(result) {
       if (!result || typeof result !== 'object') return String(result);
       const lines = [];
@@ -2466,6 +2547,18 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
 
     run(result) {
       if (!result || typeof result !== 'object') return String(result);
+      if (result.background) {
+        const parts = [
+          `[background task: ${result.task_id || '?'}]`,
+          `status: ${result.status || 'running'}`
+        ];
+        if (result.command) parts.push(`command: ${String(result.command).slice(0, 200)}`);
+        if (result.output_file) parts.push(`output_file: ${result.output_file}`);
+        if (Array.isArray(result.recent_output) && result.recent_output.length > 0) {
+          parts.push(`recent_output:\n${result.recent_output.slice(0, 6).join('\n')}`);
+        }
+        return parts.join('\n');
+      }
       const command = String(result.command || '').slice(0, 200);
       const stdout = String(result.stdout || '').slice(0, 500);
       const stderr = String(result.stderr || '').slice(0, 500);
@@ -2547,38 +2640,23 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       return `${header}\n${content.slice(0, 1200)}\n... [omitted ${content.length - 1600} chars] ...\n${content.slice(-400)}`;
     },
 
-    start_service(result) {
+    list_background_tasks(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      if (!Array.isArray(result.tasks)) return JSON.stringify(result);
+      if (result.tasks.length === 0) return 'No background tasks running.';
+      return result.tasks.map((task) => `${task.task_id || '?'} ${task.status || 'unknown'}${task.command ? ` (${task.command.slice(0, 60)})` : ''}`).join('\n');
+    },
+
+    get_background_task(result) {
       if (!result || typeof result !== 'object') return String(result);
       const tid = result.task_id || '';
       const status = result.status || 'unknown';
-      const confirmed = result.startup_confirmed ? 'ready' : 'starting';
-      const url = result.url || '';
-      return `${tid} ${status} (${confirmed})${url ? ` -> ${url}` : ''}`;
+      const outputFile = result.output_file || '';
+      const output = Array.isArray(result.recent_output) ? result.recent_output.slice(-3).join('\n') : '';
+      return `${tid} ${status}${outputFile ? ` -> ${outputFile}` : ''}${output ? `\n${output}` : ''}`;
     },
 
-    list_services(result) {
-      if (!result || typeof result !== 'object') return String(result);
-      if (!Array.isArray(result.services)) return JSON.stringify(result);
-      if (result.services.length === 0) return 'No services running.';
-      return result.services.map((s) => `${s.task_id || '?'} ${s.status || 'unknown'}${s.command ? ` (${s.command.slice(0, 60)})` : ''}`).join('\n');
-    },
-
-    get_service_status(result) {
-      if (!result || typeof result !== 'object') return String(result);
-      const tid = result.task_id || '';
-      const status = result.status || 'unknown';
-      const url = result.url || '';
-      const logs = Array.isArray(result.recent_logs) ? result.recent_logs.slice(-3).join('\n') : '';
-      return `${tid} ${status}${url ? ` -> ${url}` : ''}${logs ? `\n${logs}` : ''}`;
-    },
-
-    get_service_logs(result) {
-      if (!result || typeof result !== 'object') return String(result);
-      const logs = Array.isArray(result.recent_logs) ? result.recent_logs.join('\n') : '';
-      return logs || 'No recent logs.';
-    },
-
-    stop_service(result) {
+    stop_background_task(result) {
       if (!result || typeof result !== 'object') return String(result);
       return `${result.task_id || '?'} stopped${result.exit_code != null ? ` (exit ${result.exit_code})` : ''}`;
     }

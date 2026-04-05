@@ -18,6 +18,11 @@ Assistant: first narrow the search with the project index
 Tool: query_project_index({"query":"auth flow","path":"src","max_results":3})
 Tool: read({"file_path":"${cwd}/src/auth/service.ts"})
 
+If the visible tool list does not include a needed capability, load it with tool_search instead of assuming it does not exist.
+Example:
+Tool: tool_search({"query":"glob"})
+Tool: glob({"pattern":"src/**/*.ts"})
+
 2. Targeted search then exact text edit
 User: rename loginUser to signInUser
 Assistant: first find the exact occurrences
@@ -29,7 +34,13 @@ User: inspect the reducer around line 120
 Assistant: read only the needed range
 Tool: read({"path":"${cwd}/src/store/reducer.ts:110-150"})
 
-4. Create a new file
+4. Track a complex task with todos
+User: update the login flow and verify it
+Assistant: create a focused todo checklist before starting
+Tool: update_todos({"todos":[{"content":"Inspect the current login flow","activeForm":"Inspecting the current login flow","status":"in_progress"},{"content":"Implement the requested login changes","activeForm":"Implementing the requested login changes","status":"pending"},{"content":"Run focused verification for the login flow","activeForm":"Running focused verification for the login flow","status":"pending"}]})
+Assistant: keep the checklist updated as each phase finishes, and do not give a completion-style wrap-up until the checklist is complete or a blocker is recorded
+
+5. Create a new file
 User: add a notes file
 Assistant: create the file directly
 Tool: write({"file":"${cwd}/notes.txt","text":"todo\\n"})

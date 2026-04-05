@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getSessionsDir } from './paths.js';
+import { normalizeTodos } from './todo-state.js';
 
 const ALLOWED_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
 
@@ -85,6 +86,9 @@ function sanitizeSession(session, fallbackId = '') {
         .filter((step) => step.title || step.role || step.task);
     }
   }
+
+  const todos = normalizeTodos(session?.todos);
+  if (todos.length > 0) out.todos = todos;
 
   return out;
 }

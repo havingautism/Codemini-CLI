@@ -19,7 +19,13 @@ export function estimateMessagesTokens(messages) {
   for (const message of messages || []) {
     const roleOverhead = 6;
     const text = textFromContent(message.content);
-    total += roleOverhead + Math.ceil(text.length / 4);
+    let asciiChars = 0;
+    let nonAsciiChars = 0;
+    for (const char of text) {
+      if (char.charCodeAt(0) <= 0x7f) asciiChars += 1;
+      else nonAsciiChars += 1;
+    }
+    total += roleOverhead + Math.ceil(asciiChars / 4) + Math.ceil(nonAsciiChars / 2);
   }
   return total;
 }

@@ -8,6 +8,138 @@ function firstToken(command) {
   return base.replace(/\.exe$/i, '');
 }
 
+function splitCommandSegments(command) {
+  const text = String(command || '').trim();
+  if (!text) return [];
+  const segments = [];
+  let current = '';
+  let quote = '';
+  let escapeNext = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    const next = text[i + 1];
+
+    if (escapeNext) {
+      current += ch;
+      escapeNext = false;
+      continue;
+    }
+
+    if (ch === '\\' && quote !== '\'') {
+      current += ch;
+      escapeNext = true;
+      continue;
+    }
+
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = '';
+      continue;
+    }
+
+    if (ch === '"' || ch === '\'') {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+
+    if ((ch === '&' && next === '&') || (ch === '|' && next === '|')) {
+      if (current.trim()) segments.push(current.trim());
+      current = '';
+      i += 1;
+      continue;
+    }
+
+    if (ch === '|' || ch === ';' || ch === '&') {
+      if (current.trim()) segments.push(current.trim());
+      current = '';
+      continue;
+    }
+
+    current += ch;
+  }
+
+  if (current.trim()) segments.push(current.trim());
+  return segments;
+}
+
+function tokenizeTopLevel(command) {
+  const text = String(command || '').trim();
+  if (!text) return [];
+  const tokens = [];
+  let current = '';
+  let quote = '';
+  let escapeNext = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (escapeNext) {
+      current += ch;
+      escapeNext = false;
+      continue;
+    }
+    if (ch === '\\' && quote !== '\'') {
+      escapeNext = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) {
+        quote = '';
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === '\'') {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (current) {
+        tokens.push(current);
+        current = '';
+      }
+      continue;
+    }
+    current += ch;
+  }
+
+  if (current) tokens.push(current);
+  return tokens;
+}
+
+function unwrapShellPayload(command) {
+  const tokens = tokenizeTopLevel(command);
+  const token = firstToken(command);
+  if (!['bash', 'sh', 'zsh', 'powershell', 'pwsh', 'cmd'].includes(token)) return '';
+
+  const index = tokens.findIndex((item, itemIndex) => {
+    if (token === 'cmd') return itemIndex > 0 && /^\/c$/i.test(item);
+    return /^-(?:c|lc|command)$/i.test(item);
+  });
+  if (index < 0 || index + 1 >= tokens.length) return '';
+  return tokens.slice(index + 1).join(' ').trim();
+}
+
+function collectCommandTokens(command) {
+  const cmd = String(command || '').trim();
+  if (!cmd) return [];
+
+  const chained = splitCommandSegments(cmd);
+  if (chained.length > 1) {
+    return chained.flatMap((segment) => collectCommandTokens(segment));
+  }
+
+  const token = firstToken(cmd);
+  const out = token ? [{ token, raw: cmd }] : [];
+  const wrapped = unwrapShellPayload(cmd);
+  if (wrapped && wrapped !== cmd) {
+    out.push(...collectCommandTokens(wrapped));
+  }
+  return out;
+}
+
 function includesAny(haystackLower, patterns = []) {
   return patterns.some((p) => haystackLower.includes(String(p).toLowerCase()));
 }
@@ -46,17 +178,19 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
   }
 
   const token = firstToken(cmd);
-  if (includesAny(token, policy.blocked_commands)) {
-    return { allowed: false, reason: `blocked command: ${token}`, suggestion: suggestionForToken(token, config) };
-  }
-
+  const inspectedTokens = collectCommandTokens(cmd);
   const allowlist = Array.isArray(policy.command_allowlist) ? policy.command_allowlist : [];
-  if (allowlist.length > 0 && !allowlist.includes(token)) {
-    return {
-      allowed: false,
-      reason: `command not in allowlist: ${token}`,
-      suggestion: suggestionForToken(token, config)
-    };
+  for (const item of inspectedTokens) {
+    if (includesAny(item.token, policy.blocked_commands)) {
+      return { allowed: false, reason: `blocked command: ${item.token}`, suggestion: suggestionForToken(item.token, config) };
+    }
+    if (allowlist.length > 0 && !allowlist.includes(item.token)) {
+      return {
+        allowed: false,
+        reason: `command not in allowlist: ${item.token}`,
+        suggestion: suggestionForToken(item.token, config)
+      };
+    }
   }
 
   const workspaceLower = String(workspaceRoot).toLowerCase().replace(/\//g, '\\');

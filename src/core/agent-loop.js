@@ -194,6 +194,9 @@ function compactToolResult(result, toolName, args, maxChars = 12000) {
   if ('tasks' in obj && Array.isArray(obj.tasks)) {
     return `${obj.tasks.length} task(s)`;
   }
+  if ('newTodos' in obj && Array.isArray(obj.newTodos)) {
+    return obj.newTodos.length > 0 ? `updated ${obj.newTodos.length} todo item(s)` : 'cleared todo list';
+  }
 
   // Fallback: clip with reduced limit
   return clipToolResult(obj, Math.min(maxChars, 4000));
@@ -305,7 +308,7 @@ export function checkReadDedup(filePath, startLine, endLine, mtimeMs) {
 const READ_ONLY_TOOLS = new Set([
   'read', 'grep', 'glob', 'list',
   'ast_query', 'read_ast_node', 'generate_diff',
-  'list_services', 'get_service_status', 'get_service_logs'
+  'list_background_tasks', 'get_background_task'
 ]);
 
 // ─── Exported helpers ────────────────────────────────────────────────
@@ -370,19 +373,15 @@ export function summarizeToolResult(result) {
       const status = trimInline(obj.status || 'unknown', 32);
       const taskId = trimInline(obj.task_id || '', 24);
       const source = trimInline(obj.startup_source || '', 24);
-      const logs = Array.isArray(obj.recent_logs) ? trimInline(obj.recent_logs.slice(-1)[0] || '', 96) : '';
-      return `${taskId || 'service'} ${status}${source ? ` (${source})` : ''}${logs ? `\n${logs}` : ''}`;
+      const outputFile = trimInline(obj.output_file || '', 72);
+      const output = Array.isArray(obj.recent_output) ? trimInline(obj.recent_output.slice(-1)[0] || '', 96) : '';
+      return `${taskId || 'task'} ${status}${source ? ` (${source})` : ''}${outputFile ? ` -> ${outputFile}` : ''}${output ? `\n${output}` : ''}`;
     }
-    if ('services' in obj && Array.isArray(obj.services)) {
-      const count = obj.services.length;
-      const first = obj.services[0];
+    if ('tasks' in obj && Array.isArray(obj.tasks)) {
+      const count = obj.tasks.length;
+      const first = obj.tasks[0];
       const lead = first?.task_id ? `${trimInline(first.task_id, 24)} ${trimInline(first.status || 'unknown', 24)}` : '';
-      return `services(${count})${lead ? `\n${lead}` : ''}`;
-    }
-    if ('task_id' in obj && 'recent_logs' in obj) {
-      const taskId = trimInline(obj.task_id || '', 24);
-      const logs = Array.isArray(obj.recent_logs) ? trimInline(obj.recent_logs.slice(-1)[0] || '', 96) : '';
-      return `${taskId || 'service logs'}${logs ? `\n${logs}` : ''}`;
+      return `tasks(${count})${lead ? `\n${lead}` : ''}`;
     }
     if ('files' in obj && Array.isArray(obj.files)) {
       return `patched ${obj.files.length} file(s)`;
@@ -396,6 +395,9 @@ export function summarizeToolResult(result) {
     }
     if ('tasks' in obj && Array.isArray(obj.tasks)) {
       return `${obj.tasks.length} task(s)`;
+    }
+    if ('newTodos' in obj && Array.isArray(obj.newTodos)) {
+      return obj.newTodos.length > 0 ? `updated ${obj.newTodos.length} todo item(s)` : 'cleared todo list';
     }
     const keys = Object.keys(obj);
     return keys.length > 0 ? `keys: ${keys.slice(0, 5).join(',')}` : 'object';
@@ -601,18 +603,17 @@ function formatToolDisplayName(name, args) {
     const target = trimInline(args?.path || args?.file || '.', 96) || '.';
     return `edit(${target})`;
   }
+  if (name === 'update_todos') {
+    return 'update_todos';
+  }
   if (name === 'patch') {
     const target = trimInline(args?.path || args?.file || args?.patch || '', 96) || '.';
     return `patch(${target})`;
   }
-  if (name === 'start_service') {
-    const command = trimInline(args?.command || args?.cmd || '', 96);
-    return command ? `${name}(${command})` : name;
-  }
-  if (name === 'list_services') {
+  if (name === 'list_background_tasks') {
     return name;
   }
-  if (name === 'get_service_status' || name === 'get_service_logs' || name === 'stop_service') {
+  if (name === 'get_background_task' || name === 'stop_background_task') {
     const taskId = trimInline(args?.task_id || args?.taskId || '', 96);
     return taskId ? `${name}(${taskId})` : name;
   }

@@ -154,14 +154,12 @@ test('describeToolActivity uses more precise labels for list, glob, and grep', (
       doingGlob: '正在按模式查找文件',
       doneGrep: '已搜索关键词',
       doingGrep: '正在搜索关键词',
-      doneListServices: '已列出服务',
-      doingListServices: '正在列出服务',
-      doneServiceStatus: '已查看服务状态',
-      doingServiceStatus: '正在查看服务状态',
-      doneServiceLogs: '已查看服务日志',
-      doingServiceLogs: '正在查看服务日志',
-      doneStopService: '已停止服务',
-      doingStopService: '正在停止服务',
+      doneListBackgroundTasks: '已列出后台任务',
+      doingListBackgroundTasks: '正在列出后台任务',
+      doneBackgroundTaskStatus: '已查看后台任务',
+      doingBackgroundTaskStatus: '正在查看后台任务',
+      doneStopBackgroundTask: '已停止后台任务',
+      doingStopBackgroundTask: '正在停止后台任务',
       doneProjectIndex: '已初始化项目索引',
       doingProjectIndex: '正在初始化项目索引',
       doneFileIndex: '已刷新文件索引',
@@ -172,10 +170,9 @@ test('describeToolActivity uses more precise labels for list, glob, and grep', (
   assert.equal(describeToolActivity(zhCopy, 'list(src)', { done: true }), '已列出目录: src');
   assert.equal(describeToolActivity(zhCopy, 'glob(src/**/*.ts)'), '正在按模式查找文件: src/**/*.ts');
   assert.equal(describeToolActivity(zhCopy, 'grep(loginUser)'), '正在搜索关键词: loginUser');
-  assert.equal(describeToolActivity(zhCopy, 'list_services', { done: true }), '已列出服务: list_services');
-  assert.equal(describeToolActivity(zhCopy, 'get_service_status(task-1)'), '正在查看服务状态: task-1');
-  assert.equal(describeToolActivity(zhCopy, 'get_service_logs(task-1)'), '正在查看服务日志: task-1');
-  assert.equal(describeToolActivity(zhCopy, 'stop_service(task-1)', { done: true }), '已停止服务: task-1');
+  assert.equal(describeToolActivity(zhCopy, 'list_background_tasks', { done: true }), '已列出后台任务: list_background_tasks');
+  assert.equal(describeToolActivity(zhCopy, 'get_background_task(task-1)'), '正在查看后台任务: task-1');
+  assert.equal(describeToolActivity(zhCopy, 'stop_background_task(task-1)', { done: true }), '已停止后台任务: task-1');
   assert.equal(describeToolActivity(zhCopy, 'project_index', { done: true }), '已初始化项目索引');
   assert.equal(describeToolActivity(zhCopy, 'file_index(src/app.ts)'), '正在刷新文件索引: src/app.ts');
 });

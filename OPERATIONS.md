@@ -127,6 +127,10 @@ Use this when you want to separate:
 /retry
 ```
 
+Note:
+- The old manual `/tasks` board has been removed.
+- For complex single-task work, the assistant now maintains an internal session todo checklist automatically and shows it in the TUI.
+
 Available sub-agent roles:
 
 ```text

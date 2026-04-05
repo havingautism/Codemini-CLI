@@ -125,6 +125,61 @@ test('remember_project tool persists project memory entries', async () => {
   });
 });
 
+test('update_todos normalizes and replaces the session todo checklist', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    let currentTodos = [
+      {
+        content: 'Inspect auth flow',
+        activeForm: 'Inspecting auth flow',
+        status: 'in_progress'
+      }
+    ];
+    const { handlers, formatters } = await makeTools(workspaceRoot);
+    const { handlers: customHandlers, formatters: customFormatters } = await (async () => {
+      const config = await loadConfig();
+      return getBuiltinTools({
+        workspaceRoot,
+        config,
+        getTodos: () => currentTodos,
+        onTodosUpdate: (todos) => {
+          currentTodos = todos;
+        }
+      });
+    })();
+
+    assert.ok(handlers.read);
+    assert.ok(formatters.read);
+
+    const result = await customHandlers.update_todos({
+      todos: [
+        {
+          content: 'Inspect auth flow',
+          activeForm: 'Inspecting auth flow',
+          status: 'completed'
+        },
+        {
+          content: 'Run focused verification',
+          activeForm: 'Running focused verification',
+          status: 'in_progress'
+        },
+        {
+          content: '  ',
+          activeForm: 'Ignored invalid item',
+          status: 'pending'
+        }
+      ]
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.oldTodos.length, 1);
+    assert.equal(result.newTodos.length, 2);
+    assert.equal(currentTodos.length, 2);
+    assert.match(customFormatters.update_todos(result), /Updated todo list:/);
+    assert.match(customFormatters.update_todos(result), /\[x\] Inspect auth flow/);
+    assert.match(customFormatters.update_todos(result), /\[~\] Run focused verification/);
+  });
+});
+
 test('read returns minimal structured code context windows', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     await fs.mkdir(path.join(workspaceRoot, 'src', 'auth'), { recursive: true });
@@ -221,6 +276,49 @@ test('glob, grep, and list accept simpler demo-style aliases', async () => {
 
     const grepped = await handlers.grep({ query: 'loginUser', directory: 'src' });
     assert.ok(grepped.matches.some((item) => item.path === 'src/auth/service.ts'));
+  });
+});
+
+test('glob walks sibling directories with bounded filesystem concurrency', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src', 'a'), { recursive: true });
+    await fs.mkdir(path.join(workspaceRoot, 'src', 'b'), { recursive: true });
+    await fs.mkdir(path.join(workspaceRoot, 'src', 'c'), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, 'src', 'a', 'one.ts'), 'export const one = 1;\n', 'utf8');
+    await fs.writeFile(path.join(workspaceRoot, 'src', 'b', 'two.ts'), 'export const two = 2;\n', 'utf8');
+    await fs.writeFile(path.join(workspaceRoot, 'src', 'c', 'three.ts'), 'export const three = 3;\n', 'utf8');
+
+    const originalStat = fs.stat;
+    const originalReaddir = fs.readdir;
+    let activeOps = 0;
+    let maxConcurrentOps = 0;
+
+    function trackConcurrency(fn) {
+      return async (...args) => {
+        activeOps += 1;
+        maxConcurrentOps = Math.max(maxConcurrentOps, activeOps);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        try {
+          return await fn(...args);
+        } finally {
+          activeOps -= 1;
+        }
+      };
+    }
+
+    fs.stat = trackConcurrency(originalStat.bind(fs));
+    fs.readdir = trackConcurrency(originalReaddir.bind(fs));
+
+    try {
+      const { handlers } = await makeTools(workspaceRoot);
+      const result = await handlers.glob({ pattern: 'src/**/*.ts' });
+
+      assert.deepEqual(result.matches.sort(), ['src/a/one.ts', 'src/b/two.ts', 'src/c/three.ts']);
+      assert.ok(maxConcurrentOps > 1);
+    } finally {
+      fs.stat = originalStat;
+      fs.readdir = originalReaddir;
+    }
   });
 });
 
@@ -432,19 +530,27 @@ test('builtin tool definitions expose only current primary and structured tools'
     // Primary tools are always in definitions
     assert.ok(names.includes('read'));
     assert.ok(names.includes('grep'));
-    assert.ok(names.includes('glob'));
     assert.ok(names.includes('list'));
     assert.ok(names.includes('query_project_index'));
     assert.ok(names.includes('edit'));
     assert.ok(names.includes('write'));
     assert.ok(names.includes('run'));
+    assert.ok(names.includes('update_todos'));
     assert.ok(names.includes('tool_search'));
 
-    // AST and service tools are deferred — not in definitions but available via tool_search
+    // AST, memory, and background-task management tools are deferred
     assert.ok(!names.includes('ast_query'));
     assert.ok(!names.includes('read_ast_node'));
+    assert.ok(!names.includes('glob'));
+    assert.ok(!names.includes('remember_project'));
+    assert.ok(!names.includes('list_memory'));
+    assert.ok(!names.includes('list_background_tasks'));
+    assert.ok('glob' in deferredDefinitions);
     assert.ok('ast_query' in deferredDefinitions);
     assert.ok('read_ast_node' in deferredDefinitions);
+    assert.ok('remember_project' in deferredDefinitions);
+    assert.ok('list_memory' in deferredDefinitions);
+    assert.ok('list_background_tasks' in deferredDefinitions);
 
     // Removed tools are absent
     assert.ok(!names.includes('locate'));
@@ -468,6 +574,8 @@ test('builtin tool definitions expose only current primary and structured tools'
     assert.equal(typeof handlers.read_ast_node, 'function');
     assert.equal(typeof handlers.write, 'function');
     assert.equal(typeof handlers.run, 'function');
+    assert.equal(typeof handlers.remember_project, 'function');
+    assert.equal(typeof handlers.list_background_tasks, 'function');
     assert.equal(typeof handlers.tool_search, 'function');
   });
 });
@@ -1306,21 +1414,28 @@ test('edit can recover when the target block shifts to a new line range', async 
   });
 });
 
-test('run rejects long-running service commands and points callers to start_service', async () => {
+test('run backgrounds long-running commands and returns a task handle', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {
       config.shell.default = 'bash';
-      config.policy.command_allowlist = ['npm'];
+      config.policy.command_allowlist = ['bash'];
     });
 
-    await assert.rejects(
-      () => handlers.run({ command: 'npm start --silent' }),
-      /start_service/i
-    );
-    await assert.rejects(
-      () => handlers.run({ command: 'vite' }),
-      /frontend service/i
-    );
+    const backgroundTask = await handlers.run({
+      command: "bash -lc 'echo \"background task ready\"; while true; do sleep 1; done'",
+      run_in_background: true,
+      success_matchers: ['background task ready'],
+      startup_timeout_ms: 1200
+    });
+    assert.equal(backgroundTask.background, true);
+    assert.ok(backgroundTask.task_id);
+
+    const viteTask = await handlers.run({ command: "bash -lc 'while true; do sleep 1; done' # vite" });
+    assert.equal(viteTask.background, true);
+    assert.equal(viteTask.kind, 'frontend-service');
+
+    await handlers.stop_background_task({ task_id: backgroundTask.task_id });
+    await handlers.stop_background_task({ task_id: viteTask.task_id });
   });
 });
 
@@ -1354,84 +1469,60 @@ test('run blocked suggestions prefer structured tools before shell fallback', as
   });
 });
 
-test('service tools manage a long-running process lifecycle with compact status', async () => {
+test('background task tools manage a long-running process lifecycle with compact status', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {
       config.shell.default = 'bash';
       config.shell.timeout_ms = 1200;
-      config.policy.command_allowlist = ['node'];
+      config.policy.command_allowlist = ['bash'];
     });
 
-    const started = await handlers.start_service({
-      command:
-        "node -e 'console.log(\"Service ready on http://127.0.0.1:4310\"); setInterval(() => console.log(\"tick\"), 200)'",
+    const started = await handlers.run({
+      command: "bash -lc 'echo \"Service ready on http://127.0.0.1:4310\"; while true; do echo tick; sleep 0.2; done'",
+      run_in_background: true,
       startup_timeout_ms: 1200,
       success_matchers: ['Service ready'],
-      port_probe: 4310
+      port_probe: 0
     });
 
     assert.equal(started.status, 'running');
     assert.equal(started.startup_confirmed, true);
     assert.ok(started.task_id);
-    assert.ok(Array.isArray(started.recent_logs));
+    assert.ok(Array.isArray(started.recent_output));
+    assert.match(String(started.output_file || ''), /\.codemini\/tasks\/task_\d+\.log$/);
     assert.ok(['output', 'startup_window', 'port_probe'].includes(started.startup_source));
     assert.equal(typeof started.log_cursor, 'number');
 
-    const status = await handlers.get_service_status({ task_id: started.task_id });
+    const status = await handlers.get_background_task({ task_id: started.task_id });
     assert.equal(status.task_id, started.task_id);
     assert.equal(status.status, 'running');
 
-    const listed = await handlers.list_services({});
-    assert.ok(Array.isArray(listed.services));
-    assert.ok(listed.services.some((item) => item.task_id === started.task_id));
-
-    const logs = await handlers.get_service_logs({ task_id: started.task_id, tail: 10 });
-    assert.equal(logs.task_id, started.task_id);
-    assert.ok(Array.isArray(logs.recent_logs));
-    assert.equal(typeof logs.next_cursor, 'number');
+    const listed = await handlers.list_background_tasks({});
+    assert.ok(Array.isArray(listed.tasks));
+    assert.ok(listed.tasks.some((item) => item.task_id === started.task_id));
 
     await new Promise((resolve) => setTimeout(resolve, 250));
-    const incrementalLogs = await handlers.get_service_logs({
-      task_id: started.task_id,
-      tail: 10,
-      after_cursor: logs.next_cursor
-    });
-    assert.equal(incrementalLogs.task_id, started.task_id);
-    assert.ok(Array.isArray(incrementalLogs.recent_logs));
-    assert.equal(typeof incrementalLogs.next_cursor, 'number');
+    const output = await fs.readFile(path.join(workspaceRoot, status.output_file), 'utf8');
+    assert.match(output, /Service ready|tick/);
 
-    const stopped = await handlers.stop_service({ task_id: started.task_id });
+    const stopped = await handlers.stop_background_task({ task_id: started.task_id });
     assert.equal(stopped.task_id, started.task_id);
     assert.equal(stopped.stopped, true);
   });
 });
 
-test('start_service confirms dev-server style startup without blocking on process exit', async () => {
+test('run confirms dev-server style startup without blocking on process exit', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
-    await fs.writeFile(
-      path.join(workspaceRoot, 'package.json'),
-      JSON.stringify(
-        {
-          name: 'codemini-dev-server-test',
-          private: true,
-          scripts: {
-            start: "node -e 'console.log(\"dev server ready on http://127.0.0.1:3000\"); setInterval(() => {}, 1000)'"
-          }
-        },
-        null,
-        2
-      ),
-      'utf8'
-    );
-
     const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {
       config.shell.default = 'bash';
       config.shell.timeout_ms = 1200;
+      config.policy.command_allowlist = ['bash'];
     });
 
     const startedAt = Date.now();
-    const result = await handlers.start_service({
-      command: 'npm start --silent',
+    const result = await handlers.run({
+      command: "bash -lc 'echo \"dev server ready on http://127.0.0.1:3000\"; while true; do sleep 1; done'",
+      run_in_background: true,
       startup_timeout_ms: 1200,
       success_matchers: ['dev server ready']
     });
@@ -1443,22 +1534,22 @@ test('start_service confirms dev-server style startup without blocking on proces
     assert.ok(['output', 'startup_window', 'port_probe'].includes(result.startup_source));
     assert.ok(elapsedMs < 1300, `expected startup confirmation before startup timeout, got ${elapsedMs}ms`);
 
-    const stopped = await handlers.stop_service({ task_id: result.task_id });
+    const stopped = await handlers.stop_background_task({ task_id: result.task_id });
     assert.equal(stopped.stopped, true);
   });
 });
 
-test('start_service exposes configured http_probe metadata on service snapshots', async () => {
+test('run exposes configured http_probe metadata on background task snapshots', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {
       config.shell.default = 'bash';
       config.shell.timeout_ms = 1200;
-      config.policy.command_allowlist = ['node'];
+      config.policy.command_allowlist = ['bash'];
     });
 
-    const started = await handlers.start_service({
-      command:
-        "node -e 'console.log(\"HTTP probe placeholder service\"); setInterval(() => {}, 1000)'",
+    const started = await handlers.run({
+      command: "bash -lc 'echo \"HTTP probe placeholder service\"; while true; do sleep 1; done'",
+      run_in_background: true,
       startup_timeout_ms: 1200,
       http_probe: {
         url: 'http://127.0.0.1:4310/health',
@@ -1471,28 +1562,28 @@ test('start_service exposes configured http_probe metadata on service snapshots'
       expect_status: 200
     });
 
-    const status = await handlers.get_service_status({ task_id: started.task_id });
+    const status = await handlers.get_background_task({ task_id: started.task_id });
     assert.deepEqual(status.http_probe, {
       url: 'http://127.0.0.1:4310/health',
       expect_status: 200
     });
 
-    await handlers.stop_service({ task_id: started.task_id });
+    await handlers.stop_background_task({ task_id: started.task_id });
   });
 });
 
-test('start_service confirms java-style startup output', async () => {
+test('run confirms java-style startup output for background tasks', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {
       config.shell.default = 'bash';
       config.shell.timeout_ms = 1200;
-      config.policy.command_allowlist = ['node'];
+      config.policy.command_allowlist = ['bash'];
     });
 
     const startedAt = Date.now();
-    const result = await handlers.start_service({
-      command:
-        "node -e 'console.log(\"Tomcat started on port(s): 8080 (http) with context path \\\"\\\"\"); setInterval(() => {}, 1000)' # java -jar demo.jar",
+    const result = await handlers.run({
+      command: "bash -lc 'echo \"Tomcat started on port(s): 8080 (http) with context path \\\"\\\"\"; while true; do sleep 1; done' # java -jar demo.jar",
+      run_in_background: true,
       startup_timeout_ms: 1200
     });
     const elapsedMs = Date.now() - startedAt;
@@ -1502,23 +1593,23 @@ test('start_service confirms java-style startup output', async () => {
     assert.ok(['output', 'startup_window', 'port_probe'].includes(result.startup_source));
     assert.ok(elapsedMs < 1300, `expected java-style startup confirmation before startup timeout, got ${elapsedMs}ms`);
 
-    const stopped = await handlers.stop_service({ task_id: result.task_id });
+    const stopped = await handlers.stop_background_task({ task_id: result.task_id });
     assert.equal(stopped.stopped, true);
   });
 });
 
-test('start_service confirms dotnet and go-style startup output', async () => {
+test('run confirms dotnet and go-style startup output for background tasks', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {
       config.shell.default = 'bash';
       config.shell.timeout_ms = 1200;
-      config.policy.command_allowlist = ['node'];
+      config.policy.command_allowlist = ['bash'];
     });
 
     const dotnetStartedAt = Date.now();
-    const dotnetResult = await handlers.start_service({
-      command:
-        "node -e 'console.log(\"Now listening on: http://localhost:5099\"); setInterval(() => {}, 1000)' # dotnet run",
+    const dotnetResult = await handlers.run({
+      command: "bash -lc 'echo \"Now listening on: http://localhost:5099\"; while true; do sleep 1; done' # dotnet run",
+      run_in_background: true,
       startup_timeout_ms: 1200
     });
     const dotnetElapsedMs = Date.now() - dotnetStartedAt;
@@ -1529,9 +1620,9 @@ test('start_service confirms dotnet and go-style startup output', async () => {
     assert.ok(dotnetElapsedMs < 1300, `expected dotnet-style startup confirmation before startup timeout, got ${dotnetElapsedMs}ms`);
 
     const goStartedAt = Date.now();
-    const goResult = await handlers.start_service({
-      command:
-        "node -e 'console.log(\"Starting development server at http://127.0.0.1:8080\"); setInterval(() => {}, 1000)' # go run ./cmd/server",
+    const goResult = await handlers.run({
+      command: "bash -lc 'echo \"Starting development server at http://127.0.0.1:8080\"; while true; do sleep 1; done' # go run ./cmd/server",
+      run_in_background: true,
       startup_timeout_ms: 1200
     });
     const goElapsedMs = Date.now() - goStartedAt;
@@ -1541,8 +1632,8 @@ test('start_service confirms dotnet and go-style startup output', async () => {
     assert.ok(['output', 'startup_window', 'port_probe'].includes(goResult.startup_source));
     assert.ok(goElapsedMs < 1300, `expected go-style startup confirmation before startup timeout, got ${goElapsedMs}ms`);
 
-    await handlers.stop_service({ task_id: dotnetResult.task_id });
-    await handlers.stop_service({ task_id: goResult.task_id });
+    await handlers.stop_background_task({ task_id: dotnetResult.task_id });
+    await handlers.stop_background_task({ task_id: goResult.task_id });
   });
 });
 

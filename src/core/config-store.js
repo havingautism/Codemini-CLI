@@ -46,11 +46,9 @@ const DEFAULT_CONFIG = {
       'run',
       'patch',
       'generate_diff',
-      'start_service',
-      'list_services',
-      'get_service_status',
-      'get_service_logs',
-      'stop_service'
+      'list_background_tasks',
+      'get_background_task',
+      'stop_background_task'
     ],
     max_steps: 16
   },
@@ -154,11 +152,9 @@ function normalizePolicyLists(config) {
       'write',
       'run',
       'generate_diff',
-      'start_service',
-      'list_services',
-      'get_service_status',
-      'get_service_logs',
-      'stop_service',
+      'list_background_tasks',
+      'get_background_task',
+      'stop_background_task',
       ...rawTools
     ].filter((name) => String(name) !== 'list_files')
   );

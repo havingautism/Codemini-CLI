@@ -13,13 +13,6 @@ import { listSessions, loadSession, pruneSessions, saveSession } from './session
 import { getConfigValue, loadConfig, resetConfig, setConfigValue } from './config-store.js';
 import { evaluateCommandPolicy } from './command-policy.js';
 import { appendInputHistory, loadInputHistory } from './input-history-store.js';
-import {
-  clearTasks,
-  createTasks,
-  deleteTasks,
-  loadTasks,
-  updateTask
-} from './task-store.js';
 import { createCheckpoint, listCheckpoints, loadCheckpoint } from './checkpoint-store.js';
 import {
   compactMessagesLocally,
@@ -32,6 +25,7 @@ import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSess
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { buildMemorySnapshot } from './memory-prompt.js';
 import { forgetMemory, listMemories, searchMemories } from './memory-store.js';
+import { countActiveTodos, normalizeTodos } from './todo-state.js';
 
 function toOpenAIMessages(sessionMessages) {
   const mapped = [];
@@ -143,7 +137,6 @@ function getCompletionCopy(language = 'zh') {
         status: '查看运行状态（mode/model/session）',
         mode: '设置执行模式：normal|auto|plan',
         compact: '压缩消息上下文',
-        tasks: '任务面板管理',
         checkpoint: '创建/查看/加载检查点',
         spec: '在 .codemini/specs 中创建 spec',
         plan: '在 .codemini/plans 中创建实施计划',
@@ -158,7 +151,6 @@ function getCompletionCopy(language = 'zh') {
         configCommand: '配置命令',
         historyCommand: '历史会话命令',
         modeCommand: '切换执行模式',
-        taskCommand: '任务面板命令',
         checkpointCommand: '检查点命令',
         specCommand: '创建 spec 文件',
         planCommand: '规划命令',
@@ -232,7 +224,6 @@ function getCompletionCopy(language = 'zh') {
         status: 'show runtime status (mode/model/session)',
         mode: 'set execution mode: normal|auto|plan',
         compact: 'compress message context',
-        tasks: 'task board management',
         checkpoint: 'create/list/load conversation checkpoints',
         spec: 'create a spec markdown file in .codemini/specs',
         plan: 'create an implementation plan markdown file in .codemini/plans',
@@ -247,7 +238,6 @@ function getCompletionCopy(language = 'zh') {
         configCommand: 'config command',
         historyCommand: 'history command',
         modeCommand: 'switch execution mode',
-        taskCommand: 'task board command',
         checkpointCommand: 'checkpoint command',
         specCommand: 'create a spec file',
         planCommand: 'planning command',
@@ -276,7 +266,7 @@ const SUB_AGENT_CONTEXT_MAX_MESSAGES = 4;
 const SUB_AGENT_CONTEXT_MAX_CHARS = 1200;
 const SUB_AGENT_EVIDENCE_MAX_ITEMS = 3;
 const SUB_AGENT_HANDOFF_MAX_ITEMS = 6;
-function getSubAgentRolePrompt(role) {
+export function getSubAgentRolePrompt(role) {
   if (role === 'planner') {
     return 'You are a planning sub-agent. Produce a concrete implementation plan with risks and verification.';
   }
@@ -315,7 +305,11 @@ function getSubAgentRolePrompt(role) {
       '- <single best next step>'
     ].join('\n');
   }
-  return 'You are an execution sub-agent. Produce practical implementation guidance with code-level detail.';
+  return [
+    'You are an execution sub-agent. Produce practical implementation guidance with code-level detail.',
+    'Stop when: you have produced the code change and verified it compiles/passes basic checks.',
+    'If blocked: report what blocked you and what you tried, then stop.'
+  ].join('\n');
 }
 
 function trimInlineText(value, maxLen = 220) {
@@ -1753,14 +1747,19 @@ async function askModel({
 
   const projectContextSnippet = await buildProjectContextSnippet(process.cwd(), text).catch(() => '');
   const effectiveSystemPrompt = projectContextSnippet
-    ? `${systemPrompt}\n\n${projectContextSnippet}\n\nUse this project context as lightweight guidance. Query the project index before broad globs or reading many files, then use targeted reads for fresh verification.`
+    ? `${systemPrompt}\n\n${projectContextSnippet}\n\nUse this project context as lightweight guidance and verify important details with fresh reads when needed.`
     : systemPrompt;
 
   const { definitions, handlers, formatters, deferredDefinitions } = getBuiltinTools({
     workspaceRoot: process.cwd(),
     config,
     sessionId: session.id,
-    onSystemEvent: onAgentEvent
+    onSystemEvent: onAgentEvent,
+    getTodos: () => normalizeTodos(session.todos),
+    onTodosUpdate: (todos) => {
+      session.todos = normalizeTodos(todos);
+      scheduleSessionSave();
+    }
   });
 
   let activeAssistantIndex = -1;
@@ -2122,6 +2121,17 @@ export async function createChatRuntime({
       summary: initialIndex.summary
     });
   }
+  const initialTodos = normalizeTodos(session?.todos);
+  if (initialTodos.length > 0) {
+    startupEvents.push({
+      type: 'tool',
+      id: `startup-todos-${String(session?.id || 'session')}`,
+      name: 'update_todos',
+      status: 'done',
+      arguments: { todos: initialTodos },
+      summary: `${initialTodos.length} todo item(s)`
+    });
+  }
   let currentSession = session;
   let config = initialConfig;
   const baseSystemPrompt = systemPrompt;
@@ -2211,7 +2221,6 @@ export async function createChatRuntime({
     '/memory',
     '/mode',
     '/plan',
-    '/tasks',
     '/history',
     '/checkpoint',
     '/agents',
@@ -2230,7 +2239,6 @@ export async function createChatRuntime({
       { name: 'status', description: completionCopy.commands.status },
       { name: 'mode', description: completionCopy.commands.mode },
       { name: 'compact', description: completionCopy.commands.compact },
-      { name: 'tasks', description: completionCopy.commands.tasks },
       { name: 'checkpoint', description: completionCopy.commands.checkpoint },
       { name: 'spec', description: completionCopy.commands.spec },
       { name: 'plan', description: completionCopy.commands.plan },
@@ -2275,7 +2283,6 @@ export async function createChatRuntime({
   const historyTemplates = ['/history list', '/history current', '/history resume <session_id>'];
   const memoryTemplates = ['/memory list <scope>', '/memory search <scope> <query>', '/memory forget <scope> <id>'];
   const modeTemplates = ['/mode normal', '/mode auto', '/mode plan'];
-  const taskTemplates = ['/tasks', '/tasks add <title>', '/tasks start <id>', '/tasks done <id>', '/tasks remove <id>', '/tasks clear'];
   const checkpointTemplates = [
     '/checkpoint create <name>',
     '/checkpoint list',
@@ -2292,7 +2299,6 @@ export async function createChatRuntime({
     ...memoryTemplates,
     ...historyTemplates,
     ...modeTemplates,
-    ...taskTemplates,
     ...checkpointTemplates,
     ...specTemplates,
     ...planTemplates,
@@ -2338,7 +2344,6 @@ export async function createChatRuntime({
       'memory',
       'compact',
       'mode',
-      'tasks',
       'checkpoint',
       'plan',
       'agents',
@@ -2358,7 +2363,6 @@ export async function createChatRuntime({
     for (const template of memoryTemplates) registerSuggestion(template, completionCopy.generic.memoryCommand);
     for (const template of historyTemplates) registerSuggestion(template, completionCopy.generic.historyCommand);
     for (const template of modeTemplates) registerSuggestion(template, completionCopy.generic.modeCommand);
-    for (const template of taskTemplates) registerSuggestion(template, completionCopy.generic.taskCommand);
     for (const template of checkpointTemplates) registerSuggestion(template, completionCopy.generic.checkpointCommand);
     for (const template of specTemplates) registerSuggestion(template, completionCopy.generic.specCommand);
     for (const template of planTemplates) {
@@ -2459,15 +2463,6 @@ export async function createChatRuntime({
           .map((m) => registerSuggestion(`/mode ${m}`, completionCopy.generic.modeCommand));
       }
       return materializeSuggestions(modeTemplates);
-    }
-    if (commandPart === 'tasks') {
-      if (tokens.length <= 2 && !hasTrailingSpace) {
-        const sub = tokens[1] || '';
-        return ['add', 'start', 'done', 'remove', 'rm', 'clear']
-          .filter((s) => s.startsWith(sub))
-          .map((s) => registerSuggestion(`/tasks ${s}`, completionCopy.generic.taskCommand));
-      }
-      return materializeSuggestions(taskTemplates);
     }
     if (commandPart === 'checkpoint') {
       if (tokens.length <= 2 && !hasTrailingSpace) {
@@ -2614,7 +2609,7 @@ export async function createChatRuntime({
       workspaceRoot: process.cwd()
     }).catch(() => '');
     const memoryGuide =
-      'Persistent memory is for durable preferences, project conventions, and stable workflow knowledge. Use fresh file reads when the code can verify details. Only write memory when the fact is likely to matter in future sessions, is stable over time, and is not sensitive. Do not store temporary task details, speculative guesses, or secrets. Choose remember_user for user preferences, communication habits, and long-term constraints. Choose remember_global for reusable workflow knowledge that helps across many projects. Choose remember_project for repository-specific conventions, architecture notes, important modules, and local workflow expectations. When memory includes command names, file paths, identifiers, or exact wording, preserve those tokens exactly instead of paraphrasing them.';
+      'Persistent memory stores durable preferences and stable workflow knowledge. Verify changeable details from files, and only write memory for future-useful, non-sensitive facts.';
     return [soulPrompt, memorySnapshot, memoryGuide].filter(Boolean).join('\n\n');
   };
 
@@ -2633,7 +2628,6 @@ export async function createChatRuntime({
       'commands',
       'status',
       'mode',
-      'tasks',
       'checkpoint',
       'history',
       'memory',
@@ -2664,14 +2658,14 @@ export async function createChatRuntime({
       if (parsedInput.command === 'help') {
         return {
           type: 'system',
-          text: 'Commands: /help /exit /commands /status /mode /compact /tasks /checkpoint /spec /plan /agents /config /memory /history /debug /retry /<custom> !<shell>'
+          text: 'Commands: /help /exit /commands /status /mode /compact /checkpoint /spec /plan /agents /config /memory /history /debug /retry /<custom> !<shell>'
         };
       }
       if (parsedInput.command === 'status') {
-        const taskCount = (await loadTasks(process.cwd(), currentSession.id)).length;
+        const todoCount = countActiveTodos(currentSession.todos);
         return {
           type: 'system',
-          text: `mode=${executionMode} | model=${model || config.model.name} | max_ctx=${effectiveMaxContextTokens(config)} | session=${currentSession.id} | tasks=${taskCount}`
+          text: `mode=${executionMode} | model=${model || config.model.name} | max_ctx=${effectiveMaxContextTokens(config)} | session=${currentSession.id} | todos=${todoCount}`
         };
       }
       if (parsedInput.command === 'mode') {
@@ -2689,74 +2683,15 @@ export async function createChatRuntime({
         await persistLocalExchange(line, text);
         return { type: 'system', text };
       }
-      if (parsedInput.command === 'tasks') {
-        const sub = (parsedInput.args[0] || '').trim().toLowerCase();
-        if (!sub) {
-          const tasks = await loadTasks(process.cwd(), currentSession.id);
-          if (tasks.length === 0) return { type: 'system', text: 'No tasks' };
-          const rows = tasks.map((t, idx) => `${idx + 1}. ${t.id} | ${t.status} | ${t.title}`);
-          return { type: 'system', text: rows.join('\n') };
-        }
-        if (sub === 'add') {
-          const title = parsedInput.args.slice(1).join(' ').trim();
-          if (!title) return { type: 'system', text: 'Usage: /tasks add <title>' };
-          const created = await createTasks([{ title }], process.cwd(), currentSession.id);
-          const text = `Created task: ${created[0]?.id || '-'} | ${title}`;
-          await persistLocalExchange(line, text);
-          return { type: 'system', text };
-        }
-        if (sub === 'start') {
-          const id = parsedInput.args[1];
-          if (!id) return { type: 'system', text: 'Usage: /tasks start <id>' };
-          const updated = await updateTask(id, { status: 'in_progress' }, process.cwd(), currentSession.id);
-          if (!updated) return { type: 'system', text: `Task not found: ${id}` };
-          const text = `Task in progress: ${id}`;
-          await persistLocalExchange(line, text);
-          return { type: 'system', text };
-        }
-        if (sub === 'done') {
-          const id = parsedInput.args[1];
-          if (!id) return { type: 'system', text: 'Usage: /tasks done <id>' };
-          const updated = await updateTask(id, { status: 'completed' }, process.cwd(), currentSession.id);
-          if (!updated) return { type: 'system', text: `Task not found: ${id}` };
-          const text = `Task completed: ${id}`;
-          await persistLocalExchange(line, text);
-          return { type: 'system', text };
-        }
-        if (sub === 'remove' || sub === 'rm') {
-          const id = parsedInput.args[1];
-          if (!id) return { type: 'system', text: 'Usage: /tasks remove <id>' };
-          const result = await deleteTasks([id], process.cwd(), currentSession.id);
-          const text = `Removed=${result.removed}, Remaining=${result.remaining}`;
-          await persistLocalExchange(line, text);
-          return { type: 'system', text };
-        }
-        if (sub === 'clear') {
-          await clearTasks(process.cwd(), currentSession.id);
-          const text = 'All tasks cleared';
-          await persistLocalExchange(line, text);
-          return { type: 'system', text };
-        }
-        // shorthand: /tasks implement x
-        const title = parsedInput.args.join(' ').trim();
-        if (title) {
-          const created = await createTasks([{ title }], process.cwd(), currentSession.id);
-          const text = `Created task: ${created[0]?.id || '-'} | ${title}`;
-          await persistLocalExchange(line, text);
-          return { type: 'system', text };
-        }
-      }
       if (parsedInput.command === 'checkpoint') {
         const sub = (parsedInput.args[0] || 'list').trim().toLowerCase();
         if (sub === 'create') {
           const name = parsedInput.args.slice(1).join(' ').trim();
-          const tasks = await loadTasks(process.cwd(), currentSession.id);
           const cp = await createCheckpoint(
             {
               name,
               session: currentSession,
-              config,
-              tasks
+              config
             },
             process.cwd()
           );
@@ -2790,17 +2725,6 @@ export async function createChatRuntime({
           if (cp?.config) {
             config = cp.config;
             executionMode = config.execution?.mode || executionMode;
-          }
-          if (Array.isArray(cp?.tasks)) {
-            await clearTasks(process.cwd(), currentSession.id);
-            if (cp.tasks.length > 0) {
-              // restore with new ids to avoid stale references
-              await createTasks(
-                cp.tasks.map((t) => ({ title: t.title, description: t.description })),
-                process.cwd(),
-                currentSession.id
-              );
-            }
           }
           const text = `Checkpoint loaded: ${id}`;
           await persistLocalExchange(line, text, { includeUser: false });
