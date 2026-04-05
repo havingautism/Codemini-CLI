@@ -41,6 +41,14 @@ function sanitizeMessage(msg) {
   if (msg?.tool_call_id) out.tool_call_id = String(msg.tool_call_id);
   if (typeof msg?.name === 'string' && msg.name.trim()) out.name = msg.name.trim();
   if (typeof msg?.at === 'string' && msg.at.trim()) out.at = msg.at;
+  if (typeof msg?.reasoning_content === 'string' && msg.reasoning_content) {
+    out.reasoning_content = msg.reasoning_content;
+  }
+  if (Array.isArray(msg?.reasoning_details) && msg.reasoning_details.length > 0) {
+    out.reasoning_details = msg.reasoning_details
+      .filter((detail) => detail && typeof detail === 'object')
+      .map((detail) => ({ ...detail }));
+  }
 
   if (Array.isArray(msg?.tool_calls)) {
     const toolCalls = msg.tool_calls.map(sanitizeToolCall).filter(Boolean);

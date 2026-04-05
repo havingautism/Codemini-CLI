@@ -961,6 +961,17 @@ function normalizeRuntimeStatus(status, copy) {
   };
 }
 
+export function shouldRefreshRuntimeStateForEvent(event) {
+  const type = String(event?.type || '');
+  return (
+    type === 'assistant:start' ||
+    type === 'assistant:delta' ||
+    type === 'assistant:response' ||
+    type === 'tool:result' ||
+    type === 'compact:auto'
+  );
+}
+
 function stageDescriptor(inputStage, busy, runtimeStatus, copy) {
   const normalized = normalizeRuntimeStatus(runtimeStatus, copy);
   const tag =
@@ -1829,6 +1840,10 @@ export function normalizeActivitySpacingRows(inputRows) {
       }
     }
 
+    if (isTodoRow(row) && !isTodoRow(next) && next && !isBlankTextRow(next) && next.kind !== 'status') {
+      normalized.push({ kind: 'todo-gap' });
+    }
+
     if (isBlankTextRow(row) && isBlankTextRow(prev)) {
       normalized.pop();
     }
@@ -2145,6 +2160,9 @@ export function renderMessageRow(msg, row, idx, loaderTick) {
       h(Text, { color: 'gray' }, ' '),
       h(Text, { color, dimColor }, row.text || row.activeForm || ' ')
     );
+  }
+  if (row.kind === 'todo-gap') {
+    return h(Box, { key: `row-todo-gap-${msg.id}-${idx}`, marginTop: 1 }, h(Text, { color: 'gray' }, ' '));
   }
   if (row.kind === 'table') {
     return h(
@@ -2751,6 +2769,15 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     setRuntimeStatus(makeIdleStatus(copy, snapshot, variant));
   };
 
+  const refreshRuntimeSnapshot = () => {
+    const snapshot = runtime.getRuntimeState?.();
+    if (!snapshot) return;
+    setDisplaySessionId(snapshot.sessionId || sessionId);
+    setDisplayModel(snapshot.model || model);
+    setDisplaySdkProvider(snapshot.sdkProvider || sdkProvider);
+    setRuntimeState(snapshot);
+  };
+
   useEffect(() => {
     syncRuntimeVisualState('ready');
   }, []);
@@ -3126,6 +3153,9 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
 
     runtime
       .submit(line, (event) => {
+        if (shouldRefreshRuntimeStateForEvent(event)) {
+          refreshRuntimeSnapshot();
+        }
         if (event?.type === 'assistant:start') {
           streamedAssistantHandledRef.current = true;
           setRuntimeStatus(makeStatus(copy.runtime.modelThinking, copy.runtime.requestDelivered, 'cyanBright'));

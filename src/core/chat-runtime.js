@@ -41,6 +41,8 @@ function toOpenAIMessages(sessionMessages) {
     mapped.push({
       role: msg.role,
       content: msg.content,
+      ...(typeof msg.reasoning_content === 'string' && msg.reasoning_content ? { reasoning_content: msg.reasoning_content } : {}),
+      ...(Array.isArray(msg.reasoning_details) && msg.reasoning_details.length > 0 ? { reasoning_details: msg.reasoning_details } : {}),
       ...(msg.tool_calls ? { tool_calls: msg.tool_calls } : {})
     });
   }
@@ -1784,6 +1786,12 @@ async function askModel({
       if (activeAssistantIndex >= 0 && session.messages[activeAssistantIndex]) {
         const current = session.messages[activeAssistantIndex];
         current.content = event.assistantMessage?.content ?? event.text ?? current.content;
+        if (typeof event.assistantMessage?.reasoning_content === 'string' && event.assistantMessage.reasoning_content) {
+          current.reasoning_content = event.assistantMessage.reasoning_content;
+        }
+        if (Array.isArray(event.assistantMessage?.reasoning_details) && event.assistantMessage.reasoning_details.length > 0) {
+          current.reasoning_details = event.assistantMessage.reasoning_details;
+        }
         if (Array.isArray(event.assistantMessage?.tool_calls) && event.assistantMessage.tool_calls.length > 0) {
           current.tool_calls = event.assistantMessage.tool_calls;
         }

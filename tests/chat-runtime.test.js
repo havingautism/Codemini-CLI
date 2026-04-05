@@ -1196,6 +1196,109 @@ test('plan auto run appends a valid tester step instead of emitting undefined me
   });
 });
 
+test('chat runtime sends prior assistant reasoning_content back on the post-tool follow-up request', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    let callIndex = 0;
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      callIndex += 1;
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+
+      if (callIndex === 1) {
+        assert.equal(body.stream, true);
+        return makeSseResponse([
+          {
+            choices: [
+              {
+                delta: {
+                  reasoning_content: '先分析工具边界',
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'call_list_reasoning',
+                      function: { name: 'list', arguments: '{"path":"src/core"}' }
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            choices: [
+              {
+                delta: {},
+                finish_reason: 'tool_calls'
+              }
+            ]
+          }
+        ]);
+      }
+
+      if (callIndex === 2) {
+        assert.equal(body.stream, true);
+        const assistantWithReasoning = (body.messages || []).find(
+          (message) => message?.role === 'assistant' && message?.reasoning_content === '先分析工具边界'
+        );
+        assert.ok(assistantWithReasoning);
+        assert.equal(assistantWithReasoning.reasoning_content, '先分析工具边界');
+        assert.deepEqual(assistantWithReasoning.tool_calls, [
+          {
+            id: 'call_list_reasoning',
+            type: 'function',
+            function: {
+              name: 'list',
+              arguments: '{"path":"src/core"}'
+            }
+          }
+        ]);
+        return makeSseResponse([
+          {
+            choices: [
+              {
+                delta: { content: '不能直接嵌到 read 里。' }
+              }
+            ]
+          },
+          {
+            choices: [
+              {
+                delta: {},
+                finish_reason: 'stop'
+              }
+            ]
+          }
+        ]);
+      }
+
+      throw new Error(`unexpected fetch call ${callIndex}`);
+    });
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-reasoning-content-roundtrip',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const result = await runtime.submit('现在我的工具暴露是把query ast作为单独工具，能不能直接嵌入到read文件里');
+      assert.equal(result.type, 'assistant');
+      assert.match(result.text, /不能直接嵌到 read 里/);
+      assert.equal(callIndex, 2);
+    } finally {
+      await restoreFetch();
+    }
+  });
+});
+
 test('plan auto run sends the approved plan prompt with the generated plan details', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let callIndex = 0;

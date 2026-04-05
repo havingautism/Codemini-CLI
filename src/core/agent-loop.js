@@ -692,8 +692,14 @@ export async function runAgentLoop({
     const assistantText = completion.text || '';
     lastAssistantText = assistantText || lastAssistantText;
 
-    const assistantMessage = { role: 'assistant', content: completion?.content ?? assistantText };
-    if (toolCalls.length > 0) {
+    const assistantMessage = completion?.assistantMessage
+      ? {
+          ...completion.assistantMessage,
+          role: 'assistant',
+          content: completion.assistantMessage.content ?? completion?.content ?? assistantText
+        }
+      : { role: 'assistant', content: completion?.content ?? assistantText };
+    if (!Array.isArray(assistantMessage.tool_calls) && toolCalls.length > 0) {
       assistantMessage.tool_calls = toolCalls.map((tc) => ({
         id: tc.id,
         type: 'function',

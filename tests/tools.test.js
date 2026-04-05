@@ -256,6 +256,80 @@ test('read repairs inline path ranges into start and end lines', async () => {
   });
 });
 
+test('read can consume an ast_target directly for node-scoped reads', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, 'package.json'),
+      JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2),
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'auth.ts'),
+      [
+        'export function loginUser(name: string) {',
+        '  return name;',
+        '}',
+        '',
+        'export function logoutUser(name: string) {',
+        '  return name.toUpperCase();',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const query = await handlers.ast_query({
+      path: 'src/auth.ts',
+      query: '(function_declaration (identifier) @loginUser)',
+      capture_name: 'loginUser'
+    });
+
+    const result = await handlers.read({
+      ast_target: query.matches[0].ast_target
+    });
+
+    assert.equal(result.path, 'src/auth.ts');
+    assert.match(result.content, /loginUser/);
+    assert.doesNotMatch(result.content, /logoutUser/);
+  });
+});
+
+test('read can run an inline ast query before returning the matched node content', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, 'package.json'),
+      JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2),
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'auth.ts'),
+      [
+        'export function loginUser(name: string) {',
+        '  return name;',
+        '}',
+        '',
+        'export function logoutUser(name: string) {',
+        '  return name.toUpperCase();',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const result = await handlers.read({
+      path: 'src/auth.ts',
+      query: '(function_declaration name: (identifier) @fn (#eq? @fn "logoutUser"))',
+      capture_name: 'fn'
+    });
+
+    assert.equal(result.path, 'src/auth.ts');
+    assert.match(result.content, /logoutUser/);
+    assert.doesNotMatch(result.content, /loginUser/);
+  });
+});
+
 test('glob, grep, and list accept simpler demo-style aliases', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     await fs.mkdir(path.join(workspaceRoot, 'src', 'auth'), { recursive: true });
@@ -526,6 +600,8 @@ test('builtin tool definitions expose only current primary and structured tools'
     const config = await loadConfig();
     const { definitions, handlers, deferredDefinitions } = getBuiltinTools({ workspaceRoot, config });
     const names = definitions.map((tool) => tool.function.name);
+    const readDefinition = definitions.find((tool) => tool.function.name === 'read');
+    const editDefinition = definitions.find((tool) => tool.function.name === 'edit');
 
     // Primary tools are always in definitions
     assert.ok(names.includes('read'));
@@ -551,6 +627,13 @@ test('builtin tool definitions expose only current primary and structured tools'
     assert.ok('remember_project' in deferredDefinitions);
     assert.ok('list_memory' in deferredDefinitions);
     assert.ok('list_background_tasks' in deferredDefinitions);
+    assert.match(readDefinition.function.description, /read\(path\) for normal file or line-window reads/i);
+    assert.match(readDefinition.function.description, /read\(ast_target=.*\) for a node-scoped AST read/i);
+    assert.match(readDefinition.function.description, /read\(path, query=.*capture_name=.*\)/i);
+    assert.match(editDefinition.function.description, /prefer read\(ast_target=.*\) or read\(path, query=.*\) before symbol- or block-level edits/i);
+    assert.match(deferredDefinitions.ast_query.function.description, /advanced AST workflows/i);
+    assert.match(deferredDefinitions.ast_query.function.description, /prefer read\(path, query=.*\) or read\(ast_target=.*\)/i);
+    assert.match(deferredDefinitions.read_ast_node.function.description, /common one-shot AST reads, prefer read\(ast_target=.*\) or read\(path, query=.*\)/i);
 
     // Removed tools are absent
     assert.ok(!names.includes('locate'));

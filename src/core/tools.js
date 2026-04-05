@@ -1843,7 +1843,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'read',
         description:
-          'Inspect a file and return content directly by default. Demo-style aliases like file_path, offset, and limit are accepted. Use metadata_only=true only when you want file metadata without content. Do not use run with cat, head, or tail for file reads.',
+          'Inspect code or text files. Use read(path) for normal file or line-window reads, read(ast_target=...) for a node-scoped AST read, and read(path, query=..., capture_name=...) to run an inline Tree-sitter query before returning the first matched node. Prefer the AST forms when targeting a function, class, or method and you want tighter context. Demo-style aliases like file_path, offset, and limit are accepted. Use metadata_only=true only when you want file metadata without content. Do not use run with cat, head, or tail for file reads.',
         parameters: {
           type: 'object',
           properties: {
@@ -1856,7 +1856,11 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
             max_chars: { type: 'number', description: 'Max chars to return' },
             include_content: { type: 'boolean', description: 'Legacy compatibility flag. Content is returned by default.' },
             read_token: { type: 'string', description: 'Legacy compatibility token. No longer required for content reads.' },
-            metadata_only: { type: 'boolean', description: 'Set true to return metadata without content.' }
+            metadata_only: { type: 'boolean', description: 'Set true to return metadata without content.' },
+            ast_target: { type: 'object', description: 'AST target from ast_query or a prior AST selection. When provided, read returns that node instead of a line window.' },
+            query: { type: 'string', description: 'Optional Tree-sitter query to run inline before reading the first matched AST node. Use with path for one-shot function/class/method reads.' },
+            capture_name: { type: 'string', description: 'Optional capture name to select when query is provided.' },
+            language: { type: 'string', description: 'Optional Tree-sitter language override for AST reads or inline queries.' }
           },
           required: []
         }
@@ -1923,7 +1927,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'edit',
         description:
-          'Edit existing files. Prefer one of these shapes: 1) {file, old_text, new_text} for exact text replacement, 2) {file, symbol, edit:{kind:"replace_block", new_content:"..."}} for block replacement, 3) {file, anchor_text, position:"before"|"after", content:"..."} for inserts. Demo-style aliases {file_path, old_string, new_string} are also accepted. Read first unless the exact target is already known. Prefer this over write for existing code changes.',
+          'Edit existing files. Prefer one of these shapes: 1) {file, old_text, new_text} for exact text replacement, 2) {file, symbol, edit:{kind:"replace_block", new_content:"..."}} for block replacement, 3) {file, anchor_text, position:"before"|"after", content:"..."} for inserts. Demo-style aliases {file_path, old_string, new_string} are also accepted. Read first unless the exact target is already known, and prefer read(ast_target=...) or read(path, query=...) before symbol- or block-level edits when you want tighter context. Prefer this over write for existing code changes.',
         parameters: {
           type: 'object',
           properties: {
@@ -2053,7 +2057,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'ast_query',
         description:
-          'Run a Tree-sitter query on a code file and return ast_target objects. Use this when you need node-scoped reads or edits for functions, classes, or methods.',
+          'Run a Tree-sitter query on a code file and return ast_target objects. Use this for advanced AST workflows such as multi-match selection, explicit node caching, or when you plan to reuse ast_target across follow-up reads or edits. For a common one-shot function, class, or method read, prefer read(path, query=...) or read(ast_target=...).',
         parameters: {
           type: 'object',
           properties: {
@@ -2092,7 +2096,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'read_ast_node',
         description:
-          'Read a previously selected AST node with compact structural context. Use this after ast_query before a scoped structural edit.',
+          'Read a previously selected AST node with compact structural context. Use this after ast_query when you want an explicit follow-up read of a cached node before a scoped structural edit. For common one-shot AST reads, prefer read(ast_target=...) or read(path, query=...).',
         parameters: {
           type: 'object',
           properties: {
@@ -2274,19 +2278,63 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
   const definitions = [...primaryDefinitions];
 
   const handlers = {
-    read: (args) =>
-      readFile(workspaceRoot, {
+    read: async (args) => {
+      const inlineQuery = String(args?.query || '').trim();
+      const directAstTarget = args?.ast_target;
+
+      if (directAstTarget) {
+        const result = await readAstNode(workspaceRoot, {
+          ...args,
+          path: args?.path || directAstTarget?.path,
+          ast_target: directAstTarget
+        });
+        if (directAstTarget?.path) rememberAstSelection(directAstTarget.path, directAstTarget);
+        const readPath = String(result?.path || directAstTarget?.path || '').trim();
+        if (readPath) lastReadPath = readPath;
+        return result;
+      }
+
+      if (inlineQuery) {
+        const queryResult = await queryAst(workspaceRoot, args);
+        const firstTarget = queryResult?.matches?.[0]?.ast_target;
+        if (!firstTarget) {
+          return {
+            path: String(args?.path || '').trim(),
+            language: queryResult?.language,
+            query: inlineQuery,
+            capture_name: String(args?.capture_name || '').trim() || undefined,
+            matches: 0,
+            content: ''
+          };
+        }
+        rememberAstSelection(firstTarget.path, firstTarget);
+        const result = await readAstNode(workspaceRoot, {
+          ...args,
+          path: firstTarget.path,
+          ast_target: firstTarget
+        });
+        const readPath = String(result?.path || firstTarget?.path || '').trim();
+        if (readPath) lastReadPath = readPath;
+        return {
+          ...result,
+          query: inlineQuery,
+          capture_name: String(args?.capture_name || '').trim() || undefined,
+          matches: queryResult.matches.length
+        };
+      }
+
+      const result = await readFile(workspaceRoot, {
         ...args,
         default_lines: config.context?.read_file_default_lines ?? 220,
         max_chars:
           typeof args?.max_chars === 'number'
             ? args.max_chars
             : config.context?.read_file_max_chars ?? 24000
-      }).then((result) => {
-        const readPath = String(result?.path || args?.path || '').trim();
-        if (readPath) lastReadPath = readPath;
-        return result;
-      }),
+      });
+      const readPath = String(result?.path || args?.path || '').trim();
+      if (readPath) lastReadPath = readPath;
+      return result;
+    },
     query_project_index: async (args) => {
       await ensureProjectIndex();
       return queryProjectIndex(workspaceRoot, args);
@@ -2427,6 +2475,10 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     read(result) {
       if (typeof result === 'string') return result;
       if (!result || typeof result !== 'object') return String(result);
+      if (result.node && typeof result.content === 'string') {
+        const header = `[AST: ${result.path || '?'} ${result.node.node_type || 'node'} ${result.node.start_line || '?'}-${result.node.end_line || '?'}${result.matches ? `, matches ${result.matches}` : ''}]`;
+        return `${header}\n${result.content}`;
+      }
       // Phase 1 metadata: small, return as-is
       if (result.phase === 'metadata') {
         return JSON.stringify(result);

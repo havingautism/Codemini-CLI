@@ -1,3 +1,5 @@
+import OpenAI from 'openai';
+
 function extractTextContent(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -12,18 +14,25 @@ function extractTextContent(content) {
   return '';
 }
 
-function extractReasoningContent(payload) {
-  if (typeof payload === 'string') return payload;
-  if (Array.isArray(payload)) {
-    return payload
-      .map((part) => {
-        if (part?.type === 'reasoning') return part.text || '';
-        if (part?.type === 'reasoning_content') return part.text || part.reasoning_content || '';
-        return '';
-      })
-      .join('');
-  }
-  return '';
+function extractReasoningText(details) {
+  const source = Array.isArray(details) ? details : [];
+  return source
+    .map((detail) => {
+      if (typeof detail === 'string') return detail;
+      return typeof detail?.text === 'string' ? detail.text : '';
+    })
+    .join('');
+}
+
+function normalizeReasoningDetails(details) {
+  if (!Array.isArray(details) || details.length === 0) return undefined;
+  const normalized = details
+    .map((detail) => {
+      if (!detail || typeof detail !== 'object') return null;
+      return { ...detail };
+    })
+    .filter(Boolean);
+  return normalized.length > 0 ? normalized : undefined;
 }
 
 function emptyToolCall(index) {
@@ -33,61 +42,6 @@ function emptyToolCall(index) {
     name: '',
     arguments: ''
   };
-}
-
-function createHeaders(apiKey) {
-  return {
-    'content-type': 'application/json',
-    authorization: `Bearer ${apiKey}`
-  };
-}
-
-function buildChatCompletionsUrl(baseUrl) {
-  return `${String(baseUrl || '').replace(/\/$/, '')}/chat/completions`;
-}
-
-async function parseJsonResponse(response) {
-  if (!response.ok) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`Gateway error ${response.status}: ${text || response.statusText}`);
-  }
-  return response.json();
-}
-
-async function* iterateSseEvents(stream) {
-  const decoder = new TextDecoder();
-  let buffer = '';
-  const flushEvent = (rawEvent) => {
-    const dataLines = String(rawEvent || '')
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith('data:'))
-      .map((line) => line.slice(5).trimStart());
-    const dataText = dataLines.join('\n');
-    if (!dataText || dataText === '[DONE]') return null;
-    return JSON.parse(dataText);
-  };
-
-  for await (const chunk of stream) {
-    buffer += decoder.decode(chunk, { stream: true });
-    while (true) {
-      const lfBoundary = buffer.indexOf('\n\n');
-      const crlfBoundary = buffer.indexOf('\r\n\r\n');
-      if (lfBoundary === -1 && crlfBoundary === -1) break;
-      const useCrlf = crlfBoundary !== -1 && (lfBoundary === -1 || crlfBoundary < lfBoundary);
-      const boundary = useCrlf ? crlfBoundary : lfBoundary;
-      const separatorLength = useCrlf ? 4 : 2;
-      const rawEvent = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + separatorLength);
-      const parsed = flushEvent(rawEvent);
-      if (parsed) yield parsed;
-    }
-  }
-
-  buffer += decoder.decode();
-  const trailingEvent = flushEvent(buffer.trim());
-  if (trailingEvent) {
-    yield trailingEvent;
-  }
 }
 
 function isMiniMaxModel(model) {
@@ -136,27 +90,6 @@ function sanitizeGatewayMessages(messages) {
     });
 }
 
-function buildAssistantMessage({ text = '', toolCalls = [], content, reasoningContent = '' }) {
-  const assistantMessage = {
-    role: 'assistant',
-    content: content ?? text
-  };
-  if (reasoningContent) {
-    assistantMessage.reasoning_content = reasoningContent;
-  }
-  if (Array.isArray(toolCalls) && toolCalls.length > 0) {
-    assistantMessage.tool_calls = toolCalls.map((tc) => ({
-      id: tc.id,
-      type: 'function',
-      function: {
-        name: tc.name,
-        arguments: tc.arguments || '{}'
-      }
-    }));
-  }
-  return assistantMessage;
-}
-
 function sanitizeMiniMaxMessages(messages) {
   const source = Array.isArray(messages) ? messages : [];
   const out = [];
@@ -191,9 +124,7 @@ function buildPayload({ model, temperature, messages, tools, stream = false }) {
     temperature,
     messages: isMiniMaxModel(model) ? sanitizeMiniMaxMessages(sanitizedMessages) : sanitizedMessages
   };
-  if (stream) {
-    payload.stream = true;
-  }
+  if (stream) payload.stream = true;
   if (Array.isArray(tools) && tools.length > 0) {
     payload.tools = tools;
     payload.tool_choice = 'auto';
@@ -213,37 +144,6 @@ function hasTrailingToolContext(messages) {
     if (message.role === 'assistant' || message.role === 'user') return false;
   }
   return false;
-}
-
-function buildFinalStreamResult(text, toolCallsByIndex, usage, messages) {
-  const toolCalls = Array.from(toolCallsByIndex.entries())
-    .sort((a, b) => a[0] - b[0])
-    .map(([, tc], i) => ({
-      id: tc.id || `tc-${i + 1}`,
-      name: tc.name,
-      arguments: tc.arguments || '{}'
-    }))
-    .filter((tc) => tc.name);
-  const normalizedText = String(text || '').trim();
-
-  if (!normalizedText && toolCalls.length === 0) {
-    if (hasTrailingToolContext(messages)) {
-      return {
-        text: '',
-        toolCalls: [],
-        usage,
-        incomplete: true
-      };
-    }
-    throw new Error('Gateway stream returned empty assistant response');
-  }
-
-  return {
-    text,
-    toolCalls,
-    usage,
-    incomplete: false
-  };
 }
 
 function stripMiniMaxThinkContent(text) {
@@ -307,6 +207,74 @@ function nextMiniMaxVisibleChunk(state, content) {
   };
 }
 
+function buildAssistantMessage({ text = '', toolCalls = [], content, reasoningDetails }) {
+  const assistantMessage = {
+    role: 'assistant',
+    content: content ?? text
+  };
+  const normalizedReasoningDetails = normalizeReasoningDetails(reasoningDetails);
+  if (normalizedReasoningDetails) {
+    assistantMessage.reasoning_details = normalizedReasoningDetails;
+    assistantMessage.reasoning_content = extractReasoningText(normalizedReasoningDetails);
+  }
+  if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+    assistantMessage.tool_calls = toolCalls.map((tc) => ({
+      id: tc.id,
+      type: 'function',
+      function: {
+        name: tc.name,
+        arguments: tc.arguments || '{}'
+      }
+    }));
+  }
+  return assistantMessage;
+}
+
+function createClient({ baseUrl, apiKey, timeoutMs = 90000, maxRetries = 2 }) {
+  return new OpenAI({
+    apiKey,
+    baseURL: String(baseUrl || '').replace(/\/$/, ''),
+    timeout: timeoutMs,
+    maxRetries
+  });
+}
+
+function buildFinalStreamResult({ text, toolCallsByIndex, usage, messages, reasoningDetails }) {
+  const toolCalls = Array.from(toolCallsByIndex.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([, tc], i) => ({
+      id: tc.id || `tc-${i + 1}`,
+      name: tc.name,
+      arguments: tc.arguments || '{}'
+    }))
+    .filter((tc) => tc.name);
+  const normalizedText = String(text || '').trim();
+
+  if (!normalizedText && toolCalls.length === 0) {
+    if (hasTrailingToolContext(messages)) {
+      return {
+        text: '',
+        toolCalls: [],
+        usage,
+        incomplete: true
+      };
+    }
+    throw new Error('Gateway stream returned empty assistant response');
+  }
+
+  return {
+    text,
+    toolCalls,
+    usage,
+    incomplete: false,
+    assistantMessage: buildAssistantMessage({
+      text,
+      toolCalls,
+      reasoningDetails
+    })
+  };
+}
+
 export async function createChatCompletion({
   baseUrl,
   apiKey,
@@ -317,17 +285,10 @@ export async function createChatCompletion({
   timeoutMs = 90000,
   maxRetries = 2
 }) {
-  const payload = buildPayload({ model, temperature, messages, tools });
-  const response = await fetch(buildChatCompletionsUrl(baseUrl), {
-    method: 'POST',
-    headers: createHeaders(apiKey),
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(timeoutMs)
-  });
-  const data = await parseJsonResponse(response);
-  const message = data?.choices?.[0]?.message || {};
+  const client = createClient({ baseUrl, apiKey, timeoutMs, maxRetries });
+  const response = await client.chat.completions.create(buildPayload({ model, temperature, messages, tools }));
+  const message = response?.choices?.[0]?.message || {};
   const text = sanitizeMiniMaxText(model, extractTextContent(message.content));
-  const reasoningContent = extractReasoningContent(message.reasoning_content);
   const toolCalls = (message.tool_calls || []).map((tc) => ({
     id: tc.id,
     name: tc.function?.name,
@@ -340,7 +301,7 @@ export async function createChatCompletion({
       return {
         text: '',
         toolCalls: [],
-        usage: data?.usage || null,
+        usage: response?.usage || null,
         incomplete: true
       };
     }
@@ -350,12 +311,12 @@ export async function createChatCompletion({
   return {
     text,
     toolCalls,
-    usage: data?.usage || null,
+    usage: response?.usage || null,
     assistantMessage: buildAssistantMessage({
       text,
       toolCalls,
       content: message.content ?? text,
-      reasoningContent
+      reasoningDetails: message.reasoning_details
     })
   };
 }
@@ -372,32 +333,32 @@ export async function createChatCompletionStream({
   timeoutMs = 90000,
   maxRetries = 2
 }) {
-  const payload = buildPayload({ model, temperature, messages, tools, stream: true });
-  const response = await fetch(buildChatCompletionsUrl(baseUrl), {
-    method: 'POST',
-    headers: createHeaders(apiKey),
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(timeoutMs)
-  });
-  if (!response.ok || !response.body) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`Gateway error ${response.status}: ${text || response.statusText}`);
-  }
-  let text = '';
-  let reasoningContent = '';
-  const toolCallsByIndex = new Map();
-  let usage = null;
-  let miniMaxStreamState = { rawContent: '', visibleText: '' };
+  const client = createClient({ baseUrl, apiKey, timeoutMs, maxRetries });
+  const stream = await client.chat.completions.create(buildPayload({ model, temperature, messages, tools, stream: true }));
 
-  for await (const chunk of iterateSseEvents(response.body)) {
+  let text = '';
+  let usage = null;
+  const toolCallsByIndex = new Map();
+  let miniMaxStreamState = { rawContent: '', visibleText: '' };
+  let reasoningDetails = [];
+  let previousReasoningText = '';
+
+  for await (const chunk of stream) {
     usage = chunk?.usage || usage;
     const choice0 = chunk?.choices?.[0] || {};
     const delta = choice0?.delta || {};
     const content = delta.content;
-    const reasoningDelta = extractReasoningContent(delta.reasoning_content);
-    if (reasoningDelta) {
-      reasoningContent += reasoningDelta;
+    const nextReasoningDetails = normalizeReasoningDetails(delta.reasoning_details);
+    if (nextReasoningDetails) {
+      const nextReasoningText = extractReasoningText(nextReasoningDetails);
+      if (nextReasoningText.length >= previousReasoningText.length) {
+        previousReasoningText = nextReasoningText;
+      } else {
+        previousReasoningText += nextReasoningText;
+      }
+      reasoningDetails = previousReasoningText ? [{ type: 'reasoning', text: previousReasoningText }] : reasoningDetails;
     }
+
     if (isMiniMaxModel(model)) {
       const next = nextMiniMaxVisibleChunk(miniMaxStreamState, content);
       miniMaxStreamState = next.nextState;
@@ -441,13 +402,11 @@ export async function createChatCompletionStream({
     }
   }
 
-  const result = buildFinalStreamResult(text, toolCallsByIndex, usage, messages);
-  return {
-    ...result,
-    assistantMessage: buildAssistantMessage({
-      text: result.text,
-      toolCalls: result.toolCalls,
-      reasoningContent
-    })
-  };
+  return buildFinalStreamResult({
+    text,
+    toolCallsByIndex,
+    usage,
+    messages,
+    reasoningDetails
+  });
 }

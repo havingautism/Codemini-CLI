@@ -53,6 +53,39 @@ function makeCrlfSseResponse(events) {
   });
 }
 
+function makeSseResponseWithoutDone(events) {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const event of events) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      }
+    }
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream' }
+  });
+}
+
+function makeSseResponseWithoutTrailingSeparator(events) {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      events.forEach((event, index) => {
+        const isLast = index === events.length - 1;
+        const suffix = isLast ? '' : '\n\n';
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}${suffix}`));
+      });
+      controller.close();
+    }
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream' }
+  });
+}
+
 test('package.json does not require provider SDK dependencies for transport', () => {
   assert.equal('openai' in (pkg.dependencies || {}), false);
   assert.equal('@anthropic-ai/sdk' in (pkg.dependencies || {}), false);
@@ -524,6 +557,123 @@ test('createChatCompletionStream handles CRLF-delimited SSE frames from gateways
 
     assert.equal(result.text, 'hello world');
     assert.deepEqual(result.usage, { prompt_tokens: 8, completion_tokens: 3, total_tokens: 11 });
+  } finally {
+    await restoreFetch();
+  }
+});
+
+test('createChatCompletionStream stops after finish_reason even when gateway keeps the stream open', async () => {
+  const restoreFetch = withMockFetch(async (_url, _init) => {
+    return makeSseResponseWithoutDone([
+      {
+        choices: [
+          {
+            delta: { content: 'still finishes' },
+            finish_reason: 'stop'
+          }
+        ],
+        usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 }
+      }
+    ]);
+  });
+
+  try {
+    const result = await createChatCompletionStream({
+      baseUrl: 'https://gateway.example/v1',
+      apiKey: 'test-key',
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: 'hello' }],
+      timeoutMs: 50
+    });
+
+    assert.equal(result.text, 'still finishes');
+    assert.deepEqual(result.toolCalls, []);
+    assert.deepEqual(result.usage, { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 });
+    assert.equal(result.incomplete, false);
+  } finally {
+    await restoreFetch();
+  }
+});
+
+test('createChatCompletionStream parses a trailing SSE event without a blank-line separator', async () => {
+  const restoreFetch = withMockFetch(async (_url, _init) => {
+    return makeSseResponseWithoutTrailingSeparator([
+      {
+        choices: [
+          {
+            delta: { content: 'tail frame' },
+            finish_reason: 'stop'
+          }
+        ],
+        usage: { prompt_tokens: 6, completion_tokens: 2, total_tokens: 8 }
+      }
+    ]);
+  });
+
+  try {
+    const result = await createChatCompletionStream({
+      baseUrl: 'https://gateway.example/v1',
+      apiKey: 'test-key',
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: 'hello' }]
+    });
+
+    assert.equal(result.text, 'tail frame');
+    assert.deepEqual(result.toolCalls, []);
+    assert.deepEqual(result.usage, { prompt_tokens: 6, completion_tokens: 2, total_tokens: 8 });
+    assert.equal(result.incomplete, false);
+  } finally {
+    await restoreFetch();
+  }
+});
+
+test('createChatCompletionStream preserves streamed reasoning_content on the assistant message', async () => {
+  const restoreFetch = withMockFetch(async (_url, _init) => {
+    return makeSseResponse([
+      {
+        choices: [
+          {
+            delta: {
+              reasoning_content: '先分析一下',
+              tool_calls: [
+                {
+                  index: 0,
+                  id: 'call_reasoning',
+                  function: { name: 'read', arguments: '{"path":"src/core/tools.js"}' }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      {
+        choices: [
+          {
+            delta: {},
+            finish_reason: 'tool_calls'
+          }
+        ]
+      }
+    ]);
+  });
+
+  try {
+    const result = await createChatCompletionStream({
+      baseUrl: 'https://gateway.example/v1',
+      apiKey: 'test-key',
+      model: 'glm-4.6',
+      messages: [{ role: 'user', content: 'inspect tools' }]
+    });
+
+    assert.equal(result.text, '');
+    assert.equal(result.assistantMessage?.reasoning_content, '先分析一下');
+    assert.deepEqual(result.toolCalls, [
+      {
+        id: 'call_reasoning',
+        name: 'read',
+        arguments: '{"path":"src/core/tools.js"}'
+      }
+    ]);
   } finally {
     await restoreFetch();
   }

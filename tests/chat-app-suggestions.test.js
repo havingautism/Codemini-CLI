@@ -22,6 +22,7 @@ import {
   mergeActivitySummary,
   moveSuggestionSelection,
   sanitizeRenderableText,
+  shouldRefreshRuntimeStateForEvent,
   normalizeActivitySpacingRows,
   renderMessageRow,
   buildMessageRows,
@@ -88,6 +89,17 @@ test('getPendingUserMessageMeta distinguishes submitted turns from queued turns'
     phase: 'sending',
     liveStatus: '已提交，等待开始处理'
   });
+});
+
+test('shouldRefreshRuntimeStateForEvent only refreshes on events that can change context progress', () => {
+  assert.equal(shouldRefreshRuntimeStateForEvent({ type: 'assistant:start' }), true);
+  assert.equal(shouldRefreshRuntimeStateForEvent({ type: 'assistant:delta' }), true);
+  assert.equal(shouldRefreshRuntimeStateForEvent({ type: 'assistant:response' }), true);
+  assert.equal(shouldRefreshRuntimeStateForEvent({ type: 'tool:result' }), true);
+  assert.equal(shouldRefreshRuntimeStateForEvent({ type: 'compact:auto' }), true);
+  assert.equal(shouldRefreshRuntimeStateForEvent({ type: 'tool:start' }), false);
+  assert.equal(shouldRefreshRuntimeStateForEvent({ type: 'skill:auto' }), false);
+  assert.equal(shouldRefreshRuntimeStateForEvent(null), false);
 });
 
 test('findActivityUpdateIndex merges consecutive duplicate read activities', () => {
@@ -168,6 +180,22 @@ test('todo-item rows render without extra bottom margin between todos', () => {
 
   assert.equal(element.props.marginBottom, undefined);
   assert.equal(element.props.marginLeft, 2);
+});
+
+test('normalizeActivitySpacingRows inserts a dedicated gap after update_todos items', () => {
+  const rows = normalizeActivitySpacingRows([
+    { kind: 'activity', activityType: 'tool', name: 'Update Todos', status: 'done' },
+    { kind: 'todo-item', status: 'completed', text: '检查核心文件' },
+    { kind: 'todo-item', status: 'in_progress', text: '检查测试覆盖率' },
+    { kind: 'activity', activityType: 'tool', name: 'Read(src/core/chat-runtime.js)', status: 'done' }
+  ]);
+
+  assert.equal(rows.length, 5);
+  assert.equal(rows[0].kind, 'activity');
+  assert.equal(rows[1].kind, 'todo-item');
+  assert.equal(rows[2].kind, 'todo-item');
+  assert.equal(rows[3].kind, 'todo-gap');
+  assert.equal(rows[4].kind, 'activity');
 });
 
 test('loading status row stays at the end of the message after code blocks', () => {
