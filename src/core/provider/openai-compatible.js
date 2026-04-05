@@ -1,5 +1,3 @@
-import OpenAI from 'openai';
-
 function extractTextContent(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -23,13 +21,49 @@ function emptyToolCall(index) {
   };
 }
 
-function createClient({ baseUrl, apiKey, timeoutMs, maxRetries }) {
-  return new OpenAI({
-    apiKey,
-    baseURL: baseUrl,
-    timeout: timeoutMs,
-    maxRetries
-  });
+function createHeaders(apiKey) {
+  return {
+    'content-type': 'application/json',
+    authorization: `Bearer ${apiKey}`
+  };
+}
+
+function buildChatCompletionsUrl(baseUrl) {
+  return `${String(baseUrl || '').replace(/\/$/, '')}/chat/completions`;
+}
+
+async function parseJsonResponse(response) {
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Gateway error ${response.status}: ${text || response.statusText}`);
+  }
+  return response.json();
+}
+
+async function* iterateSseEvents(stream) {
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  for await (const chunk of stream) {
+    buffer += decoder.decode(chunk, { stream: true });
+    while (true) {
+      const lfBoundary = buffer.indexOf('\n\n');
+      const crlfBoundary = buffer.indexOf('\r\n\r\n');
+      if (lfBoundary === -1 && crlfBoundary === -1) break;
+      const useCrlf = crlfBoundary !== -1 && (lfBoundary === -1 || crlfBoundary < lfBoundary);
+      const boundary = useCrlf ? crlfBoundary : lfBoundary;
+      const separatorLength = useCrlf ? 4 : 2;
+      const rawEvent = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + separatorLength);
+      const dataLines = rawEvent
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trimStart());
+      const dataText = dataLines.join('\n');
+      if (!dataText || dataText === '[DONE]') continue;
+      yield JSON.parse(dataText);
+    }
+  }
 }
 
 function isMiniMaxModel(model) {
@@ -238,10 +272,14 @@ export async function createChatCompletion({
   timeoutMs = 90000,
   maxRetries = 2
 }) {
-  const client = createClient({ baseUrl, apiKey, timeoutMs, maxRetries });
   const payload = buildPayload({ model, temperature, messages, tools });
-
-  const data = await client.chat.completions.create(payload);
+  const response = await fetch(buildChatCompletionsUrl(baseUrl), {
+    method: 'POST',
+    headers: createHeaders(apiKey),
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  const data = await parseJsonResponse(response);
   const message = data?.choices?.[0]?.message || {};
   const text = sanitizeMiniMaxText(model, extractTextContent(message.content));
   const toolCalls = (message.tool_calls || []).map((tc) => ({
@@ -282,16 +320,23 @@ export async function createChatCompletionStream({
   timeoutMs = 90000,
   maxRetries = 2
 }) {
-  const client = createClient({ baseUrl, apiKey, timeoutMs, maxRetries });
   const payload = buildPayload({ model, temperature, messages, tools, stream: true });
-
-  const stream = await client.chat.completions.create(payload);
+  const response = await fetch(buildChatCompletionsUrl(baseUrl), {
+    method: 'POST',
+    headers: createHeaders(apiKey),
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  if (!response.ok || !response.body) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Gateway error ${response.status}: ${text || response.statusText}`);
+  }
   let text = '';
   const toolCallsByIndex = new Map();
   let usage = null;
   let miniMaxStreamState = { rawContent: '', visibleText: '' };
 
-  for await (const chunk of stream) {
+  for await (const chunk of iterateSseEvents(response.body)) {
     usage = chunk?.usage || usage;
     const choice0 = chunk?.choices?.[0] || {};
     const delta = choice0?.delta || {};

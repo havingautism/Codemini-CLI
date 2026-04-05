@@ -36,8 +36,26 @@ function makeSseResponse(events) {
   });
 }
 
-test('package.json declares openai dependency for provider transport', () => {
-  assert.ok(pkg.dependencies?.openai, 'expected package.json to include openai dependency');
+function makeCrlfSseResponse(events) {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    start(controller) {
+      for (const event of events) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\r\n\r\n`));
+      }
+      controller.enqueue(encoder.encode('data: [DONE]\r\n\r\n'));
+      controller.close();
+    }
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream' }
+  });
+}
+
+test('package.json does not require provider SDK dependencies for transport', () => {
+  assert.equal('openai' in (pkg.dependencies || {}), false);
+  assert.equal('@anthropic-ai/sdk' in (pkg.dependencies || {}), false);
 });
 
 test('createChatCompletion returns text and tool calls from an OpenAI-compatible gateway', async () => {
@@ -469,6 +487,43 @@ test('createChatCompletionStream marks whitespace-only post-tool responses as in
     assert.equal(result.text, '');
     assert.deepEqual(result.toolCalls, []);
     assert.equal(result.incomplete, true);
+  } finally {
+    await restoreFetch();
+  }
+});
+
+test('createChatCompletionStream handles CRLF-delimited SSE frames from gateways', async () => {
+  const restoreFetch = withMockFetch(async (_url, _init) => {
+    return makeCrlfSseResponse([
+      {
+        choices: [
+          {
+            delta: { content: 'hello ' }
+          }
+        ]
+      },
+      {
+        choices: [
+          {
+            delta: { content: 'world' },
+            finish_reason: 'stop'
+          }
+        ],
+        usage: { prompt_tokens: 8, completion_tokens: 3, total_tokens: 11 }
+      }
+    ]);
+  });
+
+  try {
+    const result = await createChatCompletionStream({
+      baseUrl: 'https://gateway.example/v1',
+      apiKey: 'test-key',
+      model: 'gpt-4.1-mini',
+      messages: [{ role: 'user', content: 'hello' }]
+    });
+
+    assert.equal(result.text, 'hello world');
+    assert.deepEqual(result.usage, { prompt_tokens: 8, completion_tokens: 3, total_tokens: 11 });
   } finally {
     await restoreFetch();
   }

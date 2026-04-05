@@ -1954,7 +1954,7 @@ export function collapseActivityChainRows(inputRows, showToolDetails, copy, maxV
   return collapsed;
 }
 
-function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) {
+export function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) {
   const rows = [];
   const pushTextRows = (text) => {
     const lines = String(text || '').split('\n');
@@ -2071,26 +2071,26 @@ function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) {
 
   const codeGenerationRows = getCodeGenerationActivityRows(msg);
   const generatingCodeRows = getGeneratingCodePlaceholderRows(msg, copy, contentWidth);
-  const syntheticRows = [...codeGenerationRows, ...generatingCodeRows];
+  const trailingRows = [];
   if (msg?.loading && (msg?.liveStatus || msg?.phase)) {
-    const statusRows = [];
     pushWrappedRow(
-      statusRows,
+      trailingRows,
       {
         kind: 'status',
         text: trimText(msg.liveStatus || msg.phase, 144)
       },
       Math.max(8, contentWidth - 2)
     );
-    syntheticRows.push(...statusRows);
   }
 
-  return normalizeActivitySpacingRows(
-    insertRowsAfterLastCodeRow(collapseActivityChainRows(rows, showToolDetails, copy), syntheticRows)
+  const rowsWithCodePreview = insertRowsAfterLastCodeRow(
+    collapseActivityChainRows(rows, showToolDetails, copy),
+    [...codeGenerationRows, ...generatingCodeRows]
   );
+  return normalizeActivitySpacingRows([...rowsWithCodePreview, ...trailingRows]);
 }
 
-function renderMessageRow(msg, row, idx, loaderTick) {
+export function renderMessageRow(msg, row, idx, loaderTick) {
   if (row.kind === 'activity') {
     const activity = { type: row.activityType, name: row.name, status: row.status };
     const display = getActivityDisplayParts(activity);
@@ -2139,7 +2139,7 @@ function renderMessageRow(msg, row, idx, loaderTick) {
     const dimColor = row.status === 'completed';
     return h(
       Box,
-      { key: `row-todo-${msg.id}-${idx}`, marginLeft: 2, marginBottom: 1 },
+      { key: `row-todo-${msg.id}-${idx}`, marginLeft: 2 },
       h(Text, { color: 'gray' }, '  '),
       h(Text, { color }, marker),
       h(Text, { color: 'gray' }, ' '),
@@ -2203,22 +2203,11 @@ function renderMessageRow(msg, row, idx, loaderTick) {
   }
   if (row.kind === 'status') {
     const dots = '.'.repeat((loaderTick % 3) + 1);
-    const phase = msg.phase;
-    const color =
-      phase === 'sending'
-        ? 'yellowBright'
-        : phase === 'queued'
-          ? 'cyanBright'
-          : phase === 'tooling'
-            ? 'magentaBright'
-          : phase === 'generating'
-            ? 'greenBright'
-          : 'cyanBright';
     return h(
       Box,
       { key: `row-status-${msg.id}-${idx}`, marginTop: 1 },
       h(Text, { color: 'gray' }, '  '),
-      h(Text, { color }, `${row.text}${dots}`)
+      h(Text, { color: 'gray', dimColor: true }, `${row.text}${dots}`)
     );
   }
   if (row.kind === 'quote') {

@@ -23,6 +23,8 @@ import {
   moveSuggestionSelection,
   sanitizeRenderableText,
   normalizeActivitySpacingRows,
+  renderMessageRow,
+  buildMessageRows,
   shouldAppendAssistantResult,
   shouldShowCompletionFooter,
   splitMessageRows,
@@ -154,6 +156,49 @@ test('normalizeActivitySpacingRows trims blank lines before tools and leaves one
   assert.equal(rows[3].text, ' ');
   assert.equal(rows[4].kind, 'text');
   assert.equal(rows[4].text, '现在继续检查 CSS 文件。');
+});
+
+test('todo-item rows render without extra bottom margin between todos', () => {
+  const element = renderMessageRow(
+    { id: 'coder-1', label: 'coder' },
+    { kind: 'todo-item', status: 'in_progress', text: '重写 README.md' },
+    0,
+    0
+  );
+
+  assert.equal(element.props.marginBottom, undefined);
+  assert.equal(element.props.marginLeft, 2);
+});
+
+test('loading status row stays at the end of the message after code blocks', () => {
+  const rows = buildMessageRows(
+    {
+      id: 'coder-1',
+      label: 'coder',
+      loading: true,
+      phase: 'generating',
+      liveStatus: '正在生成回复',
+      text: ['```md', '# 标题', '```', '', '**4. 没有功能**'].join('\n')
+    },
+    false,
+    72,
+    {}
+  );
+
+  assert.equal(rows.at(-1)?.kind, 'status');
+});
+
+test('status rows use grey text styling during reply generation', () => {
+  const element = renderMessageRow(
+    { id: 'coder-1', label: 'coder', phase: 'generating' },
+    { kind: 'status', text: '正在生成回复' },
+    0,
+    1
+  );
+
+  const statusTextNode = element.props.children[1];
+  assert.equal(statusTextNode.props.color, 'gray');
+  assert.equal(statusTextNode.props.dimColor, true);
 });
 
 test('collapseActivityChainRows keeps only the latest three tool activities when collapsed', () => {
