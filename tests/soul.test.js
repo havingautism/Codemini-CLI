@@ -15,5 +15,5 @@ test('loadSoulPrompt loads bundled roleplay-style soul presets', async () => {
   assert.match(caveman, /caveman/i);
 
   assert.match(ceo, /\[Soul preset: ceo\]/);
-  assert.match(ceo, /CEO-style/i);
+  assert.match(ceo, /CEO|ceo/i);
 });

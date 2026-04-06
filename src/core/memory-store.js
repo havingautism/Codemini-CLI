@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { sha1 } from './crypto-utils.js';
+import { sha256 } from './crypto-utils.js';
 import { getMemoryDir, getProjectMemoryDir } from './paths.js';
 import { assertSafeMemoryContent, normalizeMemoryText, summarizeMemoryContent } from './memory-policy.js';
 
@@ -23,7 +23,7 @@ export function getProjectMemoryKey(workspaceRoot = process.cwd(), projectAlias 
   if (alias) return slugify(alias);
   const root = path.resolve(workspaceRoot || process.cwd());
   const base = path.basename(root);
-  return `${slugify(base)}-${sha1(root).slice(0, 10)}`;
+  return `${slugify(base)}-${sha256(root).slice(0, 10)}`;
 }
 
 function ensureScope(scope) {
@@ -63,7 +63,7 @@ function normalizeMemoryItem(item, scope, projectKey = '') {
   const now = nowIso();
   const content = normalizeMemoryText(item?.content || '');
   return {
-    id: String(item?.id || `mem_${sha1(`${scope}:${projectKey}:${content}:${now}:${Math.random()}`).slice(0, 12)}`),
+    id: String(item?.id || `mem_${sha256(`${scope}:${projectKey}:${content}:${now}:${Math.random()}`).slice(0, 12)}`),
     scope,
     projectKey: projectKey || undefined,
     kind: String(item?.kind || 'note').trim() || 'note',

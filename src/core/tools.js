@@ -1,8 +1,8 @@
 import fs from 'node:fs/promises';
-import fsSync from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
+import { escapeRegex, normalizePath } from './string-utils.js';
 import {
   classifyCommandIntent,
   hasReadyOutput,
@@ -17,7 +17,7 @@ import { queryAst, readAstNode, resolveAstTarget } from './ast.js';
 import { initializeProjectIndex, queryProjectIndex, refreshIndexedFile } from './project-index.js';
 import { checkReadDedup } from './agent-loop.js';
 import { TOOL_SKIP_DIRS as SKIP_DIRS, TEXT_EXTENSIONS, CODE_WRITE_GUARD_EXTENSIONS, LANGUAGE_FILE_TYPES } from './constants.js';
-import { sha256Prefixed as sha256, sha1 } from './crypto-utils.js';
+import { sha256Prefixed as sha256, sha256 as sha256Hash } from './crypto-utils.js';
 import { forgetMemory, listMemories, rememberMemory, searchMemories } from './memory-store.js';
 import { normalizeTodos } from './todo-state.js';
 const BACKGROUND_TASK_RECENT_OUTPUT_LIMIT = 80;
@@ -26,9 +26,9 @@ const backgroundTaskRegistry = new Map();
 let backgroundTaskCounter = 0;
 let backgroundTaskLogCursorCounter = 0;
 
-function realpathIfExists(targetPath) {
+async function realpathIfExists(targetPath) {
   try {
-    return fsSync.realpathSync.native(targetPath);
+    return await fs.realpath(targetPath);
   } catch (error) {
     if (error?.code === 'ENOENT') return null;
     throw error;
@@ -40,11 +40,11 @@ function isWithinResolvedRoot(resolvedRoot, candidatePath) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-function resolveInWorkspace(root, targetPath = '.') {
+async function resolveInWorkspace(root, targetPath = '.') {
   const absRoot = path.resolve(root);
-  const realRoot = fsSync.realpathSync.native(absRoot);
+  const realRoot = await fs.realpath(absRoot);
   const absTarget = path.resolve(absRoot, targetPath);
-  const realTarget = realpathIfExists(absTarget);
+  const realTarget = await realpathIfExists(absTarget);
   if (realTarget) {
     if (!isWithinResolvedRoot(realRoot, realTarget)) {
       throw new Error(`Path escapes workspace: ${targetPath}`);
@@ -53,13 +53,13 @@ function resolveInWorkspace(root, targetPath = '.') {
   }
 
   let probe = path.dirname(absTarget);
-  while (!realpathIfExists(probe)) {
+  while (!(await realpathIfExists(probe))) {
     const parent = path.dirname(probe);
     if (parent === probe) break;
     probe = parent;
   }
 
-  const resolvedProbe = realpathIfExists(probe);
+  const resolvedProbe = await realpathIfExists(probe);
   if (!resolvedProbe) {
     throw new Error(`Path escapes workspace: ${targetPath}`);
   }
@@ -71,22 +71,18 @@ function resolveInWorkspace(root, targetPath = '.') {
   return resolvedTarget;
 }
 
-function getBackgroundTasksDir(root) {
-  return path.join(resolveInWorkspace(root, '.codemini'), 'tasks');
+async function getBackgroundTasksDir(root) {
+  return path.join(await resolveInWorkspace(root, '.codemini'), 'tasks');
 }
 
 function toWorkspaceRelative(root, absPath) {
-  return path.relative(path.resolve(root), absPath).replace(/\\/g, '/');
+  return normalizePath(path.relative(path.resolve(root), absPath));
 }
 
 function trimLinePreview(line, maxLen = 180) {
   const text = String(line || '').replace(/\t/g, '  ').trim();
   if (text.length <= maxLen) return text;
   return `${text.slice(0, maxLen - 3)}...`;
-}
-
-function escapeRegex(value) {
-  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function splitLines(text) {
@@ -297,7 +293,7 @@ async function mapLimit(items, limit, worker) {
 const WALKER_CONCURRENCY = 8;
 
 async function walkTextFiles(root, startPath = '.', fileTypes = []) {
-  const abs = resolveInWorkspace(root, startPath);
+  const abs = await resolveInWorkspace(root, startPath);
   const allowedExts = new Set((Array.isArray(fileTypes) ? fileTypes : []).map((item) => `.${String(item || '').replace(/^\./, '')}`));
 
   async function visit(current) {
@@ -318,7 +314,7 @@ async function walkTextFiles(root, startPath = '.', fileTypes = []) {
 }
 
 async function walkWorkspaceEntries(root, startPath = '.', { includeHidden = false } = {}) {
-  const abs = resolveInWorkspace(root, startPath);
+  const abs = await resolveInWorkspace(root, startPath);
 
   async function visit(current) {
     const stat = await fs.stat(current);
@@ -744,7 +740,7 @@ function applyHunkToLines(lines, hunk) {
 }
 
 async function getFileState(root, relativePath) {
-  const target = resolveInWorkspace(root, relativePath);
+  const target = await resolveInWorkspace(root, relativePath);
   const stat = await fs.stat(target);
   const content = await fs.readFile(target, 'utf8');
   return {
@@ -757,7 +753,7 @@ async function getFileState(root, relativePath) {
 
 async function readFile(root, args) {
   const normalizedArgs = normalizeReadArgs(args);
-  const target = resolveInWorkspace(root, normalizedArgs?.path);
+  const target = await resolveInWorkspace(root, normalizedArgs?.path);
   const stat = await fs.stat(target);
   const text = await fs.readFile(target, 'utf8');
   const lines = splitLines(text);
@@ -777,7 +773,7 @@ async function readFile(root, args) {
   endLine = Math.max(startLine, Math.min(endLine, totalLines));
 
   const tokenSeed = `${normalizedArgs?.path}|${stat.size}|${stat.mtimeMs}|${startLine}|${endLine}`;
-  const readToken = sha1(tokenSeed).slice(0, 16);
+  const readToken = sha256Hash(tokenSeed).slice(0, 16);
 
   if (wantsMetadataOnly) {
     return {
@@ -840,7 +836,7 @@ async function writeFile(root, args) {
   if (rawPath === '.' || rawPath === './') {
     throw new Error('write requires a file path, not the workspace root');
   }
-  const target = resolveInWorkspace(root, rawPath);
+  const target = await resolveInWorkspace(root, rawPath);
   try {
     const stat = await fs.stat(target);
     if (stat.isDirectory()) {
@@ -1086,7 +1082,7 @@ async function startBackgroundTask(root, config, args) {
   const successMatchers = normalizeSuccessMatchers(args?.success_matchers || args?.successMatchers);
   const portProbe = Number(args?.port_probe || args?.portProbe || 0) || 0;
   const httpProbe = normalizeHttpProbe(args?.http_probe || args?.httpProbe);
-  const outputDir = getBackgroundTasksDir(root);
+  const outputDir = await getBackgroundTasksDir(root);
   await fs.mkdir(outputDir, { recursive: true });
   const outputFileAbs = path.join(outputDir, `${taskId}.log`);
   await fs.writeFile(outputFileAbs, '', 'utf8');
@@ -1349,7 +1345,7 @@ async function glob(root, args) {
 async function list(root, args) {
   const normalizedArgs = normalizePathArgs(args, ['dir', 'directory', 'target']);
   const relativePath = String(normalizedArgs?.path || '.').trim() || '.';
-  const target = resolveInWorkspace(root, relativePath);
+  const target = await resolveInWorkspace(root, relativePath);
   const entries = await fs.readdir(target, { withFileTypes: true });
   const includeHidden = Boolean(normalizedArgs?.include_hidden);
   const items = entries
@@ -1556,7 +1552,7 @@ async function applyPatch(root, args) {
     if (!targetPath || targetPath === '/dev/null') {
       throw new Error('patch requires a target file path');
     }
-    const absTarget = resolveInWorkspace(root, targetPath);
+    const absTarget = await resolveInWorkspace(root, targetPath);
     let beforeContent = '';
     let beforeLines = [];
     try {

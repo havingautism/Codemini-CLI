@@ -1,6 +1,26 @@
 import path from 'node:path';
 import { getEffectivePolicy } from './shell-profile.js';
 
+const SHELL_KEYWORDS = new Set([
+  'if',
+  'then',
+  'elif',
+  'else',
+  'fi',
+  'for',
+  'while',
+  'until',
+  'do',
+  'done',
+  'case',
+  'esac',
+  'in',
+  'function',
+  'time',
+  '{',
+  '}'
+]);
+
 function firstToken(command) {
   const m = String(command || '').trim().match(/^"([^"]+)"|^'([^']+)'|^(\S+)/);
   const raw = (m && (m[1] || m[2] || m[3])) || '';
@@ -48,6 +68,11 @@ function splitCommandSegments(command) {
       if (current.trim()) segments.push(current.trim());
       current = '';
       i += 1;
+      continue;
+    }
+
+    if (ch === '&' && text[i - 1] === '>') {
+      current += ch;
       continue;
     }
 
@@ -157,6 +182,30 @@ function suggestionForToken(token, config) {
   return 'Prefer structured tools like read, edit, write, grep, glob, and list first. If you need shell fallback, use allowed shell commands for search and local context such as rg, find, grep, sed, cat, or ls.';
 }
 
+function validateCdSegment(command, workspaceRoot) {
+  const tokens = tokenizeTopLevel(command);
+  if (tokens.length === 1) {
+    return { allowed: false, reason: 'cd requires a target path in safe mode' };
+  }
+  if (tokens.length !== 2) {
+    return { allowed: false, reason: 'cd only supports a single target path in safe mode' };
+  }
+
+  const rawTarget = String(tokens[1] || '').trim();
+  if (!rawTarget || rawTarget.startsWith('-')) {
+    return { allowed: false, reason: 'cd target is not allowed in safe mode' };
+  }
+
+  const resolvedRoot = path.resolve(workspaceRoot);
+  const resolvedTarget = path.resolve(resolvedRoot, rawTarget);
+  const relative = path.relative(resolvedRoot, resolvedTarget);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    return { allowed: false, reason: `cd escapes workspace: ${rawTarget}` };
+  }
+
+  return { allowed: true };
+}
+
 export function evaluateCommandPolicy(command, config, workspaceRoot = process.cwd()) {
   const policy = getEffectivePolicy(config);
   const cmd = String(command || '').trim();
@@ -181,6 +230,13 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
   const inspectedTokens = collectCommandTokens(cmd);
   const allowlist = Array.isArray(policy.command_allowlist) ? policy.command_allowlist : [];
   for (const item of inspectedTokens) {
+    if (SHELL_KEYWORDS.has(item.token)) continue;
+    if (item.token === 'cd') {
+      const cdCheck = validateCdSegment(item.raw, workspaceRoot);
+      if (!cdCheck.allowed) {
+        return { allowed: false, reason: cdCheck.reason, suggestion: suggestionForToken(item.token, config) };
+      }
+    }
     if (includesAny(item.token, policy.blocked_commands)) {
       return { allowed: false, reason: `blocked command: ${item.token}`, suggestion: suggestionForToken(item.token, config) };
     }

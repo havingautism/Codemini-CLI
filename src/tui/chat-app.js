@@ -747,8 +747,8 @@ function buildUiMessagesFromSessionHistory(sessionMessages, nextId) {
 function safeJsonParse(raw) {
   try {
     return JSON.parse(String(raw || '{}'));
-  } catch {
-    return null;
+  } catch (parseError) {
+    return { _raw: String(raw || ''), _invalid_json: true, _parseError: parseError.message };
   }
 }
 
@@ -1405,7 +1405,7 @@ function extractPreviewLinesFromTool(tool, maxLines = 3) {
     typeof tool?.arguments === 'string'
       ? (() => {
           const parsedArguments = safeJsonParse(tool.arguments);
-          if (parsedArguments) {
+          if (parsedArguments && !parsedArguments._invalid_json) {
             const parsedPreview = collectPreviewStrings(parsedArguments);
             if (parsedPreview.length > 0) return parsedPreview;
           }
@@ -3035,7 +3035,9 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
         const nextCall = {
           id: toolCall.id || '',
           name: toolCall.name || '',
-          arguments: typeof toolCall.arguments === 'string' ? safeJsonParse(toolCall.arguments) ?? toolCall.arguments : toolCall.arguments,
+          arguments: typeof toolCall.arguments === 'string'
+            ? (() => { const p = safeJsonParse(toolCall.arguments); return p._invalid_json ? toolCall.arguments : p; })()
+            : toolCall.arguments,
           status: 'pending',
           type: 'tool'
         };

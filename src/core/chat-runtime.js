@@ -1,6 +1,7 @@
 import { parseInput } from './input-parser.js';
 import { loadCommandsAndSkills, renderCommandPrompt } from './command-loader.js';
 import { runAgentLoop, setResultDir, clearResultStore } from './agent-loop.js';
+import { trimInline, normalizePath } from './string-utils.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -314,13 +315,6 @@ export function getSubAgentRolePrompt(role) {
   ].join('\n');
 }
 
-function trimInlineText(value, maxLen = 220) {
-  const text = String(value || '').replace(/\s+/g, ' ').trim();
-  if (!text) return '';
-  if (text.length <= maxLen) return text;
-  return `${text.slice(0, maxLen - 3)}...`;
-}
-
 function buildSubAgentContextPacket(session) {
   const source = Array.isArray(session?.messages) ? session.messages : [];
   const recent = source
@@ -332,7 +326,7 @@ function buildSubAgentContextPacket(session) {
   let usedChars = 0;
   for (const msg of recent) {
     const role = msg.role === 'assistant' ? 'assistant' : 'user';
-    const text = trimInlineText(msg.content, 260);
+    const text = trimInline(msg.content, 260);
     if (!text) continue;
     const line = `- ${role}: ${text}`;
     if (usedChars + line.length > SUB_AGENT_CONTEXT_MAX_CHARS) break;
@@ -348,8 +342,8 @@ function buildSubAgentContextPacket(session) {
 }
 
 function maybePushEvidence(out, seen, filePath, summary) {
-  const pathText = trimInlineText(filePath, 160);
-  const summaryText = trimInlineText(summary, 200);
+  const pathText = trimInline(filePath, 160);
+  const summaryText = trimInline(summary, 200);
   if (!pathText || seen.has(pathText)) return;
   seen.add(pathText);
   out.push(`- ${pathText}${summaryText ? ` :: ${summaryText}` : ''}`);
@@ -415,7 +409,7 @@ function extractLikelyPathsFromText(rawText, out, seen) {
 }
 
 function summarizeStepOutput(step) {
-  const text = trimInlineText(step?.output || step?.task || '', 220);
+  const text = trimInline(step?.output || step?.task || '', 220);
   return text || 'No concise output captured.';
 }
 
@@ -588,7 +582,7 @@ function classifyPlanTaskClass(goal = '') {
 }
 
 function buildGoalRequirementPacket(goal, role) {
-  const rawGoal = trimInlineText(goal, 800);
+  const rawGoal = trimInline(goal, 800);
   if (!rawGoal) return '';
   const requirements = deriveGoalRequirements(goal);
   const lines = ['Original goal:', rawGoal];
@@ -684,13 +678,13 @@ async function buildTesterVerificationPacket(focusPaths = []) {
     const pkg = await readJsonSafe(packageJsonPath);
     const scripts = pkg?.scripts || {};
     if (typeof scripts.test === 'string' && scripts.test.trim()) {
-      primary.push(`- npm test :: package.json script = ${trimInlineText(scripts.test, 140)}`);
+      primary.push(`- npm test :: package.json script = ${trimInline(scripts.test, 140)}`);
     }
     if (typeof scripts.build === 'string' && scripts.build.trim()) {
-      secondary.push(`- npm run build :: package.json script = ${trimInlineText(scripts.build, 140)}`);
+      secondary.push(`- npm run build :: package.json script = ${trimInline(scripts.build, 140)}`);
     }
     if (typeof scripts.lint === 'string' && scripts.lint.trim()) {
-      secondary.push(`- npm run lint :: package.json script = ${trimInlineText(scripts.lint, 140)}`);
+      secondary.push(`- npm run lint :: package.json script = ${trimInline(scripts.lint, 140)}`);
     }
     fallback.push('- If test/build scripts are not usable, inspect package.json scripts and run the narrowest relevant check.');
   }
@@ -1185,7 +1179,7 @@ function buildAutoPlanFinalSummaryUserPrompt({ goal, autoPlan, runItems, plannin
     if (item.warning) {
       lines.push(`Warning: ${item.warning}`);
     }
-    lines.push(`Output: ${trimInlineText(item.output || '(empty)', 500)}`);
+    lines.push(`Output: ${trimInline(item.output || '(empty)', 500)}`);
     if (Array.isArray(item.artifactPaths) && item.artifactPaths.length > 0) {
       lines.push(`Artifacts: ${item.artifactPaths.slice(0, 5).join(', ')}`);
     }
@@ -1244,7 +1238,7 @@ async function buildAutoPlanFinalSummary({
       timeoutMs: config.gateway.timeout_ms || 90000,
       maxRetries: config.gateway.max_retries ?? 2
     });
-    return trimInlineText(result.text || '', 600) || fallbackSummary;
+    return trimInline(result.text || '', 600) || fallbackSummary;
   } catch {
     return fallbackSummary;
   }
@@ -1425,7 +1419,7 @@ async function collectLikelyImplementationFiles(cwd) {
         continue;
       }
       if (!preferredExts.has(path.extname(entry.name).toLowerCase())) continue;
-      candidates.push(path.relative(cwd, abs).replace(/\\/g, '/'));
+      candidates.push(normalizePath(path.relative(cwd, abs)));
       if (candidates.length >= 8) return;
     }
   }

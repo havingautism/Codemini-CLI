@@ -96,6 +96,52 @@ test('command policy inspects shell-wrapper payloads beyond the wrapper token', 
   assert.match(String(result.reason || ''), /curl/i);
 });
 
+test('command policy allows common read-only bash utilities in safe mode', () => {
+  const config = {
+    shell: { default: 'bash' },
+    policy: {
+      safe_mode: true,
+      allow_dangerous_commands: false,
+      command_allowlist: [],
+      blocked_commands: [],
+      blocked_path_patterns: [],
+      blocked_command_patterns: []
+    }
+  };
+
+  assert.equal(evaluateCommandPolicy('wc -l package.json', config, process.cwd()).allowed, true);
+  assert.equal(evaluateCommandPolicy('test -f package.json', config, process.cwd()).allowed, true);
+  assert.equal(evaluateCommandPolicy('sort package.json | uniq', config, process.cwd()).allowed, true);
+  assert.equal(evaluateCommandPolicy("cut -d: -f1 package.json | tr '{' '('", config, process.cwd()).allowed, true);
+  assert.equal(evaluateCommandPolicy('basename src/core/tools.js', config, process.cwd()).allowed, true);
+  assert.equal(evaluateCommandPolicy('dirname src/core/tools.js', config, process.cwd()).allowed, true);
+  assert.equal(evaluateCommandPolicy('paste package.json package.json | head -1', config, process.cwd()).allowed, true);
+  assert.equal(evaluateCommandPolicy('printf "a\\nb\\n" | xargs -I{} echo {}', config, process.cwd()).allowed, false);
+  assert.equal(evaluateCommandPolicy("awk 'NR==1 {print $1}' package.json", config, process.cwd()).allowed, false);
+  assert.equal(
+    evaluateCommandPolicy('cd tests && node --test tools.test.js 2>&1 | tail -30', config, process.cwd()).allowed,
+    true
+  );
+});
+
+test('command policy blocks cd when it escapes the workspace', () => {
+  const config = {
+    shell: { default: 'bash' },
+    policy: {
+      safe_mode: true,
+      allow_dangerous_commands: false,
+      command_allowlist: [],
+      blocked_commands: [],
+      blocked_path_patterns: [],
+      blocked_command_patterns: []
+    }
+  };
+
+  const result = evaluateCommandPolicy('cd .. && pwd', config, process.cwd());
+  assert.equal(result.allowed, false);
+  assert.match(String(result.reason || ''), /escapes workspace/i);
+});
+
 test('memory policy flags common secret env vars and credential URLs', () => {
   assert.equal(isSensitiveMemoryContent('DATABASE_URL=postgres://user:pass@db.internal/app'), true);
   assert.equal(isSensitiveMemoryContent('AWS_SECRET_ACCESS_KEY=abcd1234secretvalue'), true);

@@ -2,8 +2,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getFileIndexPath, getProjectIndexDir, getProjectMapPath, getProjectWorkspaceDir } from './paths.js';
 import { INDEX_SKIP_DIRS as SKIP_DIRS, SOURCE_EXTENSIONS, EXTENSION_LANGUAGE_MAP } from './constants.js';
-import { sha1 } from './crypto-utils.js';
+import { sha256 } from './crypto-utils.js';
 import { BoundedCache } from './bounded-cache.js';
+import { trimInline, normalizeRelativePath, escapeRegex } from './string-utils.js';
 
 const PROJECT_MARKER_FILES = new Set([
   'package.json',
@@ -31,11 +32,7 @@ function clipList(values, max = 32) {
 }
 
 function rel(cwd, filePath) {
-  return path.relative(cwd, filePath).replace(/\\/g, '/');
-}
-
-function normalizeRelativePath(value) {
-  return String(value || '').replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/^\/+/, '');
+  return normalizeRelativePath(path.relative(cwd, filePath));
 }
 
 async function safeStat(filePath) {
@@ -58,13 +55,6 @@ function tokenizeQuery(text) {
   return [...new Set(String(text || '').toLowerCase().match(/[a-z0-9_./-]+/g) || [])].filter(Boolean);
 }
 
-function trimInline(value, max = 240) {
-  const text = String(value || '').replace(/\s+/g, ' ').trim();
-  if (!text) return '';
-  if (text.length <= max) return text;
-  return `${text.slice(0, max - 3)}...`;
-}
-
 function trimMultiline(value, max = 1800) {
   const text = String(value || '').trim();
   if (!text) return '';
@@ -75,10 +65,6 @@ function trimMultiline(value, max = 1800) {
 async function writeJson(filePath, value) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
-}
-
-function escapeRegex(value) {
-  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function gitignorePatternToRegex(pattern) {
@@ -282,7 +268,7 @@ function buildFileEntry(relativePath, content, stat) {
   return {
     file: relativePath,
     language: LANGUAGE_BY_EXT[ext] || 'text',
-    hash: sha1(content),
+    hash: sha256(content),
     size: Number(stat?.size || content.length || 0),
     mtimeMs: Number(stat?.mtimeMs || 0),
     imports,

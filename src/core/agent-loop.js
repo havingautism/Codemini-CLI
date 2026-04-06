@@ -2,15 +2,22 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { BoundedCache } from './bounded-cache.js';
+import { trimInline as _trimInline, normalizePath } from './string-utils.js';
 
+/**
+ * 安全解析 JSON 字符串。
+ * 解析失败时返回带 _raw 和 _invalid_json 标记的对象，
+ * 调用方可据此决定是回退到原始文本还是报告错误。
+ */
 function safeJsonParse(raw) {
   if (!raw || typeof raw !== 'string') return {};
   try {
     return JSON.parse(raw);
-  } catch {
+  } catch (parseError) {
     return {
       _raw: String(raw),
-      _invalid_json: true
+      _invalid_json: true,
+      _parseError: parseError.message
     };
   }
 }
@@ -405,12 +412,7 @@ export function summarizeToolResult(result) {
   return String(result);
 }
 
-export function trimInline(value, maxLen = 72) {
-  const s = String(value || '').replace(/\s+/g, ' ').trim();
-  if (!s) return '';
-  if (s.length <= maxLen) return s;
-  return `${s.slice(0, maxLen - 3)}...`;
-}
+export const trimInline = _trimInline;
 
 function normalizeAssistantText(value) {
   return String(value || '').trim();
@@ -503,12 +505,12 @@ function createAnalysisGuardState(userPrompt) {
 }
 
 function topLevelPath(value) {
-  const normalized = String(value || '').replace(/\\/g, '/').replace(/^\.\/+/, '').trim();
+  const normalized = normalizePath(value).trim();
   return normalized.split('/')[0] || '';
 }
 
 function isRelevantSourcePath(filePath, state) {
-  const normalized = String(filePath || '').replace(/\\/g, '/').trim();
+  const normalized = normalizePath(filePath).trim();
   if (!normalized) return false;
   if (state.candidateFiles.has(normalized) || state.entryCandidates.has(normalized)) return true;
   for (const root of state.sourceRoots) {
@@ -523,7 +525,7 @@ function blockedExplorationReason(toolName, args, state) {
     return 'Use query_project_index before broad repository exploration so the next reads stay focused on relevant source files.';
   }
 
-  const target = String(args?.path || args?.pattern || args?.query || '').replace(/\\/g, '/').trim();
+  const target = normalizePath(String(args?.path || args?.pattern || args?.query || '')).trim();
   const top = topLevelPath(target);
   if (!top) return '';
 
