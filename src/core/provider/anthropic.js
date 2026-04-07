@@ -318,14 +318,27 @@ export async function createChatCompletionStream({
   onTextDelta,
   onToolCallDelta,
   timeoutMs = 90000,
-  maxTokens = 4096
+  maxTokens = 4096,
+  signal: externalSignal
 }) {
+  // 合并超时信号与外部中止信号
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  timeoutSignal.addEventListener('abort', onAbort, { once: true });
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener('abort', onAbort, { once: true });
+    }
+  }
   const payload = buildPayload({ model, temperature, messages, tools, stream: true, maxTokens });
   const response = await fetch(buildMessagesUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(timeoutMs)
+    signal: controller.signal
   });
 
   if (!response.ok || !response.body) {

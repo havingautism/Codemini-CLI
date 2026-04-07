@@ -5,7 +5,6 @@ import { genericPresenter } from './tool-narration/presenters/generic.js';
 import { globPresenter } from './tool-narration/presenters/glob.js';
 import { grepPresenter } from './tool-narration/presenters/grep.js';
 import { listPresenter } from './tool-narration/presenters/list.js';
-import { patchPresenter } from './tool-narration/presenters/patch.js';
 import { readPresenter } from './tool-narration/presenters/read.js';
 import { runPresenter } from './tool-narration/presenters/run.js';
 import { writePresenter } from './tool-narration/presenters/write.js';
@@ -17,8 +16,6 @@ const BASE_PRESENTERS = {
   grep: grepPresenter,
   write: writePresenter,
   edit: editPresenter,
-  patch: patchPresenter,
-  generate_diff: patchPresenter,
   run: runPresenter
 };
 

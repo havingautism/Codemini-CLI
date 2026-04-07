@@ -616,129 +616,6 @@ function buildUnifiedDiff(oldContent, newContent, filePath = 'file') {
   return body.join('\n');
 }
 
-function parseUnifiedPatch(patchText) {
-  const lines = splitLines(String(patchText || ''));
-  const files = [];
-  let current = null;
-
-  const pushCurrent = () => {
-    if (current) files.push(current);
-  };
-
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
-    if (line.startsWith('--- ')) {
-      pushCurrent();
-      current = {
-        oldPath: line.slice(4).trim(),
-        newPath: '',
-        hunks: []
-      };
-      continue;
-    }
-    if (!current) continue;
-    if (line.startsWith('+++ ')) {
-      current.newPath = line.slice(4).trim();
-      continue;
-    }
-    if (line.startsWith('@@ ')) {
-      const match = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
-      if (!match) {
-        throw new Error(`invalid patch hunk header: ${line}`);
-      }
-      const hunk = {
-        oldStart: Number(match[1]),
-        oldCount: Number(match[2] || '1'),
-        newStart: Number(match[3]),
-        newCount: Number(match[4] || '1'),
-        lines: []
-      };
-      i += 1;
-      while (i < lines.length) {
-        const hunkLine = lines[i];
-        if (hunkLine.startsWith('@@ ') || hunkLine.startsWith('--- ')) {
-          i -= 1;
-          break;
-        }
-        if (hunkLine.startsWith('\\ No newline at end of file')) {
-          i += 1;
-          continue;
-        }
-        if (hunkLine === '') {
-          hunk.lines.push(' ');
-          i += 1;
-          continue;
-        }
-        if (!/^[ +\-]/.test(hunkLine)) {
-          hunk.lines.push(` ${hunkLine}`);
-          i += 1;
-          continue;
-        }
-        if (!/^[ +\-]/.test(hunkLine)) {
-          throw new Error(`invalid patch line: ${hunkLine}`);
-        }
-        hunk.lines.push(hunkLine);
-        i += 1;
-      }
-      current.hunks.push(hunk);
-    }
-  }
-
-  pushCurrent();
-  return files.filter((file) => file.oldPath || file.newPath);
-}
-
-function applyHunkToLines(lines, hunk) {
-  const oldChunk = [];
-  const newChunk = [];
-  for (const line of hunk.lines) {
-    if (line.startsWith(' ')) {
-      const text = line.slice(1);
-      oldChunk.push(text);
-      newChunk.push(text);
-      continue;
-    }
-    if (line.startsWith('-')) {
-      oldChunk.push(line.slice(1));
-      continue;
-    }
-    if (line.startsWith('+')) {
-      newChunk.push(line.slice(1));
-    }
-  }
-
-  if (oldChunk.length === 0) {
-    const insertAt = Math.max(0, Number(hunk.oldStart || 1) - 1);
-    return [...lines.slice(0, insertAt), ...newChunk, ...lines.slice(insertAt)];
-  }
-
-  const lastStart = Math.max(0, lines.length - oldChunk.length);
-  const matches = [];
-  for (let start = 0; start <= lastStart; start += 1) {
-    let ok = true;
-    for (let offset = 0; offset < oldChunk.length; offset += 1) {
-      if (lines[start + offset] !== oldChunk[offset]) {
-        ok = false;
-        break;
-      }
-    }
-    if (ok) {
-      matches.push(start);
-      if (matches.length > 1) break;
-    }
-  }
-
-  if (matches.length === 0) {
-    throw new Error('patch hunk context not found');
-  }
-  if (matches.length > 1) {
-    throw new Error('patch hunk context not unique');
-  }
-
-  const start = matches[0];
-  return [...lines.slice(0, start), ...newChunk, ...lines.slice(start + oldChunk.length)];
-}
-
 async function getFileState(root, relativePath) {
   const target = await resolveInWorkspace(root, relativePath);
   const stat = await fs.stat(target);
@@ -1225,68 +1102,6 @@ async function stopBackgroundTask(_root, args) {
   return { ...snapshotBackgroundTask(task), stopped: true };
 }
 
-async function searchCode(root, args) {
-  const query = String(args?.query || args?.symbol || '').trim();
-  if (!query) throw new Error('search_code requires query');
-  const maxResults = Math.max(1, Math.min(50, Number(args?.max_results || 12)));
-  const caseSensitive = Boolean(args?.case_sensitive);
-  const files = await walkTextFiles(root, args?.path || '.', normalizeFileTypes(args));
-  const matches = [];
-
-  for (const filePath of files) {
-    const content = await fs.readFile(filePath, 'utf8');
-    const lines = splitLines(content);
-    for (let idx = 0; idx < lines.length; idx += 1) {
-      const line = lines[idx];
-      const haystack = caseSensitive ? line : line.toLowerCase();
-      const needle = caseSensitive ? query : query.toLowerCase();
-      if (!haystack.includes(needle)) continue;
-      matches.push({
-        file: toWorkspaceRelative(root, filePath),
-        line: idx + 1,
-        column: getLineColumnForMatch(line, query, caseSensitive),
-        preview: trimLinePreview(line),
-        kind: classifyMatch(line, query),
-        symbolHint: query
-      });
-      if (matches.length >= maxResults) {
-        matches.sort((left, right) => {
-          const kindRank = { definition: 0, reference: 1, text: 2 };
-          const specificity = matchSpecificity(left.preview, query) - matchSpecificity(right.preview, query);
-          if (specificity !== 0) return specificity;
-          if (kindRank[left.kind] !== kindRank[right.kind]) return kindRank[left.kind] - kindRank[right.kind];
-          return left.file.localeCompare(right.file) || left.line - right.line;
-        });
-        return {
-          query,
-          matches,
-          definitions: matches.filter((item) => item.kind === 'definition'),
-          references: matches.filter((item) => item.kind === 'reference'),
-          text_matches: matches.filter((item) => item.kind === 'text'),
-          truncated: true
-        };
-      }
-    }
-  }
-
-  matches.sort((left, right) => {
-    const kindRank = { definition: 0, reference: 1, text: 2 };
-    const specificity = matchSpecificity(left.preview, query) - matchSpecificity(right.preview, query);
-    if (specificity !== 0) return specificity;
-    if (kindRank[left.kind] !== kindRank[right.kind]) return kindRank[left.kind] - kindRank[right.kind];
-    return left.file.localeCompare(right.file) || left.line - right.line;
-  });
-
-  return {
-    query,
-    matches,
-    definitions: matches.filter((item) => item.kind === 'definition'),
-    references: matches.filter((item) => item.kind === 'reference'),
-    text_matches: matches.filter((item) => item.kind === 'text'),
-    truncated: false
-  };
-}
-
 async function grep(root, args) {
   const normalizedArgs = normalizePatternArgs(args, ['query', 'symbol', 'q'], ['directory', 'dir', 'cwd']);
   const pattern = String(normalizedArgs?.pattern || '').trim();
@@ -1523,70 +1338,6 @@ async function insertRelative(root, args, mode) {
   await fs.writeFile(state.target, afterContent, 'utf8');
   const changedLine = splitLines(state.content.slice(0, state.content.indexOf(anchorText))).length;
   return editResult(relativePath, mode, state.content, afterContent, changedLine);
-}
-
-async function generateDiff(root, args) {
-  const relativePath = String(args?.path || '').trim();
-  if (!relativePath) throw new Error('generate_diff requires path');
-  const state = await getFileState(root, relativePath);
-  const newContent = String(args?.new_content || '');
-  return {
-    path: relativePath,
-    old_hash: sha256(state.content),
-    new_hash: sha256(newContent),
-    diff: buildUnifiedDiff(state.content, newContent, relativePath)
-  };
-}
-
-async function applyPatch(root, args) {
-  const patchText = String(args?.patch || args?.content || '').trim();
-  if (!patchText) throw new Error('patch requires patch content');
-  const files = parseUnifiedPatch(patchText);
-  if (files.length === 0) throw new Error('patch contains no file changes');
-
-  const results = [];
-  for (const fileChange of files) {
-    const newPath = String(fileChange.newPath || '').trim();
-    const oldPath = String(fileChange.oldPath || '').trim();
-    const targetPath = newPath && newPath !== '/dev/null' ? newPath : oldPath;
-    if (!targetPath || targetPath === '/dev/null') {
-      throw new Error('patch requires a target file path');
-    }
-    const absTarget = await resolveInWorkspace(root, targetPath);
-    let beforeContent = '';
-    let beforeLines = [];
-    try {
-      beforeContent = await fs.readFile(absTarget, 'utf8');
-      beforeLines = splitLines(beforeContent);
-    } catch (error) {
-      if (!(error && error.code === 'ENOENT')) throw error;
-    }
-
-    let nextLines = beforeLines;
-    for (const hunk of fileChange.hunks) {
-      nextLines = applyHunkToLines(nextLines, hunk);
-    }
-    const afterContent = nextLines.join('\n');
-
-    if (newPath === '/dev/null') {
-      await fs.rm(absTarget, { force: true });
-      results.push({
-        path: targetPath,
-        action: 'delete',
-        changed_line: 1,
-        diff_preview: `deleted ${targetPath}`,
-        diff: buildUnifiedDiff(beforeContent, '', targetPath),
-        new_hash: sha256('')
-      });
-      continue;
-    }
-
-    await fs.mkdir(path.dirname(absTarget), { recursive: true });
-    await fs.writeFile(absTarget, afterContent, 'utf8');
-    results.push(editResult(targetPath, beforeContent ? 'patch' : 'create', beforeContent, afterContent, 1));
-  }
-
-  return results.length === 1 ? results[0] : { ok: true, files: results };
 }
 
 async function openTarget(root, args) {
@@ -1903,6 +1654,26 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     {
       type: 'function',
       function: {
+        name: 'glob',
+        description:
+          'Find files by glob pattern. Use this when you already know a filename pattern such as src/**/*.ts. Aliases like query and directory are accepted.',
+        parameters: {
+          type: 'object',
+          properties: {
+            pattern: { type: 'string', description: 'Glob pattern' },
+            path: { type: 'string', description: 'Directory to search' },
+            query: { type: 'string', description: 'Alias for pattern' },
+            directory: { type: 'string', description: 'Alias for path' },
+            include_hidden: { type: 'boolean', description: 'Include dotfiles' },
+            max_results: { type: 'number', description: 'Max results' }
+          },
+          required: ['pattern']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'query_project_index',
         description:
           'Query the lightweight project index before broad file reads. Uses both project-map metadata and file-index symbols to suggest the most relevant files for the current task.',
@@ -2067,26 +1838,6 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         }
       }
     },
-    glob: {
-      type: 'function',
-      function: {
-        name: 'glob',
-        description:
-          'Find files by glob pattern. Use this when you already know a filename pattern such as src/**/*.ts. Aliases like query and directory are accepted.',
-        parameters: {
-          type: 'object',
-          properties: {
-            pattern: { type: 'string', description: 'Glob pattern' },
-            path: { type: 'string', description: 'Directory to search' },
-            query: { type: 'string', description: 'Alias for pattern' },
-            directory: { type: 'string', description: 'Alias for path' },
-            include_hidden: { type: 'boolean', description: 'Include dotfiles' },
-            max_results: { type: 'number', description: 'Max results' }
-          },
-          required: ['pattern']
-        }
-      }
-    },
     read_ast_node: {
       type: 'function',
       function: {
@@ -2101,36 +1852,6 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
             ast_target: { type: 'object' }
           },
           required: ['path', 'ast_target']
-        }
-      }
-    },
-    generate_diff: {
-      type: 'function',
-      function: {
-        name: 'generate_diff',
-        description: 'Generate a unified diff for proposed content. Use this when you want to preview or prepare a patch before applying it.',
-        parameters: {
-          type: 'object',
-          properties: {
-            path: { type: 'string' },
-            new_content: { type: 'string' }
-          },
-          required: ['path', 'new_content']
-        }
-      }
-    },
-    patch: {
-      type: 'function',
-      function: {
-        name: 'patch',
-        description: 'Apply one or more unified diff hunks to workspace files. Use this for prepared unified diffs instead of ad-hoc shell patching.',
-        parameters: {
-          type: 'object',
-          properties: {
-            patch: { type: 'string' },
-            content: { type: 'string' }
-          },
-          required: ['patch']
         }
       }
     },
@@ -2359,18 +2080,6 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         astTarget ? { ...args, ast_target: astTarget, recent_file: lastReadPath } : { ...args, recent_file: lastReadPath }
       );
       if (result?.path) await refreshProjectFile(result.path);
-      return result;
-    },
-    generate_diff: (args) => generateDiff(workspaceRoot, args),
-    patch: async (args) => {
-      await ensureProjectIndex();
-      const result = await applyPatch(workspaceRoot, args);
-      if (result?.path) await refreshProjectFile(result.path);
-      if (Array.isArray(result?.files)) {
-        for (const item of result.files) {
-          if (item?.path) await refreshProjectFile(item.path);
-        }
-      }
       return result;
     },
     write: async (args) => {
@@ -2644,25 +2353,6 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
 
     forget_memory(result) {
       return `removed ${Number(result?.removed || 0)} memory item(s)`;
-    },
-
-    generate_diff(result) {
-      if (!result || typeof result !== 'object') return String(result);
-      const p = result.path || '';
-      const diff = result.diff || '';
-      if (diff.length <= 2000) return `${p ? `[${p}]\n` : ''}${diff}`;
-      return `${p ? `[${p}]\n` : ''}${diff.slice(0, 1997)}...\n[diff truncated: ${diff.length} chars total]`;
-    },
-
-    patch(result) {
-      if (!result || typeof result !== 'object') return String(result);
-      if (Array.isArray(result.files)) {
-        const names = result.files.slice(0, 10).map((f) => typeof f === 'string' ? f : f.path || '?');
-        return `patched ${result.files.length} file(s): ${names.join(', ')}${result.files.length > 10 ? ` ... +${result.files.length - 10} more` : ''}`;
-      }
-      const p = result.path || '';
-      const line = result.changed_line || 0;
-      return `patched ${p}${line > 0 ? ` @L${line}` : ''}${result.ok === false ? ` [FAILED: ${result.error || ''}]` : ''}`;
     },
 
     ast_query(result) {

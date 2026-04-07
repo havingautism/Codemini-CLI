@@ -44,6 +44,38 @@ const ROLE_STYLES = {
     badgeText: 'black',
     chrome: 'gray'
   },
+  planner: {
+    accent: 'magentaBright',
+    border: 'magenta',
+    text: 'magentaBright',
+    badgeBg: 'magenta',
+    badgeText: 'white',
+    chrome: 'gray'
+  },
+  reviewer: {
+    accent: 'yellowBright',
+    border: 'yellow',
+    text: 'yellowBright',
+    badgeBg: 'yellow',
+    badgeText: 'black',
+    chrome: 'gray'
+  },
+  tester: {
+    accent: 'blueBright',
+    border: 'blue',
+    text: 'blueBright',
+    badgeBg: 'blue',
+    badgeText: 'white',
+    chrome: 'gray'
+  },
+  summarizer: {
+    accent: 'cyanBright',
+    border: 'cyan',
+    text: 'cyanBright',
+    badgeBg: 'cyan',
+    badgeText: 'black',
+    chrome: 'gray'
+  },
   system: {
     accent: 'yellowBright',
     border: 'yellow',
@@ -72,7 +104,7 @@ const ROLE_STYLES = {
 
 const TUI_COPY = {
   zh: {
-    roleLabels: { you: '你', coder: 'CODER', system: '系统', error: '错误', pending: '等待中' },
+    roleLabels: { you: '👤 你', coder: '💻 CODER', planner: '📋 PLANNER', reviewer: '🔍 REVIEWER', tester: '🧪 TESTER', summarizer: '📝 SUMMARIZER', system: '⚙️ 系统', error: '❌ 错误', pending: '⏳ 等待中' },
     generic: {
       waitingForInput: '等待输入',
       ready: '就绪',
@@ -99,7 +131,7 @@ const TUI_COPY = {
       pendingQueue: '等待队列',
       commandPaletteGroupedSelect: '命令面板 | 分组选择模式',
       commandPaletteGroupedSuggestions: '命令面板 | 分组候选',
-      startupHint: '使用 /help、/commands、/compact、/exit、!<shell>。Tab 可自动补全 slash 命令。',
+      startupHint: '使用 /help、/commands、/compact、/exit、/stop、!<shell>。Tab 可自动补全 slash 命令。',
       toolSummaryExpanded: '工具摘要：已展开',
       toolSummaryCollapsed: '工具摘要：已收起',
       toolChainCollapsed: (count) => `已折叠更早的 ${count} 个工具调用`,
@@ -204,6 +236,7 @@ const TUI_COPY = {
       compactingContext: '正在压缩上下文',
       autoCompactTriggered: (mode, threshold) => `自动压缩已触发（${mode}，阈值 ${threshold}%）`,
       requestFailed: '请求失败',
+      responseStopped: '回答已中止',
       localCommandRunning: '正在执行本地命令',
       queuedWaiting: '排队中，等待上一轮完成',
       idleReady: '等待输入',
@@ -213,7 +246,7 @@ const TUI_COPY = {
     }
   },
   en: {
-    roleLabels: { you: 'YOU', coder: 'CODER', system: 'SYSTEM', error: 'ERROR', pending: 'PENDING' },
+    roleLabels: { you: 'YOU', coder: 'CODER', planner: 'PLANNER', reviewer: 'REVIEWER', tester: 'TESTER', summarizer: 'SUMMARIZER', system: 'SYSTEM', error: 'ERROR', pending: 'PENDING' },
     generic: {
       waitingForInput: 'waiting for input',
       ready: 'ready',
@@ -240,7 +273,7 @@ const TUI_COPY = {
       pendingQueue: 'pending queue',
       commandPaletteGroupedSelect: 'command palette | grouped select mode',
       commandPaletteGroupedSuggestions: 'command palette | grouped suggestions',
-      startupHint: 'Use /help, /commands, /compact, /exit, !<shell>. Tab for slash autocomplete.',
+      startupHint: 'Use /help, /commands, /compact, /stop, /exit, !<shell>. Tab for slash autocomplete.',
       toolSummaryExpanded: 'Tool summary: expanded',
       toolSummaryCollapsed: 'Tool summary: collapsed',
       toolChainCollapsed: (count) => `${count} earlier tool calls hidden`,
@@ -345,6 +378,7 @@ const TUI_COPY = {
       compactingContext: 'compacting context',
       autoCompactTriggered: (mode, threshold) => `auto-compact triggered (${mode}, threshold ${threshold}%)`,
       requestFailed: 'request failed',
+      responseStopped: 'Response stopped',
       localCommandRunning: 'running local command',
       queuedWaiting: 'queued, waiting for current turn',
       idleReady: 'waiting for input',
@@ -1036,7 +1070,6 @@ function ContextProgressMeter({ runtimeState, runtimeStatus, compact = false }) 
   const pct = Math.min(100, Math.max(0, pctRaw));
   const filled = Math.min(12, Math.max(0, Math.round((pct / 100) * 12)));
   const activeColor = pct < 40 ? 'greenBright' : pct < 75 ? 'yellowBright' : 'redBright';
-  const statusColor = runtimeStatus?.color || activeColor;
   const chunks = Array.from({ length: 12 }, (_, idx) => {
     const zoneColor = idx < 5 ? 'greenBright' : idx < 9 ? 'yellowBright' : 'redBright';
     const color = idx < filled ? zoneColor : 'gray';
@@ -1048,7 +1081,7 @@ function ContextProgressMeter({ runtimeState, runtimeStatus, compact = false }) 
       Box,
       { justifyContent: 'flex-end', alignItems: 'center' },
       h(Text, { color: 'gray' }, '上下文 '),
-      h(Text, { color: statusColor }, `${Math.round(pct)}% `),
+      h(Text, { color: activeColor }, `${Math.round(pct)}% `),
       h(
         Box,
         { flexDirection: 'row' },
@@ -1072,78 +1105,58 @@ function ContextProgressMeter({ runtimeState, runtimeStatus, compact = false }) 
 
 function PlanStrip({ planState, copy }) {
   if (!planState || !planState.total) return null;
-  const progress = `${planState.current}/${planState.total}`;
-  const stripComplete = Boolean(planState.completed) && !planState.failed;
-  const statusLabel = planState.failed ? copy.generic.attention : stripComplete ? copy.generic.taskCompleted : copy.generic.active;
-  const statusColor = planState.failed ? 'redBright' : stripComplete ? 'cyanBright' : 'greenBright';
-  const roleLabel =
-    planState.resultStatus || stripComplete || planState.failed
-      ? copy?.roleLabels?.system === 'SYSTEM'
-        ? 'RESULT'
-        : '结果'
-      : String(planState.role || 'agent').toUpperCase();
-  const titleLabel =
-    planState.resultStatus || stripComplete || planState.failed
-      ? copy?.roleLabels?.system === 'SYSTEM'
-        ? 'Plan execution result'
-        : '计划执行结果'
-      : planState.title || 'running plan step';
+  const isDone = planState.completed;
+  const borderColor = isDone ? 'green' : planState.failed ? 'red' : 'cyan';
+  const isEnglish = copy?.roleLabels?.system === 'SYSTEM';
+  const completedLabel = isEnglish ? 'DONE' : '已完成';
   return h(
     Box,
-    {
-      marginBottom: 1,
-      borderStyle: 'round',
-      borderColor: planState.failed ? 'red' : 'cyan',
-      paddingX: 1,
-      paddingY: 0,
-      flexDirection: 'column'
-    },
+    { marginBottom: 1, flexDirection: 'row' },
+    h(Box, { width: 2 }, h(Text, { color: borderColor }, '│')),
     h(
       Box,
-      { justifyContent: 'space-between' },
+      {
+        flexDirection: 'column',
+        borderStyle: 'round',
+        borderColor,
+        paddingX: 1,
+        paddingY: 0,
+        width: '100%'
+      },
       h(
         Box,
-        null,
-        h(Text, { color: 'black', backgroundColor: planState.failed ? 'red' : 'cyanBright' }, ` ${copy.generic.plan} ${progress} `),
-        h(Text, { color: 'gray' }, '  '),
-        h(Text, { color: 'magentaBright' }, roleLabel)
+        { justifyContent: 'space-between', marginBottom: planState.steps.length > 0 ? 1 : 0 },
+        h(Text, { color: 'black', backgroundColor: isDone ? 'greenBright' : 'cyanBright' }, ' Plan Summary '),
+        isDone
+          ? h(Text, { color: 'black', backgroundColor: 'greenBright' }, ` ${completedLabel} `)
+          : null
       ),
-      h(Text, { color: statusColor }, statusLabel)
-    ),
-    h(Text, { color: 'white' }, titleLabel),
-    planState.resultVerified
-      ? h(
-          Box,
-          { marginTop: 1 },
-          h(Text, { color: 'gray' }, trimText(planState.resultVerified, 120))
-        )
-      : null,
-    planState.steps.length > 0
-      ? h(
-          Box,
-          { marginTop: 1, flexDirection: 'column' },
-          ...planState.steps.slice(-4).map((step, idx) =>
-            h(
-              Box,
-              { key: `plan-step-${idx}`, marginTop: idx === 0 ? 0 : 1 },
-              h(Text, { color: step.status === 'active' ? 'cyanBright' : step.status === 'failed' ? 'redBright' : 'gray' }, `${step.status === 'active' ? '>' : step.status === 'failed' ? 'x' : '·'} `),
-              h(Text, { color: step.status === 'active' ? 'yellowBright' : step.status === 'failed' ? 'redBright' : 'gray' }, `${step.index}/${step.total}`),
-              h(Text, { color: 'gray' }, '  '),
-              h(Text, { color: step.status === 'active' ? 'magentaBright' : step.status === 'failed' ? 'redBright' : 'gray' }, String(step.role || 'agent').toUpperCase()),
-              h(Text, { color: 'gray' }, '  '),
-              h(Text, { color: step.status === 'active' ? 'white' : step.status === 'failed' ? 'redBright' : 'gray' }, step.title)
+      planState.steps.length > 0
+        ? h(
+            Box,
+            { flexDirection: 'column' },
+            ...planState.steps.map((step, idx) => {
+                const roleKey = step.role ? step.role.toLowerCase() : '';
+                const normalizedRole = ['planner', 'coder', 'reviewer', 'tester', 'summarizer'].includes(roleKey) ? roleKey : 'coder';
+                const stepTheme = roleStyle(normalizedRole);
+                const roleTag = step.role ? step.role.toUpperCase() : '';
+                const stepDone = step.status === 'done' || isDone;
+                const stepFailed = step.status === 'failed';
+                const marker = stepFailed ? '✗' : stepDone ? '✓' : '·';
+                const markerColor = stepFailed ? 'redBright' : stepDone ? 'greenBright' : 'gray';
+                return h(
+                  Box,
+                  { key: `plan-step-${idx}` },
+                  h(Text, { color: markerColor }, `${marker} `),
+                  roleTag ? h(Text, { color: stepTheme.badgeText, backgroundColor: stepTheme.badgeBg }, ` ${roleTag} `) : null,
+                  roleTag ? h(Text, { color: 'gray' }, ' ') : null,
+                  h(Text, { color: stepDone && !stepFailed ? 'gray' : 'white' }, `${step.index}. ${step.title}`)
+                );
+              }
             )
           )
-        )
-      : null,
-    planState.resultNext
-      ? h(
-          Box,
-          { marginTop: 1 },
-          h(Text, { color: 'black', backgroundColor: 'yellowBright' }, ' NEXT '),
-          h(Text, { color: 'gray' }, ` ${trimText(planState.resultNext, 108)}`)
-        )
-      : null
+        : null
+    )
   );
 }
 
@@ -1242,21 +1255,43 @@ export function parseAutoPlanSummaryMessage(text) {
     warnings: '',
     failed: '',
     warningSteps: '',
-    failedSteps: ''
+    failedSteps: '',
+    planSteps: []
   };
 
+  let inPlanSteps = false;
   for (const line of lines.slice(1)) {
-    if (line.startsWith('File: ')) parsed.filePath = line.slice('File: '.length).trim();
-    else if (line.startsWith('Plan File: ')) parsed.filePath = line.slice('Plan File: '.length).trim();
-    else if (line.startsWith('Plan Summary: ')) parsed.planSummary = line.slice('Plan Summary: '.length).trim();
-    else if (line.startsWith('Final Summary: ')) parsed.finalSummary = line.slice('Final Summary: '.length).trim();
-    else if (line.startsWith('Approval: ')) parsed.approval = line.slice('Approval: '.length).trim();
-    else if (line.startsWith('Steps: ')) parsed.stepsTotal = line.slice('Steps: '.length).trim();
-    else if (line.startsWith('Completed: ')) parsed.completed = line.slice('Completed: '.length).trim();
-    else if (line.startsWith('Warnings: ')) parsed.warnings = line.slice('Warnings: '.length).trim();
-    else if (line.startsWith('Failed: ')) parsed.failed = line.slice('Failed: '.length).trim();
-    else if (line.startsWith('Warning steps: ')) parsed.warningSteps = line.slice('Warning steps: '.length).trim();
-    else if (line.startsWith('Failed steps: ')) parsed.failedSteps = line.slice('Failed steps: '.length).trim();
+    if (line === 'Plan Steps:') {
+      inPlanSteps = true;
+      continue;
+    }
+    if (inPlanSteps) {
+      // Parse "  1. [role] title"
+      const stepMatch = line.match(/^(\d+)\.\s*\[([^\]]+)\]\s+(.+)$/);
+      if (stepMatch) {
+        parsed.planSteps.push({
+          index: Number(stepMatch[1]),
+          role: String(stepMatch[2] || '').trim().toLowerCase(),
+          title: String(stepMatch[3] || '').trim(),
+          status: 'pending'
+        });
+      } else {
+        inPlanSteps = false;
+      }
+    }
+    if (!inPlanSteps) {
+      if (line.startsWith('File: ')) parsed.filePath = line.slice('File: '.length).trim();
+      else if (line.startsWith('Plan File: ')) parsed.filePath = line.slice('Plan File: '.length).trim();
+      else if (line.startsWith('Plan Summary: ')) parsed.planSummary = line.slice('Plan Summary: '.length).trim();
+      else if (line.startsWith('Final Summary: ')) parsed.finalSummary = line.slice('Final Summary: '.length).trim();
+      else if (line.startsWith('Approval: ')) parsed.approval = line.slice('Approval: '.length).trim();
+      else if (line.startsWith('Steps: ')) parsed.stepsTotal = line.slice('Steps: '.length).trim();
+      else if (line.startsWith('Completed: ')) parsed.completed = line.slice('Completed: '.length).trim();
+      else if (line.startsWith('Warnings: ')) parsed.warnings = line.slice('Warnings: '.length).trim();
+      else if (line.startsWith('Failed: ')) parsed.failed = line.slice('Failed: '.length).trim();
+      else if (line.startsWith('Warning steps: ')) parsed.warningSteps = line.slice('Warning steps: '.length).trim();
+      else if (line.startsWith('Failed steps: ')) parsed.failedSteps = line.slice('Failed steps: '.length).trim();
+    }
   }
 
   return parsed;
@@ -1424,7 +1459,7 @@ function extractPreviewLinesFromTool(tool, maxLines = 3) {
 }
 
 function getLatestToolPreviewLines(msg, maxLines = 3) {
-  const codeTools = new Set(['edit', 'write', 'patch', 'generate_diff']);
+  const codeTools = new Set(['edit', 'write']);
   const extractFromCalls = (calls) => {
     for (let index = calls.length - 1; index >= 0; index -= 1) {
       const tool = calls[index];
@@ -1462,7 +1497,7 @@ export function getGeneratingCodePlaceholderRows(msg, copy, contentWidth = 72) {
   const previewWindow = getLatestToolPreviewLines(msg, 3);
   if (previewWindow.lines.length === 0) return [];
   const hasRunningCodeTool = (Array.isArray(msg?.toolCalls) ? msg.toolCalls : []).some(
-    (tool) => tool?.status === 'running' && new Set(['edit', 'write', 'patch', 'generate_diff']).has(parseToolDisplayName(tool?.name).base)
+    (tool) => tool?.status === 'running' && new Set(['edit', 'write']).has(parseToolDisplayName(tool?.name).base)
   );
   const isCodeGenerationStatus = liveStatus === String(copy?.runtime?.generatingCode || '').trim();
   if (!isCodeGenerationStatus && !(msg?.phase === 'tooling' && hasRunningCodeTool)) return [];
@@ -1760,13 +1795,11 @@ function isCodeActivityName(name) {
     'edit',
     'write',
     'write_file',
-    'patch',
     'replace_text',
     'replace_block',
     'insert_before',
     'insert_after',
-    'validate_edit',
-    'generate_diff'
+    'validate_edit'
   ]).has(parsed.base);
 }
 
@@ -1979,13 +2012,7 @@ export function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) 
       const trimmed = line.trim();
       const planProgress = parsePlanProgressLine(trimmed);
       if (planProgress) {
-        rows.push({
-          kind: 'plan-progress',
-          current: planProgress.current,
-          total: planProgress.total,
-          role: planProgress.role,
-          title: trimText(planProgress.title, Math.max(12, contentWidth - 18))
-        });
+        // Skip rendering plan progress lines inline — shown in header badge instead
         continue;
       }
       if (trimmed.startsWith('```')) {
@@ -2208,16 +2235,8 @@ export function renderMessageRow(msg, row, idx, loaderTick) {
     );
   }
   if (row.kind === 'plan-progress') {
-    return h(
-      Box,
-      { key: `row-plan-progress-${msg.id}-${idx}`, marginTop: 1, marginBottom: 1 },
-      h(Text, { color: 'cyanBright' }, '[plan] '),
-      h(Text, { color: 'yellowBright' }, `Step ${row.current}/${row.total}`),
-      h(Text, { color: 'gray' }, '  ->  '),
-      h(Text, { color: 'magentaBright' }, String(row.role || 'agent').toUpperCase()),
-      h(Text, { color: 'gray' }, ': '),
-      h(Text, { color: 'white' }, row.title)
-    );
+    // Already shown in header badge — skip inline rendering
+    return null;
   }
   if (row.kind === 'status') {
     const dots = '.'.repeat((loaderTick % 3) + 1);
@@ -2366,11 +2385,7 @@ export function moveSuggestionSelection(currentIndex, itemCount, direction, page
 
 function MessageBubble({ msg, loaderTick, showToolDetails, rowWindow = null, contentWidth = 72, copy }) {
   if (msg?.planStrip) {
-    return h(
-      Box,
-      { marginBottom: 1 },
-      h(PlanStrip, { planState: msg.planState, copy })
-    );
+    return h(PlanStrip, { planState: msg.planState, copy });
   }
   if (msg?.planSummary || parseAutoPlanSummaryMessage(msg?.text)) {
     return h(PlanSummaryBubble, { msg, copy });
@@ -2403,7 +2418,8 @@ function MessageBubble({ msg, loaderTick, showToolDetails, rowWindow = null, con
         h(
           Box,
           null,
-          h(Text, { color: theme.badgeText, backgroundColor: theme.badgeBg }, ` ${messageLabel(msg.label, copy)} `)
+          h(Text, { color: theme.badgeText, backgroundColor: theme.badgeBg }, ` ${messageLabel(msg.label, copy)} `),
+          msg.planStep ? h(Text, { color: 'gray', dimColor: true }, ` ${msg.planStep} `) : null
         ),
         autoSkillBadge
           ? h(Text, { color: 'blueBright' }, autoSkillBadge)
@@ -2699,6 +2715,10 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   const messagesRef = useRef([]);
   const pendingQueueRef = useRef([]);
   const deltaBufferRef = useRef('');
+  const activePlanStepNumberRef = useRef(0);
+  const activePlanStepRoleRef = useRef(null);
+  const activePlanStepInfoRef = useRef(null);
+  const activePlanStepTitleRef = useRef('');
 
   useEffect(() => {
     const rawStartupActivities = runtime.consumeStartupEvents?.();
@@ -2757,7 +2777,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       : [];
   const hasTransientPanels =
     commandSuggestions.length > 0 || pendingQueue.length > 0 || debugKeys || Boolean(planState?.total);
-  const messageContentWidth = Math.max(24, stdoutCols - 18);
+  const messageContentWidth = Math.max(24, stdoutCols - 8);
 
   const syncRuntimeVisualState = (variant = 'ready') => {
     const snapshot = runtime.getRuntimeState?.();
@@ -2765,7 +2785,15 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     setDisplaySessionId(snapshot.sessionId || sessionId);
     setDisplayModel(snapshot.model || model);
     setDisplaySdkProvider(snapshot.sdkProvider || sdkProvider);
-    setRuntimeState(snapshot);
+    setRuntimeState((prev) => {
+      if (!prev || !planTextBufferRef.current) return snapshot;
+      const prevTokens = Number(prev.currentContextTokens || 0);
+      const newTokens = Number(snapshot.currentContextTokens || 0);
+      if (newTokens < prevTokens) {
+        return { ...snapshot, currentContextTokens: prevTokens, contextUsagePct: prev.contextUsagePct };
+      }
+      return snapshot;
+    });
     setRuntimeStatus(makeIdleStatus(copy, snapshot, variant));
   };
 
@@ -2775,7 +2803,15 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     setDisplaySessionId(snapshot.sessionId || sessionId);
     setDisplayModel(snapshot.model || model);
     setDisplaySdkProvider(snapshot.sdkProvider || sdkProvider);
-    setRuntimeState(snapshot);
+    setRuntimeState((prev) => {
+      if (!prev || !planTextBufferRef.current) return snapshot;
+      const prevTokens = Number(prev.currentContextTokens || 0);
+      const newTokens = Number(snapshot.currentContextTokens || 0);
+      if (newTokens < prevTokens) {
+        return { ...snapshot, currentContextTokens: prevTokens, contextUsagePct: prev.contextUsagePct };
+      }
+      return snapshot;
+    });
   };
 
   useEffect(() => {
@@ -2794,15 +2830,34 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     if (!last) return;
     const current = Number(last[1]);
     const total = Number(last[2]);
-    const role = String(last[3] || '').trim();
+    const role = String(last[3] || '').trim().toLowerCase();
+    const normalizedRole = ['planner', 'coder', 'reviewer', 'tester', 'summarizer'].includes(role) ? role : 'coder';
     const title = String(last[4] || '').trim();
+
+    // Detect step transition — finalize old assistant and create a new one
+    if (activePlanStepNumberRef.current > 0 && current !== activePlanStepNumberRef.current) {
+      flushAssistantDelta();
+      const oldId = activeAssistantIdRef.current;
+      if (oldId) {
+        finalizeActiveAssistant();
+        activeAssistantIdRef.current = null;
+      }
+    }
+    activePlanStepNumberRef.current = current;
+
+    activePlanStepRoleRef.current = normalizedRole;
+    activePlanStepInfoRef.current = { current, total };
+    activePlanStepTitleRef.current = title;
     setActiveAssistantMeta({
-      planStep: `${current}/${total} · ${role}: ${title}`
+      label: normalizedRole,
+      planStepInfo: { current, total },
+      planStep: `${current}/${total} · ${title}`
     });
     setPlanState((prev) => {
-      const steps = (prev.steps || [])
-        .map((step) => (step.index === current ? { ...step, status: 'done' } : step))
+      let steps = (prev.steps || [])
+        .map((step) => (step.status === 'active' ? { ...step, status: 'done' } : step))
         .filter((step, idx, arr) => arr.findIndex((x) => x.index === step.index) === idx);
+
       const withoutCurrent = steps.filter((step) => step.index !== current);
       return {
         current,
@@ -2993,13 +3048,16 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     }
     const parsedPlanSummary = result.type === 'system' ? parseAutoPlanSummaryMessage(result.text || '') : null;
     if (parsedPlanSummary?.approval === 'pending') {
+      const preSteps = Array.isArray(parsedPlanSummary.planSteps) && parsedPlanSummary.planSteps.length > 0
+        ? parsedPlanSummary.planSteps
+        : [];
       setPlanState({
         current: 0,
-        total: 0,
+        total: preSteps.length,
         role: '',
         title: '',
         failed: false,
-        steps: [],
+        steps: preSteps,
         pendingApproval: true,
         completed: false,
         resultStatus: '',
@@ -3050,11 +3108,13 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   };
 
   const finalizeActiveAssistant = () => {
+    activePlanStepRoleRef.current = null;
+    activePlanStepInfoRef.current = null;
+    activePlanStepTitleRef.current = '';
     setActiveAssistantMeta({
       loading: false,
       phase: undefined,
       liveStatus: undefined,
-      planStep: undefined,
       pendingToolCalls: [],
       codeGenerationEndedAt: undefined,
       autoSkillNames: activeAssistantAutoSkillNamesRef.current
@@ -3090,19 +3150,27 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     if (activeAssistantIdRef.current) return activeAssistantIdRef.current;
     const aid = nextId();
     activeAssistantIdRef.current = aid;
+    const planRole = activePlanStepRoleRef.current;
+    const label = planRole || 'coder';
+    const style = ROLE_STYLES[label] || ROLE_STYLES.coder;
+    const planStepInfo = activePlanStepInfoRef.current;
+    const planStepTitle = activePlanStepTitleRef.current;
+    const planStepDisplay = planStepInfo ? `${planStepInfo.current}/${planStepInfo.total} · ${planStepTitle}` : undefined;
     setMessages((prev) => [
       ...prev,
       {
         id: aid,
-        label: 'coder',
+        label,
         text: '',
-        color: 'greenBright',
+        color: style.text,
         toolCalls: [],
         segments: [],
         loading: true,
         phase: 'thinking',
         liveStatus: copy.runtime.modelThinking,
-        autoSkillNames: activeAssistantAutoSkillNamesRef.current
+        autoSkillNames: activeAssistantAutoSkillNamesRef.current,
+        ...(planStepInfo ? { planStepInfo } : {}),
+        ...(planStepDisplay ? { planStep: planStepDisplay } : {})
       }
     ]);
     return aid;
@@ -3148,6 +3216,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       resultNext: ''
     });
     planTextBufferRef.current = '';
+    activePlanStepNumberRef.current = 0;
     activeAssistantIdRef.current = null;
     activeAssistantAutoSkillNamesRef.current = [];
     streamedAssistantHandledRef.current = false;
@@ -3192,7 +3261,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
         if (event?.type === 'assistant:tool_call_delta') {
           ensureActiveAssistant();
           const parsed = parseToolDisplayName(event.toolCall?.name);
-          const isCodeTool = new Set(['write', 'edit', 'patch', 'generate_diff']).has(parsed.base);
+          const isCodeTool = new Set(['write', 'edit']).has(parsed.base);
           if (isCodeTool) {
             setRuntimeStatus(makeStatus(copy.runtime.generatingCode, copy.runtime.streamingReply, 'greenBright'));
             setInputStage('streaming');
@@ -3251,7 +3320,6 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
                   loading: false,
                   phase: undefined,
                   liveStatus: undefined,
-                  planStep: undefined,
                   pendingToolCalls: [],
                   autoSkillNames: activeAssistantAutoSkillNamesRef.current,
                   ...(m.codeGenerationStartedAt && !m.codeGenerationEndedAt ? { codeGenerationEndedAt: Date.now() } : {})
@@ -3259,7 +3327,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
               })
             );
           }
-          if (!hasPlannedTools) {
+          if (!hasPlannedTools && !activePlanStepInfoRef.current) {
             activeAssistantIdRef.current = null;
           }
           if (!hadActiveAssistant && !hasPlannedTools && event.text) {
@@ -3412,6 +3480,22 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
             liveStatus: copy.toolActivity.waitingModelAdjust(detail)
           });
         }
+        if (event?.type === 'plan:steps') {
+          const planSteps = Array.isArray(event.steps) ? event.steps : [];
+          if (planSteps.length > 0) {
+            setPlanState((prev) => ({
+              ...prev,
+              total: planSteps.length,
+              steps: planSteps.map((s) => ({
+                index: s.index,
+                total: planSteps.length,
+                role: s.role || '',
+                title: s.title || '',
+                status: 'pending'
+              }))
+            }));
+          }
+        }
         if (event?.type === 'skill:start') {
           ensureActiveAssistant();
           const detail = describeSkillActivity(event.name, copy);
@@ -3491,16 +3575,28 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
           return;
         }
         if (result.type !== 'noop') setInputStage('idle');
-        if (planTextBufferRef.current && planState.total > 0) {
-          setPlanState((prev) => ({
-            ...prev,
-            steps: (prev.steps || []).map((step) =>
-              step.index === prev.current && step.status === 'active' ? { ...step, status: prev.failed ? 'failed' : 'done' } : step
-            )
-          }));
+        if (planTextBufferRef.current) {
+          setPlanState((prev) => {
+            if (!prev.total) return prev;
+            return {
+              ...prev,
+              completed: !prev.failed,
+              steps: (prev.steps || []).map((step) =>
+                step.status === 'active' ? { ...step, status: prev.failed ? 'failed' : 'done' } : step
+              )
+            };
+          });
         }
         syncRuntimeVisualState(result.type === 'noop' ? 'ready' : 'after');
         if (result.type === 'noop') return;
+        // 被用户中止时显示提示消息
+        if (result.aborted) {
+          setMessages((prev) => [
+            ...prev,
+            { id: nextId(), label: 'system', text: copy.runtime.responseStopped, color: 'yellowBright' }
+          ]);
+          return;
+        }
         if (!shouldAppendAssistantResult(result, activeAssistantIdRef.current, streamedAssistantHandledRef.current)) return;
         appendResultMessage(result);
       })
@@ -3517,7 +3613,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
           ...prev,
           failed: prev.total > 0,
           steps: (prev.steps || []).map((step) =>
-            step.index === prev.current ? { ...step, status: 'failed' } : step
+            step.status === 'active' ? { ...step, status: 'failed' } : step
           )
         }));
         setMessages((prev) => [
@@ -3529,6 +3625,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
         flushAssistantDelta();
         finalizeActiveAssistant();
         activeAssistantIdRef.current = null;
+        activePlanStepNumberRef.current = 0;
         streamedAssistantHandledRef.current = false;
         activeUserMessageIdRef.current = null;
         if (deltaFlushTimerRef.current) {
@@ -3584,6 +3681,19 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
         appendResultMessage(result);
       })
       .catch((err) => {
+        // 用户主动中止，不显示为错误
+        if (err?.name === 'AbortError') {
+          updateMessageMeta(userMessageId, {
+            loading: false,
+            phase: undefined,
+            liveStatus: undefined
+          });
+          setMessages((prev) => [
+            ...prev,
+            { id: nextId(), label: 'system', text: copy.runtime.responseStopped, color: 'yellowBright' }
+          ]);
+          return;
+        }
         const message = sanitizeRenderableText(err?.message || String(err));
         updateMessageMeta(userMessageId, {
           loading: false,
@@ -3734,6 +3844,16 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       cursorIndexRef.current = 0;
       setCursorIndex(0);
       if (!line) return;
+
+      // /stop 命令：中止当前正在进行的回答
+      if (line === '/stop' && busy && typeof runtime.abort === 'function') {
+        runtime.abort();
+        setHistory((prev) => [...prev, line]);
+        setHistoryIndex(null);
+        setDraftBeforeHistory('');
+        setHistoryMatches([]);
+        return;
+      }
 
       setHistory((prev) => [...prev, line]);
       setHistoryIndex(null);

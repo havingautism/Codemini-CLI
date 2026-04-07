@@ -12,7 +12,9 @@ function printHelp() {
 Usage:
   codemini [prompt] [--plain]
   codemini chat [prompt] [--plain]
-  codemini run <task> [--max-steps N]
+  codemini run <task> [--max-steps N] [--model <name>]
+  codemini run --harness <role> <task> [--max-steps N] [--model <name>]
+  codemini run --pipeline <task> [--model <name>]
   codemini config set|get|list <key> [value]
   codemini doctor
   codemini skill list|install|enable|disable|inspect|reindex

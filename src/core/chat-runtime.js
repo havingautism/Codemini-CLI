@@ -148,7 +148,8 @@ function getCompletionCopy(language = 'zh') {
         memory: '查看/搜索/删除持久记忆',
         history: '查看/恢复会话',
         debug: '运行时调试开关',
-        retry: '重试上一条用户请求'
+        retry: '重试上一条用户请求',
+        stop: '中止当前回答'
       },
       generic: {
         configCommand: '配置命令',
@@ -163,6 +164,7 @@ function getCompletionCopy(language = 'zh') {
         keyboardDebugCommand: '键盘调试命令',
         compactCommand: '上下文压缩命令',
         retryCommand: '重试上一条用户请求',
+        stopCommand: '中止当前回答',
         statusCommand: '查看运行状态',
         resumeSession: '恢复一个已保存的会话'
       }
@@ -235,7 +237,8 @@ function getCompletionCopy(language = 'zh') {
         memory: 'list/search/delete persistent memories',
         history: 'list/resume sessions',
         debug: 'runtime debug switches',
-        retry: 'retry the last user request'
+        retry: 'retry the last user request',
+        stop: 'stop the current response'
       },
       generic: {
         configCommand: 'config command',
@@ -250,6 +253,7 @@ function getCompletionCopy(language = 'zh') {
         keyboardDebugCommand: 'keyboard debug command',
         compactCommand: 'context compaction command',
         retryCommand: 'retry the last user request',
+        stopCommand: 'stop the current response',
         statusCommand: 'show runtime status',
         resumeSession: 'resume a saved session'
       }
@@ -264,55 +268,107 @@ function describeConfigKey(key, mode = 'set', language = 'zh') {
   return mode === 'get' ? copy.describeGet(label, hint) : copy.describeSet(label, hint);
 }
 
-const SUB_AGENT_ROLES = ['planner', 'coder', 'reviewer', 'tester'];
+const SUB_AGENT_ROLES = ['planner', 'coder', 'reviewer', 'tester', 'summarizer'];
+const ROLE_TOOL_POLICY = {
+  planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node'],
+  coder: ['read', 'grep', 'list', 'edit', 'write', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'update_todos'],
+  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node'],
+  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search'],
+  summarizer: ['read', 'grep', 'list', 'glob', 'tool_search']
+};
 const SUB_AGENT_CONTEXT_MAX_MESSAGES = 4;
 const SUB_AGENT_CONTEXT_MAX_CHARS = 1200;
 const SUB_AGENT_EVIDENCE_MAX_ITEMS = 3;
 const SUB_AGENT_HANDOFF_MAX_ITEMS = 6;
 export function getSubAgentRolePrompt(role) {
   if (role === 'planner') {
-    return 'You are a planning sub-agent. Produce a concrete implementation plan with risks and verification.';
+    return [
+      'You are the planner in a multi-step agent pipeline.',
+      'Your job: inspect the codebase and produce a concrete, actionable plan.',
+      'Output concise findings and clear next steps. Do not write implementation code.',
+      'Do not summarize your own work or add closing remarks — just deliver the plan and stop.',
+      'IMPORTANT: Stop as soon as you have enough context to produce the plan. Do NOT keep exploring once the plan is clear — deliver it immediately.'
+    ].join('\n');
   }
   if (role === 'reviewer') {
     return [
-      'You are a review sub-agent. Focus on bugs, regressions, edge cases, and missing tests.',
-      'Start with the focused files or directories handed to you. Do not roam unrelated parts of the repo unless the handed-off evidence is insufficient.',
-      'Use this exact output structure:',
-      'Acceptance Status:',
-      '- <met|unmet|unverified> :: <acceptance checklist item or "none">',
+      'You are the reviewer in a multi-step agent pipeline.',
+      'Focus on bugs, regressions, edge cases, and missing tests in the files handed to you.',
+      'Do not roam unrelated parts of the repo unless the handed-off evidence is insufficient.',
+      'Output format — keep it short and direct:',
       'Findings:',
       '- <bug, regression, risk, or "none">',
       'Verified:',
       '- <what you checked>',
       'Not Verified:',
       '- <what remains uncertain>',
-      'Next Action:',
-      '- <single best next step>'
+      'Do not add a closing summary or "Next Action" — the pipeline handles what comes next.'
     ].join('\n');
   }
   if (role === 'tester') {
     return [
-      'You are a testing sub-agent. Focus on verification strategy, real test execution evidence, missing coverage, and whether the work was actually validated.',
-      'Prefer running concrete verification commands over only suggesting them.',
-      'Start with the focused files or directories handed to you. Verify those artifacts first before scanning the wider repo.',
-      'Use this exact output structure:',
-      'Acceptance Status:',
-      '- <met|unmet|unverified> :: <acceptance checklist item or "none">',
+      'You are the tester in a multi-step agent pipeline.',
+      'Run concrete verification commands. Prefer real execution over suggestions.',
+      'Verify the handed-off files first before scanning wider.',
+      'Output format — keep it short and direct:',
       'Verified:',
       '- <commands run and evidence>',
       'Not Verified:',
       '- <what could not be validated>',
       'Failures:',
       '- <failed command or "none">',
-      'Next Action:',
-      '- <single best next step>'
+      'Do not add a closing summary or "Next Action" — the pipeline handles what comes next.'
+    ].join('\n');
+  }
+  if (role === 'summarizer') {
+    return [
+      'You are the summarizer in a multi-step agent pipeline.',
+      'Your job is to synthesize the results of all prior steps into a concise, actionable final summary.',
+      'Do NOT re-analyze the codebase or make new tool calls unless the handed-off evidence is clearly insufficient.',
+      'Instead, read the accumulated step results in the plan file context provided to you.',
+      'Output format — keep it short and direct:',
+      'Summary:',
+      '- <overall result in 2-4 sentences>',
+      'Key Findings:',
+      '- <most important findings from all steps>',
+      'Actions Taken:',
+      '- <what was implemented/changed/verified>',
+      'Remaining Issues:',
+      '- <unresolved items or "none">',
+      'Recommended Next Steps:',
+      '- <concrete follow-up actions if any>',
+      'Do not add greetings, filler, or restate the goal. Deliver the summary and stop.'
     ].join('\n');
   }
   return [
-    'You are an execution sub-agent. Produce practical implementation guidance with code-level detail.',
-    'Stop when: you have produced the code change and verified it compiles/passes basic checks.',
-    'If blocked: report what blocked you and what you tried, then stop.'
+    'You are the coder in a multi-step agent pipeline.',
+    'Produce practical code changes with minimal explanation.',
+    'Do your work, briefly state what you changed, then stop.',
+    'Do not summarize the goal, recap the plan, or add closing remarks.'
   ].join('\n');
+}
+
+function buildPipelineStepGuidance({ role, stepIndex, totalSteps, isFirst, isLast, priorSteps }) {
+  const lines = [];
+  lines.push(`Pipeline position: step ${stepIndex + 1} of ${totalSteps}.`);
+  if (isFirst) {
+    lines.push('You are the first step. Your output sets direction for the rest of the pipeline.');
+  } else if (isLast) {
+    lines.push('You are the final step. After you, the pipeline will present a combined result to the user.');
+  } else {
+    lines.push('You are in the middle of the pipeline. Your output feeds into the next step.');
+  }
+  if (priorSteps.length > 0) {
+    const prev = priorSteps[priorSteps.length - 1];
+    lines.push(`Previous step was [${prev.role}]: ${prev.title}. Use its output as your starting point.`);
+  }
+  lines.push('Style rules:');
+  lines.push('- Be direct and action-oriented. No greetings, no summaries, no "In conclusion" or "To summarize".');
+  lines.push('- Output only what the next step needs to know. Skip obvious observations.');
+  if (isLast) {
+    lines.push('- Since you are the final step, give a concise overall verdict the user can act on.');
+  }
+  return lines.join('\n');
 }
 
 function buildSubAgentContextPacket(session) {
@@ -409,7 +465,7 @@ function extractLikelyPathsFromText(rawText, out, seen) {
 }
 
 function summarizeStepOutput(step) {
-  const text = trimInline(step?.output || step?.task || '', 220);
+  const text = trimInline(step?.output || step?.task || '', 800);
   return text || 'No concise output captured.';
 }
 
@@ -615,7 +671,8 @@ function buildAutoPlanPlannerGuidance() {
     '- Prefer the smallest local approach that satisfies the goal.',
     '- Do not output multiple alternative branches in the final plan.',
     '- Do not assume implementation should begin before the plan is coherent.',
-    '- Available sub-agent roles are planner, coder, reviewer, and tester. Use only the roles the task actually needs.',
+    '- Available sub-agent roles are planner, coder, reviewer, tester, and summarizer. Use only the roles the task actually needs.',
+    '- The summarizer role reads accumulated step results from the plan file and synthesizes a final summary. It does NOT re-analyze the codebase. Prefer summarizer as the final step for multi-step plans.',
     '- For implementation-heavy or risky changes, prefer adding review and/or verification steps.',
     '- For analysis, recommendation, or planning-only goals, you may omit reviewer/tester if they do not add value.',
     '- Prefer 3-5 steps total unless the task is clearly larger.',
@@ -660,6 +717,42 @@ async function readJsonSafe(targetPath) {
     return JSON.parse(await fs.readFile(targetPath, 'utf8'));
   } catch {
     return null;
+  }
+}
+
+async function appendStepResultToPlanFile(planFilePath, stepIndex, stepTitle, role, output, artifactPaths = []) {
+  if (!planFilePath) return;
+  try {
+    const separator = '\n\n---\n\n';
+    const timestamp = new Date().toISOString();
+    const artifactSection = Array.isArray(artifactPaths) && artifactPaths.length > 0
+      ? `\nArtifacts: ${artifactPaths.join(', ')}`
+      : '';
+    const entry = [
+      `## Step ${stepIndex + 1} Result: ${stepTitle}`,
+      `Role: ${role}`,
+      `Completed: ${timestamp}${artifactSection}`,
+      '',
+      output || '(no output)',
+      ''
+    ].join('\n');
+    await fs.appendFile(planFilePath, `${separator}${entry}`, 'utf8');
+  } catch {
+    // Non-fatal: plan file handoff is best-effort
+  }
+}
+
+async function readPlanFileAsContext(planFilePath, maxChars = 6000) {
+  if (!planFilePath) return '';
+  try {
+    const content = await fs.readFile(planFilePath, 'utf8');
+    if (!content || content.length <= maxChars) return content;
+    // Keep the beginning (plan structure) and the step results (at the end)
+    const headSize = Math.floor(maxChars * 0.3);
+    const tailSize = maxChars - headSize - 50;
+    return `${content.slice(0, headSize)}\n\n... [plan file truncated, showing most recent step results] ...\n\n${content.slice(-tailSize)}`;
+  } catch {
+    return '';
   }
 }
 
@@ -1144,6 +1237,13 @@ function buildAutoPlanSystemSummary(auto) {
   if (auto.failedTitles?.length) {
     lines.push(`Failed steps: ${auto.failedTitles.slice(0, 5).join(', ')}`);
   }
+  // Always include plan steps for TUI rendering
+  if (Array.isArray(auto.steps) && auto.steps.length > 0) {
+    lines.push('Plan Steps:');
+    auto.steps.forEach((s, idx) => {
+      lines.push(`  ${idx + 1}. [${s.role}] ${s.title}`);
+    });
+  }
   if (auto.approvalStatus === 'pending') {
     lines.push('Next: review the plan summary, then use /plan approve to start implementation, /plan auto run <goal> to plan and run in one step next time, or /plan stay to keep planning.');
   }
@@ -1491,8 +1591,10 @@ function effectiveMaxContextTokens(config) {
   return 32000;
 }
 
-function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode }) {
-  const currentContextTokens = estimateMessagesTokens(currentSession?.messages || []);
+function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession }) {
+  const parentTokens = estimateMessagesTokens(currentSession?.messages || []);
+  const subTokens = extraSession ? estimateMessagesTokens(extraSession.messages || []) : 0;
+  const currentContextTokens = parentTokens + subTokens;
   const maxContextTokens = effectiveMaxContextTokens(config);
   const contextUsagePct = maxContextTokens > 0 ? Math.min(100, Math.max(0, (currentContextTokens / maxContextTokens) * 100)) : 0;
   const snapshot = {
@@ -1675,7 +1777,11 @@ async function askModel({
   onAgentEvent,
   persistSession = true,
   executionMode,
-  alwaysAllowTools
+  alwaysAllowTools,
+  signal,
+  allowedTools,
+  maxSteps: maxStepsOverride,
+  skipAnalysisNudge = false
 }) {
   const maxContextTokens = effectiveMaxContextTokens(config);
   const triggerPct = Number(config.context?.preflight_trigger_pct || 92);
@@ -1736,9 +1842,9 @@ async function askModel({
     if (savePromise) await savePromise;
   };
 
-  if (persistSession && text) {
+  if (text) {
     session.messages.push(stampedMessage('user', text));
-    await saveSession(session);
+    if (persistSession) await saveSession(session);
   }
 
   const projectContextSnippet = await buildProjectContextSnippet(process.cwd(), text).catch(() => '');
@@ -1758,23 +1864,29 @@ async function askModel({
     }
   });
 
+  const filteredDefinitions = Array.isArray(allowedTools)
+    ? definitions.filter((t) => allowedTools.includes(t.function?.name || t.name))
+    : definitions;
+  const filteredHandlers = Array.isArray(allowedTools)
+    ? Object.fromEntries(Object.entries(handlers).filter(([name]) => allowedTools.includes(name)))
+    : handlers;
+  const filteredDeferred = Array.isArray(allowedTools)
+    ? Object.fromEntries(Object.entries(deferredDefinitions).filter(([name]) => allowedTools.includes(name)))
+    : deferredDefinitions;
+
   let activeAssistantIndex = -1;
   const wrappedAgentEvent = (event) => {
-    if (!persistSession) {
-      if (onAgentEvent) onAgentEvent(event);
-      return;
-    }
-
+    // Always accumulate messages in session (for token tracking), only save when persisting
     if (event?.type === 'assistant:start') {
       session.messages.push(stampedMessage('assistant', ''));
       activeAssistantIndex = session.messages.length - 1;
-      scheduleSessionSave();
+      if (persistSession) scheduleSessionSave();
     } else if (event?.type === 'assistant:delta') {
       if (activeAssistantIndex >= 0 && session.messages[activeAssistantIndex]) {
         const current = session.messages[activeAssistantIndex];
         current.content = `${current.content || ''}${event.text || ''}`;
         current.at = new Date().toISOString();
-        scheduleSessionSave();
+        if (persistSession) scheduleSessionSave();
       }
     } else if (event?.type === 'assistant:response') {
       if (activeAssistantIndex >= 0 && session.messages[activeAssistantIndex]) {
@@ -1790,7 +1902,7 @@ async function askModel({
           current.tool_calls = event.assistantMessage.tool_calls;
         }
         current.at = new Date().toISOString();
-        scheduleSessionSave();
+        if (persistSession) scheduleSessionSave();
       }
       activeAssistantIndex = -1;
     } else if (event?.type === 'tool:result') {
@@ -1799,7 +1911,7 @@ async function askModel({
           tool_call_id: event.id || ''
         })
       );
-      scheduleSessionSave();
+      if (persistSession) scheduleSessionSave();
     }
 
     if (onAgentEvent) onAgentEvent(event);
@@ -1810,9 +1922,9 @@ async function askModel({
     systemPrompt: effectiveSystemPrompt,
     userPrompt: loopUserPrompt,
     model: model || config.model.name,
-    maxSteps: Number(config.execution?.max_steps || 16),
-    toolDefinitions: definitions,
-    toolHandlers: handlers,
+    maxSteps: maxStepsOverride ?? Number(config.execution?.max_steps || 16),
+    toolDefinitions: filteredDefinitions,
+    toolHandlers: filteredHandlers,
     initialMessages: toOpenAIMessages(session.messages),
     onEvent: wrappedAgentEvent,
     executionMode: executionMode || config.execution?.mode || 'auto',
@@ -1820,7 +1932,9 @@ async function askModel({
       alwaysAllowTools || config.execution?.always_allow_tools || ['run', 'read', 'write'],
     toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
     toolFormatters: formatters,
-    deferredDefinitions,
+    deferredDefinitions: filteredDeferred,
+    signal,
+    skipAnalysisNudge,
     requestCompletion: async ({ messages, tools, model: selectedModel }) => {
       let started = false;
       const startAssistantStream = () => {
@@ -1839,6 +1953,7 @@ async function askModel({
         tools,
         timeoutMs: config.gateway.timeout_ms || 90000,
         maxRetries: config.gateway.max_retries ?? 2,
+        signal,
         onTextDelta: (delta) => {
           startAssistantStream();
           if (onAgentEvent) onAgentEvent({ type: 'assistant:delta', text: delta });
@@ -1869,7 +1984,7 @@ async function askModel({
       // keep chat usable even if pruning fails
     }
   }
-  return { text: loopResult.text };
+  return { text: loopResult.text, aborted: !!loopResult.aborted };
 }
 
 async function runSubAgentTask({
@@ -1882,7 +1997,10 @@ async function runSubAgentTask({
   model,
   systemPrompt,
   onAgentEvent,
-  extraRolePrompt = ''
+  extraRolePrompt = '',
+  signal,
+  onSessionActive,
+  planFileContext = ''
 }) {
   const subSession = { id: `sub-${Date.now()}`, messages: [] };
   const rolePrompt = getSubAgentRolePrompt(role);
@@ -1893,11 +2011,15 @@ async function runSubAgentTask({
   const focusedTaskNote = buildFocusedTaskNote(role, handoffFocusPaths);
   const goalRequirementPacket = buildGoalRequirementPacket(goal, role);
   const verificationPacket = role === 'tester' ? await buildTesterVerificationPacket(handoffFocusPaths) : '';
+  const planFileSection = planFileContext
+    ? `Accumulated plan file context (results from prior steps):\n${planFileContext}`
+    : '';
   const scopedTask = [
     contextPacket,
     goalRequirementPacket,
     evidencePacket,
     handoffPacket,
+    planFileSection,
     verificationPacket,
     focusedTaskNote,
     'Task:',
@@ -1929,6 +2051,8 @@ async function runSubAgentTask({
     }
     if (onAgentEvent) onAgentEvent(evt);
   };
+  const roleAllowedTools = ROLE_TOOL_POLICY[role];
+  if (onSessionActive) onSessionActive(subSession);
   const subResult = await askModel({
     text: scopedTask,
     session: subSession,
@@ -1937,7 +2061,10 @@ async function runSubAgentTask({
     systemPrompt: `${systemPrompt}\n${rolePrompt}${extraRolePrompt ? `\n${extraRolePrompt}` : ''}`,
     onAgentEvent: wrappedOnAgentEvent,
     persistSession: false,
-    executionMode: 'auto'
+    executionMode: 'auto',
+    allowedTools: roleAllowedTools,
+    skipAnalysisNudge: true,
+    signal
   });
   const text = subResult.text || '';
   const hasErrorLine = /(^|\n)\s*error\s*:/i.test(text);
@@ -1947,6 +2074,116 @@ async function runSubAgentTask({
     toolErrorCount,
     hasErrorLine,
     artifactPaths: artifactPaths.slice(0, SUB_AGENT_HANDOFF_MAX_ITEMS)
+  };
+}
+
+async function executePlanWithSubAgents({
+  planState,
+  parentSession,
+  config,
+  model,
+  systemPrompt,
+  onAgentEvent,
+  signal,
+  onSubSessionActive
+}) {
+  const steps = Array.isArray(planState.steps) ? planState.steps : [];
+  const goal = planState.goal || '';
+  const planFilePath = planState.filePath || '';
+  if (steps.length === 0) {
+    return { text: '(no steps to execute)', aborted: false };
+  }
+
+  const priorSteps = [];
+  const results = [];
+
+  // Emit structured plan steps so TUI can show all steps with real role/title
+  if (onAgentEvent) {
+    onAgentEvent({
+      type: 'plan:steps',
+      steps: steps.map((s, idx) => ({ index: idx + 1, role: s.role, title: s.title, status: 'pending' }))
+    });
+  }
+
+  for (let i = 0; i < steps.length; i += 1) {
+    const step = steps[i];
+    if (signal?.aborted) break;
+
+    if (onAgentEvent) {
+      onAgentEvent({
+        type: 'assistant:delta',
+        text: `\n[plan] Step ${i + 1}/${steps.length} -> ${step.role}: ${step.title}\n`
+      });
+    }
+
+    // Read accumulated plan file context from prior step results (skip for step 0)
+    let planFileContext = '';
+    if (i > 0 && planFilePath) {
+      planFileContext = await readPlanFileAsContext(planFilePath);
+    }
+
+    const stepGuidance = buildPipelineStepGuidance({ role: step.role, stepIndex: i, totalSteps: steps.length, isFirst: i === 0, isLast: i === steps.length - 1, priorSteps });
+    const output = await runSubAgentTask({
+      role: step.role,
+      task: step.task,
+      goal,
+      priorSteps,
+      parentSession,
+      config,
+      model,
+      systemPrompt,
+      onAgentEvent,
+      extraRolePrompt: stepGuidance,
+      signal,
+      onSessionActive: onSubSessionActive,
+      planFileContext
+    });
+
+    const stepRecord = {
+      role: step.role,
+      title: step.title,
+      task: step.task,
+      output: output.text || '',
+      blockedCount: output.blockedCount || 0,
+      toolErrorCount: output.toolErrorCount || 0,
+      hasErrorLine: output.hasErrorLine || false,
+      artifactPaths: output.artifactPaths || [],
+      failed: output.hasErrorLine || (output.toolErrorCount || 0) > 2
+    };
+    priorSteps.push(stepRecord);
+    results.push(stepRecord);
+
+    // Write step result to plan file for subsequent steps to read
+    if (planFilePath) {
+      await appendStepResultToPlanFile(
+        planFilePath,
+        i,
+        step.title,
+        step.role,
+        stepRecord.output,
+        stepRecord.artifactPaths
+      );
+    }
+  }
+
+  const summaryLines = [];
+  for (let i = 0; i < results.length; i += 1) {
+    const r = results[i];
+    const tag = r.failed ? 'FAILED' : 'DONE';
+    summaryLines.push(`[${tag}] ${r.role}: ${r.title}`);
+    summaryLines.push(r.output.slice(0, 400));
+    summaryLines.push('');
+  }
+
+  const failedSteps = results.filter((r) => r.failed);
+  if (failedSteps.length > 0) {
+    summaryLines.push(`${failedSteps.length} step(s) had errors.`);
+  }
+
+  return {
+    text: summaryLines.join('\n'),
+    aborted: !!signal?.aborted,
+    results
   };
 }
 
@@ -1975,7 +2212,7 @@ async function buildAutoPlanAndRun({
     '- If the task is purely to inspect the current project and suggest improvements, a lean 2-step or 3-step plan is preferred.',
     '- Example advisory roles: planner -> inspect project shape, coder -> synthesize findings and prioritized recommendations.',
     '- Example implementation roles: planner -> inspect target area, coder -> implement change, tester -> verify changed behavior.',
-    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester","task":"..."}]}. No markdown.'
+    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.'
   ].join('\n');
   let autoPlan = {
     summary: `Auto plan for: ${goal}`,
@@ -2000,8 +2237,9 @@ async function buildAutoPlanAndRun({
           role: 'user',
           content: [
             'Create an execution plan and assign best sub-agent role for each step.',
-            'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester","task":"..."}]}. No markdown.',
-            'The available roles are planner, coder, reviewer, and tester. Use only the roles the task actually needs.',
+            'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.',
+            'The available roles are planner, coder, reviewer, tester, and summarizer. Use only the roles the task actually needs.',
+            'The summarizer role synthesizes prior step results without re-analyzing. Use it as the final step for plans with 3+ steps.',
             `Task class: ${normalizedTaskClass}`,
             'Before choosing roles, decide whether the request is advisory, implementation, or verification-heavy.',
             requirementPacket,
@@ -2024,16 +2262,6 @@ async function buildAutoPlanAndRun({
   } catch (err) {
     planningError = String(err?.message || err || 'planning failed');
     autoPlan = buildFallbackAutoPlan(goal);
-  }
-
-  for (let i = 0; i < autoPlan.steps.length; i += 1) {
-    const step = autoPlan.steps[i];
-    if (onAgentEvent) {
-      onAgentEvent({
-        type: 'assistant:delta',
-        text: `\n[plan] Step ${i + 1}/${autoPlan.steps.length} -> ${step.role}: ${step.title}\n`
-      });
-    }
   }
 
   const finalSummary = planningError
@@ -2249,7 +2477,8 @@ export async function createChatRuntime({
       { name: 'memory', description: completionCopy.commands.memory },
       { name: 'history', description: completionCopy.commands.history },
       { name: 'debug', description: completionCopy.commands.debug },
-      { name: 'retry', description: completionCopy.commands.retry }
+      { name: 'retry', description: completionCopy.commands.retry },
+      { name: 'stop', description: completionCopy.commands.stop }
     ];
     const out = [];
     for (const cmd of commands.values()) {
@@ -2293,7 +2522,7 @@ export async function createChatRuntime({
   ];
   const specTemplates = ['/spec <topic>'];
   const planTemplates = ['/plan <goal>', '/plan auto <goal>', '/plan auto run <goal>', '/plan approve', '/plan from-spec <spec-path?>'];
-  const agentTemplates = ['/agents list', '/agents run planner <task>', '/agents run coder <task>', '/agents run reviewer <task>', '/agents run tester <task>'];
+  const agentTemplates = ['/agents list', '/agents run planner <task>', '/agents run coder <task>', '/agents run reviewer <task>', '/agents run tester <task>', '/agents run summarizer <task>'];
   const debugTemplates = ['/debug keys on', '/debug keys off', '/debug keys status'];
   const compactTemplates = compactOptions.map((opt) => `/compact ${opt}`);
   const slashTemplates = [
@@ -2523,7 +2752,7 @@ export async function createChatRuntime({
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         const sub = tokens[1] || '';
         if (sub === 'run') {
-          return ['planner', 'coder', 'reviewer', 'tester']
+          return ['planner', 'coder', 'reviewer', 'tester', 'summarizer']
             .map((r) => registerSuggestion(`/agents run ${r} `, completionCopy.generic.agentCommand));
         }
         return ['list', 'run']
@@ -2640,7 +2869,14 @@ export async function createChatRuntime({
     return localCommands.has(command);
   };
 
+  // 当前的 AbortController 引用，用于中止正在进行的回答
+  let activeAbortController = null;
+  let activeSubSession = null;
+
   const submit = async (line, onAgentEvent) => {
+    // 每次提交创建新的 AbortController，替代旧的
+    activeAbortController = new AbortController();
+    const { signal } = activeAbortController;
     const activeReplySystemPrompt = await buildActiveSystemPrompt();
     try {
       await appendInputHistory(line);
@@ -2660,7 +2896,7 @@ export async function createChatRuntime({
       if (parsedInput.command === 'help') {
         return {
           type: 'system',
-          text: 'Commands: /help /exit /commands /status /mode /compact /checkpoint /spec /plan /agents /config /memory /history /debug /retry /<custom> !<shell>'
+          text: 'Commands: /help /exit /stop /commands /status /mode /compact /checkpoint /spec /plan /agents /config /memory /history /debug /retry /<custom> !<shell>'
         };
       }
       if (parsedInput.command === 'status') {
@@ -2778,30 +3014,30 @@ export async function createChatRuntime({
             taskClass: classifyPlanTaskClass(goal)
           });
           if (runImmediately) {
-            const result = await askModel({
-              text: buildApprovedPlanExecutionPrompt(
-                {
-                  status: 'approved',
-                  source: 'auto',
-                  goal,
-                  filePath: auto.filePath,
-                  summary: auto.summary || '',
-                  finalSummary: auto.finalSummary || auto.summary || '',
-                  steps: Array.isArray(auto.steps) ? auto.steps : []
-                },
-                '/plan auto run'
-              ),
-              session: currentSession,
+            const planState = {
+              status: 'approved',
+              source: 'auto',
+              goal,
+              filePath: auto.filePath,
+              summary: auto.summary || '',
+              finalSummary: auto.finalSummary || auto.summary || '',
+              steps: Array.isArray(auto.steps) ? auto.steps : []
+            };
+            const result = await executePlanWithSubAgents({
+              planState,
+              parentSession: currentSession,
               config,
               model,
-              systemPrompt: activeReplySystemPrompt,
+              systemPrompt: baseSystemPrompt,
               onAgentEvent,
-              executionMode: 'auto'
+              signal,
+              onSubSessionActive: (sub) => { activeSubSession = sub; }
             });
+            activeSubSession = null;
             currentSession.planState = null;
             executionMode = 'auto';
             await saveSession(currentSession);
-            return { type: 'assistant', text: result.text };
+            return { type: 'assistant', text: result.text, aborted: !!result.aborted };
           }
           currentSession.planState = {
             status: 'pending_approval',
@@ -2825,19 +3061,21 @@ export async function createChatRuntime({
             return { type: 'system', text: 'No pending plan approval. Use /plan auto <goal> or /plan <goal> first.' };
           }
           const planState = { ...currentSession.planState };
-          const result = await askModel({
-            text: buildApprovedPlanExecutionPrompt(planState, '/plan approve'),
-            session: currentSession,
+          const result = await executePlanWithSubAgents({
+            planState,
+            parentSession: currentSession,
             config,
             model,
-            systemPrompt: activeReplySystemPrompt,
+            systemPrompt: baseSystemPrompt,
             onAgentEvent,
-            executionMode: 'auto'
+            signal,
+            onSubSessionActive: (sub) => { activeSubSession = sub; }
           });
+          activeSubSession = null;
           currentSession.planState = null;
           executionMode = 'auto';
           await saveSession(currentSession);
-          return { type: 'assistant', text: result.text };
+          return { type: 'assistant', text: result.text, aborted: !!result.aborted };
         }
         if (sub === 'stay') {
           if (!hasPendingPlanApproval(currentSession)) {
@@ -2900,7 +3138,7 @@ export async function createChatRuntime({
         if (sub === 'list') {
           return {
             type: 'system',
-            text: 'Sub-agent roles: planner, coder, reviewer, tester\nUse: /agents run <role> <task>'
+            text: 'Sub-agent roles: planner, coder, reviewer, tester, summarizer\nUse: /agents run <role> <task>'
           };
         }
         if (sub === 'run') {
@@ -2908,7 +3146,7 @@ export async function createChatRuntime({
           const task = parsedInput.args.slice(2).join(' ').trim();
           if (!role || !task) return { type: 'system', text: 'Usage: /agents run <role> <task>' };
           if (!SUB_AGENT_ROLES.includes(role)) {
-            return { type: 'system', text: 'Unknown role. Allowed: planner|coder|reviewer|tester' };
+            return { type: 'system', text: 'Unknown role. Allowed: planner|coder|reviewer|tester|summarizer' };
           }
           const output = await runSubAgentTask({
             role,
@@ -3038,9 +3276,10 @@ export async function createChatRuntime({
           model,
           systemPrompt: activeReplySystemPrompt,
           onAgentEvent,
-          executionMode
+          executionMode,
+          signal
         });
-        return { type: 'assistant', text: result.text };
+        return { type: 'assistant', text: result.text, aborted: !!result.aborted };
       }
       if (parsedInput.command === 'config') {
         const sub = parsedInput.args[0];
@@ -3174,7 +3413,8 @@ export async function createChatRuntime({
           model,
           systemPrompt: activeReplySystemPrompt,
           onAgentEvent,
-          executionMode
+          executionMode,
+          signal
         });
       } catch (error) {
         if (custom.metadata.type === 'skill' && onAgentEvent) {
@@ -3195,19 +3435,21 @@ export async function createChatRuntime({
     if (hasPendingPlanApproval(currentSession)) {
       if (isApprovalText(parsedInput.text)) {
         const planState = { ...currentSession.planState };
-        const result = await askModel({
-          text: buildApprovedPlanExecutionPrompt(planState, parsedInput.text),
-          session: currentSession,
+        const result = await executePlanWithSubAgents({
+          planState,
+          parentSession: currentSession,
           config,
           model,
-          systemPrompt: activeReplySystemPrompt,
+          systemPrompt: baseSystemPrompt,
           onAgentEvent,
-          executionMode: 'auto'
+          signal,
+          onSubSessionActive: (sub) => { activeSubSession = sub; }
         });
+        activeSubSession = null;
         currentSession.planState = null;
         executionMode = 'auto';
         await saveSession(currentSession);
-        return { type: 'assistant', text: result.text };
+        return { type: 'assistant', text: result.text, aborted: !!result.aborted };
       }
       if (isStayInPlanText(parsedInput.text)) {
         const text = buildPendingPlanApprovalMessage(currentSession.planState);
@@ -3293,9 +3535,10 @@ export async function createChatRuntime({
       model,
       systemPrompt: routedSystemPrompt,
       onAgentEvent,
-      executionMode
+      executionMode,
+      signal
     });
-    return { type: 'assistant', text: result.text };
+    return { type: 'assistant', text: result.text, aborted: !!result.aborted };
   };
 
   return {
@@ -3303,6 +3546,13 @@ export async function createChatRuntime({
     getCompletionOptions,
     isImmediateLocalInput,
     submit,
+    abort: () => {
+      if (activeAbortController && !activeAbortController.signal.aborted) {
+        activeAbortController.abort();
+        return true;
+      }
+      return false;
+    },
     consumeStartupEvents: () => startupEvents.splice(0, startupEvents.length),
     getInputHistory: () => loadInputHistory(),
     getCurrentSessionId: () => currentSession.id,
@@ -3311,7 +3561,8 @@ export async function createChatRuntime({
         currentSession,
         config,
         model,
-        executionMode
+        executionMode,
+        extraSession: activeSubSession
       })
   };
 }

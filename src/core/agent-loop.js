@@ -314,7 +314,7 @@ export function checkReadDedup(filePath, startLine, endLine, mtimeMs) {
 
 const READ_ONLY_TOOLS = new Set([
   'read', 'grep', 'glob', 'list',
-  'ast_query', 'read_ast_node', 'generate_diff',
+  'ast_query', 'read_ast_node',
   'list_background_tasks', 'get_background_task'
 ]);
 
@@ -521,9 +521,9 @@ function isRelevantSourcePath(filePath, state) {
 
 function blockedExplorationReason(toolName, args, state) {
   if (!state.active) return '';
-  if (!state.indexQueried && toolName !== 'query_project_index') {
-    return 'Use query_project_index before broad repository exploration so the next reads stay focused on relevant source files.';
-  }
+
+  // Always note when query_project_index is used, but never force it
+  if (toolName === 'query_project_index') return '';
 
   const target = normalizePath(String(args?.path || args?.pattern || args?.query || '')).trim();
   const top = topLevelPath(target);
@@ -531,9 +531,6 @@ function blockedExplorationReason(toolName, args, state) {
 
   if (['skills', 'souls', 'templates', '.codemini', '.codemini-project'].includes(top)) {
     return `Skip ${top}/ for broad repository analysis unless the user explicitly asks for it. Inspect relevant source files first.`;
-  }
-  if (top === 'tests' && state.relevantSourceReads.size < 2) {
-    return 'Inspect the next relevant source files before reading tests. Broad analysis should be grounded in production code first.';
   }
   return '';
 }
@@ -608,20 +605,12 @@ function formatToolDisplayName(name, args) {
   if (name === 'update_todos') {
     return 'update_todos';
   }
-  if (name === 'patch') {
-    const target = trimInline(args?.path || args?.file || args?.patch || '', 96) || '.';
-    return `patch(${target})`;
-  }
   if (name === 'list_background_tasks') {
     return name;
   }
   if (name === 'get_background_task' || name === 'stop_background_task') {
     const taskId = trimInline(args?.task_id || args?.taskId || '', 96);
     return taskId ? `${name}(${taskId})` : name;
-  }
-  if (name === 'read' || name === 'write' || name === 'run' || name === 'grep' || name === 'glob' || name === 'list' || name === 'edit' || name === 'patch' || name === 'generate_diff') {
-    const target = trimInline(args?.path || args?.query || args?.symbol || '', 96);
-    return target ? `${name}(${target})` : name;
   }
   return name;
 }
@@ -656,7 +645,9 @@ export async function runAgentLoop({
   requestToolApproval,
   toolResultMaxChars = 12000,
   toolFormatters = {},
-  deferredDefinitions = {}
+  deferredDefinitions = {},
+  signal,
+  skipAnalysisNudge = false
 }) {
   const messages = [];
   if (systemPrompt) {
@@ -679,12 +670,24 @@ export async function runAgentLoop({
   const activeTools = [...toolDefinitions];
 
   for (let step = 0; step < maxSteps; step += 1) {
+    // 检查是否已被用户中止
+    if (signal?.aborted) {
+      if (onEvent) onEvent({ type: 'aborted', step: step + 1 });
+      break;
+    }
     if (onEvent) onEvent({ type: 'step:start', step: step + 1 });
     const completion = await requestCompletion({
       model,
       messages,
-      tools: activeTools
+      tools: activeTools,
+      signal
     });
+
+    // 流式请求完成后再次检查中止状态
+    if (signal?.aborted) {
+      if (onEvent) onEvent({ type: 'aborted', step: step + 1 });
+      break;
+    }
 
     if (completion?.incomplete) {
       continue;
@@ -720,7 +723,7 @@ export async function runAgentLoop({
     }
 
     if (toolCalls.length === 0) {
-      if (needsMoreAnalysisEvidence(analysisGuard) && pendingSummaryNudges < 2) {
+      if (!skipAnalysisNudge && needsMoreAnalysisEvidence(analysisGuard) && pendingSummaryNudges < 2) {
         pendingSummaryNudges += 1;
         messages.push({
           role: 'user',
@@ -729,7 +732,7 @@ export async function runAgentLoop({
         });
         continue;
       }
-      if (shouldAskForConcreteFinalAnswer(assistantText, messages.slice(0, -1)) && pendingSummaryNudges < 2) {
+      if (!skipAnalysisNudge && shouldAskForConcreteFinalAnswer(assistantText, messages.slice(0, -1)) && pendingSummaryNudges < 2) {
         pendingSummaryNudges += 1;
         messages.push({
           role: 'user',
@@ -908,6 +911,17 @@ export async function runAgentLoop({
         onEvent({ type: 'tool:result', name: displayName, id: call.id, arguments: args, content: entry.content });
       }
     }
+  }
+
+  // 如果被用户中止，返回已有内容并标记
+  if (signal?.aborted) {
+    const fallback = lastAssistantText || '';
+    return {
+      text: fallback,
+      messages,
+      steps: maxSteps,
+      aborted: true
+    };
   }
 
   const fallback = lastAssistantText || 'Stopped before final response.';

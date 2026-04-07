@@ -44,8 +44,6 @@ const DEFAULT_CONFIG = {
       'edit',
       'write',
       'run',
-      'patch',
-      'generate_diff',
       'list_background_tasks',
       'get_background_task',
       'stop_background_task'
@@ -151,7 +149,6 @@ function normalizePolicyLists(config) {
       'edit',
       'write',
       'run',
-      'generate_diff',
       'list_background_tasks',
       'get_background_task',
       'stop_background_task',

@@ -370,14 +370,27 @@ export async function createChatCompletionStream({
   onTextDelta,
   onToolCallDelta,
   timeoutMs = 90000,
-  maxRetries = 2
+  maxRetries = 2,
+  signal: externalSignal
 }) {
+  // 合并超时信号与外部中止信号，任一触发都会中止请求
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  timeoutSignal.addEventListener('abort', onAbort, { once: true });
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener('abort', onAbort, { once: true });
+    }
+  }
   const payload = buildPayload({ model, temperature, messages, tools, stream: true });
   const response = await fetch(buildChatCompletionsUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(timeoutMs)
+    signal: controller.signal
   });
   if (!response.ok || !response.body) {
     const text = await response.text().catch(() => '');

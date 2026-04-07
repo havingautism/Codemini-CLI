@@ -162,7 +162,6 @@ Use update_todos with these rules:
 Some tools are loaded on demand through tool_search. Common examples:
 - glob for pattern-based file lookup
 - ast_query and read_ast_node for advanced AST-scoped reads and edits
-- generate_diff and patch for explicit diff workflows
 - list_background_tasks, get_background_task, and stop_background_task for managing long-running background commands
 - remember_user, remember_global, remember_project, list_memory, search_memory, and forget_memory for persistent memory operations
 

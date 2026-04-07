@@ -16,9 +16,6 @@ export function describeFileToolActivity(copy, parsed, options = {}) {
   if (parsed.base === 'write') {
     return describePathTool(copy, parsed, { done: copy.toolActivity.doneWrite, doing: copy.toolActivity.doingWrite }, options);
   }
-  if (parsed.base === 'patch') {
-    return describePathTool(copy, parsed, { done: copy.toolActivity.donePatch, doing: copy.toolActivity.doingPatch }, options);
-  }
   if (parsed.base === 'list') {
     return describePathTool(copy, parsed, { done: copy.toolActivity.doneList, doing: copy.toolActivity.doingList }, options);
   }
