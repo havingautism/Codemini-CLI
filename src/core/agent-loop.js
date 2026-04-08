@@ -361,11 +361,12 @@ export function summarizeToolResult(result) {
           : start;
       const rangeText = start > 0 && end >= start ? ` lines ${start}-${end}` : '';
       const totalText = total > 0 ? ` of ${total}` : '';
+      const enclosingText = obj.enclosing_symbol ? ` in ${obj.enclosing_symbol}` : '';
       const errorText = obj.error ? ` (${trimInline(obj.error, 64)})` : '';
       const truncatedText = obj.truncated ? ' [truncated]' : '';
       return phase === 'metadata'
         ? `metadata for ${p}${rangeText}${totalText}${errorText}`
-        : `content from ${p}${rangeText}${totalText}${truncatedText}`;
+        : `content from ${p}${rangeText}${totalText}${enclosingText}${truncatedText}`;
     }
     if ('stdout' in obj || 'stderr' in obj || 'code' in obj) {
       const stdout = trimInline(obj.stdout || '', 96);

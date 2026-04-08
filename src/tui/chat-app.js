@@ -3924,6 +3924,10 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     }
 
     if (key.ctrl && value === 'c') {
+      if (busy && typeof runtime.abort === 'function') {
+        runtime.abort();
+        return;
+      }
       exit();
       return;
     }

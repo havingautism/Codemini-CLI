@@ -5,13 +5,13 @@
 
 ## English
 
-CodeMini CLI is a terminal coding assistant built for teams that want a smaller, sharper, and more controllable agent experience.
+CodeMini CLI is a terminal coding assistant built for teams that want a sharper, more controllable, and model-agnostic agent experience.
 
 It is designed around a deliberate idea: most coding workflows do not need a huge default tool surface or unrestricted shell behavior. Instead, CodeMini starts with a compact core, loads advanced tools on demand, and keeps the agent grounded in structured code operations, session todos, lightweight project indexing, and shell-aware safety rules.
 
 ### Why CodeMini CLI
 
-- Built for practical coding workflows, especially when smaller or internal models are part of the stack
+- Built for practical coding workflows across both frontier-scale and smaller/internal models
 - Keeps the default tool list intentionally small, with additional tools discoverable through `tool_search`
 - Treats Windows and PowerShell as first-class environments instead of Linux-only afterthoughts
 - Prefers structured file and code tools over noisy shell fallbacks
@@ -22,7 +22,7 @@ It is designed around a deliberate idea: most coding workflows do not need a hug
 - A coding CLI that is fast to steer
 - A tool surface that is easier to audit and reason about
 - A TUI that makes execution visible instead of hiding agent state
-- A workflow that stays useful even when the model is not frontier-scale
+- A workflow that stays reliable across both large and small models
 
 ### Core Capabilities
 
@@ -68,7 +68,7 @@ It is designed around a deliberate idea: most coding workflows do not need a hug
 ```bash
 codemini config set gateway.base_url http://your-internal-gateway/v1
 codemini config set gateway.api_key your_token
-codemini config set model.name your-30b-model
+codemini config set model.name your-preferred-model
 codemini config set shell.default powershell
 codemini config set ui.reply_language zh
 codemini doctor
@@ -121,11 +121,12 @@ CodeMini CLI maintains a lightweight project index inside `.codemini-project/`:
 - `file-index.json`
   per-file structure such as imports, exports, functions, classes, and lightweight symbol hints
 
-The index is initialized when entering a project and refreshed incrementally after edits, writes, and patches. It is intended to be factual, compact, and cheap to keep current.
+The index is initialized when entering a project and refreshed incrementally after edits, writes, and patches. It is intended to be factual, compact, and inexpensive to keep current.
 
 ### Data Layout
 
-- Session and project workspace state: `.codemini/`
+- Global session state: `<base-config-dir>/sessions/`
+- Project workspace state: `.codemini/`
 - Lightweight project index: `.codemini-project/`
 - Bundled repo skills: `skills/<name>/SKILL.md`
 - Project-scoped skills: `.codemini/skills/<name>/SKILL.md`
@@ -141,15 +142,15 @@ Base config directory resolution order:
 
 ### Documentation
 
-- Operator guide and workflow notes: [OPERATIONS.md](/mnt/e/Git%20Projects/qurio-coder/OPERATIONS.md)
-- Packaging and deployment: [deployment.md](/mnt/e/Git%20Projects/qurio-coder/deployment.md)
-- Release process: [RELEASE_CHECKLIST.md](/mnt/e/Git%20Projects/qurio-coder/RELEASE_CHECKLIST.md)
+- Operator guide and workflow notes: [OPERATIONS.md](./OPERATIONS.md)
+- Packaging and deployment: [deployment.md](./deployment.md)
+- Release process: [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md)
 
 ### Good Fit
 
 CodeMini CLI is a strong fit if you want:
 
-- a coding CLI that behaves well with smaller models
+- a coding CLI that behaves well with both large and small models
 - a controlled tool surface instead of an everything-is-exposed agent
 - Windows and PowerShell support that feels intentional
 - a TUI that shows plans, todos, tools, and progress clearly
@@ -161,11 +162,11 @@ CodeMini CLI is a strong fit if you want:
 
 CodeMini CLI 是一个面向真实开发环境的终端代码助手，目标不是“把所有能力都塞进默认界面”，而是做一个更克制、更清晰、更容易掌控的 coding agent CLI。
 
-它围绕一个很明确的原则来设计：默认工具面尽量小，常用路径尽量顺，复杂能力按需加载。这样既更适合小模型，也更适合团队在内部环境里做稳定、可控的日常开发协作。
+它围绕一个很明确的原则来设计：默认工具面尽量小，常用路径尽量顺，复杂能力按需加载。这样可以同时兼顾大模型与小模型，也适合团队在内部环境里做稳定、可控的日常开发协作。
 
 ### 为什么是它
 
-- 面向小模型和内部模型工作流优化，而不是默认假设超大模型能力
+- 面向大小模型协同的工作流优化：既不默认依赖超大模型，也不牺牲大模型能力上限
 - 默认工具面刻意精简，需要更高级能力时再通过 `tool_search` 加载
 - 把 Windows 和 PowerShell 当作一等公民来支持
 - 优先走结构化代码工具，而不是让模型长期泡在嘈杂 shell 输出里
@@ -222,7 +223,7 @@ CodeMini CLI 是一个面向真实开发环境的终端代码助手，目标不�
 ```bash
 codemini config set gateway.base_url http://your-internal-gateway/v1
 codemini config set gateway.api_key your_token
-codemini config set model.name your-30b-model
+codemini config set model.name your-preferred-model
 codemini config set shell.default powershell
 codemini config set ui.reply_language zh
 codemini doctor
@@ -279,7 +280,8 @@ CodeMini CLI 会在 `.codemini-project/` 下维护一份轻量项目索引：
 
 ### 数据目录
 
-- 会话和项目工作区状态：`.codemini/`
+- 全局会话状态：`<base-config-dir>/sessions/`
+- 项目工作区状态：`.codemini/`
 - 轻量项目索引：`.codemini-project/`
 - 仓库内置 skill：`skills/<name>/SKILL.md`
 - 项目级 skill：`.codemini/skills/<name>/SKILL.md`
@@ -295,15 +297,15 @@ CodeMini CLI 会在 `.codemini-project/` 下维护一份轻量项目索引：
 
 ### 文档入口
 
-- 操作手册与工作流说明：[OPERATIONS.md](/mnt/e/Git%20Projects/qurio-coder/OPERATIONS.md)
-- 打包与部署文档：[deployment.md](/mnt/e/Git%20Projects/qurio-coder/deployment.md)
-- 发布流程：[RELEASE_CHECKLIST.md](/mnt/e/Git%20Projects/qurio-coder/RELEASE_CHECKLIST.md)
+- 操作手册与工作流说明：[OPERATIONS.md](./OPERATIONS.md)
+- 打包与部署文档：[deployment.md](./deployment.md)
+- 发布流程：[RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md)
 
 ### 适合谁
 
 如果你想要的是下面这种工具，CodeMini CLI 会很合适：
 
-- 能和小模型稳定协作的 coding CLI
+- 能同时和大模型、小模型稳定协作的 coding CLI
 - 更克制、更可控的工具暴露方式
 - 真正重视 Windows / PowerShell 体验的终端工作流
 - 能把计划、待办、工具调用和执行状态展示清楚的 TUI

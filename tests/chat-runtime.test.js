@@ -7,7 +7,7 @@ import path from 'node:path';
 import { createChatRuntime } from '../src/core/chat-runtime.js';
 import { loadConfig } from '../src/core/config-store.js';
 import { listMemories, rememberMemory } from '../src/core/memory-store.js';
-import { saveSession } from '../src/core/session-store.js';
+import { loadSession, saveSession } from '../src/core/session-store.js';
 
 async function withTempConfigDir(run) {
   const prev = process.env.CODEMINI_GLOBAL_DIR;
@@ -306,6 +306,128 @@ test('history resume returns loaded session messages for UI restore', { concurre
       { role: 'user', content: '你好' },
       { role: 'assistant', content: '你好，请问我可以帮你做什么？' }
     ]);
+  });
+});
+
+test('plan auto run persists slash input and assistant output into session history', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    let callIndex = 0;
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      callIndex += 1;
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+      const userPrompt = String(body.messages?.[1]?.content || '');
+      if (callIndex === 1) {
+        // Auto-plan generation response
+        return makeSseResponse([
+          {
+            choices: [
+              {
+                delta: {
+                  content:
+                    '{"summary":"Plan quickly","steps":[{"title":"Execute quickly","role":"coder","task":"Return exactly plan-auto-run-persist-ok."}]}'
+                }
+              }
+            ]
+          },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+      // Execution step response
+      if (userPrompt) {
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'plan-auto-run-persist-ok' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+      throw new Error(`unexpected fetch call ${callIndex}`);
+    });
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const sessionId = 'session-plan-auto-run-persist';
+      const runtime = await createChatRuntime({
+        session: {
+          id: sessionId,
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const result = await runtime.submit('/plan auto run return exactly one line');
+      assert.equal(result.type, 'assistant');
+      assert.match(String(result.text || ''), /plan-auto-run-persist-ok/i);
+
+      const loaded = await loadSession(sessionId);
+      const userMessages = loaded.messages.filter((m) => m.role === 'user').map((m) => String(m.content || ''));
+      const assistantMessages = loaded.messages.filter((m) => m.role === 'assistant').map((m) => String(m.content || ''));
+      assert.ok(userMessages.some((msg) => msg.includes('/plan auto run')));
+      assert.ok(assistantMessages.some((msg) => msg.includes('plan-auto-run-persist-ok')));
+    } finally {
+      await restoreFetch();
+    }
+  });
+});
+
+test('plan auto run persists slash input even when execution fails mid-flight', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    let callIndex = 0;
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      callIndex += 1;
+      if (callIndex === 1) {
+        // Auto-plan generation response
+        return makeSseResponse([
+          {
+            choices: [
+              {
+                delta: {
+                  content:
+                    '{"summary":"Plan quickly","steps":[{"title":"Run and fail","role":"coder","task":"Do work and fail due to network."}]}'
+                }
+              }
+            ]
+          },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+      throw new Error('simulated network interruption');
+    });
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const sessionId = 'session-plan-auto-run-persist-on-fail';
+      const runtime = await createChatRuntime({
+        session: {
+          id: sessionId,
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      await assert.rejects(
+        () => runtime.submit('/plan auto run simulate a failing execution'),
+        /simulated network interruption/i
+      );
+
+      const loaded = await loadSession(sessionId);
+      const userMessages = loaded.messages.filter((m) => m.role === 'user').map((m) => String(m.content || ''));
+      assert.ok(userMessages.some((msg) => msg.includes('/plan auto run')));
+    } finally {
+      await restoreFetch();
+    }
   });
 });
 

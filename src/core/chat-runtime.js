@@ -28,6 +28,8 @@ import { buildMemorySnapshot } from './memory-prompt.js';
 import { forgetMemory, listMemories, searchMemories } from './memory-store.js';
 import { countActiveTodos, normalizeTodos } from './todo-state.js';
 
+const STREAM_SAVE_DEBOUNCE_MS = 120;
+
 function toOpenAIMessages(sessionMessages) {
   const mapped = [];
   for (const msg of sessionMessages) {
@@ -1825,7 +1827,7 @@ async function askModel({
         if (done) done();
         savePromise = null;
       }
-    }, 400);
+    }, STREAM_SAVE_DEBOUNCE_MS);
   };
   const flushScheduledSave = async () => {
     if (!persistSession) return;
@@ -1841,6 +1843,16 @@ async function askModel({
     }
     if (savePromise) await savePromise;
   };
+  if (persistSession && signal) {
+    const flushOnAbort = () => {
+      void flushScheduledSave().catch(() => {});
+    };
+    if (signal.aborted) {
+      flushOnAbort();
+    } else {
+      signal.addEventListener('abort', flushOnAbort, { once: true });
+    }
+  }
 
   if (text) {
     session.messages.push(stampedMessage('user', text));
@@ -2090,6 +2102,13 @@ async function executePlanWithSubAgents({
   const steps = Array.isArray(planState.steps) ? planState.steps : [];
   const goal = planState.goal || '';
   const planFilePath = planState.filePath || '';
+  let partialDeltaText = '';
+  const emitPlanEvent = (evt) => {
+    if (evt?.type === 'assistant:delta' && evt.text) {
+      partialDeltaText += String(evt.text);
+    }
+    if (onAgentEvent) onAgentEvent(evt);
+  };
   if (steps.length === 0) {
     return { text: '(no steps to execute)', aborted: false };
   }
@@ -2098,23 +2117,19 @@ async function executePlanWithSubAgents({
   const results = [];
 
   // Emit structured plan steps so TUI can show all steps with real role/title
-  if (onAgentEvent) {
-    onAgentEvent({
-      type: 'plan:steps',
-      steps: steps.map((s, idx) => ({ index: idx + 1, role: s.role, title: s.title, status: 'pending' }))
-    });
-  }
+  emitPlanEvent({
+    type: 'plan:steps',
+    steps: steps.map((s, idx) => ({ index: idx + 1, role: s.role, title: s.title, status: 'pending' }))
+  });
 
   for (let i = 0; i < steps.length; i += 1) {
     const step = steps[i];
     if (signal?.aborted) break;
 
-    if (onAgentEvent) {
-      onAgentEvent({
-        type: 'assistant:delta',
-        text: `\n[plan] Step ${i + 1}/${steps.length} -> ${step.role}: ${step.title}\n`
-      });
-    }
+    emitPlanEvent({
+      type: 'assistant:delta',
+      text: `\n[plan] Step ${i + 1}/${steps.length} -> ${step.role}: ${step.title}\n`
+    });
 
     // Read accumulated plan file context from prior step results (skip for step 0)
     let planFileContext = '';
@@ -2132,7 +2147,7 @@ async function executePlanWithSubAgents({
       config,
       model,
       systemPrompt,
-      onAgentEvent,
+      onAgentEvent: emitPlanEvent,
       extraRolePrompt: stepGuidance,
       signal,
       onSessionActive: onSubSessionActive,
@@ -2178,6 +2193,14 @@ async function executePlanWithSubAgents({
   const failedSteps = results.filter((r) => r.failed);
   if (failedSteps.length > 0) {
     summaryLines.push(`${failedSteps.length} step(s) had errors.`);
+  }
+  if (signal?.aborted) {
+    const partial = partialDeltaText.trim();
+    if (partial) {
+      const clipped = partial.length > 6000 ? `${partial.slice(0, 6000)}\n... [partial output truncated]` : partial;
+      parentSession.messages.push(stampedMessage('assistant', clipped));
+      await saveSession(parentSession);
+    }
   }
 
   return {
@@ -2833,6 +2856,22 @@ export async function createChatRuntime({
     await saveSession(currentSession);
   };
 
+  const persistAssistantExchange = async (userText, assistantText, { includeUser = true } = {}) => {
+    if (includeUser && userText) {
+      currentSession.messages.push(stampedMessage('user', userText));
+    }
+    if (assistantText) {
+      currentSession.messages.push(stampedMessage('assistant', assistantText));
+    }
+    await saveSession(currentSession);
+  };
+
+  const persistUserExchange = async (userText) => {
+    if (!userText) return;
+    currentSession.messages.push(stampedMessage('user', userText));
+    await saveSession(currentSession);
+  };
+
   const buildActiveSystemPrompt = async () => {
     const soulPrompt = await buildSystemPromptWithSoul(baseSystemPrompt, config);
     const memorySnapshot = await buildMemorySnapshot({
@@ -3003,6 +3042,9 @@ export async function createChatRuntime({
           const runImmediately = (parsedInput.args[1] || '').trim().toLowerCase() === 'run';
           const goal = parsedInput.args.slice(runImmediately ? 2 : 1).join(' ').trim();
           if (!goal) return { type: 'system', text: 'Usage: /plan auto <goal> | /plan auto run <goal>' };
+          if (runImmediately) {
+            await persistUserExchange(line);
+          }
           const auto = await buildAutoPlanAndRun({
             goal,
             session: currentSession,
@@ -3036,7 +3078,7 @@ export async function createChatRuntime({
             activeSubSession = null;
             currentSession.planState = null;
             executionMode = 'auto';
-            await saveSession(currentSession);
+            await persistAssistantExchange(line, result.text || '', { includeUser: false });
             return { type: 'assistant', text: result.text, aborted: !!result.aborted };
           }
           currentSession.planState = {
@@ -3060,6 +3102,7 @@ export async function createChatRuntime({
           if (!hasPendingPlanApproval(currentSession)) {
             return { type: 'system', text: 'No pending plan approval. Use /plan auto <goal> or /plan <goal> first.' };
           }
+          await persistUserExchange(line);
           const planState = { ...currentSession.planState };
           const result = await executePlanWithSubAgents({
             planState,
@@ -3074,7 +3117,7 @@ export async function createChatRuntime({
           activeSubSession = null;
           currentSession.planState = null;
           executionMode = 'auto';
-          await saveSession(currentSession);
+          await persistAssistantExchange(line, result.text || '', { includeUser: false });
           return { type: 'assistant', text: result.text, aborted: !!result.aborted };
         }
         if (sub === 'stay') {
@@ -3434,6 +3477,7 @@ export async function createChatRuntime({
 
     if (hasPendingPlanApproval(currentSession)) {
       if (isApprovalText(parsedInput.text)) {
+        await persistUserExchange(line);
         const planState = { ...currentSession.planState };
         const result = await executePlanWithSubAgents({
           planState,
@@ -3448,7 +3492,7 @@ export async function createChatRuntime({
         activeSubSession = null;
         currentSession.planState = null;
         executionMode = 'auto';
-        await saveSession(currentSession);
+        await persistAssistantExchange(line, result.text || '', { includeUser: false });
         return { type: 'assistant', text: result.text, aborted: !!result.aborted };
       }
       if (isStayInPlanText(parsedInput.text)) {

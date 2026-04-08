@@ -4,6 +4,8 @@ import { getSessionsDir } from './paths.js';
 import { normalizeTodos } from './todo-state.js';
 
 const ALLOWED_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
+const SESSION_LEGACY_EXT = '.json';
+const SESSION_JSONL_EXT = '.jsonl';
 
 function createSessionId() {
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
@@ -101,25 +103,85 @@ function sanitizeSession(session, fallbackId = '') {
   return out;
 }
 
+function sessionPathById(sessionId, ext = SESSION_JSONL_EXT) {
+  return path.join(getSessionsDir(), `${sessionId}${ext}`);
+}
+
+function sessionIdFromFileName(fileName) {
+  if (fileName.endsWith(SESSION_JSONL_EXT)) return fileName.slice(0, -SESSION_JSONL_EXT.length);
+  if (fileName.endsWith(SESSION_LEGACY_EXT)) return fileName.slice(0, -SESSION_LEGACY_EXT.length);
+  return '';
+}
+
+function summarizeParsedSession(parsed, filePath) {
+  const id = parsed.id || sessionIdFromFileName(path.basename(filePath));
+  const updatedAt = parsed.updatedAt || parsed.createdAt || '';
+  const latestMessage = Array.isArray(parsed.messages) ? parsed.messages.at(-1) : null;
+  const preview = latestMessage?.content ? String(latestMessage.content).replace(/\s+/g, ' ').slice(0, 80) : '';
+  return {
+    id,
+    updatedAt,
+    messageCount: Array.isArray(parsed.messages) ? parsed.messages.length : 0,
+    preview
+  };
+}
+
+async function tryReadJson(filePath) {
+  const raw = await fs.readFile(filePath, 'utf8');
+  return JSON.parse(raw);
+}
+
+async function loadLatestJsonlObject(filePath) {
+  const raw = await fs.readFile(filePath, 'utf8');
+  const lines = String(raw || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    try {
+      return JSON.parse(lines[i]);
+    } catch {
+      continue;
+    }
+  }
+  throw new Error(`No valid JSONL record found: ${filePath}`);
+}
+
+async function loadSessionPayload(sessionId) {
+  const jsonlPath = sessionPathById(sessionId, SESSION_JSONL_EXT);
+  let jsonlError = null;
+  try {
+    return await loadLatestJsonlObject(jsonlPath);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') jsonlError = error;
+  }
+  const legacyPath = sessionPathById(sessionId, SESSION_LEGACY_EXT);
+  try {
+    return await tryReadJson(legacyPath);
+  } catch (error) {
+    if (jsonlError) throw jsonlError;
+    throw error;
+  }
+}
+
 export async function createSession() {
   const sessionId = createSessionId();
   const dir = getSessionsDir();
   await fs.mkdir(dir, { recursive: true });
-  const filePath = path.join(dir, `${sessionId}.json`);
+  const filePath = sessionPathById(sessionId, SESSION_JSONL_EXT);
   const payload = {
     id: sessionId,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     messages: []
   };
-  await fs.writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  await fs.writeFile(filePath, `${JSON.stringify(payload)}\n`, 'utf8');
   return payload;
 }
 
 export async function loadSession(sessionId) {
-  const filePath = path.join(getSessionsDir(), `${sessionId}.json`);
-  const raw = await fs.readFile(filePath, 'utf8');
-  return sanitizeSession(JSON.parse(raw), sessionId);
+  const parsed = await loadSessionPayload(sessionId);
+  return sanitizeSession(parsed, sessionId);
 }
 
 export async function saveSession(session) {
@@ -127,8 +189,8 @@ export async function saveSession(session) {
   await fs.mkdir(dir, { recursive: true });
   const normalized = sanitizeSession(session);
   normalized.updatedAt = new Date().toISOString();
-  const filePath = path.join(dir, `${normalized.id}.json`);
-  await fs.writeFile(filePath, `${JSON.stringify(normalized, null, 2)}\n`, 'utf8');
+  const filePath = sessionPathById(normalized.id, SESSION_JSONL_EXT);
+  await fs.appendFile(filePath, `${JSON.stringify(normalized)}\n`, 'utf8');
 }
 
 export async function resolveSession(sessionId) {
@@ -143,31 +205,25 @@ export async function listSessions(limit = 30) {
   await fs.mkdir(dir, { recursive: true });
   const entries = await fs.readdir(dir, { withFileTypes: true });
   const files = entries
-    .filter((e) => e.isFile() && e.name.endsWith('.json'))
+    .filter((e) => e.isFile() && (e.name.endsWith(SESSION_JSONL_EXT) || e.name.endsWith(SESSION_LEGACY_EXT)))
     .map((e) => path.join(dir, e.name));
 
-  const sessions = [];
+  const sessionsById = new Map();
   for (const file of files) {
     try {
-      const raw = await fs.readFile(file, 'utf8');
-      const parsed = JSON.parse(raw);
-      const id = parsed.id || path.basename(file, '.json');
-      const updatedAt = parsed.updatedAt || parsed.createdAt || '';
-      const latestMessage = Array.isArray(parsed.messages) ? parsed.messages.at(-1) : null;
-      const preview = latestMessage?.content
-        ? String(latestMessage.content).replace(/\s+/g, ' ').slice(0, 80)
-        : '';
-      sessions.push({
-        id,
-        updatedAt,
-        messageCount: Array.isArray(parsed.messages) ? parsed.messages.length : 0,
-        preview
-      });
+      const parsed = file.endsWith(SESSION_JSONL_EXT) ? await loadLatestJsonlObject(file) : await tryReadJson(file);
+      const summary = summarizeParsedSession(parsed, file);
+      if (!summary.id) continue;
+      const existing = sessionsById.get(summary.id);
+      if (!existing || String(summary.updatedAt) > String(existing.updatedAt)) {
+        sessionsById.set(summary.id, summary);
+      }
     } catch {
       continue;
     }
   }
 
+  const sessions = Array.from(sessionsById.values());
   sessions.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
   return sessions.filter((s) => Number(s.messageCount || 0) > 0).slice(0, limit);
 }
@@ -195,8 +251,9 @@ export async function pruneSessions(policy = {}) {
   const entries = await fs.readdir(dir, { withFileTypes: true });
   let removed = 0;
   for (const e of entries) {
-    if (!e.isFile() || !e.name.endsWith('.json')) continue;
-    const id = path.basename(e.name, '.json');
+    if (!e.isFile()) continue;
+    const id = sessionIdFromFileName(e.name);
+    if (!id) continue;
     if (keepIds.has(id)) continue;
     try {
       await fs.unlink(path.join(dir, e.name));

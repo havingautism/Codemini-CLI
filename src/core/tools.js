@@ -13,7 +13,7 @@ import {
   terminateChild
 } from './shell.js';
 import { evaluateCommandPolicy } from './command-policy.js';
-import { queryAst, readAstNode, resolveAstTarget } from './ast.js';
+import { findEnclosingSymbol, queryAst, readAstNode, resolveAstTarget } from './ast.js';
 import { initializeProjectIndex, queryProjectIndex, refreshIndexedFile } from './project-index.js';
 import { checkReadDedup } from './agent-loop.js';
 import { TOOL_SKIP_DIRS as SKIP_DIRS, TEXT_EXTENSIONS, CODE_WRITE_GUARD_EXTENSIONS, LANGUAGE_FILE_TYPES } from './constants.js';
@@ -22,6 +22,8 @@ import { forgetMemory, listMemories, rememberMemory, searchMemories } from './me
 import { normalizeTodos } from './todo-state.js';
 const BACKGROUND_TASK_RECENT_OUTPUT_LIMIT = 80;
 const BACKGROUND_TASK_POLL_MS = 150;
+const MAX_AST_ENCLOSING_BYTES = 300_000;
+const MAX_AST_ENCLOSING_LINES = 5_000;
 const backgroundTaskRegistry = new Map();
 let backgroundTaskCounter = 0;
 let backgroundTaskLogCursorCounter = 0;
@@ -365,41 +367,6 @@ function globToRegex(pattern) {
   return new RegExp(`^${regexBody}$`);
 }
 
-function getLineColumnForMatch(line, query, caseSensitive = false) {
-  const haystack = caseSensitive ? line : line.toLowerCase();
-  const needle = caseSensitive ? query : query.toLowerCase();
-  const index = haystack.indexOf(needle);
-  return index === -1 ? 1 : index + 1;
-}
-
-function classifyMatch(preview, query) {
-  const line = String(preview || '');
-  const escaped = escapeRegex(query);
-  const normalized = line.toLowerCase();
-  const queryLower = String(query || '').toLowerCase();
-  const definitionLeadPatterns = [
-    /^\s*(?:export\s+)?(?:async\s+)?function\b/i,
-    /^\s*(?:export\s+)?class\b/i,
-    /^\s*(?:export\s+)?(?:const|let|var)\b/i,
-    /^\s*(?:export\s+)?(?:interface|type|enum)\b/i,
-    /^\s*def\b/i,
-    /^\s*(?:public|private|protected)\s+[A-Za-z0-9_<>,[\]\s?]+\s+[A-Za-z0-9_$]+\s*\(/i
-  ];
-  if (definitionLeadPatterns.some((pattern) => pattern.test(line)) && normalized.includes(queryLower)) {
-    return 'definition';
-  }
-  if (new RegExp(String.raw`\b${escaped}\s*\(`, 'i').test(line)) return 'reference';
-  return 'text';
-}
-
-function matchSpecificity(preview, query) {
-  const line = String(preview || '');
-  const escaped = escapeRegex(query);
-  if (new RegExp(String.raw`\b${escaped}\b`, 'i').test(line)) return 0;
-  if (line.toLowerCase().includes(String(query || '').toLowerCase())) return 1;
-  return 2;
-}
-
 function findSymbolDefinition(lines, symbol) {
   const escaped = String(symbol || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const patterns = [
@@ -551,7 +518,7 @@ function extractDirectCalls(lines, symbol, maxItems = 3, excludeRange = null) {
     if (excludeRange && i + 1 >= excludeRange.startLine && i + 1 <= excludeRange.endLine) continue;
     const line = String(lines[i] || '');
     if (!new RegExp(String.raw`\b${escaped}\s*\(`).test(line)) continue;
-    const blockLine = findEnclosingSymbol(lines, i + 1);
+    const blockLine = findEnclosingSymbolLine(lines, i + 1);
     const owner = blockLine ? trimLinePreview(lines[blockLine - 1], 220) : trimLinePreview(line, 220);
     const ownerName = blockLine ? extractSymbolName(lines[blockLine - 1]) : '';
     if (ownerName === symbol) continue;
@@ -574,7 +541,7 @@ function extractSymbolName(line) {
   return match?.[1] || '';
 }
 
-function findEnclosingSymbol(lines, anchorLine) {
+function findEnclosingSymbolLine(lines, anchorLine) {
   for (let i = Math.max(0, anchorLine - 1); i >= 0; i -= 1) {
     const name = extractSymbolName(lines[i]);
     if (name) return i + 1;
@@ -693,6 +660,11 @@ async function readFile(root, args) {
     };
   }
 
+  // Resolve enclosing structural symbol via Tree-sitter (best-effort, skipped for large files)
+  const shouldResolveEnclosing = text.length <= MAX_AST_ENCLOSING_BYTES && totalLines <= MAX_AST_ENCLOSING_LINES;
+  const anchorLine = Math.floor((startLine + endLine) / 2);
+  const enclosing = shouldResolveEnclosing ? await findEnclosingSymbol(text, normalizedArgs?.path, anchorLine) : null;
+
   return {
     path: normalizedArgs?.path,
     phase: 'content',
@@ -700,7 +672,8 @@ async function readFile(root, args) {
     end_line: endLine,
     total_lines: totalLines,
     truncated,
-    content
+    content,
+    ...(enclosing ? { enclosing_symbol: enclosing.name, enclosing_kind: enclosing.kind, enclosing_line: enclosing.start_line } : {})
   };
 }
 
@@ -2190,7 +2163,8 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       }
       // Phase 2 content: structured header + head/tail content
       if (result.phase === 'content') {
-        const header = `[File: ${result.path}, lines ${result.start_line || 1}-${result.end_line || '?'}${result.total_lines ? ` of ${result.total_lines}` : ''}${result.truncated ? ', truncated' : ''}]`;
+        const enclosing = result.enclosing_symbol ? `, inside ${result.enclosing_kind || 'symbol'} ${result.enclosing_symbol}` : '';
+        const header = `[File: ${result.path}, lines ${result.start_line || 1}-${result.end_line || '?'}${result.total_lines ? ` of ${result.total_lines}` : ''}${result.truncated ? ', truncated' : ''}${enclosing}]`;
         const content = result.content || '';
         if (typeof content !== 'string' || content.length <= 3000) {
           return `${header}\n${content}`;

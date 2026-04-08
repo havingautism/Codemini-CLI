@@ -153,6 +153,46 @@ function exactNodeForTarget(rootNode, target) {
   return null;
 }
 
+/**
+ * Find the enclosing named structural symbol (function, class, method, etc.)
+ * for a given line range in already-parsed content. Returns null if not found
+ * or if the language is unsupported.
+ */
+export async function findEnclosingSymbol(content, filePath, line) {
+  const ext = path.extname(String(filePath || '')).toLowerCase();
+  const language = EXTENSION_LANGUAGE_MAP[ext];
+  if (!language) return null;
+  let parser = null;
+  let tree = null;
+  try {
+    const parsed = await parseContent(content, language);
+    parser = parsed.parser;
+    tree = parsed.tree;
+    const row = Math.max(0, Number(line || 1) - 1);
+    const node = tree.rootNode.descendantForPosition({ row, column: 0 });
+    let current = node;
+    while (current) {
+      if (current.type === 'program' || !current.parent) break;
+      const nameChild = current.childForFieldName('name');
+      if (nameChild) {
+        return {
+          name: nameChild.text,
+          kind: current.type,
+          start_line: current.startPosition.row + 1,
+          end_line: current.endPosition.row + 1
+        };
+      }
+      current = current.parent;
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (tree) tree.delete();
+    if (parser) parser.delete();
+  }
+}
+
 export async function queryAst(root, args) {
   const relativePath = String(args?.path || '').trim();
   const querySource = String(args?.query || '').trim();
