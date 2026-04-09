@@ -180,6 +180,65 @@ test('update_todos normalizes and replaces the session todo checklist', async ()
   });
 });
 
+test('read_plan and update_plan manage normalized plan state', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    let currentPlan = {
+      status: 'pending_approval',
+      source: 'auto',
+      goal: 'Tighten auth workflow',
+      summary: 'Inspect and implement auth updates',
+      steps: [
+        { title: 'Inspect auth module', role: 'planner', task: 'Map auth entry points' }
+      ]
+    };
+
+    const { handlers, formatters } = await (async () => {
+      const config = await loadConfig();
+      return getBuiltinTools({
+        workspaceRoot,
+        config,
+        getPlanState: () => currentPlan,
+        onPlanStateUpdate: (planState) => {
+          currentPlan = planState;
+        }
+      });
+    })();
+
+    const readBefore = await handlers.read_plan({});
+    assert.equal(readBefore.ok, true);
+    assert.equal(readBefore.plan?.status, 'pending_approval');
+    assert.equal(readBefore.hasPendingApproval, true);
+
+    const updated = await handlers.update_plan({
+      plan: {
+        status: 'approved',
+        source: 'auto',
+        goal: 'Tighten auth workflow',
+        filePath: '.codemini/plans/auth-plan.md',
+        summary: 'Approved auth plan',
+        finalSummary: 'Ready to execute',
+        steps: [
+          { title: 'Implement auth patch', role: 'coder', task: 'Update auth guard checks' },
+          { title: 'Verify auth flows', role: 'tester', task: 'Run focused auth tests' }
+        ]
+      }
+    });
+    assert.equal(updated.ok, true);
+    assert.equal(updated.oldPlan?.status, 'pending_approval');
+    assert.equal(updated.newPlan?.status, 'approved');
+    assert.equal(updated.hasPendingApproval, false);
+    assert.equal(currentPlan?.status, 'approved');
+    assert.match(formatters.read_plan(readBefore), /Current plan state:/);
+    assert.match(formatters.update_plan(updated), /status: approved/);
+
+    const cleared = await handlers.update_plan({ clear: true });
+    assert.equal(cleared.ok, true);
+    assert.equal(cleared.newPlan, null);
+    assert.equal(currentPlan, null);
+    assert.match(formatters.update_plan(cleared), /Plan state cleared/i);
+  });
+});
+
 test('read returns minimal structured code context windows', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     await fs.mkdir(path.join(workspaceRoot, 'src', 'auth'), { recursive: true });

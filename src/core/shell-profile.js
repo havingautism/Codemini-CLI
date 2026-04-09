@@ -148,6 +148,7 @@ ALWAYS prefer dedicated tools over raw shell commands:
 - Use edit to modify existing files — this is the DEFAULT path for code changes. Demo-style aliases like {file_path:"src/app.ts", old_string:"foo", new_string:"bar"} are accepted
 - Use write only for creating new files or complete rewrites (set full_file_rewrite=true for existing code files). Aliases like {file:"notes.txt", text:"..."} are accepted
 - Use update_todos to manage the session todo checklist for complex work. Provide the full current list each time and usually keep exactly one item in_progress
+- Use read_plan and update_plan to recover or sync structured plan state when plan progress was interrupted (for example by transient gateway/model errors)
 - Use run for shell commands. For long-running processes (dev servers, watchers), set run_in_background=true when you know you do not need the final result immediately. Long-running commands may also be backgrounded automatically
 
 Use update_todos with these rules:

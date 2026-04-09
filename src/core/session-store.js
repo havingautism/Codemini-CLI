@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getSessionsDir } from './paths.js';
+import { normalizePlanState } from './plan-state.js';
 import { normalizeTodos } from './todo-state.js';
 
 const ALLOWED_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
@@ -77,25 +78,8 @@ function sanitizeSession(session, fallbackId = '') {
 
   if (session?.model) out.model = String(session.model);
   if (session?.mode) out.mode = String(session.mode);
-  if (session?.planState && typeof session.planState === 'object') {
-    out.planState = {
-      status: String(session.planState.status || '').trim(),
-      source: String(session.planState.source || '').trim(),
-      goal: String(session.planState.goal || '').trim(),
-      filePath: String(session.planState.filePath || '').trim(),
-      summary: String(session.planState.summary || '').trim(),
-      finalSummary: String(session.planState.finalSummary || '').trim()
-    };
-    if (Array.isArray(session.planState.steps)) {
-      out.planState.steps = session.planState.steps
-        .map((step) => ({
-          title: String(step?.title || '').trim(),
-          role: String(step?.role || '').trim(),
-          task: String(step?.task || '').trim()
-        }))
-        .filter((step) => step.title || step.role || step.task);
-    }
-  }
+  const normalizedPlan = normalizePlanState(session?.planState);
+  if (normalizedPlan) out.planState = normalizedPlan;
 
   const todos = normalizeTodos(session?.todos);
   if (todos.length > 0) out.todos = todos;

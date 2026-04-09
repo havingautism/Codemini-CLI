@@ -251,7 +251,10 @@ test('chat runtime prioritizes important config completions near the top', { con
     assert.ok(runtime.getCompletionOptions('/plan').some((item) => item.value === '/plan auto'));
     assert.ok(runtime.getCompletionOptions('/plan').some((item) => item.value === '/plan approve'));
     assert.ok(!runtime.getCompletionOptions('/plan').some((item) => item.value === '/plan stay'));
-    assert.ok(runtime.getCompletionOptions('/plan auto').some((item) => item.value === '/plan auto run '));
+    assert.equal(runtime.getCompletionOptions('/yes').length, 0);
+    assert.equal(runtime.getCompletionOptions('/no').length, 0);
+    assert.equal(runtime.getCompletionOptions('/edit').length, 0);
+    assert.equal(runtime.getCompletionOptions('/reject').length, 0);
     assert.equal(
       runtime.getCompletionOptions('/plan').find((item) => item.value === '/plan auto')?.description,
       '自动生成计划并等待你确认执行'
@@ -259,10 +262,6 @@ test('chat runtime prioritizes important config completions near the top', { con
     assert.equal(
       runtime.getCompletionOptions('/plan').find((item) => item.value === '/plan approve')?.description,
       '批准当前待确认的计划并开始执行'
-    );
-    assert.equal(
-      runtime.getCompletionOptions('/plan auto').find((item) => item.value === '/plan auto run ')?.description,
-      '自动生成计划后立即继续执行'
     );
     assert.equal(runtime.getCompletionOptions('/tasks').length, 0);
     assert.ok(runtime.getCompletionOptions('/agents').some((item) => item.value === '/agents run'));
@@ -307,6 +306,117 @@ test('chat runtime localizes completion descriptions using UI language', { concu
       runtime.getCompletionOptions('/history resume')[0]?.description,
       'resume a saved session'
     );
+  });
+});
+
+test('approval-only slash commands are excluded from input history', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const config = await loadConfig();
+    const now = new Date().toISOString();
+    const runtime = await createChatRuntime({
+      session: {
+        id: 'session-approval-history-filter',
+        createdAt: now,
+        updatedAt: now,
+        messages: []
+      },
+      config,
+      systemPrompt: 'You are a test assistant.'
+    });
+
+    await runtime.submit('/status');
+    await runtime.submit('/yes');
+    await runtime.submit('/no');
+    await runtime.submit('/edit tighten step 2');
+    await runtime.submit('/reject');
+
+    const items = await runtime.getInputHistory();
+    const joined = items.join('\n');
+    assert.match(joined, /\/status/);
+    assert.doesNotMatch(joined, /\/yes/);
+    assert.doesNotMatch(joined, /\/no/);
+    assert.doesNotMatch(joined, /\/edit tighten step 2/);
+    assert.doesNotMatch(joined, /\/reject/);
+  });
+});
+
+test('plan auto run is deprecated and requires manual approval flow', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const config = await loadConfig();
+    const now = new Date().toISOString();
+    const runtime = await createChatRuntime({
+      session: {
+        id: 'session-plan-auto-run-deprecated',
+        createdAt: now,
+        updatedAt: now,
+        messages: []
+      },
+      config,
+      systemPrompt: 'You are a test assistant.'
+    });
+
+    const result = await runtime.submit('/plan auto run refactor auth flow');
+    assert.equal(result.type, 'system');
+    assert.match(String(result.text || ''), /\/plan auto <goal>/i);
+    assert.match(String(result.text || ''), /\/yes/i);
+  });
+});
+
+test('reject clears pending plan approval and returns to auto mode', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const config = await loadConfig();
+    const now = new Date().toISOString();
+    const runtime = await createChatRuntime({
+      session: {
+        id: 'session-plan-reject',
+        createdAt: now,
+        updatedAt: now,
+        messages: [],
+        planState: {
+          status: 'pending_approval',
+          source: 'auto',
+          goal: 'Harden auth',
+          summary: 'Plan pending',
+          finalSummary: 'Plan pending'
+        }
+      },
+      config,
+      systemPrompt: 'You are a test assistant.'
+    });
+
+    const result = await runtime.submit('/reject');
+    assert.equal(result.type, 'system');
+    assert.match(String(result.text || ''), /rejected and cleared/i);
+    assert.equal(runtime.getRuntimeState().mode, 'auto');
+    assert.equal(runtime.getRuntimeState().pendingPlanApproval, false);
+  });
+});
+
+test('edit requires feedback when plan approval is pending', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const config = await loadConfig();
+    const now = new Date().toISOString();
+    const runtime = await createChatRuntime({
+      session: {
+        id: 'session-plan-edit-usage',
+        createdAt: now,
+        updatedAt: now,
+        messages: [],
+        planState: {
+          status: 'pending_approval',
+          source: 'auto',
+          goal: 'Improve tests',
+          summary: 'Plan pending',
+          finalSummary: 'Plan pending'
+        }
+      },
+      config,
+      systemPrompt: 'You are a test assistant.'
+    });
+
+    const result = await runtime.submit('/edit');
+    assert.equal(result.type, 'system');
+    assert.equal(result.text, 'Usage: /edit <feedback>');
   });
 });
 
@@ -436,14 +546,17 @@ test('plan auto run persists slash input and assistant output into session histo
         systemPrompt: 'You are a test assistant.'
       });
 
-      const result = await runtime.submit('/plan auto run return exactly one line');
+      const pending = await runtime.submit('/plan auto return exactly one line');
+      assert.equal(pending.type, 'system');
+      assert.match(String(pending.text || ''), /Approval:\s*pending/i);
+      const result = await runtime.submit('/yes');
       assert.equal(result.type, 'assistant');
       assert.match(String(result.text || ''), /plan-auto-run-persist-ok/i);
 
       const loaded = await loadSession(sessionId);
       const userMessages = loaded.messages.filter((m) => m.role === 'user').map((m) => String(m.content || ''));
       const assistantMessages = loaded.messages.filter((m) => m.role === 'assistant').map((m) => String(m.content || ''));
-      assert.ok(userMessages.some((msg) => msg.includes('/plan auto run')));
+      assert.ok(userMessages.some((msg) => msg.includes('/plan auto return exactly one line')));
       assert.ok(assistantMessages.some((msg) => msg.includes('plan-auto-run-persist-ok')));
     } finally {
       await restoreFetch();
@@ -451,7 +564,7 @@ test('plan auto run persists slash input and assistant output into session histo
   });
 });
 
-test('plan auto run persists slash input even when execution fails mid-flight', { concurrency: false }, async () => {
+test('plan auto persists slash input even when approved execution fails mid-flight', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let callIndex = 0;
     const restoreFetch = withMockFetch(async (_url, init) => {
@@ -493,14 +606,14 @@ test('plan auto run persists slash input even when execution fails mid-flight', 
         systemPrompt: 'You are a test assistant.'
       });
 
-      await assert.rejects(
-        () => runtime.submit('/plan auto run simulate a failing execution'),
-        /simulated network interruption/i
-      );
+      const pending = await runtime.submit('/plan auto simulate a failing execution');
+      assert.equal(pending.type, 'system');
+      assert.match(String(pending.text || ''), /Approval:\s*pending/i);
+      await assert.rejects(() => runtime.submit('/yes'), /simulated network interruption/i);
 
       const loaded = await loadSession(sessionId);
       const userMessages = loaded.messages.filter((m) => m.role === 'user').map((m) => String(m.content || ''));
-      assert.ok(userMessages.some((msg) => msg.includes('/plan auto run')));
+      assert.ok(userMessages.some((msg) => msg.includes('/plan auto simulate a failing execution')));
     } finally {
       await restoreFetch();
     }
@@ -1170,8 +1283,8 @@ test('chat runtime auto-plans complex tasks from ordinary chat input', { concurr
       const result = await runtime.submit('Refactor authentication workflow across API handlers, session state, error recovery, and tests.');
       assert.equal(result.type, 'system');
       assert.match(result.text, /Approval: pending/i);
-      assert.match(result.text, /Auto plan finished.*waiting for \/plan approve/i);
-      assert.match(result.text, /Next: review the plan summary, then use \/plan approve/i);
+      assert.match(result.text, /Auto plan finished.*waiting for \/yes/i);
+      assert.match(result.text, /Next: review the plan summary, then use \/yes/i);
       assert.match(result.text, /\[summarizer\] Synthesize final implementation status/i);
       assert.doesNotMatch(result.text, /Steps:\s+\d+\s+total/i);
       assert.match(result.text, /Plan File:/i);
@@ -1397,8 +1510,10 @@ test('plan auto run immediately executes the generated plan without pending appr
         systemPrompt: 'You are a test assistant.'
       });
 
-      const result = await runtime.submit('/plan auto run review the current project and recommend optimizations');
-
+      const pending = await runtime.submit('/plan auto review the current project and recommend optimizations');
+      assert.equal(pending.type, 'system');
+      assert.match(String(pending.text || ''), /Approval:\s*pending/i);
+      const result = await runtime.submit('/yes');
       assert.equal(result.type, 'assistant');
       assert.match(result.text, /Summarized optimization ideas/i);
       assert.equal(callIndex, 3);
@@ -1513,9 +1628,11 @@ test('plan auto run executes the approved plan prompt immediately', { concurrenc
         systemPrompt: 'You are a test assistant.'
       });
 
+      const pending = await runtime.submit('/plan auto create a login test plan');
+      assert.equal(pending.type, 'system');
+      assert.match(String(pending.text || ''), /Approval:\s*pending/i);
       const events = [];
-      const result = await runtime.submit('/plan auto run create a login test plan', (event) => events.push(event));
-
+      const result = await runtime.submit('/yes', (event) => events.push(event));
       assert.equal(result.type, 'assistant');
       assert.match(result.text, /Login test plan drafted and reviewed/i);
       assert.ok(
@@ -1624,9 +1741,11 @@ test('plan auto run appends a valid tester step instead of emitting undefined me
         systemPrompt: 'You are a test assistant.'
       });
 
+      const pending = await runtime.submit('/plan auto refactor the auth flow and verify it');
+      assert.equal(pending.type, 'system');
+      assert.match(String(pending.text || ''), /Approval:\s*pending/i);
       const events = [];
-      const result = await runtime.submit('/plan auto run refactor the auth flow and verify it', (event) => events.push(event));
-
+      const result = await runtime.submit('/yes', (event) => events.push(event));
       assert.equal(result.type, 'assistant');
       assert.match(result.text, /Auth refactor completed/i);
       assert.ok(
@@ -1851,8 +1970,10 @@ test('plan auto run sends the approved plan prompt with the generated plan detai
         systemPrompt: 'You are a test assistant.'
       });
 
-      const result = await runtime.submit('/plan auto run update auth helper and ensure names are trimmed');
-
+      const pending = await runtime.submit('/plan auto update auth helper and ensure names are trimmed');
+      assert.equal(pending.type, 'system');
+      assert.match(String(pending.text || ''), /Approval:\s*pending/i);
+      const result = await runtime.submit('/yes');
       assert.equal(result.type, 'assistant');
       assert.match(result.text, /partially complete/i);
       assert.equal(callIndex, 5);
@@ -2010,6 +2131,46 @@ test('chat runtime exposes startup system tool events for project indexing', { c
       assert.equal(startupEvents[0].status, 'done');
       assert.match(String(startupEvents[0].summary || ''), /\.codemini-project/i);
       assert.deepEqual(runtime.consumeStartupEvents(), []);
+    } finally {
+      process.chdir(previousCwd);
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('chat runtime exposes startup plan tool event when session has plan state', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-runtime-plan-events-'));
+    const previousCwd = process.cwd();
+    await fs.writeFile(path.join(cwd, 'package.json'), JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2));
+
+    try {
+      process.chdir(cwd);
+      const config = await loadConfig();
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-startup-plan-events',
+          createdAt: now,
+          updatedAt: now,
+          messages: [],
+          planState: {
+            status: 'pending_approval',
+            source: 'auto',
+            goal: 'Tighten auth flow',
+            summary: 'Inspect then implement auth updates'
+          }
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const startupEvents = runtime.consumeStartupEvents();
+      const planEvent = startupEvents.find((event) => event?.type === 'tool' && event?.name === 'update_plan');
+      assert.ok(planEvent);
+      assert.equal(planEvent.status, 'done');
+      assert.equal(planEvent.arguments?.plan?.status, 'pending_approval');
+      assert.equal(planEvent.arguments?.plan?.goal, 'Tighten auth flow');
     } finally {
       process.chdir(previousCwd);
       await fs.rm(cwd, { recursive: true, force: true });
@@ -2254,8 +2415,10 @@ test('plan auto run includes acceptance checklist for lightweight goals', { conc
         systemPrompt: 'You are a test assistant.'
       });
 
-      const result = await runtime.submit('/plan auto run add trimName(name) helper in src/user.js');
-
+      const pending = await runtime.submit('/plan auto add trimName(name) helper in src/user.js');
+      assert.equal(pending.type, 'system');
+      assert.match(String(pending.text || ''), /Approval:\s*pending/i);
+      const result = await runtime.submit('/yes');
       assert.equal(result.type, 'assistant');
       assert.match(result.text, /trimName\(name\) is exported/i);
       assert.equal(callIndex, 3);
@@ -2368,10 +2531,12 @@ test('plan auto run forwards checklist-style acceptance guidance into execution'
         systemPrompt: 'You are a test assistant.'
       });
 
-      const result = await runtime.submit(
-        '/plan auto run add greetUser(name), trim whitespace in the returned greeting, and preserve the exclamation mark'
+      const pending = await runtime.submit(
+        '/plan auto add greetUser(name), trim whitespace in the returned greeting, and preserve the exclamation mark'
       );
-
+      assert.equal(pending.type, 'system');
+      assert.match(String(pending.text || ''), /Approval:\s*pending/i);
+      const result = await runtime.submit('/yes');
       assert.equal(result.type, 'assistant');
       assert.match(result.text, /acceptance checklist/i);
       assert.equal(callIndex, 5);
@@ -2488,10 +2653,12 @@ test('plan auto run carries acceptance checklist into the approved execution pro
         systemPrompt: 'You are a test assistant.'
       });
 
-      const result = await runtime.submit(
-        '/plan auto run add greetUser(name) and trim whitespace in the returned greeting'
+      const pending = await runtime.submit(
+        '/plan auto add greetUser(name) and trim whitespace in the returned greeting'
       );
-
+      assert.equal(pending.type, 'system');
+      assert.match(String(pending.text || ''), /Approval:\s*pending/i);
+      const result = await runtime.submit('/yes');
       assert.equal(result.type, 'assistant');
       assert.match(result.text, /partially complete/i);
       assert.equal(callIndex, 5);
@@ -2609,10 +2776,12 @@ test('plan auto run preserves the approved plan summary and goal in the executio
         systemPrompt: 'You are a test assistant.'
       });
 
-      const result = await runtime.submit(
-        '/plan auto run add greetUser(name) and preserve the exclamation mark'
+      const pending = await runtime.submit(
+        '/plan auto add greetUser(name) and preserve the exclamation mark'
       );
-
+      assert.equal(pending.type, 'system');
+      assert.match(String(pending.text || ''), /Approval:\s*pending/i);
+      const result = await runtime.submit('/yes');
       assert.equal(result.type, 'assistant');
       assert.match(result.text, /currently blocked/i);
       assert.equal(callIndex, 5);
@@ -2695,9 +2864,11 @@ test('plan auto run stops the pipeline when a tester step fails exit criteria', 
         systemPrompt: 'You are a test assistant.'
       });
 
+      const pending = await runtime.submit('/plan auto update auth flow with retries');
+      assert.equal(pending.type, 'system');
+      assert.match(String(pending.text || ''), /Approval:\s*pending/i);
       const events = [];
-      const result = await runtime.submit('/plan auto run update auth flow with retries', (event) => events.push(event));
-
+      const result = await runtime.submit('/yes', (event) => events.push(event));
       assert.equal(result.type, 'assistant');
       assert.match(result.text, /\[FAILED\] tester: Verify auth flow update/i);
       assert.match(result.text, /pipeline stopped after exit criteria failed/i);
@@ -2806,9 +2977,11 @@ test('plan auto run does not stop on confirmatory reviewer findings', { concurre
         systemPrompt: 'You are a test assistant.'
       });
 
+      const pending = await runtime.submit('/plan auto add greetUser(name) and preserve the exclamation mark');
+      assert.equal(pending.type, 'system');
+      assert.match(String(pending.text || ''), /Approval:\s*pending/i);
       const events = [];
-      const result = await runtime.submit('/plan auto run add greetUser(name) and preserve the exclamation mark', (event) => events.push(event));
-
+      const result = await runtime.submit('/yes', (event) => events.push(event));
       assert.equal(result.type, 'assistant');
       assert.match(result.text, /Auth helper update completed/i);
       assert.ok(
@@ -2889,9 +3062,11 @@ test('plan auto run stops when coder output lacks implementation evidence', { co
         systemPrompt: 'You are a test assistant.'
       });
 
+      const pending = await runtime.submit('/plan auto add greetUser(name)');
+      assert.equal(pending.type, 'system');
+      assert.match(String(pending.text || ''), /Approval:\s*pending/i);
       const events = [];
-      const result = await runtime.submit('/plan auto run add greetUser(name)', (event) => events.push(event));
-
+      const result = await runtime.submit('/yes', (event) => events.push(event));
       assert.equal(result.type, 'assistant');
       assert.match(result.text, /\[FAILED\] coder: Implement greeting helper/i);
       assert.match(result.text, /coder output did not include implementation evidence/i);

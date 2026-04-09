@@ -247,6 +247,9 @@ function compactToolResult(result, toolName, args, maxChars = 12000) {
   if ('newTodos' in obj && Array.isArray(obj.newTodos)) {
     return obj.newTodos.length > 0 ? `updated ${obj.newTodos.length} todo item(s)` : 'cleared todo list';
   }
+  if ('newPlan' in obj) {
+    return obj.newPlan ? `updated plan state (${String(obj.newPlan.status || 'draft')})` : 'cleared plan state';
+  }
 
   // Fallback: clip with reduced limit
   return clipToolResult(obj, Math.min(maxChars, 4000));
@@ -358,7 +361,8 @@ export function checkReadDedup(filePath, startLine, endLine, mtimeMs) {
 const READ_ONLY_TOOLS = new Set([
   'read', 'grep', 'glob', 'list',
   'ast_query', 'read_ast_node',
-  'list_background_tasks', 'get_background_task'
+  'list_background_tasks', 'get_background_task',
+  'read_plan'
 ]);
 
 // ─── Exported helpers ────────────────────────────────────────────────
@@ -455,6 +459,9 @@ export function summarizeToolResult(result) {
     }
     if ('newTodos' in obj && Array.isArray(obj.newTodos)) {
       return obj.newTodos.length > 0 ? `updated ${obj.newTodos.length} todo item(s)` : 'cleared todo list';
+    }
+    if ('newPlan' in obj) {
+      return obj.newPlan ? `updated plan state (${String(obj.newPlan.status || 'draft')})` : 'cleared plan state';
     }
     const keys = Object.keys(obj);
     return keys.length > 0 ? `keys: ${keys.slice(0, 5).join(',')}` : 'object';
@@ -658,6 +665,9 @@ function formatToolDisplayName(name, args) {
   }
   if (name === 'update_todos') {
     return 'update_todos';
+  }
+  if (name === 'read_plan' || name === 'update_plan') {
+    return name;
   }
   if (name === 'list_background_tasks') {
     return name;

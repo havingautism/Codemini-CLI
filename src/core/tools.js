@@ -19,6 +19,7 @@ import { checkReadDedup } from './agent-loop.js';
 import { TOOL_SKIP_DIRS as SKIP_DIRS, TEXT_EXTENSIONS, CODE_WRITE_GUARD_EXTENSIONS, LANGUAGE_FILE_TYPES } from './constants.js';
 import { sha256Prefixed as sha256, sha256 as sha256Hash } from './crypto-utils.js';
 import { forgetMemory, listMemories, rememberMemory, searchMemories } from './memory-store.js';
+import { normalizePlanState } from './plan-state.js';
 import { normalizeTodos } from './todo-state.js';
 const BACKGROUND_TASK_RECENT_OUTPUT_LIMIT = 80;
 const BACKGROUND_TASK_POLL_MS = 150;
@@ -1534,7 +1535,7 @@ async function editTarget(root, args) {
   throw new Error(`edit does not support kind: ${kind}`);
 }
 
-export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSystemEvent, getTodos, onTodosUpdate }) {
+export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSystemEvent, getTodos, onTodosUpdate, getPlanState, onPlanStateUpdate }) {
   const emitSystemTool = (event) => {
     if (typeof onSystemEvent === 'function' && event) onSystemEvent(event);
   };
@@ -1788,6 +1789,76 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
             dir: { type: 'string', description: 'Alias for path' }
           },
           required: ['path']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'read_plan',
+        description:
+          'Read the structured plan state for the current session. Use this to recover plan progress after transient model/tool errors before continuing implementation.',
+        parameters: {
+          type: 'object',
+          properties: {
+            include_steps: { type: 'boolean', description: 'Include normalized plan steps in the output (default: true)' }
+          },
+          required: []
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'update_plan',
+        description:
+          'Create, replace, or clear the structured plan state for the current session. Use clear=true to remove plan state.',
+        parameters: {
+          type: 'object',
+          properties: {
+            clear: { type: 'boolean', description: 'Set true to clear current plan state' },
+            plan: {
+              type: 'object',
+              properties: {
+                status: { type: 'string', description: 'Plan lifecycle status (for example pending_approval, approved, completed, failed)' },
+                source: { type: 'string', description: 'Plan source such as auto/manual/tool' },
+                goal: { type: 'string', description: 'Original user goal for this plan' },
+                filePath: { type: 'string', description: 'Plan markdown file path' },
+                summary: { type: 'string', description: 'Short plan summary' },
+                finalSummary: { type: 'string', description: 'Final planning summary shown for approval' },
+                steps: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      title: { type: 'string' },
+                      role: { type: 'string' },
+                      task: { type: 'string' }
+                    }
+                  }
+                }
+              }
+            },
+            status: { type: 'string', description: 'Top-level alias for plan.status when plan is omitted' },
+            source: { type: 'string', description: 'Top-level alias for plan.source when plan is omitted' },
+            goal: { type: 'string', description: 'Top-level alias for plan.goal when plan is omitted' },
+            filePath: { type: 'string', description: 'Top-level alias for plan.filePath when plan is omitted' },
+            summary: { type: 'string', description: 'Top-level alias for plan.summary when plan is omitted' },
+            finalSummary: { type: 'string', description: 'Top-level alias for plan.finalSummary when plan is omitted' },
+            steps: {
+              type: 'array',
+              description: 'Top-level alias for plan.steps when plan is omitted',
+              items: {
+                type: 'object',
+                properties: {
+                  title: { type: 'string' },
+                  role: { type: 'string' },
+                  task: { type: 'string' }
+                }
+              }
+            }
+          },
+          required: []
         }
       }
     },
@@ -2164,6 +2235,42 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         newTodos: nextTodos
       };
     },
+    read_plan: async (args = {}) => {
+      const includeSteps = args?.include_steps !== false;
+      const currentPlan = normalizePlanState(typeof getPlanState === 'function' ? getPlanState() : null);
+      if (!includeSteps && currentPlan && Array.isArray(currentPlan.steps)) {
+        const { steps, ...rest } = currentPlan;
+        return {
+          ok: true,
+          plan: rest,
+          hasPendingApproval: rest.status === 'pending_approval'
+        };
+      }
+      return {
+        ok: true,
+        plan: currentPlan,
+        hasPendingApproval: currentPlan?.status === 'pending_approval'
+      };
+    },
+    update_plan: async (args = {}) => {
+      const oldPlan = normalizePlanState(typeof getPlanState === 'function' ? getPlanState() : null);
+      const shouldClear = args?.clear === true || args?.plan === null;
+      const nextRaw = shouldClear
+        ? null
+        : args?.plan && typeof args.plan === 'object'
+          ? args.plan
+          : args;
+      const nextPlan = normalizePlanState(nextRaw);
+      if (typeof onPlanStateUpdate === 'function') {
+        onPlanStateUpdate(nextPlan);
+      }
+      return {
+        ok: true,
+        oldPlan,
+        newPlan: nextPlan,
+        hasPendingApproval: nextPlan?.status === 'pending_approval'
+      };
+    },
     run: (args) => runCommand(workspaceRoot, config, args),
     remember_user: async (args = {}) => {
       const saved = await rememberMemory({
@@ -2310,6 +2417,56 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         return `${box} ${item.content}`;
       });
       return ['Updated todo list:', ...lines].join('\n');
+    },
+
+    read_plan(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      const plan = normalizePlanState(result.plan);
+      if (!plan) return 'No active plan state.';
+      const lines = [
+        'Current plan state:',
+        `- status: ${plan.status || '-'}`,
+        `- source: ${plan.source || '-'}`,
+        `- goal: ${plan.goal || '-'}`,
+        `- filePath: ${plan.filePath || '-'}`,
+        `- summary: ${plan.summary || '-'}`,
+        `- finalSummary: ${plan.finalSummary || '-'}`
+      ];
+      const steps = Array.isArray(plan.steps) ? plan.steps : [];
+      if (steps.length > 0) {
+        lines.push('- steps:');
+        for (let i = 0; i < Math.min(steps.length, 8); i += 1) {
+          const step = steps[i];
+          lines.push(`  ${i + 1}. [${step.role || '-'}] ${step.title || '-'} :: ${step.task || '-'}`);
+        }
+        if (steps.length > 8) lines.push(`  ... and ${steps.length - 8} more step(s)`);
+      }
+      return lines.join('\n');
+    },
+
+    update_plan(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      const nextPlan = normalizePlanState(result.newPlan);
+      if (!nextPlan) return 'Plan state cleared.';
+      const lines = [
+        'Current plan state:',
+        `- status: ${nextPlan.status || '-'}`,
+        `- source: ${nextPlan.source || '-'}`,
+        `- goal: ${nextPlan.goal || '-'}`,
+        `- filePath: ${nextPlan.filePath || '-'}`,
+        `- summary: ${nextPlan.summary || '-'}`,
+        `- finalSummary: ${nextPlan.finalSummary || '-'}`
+      ];
+      const steps = Array.isArray(nextPlan.steps) ? nextPlan.steps : [];
+      if (steps.length > 0) {
+        lines.push('- steps:');
+        for (let i = 0; i < Math.min(steps.length, 8); i += 1) {
+          const step = steps[i];
+          lines.push(`  ${i + 1}. [${step.role || '-'}] ${step.title || '-'} :: ${step.task || '-'}`);
+        }
+        if (steps.length > 8) lines.push(`  ... and ${steps.length - 8} more step(s)`);
+      }
+      return lines.join('\n');
     },
 
     query_project_index(result) {

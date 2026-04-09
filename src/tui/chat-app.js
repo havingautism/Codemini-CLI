@@ -258,6 +258,18 @@ const TUI_COPY = {
       inputLocked: '删除确认进行中，请输入 yes 或 no',
       answerLabel: '确认输入（yes/no）',
       answerPlaceholder: 'yes 或 no'
+    },
+    planApproval: {
+      title: '确认执行计划？',
+      goalLabel: '目标',
+      summaryLabel: '摘要',
+      fileLabel: '文件',
+      prompt: '输入 /yes 执行，输入 /edit <反馈> 修改，输入 /reject 拒绝。',
+      invalidAnswer: '请输入 /yes、/edit <反馈> 或 /reject。',
+      missingFeedback: '请在 /edit 后提供反馈内容。',
+      inputLocked: '计划审批进行中，请在审批框输入 /yes、/edit 或 /reject',
+      answerLabel: '审批输入',
+      answerPlaceholder: '/yes | /edit <反馈> | /reject'
     }
   },
   en: {
@@ -415,6 +427,18 @@ const TUI_COPY = {
       inputLocked: 'Delete approval is active; type yes or no',
       answerLabel: 'Approval input (yes/no)',
       answerPlaceholder: 'yes or no'
+    },
+    planApproval: {
+      title: 'Approve this plan?',
+      goalLabel: 'Goal',
+      summaryLabel: 'Summary',
+      fileLabel: 'File',
+      prompt: 'Type /yes to execute, /edit <feedback> to revise, or /reject to discard.',
+      invalidAnswer: 'Please enter /yes, /edit <feedback>, or /reject.',
+      missingFeedback: 'Please provide feedback after /edit.',
+      inputLocked: 'Plan approval is active; type /yes, /edit <feedback>, or /reject',
+      answerLabel: 'Approval input',
+      answerPlaceholder: '/yes | /edit <feedback> | /reject'
     }
   }
 };
@@ -960,6 +984,38 @@ export function parseDeleteApprovalAnswer(value) {
   return normalized ? 'invalid' : 'empty';
 }
 
+export function parsePlanApprovalAnswer(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return { action: 'empty', command: '' };
+  const normalized = raw.toLowerCase();
+  if (normalized === '/yes' || normalized === 'yes') {
+    return { action: 'approve', command: '/yes' };
+  }
+  if (normalized === '/reject' || normalized === 'reject' || normalized === 'no') {
+    return { action: 'reject', command: '/reject' };
+  }
+  const editMatch = raw.match(/^\/?edit(?:\s+(.+))?$/i);
+  if (editMatch) {
+    const feedback = String(editMatch[1] || '').trim();
+    if (!feedback) return { action: 'missing_feedback', command: '' };
+    return { action: 'edit', feedback, command: `/edit ${feedback}` };
+  }
+  return { action: 'invalid', command: '' };
+}
+
+export function parsePendingPlanApprovalMessage(text = '') {
+  const raw = String(text || '');
+  if (!/^Plan approval is still pending\./i.test(raw.trim())) return null;
+  const lines = raw.split(/\r?\n/);
+  const out = { goal: '', summary: '', filePath: '' };
+  for (const line of lines) {
+    if (line.startsWith('Goal: ')) out.goal = line.slice('Goal: '.length).trim();
+    else if (line.startsWith('Summary: ')) out.summary = line.slice('Summary: '.length).trim();
+    else if (line.startsWith('Plan File: ')) out.filePath = line.slice('Plan File: '.length).trim();
+  }
+  return out;
+}
+
 export function formatDeleteApprovalLines(copy, request) {
   const details = normalizeDeleteApprovalRequest(request);
   if (!details) return [];
@@ -1021,7 +1077,9 @@ function getActivityDisplayParts(activity) {
     get_background_task: 'Task',
     stop_background_task: 'Stop',
     list_files: 'Glob',
-    update_todos: 'Update Todos'
+    update_todos: 'Update Todos',
+    read_plan: 'Read Plan',
+    update_plan: 'Update Plan'
   };
   return {
     primary: labels[parsed.base] || parsed.base || 'Tool',
@@ -1347,8 +1405,13 @@ export function parseAutoPlanSummaryMessage(text) {
           index: Number(stepMatch[1]),
           role: String(stepMatch[2] || '').trim().toLowerCase(),
           title: String(stepMatch[3] || '').trim(),
+          task: '',
           status: 'pending'
         });
+      } else if (/^-\s*task\s*:\s*/i.test(line) && parsed.planSteps.length > 0) {
+        parsed.planSteps[parsed.planSteps.length - 1].task = line.replace(/^-\s*task\s*:\s*/i, '').trim();
+      } else if (/^Next:\s*/i.test(line)) {
+        inPlanSteps = false;
       } else {
         inPlanSteps = false;
       }
@@ -1708,6 +1771,7 @@ function PlanSummaryBubble({ msg, copy }) {
     summary.failed ? `${labels.fail} ${summary.failed}` : ''
   ].filter(Boolean);
   const shortFile = summary.filePath ? trimText(summary.filePath, 96) : '';
+  const planSteps = Array.isArray(summary.planSteps) ? summary.planSteps : [];
 
   return h(
     Box,
@@ -1746,9 +1810,25 @@ function PlanSummaryBubble({ msg, copy }) {
       summary.planSummary
         ? h(
             Box,
-            { marginBottom: summary.approval || metaItems.length > 0 || summary.warningSteps || summary.failedSteps || shortFile ? 1 : 0, flexDirection: 'column' },
+            { marginBottom: planSteps.length > 0 || summary.approval || metaItems.length > 0 || summary.warningSteps || summary.failedSteps || shortFile ? 1 : 0, flexDirection: 'column' },
             h(Text, { color: 'cyanBright' }, labels.plan),
             h(Text, { color: 'gray' }, summary.planSummary)
+          )
+        : null,
+      planSteps.length > 0
+        ? h(
+            Box,
+            { marginBottom: summary.approval || metaItems.length > 0 || summary.warningSteps || summary.failedSteps || shortFile ? 1 : 0, flexDirection: 'column' },
+            h(Text, { color: 'cyanBright' }, labels.steps),
+            ...planSteps.flatMap((step, idx) => {
+              const roleTag = String(step?.role || '').trim().toUpperCase() || 'CODER';
+              const titleText = String(step?.title || '-').trim() || '-';
+              const taskText = String(step?.task || '').trim();
+              const titleRow = h(Text, { key: `plan-step-title-${idx}`, color: 'gray' }, `${idx + 1}. [${roleTag}] ${titleText}`);
+              if (!taskText) return [titleRow];
+              const taskRow = h(Text, { key: `plan-step-task-${idx}`, color: 'gray' }, `   - task: ${taskText}`);
+              return [titleRow, taskRow];
+            })
           )
         : null,
       summary.approval
@@ -2706,7 +2786,32 @@ function InputBar({
   );
 }
 
-function DeleteApprovalPanel({ request, inputValue, errorText, copy }) {
+function ApprovalCursorLine({ inputValue, placeholder, cursorVisible, accent }) {
+  if (inputValue) {
+    return h(
+      Box,
+      null,
+      h(Text, { color: 'white' }, inputValue),
+      h(
+        Text,
+        { color: cursorVisible ? 'black' : accent, backgroundColor: cursorVisible ? accent : undefined },
+        ' '
+      )
+    );
+  }
+  return h(
+    Box,
+    null,
+    h(
+      Text,
+      { color: cursorVisible ? 'black' : accent, backgroundColor: cursorVisible ? accent : undefined },
+      ' '
+    ),
+    placeholder ? h(Text, { color: 'gray' }, placeholder) : null
+  );
+}
+
+function DeleteApprovalPanel({ request, inputValue, errorText, copy, cursorVisible }) {
   if (!request) return null;
   const details =
     request?.toolName === 'delete'
@@ -2735,7 +2840,48 @@ function DeleteApprovalPanel({ request, inputValue, errorText, copy }) {
       Box,
       { marginTop: 1 },
       h(Text, { color: 'redBright' }, `${copy.deleteApproval.answerLabel}: `),
-      h(Text, { color: inputValue ? 'white' : 'gray' }, inputValue || placeholder || ' ')
+      h(ApprovalCursorLine, {
+        inputValue,
+        placeholder: placeholder || ' ',
+        cursorVisible,
+        accent: 'redBright'
+      })
+    ),
+    errorText ? h(Text, { color: 'yellowBright' }, errorText) : null
+  );
+}
+
+function PlanApprovalPanel({ request, inputValue, errorText, copy, cursorVisible }) {
+  if (!request) return null;
+  const goal = String(request.goal || '').trim();
+  const summary = String(request.summary || '').trim();
+  const filePath = String(request.filePath || '').trim();
+  const placeholder = String(copy.planApproval.answerPlaceholder || '').trim();
+  return h(
+    Box,
+    {
+      marginTop: 1,
+      flexDirection: 'column',
+      borderStyle: 'round',
+      borderColor: 'yellowBright',
+      paddingX: 1,
+      paddingY: 0
+    },
+    h(Text, { color: 'yellowBright' }, copy.planApproval.title),
+    goal ? h(Text, { color: 'white' }, `${copy.planApproval.goalLabel}: ${goal}`) : null,
+    summary ? h(Text, { color: 'white' }, `${copy.planApproval.summaryLabel}: ${summary}`) : null,
+    filePath ? h(Text, { color: 'gray' }, `${copy.planApproval.fileLabel}: ${filePath}`) : null,
+    h(Text, { color: 'gray' }, copy.planApproval.prompt),
+    h(
+      Box,
+      { marginTop: 1 },
+      h(Text, { color: 'yellowBright' }, `${copy.planApproval.answerLabel}: `),
+      h(ApprovalCursorLine, {
+        inputValue,
+        placeholder: placeholder || ' ',
+        cursorVisible,
+        accent: 'yellowBright'
+      })
     ),
     errorText ? h(Text, { color: 'yellowBright' }, errorText) : null
   );
@@ -2825,6 +2971,10 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   const [pendingDeleteApproval, setPendingDeleteApproval] = useState(null);
   const [deleteApprovalInput, setDeleteApprovalInput] = useState('');
   const [deleteApprovalError, setDeleteApprovalError] = useState('');
+  const [pendingPlanApproval, setPendingPlanApproval] = useState(null);
+  const [planApprovalInput, setPlanApprovalInput] = useState('');
+  const [planApprovalError, setPlanApprovalError] = useState('');
+  const approvalLockActive = Boolean(pendingDeleteApproval || pendingPlanApproval);
   const activeAssistantIdRef = useRef(null);
   const activeAssistantAutoSkillNamesRef = useRef([]);
   const streamedAssistantHandledRef = useRef(false);
@@ -3204,6 +3354,25 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
         resultVerified: '',
         resultNext: ''
       });
+      setPendingPlanApproval({
+        goal: parsedPlanSummary.planSummary || '',
+        summary: parsedPlanSummary.finalSummary || parsedPlanSummary.planSummary || '',
+        filePath: parsedPlanSummary.filePath || ''
+      });
+      setPlanApprovalInput('');
+      setPlanApprovalError('');
+    } else if (result.type === 'system') {
+      const pendingMeta = parsePendingPlanApprovalMessage(result.text || '');
+      if (pendingMeta) {
+        setPendingPlanApproval({
+          goal: pendingMeta.goal || '',
+          summary: pendingMeta.summary || '',
+          filePath: pendingMeta.filePath || ''
+        });
+        setPlanState((prev) => ({ ...prev, pendingApproval: true }));
+        setPlanApprovalInput('');
+        setPlanApprovalError('');
+      }
     }
     setMessages((prev) => [
       ...prev,
@@ -3342,6 +3511,9 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     setBusy(true);
     setInputStage('sending');
     setRuntimeStatus(makeStatus(copy.runtime.sendingToGateway, copy.runtime.preparingRequest, 'yellowBright'));
+    setPendingPlanApproval(null);
+    setPlanApprovalInput('');
+    setPlanApprovalError('');
     setPlanState({
       current: 0,
       total: 0,
@@ -3623,6 +3795,9 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
         if (event?.type === 'plan:steps') {
           const planSteps = Array.isArray(event.steps) ? event.steps : [];
           if (planSteps.length > 0) {
+            setPendingPlanApproval(null);
+            setPlanApprovalInput('');
+            setPlanApprovalError('');
             setPlanState((prev) => ({
               ...prev,
               total: planSteps.length,
@@ -3921,6 +4096,46 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       return;
     }
 
+    if (pendingPlanApproval) {
+      if (key.return) {
+        const parsed = parsePlanApprovalAnswer(planApprovalInput);
+        if (parsed.action === 'approve' || parsed.action === 'reject' || parsed.action === 'edit') {
+          setPendingPlanApproval(null);
+          setPlanApprovalInput('');
+          setPlanApprovalError('');
+          runSubmission(parsed.command);
+        } else if (parsed.action === 'missing_feedback') {
+          setPlanApprovalError(copy.planApproval.missingFeedback);
+        } else {
+          setPlanApprovalError(copy.planApproval.invalidAnswer);
+        }
+        return;
+      }
+
+      if (isBackspaceKey(value, key) || isDeleteKey(value, key)) {
+        setPlanApprovalInput((prev) => prev.slice(0, -1));
+        setPlanApprovalError('');
+        return;
+      }
+
+      if (isPrintableInput(value, key)) {
+        setPlanApprovalInput((prev) => `${prev}${value}`);
+        setPlanApprovalError('');
+        return;
+      }
+
+      if (key.ctrl && value === 'c') {
+        if (busy && typeof runtime.abort === 'function') {
+          runtime.abort();
+          return;
+        }
+        exit();
+        return;
+      }
+
+      return;
+    }
+
     if (key.upArrow) {
       if (suggestionNav && commandSuggestions.length > 0) {
         setMenuIndex((prev) => moveSuggestionSelection(prev, commandSuggestions.length, 'up'));
@@ -4171,6 +4386,17 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   }, []);
 
   useEffect(() => {
+    if (approvalLockActive) {
+      setCursorVisible(true);
+      return () => {};
+    }
+    const timer = setInterval(() => {
+      setCursorVisible((prev) => !prev);
+    }, 500);
+    return () => clearInterval(timer);
+  }, [approvalLockActive]);
+
+  useEffect(() => {
     const hasLoadingMessage = messages.some((m) => m.loading);
     if (!busy && !hasLoadingMessage) return () => {};
     const timer = setInterval(() => {
@@ -4178,6 +4404,18 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     }, 500);
     return () => clearInterval(timer);
   }, [busy, messages]);
+
+  useEffect(() => {
+    const pending = Boolean(runtimeState?.pendingPlanApproval);
+    if (!pending) {
+      setPendingPlanApproval(null);
+      return;
+    }
+    // Startup/recovery fallback only while idle; do not resurrect the panel mid-execution.
+    if (!busy) {
+      setPendingPlanApproval((prev) => prev || { goal: '', summary: '', filePath: '' });
+    }
+  }, [runtimeState?.pendingPlanApproval, busy]);
 
   useEffect(() => {
     if (commandSuggestions.length === 0) {
@@ -4219,6 +4457,11 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     activeUserMessageIdRef.current,
     activeAssistantIdRef.current
   );
+  const activeApprovalLock = pendingDeleteApproval
+    ? { text: copy.deleteApproval.inputLocked }
+    : pendingPlanApproval
+      ? { text: copy.planApproval.inputLocked }
+      : null;
 
   return h(
     Box,
@@ -4251,7 +4494,15 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       request: pendingDeleteApproval,
       inputValue: deleteApprovalInput,
       errorText: deleteApprovalError,
-      copy
+      copy,
+      cursorVisible
+    }),
+    h(PlanApprovalPanel, {
+      request: pendingPlanApproval,
+      inputValue: planApprovalInput,
+      errorText: planApprovalError,
+      copy,
+      cursorVisible
     }),
     debugKeys
       ? h(
@@ -4266,8 +4517,8 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       afterCursor,
       cursorVisible,
       busy,
-      disabled: Boolean(pendingDeleteApproval),
-      disabledText: pendingDeleteApproval ? copy.deleteApproval.inputLocked : '',
+      disabled: Boolean(activeApprovalLock),
+      disabledText: activeApprovalLock ? activeApprovalLock.text : '',
       inputStage,
       pendingQueueLength: pendingQueue.length,
       showToolDetails,

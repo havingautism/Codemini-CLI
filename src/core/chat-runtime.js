@@ -26,6 +26,7 @@ import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSess
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { buildMemorySnapshot } from './memory-prompt.js';
 import { forgetMemory, listMemories, searchMemories } from './memory-store.js';
+import { normalizePlanState } from './plan-state.js';
 import { countActiveTodos, normalizeTodos } from './todo-state.js';
 
 const STREAM_SAVE_DEBOUNCE_MS = 120;
@@ -131,8 +132,10 @@ function getCompletionCopy(language = 'zh') {
       planSubcommands: {
         '/plan <goal>': '创建一个人工审阅的实施计划',
         '/plan auto <goal>': '自动生成计划并等待你确认执行',
-        '/plan auto run <goal>': '自动生成计划后立即继续执行',
         '/plan approve': '批准当前待确认的计划并开始执行',
+        '/yes': '确认并执行当前待确认计划',
+        '/edit <feedback>': '根据你的反馈修改当前待确认计划',
+        '/reject': '拒绝并清空当前待确认计划',
         '/plan from-spec <spec-path?>': '从 spec 文件生成实施计划'
       },
       commands: {
@@ -151,7 +154,10 @@ function getCompletionCopy(language = 'zh') {
         history: '查看/恢复会话',
         debug: '运行时调试开关',
         retry: '重试上一条用户请求',
-        stop: '中止当前回答'
+        stop: '中止当前回答',
+        yes: '确认当前待审批计划并开始执行',
+        edit: '修改当前待审批计划',
+        reject: '拒绝当前待审批计划'
       },
       generic: {
         configCommand: '配置命令',
@@ -220,8 +226,10 @@ function getCompletionCopy(language = 'zh') {
       planSubcommands: {
         '/plan <goal>': 'create an implementation plan for manual review',
         '/plan auto <goal>': 'generate a plan and wait for your approval',
-        '/plan auto run <goal>': 'generate a plan and continue execution immediately',
         '/plan approve': 'approve the pending plan and start execution',
+        '/yes': 'approve and execute the pending plan',
+        '/edit <feedback>': 'revise the pending plan based on your feedback',
+        '/reject': 'reject and clear the pending plan',
         '/plan from-spec <spec-path?>': 'generate an implementation plan from a spec file'
       },
       commands: {
@@ -240,7 +248,10 @@ function getCompletionCopy(language = 'zh') {
         history: 'list/resume sessions',
         debug: 'runtime debug switches',
         retry: 'retry the last user request',
-        stop: 'stop the current response'
+        stop: 'stop the current response',
+        yes: 'approve the pending plan and start execution',
+        edit: 'revise the pending plan',
+        reject: 'reject the pending plan'
       },
       generic: {
         configCommand: 'config command',
@@ -272,11 +283,11 @@ function describeConfigKey(key, mode = 'set', language = 'zh') {
 
 const SUB_AGENT_ROLES = ['planner', 'coder', 'reviewer', 'tester', 'summarizer'];
 const ROLE_TOOL_POLICY = {
-  planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node'],
-  coder: ['read', 'grep', 'list', 'edit', 'write', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'update_todos'],
-  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node'],
-  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search'],
-  summarizer: ['read', 'grep', 'list', 'glob', 'tool_search']
+  planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node', 'read_plan', 'update_plan'],
+  coder: ['read', 'grep', 'list', 'edit', 'write', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'update_todos', 'read_plan', 'update_plan'],
+  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'read_plan'],
+  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'read_plan'],
+  summarizer: ['read', 'grep', 'list', 'glob', 'tool_search', 'read_plan', 'update_plan']
 };
 const SUB_AGENT_CONTEXT_MAX_MESSAGES = 4;
 const SUB_AGENT_CONTEXT_MAX_CHARS = 1200;
@@ -1479,7 +1490,7 @@ function buildAutoPlanSystemSummary(auto) {
   const baseStatusTitle =
     auto.failedCount > 0 ? 'Auto plan finished with failures' : auto.warningCount > 0 ? 'Auto plan finished with warnings' : 'Auto plan finished';
   const statusTitle =
-    auto.approvalStatus === 'pending' ? `${baseStatusTitle} (waiting for /plan approve)` : baseStatusTitle;
+    auto.approvalStatus === 'pending' ? `${baseStatusTitle} (waiting for /yes)` : baseStatusTitle;
   const lines = [
     statusTitle,
     `Plan File: ${auto.filePath}`,
@@ -1504,10 +1515,13 @@ function buildAutoPlanSystemSummary(auto) {
     lines.push('Plan Steps:');
     auto.steps.forEach((s, idx) => {
       lines.push(`  ${idx + 1}. [${s.role}] ${s.title}`);
+      if (String(s?.task || '').trim()) {
+        lines.push(`     - task: ${String(s.task).trim()}`);
+      }
     });
   }
   if (auto.approvalStatus === 'pending') {
-    lines.push('Next: review the plan summary, then use /plan approve to start implementation, /plan auto run <goal> to plan and run in one step next time, or /plan stay to keep planning.');
+    lines.push('Next: review the plan summary, then use /yes to execute, /edit <feedback> to revise this plan, or /reject to discard it.');
   }
   return lines.join('\n');
 }
@@ -1910,13 +1924,26 @@ function hasPendingPlanApproval(session) {
 function isApprovalText(text = '') {
   const value = String(text || '').trim().toLowerCase();
   if (!value) return false;
-  return /^(yes|y|ok|okay|approve|approved|continue|proceed|go ahead|start|开始|继续|可以|同意|批准|通过|按这个做)$/.test(value);
+  return /^(yes|\/yes|y|ok|okay|approve|approved|continue|proceed|go ahead|start|开始|继续|可以|同意|批准|通过|按这个做)$/.test(value);
 }
 
 function isStayInPlanText(text = '') {
   const value = String(text || '').trim().toLowerCase();
   if (!value) return false;
-  return /^(stay|keep planning|keep in plan mode|not yet|wait|先别|先等等|继续计划|继续讨论|继续规划|暂不批准)$/.test(value);
+  return /^(stay|\/stay|keep planning|keep in plan mode|not yet|wait|先别|先等等|继续计划|继续讨论|继续规划|暂不批准)$/.test(value);
+}
+
+function isRejectPlanText(text = '') {
+  const value = String(text || '').trim().toLowerCase();
+  if (!value) return false;
+  return /^(\/reject|reject|no|discard|cancel|否决|拒绝|不要了|取消计划)$/.test(value);
+}
+
+function shouldPersistInputHistory(parsedInput) {
+  if (!parsedInput || parsedInput.type !== 'slash') return true;
+  const command = String(parsedInput.command || '').trim().toLowerCase();
+  // Keep approval-only commands out of input history (↑/↓ should focus on real task prompts).
+  return !['yes', 'no', 'edit', 'reject'].includes(command);
 }
 
 function buildPendingPlanApprovalMessage(planState) {
@@ -1925,7 +1952,7 @@ function buildPendingPlanApprovalMessage(planState) {
     `Goal: ${planState?.goal || '-'}`,
     `Plan File: ${planState?.filePath || '-'}`,
     `Summary: ${planState?.finalSummary || planState?.summary || '-'}`,
-    'Use /plan approve to start implementation, or /plan stay to keep refining the plan first.'
+    'Use /yes to execute this plan, /edit <feedback> to revise it, or /reject to discard it.'
   ];
   return lines.join('\n');
 }
@@ -2133,6 +2160,11 @@ async function askModel({
     getTodos: () => normalizeTodos(session.todos),
     onTodosUpdate: (todos) => {
       session.todos = normalizeTodos(todos);
+      scheduleSessionSave();
+    },
+    getPlanState: () => normalizePlanState(session.planState),
+    onPlanStateUpdate: (planState) => {
+      session.planState = normalizePlanState(planState);
       scheduleSessionSave();
     }
   });
@@ -2568,43 +2600,17 @@ async function buildAutoPlanAndRun({
     ? `Plan created with fallback guidance because planning hit an error: ${planningError}`
     : 'Plan created and waiting for approval before implementation.';
 
-  const lines = [];
-  lines.push(`# Auto Plan: ${goal}`);
-  lines.push('');
-  lines.push(`## Summary`);
-  lines.push(autoPlan.summary || `Auto plan for: ${goal}`);
-  lines.push('');
-  lines.push('## Final Summary');
-  lines.push(finalSummary || '(empty)');
-  if (planningError) {
-    lines.push('');
-    lines.push(`Planning Error: ${planningError}`);
-  }
-  lines.push('');
-  lines.push('## Steps');
-  autoPlan.steps.forEach((s, idx) => {
-    lines.push(`${idx + 1}. [${s.role}] ${s.title}`);
-    lines.push(`   - task: ${s.task}`);
-  });
-  lines.push('');
-  lines.push('## Approval');
-  lines.push('Pending user approval before implementation.');
-  lines.push('');
-  lines.push('## Working Memory');
-  lines.push('### Findings Ledger');
-  lines.push(PLAN_MEMORY_MARKERS.findings[0]);
-  lines.push('- None recorded yet.');
-  lines.push(PLAN_MEMORY_MARKERS.findings[1]);
-  lines.push('');
-  lines.push('### Progress Ledger');
-  lines.push(PLAN_MEMORY_MARKERS.progress[0]);
-  lines.push('- Plan created and waiting for execution.');
-  lines.push(PLAN_MEMORY_MARKERS.progress[1]);
-
   const filePath = await writeMarkdownInProjectDir(
     'plans',
     `${goal}-auto`,
-    lines.join('\n'),
+    renderAutoPlanMarkdown({
+      goal,
+      autoPlan,
+      finalSummary,
+      planningError,
+      approvalText: 'Pending user approval before implementation.',
+      progressLine: '- Plan created and waiting for execution.'
+    }),
     'plan-auto',
     sessionId
   );
@@ -2619,6 +2625,116 @@ async function buildAutoPlanAndRun({
     failedCount: 0,
     warningTitles: planningError ? ['planner:fallback-plan'] : [],
     failedTitles: []
+  };
+}
+
+function renderAutoPlanMarkdown({
+  goal,
+  autoPlan,
+  finalSummary,
+  planningError = '',
+  approvalText = 'Pending user approval before implementation.',
+  progressLine = '- Plan created and waiting for execution.'
+}) {
+  const lines = [];
+  lines.push(`# Auto Plan: ${goal}`);
+  lines.push('');
+  lines.push('## Summary');
+  lines.push(autoPlan?.summary || `Auto plan for: ${goal}`);
+  lines.push('');
+  lines.push('## Final Summary');
+  lines.push(finalSummary || '(empty)');
+  if (planningError) {
+    lines.push('');
+    lines.push(`Planning Error: ${planningError}`);
+  }
+  lines.push('');
+  lines.push('## Steps');
+  (Array.isArray(autoPlan?.steps) ? autoPlan.steps : []).forEach((s, idx) => {
+    lines.push(`${idx + 1}. [${s.role}] ${s.title}`);
+    lines.push(`   - task: ${s.task}`);
+  });
+  lines.push('');
+  lines.push('## Approval');
+  lines.push(approvalText);
+  lines.push('');
+  lines.push('## Working Memory');
+  lines.push('### Findings Ledger');
+  lines.push(PLAN_MEMORY_MARKERS.findings[0]);
+  lines.push('- None recorded yet.');
+  lines.push(PLAN_MEMORY_MARKERS.findings[1]);
+  lines.push('');
+  lines.push('### Progress Ledger');
+  lines.push(PLAN_MEMORY_MARKERS.progress[0]);
+  lines.push(progressLine);
+  lines.push(PLAN_MEMORY_MARKERS.progress[1]);
+  return lines.join('\n');
+}
+
+async function revisePendingPlanWithModel({
+  planState,
+  feedback,
+  config,
+  model,
+  systemPrompt
+}) {
+  const goal = String(planState?.goal || '').trim();
+  const priorSummary = String(planState?.summary || '').trim();
+  const priorSteps = Array.isArray(planState?.steps) ? planState.steps : [];
+  if (!goal || !feedback) {
+    throw new Error('Plan revision requires both goal and feedback.');
+  }
+  const prompt = [
+    buildAutoPlanPlannerGuidance(),
+    'You are revising an existing plan based on explicit user feedback.',
+    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.',
+    'Keep roles minimal and only include steps that materially help the goal.'
+  ].join('\n');
+  const result = await createChatCompletion({
+    sdkProvider: config.sdk?.provider,
+    baseUrl: config.gateway.base_url,
+    apiKey: config.gateway.api_key,
+    model: model || config.model.name,
+    messages: [
+      { role: 'system', content: `${systemPrompt}\n${prompt}` },
+      {
+        role: 'user',
+        content: [
+          `Goal: ${goal}`,
+          `Current summary: ${priorSummary || '-'}`,
+          'Current plan steps:',
+          ...priorSteps.map((step, index) => `${index + 1}. [${step.role}] ${step.title} :: ${step.task}`),
+          '',
+          `User revision feedback: ${feedback}`,
+          'Revise the summary and steps accordingly while keeping them executable.'
+        ].join('\n')
+      }
+    ],
+    timeoutMs: config.gateway.timeout_ms || 90000,
+    maxRetries: config.gateway.max_retries ?? 2
+  });
+  const parsed = extractJsonBlock(result.text || '');
+  const revised = normalizeAutoPlan(parsed, goal);
+  const revisedFinalSummary = `Plan revised based on feedback: ${feedback}`;
+  const planFilePath = String(planState?.filePath || '').trim();
+  if (planFilePath) {
+    const content = renderAutoPlanMarkdown({
+      goal,
+      autoPlan: revised,
+      finalSummary: revisedFinalSummary,
+      approvalText: 'Pending user approval before implementation (revised).',
+      progressLine: `- Plan revised with user feedback: ${feedback}`
+    });
+    await fs.writeFile(planFilePath, `${content.trim()}\n`, 'utf8');
+  }
+  return {
+    status: 'pending_approval',
+    source: String(planState?.source || 'auto'),
+    goal,
+    filePath: planFilePath,
+    summary: revised.summary || `Auto plan for: ${goal}`,
+    finalSummary: revisedFinalSummary,
+    steps: revised.steps
   };
 }
 
@@ -2673,6 +2789,17 @@ export async function createChatRuntime({
       status: 'done',
       arguments: { todos: initialTodos },
       summary: `${initialTodos.length} todo item(s)`
+    });
+  }
+  const initialPlanState = normalizePlanState(session?.planState);
+  if (initialPlanState) {
+    startupEvents.push({
+      type: 'tool',
+      id: `startup-plan-${String(session?.id || 'session')}`,
+      name: 'update_plan',
+      status: 'done',
+      arguments: { plan: initialPlanState },
+      summary: `plan status=${initialPlanState.status || 'draft'}`
     });
   }
   let currentSession = session;
@@ -2834,7 +2961,7 @@ export async function createChatRuntime({
     '/checkpoint load <id>'
   ];
   const specTemplates = ['/spec <topic>'];
-  const planTemplates = ['/plan <goal>', '/plan auto <goal>', '/plan auto run <goal>', '/plan approve', '/plan from-spec <spec-path?>'];
+  const planTemplates = ['/plan <goal>', '/plan auto <goal>', '/plan approve', '/plan from-spec <spec-path?>'];
   const agentTemplates = ['/agents list', '/agents run planner <task>', '/agents run coder <task>', '/agents run reviewer <task>', '/agents run tester <task>', '/agents run summarizer <task>'];
   const debugTemplates = ['/debug keys on', '/debug keys off', '/debug keys status'];
   const compactTemplates = compactOptions.map((opt) => `/compact ${opt}`);
@@ -3039,12 +3166,6 @@ export async function createChatRuntime({
       return materializeSuggestions(specTemplates);
     }
     if (commandPart === 'plan') {
-      if (tokens[1] === 'auto' && (tokens.length === 2 || (tokens.length === 3 && !hasTrailingSpace))) {
-        const sub = tokens[2] || '';
-        return ['run']
-          .filter((s) => s.startsWith(sub))
-          .map((s) => registerSuggestion(`/plan auto ${s} `, planSubcommandDescriptions[`/plan auto ${s} <goal>`] || completionCopy.generic.planCommand));
-      }
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         const sub = tokens[1] || '';
         return ['auto', 'approve', 'from-spec']
@@ -3207,12 +3328,14 @@ export async function createChatRuntime({
     activeAbortController = new AbortController();
     const { signal } = activeAbortController;
     const activeReplySystemPrompt = await buildActiveSystemPrompt();
+    const parsedInput = parseInput(line);
     try {
-      await appendInputHistory(line);
+      if (shouldPersistInputHistory(parsedInput)) {
+        await appendInputHistory(line);
+      }
     } catch {
       // Non-fatal: history persistence should not block chat flow.
     }
-    const parsedInput = parseInput(line);
     if (parsedInput.type === 'empty') {
       return { type: 'noop' };
     }
@@ -3225,7 +3348,7 @@ export async function createChatRuntime({
       if (parsedInput.command === 'help') {
         return {
           type: 'system',
-          text: 'Commands: /help /exit /stop /commands /status /mode /compact /checkpoint /spec /plan /agents /config /memory /history /debug /retry /<custom> !<shell>'
+          text: 'Commands: /help /exit /stop /commands /status /mode /compact /checkpoint /spec /plan /yes /edit /reject /agents /config /memory /history /debug /retry /<custom> !<shell>'
         };
       }
       if (parsedInput.command === 'status') {
@@ -3247,6 +3370,59 @@ export async function createChatRuntime({
         await setConfigValue('execution.mode', next);
         config = await loadConfig();
         const text = `Execution mode set to: ${next}`;
+        await persistLocalExchange(line, text);
+        return { type: 'system', text };
+      }
+      if (parsedInput.command === 'yes') {
+        if (!hasPendingPlanApproval(currentSession)) {
+          return { type: 'system', text: 'No pending plan approval. Use /plan auto <goal> first.' };
+        }
+        await persistUserExchange(line);
+        const planState = { ...currentSession.planState };
+        const result = await executePlanWithSubAgents({
+          planState,
+          parentSession: currentSession,
+          config,
+          model,
+          systemPrompt: baseSystemPrompt,
+          onAgentEvent,
+          signal,
+          onSubSessionActive: (sub) => { activeSubSession = sub; }
+        });
+        activeSubSession = null;
+        currentSession.planState = null;
+        executionMode = 'auto';
+        await persistAssistantExchange(line, result.text || '', { includeUser: false });
+        return { type: 'assistant', text: result.text, aborted: !!result.aborted };
+      }
+      if (parsedInput.command === 'edit') {
+        if (!hasPendingPlanApproval(currentSession)) {
+          return { type: 'system', text: 'No pending plan approval. Use /plan auto <goal> first.' };
+        }
+        const feedback = parsedInput.args.join(' ').trim();
+        if (!feedback) {
+          return { type: 'system', text: 'Usage: /edit <feedback>' };
+        }
+        const revised = await revisePendingPlanWithModel({
+          planState: currentSession.planState,
+          feedback,
+          config,
+          model,
+          systemPrompt: activeReplySystemPrompt
+        });
+        currentSession.planState = revised;
+        executionMode = 'plan';
+        const text = `Plan revised.\n${buildPendingPlanApprovalMessage(currentSession.planState)}`;
+        await persistLocalExchange(line, text);
+        return { type: 'system', text };
+      }
+      if (parsedInput.command === 'reject') {
+        if (!hasPendingPlanApproval(currentSession)) {
+          return { type: 'system', text: 'No pending plan approval.' };
+        }
+        currentSession.planState = null;
+        executionMode = 'auto';
+        const text = 'Pending plan rejected and cleared.';
         await persistLocalExchange(line, text);
         return { type: 'system', text };
       }
@@ -3329,12 +3505,15 @@ export async function createChatRuntime({
       if (parsedInput.command === 'plan') {
         const sub = (parsedInput.args[0] || '').trim().toLowerCase();
         if (sub === 'auto') {
-          const runImmediately = (parsedInput.args[1] || '').trim().toLowerCase() === 'run';
-          const goal = parsedInput.args.slice(runImmediately ? 2 : 1).join(' ').trim();
-          if (!goal) return { type: 'system', text: 'Usage: /plan auto <goal> | /plan auto run <goal>' };
-          if (runImmediately) {
-            await persistUserExchange(line);
+          const deprecatedRun = (parsedInput.args[1] || '').trim().toLowerCase() === 'run';
+          if (deprecatedRun) {
+            return {
+              type: 'system',
+              text: 'Usage: /plan auto <goal>\n`/plan auto run` was removed. Review the generated plan first, then use /yes to execute, /edit <feedback> to revise, or /reject to discard.'
+            };
           }
+          const goal = parsedInput.args.slice(1).join(' ').trim();
+          if (!goal) return { type: 'system', text: 'Usage: /plan auto <goal>' };
           const auto = await buildAutoPlanAndRun({
             goal,
             session: currentSession,
@@ -3345,32 +3524,6 @@ export async function createChatRuntime({
             sessionId: currentSession.id,
             taskClass: classifyPlanTaskClass(goal)
           });
-          if (runImmediately) {
-            const planState = {
-              status: 'approved',
-              source: 'auto',
-              goal,
-              filePath: auto.filePath,
-              summary: auto.summary || '',
-              finalSummary: auto.finalSummary || auto.summary || '',
-              steps: Array.isArray(auto.steps) ? auto.steps : []
-            };
-            const result = await executePlanWithSubAgents({
-              planState,
-              parentSession: currentSession,
-              config,
-              model,
-              systemPrompt: baseSystemPrompt,
-              onAgentEvent,
-              signal,
-              onSubSessionActive: (sub) => { activeSubSession = sub; }
-            });
-            activeSubSession = null;
-            currentSession.planState = null;
-            executionMode = 'auto';
-            await persistAssistantExchange(line, result.text || '', { includeUser: false });
-            return { type: 'assistant', text: result.text, aborted: !!result.aborted };
-          }
           currentSession.planState = {
             status: 'pending_approval',
             source: 'auto',
@@ -3390,7 +3543,7 @@ export async function createChatRuntime({
         }
         if (sub === 'approve') {
           if (!hasPendingPlanApproval(currentSession)) {
-            return { type: 'system', text: 'No pending plan approval. Use /plan auto <goal> or /plan <goal> first.' };
+            return { type: 'system', text: 'No pending plan approval. Use /plan auto <goal> first.' };
           }
           await persistUserExchange(line);
           const planState = { ...currentSession.planState };
@@ -3453,7 +3606,7 @@ export async function createChatRuntime({
         }
 
         const goal = parsedInput.args.join(' ').trim();
-        if (!goal) return { type: 'system', text: 'Usage: /plan <goal> | /plan auto <goal> | /plan auto run <goal> | /plan from-spec <spec-path?>' };
+        if (!goal) return { type: 'system', text: 'Usage: /plan <goal> | /plan auto <goal> | /plan from-spec <spec-path?>' };
         const content = buildPlanTemplate(goal);
         const filePath = await writeMarkdownInProjectDir(
           'plans',
@@ -3789,6 +3942,13 @@ export async function createChatRuntime({
       }
       if (isStayInPlanText(parsedInput.text)) {
         const text = buildPendingPlanApprovalMessage(currentSession.planState);
+        await persistLocalExchange(line, text);
+        return { type: 'system', text };
+      }
+      if (isRejectPlanText(parsedInput.text)) {
+        currentSession.planState = null;
+        executionMode = 'auto';
+        const text = 'Pending plan rejected and cleared.';
         await persistLocalExchange(line, text);
         return { type: 'system', text };
       }

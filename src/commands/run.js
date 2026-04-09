@@ -10,10 +10,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 const ROLE_TOOL_POLICY = {
-  planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node'],
-  coder: ['read', 'grep', 'list', 'edit', 'write', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'update_todos'],
-  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node'],
-  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search']
+  planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node', 'read_plan', 'update_plan'],
+  coder: ['read', 'grep', 'list', 'edit', 'write', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'update_todos', 'read_plan', 'update_plan'],
+  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'read_plan'],
+  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'read_plan']
 };
 const HARNESS_ROLES = Object.keys(ROLE_TOOL_POLICY);
 

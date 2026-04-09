@@ -6,7 +6,9 @@ import {
   formatDeleteApprovalLines,
   injectPlanStateMessage,
   normalizeDeleteApprovalRequest,
+  parsePendingPlanApprovalMessage,
   parsePlanExecutionResult,
+  parsePlanApprovalAnswer,
   parseDeleteApprovalAnswer,
   parseAutoPlanSummaryMessage,
   parsePlanProgressLine,
@@ -47,6 +49,38 @@ Warning steps: planner:分析现有代码, tester:编写测试用例
 
 test('parseAutoPlanSummaryMessage returns null for non plan-summary system text', () => {
   assert.equal(parseAutoPlanSummaryMessage('Usage: /plan auto <goal>'), null);
+});
+
+test('parseAutoPlanSummaryMessage captures plan steps with role and task lines', () => {
+  const parsed = parseAutoPlanSummaryMessage(`
+Auto plan finished (waiting for /yes)
+Plan File: /tmp/.codemini/plans/plan.md
+Plan Summary: Improve README
+Final Summary: Plan created and waiting for approval before implementation.
+Approval: pending
+Plan Steps:
+  1. [planner] Inspect README structure
+     - task: Review sections and identify weak spots
+  2. [coder] Draft concrete rewrite suggestions
+     - task: Provide prioritized edits with examples
+Next: review the plan summary, then use /yes to execute.
+  `);
+
+  assert.equal(parsed?.planSteps?.length, 2);
+  assert.deepEqual(parsed?.planSteps?.[0], {
+    index: 1,
+    role: 'planner',
+    title: 'Inspect README structure',
+    task: 'Review sections and identify weak spots',
+    status: 'pending'
+  });
+  assert.deepEqual(parsed?.planSteps?.[1], {
+    index: 2,
+    role: 'coder',
+    title: 'Draft concrete rewrite suggestions',
+    task: 'Provide prioritized edits with examples',
+    status: 'pending'
+  });
 });
 
 test('parsePlanProgressLine extracts plan step metadata from streamed text', () => {
@@ -298,4 +332,35 @@ test('parseDeleteApprovalAnswer accepts only yes and no', () => {
   assert.equal(parseDeleteApprovalAnswer('  no  '), 'deny');
   assert.equal(parseDeleteApprovalAnswer('maybe'), 'invalid');
   assert.equal(parseDeleteApprovalAnswer(''), 'empty');
+});
+
+test('parsePlanApprovalAnswer accepts /yes, /reject, and /edit with feedback', () => {
+  assert.deepEqual(parsePlanApprovalAnswer('/yes'), { action: 'approve', command: '/yes' });
+  assert.deepEqual(parsePlanApprovalAnswer('reject'), { action: 'reject', command: '/reject' });
+  assert.deepEqual(parsePlanApprovalAnswer('/edit tighten step 2'), {
+    action: 'edit',
+    feedback: 'tighten step 2',
+    command: '/edit tighten step 2'
+  });
+  assert.deepEqual(parsePlanApprovalAnswer('/edit'), { action: 'missing_feedback', command: '' });
+  assert.deepEqual(parsePlanApprovalAnswer('maybe'), { action: 'invalid', command: '' });
+  assert.deepEqual(parsePlanApprovalAnswer(''), { action: 'empty', command: '' });
+});
+
+test('parsePendingPlanApprovalMessage extracts goal, summary, and file path', () => {
+  const parsed = parsePendingPlanApprovalMessage(
+    [
+      'Plan approval is still pending.',
+      'Goal: Improve README',
+      'Plan File: /tmp/.codemini/plans/plan.md',
+      'Summary: Focus on structure and examples',
+      'Use /yes to execute this plan, /edit <feedback> to revise it, or /reject to discard it.'
+    ].join('\n')
+  );
+  assert.deepEqual(parsed, {
+    goal: 'Improve README',
+    summary: 'Focus on structure and examples',
+    filePath: '/tmp/.codemini/plans/plan.md'
+  });
+  assert.equal(parsePendingPlanApprovalMessage('random message'), null);
 });

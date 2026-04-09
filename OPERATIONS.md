@@ -120,6 +120,9 @@ Use this when you want to separate:
 /spec <topic>
 /plan <goal>
 /plan auto <goal>
+/yes
+/edit <feedback>
+/reject
 /plan from-spec <path?>
 /agents list
 /agents run <role> <task>
@@ -130,6 +133,7 @@ Use this when you want to separate:
 Note:
 - The old manual `/tasks` board has been removed.
 - For complex single-task work, the assistant now maintains an internal session todo checklist automatically and shows it in the TUI.
+- `/plan auto run` is deprecated. Use `/plan auto <goal>` then `/yes`, `/edit <feedback>`, or `/reject`.
 
 Available sub-agent roles:
 
@@ -169,6 +173,20 @@ Then continue with:
 
 ```text
 Execute this plan step by step.
+```
+
+For auto plan approval flow:
+
+```text
+/plan auto <goal>
+/yes
+```
+
+or revise/discard before execution:
+
+```text
+/edit <feedback>
+/reject
 ```
 
 ### Session recovery
