@@ -735,6 +735,63 @@ async function writeFile(root, args) {
   };
 }
 
+async function prepareDeleteTarget(root, args) {
+  const normalizedArgs = normalizePathArgs(args, ['file', 'file_path', 'target', 'directory', 'dir']);
+  const rawPath = String(normalizedArgs?.path || '').trim();
+  if (!rawPath) {
+    throw new Error('delete requires a file or directory path');
+  }
+  const absRoot = path.resolve(root);
+  const realRoot = await fs.realpath(absRoot);
+  const originalTarget = path.resolve(absRoot, rawPath);
+  if (originalTarget === absRoot) {
+    throw new Error('delete requires a path inside the workspace, not the workspace root');
+  }
+  const resolvedTarget = await resolveInWorkspace(root, rawPath);
+  if (resolvedTarget === realRoot) {
+    throw new Error('delete requires a path inside the workspace, not the workspace root');
+  }
+
+  let rawStat;
+  let stat;
+  try {
+    rawStat = await fs.lstat(originalTarget);
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      throw new Error(`delete target not found: ${rawPath}`);
+    }
+    throw error;
+  }
+  try {
+    stat = await fs.stat(resolvedTarget);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+
+  const type = stat?.isDirectory?.() ? 'directory' : rawStat.isDirectory() ? 'directory' : 'file';
+  const pathInWorkspace = toWorkspaceRelative(root, originalTarget);
+  return {
+    originalTarget,
+    resolvedTarget,
+    path: pathInWorkspace,
+    name: path.basename(pathInWorkspace),
+    type
+  };
+}
+
+async function deletePath(root, args) {
+  const target = await prepareDeleteTarget(root, args);
+  await fs.rm(target.originalTarget, { recursive: true, force: false });
+
+  return {
+    ok: true,
+    path: target.path,
+    name: target.name,
+    type: target.type,
+    deleted: true
+  };
+}
+
 async function runCommand(root, config, args) {
   const command = args?.command || '';
   if (!command.trim()) {
@@ -1718,6 +1775,25 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     {
       type: 'function',
       function: {
+        name: 'delete',
+        description:
+          'Delete a file or directory inside the workspace. Use path, file, or file_path to point at the target. Missing targets fail. Workspace escape attempts are rejected.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'File or directory path to delete' },
+            file: { type: 'string', description: 'Alias for path' },
+            file_path: { type: 'string', description: 'Alias for path' },
+            directory: { type: 'string', description: 'Alias for path' },
+            dir: { type: 'string', description: 'Alias for path' }
+          },
+          required: ['path']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'update_todos',
         description:
           'Create or replace the structured todo checklist for the current session. Use this proactively for complex single-task work to track progress. Provide the full current list each time, and keep exactly one item in_progress when work is actively underway.',
@@ -2061,6 +2137,21 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       if (result?.path) await refreshProjectFile(result.path);
       return result;
     },
+    delete: Object.assign(async (args) => {
+      await ensureProjectIndex();
+      const result = await deletePath(workspaceRoot, args);
+      if (result?.path) await refreshProjectFile(result.path);
+      return result;
+    }, {
+      prepareApproval: async (args) => {
+        const target = await prepareDeleteTarget(workspaceRoot, args);
+        return {
+          path: target.path,
+          name: target.name,
+          type: target.type
+        };
+      }
+    }),
     update_todos: async (args = {}) => {
       const oldTodos = normalizeTodos(typeof getTodos === 'function' ? getTodos() : []);
       const nextTodos = normalizeTodos(args?.todos);
@@ -2274,6 +2365,14 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         return `${summary}\n${trimmed}`;
       }
       return summary;
+    },
+
+    delete(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      if (result.ok === false) return JSON.stringify(result);
+      const kind = result.type || 'item';
+      const target = result.path || '';
+      return `[delete: ${kind}] deleted ${target}`;
     },
 
     run(result) {

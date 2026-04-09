@@ -782,6 +782,115 @@ test('chat runtime emits skill lifecycle events for explicit skill commands', { 
   });
 });
 
+test('chat runtime threads requestToolApproval into delete requests and surfaces delete cancellation payloads in auto mode', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-delete-approval-'));
+    const previousCwd = process.cwd();
+    const approvalRequests = [];
+    let callIndex = 0;
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      callIndex += 1;
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+
+      if (callIndex === 1) {
+        return makeSseResponse([
+          {
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'call_delete_runtime',
+                      function: {
+                        name: 'delete',
+                        arguments: '{"path":"notes/todo.txt"}'
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            choices: [
+              {
+                delta: {},
+                finish_reason: 'tool_calls'
+              }
+            ]
+          }
+        ]);
+      }
+
+      const toolMessage = (body.messages || []).find(
+        (message) => message?.role === 'tool' && message?.tool_call_id === 'call_delete_runtime'
+      );
+      assert.ok(toolMessage);
+      assert.deepEqual(JSON.parse(String(toolMessage.content || '{}')), {
+        ok: false,
+        path: 'notes/todo.txt',
+        name: 'todo.txt',
+        type: 'file',
+        deleted: false,
+        cancelled: true,
+        reason: 'User denied deletion approval'
+      });
+
+      return makeSseResponse([
+        { choices: [{ delta: { content: 'delete approval denied' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] }
+      ]);
+    });
+
+    try {
+      process.chdir(cwd);
+      await fs.mkdir(path.join(cwd, 'notes'), { recursive: true });
+      await fs.writeFile(path.join(cwd, 'notes', 'todo.txt'), 'keep me\n', 'utf8');
+
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+      config.execution.mode = 'auto';
+      config.execution.always_allow_tools = ['delete'];
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-delete-approval',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.',
+        requestToolApproval: async (request) => {
+          approvalRequests.push(request);
+          return { approved: false };
+        }
+      });
+
+      const result = await runtime.submit('delete notes/todo.txt');
+      assert.equal(result.text, 'delete approval denied');
+      assert.equal(approvalRequests.length, 1);
+      assert.equal(approvalRequests[0]?.name, 'delete');
+      assert.equal(approvalRequests[0]?.arguments?.path, 'notes/todo.txt');
+      assert.deepEqual(approvalRequests[0]?.arguments?.approval, {
+        path: 'notes/todo.txt',
+        name: 'todo.txt',
+        type: 'file'
+      });
+
+      const fileContents = await fs.readFile(path.join(cwd, 'notes', 'todo.txt'), 'utf8');
+      assert.equal(fileContents, 'keep me\n');
+    } finally {
+      process.chdir(previousCwd);
+      await restoreFetch();
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
 test('chat runtime auto-injects brainstorm for ambiguous feature requests', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let inspected = false;

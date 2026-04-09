@@ -60,6 +60,25 @@ test('write rejects creating files through symlinked directories outside the wor
   });
 });
 
+test('delete rejects symlinked paths that resolve outside the workspace', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const externalRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-security-external-'));
+    try {
+      await fs.mkdir(path.join(externalRoot, 'secrets'), { recursive: true });
+      await fs.writeFile(path.join(externalRoot, 'secrets', 'token.txt'), 'top-secret\n', 'utf8');
+      await fs.symlink(path.join(externalRoot, 'secrets'), path.join(workspaceRoot, 'linked-secrets'), 'dir');
+
+      const { handlers } = await makeTools(workspaceRoot);
+      await assert.rejects(
+        () => handlers.delete({ path: 'linked-secrets/token.txt' }),
+        /workspace/i
+      );
+    } finally {
+      await fs.rm(externalRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 test('command policy inspects chained commands beyond the first token', () => {
   const config = {
     shell: { default: 'bash' },

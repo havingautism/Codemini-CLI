@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 
 import {
   buildPreToolNotice,
+  formatDeleteApprovalLines,
   injectPlanStateMessage,
+  normalizeDeleteApprovalRequest,
   parsePlanExecutionResult,
+  parseDeleteApprovalAnswer,
   parseAutoPlanSummaryMessage,
   parsePlanProgressLine,
   stripPlanExecutionResult
@@ -37,7 +40,8 @@ Warning steps: planner:分析现有代码, tester:编写测试用例
     warnings: '2',
     failed: '0',
     warningSteps: 'planner:分析现有代码, tester:编写测试用例',
-    failedSteps: ''
+    failedSteps: '',
+    planSteps: []
   });
 });
 
@@ -141,7 +145,7 @@ test('buildPreToolNotice gives the user a visible pre-tool progress hint', () =>
     toolActivity: { doingRead: 'Reading file', doingList: 'Inspecting directory', doingCommand: 'Running command' }
   });
   assert.match(enNotice, /I'll/i);
-  assert.match(enNotice, /directory/i);
+  assert.match(enNotice, /list the contents/i);
 });
 
 test('describeToolActivity uses more precise labels for list, glob, and grep', () => {
@@ -150,6 +154,8 @@ test('describeToolActivity uses more precise labels for list, glob, and grep', (
       blocked: '工具被拦截',
       doneList: '已列出目录',
       doingList: '正在列出目录',
+      doneDelete: '已删除目标',
+      doingDelete: '正在等待删除确认',
       doneGlob: '已按模式查找文件',
       doingGlob: '正在按模式查找文件',
       doneGrep: '已搜索关键词',
@@ -168,6 +174,7 @@ test('describeToolActivity uses more precise labels for list, glob, and grep', (
   };
 
   assert.equal(describeToolActivity(zhCopy, 'list(src)', { done: true }), '已列出目录: src');
+  assert.equal(describeToolActivity(zhCopy, 'delete(src/old.ts)'), '正在等待删除确认: src/old.ts');
   assert.equal(describeToolActivity(zhCopy, 'glob(src/**/*.ts)'), '正在按模式查找文件: src/**/*.ts');
   assert.equal(describeToolActivity(zhCopy, 'grep(loginUser)'), '正在搜索关键词: loginUser');
   assert.equal(describeToolActivity(zhCopy, 'list_background_tasks', { done: true }), '已列出后台任务: list_background_tasks');
@@ -194,4 +201,101 @@ test('skill activity helpers produce concise skill status text', () => {
     roleLabels: { system: 'SYSTEM' }
   };
   assert.equal(formatAutoSkillBadge(enCopy, ['superpowers-lite']), 'AUTO /superpowers-lite');
+});
+
+test('normalizeDeleteApprovalRequest and formatting support zh/en delete approval copy', () => {
+  const request = {
+    id: 'delete-1',
+    name: 'delete',
+    approvalDetails: {
+      path: 'src/old.ts',
+      name: 'old.ts',
+      type: 'file'
+    }
+  };
+  assert.deepEqual(normalizeDeleteApprovalRequest(request), {
+    id: 'delete-1',
+    toolName: 'delete',
+    path: 'src/old.ts',
+    name: 'old.ts',
+    type: 'file'
+  });
+
+  const zhLines = formatDeleteApprovalLines(
+    {
+      deleteApproval: {
+        title: '确认删除？',
+        pathLabel: '路径',
+        nameLabel: '名称',
+        typeLabel: '类型',
+        fileType: '文件',
+        directoryType: '目录',
+        prompt: '输入 yes 确认删除，输入 no 取消。'
+      }
+    },
+    request
+  );
+  assert.deepEqual(zhLines, [
+    '确认删除？',
+    '路径: src/old.ts',
+    '名称: old.ts',
+    '类型: 文件',
+    '输入 yes 确认删除，输入 no 取消。'
+  ]);
+
+  const enLines = formatDeleteApprovalLines(
+    {
+      deleteApproval: {
+        title: 'Confirm deletion?',
+        pathLabel: 'Path',
+        nameLabel: 'Name',
+        typeLabel: 'Type',
+        fileType: 'file',
+        directoryType: 'directory',
+        prompt: 'Type yes to delete, or no to cancel.'
+      }
+    },
+    request
+  );
+  assert.deepEqual(enLines, [
+    'Confirm deletion?',
+    'Path: src/old.ts',
+    'Name: old.ts',
+    'Type: file',
+    'Type yes to delete, or no to cancel.'
+  ]);
+});
+
+test('formatDeleteApprovalLines prefixes root-level files with ./ for clarity', () => {
+  const lines = formatDeleteApprovalLines(
+    {
+      deleteApproval: {
+        title: '确认删除？',
+        pathLabel: '路径',
+        nameLabel: '名称',
+        typeLabel: '类型',
+        fileType: '文件',
+        directoryType: '目录',
+        prompt: '输入 yes 确认删除，输入 no 取消。'
+      }
+    },
+    {
+      id: 'delete-root',
+      name: 'delete',
+      approvalDetails: {
+        path: 'TEST_RELIABILITY_PLAN.md',
+        name: 'TEST_RELIABILITY_PLAN.md',
+        type: 'file'
+      }
+    }
+  );
+
+  assert.equal(lines[1], '路径: ./TEST_RELIABILITY_PLAN.md');
+});
+
+test('parseDeleteApprovalAnswer accepts only yes and no', () => {
+  assert.equal(parseDeleteApprovalAnswer('yes'), 'approve');
+  assert.equal(parseDeleteApprovalAnswer('  no  '), 'deny');
+  assert.equal(parseDeleteApprovalAnswer('maybe'), 'invalid');
+  assert.equal(parseDeleteApprovalAnswer(''), 'empty');
 });

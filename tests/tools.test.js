@@ -439,56 +439,11 @@ test('edit applies stable minimal edits through symbol-targeted block replacemen
   });
 });
 
-test('generate_diff compares current file with proposed content', async () => {
+test('current toolset no longer exposes legacy generate_diff and patch handlers', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
-    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
-    await fs.writeFile(path.join(workspaceRoot, 'src', 'demo.ts'), 'export const value = 1;\n', 'utf8');
-
     const { handlers } = await makeTools(workspaceRoot);
-    const diff = await handlers.generate_diff({
-      path: 'src/demo.ts',
-      new_content: 'export const value = 2;\n'
-    });
-
-    assert.equal(diff.path, 'src/demo.ts');
-    assert.match(diff.diff, /-export const value = 1;/);
-    assert.match(diff.diff, /\+export const value = 2;/);
-  });
-});
-
-test('patch applies a unified diff to a file', async () => {
-  await withTempWorkspace(async (workspaceRoot) => {
-    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
-    await fs.writeFile(
-      path.join(workspaceRoot, 'src', 'demo.tsx'),
-      [
-        "import React from 'react';",
-        '',
-        'export function Demo() {',
-        '  return <div className="demo">Old</div>;',
-        '}'
-      ].join('\n'),
-      'utf8'
-    );
-
-    const { handlers } = await makeTools(workspaceRoot);
-    const result = await handlers.patch({
-      patch: [
-        '--- src/demo.tsx',
-        '+++ src/demo.tsx',
-        '@@ -1,5 +1,5 @@',
-        " import React from 'react';",
-        '',
-        ' export function Demo() {',
-        '-  return <div className="demo">Old</div>;',
-        '+  return <div className="demo">New</div>;',
-        '}'
-      ].join('\n')
-    });
-
-    assert.equal(result.ok, true);
-    const after = await fs.readFile(path.join(workspaceRoot, 'src', 'demo.tsx'), 'utf8');
-    assert.match(after, /New/);
+    assert.equal(typeof handlers.generate_diff, 'undefined');
+    assert.equal(typeof handlers.patch, 'undefined');
   });
 });
 
@@ -533,6 +488,143 @@ test('write still allows new files and explicit full rewrites for code files', a
 
     const afterText = await fs.readFile(path.join(workspaceRoot, 'src', 'demo.ts'), 'utf8');
     assert.match(afterText, /value = 2/);
+  });
+});
+
+test('delete removes files and reports concise structured metadata', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, 'src', 'remove-me.txt'), 'temporary\n', 'utf8');
+
+    const { handlers, formatters } = await makeTools(workspaceRoot);
+
+    assert.equal(typeof handlers.delete, 'function');
+    assert.equal(typeof formatters.delete, 'function');
+
+    const result = await handlers.delete({ path: 'src/remove-me.txt' });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.path, 'src/remove-me.txt');
+    assert.equal(result.name, 'remove-me.txt');
+    assert.equal(result.type, 'file');
+    assert.equal(result.deleted, true);
+    assert.match(formatters.delete(result), /deleted src\/remove-me\.txt/);
+  });
+});
+
+test('delete removes directories recursively with structured metadata', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src', 'nested'), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, 'src', 'nested', 'child.txt'), 'nested\n', 'utf8');
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const result = await handlers.delete({ path: 'src/nested' });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.path, 'src/nested');
+    assert.equal(result.name, 'nested');
+    assert.equal(result.type, 'directory');
+    assert.equal(result.deleted, true);
+    await assert.rejects(
+      () => fs.stat(path.join(workspaceRoot, 'src', 'nested')),
+      /ENOENT/
+    );
+  });
+});
+
+test('delete resolves in-workspace symlinked file targets to the real file metadata', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, 'src', 'real-file.txt'), 'temporary\n', 'utf8');
+    await fs.symlink(path.join(workspaceRoot, 'src', 'real-file.txt'), path.join(workspaceRoot, 'src', 'linked-file.txt'));
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const result = await handlers.delete({ path: 'src/linked-file.txt' });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.path, 'src/linked-file.txt');
+    assert.equal(result.name, 'linked-file.txt');
+    assert.equal(result.type, 'file');
+    assert.equal(result.deleted, true);
+    await assert.rejects(() => fs.stat(path.join(workspaceRoot, 'src', 'linked-file.txt')), /ENOENT/);
+    assert.match(await fs.readFile(path.join(workspaceRoot, 'src', 'real-file.txt'), 'utf8'), /temporary/);
+  });
+});
+
+test('delete resolves in-workspace symlinked directory targets to the real directory metadata', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src', 'real-dir'), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, 'src', 'real-dir', 'child.txt'), 'nested\n', 'utf8');
+    await fs.symlink(path.join(workspaceRoot, 'src', 'real-dir'), path.join(workspaceRoot, 'src', 'linked-dir'));
+
+    const { handlers } = await makeTools(workspaceRoot);
+    const result = await handlers.delete({ path: 'src/linked-dir' });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.path, 'src/linked-dir');
+    assert.equal(result.name, 'linked-dir');
+    assert.equal(result.type, 'directory');
+    assert.equal(result.deleted, true);
+    await assert.rejects(() => fs.stat(path.join(workspaceRoot, 'src', 'linked-dir')), /ENOENT/);
+    assert.ok((await fs.stat(path.join(workspaceRoot, 'src', 'real-dir'))).isDirectory());
+    assert.match(await fs.readFile(path.join(workspaceRoot, 'src', 'real-dir', 'child.txt'), 'utf8'), /nested/);
+  });
+});
+
+test('delete rejects missing targets', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { handlers } = await makeTools(workspaceRoot);
+
+    await assert.rejects(
+      () => handlers.delete({ path: 'src/missing.txt' }),
+      /not found|missing|ENOENT/i
+    );
+  });
+});
+
+test('delete rejects root-equivalent paths after resolution', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, 'src', 'keep.txt'), 'keep\n', 'utf8');
+
+    const { handlers } = await makeTools(workspaceRoot);
+
+    await assert.rejects(
+      () => handlers.delete({ path: 'src/..' }),
+      /workspace root|root/i
+    );
+    await assert.rejects(
+      () => handlers.delete({ path: 'a/../' }),
+      /workspace root|root/i
+    );
+    assert.match(await fs.readFile(path.join(workspaceRoot, 'src', 'keep.txt'), 'utf8'), /keep/);
+  });
+});
+
+test('delete refreshes the lightweight project file index after removal', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
+    await fs.writeFile(path.join(workspaceRoot, 'package.json'), JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2));
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'service.ts'),
+      ['export function greet(name) {', '  return name;', '}'].join('\n'),
+      'utf8'
+    );
+
+    const events = [];
+    const { handlers } = await makeToolsWithSystemEvents(workspaceRoot, (event) => events.push(event));
+    const result = await handlers.delete({ path: 'src/service.ts' });
+
+    assert.equal(result.ok, true);
+    const fileIndex = JSON.parse(await fs.readFile(path.join(workspaceRoot, '.codemini-project', 'file-index.json'), 'utf8'));
+    assert.equal(fileIndex.files.some((entry) => entry.file === 'src/service.ts'), false);
+    assert.deepEqual(
+      events.map((event) => `${event.type}:${event.name}`),
+      [
+        'system_tool:end:project_index(.codemini-project/project-map.json,.codemini-project/file-index.json)',
+        'system_tool:end:file_index(src/service.ts)'
+      ]
+    );
   });
 });
 
@@ -610,6 +702,7 @@ test('builtin tool definitions expose only current primary and structured tools'
     assert.ok(names.includes('query_project_index'));
     assert.ok(names.includes('edit'));
     assert.ok(names.includes('write'));
+    assert.ok(names.includes('delete'));
     assert.ok(names.includes('run'));
     assert.ok(names.includes('update_todos'));
     assert.ok(names.includes('tool_search'));
@@ -617,11 +710,11 @@ test('builtin tool definitions expose only current primary and structured tools'
     // AST, memory, and background-task management tools are deferred
     assert.ok(!names.includes('ast_query'));
     assert.ok(!names.includes('read_ast_node'));
-    assert.ok(!names.includes('glob'));
+    assert.ok(names.includes('glob'));
     assert.ok(!names.includes('remember_project'));
     assert.ok(!names.includes('list_memory'));
     assert.ok(!names.includes('list_background_tasks'));
-    assert.ok('glob' in deferredDefinitions);
+    assert.ok(!('glob' in deferredDefinitions));
     assert.ok('ast_query' in deferredDefinitions);
     assert.ok('read_ast_node' in deferredDefinitions);
     assert.ok('remember_project' in deferredDefinitions);
@@ -1160,7 +1253,7 @@ test('agent loop asks for a more concrete summary after generic completion text'
   });
 });
 
-test('agent loop enforces query_project_index first for broad repo analysis tasks', async () => {
+test('agent loop blocks unrelated skills exploration during broad repo analysis', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const config = await loadConfig();
     const { definitions, formatters, deferredDefinitions } = getBuiltinTools({ workspaceRoot, config });
@@ -1174,7 +1267,9 @@ test('agent loop enforces query_project_index first for broad repo analysis task
       maxSteps: 6,
       toolDefinitions: definitions,
       toolHandlers: {
-        glob: async () => ({ pattern: 'tests/*command*.test.js', matches: ['tests/command-loader.test.js'] }),
+        glob: async () => {
+          throw new Error('glob should be blocked before execution for skills/ exploration');
+        },
         query_project_index: async () => ({
           query: '项目优化 project optimize',
           project_root: workspaceRoot,
@@ -1203,7 +1298,7 @@ test('agent loop enforces query_project_index first for broad repo analysis task
       deferredDefinitions,
       requestCompletion: async ({ messages }) => {
         const last = messages.at(-1);
-        if (last?.role === 'tool' && String(last.content || '').includes('query_project_index before broad repository exploration')) {
+        if (last?.role === 'tool' && String(last.content || '').includes('Skip skills/ for broad repository analysis')) {
           stage = 2;
           return {
             text: '',
@@ -1224,7 +1319,7 @@ test('agent loop enforces query_project_index first for broad repo analysis task
               {
                 id: 'call_glob_first',
                 name: 'glob',
-                arguments: JSON.stringify({ pattern: 'tests/*command*.test.js' })
+                arguments: JSON.stringify({ pattern: 'skills/**/*.md' })
               }
             ]
           };
@@ -1258,7 +1353,7 @@ test('agent loop enforces query_project_index first for broad repo analysis task
 
     const blockedToolMessage = result.messages.find((msg) => msg.role === 'tool' && msg.tool_call_id === 'call_glob_first');
     assert.ok(blockedToolMessage);
-    assert.match(String(blockedToolMessage.content), /query_project_index before broad repository exploration/i);
+    assert.match(String(blockedToolMessage.content), /Skip skills\/ for broad repository analysis unless the user explicitly asks for it/i);
     assert.equal(result.text, '发现两个可优化点：先查索引再读源码，并减少泛目录探索。');
   });
 });
@@ -1413,6 +1508,188 @@ test('agent loop accepts write aliases and edit content shorthand', async () => 
     const updated = await fs.readFile(path.join(workspaceRoot, 'src', 'demo.ts'), 'utf8');
     assert.equal(created, 'hello from alias\n');
     assert.match(updated, /value = 4/);
+  });
+});
+
+test('agent loop normalizes delete approval metadata and returns delete-specific cancellation when denied', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const approvalRequests = [];
+    const deleteHandler = async () => {
+      throw new Error('delete handler should not run when approval is denied');
+    };
+    deleteHandler.prepareApproval = async (args) => ({
+      path: String(args?.path || ''),
+      name: 'demo.txt',
+      type: 'file'
+    });
+
+    const result = await runAgentLoop({
+      systemPrompt: 'You are a test agent.',
+      userPrompt: 'delete a file',
+      model: 'test-model',
+      maxSteps: 2,
+      toolDefinitions: [],
+      toolHandlers: {
+        delete: deleteHandler
+      },
+      toolFormatters: {},
+      executionMode: 'normal',
+      alwaysAllowTools: [],
+      requestToolApproval: async (request) => {
+        approvalRequests.push(request);
+        return { approved: false };
+      },
+      requestCompletion: async ({ messages }) => {
+        const hasToolResult = messages.some((msg) => msg.role === 'tool');
+        if (!hasToolResult) {
+          return {
+            text: '',
+            toolCalls: [
+              {
+                id: 'call_delete_denied',
+                name: 'delete',
+                arguments: '{"target":"tmp/demo.txt"}'
+              }
+            ]
+          };
+        }
+        return {
+          text: 'delete denied',
+          toolCalls: []
+        };
+      }
+    });
+
+    assert.equal(approvalRequests.length, 1);
+    assert.equal(approvalRequests[0]?.name, 'delete');
+    assert.equal(approvalRequests[0]?.arguments?.path, 'tmp/demo.txt');
+    assert.deepEqual(approvalRequests[0]?.arguments?.approval, {
+      path: 'tmp/demo.txt',
+      name: 'demo.txt',
+      type: 'file'
+    });
+
+    const toolMessage = result.messages.find((msg) => msg.role === 'tool' && msg.tool_call_id === 'call_delete_denied');
+    assert.ok(toolMessage);
+    const payload = JSON.parse(String(toolMessage.content || '{}'));
+    assert.deepEqual(payload, {
+      ok: false,
+      path: 'tmp/demo.txt',
+      name: 'demo.txt',
+      type: 'file',
+      deleted: false,
+      cancelled: true,
+      reason: 'User denied deletion approval'
+    });
+    assert.equal(result.text, 'delete denied');
+  });
+});
+
+test('agent loop surfaces delete preflight errors before requesting approval', async () => {
+  await withTempWorkspace(async () => {
+    let approvalCalls = 0;
+    const deleteHandler = async () => {
+      throw new Error('delete handler should not run when preflight fails');
+    };
+    deleteHandler.prepareApproval = async () => {
+      throw new Error('delete target not found: tmp/missing.txt');
+    };
+
+    const result = await runAgentLoop({
+      systemPrompt: 'You are a test agent.',
+      userPrompt: 'delete a missing file',
+      model: 'test-model',
+      maxSteps: 2,
+      toolDefinitions: [],
+      toolHandlers: { delete: deleteHandler },
+      toolFormatters: {},
+      executionMode: 'normal',
+      alwaysAllowTools: [],
+      requestToolApproval: async () => {
+        approvalCalls += 1;
+        return { approved: false };
+      },
+      requestCompletion: async ({ messages }) => {
+        const hasToolResult = messages.some((msg) => msg.role === 'tool');
+        if (!hasToolResult) {
+          return {
+            text: '',
+            toolCalls: [
+              {
+                id: 'call_delete_missing',
+                name: 'delete',
+                arguments: '{"path":"tmp/missing.txt"}'
+              }
+            ]
+          };
+        }
+        return {
+          text: 'delete failed before approval',
+          toolCalls: []
+        };
+      }
+    });
+
+    assert.equal(approvalCalls, 0);
+    const toolMessage = result.messages.find((msg) => msg.role === 'tool' && msg.tool_call_id === 'call_delete_missing');
+    assert.ok(toolMessage);
+    assert.match(String(toolMessage.content || ''), /delete target not found/i);
+    assert.equal(result.text, 'delete failed before approval');
+  });
+});
+
+test('agent loop requires delete approval even in auto mode', async () => {
+  await withTempWorkspace(async () => {
+    let approvalCalls = 0;
+    const deleteHandler = async () => {
+      throw new Error('delete handler should not run before approval in auto mode');
+    };
+    deleteHandler.prepareApproval = async (args) => ({
+      path: String(args?.path || ''),
+      name: 'demo.txt',
+      type: 'file'
+    });
+
+    const result = await runAgentLoop({
+      systemPrompt: 'You are a test agent.',
+      userPrompt: 'delete a file',
+      model: 'test-model',
+      maxSteps: 2,
+      toolDefinitions: [],
+      toolHandlers: { delete: deleteHandler },
+      toolFormatters: {},
+      executionMode: 'auto',
+      alwaysAllowTools: ['delete'],
+      requestToolApproval: async () => {
+        approvalCalls += 1;
+        return { approved: false };
+      },
+      requestCompletion: async ({ messages }) => {
+        const hasToolResult = messages.some((msg) => msg.role === 'tool');
+        if (!hasToolResult) {
+          return {
+            text: '',
+            toolCalls: [
+              {
+                id: 'call_delete_auto',
+                name: 'delete',
+                arguments: '{"path":"tmp/demo.txt"}'
+              }
+            ]
+          };
+        }
+        return {
+          text: 'delete denied in auto mode',
+          toolCalls: []
+        };
+      }
+    });
+
+    assert.equal(approvalCalls, 1);
+    const toolMessage = result.messages.find((msg) => msg.role === 'tool' && msg.tool_call_id === 'call_delete_auto');
+    assert.ok(toolMessage);
+    assert.match(String(toolMessage.content || ''), /User denied deletion approval/);
+    assert.equal(result.text, 'delete denied in auto mode');
   });
 });
 

@@ -2037,6 +2037,7 @@ async function askModel({
   model,
   systemPrompt,
   onAgentEvent,
+  requestToolApproval,
   persistSession = true,
   executionMode,
   alwaysAllowTools,
@@ -2205,6 +2206,7 @@ async function askModel({
     toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
     toolFormatters: formatters,
     deferredDefinitions: filteredDeferred,
+    requestToolApproval,
     signal,
     skipAnalysisNudge,
     requestCompletion: async ({ messages, tools, model: selectedModel }) => {
@@ -2648,8 +2650,10 @@ export async function createChatRuntime({
   session,
   config: initialConfig,
   model,
-  systemPrompt
+  systemPrompt,
+  requestToolApproval
 }) {
+  let activeRequestToolApproval = typeof requestToolApproval === 'function' ? requestToolApproval : null;
   const startupEvents = [];
   const initialIndex = await initializeProjectIndex(process.cwd()).catch(() => null);
   if (initialIndex?.summary) {
@@ -3605,6 +3609,7 @@ export async function createChatRuntime({
           model,
           systemPrompt: activeReplySystemPrompt,
           onAgentEvent,
+          requestToolApproval: activeRequestToolApproval,
           executionMode,
           signal
         });
@@ -3742,6 +3747,7 @@ export async function createChatRuntime({
           model,
           systemPrompt: activeReplySystemPrompt,
           onAgentEvent,
+          requestToolApproval: activeRequestToolApproval,
           executionMode,
           signal
         });
@@ -3865,6 +3871,7 @@ export async function createChatRuntime({
       model,
       systemPrompt: routedSystemPrompt,
       onAgentEvent,
+      requestToolApproval: activeRequestToolApproval,
       executionMode,
       signal
     });
@@ -3886,6 +3893,10 @@ export async function createChatRuntime({
     consumeStartupEvents: () => startupEvents.splice(0, startupEvents.length),
     getInputHistory: () => loadInputHistory(),
     getCurrentSessionId: () => currentSession.id,
+    setRequestToolApproval: (handler) => {
+      activeRequestToolApproval = typeof handler === 'function' ? handler : null;
+      return true;
+    },
     getRuntimeState: () =>
       buildRuntimeStateSnapshot({
         currentSession,

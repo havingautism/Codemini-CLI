@@ -158,6 +158,8 @@ const TUI_COPY = {
       doingEdit: '正在编辑文件',
       doneWrite: '已写入文件',
       doingWrite: '正在写入文件',
+      doneDelete: '已删除目标',
+      doingDelete: '正在等待删除确认',
       donePatch: '已应用补丁',
       doingPatch: '正在应用补丁',
       doneList: '已列出目录',
@@ -243,6 +245,19 @@ const TUI_COPY = {
       idleReadyDetail: '就绪',
       idleAfterTurn: '空闲',
       idleAfterTurnDetail: '等待下一轮输入'
+    },
+    deleteApproval: {
+      title: '确认删除？',
+      pathLabel: '路径',
+      nameLabel: '名称',
+      typeLabel: '类型',
+      fileType: '文件',
+      directoryType: '目录',
+      prompt: '输入 yes 确认删除，输入 no 取消。',
+      invalidAnswer: '请输入 yes 或 no。',
+      inputLocked: '删除确认进行中，请输入 yes 或 no',
+      answerLabel: '确认输入（yes/no）',
+      answerPlaceholder: 'yes 或 no'
     }
   },
   en: {
@@ -300,6 +315,8 @@ const TUI_COPY = {
       doingEdit: 'Editing file',
       doneWrite: 'Wrote file',
       doingWrite: 'Writing file',
+      doneDelete: 'Deleted target',
+      doingDelete: 'Waiting for delete approval',
       donePatch: 'Applied patch',
       doingPatch: 'Applying patch',
       doneList: 'Listed directory',
@@ -385,6 +402,19 @@ const TUI_COPY = {
       idleReadyDetail: 'ready',
       idleAfterTurn: 'idle',
       idleAfterTurnDetail: 'ready for next input'
+    },
+    deleteApproval: {
+      title: 'Confirm deletion?',
+      pathLabel: 'Path',
+      nameLabel: 'Name',
+      typeLabel: 'Type',
+      fileType: 'file',
+      directoryType: 'directory',
+      prompt: 'Type yes to delete, or no to cancel.',
+      invalidAnswer: 'Please enter yes or no.',
+      inputLocked: 'Delete approval is active; type yes or no',
+      answerLabel: 'Approval input (yes/no)',
+      answerPlaceholder: 'yes or no'
     }
   }
 };
@@ -901,6 +931,49 @@ export function getPendingUserMessageMeta(copy, { immediateLocal = false, inFlig
   };
 }
 
+export function normalizeDeleteApprovalRequest(request) {
+  if (!request || String(request?.name || '').trim() !== 'delete') return null;
+  const details =
+    request?.approvalDetails && typeof request.approvalDetails === 'object' && !Array.isArray(request.approvalDetails)
+      ? request.approvalDetails
+      : request?.arguments?.approval && typeof request.arguments.approval === 'object' && !Array.isArray(request.arguments.approval)
+        ? request.arguments.approval
+        : {};
+  const fallbackPath = String(details.path || request?.arguments?.path || '').trim();
+  const pathValue = fallbackPath;
+  const nameValue = String(details.name || (pathValue ? pathValue.split(/[\\/]/).pop() : '') || '').trim();
+  const typeValue = String(details.type || '').trim() === 'directory' ? 'directory' : 'file';
+  if (!pathValue) return null;
+  return {
+    id: String(request?.id || '').trim(),
+    toolName: 'delete',
+    path: pathValue,
+    name: nameValue || pathValue,
+    type: typeValue
+  };
+}
+
+export function parseDeleteApprovalAnswer(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'yes') return 'approve';
+  if (normalized === 'no') return 'deny';
+  return normalized ? 'invalid' : 'empty';
+}
+
+export function formatDeleteApprovalLines(copy, request) {
+  const details = normalizeDeleteApprovalRequest(request);
+  if (!details) return [];
+  const typeLabel = details.type === 'directory' ? copy.deleteApproval.directoryType : copy.deleteApproval.fileType;
+  const pathDisplay = details.path.includes('/') || details.path.includes('\\') ? details.path : `./${details.path}`;
+  return [
+    copy.deleteApproval.title,
+    `${copy.deleteApproval.pathLabel}: ${pathDisplay}`,
+    `${copy.deleteApproval.nameLabel}: ${details.name}`,
+    `${copy.deleteApproval.typeLabel}: ${typeLabel}`,
+    copy.deleteApproval.prompt
+  ];
+}
+
 function getActivityDisplayParts(activity) {
   if (isCodeGenerationActivityName(activity?.name)) {
     return {
@@ -938,6 +1011,7 @@ function getActivityDisplayParts(activity) {
     read: 'Read',
     edit: 'Edit',
     write: 'Write',
+    delete: 'Delete',
     patch: 'Patch',
     run: 'Run',
     grep: 'Search',
@@ -2570,6 +2644,8 @@ function InputBar({
   afterCursor,
   cursorVisible,
   busy,
+  disabled = false,
+  disabledText = '',
   inputStage,
   pendingQueueLength,
   showToolDetails,
@@ -2611,17 +2687,57 @@ function InputBar({
       Box,
       null,
       h(Text, { color: 'cyan' }, 'codemini> '),
-      h(Text, { color: 'white' }, beforeCursor),
-      h(
-        Text,
-        {
-          color: cursorVisible ? 'black' : 'white',
-          backgroundColor: cursorVisible ? 'cyanBright' : undefined
-        },
-        underCursor || ' '
-      ),
-      h(Text, { color: 'white' }, afterCursor)
+      disabled
+        ? h(Text, { color: 'gray' }, disabledText || '')
+        : [
+            h(Text, { key: 'before', color: 'white' }, beforeCursor),
+            h(
+              Text,
+              {
+                key: 'cursor',
+                color: cursorVisible ? 'black' : 'white',
+                backgroundColor: cursorVisible ? 'cyanBright' : undefined
+              },
+              underCursor || ' '
+            ),
+            h(Text, { key: 'after', color: 'white' }, afterCursor)
+          ]
     )
+  );
+}
+
+function DeleteApprovalPanel({ request, inputValue, errorText, copy }) {
+  if (!request) return null;
+  const details =
+    request?.toolName === 'delete'
+      ? request
+      : normalizeDeleteApprovalRequest(request);
+  if (!details) return null;
+  const typeLabel = details.type === 'directory' ? copy.deleteApproval.directoryType : copy.deleteApproval.fileType;
+  const pathDisplay = details.path.includes('/') || details.path.includes('\\') ? details.path : `./${details.path}`;
+  const placeholder = String(copy.deleteApproval.answerPlaceholder || '').trim();
+  return h(
+    Box,
+    {
+      marginTop: 1,
+      flexDirection: 'column',
+      borderStyle: 'round',
+      borderColor: 'redBright',
+      paddingX: 1,
+      paddingY: 0
+    },
+    h(Text, { color: 'redBright' }, copy.deleteApproval.title),
+    h(Text, { color: 'white' }, `${copy.deleteApproval.nameLabel}: ${details.name}`),
+    h(Text, { color: 'white' }, `${copy.deleteApproval.pathLabel}: ${pathDisplay}`),
+    h(Text, { color: 'white' }, `${copy.deleteApproval.typeLabel}: ${typeLabel}`),
+    h(Text, { color: 'gray' }, copy.deleteApproval.prompt),
+    h(
+      Box,
+      { marginTop: 1 },
+      h(Text, { color: 'redBright' }, `${copy.deleteApproval.answerLabel}: `),
+      h(Text, { color: inputValue ? 'white' : 'gray' }, inputValue || placeholder || ' ')
+    ),
+    errorText ? h(Text, { color: 'yellowBright' }, errorText) : null
   );
 }
 
@@ -2706,6 +2822,9 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   const [debugKeys, setDebugKeys] = useState(false);
   const [lastKeyDebug, setLastKeyDebug] = useState('');
   const [showToolDetails, setShowToolDetails] = useState(false);
+  const [pendingDeleteApproval, setPendingDeleteApproval] = useState(null);
+  const [deleteApprovalInput, setDeleteApprovalInput] = useState('');
+  const [deleteApprovalError, setDeleteApprovalError] = useState('');
   const activeAssistantIdRef = useRef(null);
   const activeAssistantAutoSkillNamesRef = useRef([]);
   const streamedAssistantHandledRef = useRef(false);
@@ -2719,6 +2838,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   const activePlanStepRoleRef = useRef(null);
   const activePlanStepInfoRef = useRef(null);
   const activePlanStepTitleRef = useRef('');
+  const deleteApprovalResolverRef = useRef(null);
 
   useEffect(() => {
     const rawStartupActivities = runtime.consumeStartupEvents?.();
@@ -2740,6 +2860,26 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   const escSeqRef = useRef('');
   const planTextBufferRef = useRef('');
   const { exit } = useApp();
+
+  useEffect(() => {
+    if (typeof runtime.setRequestToolApproval !== 'function') return () => {};
+    runtime.setRequestToolApproval((request) => {
+      const normalized = normalizeDeleteApprovalRequest(request);
+      if (!normalized) {
+        return Promise.resolve({ approved: false });
+      }
+      setDeleteApprovalInput('');
+      setDeleteApprovalError('');
+      setPendingDeleteApproval(normalized);
+      return new Promise((resolve) => {
+        deleteApprovalResolverRef.current = resolve;
+      });
+    });
+    return () => {
+      runtime.setRequestToolApproval(null);
+      deleteApprovalResolverRef.current = null;
+    };
+  }, [runtime]);
 
   useEffect(() => {
     messagesRef.current = messages;
@@ -3741,6 +3881,46 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       escSeqRef.current = '';
     }
 
+    if (pendingDeleteApproval) {
+      if (key.return) {
+        const answer = parseDeleteApprovalAnswer(deleteApprovalInput);
+        if (answer === 'approve' || answer === 'deny') {
+          const resolver = deleteApprovalResolverRef.current;
+          deleteApprovalResolverRef.current = null;
+          setPendingDeleteApproval(null);
+          setDeleteApprovalInput('');
+          setDeleteApprovalError('');
+          if (resolver) resolver({ approved: answer === 'approve' });
+        } else {
+          setDeleteApprovalError(copy.deleteApproval.invalidAnswer);
+        }
+        return;
+      }
+
+      if (isBackspaceKey(value, key) || isDeleteKey(value, key)) {
+        setDeleteApprovalInput((prev) => prev.slice(0, -1));
+        setDeleteApprovalError('');
+        return;
+      }
+
+      if (isPrintableInput(value, key)) {
+        setDeleteApprovalInput((prev) => `${prev}${value}`);
+        setDeleteApprovalError('');
+        return;
+      }
+
+      if (key.ctrl && value === 'c') {
+        if (busy && typeof runtime.abort === 'function') {
+          runtime.abort();
+          return;
+        }
+        exit();
+        return;
+      }
+
+      return;
+    }
+
     if (key.upArrow) {
       if (suggestionNav && commandSuggestions.length > 0) {
         setMenuIndex((prev) => moveSuggestionSelection(prev, commandSuggestions.length, 'up'));
@@ -4067,6 +4247,12 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     ),
     h(SuggestionPanel, { commandSuggestions, suggestionNav, menuIndex, copy }),
     h(PendingPanel, { pendingQueue, copy }),
+    h(DeleteApprovalPanel, {
+      request: pendingDeleteApproval,
+      inputValue: deleteApprovalInput,
+      errorText: deleteApprovalError,
+      copy
+    }),
     debugKeys
       ? h(
           Box,
@@ -4080,6 +4266,8 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       afterCursor,
       cursorVisible,
       busy,
+      disabled: Boolean(pendingDeleteApproval),
+      disabledText: pendingDeleteApproval ? copy.deleteApproval.inputLocked : '',
       inputStage,
       pendingQueueLength: pendingQueue.length,
       showToolDetails,

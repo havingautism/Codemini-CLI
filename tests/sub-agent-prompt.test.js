@@ -6,7 +6,9 @@ import { getSubAgentRolePrompt } from '../src/core/chat-runtime.js';
 test('coder sub-agent prompt defines stop conditions and blocked behavior', () => {
   const prompt = getSubAgentRolePrompt('coder');
 
-  assert.match(prompt, /execution sub-agent/i);
-  assert.match(prompt, /Stop when: you have produced the code change and verified it compiles\/passes basic checks\./i);
-  assert.match(prompt, /If blocked: report what blocked you and what you tried, then stop\./i);
+  assert.match(prompt, /coder in a multi-step agent pipeline/i);
+  assert.match(prompt, /Actions Taken:/i);
+  assert.match(prompt, /Verified:/i);
+  assert.match(prompt, /Open Issues:/i);
+  assert.match(prompt, /Do not summarize the goal, recap the plan, or add closing remarks\./i);
 });

@@ -36,6 +36,41 @@ function parseInlineRangePath(value) {
   return { path: maybePath, start_line: start, end_line: end };
 }
 
+function buildDeleteApprovalDetails(source, rawPath) {
+  const existing =
+    source?.approval && typeof source.approval === 'object' && !Array.isArray(source.approval)
+      ? source.approval
+      : {};
+  const approvalPath = String(existing.path || rawPath || '').trim();
+  const approvalName = String(existing.name || (approvalPath ? path.basename(approvalPath) : '') || '').trim();
+  const approvalType = String(existing.type || '').trim();
+
+  const approval = {};
+  if (approvalPath) approval.path = approvalPath;
+  if (approvalName) approval.name = approvalName;
+  if (approvalType) approval.type = approvalType;
+  return Object.keys(approval).length > 0 ? approval : undefined;
+}
+
+function buildDeleteCancellationResult(args) {
+  const approval =
+    args?.approval && typeof args.approval === 'object' && !Array.isArray(args.approval)
+      ? args.approval
+      : undefined;
+  const pathValue = String(approval?.path || args?.path || '').trim();
+  const nameValue = String(approval?.name || (pathValue ? path.basename(pathValue) : '') || '').trim();
+  const typeValue = String(approval?.type || '').trim();
+  return {
+    ok: false,
+    ...(pathValue ? { path: pathValue } : {}),
+    ...(nameValue ? { name: nameValue } : {}),
+    ...(typeValue ? { type: typeValue } : {}),
+    deleted: false,
+    cancelled: true,
+    reason: 'User denied deletion approval'
+  };
+}
+
 function normalizeToolArguments(toolName, args, rawArguments) {
   const rawText = typeof rawArguments === 'string' ? rawArguments.trim() : '';
   const primitive =
@@ -106,6 +141,14 @@ function normalizeToolArguments(toolName, args, rawArguments) {
   if (toolName === 'edit') {
     const value = String(source.path || source.file || source.file_path || '').trim();
     if (value && !source.path) source.path = value;
+    return source;
+  }
+
+  if (toolName === 'delete') {
+    const value = String(source.path || source.file_path || source.file || source.target || source.directory || source.dir || stringValue || '').trim();
+    if (value) source.path = value;
+    const approval = buildDeleteApprovalDetails(source, source.path);
+    if (approval) source.approval = approval;
     return source;
   }
 
@@ -329,6 +372,12 @@ export function summarizeToolResult(result) {
   if (typeof result === 'object') {
     const obj = result;
     if (Array.isArray(obj)) return `array(${obj.length})`;
+    if ('deleted' in obj && 'path' in obj) {
+      const kind = trimInline(obj.type || 'item', 16);
+      const target = trimInline(obj.path || '', 96);
+      if (obj.deleted) return target ? `deleted ${kind} ${target}` : `deleted ${kind}`;
+      if (obj.cancelled) return target ? `cancelled delete ${target}` : 'cancelled delete';
+    }
     if ('path' in obj && 'action' in obj) {
       const p = String(obj.path || '');
       const action = String(obj.action || 'write');
@@ -603,6 +652,10 @@ function formatToolDisplayName(name, args) {
     const target = trimInline(args?.path || args?.file || '.', 96) || '.';
     return `edit(${target})`;
   }
+  if (name === 'delete') {
+    const target = trimInline(args?.path || args?.target || '.', 96) || '.';
+    return `delete(${target})`;
+  }
   if (name === 'update_todos') {
     return 'update_todos';
   }
@@ -776,19 +829,44 @@ export async function runAgentLoop({
     const approvalResults = new Map();
     for (const { call, toolName, displayName, args } of callsWithMeta) {
       let approved = true;
-      if (executionMode === 'normal' && !alwaysAllowSet.has(toolName)) {
+      let approvalArgs = args;
+      let preflightErrorContent = '';
+      const needsApproval = toolName === 'delete' || (executionMode === 'normal' && !alwaysAllowSet.has(toolName));
+      if (needsApproval) {
         approved = false;
+        const handler = toolHandlers[toolName];
+        if (toolName === 'delete' && typeof handler?.prepareApproval === 'function') {
+          try {
+            const approval = await handler.prepareApproval(args);
+            const normalizedApproval = buildDeleteApprovalDetails({ approval }, args?.path);
+            if (normalizedApproval) {
+              approvalArgs = { ...args, approval: normalizedApproval };
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            preflightErrorContent = clipToolResult({ error: message }, toolResultMaxChars);
+          }
+        }
+        if (preflightErrorContent) {
+          approvalResults.set(call.id, {
+            approved: false,
+            args: approvalArgs,
+            errorContent: preflightErrorContent
+          });
+          continue;
+        }
         if (typeof requestToolApproval === 'function') {
           const decision = await requestToolApproval({
             id: call.id,
             name: toolName,
             displayName,
-            arguments: args
+            arguments: approvalArgs,
+            approvalDetails: toolName === 'delete' ? approvalArgs.approval : undefined
           });
           approved = Boolean(decision?.approved);
         }
       }
-      approvalResults.set(call.id, approved);
+      approvalResults.set(call.id, { approved, args: approvalArgs });
     }
 
     // Collect results keyed by call.id, then write to messages in original order
@@ -797,28 +875,45 @@ export async function runAgentLoop({
     // Helper to execute a single tool call
     async function executeOne({ call, args, toolName, displayName, isReadOnly }) {
       const startedAt = Date.now();
+      const approvalState = approvalResults.get(call.id) || { approved: true, args };
+      const effectiveArgs = approvalState.args || args;
 
-      if (!approvalResults.get(call.id)) {
-        if (onEvent) onEvent({ type: 'tool:blocked', name: displayName, id: call.id, arguments: args });
+      if (approvalState.errorContent) {
+        if (onEvent) {
+          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary: trimInline(approvalState.errorContent, 120) });
+        }
         return {
           callId: call.id,
-          content: JSON.stringify({ blocked: true, reason: 'Tool call requires approval in normal mode' }),
+          content: approvalState.errorContent,
+          error: true
+        };
+      }
+
+      if (!approvalState.approved) {
+        if (onEvent) onEvent({ type: 'tool:blocked', name: displayName, id: call.id, arguments: effectiveArgs });
+        const blockedPayload =
+          toolName === 'delete'
+            ? buildDeleteCancellationResult(effectiveArgs)
+            : { blocked: true, reason: 'Tool call requires approval in normal mode' };
+        return {
+          callId: call.id,
+          content: JSON.stringify(blockedPayload),
           blocked: true
         };
       }
 
-      if (onEvent) onEvent({ type: 'tool:start', name: displayName, id: call.id, arguments: args });
+      if (onEvent) onEvent({ type: 'tool:start', name: displayName, id: call.id, arguments: effectiveArgs });
       const handler = toolHandlers[toolName];
       if (!handler) {
         throw new Error(`Unknown tool: ${call.name}`);
       }
 
-      const blockedReason = blockedExplorationReason(toolName, args, analysisGuard);
+      const blockedReason = blockedExplorationReason(toolName, effectiveArgs, analysisGuard);
       if (blockedReason) {
         analysisGuard.blockedExplorations += 1;
         const content = clipToolResult({ error: blockedReason }, toolResultMaxChars);
         if (onEvent) {
-          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: args, durationMs: 0, summary: trimInline(blockedReason, 120) });
+          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary: trimInline(blockedReason, 120) });
         }
         return {
           callId: call.id,
@@ -829,12 +924,12 @@ export async function runAgentLoop({
 
       let toolResult;
       try {
-        toolResult = await handler(args);
+        toolResult = await handler(effectiveArgs);
       } catch (error) {
         const durationMs = Date.now() - startedAt;
         const message = error instanceof Error ? error.message : String(error);
         if (onEvent) {
-          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: args, durationMs, summary: trimInline(message, 120) });
+          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary: trimInline(message, 120) });
         }
         return {
           callId: call.id,
@@ -845,12 +940,12 @@ export async function runAgentLoop({
 
       const durationMs = Date.now() - startedAt;
       if (onEvent) {
-        onEvent({ type: 'tool:end', name: displayName, id: call.id, arguments: args, durationMs, summary: summarizeToolResult(toolResult) });
+        onEvent({ type: 'tool:end', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary: summarizeToolResult(toolResult) });
       }
 
       // P1b: Use per-tool formatter if available, else fallback
-      let formatted = formatToolResult(toolResult, toolName, args, toolFormatters, toolResultMaxChars);
-      noteAnalysisEvidence(analysisGuard, toolName, args, toolResult);
+      let formatted = formatToolResult(toolResult, toolName, effectiveArgs, toolFormatters, toolResultMaxChars);
+      noteAnalysisEvidence(analysisGuard, toolName, effectiveArgs, toolResult);
 
       // P2: If tool_search loaded deferred tools, inject their schemas into activeTools
       if (toolName === 'tool_search' && toolResult && Array.isArray(toolResult.schemas)) {
@@ -869,8 +964,8 @@ export async function runAgentLoop({
     }
 
     // Separate read-only and write calls, preserving order
-    const readOnlyCalls = callsWithMeta.filter((c) => c.isReadOnly && approvalResults.get(c.call.id));
-    const writeCalls = callsWithMeta.filter((c) => !c.isReadOnly || !approvalResults.get(c.call.id));
+    const readOnlyCalls = callsWithMeta.filter((c) => c.isReadOnly && approvalResults.get(c.call.id)?.approved);
+    const writeCalls = callsWithMeta.filter((c) => !c.isReadOnly || !approvalResults.get(c.call.id)?.approved);
 
     // Execute read-only calls in parallel
     if (readOnlyCalls.length > 0) {
