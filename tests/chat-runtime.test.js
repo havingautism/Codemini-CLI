@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createChatRuntime } from '../src/core/chat-runtime.js';
+import { buildPlanWorkingMemoryContext, createChatRuntime, extractStepWorkingMemory } from '../src/core/chat-runtime.js';
 import { loadConfig } from '../src/core/config-store.js';
 import { listMemories, rememberMemory } from '../src/core/memory-store.js';
 import { loadSession, saveSession } from '../src/core/session-store.js';
@@ -116,6 +116,82 @@ test('chat runtime reflects config and mode changes immediately for TUI refresh'
       maxContextTokens: 12345
     });
   });
+});
+
+test('extractStepWorkingMemory keeps only actionable structured handoff items', () => {
+  const memory = extractStepWorkingMemory(
+    [
+      'Actions Taken:',
+      '- Updated src/auth.js',
+      'Findings:',
+      '- Login flow still depends on legacy token parsing',
+      'Verified:',
+      '- npm test -- auth',
+      'Open Issues:',
+      '- Session refresh path is still manual',
+      'Artifacts:',
+      '- src/auth.js',
+      'Next Action:',
+      '- Reviewer should check refresh edge cases'
+    ].join('\n'),
+    ['tests/auth.test.js']
+  );
+
+  assert.deepEqual(memory.actionsTaken, ['- Updated src/auth.js']);
+  assert.deepEqual(memory.findings, ['- Login flow still depends on legacy token parsing']);
+  assert.deepEqual(memory.verified, ['- npm test -- auth']);
+  assert.deepEqual(memory.openIssues, ['- Session refresh path is still manual']);
+  assert.deepEqual(memory.nextAction, ['- Reviewer should check refresh edge cases']);
+  assert.deepEqual(memory.artifacts, ['- src/auth.js', '- tests/auth.test.js']);
+});
+
+test('buildPlanWorkingMemoryContext prefers ledgers and recent step results over raw full-file dumps', () => {
+  const content = [
+    '# Auto Plan: tighten auth flow',
+    '',
+    '## Steps',
+    '1. [planner] Inspect auth flow',
+    '2. [coder] Update auth flow',
+    '',
+    '## Working Memory',
+    '### Findings Ledger',
+    '<!-- plan-findings-start -->',
+    '- Session refresh is shared by login and logout.',
+    '- Reviewer flagged a missing refresh expiry check.',
+    '<!-- plan-findings-end -->',
+    '',
+    '### Progress Ledger',
+    '<!-- plan-progress-start -->',
+    '- Plan created and waiting for execution.',
+    '- Step 1 [planner] Inspect auth flow -> completed :: mapped auth entrypoints',
+    '<!-- plan-progress-end -->',
+    '',
+    '## Step 1 Result: Inspect auth flow',
+    'Role: planner',
+    'Completed: 2026-04-09T00:00:00.000Z',
+    '',
+    'Findings:',
+    '- Session refresh is shared by login and logout.',
+    '',
+    '## Step 2 Result: Update auth flow',
+    'Role: coder',
+    'Completed: 2026-04-09T00:01:00.000Z',
+    '',
+    'Actions Taken:',
+    '- Updated src/auth.js',
+    'Open Issues:',
+    '- Expiry check still needs review'
+  ].join('\n');
+
+  const summary = buildPlanWorkingMemoryContext(content, 1600);
+
+  assert.match(summary, /## Working Memory Snapshot/);
+  assert.match(summary, /### Findings Ledger/);
+  assert.match(summary, /Session refresh is shared by login and logout/);
+  assert.match(summary, /### Progress Ledger/);
+  assert.match(summary, /Step 1 \[planner\] Inspect auth flow/);
+  assert.match(summary, /## Recent Step Results/);
+  assert.match(summary, /## Step 2 Result: Update auth flow/);
 });
 
 test('chat runtime prioritizes important config completions near the top', { concurrency: false }, async () => {
@@ -987,6 +1063,7 @@ test('chat runtime auto-plans complex tasks from ordinary chat input', { concurr
       assert.match(result.text, /Approval: pending/i);
       assert.match(result.text, /Auto plan finished.*waiting for \/plan approve/i);
       assert.match(result.text, /Next: review the plan summary, then use \/plan approve/i);
+      assert.match(result.text, /\[summarizer\] Synthesize final implementation status/i);
       assert.doesNotMatch(result.text, /Steps:\s+\d+\s+total/i);
       assert.match(result.text, /Plan File:/i);
       assert.equal(callIndex, 1);
@@ -1049,6 +1126,70 @@ test('plan auto keeps advisory plans lean instead of forcing reviewer and tester
       assert.match(result.text, /Approval: pending/i);
       assert.doesNotMatch(result.text, /reviewer/i);
       assert.doesNotMatch(result.text, /tester/i);
+      assert.doesNotMatch(result.text, /summarizer/i);
+    } finally {
+      await restoreFetch();
+    }
+  });
+});
+
+test('plan auto appends a summarizer step for multi-step implementation plans', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+      assert.equal(body.stream, undefined);
+      return makeJsonResponse({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                summary: 'Tighten the auth workflow.',
+                steps: [
+                  {
+                    title: 'Inspect auth flow',
+                    role: 'planner',
+                    task: 'Inspect the current auth flow and note constraints.'
+                  },
+                  {
+                    title: 'Update auth flow',
+                    role: 'coder',
+                    task: 'Implement the requested auth changes.'
+                  },
+                  {
+                    title: 'Verify auth flow',
+                    role: 'tester',
+                    task: 'Run focused verification for the auth changes.'
+                  }
+                ]
+              })
+            }
+          }
+        ]
+      });
+    });
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-auto-plan-summarizer',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const result = await runtime.submit('/plan auto tighten auth workflow across handlers and tests');
+      assert.equal(result.type, 'system');
+      assert.match(result.text, /\[planner\] Inspect auth flow/i);
+      assert.match(result.text, /\[tester\] Verify auth flow/i);
+      assert.match(result.text, /\[summarizer\] Synthesize final implementation status/i);
     } finally {
       await restoreFetch();
     }
@@ -1058,6 +1199,7 @@ test('plan auto keeps advisory plans lean instead of forcing reviewer and tester
 test('plan auto run immediately executes the generated plan without pending approval', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let callIndex = 0;
+    const executionPrompts = [];
     const restoreFetch = withMockFetch(async (_url, init) => {
       callIndex += 1;
       const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
@@ -1104,13 +1246,24 @@ test('plan auto run immediately executes the generated plan without pending appr
 
       if (callIndex === 2) {
         assert.equal(body.stream, true);
-        assert.match(String(body.messages?.[1]?.content || ''), /User approval: \/plan auto run/i);
-        assert.match(String(body.messages?.[1]?.content || ''), /Plan file:/i);
-        assert.doesNotMatch(String(body.messages?.[1]?.content || ''), /\[tester\]/i);
-        assert.doesNotMatch(String(body.messages?.[1]?.content || ''), /reviewer/i);
-        assert.doesNotMatch(String(body.messages?.[1]?.content || ''), /tester/i);
+        const scopedTask = String(body.messages?.[1]?.content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Acceptance checklist:/i);
+        assert.match(scopedTask, /Review the current project/i);
         return makeSseResponse([
-          { choices: [{ delta: { content: 'Here is the completed optimization review.' } }] },
+          { choices: [{ delta: { content: 'Findings:\n- Main service layer is tightly coupled\nActions Taken:\n- Inspected core modules\nOpen Issues:\n- none\nNext Action:\n- Summarize the optimization ideas' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 3) {
+        assert.equal(body.stream, true);
+        const scopedTask = String(body.messages?.[1]?.content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Acceptance checklist:/i);
+        assert.match(scopedTask, /Recommend optimizations/i);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Actions Taken:\n- Summarized optimization ideas\nFindings:\n- Cache invalidation and config loading are the top opportunities\nVerified:\n- Reviewed current module boundaries\nOpen Issues:\n- none\nArtifacts:\n- src/core/config-store.js\nNext Action:\n- none' } }] },
           { choices: [{ delta: {}, finish_reason: 'stop' }] }
         ]);
       }
@@ -1138,8 +1291,9 @@ test('plan auto run immediately executes the generated plan without pending appr
       const result = await runtime.submit('/plan auto run review the current project and recommend optimizations');
 
       assert.equal(result.type, 'assistant');
-      assert.match(result.text, /completed optimization review/i);
-      assert.equal(callIndex, 2);
+      assert.match(result.text, /Summarized optimization ideas/i);
+      assert.equal(callIndex, 3);
+      assert.equal(executionPrompts.length, 2);
     } finally {
       await restoreFetch();
     }
@@ -1149,6 +1303,7 @@ test('plan auto run immediately executes the generated plan without pending appr
 test('plan auto run executes the approved plan prompt immediately', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let callIndex = 0;
+    const executionPrompts = [];
     const restoreFetch = withMockFetch(async (_url, init) => {
       callIndex += 1;
       const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
@@ -1187,10 +1342,44 @@ test('plan auto run executes the approved plan prompt immediately', { concurrenc
 
       if (callIndex === 2) {
         assert.equal(body.stream, true);
-        assert.match(String(body.messages?.[1]?.content || ''), /Acceptance checklist:/i);
-        assert.match(String(body.messages?.[1]?.content || ''), /Plan summary: Build and verify a login test plan\./i);
+        const scopedTask = String(body.messages?.[1]?.content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Acceptance checklist:/i);
         return makeSseResponse([
-          { choices: [{ delta: { content: 'Status: done\nVerified: reviewed the login plan structure\nNext: none' } }] },
+          { choices: [{ delta: { content: 'Actions Taken:\n- Drafted login test cases\nFindings:\n- Happy path and invalid password cases are covered\nVerified:\n- Reviewed existing login flows\nOpen Issues:\n- MFA path still needs explicit cases\nArtifacts:\n- docs/login-test-plan.md\nNext Action:\n- Reviewer should inspect for missing scenarios' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 3) {
+        assert.equal(body.stream, true);
+        const scopedTask = String(body.messages?.[1]?.content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Accumulated plan file context/i);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Findings:\n- none\nVerified:\n- Reviewed the drafted test plan for gaps and risky assumptions\nNot Verified:\n- none\nFailures:\n- none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 4) {
+        assert.equal(body.stream, true);
+        const scopedTask = String(body.messages?.[1]?.content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Accumulated plan file context/i);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Verified:\n- Checked that the plan covers password login, MFA, and lockout scenarios\nNot Verified:\n- none\nFailures:\n- none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 5) {
+        assert.equal(body.stream, true);
+        const scopedTask = String(body.messages?.[1]?.content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Build and verify a login test plan\./i);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Summary:\n- Login test plan drafted and reviewed.\nKey Findings:\n- MFA and lockout coverage remain missing.\nActions Taken:\n- Drafted cases and reviewed critical flows.\nRemaining Issues:\n- MFA and lockout scenarios are still unverified.\nRecommended Next Steps:\n- Add explicit MFA and lockout coverage.' } }] },
           { choices: [{ delta: {}, finish_reason: 'stop' }] }
         ]);
       }
@@ -1219,14 +1408,21 @@ test('plan auto run executes the approved plan prompt immediately', { concurrenc
       const result = await runtime.submit('/plan auto run create a login test plan', (event) => events.push(event));
 
       assert.equal(result.type, 'assistant');
-      assert.match(result.text, /Status: done/i);
+      assert.match(result.text, /Login test plan drafted and reviewed/i);
       assert.ok(
         events.some(
           (event) =>
-            event?.type === 'assistant:delta' && String(event.text || '').includes('[plan] Step 1/3 -> coder: Implement login test cases')
+            event?.type === 'assistant:delta' && String(event.text || '').includes('[plan] Step 1/4 -> coder: Implement login test cases')
         )
       );
-      assert.equal(callIndex, 2);
+      assert.ok(
+        events.some(
+          (event) =>
+            event?.type === 'assistant:delta' && String(event.text || '').includes('[plan] Step 4/4 -> summarizer: Synthesize final implementation status')
+        )
+      );
+      assert.equal(callIndex, 5);
+      assert.equal(executionPrompts.length, 4);
     } finally {
       await restoreFetch();
     }
@@ -1270,7 +1466,31 @@ test('plan auto run appends a valid tester step instead of emitting undefined me
       if (callIndex === 2) {
         assert.equal(body.stream, true);
         return makeSseResponse([
-          { choices: [{ delta: { content: 'Status: done\nVerified: exercised the refactor flow\nNext: none' } }] },
+          { choices: [{ delta: { content: 'Actions Taken:\n- Refactored auth flow implementation\nFindings:\n- none\nVerified:\n- Reviewed the affected auth paths\nOpen Issues:\n- none\nArtifacts:\n- src/auth.js\nNext Action:\n- Reviewer should inspect for regressions' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 3) {
+        assert.equal(body.stream, true);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Findings:\n- none\nVerified:\n- Reviewed the refactor for regressions\nNot Verified:\n- none\nFailures:\n- none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 4) {
+        assert.equal(body.stream, true);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Verified:\n- Exercised the refactor flow and focused integration coverage\nNot Verified:\n- none\nFailures:\n- none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 5) {
+        assert.equal(body.stream, true);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Summary:\n- Auth refactor completed with focused review and verification.\nKey Findings:\n- No regression was identified in the reviewed paths.\nActions Taken:\n- Refactored, reviewed, and exercised the auth flow.\nRemaining Issues:\n- Full integration coverage remains unverified.\nRecommended Next Steps:\n- Run broader integration tests if available.' } }] },
           { choices: [{ delta: {}, finish_reason: 'stop' }] }
         ]);
       }
@@ -1299,11 +1519,11 @@ test('plan auto run appends a valid tester step instead of emitting undefined me
       const result = await runtime.submit('/plan auto run refactor the auth flow and verify it', (event) => events.push(event));
 
       assert.equal(result.type, 'assistant');
-      assert.match(result.text, /Status: done/i);
+      assert.match(result.text, /Auth refactor completed/i);
       assert.ok(
         events.some(
           (event) =>
-            event?.type === 'assistant:delta' && String(event.text || '').includes('[plan] Step 3/3 -> tester: Test and verify')
+            event?.type === 'assistant:delta' && String(event.text || '').includes('[plan] Step 3/4 -> tester: Test and verify')
         )
       );
       assert.ok(
@@ -1311,7 +1531,7 @@ test('plan auto run appends a valid tester step instead of emitting undefined me
           (event) => event?.type !== 'assistant:delta' || !/\bundefined\b/i.test(String(event.text || ''))
         )
       );
-      assert.equal(callIndex, 2);
+      assert.equal(callIndex, 5);
     } finally {
       await restoreFetch();
     }
@@ -1424,6 +1644,7 @@ test('chat runtime sends prior assistant reasoning_content back on the post-tool
 test('plan auto run sends the approved plan prompt with the generated plan details', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let callIndex = 0;
+    const executionPrompts = [];
     const restoreFetch = withMockFetch(async (_url, init) => {
       callIndex += 1;
       const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
@@ -1460,11 +1681,43 @@ test('plan auto run sends the approved plan prompt with the generated plan detai
       }
 
       if (callIndex === 2) {
-        assert.match(String(body.messages?.[1]?.content || ''), /Original goal:/i);
-        assert.match(String(body.messages?.[1]?.content || ''), /Acceptance checklist:/i);
-        assert.match(String(body.messages?.[1]?.content || ''), /trim/i);
+        const scopedTask = String(body.messages?.[1]?.content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Original goal:/i);
+        assert.match(scopedTask, /Acceptance checklist:/i);
+        assert.match(scopedTask, /trim/i);
         return makeSseResponse([
-          { choices: [{ delta: { content: 'Status: partial\nVerified: reviewed helper file\nNext: run focused tests' } }] },
+          { choices: [{ delta: { content: 'Actions Taken:\n- Modified auth helper implementation\nFindings:\n- Name trimming is handled at the helper boundary\nVerified:\n- Reviewed helper file\nOpen Issues:\n- none\nArtifacts:\n- src/auth-helper.js\nNext Action:\n- Reviewer should confirm edge cases' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 3) {
+        const scopedTask = String(body.messages?.[1]?.content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Accumulated plan file context \(results from prior steps\):/i);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Findings:\n- none\nVerified:\n- Reviewed helper logic against the goal\nNot Verified:\n- none\nFailures:\n- none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 4) {
+        const scopedTask = String(body.messages?.[1]?.content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Accumulated plan file context \(results from prior steps\):/i);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Verified:\n- Reviewed helper file and focused trim behavior\nNot Verified:\n- none\nFailures:\n- none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 5) {
+        const scopedTask = String(body.messages?.[1]?.content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Update auth helpers safely\./i);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Summary:\n- Auth helper update is partially complete.\nKey Findings:\n- Trim behavior is implemented in the helper.\nActions Taken:\n- Implemented, reviewed, and spot-checked the helper change.\nRemaining Issues:\n- Focused tests still need to run.\nRecommended Next Steps:\n- Run focused helper tests.' } }] },
           { choices: [{ delta: {}, finish_reason: 'stop' }] }
         ]);
       }
@@ -1492,8 +1745,9 @@ test('plan auto run sends the approved plan prompt with the generated plan detai
       const result = await runtime.submit('/plan auto run update auth helper and ensure names are trimmed');
 
       assert.equal(result.type, 'assistant');
-      assert.match(result.text, /Status: partial/i);
-      assert.equal(callIndex, 2);
+      assert.match(result.text, /partially complete/i);
+      assert.equal(callIndex, 5);
+      assert.equal(executionPrompts.length, 4);
     } finally {
       await restoreFetch();
     }
@@ -1810,6 +2064,7 @@ test('chat runtime project index respects .llmignore for source files', { concur
 test('plan auto run includes acceptance checklist for lightweight goals', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let callIndex = 0;
+    const executionPrompts = [];
     const restoreFetch = withMockFetch(async (_url, init) => {
       callIndex += 1;
       const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
@@ -1846,11 +2101,25 @@ test('plan auto run includes acceptance checklist for lightweight goals', { conc
       }
 
       if (callIndex === 2) {
-        assert.match(body.messages[1].content, /Acceptance checklist:/i);
-        assert.match(body.messages[1].content, /Add trimName\(name\) helper in src\/user\.js/i);
+        const scopedTask = String(body.messages[1].content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Acceptance checklist:/i);
+        assert.match(scopedTask, /Add trimName\(name\) helper in src\/user\.js/i);
         return makeSseResponse([
           {
-            choices: [{ delta: { content: 'Status: done\nVerified: confirmed trimName(name) is exported\nNext: none' } }]
+            choices: [{ delta: { content: 'Actions Taken:\n- Added trimName(name) and exported it\nFindings:\n- none\nVerified:\n- Confirmed trimName(name) is exported\nOpen Issues:\n- none\nArtifacts:\n- src/user.js\nNext Action:\n- none' } }]
+          },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 3) {
+        const scopedTask = String(body.messages[1].content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Acceptance checklist:/i);
+        return makeSseResponse([
+          {
+            choices: [{ delta: { content: 'Verified:\n- Confirmed trimName(name) remains exported during verification\nNot Verified:\n- Runtime usage sites\nFailures:\n- none' } }]
           },
           { choices: [{ delta: {}, finish_reason: 'stop' }] }
         ]);
@@ -1879,8 +2148,9 @@ test('plan auto run includes acceptance checklist for lightweight goals', { conc
       const result = await runtime.submit('/plan auto run add trimName(name) helper in src/user.js');
 
       assert.equal(result.type, 'assistant');
-      assert.match(result.text, /Status: done/i);
-      assert.equal(callIndex, 2);
+      assert.match(result.text, /trimName\(name\) is exported/i);
+      assert.equal(callIndex, 3);
+      assert.equal(executionPrompts.length, 2);
     } finally {
       await restoreFetch();
     }
@@ -1890,6 +2160,7 @@ test('plan auto run includes acceptance checklist for lightweight goals', { conc
 test('plan auto run forwards checklist-style acceptance guidance into execution', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let callIndex = 0;
+    const executionPrompts = [];
     const restoreFetch = withMockFetch(async (_url, init) => {
       callIndex += 1;
       const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
@@ -1927,12 +2198,43 @@ test('plan auto run forwards checklist-style acceptance guidance into execution'
 
       if (callIndex === 2) {
         const scopedTask = String(body.messages[1].content || '');
+        executionPrompts.push(scopedTask);
         assert.match(scopedTask, /Acceptance checklist:/i);
         assert.match(scopedTask, /Add greetUser\(name\)/i);
         assert.match(scopedTask, /trim whitespace/i);
         assert.match(scopedTask, /preserve the exclamation mark/i);
         return makeSseResponse([
-          { choices: [{ delta: { content: 'Status: done\nVerified: aligned with the checklist in the approved plan prompt\nNext: none' } }] },
+          { choices: [{ delta: { content: 'Actions Taken:\n- Added greetUser(name) and updated the login helper\nFindings:\n- Greeting path keeps the exclamation mark intact\nVerified:\n- Aligned implementation with the checklist\nOpen Issues:\n- none\nArtifacts:\n- src/auth.js\nNext Action:\n- Reviewer should confirm checklist coverage' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 3) {
+        const scopedTask = String(body.messages[1].content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Accumulated plan file context \(results from prior steps\):/i);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Findings:\n- none\nVerified:\n- Compared implementation notes against the checklist\nNot Verified:\n- none\nFailures:\n- none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 4) {
+        const scopedTask = String(body.messages[1].content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Accumulated plan file context \(results from prior steps\):/i);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Verified:\n- Checklist remained visible during verification and focused auth checks\nNot Verified:\n- none\nFailures:\n- none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 5) {
+        const scopedTask = String(body.messages[1].content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Implement two auth updates\./i);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Summary:\n- Auth updates stayed aligned with the acceptance checklist.\nKey Findings:\n- Greeting behavior and whitespace trimming were covered.\nActions Taken:\n- Implemented, reviewed, and verified the auth updates.\nRemaining Issues:\n- Full end-to-end flow remains unverified.\nRecommended Next Steps:\n- Run focused auth flow tests.' } }] },
           { choices: [{ delta: {}, finish_reason: 'stop' }] }
         ]);
       }
@@ -1962,8 +2264,9 @@ test('plan auto run forwards checklist-style acceptance guidance into execution'
       );
 
       assert.equal(result.type, 'assistant');
-      assert.match(result.text, /Status: done/i);
-      assert.equal(callIndex, 2);
+      assert.match(result.text, /acceptance checklist/i);
+      assert.equal(callIndex, 5);
+      assert.equal(executionPrompts.length, 4);
     } finally {
       await restoreFetch();
     }
@@ -1973,6 +2276,7 @@ test('plan auto run forwards checklist-style acceptance guidance into execution'
 test('plan auto run carries acceptance checklist into the approved execution prompt', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let callIndex = 0;
+    const executionPrompts = [];
     const restoreFetch = withMockFetch(async (_url, init) => {
       callIndex += 1;
       const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
@@ -2010,6 +2314,7 @@ test('plan auto run carries acceptance checklist into the approved execution pro
 
       if (callIndex === 2) {
         const scopedTask = String(body.messages[1].content || '');
+        executionPrompts.push(scopedTask);
         assert.match(scopedTask, /Acceptance checklist:/i);
         assert.match(scopedTask, /Add greetUser\(name\)/i);
         assert.match(scopedTask, /Trim whitespace/i);
@@ -2018,11 +2323,38 @@ test('plan auto run carries acceptance checklist into the approved execution pro
             choices: [
               {
                 delta: {
-                  content: 'Status: partial\nVerified: checklist was included in the approved execution prompt\nNext: run focused verification'
+                  content: 'Actions Taken:\n- Updated greetUser(name)\nFindings:\n- Checklist requirements were preserved in the execution prompt\nVerified:\n- Checked the scoped execution prompt\nOpen Issues:\n- Focused verification still needs to run\nArtifacts:\n- src/greetings.js\nNext Action:\n- Tester should verify the greeting output'
                 }
               }
             ]
           },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 3) {
+        const scopedTask = String(body.messages[1].content || '');
+        executionPrompts.push(scopedTask);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Findings:\n- none\nVerified:\n- Reviewed greetUser(name) against checklist items\nNot Verified:\n- none\nFailures:\n- none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 4) {
+        const scopedTask = String(body.messages[1].content || '');
+        executionPrompts.push(scopedTask);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Verified:\n- Checklist was included in the verification step context and focused greetUser checks\nNot Verified:\n- none\nFailures:\n- none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 5) {
+        const scopedTask = String(body.messages[1].content || '');
+        executionPrompts.push(scopedTask);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Summary:\n- Greeting update is partially complete.\nKey Findings:\n- The acceptance checklist stayed attached to execution and review.\nActions Taken:\n- Updated, reviewed, and checked the greetUser flow.\nRemaining Issues:\n- Focused runtime verification is still pending.\nRecommended Next Steps:\n- Run focused greeting verification.' } }] },
           { choices: [{ delta: {}, finish_reason: 'stop' }] }
         ]);
       }
@@ -2052,8 +2384,9 @@ test('plan auto run carries acceptance checklist into the approved execution pro
       );
 
       assert.equal(result.type, 'assistant');
-      assert.match(result.text, /Status: partial/i);
-      assert.equal(callIndex, 2);
+      assert.match(result.text, /partially complete/i);
+      assert.equal(callIndex, 5);
+      assert.equal(executionPrompts.length, 4);
     } finally {
       await restoreFetch();
     }
@@ -2061,6 +2394,223 @@ test('plan auto run carries acceptance checklist into the approved execution pro
 });
 
 test('plan auto run preserves the approved plan summary and goal in the execution prompt', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    let callIndex = 0;
+    const executionPrompts = [];
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      callIndex += 1;
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+
+      if (callIndex === 1) {
+        return makeJsonResponse({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: 'Update auth helper safely.',
+                  steps: [
+                    {
+                      title: 'Implement auth helper update',
+                      role: 'coder',
+                      task: 'Update greetUser(name).'
+                    },
+                    {
+                      title: 'Review auth helper update',
+                      role: 'reviewer',
+                      task: 'Review greetUser(name) against the goal.'
+                    },
+                    {
+                      title: 'Verify auth helper update',
+                      role: 'tester',
+                      task: 'Verify greetUser(name) against the goal.'
+                    }
+                  ]
+                })
+              }
+            }
+          ]
+        });
+      }
+
+      if (callIndex === 2) {
+        const scopedTask = String(body.messages[1].content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Original goal:/i);
+        assert.match(scopedTask, /Acceptance checklist:/i);
+        assert.match(scopedTask, /Preserve the exclamation mark/i);
+        return makeSseResponse([
+          {
+            choices: [
+              {
+                delta: {
+                  content: 'Actions Taken:\n- Updated greetUser(name)\nFindings:\n- The punctuation requirement is still explicit in the scoped task\nVerified:\n- Checked the execution prompt content\nOpen Issues:\n- Implementation is not yet verified at runtime\nArtifacts:\n- src/greetings.js\nNext Action:\n- Reviewer should confirm punctuation handling'
+                }
+              }
+            ]
+          },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 3) {
+        const scopedTask = String(body.messages[1].content || '');
+        executionPrompts.push(scopedTask);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Findings:\n- none\nVerified:\n- Reviewed greetUser(name) against the requested punctuation behavior\nNot Verified:\n- none\nFailures:\n- none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 4) {
+        const scopedTask = String(body.messages[1].content || '');
+        executionPrompts.push(scopedTask);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Verified:\n- Original goal context remained visible during verification and punctuation-preserving checks\nNot Verified:\n- none\nFailures:\n- none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 5) {
+        const scopedTask = String(body.messages[1].content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Update auth helper safely\./i);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Summary:\n- Auth helper update is currently blocked on runtime verification.\nKey Findings:\n- The plan summary and punctuation requirement stayed visible across the pipeline.\nActions Taken:\n- Updated, reviewed, and inspected the greeting helper context.\nRemaining Issues:\n- Actual punctuation-preserving output is still unverified.\nRecommended Next Steps:\n- Run focused greetUser(name) verification.' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      throw new Error(`unexpected fetch call ${callIndex}`);
+    });
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-plan-acceptance-failure',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const result = await runtime.submit(
+        '/plan auto run add greetUser(name) and preserve the exclamation mark'
+      );
+
+      assert.equal(result.type, 'assistant');
+      assert.match(result.text, /currently blocked/i);
+      assert.equal(callIndex, 5);
+      assert.equal(executionPrompts.length, 4);
+    } finally {
+      await restoreFetch();
+    }
+  });
+});
+
+test('plan auto run stops the pipeline when a tester step fails exit criteria', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    let callIndex = 0;
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      callIndex += 1;
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+
+      if (callIndex === 1) {
+        return makeJsonResponse({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: 'Update the auth flow safely.',
+                  steps: [
+                    {
+                      title: 'Implement auth flow update',
+                      role: 'coder',
+                      task: 'Update the auth flow implementation.'
+                    },
+                    {
+                      title: 'Review auth flow update',
+                      role: 'reviewer',
+                      task: 'Review the auth flow changes for regressions.'
+                    },
+                    {
+                      title: 'Verify auth flow update',
+                      role: 'tester',
+                      task: 'Verify the auth flow changes.'
+                    }
+                  ]
+                })
+              }
+            }
+          ]
+        });
+      }
+
+      if (callIndex === 2) {
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Actions Taken:\n- Updated auth flow implementation\nFindings:\n- none\nVerified:\n- Reviewed changed files\nOpen Issues:\n- none\nArtifacts:\n- src/auth.js\nNext Action:\n- Reviewer should inspect edge cases' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 3) {
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Findings:\n- Refresh token rotation can still regress under retry\nVerified:\n- Reviewed the updated auth flow\nNot Verified:\n- Runtime retry behavior\nFailures:\n- none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      throw new Error(`unexpected fetch call ${callIndex}`);
+    });
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-plan-exit-criteria-stop',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const events = [];
+      const result = await runtime.submit('/plan auto run update auth flow with retries', (event) => events.push(event));
+
+      assert.equal(result.type, 'assistant');
+      assert.match(result.text, /\[FAILED\] tester: Verify auth flow update/i);
+      assert.match(result.text, /pipeline stopped after exit criteria failed/i);
+      assert.ok(
+        events.some(
+          (event) =>
+            event?.type === 'assistant:delta' && String(event.text || '').includes('[plan] Step 2/2 -> tester: Verify auth flow update')
+        )
+      );
+      assert.ok(
+        events.every(
+          (event) => event?.type !== 'assistant:delta' || !String(event.text || '').includes('summarizer')
+        )
+      );
+      assert.equal(callIndex, 3);
+    } finally {
+      await restoreFetch();
+    }
+  });
+});
+
+test('plan auto run does not stop on confirmatory reviewer findings', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let callIndex = 0;
     const restoreFetch = withMockFetch(async (_url, init) => {
@@ -2099,20 +2649,30 @@ test('plan auto run preserves the approved plan summary and goal in the executio
       }
 
       if (callIndex === 2) {
-        const scopedTask = String(body.messages[1].content || '');
-        assert.match(scopedTask, /Original goal:/i);
-        assert.match(scopedTask, /Plan summary: Update auth helper safely\./i);
-        assert.match(scopedTask, /Preserve the exclamation mark/i);
         return makeSseResponse([
-          {
-            choices: [
-              {
-                delta: {
-                  content: 'Status: blocked\nVerified: approved prompt preserved the requested punctuation requirement\nNext: implement the actual code path'
-                }
-              }
-            ]
-          },
+          { choices: [{ delta: { content: 'Actions Taken:\n- Updated greetUser(name)\nFindings:\n- none\nVerified:\n- Reviewed greeting helper\nOpen Issues:\n- none\nArtifacts:\n- src/greetings.js\nNext Action:\n- Reviewer should confirm punctuation handling' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 3) {
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Findings:\n- The punctuation requirement remains visible in review context\nVerified:\n- Reviewed greetUser(name) against the goal\nNot Verified:\n- none\nFailures:\n- none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 4) {
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Verified:\n- Confirmed punctuation-preserving behavior in focused verification\nNot Verified:\n- none\nFailures:\n- none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 5) {
+        assert.match(String(body.messages?.[1]?.content || ''), /Update auth helper safely\./i);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Summary:\n- Auth helper update completed.\nKey Findings:\n- Review confirmed the punctuation requirement stayed visible.\nActions Taken:\n- Updated, reviewed, and verified greetUser(name).\nRemaining Issues:\n- none\nRecommended Next Steps:\n- none' } }] },
           { choices: [{ delta: {}, finish_reason: 'stop' }] }
         ]);
       }
@@ -2128,7 +2688,7 @@ test('plan auto run preserves the approved plan summary and goal in the executio
       const now = new Date().toISOString();
       const runtime = await createChatRuntime({
         session: {
-          id: 'session-plan-acceptance-failure',
+          id: 'session-reviewer-confirmatory-findings',
           createdAt: now,
           updatedAt: now,
           messages: []
@@ -2137,12 +2697,100 @@ test('plan auto run preserves the approved plan summary and goal in the executio
         systemPrompt: 'You are a test assistant.'
       });
 
-      const result = await runtime.submit(
-        '/plan auto run add greetUser(name) and preserve the exclamation mark'
-      );
+      const events = [];
+      const result = await runtime.submit('/plan auto run add greetUser(name) and preserve the exclamation mark', (event) => events.push(event));
 
       assert.equal(result.type, 'assistant');
-      assert.match(result.text, /Status: blocked/i);
+      assert.match(result.text, /Auth helper update completed/i);
+      assert.ok(
+        events.some(
+          (event) =>
+            event?.type === 'assistant:delta' && String(event.text || '').includes('[plan] Step 3/4 -> tester: Verify auth helper update')
+        )
+      );
+      assert.ok(
+        events.some(
+          (event) =>
+            event?.type === 'assistant:delta' && String(event.text || '').includes('[plan] Step 4/4 -> summarizer: Synthesize final implementation status')
+        )
+      );
+      assert.equal(callIndex, 5);
+    } finally {
+      await restoreFetch();
+    }
+  });
+});
+
+test('plan auto run stops when coder output lacks implementation evidence', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    let callIndex = 0;
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      callIndex += 1;
+
+      if (callIndex === 1) {
+        return makeJsonResponse({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: 'Add a tiny greeting helper.',
+                  steps: [
+                    {
+                      title: 'Implement greeting helper',
+                      role: 'coder',
+                      task: 'Add greetUser(name).'
+                    },
+                    {
+                      title: 'Verify greeting helper',
+                      role: 'tester',
+                      task: 'Verify greetUser(name).'
+                    }
+                  ]
+                })
+              }
+            }
+          ]
+        });
+      }
+
+      if (callIndex === 2) {
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Actions Taken:\n- none\nFindings:\n- none\nVerified:\n- none\nOpen Issues:\n- none\nArtifacts:\n- none\nNext Action:\n- none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      throw new Error(`unexpected fetch call ${callIndex}`);
+    });
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-coder-evidence-stop',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const events = [];
+      const result = await runtime.submit('/plan auto run add greetUser(name)', (event) => events.push(event));
+
+      assert.equal(result.type, 'assistant');
+      assert.match(result.text, /\[FAILED\] coder: Implement greeting helper/i);
+      assert.match(result.text, /coder output did not include implementation evidence/i);
+      assert.ok(
+        events.every(
+          (event) => event?.type !== 'assistant:delta' || !String(event.text || '').includes('Verify greeting helper')
+        )
+      );
       assert.equal(callIndex, 2);
     } finally {
       await restoreFetch();

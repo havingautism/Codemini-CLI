@@ -282,13 +282,26 @@ const SUB_AGENT_CONTEXT_MAX_MESSAGES = 4;
 const SUB_AGENT_CONTEXT_MAX_CHARS = 1200;
 const SUB_AGENT_EVIDENCE_MAX_ITEMS = 3;
 const SUB_AGENT_HANDOFF_MAX_ITEMS = 6;
+const PLAN_MEMORY_MARKERS = {
+  findings: ['<!-- plan-findings-start -->', '<!-- plan-findings-end -->'],
+  progress: ['<!-- plan-progress-start -->', '<!-- plan-progress-end -->']
+};
 export function getSubAgentRolePrompt(role) {
   if (role === 'planner') {
     return [
       'You are the planner in a multi-step agent pipeline.',
       'Your job: inspect the codebase and produce a concrete, actionable plan.',
-      'Output concise findings and clear next steps. Do not write implementation code.',
-      'Do not summarize your own work or add closing remarks — just deliver the plan and stop.',
+      'Do not write implementation code.',
+      'Output format — keep it short and direct:',
+      'Findings:',
+      '- <important constraint, dependency, risk, or "none">',
+      'Actions Taken:',
+      '- <what you inspected>',
+      'Open Issues:',
+      '- <blocking uncertainty or "none">',
+      'Next Action:',
+      '- <the concrete next step for the following role>',
+      'Do not summarize your own work or add closing remarks — just deliver the structured handoff and stop.',
       'IMPORTANT: Stop as soon as you have enough context to produce the plan. Do NOT keep exploring once the plan is clear — deliver it immediately.'
     ].join('\n');
   }
@@ -345,7 +358,19 @@ export function getSubAgentRolePrompt(role) {
   return [
     'You are the coder in a multi-step agent pipeline.',
     'Produce practical code changes with minimal explanation.',
-    'Do your work, briefly state what you changed, then stop.',
+    'Output format — keep it short and direct:',
+    'Actions Taken:',
+    '- <file changes, commands, or "none">',
+    'Findings:',
+    '- <important implementation note, regression risk, or "none">',
+    'Verified:',
+    '- <test/check evidence or "none">',
+    'Open Issues:',
+    '- <remaining gap or "none">',
+    'Artifacts:',
+    '- <changed file path or "none">',
+    'Next Action:',
+    '- <the best next step for the following role or "none">',
     'Do not summarize the goal, recap the plan, or add closing remarks.'
   ].join('\n');
 }
@@ -366,6 +391,9 @@ function buildPipelineStepGuidance({ role, stepIndex, totalSteps, isFirst, isLas
   }
   lines.push('Style rules:');
   lines.push('- Be direct and action-oriented. No greetings, no summaries, no "In conclusion" or "To summarize".');
+  lines.push('- Treat the Findings Ledger and Progress Ledger in the plan file context as the shared working memory for this pipeline.');
+  lines.push('- If you discover something new, record it under the requested headings instead of burying it in prose.');
+  lines.push('- Continue the established direction unless you have concrete contradictory evidence.');
   lines.push('- Output only what the next step needs to know. Skip obvious observations.');
   if (isLast) {
     lines.push('- Since you are the final step, give a concise overall verdict the user can act on.');
@@ -722,23 +750,181 @@ async function readJsonSafe(targetPath) {
   }
 }
 
+function extractManagedPlanSection(content = '', key = 'findings') {
+  const markers = PLAN_MEMORY_MARKERS[key];
+  if (!markers) return '';
+  const [startMarker, endMarker] = markers;
+  const start = String(content || '').indexOf(startMarker);
+  const end = String(content || '').indexOf(endMarker);
+  if (start === -1 || end === -1 || end <= start) return '';
+  return String(content || '')
+    .slice(start + startMarker.length, end)
+    .trim();
+}
+
+function replaceManagedPlanSection(content = '', key = 'findings', nextSection = '') {
+  const markers = PLAN_MEMORY_MARKERS[key];
+  if (!markers) return String(content || '');
+  const [startMarker, endMarker] = markers;
+  const sectionBody = `${startMarker}\n${String(nextSection || '').trim()}\n${endMarker}`;
+  const pattern = new RegExp(`${startMarker}[\\s\\S]*?${endMarker}`);
+  if (pattern.test(String(content || ''))) {
+    return String(content || '').replace(pattern, sectionBody);
+  }
+  return `${String(content || '').trimEnd()}\n\n${sectionBody}\n`;
+}
+
+function normalizeLedgerItems(items = [], fallback = '- None recorded yet.') {
+  const cleaned = [...new Set((Array.isArray(items) ? items : []).map((item) => String(item || '').trim()).filter(Boolean))];
+  return cleaned.length > 0 ? cleaned : [fallback];
+}
+
+function trimLedger(items = [], maxItems = 10) {
+  const cleaned = normalizeLedgerItems(items, '').filter(Boolean);
+  return cleaned.slice(Math.max(0, cleaned.length - maxItems));
+}
+
+export function extractStepWorkingMemory(output = '', artifactPaths = []) {
+  const findings = extractSectionBullets(output, 'Findings')
+    .filter((item) => !/^none\b/i.test(item))
+    .map((item) => `- ${item}`);
+  const actionsTaken = extractSectionBullets(output, 'Actions Taken')
+    .filter((item) => !/^none\b/i.test(item))
+    .map((item) => `- ${item}`);
+  const verified = extractSectionBullets(output, 'Verified')
+    .filter((item) => !/^none\b/i.test(item))
+    .map((item) => `- ${item}`);
+  const notVerified = extractSectionBullets(output, 'Not Verified')
+    .filter((item) => !/^none\b/i.test(item))
+    .map((item) => `- ${item}`);
+  const failures = extractSectionBullets(output, 'Failures')
+    .filter((item) => !/^none\b/i.test(item))
+    .map((item) => `- ${item}`);
+  const openIssues = extractSectionBullets(output, 'Open Issues')
+    .filter((item) => !/^none\b/i.test(item))
+    .map((item) => `- ${item}`);
+  const nextAction = extractSectionBullets(output, 'Next Action')
+    .filter((item) => !/^none\b/i.test(item))
+    .map((item) => `- ${item}`);
+  const artifactLines = [
+    ...extractSectionBullets(output, 'Artifacts')
+      .filter((item) => !/^none\b/i.test(item))
+      .map((item) => `- ${item}`),
+    ...(Array.isArray(artifactPaths) ? artifactPaths : []).filter(Boolean).map((item) => `- ${item}`)
+  ];
+
+  return {
+    findings: trimLedger(findings, 8),
+    actionsTaken: trimLedger(actionsTaken, 8),
+    verified: trimLedger(verified, 6),
+    notVerified: trimLedger(notVerified, 6),
+    failures: trimLedger(failures, 6),
+    openIssues: trimLedger(openIssues, 6),
+    nextAction: trimLedger(nextAction, 3),
+    artifacts: trimLedger(artifactLines, 6)
+  };
+}
+
+function buildProgressLedgerEntry(stepIndex, stepTitle, role, memory) {
+  const status = memory.failures.length > 0 || memory.openIssues.length > 0 || memory.notVerified.length > 0 ? 'attention-needed' : 'completed';
+  const highlights = [
+    memory.actionsTaken[0],
+    memory.verified[0],
+    memory.nextAction[0],
+    memory.openIssues[0],
+    memory.notVerified[0],
+    memory.failures[0]
+  ]
+    .filter(Boolean)
+    .map((item) => item.replace(/^- /, ''))
+    .slice(0, 2);
+  const suffix = highlights.length > 0 ? ` :: ${highlights.join(' | ')}` : '';
+  return `- Step ${stepIndex + 1} [${role}] ${stepTitle} -> ${status}${suffix}`;
+}
+
+function buildRecentStepResults(content = '', maxEntries = 2) {
+  const value = String(content || '');
+  const matches = [...value.matchAll(/^## Step \d+ Result: .*$/gm)];
+  if (matches.length === 0) return '';
+  const starts = matches.map((match) => match.index || 0);
+  const chunks = starts.map((start, index) => value.slice(start, starts[index + 1] || value.length).trim());
+  return chunks.slice(-maxEntries).join('\n\n---\n\n');
+}
+
+export function buildPlanWorkingMemoryContext(content = '', maxChars = 6000) {
+  const value = String(content || '').trim();
+  if (!value) return '';
+
+  const findings = extractManagedPlanSection(value, 'findings');
+  const progress = extractManagedPlanSection(value, 'progress');
+  if (!findings && !progress) {
+    if (value.length <= maxChars) return value;
+    const headSize = Math.floor(maxChars * 0.3);
+    const tailSize = maxChars - headSize - 50;
+    return `${value.slice(0, headSize)}\n\n... [plan file truncated, showing most recent step results] ...\n\n${value.slice(-tailSize)}`;
+  }
+
+  const headLimit = Math.max(600, Math.floor(maxChars * 0.35));
+  const head = value.slice(0, headLimit).trimEnd();
+  const recentResults = buildRecentStepResults(value, 2);
+  const sections = [
+    head,
+    '## Working Memory Snapshot',
+    '### Findings Ledger',
+    findings || '- None recorded yet.',
+    '### Progress Ledger',
+    progress || '- No progress recorded yet.'
+  ];
+  if (recentResults) {
+    sections.push('## Recent Step Results');
+    sections.push(recentResults);
+  }
+  const summary = sections.filter(Boolean).join('\n\n').trim();
+  return summary.length <= maxChars ? summary : `${summary.slice(0, maxChars - 42).trimEnd()}\n... [working memory truncated]`;
+}
+
 async function appendStepResultToPlanFile(planFilePath, stepIndex, stepTitle, role, output, artifactPaths = []) {
   if (!planFilePath) return;
   try {
     const separator = '\n\n---\n\n';
     const timestamp = new Date().toISOString();
-    const artifactSection = Array.isArray(artifactPaths) && artifactPaths.length > 0
-      ? `\nArtifacts: ${artifactPaths.join(', ')}`
-      : '';
+    const content = await fs.readFile(planFilePath, 'utf8');
+    const memory = extractStepWorkingMemory(output, artifactPaths);
+    const findingsBlock = [
+      ...extractManagedPlanSection(content, 'findings')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean),
+      ...memory.findings,
+      ...memory.openIssues,
+      ...memory.notVerified,
+      ...memory.failures
+    ];
+    const progressBlock = [
+      ...extractManagedPlanSection(content, 'progress')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean),
+      buildProgressLedgerEntry(stepIndex, stepTitle, role, memory)
+    ];
     const entry = [
       `## Step ${stepIndex + 1} Result: ${stepTitle}`,
       `Role: ${role}`,
-      `Completed: ${timestamp}${artifactSection}`,
+      `Completed: ${timestamp}`,
       '',
       output || '(no output)',
       ''
     ].join('\n');
-    await fs.appendFile(planFilePath, `${separator}${entry}`, 'utf8');
+    const nextContent = [
+      replaceManagedPlanSection(content, 'findings', normalizeLedgerItems(trimLedger(findingsBlock, 12)).join('\n')),
+      ''
+    ].join('\n');
+    const nextWithProgress = replaceManagedPlanSection(
+      nextContent,
+      'progress',
+      normalizeLedgerItems(trimLedger(progressBlock, 12), '- No progress recorded yet.').join('\n')
+    );
+    await fs.writeFile(planFilePath, `${nextWithProgress.trimEnd()}${separator}${entry}\n`, 'utf8');
   } catch {
     // Non-fatal: plan file handoff is best-effort
   }
@@ -748,11 +934,7 @@ async function readPlanFileAsContext(planFilePath, maxChars = 6000) {
   if (!planFilePath) return '';
   try {
     const content = await fs.readFile(planFilePath, 'utf8');
-    if (!content || content.length <= maxChars) return content;
-    // Keep the beginning (plan structure) and the step results (at the end)
-    const headSize = Math.floor(maxChars * 0.3);
-    const tailSize = maxChars - headSize - 50;
-    return `${content.slice(0, headSize)}\n\n... [plan file truncated, showing most recent step results] ...\n\n${content.slice(-tailSize)}`;
+    return buildPlanWorkingMemoryContext(content, maxChars);
   } catch {
     return '';
   }
@@ -1095,8 +1277,23 @@ function buildFallbackAutoPlan(goal) {
         title: 'Verify the changed flows',
         role: 'tester',
         task: `Verify the completed work for: ${goal}. Run the most relevant checks available, report concrete evidence, and call out anything still not verified.`
+      },
+      {
+        title: 'Synthesize final implementation status',
+        role: 'summarizer',
+        task: `Synthesize the completed work for: ${goal}. Read the accumulated findings, verification evidence, and open issues from earlier steps, then produce a concise final status with remaining risks and the single best next action.`
       }
     ]
+  };
+}
+
+function buildDefaultSummarizerStep(goal, source = []) {
+  const existing = (Array.isArray(source) ? source : []).find((step) => step.role === 'summarizer');
+  if (existing?.title && existing?.task) return existing;
+  return {
+    title: 'Synthesize final implementation status',
+    role: 'summarizer',
+    task: `Synthesize the completed work for: ${goal}. Read the accumulated findings, verification evidence, and open issues from earlier steps, then produce a concise final status with remaining risks and the single best next action.`
   };
 }
 
@@ -1105,7 +1302,7 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
   const requirements = deriveGoalRequirements(goal);
   const lightweightGoal = isLightweightAutoPlanGoal(goal, requirements);
   const taskClass = classifyPlanTaskClass(goal);
-  const implementationSteps = source.filter((step) => step.role !== 'reviewer' && step.role !== 'tester');
+  const implementationSteps = source.filter((step) => step.role !== 'reviewer' && step.role !== 'tester' && step.role !== 'summarizer');
   const primaryImplementationStep =
     implementationSteps.find((step) => step.role === 'coder') ||
     implementationSteps[0] || {
@@ -1123,6 +1320,7 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
     role: 'tester',
     task: `Test and verify the completed work for: ${goal}. Start with the artifacts produced by earlier implementation steps, run the most relevant checks available, report concrete evidence, and call out anything still unverified.`
   };
+  const summarizerStep = buildDefaultSummarizerStep(goal, source);
   const hasReviewer = source.some((step) => step.role === 'reviewer');
   const hasTester = source.some((step) => step.role === 'tester');
 
@@ -1141,13 +1339,16 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
     };
   }
 
+  const executionSteps = [
+    ...implementationSteps.slice(0, 6),
+    ...(hasReviewer ? [reviewerStep] : []),
+    ...(testerStep ? [testerStep] : [])
+  ];
+  const needsSummarizer = executionSteps.length >= 3;
+
   return {
     summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
-    steps: [
-      ...implementationSteps.slice(0, 6),
-      ...(hasReviewer ? [reviewerStep] : []),
-      ...(testerStep ? [testerStep] : [])
-    ]
+    steps: needsSummarizer ? [...executionSteps, summarizerStep] : executionSteps
   };
 }
 
@@ -1172,13 +1373,72 @@ function stepOutputHasFailureSignals(role, text = '') {
   const failureBullet = extractSectionFirstBullet(value, 'Failures');
   const findingsBullet = extractSectionFirstBullet(value, 'Findings');
   const nextActionBullet = extractSectionFirstBullet(value, 'Next Action');
+  const notVerifiedBullet = extractSectionFirstBullet(value, 'Not Verified');
+  const remainingIssuesBullet = extractSectionFirstBullet(value, 'Remaining Issues');
+  const actionsTakenBullet = extractSectionFirstBullet(value, 'Actions Taken');
+  const artifactsBullet = extractSectionFirstBullet(value, 'Artifacts');
   const acceptanceFailures = extractAcceptanceStatusItems(value).filter((item) => item.status !== 'met');
   if (errorBullet && !/^none\b/i.test(errorBullet)) return true;
   if (failureBullet && !/^none\b/i.test(failureBullet)) return true;
   if (acceptanceFailures.length > 0) return true;
-  if (role === 'reviewer' && findingsBullet && !/^none\b/i.test(findingsBullet)) return true;
+  if (role === 'coder' && coderOutputLacksImplementationEvidence(actionsTakenBullet, artifactsBullet)) return true;
+  if (role === 'reviewer' && reviewerFindingNeedsAction(findingsBullet)) return true;
+  if ((role === 'tester' || role === 'summarizer') && notVerifiedBullet && !/^none\b/i.test(notVerifiedBullet)) return true;
+  if (role === 'summarizer' && remainingIssuesBullet && !/^none\b/i.test(remainingIssuesBullet)) return true;
   if (nextActionBullet && /^(fix|retry|correct|repair)\b/i.test(nextActionBullet)) return true;
   return false;
+}
+
+function coderOutputLacksImplementationEvidence(actionsTaken = '', artifacts = '') {
+  const noActions = !String(actionsTaken || '').trim() || /^none\b/i.test(String(actionsTaken || '').trim());
+  const noArtifacts = !String(artifacts || '').trim() || /^none\b/i.test(String(artifacts || '').trim());
+  return noActions && noArtifacts;
+}
+
+function reviewerFindingNeedsAction(text = '') {
+  const value = String(text || '').trim();
+  if (!value || /^none\b/i.test(value)) return false;
+  const lower = value.toLowerCase();
+  if (
+    /\b(bug|regression|risk|risky|missing|missing test|unsafe|blocker|blocked|incorrect|broken|failure|failing|unverified|mismatch|incomplete|gap|can regress|still regress)\b/i.test(
+      lower
+    )
+  ) {
+    return true;
+  }
+  if (/\b(not covered|not handled|not verified|does not|doesn't|cannot|can't|lacks?)\b/i.test(lower)) {
+    return true;
+  }
+  return false;
+}
+
+function buildExitCriteriaFailureReason(role, text = '') {
+  const value = String(text || '').trim();
+  if (!value) return 'no structured step output was produced';
+  const errorBullet = extractSectionFirstBullet(value, 'Error');
+  if (errorBullet && !/^none\b/i.test(errorBullet)) return `error: ${errorBullet}`;
+  const failureBullet = extractSectionFirstBullet(value, 'Failures');
+  if (failureBullet && !/^none\b/i.test(failureBullet)) return `failures: ${failureBullet}`;
+  const findingsBullet = extractSectionFirstBullet(value, 'Findings');
+  const actionsTakenBullet = extractSectionFirstBullet(value, 'Actions Taken');
+  const artifactsBullet = extractSectionFirstBullet(value, 'Artifacts');
+  if (role === 'coder' && coderOutputLacksImplementationEvidence(actionsTakenBullet, artifactsBullet)) {
+    return 'coder output did not include implementation evidence';
+  }
+  if (role === 'reviewer' && reviewerFindingNeedsAction(findingsBullet)) return `review findings: ${findingsBullet}`;
+  const nextActionBullet = extractSectionFirstBullet(value, 'Next Action');
+  if (nextActionBullet && /^(fix|retry|correct|repair)\b/i.test(nextActionBullet)) return `next action requires rework: ${nextActionBullet}`;
+  const acceptanceFailure = extractAcceptanceStatusItems(value).find((item) => item.status !== 'met');
+  if (acceptanceFailure) return `acceptance ${acceptanceFailure.status}: ${acceptanceFailure.label}`;
+  const notVerifiedBullet = extractSectionFirstBullet(value, 'Not Verified');
+  if ((role === 'tester' || role === 'summarizer') && notVerifiedBullet && !/^none\b/i.test(notVerifiedBullet)) {
+    return `not verified: ${notVerifiedBullet}`;
+  }
+  const remainingIssuesBullet = extractSectionFirstBullet(value, 'Remaining Issues');
+  if (role === 'summarizer' && remainingIssuesBullet && !/^none\b/i.test(remainingIssuesBullet)) {
+    return `remaining issues: ${remainingIssuesBullet}`;
+  }
+  return 'step output did not satisfy exit criteria';
 }
 
 function extractSectionFirstBullet(text = '', heading = '') {
@@ -2163,8 +2423,17 @@ async function executePlanWithSubAgents({
       toolErrorCount: output.toolErrorCount || 0,
       hasErrorLine: output.hasErrorLine || false,
       artifactPaths: output.artifactPaths || [],
-      failed: output.hasErrorLine || (output.toolErrorCount || 0) > 2
+      failed:
+        output.hasErrorLine ||
+        stepOutputHasFailureSignals(step.role, output.text || ''),
+      failureReason: ''
     };
+    if (stepRecord.failed) {
+      stepRecord.failureReason =
+        output.hasErrorLine
+          ? 'tool or model execution error'
+          : buildExitCriteriaFailureReason(step.role, output.text || '');
+    }
     priorSteps.push(stepRecord);
     results.push(stepRecord);
 
@@ -2179,6 +2448,8 @@ async function executePlanWithSubAgents({
         stepRecord.artifactPaths
       );
     }
+
+    if (stepRecord.failed && i < steps.length - 1) break;
   }
 
   const summaryLines = [];
@@ -2193,6 +2464,10 @@ async function executePlanWithSubAgents({
   const failedSteps = results.filter((r) => r.failed);
   if (failedSteps.length > 0) {
     summaryLines.push(`${failedSteps.length} step(s) had errors.`);
+    const firstFailed = failedSteps[0];
+    if (firstFailed?.failureReason) {
+      summaryLines.push(`Pipeline stopped after exit criteria failed at [${firstFailed.role}] ${firstFailed.title}: ${firstFailed.failureReason}.`);
+    }
   }
   if (signal?.aborted) {
     const partial = partialDeltaText.trim();
@@ -2312,6 +2587,17 @@ async function buildAutoPlanAndRun({
   lines.push('');
   lines.push('## Approval');
   lines.push('Pending user approval before implementation.');
+  lines.push('');
+  lines.push('## Working Memory');
+  lines.push('### Findings Ledger');
+  lines.push(PLAN_MEMORY_MARKERS.findings[0]);
+  lines.push('- None recorded yet.');
+  lines.push(PLAN_MEMORY_MARKERS.findings[1]);
+  lines.push('');
+  lines.push('### Progress Ledger');
+  lines.push(PLAN_MEMORY_MARKERS.progress[0]);
+  lines.push('- Plan created and waiting for execution.');
+  lines.push(PLAN_MEMORY_MARKERS.progress[1]);
 
   const filePath = await writeMarkdownInProjectDir(
     'plans',
