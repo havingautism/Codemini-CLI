@@ -27,6 +27,7 @@ const BANNER = [
   ' ██████  ██████  ██████  ███████ ██      ██ ██ ██   ████ ██ '
 ];
 const BANNER_COLORS = ['magentaBright', 'redBright', 'yellowBright', 'cyanBright', 'magentaBright'];
+const SPINNER_FRAMES = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
 const ROLE_STYLES = {
   you: {
     accent: 'blueBright',
@@ -1172,7 +1173,7 @@ function stageDescriptor(inputStage, busy, runtimeStatus, copy) {
 
 function RuntimeStrip({ busy, runtimeStatus, loaderTick, copy }) {
   const status = normalizeRuntimeStatus(runtimeStatus, copy);
-  const dots = '●○○'.slice(loaderTick % 3, (loaderTick % 3) + 1) || '●';
+  const spinnerChar = SPINNER_FRAMES[loaderTick % SPINNER_FRAMES.length];
   return h(
     Box,
     {
@@ -1184,7 +1185,7 @@ function RuntimeStrip({ busy, runtimeStatus, loaderTick, copy }) {
     },
     h(Text, { color: busy ? 'greenBright' : 'gray' }, busy ? copy.generic.live : copy.generic.idle),
     h(Text, { color: 'gray' }, '  '),
-    h(Text, { color: busy ? 'cyanBright' : 'gray' }, dots),
+    h(Text, { color: busy ? 'cyanBright' : 'gray' }, spinnerChar),
     h(Text, { color: 'gray' }, '  '),
     h(Text, { color: busy ? 'white' : 'gray' }, status.title || copy.generic.waitingForInput)
   );
@@ -1226,7 +1227,7 @@ function ContextProgressMeter({ runtimeState, runtimeStatus, compact = false }) 
     Box,
     { justifyContent: 'flex-end', alignItems: 'center' },
     h(Text, { color: 'gray' }, '上下文 '),
-    h(Text, { color: statusColor }, `${Math.round(pct)}% `),
+    h(Text, { color: activeColor }, `${Math.round(pct)}% `),
     h(
       Box,
       null,
@@ -2313,7 +2314,7 @@ export function renderMessageRow(msg, row, idx, loaderTick) {
       Box,
       { key: `row-tool-${msg.id}-${idx}` },
       h(Text, { color: 'gray' }, ' '),
-      h(Text, { color: dotColor }, '●'),
+      h(Text, { color: dotColor }, row.status === 'running' ? SPINNER_FRAMES[loaderTick % SPINNER_FRAMES.length] : '●'),
       h(Text, { color: 'gray' }, ' '),
       h(Text, { color: textColor }, display.primary),
       h(Text, { color: 'gray' }, display.secondary),
@@ -2393,12 +2394,12 @@ export function renderMessageRow(msg, row, idx, loaderTick) {
     return null;
   }
   if (row.kind === 'status') {
-    const dots = '.'.repeat((loaderTick % 3) + 1);
+    const spinnerChar = SPINNER_FRAMES[loaderTick % SPINNER_FRAMES.length];
     return h(
       Box,
       { key: `row-status-${msg.id}-${idx}`, marginTop: 1 },
       h(Text, { color: 'gray' }, '  '),
-      h(Text, { color: 'gray', dimColor: true }, `${row.text}${dots}`)
+      h(Text, { color: 'gray', dimColor: true }, `${row.text} ${spinnerChar}`)
     );
   }
   if (row.kind === 'quote') {
@@ -2537,7 +2538,7 @@ export function moveSuggestionSelection(currentIndex, itemCount, direction, page
   return safeIndex;
 }
 
-function MessageBubble({ msg, loaderTick, showToolDetails, rowWindow = null, contentWidth = 72, copy }) {
+const MessageBubble = React.memo(function MessageBubble({ msg, loaderTick, showToolDetails, rowWindow = null, contentWidth = 72, copy }) {
   if (msg?.planStrip) {
     return h(PlanStrip, { planState: msg.planState, copy });
   }
@@ -2589,7 +2590,13 @@ function MessageBubble({ msg, loaderTick, showToolDetails, rowWindow = null, con
         : null
     )
   );
-}
+}, (prev, next) => {
+  if (prev.msg === next.msg &&
+      prev.showToolDetails === next.showToolDetails &&
+      prev.contentWidth === next.contentWidth &&
+      prev.copy === next.copy) return true;
+  return false;
+});
 
 function MessageList({ messages, loaderTick, showToolDetails, contentWidth = 72, copy }) {
   return h(
@@ -2604,7 +2611,7 @@ function MessageList({ messages, loaderTick, showToolDetails, contentWidth = 72,
       h(MessageBubble, {
         key: message.id,
         msg: message,
-        loaderTick,
+        loaderTick: message.loading ? loaderTick : 0,
         showToolDetails,
         contentWidth,
         copy
@@ -4386,24 +4393,12 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   }, []);
 
   useEffect(() => {
-    if (approvalLockActive) {
-      setCursorVisible(true);
-      return () => {};
-    }
-    const timer = setInterval(() => {
-      setCursorVisible((prev) => !prev);
-    }, 500);
-    return () => clearInterval(timer);
-  }, [approvalLockActive]);
-
-  useEffect(() => {
-    const hasLoadingMessage = messages.some((m) => m.loading);
-    if (!busy && !hasLoadingMessage) return () => {};
+    if (!busy) return () => {};
     const timer = setInterval(() => {
       setLoaderTick((prev) => prev + 1);
     }, 500);
     return () => clearInterval(timer);
-  }, [busy, messages]);
+  }, [busy]);
 
   useEffect(() => {
     const pending = Boolean(runtimeState?.pendingPlanApproval);

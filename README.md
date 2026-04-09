@@ -1,4 +1,4 @@
-# CodeMini CLI
+# [CodeMini CLI](https://github.com/havingautism/Codemini-CLI)
 
 [![npm version](https://img.shields.io/npm/v/codemini-cli.svg?style=flat-square)](https://www.npmjs.com/package/codemini-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
@@ -15,6 +15,8 @@
 CodeMini CLI is a terminal coding assistant built for teams that want a sharper, more controllable, and model-agnostic agent experience.
 
 It is designed around a deliberate idea: most coding workflows do not need a huge default tool surface or unrestricted shell behavior. Instead, CodeMini starts with a compact core, loads advanced tools on demand, and keeps the agent grounded in structured code operations, session todos, lightweight project indexing, and shell-aware safety rules.
+
+**Contents** — [Why CodeMini CLI](#why-codemini-cli) · [Installation](#installation) · [Quick Start](#quick-start) · [Commands](#commands) · [Personalities (Souls)](#personalities-souls) · [Tool Model](#how-the-tool-model-works) · [Core Capabilities](#core-capabilities) · [Project Index](#project-index) · [Good Fit](#good-fit) · [Documentation](#documentation) · [Development](#development) · [License](#license)
 
 ### Why CodeMini CLI
 
@@ -69,12 +71,12 @@ codemini
 
 ### Personalities (Souls)
 
-CodeMini CLI supports swapable "soul" personalities that change tone and expression style without altering plan logic or code behavior.
+CodeMini CLI supports swappable "soul" personalities that change tone and expression style without altering plan logic or code behavior.
 
 Built-in souls: `default`, `professional`, `ceo`, `playful`, `anime`, `caveman`, `pirate`
 
 ```bash
-codemini config set soul.name playful
+codemini config set soul.preset playful
 ```
 
 ### How The Tool Model Works
@@ -98,14 +100,12 @@ Typical flow:
 ### Core Capabilities
 
 - Compact default tools for daily work:
-  - `read`, `grep`, `list`, `query_project_index`
+  - `read`, `grep`, `glob`, `list`, `query_project_index`
   - `edit`, `write`
   - `read_plan`, `update_plan`, `update_todos`
   - `run`, `tool_search`
 - On-demand tools for advanced workflows:
-  - `glob`
   - AST tools: `ast_query`, `read_ast_node`
-  - diff tools: `generate_diff`, `patch`
   - background task management tools
   - persistent memory tools
 - Session-level todo checklists via `update_todos`, rendered natively in the TUI
@@ -114,7 +114,6 @@ Typical flow:
   - long-running commands via `run` with `run_in_background=true`
 - Lightweight project index under `.codemini-project/`
 - Tree-sitter based structured editing for function, class, and method-level changes
-- Sub-agent collaboration: planner, coder, reviewer, tester
 - Reply language control via `ui.reply_language`
 - Safe mode enabled by default
 
@@ -127,7 +126,8 @@ CodeMini CLI maintains a lightweight project index inside `.codemini-project/`:
 
 The index is initialized when entering a project and refreshed incrementally after edits, writes, and patches. It is intended to be factual, compact, and inexpensive to keep current.
 
-### Data Layout
+<details>
+<summary>Data Layout &amp; Config Paths</summary>
 
 - Global session state: `<base-config-dir>/sessions/`
 - Project workspace state: `.codemini/`
@@ -145,6 +145,18 @@ Base config directory resolution order:
 | macOS | `~/Library/Preferences/codemini-global` |
 | Linux / XDG | `$XDG_CONFIG_HOME/codemini-global` |
 | Restricted fallback | `.codemini-global/` |
+
+</details>
+
+### Good Fit
+
+CodeMini CLI is a strong fit if you want:
+
+- a coding CLI that behaves well with both large and small models
+- a controlled tool surface instead of an everything-is-exposed agent
+- Windows and PowerShell support that feels intentional
+- a TUI that shows plans, todos, tools, and progress clearly
+- a code assistant that prefers structured operations over shell noise
 
 ### Documentation
 
@@ -164,16 +176,6 @@ npm test
 # Start locally
 npm start
 ```
-
-### Good Fit
-
-CodeMini CLI is a strong fit if you want:
-
-- a coding CLI that behaves well with both large and small models
-- a controlled tool surface instead of an everything-is-exposed agent
-- Windows and PowerShell support that feels intentional
-- a TUI that shows plans, todos, tools, and progress clearly
-- a code assistant that prefers structured operations over shell noise
 
 ### License
 
@@ -247,7 +249,7 @@ CodeMini CLI 支持可切换的 "soul" 人格，仅改变语气和表达风格�
 内置人格：`default`、`professional`、`ceo`、`playful`、`anime`、`caveman`、`pirate`
 
 ```bash
-codemini config set soul.name playful
+codemini config set soul.preset playful
 ```
 
 ### 工具模型怎么设计
@@ -271,14 +273,12 @@ CodeMini CLI 把工具分成两层：
 ### 核心能力
 
 - 默认主工具保持在高频主路径：
-  - `read`、`grep`、`list`、`query_project_index`
+  - `read`、`grep`、`glob`、`list`、`query_project_index`
   - `edit`、`write`
   - `read_plan`、`update_plan`、`update_todos`
   - `run`、`tool_search`
 - 更专业的能力按需加载：
-  - `glob`
   - AST 工具：`ast_query`、`read_ast_node`
-  - diff 工具：`generate_diff`、`patch`
   - 后台任务管理工具
   - 持久 memory 工具
 - 通过 `update_todos` 维护复杂单任务的会话级待办清单，并直接渲染在 TUI 中
@@ -287,7 +287,6 @@ CodeMini CLI 把工具分成两层：
   - 长运行命令通过 `run` + `run_in_background=true`
 - 在 `.codemini-project/` 下维护轻量项目索引，帮助模型更快理解仓库
 - 基于 Tree-sitter 的结构化编辑能力，适合函数级、类级、方法级改动
-- 支持 planner、coder、reviewer、tester 等 sub-agent 协作
 - 支持通过 `ui.reply_language` 控制回复语言
 - safe mode 默认开启
 
@@ -300,7 +299,8 @@ CodeMini CLI 会在 `.codemini-project/` 下维护一份轻量项目索引：
 
 这份索引会在进入项目时初始化，在 `edit`、`write`、`patch` 后做增量刷新。它的目标是轻量、可靠、低噪声，而不是生成一份很长的 AI 报告。
 
-### 数据目录
+<details>
+<summary>数据目录与配置路径</summary>
 
 - 全局会话状态：`<base-config-dir>/sessions/`
 - 项目工作区状态：`.codemini/`
@@ -318,6 +318,18 @@ CodeMini CLI 会在 `.codemini-project/` 下维护一份轻量项目索引：
 | macOS | `~/Library/Preferences/codemini-global` |
 | Linux / XDG | `$XDG_CONFIG_HOME/codemini-global` |
 | 受限环境回退 | `.codemini-global/` |
+
+</details>
+
+### 适合谁
+
+如果你想要的是下面这种工具，CodeMini CLI 会很合适：
+
+- 能同时和大模型、小模型稳定协作的 coding CLI
+- 更克制、更可控的工具暴露方式
+- 真正重视 Windows / PowerShell 体验的终端工作流
+- 能把计划、待办、工具调用和执行状态展示清楚的 TUI
+- 更偏结构化操作、而不是大量 shell 噪声的代码助手
 
 ### 文档入口
 
@@ -337,16 +349,6 @@ npm test
 # 本地启动
 npm start
 ```
-
-### 适合谁
-
-如果你想要的是下面这种工具，CodeMini CLI 会很合适：
-
-- 能同时和大模型、小模型稳定协作的 coding CLI
-- 更克制、更可控的工具暴露方式
-- 真正重视 Windows / PowerShell 体验的终端工作流
-- 能把计划、待办、工具调用和执行状态展示清楚的 TUI
-- 更偏结构化操作、而不是大量 shell 噪声的代码助手
 
 ### 许可证
 
