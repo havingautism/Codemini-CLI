@@ -109,3 +109,15 @@ export function getProjectIndexDir(cwd = process.cwd()) {
 export function getProjectMemoryDir(cwd = process.cwd()) {
   return path.join(getProjectIndexDir(cwd), 'memory');
 }
+
+export function getInboxDir() {
+  return path.join(getMemoryDir(), 'inbox');
+}
+
+export function getArchiveDir() {
+  return path.join(getMemoryDir(), 'archive');
+}
+
+export function getDreamAuditDir() {
+  return path.join(getMemoryDir(), 'audit');
+}

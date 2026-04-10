@@ -11,6 +11,15 @@ function renderScope(title, items = []) {
   return `${title}\n${lines.join('\n')}`;
 }
 
+function renderLifecycleGroup(title, items = []) {
+  if (!Array.isArray(items) || items.length === 0) return '';
+  const lines = items.map((item) => {
+    const prefix = item.lifecycle ? `[${item.lifecycle}]` : '';
+    return `- ${prefix} ${JSON.stringify(String(item.summary || item.content || ''))}`;
+  });
+  return `${title}\n${lines.join('\n')}`;
+}
+
 export async function buildMemorySnapshot({
   config = {},
   workspaceRoot = process.cwd()
@@ -24,11 +33,25 @@ export async function buildMemorySnapshot({
   ]);
 
   const maxItems = Math.max(1, Number(config?.memory?.max_items_per_scope || 12));
+
+  // Separate lifecycle-tagged items for projections
+  const allItems = [...user, ...globalItems, ...project];
+  const operational = allItems.filter((item) => item.lifecycle === 'operational');
+  const longterm = allItems.filter((item) => item.lifecycle === 'longterm');
+
   const sections = [
     renderScope('User Memory:', user.slice(0, maxItems)),
     renderScope('Global Memory:', globalItems.slice(0, maxItems)),
     renderScope('Project Memory:', project.slice(0, maxItems))
   ].filter(Boolean);
+
+  // Add lifecycle projection sections
+  if (operational.length > 0) {
+    sections.push(renderLifecycleGroup('Active Guidance (Operational — temporary but important for current phase):', operational));
+  }
+  if (longterm.length > 0) {
+    sections.push(renderLifecycleGroup('Stable Learnings (LongTerm — proven patterns across tasks):', longterm));
+  }
 
   if (sections.length === 0) return '';
 

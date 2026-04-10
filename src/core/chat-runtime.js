@@ -25,7 +25,8 @@ import { buildSystemPromptWithSoul } from './soul.js';
 import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir } from './paths.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { buildMemorySnapshot } from './memory-prompt.js';
-import { forgetMemory, listMemories, searchMemories } from './memory-store.js';
+import { forgetMemory, listMemories, searchMemories, captureToInbox, listInbox } from './memory-store.js';
+import { runDreamConsolidation } from './dream-consolidate.js';
 import { normalizePlanState } from './plan-state.js';
 import { countActiveTodos, normalizeTodos } from './todo-state.js';
 
@@ -2241,6 +2242,7 @@ async function askModel({
     requestToolApproval,
     signal,
     skipAnalysisNudge,
+    config,
     requestCompletion: async ({ messages, tools, model: selectedModel }) => {
       let started = false;
       const startAssistantStream = () => {
@@ -2889,6 +2891,9 @@ export async function createChatRuntime({
     '/status',
     '/config',
     '/memory',
+    '/capture',
+    '/inbox',
+    '/dream',
     '/mode',
     '/plan',
     '/history',
@@ -3329,6 +3334,38 @@ export async function createChatRuntime({
     const { signal } = activeAbortController;
     const activeReplySystemPrompt = await buildActiveSystemPrompt();
     const parsedInput = parseInput(line);
+    const maybeAutoDreamFromRuntime = async () => {
+      const threshold = Number(config?.memory?.auto_dream_threshold ?? 10);
+      if (!(threshold > 0)) return null;
+      let entries = [];
+      try {
+        entries = await listInbox();
+      } catch {
+        return null;
+      }
+      if (entries.length < threshold) return null;
+      if (onAgentEvent) onAgentEvent({ type: 'dream:auto', message: 'inbox threshold reached' });
+      try {
+        const report = await runDreamConsolidation({
+          dryRun: false,
+          workspaceRoot: process.cwd(),
+          config,
+          writeAudit: true
+        });
+        if (onAgentEvent) {
+          onAgentEvent({ type: 'dream:complete', report });
+        }
+        return report;
+      } catch (error) {
+        if (onAgentEvent) {
+          onAgentEvent({
+            type: 'dream:complete',
+            report: { ok: false, error: String(error?.message || error || 'unknown dream error') }
+          });
+        }
+        return null;
+      }
+    };
     try {
       if (shouldPersistInputHistory(parsedInput)) {
         await appendInputHistory(line);
@@ -3348,7 +3385,7 @@ export async function createChatRuntime({
       if (parsedInput.command === 'help') {
         return {
           type: 'system',
-          text: 'Commands: /help /exit /stop /commands /status /mode /compact /checkpoint /spec /plan /yes /edit /reject /agents /config /memory /history /debug /retry /<custom> !<shell>'
+          text: 'Commands: /help /exit /stop /commands /status /mode /compact /checkpoint /spec /plan /yes /edit /reject /agents /config /memory /capture /inbox /dream /history /debug /retry /<custom> !<shell>'
         };
       }
       if (parsedInput.command === 'status') {
@@ -3514,6 +3551,7 @@ export async function createChatRuntime({
           }
           const goal = parsedInput.args.slice(1).join(' ').trim();
           if (!goal) return { type: 'system', text: 'Usage: /plan auto <goal>' };
+          await maybeAutoDreamFromRuntime();
           const auto = await buildAutoPlanAndRun({
             goal,
             session: currentSession,
@@ -3749,6 +3787,75 @@ export async function createChatRuntime({
           return { type: 'system', text };
         }
         return { type: 'system', text: `Unknown /memory subcommand: ${sub}` };
+      }
+      if (parsedInput.command === 'capture') {
+        const summary = parsedInput.args.join(' ').trim();
+        if (!summary) return { type: 'system', text: 'Usage: /capture <summary> [--scope global|repo|thread] [--type observation|correction|failure|preference|pattern|win|gap|decision]' };
+        let scope = 'global';
+        let capType = 'observation';
+        const filtered = [];
+        for (const arg of parsedInput.args) {
+          if (arg.startsWith('--scope=')) { scope = arg.slice(7); continue; }
+          if (arg.startsWith('--type=')) { capType = arg.slice(7); continue; }
+          if (arg === '--scope') { scope = ''; continue; }
+          if (arg === '--type') { capType = ''; continue; }
+          filtered.push(arg);
+        }
+        const capSummary = filtered.join(' ').trim();
+        if (!capSummary) return { type: 'system', text: 'Usage: /capture <summary>' };
+        try {
+          const entry = await captureToInbox({ summary: capSummary, scope, type: capType, source: 'slash' });
+          const text = `Captured to inbox: ${entry.id} [${entry.lifecycle}] ${entry.summary}`;
+          return { type: 'system', text };
+        } catch (err) {
+          return { type: 'system', text: `Capture failed: ${err.message}` };
+        }
+      }
+      if (parsedInput.command === 'inbox') {
+        const since = parsedInput.args[0] || '';
+        try {
+          const entries = await listInbox({ since: since || undefined });
+          if (entries.length === 0) return { type: 'system', text: 'Inbox is empty.' };
+          const rows = entries.map((e) => `[${e.lifecycle}] ${e.scope}/${e.type}: ${e.summary} (${e.id})`);
+          return { type: 'system', text: `Inbox (${entries.length}):\n${rows.join('\n')}` };
+        } catch (err) {
+          return { type: 'system', text: `Failed to list inbox: ${err.message}` };
+        }
+      }
+      if (parsedInput.command === 'dream') {
+        let dryRun = false;
+        let scope = null;
+        for (const arg of parsedInput.args) {
+          if (arg === '--dry-run') {
+            dryRun = true;
+            continue;
+          }
+          if (arg.startsWith('--scope=')) {
+            scope = arg.slice(8) || null;
+          }
+        }
+        try {
+          const report = await runDreamConsolidation({
+            dryRun,
+            scope,
+            workspaceRoot: process.cwd(),
+            config,
+            writeAudit: true
+          });
+          const summary = [
+            `Dream done${dryRun ? ' (dry-run)' : ''}.`,
+            `Candidates: ${Number(report.candidatesGenerated || 0)}`,
+            `Promotions: ${Array.isArray(report.promotions) ? report.promotions.length : 0}`,
+            `Rejections: ${Array.isArray(report.rejections) ? report.rejections.length : 0}`,
+            `Archives: ${Array.isArray(report.archives) ? report.archives.length : 0}`,
+            report.auditReport ? `Audit: ${report.auditReport}` : ''
+          ]
+            .filter(Boolean)
+            .join('\n');
+          return { type: 'system', text: summary };
+        } catch (err) {
+          return { type: 'system', text: `Dream failed: ${err.message}` };
+        }
       }
       if (parsedInput.command === 'retry') {
         const lastUser = [...currentSession.messages].reverse().find((m) => m.role === 'user');
@@ -3987,6 +4094,7 @@ export async function createChatRuntime({
     const expandedText = await expandFileMentions(parsedInput.text, process.cwd());
     const autoRoute = classifyAutoRoute(expandedText);
     if (autoRoute.autoPlan) {
+      await maybeAutoDreamFromRuntime();
       const auto = await buildAutoPlanAndRun({
         goal: expandedText,
         session: currentSession,

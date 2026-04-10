@@ -66,6 +66,7 @@ const DEFAULT_CONFIG = {
     enabled: true,
     auto_write: true,
     inject_on_session_start: true,
+    auto_dream_threshold: 10,
     max_items_per_scope: 12,
     max_prompt_chars: 4000,
     max_user_chars: 1375,
@@ -163,6 +164,7 @@ function normalizePolicyLists(config) {
   next.memory.auto_write = next.memory.auto_write !== false;
   next.memory.inject_on_session_start = next.memory.inject_on_session_start !== false;
   next.memory.max_items_per_scope = Math.max(1, Number(next.memory.max_items_per_scope || 12));
+  next.memory.auto_dream_threshold = Number(next.memory.auto_dream_threshold ?? 10);
   next.memory.max_prompt_chars = Math.max(200, Number(next.memory.max_prompt_chars || 4000));
   next.memory.max_user_chars = Math.max(80, Number(next.memory.max_user_chars || 1375));
   next.memory.max_global_chars = Math.max(80, Number(next.memory.max_global_chars || 2200));

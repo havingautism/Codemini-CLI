@@ -245,7 +245,11 @@ const TUI_COPY = {
       idleReady: '等待输入',
       idleReadyDetail: '就绪',
       idleAfterTurn: '空闲',
-      idleAfterTurnDetail: '等待下一轮输入'
+      idleAfterTurnDetail: '等待下一轮输入',
+      dreamAutoTriggered: '瞌睡虫来了…自动整理记忆中，请稍等',
+      dreamRunning: '💤 打瞌睡中，请稍等…',
+      dreamCompleted: '✨ 做了一个好梦，记忆已整理',
+      dreamIdle: '💤'
     },
     deleteApproval: {
       title: '确认删除？',
@@ -414,7 +418,11 @@ const TUI_COPY = {
       idleReady: 'waiting for input',
       idleReadyDetail: 'ready',
       idleAfterTurn: 'idle',
-      idleAfterTurnDetail: 'ready for next input'
+      idleAfterTurnDetail: 'ready for next input',
+      dreamAutoTriggered: 'Getting sleepy... auto-consolidating memory, please wait',
+      dreamRunning: '💤 Dreaming... please wait',
+      dreamCompleted: '✨ Had a good dream, memory consolidated',
+      dreamIdle: '💤'
     },
     deleteApproval: {
       title: 'Confirm deletion?',
@@ -1135,7 +1143,9 @@ export function shouldRefreshRuntimeStateForEvent(event) {
     type === 'assistant:delta' ||
     type === 'assistant:response' ||
     type === 'tool:result' ||
-    type === 'compact:auto'
+    type === 'compact:auto' ||
+    type === 'dream:auto' ||
+    type === 'dream:complete'
   );
 }
 
@@ -3877,6 +3887,30 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
               label: 'system',
               text: copy.runtime.autoCompactTriggered(event.mode, event.threshold),
               color: 'yellowBright'
+            }
+          ]);
+        }
+        if (event?.type === 'dream:auto') {
+          setRuntimeStatus(makeStatus(copy.runtime.dreamRunning, copy.runtime.dreamAutoTriggered, 'magentaBright'));
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: nextId(),
+              label: 'system',
+              text: copy.runtime.dreamAutoTriggered,
+              color: 'magentaBright'
+            }
+          ]);
+        }
+        if (event?.type === 'dream:complete') {
+          setRuntimeStatus(makeStatus(copy.runtime.dreamCompleted, '', 'greenBright'));
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: nextId(),
+              label: 'system',
+              text: copy.runtime.dreamCompleted,
+              color: 'greenBright'
             }
           ]);
         }

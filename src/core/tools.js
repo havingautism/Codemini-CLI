@@ -18,7 +18,8 @@ import { initializeProjectIndex, queryProjectIndex, refreshIndexedFile } from '.
 import { checkReadDedup } from './agent-loop.js';
 import { TOOL_SKIP_DIRS as SKIP_DIRS, TEXT_EXTENSIONS, CODE_WRITE_GUARD_EXTENSIONS, LANGUAGE_FILE_TYPES } from './constants.js';
 import { sha256Prefixed as sha256, sha256 as sha256Hash } from './crypto-utils.js';
-import { forgetMemory, listMemories, rememberMemory, searchMemories } from './memory-store.js';
+import { forgetMemory, listMemories, rememberMemory, searchMemories, captureToInbox } from './memory-store.js';
+import { runDreamConsolidation } from './dream-consolidate.js';
 import { normalizePlanState } from './plan-state.js';
 import { normalizeTodos } from './todo-state.js';
 const BACKGROUND_TASK_RECENT_OUTPUT_LIMIT = 80;
@@ -2070,6 +2071,41 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         }
       }
     },
+    capture_memory: {
+      type: 'function',
+      function: {
+        name: 'capture_memory',
+        description:
+          'Capture a high-signal observation into the dream loop inbox during active work. Use this when you notice a reusable pattern, a user correction, a repeated failure with stable fix, a stable preference, or a workflow win. Do NOT use for casual chatter, trivial typos, or one-off noise. This is lightweight — entries land in inbox and are consolidated later.',
+        parameters: {
+          type: 'object',
+          properties: {
+            summary: { type: 'string', description: 'Short high-signal summary of the observation' },
+            details: { type: 'string', description: 'Detailed explanation of the observation' },
+            scope: { type: 'string', description: 'Scope: global, repo, or thread. Default: global' },
+            type: { type: 'string', description: 'Observation type: correction, failure, preference, pattern, win, gap, decision. Default: observation' },
+            tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags for categorization' },
+            suggested_action: { type: 'string', description: 'Optional suggested follow-up action' }
+          },
+          required: ['summary']
+        }
+      }
+    },
+    dream_consolidate: {
+      type: 'function',
+      function: {
+        name: 'dream_consolidate',
+        description:
+          'Run a dream loop consolidation pass over inbox entries. Reads recent inbox items, deduplicates, evaluates lifecycle progression (observed → candidate → operational/longterm), promotes stable patterns into persistent memory, archives expired items, and writes an audit report. Use during off-hours or explicit maintenance.',
+        parameters: {
+          type: 'object',
+          properties: {
+            scope: { type: 'string', description: 'Optional scope filter: global, repo, or thread' },
+            dry_run: { type: 'boolean', description: 'If true, only preview what would change without making changes' }
+          }
+        }
+      }
+    },
     list_background_tasks: {
       type: 'function',
       function: {
@@ -2321,6 +2357,27 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       ok: true,
       ...(await forgetMemory({ scope: args.scope, id: args.id, workspaceRoot }))
     }),
+    capture_memory: async (args = {}) => {
+      const entry = await captureToInbox({
+        scope: args.scope,
+        type: args.type,
+        summary: args.summary,
+        details: args.details,
+        suggestedAction: args.suggested_action,
+        tags: args.tags,
+        source: 'tool'
+      });
+      return { ok: true, captured: entry };
+    },
+    dream_consolidate: async (args = {}) => {
+      return runDreamConsolidation({
+        dryRun: args.dry_run === true,
+        scope: args.scope || null,
+        workspaceRoot,
+        config,
+        writeAudit: true
+      });
+    },
     list_background_tasks: () => listBackgroundTasks(workspaceRoot),
     get_background_task: (args) => getBackgroundTask(workspaceRoot, args),
     stop_background_task: (args) => stopBackgroundTask(workspaceRoot, args),

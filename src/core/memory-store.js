@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { sha256 } from './crypto-utils.js';
-import { getMemoryDir, getProjectMemoryDir } from './paths.js';
+import { getMemoryDir, getProjectMemoryDir, getInboxDir, getArchiveDir } from './paths.js';
 import { assertSafeMemoryContent, normalizeMemoryText, summarizeMemoryContent } from './memory-policy.js';
 
 const ALLOWED_SCOPES = new Set(['user', 'global', 'project']);
@@ -178,4 +178,230 @@ export async function searchMemories({ scope, query, workspaceRoot = process.cwd
   const needle = normalizeMemoryText(query).toLowerCase();
   if (!needle) return items;
   return items.filter((item) => item.content.toLowerCase().includes(needle) || item.summary.toLowerCase().includes(needle));
+}
+
+// ---------------------------------------------------------------------------
+// Dream Loop: inbox capture, lifecycle, archive, promotion
+// ---------------------------------------------------------------------------
+
+const VALID_LIFECYCLE = new Set(['observed', 'candidate', 'operational', 'longterm', 'archived']);
+const VALID_INBOX_SCOPES = new Set(['global', 'repo', 'thread', 'project', 'user']);
+
+function validateLifecycle(value) {
+  const lc = String(value || '').trim().toLowerCase();
+  if (!VALID_LIFECYCLE.has(lc)) throw new Error(`Invalid lifecycle state: ${value}`);
+  return lc;
+}
+
+function normalizeInboxScope(value) {
+  const scope = String(value || 'global').trim().toLowerCase();
+  if (!VALID_INBOX_SCOPES.has(scope)) throw new Error(`Unsupported inbox scope: ${value}`);
+  return scope;
+}
+
+function todayDir(baseDir) {
+  const date = new Date().toISOString().slice(0, 10);
+  return path.join(baseDir, date);
+}
+
+async function readJsonArray(filePath) {
+  try {
+    const raw = await fs.readFile(filePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeJsonArray(filePath, items) {
+  await ensureParent(filePath);
+  await fs.writeFile(filePath, `${JSON.stringify(items, null, 2)}\n`, 'utf8');
+}
+
+export async function captureToInbox({
+  scope = 'global',
+  type = 'observation',
+  summary,
+  details = '',
+  suggestedAction = '',
+  tags = [],
+  source = 'tool'
+} = {}) {
+  const normalizedSummary = normalizeMemoryText(summary);
+  if (!normalizedSummary) throw new Error('Inbox capture summary is required');
+  assertSafeMemoryContent(normalizedSummary);
+
+  const dir = todayDir(getInboxDir());
+  await fs.mkdir(dir, { recursive: true });
+  const now = nowIso();
+  const id = `inbox_${sha256(`${normalizedSummary}:${now}:${Math.random()}`).slice(0, 12)}`;
+  const entry = {
+    id,
+    timestamp: now,
+    scope: normalizeInboxScope(scope),
+    source,
+    type: String(type || 'observation').trim().toLowerCase(),
+    summary: normalizedSummary,
+    details: normalizeMemoryText(details),
+    suggestedAction: normalizeMemoryText(suggestedAction),
+    tags: Array.isArray(tags) ? tags.map((t) => String(t).trim()).filter(Boolean) : [],
+    lifecycle: 'observed'
+  };
+
+  const indexPath = path.join(dir, 'index.json');
+  const entries = await readJsonArray(indexPath);
+  entries.push(entry);
+  await writeJsonArray(indexPath, entries);
+  return entry;
+}
+
+export async function listInbox({ since, scope } = {}) {
+  const inboxBase = getInboxDir();
+  let dayDirs;
+  try {
+    const entries = await fs.readdir(inboxBase);
+    dayDirs = entries.filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e)).sort();
+  } catch {
+    return [];
+  }
+  if (since) {
+    const sinceStr = String(since).slice(0, 10);
+    dayDirs = dayDirs.filter((d) => d >= sinceStr);
+  }
+  const all = [];
+  for (const day of dayDirs) {
+    const indexPath = path.join(inboxBase, day, 'index.json');
+    const entries = await readJsonArray(indexPath);
+    all.push(...entries);
+  }
+  if (scope) {
+    const sc = String(scope).trim().toLowerCase();
+    return all.filter((e) => e.scope === sc);
+  }
+  return all;
+}
+
+export async function updateInboxEntry(id, updates = {}) {
+  const inboxBase = getInboxDir();
+  let dayDirs;
+  try {
+    dayDirs = (await fs.readdir(inboxBase)).filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e)).sort();
+  } catch {
+    return null;
+  }
+  for (const day of dayDirs) {
+    const indexPath = path.join(inboxBase, day, 'index.json');
+    const entries = await readJsonArray(indexPath);
+    const idx = entries.findIndex((e) => e.id === id);
+    if (idx === -1) continue;
+    if (updates.lifecycle) updates.lifecycle = validateLifecycle(updates.lifecycle);
+    entries[idx] = { ...entries[idx], ...updates };
+    await writeJsonArray(indexPath, entries);
+    return entries[idx];
+  }
+  return null;
+}
+
+export async function removeInboxEntry(id) {
+  const inboxBase = getInboxDir();
+  let dayDirs;
+  try {
+    dayDirs = (await fs.readdir(inboxBase)).filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e)).sort();
+  } catch {
+    return false;
+  }
+  for (const day of dayDirs) {
+    const indexPath = path.join(inboxBase, day, 'index.json');
+    const entries = await readJsonArray(indexPath);
+    const idx = entries.findIndex((e) => e.id === id);
+    if (idx === -1) continue;
+    entries.splice(idx, 1);
+    await writeJsonArray(indexPath, entries);
+    return true;
+  }
+  return false;
+}
+
+export async function archiveEntry(entry, reason = '', auditNote = '') {
+  const archiveDir = getArchiveDir();
+  const date = new Date().toISOString().slice(0, 10);
+  const dir = path.join(archiveDir, date);
+  await fs.mkdir(dir, { recursive: true });
+  const archived = {
+    ...entry,
+    lifecycle: 'archived',
+    archivedAt: nowIso(),
+    archiveReason: normalizeMemoryText(reason),
+    auditNote: normalizeMemoryText(auditNote)
+  };
+  const indexPath = path.join(dir, 'index.json');
+  const entries = await readJsonArray(indexPath);
+  entries.push(archived);
+  await writeJsonArray(indexPath, entries);
+  await removeInboxEntry(entry.id);
+  return archived;
+}
+
+export async function listArchive({ since, scope } = {}) {
+  const archiveBase = getArchiveDir();
+  let dayDirs;
+  try {
+    const entries = await fs.readdir(archiveBase);
+    dayDirs = entries.filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e)).sort();
+  } catch {
+    return [];
+  }
+  if (since) {
+    const sinceStr = String(since).slice(0, 10);
+    dayDirs = dayDirs.filter((d) => d >= sinceStr);
+  }
+  const all = [];
+  for (const day of dayDirs) {
+    const indexPath = path.join(archiveBase, day, 'index.json');
+    const entries = await readJsonArray(indexPath);
+    all.push(...entries);
+  }
+  if (scope) {
+    const sc = String(scope).trim().toLowerCase();
+    return all.filter((e) => e.scope === sc);
+  }
+  return all;
+}
+
+export async function promoteMemory({
+  entry,
+  scope = 'global',
+  lifecycle = 'operational',
+  workspaceRoot = process.cwd(),
+  projectAlias = '',
+  config = {}
+} = {}) {
+  if (!entry?.summary) throw new Error('Entry with summary is required for promotion');
+  const lc = validateLifecycle(lifecycle);
+  const content = normalizeMemoryText(entry.details || entry.summary);
+  const saved = await rememberMemory({
+    scope,
+    content,
+    kind: entry.type || 'note',
+    summary: normalizeMemoryText(entry.summary),
+    source: `dream-promote:${entry.id}`,
+    confidence: 0.9,
+    replaceSimilar: true,
+    workspaceRoot,
+    projectAlias,
+    config
+  });
+  // Tag the saved item with lifecycle
+  const filePath = buildFilePath(scope, workspaceRoot, projectAlias);
+  const projectKey = scope === 'project' ? getProjectMemoryKey(workspaceRoot, projectAlias) : '';
+  const items = (await readMemoryBucket(filePath)).map((item) => normalizeMemoryItem(item, scope, projectKey));
+  const target = items.find((item) => item.id === saved.id);
+  if (target) {
+    target.lifecycle = lc;
+    await writeMemoryBucket(filePath, items);
+  }
+  // Remove from inbox
+  await removeInboxEntry(entry.id);
+  return { promoted: saved, lifecycle: lc };
 }

@@ -45,6 +45,14 @@ User: add a notes file
 Assistant: create the file directly
 Tool: write({"file":"${cwd}/notes.txt","text":"todo\\n"})
 
+6. Capture a high-signal observation during work
+When you notice a reusable pattern, a user correction, a repeated failure, or a stable preference — capture it to the dream loop inbox for later consolidation.
+Tool: capture_memory({"summary":"User prefers tab size 2 for all JSON files","scope":"global","type":"preference"})
+
+7. Run a dream loop consolidation pass
+When you want to review and consolidate inbox entries into long-term memory.
+Tool: dream_consolidate({})
+
 Prefer these direct tool shapes over multi-step metadata reads or shell fallbacks.
 Prefer explicit absolute file_path values when the current working directory is known.`;
 }

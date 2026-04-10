@@ -16,7 +16,7 @@ CodeMini CLI is a terminal coding assistant built for teams that want a sharper,
 
 It is designed around a deliberate idea: most coding workflows do not need a huge default tool surface or unrestricted shell behavior. Instead, CodeMini starts with a compact core, loads advanced tools on demand, and keeps the agent grounded in structured code operations, session todos, lightweight project indexing, and shell-aware safety rules.
 
-**Contents** — [Why CodeMini CLI](#why-codemini-cli) · [Installation](#installation) · [Quick Start](#quick-start) · [Commands](#commands) · [Personalities (Souls)](#personalities-souls) · [Tool Model](#how-the-tool-model-works) · [Core Capabilities](#core-capabilities) · [Project Index](#project-index) · [Good Fit](#good-fit) · [Documentation](#documentation) · [Development](#development) · [License](#license)
+**Contents** — [Why CodeMini CLI](#why-codemini-cli) · [Installation](#installation) · [Quick Start](#quick-start) · [Commands](#commands) · [Personalities (Souls)](#personalities-souls) · [Tool Model](#how-the-tool-model-works) · [Core Capabilities](#core-capabilities) · [Dream Loop (Built-in Memory Evolution)](#dream-loop-built-in-memory-evolution) · [Project Index](#project-index) · [Good Fit](#good-fit) · [Documentation](#documentation) · [Development](#development) · [License](#license)
 
 ### Why CodeMini CLI
 
@@ -108,6 +108,7 @@ Typical flow:
   - AST tools: `ast_query`, `read_ast_node`
   - background task management tools
   - persistent memory tools
+  - dream loop tools: `capture_memory`, `dream_consolidate`
 - Session-level todo checklists via `update_todos`, rendered natively in the TUI
 - Unified shell execution model:
   - one-off commands via `run`
@@ -116,6 +117,34 @@ Typical flow:
 - Tree-sitter based structured editing for function, class, and method-level changes
 - Reply language control via `ui.reply_language`
 - Safe mode enabled by default
+
+### Dream Loop (Built-in Memory Evolution)
+
+Dream loop is built into the runtime as native tools and slash commands (not a skill-only workflow).
+
+What goes into inbox vs persistent memory:
+
+- Inbox (`memory/inbox/...`) stores raw, recent, event-level signal captured during work.
+- Typical inbox entries: user corrections, repeated failures, stable preferences, workflow wins, capability gaps, and decisions.
+- Inbox is intentionally noisy and temporary; entries are reviewed by consolidation before promotion.
+- User memory stores user-specific stable preferences and habits that should follow the user across repos.
+- Global memory stores stable cross-task learnings and generally reusable rules.
+- Project memory stores repo-specific conventions, workflows, and constraints tied to one codebase.
+- Archive (`memory/archive/...`) keeps rejected/superseded evidence instead of silently deleting it.
+
+- Capture signal during active work:
+  - Tool: `capture_memory`
+  - Slash: `/capture <summary> [--scope global|repo|thread] [--type observation|correction|failure|preference|pattern|win|gap|decision]`
+- Inspect inbox:
+  - Slash: `/inbox [since-YYYY-MM-DD]`
+- Consolidate inbox into long-term/project memory:
+  - Tool: `dream_consolidate`
+  - Slash: `/dream [--dry-run] [--scope=global|repo|thread]`
+
+Execution mode behavior:
+
+- `execution.mode=auto`: dream tools run normally, and auto-dream can trigger when `memory.auto_dream_threshold` is reached.
+- `execution.mode=plan`: model-planned tool calls are not executed, but slash command `/dream` still executes directly in runtime.
 
 ### Project Index
 
@@ -281,6 +310,7 @@ CodeMini CLI 把工具分成两层：
   - AST 工具：`ast_query`、`read_ast_node`
   - 后台任务管理工具
   - 持久 memory 工具
+  - dream loop 工具：`capture_memory`、`dream_consolidate`
 - 通过 `update_todos` 维护复杂单任务的会话级待办清单，并直接渲染在 TUI 中
 - 统一的 shell 执行模型：
   - 一次性命令直接 `run`
@@ -289,6 +319,34 @@ CodeMini CLI 把工具分成两层：
 - 基于 Tree-sitter 的结构化编辑能力，适合函数级、类级、方法级改动
 - 支持通过 `ui.reply_language` 控制回复语言
 - safe mode 默认开启
+
+### Dream Loop（内置记忆演化）
+
+Dream loop 是运行时内置能力，不依赖 skill 才能使用。
+
+Inbox 和持久记忆的区别：
+
+- Inbox（`memory/inbox/...`）保存的是工作过程中的原始事件信号，强调“先记下来”。
+- 典型 inbox 条目：用户纠正、重复失败、稳定偏好、流程收益、能力缺口、关键决策。
+- Inbox 本质上是临时且可能带噪的，需经 consolidation 审核后再晋升。
+- User memory 保存“跟这个用户长期相关”的稳定偏好与习惯，可跨仓库复用。
+- Global memory 保存跨任务可复用的稳定经验或规则。
+- Project memory 保存特定仓库的约定、流程和约束。
+- Archive（`memory/archive/...`）用于保留被拒绝/被覆盖证据，而不是静默删除。
+
+- 在工作中捕获高信号：
+  - 工具：`capture_memory`
+  - 斜杠命令：`/capture <summary> [--scope global|repo|thread] [--type observation|correction|failure|preference|pattern|win|gap|decision]`
+- 查看 inbox：
+  - 斜杠命令：`/inbox [since-YYYY-MM-DD]`
+- 把 inbox 整理进长期/项目记忆：
+  - 工具：`dream_consolidate`
+  - 斜杠命令：`/dream [--dry-run] [--scope=global|repo|thread]`
+
+执行模式差异：
+
+- `execution.mode=auto`：dream 工具可正常执行；当达到 `memory.auto_dream_threshold` 时可自动触发 consolidation。
+- `execution.mode=plan`：模型规划出的工具调用不会执行，但 `/dream` 作为运行时命令仍可直接执行。
 
 ### 项目索引
 

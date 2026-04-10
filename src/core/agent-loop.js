@@ -3,6 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { BoundedCache } from './bounded-cache.js';
 import { trimInline as _trimInline, normalizePath } from './string-utils.js';
+import { captureToInbox, listInbox } from './memory-store.js';
 
 /**
  * 安全解析 JSON 字符串。
@@ -365,6 +366,58 @@ const READ_ONLY_TOOLS = new Set([
   'read_plan'
 ]);
 
+// ─── Auto-capture tool errors to dream loop inbox ────────────────────
+
+const DREAM_AUTO_CAPTURE_TOOLS = new Set([
+  'edit', 'write', 'run', 'delete'
+]);
+
+const DREAM_AUTO_CAPTURE_COOLDOWN_MS = 60_000;
+const lastAutoCaptureByTool = new Map();
+
+function shouldAutoCaptureError(toolName, message) {
+  if (!DREAM_AUTO_CAPTURE_TOOLS.has(toolName)) return false;
+  const now = Date.now();
+  const lastTime = lastAutoCaptureByTool.get(toolName) || 0;
+  if (now - lastTime < DREAM_AUTO_CAPTURE_COOLDOWN_MS) return false;
+  const noisePatterns = [
+    /file already exists/i,
+    /no such file/i,
+    /not found$/i,
+    /already exists$/i,
+    /cancelled/i,
+    /aborted/i
+  ];
+  if (noisePatterns.some((p) => p.test(message))) return false;
+  lastAutoCaptureByTool.set(toolName, now);
+  return true;
+}
+
+function fireAndForgetCapture(toolName, message, args) {
+  const summary = `[${toolName}] ${String(message).slice(0, 120)}`;
+  const details = args
+    ? `Tool: ${toolName}\nError: ${message}\nArgs: ${JSON.stringify(args).slice(0, 300)}`
+    : `Tool: ${toolName}\nError: ${message}`;
+  captureToInbox({
+    scope: 'global',
+    type: 'failure',
+    summary,
+    details,
+    source: 'auto-capture'
+  }).catch(() => {});
+}
+
+async function checkAutoDreamThreshold(config) {
+  const threshold = Number(config?.memory?.auto_dream_threshold || 10);
+  if (threshold <= 0) return false;
+  try {
+    const entries = await listInbox();
+    return entries.length >= threshold;
+  } catch {
+    return false;
+  }
+}
+
 // ─── Exported helpers ────────────────────────────────────────────────
 
 export function summarizeToolResult(result) {
@@ -711,7 +764,8 @@ export async function runAgentLoop({
   toolFormatters = {},
   deferredDefinitions = {},
   signal,
-  skipAnalysisNudge = false
+  skipAnalysisNudge = false,
+  config = {}
 }) {
   const messages = [];
   if (systemPrompt) {
@@ -729,9 +783,35 @@ export async function runAgentLoop({
   let pendingSummaryNudges = 0;
   const analysisGuard = createAnalysisGuardState(userPrompt);
   const alwaysAllowSet = new Set((Array.isArray(alwaysAllowTools) ? alwaysAllowTools : []).map((t) => String(t)));
+  let autoDreamChecked = false;
 
   // Mutable tool list — grows as tool_search loads deferred tools
   const activeTools = [...toolDefinitions];
+
+  async function maybeRunAutoDream() {
+    if (autoDreamChecked) return;
+    autoDreamChecked = true;
+    if (executionMode === 'plan') return;
+    const autoDreamResult = await checkAutoDreamThreshold(config);
+    if (!autoDreamResult) return;
+    const dreamTool = toolHandlers['dream_consolidate'];
+    if (typeof dreamTool !== 'function') return;
+    if (onEvent) onEvent({ type: 'dream:auto', message: 'inbox threshold reached' });
+    try {
+      const report = await dreamTool({});
+      if (onEvent) {
+        onEvent({ type: 'dream:complete', report });
+      }
+    } catch (error) {
+      if (onEvent) {
+        onEvent({
+          type: 'dream:complete',
+          report: { ok: false, error: String(error?.message || error || 'unknown dream error') }
+        });
+      }
+      // Auto-dream is best-effort; don't block the loop
+    }
+  }
 
   for (let step = 0; step < maxSteps; step += 1) {
     // 检查是否已被用户中止
@@ -806,6 +886,7 @@ export async function runAgentLoop({
         continue;
       }
       finalText = assistantText;
+      await maybeRunAutoDream();
       return { text: finalText, messages, steps: step + 1 };
     }
 
@@ -822,6 +903,7 @@ export async function runAgentLoop({
       ]
         .filter(Boolean)
         .join('\n');
+      await maybeRunAutoDream();
       return { text: finalText.trim(), messages, steps: step + 1 };
     }
 
@@ -941,6 +1023,9 @@ export async function runAgentLoop({
         if (onEvent) {
           onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary: trimInline(message, 120) });
         }
+        if (shouldAutoCaptureError(toolName, message)) {
+          fireAndForgetCapture(toolName, message, effectiveArgs);
+        }
         return {
           callId: call.id,
           content: clipToolResult({ error: message }, toolResultMaxChars),
@@ -951,6 +1036,24 @@ export async function runAgentLoop({
       const durationMs = Date.now() - startedAt;
       if (onEvent) {
         onEvent({ type: 'tool:end', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary: summarizeToolResult(toolResult) });
+      }
+
+      // Auto-capture non-throwing tool failures (e.g. shell non-zero exit)
+      if (toolResult && typeof toolResult === 'object') {
+        const exitCode = toolResult.code ?? toolResult.exitCode;
+        const stderr = String(toolResult.stderr || '');
+        if (typeof exitCode === 'number' && exitCode !== 0 && stderr) {
+          const failMsg = `exit ${exitCode}: ${stderr.slice(0, 120)}`;
+          if (shouldAutoCaptureError(toolName, failMsg)) {
+            fireAndForgetCapture(toolName, failMsg, effectiveArgs);
+          }
+        }
+        if (toolResult.error) {
+          const errMsg = String(toolResult.error).slice(0, 120);
+          if (shouldAutoCaptureError(toolName, errMsg)) {
+            fireAndForgetCapture(toolName, errMsg, effectiveArgs);
+          }
+        }
       }
 
       // P1b: Use per-tool formatter if available, else fallback
@@ -1031,6 +1134,7 @@ export async function runAgentLoop({
   }
 
   const fallback = lastAssistantText || 'Stopped before final response.';
+  await maybeRunAutoDream();
   return {
     text: `${fallback}\n\n[stopped] Reached max tool steps (${maxSteps}). Try a narrower prompt or increase execution.max_steps.`,
     messages,
