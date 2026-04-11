@@ -198,6 +198,208 @@ function normalizeWriteArgs(rawArgs) {
   return normalized;
 }
 
+function normalizeWebFetchArgs(rawArgs) {
+  const source =
+    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+      ? { ...rawArgs }
+      : { url: typeof rawArgs === 'string' ? rawArgs : '' };
+  const normalized = { ...source };
+  const url = String(source.url || source.href || source.link || source.target || '').trim();
+  if (url) normalized.url = url;
+  return normalized;
+}
+
+function normalizeWebSearchArgs(rawArgs) {
+  const source =
+    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+      ? { ...rawArgs }
+      : { query: typeof rawArgs === 'string' ? rawArgs : '' };
+  const normalized = { ...source };
+  const query = String(source.query || source.q || source.keyword || '').trim();
+  if (query) normalized.query = query;
+  return normalized;
+}
+
+function clampNumber(value, min, max, fallback) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.min(max, Math.max(min, num));
+}
+
+function normalizeWhitespace(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function trimPreview(value, maxLen = 300) {
+  const text = normalizeWhitespace(value);
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, Math.max(0, maxLen - 3))}...`;
+}
+
+function normalizeWebUrl(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  let parsed;
+  try {
+    parsed = new URL(text);
+  } catch {
+    throw new Error(`Invalid URL: ${text}`);
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error(`Unsupported URL protocol: ${parsed.protocol}`);
+  }
+  return parsed.toString();
+}
+
+function extractHtmlMeta($, name, attribute = 'content') {
+  return String(
+    $(`meta[name="${name}"]`).attr(attribute) ||
+      $(`meta[property="${name}"]`).attr(attribute) ||
+      ''
+  ).trim();
+}
+
+function collectPageLinks($, pageUrl, maxLinks = 20) {
+  const links = [];
+  const seen = new Set();
+  $('a[href]').each((_, element) => {
+    if (links.length >= maxLinks) return false;
+    const hrefRaw = String($(element).attr('href') || '').trim();
+    if (!hrefRaw) return undefined;
+    try {
+      const href = new URL(hrefRaw, pageUrl).toString();
+      if (seen.has(href)) return undefined;
+      seen.add(href);
+      links.push({
+        href,
+        text: trimPreview($(element).text(), 160)
+      });
+    } catch {
+      return undefined;
+    }
+    return undefined;
+  });
+  return links;
+}
+
+async function buildPlaywrightLaunchEnv() {
+  const localLibDir = path.join(
+    process.env.HOME || '',
+    '.cache',
+    'codemini',
+    'playwright-libs',
+    'usr',
+    'lib',
+    'x86_64-linux-gnu'
+  );
+  try {
+    await fs.access(localLibDir);
+  } catch {
+    return process.env;
+  }
+
+  const existing = String(process.env.LD_LIBRARY_PATH || '').trim();
+  return {
+    ...process.env,
+    LD_LIBRARY_PATH: existing ? `${localLibDir}:${existing}` : localLibDir
+  };
+}
+
+async function webFetchPage(args = {}) {
+  const normalizedArgs = normalizeWebFetchArgs(args);
+  const url = normalizeWebUrl(normalizedArgs.url);
+  const timeoutMs = clampNumber(normalizedArgs.timeout_ms, 1_000, 120_000, 20_000);
+  const maxLinks = clampNumber(normalizedArgs.max_links, 0, 100, 20);
+  const waitUntil = ['domcontentloaded', 'load', 'networkidle'].includes(String(normalizedArgs.wait_until || '').trim())
+    ? String(normalizedArgs.wait_until).trim()
+    : 'domcontentloaded';
+
+  const [{ chromium }, { RequestList }, cheerio] = await Promise.all([
+    import('playwright'),
+    import('@crawlee/core'),
+    import('cheerio')
+  ]);
+
+  const requestList = await RequestList.open(`web-fetch-${Date.now()}`, [{ url }]);
+  const request = await requestList.fetchNextRequest();
+  if (!request?.url) {
+    throw new Error(`Unable to enqueue URL: ${url}`);
+  }
+
+  const browser = await chromium.launch({
+    headless: true,
+    env: await buildPlaywrightLaunchEnv()
+  });
+  try {
+    const page = await browser.newPage();
+    const response = await page.goto(request.url, { waitUntil, timeout: timeoutMs });
+    const finalUrl = page.url();
+    const html = await page.content();
+    const $ = cheerio.load(html);
+    const bodyText = $('body').text() || $.root().text();
+    const text = normalizeWhitespace(bodyText);
+    const title = trimPreview($('title').first().text() || (await page.title()), 240);
+    const description = extractHtmlMeta($, 'description') || extractHtmlMeta($, 'og:description');
+    const links = collectPageLinks($, finalUrl, maxLinks);
+    const htmlExcerpt = html.length > 4000 ? `${html.slice(0, 4000)}...` : html;
+
+    return {
+      url,
+      final_url: finalUrl,
+      title,
+      description,
+      text,
+      html_excerpt: htmlExcerpt,
+      links,
+      metadata: {
+        status: response?.status?.() ?? null,
+        fetched_at: new Date().toISOString(),
+        content_type: response?.headers?.()['content-type'] || '',
+        wait_until: waitUntil,
+        lang: String($('html').attr('lang') || '').trim()
+      }
+    };
+  } finally {
+    await browser.close();
+  }
+}
+
+async function webSearchQuery(config, args = {}) {
+  if (config?.web?.search_enabled === false) {
+    throw new Error('web_search is disabled by config. Set web.search_enabled=true to enable network search.');
+  }
+
+  const normalizedArgs = normalizeWebSearchArgs(args);
+  const query = String(normalizedArgs.query || '').trim();
+  if (!query) throw new Error('web_search requires query');
+
+  const maxResults = clampNumber(normalizedArgs.max_results, 1, 20, 8);
+  const [{ search, SafeSearchType }] = await Promise.all([import('duck-duck-scrape')]);
+  const response = await search(query, {
+    safeSearch: SafeSearchType.MODERATE,
+    locale: String(normalizedArgs.locale || 'en-us').trim() || 'en-us',
+    region: String(normalizedArgs.region || 'wt-wt').trim() || 'wt-wt'
+  });
+
+  return {
+    query,
+    no_results: response?.noResults === true,
+    results: Array.isArray(response?.results)
+      ? response.results.slice(0, maxResults).map((item) => ({
+          title: String(item?.title || '').trim(),
+          url: String(item?.url || '').trim(),
+          description: normalizeWhitespace(item?.description || item?.rawDescription || ''),
+          hostname: String(item?.hostname || '').trim()
+        }))
+      : [],
+    related: Array.isArray(response?.related)
+      ? response.related.slice(0, 8).map((item) => String(item?.text || item?.raw || '').trim()).filter(Boolean)
+      : []
+  };
+}
+
 function findUniqueLineBlock(lines, blockContent) {
   const probeLines = splitLines(blockContent);
   if (probeLines.length === 0 || (probeLines.length === 1 && probeLines[0] === '')) return null;
@@ -1976,6 +2178,44 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         }
       }
     },
+    web_fetch: {
+      type: 'function',
+      function: {
+        name: 'web_fetch',
+        description:
+          'Fetch and read a live web page. Uses Playwright to render the page, Cheerio to extract structured content, and Crawlee request handling to normalize the fetch flow. Use this for direct URL reads, not for keyword search.',
+        parameters: {
+          type: 'object',
+          properties: {
+            url: { type: 'string', description: 'Absolute http or https URL to fetch' },
+            href: { type: 'string', description: 'Alias for url' },
+            timeout_ms: { type: 'number', description: 'Navigation timeout in milliseconds' },
+            wait_until: { type: 'string', description: 'domcontentloaded, load, or networkidle' },
+            max_links: { type: 'number', description: 'Max number of links to extract from the page' }
+          },
+          required: ['url']
+        }
+      }
+    },
+    web_search: {
+      type: 'function',
+      function: {
+        name: 'web_search',
+        description:
+          'Run a live web search through DuckDuckGo. Use this for keyword-based internet search. This tool respects config.web.search_enabled and will fail when network search is disabled.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Search query' },
+            q: { type: 'string', description: 'Alias for query' },
+            max_results: { type: 'number', description: 'Max results to return' },
+            locale: { type: 'string', description: 'DuckDuckGo locale such as en-us' },
+            region: { type: 'string', description: 'DuckDuckGo region such as wt-wt' }
+          },
+          required: ['query']
+        }
+      }
+    },
     remember_user: {
       type: 'function',
       function: {
@@ -2227,6 +2467,8 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       if (astTarget.path) rememberAstSelection(astTarget.path, astTarget);
       return readAstNode(workspaceRoot, { ...args, ast_target: astTarget });
     },
+    web_fetch: (args) => webFetchPage(args),
+    web_search: (args) => webSearchQuery(config, args),
     edit: async (args) => {
       await ensureProjectIndex();
       const normalizedKind = String(args?.edit?.kind || args?.kind || '').trim();
@@ -2663,6 +2905,34 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       const header = `${kind} ${name}`;
       if (typeof content !== 'string' || content.length <= 2000) return `${header}\n${content}`;
       return `${header}\n${content.slice(0, 1200)}\n... [omitted ${content.length - 1600} chars] ...\n${content.slice(-400)}`;
+    },
+
+    web_fetch(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      const lines = [`[web_fetch: ${result.final_url || result.url || '?'}]`];
+      if (result.title) lines.push(`title: ${result.title}`);
+      if (result.description) lines.push(`description: ${trimPreview(result.description, 200)}`);
+      if (result.metadata?.status) lines.push(`status: ${result.metadata.status}`);
+      if (Array.isArray(result.links) && result.links.length > 0) {
+        lines.push(`links: ${result.links.slice(0, 5).map((item) => item.href).join(', ')}`);
+      }
+      if (result.text) lines.push(trimPreview(result.text, 1200));
+      return lines.join('\n');
+    },
+
+    web_search(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      const lines = [result.query ? `[web_search: "${result.query}"]` : '[web_search]'];
+      if (!Array.isArray(result.results) || result.results.length === 0) {
+        lines.push(result.no_results ? 'No results found.' : 'No search results returned.');
+        return lines.join('\n');
+      }
+      for (const item of result.results.slice(0, 8)) {
+        lines.push(`- ${item.title || item.url}`);
+        if (item.url) lines.push(`  ${item.url}`);
+        if (item.description) lines.push(`  ${trimPreview(item.description, 180)}`);
+      }
+      return lines.join('\n');
     },
 
     list_background_tasks(result) {

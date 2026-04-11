@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -33,6 +34,18 @@ async function makeToolsWithConfig(workspaceRoot, mutate) {
   const config = await loadConfig();
   if (typeof mutate === 'function') mutate(config);
   return getBuiltinTools({ workspaceRoot, config });
+}
+
+async function withHttpServer(handler, run) {
+  const server = http.createServer(handler);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const url = `http://127.0.0.1:${address.port}`;
+  try {
+    await run({ server, url });
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
 }
 
 test('grep returns structured top matches for content discovery', async () => {
@@ -776,6 +789,8 @@ test('builtin tool definitions expose only current primary and structured tools'
     assert.ok(!('glob' in deferredDefinitions));
     assert.ok('ast_query' in deferredDefinitions);
     assert.ok('read_ast_node' in deferredDefinitions);
+    assert.ok('web_fetch' in deferredDefinitions);
+    assert.ok('web_search' in deferredDefinitions);
     assert.ok('remember_project' in deferredDefinitions);
     assert.ok('list_memory' in deferredDefinitions);
     assert.ok('list_background_tasks' in deferredDefinitions);
@@ -809,9 +824,67 @@ test('builtin tool definitions expose only current primary and structured tools'
     assert.equal(typeof handlers.read_ast_node, 'function');
     assert.equal(typeof handlers.write, 'function');
     assert.equal(typeof handlers.run, 'function');
+    assert.equal(typeof handlers.web_fetch, 'function');
+    assert.equal(typeof handlers.web_search, 'function');
     assert.equal(typeof handlers.remember_project, 'function');
     assert.equal(typeof handlers.list_background_tasks, 'function');
     assert.equal(typeof handlers.tool_search, 'function');
+  });
+});
+
+test('web_search is blocked when config disables network search', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {
+      config.web = { ...(config.web || {}), search_enabled: false };
+    });
+
+    await assert.rejects(
+      () => handlers.web_search({ query: 'codemini cli' }),
+      /network search disabled|web\.search_enabled/i
+    );
+  });
+});
+
+test('web_fetch reads rendered page content and extracts links', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { handlers, formatters } = await makeTools(workspaceRoot);
+
+    await withHttpServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html>
+<html>
+  <head>
+    <title>CodeMini Fetch Demo</title>
+  </head>
+  <body>
+    <main>
+      <h1>Fetch Demo Title</h1>
+      <p id="intro">Hello from the fetch test.</p>
+      <script>
+        const node = document.createElement('p');
+        node.textContent = 'Rendered by script.';
+        document.body.appendChild(node);
+      </script>
+      <a href="/docs">Docs</a>
+    </main>
+  </body>
+</html>`);
+    }, async ({ url }) => {
+      const result = await handlers.web_fetch({ url, max_links: 5 });
+
+      assert.equal(result.url, new URL(url).toString());
+      assert.equal(result.title, 'CodeMini Fetch Demo');
+      assert.match(result.text, /Fetch Demo Title/);
+      assert.match(result.text, /Hello from the fetch test/);
+      assert.match(result.text, /Rendered by script/);
+      assert.ok(Array.isArray(result.links));
+      assert.ok(result.links.some((item) => item.href === `${url}/docs`));
+
+      const formatted = formatters.web_fetch(result);
+      assert.match(formatted, /\[web_fetch:/);
+      assert.match(formatted, /CodeMini Fetch Demo/);
+      assert.match(formatted, /Rendered by script/);
+    });
   });
 });
 

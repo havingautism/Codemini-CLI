@@ -284,11 +284,11 @@ function describeConfigKey(key, mode = 'set', language = 'zh') {
 
 const SUB_AGENT_ROLES = ['planner', 'coder', 'reviewer', 'tester', 'summarizer'];
 const ROLE_TOOL_POLICY = {
-  planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node', 'read_plan', 'update_plan'],
-  coder: ['read', 'grep', 'list', 'edit', 'write', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'update_todos', 'read_plan', 'update_plan'],
-  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'read_plan'],
-  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'read_plan'],
-  summarizer: ['read', 'grep', 'list', 'glob', 'tool_search', 'read_plan', 'update_plan']
+  planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node', 'web_fetch', 'web_search', 'read_plan', 'update_plan'],
+  coder: ['read', 'grep', 'list', 'edit', 'write', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
+  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'web_fetch', 'web_search', 'read_plan'],
+  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'web_fetch', 'web_search', 'read_plan'],
+  summarizer: ['read', 'grep', 'list', 'glob', 'tool_search', 'web_fetch', 'web_search', 'read_plan', 'update_plan']
 };
 const SUB_AGENT_CONTEXT_MAX_MESSAGES = 4;
 const SUB_AGENT_CONTEXT_MAX_CHARS = 1200;

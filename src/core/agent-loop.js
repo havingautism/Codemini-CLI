@@ -362,6 +362,7 @@ export function checkReadDedup(filePath, startLine, endLine, mtimeMs) {
 const READ_ONLY_TOOLS = new Set([
   'read', 'grep', 'glob', 'list',
   'ast_query', 'read_ast_node',
+  'web_fetch', 'web_search',
   'list_background_tasks', 'get_background_task',
   'read_plan'
 ]);

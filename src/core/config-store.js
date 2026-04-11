@@ -78,6 +78,9 @@ const DEFAULT_CONFIG = {
     preset: 'default',
     custom_path: ''
   },
+  web: {
+    search_enabled: true
+  },
   policy: {
     safe_mode: true,
     allow_dangerous_commands: false,
@@ -172,6 +175,8 @@ function normalizePolicyLists(config) {
   next.memory.project_binding = ['path', 'alias', 'path-or-alias'].includes(String(next.memory.project_binding || ''))
     ? String(next.memory.project_binding)
     : 'path-or-alias';
+  next.web = next.web || {};
+  next.web.search_enabled = next.web.search_enabled !== false;
   next.policy = next.policy || {};
   next.policy.command_allowlist = uniqueStrings(
     Array.isArray(next.policy.command_allowlist) ? next.policy.command_allowlist : []

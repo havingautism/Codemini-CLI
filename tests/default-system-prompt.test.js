@@ -21,4 +21,8 @@ test('default system prompt includes demo-style tool few-shot examples', () => {
   assert.match(prompt, /do not give a completion-style wrap-up until the checklist is complete or a blocker is recorded/i);
   assert.match(prompt, new RegExp(`edit\\(\\{"file_path":"${cwd}\\/src\\/auth\\/service\\.ts","old_string":"loginUser","new_string":"signInUser"\\}\\)`));
   assert.match(prompt, new RegExp(`write\\(\\{"file":"${cwd}\\/notes\\.txt","text":"todo\\\\n"\\}\\)`));
+  assert.match(prompt, /tool_search\(\{"query":"web_fetch"\}\)/);
+  assert.match(prompt, /web_fetch\(\{"url":"https:\/\/example\.com\/docs"\}\)/);
+  assert.match(prompt, /tool_search\(\{"query":"web_search"\}\)/);
+  assert.match(prompt, /web_search\(\{"query":"latest pnpm release","max_results":5\}\)/);
 });

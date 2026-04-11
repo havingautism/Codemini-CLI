@@ -1,100 +1,92 @@
 ---
 name: superpowers-lite
 description: Concise workflow skill tuned for 30B-class models: prefer structured code tools first, keep context tight, use sub-agents for narrow tasks, and verify before claiming success.
-version: 0.1.0
+version: 0.2.0
 ---
 
-Use this skill as the default lightweight operating style for coding work.
+Use this skill as the default lightweight operating style for all coding work.
 
-Primary behavior:
-- keep momentum on clear tasks
-- slow down before coding when the request is ambiguous
-- keep edits local
-- verify before claiming success
+**Announce when using a skill:** Before following any route below, say "Using [skill name] to [purpose]" in your response. This signals intent and prevents silent skill skipping.
 
-Routing:
+## Mandatory Skill Check
 
-1. If the task is clear, small, and the implementation path is obvious:
-- execute directly
-- do not force brainstorming
+Before responding to ANY user message, check whether a skill applies. If there is even a small chance a skill is relevant, YOU MUST invoke it. This is not optional.
 
-2. If the task is a non-trivial implementation that likely needs codebase exploration, touches multiple areas, changes shared behavior, or needs explicit review/testing before coding:
-- prefer `auto plan`
-- inspect first, then present a short implementation plan for approval
-- do not jump straight into coding
-- do not use `brainstorm` as a substitute for implementation planning
+**Skill check comes BEFORE:**
+- Clarifying questions
+- Code exploration
+- Writing code
+- Anything else
 
-3. If the goal is clear but there are multiple reasonable implementation paths and the missing piece is mainly user preference, tradeoff choice, or one key constraint:
-- use `brainstorm`
-- ask exactly one clarifying question first
-- do not give options, recommendations, or a tentative solution in the same response
-- stop after the question and wait for the user's answer before continuing
+## Anti-Rationalization
 
-4. If the request is still missing a key constraint or success condition:
-- ask exactly one clarifying question
-- do not give options yet
-- do not write code yet
-- stop after the question and wait for the user's answer
+If you catch yourself thinking any of the following, STOP — you are about to skip a skill incorrectly:
 
-5. If the request is greenfield and underspecified, such as "build a page", "make a site", "generate an app", or similar:
-- treat it as missing key constraints by default
-- ask one high-value question before coding
-- do not assume features, storage model, or scope unless the user already gave them
-- stop after the question and wait for the user's answer
+| Thought | Reality |
+|---|---|
+| "This is too simple for a skill" | Simple tasks derail too. Use the skill. |
+| "I need more context first" | Skills tell you HOW to gather context. Check first. |
+| "The skill is overkill here" | A lightweight pass is cheaper than rework. |
+| "I'll just do this one thing first" | Do the skill check BEFORE anything. |
+| "I already know what to do" | Knowing the concept ≠ following the process. |
 
-Decision boundary:
+## Routing
+
+Evaluate the user's request and YOU MUST follow exactly one route:
+
+1. **Task is clear, small, and obvious path:**
+   - Execute directly
+   - Do NOT invoke brainstorming
+
+2. **Non-trivial implementation that needs codebase exploration, touches multiple areas, or changes shared behavior:**
+   - YOU MUST invoke `writing-plans` skill
+   - Inspect first, then present an implementation plan for approval
+   - Do NOT jump straight into coding
+
+3. **Goal is clear but multiple reasonable approaches exist and the missing piece is user preference or tradeoff choice:**
+   - YOU MUST invoke `brainstorm` skill
+   - Follow brainstorm process — do NOT substitute it with ad-hoc questions
+
+4. **Request is missing a key constraint or success condition:**
+   - Ask exactly one clarifying question
+   - Do NOT give options or write code
+   - Stop and wait for the answer
+
+5. **Request is greenfield and underspecified** ("build a page", "make a site", "generate an app"):
+   - Treat as missing key constraints
+   - Ask one high-value question
+   - Do NOT assume features, scope, or storage model
+   - Stop and wait for the answer
+
+**Decision boundary:**
 - Use `brainstorm` when one focused user answer will determine the direction.
-- Use `auto plan` when the task is already implementation-shaped but the work is large enough that you should explore first and get sign-off on the plan.
-- If both could apply, prefer `brainstorm` first when the core uncertainty is user intent; prefer `auto plan` first when the core uncertainty is codebase impact and execution shape.
+- Use `writing-plans` when the task is implementation-shaped but needs a plan before coding.
+- If both could apply, prefer `brainstorm` first when the core uncertainty is user intent; prefer `writing-plans` first when the core uncertainty is codebase impact.
 
-Tool order:
-- prefer `grep` first for content search and candidate discovery
-- use `read` to inspect the smallest useful code block
-- use `edit` for minimal focused edits or direct whole-file rewrites when you already have the replacement content
-- use `generate_diff` and `patch` for larger edits or when you already have a diff
-- use `glob` and `list` when you need file or directory discovery
-- use shell search such as `rg` only as a fallback when structured tools are not enough
+## Tool Order
 
-Core rules:
+- Prefer `grep` first for content search and candidate discovery
+- Use `read` to inspect the smallest useful code block
+- Use `edit` for minimal focused edits or whole-file rewrites
+- Use `glob` when you need file or directory discovery
+- Use shell search (`rg`) only as a fallback
 
-1. Search first.
-Prefer structured search before broad file reads. Start with `grep`, then inspect with `read`, and only fall back to shell search such as `rg` when the structured tools are not enough.
+## Core Rules
 
-2. Keep context tight.
-Do not carry full conversation history into every step. Summarize, narrow scope, and work from the most recent relevant evidence.
+1. **Search first.** Start with `grep`, then `read`. Fall back to shell only when structured tools aren't enough.
 
-3. Prefer narrow sub-agents.
-When a task can be split cleanly, use sub-agents for bounded subtasks so the main thread keeps global focus. Give each sub-agent:
-- one clear objective
-- a tiny context summary
-- a tiny file evidence packet
-- a concrete expected output
+2. **Keep context tight.** Do not carry full conversation history into every step. Summarize and narrow scope.
 
-4. Do not code against unclear requirements.
-If the requested behavior, scope, or acceptance is unclear, do not jump into implementation. First decide which of these applies:
-- missing key constraint -> ask one question
-- multiple valid approaches -> use `brainstorm`
-- clear enough to build -> proceed
+3. **Prefer narrow sub-agents.** When a task splits cleanly, delegate to sub-agents with: one clear objective, tiny context, concrete expected output.
 
-5. Read and write with intent.
-Use `read` before broad reads when possible. Use `edit` for focused edits or when you already have the complete replacement content. Use `generate_diff` and `patch` for larger changes. Use `write` only for creating new files or explicit whole-file writes. Avoid unnecessary tool calls and avoid rereading the same file without a reason.
+4. **Do not code against unclear requirements.** Missing constraint → ask one question. Multiple approaches → `brainstorm`. Clear enough → proceed.
 
-6. Verify before claiming success.
-Run the relevant test, check, or command before saying work is fixed or complete.
+5. **Verify before claiming success.** Run the relevant test or command before saying work is done.
 
-Default workflow:
-- Search with `grep`
-- Inspect local context with `read`
-- If the request is unclear, first decide: ask one question, brainstorm, auto plan, or proceed
-- Plan the next smallest step
-- Delegate if the work is independent
-- Edit with `edit`
-- Verify
-- Summarize briefly
+## Sub-agent Guidance
 
-Sub-agent guidance:
 - `planner`: break work into steps, risks, and checks
 - `coder`: implement one bounded change
 - `reviewer`: look for bugs, regressions, and missing verification
 
-If the task is simple, stay lightweight. Do not expand into a large ceremony unless the problem actually needs it.
+If the task is simple, stay lightweight. Do not expand into ceremony unless the problem needs it.

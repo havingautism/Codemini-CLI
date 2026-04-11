@@ -53,6 +53,18 @@ Tool: capture_memory({"summary":"User prefers tab size 2 for all JSON files","sc
 When you want to review and consolidate inbox entries into long-term memory.
 Tool: dream_consolidate({})
 
+8. Read a live web page by URL
+User: summarize https://example.com/docs
+Assistant: load the web fetch tool and read the page directly
+Tool: tool_search({"query":"web_fetch"})
+Tool: web_fetch({"url":"https://example.com/docs"})
+
+9. Search the web
+User: search the web for latest pnpm release
+Assistant: load the web search tool and run a targeted search
+Tool: tool_search({"query":"web_search"})
+Tool: web_search({"query":"latest pnpm release","max_results":5})
+
 Prefer these direct tool shapes over multi-step metadata reads or shell fallbacks.
 Prefer explicit absolute file_path values when the current working directory is known.`;
 }
