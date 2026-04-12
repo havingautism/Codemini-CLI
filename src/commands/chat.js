@@ -78,57 +78,61 @@ export async function handleChat(args) {
     systemPrompt
   });
 
-  if (parsed.prompt) {
-    const result = await runtime.submit(parsed.prompt);
-    if (result.text) console.log(result.text);
-    return;
-  }
-
-  if (parsed.plain || !process.stdout.isTTY) {
-    await runPlainLoop(runtime);
-    return;
-  }
-
-  const React = (await import('react')).default;
-  const { render } = await import('ink');
-  const { ChatApp } = await import('../tui/chat-app.js');
-
-  const instance = render(
-    React.createElement(ChatApp, {
-      runtime,
-      sessionId: session.id,
-      model: parsed.model || config.model.name,
-      sdkProvider: config.sdk?.provider || 'openai-compatible',
-      language: config.ui?.language || 'zh',
-      shellName: config.shell?.default || 'powershell',
-      safeMode: config.policy?.safe_mode !== false,
-      version: pkg.version
-    })
-  );
-
-  // Patch Ink's renderInteractiveFrame to never use clearTerminal.
-  // Ink calls clearTerminal (ESC[2J + ESC[H]) when the output frame exceeds
-  // the terminal viewport height, which resets the scroll position to the top
-  // and prevents the user from scrolling freely during streaming.
-  // By always using incremental logUpdate updates instead, old content scrolls
-  // into the terminal's scrollback naturally and the user can scroll freely.
-  const origRenderFrame = instance.renderInteractiveFrame;
-  instance.renderInteractiveFrame = function (output, outputHeight, staticOutput) {
-    const hasStaticOutput = staticOutput !== '';
-    const outputToRender = output + '\n';
-
-    if (hasStaticOutput) {
-      this.fullStaticOutput += staticOutput;
-      this.log.clear();
-      this.options.stdout.write(staticOutput);
-      this.log(outputToRender);
-    } else if (output !== this.lastOutput || this.log.isCursorDirty()) {
-      this.throttledLog(outputToRender);
+  try {
+    if (parsed.prompt) {
+      const result = await runtime.submit(parsed.prompt);
+      if (result.text) console.log(result.text);
+      return;
     }
-    this.lastOutput = output;
-    this.lastOutputToRender = outputToRender;
-    this.lastOutputHeight = outputHeight;
-  };
 
-  await instance.waitUntilExit();
+    if (parsed.plain || !process.stdout.isTTY) {
+      await runPlainLoop(runtime);
+      return;
+    }
+
+    const React = (await import('react')).default;
+    const { render } = await import('ink');
+    const { ChatApp } = await import('../tui/chat-app.js');
+
+    const instance = render(
+      React.createElement(ChatApp, {
+        runtime,
+        sessionId: session.id,
+        model: parsed.model || config.model.name,
+        sdkProvider: config.sdk?.provider || 'openai-compatible',
+        language: config.ui?.language || 'zh',
+        shellName: config.shell?.default || 'powershell',
+        safeMode: config.policy?.safe_mode !== false,
+        version: pkg.version
+      })
+    );
+
+    // Patch Ink's renderInteractiveFrame to never use clearTerminal.
+    // Ink calls clearTerminal (ESC[2J + ESC[H]) when the output frame exceeds
+    // the terminal viewport height, which resets the scroll position to the top
+    // and prevents the user from scrolling freely during streaming.
+    // By always using incremental logUpdate updates instead, old content scrolls
+    // into the terminal's scrollback naturally and the user can scroll freely.
+    const origRenderFrame = instance.renderInteractiveFrame;
+    instance.renderInteractiveFrame = function (output, outputHeight, staticOutput) {
+      const hasStaticOutput = staticOutput !== '';
+      const outputToRender = output + '\n';
+
+      if (hasStaticOutput) {
+        this.fullStaticOutput += staticOutput;
+        this.log.clear();
+        this.options.stdout.write(staticOutput);
+        this.log(outputToRender);
+      } else if (output !== this.lastOutput || this.log.isCursorDirty()) {
+        this.throttledLog(outputToRender);
+      }
+      this.lastOutput = output;
+      this.lastOutputToRender = outputToRender;
+      this.lastOutputHeight = outputHeight;
+    };
+
+    await instance.waitUntilExit();
+  } finally {
+    await runtime.dispose?.();
+  }
 }

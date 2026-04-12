@@ -22,6 +22,7 @@ import { forgetMemory, listMemories, rememberMemory, searchMemories, captureToIn
 import { runDreamConsolidation } from './dream-consolidate.js';
 import { normalizePlanState } from './plan-state.js';
 import { normalizeTodos } from './todo-state.js';
+import { createFffAdapter } from './fff-adapter.js';
 const BACKGROUND_TASK_RECENT_OUTPUT_LIMIT = 80;
 const BACKGROUND_TASK_POLL_MS = 150;
 const MAX_AST_ENCLOSING_BYTES = 300_000;
@@ -316,17 +317,10 @@ async function webFetchPage(args = {}) {
     ? String(normalizedArgs.wait_until).trim()
     : 'domcontentloaded';
 
-  const [{ chromium }, { RequestList }, cheerio] = await Promise.all([
-    import('playwright'),
-    import('@crawlee/core'),
-    import('cheerio')
-  ]);
+  const [{ chromium }, cheerio] = await Promise.all([import('playwright'), import('cheerio')]);
 
-  const requestList = await RequestList.open(`web-fetch-${Date.now()}`, [{ url }]);
-  const request = await requestList.fetchNextRequest();
-  if (!request?.url) {
-    throw new Error(`Unable to enqueue URL: ${url}`);
-  }
+  // Crawlee is intentionally disabled for now so single-page reads stay lightweight.
+  // If we later need multi-URL crawl orchestration, retries, or request queues, we can re-enable it here.
 
   const browser = await chromium.launch({
     headless: true,
@@ -334,7 +328,7 @@ async function webFetchPage(args = {}) {
   });
   try {
     const page = await browser.newPage();
-    const response = await page.goto(request.url, { waitUntil, timeout: timeoutMs });
+    const response = await page.goto(url, { waitUntil, timeout: timeoutMs });
     const finalUrl = page.url();
     const html = await page.content();
     const $ = cheerio.load(html);
@@ -1336,7 +1330,7 @@ async function stopBackgroundTask(_root, args) {
   return { ...snapshotBackgroundTask(task), stopped: true };
 }
 
-async function grep(root, args) {
+async function builtinGrep(root, args) {
   const normalizedArgs = normalizePatternArgs(args, ['query', 'symbol', 'q'], ['directory', 'dir', 'cwd']);
   const pattern = String(normalizedArgs?.pattern || '').trim();
   if (!pattern) throw new Error('grep requires pattern');
@@ -1371,7 +1365,7 @@ async function grep(root, args) {
   return { pattern, matches, truncated: false };
 }
 
-async function glob(root, args) {
+async function builtinGlob(root, args) {
   const normalizedArgs = normalizePatternArgs(args, ['glob', 'query'], ['directory', 'dir', 'cwd']);
   const pattern = String(normalizedArgs?.pattern || '').trim();
   if (!pattern) throw new Error('glob requires pattern');
@@ -1391,7 +1385,7 @@ async function glob(root, args) {
   };
 }
 
-async function list(root, args) {
+async function builtinList(root, args) {
   const normalizedArgs = normalizePathArgs(args, ['dir', 'directory', 'target']);
   const relativePath = String(normalizedArgs?.path || '.').trim() || '.';
   const target = await resolveInWorkspace(root, relativePath);
@@ -1738,7 +1732,7 @@ async function editTarget(root, args) {
   throw new Error(`edit does not support kind: ${kind}`);
 }
 
-export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSystemEvent, getTodos, onTodosUpdate, getPlanState, onPlanStateUpdate }) {
+export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSystemEvent, getTodos, onTodosUpdate, getPlanState, onPlanStateUpdate, fffAdapter }) {
   const emitSystemTool = (event) => {
     if (typeof onSystemEvent === 'function' && event) onSystemEvent(event);
   };
@@ -2389,6 +2383,47 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
   };
 
   const definitions = [...primaryDefinitions];
+  const activeFffAdapter = fffAdapter || createFffAdapter({ workspaceRoot, config });
+  let fffConnected = false;
+
+  async function ensureFffConnected() {
+    if (!activeFffAdapter?.connect || fffConnected) return;
+    await activeFffAdapter.connect();
+    fffConnected = true;
+  }
+
+  async function grep(args) {
+    if (activeFffAdapter?.grep) {
+      try {
+        await ensureFffConnected();
+        const result = await activeFffAdapter.grep(args);
+        if (result && Array.isArray(result.matches)) return result;
+      } catch {}
+    }
+    return builtinGrep(workspaceRoot, args);
+  }
+
+  async function glob(args) {
+    if (activeFffAdapter?.glob) {
+      try {
+        await ensureFffConnected();
+        const result = await activeFffAdapter.glob(args);
+        if (result && Array.isArray(result.matches)) return result;
+      } catch {}
+    }
+    return builtinGlob(workspaceRoot, args);
+  }
+
+  async function list(args) {
+    if (activeFffAdapter?.list) {
+      try {
+        await ensureFffConnected();
+        const result = await activeFffAdapter.list(args);
+        if (result && Array.isArray(result.items)) return result;
+      } catch {}
+    }
+    return builtinList(workspaceRoot, args);
+  }
 
   const handlers = {
     read: async (args) => {
@@ -2452,9 +2487,9 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       await ensureProjectIndex();
       return queryProjectIndex(workspaceRoot, args);
     },
-    grep: (args) => grep(workspaceRoot, args),
-    glob: (args) => glob(workspaceRoot, args),
-    list: (args) => list(workspaceRoot, args),
+    grep,
+    glob,
+    list,
     ast_query: async (args) => {
       const result = await queryAst(workspaceRoot, args);
       const firstTarget = result?.matches?.[0]?.ast_target;
@@ -2957,5 +2992,13 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     }
   };
 
-  return { definitions, handlers, formatters, deferredDefinitions };
+  async function dispose() {
+    if (activeFffAdapter?.dispose) {
+      try {
+        await activeFffAdapter.dispose();
+      } catch {}
+    }
+  }
+
+  return { definitions, handlers, formatters, deferredDefinitions, dispose };
 }

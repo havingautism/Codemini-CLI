@@ -85,25 +85,29 @@ async function runHarness({ role, task, config, systemPrompt, model, maxSteps })
   if (!HARNESS_ROLES.includes(role)) {
     throw new Error(`Unknown harness role: ${role}. Available: ${HARNESS_ROLES.join(', ')}`);
   }
-  const { definitions, handlers, formatters, deferredDefinitions } = getBuiltinTools({
+  const { definitions, handlers, formatters, deferredDefinitions, dispose } = getBuiltinTools({
     workspaceRoot: process.cwd(),
     config
   });
-  const filtered = filterToolsForRole(definitions, handlers, deferredDefinitions, role);
-  const rolePrompt = getSubAgentRolePrompt(role);
+  try {
+    const filtered = filterToolsForRole(definitions, handlers, deferredDefinitions, role);
+    const rolePrompt = getSubAgentRolePrompt(role);
 
-  const result = await runAgentLoop({
-    systemPrompt: `${systemPrompt}\n${rolePrompt}`,
-    userPrompt: task,
-    model: model || config.model.name,
-    toolDefinitions: filtered.definitions,
-    toolHandlers: filtered.handlers,
-    toolFormatters: formatters,
-    deferredDefinitions: filtered.deferredDefinitions,
-    maxSteps,
-    requestCompletion: makeCompletionFn(config)
-  });
-  return result;
+    const result = await runAgentLoop({
+      systemPrompt: `${systemPrompt}\n${rolePrompt}`,
+      userPrompt: task,
+      model: model || config.model.name,
+      toolDefinitions: filtered.definitions,
+      toolHandlers: filtered.handlers,
+      toolFormatters: formatters,
+      deferredDefinitions: filtered.deferredDefinitions,
+      maxSteps,
+      requestCompletion: makeCompletionFn(config)
+    });
+    return result;
+  } finally {
+    await dispose?.();
+  }
 }
 
 function extractJsonBlock(text) {
@@ -263,21 +267,25 @@ export async function handleRun(args) {
     return;
   }
 
-  const { definitions, handlers, formatters, deferredDefinitions } = getBuiltinTools({
+  const { definitions, handlers, formatters, deferredDefinitions, dispose } = getBuiltinTools({
     workspaceRoot: process.cwd(),
     config
   });
-  const result = await runAgentLoop({
-    systemPrompt,
-    userPrompt: parsed.task,
-    model: parsed.model || config.model.name,
-    toolDefinitions: definitions,
-    toolHandlers: handlers,
-    toolFormatters: formatters,
-    deferredDefinitions,
-    maxSteps: parsed.maxSteps,
-    requestCompletion: makeCompletionFn(config)
-  });
+  try {
+    const result = await runAgentLoop({
+      systemPrompt,
+      userPrompt: parsed.task,
+      model: parsed.model || config.model.name,
+      toolDefinitions: definitions,
+      toolHandlers: handlers,
+      toolFormatters: formatters,
+      deferredDefinitions,
+      maxSteps: parsed.maxSteps,
+      requestCompletion: makeCompletionFn(config)
+    });
 
-  console.log(result.text);
+    console.log(result.text);
+  } finally {
+    await dispose?.();
+  }
 }

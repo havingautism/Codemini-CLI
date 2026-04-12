@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { getConfigFilePath, getSessionsDir, getSkillsDir } from '../core/paths.js';
 import { loadConfig } from '../core/config-store.js';
 
@@ -34,8 +35,20 @@ async function checkGateway(config) {
   }
 }
 
-export async function handleDoctor() {
-  const config = await loadConfig();
+async function commandExists(command) {
+  const probe = process.platform === 'win32' ? 'where' : 'which';
+  const result = spawnSync(probe, [command], { stdio: 'ignore' });
+  return result.status === 0;
+}
+
+export async function handleDoctor({
+  loadConfigFn = loadConfig,
+  checkPathWritableFn = checkPathWritable,
+  checkGatewayFn = checkGateway,
+  commandExistsFn = commandExists,
+  writeLine = (line) => console.log(line)
+} = {}) {
+  const config = await loadConfigFn();
   const checks = [];
 
   checks.push({
@@ -52,32 +65,39 @@ export async function handleDoctor() {
 
   checks.push({
     name: 'Config file writable',
-    ok: await checkPathWritable(path.dirname(getConfigFilePath())),
+    ok: await checkPathWritableFn(path.dirname(getConfigFilePath())),
     detail: getConfigFilePath()
   });
 
   checks.push({
     name: 'Sessions dir writable',
-    ok: await checkPathWritable(getSessionsDir()),
+    ok: await checkPathWritableFn(getSessionsDir()),
     detail: getSessionsDir()
   });
 
   checks.push({
     name: 'Skills dir writable',
-    ok: await checkPathWritable(getSkillsDir()),
+    ok: await checkPathWritableFn(getSkillsDir()),
     detail: getSkillsDir()
   });
 
-  const gateway = await checkGateway(config);
+  const gateway = await checkGatewayFn(config);
   checks.push({
     name: 'Gateway connectivity',
     ok: gateway.ok,
     detail: gateway.reason
   });
 
+  const hasFff = await commandExistsFn('fff-mcp');
+  checks.push({
+    name: 'FFF MCP availability',
+    ok: hasFff,
+    detail: hasFff ? 'found fff-mcp' : 'fff-mcp not found in PATH'
+  });
+
   for (const check of checks) {
     const mark = check.ok ? 'OK' : 'FAIL';
-    console.log(`[${mark}] ${check.name}: ${check.detail}`);
+    writeLine(`[${mark}] ${check.name}: ${check.detail}`);
   }
 
   const failed = checks.filter((c) => !c.ok).length;

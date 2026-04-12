@@ -4,7 +4,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { buildPlanWorkingMemoryContext, createChatRuntime, extractStepWorkingMemory } from '../src/core/chat-runtime.js';
+import {
+  ROLE_TOOL_POLICY,
+  buildPlanWorkingMemoryContext,
+  createChatRuntime,
+  extractStepWorkingMemory
+} from '../src/core/chat-runtime.js';
 import { loadConfig } from '../src/core/config-store.js';
 import { listMemories, rememberMemory } from '../src/core/memory-store.js';
 import { loadSession, saveSession } from '../src/core/session-store.js';
@@ -116,6 +121,34 @@ test('chat runtime reflects config and mode changes immediately for TUI refresh'
       maxContextTokens: 12345
     });
   });
+});
+
+test('plan auto role tool policy stays aligned with each role responsibility', () => {
+  assert.deepEqual(ROLE_TOOL_POLICY.planner, [
+    'read',
+    'grep',
+    'list',
+    'query_project_index',
+    'tool_search',
+    'glob',
+    'ast_query',
+    'read_ast_node',
+    'web_fetch',
+    'web_search',
+    'read_plan',
+    'update_plan'
+  ]);
+
+  assert.ok(ROLE_TOOL_POLICY.coder.includes('delete'));
+  assert.ok(ROLE_TOOL_POLICY.coder.includes('web_fetch'));
+  assert.ok(ROLE_TOOL_POLICY.coder.includes('web_search'));
+
+  assert.ok(!ROLE_TOOL_POLICY.reviewer.includes('web_fetch'));
+  assert.ok(!ROLE_TOOL_POLICY.reviewer.includes('web_search'));
+  assert.ok(!ROLE_TOOL_POLICY.tester.includes('web_fetch'));
+  assert.ok(!ROLE_TOOL_POLICY.tester.includes('web_search'));
+
+  assert.deepEqual(ROLE_TOOL_POLICY.summarizer, ['read_plan']);
 });
 
 test('extractStepWorkingMemory keeps only actionable structured handoff items', () => {

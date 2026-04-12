@@ -25,6 +25,12 @@ async function makeTools(workspaceRoot) {
   return getBuiltinTools({ workspaceRoot, config });
 }
 
+async function makeToolsWithFff(workspaceRoot, fffAdapter, mutateConfig) {
+  const config = await loadConfig();
+  if (typeof mutateConfig === 'function') mutateConfig(config);
+  return getBuiltinTools({ workspaceRoot, config, fffAdapter });
+}
+
 async function makeToolsWithSystemEvents(workspaceRoot, onSystemEvent) {
   const config = await loadConfig();
   return getBuiltinTools({ workspaceRoot, config, onSystemEvent });
@@ -85,6 +91,177 @@ test('grep returns structured top matches for content discovery', async () => {
     assert.ok(Array.isArray(result.matches));
     assert.ok(result.matches.some((item) => item.path === 'src/auth/service.ts' && item.line === 3));
     assert.ok(result.matches.some((item) => item.path === 'src/auth/controller.ts' && item.line === 1));
+  });
+});
+
+test('grep prefers FFF search results when adapter is available', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const fffCalls = [];
+    const fffAdapter = {
+      async grep(args) {
+        fffCalls.push(args);
+        return {
+          pattern: args.pattern,
+          matches: [
+            {
+              path: 'src/auth/service.ts',
+              line: 3,
+              column: 16,
+              preview: 'export async function login(username, password) {'
+            }
+          ],
+          truncated: false
+        };
+      }
+    };
+
+    const { handlers } = await makeToolsWithFff(workspaceRoot, fffAdapter);
+    const result = await handlers.grep({ pattern: 'login', path: 'src', max_results: 5 });
+
+    assert.equal(fffCalls.length, 1);
+    assert.equal(fffCalls[0].pattern, 'login');
+    assert.equal(result.matches[0].path, 'src/auth/service.ts');
+  });
+});
+
+test('grep falls back to builtin search when FFF adapter fails', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    await fs.mkdir(path.join(workspaceRoot, 'src', 'auth'), { recursive: true });
+    await fs.writeFile(
+      path.join(workspaceRoot, 'src', 'auth', 'service.ts'),
+      [
+        "import { hashPassword } from './crypto';",
+        '',
+        'export async function login(username, password) {',
+        '  return hashPassword(password);',
+        '}'
+      ].join('\n'),
+      'utf8'
+    );
+
+    let attempted = 0;
+    const fffAdapter = {
+      async grep() {
+        attempted += 1;
+        throw new Error('fff unavailable');
+      }
+    };
+
+    const { handlers } = await makeToolsWithFff(workspaceRoot, fffAdapter);
+    const result = await handlers.grep({ pattern: 'login', path: 'src', max_results: 5 });
+
+    assert.equal(attempted, 1);
+    assert.ok(result.matches.some((item) => item.path === 'src/auth/service.ts' && item.line === 3));
+  });
+});
+
+test('glob prefers FFF file search results when adapter is available', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const fffCalls = [];
+    const fffAdapter = {
+      async glob(args) {
+        fffCalls.push(args);
+        return {
+          pattern: args.pattern,
+          matches: ['src/auth/service.ts', 'src/index.ts'],
+          truncated: false
+        };
+      }
+    };
+
+    const { handlers } = await makeToolsWithFff(workspaceRoot, fffAdapter);
+    const result = await handlers.glob({ pattern: 'src/**/*.ts', max_results: 10 });
+
+    assert.equal(fffCalls.length, 1);
+    assert.deepEqual(result.matches, ['src/auth/service.ts', 'src/index.ts']);
+  });
+});
+
+test('list keeps directory-shaped results when FFF adapter handles nested path listing', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const fffCalls = [];
+    const fffAdapter = {
+      async list(args) {
+        fffCalls.push(args);
+        return {
+          path: 'src',
+          items: [
+            { name: 'auth', path: 'src/auth', type: 'dir' },
+            { name: 'index.ts', path: 'src/index.ts', type: 'file' }
+          ]
+        };
+      }
+    };
+
+    const { handlers } = await makeToolsWithFff(workspaceRoot, fffAdapter);
+    const result = await handlers.list({ path: 'src' });
+
+    assert.equal(fffCalls.length, 1);
+    assert.equal(result.path, 'src');
+    assert.deepEqual(result.items, [
+      { name: 'auth', path: 'src/auth', type: 'dir' },
+      { name: 'index.ts', path: 'src/index.ts', type: 'file' }
+    ]);
+  });
+});
+
+test('FFF adapter client is reused across multiple tool calls in one tools instance', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    let connects = 0;
+    const calls = [];
+    const fffAdapter = {
+      async connect() {
+        connects += 1;
+      },
+      async grep(args) {
+        calls.push(`grep:${args.pattern}`);
+        return {
+          pattern: args.pattern,
+          matches: [{ path: 'src/auth/service.ts', line: 3, column: 1, preview: 'login' }],
+          truncated: false
+        };
+      },
+      async glob(args) {
+        calls.push(`glob:${args.pattern}`);
+        return {
+          pattern: args.pattern,
+          matches: ['src/auth/service.ts'],
+          truncated: false
+        };
+      }
+    };
+
+    const { handlers } = await makeToolsWithFff(workspaceRoot, fffAdapter);
+    await handlers.grep({ pattern: 'login', path: 'src' });
+    await handlers.glob({ pattern: 'src/**/*.ts' });
+
+    assert.equal(connects, 1);
+    assert.deepEqual(calls, ['grep:login', 'glob:src/**/*.ts']);
+  });
+});
+
+test('FFF adapter dispose is called when toolset is disposed', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    let disposed = 0;
+    const fffAdapter = {
+      async connect() {},
+      async grep(args) {
+        return {
+          pattern: args.pattern,
+          matches: [{ path: 'src/auth/service.ts', line: 3, column: 1, preview: 'login' }],
+          truncated: false
+        };
+      },
+      async dispose() {
+        disposed += 1;
+      }
+    };
+
+    const toolset = await makeToolsWithFff(workspaceRoot, fffAdapter);
+    await toolset.handlers.grep({ pattern: 'login', path: 'src' });
+    await toolset.dispose();
+
+    assert.equal(disposed, 1);
   });
 });
 
@@ -310,16 +487,16 @@ test('read repairs inline path ranges into start and end lines', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });
     await fs.writeFile(
-      path.join(workspaceRoot, 'src', 'demo.ts'),
+      path.join(workspaceRoot, 'src', 'demo-inline-range.ts'),
       ['alpha', 'beta', 'gamma', 'delta'].join('\n'),
       'utf8'
     );
 
     const { handlers } = await makeTools(workspaceRoot);
-    const result = await handlers.read({ path: 'src/demo.ts:2-3' });
+    const result = await handlers.read({ path: 'src/demo-inline-range.ts:2-3' });
 
     assert.equal(result.phase, 'content');
-    assert.equal(result.path, 'src/demo.ts');
+    assert.equal(result.path, 'src/demo-inline-range.ts');
     assert.equal(result.start_line, 2);
     assert.equal(result.end_line, 3);
     assert.match(result.content, /beta/);

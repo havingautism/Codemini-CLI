@@ -58,6 +58,15 @@ codemini doctor
 codemini
 ```
 
+### Optional: FFF Search Acceleration
+
+CodeMini CLI can optionally use `fff-mcp` as a faster backend for `grep`, `glob`, and part of `list`.
+
+- If `fff-mcp` is installed and available in `PATH`, CodeMini will reuse it automatically within the current session.
+- If `fff-mcp` is missing or fails to start, CodeMini falls back to its built-in search implementation automatically.
+- This means `fff-mcp` is an enhancement, not a hard dependency.
+- `codemini doctor` now reports `FFF MCP availability` so you can verify whether it is active.
+
 ### Commands
 
 | Command | Description |
@@ -259,6 +268,15 @@ codemini doctor
 # 4. 启动交互式编码会话
 codemini
 ```
+
+### 可选：FFF 搜索加速
+
+CodeMini CLI 可以可选地使用 `fff-mcp` 作为 `grep`、`glob` 和部分 `list` 的更快后端。
+
+- 如果 `fff-mcp` 已安装并且在 `PATH` 中可用，CodeMini 会在当前会话内自动复用它。
+- 如果 `fff-mcp` 缺失或启动失败，CodeMini 会自动回退到内置搜索实现。
+- 这意味着 `fff-mcp` 是增强项，不是硬依赖。
+- 现在可以通过 `codemini doctor` 里的 `FFF MCP availability` 看到它是否可用。
 
 ### 命令概览
 

@@ -283,12 +283,12 @@ function describeConfigKey(key, mode = 'set', language = 'zh') {
 }
 
 const SUB_AGENT_ROLES = ['planner', 'coder', 'reviewer', 'tester', 'summarizer'];
-const ROLE_TOOL_POLICY = {
+export const ROLE_TOOL_POLICY = {
   planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node', 'web_fetch', 'web_search', 'read_plan', 'update_plan'],
-  coder: ['read', 'grep', 'list', 'edit', 'write', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
-  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'web_fetch', 'web_search', 'read_plan'],
-  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'web_fetch', 'web_search', 'read_plan'],
-  summarizer: ['read', 'grep', 'list', 'glob', 'tool_search', 'web_fetch', 'web_search', 'read_plan', 'update_plan']
+  coder: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
+  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'read_plan'],
+  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'read_plan'],
+  summarizer: ['read_plan']
 };
 const SUB_AGENT_CONTEXT_MAX_MESSAGES = 4;
 const SUB_AGENT_CONTEXT_MAX_CHARS = 1200;
@@ -2153,7 +2153,7 @@ async function askModel({
     ? `${systemPrompt}\n\n${projectContextSnippet}\n\nUse this project context as lightweight guidance and verify important details with fresh reads when needed.`
     : systemPrompt;
 
-  const { definitions, handlers, formatters, deferredDefinitions } = getBuiltinTools({
+  const { definitions, handlers, formatters, deferredDefinitions, dispose: disposeTools } = getBuiltinTools({
     workspaceRoot: process.cwd(),
     config,
     sessionId: session.id,
@@ -4163,6 +4163,12 @@ export async function createChatRuntime({
     getCurrentSessionId: () => currentSession.id,
     setRequestToolApproval: (handler) => {
       activeRequestToolApproval = typeof handler === 'function' ? handler : null;
+      return true;
+    },
+    dispose: async () => {
+      if (typeof disposeTools === 'function') {
+        await disposeTools();
+      }
       return true;
     },
     getRuntimeState: () =>
