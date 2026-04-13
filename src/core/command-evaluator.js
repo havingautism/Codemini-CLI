@@ -1,0 +1,66 @@
+import { createChatCompletion } from './provider/index.js';
+
+const EVAL_TIMEOUT_MS = 15000;
+
+const SYSTEM_PROMPT = `You are a command safety evaluator for a coding assistant. Analyze the shell command and respond with valid JSON only, no markdown fences:
+{"risk":"low|medium|high","description":"what this command does in one sentence","sideEffects":"potential side effects in one sentence, or none","recommendation":"allow|deny"}
+
+Rules:
+- Read-only commands (ls, cat, git status, git diff, grep, find, etc.) are low risk and allow.
+- Commands that install/uninstall packages, modify files, push code, start servers, or have network side effects are medium or high.
+- Destructive commands (rm -rf, format, sudo, dd) are high risk and deny.
+- Consider the workspace context: the command runs in the project directory.
+- Be concise. Maximum 1 sentence per field.`;
+
+const FAIL_CLOSED_RESULT = Object.freeze({
+  risk: 'high',
+  description: '',
+  sideEffects: '',
+  recommendation: 'deny'
+});
+
+function parseEvaluation(text) {
+  try {
+    const json = JSON.parse(text);
+    const risk = String(json?.risk || '').toLowerCase();
+    const recommendation = String(json?.recommendation || '').toLowerCase();
+    return {
+      risk: ['low', 'medium', 'high'].includes(risk) ? risk : 'high',
+      description: String(json?.description || '').slice(0, 200),
+      sideEffects: String(json?.sideEffects || '').slice(0, 200),
+      recommendation: recommendation === 'allow' ? 'allow' : 'deny'
+    };
+  } catch {
+    return { ...FAIL_CLOSED_RESULT };
+  }
+}
+
+/**
+ * 用轻量 LLM 调用评估命令风险。
+ * @param {{ command: string, config: object, workspaceRoot?: string }} params
+ * @returns {Promise<{ risk: 'low'|'medium'|'high', description: string, sideEffects: string, recommendation: 'allow'|'deny' }>}
+ */
+export async function evaluateCommandWithLLM({ command, config, workspaceRoot }) {
+  const cmd = String(command || '').trim();
+  if (!cmd) return { ...FAIL_CLOSED_RESULT };
+
+  try {
+    const result = await createChatCompletion({
+      sdkProvider: config?.sdk?.provider,
+      baseUrl: config?.gateway?.base_url,
+      apiKey: config?.gateway?.api_key,
+      model: config?.model?.name,
+      messages: [
+        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'user', content: `Command: ${cmd}\nWorkspace: ${workspaceRoot || process.cwd()}` }
+      ],
+      temperature: 0,
+      timeoutMs: EVAL_TIMEOUT_MS
+    });
+
+    const text = result?.text || '';
+    return parseEvaluation(text);
+  } catch {
+    return { ...FAIL_CLOSED_RESULT };
+  }
+}

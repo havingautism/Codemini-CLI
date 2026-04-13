@@ -2547,7 +2547,16 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         hasPendingApproval: nextPlan?.status === 'pending_approval'
       };
     },
-    run: (args) => runCommand(workspaceRoot, config, args),
+    run: Object.assign(
+      (args) => runCommand(workspaceRoot, config, args),
+      {
+        prepareApproval: async (args) => ({
+          command: args?.command || '',
+          risk: args?._risk || 'high',
+          evaluation: args?._evaluation || null
+        })
+      }
+    ),
     remember_user: async (args = {}) => {
       const saved = await rememberMemory({
         scope: 'user',

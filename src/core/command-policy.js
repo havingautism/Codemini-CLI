@@ -273,3 +273,5 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
 
   return { allowed: true };
 }
+
+export { collectCommandTokens, firstToken };

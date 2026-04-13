@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import { BoundedCache } from './bounded-cache.js';
 import { trimInline as _trimInline, normalizePath } from './string-utils.js';
 import { captureToInbox, listInbox } from './memory-store.js';
+import { requiresApprovalEvaluation } from './command-risk.js';
 
 /**
  * 安全解析 JSON 字符串。
@@ -924,7 +925,11 @@ export async function runAgentLoop({
       let approved = true;
       let approvalArgs = args;
       let preflightErrorContent = '';
-      const needsApproval = toolName === 'delete' || (executionMode === 'normal' && !alwaysAllowSet.has(toolName));
+      const isSafeModeRun = toolName === 'run'
+        && config?.policy?.safe_mode !== false
+        && requiresApprovalEvaluation(args?.command || '', config?.shell?.default);
+      const needsApproval = toolName === 'delete' || isSafeModeRun
+        || (executionMode === 'normal' && !alwaysAllowSet.has(toolName));
       if (needsApproval) {
         approved = false;
         const handler = toolHandlers[toolName];
@@ -938,6 +943,31 @@ export async function runAgentLoop({
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             preflightErrorContent = clipToolResult({ error: message }, toolResultMaxChars);
+          }
+        }
+        /* Run tool: safe mode LLM-based command evaluation */
+        if (toolName === 'run' && isSafeModeRun && !preflightErrorContent) {
+          try {
+            const { evaluateCommandWithLLM } = await import('./command-evaluator.js');
+            const evaluation = await evaluateCommandWithLLM({
+              command: args?.command || '',
+              config,
+              workspaceRoot: config?.workspaceRoot || process.cwd()
+            });
+            approvalArgs = { ...args, _risk: evaluation.risk, _evaluation: evaluation };
+            /* LLM says low-risk + allow → auto-approve, skip confirmation panel */
+            if (evaluation.risk === 'low' && evaluation.recommendation === 'allow') {
+              approvalResults.set(call.id, { approved: true, args: approvalArgs });
+              continue;
+            }
+          } catch (_) {
+            approvalArgs = { ...args, _risk: 'high', _evaluation: null };
+          }
+          if (typeof handler?.prepareApproval === 'function') {
+            try {
+              const approval = await handler.prepareApproval(approvalArgs);
+              approvalArgs = { ...approvalArgs, approval };
+            } catch (_) { /* skip */ }
           }
         }
         if (preflightErrorContent) {
@@ -954,7 +984,8 @@ export async function runAgentLoop({
             name: toolName,
             displayName,
             arguments: approvalArgs,
-            approvalDetails: toolName === 'delete' ? approvalArgs.approval : undefined
+            approvalDetails: toolName === 'delete' ? approvalArgs.approval
+              : (toolName === 'run' ? approvalArgs.approval : undefined)
           });
           approved = Boolean(decision?.approved);
         }

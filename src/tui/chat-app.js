@@ -275,6 +275,21 @@ const TUI_COPY = {
       answerLabel: '确认输入（yes/no）',
       answerPlaceholder: 'yes 或 no'
     },
+    runApproval: {
+      title: '确认执行命令？',
+      commandLabel: '命令',
+      riskLabel: '风险等级',
+      descriptionLabel: '说明',
+      sideEffectsLabel: '副作用',
+      lowRisk: '低',
+      mediumRisk: '中',
+      highRisk: '高',
+      prompt: '输入 yes 执行，输入 no 取消。',
+      invalidAnswer: '请输入 yes 或 no。',
+      inputLocked: '命令审批进行中，请输入 yes 或 no',
+      answerLabel: '审批输入（yes/no）',
+      answerPlaceholder: 'yes 或 no'
+    },
     planApproval: {
       title: '确认执行计划？',
       goalLabel: '目标',
@@ -456,6 +471,21 @@ const TUI_COPY = {
       prompt: 'Type yes to delete, or no to cancel.',
       invalidAnswer: 'Please enter yes or no.',
       inputLocked: 'Delete approval is active; type yes or no',
+      answerLabel: 'Approval input (yes/no)',
+      answerPlaceholder: 'yes or no'
+    },
+    runApproval: {
+      title: 'Confirm command execution?',
+      commandLabel: 'Command',
+      riskLabel: 'Risk Level',
+      descriptionLabel: 'Description',
+      sideEffectsLabel: 'Side Effects',
+      lowRisk: 'Low',
+      mediumRisk: 'Medium',
+      highRisk: 'High',
+      prompt: 'Type yes to execute, or no to cancel.',
+      invalidAnswer: 'Please enter yes or no.',
+      inputLocked: 'Command approval is active; type yes or no',
       answerLabel: 'Approval input (yes/no)',
       answerPlaceholder: 'yes or no'
     },
@@ -1013,6 +1043,25 @@ export function parseDeleteApprovalAnswer(value) {
   if (normalized === 'yes') return 'approve';
   if (normalized === 'no') return 'deny';
   return normalized ? 'invalid' : 'empty';
+}
+
+export function normalizeRunApprovalRequest(request) {
+  if (!request || String(request?.name || '').trim() !== 'run') return null;
+  const details =
+    request?.approvalDetails && typeof request.approvalDetails === 'object' && !Array.isArray(request.approvalDetails)
+      ? request.approvalDetails
+      : {};
+  const command = String(details.command || request?.arguments?.command || '').trim();
+  if (!command) return null;
+  return {
+    id: String(request?.id || '').trim(),
+    toolName: 'run',
+    command,
+    risk: details.risk || 'high',
+    description: details.evaluation?.description || '',
+    sideEffects: details.evaluation?.sideEffects || '',
+    recommendation: details.evaluation?.recommendation || 'deny'
+  };
 }
 
 export function parsePlanApprovalAnswer(value) {
@@ -2890,6 +2939,46 @@ function DeleteApprovalPanel({ request, inputValue, errorText, copy, cursorVisib
   );
 }
 
+function RunApprovalPanel({ request, inputValue, errorText, copy, cursorVisible }) {
+  if (!request) return null;
+  const details = request?.toolName === 'run' ? request : normalizeRunApprovalRequest(request);
+  if (!details) return null;
+  const c = copy.runApproval || {};
+  const riskColor = details.risk === 'low' ? 'green' : details.risk === 'medium' ? 'yellow' : 'redBright';
+  const borderColor = details.risk === 'medium' ? 'yellow' : 'redBright';
+  const riskLabel = details.risk === 'low' ? c.lowRisk : details.risk === 'medium' ? c.mediumRisk : c.highRisk;
+  const placeholder = String(c.answerPlaceholder || '').trim();
+  return h(
+    Box,
+    {
+      marginTop: 1,
+      flexDirection: 'column',
+      borderStyle: 'round',
+      borderColor,
+      paddingX: 1,
+      paddingY: 0
+    },
+    h(Text, { color: borderColor }, c.title),
+    h(Text, { color: 'white' }, `${c.commandLabel}: ${details.command}`),
+    h(Text, null, `${c.riskLabel}: `, h(Text, { color: riskColor, bold: true }, riskLabel || details.risk)),
+    details.description ? h(Text, { color: 'gray' }, `${c.descriptionLabel}: ${details.description}`) : null,
+    details.sideEffects ? h(Text, { color: 'gray' }, `${c.sideEffectsLabel}: ${details.sideEffects}`) : null,
+    h(Text, { color: 'gray' }, c.prompt),
+    h(
+      Box,
+      { marginTop: 1 },
+      h(Text, { color: borderColor }, `${c.answerLabel}: `),
+      h(ApprovalCursorLine, {
+        inputValue,
+        placeholder: placeholder || ' ',
+        cursorVisible,
+        accent: borderColor
+      })
+    ),
+    errorText ? h(Text, { color: 'yellowBright' }, errorText) : null
+  );
+}
+
 function PlanApprovalPanel({ request, inputValue, errorText, copy, cursorVisible }) {
   if (!request) return null;
   const goal = String(request.goal || '').trim();
@@ -3010,10 +3099,13 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   const [pendingDeleteApproval, setPendingDeleteApproval] = useState(null);
   const [deleteApprovalInput, setDeleteApprovalInput] = useState('');
   const [deleteApprovalError, setDeleteApprovalError] = useState('');
+  const [pendingRunApproval, setPendingRunApproval] = useState(null);
+  const [runApprovalInput, setRunApprovalInput] = useState('');
+  const [runApprovalError, setRunApprovalError] = useState('');
   const [pendingPlanApproval, setPendingPlanApproval] = useState(null);
   const [planApprovalInput, setPlanApprovalInput] = useState('');
   const [planApprovalError, setPlanApprovalError] = useState('');
-  const approvalLockActive = Boolean(pendingDeleteApproval || pendingPlanApproval);
+  const approvalLockActive = Boolean(pendingDeleteApproval || pendingRunApproval || pendingPlanApproval);
   const activeAssistantIdRef = useRef(null);
   const activeAssistantAutoSkillNamesRef = useRef([]);
   const streamedAssistantHandledRef = useRef(false);
@@ -3028,6 +3120,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   const activePlanStepInfoRef = useRef(null);
   const activePlanStepTitleRef = useRef('');
   const deleteApprovalResolverRef = useRef(null);
+  const runApprovalResolverRef = useRef(null);
 
   useEffect(() => {
     const rawStartupActivities = runtime.consumeStartupEvents?.();
@@ -3053,20 +3146,30 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   useEffect(() => {
     if (typeof runtime.setRequestToolApproval !== 'function') return () => {};
     runtime.setRequestToolApproval((request) => {
-      const normalized = normalizeDeleteApprovalRequest(request);
-      if (!normalized) {
-        return Promise.resolve({ approved: false });
+      const deleteNorm = normalizeDeleteApprovalRequest(request);
+      if (deleteNorm) {
+        setDeleteApprovalInput('');
+        setDeleteApprovalError('');
+        setPendingDeleteApproval(deleteNorm);
+        return new Promise((resolve) => {
+          deleteApprovalResolverRef.current = resolve;
+        });
       }
-      setDeleteApprovalInput('');
-      setDeleteApprovalError('');
-      setPendingDeleteApproval(normalized);
-      return new Promise((resolve) => {
-        deleteApprovalResolverRef.current = resolve;
-      });
+      const runNorm = normalizeRunApprovalRequest(request);
+      if (runNorm) {
+        setRunApprovalInput('');
+        setRunApprovalError('');
+        setPendingRunApproval(runNorm);
+        return new Promise((resolve) => {
+          runApprovalResolverRef.current = resolve;
+        });
+      }
+      return Promise.resolve({ approved: false });
     });
     return () => {
       runtime.setRequestToolApproval(null);
       deleteApprovalResolverRef.current = null;
+      runApprovalResolverRef.current = null;
     };
   }, [runtime]);
 
@@ -4164,6 +4267,46 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       return;
     }
 
+    if (pendingRunApproval) {
+      if (key.return) {
+        const answer = parseDeleteApprovalAnswer(runApprovalInput);
+        if (answer === 'approve' || answer === 'deny') {
+          const resolver = runApprovalResolverRef.current;
+          runApprovalResolverRef.current = null;
+          setPendingRunApproval(null);
+          setRunApprovalInput('');
+          setRunApprovalError('');
+          if (resolver) resolver({ approved: answer === 'approve' });
+        } else {
+          setRunApprovalError(copy.runApproval.invalidAnswer);
+        }
+        return;
+      }
+
+      if (isBackspaceKey(value, key) || isDeleteKey(value, key)) {
+        setRunApprovalInput((prev) => prev.slice(0, -1));
+        setRunApprovalError('');
+        return;
+      }
+
+      if (isPrintableInput(value, key)) {
+        setRunApprovalInput((prev) => `${prev}${value}`);
+        setRunApprovalError('');
+        return;
+      }
+
+      if (key.ctrl && value === 'c') {
+        if (busy && typeof runtime.abort === 'function') {
+          runtime.abort();
+          return;
+        }
+        exit();
+        return;
+      }
+
+      return;
+    }
+
     if (pendingPlanApproval) {
       if (key.return) {
         const parsed = parsePlanApprovalAnswer(planApprovalInput);
@@ -4515,9 +4658,11 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   );
   const activeApprovalLock = pendingDeleteApproval
     ? { text: copy.deleteApproval.inputLocked }
-    : pendingPlanApproval
-      ? { text: copy.planApproval.inputLocked }
-      : null;
+    : pendingRunApproval
+      ? { text: copy.runApproval.inputLocked }
+      : pendingPlanApproval
+        ? { text: copy.planApproval.inputLocked }
+        : null;
 
   return h(
     Box,
@@ -4550,6 +4695,13 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       request: pendingDeleteApproval,
       inputValue: deleteApprovalInput,
       errorText: deleteApprovalError,
+      copy,
+      cursorVisible
+    }),
+    h(RunApprovalPanel, {
+      request: pendingRunApproval,
+      inputValue: runApprovalInput,
+      errorText: runApprovalError,
       copy,
       cursorVisible
     }),
