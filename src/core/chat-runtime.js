@@ -10,7 +10,7 @@ import {
 } from './provider/index.js';
 import { isDangerousCommand, runShellCommand } from './shell.js';
 import { getBuiltinTools } from './tools.js';
-import { listSessions, loadSession, pruneSessions, saveSession } from './session-store.js';
+import { createSession, listSessions, loadSession, pruneSessions, saveSession } from './session-store.js';
 import { getConfigValue, loadConfig, resetConfig, setConfigValue } from './config-store.js';
 import { evaluateCommandPolicy } from './command-policy.js';
 import { appendInputHistory, loadInputHistory } from './input-history-store.js';
@@ -156,6 +156,7 @@ function getCompletionCopy(language = 'zh') {
         debug: '运行时调试开关',
         retry: '重试上一条用户请求',
         stop: '中止当前回答',
+        new: '开始新会话',
         yes: '确认当前待审批计划并开始执行',
         edit: '修改当前待审批计划',
         reject: '拒绝当前待审批计划'
@@ -250,6 +251,7 @@ function getCompletionCopy(language = 'zh') {
         debug: 'runtime debug switches',
         retry: 'retry the last user request',
         stop: 'stop the current response',
+        new: 'start a new session',
         yes: 'approve the pending plan and start execution',
         edit: 'revise the pending plan',
         reject: 'reject the pending plan'
@@ -2901,7 +2903,8 @@ export async function createChatRuntime({
     '/agents',
     '/compact',
     '/debug',
-    '/retry'
+    '/retry',
+    '/new'
   ];
   const configSubcommandPriority = ['/config set', '/config get', '/config list', '/config reset'];
 
@@ -2923,7 +2926,8 @@ export async function createChatRuntime({
       { name: 'history', description: completionCopy.commands.history },
       { name: 'debug', description: completionCopy.commands.debug },
       { name: 'retry', description: completionCopy.commands.retry },
-      { name: 'stop', description: completionCopy.commands.stop }
+      { name: 'stop', description: completionCopy.commands.stop },
+      { name: 'new', description: completionCopy.commands.new }
     ];
     const out = [];
     for (const cmd of commands.values()) {
@@ -3382,10 +3386,27 @@ export async function createChatRuntime({
     }
     if (parsedInput.type === 'slash') {
       if (parsedInput.command === 'exit') return { type: 'exit' };
+      if (parsedInput.command === 'new') {
+        const fresh = await createSession();
+        currentSession = fresh;
+        executionMode = config.execution?.mode || 'auto';
+        compactState.backupMessages = null;
+        setResultDir(path.join(getSessionsDir(), String(fresh.id)));
+        historyIdCache = [fresh.id, ...historyIdCache.filter((id) => id !== fresh.id)];
+        historySessionCache = [
+          { id: fresh.id, messageCount: 0 },
+          ...historySessionCache.filter((s) => s.id !== fresh.id)
+        ];
+        return {
+          type: 'system',
+          text: `New session started: ${fresh.id}`,
+          restoredMessages: []
+        };
+      }
       if (parsedInput.command === 'help') {
         return {
           type: 'system',
-          text: 'Commands: /help /exit /stop /commands /status /mode /compact /checkpoint /spec /plan /yes /edit /reject /agents /config /memory /capture /inbox /dream /history /debug /retry /<custom> !<shell>'
+          text: 'Commands: /help /exit /new /stop /commands /status /mode /compact /checkpoint /spec /plan /yes /edit /reject /agents /config /memory /capture /inbox /dream /history /debug /retry /<custom> !<shell>'
         };
       }
       if (parsedInput.command === 'status') {

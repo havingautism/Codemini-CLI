@@ -169,8 +169,22 @@ function includesAny(haystackLower, patterns = []) {
   return patterns.some((p) => haystackLower.includes(String(p).toLowerCase()));
 }
 
+/** bash 下会被阻止的删除类命令 token */
+const BASH_DELETE_TOKENS = new Set(['rm', 'rmdir']);
+/** PowerShell 下会被阻止的删除类命令 token */
+const POWERSHELL_DELETE_TOKENS = new Set(['del', 'erase', 'rmdir', 'rd', 'remove-item', 'ri']);
+
 function suggestionForToken(token, config) {
   const shell = String(config?.shell?.default || '').toLowerCase();
+
+  /* 删除类命令：优先引导 LLM 使用 delete 工具 */
+  if (
+    (shell !== 'powershell' && BASH_DELETE_TOKENS.has(token)) ||
+    (shell === 'powershell' && POWERSHELL_DELETE_TOKENS.has(token))
+  ) {
+    return 'Use the delete tool to remove files or directories inside the workspace. Do not use shell commands for deletion.';
+  }
+
   if (token === 'find' || token === 'grep') {
     return shell === 'powershell'
       ? 'Prefer structured tools like grep, list, read, and edit first. If you need shell fallback, use allowed search and context commands such as Get-ChildItem, Select-String, Get-Content, or rg when available.'

@@ -132,7 +132,18 @@ const TUI_COPY = {
       pendingQueue: '等待队列',
       commandPaletteGroupedSelect: '命令面板 | 分组选择模式',
       commandPaletteGroupedSuggestions: '命令面板 | 分组候选',
-      startupHint: '使用 /help、/commands、/compact、/exit、/stop、!<shell>。Tab 可自动补全 slash 命令。',
+      startupHints: [
+        '🧭 使用 /help、/commands、/compact、/exit、/stop、!<shell>。Tab 可自动补全 slash 命令。',
+        '📋 试试用 /plan 模式来规划复杂任务，让 AI 先给出方案再动手。',
+        '⏫ 使用 ↑↓ 键可以浏览历史输入，快速重复之前的操作。',
+        '🐚 输入 !<shell命令> 可以直接执行本地终端命令，如 !ls、!git status。',
+        '🔧 Ctrl+T 可以切换工具调用详情的展开/收起状态。',
+        '📊 试试 /status 查看当前会话模式、模型和 token 用量。',
+        '🧩 用 /mode plan 切换到规划模式，让 AI 先出方案再动手。',
+        '🆕 /new 可以新建一个干净的会话，重新开始工作。',
+        '🧠 /memory 查看和管理 AI 的持久记忆，帮助它更好地理解你的偏好。',
+        '💤 CodeMini 会自动"做梦"休息，整理错误信息并自我优化，越用越聪明~'
+      ],
       toolSummaryExpanded: '工具摘要：已展开',
       toolSummaryCollapsed: '工具摘要：已收起',
       toolChainCollapsed: (count) => `已折叠更早的 ${count} 个工具调用`,
@@ -305,7 +316,18 @@ const TUI_COPY = {
       pendingQueue: 'pending queue',
       commandPaletteGroupedSelect: 'command palette | grouped select mode',
       commandPaletteGroupedSuggestions: 'command palette | grouped suggestions',
-      startupHint: 'Use /help, /commands, /compact, /stop, /exit, !<shell>. Tab for slash autocomplete.',
+      startupHints: [
+        '🧭 Use /help, /commands, /compact, /stop, /exit, !<shell>. Tab for slash autocomplete.',
+        '📋 Try /plan mode for complex tasks — let the AI propose a plan before coding.',
+        '⏫ Use ↑↓ arrow keys to browse input history and repeat previous actions.',
+        '🐚 Type !<shell command> to run local terminal commands, e.g. !ls, !git status.',
+        '🔧 Ctrl+T toggles tool call detail expansion/collapse.',
+        '📊 Try /status to check current session mode, model, and token usage.',
+        '🧩 Use /mode plan to switch to planning mode — AI proposes a plan before coding.',
+        '🆕 /new starts a fresh session to begin a clean slate.',
+        '🧠 /memory lets you view and manage the AI\'s persistent memory for better personalization.',
+        '💤 CodeMini auto-"dreams" to rest, consolidate errors, and self-optimize — it gets smarter over time~'
+      ],
       toolSummaryExpanded: 'Tool summary: expanded',
       toolSummaryCollapsed: 'Tool summary: collapsed',
       toolChainCollapsed: (count) => `${count} earlier tool calls hidden`,
@@ -3051,7 +3073,12 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
-  const startupHint = copy.generic.startupHint;
+  const startupHints = copy.generic.startupHints;
+  const startupHint = useMemo(() => {
+    const arr = Array.isArray(startupHints) ? startupHints : [];
+    if (arr.length === 0) return '';
+    return arr[Math.floor(Math.random() * arr.length)];
+  }, [startupHints]);
   const isBackspaceKey = (value, key) =>
     Boolean(key?.backspace) || value === '\u0008' || value === '\u007f' || (key?.ctrl && value === 'h');
   const isDeleteKey = (value, key) =>

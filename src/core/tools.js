@@ -333,11 +333,10 @@ async function webFetchPage(args = {}) {
     const html = await page.content();
     const $ = cheerio.load(html);
     const bodyText = $('body').text() || $.root().text();
-    const text = normalizeWhitespace(bodyText);
+    const text = String(bodyText || '').replace(/[^\S\n]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
     const title = trimPreview($('title').first().text() || (await page.title()), 240);
     const description = extractHtmlMeta($, 'description') || extractHtmlMeta($, 'og:description');
     const links = collectPageLinks($, finalUrl, maxLinks);
-    const htmlExcerpt = html.length > 4000 ? `${html.slice(0, 4000)}...` : html;
 
     return {
       url,
@@ -345,7 +344,6 @@ async function webFetchPage(args = {}) {
       title,
       description,
       text,
-      html_excerpt: htmlExcerpt,
       links,
       metadata: {
         status: response?.status?.() ?? null,
@@ -745,40 +743,6 @@ function findEnclosingSymbolLine(lines, anchorLine) {
     if (name) return i + 1;
   }
   return 0;
-}
-
-function buildUnifiedDiff(oldContent, newContent, filePath = 'file') {
-  const oldLines = splitLines(oldContent);
-  const newLines = splitLines(newContent);
-  let prefix = 0;
-  while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) {
-    prefix += 1;
-  }
-
-  let suffix = 0;
-  while (
-    suffix < oldLines.length - prefix &&
-    suffix < newLines.length - prefix &&
-    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
-  ) {
-    suffix += 1;
-  }
-
-  const oldChanged = oldLines.slice(prefix, oldLines.length - suffix);
-  const newChanged = newLines.slice(prefix, newLines.length - suffix);
-  const oldStart = prefix + 1;
-  const newStart = prefix + 1;
-  const oldCount = Math.max(1, oldChanged.length);
-  const newCount = Math.max(1, newChanged.length);
-
-  const body = [
-    `--- ${filePath}`,
-    `+++ ${filePath}`,
-    `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`,
-    ...oldChanged.map((line) => `-${line}`),
-    ...newChanged.map((line) => `+${line}`)
-  ];
-  return body.join('\n');
 }
 
 async function getFileState(root, relativePath) {
@@ -1509,7 +1473,6 @@ function editResult(pathText, action, beforeContent, afterContent, changedLine =
     action,
     changed_line: changedLine,
     diff_preview: diffPreview,
-    diff: buildUnifiedDiff(beforeContent, afterContent, pathText),
     new_hash: sha256(afterContent)
   };
 }
@@ -2951,7 +2914,10 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       if (Array.isArray(result.links) && result.links.length > 0) {
         lines.push(`links: ${result.links.slice(0, 5).map((item) => item.href).join(', ')}`);
       }
-      if (result.text) lines.push(trimPreview(result.text, 1200));
+      if (result.text) {
+        const t = result.text.length <= 1200 ? result.text : result.text.slice(0, 1200) + '\n... [truncated]';
+        lines.push(t);
+      }
       return lines.join('\n');
     },
 

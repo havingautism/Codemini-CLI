@@ -671,7 +671,7 @@ test('edit applies stable minimal edits through symbol-targeted block replacemen
       }
     });
     assert.equal(replaced.ok, true);
-    assert.match(replaced.diff, /\+  return \{ ok: true, value \};/);
+    assert.match(replaced.diff_preview, /return \{ ok: true, value \};/);
 
     const textReplaced = await handlers.edit({
       file: 'src/service.ts',
@@ -932,7 +932,7 @@ test('grep and edit provide a compact high-level workflow', async () => {
     });
 
     assert.equal(edited.ok, true);
-    assert.match(edited.diff, /\+  const response = await api\.login/);
+    assert.match(edited.diff_preview, /const response = await api\.login/);
   });
 });
 
