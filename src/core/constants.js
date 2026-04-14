@@ -18,7 +18,6 @@ export const INDEX_SKIP_DIRS = new Set([
   '.git',
   'node_modules',
   '.codemini',
-  '.codemini-project',
   '.codemini-global',
   'dist',
   'coverage',

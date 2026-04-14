@@ -133,7 +133,7 @@ const TUI_COPY = {
       commandPaletteGroupedSelect: '命令面板 | 分组选择模式',
       commandPaletteGroupedSuggestions: '命令面板 | 分组候选',
       startupHints: [
-        '🧭 使用 /help、/commands、/compact、/exit、/stop、!<shell>。Tab 可自动补全 slash 命令。',
+        '🧭 使用 /help 可查看命令帮助。Tab 可自动补全 slash 命令。',
         '📋 试试用 /plan 模式来规划复杂任务，让 AI 先给出方案再动手。',
         '⏫ 使用 ↑↓ 键可以浏览历史输入，快速重复之前的操作。',
         '🐚 输入 !<shell命令> 可以直接执行本地终端命令，如 !ls、!git status。',
@@ -290,6 +290,15 @@ const TUI_COPY = {
       answerLabel: '审批输入（yes/no）',
       answerPlaceholder: 'yes 或 no'
     },
+    fileChangeSummary: {
+      title: '文件改动',
+      fileLabel: '文件',
+      statusLabel: '状态',
+      editStatus: '编辑',
+      createStatus: '新建',
+      deleteStatus: '删除',
+      changesLabel: '改动'
+    },
     planApproval: {
       title: '确认执行计划？',
       goalLabel: '目标',
@@ -332,7 +341,7 @@ const TUI_COPY = {
       commandPaletteGroupedSelect: 'command palette | grouped select mode',
       commandPaletteGroupedSuggestions: 'command palette | grouped suggestions',
       startupHints: [
-        '🧭 Use /help, /commands, /compact, /stop, /exit, !<shell>. Tab for slash autocomplete.',
+        '🧭 Use /help to view command help. Tab for slash autocomplete.',
         '📋 Try /plan mode for complex tasks — let the AI propose a plan before coding.',
         '⏫ Use ↑↓ arrow keys to browse input history and repeat previous actions.',
         '🐚 Type !<shell command> to run local terminal commands, e.g. !ls, !git status.',
@@ -488,6 +497,15 @@ const TUI_COPY = {
       inputLocked: 'Command approval is active; type yes or no',
       answerLabel: 'Approval input (yes/no)',
       answerPlaceholder: 'yes or no'
+    },
+    fileChangeSummary: {
+      title: 'File Changes',
+      fileLabel: 'File',
+      statusLabel: 'Status',
+      editStatus: 'Edit',
+      createStatus: 'Create',
+      deleteStatus: 'Delete',
+      changesLabel: 'Changes'
     },
     planApproval: {
       title: 'Approve this plan?',
@@ -1173,7 +1191,9 @@ export function isIndexSystemToolName(name) {
 }
 
 export function shouldShowCompletionFooter(msg) {
-  return Boolean(msg && msg.label === 'coder' && !msg.loading && !(msg.phase || '').trim());
+  if (!msg || msg.loading || (msg.phase || '').trim()) return false;
+  const label = (msg.label || '').toLowerCase();
+  return label === 'coder' || label === 'planner' || label === 'reviewer' || label === 'tester';
 }
 
 function describeToolActivity(name, copy, { done = false, blocked = false } = {}) {
@@ -2665,8 +2685,11 @@ const MessageBubble = React.memo(function MessageBubble({ msg, loaderTick, showT
       shouldShowCompletionFooter(msg)
         ? h(
             Box,
-            { marginTop: 1, marginLeft: 1, key: `row-completion-${msg.id}` },
-            h(Text, { color: 'gray', dimColor: true }, copy.generic.taskCompleted)
+            { marginTop: 1, flexDirection: 'column', key: `row-completion-${msg.id}` },
+            h(FileChangeSummary, { segments: msg.segments, copy }),
+            h(Box, { marginLeft: 1, marginTop: 1 },
+              h(Text, { color: 'gray', dimColor: true }, copy.generic.taskCompleted)
+            )
           )
         : null
     )
@@ -2976,6 +2999,58 @@ function RunApprovalPanel({ request, inputValue, errorText, copy, cursorVisible 
       })
     ),
     errorText ? h(Text, { color: 'yellowBright' }, errorText) : null
+  );
+}
+
+function FileChangeSummary({ segments, copy }) {
+  if (!Array.isArray(segments) || segments.length === 0) return null;
+  const c = copy.fileChangeSummary || {};
+  const changes = new Map();
+  for (const seg of segments) {
+    if (!seg.fileChange) continue;
+    const p = seg.fileChange.path;
+    if (!p) continue;
+    const existing = changes.get(p);
+    if (existing) {
+      /* 同一文件多次编辑，合并行数，取最高 action */
+      existing.linesAdded += seg.fileChange.linesAdded || 0;
+      existing.linesRemoved += seg.fileChange.linesRemoved || 0;
+      const ACTION_ORDER = { delete: 3, create: 2, edit: 1 };
+      if ((ACTION_ORDER[seg.fileChange.action] || 0) > (ACTION_ORDER[existing.action] || 0)) {
+        existing.action = seg.fileChange.action;
+      }
+    } else {
+      changes.set(p, { path: p, action: seg.fileChange.action, linesAdded: seg.fileChange.linesAdded || 0, linesRemoved: seg.fileChange.linesRemoved || 0 });
+    }
+  }
+  if (changes.size === 0) return null;
+  const entries = [...changes.values()];
+  return h(
+    Box,
+    { marginTop: 1, flexDirection: 'column', borderStyle: 'round', borderColor: 'gray', paddingX: 1 },
+    h(Text, { color: 'cyan', bold: true }, c.title || 'File Changes'),
+    ...entries.map((entry) => {
+      const statusMap = { edit: c.editStatus || 'Edit', create: c.createStatus || 'Create', delete: c.deleteStatus || 'Delete' };
+      const statusColor = entry.action === 'create' ? 'green' : entry.action === 'delete' ? 'red' : 'yellow';
+      const statusText = statusMap[entry.action] || entry.action;
+      let changesText = '';
+      if (entry.action !== 'delete') {
+        const parts = [];
+        if (entry.linesAdded > 0) parts.push(h(Text, { color: 'green' }, `+${entry.linesAdded}`));
+        if (entry.linesRemoved > 0) parts.push(h(Text, { color: 'red' }, `-${entry.linesRemoved}`));
+        if (parts.length > 0) {
+          changesText = parts.reduce((acc, el, i) => i === 0 ? [el] : [...acc, ' ', el], []);
+        }
+      }
+      return h(
+        Box,
+        { key: entry.path },
+        h(Text, { color: 'white' }, `  ${entry.path}`),
+        h(Text, { color: 'gray' }, '  '),
+        h(Text, { color: statusColor }, statusText),
+        changesText ? h(Text, null, '  ', changesText) : null
+      );
+    })
   );
 }
 
@@ -3369,7 +3444,8 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
             ...(toolEvent.arguments !== undefined ? { arguments: toolEvent.arguments } : {}),
             ...(startedAt ? { startedAt } : {}),
             ...(toolEvent.durationMs !== undefined ? { durationMs: toolEvent.durationMs } : {}),
-            ...(toolEvent.summary ? { summary: toolEvent.summary } : {})
+            ...(toolEvent.summary ? { summary: toolEvent.summary } : {}),
+            ...(toolEvent.fileChange ? { fileChange: toolEvent.fileChange } : {})
           });
         } else {
           toolCalls[idx] = {
@@ -3395,7 +3471,8 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
           ...(toolEvent.arguments !== undefined ? { arguments: toolEvent.arguments } : {}),
           ...(startedAt ? { startedAt } : {}),
           ...(toolEvent.durationMs !== undefined ? { durationMs: toolEvent.durationMs } : {}),
-          ...(toolEvent.summary ? { summary: toolEvent.summary } : {})
+          ...(toolEvent.summary ? { summary: toolEvent.summary } : {}),
+          ...(toolEvent.fileChange ? { fileChange: toolEvent.fileChange } : {})
         };
         if (segmentIdx === -1) {
           segments.push(patch);
@@ -3846,7 +3923,8 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
             status: 'done',
             durationMs: event.durationMs,
             summary: event.summary,
-            arguments: event.arguments
+            arguments: event.arguments,
+            fileChange: event.fileChange || null
           });
         }
         if (event?.type === 'tool:blocked') {

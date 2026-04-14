@@ -375,7 +375,8 @@ export async function promoteMemory({
   lifecycle = 'operational',
   workspaceRoot = process.cwd(),
   projectAlias = '',
-  config = {}
+  config = {},
+  confidence = 0.9
 } = {}) {
   if (!entry?.summary) throw new Error('Entry with summary is required for promotion');
   const lc = validateLifecycle(lifecycle);
@@ -386,7 +387,7 @@ export async function promoteMemory({
     kind: entry.type || 'note',
     summary: normalizeMemoryText(entry.summary),
     source: `dream-promote:${entry.id}`,
-    confidence: 0.9,
+    confidence: Math.min(1, Math.max(0.5, confidence)),
     replaceSimilar: true,
     workspaceRoot,
     projectAlias,

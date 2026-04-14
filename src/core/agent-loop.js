@@ -388,7 +388,18 @@ function shouldAutoCaptureError(toolName, message) {
     /not found$/i,
     /already exists$/i,
     /cancelled/i,
-    /aborted/i
+    /aborted/i,
+    /blocked by (?:safe mode|policy|dangerous command)/i,
+    /exit 127/i,
+    /command not found/i,
+    /permission denied/i,
+    /args\?\s/i,
+    /Raw tool arguments/i,
+    /edit requires/i,
+    /write requires/i,
+    /requires file/i,
+    /path.*outside workspace/i,
+    /escapes workspace/i
   ];
   if (noisePatterns.some((p) => p.test(message))) return false;
   lastAutoCaptureByTool.set(toolName, now);
@@ -401,7 +412,7 @@ function fireAndForgetCapture(toolName, message, args) {
     ? `Tool: ${toolName}\nError: ${message}\nArgs: ${JSON.stringify(args).slice(0, 300)}`
     : `Tool: ${toolName}\nError: ${message}`;
   captureToInbox({
-    scope: 'global',
+    scope: 'auto',
     type: 'failure',
     summary,
     details,
@@ -421,6 +432,33 @@ async function checkAutoDreamThreshold(config) {
 }
 
 // ─── Exported helpers ────────────────────────────────────────────────
+
+function extractFileChange(toolName, result) {
+  if (!result || typeof result !== 'object') return null;
+  const FILE_TOOLS = new Set(['edit', 'write', 'delete']);
+  if (!FILE_TOOLS.has(toolName)) return null;
+
+  /* delete */
+  if ('deleted' in result && result.deleted) {
+    return { path: String(result.path || ''), action: 'delete', linesAdded: 0, linesRemoved: 0 };
+  }
+
+  /* edit / write */
+  if ('path' in result && 'action' in result) {
+    const action = String(result.action || '');
+    const isCreate = action === 'create';
+    const added = Number(result.lines_added || 0);
+    const removed = Number(result.lines_removed || 0);
+    return {
+      path: String(result.path || ''),
+      action: isCreate ? 'create' : 'edit',
+      linesAdded: added,
+      linesRemoved: removed
+    };
+  }
+
+  return null;
+}
 
 export function summarizeToolResult(result) {
   if (result === null || result === undefined) return 'no output';
@@ -641,7 +679,7 @@ function blockedExplorationReason(toolName, args, state) {
   const top = topLevelPath(target);
   if (!top) return '';
 
-  if (['skills', 'souls', 'templates', '.codemini', '.codemini-project'].includes(top)) {
+  if (['skills', 'souls', 'templates', '.codemini', '.codemini-global'].includes(top)) {
     return `Skip ${top}/ for broad repository analysis unless the user explicitly asks for it. Inspect relevant source files first.`;
   }
   return '';
@@ -1066,8 +1104,10 @@ export async function runAgentLoop({
       }
 
       const durationMs = Date.now() - startedAt;
+      /* 提取文件改动统计 */
+      const fileChange = extractFileChange(toolName, toolResult);
       if (onEvent) {
-        onEvent({ type: 'tool:end', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary: summarizeToolResult(toolResult) });
+        onEvent({ type: 'tool:end', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary: summarizeToolResult(toolResult), fileChange });
       }
 
       // Auto-capture non-throwing tool failures (e.g. shell non-zero exit)

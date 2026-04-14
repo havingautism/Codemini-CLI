@@ -152,6 +152,7 @@ function getCompletionCopy(language = 'zh') {
         agents: '列出/运行子代理角色',
         config: '设置/读取/列出/重置配置',
         memory: '查看/搜索/删除持久记忆',
+        dream: '整理记忆收件箱（dream consolidation）',
         history: '查看/恢复会话',
         debug: '运行时调试开关',
         retry: '重试上一条用户请求',
@@ -170,6 +171,7 @@ function getCompletionCopy(language = 'zh') {
         planCommand: '规划命令',
         agentCommand: '子代理命令',
         memoryCommand: '记忆命令',
+        dreamCommand: '记忆整理命令',
         debugCommand: '调试命令',
         keyboardDebugCommand: '键盘调试命令',
         compactCommand: '上下文压缩命令',
@@ -247,6 +249,7 @@ function getCompletionCopy(language = 'zh') {
         agents: 'run/list sub-agent roles',
         config: 'set/get/list/reset config values',
         memory: 'list/search/delete persistent memories',
+        dream: 'consolidate memory inbox (dream)',
         history: 'list/resume sessions',
         debug: 'runtime debug switches',
         retry: 'retry the last user request',
@@ -265,6 +268,7 @@ function getCompletionCopy(language = 'zh') {
         planCommand: 'planning command',
         agentCommand: 'sub-agent command',
         memoryCommand: 'memory command',
+        dreamCommand: 'dream consolidation command',
         debugCommand: 'debug command',
         keyboardDebugCommand: 'keyboard debug command',
         compactCommand: 'context compaction command',
@@ -2779,7 +2783,7 @@ export async function createChatRuntime({
   if (initialIndex?.summary) {
     startupEvents.push({
       type: 'system_tool',
-      name: 'project_index(.codemini-project/project-map.json,.codemini-project/file-index.json)',
+      name: 'project_index(.codemini/project-map.json,.codemini/file-index.json)',
       status: 'done',
       summary: initialIndex.summary
     });
@@ -2923,6 +2927,7 @@ export async function createChatRuntime({
       { name: 'agents', description: completionCopy.commands.agents },
       { name: 'config', description: completionCopy.commands.config },
       { name: 'memory', description: completionCopy.commands.memory },
+      { name: 'dream', description: completionCopy.commands.dream },
       { name: 'history', description: completionCopy.commands.history },
       { name: 'debug', description: completionCopy.commands.debug },
       { name: 'retry', description: completionCopy.commands.retry },
@@ -2973,6 +2978,7 @@ export async function createChatRuntime({
   const planTemplates = ['/plan <goal>', '/plan auto <goal>', '/plan approve', '/plan from-spec <spec-path?>'];
   const agentTemplates = ['/agents list', '/agents run planner <task>', '/agents run coder <task>', '/agents run reviewer <task>', '/agents run tester <task>', '/agents run summarizer <task>'];
   const debugTemplates = ['/debug keys on', '/debug keys off', '/debug keys status'];
+  const dreamTemplates = ['/dream', '/dream --dry-run', '/dream --scope=project', '/dream --scope=global'];
   const compactTemplates = compactOptions.map((opt) => `/compact ${opt}`);
   const slashTemplates = [
     ...configTemplates,
@@ -2984,6 +2990,7 @@ export async function createChatRuntime({
     ...planTemplates,
     ...agentTemplates,
     ...debugTemplates,
+    ...dreamTemplates,
     ...compactTemplates,
     '/retry',
     '/status'
@@ -3050,6 +3057,7 @@ export async function createChatRuntime({
     }
     for (const template of agentTemplates) registerSuggestion(template, completionCopy.generic.agentCommand);
     for (const template of debugTemplates) registerSuggestion(template, completionCopy.generic.debugCommand);
+    for (const template of dreamTemplates) registerSuggestion(template, completionCopy.generic.dreamCommand);
     for (const template of compactTemplates) registerSuggestion(template, completionCopy.generic.compactCommand);
     registerSuggestion('/retry', completionCopy.generic.retryCommand);
     registerSuggestion('/status', completionCopy.generic.statusCommand);

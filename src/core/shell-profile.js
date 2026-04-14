@@ -168,7 +168,7 @@ Some tools are loaded on demand through tool_search. Common examples:
 - glob for pattern-based file lookup
 - ast_query and read_ast_node for advanced AST-scoped reads and edits
 - list_background_tasks, get_background_task, and stop_background_task for managing long-running background commands
-- remember_user, remember_global, remember_project, list_memory, search_memory, and forget_memory for persistent memory operations
+- save_memory, list_memory, search_memory, and forget_memory for persistent memory operations
 
 For structural code edits (functions, classes, methods), prefer AST-scoped reads before editing:
 - Common one-shot workflow: read(path, query=..., capture_name=...) → edit with symbol or ast_target

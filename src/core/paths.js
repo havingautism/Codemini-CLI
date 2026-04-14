@@ -3,7 +3,7 @@ import path from 'node:path';
 
 const GLOBAL_APP_DIR = 'codemini-global';
 const PROJECT_APP_DIR = '.codemini';
-const PROJECT_INDEX_DIR = '.codemini-project';
+const PROJECT_INDEX_DIR = '.codemini';
 
 export function getBaseConfigDir() {
   if (process.env.CODEMINI_GLOBAL_DIR) {

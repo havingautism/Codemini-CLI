@@ -888,12 +888,15 @@ async function writeFile(root, args) {
   }
   const previewStart = Math.max(0, (changeLine || 1) - 1);
   const previewLines = afterLines.slice(previewStart, previewStart + 6);
+  const changed = countChangedLines(before, after);
   return {
     ok: true,
     path: rawPath,
     action: normalizedArgs?.append ? 'append' : existed ? 'overwrite' : 'create',
     changed_line: changeLine || Math.max(1, afterLines.length),
-    diff_preview: previewLines.map((line, idx) => `${previewStart + idx + 1}| ${line}`).join('\n')
+    diff_preview: previewLines.map((line, idx) => `${previewStart + idx + 1}| ${line}`).join('\n'),
+    lines_added: changed.added,
+    lines_removed: changed.removed
   };
 }
 
@@ -1463,17 +1466,36 @@ async function validateEdit(root, args) {
   throw new Error(`validate_edit does not support kind: ${kind}`);
 }
 
+function countChangedLines(beforeContent, afterContent) {
+  const before = splitLines(beforeContent);
+  const after = splitLines(afterContent);
+  let added = 0;
+  let removed = 0;
+  const maxLen = Math.max(before.length, after.length);
+  for (let i = 0; i < maxLen; i += 1) {
+    const b = before[i];
+    const a = after[i];
+    if (b === undefined && a !== undefined) added += 1;
+    else if (a === undefined && b !== undefined) removed += 1;
+    else if (b !== a) { added += 1; removed += 1; }
+  }
+  return { added, removed };
+}
+
 function editResult(pathText, action, beforeContent, afterContent, changedLine = 1) {
   const afterLines = splitLines(afterContent);
   const previewStart = Math.max(0, changedLine - 1);
   const diffPreview = afterLines.slice(previewStart, previewStart + 6).map((line, idx) => `${previewStart + idx + 1}| ${line}`).join('\n');
+  const changed = countChangedLines(beforeContent, afterContent);
   return {
     ok: true,
     path: pathText,
     action,
     changed_line: changedLine,
     diff_preview: diffPreview,
-    new_hash: sha256(afterContent)
+    new_hash: sha256(afterContent),
+    lines_added: changed.added,
+    lines_removed: changed.removed
   };
 }
 
@@ -1730,7 +1752,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
   };
   const ensureProjectIndex = async () => {
     const eventId = `project-index:${Date.now()}`;
-    const name = 'project_index(.codemini-project/project-map.json,.codemini-project/file-index.json)';
+    const name = 'project_index(.codemini/project-map.json,.codemini/file-index.json)';
     try {
       const result = await initializeProjectIndex(workspaceRoot);
       if (result?.skipped || !result?.summary) {
@@ -1762,7 +1784,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         type: 'system_tool:end',
         id: eventId,
         name,
-        summary: result?.summary || `updated .codemini-project for ${relativePath}`
+        summary: result?.summary || `updated .codemini for ${relativePath}`
       });
       return result;
     } catch (error) {
@@ -2173,52 +2195,23 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         }
       }
     },
-    remember_user: {
+    save_memory: {
       type: 'function',
       function: {
-        name: 'remember_user',
-        description: 'Store a durable user preference, communication habit, or long-term instruction for future sessions. Use this for things like reply style, language, explanation depth, or stable guardrails. Never store secrets, tokens, passwords, or one-off task details.',
+        name: 'save_memory',
+        description:
+          'Save a durable observation or knowledge to persistent memory. Use this when you notice a reusable pattern, a user correction, a stable preference, a project convention, or a workflow insight. Do NOT use for casual chatter, trivial typos, one-off noise, or secrets. The memory is saved immediately and available in future sessions.',
         parameters: {
           type: 'object',
           properties: {
-            content: { type: 'string', description: 'Stable preference or instruction to remember' },
-            kind: { type: 'string', description: 'preference, workflow, constraint, or warning' },
-            summary: { type: 'string', description: 'Short summary for the memory index' },
-            replace_similar: { type: 'boolean', description: 'Replace an existing similar memory when true' }
-          },
-          required: ['content']
-        }
-      }
-    },
-    remember_global: {
-      type: 'function',
-      function: {
-        name: 'remember_global',
-        description: 'Store a durable cross-project workflow, environment fact, or generally reusable lesson that can help across many repositories. Use this for stable habits like preferred search tools or repeatable debugging workflow. Never store secrets.',
-        parameters: {
-          type: 'object',
-          properties: {
-            content: { type: 'string' },
-            kind: { type: 'string' },
-            summary: { type: 'string' },
-            replace_similar: { type: 'boolean' }
-          },
-          required: ['content']
-        }
-      }
-    },
-    remember_project: {
-      type: 'function',
-      function: {
-        name: 'remember_project',
-        description: 'Store a durable project-specific convention, architecture note, key module warning, or local workflow expectation. Use this for repository-specific rules, important files, testing conventions, or architectural boundaries. Never store secrets or transient task state.',
-        parameters: {
-          type: 'object',
-          properties: {
-            content: { type: 'string' },
-            kind: { type: 'string' },
-            summary: { type: 'string' },
-            replace_similar: { type: 'boolean' }
+            content: { type: 'string', description: 'The knowledge or observation to remember' },
+            summary: { type: 'string', description: 'Short summary for the memory index (under 80 chars)' },
+            scope: {
+              type: 'string',
+              description: 'Where to store this memory. "user" = personal preferences (language, style, interaction habits). "global" = cross-project knowledge useful in ANY repository (environment quirks, general workflows, tool tips). "project" = specific to THIS repository only (architecture conventions, local config, test commands, file locations). Default: "global".'
+            },
+            kind: { type: 'string', description: 'Memory kind: preference, pattern, correction, observation, decision, failure, win, gap, convention. Default: observation' },
+            replace_similar: { type: 'boolean', description: 'Replace an existing similar memory when true. Default: true.' }
           },
           required: ['content']
         }
@@ -2265,26 +2258,6 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
             id: { type: 'string', description: 'Memory id to delete' }
           },
           required: ['scope', 'id']
-        }
-      }
-    },
-    capture_memory: {
-      type: 'function',
-      function: {
-        name: 'capture_memory',
-        description:
-          'Capture a high-signal observation into the dream loop inbox during active work. Use this when you notice a reusable pattern, a user correction, a repeated failure with stable fix, a stable preference, or a workflow win. Do NOT use for casual chatter, trivial typos, or one-off noise. This is lightweight — entries land in inbox and are consolidated later.',
-        parameters: {
-          type: 'object',
-          properties: {
-            summary: { type: 'string', description: 'Short high-signal summary of the observation' },
-            details: { type: 'string', description: 'Detailed explanation of the observation' },
-            scope: { type: 'string', description: 'Scope: global, repo, or thread. Default: global' },
-            type: { type: 'string', description: 'Observation type: correction, failure, preference, pattern, win, gap, decision. Default: observation' },
-            tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags for categorization' },
-            suggested_action: { type: 'string', description: 'Optional suggested follow-up action' }
-          },
-          required: ['summary']
         }
       }
     },
@@ -2557,41 +2530,22 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         })
       }
     ),
-    remember_user: async (args = {}) => {
+    save_memory: async (args = {}) => {
+      const rawScope = String(args.scope || 'global').toLowerCase();
+      const memoryScope = rawScope === 'repo' || rawScope === 'project' ? 'project'
+        : rawScope === 'user' ? 'user'
+        : 'global';
       const saved = await rememberMemory({
-        scope: 'user',
+        scope: memoryScope,
         content: args.content,
-        kind: args.kind,
-        summary: args.summary,
+        kind: args.kind || 'observation',
+        summary: args.summary || String(args.content || '').slice(0, 80),
+        source: 'tool',
         replaceSimilar: args.replace_similar !== false,
         workspaceRoot,
         config
       });
-      return { ok: true, scope: 'user', memory: saved };
-    },
-    remember_global: async (args = {}) => {
-      const saved = await rememberMemory({
-        scope: 'global',
-        content: args.content,
-        kind: args.kind,
-        summary: args.summary,
-        replaceSimilar: args.replace_similar !== false,
-        workspaceRoot,
-        config
-      });
-      return { ok: true, scope: 'global', memory: saved };
-    },
-    remember_project: async (args = {}) => {
-      const saved = await rememberMemory({
-        scope: 'project',
-        content: args.content,
-        kind: args.kind,
-        summary: args.summary,
-        replaceSimilar: args.replace_similar !== false,
-        workspaceRoot,
-        config
-      });
-      return { ok: true, scope: 'project', memory: saved };
+      return { ok: true, scope: memoryScope, memory: saved };
     },
     list_memory: async (args = {}) => ({
       scope: String(args.scope || ''),
@@ -2606,18 +2560,6 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       ok: true,
       ...(await forgetMemory({ scope: args.scope, id: args.id, workspaceRoot }))
     }),
-    capture_memory: async (args = {}) => {
-      const entry = await captureToInbox({
-        scope: args.scope,
-        type: args.type,
-        summary: args.summary,
-        details: args.details,
-        suggestedAction: args.suggested_action,
-        tags: args.tags,
-        source: 'tool'
-      });
-      return { ok: true, captured: entry };
-    },
     dream_consolidate: async (args = {}) => {
       return runDreamConsolidation({
         dryRun: args.dry_run === true,
@@ -2873,6 +2815,11 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
 
     remember_project(result) {
       return result?.memory?.content ? `stored project memory: ${result.memory.content}` : JSON.stringify(result);
+    },
+
+    save_memory(result) {
+      const scope = result?.scope || 'global';
+      return result?.memory?.content ? `stored ${scope} memory: ${result.memory.content}` : JSON.stringify(result);
     },
 
     list_memory(result) {

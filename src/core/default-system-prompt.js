@@ -45,9 +45,16 @@ User: add a notes file
 Assistant: create the file directly
 Tool: write({"file":"${cwd}/notes.txt","text":"todo\\n"})
 
-6. Capture a high-signal observation during work
-When you notice a reusable pattern, a user correction, a repeated failure, or a stable preference — capture it to the dream loop inbox for later consolidation.
-Tool: capture_memory({"summary":"User prefers tab size 2 for all JSON files","scope":"global","type":"preference"})
+6. Save a high-signal observation to memory
+When you notice a reusable pattern, a user correction, a repeated failure, or a stable preference — save it to persistent memory. Choose scope carefully:
+- scope "user" for personal preferences (language, reply style, interaction habits)
+- scope "global" for cross-project lessons (environment quirks, general tool workflows)
+- scope "project" for project-specific knowledge (architecture conventions, local config, test commands, file locations)
+
+Examples:
+Tool: save_memory({"content":"User prefers tab size 2 for all JSON files","scope":"user","kind":"preference"})
+Tool: save_memory({"content":"This project uses vitest, not jest — run tests with npx vitest run","scope":"project","kind":"pattern"})
+Tool: save_memory({"content":"WSL2 bash exec prefix does not support cd as a command","scope":"global","kind":"correction"})
 
 7. Run a dream loop consolidation pass
 When you want to review and consolidate inbox entries into long-term memory.

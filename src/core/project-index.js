@@ -387,7 +387,7 @@ export async function initializeProjectIndex(cwd = process.cwd()) {
       projectRoot: targetRoot,
       projectMap,
       fileIndex,
-      summary: `initialized ${path.basename(targetRoot) || '.'}/.codemini-project (${Array.isArray(fileIndex?.files) ? fileIndex.files.length : 0} files)`
+      summary: `initialized ${path.basename(targetRoot) || '.'}/.codemini (${Array.isArray(fileIndex?.files) ? fileIndex.files.length : 0} files)`
     };
   })();
   initCache.set(cacheKey, promise);
@@ -447,7 +447,7 @@ export async function refreshIndexedFile(cwd = process.cwd(), relativePath = '')
     path: projectRelativePath,
     projectRoot,
     action,
-    summary: `${action} ${path.basename(projectRoot) || '.'}/.codemini-project for ${projectRelativePath}`
+    summary: `${action} ${path.basename(projectRoot) || '.'}/.codemini for ${projectRelativePath}`
   };
 }
 

@@ -1,19 +1,12 @@
 import { listMemories, listInbox, archiveEntry, promoteMemory } from './memory-store.js';
 import { writeDreamAuditReport } from './dream-audit.js';
+import { evaluateInboxBatch } from './dream-evaluator.js';
 
 const LONGTERM_TYPES = new Set(['preference', 'pattern', 'win', 'decision']);
 const OPERATIONAL_TYPES = new Set(['correction', 'failure', 'gap', 'observation']);
 
 function normalizeText(value) {
   return String(value || '').trim().toLowerCase();
-}
-
-function mapInboxScopeToMemoryScope(scope) {
-  const value = normalizeText(scope);
-  if (value === 'repo' || value === 'project') return 'project';
-  if (value === 'thread') return 'global';
-  if (value === 'user') return 'user';
-  return 'global';
 }
 
 function chooseLifecycle(type) {
@@ -55,7 +48,10 @@ export async function runDreamConsolidation({
   const filesRead = ['memory/inbox/*', 'memory/global.json', 'memory/user.json', 'memory/project/*.json'];
   const filesChanged = [];
 
+  /* ── Phase 1: 规则预过滤（快速剔除明显垃圾） ─────────────────── */
+  const candidates = [];
   const seen = new Map();
+
   for (const entry of inbox) {
     const summaryKey = normalizeText(entry.summary);
     if (!summaryKey) {
@@ -78,14 +74,58 @@ export async function runDreamConsolidation({
       continue;
     }
 
-    const lifecycle = chooseLifecycle(entry.type);
-    const promoteScope = mapInboxScopeToMemoryScope(entry.scope);
+    candidates.push(entry);
+  }
+
+  if (candidates.length === 0) {
+    const report = { timestamp: new Date().toISOString(), filesRead, filesChanged: [], candidatesGenerated: inbox.length, promotions, rejections, archives };
+    if (!dryRun && writeAudit) {
+      const reportPath = await writeDreamAuditReport(report);
+      report.auditReport = reportPath;
+    }
+    return { ok: true, dryRun, ...report };
+  }
+
+  /* ── Phase 2: LLM 批量评估（质量门控 + scope 分类 + 内容提炼） ── */
+  const llmResults = dryRun
+    ? candidates.map((e) => ({ id: e.id, action: 'keep', scope: 'global', kind: e.type || 'observation', content: e.details || e.summary, summary: e.summary, confidence: 0.9 }))
+    : await evaluateInboxBatch({ entries: candidates, config, workspaceRoot });
+
+  const resultMap = new Map(llmResults.map((r) => [r.id, r]));
+
+  /* ── Phase 3: 按评估结果 promote 或 archive ─────────────────── */
+  for (const entry of candidates) {
+    const evaluation = resultMap.get(entry.id);
+
+    if (!evaluation || evaluation.action === 'discard') {
+      const reason = evaluation?.reason || 'LLM discarded';
+      if (!dryRun) await archiveEntry(entry, 'discarded-by-evaluator', reason);
+      rejections.push({ summary: entry.summary, reason: `evaluator-discard: ${reason}` });
+      continue;
+    }
+
+    const promoteScope = evaluation.scope || 'global';
+    const lifecycle = chooseLifecycle(evaluation.kind);
+    const enrichedEntry = {
+      ...entry,
+      /* 用 LLM 提炼后的内容覆盖原始报错 */
+      summary: evaluation.summary || entry.summary,
+      details: evaluation.content || entry.details || entry.summary,
+      type: evaluation.kind || entry.type || 'observation'
+    };
 
     if (!dryRun) {
       try {
-        await promoteMemory({ entry, scope: promoteScope, lifecycle, workspaceRoot, config });
-        filesChanged.push({ file: `memory/${promoteScope}.json`, why: `Promoted "${entry.summary}" as ${lifecycle}` });
-        promotions.push({ summary: entry.summary, scope: promoteScope, lifecycle, rationale: entry.type });
+        await promoteMemory({
+          entry: enrichedEntry,
+          scope: promoteScope,
+          lifecycle,
+          workspaceRoot,
+          config,
+          confidence: evaluation.confidence || 0.8
+        });
+        filesChanged.push({ file: `memory/${promoteScope}.json`, why: `Promoted "${enrichedEntry.summary}" as ${lifecycle} (${promoteScope})` });
+        promotions.push({ summary: enrichedEntry.summary, scope: promoteScope, lifecycle, rationale: evaluation.kind, confidence: evaluation.confidence });
       } catch (error) {
         const reason = String(error?.message || error || 'promotion failed').slice(0, 180);
         await archiveEntry(entry, 'promotion-failed', reason);
@@ -95,7 +135,7 @@ export async function runDreamConsolidation({
       continue;
     }
 
-    promotions.push({ summary: entry.summary, scope: promoteScope, lifecycle, rationale: entry.type, dryRun: true });
+    promotions.push({ summary: enrichedEntry.summary, scope: promoteScope, lifecycle, rationale: evaluation.kind, confidence: evaluation.confidence, dryRun: true });
   }
 
   const report = {

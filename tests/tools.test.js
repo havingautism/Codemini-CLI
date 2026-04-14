@@ -298,13 +298,14 @@ test('opencode-style primary tools read grep glob and list work for discovery fl
   });
 });
 
-test('remember_project tool persists project memory entries', async () => {
+test('save_memory tool persists project memory entries', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const { handlers } = await makeTools(workspaceRoot);
 
-    const saved = await handlers.remember_project({
+    const saved = await handlers.save_memory({
       content: 'src/auth.ts 是登录核心模块，改动时先补测试。',
-      kind: 'module'
+      kind: 'module',
+      scope: 'project'
     });
     const memories = await listMemories({ scope: 'project', workspaceRoot });
 
@@ -865,12 +866,12 @@ test('delete refreshes the lightweight project file index after removal', async 
     const result = await handlers.delete({ path: 'src/service.ts' });
 
     assert.equal(result.ok, true);
-    const fileIndex = JSON.parse(await fs.readFile(path.join(workspaceRoot, '.codemini-project', 'file-index.json'), 'utf8'));
+    const fileIndex = JSON.parse(await fs.readFile(path.join(workspaceRoot, '.codemini', 'file-index.json'), 'utf8'));
     assert.equal(fileIndex.files.some((entry) => entry.file === 'src/service.ts'), false);
     assert.deepEqual(
       events.map((event) => `${event.type}:${event.name}`),
       [
-        'system_tool:end:project_index(.codemini-project/project-map.json,.codemini-project/file-index.json)',
+        'system_tool:end:project_index(.codemini/project-map.json,.codemini/file-index.json)',
         'system_tool:end:file_index(src/service.ts)'
       ]
     );
@@ -960,7 +961,7 @@ test('builtin tool definitions expose only current primary and structured tools'
     assert.ok(!names.includes('ast_query'));
     assert.ok(!names.includes('read_ast_node'));
     assert.ok(names.includes('glob'));
-    assert.ok(!names.includes('remember_project'));
+    assert.ok(!names.includes('save_memory'));
     assert.ok(!names.includes('list_memory'));
     assert.ok(!names.includes('list_background_tasks'));
     assert.ok(!('glob' in deferredDefinitions));
@@ -968,7 +969,7 @@ test('builtin tool definitions expose only current primary and structured tools'
     assert.ok('read_ast_node' in deferredDefinitions);
     assert.ok('web_fetch' in deferredDefinitions);
     assert.ok('web_search' in deferredDefinitions);
-    assert.ok('remember_project' in deferredDefinitions);
+    assert.ok('save_memory' in deferredDefinitions);
     assert.ok('list_memory' in deferredDefinitions);
     assert.ok('list_background_tasks' in deferredDefinitions);
     assert.match(readDefinition.function.description, /read\(path\) for normal file or line-window reads/i);
@@ -1003,7 +1004,7 @@ test('builtin tool definitions expose only current primary and structured tools'
     assert.equal(typeof handlers.run, 'function');
     assert.equal(typeof handlers.web_fetch, 'function');
     assert.equal(typeof handlers.web_search, 'function');
-    assert.equal(typeof handlers.remember_project, 'function');
+    assert.equal(typeof handlers.save_memory, 'function');
     assert.equal(typeof handlers.list_background_tasks, 'function');
     assert.equal(typeof handlers.tool_search, 'function');
   });
@@ -2852,7 +2853,7 @@ test('edit refreshes the lightweight project file index after code changes', asy
       }
     });
 
-    const fileIndex = JSON.parse(await fs.readFile(path.join(workspaceRoot, '.codemini-project', 'file-index.json'), 'utf8'));
+    const fileIndex = JSON.parse(await fs.readFile(path.join(workspaceRoot, '.codemini', 'file-index.json'), 'utf8'));
     const entry = fileIndex.files.find((item) => item.file === 'src/math.js');
     assert.ok(entry);
     assert.ok(entry.exports.includes('add'));
@@ -2886,12 +2887,12 @@ test('edit emits system tool events for project and file indexing', async () => 
     assert.deepEqual(
       events.map((event) => `${event.type}:${event.name}`),
       [
-        'system_tool:end:project_index(.codemini-project/project-map.json,.codemini-project/file-index.json)',
+        'system_tool:end:project_index(.codemini/project-map.json,.codemini/file-index.json)',
         'system_tool:end:file_index(src/service.ts)'
       ]
     );
-    assert.match(String(events[0]?.summary || ''), /\.codemini-project/i);
-    assert.match(String(events[1]?.summary || ''), /\.codemini-project.*src\/service\.ts/i);
+    assert.match(String(events[0]?.summary || ''), /\.codemini/i);
+    assert.match(String(events[1]?.summary || ''), /\.codemini.*src\/service\.ts/i);
   });
 });
 
