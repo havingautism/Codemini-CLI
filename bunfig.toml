@@ -1,0 +1,2 @@
+# opentui/solid uses its own babel-preset-solid bun plugin for JSX.
+# Do NOT set [jsx] here — the plugin registered in entry.js handles TSX transforms.

@@ -1,10 +1,17 @@
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
+import { spawn, execSync } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { loadConfig } from '../core/config-store.js';
 import { createChatRuntime } from '../core/chat-runtime.js';
 import { buildDefaultSystemPrompt } from '../core/default-system-prompt.js';
 import { resolveSession } from '../core/session-store.js';
 import pkg from '../../package.json' with { type: 'json' };
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function parseChatArgs(args) {
   const parsed = {
@@ -63,6 +70,83 @@ async function runPlainLoop(runtime) {
   }
 }
 
+/**
+ * Find the bun executable. Returns a path usable by Node's spawn().
+ * - On Windows/WSL: looks for bun.exe
+ * - On Unix: looks for bun binary
+ * - Falls back to 'bun' on PATH
+ */
+function findBunBin() {
+  const home = homedir();
+  const candidates = [
+    // project-local
+    path.resolve(__dirname, '../../node_modules/bun/bin/bun.exe'),
+    path.resolve(__dirname, '../../node_modules/bun/bin/bun'),
+    // global npm (Windows AppData)
+    path.join(home, 'AppData/Roaming/npm/node_modules/bun/bin/bun.exe'),
+    // global npm (Unix)
+    path.join(home, '.npm-global/lib/node_modules/bun/bin/bun'),
+    // brew (macOS)
+    '/usr/local/bin/bun',
+    '/opt/homebrew/bin/bun',
+  ];
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  return 'bun';
+}
+
+function runOpenTuiProcess({ parsed, session, config, systemPrompt }) {
+  return new Promise((resolve, reject) => {
+    const bunBin = findBunBin();
+    const cwd = process.cwd();
+    const entryScript = path.resolve(cwd, 'src/tui/opentui/entry.js');
+    const globalDir = path.resolve(cwd, '.codemini-global');
+
+    const args = [
+      'run',
+      entryScript,
+      '--session',
+      session.id,
+      '--model',
+      parsed.model || config.model.name,
+      '--language',
+      config.ui?.language || 'zh',
+      '--shell',
+      config.shell?.default || 'powershell',
+      '--sdk-provider',
+      config.sdk?.provider || 'openai-compatible',
+      '--global-dir',
+      globalDir,
+    ];
+    if (config.policy?.safe_mode === false) {
+      args.push('--unsafe');
+    }
+
+    const child = spawn(bunBin, args, {
+      cwd,
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        CODEMINI_SYSTEM_PROMPT: systemPrompt
+      }
+    });
+
+    child.on('error', reject);
+    child.on('exit', (code, signal) => {
+      if (signal) {
+        reject(new Error(`OpenTUI process exited via signal ${signal}`));
+        return;
+      }
+      if (code && code !== 0) {
+        reject(new Error(`OpenTUI process exited with code ${code}`));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
 export async function handleChat(args) {
   const parsed = parseChatArgs(args);
   const config = await loadConfig();
@@ -90,49 +174,11 @@ export async function handleChat(args) {
       return;
     }
 
-    const React = (await import('react')).default;
-    const { render } = await import('ink');
-    const { ChatApp } = await import('../tui/chat-app.js');
-
-    const instance = render(
-      React.createElement(ChatApp, {
-        runtime,
-        sessionId: session.id,
-        model: parsed.model || config.model.name,
-        sdkProvider: config.sdk?.provider || 'openai-compatible',
-        language: config.ui?.language || 'zh',
-        shellName: config.shell?.default || 'powershell',
-        safeMode: config.policy?.safe_mode !== false,
-        version: pkg.version
-      })
-    );
-
-    // Patch Ink's renderInteractiveFrame to never use clearTerminal.
-    // Ink calls clearTerminal (ESC[2J + ESC[H]) when the output frame exceeds
-    // the terminal viewport height, which resets the scroll position to the top
-    // and prevents the user from scrolling freely during streaming.
-    // By always using incremental logUpdate updates instead, old content scrolls
-    // into the terminal's scrollback naturally and the user can scroll freely.
-    const origRenderFrame = instance.renderInteractiveFrame;
-    instance.renderInteractiveFrame = function (output, outputHeight, staticOutput) {
-      const hasStaticOutput = staticOutput !== '';
-      const outputToRender = output + '\n';
-
-      if (hasStaticOutput) {
-        this.fullStaticOutput += staticOutput;
-        this.log.clear();
-        this.options.stdout.write(staticOutput);
-        this.log(outputToRender);
-      } else if (output !== this.lastOutput || this.log.isCursorDirty()) {
-        this.throttledLog(outputToRender);
-      }
-      this.lastOutput = output;
-      this.lastOutputToRender = outputToRender;
-      this.lastOutputHeight = outputHeight;
-    };
-
-    await instance.waitUntilExit();
-  } finally {
+    // Dispose the node-side runtime — the bun child process creates its own.
     await runtime.dispose?.();
+    await runOpenTuiProcess({ parsed, session, config, systemPrompt });
+  } finally {
+    // runtime already disposed for the opentui path; clean up for plain/prompt paths.
+    await runtime.dispose?.().catch(() => {});
   }
 }

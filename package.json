@@ -47,12 +47,19 @@
   },
   "dependencies": {
     "@cursorless/tree-sitter-wasms": "^0.8.1",
+    "@opentui/core": "^0.1.99",
+    "@opentui/core-win32-x64": "^0.1.99",
+    "@opentui/solid": "^0.1.99",
     "cheerio": "^1.1.2",
     "duck-duck-scrape": "^2.2.7",
     "ink": "^7.0.0",
     "playwright": "^1.54.2",
     "react": "^19.2.5",
+    "solid-js": "^1.9.12",
     "web-tree-sitter": "^0.26.8"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "peerDependencies": {
+    "bun": ">=1.0.0"
+  }
 }

@@ -526,15 +526,15 @@ function normalizeLanguage(language) {
   return String(language || '').toLowerCase().startsWith('en') ? 'en' : 'zh';
 }
 
-function getCopy(language) {
+export function getCopy(language) {
   return TUI_COPY[normalizeLanguage(language)] || TUI_COPY.zh;
 }
 
-function messageLabel(label, copy) {
+export function messageLabel(label, copy) {
   return copy.roleLabels[label] || String(label || '').toUpperCase();
 }
 
-function roleStyle(label) {
+export function roleStyle(label) {
   return ROLE_STYLES[label] || ROLE_STYLES.system;
 }
 
@@ -884,7 +884,7 @@ function textFromSessionContent(content) {
   return sanitizeRenderableText(String(content || ''));
 }
 
-function buildUiMessagesFromSessionHistory(sessionMessages, nextId) {
+export function buildUiMessagesFromSessionHistory(sessionMessages, nextId) {
   const source = Array.isArray(sessionMessages) ? sessionMessages : [];
   const out = [];
 
