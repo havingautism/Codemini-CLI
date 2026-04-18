@@ -13,13 +13,13 @@ npm pack
 Expected output:
 
 ```text
-codemini-cli-0.1.0.tgz
+codemini-cli-0.3.9.tgz
 ```
 
 If you want to verify the package contents:
 
 ```bash
-tar -tf codemini-cli-0.1.0.tgz
+tar -tf codemini-cli-0.3.9.tgz
 ```
 
 ## 2. Copy To The Target Machine
@@ -34,7 +34,7 @@ Copy the generated `.tgz` file to the Win10 machine by one of these methods:
 Recommended target path:
 
 ```powershell
-C:\temp\codemini-cli-0.1.0.tgz
+C:\temp\codemini-cli-0.3.9.tgz
 ```
 
 ## 3. Environment Requirements
@@ -42,7 +42,7 @@ C:\temp\codemini-cli-0.1.0.tgz
 Target machine requirements:
 
 - Windows 10
-- Node.js 20 or newer
+- Node.js 22 or newer
 - npm available
 - PowerShell available
 
@@ -58,7 +58,7 @@ npm -v
 Global install:
 
 ```powershell
-npm install -g C:\temp\codemini-cli-0.1.0.tgz
+npm install -g C:\temp\codemini-cli-0.3.9.tgz
 ```
 
 If global install is blocked by company policy, install in a working directory instead:
@@ -66,7 +66,7 @@ If global install is blocked by company policy, install in a working directory i
 ```powershell
 mkdir C:\temp\coder-test
 cd C:\temp\coder-test
-npm install C:\temp\codemini-cli-0.1.0.tgz
+npm install C:\temp\codemini-cli-0.3.9.tgz
 ```
 
 ## 5. Confirm Installation

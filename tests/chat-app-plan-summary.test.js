@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   buildPreToolNotice,
+  formatPlanApprovalLines,
   formatDeleteApprovalLines,
   injectPlanStateMessage,
   normalizeDeleteApprovalRequest,
@@ -363,4 +364,25 @@ test('parsePendingPlanApprovalMessage extracts goal, summary, and file path', ()
     filePath: '/tmp/.codemini/plans/plan.md'
   });
   assert.equal(parsePendingPlanApprovalMessage('random message'), null);
+});
+
+test('formatPlanApprovalLines keeps the plan approval panel concise', () => {
+  const lines = formatPlanApprovalLines(
+    {
+      planApproval: {
+        title: '确认执行计划？',
+        goalLabel: '目标',
+        summaryLabel: '摘要',
+        fileLabel: '文件',
+        prompt: '输入 /yes 执行，输入 /edit <反馈> 修改，输入 /reject 拒绝。'
+      }
+    },
+    {
+      goal: '审查当前 README 内容与项目结构',
+      summary: 'Plan created and waiting for approval before implementation.',
+      filePath: '/tmp/.codemini/plans/plan.md'
+    }
+  );
+
+  assert.deepEqual(lines, ['确认执行计划？']);
 });

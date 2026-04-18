@@ -1642,6 +1642,18 @@ async function writeMarkdownInProjectDir(subDir, title, body, fallbackName, sess
   return filePath;
 }
 
+async function removePlanFileIfPresent(planState) {
+  const filePath = String(planState?.filePath || '').trim();
+  if (!filePath) return;
+  try {
+    await fs.unlink(filePath);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      // Best-effort cleanup: keep the main approval flow moving.
+    }
+  }
+}
+
 function buildSpecTemplate(topic) {
   return `
 # Spec: ${topic}
@@ -3457,6 +3469,7 @@ export async function createChatRuntime({
         });
         activeSubSession = null;
         currentSession.planState = null;
+        await removePlanFileIfPresent(planState);
         executionMode = 'auto';
         await persistAssistantExchange(line, result.text || '', { includeUser: false });
         return { type: 'assistant', text: result.text, aborted: !!result.aborted };
@@ -3486,7 +3499,9 @@ export async function createChatRuntime({
         if (!hasPendingPlanApproval(currentSession)) {
           return { type: 'system', text: 'No pending plan approval.' };
         }
+        const planState = { ...currentSession.planState };
         currentSession.planState = null;
+        await removePlanFileIfPresent(planState);
         executionMode = 'auto';
         const text = 'Pending plan rejected and cleared.';
         await persistLocalExchange(line, text);
@@ -3626,6 +3641,7 @@ export async function createChatRuntime({
           });
           activeSubSession = null;
           currentSession.planState = null;
+          await removePlanFileIfPresent(planState);
           executionMode = 'auto';
           await persistAssistantExchange(line, result.text || '', { includeUser: false });
           return { type: 'assistant', text: result.text, aborted: !!result.aborted };

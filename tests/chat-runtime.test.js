@@ -62,6 +62,11 @@ function makeSseResponse(events) {
   });
 }
 
+function extractPlanFilePath(text) {
+  const match = String(text || '').match(/^Plan File:\s+(.+)$/m);
+  return String(match?.[1] || '').trim();
+}
+
 test('chat runtime reflects config and mode changes immediately for TUI refresh', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     const config = await loadConfig();
@@ -399,6 +404,8 @@ test('reject clears pending plan approval and returns to auto mode', { concurren
   await withTempConfigDir(async () => {
     const config = await loadConfig();
     const now = new Date().toISOString();
+    const planFilePath = path.join(os.tmpdir(), `codemini-reject-plan-${Date.now()}.md`);
+    await fs.writeFile(planFilePath, '# Pending plan\n', 'utf8');
     const runtime = await createChatRuntime({
       session: {
         id: 'session-plan-reject',
@@ -409,6 +416,7 @@ test('reject clears pending plan approval and returns to auto mode', { concurren
           status: 'pending_approval',
           source: 'auto',
           goal: 'Harden auth',
+          filePath: planFilePath,
           summary: 'Plan pending',
           finalSummary: 'Plan pending'
         }
@@ -422,6 +430,7 @@ test('reject clears pending plan approval and returns to auto mode', { concurren
     assert.match(String(result.text || ''), /rejected and cleared/i);
     assert.equal(runtime.getRuntimeState().mode, 'auto');
     assert.equal(runtime.getRuntimeState().pendingPlanApproval, false);
+    await assert.rejects(() => fs.access(planFilePath));
   });
 });
 
@@ -582,15 +591,91 @@ test('plan auto run persists slash input and assistant output into session histo
       const pending = await runtime.submit('/plan auto return exactly one line');
       assert.equal(pending.type, 'system');
       assert.match(String(pending.text || ''), /Approval:\s*pending/i);
+      const planFilePath = extractPlanFilePath(pending.text);
+      assert.ok(planFilePath);
+      await fs.access(planFilePath);
       const result = await runtime.submit('/yes');
       assert.equal(result.type, 'assistant');
       assert.match(String(result.text || ''), /plan-auto-run-persist-ok/i);
+      await assert.rejects(() => fs.access(planFilePath));
 
       const loaded = await loadSession(sessionId);
       const userMessages = loaded.messages.filter((m) => m.role === 'user').map((m) => String(m.content || ''));
       const assistantMessages = loaded.messages.filter((m) => m.role === 'assistant').map((m) => String(m.content || ''));
       assert.ok(userMessages.some((msg) => msg.includes('/plan auto return exactly one line')));
       assert.ok(assistantMessages.some((msg) => msg.includes('plan-auto-run-persist-ok')));
+    } finally {
+      await restoreFetch();
+    }
+  });
+});
+
+test('plan approve deletes the pending auto plan file after successful execution', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    let callIndex = 0;
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      callIndex += 1;
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+      const userPrompt = String(body?.messages?.[body.messages.length - 1]?.content || '');
+
+      if (callIndex === 1) {
+        return makeJsonResponse({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: 'Return exactly one line.',
+                  steps: [
+                    {
+                      title: 'Return one line',
+                      role: 'coder',
+                      task: 'Return a single confirmation line.'
+                    }
+                  ]
+                })
+              }
+            }
+          ]
+        });
+      }
+
+      if (userPrompt) {
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'plan-approve-ok' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      throw new Error(`unexpected fetch call ${callIndex}`);
+    });
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-plan-approve-delete',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const pending = await runtime.submit('/plan auto return exactly one line');
+      assert.equal(pending.type, 'system');
+      const planFilePath = extractPlanFilePath(pending.text);
+      assert.ok(planFilePath);
+      await fs.access(planFilePath);
+
+      const result = await runtime.submit('/plan approve');
+      assert.equal(result.type, 'assistant');
+      assert.match(String(result.text || ''), /plan-approve-ok/i);
+      await assert.rejects(() => fs.access(planFilePath));
     } finally {
       await restoreFetch();
     }

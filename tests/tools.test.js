@@ -10,6 +10,7 @@ import { loadConfig } from '../src/core/config-store.js';
 import { classifyCommandIntent } from '../src/core/shell.js';
 import { runAgentLoop } from '../src/core/agent-loop.js';
 import { listMemories } from '../src/core/memory-store.js';
+import { sanitizeTextForModel } from '../src/core/tool-output.js';
 
 async function withTempWorkspace(run) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-tools-'));
@@ -895,6 +896,204 @@ test('opencode-style write and run tools execute through the existing runtime', 
       command: 'printf ok'
     });
     assert.equal(result.stdout, 'ok');
+  });
+});
+
+test('sanitizeTextForModel strips ansi, collapses blank runs, and truncates wide lines', () => {
+  const result = sanitizeTextForModel(
+    '\u001b[31merror:\u001b[0m abcdefghijklmnopqrstuvwxyz\n\n\nnext line',
+    { maxLineLength: 16 }
+  );
+
+  assert.equal(result.includes('\u001b['), false);
+  assert.match(result, /^error: abcdefgh…\n\nnext line$/);
+});
+
+test('tool formatters sanitize shell and background task output before model context', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { formatters } = await makeTools(workspaceRoot);
+    const formattedRun = formatters.run({
+      code: 1,
+      command: 'printf fail',
+      stdout: '\u001b[32m' + 'x'.repeat(260) + '\u001b[0m',
+      stderr: ''
+    });
+    const formattedTask = formatters.get_background_task({
+      task_id: 'task_001',
+      status: 'running',
+      output_file: '.codemini/tasks/task_001.log',
+      recent_output: ['\u001b[31m' + 'y'.repeat(260) + '\u001b[0m']
+    });
+
+    assert.equal(formattedRun.includes('\u001b['), false);
+    assert.equal(formattedTask.includes('\u001b['), false);
+    assert.match(formattedRun, /x{80,}/);
+    assert.match(formattedTask, /y{10,}…/);
+  });
+});
+
+test('read formatter preserves full long lines instead of clipping them for display', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { formatters } = await makeTools(workspaceRoot);
+    const longLine = `keeps the agent's safety rules! ${'x'.repeat(260)}`;
+    const formatted = formatters.read({
+      path: 'README.md',
+      phase: 'content',
+      start_line: 17,
+      end_line: 17,
+      total_lines: 40,
+      truncated: false,
+      content: longLine
+    });
+
+    assert.match(formatted, /keeps the agent's safety rules!/);
+    assert.match(formatted, /x{40,}/);
+    assert.equal(formatted.includes('…'), false);
+  });
+});
+
+test('read_ast_node formatter preserves very large node content instead of head-tail clipping', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { formatters } = await makeTools(workspaceRoot);
+    const longLine = [
+      `const prefixValue = "${'a'.repeat(900)}";`,
+      `const importantMiddleValue = "${'b'.repeat(900)}";`,
+      `const suffixValue = "${'c'.repeat(900)}";`
+    ].join('\n');
+    const formatted = formatters.read_ast_node({
+      name: 'demoNode',
+      kind: 'function',
+      content: longLine
+    });
+
+    assert.match(formatted, /prefixValue/);
+    assert.match(formatted, /importantMiddleValue/);
+    assert.match(formatted, /suffixValue/);
+    assert.equal(formatted.includes('... [omitted'), false);
+  });
+});
+
+test('generic run formatter preserves full stdout lines instead of slicing to 500 chars', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { formatters } = await makeTools(workspaceRoot);
+    const longLine = `result=${'x'.repeat(700)}`;
+    const formatted = formatters.run({
+      code: 0,
+      command: 'python demo.py',
+      stdout: longLine,
+      stderr: ''
+    });
+
+    assert.match(formatted, /stdout:/);
+    assert.match(formatted, /x{200,}/);
+    assert.equal(formatted.includes('…'), false);
+  });
+});
+
+test('web_fetch formatter preserves fetched page text instead of clipping to preview size', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { formatters } = await makeTools(workspaceRoot);
+    const pageText = `Heading\n${'Paragraph '.repeat(180)}`;
+    const formatted = formatters.web_fetch({
+      final_url: 'https://example.com/docs',
+      title: 'Docs',
+      text: pageText
+    });
+
+    assert.match(formatted, /\[web_fetch: https:\/\/example\.com\/docs\]/);
+    assert.match(formatted, /Paragraph Paragraph Paragraph/);
+    assert.equal(formatted.includes('[truncated]'), false);
+  });
+});
+
+test('run formatter summarizes git status porcelain output into compact file groups', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { formatters } = await makeTools(workspaceRoot);
+    const formatted = formatters.run({
+      code: 0,
+      command: 'git status --short',
+      stdout: [' M src/core/tools.js', 'A  src/core/tool-output.js', '?? tests/new.test.js'].join('\n'),
+      stderr: ''
+    });
+
+    assert.match(formatted, /\[git status: 3 file\(s\)\]/);
+    assert.match(formatted, /modified: src\/core\/tools\.js/);
+    assert.match(formatted, /added: src\/core\/tool-output\.js/);
+    assert.match(formatted, /untracked: tests\/new\.test\.js/);
+    assert.equal(formatted.includes('stdout:'), false);
+  });
+});
+
+test('run formatter prioritizes failing test summaries over noisy raw output', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { formatters } = await makeTools(workspaceRoot);
+    const formatted = formatters.run({
+      code: 1,
+      command: 'npm test',
+      stdout: [
+        'PASS tests/config-store.test.js',
+        'FAIL tests/tools.test.js',
+        '  AssertionError: expected true to equal false',
+        '      at tests/tools.test.js:928:12',
+        '',
+        'Test Suites: 1 failed, 5 passed, 6 total',
+        'Tests:       1 failed, 75 passed, 76 total'
+      ].join('\n'),
+      stderr: '\u001b[31mELIFECYCLE\u001b[0m Test failed. See above for more details.'
+    });
+
+    assert.match(formatted, /\[test failure: exit 1\]/);
+    assert.match(formatted, /FAIL tests\/tools\.test\.js/);
+    assert.match(formatted, /AssertionError: expected true to equal false/);
+    assert.match(formatted, /at tests\/tools\.test\.js:928:12/);
+    assert.match(formatted, /Test Suites: 1 failed, 5 passed, 6 total/);
+    assert.equal(formatted.includes('stdout:'), false);
+  });
+});
+
+test('run formatter distills install output into package and audit summary', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { formatters } = await makeTools(workspaceRoot);
+    const formatted = formatters.run({
+      code: 0,
+      command: 'npm install',
+      stdout: [
+        'added 12 packages, removed 2 packages, and audited 72 packages in 3s',
+        '',
+        '42 packages are looking for funding',
+        '  run `npm fund` for details',
+        '',
+        '2 moderate severity vulnerabilities'
+      ].join('\n'),
+      stderr: ''
+    });
+
+    assert.match(formatted, /\[install summary: exit 0\]/);
+    assert.match(formatted, /added 12 packages, removed 2 packages, and audited 72 packages in 3s/);
+    assert.match(formatted, /2 moderate severity vulnerabilities/);
+    assert.equal(formatted.includes('stdout:'), false);
+  });
+});
+
+test('run formatter surfaces build errors and suppresses noisy successful chunks', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { formatters } = await makeTools(workspaceRoot);
+    const formatted = formatters.run({
+      code: 1,
+      command: 'npm run build',
+      stdout: [
+        'transforming modules...',
+        '✓ 132 modules transformed.',
+        'src/app.ts:12:3: error: Unexpected token',
+        'Build failed in 1.23s'
+      ].join('\n'),
+      stderr: ''
+    });
+
+    assert.match(formatted, /\[build failure: exit 1\]/);
+    assert.match(formatted, /src\/app\.ts:12:3: error: Unexpected token/);
+    assert.match(formatted, /Build failed in 1\.23s/);
+    assert.equal(formatted.includes('stdout:'), false);
   });
 });
 

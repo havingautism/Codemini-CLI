@@ -5,6 +5,7 @@ import { BoundedCache } from './bounded-cache.js';
 import { trimInline as _trimInline, normalizePath } from './string-utils.js';
 import { captureToInbox, listInbox } from './memory-store.js';
 import { requiresApprovalEvaluation } from './command-risk.js';
+import { getToolOutputSanitizeOptions, sanitizeTextForModel } from './tool-output.js';
 
 /**
  * 安全解析 JSON 字符串。
@@ -163,7 +164,7 @@ function emptyToolResultMarker(toolName) {
 }
 
 function clipToolResult(result, maxChars = 12000) {
-  const raw = typeof result === 'string' ? result : JSON.stringify(result);
+  const raw = sanitizeTextForModel(typeof result === 'string' ? result : JSON.stringify(result));
   if (!maxChars || raw.length <= maxChars) return raw;
   return `${raw.slice(0, maxChars)}\n... [tool result truncated ${raw.length - maxChars} chars]`;
 }
@@ -171,8 +172,9 @@ function clipToolResult(result, maxChars = 12000) {
 function compactToolResult(result, toolName, args, maxChars = 12000) {
   if (result === null || result === undefined) return 'no output';
   if (typeof result === 'string') {
-    if (result.length <= maxChars) return result;
-    return `${result.slice(0, maxChars)}\n... [tool result truncated ${result.length - maxChars} chars, original: ${result.length}]`;
+    const sanitized = sanitizeTextForModel(result);
+    if (sanitized.length <= maxChars) return sanitized;
+    return `${sanitized.slice(0, maxChars)}\n... [tool result truncated ${sanitized.length - maxChars} chars, original: ${sanitized.length}]`;
   }
   if (typeof result !== 'object') return String(result);
 
@@ -775,14 +777,17 @@ function formatToolDisplayName(name, args) {
 // ─── Format a single tool result using per-tool formatter or fallback ──
 
 function formatToolResult(toolResult, toolName, args, toolFormatters, toolResultMaxChars) {
+  const sanitizeOptions = getToolOutputSanitizeOptions(toolName);
   if (toolFormatters && typeof toolFormatters[toolName] === 'function') {
     const formatted = toolFormatters[toolName](toolResult, args);
     if (typeof formatted === 'string') {
-      return formatted.trim() ? formatted : emptyToolResultMarker(toolName);
+      const sanitized = sanitizeTextForModel(formatted, sanitizeOptions);
+      return sanitized.trim() ? sanitized : emptyToolResultMarker(toolName);
     }
   }
   const fallback = compactToolResult(toolResult, toolName, args, toolResultMaxChars);
-  return String(fallback || '').trim() ? fallback : emptyToolResultMarker(toolName);
+  const sanitizedFallback = sanitizeTextForModel(fallback, sanitizeOptions);
+  return String(sanitizedFallback || '').trim() ? sanitizedFallback : emptyToolResultMarker(toolName);
 }
 
 // ─── Main agent loop ────────────────────────────────────────────────

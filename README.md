@@ -74,6 +74,11 @@ CodeMini CLI can optionally use `fff-mcp` as a faster backend for `grep`, `glob`
 | `codemini [prompt]` | Start an interactive coding session with an optional initial prompt |
 | `codemini chat [prompt]` | Chat mode — single-turn or multi-turn conversation |
 | `codemini run <task>` | Run a task non-interactively (e.g. `codemini run "fix the login bug"`) |
+| `codemini run --harness <role> <task>` | Run a task with a specific sub-agent role (e.g. `coder`, `planner`, `reviewer`) |
+| `codemini run --pipeline <task>` | Run a task through the full planning → coding → review pipeline |
+| `codemini run <task> --max-steps N` | Limit the maximum number of agent steps for a run task |
+| `codemini run <task> --model <name>` | Override the default model for a single run |
+| `codemini [prompt] --plain` | Disable TUI and use plain terminal output |
 | `codemini config set\|get\|list <key> [value]` | Manage configuration (gateway, model, shell, UI, soul, etc.) |
 | `codemini doctor` | Run environment diagnostics and validate configuration |
 | `codemini skill list\|install\|enable\|disable\|inspect\|reindex` | Manage skills — list, install, toggle, or inspect bundled/third-party skills |
@@ -86,6 +91,23 @@ Built-in souls: `default`, `professional`, `ceo`, `playful`, `anime`, `caveman`,
 
 ```bash
 codemini config set soul.preset playful
+```
+
+### Built-in Skills
+
+Skills are reusable workflow patterns that guide how the agent approaches different types of tasks. They are loaded automatically when applicable.
+
+| Skill | Trigger | Description |
+|-------|---------|-------------|
+| **superpowers-lite** | Default for all coding work | Lightweight operating style: prefer structured tools, keep context tight, use sub-agents, verify before claiming success |
+| **brainstorm** | Multiple reasonable approaches exist | Explores options and tradeoffs before coding; asks one question at a time to resolve uncertainty |
+| **writing-plans** | Non-trivial implementation task | Creates a step-by-step plan with exact file paths, code, and verification steps before touching code |
+
+Skills are installed and managed via `codemini skill`:
+
+```bash
+codemini skill list        # List all available skills
+codemini skill inspect <name>  # Inspect a skill's details
 ```
 
 ### How The Tool Model Works
@@ -285,6 +307,11 @@ CodeMini CLI 可以可选地使用 `fff-mcp` 作为 `grep`、`glob` 和部分 `l
 | `codemini [prompt]` | 启动交互式编码会话，可附带初始提示 |
 | `codemini chat [prompt]` | 对话模式——单轮或多轮 |
 | `codemini run <task>` | 非交互式执行任务（如 `codemini run "修复登录 bug"`） |
+| `codemini run --harness <role> <task>` | 以指定 sub-agent 角色执行任务（如 `coder`、`planner`、`reviewer`） |
+| `codemini run --pipeline <task>` | 通过完整计划→编码→审查流水线执行任务 |
+| `codemini run <task> --max-steps N` | 限制单次执行的最大 agent 步数 |
+| `codemini run <task> --model <name>` | 单次执行时覆盖默认模型 |
+| `codemini [prompt] --plain` | 禁用 TUI，使用纯文本终端输出 |
 | `codemini config set\|get\|list <key> [value]` | 管理配置（网关、模型、shell、UI、soul 等） |
 | `codemini doctor` | 运行环境诊断并验证配置 |
 | `codemini skill list\|install\|enable\|disable\|inspect\|reindex` | 管理 skill——列表、安装、启用/禁用、检查 |
@@ -297,6 +324,23 @@ CodeMini CLI 支持可切换的 "soul" 人格，仅改变语气和表达风格�
 
 ```bash
 codemini config set soul.preset playful
+```
+
+### 内置 Skills
+
+Skill 是可复用的工作流模式，指导 agent 如何处理不同类型的任务。适用时会自动加载。
+
+| Skill | 触发条件 | 说明 |
+|-------|----------|------|
+| **superpowers-lite** | 所有编码工作的默认 skill | 轻量操作风格：优先结构化工具、保持上下文精简、使用 sub-agent、验证后再报告完成 |
+| **brainstorm** | 存在多种合理方案时 | 在编码前探索选项和权衡；每次只问一个问题来消除不确定性 |
+| **writing-plans** | 非平凡的实现任务 | 在动手之前创建包含精确文件路径、代码和验证步骤的分步计划 |
+
+通过 `codemini skill` 管理技能：
+
+```bash
+codemini skill list           # 列出所有可用 skill
+codemini skill inspect <name> # 查看某个 skill 的详细信息
 ```
 
 ### 工具模型怎么设计

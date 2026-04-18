@@ -23,6 +23,12 @@ import { runDreamConsolidation } from './dream-consolidate.js';
 import { normalizePlanState } from './plan-state.js';
 import { normalizeTodos } from './todo-state.js';
 import { createFffAdapter } from './fff-adapter.js';
+import {
+  getToolOutputSanitizeOptions,
+  sanitizePreviewLines,
+  sanitizeTextForModel,
+  summarizeRunOutput
+} from './tool-output.js';
 const BACKGROUND_TASK_RECENT_OUTPUT_LIMIT = 80;
 const BACKGROUND_TASK_POLL_MS = 150;
 const MAX_AST_ENCLOSING_BYTES = 300_000;
@@ -1012,10 +1018,9 @@ function shellCommandForBackgroundTask(command, shellSpec) {
 }
 
 function appendRecentOutput(task, chunk) {
-  const lines = String(chunk || '')
-    .split(/\r?\n/)
-    .map((line) => trimLinePreview(line, 220))
-    .filter(Boolean);
+  const lines = sanitizePreviewLines(chunk, { maxLineLength: 220 }).map((line) =>
+    trimLinePreview(line, 220)
+  );
   if (lines.length === 0) return;
   for (const line of lines) {
     backgroundTaskLogCursorCounter += 1;
@@ -1469,17 +1474,28 @@ async function validateEdit(root, args) {
 function countChangedLines(beforeContent, afterContent) {
   const before = splitLines(beforeContent);
   const after = splitLines(afterContent);
-  let added = 0;
-  let removed = 0;
-  const maxLen = Math.max(before.length, after.length);
-  for (let i = 0; i < maxLen; i += 1) {
-    const b = before[i];
-    const a = after[i];
-    if (b === undefined && a !== undefined) added += 1;
-    else if (a === undefined && b !== undefined) removed += 1;
-    else if (b !== a) { added += 1; removed += 1; }
+  const m = before.length;
+  const n = after.length;
+  // LCS via rolling DP — O(m*n) time, O(min(m,n)) space
+  const short = m <= n ? before : after;
+  const long = m <= n ? after : before;
+  const shortLen = short.length;
+  const longLen = long.length;
+  let prev = new Array(longLen + 1).fill(0);
+  let curr = new Array(longLen + 1).fill(0);
+  for (let i = 1; i <= shortLen; i++) {
+    for (let j = 1; j <= longLen; j++) {
+      if (short[i - 1] === long[j - 1]) {
+        curr[j] = prev[j - 1] + 1;
+      } else {
+        curr[j] = Math.max(prev[j], curr[j - 1]);
+      }
+    }
+    [prev, curr] = [curr, prev];
+    curr.fill(0);
   }
-  return { added, removed };
+  const lcsLen = prev[longLen];
+  return { added: n - lcsLen, removed: m - lcsLen };
 }
 
 function editResult(pathText, action, beforeContent, afterContent, changedLine = 1) {
@@ -2595,7 +2611,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     }
   };
 
-  const formatters = {
+  const rawFormatters = {
     read(result) {
       if (typeof result === 'string') return result;
       if (!result || typeof result !== 'object') return String(result);
@@ -2794,9 +2810,11 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         }
         return parts.join('\n');
       }
+      const runSummary = summarizeRunOutput(result);
+      if (runSummary) return runSummary;
       const command = String(result.command || '').slice(0, 200);
-      const stdout = String(result.stdout || '').slice(0, 500);
-      const stderr = String(result.stderr || '').slice(0, 500);
+      const stdout = String(result.stdout || '');
+      const stderr = String(result.stderr || '');
       const code = result.code ?? 0;
       const parts = [`[exit: ${code}]`];
       if (command) parts.push(`command: ${command}`);
@@ -2857,8 +2875,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       const kind = result.kind || '';
       const content = result.content || result.source || '';
       const header = `${kind} ${name}`;
-      if (typeof content !== 'string' || content.length <= 2000) return `${header}\n${content}`;
-      return `${header}\n${content.slice(0, 1200)}\n... [omitted ${content.length - 1600} chars] ...\n${content.slice(-400)}`;
+      return `${header}\n${content}`;
     },
 
     web_fetch(result) {
@@ -2871,8 +2888,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         lines.push(`links: ${result.links.slice(0, 5).map((item) => item.href).join(', ')}`);
       }
       if (result.text) {
-        const t = result.text.length <= 1200 ? result.text : result.text.slice(0, 1200) + '\n... [truncated]';
-        lines.push(t);
+        lines.push(result.text);
       }
       return lines.join('\n');
     },
@@ -2913,6 +2929,13 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       return `${result.task_id || '?'} stopped${result.exit_code != null ? ` (exit ${result.exit_code})` : ''}`;
     }
   };
+
+  const formatters = Object.fromEntries(
+    Object.entries(rawFormatters).map(([name, formatter]) => [
+      name,
+      (result, args) => sanitizeTextForModel(formatter(result, args), getToolOutputSanitizeOptions(name))
+    ])
+  );
 
   async function dispose() {
     if (activeFffAdapter?.dispose) {

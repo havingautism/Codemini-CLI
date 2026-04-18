@@ -1128,6 +1128,11 @@ export function formatDeleteApprovalLines(copy, request) {
   ];
 }
 
+export function formatPlanApprovalLines(copy, request) {
+  if (!request) return [];
+  return [String(copy?.planApproval?.title || '').trim()].filter(Boolean);
+}
+
 function getActivityDisplayParts(activity) {
   if (isCodeGenerationActivityName(activity?.name)) {
     return {
@@ -3056,10 +3061,8 @@ function FileChangeSummary({ segments, copy }) {
 
 function PlanApprovalPanel({ request, inputValue, errorText, copy, cursorVisible }) {
   if (!request) return null;
-  const goal = String(request.goal || '').trim();
-  const summary = String(request.summary || '').trim();
-  const filePath = String(request.filePath || '').trim();
   const placeholder = String(copy.planApproval.answerPlaceholder || '').trim();
+  const lines = formatPlanApprovalLines(copy, request);
   return h(
     Box,
     {
@@ -3070,11 +3073,9 @@ function PlanApprovalPanel({ request, inputValue, errorText, copy, cursorVisible
       paddingX: 1,
       paddingY: 0
     },
-    h(Text, { color: 'yellowBright' }, copy.planApproval.title),
-    goal ? h(Text, { color: 'white' }, `${copy.planApproval.goalLabel}: ${goal}`) : null,
-    summary ? h(Text, { color: 'white' }, `${copy.planApproval.summaryLabel}: ${summary}`) : null,
-    filePath ? h(Text, { color: 'gray' }, `${copy.planApproval.fileLabel}: ${filePath}`) : null,
-    h(Text, { color: 'gray' }, copy.planApproval.prompt),
+    ...lines.map((line, index) =>
+      h(Text, { key: `plan-approval-line-${index}`, color: 'yellowBright' }, line)
+    ),
     h(
       Box,
       { marginTop: 1 },

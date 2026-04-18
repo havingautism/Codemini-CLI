@@ -48,10 +48,12 @@
   "dependencies": {
     "@cursorless/tree-sitter-wasms": "^0.8.1",
     "cheerio": "^1.1.2",
+    "cli-truncate": "^6.0.0",
     "duck-duck-scrape": "^2.2.7",
     "ink": "^7.0.0",
     "playwright": "^1.54.2",
     "react": "^19.2.5",
+    "strip-ansi": "^7.2.0",
     "web-tree-sitter": "^0.26.8"
   },
   "license": "MIT"
