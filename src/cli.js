@@ -1,4 +1,5 @@
 import { handleChat } from './commands/chat.js';
+import { handleChatPi } from './commands/chat-pi.js';
 import { handleRun } from './commands/run.js';
 import { handleConfig } from './commands/config.js';
 import { handleDoctor } from './commands/doctor.js';
@@ -7,11 +8,21 @@ import pkg from '../package.json' with { type: 'json' };
 
 const VERSION = pkg.version;
 
+export const cliHandlers = {
+  chat: handleChat,
+  'chat-pi': handleChatPi,
+  run: handleRun,
+  config: handleConfig,
+  doctor: handleDoctor,
+  skill: handleSkill
+};
+
 function printHelp() {
   console.log(`codemini ${VERSION}
 Usage:
   codemini [prompt] [--plain]
   codemini chat [prompt] [--plain]
+  codemini chat-pi [prompt]
   codemini run <task> [--max-steps N] [--model <name>]
   codemini run --harness <role> <task> [--max-steps N] [--model <name>]
   codemini run --pipeline <task> [--model <name>]
@@ -24,7 +35,7 @@ Usage:
 
 export async function runCli(args) {
   const [command, ...rest] = args;
-  const knownCommands = new Set(['chat', 'run', 'config', 'doctor', 'skill']);
+  const knownCommands = new Set(Object.keys(cliHandlers));
 
   if (!command || command === '--help' || command === '-h') {
     if (!command) {
@@ -45,21 +56,5 @@ export async function runCli(args) {
     return;
   }
 
-  switch (command) {
-    case 'chat':
-      await handleChat(rest);
-      return;
-    case 'run':
-      await handleRun(rest);
-      return;
-    case 'config':
-      await handleConfig(rest);
-      return;
-    case 'doctor':
-      await handleDoctor();
-      return;
-    case 'skill':
-      await handleSkill(rest);
-      return;
-  }
+  await cliHandlers[command](rest);
 }

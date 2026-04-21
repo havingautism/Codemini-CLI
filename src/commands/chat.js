@@ -6,7 +6,7 @@ import { buildDefaultSystemPrompt } from '../core/default-system-prompt.js';
 import { resolveSession } from '../core/session-store.js';
 import pkg from '../../package.json' with { type: 'json' };
 
-function parseChatArgs(args) {
+export function parseChatArgs(args) {
   const parsed = {
     prompt: '',
     sessionId: undefined,

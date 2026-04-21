@@ -47,6 +47,7 @@
   },
   "dependencies": {
     "@cursorless/tree-sitter-wasms": "^0.8.1",
+    "@mariozechner/pi-tui": "^0.67.68",
     "cheerio": "^1.1.2",
     "cli-truncate": "^6.0.0",
     "duck-duck-scrape": "^2.2.7",
