@@ -1136,33 +1136,34 @@ export function formatPlanApprovalLines(copy, request) {
 function getActivityDisplayParts(activity) {
   if (isCodeGenerationActivityName(activity?.name)) {
     return {
-      primary: 'Code',
+      primary: '🧠 Code',
       secondary: ' (generation)'
     };
   }
   const parsed = parseToolDisplayName(activity?.name);
-  if (parsed.base === 'run') {
+  const base = String(parsed.base || '').toLowerCase();
+  if (base === 'run') {
     const intent = classifyCommandIntent(parsed.target);
     return {
-      primary: getIntentLabel(intent.kind),
+      primary: `${getIntentEmoji(intent.kind)} ${getIntentLabel(intent.kind)}`,
       secondary: parsed.target ? `(${parsed.target})` : ''
     };
   }
   if ((activity?.type || 'tool') === 'skill') {
     return {
-      primary: `Skill`,
+      primary: '🧩 Skill',
       secondary: `(${activity?.name || 'unknown'})`
     };
   }
   if ((activity?.type || 'tool') === 'system_tool') {
-    if (parsed.base === 'project_index') {
-      return { primary: 'Project Index', secondary: '' };
+    if (base === 'project_index') {
+      return { primary: '🗂️ Project Index', secondary: '' };
     }
-    if (parsed.base === 'file_index') {
-      return { primary: 'File Index', secondary: parsed.target ? `(${parsed.target})` : '' };
+    if (base === 'file_index') {
+      return { primary: '🗂️ File Index', secondary: parsed.target ? `(${parsed.target})` : '' };
     }
     return {
-      primary: 'Index',
+      primary: '🗂️ Index',
       secondary: parsed.target ? `(${parsed.target})` : parsed.base ? `(${parsed.base})` : ''
     };
   }
@@ -1184,10 +1185,42 @@ function getActivityDisplayParts(activity) {
     read_plan: 'Read Plan',
     update_plan: 'Update Plan'
   };
+  const emojis = {
+    read: '📖',
+    edit: '✏️',
+    write: '📝',
+    delete: '🗑️',
+    patch: '🩹',
+    run: '⚙️',
+    grep: '🔍',
+    glob: '🧭',
+    list: '📂',
+    list_background_tasks: '🗃️',
+    get_background_task: '📌',
+    stop_background_task: '⏹️',
+    list_files: '🧭',
+    update_todos: '✅',
+    read_plan: '📋',
+    update_plan: '🗓️'
+  };
   return {
-    primary: labels[parsed.base] || parsed.base || 'Tool',
+    primary: `${emojis[base] || '🔧'} ${labels[base] || parsed.base || 'Tool'}`,
     secondary: parsed.target ? `(${parsed.target})` : ''
   };
+}
+
+function getIntentEmoji(kind) {
+  const map = {
+    test: '🧪',
+    install: '📦',
+    build: '🏗️',
+    frontend: '🖥️',
+    backend: '🛰️',
+    database: '🗄️',
+    docker: '🐳',
+    command: '⚙️'
+  };
+  return map[kind] || '⚙️';
 }
 
 export function isIndexSystemToolName(name) {
@@ -1279,7 +1312,6 @@ function stageDescriptor(inputStage, busy, runtimeStatus, copy) {
 
 function RuntimeStrip({ busy, runtimeStatus, loaderTick, copy }) {
   const status = normalizeRuntimeStatus(runtimeStatus, copy);
-  const spinnerChar = SPINNER_FRAMES[loaderTick % SPINNER_FRAMES.length];
   return h(
     Box,
     {
@@ -1291,7 +1323,7 @@ function RuntimeStrip({ busy, runtimeStatus, loaderTick, copy }) {
     },
     h(Text, { color: busy ? 'greenBright' : 'gray' }, busy ? copy.generic.live : copy.generic.idle),
     h(Text, { color: 'gray' }, '  '),
-    h(Text, { color: busy ? 'cyanBright' : 'gray' }, spinnerChar),
+    h(Text, { color: busy ? 'cyanBright' : 'gray' }, busy ? '●' : '○'),
     h(Text, { color: 'gray' }, '  '),
     h(Text, { color: busy ? 'white' : 'gray' }, status.title || copy.generic.waitingForInput)
   );
@@ -2416,15 +2448,20 @@ export function renderMessageRow(msg, row, idx, loaderTick) {
           ? 'redBright'
           : 'cyanBright';
     const durationText = formatActivityDurationText(row);
+    const trailingLoader =
+      row.status === 'running'
+        ? h(Text, { color: 'gray' }, ` ${SPINNER_FRAMES[loaderTick % SPINNER_FRAMES.length]}`)
+        : null;
     return h(
       Box,
       { key: `row-tool-${msg.id}-${idx}` },
       h(Text, { color: 'gray' }, ' '),
-      h(Text, { color: dotColor }, row.status === 'running' ? SPINNER_FRAMES[loaderTick % SPINNER_FRAMES.length] : '●'),
+      h(Text, { color: dotColor }, '●'),
       h(Text, { color: 'gray' }, ' '),
       h(Text, { color: textColor }, display.primary),
       h(Text, { color: 'gray' }, display.secondary),
-      durationText ? h(Text, { color: row.statusColor }, ` ${durationText}`) : null
+      durationText ? h(Text, { color: row.statusColor }, ` ${durationText}`) : null,
+      trailingLoader
     );
   }
   if (row.kind === 'activity-summary') {

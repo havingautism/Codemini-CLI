@@ -32,6 +32,13 @@ import {
   formatActivityDurationText
 } from '../src/tui/chat-app.js';
 
+function flattenText(node) {
+  if (node == null || typeof node === 'boolean') return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(flattenText).join('');
+  return flattenText(node.props?.children);
+}
+
 test('getSuggestionPageState paginates suggestions in fixed-size pages', () => {
   const suggestions = Array.from({ length: 18 }, (_, idx) => `/cmd ${idx + 1}`);
   const state = getSuggestionPageState(suggestions, 9, 8);
@@ -180,6 +187,66 @@ test('todo-item rows render without extra bottom margin between todos', () => {
 
   assert.equal(element.props.marginBottom, undefined);
   assert.equal(element.props.marginLeft, 2);
+});
+
+test('tool activity rows render semantic emoji prefixes', () => {
+  const readRow = renderMessageRow(
+    { id: 'coder-1', label: 'coder' },
+    { kind: 'activity', activityType: 'tool', name: 'Read(src/App.js)', status: 'done' },
+    0,
+    0
+  );
+  const runRow = renderMessageRow(
+    { id: 'coder-1', label: 'coder' },
+    { kind: 'activity', activityType: 'tool', name: 'Run(npm test)', status: 'done' },
+    0,
+    0
+  );
+
+  assert.match(flattenText(readRow), /📖\s*Read/);
+  assert.match(flattenText(runRow), /🧪\s*Test/);
+});
+
+test('running tool activity rows animate only on their trailing loader slot', () => {
+  const first = renderMessageRow(
+    { id: 'coder-1', label: 'coder' },
+    { kind: 'activity', activityType: 'tool', name: 'Read(src/App.js)', status: 'running' },
+    0,
+    0
+  );
+  const second = renderMessageRow(
+    { id: 'coder-1', label: 'coder' },
+    { kind: 'activity', activityType: 'tool', name: 'Read(src/App.js)', status: 'running' },
+    0,
+    7
+  );
+
+  const firstText = flattenText(first);
+  const secondText = flattenText(second);
+  assert.match(firstText, /📖\s*Read\(src\/App\.js\)/);
+  assert.match(secondText, /📖\s*Read\(src\/App\.js\)/);
+  assert.notEqual(firstText, secondText);
+});
+
+test('status rows animate at the end of the current reply footer', () => {
+  const first = renderMessageRow(
+    { id: 'coder-1', label: 'coder', phase: 'generating' },
+    { kind: 'status', text: '正在生成回复' },
+    0,
+    0
+  );
+  const second = renderMessageRow(
+    { id: 'coder-1', label: 'coder', phase: 'generating' },
+    { kind: 'status', text: '正在生成回复' },
+    0,
+    3
+  );
+
+  const firstText = flattenText(first);
+  const secondText = flattenText(second);
+  assert.match(firstText, /正在生成回复/);
+  assert.match(secondText, /正在生成回复/);
+  assert.notEqual(firstText, secondText);
 });
 
 test('normalizeActivitySpacingRows inserts a dedicated gap after update_todos items', () => {
