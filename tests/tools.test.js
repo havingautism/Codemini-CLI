@@ -45,7 +45,19 @@ async function makeToolsWithConfig(workspaceRoot, mutate) {
 
 async function withHttpServer(handler, run) {
   const server = http.createServer(handler);
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+  } catch (error) {
+    if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+      server.close();
+      test.skip(`local HTTP server unavailable in this environment: ${error.code}`);
+      return;
+    }
+    throw error;
+  }
   const address = server.address();
   const url = `http://127.0.0.1:${address.port}`;
   try {
@@ -1172,9 +1184,11 @@ test('builtin tool definitions expose only current primary and structured tools'
     assert.ok('list_memory' in deferredDefinitions);
     assert.ok('list_background_tasks' in deferredDefinitions);
     assert.match(readDefinition.function.description, /read\(path\) for normal file or line-window reads/i);
-    assert.match(readDefinition.function.description, /read\(ast_target=.*\) for a node-scoped AST read/i);
-    assert.match(readDefinition.function.description, /read\(path, query=.*capture_name=.*\)/i);
-    assert.match(editDefinition.function.description, /prefer read\(ast_target=.*\) or read\(path, query=.*\) before symbol- or block-level edits/i);
+    assert.match(readDefinition.function.description, /start_line and end_line/i);
+    assert.match(editDefinition.function.description, /\{path, old_text, new_text\}/i);
+    assert.ok(!('file_path' in readDefinition.function.parameters.properties));
+    assert.ok(!('old_string' in editDefinition.function.parameters.properties));
+    assert.ok(!('file' in editDefinition.function.parameters.properties));
     assert.match(deferredDefinitions.ast_query.function.description, /advanced AST workflows/i);
     assert.match(deferredDefinitions.ast_query.function.description, /prefer read\(path, query=.*\) or read\(ast_target=.*\)/i);
     assert.match(deferredDefinitions.read_ast_node.function.description, /common one-shot AST reads, prefer read\(ast_target=.*\) or read\(path, query=.*\)/i);

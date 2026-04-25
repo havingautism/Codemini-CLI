@@ -500,7 +500,7 @@ test('insertRowsAfterLastCodeRow treats code-placeholder as the last code anchor
 });
 
 test('isIndexSystemToolName matches index system tool events', () => {
-  assert.equal(isIndexSystemToolName('project_index(.codemini-project/project-map.json,.codemini-project/file-index.json)'), true);
+  assert.equal(isIndexSystemToolName('project_index(.codemini/project-map.json,.codemini/file-index.json)'), true);
   assert.equal(isIndexSystemToolName('file_index(src/app.ts)'), true);
   assert.equal(isIndexSystemToolName('read(src/app.ts)'), false);
 });

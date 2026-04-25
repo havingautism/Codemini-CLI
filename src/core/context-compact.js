@@ -37,20 +37,30 @@ function modeToKeepRecent(mode) {
 }
 
 function buildLocalSummary(messages) {
-  const lines = [];
+  const goal = [];
+  const constraints = [];
+  const changedFiles = new Set();
+  const verification = [];
+  const openThreads = [];
   const limit = 16;
   for (const msg of messages.slice(-limit)) {
     if (msg.role === 'tool') {
-      // Try to parse tool result as JSON for semantic summary
       const text = textFromContent(msg.content);
       let parsed;
       try { parsed = JSON.parse(text); } catch { parsed = null; }
       if (parsed && typeof parsed === 'object') {
         const summary = summarizeToolResult(parsed);
-        lines.push(`- tool_result: ${summary}`);
+        if (parsed.path) changedFiles.add(String(parsed.path));
+        if (parsed.command || parsed.code != null || parsed.stderr || parsed.stdout) {
+          verification.push(summary);
+        } else {
+          openThreads.push(`tool_result: ${summary}`);
+        }
       } else {
         const clipped = text.length > 120 ? `${text.slice(0, 117)}...` : text;
-        lines.push(`- tool_result: ${clipped}`);
+        const match = clipped.match(/([A-Za-z0-9_./-]+\.[A-Za-z0-9]+):\d+/);
+        if (match) changedFiles.add(match[1]);
+        openThreads.push(`tool_result: ${clipped}`);
       }
       continue;
     }
@@ -59,21 +69,35 @@ function buildLocalSummary(messages) {
       const toolCallCount = Array.isArray(msg.tool_calls) ? msg.tool_calls.length : 0;
       const toolInfo = toolCallCount > 0 ? ` [called ${toolCallCount} tool(s)]` : '';
       const clipped = text.length > 300 ? `${text.slice(0, 297)}...` : text;
-      lines.push(`- assistant: ${clipped}${toolInfo}`);
+      if (clipped) openThreads.push(`assistant: ${clipped}${toolInfo}`);
       continue;
     }
     if (msg.role === 'user') {
       const text = textFromContent(msg.content).replace(/\s+/g, ' ').trim();
       const clipped = text.length > 200 ? `${text.slice(0, 197)}...` : text;
-      lines.push(`- user: ${clipped}`);
+      if (goal.length === 0) goal.push(clipped);
+      else constraints.push(clipped);
       continue;
     }
     const text = textFromContent(msg.content).replace(/\s+/g, ' ').trim();
     if (!text) continue;
     const clipped = text.length > 160 ? `${text.slice(0, 157)}...` : text;
-    lines.push(`- ${msg.role}: ${clipped}`);
+    openThreads.push(`${msg.role}: ${clipped}`);
   }
-  return `Context Summary\n${lines.join('\n')}`.trim();
+  const lines = [
+    'Context Summary',
+    'Goal:',
+    goal.length > 0 ? `- ${goal[0]}` : '- Unknown from compacted context',
+    'Key Constraints:',
+    ...(constraints.length > 0 ? constraints.slice(-4).map((item) => `- ${item}`) : ['- None recorded']),
+    'Changed Files:',
+    ...(changedFiles.size > 0 ? [...changedFiles].slice(0, 8).map((item) => `- ${item}`) : ['- None recorded']),
+    'Verification:',
+    ...(verification.length > 0 ? verification.slice(-4).map((item) => `- ${item}`) : ['- None recorded']),
+    'Open Threads:',
+    ...(openThreads.length > 0 ? openThreads.slice(-8).map((item) => `- ${item}`) : ['- None recorded'])
+  ];
+  return lines.join('\n').trim();
 }
 
 export function compactMessagesLocally(messages, { mode = 'default' } = {}) {

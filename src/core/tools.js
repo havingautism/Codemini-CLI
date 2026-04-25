@@ -29,6 +29,14 @@ import {
   sanitizeTextForModel,
   summarizeRunOutput
 } from './tool-output.js';
+import {
+  normalizePathArgs,
+  normalizePatternArgs,
+  normalizeReadArgs,
+  normalizeWebFetchArgs,
+  normalizeWebSearchArgs,
+  normalizeWriteArgs
+} from './tool-args.js';
 const BACKGROUND_TASK_RECENT_OUTPUT_LIMIT = 80;
 const BACKGROUND_TASK_POLL_MS = 150;
 const MAX_AST_ENCLOSING_BYTES = 300_000;
@@ -98,133 +106,6 @@ function trimLinePreview(line, maxLen = 180) {
 
 function splitLines(text) {
   return String(text || '').split('\n');
-}
-
-function parseInlineReadRange(value) {
-  const text = String(value || '').trim();
-  if (!text) return null;
-  const match = text.match(/^(.*?):(\d+)(?:-(\d+))?$/);
-  if (!match) return null;
-  const [, maybePath, startRaw, endRaw] = match;
-  if (!maybePath || /^(?:[A-Za-z])$/.test(maybePath)) return null;
-  const startLine = Number(startRaw);
-  const endLine = Number(endRaw || startRaw);
-  if (!Number.isFinite(startLine) || startLine <= 0) return null;
-  if (!Number.isFinite(endLine) || endLine < startLine) return null;
-  return {
-    path: maybePath,
-    start_line: startLine,
-    end_line: endLine
-  };
-}
-
-function normalizeReadArgs(rawArgs) {
-  const source =
-    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
-      ? { ...rawArgs }
-      : { path: typeof rawArgs === 'string' ? rawArgs : '' };
-
-  const normalized = { ...source };
-  const aliasPath = String(source.path || source.file_path || source.file || source.target || '').trim();
-  if (aliasPath) normalized.path = aliasPath;
-
-  if (!Number.isFinite(Number(normalized.start_line)) && Number.isFinite(Number(source.offset))) {
-    normalized.start_line = Number(source.offset);
-  }
-
-  if (!Number.isFinite(Number(normalized.end_line)) && Number.isFinite(Number(source.limit))) {
-    const startLine = Number(normalized.start_line);
-    const limit = Number(source.limit);
-    if (startLine > 0 && limit > 0) {
-      normalized.end_line = startLine + limit - 1;
-    }
-  }
-
-  const inlineRange = parseInlineReadRange(normalized.path);
-  if (inlineRange) {
-    normalized.path = inlineRange.path;
-    if (!Number.isFinite(Number(normalized.start_line))) normalized.start_line = inlineRange.start_line;
-    if (!Number.isFinite(Number(normalized.end_line))) normalized.end_line = inlineRange.end_line;
-  }
-
-  return normalized;
-}
-
-function normalizePathArgs(rawArgs, aliases = []) {
-  const source =
-    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
-      ? { ...rawArgs }
-      : { path: typeof rawArgs === 'string' ? rawArgs : '' };
-  const normalized = { ...source };
-  const keys = ['path', ...aliases];
-  for (const key of keys) {
-    const value = String(source?.[key] || '').trim();
-    if (value) {
-      normalized.path = value;
-      break;
-    }
-  }
-  return normalized;
-}
-
-function normalizePatternArgs(rawArgs, aliases = [], defaultPathAliases = []) {
-  const source =
-    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
-      ? { ...rawArgs }
-      : { pattern: typeof rawArgs === 'string' ? rawArgs : '' };
-  const normalized = { ...source };
-  for (const key of ['pattern', ...aliases]) {
-    const value = String(source?.[key] || '').trim();
-    if (value) {
-      normalized.pattern = value;
-      break;
-    }
-  }
-  for (const key of ['path', ...defaultPathAliases]) {
-    const value = String(source?.[key] || '').trim();
-    if (value) {
-      normalized.path = value;
-      break;
-    }
-  }
-  return normalized;
-}
-
-function normalizeWriteArgs(rawArgs) {
-  const source =
-    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
-      ? { ...rawArgs }
-      : { path: typeof rawArgs === 'string' ? rawArgs : '' };
-  const normalized = { ...source };
-  const filePath = String(source.path || source.file_path || source.file || '').trim();
-  if (filePath) normalized.path = filePath;
-  if (normalized.content == null) {
-    if (source.text != null) normalized.content = source.text;
-    if (source.new_content != null) normalized.content = source.new_content;
-  }
-  return normalized;
-}
-
-function normalizeWebFetchArgs(rawArgs) {
-  const source =
-    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
-      ? { ...rawArgs }
-      : { url: typeof rawArgs === 'string' ? rawArgs : '' };
-  const normalized = { ...source };
-  const url = String(source.url || source.href || source.link || source.target || '').trim();
-  if (url) normalized.url = url;
-  return normalized;
-}
-
-function normalizeWebSearchArgs(rawArgs) {
-  const source =
-    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
-      ? { ...rawArgs }
-      : { query: typeof rawArgs === 'string' ? rawArgs : '' };
-  const normalized = { ...source };
-  const query = String(source.query || source.q || source.keyword || '').trim();
-  if (query) normalized.query = query;
-  return normalized;
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -1819,20 +1700,14 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'read',
         description:
-          'Inspect code or text files. Use read(path) for normal file or line-window reads, read(ast_target=...) for a node-scoped AST read, and read(path, query=..., capture_name=...) to run an inline Tree-sitter query before returning the first matched node. Prefer the AST forms when targeting a function, class, or method and you want tighter context. Demo-style aliases like file_path, offset, and limit are accepted. Use metadata_only=true only when you want file metadata without content. Do not use run with cat, head, or tail for file reads.',
+          'Inspect code or text files. Use read(path) for normal file or line-window reads. Use start_line and end_line for ranges, or path:"src/app.ts:10-40" for inline ranges. Prefer this over run with cat, head, or tail.',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string', description: 'File path to read. You can also include an inline range like src/app.ts:10-40.' },
-            file_path: { type: 'string', description: 'Alias for path' },
             start_line: { type: 'number', description: '1-based start line' },
             end_line: { type: 'number', description: 'Inclusive end line' },
-            offset: { type: 'number', description: 'Alias for start_line' },
-            limit: { type: 'number', description: 'Number of lines to read starting from offset/start_line' },
             max_chars: { type: 'number', description: 'Max chars to return' },
-            include_content: { type: 'boolean', description: 'Legacy compatibility flag. Content is returned by default.' },
-            read_token: { type: 'string', description: 'Legacy compatibility token. No longer required for content reads.' },
-            metadata_only: { type: 'boolean', description: 'Set true to return metadata without content.' },
             ast_target: { type: 'object', description: 'AST target from ast_query or a prior AST selection. When provided, read returns that node instead of a line window.' },
             query: { type: 'string', description: 'Optional Tree-sitter query to run inline before reading the first matched AST node. Use with path for one-shot function/class/method reads.' },
             capture_name: { type: 'string', description: 'Optional capture name to select when query is provided.' },
@@ -1847,14 +1722,12 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'grep',
         description:
-          'Search file contents. Use this for code search before read or edit. Aliases like query and directory are accepted. Do not use run with grep or rg for normal code search.',
+          'Search file contents. Use this for code search before read or edit. Do not use run with grep or rg for normal code search.',
         parameters: {
           type: 'object',
           properties: {
             pattern: { type: 'string', description: 'Search pattern' },
-            query: { type: 'string', description: 'Alias for pattern' },
             path: { type: 'string', description: 'Directory or file to search' },
-            directory: { type: 'string', description: 'Alias for path' },
             regex: { type: 'boolean', description: 'Treat pattern as regex' },
             case_sensitive: { type: 'boolean', description: 'Case-sensitive matching' },
             max_results: { type: 'number', description: 'Max matches to return' },
@@ -1869,12 +1742,11 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       type: 'function',
       function: {
         name: 'list',
-        description: 'List files and directories in a workspace path. Use this for quick directory discovery before deeper reads. Aliases like directory are accepted, and plain string paths are tolerated by the runtime.',
+        description: 'List files and directories in a workspace path. Use this for quick directory discovery before deeper reads.',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string', description: 'Directory path to list' },
-            directory: { type: 'string', description: 'Alias for path' },
             include_hidden: { type: 'boolean', description: 'Include dotfiles' }
           }
         }
@@ -1885,14 +1757,12 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'glob',
         description:
-          'Find files by glob pattern. Use this when you already know a filename pattern such as src/**/*.ts. Aliases like query and directory are accepted.',
+          'Find files by glob pattern. Use this when you already know a filename pattern such as src/**/*.ts.',
         parameters: {
           type: 'object',
           properties: {
             pattern: { type: 'string', description: 'Glob pattern' },
             path: { type: 'string', description: 'Directory to search' },
-            query: { type: 'string', description: 'Alias for pattern' },
-            directory: { type: 'string', description: 'Alias for path' },
             include_hidden: { type: 'boolean', description: 'Include dotfiles' },
             max_results: { type: 'number', description: 'Max results' }
           },
@@ -1923,18 +1793,14 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'edit',
         description:
-          'Edit existing files. Prefer one of these shapes: 1) {file, old_text, new_text} for exact text replacement, 2) {file, symbol, edit:{kind:"replace_block", new_content:"..."}} for block replacement, 3) {file, anchor_text, position:"before"|"after", content:"..."} for inserts. Demo-style aliases {file_path, old_string, new_string} are also accepted. Read first unless the exact target is already known, and prefer read(ast_target=...) or read(path, query=...) before symbol- or block-level edits when you want tighter context. Prefer this over write for existing code changes.',
+          'Edit existing files. Prefer one of these shapes: 1) {path, old_text, new_text} for exact text replacement, 2) {path, symbol, edit:{kind:"replace_block", new_content:"..."}} for block replacement, 3) {path, anchor_text, position:"before"|"after", content:"..."} for inserts. Read first unless the exact target is already known. Prefer this over write for existing code changes.',
         parameters: {
           type: 'object',
           properties: {
-            file: { type: 'string', description: 'File path to edit' },
-            path: { type: 'string', description: 'Alias for file' },
-            file_path: { type: 'string', description: 'Alias for file, compatible with simpler demo-style tool calls' },
+            path: { type: 'string', description: 'File path to edit' },
             new_content: { type: 'string', description: 'Replacement content' },
             old_text: { type: 'string', description: 'Exact text to replace' },
             new_text: { type: 'string', description: 'Replacement text' },
-            old_string: { type: 'string', description: 'Alias for old_text' },
-            new_string: { type: 'string', description: 'Alias for new_text' },
             anchor_text: { type: 'string', description: 'Anchor text for inserts' },
             content: { type: 'string', description: 'Content to insert or append' },
             position: { type: 'string', description: 'before or after' },
@@ -1945,7 +1811,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
             line: { type: 'number', description: 'Line to target' },
             edit: { type: 'object', description: 'Structured edit input' }
           },
-          required: ['file']
+          required: ['path']
         }
       }
     },
@@ -1954,16 +1820,12 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'write',
         description:
-          'Create a new file or overwrite a file. Always include path and content. Aliases like file, file_path, text, and new_content are accepted. Use this for new files or explicit full rewrites only. Example: {path:"src/page.html", content:"..."} . If the file path is not decided yet, do not call write yet. Prefer edit for existing code changes.',
+          'Create a new file or overwrite a file. Always include path and content. Use this for new files or explicit full rewrites only. Example: {path:"src/page.html", content:"..."} . If the file path is not decided yet, do not call write yet. Prefer edit for existing code changes.',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string', description: 'Required file path like src/app.js or pages/index.html. Never omit this.' },
-            file_path: { type: 'string', description: 'Alias for path, compatible with simpler demo-style tool calls' },
-            file: { type: 'string', description: 'Alias for path' },
             content: { type: 'string', description: 'Content to write' },
-            text: { type: 'string', description: 'Alias for content' },
-            new_content: { type: 'string', description: 'Alias for content' },
             append: { type: 'boolean', description: 'Append instead of overwrite' },
             full_file_rewrite: { type: 'boolean', description: 'Set true for whole-file rewrites' }
           },
@@ -1976,15 +1838,11 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'delete',
         description:
-          'Delete a file or directory inside the workspace. Use path, file, or file_path to point at the target. Missing targets fail. Workspace escape attempts are rejected.',
+          'Delete a file or directory inside the workspace. Missing targets fail. Workspace escape attempts are rejected.',
         parameters: {
           type: 'object',
           properties: {
-            path: { type: 'string', description: 'File or directory path to delete' },
-            file: { type: 'string', description: 'Alias for path' },
-            file_path: { type: 'string', description: 'Alias for path' },
-            directory: { type: 'string', description: 'Alias for path' },
-            dir: { type: 'string', description: 'Alias for path' }
+            path: { type: 'string', description: 'File or directory path to delete' }
           },
           required: ['path']
         }

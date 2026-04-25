@@ -144,6 +144,34 @@ test('createChatCompletion returns text and tool calls from an OpenAI-compatible
   }
 });
 
+test('createChatCompletion retries transient gateway failures', async () => {
+  let attempts = 0;
+  const restoreFetch = withMockFetch(async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      return new Response('temporary outage', { status: 502 });
+    }
+    return makeJsonResponse({
+      choices: [{ message: { content: 'recovered' } }]
+    });
+  });
+
+  try {
+    const result = await createChatCompletion({
+      baseUrl: 'https://gateway.example/v1',
+      apiKey: 'test-key',
+      model: 'demo',
+      messages: [{ role: 'user', content: 'hello' }],
+      maxRetries: 1
+    });
+
+    assert.equal(result.text, 'recovered');
+    assert.equal(attempts, 2);
+  } finally {
+    await restoreFetch();
+  }
+});
+
 test('MiniMax payload keeps leading system message and rewrites later system history entries as user notes', async () => {
   const restoreFetch = withMockFetch(async (_url, init) => {
     const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));

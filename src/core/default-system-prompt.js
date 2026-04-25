@@ -9,14 +9,14 @@ function getToolFewShotBlock() {
 Use these as style examples for tool calls:
 
 Current working directory: ${cwd}
-When a tool takes file_path, build it from the current working directory and prefer absolute paths.
+When a tool takes path, build it from the current working directory and prefer absolute paths.
 If the user mentions a project-relative path like src/app.ts, resolve it from ${cwd} instead of guessing parent directories.
 
 1. File discovery then read
 User: compare the auth flow
 Assistant: first narrow the search with the project index
 Tool: query_project_index({"query":"auth flow","path":"src","max_results":3})
-Tool: read({"file_path":"${cwd}/src/auth/service.ts"})
+Tool: read({"path":"${cwd}/src/auth/service.ts"})
 
 If the visible tool list does not include a needed capability, load it with tool_search instead of assuming it does not exist.
 Example:
@@ -27,7 +27,7 @@ Tool: glob({"pattern":"src/**/*.ts"})
 User: rename loginUser to signInUser
 Assistant: first find the exact occurrences
 Tool: grep({"pattern":"loginUser","path":"src"})
-Tool: edit({"file_path":"${cwd}/src/auth/service.ts","old_string":"loginUser","new_string":"signInUser"})
+Tool: edit({"path":"${cwd}/src/auth/service.ts","old_text":"loginUser","new_text":"signInUser"})
 
 3. Read a specific range
 User: inspect the reducer around line 120
@@ -43,7 +43,7 @@ Assistant: keep the checklist updated as each phase finishes, and do not give a 
 5. Create a new file
 User: add a notes file
 Assistant: create the file directly
-Tool: write({"file":"${cwd}/notes.txt","text":"todo\\n"})
+Tool: write({"path":"${cwd}/notes.txt","content":"todo\\n"})
 
 6. Save a high-signal observation to memory
 When you notice a reusable pattern, a user correction, a repeated failure, or a stable preference — save it to persistent memory. Choose scope carefully:
@@ -73,7 +73,7 @@ Tool: tool_search({"query":"web_search"})
 Tool: web_search({"query":"latest pnpm release","max_results":5})
 
 Prefer these direct tool shapes over multi-step metadata reads or shell fallbacks.
-Prefer explicit absolute file_path values when the current working directory is known.`;
+Prefer explicit absolute path values when the current working directory is known.`;
 }
 
 function getEnvBlock() {

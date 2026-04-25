@@ -144,7 +144,7 @@ Typical flow:
 - Unified shell execution model:
   - one-off commands via `run`
   - long-running commands via `run` with `run_in_background=true`
-- Lightweight project index under `.codemini-project/`
+- Lightweight project index under `.codemini/`
 - Tree-sitter based structured editing for function, class, and method-level changes
 - Reply language control via `ui.reply_language`
 - Safe mode enabled by default
@@ -179,7 +179,7 @@ Execution mode behavior:
 
 ### Project Index
 
-CodeMini CLI maintains a lightweight project index inside `.codemini-project/`:
+CodeMini CLI maintains a lightweight project index inside `.codemini/`:
 
 - `project-map.json` — high-level repository facts such as languages, source roots, test roots, and entry candidates
 - `file-index.json` — per-file structure such as imports, exports, functions, classes, and lightweight symbol hints
@@ -191,7 +191,7 @@ The index is initialized when entering a project and refreshed incrementally aft
 
 - Global session state: `<base-config-dir>/sessions/`
 - Project workspace state: `.codemini/`
-- Lightweight project index: `.codemini-project/`
+- Lightweight project index: `.codemini/`
 - Bundled repo skills: `skills/<name>/SKILL.md`
 - Project-scoped skills: `.codemini/skills/<name>/SKILL.md`
 - Global installed skills: `<base-config-dir>/skills/<name>/SKILL.md`
@@ -377,7 +377,7 @@ CodeMini CLI 把工具分成两层：
 - 统一的 shell 执行模型：
   - 一次性命令直接 `run`
   - 长运行命令通过 `run` + `run_in_background=true`
-- 在 `.codemini-project/` 下维护轻量项目索引，帮助模型更快理解仓库
+- 在 `.codemini/` 下维护轻量项目索引，帮助模型更快理解仓库
 - 基于 Tree-sitter 的结构化编辑能力，适合函数级、类级、方法级改动
 - 支持通过 `ui.reply_language` 控制回复语言
 - safe mode 默认开启
@@ -412,7 +412,7 @@ Inbox 和持久记忆的区别：
 
 ### 项目索引
 
-CodeMini CLI 会在 `.codemini-project/` 下维护一份轻量项目索引：
+CodeMini CLI 会在 `.codemini/` 下维护一份轻量项目索引：
 
 - `project-map.json` — 记录仓库的高层结构事实，比如语言、源码目录、测试目录、入口候选
 - `file-index.json` — 记录文件级结构信息，比如 imports、exports、functions、classes 和轻量 symbol 提示
@@ -424,7 +424,7 @@ CodeMini CLI 会在 `.codemini-project/` 下维护一份轻量项目索引：
 
 - 全局会话状态：`<base-config-dir>/sessions/`
 - 项目工作区状态：`.codemini/`
-- 轻量项目索引：`.codemini-project/`
+- 轻量项目索引：`.codemini/`
 - 仓库内置 skill：`skills/<name>/SKILL.md`
 - 项目级 skill：`.codemini/skills/<name>/SKILL.md`
 - 全局已安装 skill：`<base-config-dir>/skills/<name>/SKILL.md`

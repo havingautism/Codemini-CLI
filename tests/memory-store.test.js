@@ -54,7 +54,7 @@ test('rememberMemory stores user, global, and project memories and renders a com
       const user = await listMemories({ scope: 'user', workspaceRoot });
       const globalItems = await listMemories({ scope: 'global', workspaceRoot });
       const project = await listMemories({ scope: 'project', workspaceRoot });
-      const projectEntries = await fs.readdir(path.join(workspaceRoot, '.codemini-project', 'memory'));
+      const projectEntries = await fs.readdir(path.join(workspaceRoot, '.codemini', 'memory'));
       const snapshot = await buildMemorySnapshot({ config, workspaceRoot });
 
       assert.equal(user.length, 1);

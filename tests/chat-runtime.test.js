@@ -2204,8 +2204,8 @@ test('chat runtime bootstraps lightweight project index in .codemini', { concurr
         systemPrompt: 'You are a test assistant.'
       });
 
-      const projectMap = JSON.parse(await fs.readFile(path.join(cwd, '.codemini-project', 'project-map.json'), 'utf8'));
-      const fileIndex = JSON.parse(await fs.readFile(path.join(cwd, '.codemini-project', 'file-index.json'), 'utf8'));
+      const projectMap = JSON.parse(await fs.readFile(path.join(cwd, '.codemini', 'project-map.json'), 'utf8'));
+      const fileIndex = JSON.parse(await fs.readFile(path.join(cwd, '.codemini', 'file-index.json'), 'utf8'));
 
       assert.equal(projectMap.projectRoot, cwd);
       assert.ok(projectMap.languages.includes('ts'));
@@ -2247,7 +2247,7 @@ test('chat runtime exposes startup system tool events for project indexing', { c
       assert.equal(startupEvents.length, 1);
       assert.equal(startupEvents[0].type, 'system_tool');
       assert.equal(startupEvents[0].status, 'done');
-      assert.match(String(startupEvents[0].summary || ''), /\.codemini-project/i);
+      assert.match(String(startupEvents[0].summary || ''), /\.codemini/i);
       assert.deepEqual(runtime.consumeStartupEvents(), []);
     } finally {
       process.chdir(previousCwd);
@@ -2319,8 +2319,8 @@ test('chat runtime skips project indexing in non-project directories', { concurr
       assert.deepEqual(runtime.consumeStartupEvents(), []);
       const workspaceStat = await fs.stat(path.join(cwd, '.codemini'));
       assert.equal(workspaceStat.isDirectory(), true);
-      await assert.rejects(fs.readFile(path.join(cwd, '.codemini-project', 'project-map.json'), 'utf8'));
-      await assert.rejects(fs.readFile(path.join(cwd, '.codemini-project', 'file-index.json'), 'utf8'));
+      await assert.rejects(fs.readFile(path.join(cwd, '.codemini', 'project-map.json'), 'utf8'));
+      await assert.rejects(fs.readFile(path.join(cwd, '.codemini', 'file-index.json'), 'utf8'));
     } finally {
       process.chdir(previousCwd);
       await fs.rm(cwd, { recursive: true, force: true });
@@ -2356,8 +2356,8 @@ test('chat runtime project index respects .gitignore for source files', { concur
         systemPrompt: 'You are a test assistant.'
       });
 
-      const projectMap = JSON.parse(await fs.readFile(path.join(cwd, '.codemini-project', 'project-map.json'), 'utf8'));
-      const fileIndex = JSON.parse(await fs.readFile(path.join(cwd, '.codemini-project', 'file-index.json'), 'utf8'));
+      const projectMap = JSON.parse(await fs.readFile(path.join(cwd, '.codemini', 'project-map.json'), 'utf8'));
+      const fileIndex = JSON.parse(await fs.readFile(path.join(cwd, '.codemini', 'file-index.json'), 'utf8'));
 
       assert.equal(projectMap.gitignoreEnabled, true);
       assert.ok(fileIndex.files.some((entry) => entry.file === 'src/main.ts'));
@@ -2396,7 +2396,7 @@ test('chat runtime project index skips default noise directories like sessions',
         systemPrompt: 'You are a test assistant.'
       });
 
-      const fileIndex = JSON.parse(await fs.readFile(path.join(cwd, '.codemini-project', 'file-index.json'), 'utf8'));
+      const fileIndex = JSON.parse(await fs.readFile(path.join(cwd, '.codemini', 'file-index.json'), 'utf8'));
 
       assert.ok(fileIndex.files.some((entry) => entry.file === 'src/main.ts'));
       assert.ok(!fileIndex.files.some((entry) => entry.file === 'sessions/chat.ts'));
@@ -2435,8 +2435,8 @@ test('chat runtime project index respects .llmignore for source files', { concur
         systemPrompt: 'You are a test assistant.'
       });
 
-      const projectMap = JSON.parse(await fs.readFile(path.join(cwd, '.codemini-project', 'project-map.json'), 'utf8'));
-      const fileIndex = JSON.parse(await fs.readFile(path.join(cwd, '.codemini-project', 'file-index.json'), 'utf8'));
+      const projectMap = JSON.parse(await fs.readFile(path.join(cwd, '.codemini', 'project-map.json'), 'utf8'));
+      const fileIndex = JSON.parse(await fs.readFile(path.join(cwd, '.codemini', 'file-index.json'), 'utf8'));
 
       assert.equal(projectMap.gitignoreEnabled, false);
       assert.ok(fileIndex.files.some((entry) => entry.file === 'src/main.ts'));
