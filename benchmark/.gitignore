@@ -1,0 +1,12 @@
+runs/
+reports/
+data/
+*.jsonl
+*.json
+*.log
+!swebench/README.md
+!swebench/lib.mjs
+!swebench/import-samples.mjs
+!swebench/run.mjs
+!swebench/score.mjs
+!swebench/verified-smoke.txt

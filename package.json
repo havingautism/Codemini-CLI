@@ -27,6 +27,9 @@
   "scripts": {
     "start": "node bin/coder.js",
     "test": "node --test tests/*.test.js",
+    "benchmark:swebench:import": "node benchmark/swebench/import-samples.mjs",
+    "benchmark:swebench:score": "node benchmark/swebench/score.mjs",
+    "benchmark:swebench": "node benchmark/swebench/run.mjs",
     "pack:offline": "npm pack"
   },
   "files": [
