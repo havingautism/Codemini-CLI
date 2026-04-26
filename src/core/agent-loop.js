@@ -653,6 +653,14 @@ function formatToolDisplayName(name, args) {
     const command = trimInline(args?.command || '', 96);
     return command ? `run(${command})` : name;
   }
+  if (name === 'web_fetch') {
+    const url = trimInline(args?.url || args?.href || '', 96);
+    return url ? `web_fetch(${url})` : name;
+  }
+  if (name === 'web_search') {
+    const query = trimInline(args?.query || args?.q || '', 96);
+    return query ? `web_search(${query})` : name;
+  }
   if (name === 'edit') {
     const target = trimInline(args?.path || args?.file || '.', 96) || '.';
     return `edit(${target})`;

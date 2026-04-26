@@ -180,6 +180,10 @@ const TUI_COPY = {
       doingGlob: '正在按模式查找文件',
       doneGrep: '已搜索关键词',
       doingGrep: '正在搜索关键词',
+      doneWebFetch: '已抓取网页',
+      doingWebFetch: '正在抓取网页',
+      doneWebSearch: '已搜索网页',
+      doingWebSearch: '正在搜索网页',
       doneCommand: '已执行命令',
       doingCommand: '正在执行命令',
       doneUpdateTodos: '已更新待办',
@@ -388,6 +392,10 @@ const TUI_COPY = {
       doingGlob: 'Matching files by pattern',
       doneGrep: 'Searched keywords',
       doingGrep: 'Searching keywords',
+      doneWebFetch: 'Fetched page',
+      doingWebFetch: 'Fetching page',
+      doneWebSearch: 'Searched web',
+      doingWebSearch: 'Searching web',
       doneCommand: 'Ran command',
       doingCommand: 'Running command',
       doneUpdateTodos: 'Updated todos',
@@ -1175,6 +1183,8 @@ function getActivityDisplayParts(activity) {
     patch: 'Patch',
     run: 'Run',
     grep: 'Search',
+    web_fetch: 'Fetch',
+    web_search: 'Web Search',
     glob: 'Glob',
     list: 'List',
     list_background_tasks: 'Tasks',
@@ -1193,6 +1203,8 @@ function getActivityDisplayParts(activity) {
     patch: '🩹',
     run: '⚙️',
     grep: '🔍',
+    web_fetch: '🌐',
+    web_search: '🌐',
     glob: '🧭',
     list: '📂',
     list_background_tasks: '🗃️',
@@ -2401,7 +2413,17 @@ export function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) 
   } else {
     pushTextRows(msg?.text || '');
     const toolCalls = Array.isArray(msg?.toolCalls) ? msg.toolCalls : [];
-    toolCalls.forEach((tool, idx) => pushActivityRows(tool, idx, toolCalls.length));
+    const pendingToolCalls = Array.isArray(msg?.pendingToolCalls) ? msg.pendingToolCalls : [];
+    const visibleCalls = [
+      ...toolCalls,
+      ...pendingToolCalls.filter((pending) => {
+        if (!pending) return false;
+        if (pending.id && toolCalls.some((tool) => tool?.id && tool.id === pending.id)) return false;
+        const pendingBase = parseToolDisplayName(pending.name).base;
+        return !toolCalls.some((tool) => parseToolDisplayName(tool?.name).base === pendingBase && tool?.status === 'running');
+      })
+    ];
+    visibleCalls.forEach((tool, idx) => pushActivityRows(tool, idx, visibleCalls.length));
   }
 
   const codeGenerationRows = getCodeGenerationActivityRows(msg);

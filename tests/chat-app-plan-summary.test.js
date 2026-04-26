@@ -204,7 +204,11 @@ test('describeToolActivity uses more precise labels for list, glob, and grep', (
       doneProjectIndex: '已初始化项目索引',
       doingProjectIndex: '正在初始化项目索引',
       doneFileIndex: '已刷新文件索引',
-      doingFileIndex: '正在刷新文件索引'
+      doingFileIndex: '正在刷新文件索引',
+      doneWebFetch: '已抓取网页',
+      doingWebFetch: '正在抓取网页',
+      doneWebSearch: '已搜索网页',
+      doingWebSearch: '正在搜索网页'
     }
   };
 
@@ -217,6 +221,8 @@ test('describeToolActivity uses more precise labels for list, glob, and grep', (
   assert.equal(describeToolActivity(zhCopy, 'stop_background_task(task-1)', { done: true }), '已停止后台任务: task-1');
   assert.equal(describeToolActivity(zhCopy, 'project_index', { done: true }), '已初始化项目索引');
   assert.equal(describeToolActivity(zhCopy, 'file_index(src/app.ts)'), '正在刷新文件索引: src/app.ts');
+  assert.equal(describeToolActivity(zhCopy, 'web_fetch(https://example.com/docs)'), '正在抓取网页: https://example.com/docs');
+  assert.equal(describeToolActivity(zhCopy, 'web_search(latest pnpm)', { done: true }), '已搜索网页: latest pnpm');
 });
 
 test('skill activity helpers produce concise skill status text', () => {

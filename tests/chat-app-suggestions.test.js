@@ -840,6 +840,39 @@ test('getCodeGenerationActivityRows returns a tool-like timer row while code gen
   assert.equal(closed.length, 0);
 });
 
+test('buildMessageRows renders pending non-code tool calls immediately', () => {
+  const rows = buildMessageRows(
+    {
+      id: 'msg-web-fetch',
+      label: 'coder',
+      text: '',
+      loading: true,
+      phase: 'generating',
+      liveStatus: '正在准备工具调用',
+      pendingToolCalls: [
+        {
+          type: 'tool',
+          name: 'web_fetch(https://example.com/docs)',
+          status: 'pending',
+          arguments: { url: 'https://example.com/docs' }
+        }
+      ],
+      toolCalls: []
+    },
+    true,
+    72,
+    {
+      runtime: {},
+      toolActivity: {}
+    }
+  );
+
+  const activityRows = rows.filter((row) => row.kind === 'activity');
+  assert.equal(activityRows.length, 1);
+  assert.equal(activityRows[0].name, 'web_fetch(https://example.com/docs)');
+  assert.equal(activityRows[0].status, 'pending');
+});
+
 test('ensureCodeGenerationTiming only sets the start time once', () => {
   const started = ensureCodeGenerationTiming({ id: 'm-1' }, 1000);
   assert.equal(started.codeGenerationStartedAt, 1000);
