@@ -1115,6 +1115,79 @@ test('explicit user preferences are saved directly to user memory', { concurrenc
   });
 });
 
+test('explicit user preferences are not duplicated when the model saves memory itself', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-user-direct-memory-dedupe-'));
+    const previousCwd = process.cwd();
+    let callIndex = 0;
+    const restoreFetch = withMockFetch(async () => {
+      callIndex += 1;
+      if (callIndex === 1) {
+        return makeSseResponse([
+          {
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'call_save_memory',
+                      type: 'function',
+                      function: {
+                        name: 'save_memory',
+                        arguments: JSON.stringify({
+                          scope: 'user',
+                          kind: 'preference',
+                          content: '用户希望回复中多使用 emoji',
+                          summary: '用户希望多使用 emoji'
+                        })
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          { choices: [{ delta: {}, finish_reason: 'tool_calls' }] }
+        ]);
+      }
+      return makeSseResponse([
+        { choices: [{ delta: { content: 'ok' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] }
+      ]);
+    });
+
+    try {
+      process.chdir(cwd);
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-user-direct-memory-dedupe',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      await runtime.submit('帮我记住，希望你多使用emoji');
+      const userMemories = await listMemories({ scope: 'user', workspaceRoot: cwd });
+
+      assert.equal(userMemories.length, 1);
+      assert.equal(userMemories[0].source, 'tool');
+      assert.match(userMemories[0].content, /emoji/i);
+    } finally {
+      process.chdir(previousCwd);
+      await restoreFetch();
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
 test('chat runtime emits skill lifecycle events for explicit skill commands', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     const restoreFetch = withMockFetch(async () =>

@@ -6,7 +6,7 @@ import path from 'node:path';
 
 import { loadConfig } from '../src/core/config-store.js';
 import { buildMemorySnapshot } from '../src/core/memory-prompt.js';
-import { listMemories, rememberMemory } from '../src/core/memory-store.js';
+import { getMemoryBucketMaintenance, listMemories, markMemoryBucketMaintained, rememberMemory } from '../src/core/memory-store.js';
 
 async function withTempConfigDir(run) {
   const prev = process.env.CODEMINI_GLOBAL_DIR;
@@ -141,6 +141,41 @@ test('rememberMemory keeps newest entries within per-scope char budget', async (
       const project = await listMemories({ scope: 'project', workspaceRoot });
       assert.equal(project.length, 1);
       assert.match(project[0].content, /second project memory note/);
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+test('memory bucket maintenance marker is reset when bucket changes', async () => {
+  await withTempConfigDir(async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-memory-maintenance-'));
+    try {
+      const config = await loadConfig();
+      await rememberMemory({
+        scope: 'user',
+        content: '用户偏好简洁中文回复。',
+        kind: 'preference',
+        workspaceRoot,
+        config
+      });
+      await markMemoryBucketMaintained({ scope: 'user', workspaceRoot });
+
+      const marked = await getMemoryBucketMaintenance({ scope: 'user', workspaceRoot });
+      assert.equal(marked.fresh, true);
+      assert.ok(marked.maintainedAt);
+
+      await rememberMemory({
+        scope: 'user',
+        content: '用户希望回复中适度使用 emoji。',
+        kind: 'preference',
+        workspaceRoot,
+        config
+      });
+
+      const afterChange = await getMemoryBucketMaintenance({ scope: 'user', workspaceRoot });
+      assert.equal(afterChange.fresh, false);
+      assert.equal(afterChange.maintainedAt, '');
     } finally {
       await fs.rm(workspaceRoot, { recursive: true, force: true });
     }

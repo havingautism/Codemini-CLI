@@ -1,6 +1,13 @@
-import { listMemories, listInbox, archiveEntry, promoteMemory } from './memory-store.js';
+import {
+  getMemoryBucketMaintenance,
+  listMemories,
+  listInbox,
+  archiveEntry,
+  promoteMemory,
+  replaceMemoryBucket
+} from './memory-store.js';
 import { writeDreamAuditReport } from './dream-audit.js';
-import { evaluateInboxBatch } from './dream-evaluator.js';
+import { evaluateInboxBatch, evaluateMemoryMaintenance } from './dream-evaluator.js';
 
 const LONGTERM_TYPES = new Set(['preference', 'pattern', 'win', 'decision']);
 const OPERATIONAL_TYPES = new Set(['correction', 'failure', 'gap', 'observation']);
@@ -22,6 +29,76 @@ function memoryContainsSummary(memory, summaryKey) {
   return content.includes(summaryKey) || summary.includes(summaryKey);
 }
 
+function maintenanceScopes(scopeFilter) {
+  const scope = normalizeText(scopeFilter);
+  if (!scope) return ['user', 'global', 'project'];
+  if (scope === 'repo') return ['project'];
+  if (['user', 'global', 'project'].includes(scope)) return [scope];
+  return ['user', 'global', 'project'];
+}
+
+async function runMemoryMaintenance({
+  dryRun = false,
+  scope = null,
+  workspaceRoot = process.cwd(),
+  config = {}
+} = {}) {
+  const reports = [];
+  const filesChanged = [];
+
+  for (const memoryScope of maintenanceScopes(scope)) {
+    const maintenance = await getMemoryBucketMaintenance({ scope: memoryScope, workspaceRoot });
+    const items = await listMemories({ scope: memoryScope, workspaceRoot });
+    if (items.length === 0) {
+      reports.push({ scope: memoryScope, skipped: true, reason: 'empty' });
+      continue;
+    }
+    if (maintenance.fresh) {
+      reports.push({ scope: memoryScope, skipped: true, reason: 'already-maintained', itemCount: items.length });
+      continue;
+    }
+
+    const evaluated = dryRun
+      ? { items, archives: [] }
+      : await evaluateMemoryMaintenance({ scope: memoryScope, items, config, workspaceRoot });
+    if (evaluated.error) {
+      reports.push({ scope: memoryScope, skipped: true, reason: `maintenance-error: ${evaluated.error}`, itemCount: items.length });
+      continue;
+    }
+    const nextItems = Array.isArray(evaluated.items) && evaluated.items.length > 0 ? evaluated.items : items;
+    const changed =
+      JSON.stringify(nextItems.map((item) => [item.kind, item.content, item.summary, item.lifecycle || ''])) !==
+      JSON.stringify(items.map((item) => [item.kind, item.content, item.summary, item.lifecycle || '']));
+
+    if (!dryRun) {
+      await replaceMemoryBucket({
+        scope: memoryScope,
+        items: nextItems,
+        workspaceRoot,
+        markMaintained: true
+      });
+      filesChanged.push({
+        file: memoryScope === 'project' ? 'memory/project/*.json' : `memory/${memoryScope}.json`,
+        why: changed
+          ? `LLM-maintained ${items.length} item(s) into ${nextItems.length} item(s)`
+          : `Marked ${items.length} item(s) as maintained`
+      });
+    }
+
+    reports.push({
+      scope: memoryScope,
+      skipped: false,
+      before: items.length,
+      after: nextItems.length,
+      changed,
+      archives: evaluated.archives || [],
+      dryRun
+    });
+  }
+
+  return { reports, filesChanged };
+}
+
 export async function runDreamConsolidation({
   dryRun = false,
   scope = null,
@@ -31,9 +108,6 @@ export async function runDreamConsolidation({
 } = {}) {
   const scopeFilter = scope || null;
   const inbox = await listInbox({ scope: scopeFilter });
-  if (inbox.length === 0) {
-    return { ok: true, dryRun, message: 'No inbox entries to consolidate.', promotions: [], rejections: [], archives: [] };
-  }
 
   const [globalMemories, userMemories, projectMemories] = await Promise.all([
     listMemories({ scope: 'global', workspaceRoot }),
@@ -77,66 +151,62 @@ export async function runDreamConsolidation({
     candidates.push(entry);
   }
 
-  if (candidates.length === 0) {
-    const report = { timestamp: new Date().toISOString(), filesRead, filesChanged: [], candidatesGenerated: inbox.length, promotions, rejections, archives };
-    if (!dryRun && writeAudit) {
-      const reportPath = await writeDreamAuditReport(report);
-      report.auditReport = reportPath;
-    }
-    return { ok: true, dryRun, ...report };
-  }
+  if (candidates.length > 0) {
+    /* ── Phase 2: LLM 批量评估（质量门控 + scope 分类 + 内容提炼） ── */
+    const llmResults = dryRun
+      ? candidates.map((e) => ({ id: e.id, action: 'keep', scope: 'global', kind: e.type || 'observation', content: e.details || e.summary, summary: e.summary, confidence: 0.9 }))
+      : await evaluateInboxBatch({ entries: candidates, config, workspaceRoot });
 
-  /* ── Phase 2: LLM 批量评估（质量门控 + scope 分类 + 内容提炼） ── */
-  const llmResults = dryRun
-    ? candidates.map((e) => ({ id: e.id, action: 'keep', scope: 'global', kind: e.type || 'observation', content: e.details || e.summary, summary: e.summary, confidence: 0.9 }))
-    : await evaluateInboxBatch({ entries: candidates, config, workspaceRoot });
+    const resultMap = new Map(llmResults.map((r) => [r.id, r]));
 
-  const resultMap = new Map(llmResults.map((r) => [r.id, r]));
+    /* ── Phase 3: 按评估结果 promote 或 archive ─────────────────── */
+    for (const entry of candidates) {
+      const evaluation = resultMap.get(entry.id);
 
-  /* ── Phase 3: 按评估结果 promote 或 archive ─────────────────── */
-  for (const entry of candidates) {
-    const evaluation = resultMap.get(entry.id);
-
-    if (!evaluation || evaluation.action === 'discard') {
-      const reason = evaluation?.reason || 'LLM discarded';
-      if (!dryRun) await archiveEntry(entry, 'discarded-by-evaluator', reason);
-      rejections.push({ summary: entry.summary, reason: `evaluator-discard: ${reason}` });
-      continue;
-    }
-
-    const promoteScope = evaluation.scope || 'global';
-    const lifecycle = chooseLifecycle(evaluation.kind);
-    const enrichedEntry = {
-      ...entry,
-      /* 用 LLM 提炼后的内容覆盖原始报错 */
-      summary: evaluation.summary || entry.summary,
-      details: evaluation.content || entry.details || entry.summary,
-      type: evaluation.kind || entry.type || 'observation'
-    };
-
-    if (!dryRun) {
-      try {
-        await promoteMemory({
-          entry: enrichedEntry,
-          scope: promoteScope,
-          lifecycle,
-          workspaceRoot,
-          config,
-          confidence: evaluation.confidence || 0.8
-        });
-        filesChanged.push({ file: `memory/${promoteScope}.json`, why: `Promoted "${enrichedEntry.summary}" as ${lifecycle} (${promoteScope})` });
-        promotions.push({ summary: enrichedEntry.summary, scope: promoteScope, lifecycle, rationale: evaluation.kind, confidence: evaluation.confidence });
-      } catch (error) {
-        const reason = String(error?.message || error || 'promotion failed').slice(0, 180);
-        await archiveEntry(entry, 'promotion-failed', reason);
-        rejections.push({ summary: entry.summary, reason: `promotion-failed: ${reason}` });
-        archives.push({ summary: entry.summary, reason: 'promotion-failed' });
+      if (!evaluation || evaluation.action === 'discard') {
+        const reason = evaluation?.reason || 'LLM discarded';
+        if (!dryRun) await archiveEntry(entry, 'discarded-by-evaluator', reason);
+        rejections.push({ summary: entry.summary, reason: `evaluator-discard: ${reason}` });
+        continue;
       }
-      continue;
-    }
 
-    promotions.push({ summary: enrichedEntry.summary, scope: promoteScope, lifecycle, rationale: evaluation.kind, confidence: evaluation.confidence, dryRun: true });
+      const promoteScope = evaluation.scope || 'global';
+      const lifecycle = chooseLifecycle(evaluation.kind);
+      const enrichedEntry = {
+        ...entry,
+        /* 用 LLM 提炼后的内容覆盖原始报错 */
+        summary: evaluation.summary || entry.summary,
+        details: evaluation.content || entry.details || entry.summary,
+        type: evaluation.kind || entry.type || 'observation'
+      };
+
+      if (!dryRun) {
+        try {
+          await promoteMemory({
+            entry: enrichedEntry,
+            scope: promoteScope,
+            lifecycle,
+            workspaceRoot,
+            config,
+            confidence: evaluation.confidence || 0.8
+          });
+          filesChanged.push({ file: `memory/${promoteScope}.json`, why: `Promoted "${enrichedEntry.summary}" as ${lifecycle} (${promoteScope})` });
+          promotions.push({ summary: enrichedEntry.summary, scope: promoteScope, lifecycle, rationale: evaluation.kind, confidence: evaluation.confidence });
+        } catch (error) {
+          const reason = String(error?.message || error || 'promotion failed').slice(0, 180);
+          await archiveEntry(entry, 'promotion-failed', reason);
+          rejections.push({ summary: entry.summary, reason: `promotion-failed: ${reason}` });
+          archives.push({ summary: entry.summary, reason: 'promotion-failed' });
+        }
+        continue;
+      }
+
+      promotions.push({ summary: enrichedEntry.summary, scope: promoteScope, lifecycle, rationale: evaluation.kind, confidence: evaluation.confidence, dryRun: true });
+    }
   }
+
+  const maintenance = await runMemoryMaintenance({ dryRun, scope: scopeFilter, workspaceRoot, config });
+  filesChanged.push(...maintenance.filesChanged);
 
   const report = {
     timestamp: new Date().toISOString(),
@@ -145,7 +215,9 @@ export async function runDreamConsolidation({
     candidatesGenerated: inbox.length,
     promotions,
     rejections,
-    archives
+    archives,
+    maintenance: maintenance.reports,
+    ...(inbox.length === 0 ? { message: 'No inbox entries to consolidate; maintained existing memory buckets.' } : {})
   };
 
   if (!dryRun && writeAudit) {

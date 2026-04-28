@@ -45,18 +45,42 @@ function buildFilePath(scope, workspaceRoot = process.cwd(), projectAlias = '') 
 }
 
 async function readMemoryBucket(filePath) {
+  const doc = await readMemoryBucketDocument(filePath);
+  return doc.items;
+}
+
+async function readMemoryBucketDocument(filePath) {
   try {
     const raw = await fs.readFile(filePath, 'utf8');
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed?.items) ? parsed.items : [];
+    return {
+      items: Array.isArray(parsed?.items) ? parsed.items : [],
+      maintenance: parsed?.maintenance && typeof parsed.maintenance === 'object' ? parsed.maintenance : null
+    };
   } catch {
-    return [];
+    return { items: [], maintenance: null };
   }
 }
 
-async function writeMemoryBucket(filePath, items) {
+function memoryBucketHash(items = []) {
+  const stable = (Array.isArray(items) ? items : [])
+    .map((item) => ({
+      id: String(item?.id || ''),
+      kind: String(item?.kind || ''),
+      content: normalizeMemoryText(item?.content || ''),
+      summary: normalizeMemoryText(item?.summary || ''),
+      lifecycle: String(item?.lifecycle || ''),
+      pinned: item?.pinned === true
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  return sha256(JSON.stringify(stable));
+}
+
+async function writeMemoryBucket(filePath, items, { maintenance = null } = {}) {
   await ensureParent(filePath);
-  await fs.writeFile(filePath, `${JSON.stringify({ items }, null, 2)}\n`, 'utf8');
+  const doc = { items };
+  if (maintenance) doc.maintenance = maintenance;
+  await fs.writeFile(filePath, `${JSON.stringify(doc, null, 2)}\n`, 'utf8');
 }
 
 function normalizeMemoryItem(item, scope, projectKey = '') {
@@ -74,7 +98,8 @@ function normalizeMemoryItem(item, scope, projectKey = '') {
     createdAt: String(item?.createdAt || now),
     updatedAt: String(item?.updatedAt || now),
     hits: Number.isFinite(Number(item?.hits)) ? Number(item.hits) : 0,
-    pinned: item?.pinned === true
+    pinned: item?.pinned === true,
+    ...(item?.lifecycle ? { lifecycle: String(item.lifecycle) } : {})
   };
 }
 
@@ -103,6 +128,67 @@ export async function listMemories({ scope, workspaceRoot = process.cwd(), proje
   return items
     .map((item) => normalizeMemoryItem(item, normalizedScope, projectKey))
     .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
+}
+
+export async function getMemoryBucketMaintenance({ scope, workspaceRoot = process.cwd(), projectAlias = '' }) {
+  const normalizedScope = ensureScope(scope);
+  const filePath = buildFilePath(normalizedScope, workspaceRoot, projectAlias);
+  const projectKey = normalizedScope === 'project' ? getProjectMemoryKey(workspaceRoot, projectAlias) : '';
+  const doc = await readMemoryBucketDocument(filePath);
+  const items = doc.items.map((item) => normalizeMemoryItem(item, normalizedScope, projectKey));
+  const currentHash = memoryBucketHash(items);
+  const storedHash = String(doc.maintenance?.contentHash || '');
+  const maintainedAt = String(doc.maintenance?.maintainedAt || '');
+  return {
+    scope: normalizedScope,
+    itemCount: items.length,
+    contentHash: currentHash,
+    storedHash,
+    maintainedAt,
+    fresh: Boolean(maintainedAt && storedHash && storedHash === currentHash)
+  };
+}
+
+export async function markMemoryBucketMaintained({ scope, workspaceRoot = process.cwd(), projectAlias = '' }) {
+  const normalizedScope = ensureScope(scope);
+  const filePath = buildFilePath(normalizedScope, workspaceRoot, projectAlias);
+  const projectKey = normalizedScope === 'project' ? getProjectMemoryKey(workspaceRoot, projectAlias) : '';
+  const items = (await readMemoryBucket(filePath)).map((item) => normalizeMemoryItem(item, normalizedScope, projectKey));
+  const maintenance = {
+    maintainedAt: nowIso(),
+    contentHash: memoryBucketHash(items),
+    itemCount: items.length
+  };
+  await writeMemoryBucket(filePath, items, { maintenance });
+  return { scope: normalizedScope, ...maintenance };
+}
+
+export async function replaceMemoryBucket({
+  scope,
+  items = [],
+  workspaceRoot = process.cwd(),
+  projectAlias = '',
+  markMaintained = false
+} = {}) {
+  const normalizedScope = ensureScope(scope);
+  const filePath = buildFilePath(normalizedScope, workspaceRoot, projectAlias);
+  const projectKey = normalizedScope === 'project' ? getProjectMemoryKey(workspaceRoot, projectAlias) : '';
+  const normalizedItems = (Array.isArray(items) ? items : [])
+    .map((item) => normalizeMemoryItem(item, normalizedScope, projectKey))
+    .filter((item) => item.content);
+  const maintenance = markMaintained
+    ? {
+        maintainedAt: nowIso(),
+        contentHash: memoryBucketHash(normalizedItems),
+        itemCount: normalizedItems.length
+      }
+    : null;
+  await writeMemoryBucket(filePath, normalizedItems, { maintenance });
+  return {
+    scope: normalizedScope,
+    items: normalizedItems,
+    maintenance
+  };
 }
 
 export async function rememberMemory({

@@ -3355,6 +3355,27 @@ export async function createChatRuntime({
   const saveDirectMemoryPrompt = async (text) => {
     const direct = classifyDirectMemoryPrompt(text);
     if (!direct) return null;
+    const existing = await listMemories({
+      scope: direct.scope,
+      workspaceRoot: process.cwd()
+    }).catch(() => []);
+    const directText = String(direct.content || '').toLowerCase();
+    const directTokens = new Set(directText.match(/[a-z0-9_\u4e00-\u9fa5]+/g) || []);
+    const directAsciiTokens = new Set(directText.match(/[a-z0-9_]{4,}/g) || []);
+    const overlapsExisting = existing.some((item) => {
+      const existingText = `${item.content || ''} ${item.summary || ''}`.toLowerCase();
+      for (const token of directAsciiTokens) {
+        if (existingText.includes(token)) return true;
+      }
+      let hits = 0;
+      for (const token of directTokens) {
+        if (token.length < 2) continue;
+        if (existingText.includes(token)) hits += 1;
+        if (hits >= 2) return true;
+      }
+      return false;
+    });
+    if (overlapsExisting) return null;
     return rememberMemory({
       scope: direct.scope,
       content: direct.content,
@@ -4218,7 +4239,6 @@ export async function createChatRuntime({
     }
 
     const expandedText = await expandFileMentions(parsedInput.text, process.cwd());
-    await saveDirectMemoryPrompt(expandedText);
     const autoRoute = classifyAutoRoute(expandedText);
     if (autoRoute.autoPlan) {
       await maybeAutoDreamFromRuntime();
@@ -4270,6 +4290,7 @@ export async function createChatRuntime({
       executionMode,
       signal
     });
+    await saveDirectMemoryPrompt(expandedText);
     await captureUserPromptForDream(expandedText);
     return { type: 'assistant', text: result.text, aborted: !!result.aborted };
   };

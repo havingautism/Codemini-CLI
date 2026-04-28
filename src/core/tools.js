@@ -2140,7 +2140,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'dream_consolidate',
         description:
-          'Run a dream loop consolidation pass over inbox entries. Reads recent inbox items, deduplicates, evaluates lifecycle progression (observed → candidate → operational/longterm), promotes stable patterns into persistent memory, archives expired items, and writes an audit report. Use during off-hours or explicit maintenance.',
+          'Run a dream loop pass over inbox entries and existing memory buckets. Reads recent inbox items, deduplicates, evaluates lifecycle progression (observed → candidate → operational/longterm), promotes stable patterns into persistent memory, then uses LLM maintenance to merge/summarize/clean stale user/global/project memories when their bucket changed since the last maintenance marker. Writes an audit report. Use during off-hours or explicit maintenance.',
         parameters: {
           type: 'object',
           properties: {
