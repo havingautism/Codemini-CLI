@@ -65,6 +65,7 @@ const DEFAULT_CONFIG = {
   memory: {
     enabled: true,
     auto_write: true,
+    auto_capture: true,
     inject_on_session_start: true,
     auto_dream_threshold: 10,
     max_items_per_scope: 12,
@@ -165,6 +166,7 @@ function normalizePolicyLists(config) {
   next.memory = next.memory || {};
   next.memory.enabled = next.memory.enabled !== false;
   next.memory.auto_write = next.memory.auto_write !== false;
+  next.memory.auto_capture = next.memory.auto_capture !== false;
   next.memory.inject_on_session_start = next.memory.inject_on_session_start !== false;
   next.memory.max_items_per_scope = Math.max(1, Number(next.memory.max_items_per_scope || 12));
   next.memory.auto_dream_threshold = Number(next.memory.auto_dream_threshold ?? 10);

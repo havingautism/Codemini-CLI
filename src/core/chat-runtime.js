@@ -25,7 +25,7 @@ import { buildSystemPromptWithSoul } from './soul.js';
 import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir } from './paths.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { buildMemorySnapshot } from './memory-prompt.js';
-import { forgetMemory, listMemories, searchMemories, captureToInbox, listInbox } from './memory-store.js';
+import { forgetMemory, listMemories, rememberMemory, searchMemories, captureToInbox, listInbox } from './memory-store.js';
 import { runDreamConsolidation } from './dream-consolidate.js';
 import { normalizePlanState } from './plan-state.js';
 import { countActiveTodos, normalizeTodos } from './todo-state.js';
@@ -3312,6 +3312,75 @@ export async function createChatRuntime({
     await saveSession(currentSession);
   };
 
+  const captureCompactSummary = async ({ summary, mode, beforeTokens, afterTokens }) => {
+    if (config?.memory?.enabled === false || config?.memory?.auto_capture === false) return null;
+    const normalizedSummary = String(summary || '').trim();
+    if (!normalizedSummary) return null;
+    const entrySummary = `Context compacted (${mode}): ${beforeTokens} -> ${afterTokens} tokens`;
+    return captureToInbox({
+      scope: 'repo',
+      type: 'observation',
+      summary: entrySummary,
+      details: normalizedSummary,
+      tags: ['compact', 'context-summary'],
+      source: 'auto-compact'
+    }).catch(() => null);
+  };
+
+  const shouldAutoCaptureUserPrompt = (text) => {
+    if (config?.memory?.enabled === false || config?.memory?.auto_capture === false) return false;
+    const value = String(text || '').replace(/\s+/g, ' ').trim();
+    if (value.length < 12) return false;
+    const actionPattern =
+      /\b(add|build|fix|implement|change|update|refactor|test|debug|remember|capture|continue|review)\b|实现|增加|添加|修复|修改|更新|重构|测试|调试|记住|继续|检查|沉淀|捕获/i;
+    return actionPattern.test(value);
+  };
+
+  const classifyDirectMemoryPrompt = (text) => {
+    if (config?.memory?.enabled === false || config?.memory?.auto_capture === false) return null;
+    const value = String(text || '').replace(/\s+/g, ' ').trim();
+    if (value.length < 6) return null;
+    const userPreferencePattern =
+      /(?:记住|请记住|以后|后续|我偏好|我的偏好|我喜欢|我习惯|不要再|别再|always remember|remember that|i prefer|my preference|don't|do not)/i;
+    if (!userPreferencePattern.test(value)) return null;
+    const projectPattern = /(?:本项目|这个项目|当前项目|这个仓库|当前仓库|repo|repository|project)/i;
+    const isProject = projectPattern.test(value);
+    return {
+      scope: isProject ? 'project' : 'user',
+      kind: isProject ? 'workflow' : 'preference',
+      content: value
+    };
+  };
+
+  const saveDirectMemoryPrompt = async (text) => {
+    const direct = classifyDirectMemoryPrompt(text);
+    if (!direct) return null;
+    return rememberMemory({
+      scope: direct.scope,
+      content: direct.content,
+      kind: direct.kind,
+      summary: direct.content.slice(0, 80),
+      source: 'auto-user-directive',
+      replaceSimilar: true,
+      workspaceRoot: process.cwd(),
+      config
+    }).catch(() => null);
+  };
+
+  const captureUserPromptForDream = async (text) => {
+    if (classifyDirectMemoryPrompt(text)) return null;
+    if (!shouldAutoCaptureUserPrompt(text)) return null;
+    const value = String(text || '').replace(/\s+/g, ' ').trim();
+    return captureToInbox({
+      scope: 'repo',
+      type: 'observation',
+      summary: `User task: ${value.slice(0, 120)}`,
+      details: value,
+      tags: ['user-prompt'],
+      source: 'auto-user-prompt'
+    }).catch(() => null);
+  };
+
   const buildActiveSystemPrompt = async () => {
     const soulPrompt = await buildSystemPromptWithSoul(baseSystemPrompt, config);
     const memorySnapshot = await buildMemorySnapshot({
@@ -4005,6 +4074,12 @@ export async function createChatRuntime({
         compactState.backupMessages = structuredClone(currentSession.messages);
         currentSession.messages = result.compacted.map((m) => ({ ...m, at: new Date().toISOString() }));
         await saveSession(currentSession);
+        await captureCompactSummary({
+          summary: result.summary,
+          mode: compactState.mode,
+          beforeTokens,
+          afterTokens
+        });
         await persistLocalExchange(line, report, { includeUser: false });
         return { type: 'system', text: report };
       }
@@ -4125,6 +4200,12 @@ export async function createChatRuntime({
             at: new Date().toISOString()
           }));
           await saveSession(currentSession);
+          await captureCompactSummary({
+            summary: autoResult.summary,
+            mode: compactState.mode,
+            beforeTokens: currentTokens,
+            afterTokens: estimateMessagesTokens(currentSession.messages)
+          });
           if (onAgentEvent) {
             onAgentEvent({
               type: 'compact:auto',
@@ -4137,6 +4218,7 @@ export async function createChatRuntime({
     }
 
     const expandedText = await expandFileMentions(parsedInput.text, process.cwd());
+    await saveDirectMemoryPrompt(expandedText);
     const autoRoute = classifyAutoRoute(expandedText);
     if (autoRoute.autoPlan) {
       await maybeAutoDreamFromRuntime();
@@ -4188,6 +4270,7 @@ export async function createChatRuntime({
       executionMode,
       signal
     });
+    await captureUserPromptForDream(expandedText);
     return { type: 'assistant', text: result.text, aborted: !!result.aborted };
   };
 

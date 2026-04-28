@@ -11,7 +11,7 @@ import {
   extractStepWorkingMemory
 } from '../src/core/chat-runtime.js';
 import { loadConfig } from '../src/core/config-store.js';
-import { listMemories, rememberMemory } from '../src/core/memory-store.js';
+import { listInbox, listMemories, rememberMemory } from '../src/core/memory-store.js';
 import { loadSession, saveSession } from '../src/core/session-store.js';
 
 async function withTempConfigDir(run) {
@@ -969,6 +969,147 @@ test('memory slash commands list search and forget stored memories', { concurren
       assert.ok(runtime.getCompletionOptions('/memory').some((item) => item.value === '/memory list'));
     } finally {
       process.chdir(previousCwd);
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('compact applied captures summary into dream inbox for later consolidation', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-compact-memory-'));
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(cwd);
+      const config = await loadConfig();
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-compact-memory',
+          createdAt: now,
+          updatedAt: now,
+          messages: [
+            { role: 'user', content: '实现登录修复，并记住验证路径', at: now },
+            { role: 'assistant', content: '我会检查登录模块。', at: now },
+            { role: 'tool', content: JSON.stringify({ path: 'src/auth.ts', action: 'read' }), tool_call_id: 'read-1', at: now },
+            { role: 'assistant', content: '发现 token refresh 分支需要更新。', at: now },
+            { role: 'tool', content: JSON.stringify({ command: 'bun test tests/auth.test.js', code: 0, stdout: 'pass' }), tool_call_id: 'run-1', at: now },
+            { role: 'assistant', content: '验证通过。', at: now },
+            { role: 'user', content: '再检查一下记忆沉淀路径', at: now },
+            { role: 'assistant', content: '我会确认 compact 摘要能被 dream 使用。', at: now },
+            { role: 'user', content: '保持改动小一点', at: now },
+            { role: 'assistant', content: '收到，先做最小闭环。', at: now },
+            { role: 'user', content: '继续压缩上下文', at: now },
+            { role: 'assistant', content: '准备压缩。', at: now }
+          ]
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const result = await runtime.submit('/compact --aggressive');
+      const entries = await listInbox();
+
+      assert.match(result.text, /Compact applied/);
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].scope, 'repo');
+      assert.equal(entries[0].type, 'observation');
+      assert.equal(entries[0].source, 'auto-compact');
+      assert.match(entries[0].summary, /Context compacted/);
+      assert.match(entries[0].details, /Context Summary/);
+      assert.match(entries[0].details, /bun test tests\/auth\.test\.js/);
+    } finally {
+      process.chdir(previousCwd);
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('actionable user prompts are auto-captured into dream inbox only', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-user-capture-'));
+    const previousCwd = process.cwd();
+    const restoreFetch = withMockFetch(async () =>
+      makeSseResponse([
+        { choices: [{ delta: { content: 'ok' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] }
+      ])
+    );
+
+    try {
+      process.chdir(cwd);
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-user-capture',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      await runtime.submit('请实现 memory 自动捕获到 dream inbox 的功能');
+      const entries = await listInbox();
+      const memories = await listMemories({ scope: 'project', workspaceRoot: cwd });
+
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].scope, 'repo');
+      assert.equal(entries[0].type, 'observation');
+      assert.equal(entries[0].source, 'auto-user-prompt');
+      assert.match(entries[0].summary, /User task/);
+      assert.match(entries[0].details, /memory 自动捕获/);
+      assert.equal(memories.length, 0);
+    } finally {
+      process.chdir(previousCwd);
+      await restoreFetch();
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('explicit user preferences are saved directly to user memory', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-user-direct-memory-'));
+    const previousCwd = process.cwd();
+    const restoreFetch = withMockFetch(async () =>
+      makeSseResponse([
+        { choices: [{ delta: { content: 'ok' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] }
+      ])
+    );
+
+    try {
+      process.chdir(cwd);
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-user-direct-memory',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      await runtime.submit('记住：我偏好简洁的中文回复');
+      const userMemories = await listMemories({ scope: 'user', workspaceRoot: cwd });
+      const inbox = await listInbox();
+
+      assert.equal(userMemories.length, 1);
+      assert.equal(userMemories[0].kind, 'preference');
+      assert.match(userMemories[0].content, /偏好简洁的中文回复/);
+      assert.equal(inbox.length, 0);
+    } finally {
+      process.chdir(previousCwd);
+      await restoreFetch();
       await fs.rm(cwd, { recursive: true, force: true });
     }
   });

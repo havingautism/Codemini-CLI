@@ -311,18 +311,19 @@ function shouldAutoCaptureError(toolName, message) {
   return true;
 }
 
-function fireAndForgetCapture(toolName, message, args) {
+async function captureToolFailure(toolName, message, args, config = {}) {
+  if (config?.memory?.enabled === false || config?.memory?.auto_capture === false) return;
   const summary = `[${toolName}] ${String(message).slice(0, 120)}`;
   const details = args
     ? `Tool: ${toolName}\nError: ${message}\nArgs: ${JSON.stringify(args).slice(0, 300)}`
     : `Tool: ${toolName}\nError: ${message}`;
-  captureToInbox({
-    scope: 'auto',
+  await captureToInbox({
+    scope: 'repo',
     type: 'failure',
     summary,
     details,
     source: 'auto-capture'
-  }).catch(() => {});
+  });
 }
 
 async function checkAutoDreamThreshold(config) {
@@ -1010,7 +1011,7 @@ export async function runAgentLoop({
           onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary: trimInline(message, 120) });
         }
         if (shouldAutoCaptureError(toolName, message)) {
-          fireAndForgetCapture(toolName, message, effectiveArgs);
+          await captureToolFailure(toolName, message, effectiveArgs, config).catch(() => {});
         }
         return {
           callId: call.id,
@@ -1033,13 +1034,13 @@ export async function runAgentLoop({
         if (typeof exitCode === 'number' && exitCode !== 0 && stderr) {
           const failMsg = `exit ${exitCode}: ${stderr.slice(0, 120)}`;
           if (shouldAutoCaptureError(toolName, failMsg)) {
-            fireAndForgetCapture(toolName, failMsg, effectiveArgs);
+            await captureToolFailure(toolName, failMsg, effectiveArgs, config).catch(() => {});
           }
         }
         if (toolResult.error) {
           const errMsg = String(toolResult.error).slice(0, 120);
           if (shouldAutoCaptureError(toolName, errMsg)) {
-            fireAndForgetCapture(toolName, errMsg, effectiveArgs);
+            await captureToolFailure(toolName, errMsg, effectiveArgs, config).catch(() => {});
           }
         }
       }
