@@ -1,4 +1,5 @@
-import { summarizeToolResult, trimInline } from './agent-loop.js';
+import { trimInline } from './string-utils.js';
+import { summarizeToolResult } from './tool-result-store.js';
 
 function textFromContent(content) {
   if (typeof content === 'string') return content;

@@ -15,7 +15,7 @@ import {
 import { evaluateCommandPolicy } from './command-policy.js';
 import { findEnclosingSymbol, queryAst, readAstNode, resolveAstTarget } from './ast.js';
 import { initializeProjectIndex, queryProjectIndex, refreshIndexedFile } from './project-index.js';
-import { checkReadDedup } from './agent-loop.js';
+import { checkReadDedup } from './tool-result-store.js';
 import { TOOL_SKIP_DIRS as SKIP_DIRS, TEXT_EXTENSIONS, CODE_WRITE_GUARD_EXTENSIONS, LANGUAGE_FILE_TYPES } from './constants.js';
 import { sha256Prefixed as sha256, sha256 as sha256Hash } from './crypto-utils.js';
 import { forgetMemory, listMemories, rememberMemory, searchMemories, captureToInbox } from './memory-store.js';

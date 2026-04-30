@@ -1,6 +1,7 @@
 import { parseInput } from './input-parser.js';
 import { loadCommandsAndSkills, renderCommandPrompt } from './command-loader.js';
-import { runAgentLoop, setResultDir, clearResultStore } from './agent-loop.js';
+import { runAgentLoop } from './agent-loop.js';
+import { setResultDir, clearResultStore } from './tool-result-store.js';
 import { trimInline, normalizePath } from './string-utils.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
