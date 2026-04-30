@@ -2783,6 +2783,44 @@ async function handleShellInput(shellText, config) {
   return { text: chunks.join('\n') };
 }
 
+function formatHistoryTimestamp(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 'updated unknown';
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return `updated ${raw}`;
+  return `updated ${parsed.toISOString().slice(0, 16).replace('T', ' ')}`;
+}
+
+function compactHistoryPreview(value, maxChars = 72) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '(no preview)';
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
+}
+
+function formatHistoryList({ currentSession, sessions }) {
+  const currentMessages = Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0;
+  const lines = [
+    `Current session  ${currentSession.id}`,
+    `Messages         ${currentMessages}`,
+    '',
+    'Recent sessions'
+  ];
+
+  for (const [index, session] of sessions.entries()) {
+    const count = Number(session.messageCount || 0);
+    lines.push(
+      `${index + 1}. ${session.id}`,
+      `   ${count} ${count === 1 ? 'msg' : 'msgs'}  |  ${formatHistoryTimestamp(session.updatedAt)}`,
+      `   ${compactHistoryPreview(session.preview)}`,
+      `   resume: /history resume ${session.id}`
+    );
+  }
+
+  lines.push('', 'Tip: use /history resume <session_id>');
+  return lines.join('\n');
+}
+
 export async function createChatRuntime({
   session,
   config: initialConfig,
@@ -3844,13 +3882,9 @@ export async function createChatRuntime({
             messageCount: Number(s.messageCount || 0)
           }));
           if (sessions.length === 0) return { type: 'system', text: 'No sessions found' };
-          const rows = sessions.map(
-            (s, idx) =>
-              `${idx + 1}. ${s.id} | msgs:${s.messageCount} | updated:${s.updatedAt || '-'}${s.preview ? ` | ${s.preview}` : ''}`
-          );
           return {
             type: 'system',
-            text: `Current: ${currentSession.id}\n${rows.join('\n')}\nUse /history resume <session_id>`
+            text: formatHistoryList({ currentSession, sessions })
           };
         }
         if (sub === 'current') {

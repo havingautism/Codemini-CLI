@@ -1521,6 +1521,30 @@ function renderTextLine(msg, line, idx, color) {
   );
 }
 
+function historyListLineColor(line, fallbackColor) {
+  const raw = String(line || '');
+  const trimmed = raw.trim();
+  if (!trimmed) return fallbackColor;
+  if (/^Current session\s+/i.test(trimmed) || /^Recent sessions$/i.test(trimmed) || /^\d+\.\s+\S+/.test(trimmed)) {
+    return 'cyanBright';
+  }
+  if (/^Messages\s+\d+$/i.test(trimmed) || /^\d+\s+msgs?\s+\|\s+updated\b/i.test(trimmed) || /^Tip:/i.test(trimmed)) {
+    return 'gray';
+  }
+  if (/^resume:\s+\/history resume\b/i.test(trimmed)) {
+    return 'blueBright';
+  }
+  return 'white';
+}
+
+function isHistoryListMessage(msg) {
+  const text = String(msg?.text || '');
+  return msg?.label === 'system' &&
+    /^Current session\s+/m.test(text) &&
+    /^Recent sessions$/m.test(text) &&
+    /resume:\s+\/history resume\b/m.test(text);
+}
+
 export function parseAutoPlanSummaryMessage(text) {
   const raw = String(text || '').trim();
   if (!/^Auto plan finished\b/i.test(raw)) return null;
@@ -2311,6 +2335,7 @@ export function collapseActivityChainRows(inputRows, showToolDetails, copy, maxV
 
 export function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) {
   const rows = [];
+  const isHistoryList = isHistoryListMessage(msg);
   const pushTextRows = (text) => {
     const lines = String(text || '').split('\n');
     let codeFence = false;
@@ -2341,7 +2366,8 @@ export function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) 
         continue;
       }
       let color = msg.color || roleStyle(msg.label).text || 'white';
-      if (line.startsWith('#')) color = 'cyanBright';
+      if (isHistoryList) color = historyListLineColor(line, color);
+      else if (line.startsWith('#')) color = 'cyanBright';
       else if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) color = 'magentaBright';
       else if (trimmed.startsWith('>')) color = 'yellow';
       else if (/^[|└├│]/.test(trimmed)) color = 'gray';

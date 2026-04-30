@@ -501,6 +501,54 @@ test('history resume completions preload saved sessions sorted by recency', { co
   });
 });
 
+test('history list renders compact readable session cards', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    await saveSession({
+      id: 'session-history-readable-newer',
+      createdAt: '2026-04-02T10:00:00.000Z',
+      updatedAt: '2026-04-02T10:05:00.000Z',
+      messages: [
+        { role: 'user', content: 'newer session user prompt' },
+        {
+          role: 'assistant',
+          content: 'This is a very long assistant preview that should be shortened so history list stays readable instead of wrapping across the whole terminal width.'
+        }
+      ]
+    });
+    await saveSession({
+      id: 'session-history-readable-older',
+      createdAt: '2026-04-01T10:00:00.000Z',
+      updatedAt: '2026-04-01T10:05:00.000Z',
+      messages: [{ role: 'user', content: 'older session message' }]
+    });
+
+    const config = await loadConfig();
+    const now = new Date().toISOString();
+    const runtime = await createChatRuntime({
+      session: {
+        id: 'session-current-readable',
+        createdAt: now,
+        updatedAt: now,
+        messages: [{ role: 'user', content: 'current session message' }]
+      },
+      config,
+      systemPrompt: 'You are a test assistant.'
+    });
+
+    const result = await runtime.submit('/history list');
+
+    assert.equal(result.type, 'system');
+    assert.match(result.text, /Current session\s+session-current-readable/);
+    assert.match(result.text, /Recent sessions/);
+    assert.match(result.text, /1\. session-history-readable-newer/);
+    assert.match(result.text, /2 msgs/);
+    assert.match(result.text, /resume: \/history resume session-history-readable-newer/);
+    assert.match(result.text, /This is a very long assistant preview.*\.\.\./);
+    assert.doesNotMatch(result.text, /\| msgs:/);
+    assert.doesNotMatch(result.text, /\| updated:/);
+  });
+});
+
 test('history resume returns loaded session messages for UI restore', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     await saveSession({

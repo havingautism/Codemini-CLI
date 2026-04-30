@@ -177,6 +177,40 @@ test('normalizeActivitySpacingRows trims blank lines before tools and leaves one
   assert.equal(rows[4].text, '现在继续检查 CSS 文件。');
 });
 
+test('history list rows use semantic colors by line type', () => {
+  const rows = buildMessageRows(
+    {
+      id: 'sys-history',
+      label: 'system',
+      color: 'yellowBright',
+      text: [
+        'Current session  session-current-readable',
+        'Messages         0',
+        '',
+        'Recent sessions',
+        '1. session-history-readable-newer',
+        '   2 msgs  |  updated 2026-04-02 10:05',
+        '   This is a shortened preview...',
+        '   resume: /history resume session-history-readable-newer',
+        '',
+        'Tip: use /history resume <session_id>'
+      ].join('\n')
+    },
+    true,
+    120
+  );
+
+  const byText = new Map(rows.map((row) => [row.text.trim(), row]));
+  assert.equal(byText.get('Current session  session-current-readable').color, 'cyanBright');
+  assert.equal(byText.get('Messages         0').color, 'gray');
+  assert.equal(byText.get('Recent sessions').color, 'cyanBright');
+  assert.equal(byText.get('1. session-history-readable-newer').color, 'cyanBright');
+  assert.equal(byText.get('2 msgs  |  updated 2026-04-02 10:05').color, 'gray');
+  assert.equal(byText.get('This is a shortened preview...').color, 'white');
+  assert.equal(byText.get('resume: /history resume session-history-readable-newer').color, 'blueBright');
+  assert.equal(byText.get('Tip: use /history resume <session_id>').color, 'gray');
+});
+
 test('todo-item rows render without extra bottom margin between todos', () => {
   const element = renderMessageRow(
     { id: 'coder-1', label: 'coder' },
