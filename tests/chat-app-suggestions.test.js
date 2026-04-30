@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   buildInterToolNotice,
+  buildUiMessagesFromSessionHistory,
   buildPreToolNotice,
   buildSyntheticCompletionText,
   collapseActivityChainRows,
@@ -209,6 +210,27 @@ test('history list rows use semantic colors by line type', () => {
   assert.equal(byText.get('This is a shortened preview...').color, 'white');
   assert.equal(byText.get('resume: /history resume session-history-readable-newer').color, 'blueBright');
   assert.equal(byText.get('Tip: use /history resume <session_id>').color, 'gray');
+});
+
+test('restored session history skips empty assistant messages', () => {
+  let id = 0;
+  const messages = buildUiMessagesFromSessionHistory(
+    [
+      { role: 'assistant', content: '' },
+      { role: 'assistant', content: '   ' },
+      { role: 'assistant', content: '有内容的回答' },
+      { role: 'user', content: '继续' }
+    ],
+    () => `msg-${++id}`
+  );
+
+  assert.deepEqual(
+    messages.map((message) => ({ label: message.label, text: message.text })),
+    [
+      { label: 'coder', text: '有内容的回答' },
+      { label: 'you', text: '继续' }
+    ]
+  );
 });
 
 test('todo-item rows render without extra bottom margin between todos', () => {
@@ -428,6 +450,33 @@ test('formatMarkdownTableBlock renders compact box-style rows', () => {
   assert.match(rows[5].text, /GitHub/);
   assert.equal(rows.at(-1)?.kind, 'table-separator');
   assert.match(rows.at(-1)?.text || '', /^└/);
+});
+
+test('buildMessageRows preserves markdown table body rows', () => {
+  const rows = buildMessageRows(
+    {
+      id: 'memory-table',
+      label: 'coder',
+      color: 'greenBright',
+      text: [
+        '## 📁 项目记忆 (Project Memory)',
+        '',
+        '| 类型 | 内容 |',
+        '| --- | --- |',
+        '| convention | 代码搜索时优先使用 rg（ripgrep），避免使用 grep 命令。 |'
+      ].join('\n')
+    },
+    true,
+    100
+  );
+
+  const renderedTableText = rows
+    .filter((row) => row.kind === 'table')
+    .map((row) => row.text)
+    .join('\n');
+
+  assert.match(renderedTableText, /convention/);
+  assert.match(renderedTableText, /代码搜索时优先使用 rg/);
 });
 
 test('formatMarkdownTableBlock falls back to vertical rows for narrow layouts', () => {

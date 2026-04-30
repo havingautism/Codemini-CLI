@@ -894,7 +894,7 @@ function textFromSessionContent(content) {
   return sanitizeRenderableText(String(content || ''));
 }
 
-function buildUiMessagesFromSessionHistory(sessionMessages, nextId) {
+export function buildUiMessagesFromSessionHistory(sessionMessages, nextId) {
   const source = Array.isArray(sessionMessages) ? sessionMessages : [];
   const out = [];
 
@@ -903,7 +903,7 @@ function buildUiMessagesFromSessionHistory(sessionMessages, nextId) {
     if (message.role === 'tool') continue;
 
     const text = textFromSessionContent(message.content);
-    if (!text.trim() && message.role !== 'assistant') continue;
+    if (!text.trim()) continue;
 
     if (message.role === 'user') {
       out.push({ id: nextId(), label: 'you', text, color: 'blueBright' });
@@ -2356,8 +2356,8 @@ export function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) 
         continue;
       }
       if (isMarkdownTableHeader(line, lines[lineIndex + 1])) {
-        const tableLines = [line];
-        lineIndex += 1; // skip separator
+        const tableLines = [line, lines[lineIndex + 1]];
+        lineIndex += 1; // separator included above
         while (lineIndex + 1 < lines.length && splitMarkdownTableCells(lines[lineIndex + 1]).length > 1) {
           tableLines.push(lines[lineIndex + 1]);
           lineIndex += 1;

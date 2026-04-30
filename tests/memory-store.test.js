@@ -6,7 +6,7 @@ import path from 'node:path';
 
 import { loadConfig } from '../src/core/config-store.js';
 import { buildMemorySnapshot } from '../src/core/memory-prompt.js';
-import { getMemoryBucketMaintenance, listMemories, markMemoryBucketMaintained, rememberMemory } from '../src/core/memory-store.js';
+import { getMemoryBucketMaintenance, getProjectMemoryKey, listMemories, markMemoryBucketMaintained, rememberMemory } from '../src/core/memory-store.js';
 
 async function withTempConfigDir(run) {
   const prev = process.env.CODEMINI_GLOBAL_DIR;
@@ -70,6 +70,49 @@ test('rememberMemory stores user, global, and project memories and renders a com
       assert.match(snapshot, /用户偏好中文回复/);
       assert.match(snapshot, /优先使用 rg 搜索代码/);
       assert.match(snapshot, /chat-runtime\.js 是核心编排入口/);
+    } finally {
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+test('project memory reads compatible local buckets when path-derived key changes', async () => {
+  await withTempConfigDir(async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-memory-workspace-'));
+    try {
+      const config = await loadConfig();
+      const currentKey = getProjectMemoryKey(workspaceRoot);
+      const legacyKey = `${currentKey.replace(/-[^-]+$/, '')}-legacykey`;
+      const memoryDir = path.join(workspaceRoot, '.codemini', 'memory');
+      await fs.mkdir(memoryDir, { recursive: true });
+      await fs.writeFile(
+        path.join(memoryDir, `${legacyKey}.json`),
+        `${JSON.stringify({
+          items: [
+            {
+              id: 'mem_legacy_project',
+              scope: 'project',
+              projectKey: legacyKey,
+              kind: 'convention',
+              content: '代码搜索时优先使用 rg，避免使用 grep 命令。',
+              summary: '优先使用 rg 而非 grep 进行代码搜索',
+              source: 'tool',
+              confidence: 0.9,
+              createdAt: '2026-04-04T15:03:16.193Z',
+              updatedAt: '2026-04-04T15:03:16.193Z'
+            }
+          ]
+        }, null, 2)}\n`,
+        'utf8'
+      );
+
+      const project = await listMemories({ scope: 'project', workspaceRoot });
+      const snapshot = await buildMemorySnapshot({ config, workspaceRoot });
+
+      assert.equal(project.length, 1);
+      assert.equal(project[0].id, 'mem_legacy_project');
+      assert.match(snapshot, /Project Memory:/);
+      assert.match(snapshot, /优先使用 rg 而非 grep/);
     } finally {
       await fs.rm(workspaceRoot, { recursive: true, force: true });
     }

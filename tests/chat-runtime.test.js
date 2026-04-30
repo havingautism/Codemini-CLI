@@ -540,7 +540,8 @@ test('history list renders compact readable session cards', { concurrency: false
     assert.equal(result.type, 'system');
     assert.match(result.text, /Current session\s+session-current-readable/);
     assert.match(result.text, /Recent sessions/);
-    assert.match(result.text, /1\. session-history-readable-newer/);
+    assert.match(result.text, /\d+\. session-history-readable-newer/);
+    assert.match(result.text, /\d+\. session-history-readable-older/);
     assert.match(result.text, /2 msgs/);
     assert.match(result.text, /resume: \/history resume session-history-readable-newer/);
     assert.match(result.text, /This is a very long assistant preview.*\.\.\./);
