@@ -1236,7 +1236,7 @@ test('web_search is blocked when config disables network search', async () => {
   });
 });
 
-test('web_fetch reads rendered page content and extracts links', async () => {
+test('web_fetch reads static page content and extracts links without requiring browser rendering', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const { handlers, formatters } = await makeTools(workspaceRoot);
 
@@ -1265,16 +1265,17 @@ test('web_fetch reads rendered page content and extracts links', async () => {
 
       assert.equal(result.url, new URL(url).toString());
       assert.equal(result.title, 'CodeMini Fetch Demo');
+      assert.equal(result.metadata.fetch_mode, 'static');
       assert.match(result.text, /Fetch Demo Title/);
       assert.match(result.text, /Hello from the fetch test/);
-      assert.match(result.text, /Rendered by script/);
+      assert.doesNotMatch(result.text, /Rendered by script/);
       assert.ok(Array.isArray(result.links));
       assert.ok(result.links.some((item) => item.href === `${url}/docs`));
 
       const formatted = formatters.web_fetch(result);
       assert.match(formatted, /\[web_fetch:/);
       assert.match(formatted, /CodeMini Fetch Demo/);
-      assert.match(formatted, /Rendered by script/);
+      assert.match(formatted, /mode: static/);
     });
   });
 });

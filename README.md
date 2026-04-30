@@ -67,6 +67,17 @@ CodeMini CLI can optionally use `fff-mcp` as a faster backend for `grep`, `glob`
 - This means `fff-mcp` is an enhancement, not a hard dependency.
 - `codemini doctor` now reports `FFF MCP availability` so you can verify whether it is active.
 
+### Optional: Playwright Web Rendering
+
+`web_fetch` uses a lightweight `fetch` + HTML parser path by default, so Playwright is not installed as a default dependency.
+
+For JavaScript-rendered pages, install Playwright separately to enable richer browser-rendered fallback:
+
+```bash
+npm install -g playwright
+playwright install chromium
+```
+
 ### Commands
 
 | Command | Description |
@@ -299,6 +310,17 @@ CodeMini CLI 可以可选地使用 `fff-mcp` 作为 `grep`、`glob` 和部分 `l
 - 如果 `fff-mcp` 缺失或启动失败，CodeMini 会自动回退到内置搜索实现。
 - 这意味着 `fff-mcp` 是增强项，不是硬依赖。
 - 现在可以通过 `codemini doctor` 里的 `FFF MCP availability` 看到它是否可用。
+
+### 可选：Playwright 网页渲染
+
+`web_fetch` 默认使用轻量的 `fetch` + HTML 解析路径，因此 Playwright 不再作为默认依赖安装。
+
+如果经常读取 JavaScript 渲染页面，可以单独安装 Playwright，让 `web_fetch` 在需要时回退到浏览器渲染：
+
+```bash
+npm install -g playwright
+playwright install chromium
+```
 
 ### 命令概览
 

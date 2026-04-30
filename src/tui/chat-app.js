@@ -142,6 +142,7 @@ const TUI_COPY = {
         '🧩 用 /mode plan 切换到规划模式，让 AI 先出方案再动手。',
         '🆕 /new 可以新建一个干净的会话，重新开始工作。',
         '🧠 /memory 查看和管理 AI 的持久记忆，帮助它更好地理解你的偏好。',
+        '🌐 web_fetch 默认轻量读取网页；如需更好读取 JS 渲染页面，可运行 npm install -g playwright && playwright install chromium。',
         '💤 CodeMini 会自动"做梦"休息，整理错误信息并自我优化，越用越聪明~'
       ],
       toolSummaryExpanded: '工具摘要：已展开',
@@ -354,6 +355,7 @@ const TUI_COPY = {
         '🧩 Use /mode plan to switch to planning mode — AI proposes a plan before coding.',
         '🆕 /new starts a fresh session to begin a clean slate.',
         '🧠 /memory lets you view and manage the AI\'s persistent memory for better personalization.',
+        '🌐 web_fetch uses a lightweight reader by default. For better JS-rendered pages: npm install -g playwright && playwright install chromium.',
         '💤 CodeMini auto-"dreams" to rest, consolidate errors, and self-optimize — it gets smarter over time~'
       ],
       toolSummaryExpanded: 'Tool summary: expanded',

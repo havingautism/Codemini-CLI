@@ -172,6 +172,55 @@ function collectPageLinks($, pageUrl, maxLinks = 20) {
   return links;
 }
 
+function extractPageContent(cheerio, html, pageUrl, { maxLinks, status = null, contentType = '', fetchMode = 'static' } = {}) {
+  const $ = cheerio.load(html);
+  $('script, style, noscript').remove();
+  const bodyText = $('body').text() || $.root().text();
+  const text = String(bodyText || '').replace(/[^\S\n]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  const title = trimPreview($('title').first().text(), 240);
+  const description = extractHtmlMeta($, 'description') || extractHtmlMeta($, 'og:description');
+  const links = collectPageLinks($, pageUrl, maxLinks);
+
+  return {
+    final_url: pageUrl,
+    title,
+    description,
+    text,
+    links,
+    metadata: {
+      status,
+      fetched_at: new Date().toISOString(),
+      content_type: contentType,
+      fetch_mode: fetchMode,
+      lang: String($('html').attr('lang') || '').trim()
+    }
+  };
+}
+
+function shouldTryBrowserRender(html, text) {
+  if (String(text || '').trim().length >= 120) return false;
+  return /<script\b/i.test(html) ||
+    /id=["']__(?:next|nuxt)["']/i.test(html) ||
+    /data-reactroot|ng-version|window\.__/i.test(html);
+}
+
+function playwrightInstallHint() {
+  return 'For JavaScript-rendered pages, install Playwright for richer web_fetch results: npm install -g playwright && playwright install chromium';
+}
+
+async function loadOptionalPlaywright() {
+  try {
+    return await import('playwright');
+  } catch (error) {
+    const code = String(error?.code || '');
+    const message = String(error?.message || '');
+    if (code === 'ERR_MODULE_NOT_FOUND' || /Cannot find package 'playwright'|Cannot find module 'playwright'/i.test(message)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 async function buildPlaywrightLaunchEnv() {
   const localLibDir = path.join(
     process.env.HOME || '',
@@ -204,44 +253,85 @@ async function webFetchPage(args = {}) {
     ? String(normalizedArgs.wait_until).trim()
     : 'domcontentloaded';
 
-  const [{ chromium }, cheerio] = await Promise.all([import('playwright'), import('cheerio')]);
-
-  // Crawlee is intentionally disabled for now so single-page reads stay lightweight.
-  // If we later need multi-URL crawl orchestration, retries, or request queues, we can re-enable it here.
-
-  const browser = await chromium.launch({
-    headless: true,
-    env: await buildPlaywrightLaunchEnv()
-  });
+  const cheerio = await import('cheerio');
+  let staticResult = null;
+  let staticHtml = '';
+  let staticError = null;
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let response;
+    try {
+      response = await fetch(url, {
+        redirect: 'follow',
+        signal: controller.signal,
+        headers: {
+          'user-agent': 'CodeMiniCLI/0.4 web_fetch'
+        }
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+    staticHtml = await response.text();
+    staticResult = {
+      url,
+      ...extractPageContent(cheerio, staticHtml, response.url || url, {
+        maxLinks,
+        status: response.status,
+        contentType: response.headers.get('content-type') || '',
+        fetchMode: 'static'
+      })
+    };
+    if (!shouldTryBrowserRender(staticHtml, staticResult.text)) {
+      return staticResult;
+    }
+  } catch (error) {
+    staticError = error;
+  }
+
+  const playwright = await loadOptionalPlaywright();
+  if (!playwright) {
+    if (staticResult) {
+      return {
+        ...staticResult,
+        warnings: [playwrightInstallHint()]
+      };
+    }
+    throw new Error(`web_fetch failed and browser rendering is unavailable. ${playwrightInstallHint()}. Static fetch error: ${staticError?.message || staticError}`);
+  }
+
+  let browser;
+  try {
+    browser = await playwright.chromium.launch({
+      headless: true,
+      env: await buildPlaywrightLaunchEnv()
+    });
     const page = await browser.newPage();
     const response = await page.goto(url, { waitUntil, timeout: timeoutMs });
     const finalUrl = page.url();
     const html = await page.content();
-    const $ = cheerio.load(html);
-    const bodyText = $('body').text() || $.root().text();
-    const text = String(bodyText || '').replace(/[^\S\n]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
-    const title = trimPreview($('title').first().text() || (await page.title()), 240);
-    const description = extractHtmlMeta($, 'description') || extractHtmlMeta($, 'og:description');
-    const links = collectPageLinks($, finalUrl, maxLinks);
-
-    return {
+    const rendered = {
       url,
-      final_url: finalUrl,
-      title,
-      description,
-      text,
-      links,
-      metadata: {
+      ...extractPageContent(cheerio, html, finalUrl, {
+        maxLinks,
         status: response?.status?.() ?? null,
-        fetched_at: new Date().toISOString(),
-        content_type: response?.headers?.()['content-type'] || '',
-        wait_until: waitUntil,
-        lang: String($('html').attr('lang') || '').trim()
-      }
+        contentType: response?.headers?.()['content-type'] || '',
+        fetchMode: 'browser'
+      })
     };
+    rendered.metadata.wait_until = waitUntil;
+    rendered.title = rendered.title || trimPreview(await page.title(), 240);
+    return rendered;
+  } catch (error) {
+    if (staticResult) {
+      return {
+        ...staticResult,
+        warnings: [`Browser rendering fallback failed: ${error?.message || error}`]
+      };
+    }
+    throw error;
   } finally {
-    await browser.close();
+    if (browser) await browser.close();
   }
 }
 
@@ -2036,7 +2126,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'web_fetch',
         description:
-          'Fetch and read a live web page. Uses Playwright to render the page, Cheerio to extract structured content, and Crawlee request handling to normalize the fetch flow. Use this for direct URL reads, not for keyword search.',
+          'Fetch and read a live web page. Uses a lightweight fetch + Cheerio reader by default, then falls back to optional Playwright browser rendering for JavaScript-heavy pages when Playwright is installed. Use this for direct URL reads, not for keyword search.',
         parameters: {
           type: 'object',
           properties: {
@@ -2742,6 +2832,12 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       if (result.title) lines.push(`title: ${result.title}`);
       if (result.description) lines.push(`description: ${trimPreview(result.description, 200)}`);
       if (result.metadata?.status) lines.push(`status: ${result.metadata.status}`);
+      if (result.metadata?.fetch_mode) lines.push(`mode: ${result.metadata.fetch_mode}`);
+      if (Array.isArray(result.warnings)) {
+        for (const warning of result.warnings.slice(0, 3)) {
+          if (warning) lines.push(`warning: ${warning}`);
+        }
+      }
       if (Array.isArray(result.links) && result.links.length > 0) {
         lines.push(`links: ${result.links.slice(0, 5).map((item) => item.href).join(', ')}`);
       }
