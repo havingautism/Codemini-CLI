@@ -2630,36 +2630,36 @@ export function renderMessageRow(msg, row, idx, loaderTick) {
     return h(
       Box,
       { key: `row-table-${msg.id}-${idx}`, marginLeft: 1 },
-      h(Text, { color: row.isHeader ? 'cyanBright' : 'gray', bold: Boolean(row.isHeader) }, row.text)
+      h(Text, { color: 'white', bold: Boolean(row.isHeader) }, row.text)
     );
   }
   if (row.kind === 'table-separator') {
     return h(
       Box,
       { key: `row-table-sep-${msg.id}-${idx}`, marginLeft: 1 },
-      h(Text, { color: 'gray' }, row.text)
+      h(Text, { color: 'white' }, row.text)
     );
   }
   if (row.kind === 'table-vertical') {
     return h(
       Box,
       { key: `row-table-v-${msg.id}-${idx}`, marginLeft: 1 },
-      h(Text, { color: 'cyanBright', bold: true }, `${row.label}:`),
-      h(Text, { color: 'gray' }, row.text ? ` ${row.text}` : '')
+      h(Text, { color: 'white', bold: true }, `${row.label}:`),
+      h(Text, { color: 'white' }, row.text ? ` ${row.text}` : '')
     );
   }
   if (row.kind === 'table-vertical-continuation') {
     return h(
       Box,
       { key: `row-table-vc-${msg.id}-${idx}`, marginLeft: 3 },
-      h(Text, { color: 'gray' }, row.text)
+      h(Text, { color: 'white' }, row.text)
     );
   }
   if (row.kind === 'table-vertical-separator') {
     return h(
       Box,
       { key: `row-table-vs-${msg.id}-${idx}`, marginLeft: 1 },
-      h(Text, { color: 'gray' }, row.text)
+      h(Text, { color: 'white' }, row.text)
     );
   }
   if (row.kind === 'activity-collapsed') {

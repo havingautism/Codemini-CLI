@@ -17,7 +17,7 @@ Usage:
   codemini run --pipeline <task> [--model <name>]
   codemini config set|get|list <key> [value]
   codemini doctor
-  codemini skill list|install|enable|disable|inspect|reindex
+  codemini skill list|install|enable|disable|inspect|reindex [--scope=project|global]
   codemini --version
   codemini --help`);
 }

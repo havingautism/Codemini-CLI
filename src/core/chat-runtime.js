@@ -1057,7 +1057,12 @@ async function buildTesterVerificationPacket(focusPaths = []) {
   return lines.join('\n');
 }
 
-function isSkillEnabled(config, name) {
+function isBundledSkillCommand(command) {
+  return command?.metadata?.type === 'skill' && command?.source === 'bundled-skill';
+}
+
+function isSkillEnabled(config, name, command = null) {
+  if (isBundledSkillCommand(command)) return true;
   return config.skills?.enabled?.[name] !== false;
 }
 
@@ -1182,7 +1187,7 @@ function buildMediumTaskSystemPrompt(systemPrompt) {
 }
 
 function buildAutoSkillSystemPrompt(baseSystemPrompt, commands, config, text) {
-  const selected = classifyAutoRoute(text).selectedSkills.filter((name) => isSkillEnabled(config, name));
+  const selected = classifyAutoRoute(text).selectedSkills.filter((name) => isSkillEnabled(config, name, commands.get(name)));
   if (selected.length === 0) return baseSystemPrompt;
 
   const blocks = [];
@@ -3078,7 +3083,7 @@ export async function createChatRuntime({
     ];
     const out = [];
     for (const cmd of commands.values()) {
-      if (cmd.metadata.type === 'skill' && config.skills?.enabled?.[cmd.name] === false) {
+      if (cmd.metadata.type === 'skill' && !isSkillEnabled(config, cmd.name, cmd)) {
         continue;
       }
       out.push({
@@ -4344,7 +4349,7 @@ export async function createChatRuntime({
       if (!custom) {
         return { type: 'system', text: `Unknown slash command: /${parsedInput.command}` };
       }
-      if (custom.metadata.type === 'skill' && config.skills?.enabled?.[custom.name] === false) {
+      if (custom.metadata.type === 'skill' && !isSkillEnabled(config, custom.name, custom)) {
         return { type: 'system', text: `Skill is disabled: ${custom.name}` };
       }
 
@@ -4494,7 +4499,7 @@ export async function createChatRuntime({
       return { type: 'system', text };
     }
 
-    const selectedAutoSkills = autoRoute.selectedSkills.filter((name) => isSkillEnabled(config, name));
+    const selectedAutoSkills = autoRoute.selectedSkills.filter((name) => isSkillEnabled(config, name, commands.get(name)));
     if (selectedAutoSkills.length > 0 && onAgentEvent) {
       onAgentEvent({
         type: 'skill:auto',

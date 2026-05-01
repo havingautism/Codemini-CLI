@@ -352,6 +352,24 @@ test('status rows use grey text styling during reply generation', () => {
   assert.equal(statusTextNode.props.dimColor, true);
 });
 
+test('markdown table rows render border and cell text in white', () => {
+  const msg = { id: 'coder-1', label: 'coder' };
+  const tableRow = renderMessageRow(msg, { kind: 'table', text: '│ cell │', isHeader: false }, 0, 0);
+  const headerRow = renderMessageRow(msg, { kind: 'table', text: '│ head │', isHeader: true }, 1, 0);
+  const separatorRow = renderMessageRow(msg, { kind: 'table-separator', text: '┌────┐' }, 2, 0);
+  const verticalRow = renderMessageRow(msg, { kind: 'table-vertical', label: 'Field', text: 'value' }, 3, 0);
+  const continuationRow = renderMessageRow(msg, { kind: 'table-vertical-continuation', text: 'wrapped' }, 4, 0);
+  const verticalSeparatorRow = renderMessageRow(msg, { kind: 'table-vertical-separator', text: '────' }, 5, 0);
+
+  assert.equal(tableRow.props.children.props.color, 'white');
+  assert.equal(headerRow.props.children.props.color, 'white');
+  assert.equal(separatorRow.props.children.props.color, 'white');
+  assert.equal(verticalRow.props.children[0].props.color, 'white');
+  assert.equal(verticalRow.props.children[1].props.color, 'white');
+  assert.equal(continuationRow.props.children.props.color, 'white');
+  assert.equal(verticalSeparatorRow.props.children.props.color, 'white');
+});
+
 test('collapseActivityChainRows keeps only the latest three tool activities when collapsed', () => {
   const copy = {
     generic: {

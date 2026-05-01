@@ -58,6 +58,12 @@ function isSafeEntry(entry) {
   return entry !== '.' && entry !== '..' && !entry.includes('/') && !entry.includes('\\');
 }
 
+function setCommand(out, name, command) {
+  const existing = out.get(name);
+  if (existing?.source === 'bundled-skill') return;
+  out.set(name, command);
+}
+
 function loadMarkdownCommandsFromDir(baseDir, source, out) {
   if (!fs.existsSync(baseDir)) return;
   for (const entry of safeEntries(baseDir)) {
@@ -70,7 +76,7 @@ function loadMarkdownCommandsFromDir(baseDir, source, out) {
       if (fs.existsSync(commandFile)) {
         const raw = fs.readFileSync(commandFile, 'utf8');
         const parsed = parseFrontmatter(raw);
-        out.set(entry, {
+        setCommand(out, entry, {
           name: entry,
           source,
           path: commandFile,
@@ -85,7 +91,7 @@ function loadMarkdownCommandsFromDir(baseDir, source, out) {
       const name = entry.replace(/\.md$/, '');
       const raw = fs.readFileSync(full, 'utf8');
       const parsed = parseFrontmatter(raw);
-      out.set(name, {
+      setCommand(out, name, {
         name,
         source,
         path: full,
@@ -107,7 +113,7 @@ function loadLegacySkillsFromDir(baseDir, source, out) {
     if (!fs.existsSync(skillFile)) continue;
     const raw = fs.readFileSync(skillFile, 'utf8');
     const parsed = parseFrontmatter(raw);
-    out.set(entry, {
+    setCommand(out, entry, {
       name: entry,
       source: `${source}-skill`,
       path: skillFile,
@@ -131,7 +137,7 @@ function loadBundledSkillsFromDir(baseDir, out) {
     if (!fs.existsSync(skillFile)) continue;
     const raw = fs.readFileSync(skillFile, 'utf8');
     const parsed = parseFrontmatter(raw);
-    out.set(entry, {
+    setCommand(out, entry, {
       name: entry,
       source: 'bundled-skill',
       path: skillFile,
@@ -151,12 +157,13 @@ function loadInstalledSkillsFromRegistry(baseDir, registry, out) {
   for (const skill of registry.skills) {
     if (skill.enabled === false) continue;
     const name = skill.name;
+    if (out.has(name)) continue;
     const entry = skill.entryFile || 'SKILL.md';
     const full = path.join(baseDir, name, entry);
     if (!fs.existsSync(full)) continue;
     const raw = fs.readFileSync(full, 'utf8');
     const parsed = parseFrontmatter(raw);
-    out.set(name, {
+    setCommand(out, name, {
       name,
       source: 'registry-skill',
       path: full,

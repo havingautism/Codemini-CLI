@@ -16,7 +16,7 @@ CodeMini CLI is a terminal coding assistant built for teams that want a sharper,
 
 It is designed around a deliberate idea: most coding workflows do not need a huge default tool surface or unrestricted shell behavior. Instead, CodeMini starts with a compact core, loads advanced tools on demand, and keeps the agent grounded in structured code operations, session todos, lightweight project indexing, and shell-aware safety rules.
 
-**Contents** — [Why CodeMini CLI](#why-codemini-cli) · [Installation](#installation) · [Quick Start](#quick-start) · [Commands](#commands) · [Personalities (Souls)](#personalities-souls) · [Tool Model](#how-the-tool-model-works) · [Core Capabilities](#core-capabilities) · [Dream Loop (Built-in Memory Evolution)](#dream-loop-built-in-memory-evolution) · [Project Index](#project-index) · [Good Fit](#good-fit) · [Documentation](#documentation) · [Development](#development) · [License](#license)
+**Contents** — [Why CodeMini CLI](#why-codemini-cli) · [Installation](#installation) · [Quick Start](#quick-start) · [Commands](#commands) · [Personalities (Souls)](#personalities-souls) · [Tool Model](#how-the-tool-model-works) · [Core Capabilities](#core-capabilities) · [Reflect Skills](#reflect-skills) · [Dream Loop (Built-in Memory Evolution)](#dream-loop-built-in-memory-evolution) · [Project Index](#project-index) · [Good Fit](#good-fit) · [Documentation](#documentation) · [Development](#development) · [License](#license)
 
 ### Why CodeMini CLI
 
@@ -117,9 +117,13 @@ Skills are reusable workflow patterns that guide how the agent approaches differ
 Skills are installed and managed via `codemini skill`:
 
 ```bash
-codemini skill list        # List all available skills
-codemini skill inspect <name>  # Inspect a skill's details
+codemini skill list                         # List builtin, project, and global skills
+codemini skill install <path>               # Install to .codemini/skills by default
+codemini skill install --scope=global <path> # Install to the global skills directory
+codemini skill inspect <name>               # Inspect a skill's details
 ```
+
+Bundled skills are built in, always enabled, and cannot be disabled or overwritten. Third-party skills live either in the project at `.codemini/skills/<name>/SKILL.md` or globally at `<base-config-dir>/skills/<name>/SKILL.md`, matching `/reflect`.
 
 ### How The Tool Model Works
 
@@ -159,6 +163,30 @@ Typical flow:
 - Tree-sitter based structured editing for function, class, and method-level changes
 - Reply language control via `ui.reply_language`
 - Safe mode enabled by default
+
+### Reflect Skills
+
+`/reflect` turns a successful workflow from the current session into a reviewed, reusable `SKILL.md` draft.
+
+It is separate from the dream loop: reflect creates a skill draft, waits for review, and writes only after approval. It does not write inbox memories or run dream consolidation.
+
+Common forms:
+
+```text
+/reflect
+/reflect <what to preserve>
+/reflect --scope=global <what to preserve>
+```
+
+- `/reflect` is exploratory. CodeMini reviews recent context and proposes a skill only when there is a reusable pattern worth saving.
+- `/reflect <what to preserve>` is directed. Use it when you already know which successful chain should become a skill, such as `/reflect preserve the provider tool-call recovery workflow`.
+- `/reflect --scope=global <request>` writes the approved draft to the global skills directory instead of the current project.
+- The draft is previewed first. Use `/yes` to write it, `/edit <feedback>` to revise it, or `/no` to discard it.
+
+Approved skills are written to the same locations used by third-party skill install:
+
+- Project scope: `.codemini/skills/<skill-name>/SKILL.md`
+- Global scope: `<base-config-dir>/skills/<skill-name>/SKILL.md`
 
 ### Dream Loop (Built-in Memory Evolution)
 
@@ -361,9 +389,13 @@ Skill 是可复用的工作流模式，指导 agent 如何处理不同类型的�
 通过 `codemini skill` 管理技能：
 
 ```bash
-codemini skill list           # 列出所有可用 skill
-codemini skill inspect <name> # 查看某个 skill 的详细信息
+codemini skill list                          # 列出内置、项目级、全局 skill
+codemini skill install <path>                # 默认安装到 .codemini/skills
+codemini skill install --scope=global <path> # 安装到全局 skills 目录
+codemini skill inspect <name>                # 查看某个 skill 的详细信息
 ```
+
+内置 skill 是运行时能力，默认启用，不能禁用或被同名第三方 skill 覆盖。第三方 skill 分为项目级 `.codemini/skills/<name>/SKILL.md` 和全局 `<base-config-dir>/skills/<name>/SKILL.md`，与 `/reflect` 的写入位置一致。
 
 ### 工具模型怎么设计
 
@@ -403,6 +435,30 @@ CodeMini CLI 把工具分成两层：
 - 基于 Tree-sitter 的结构化编辑能力，适合函数级、类级、方法级改动
 - 支持通过 `ui.reply_language` 控制回复语言
 - safe mode 默认开启
+
+### Reflect Skills（复盘沉淀 Skill）
+
+`/reflect` 可以把当前会话中已经跑通的成功链路沉淀成一个可审阅、可复用的 `SKILL.md` 草稿。
+
+它和 dream loop 是分开的：reflect 只生成 skill 草稿，先让用户审阅，确认后才写文件；不会写入 inbox，也不会触发 dream consolidation。
+
+常用形式：
+
+```text
+/reflect
+/reflect <要沉淀的用户要求>
+/reflect --scope=global <要沉淀的用户要求>
+```
+
+- `/reflect` 是探索模式。CodeMini 会查看近期上下文，只有在确实有可复用模式时才提出 skill 草稿。
+- `/reflect <用户要求>` 是定向模式。适合你已经知道要沉淀哪条成功链路，例如 `/reflect 把刚才 provider tool_call 恢复链路沉淀成 skill`。
+- `/reflect --scope=global <用户要求>` 会把确认后的草稿写到全局 skill 目录，而不是当前项目。
+- 草稿会先预览。用 `/yes` 写入，用 `/edit <反馈>` 修改，用 `/no` 放弃。
+
+确认后的 skill 写入位置和第三方 skill 安装保持一致：
+
+- 项目级：`.codemini/skills/<skill-name>/SKILL.md`
+- 全局级：`<base-config-dir>/skills/<skill-name>/SKILL.md`
 
 ### Dream Loop（内置记忆演化）
 
