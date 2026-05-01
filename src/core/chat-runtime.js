@@ -30,6 +30,12 @@ import { forgetMemory, listMemories, rememberMemory, searchMemories, captureToIn
 import { runDreamConsolidation } from './dream-consolidate.js';
 import { normalizePlanState } from './plan-state.js';
 import { countActiveTodos, normalizeTodos } from './todo-state.js';
+import {
+  attachReflectTargets,
+  buildReflectSkillDraft,
+  parseReflectScope,
+  writeReflectSkillDraft
+} from './reflect-skill.js';
 
 const STREAM_SAVE_DEBOUNCE_MS = 120;
 
@@ -154,12 +160,14 @@ function getCompletionCopy(language = 'zh') {
         config: '设置/读取/列出/重置配置',
         memory: '查看/搜索/删除持久记忆',
         dream: '整理记忆收件箱（dream consolidation）',
+        reflect: '复盘成功链路并生成可审阅 skill 草稿',
         history: '查看/恢复会话',
         debug: '运行时调试开关',
         retry: '重试上一条用户请求',
         stop: '中止当前回答',
         new: '开始新会话',
         yes: '确认当前待审批计划并开始执行',
+        no: '放弃当前待审批事项',
         edit: '修改当前待审批计划',
         reject: '拒绝当前待审批计划'
       },
@@ -173,6 +181,7 @@ function getCompletionCopy(language = 'zh') {
         agentCommand: '子代理命令',
         memoryCommand: '记忆命令',
         dreamCommand: '记忆整理命令',
+        reflectCommand: '复盘生成 skill 草稿',
         debugCommand: '调试命令',
         keyboardDebugCommand: '键盘调试命令',
         compactCommand: '上下文压缩命令',
@@ -251,12 +260,14 @@ function getCompletionCopy(language = 'zh') {
         config: 'set/get/list/reset config values',
         memory: 'list/search/delete persistent memories',
         dream: 'consolidate memory inbox (dream)',
+        reflect: 'reflect on a successful workflow and draft a reusable skill',
         history: 'list/resume sessions',
         debug: 'runtime debug switches',
         retry: 'retry the last user request',
         stop: 'stop the current response',
         new: 'start a new session',
         yes: 'approve the pending plan and start execution',
+        no: 'discard the pending item',
         edit: 'revise the pending plan',
         reject: 'reject the pending plan'
       },
@@ -270,6 +281,7 @@ function getCompletionCopy(language = 'zh') {
         agentCommand: 'sub-agent command',
         memoryCommand: 'memory command',
         dreamCommand: 'dream consolidation command',
+        reflectCommand: 'reflect skill draft command',
         debugCommand: 'debug command',
         keyboardDebugCommand: 'keyboard debug command',
         compactCommand: 'context compaction command',
@@ -414,7 +426,10 @@ function buildPipelineStepGuidance({ role, stepIndex, totalSteps, isFirst, isLas
   lines.push('- If you discover something new, record it under the requested headings instead of burying it in prose.');
   lines.push('- Continue the established direction unless you have concrete contradictory evidence.');
   lines.push('- Output only what the next step needs to know. Skip obvious observations.');
-  if (isLast) {
+  if (role !== 'summarizer') {
+    lines.push('- Do not produce a final overall summary; the final summarizer step owns synthesis.');
+  }
+  if (isLast && role === 'summarizer') {
     lines.push('- Since you are the final step, give a concise overall verdict the user can act on.');
   }
   return lines.join('\n');
@@ -720,8 +735,9 @@ function buildAutoPlanPlannerGuidance() {
     '- Prefer the smallest local approach that satisfies the goal.',
     '- Do not output multiple alternative branches in the final plan.',
     '- Do not assume implementation should begin before the plan is coherent.',
-    '- Available sub-agent roles are planner, coder, reviewer, tester, and summarizer. Use only the roles the task actually needs.',
-    '- The summarizer role reads accumulated step results from the plan file and synthesizes a final summary. It does NOT re-analyze the codebase. Prefer summarizer as the final step for multi-step plans.',
+    '- Available sub-agent roles are planner, coder, reviewer, tester, and summarizer. Use only the non-summary roles the task actually needs.',
+    '- Always include a summarizer as the final step. The summarizer reads accumulated step results from the plan file and synthesizes the final summary. It does NOT re-analyze the codebase.',
+    '- Do not ask planner, coder, reviewer, or tester steps to produce the final summary. They should write detailed step results for the summarizer.',
     '- For implementation-heavy or risky changes, prefer adding review and/or verification steps.',
     '- For analysis, recommendation, or planning-only goals, you may omit reviewer/tester if they do not add value.',
     '- Prefer 3-5 steps total unless the task is clearly larger.',
@@ -1252,6 +1268,7 @@ function buildFallbackAutoPlan(goal) {
       : `Auto fallback plan for: ${goal}`;
 
   if (lightweightGoal) {
+    const summarizerStep = buildDefaultSummarizerStep(goal);
     return {
       summary,
       steps: [
@@ -1264,7 +1281,8 @@ function buildFallbackAutoPlan(goal) {
           title: 'Verify the change',
           role: 'tester',
           task: `Verify the completed change for: ${goal}. Run the most relevant focused checks available and report concrete evidence plus anything still unverified.`
-        }
+        },
+        summarizerStep
       ]
     };
   }
@@ -1345,16 +1363,18 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
 
   if (taskClass === 'advisory') {
     const advisorySteps = source.filter((step) => step.role === 'planner' || step.role === 'coder');
+    const baseSteps = advisorySteps.length > 0 ? advisorySteps.slice(0, 6) : [primaryImplementationStep];
     return {
       summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
-      steps: advisorySteps.length > 0 ? advisorySteps.slice(0, 6) : [primaryImplementationStep]
+      steps: [...baseSteps, summarizerStep]
     };
   }
 
   if (lightweightGoal) {
+    const baseSteps = hasTester ? [primaryImplementationStep, testerStep] : [primaryImplementationStep];
     return {
       summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
-      steps: hasTester ? [primaryImplementationStep, testerStep] : [primaryImplementationStep]
+      steps: [...baseSteps, summarizerStep]
     };
   }
 
@@ -1363,11 +1383,9 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
     ...(hasReviewer ? [reviewerStep] : []),
     ...(testerStep ? [testerStep] : [])
   ];
-  const needsSummarizer = executionSteps.length >= 3;
-
   return {
     summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
-    steps: needsSummarizer ? [...executionSteps, summarizerStep] : executionSteps
+    steps: [...executionSteps, summarizerStep]
   };
 }
 
@@ -1657,35 +1675,51 @@ async function removePlanFileIfPresent(planState) {
 
 function buildSpecTemplate(topic) {
   return `
-# Spec: ${topic}
+# ${topic} Design
 
-## 1. Background
-- Why this work is needed
-- Existing pain points
+## Summary
+- Problem statement
+- Desired outcome
+- Why this is worth doing
 
-## 2. Goals
+## Goals
 - Primary goal
-- Non-goals
+- Secondary goals
 
-## 3. Scope
-- In scope
-- Out of scope
+## Non-Goals
+- Out-of-scope behavior
+- Explicitly rejected approaches
 
-## 4. Requirements
+## User Experience / Command Behavior
+- User-facing commands or flows
+- Review or approval behavior
+- Expected outputs
+
+## Architecture
+- Main modules and responsibilities
+- Data flow
+- Integration points
+
+## Data / State Model
+- New or changed state
+- Persistence locations
+- Lifecycle and cleanup behavior
+
+## Safety Rules
+- Guardrails
+- Permission or approval requirements
+- Failure behavior
+
+## Requirements
 - Functional requirements
 - Non-functional requirements
 - Win10 compatibility requirements
 
-## 5. Design
-- Architecture sketch
-- Data flow
-- Key interfaces/commands
-
-## 6. Risks and Mitigations
+## Risks and Mitigations
 - Risk
 - Mitigation
 
-## 7. Validation
+## Testing / Validation
 - Test strategy
 - Acceptance checklist
 `;
@@ -1704,17 +1738,20 @@ async function buildSpecWithModel({
   systemPrompt
 }) {
   const prompt = [
-    'Write a practical engineering spec in markdown.',
+    'Write a practical engineering spec in markdown, like an implementation-ready design document.',
     'Use these sections exactly:',
-    '# Spec: <title>',
-    '## 1. Background',
-    '## 2. Goals',
-    '## 3. Scope',
-    '## 4. Requirements',
-    '## 5. Design',
-    '## 6. Risks and Mitigations',
-    '## 7. Validation',
-    'Make it implementation-oriented and suitable for a Win10-first internal coding CLI.'
+    '# <Feature> Design',
+    '## Summary',
+    '## Goals',
+    '## Non-Goals',
+    '## User Experience / Command Behavior',
+    '## Architecture',
+    '## Data / State Model',
+    '## Safety Rules',
+    '## Requirements',
+    '## Risks and Mitigations',
+    '## Testing / Validation',
+    'Make it concrete, scoped, and suitable for turning into a sub-agent implementation plan.'
   ].join('\n');
 
   const result = await createChatCompletion({
@@ -1915,6 +1952,11 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
       value: currentSession?.planState?.status === 'pending_approval',
       enumerable: false,
       writable: false
+    },
+    pendingReflectSkill: {
+      value: currentSession?.planState?.status === 'pending_reflect_skill',
+      enumerable: false,
+      writable: false
     }
   });
   return snapshot;
@@ -1939,6 +1981,10 @@ function stampedMessage(role, content, extra = {}) {
 
 function hasPendingPlanApproval(session) {
   return session?.planState?.status === 'pending_approval';
+}
+
+function hasPendingReflectSkill(session) {
+  return session?.planState?.status === 'pending_reflect_skill';
 }
 
 function isApprovalText(text = '') {
@@ -1974,6 +2020,28 @@ function buildPendingPlanApprovalMessage(planState) {
     `Summary: ${planState?.finalSummary || planState?.summary || '-'}`,
     'Use /yes to execute this plan, /edit <feedback> to revise it, or /reject to discard it.'
   ];
+  return lines.join('\n');
+}
+
+function buildPendingReflectSkillMessage(reflectState) {
+  const candidates = Array.isArray(reflectState?.candidates) ? reflectState.candidates : [];
+  if (candidates.length === 0) {
+    return 'Reflect found no reusable skill candidate.';
+  }
+  const lines = [
+    'Reflect skill draft pending.',
+    `Scope: ${reflectState?.targetScope || 'project'}`
+  ];
+  for (const candidate of candidates) {
+    lines.push('');
+    lines.push(`[${candidate.id || 1}] ${candidate.name}`);
+    lines.push(`Confidence: ${Number(candidate.confidence ?? 0.75).toFixed(2)}`);
+    lines.push(`Target: ${candidate.targetPath || '-'}`);
+    lines.push('');
+    lines.push(String(candidate.content || '').trim());
+  }
+  lines.push('');
+  lines.push('Use /yes to write this skill, /edit <feedback> to revise it, or /no to discard it.');
   return lines.join('\n');
 }
 
@@ -2376,6 +2444,12 @@ async function runSubAgentTask({
         }
       } catch {}
     }
+    if (
+      role !== 'summarizer' &&
+      ['assistant:start', 'assistant:delta', 'assistant:response', 'assistant:tool_call_delta'].includes(String(evt?.type || ''))
+    ) {
+      return;
+    }
     if (onAgentEvent) onAgentEvent(evt);
   };
   const roleAllowedTools = ROLE_TOOL_POLICY[role];
@@ -2504,7 +2578,14 @@ async function executePlanWithSubAgents({
       );
     }
 
-    if (stepRecord.failed && i < steps.length - 1) break;
+    if (stepRecord.failed && i < steps.length - 1) {
+      const summarizerIndex = steps.findIndex((candidate, index) => index > i && candidate.role === 'summarizer');
+      if (summarizerIndex > i) {
+        i = summarizerIndex - 1;
+        continue;
+      }
+      break;
+    }
   }
 
   const summaryLines = [];
@@ -2591,8 +2672,9 @@ async function buildAutoPlanAndRun({
           content: [
             'Create an execution plan and assign best sub-agent role for each step.',
             'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.',
-            'The available roles are planner, coder, reviewer, tester, and summarizer. Use only the roles the task actually needs.',
-            'The summarizer role synthesizes prior step results without re-analyzing. Use it as the final step for plans with 3+ steps.',
+            'The available roles are planner, coder, reviewer, tester, and summarizer. Use only the non-summary roles the task actually needs.',
+            'Always include a summarizer as the final step. The summarizer synthesizes prior step results without re-analyzing.',
+            'Planner, coder, reviewer, and tester steps should write detailed step results, not final summaries.',
             `Task class: ${normalizedTaskClass}`,
             'Before choosing roles, decide whether the request is advisory, implementation, or verification-heavy.',
             requirementPacket,
@@ -2709,7 +2791,8 @@ async function revisePendingPlanWithModel({
     buildAutoPlanPlannerGuidance(),
     'You are revising an existing plan based on explicit user feedback.',
     'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.',
-    'Keep roles minimal and only include steps that materially help the goal.'
+    'Keep roles minimal and only include steps that materially help the goal.',
+    'Always keep a summarizer as the final step.'
   ].join('\n');
   const result = await createChatCompletion({
     sdkProvider: config.sdk?.provider,
@@ -2869,6 +2952,13 @@ export async function createChatRuntime({
     executionMode = 'plan';
   }
   const commands = await loadCommandsAndSkills();
+  const reloadCommandsAndSkills = async () => {
+    const next = await loadCommandsAndSkills();
+    commands.clear();
+    for (const [name, command] of next.entries()) {
+      commands.set(name, command);
+    }
+  };
 
   // Set up tool result store under session directory
   const sessionResultsDir = path.join(getSessionsDir(), String(currentSession.id));
@@ -2979,6 +3069,7 @@ export async function createChatRuntime({
       { name: 'config', description: completionCopy.commands.config },
       { name: 'memory', description: completionCopy.commands.memory },
       { name: 'dream', description: completionCopy.commands.dream },
+      { name: 'reflect', description: completionCopy.commands.reflect },
       { name: 'history', description: completionCopy.commands.history },
       { name: 'debug', description: completionCopy.commands.debug },
       { name: 'retry', description: completionCopy.commands.retry },
@@ -3030,6 +3121,7 @@ export async function createChatRuntime({
   const agentTemplates = ['/agents list', '/agents run planner <task>', '/agents run coder <task>', '/agents run reviewer <task>', '/agents run tester <task>', '/agents run summarizer <task>'];
   const debugTemplates = ['/debug keys on', '/debug keys off', '/debug keys status'];
   const dreamTemplates = ['/dream', '/dream --dry-run', '/dream --scope=project', '/dream --scope=global'];
+  const reflectTemplates = ['/reflect', '/reflect --scope=global <request>', '/reflect <request>'];
   const compactTemplates = compactOptions.map((opt) => `/compact ${opt}`);
   const slashTemplates = [
     ...configTemplates,
@@ -3042,6 +3134,7 @@ export async function createChatRuntime({
     ...agentTemplates,
     ...debugTemplates,
     ...dreamTemplates,
+    ...reflectTemplates,
     ...compactTemplates,
     '/retry',
     '/status'
@@ -3109,6 +3202,7 @@ export async function createChatRuntime({
     for (const template of agentTemplates) registerSuggestion(template, completionCopy.generic.agentCommand);
     for (const template of debugTemplates) registerSuggestion(template, completionCopy.generic.debugCommand);
     for (const template of dreamTemplates) registerSuggestion(template, completionCopy.generic.dreamCommand);
+    for (const template of reflectTemplates) registerSuggestion(template, completionCopy.generic.reflectCommand);
     for (const template of compactTemplates) registerSuggestion(template, completionCopy.generic.compactCommand);
     registerSuggestion('/retry', completionCopy.generic.retryCommand);
     registerSuggestion('/status', completionCopy.generic.statusCommand);
@@ -3555,7 +3649,7 @@ export async function createChatRuntime({
       if (parsedInput.command === 'help') {
         return {
           type: 'system',
-          text: 'Commands: /help /exit /new /stop /commands /status /mode /compact /checkpoint /spec /plan /yes /edit /reject /agents /config /memory /capture /inbox /dream /history /debug /retry /<custom> !<shell>'
+          text: 'Commands: /help /exit /new /stop /commands /status /mode /compact /checkpoint /spec /plan /yes /no /edit /reject /agents /config /memory /capture /inbox /dream /reflect /history /debug /retry /<custom> !<shell>'
         };
       }
       if (parsedInput.command === 'status') {
@@ -3581,6 +3675,27 @@ export async function createChatRuntime({
         return { type: 'system', text };
       }
       if (parsedInput.command === 'yes') {
+        if (hasPendingReflectSkill(currentSession)) {
+          const state = { ...currentSession.planState };
+          const candidate = Array.isArray(state.candidates) ? state.candidates[0] : null;
+          if (!candidate) {
+            currentSession.planState = null;
+            const text = 'No reflect skill draft to write.';
+            await persistLocalExchange(line, text, { includeUser: false });
+            return { type: 'system', text };
+          }
+          const written = await writeReflectSkillDraft({
+            draft: candidate,
+            scope: state.targetScope || 'project',
+            workspaceRoot: process.cwd()
+          });
+          currentSession.planState = null;
+          executionMode = 'auto';
+          await reloadCommandsAndSkills();
+          const text = `Reflect skill written and loaded: /${written.draft.name}\nPath: ${written.filePath}`;
+          await persistLocalExchange(line, text, { includeUser: false });
+          return { type: 'system', text };
+        }
         if (!hasPendingPlanApproval(currentSession)) {
           return { type: 'system', text: 'No pending plan approval. Use /plan auto <goal> first.' };
         }
@@ -3604,6 +3719,35 @@ export async function createChatRuntime({
         return { type: 'assistant', text: result.text, aborted: !!result.aborted };
       }
       if (parsedInput.command === 'edit') {
+        if (hasPendingReflectSkill(currentSession)) {
+          const feedback = parsedInput.args.join(' ').trim();
+          if (!feedback) {
+            return { type: 'system', text: 'Usage: /edit <feedback>' };
+          }
+          const state = { ...currentSession.planState };
+          const previousDraft = Array.isArray(state.candidates) ? state.candidates[0] : null;
+          const drafts = await buildReflectSkillDraft({
+            request: state.request || '',
+            scope: state.targetScope || 'project',
+            session: currentSession,
+            config,
+            model,
+            systemPrompt: activeReplySystemPrompt,
+            previousDraft,
+            feedback
+          });
+          currentSession.planState = {
+            ...state,
+            candidates: attachReflectTargets({
+              candidates: drafts,
+              scope: state.targetScope || 'project',
+              workspaceRoot: process.cwd()
+            })
+          };
+          const text = `Reflect skill draft revised.\n${buildPendingReflectSkillMessage(currentSession.planState)}`;
+          await persistLocalExchange(line, text);
+          return { type: 'system', text };
+        }
         if (!hasPendingPlanApproval(currentSession)) {
           return { type: 'system', text: 'No pending plan approval. Use /plan auto <goal> first.' };
         }
@@ -3623,6 +3767,23 @@ export async function createChatRuntime({
         const text = `Plan revised.\n${buildPendingPlanApprovalMessage(currentSession.planState)}`;
         await persistLocalExchange(line, text);
         return { type: 'system', text };
+      }
+      if (parsedInput.command === 'no') {
+        if (hasPendingReflectSkill(currentSession)) {
+          currentSession.planState = null;
+          executionMode = 'auto';
+          const text = 'Reflect skill draft discarded.';
+          await persistLocalExchange(line, text, { includeUser: false });
+          return { type: 'system', text };
+        }
+        if (hasPendingPlanApproval(currentSession)) {
+          currentSession.planState = null;
+          executionMode = 'auto';
+          const text = 'Pending plan rejected and cleared.';
+          await persistLocalExchange(line, text, { includeUser: false });
+          return { type: 'system', text };
+        }
+        return { type: 'system', text: 'No pending reflect skill draft.' };
       }
       if (parsedInput.command === 'reject') {
         if (!hasPendingPlanApproval(currentSession)) {
@@ -4026,6 +4187,37 @@ export async function createChatRuntime({
         } catch (err) {
           return { type: 'system', text: `Dream failed: ${err.message}` };
         }
+      }
+      if (parsedInput.command === 'reflect') {
+        const parsedReflect = parseReflectScope(parsedInput.args);
+        const drafts = await buildReflectSkillDraft({
+          request: parsedReflect.request,
+          scope: parsedReflect.scope,
+          session: currentSession,
+          config,
+          model,
+          systemPrompt: activeReplySystemPrompt
+        });
+        const candidates = attachReflectTargets({
+          candidates: drafts,
+          scope: parsedReflect.scope,
+          workspaceRoot: process.cwd()
+        });
+        if (candidates.length === 0) {
+          const text = 'Reflect found no reusable skill candidate.';
+          await persistLocalExchange(line, text);
+          return { type: 'system', text };
+        }
+        currentSession.planState = {
+          status: 'pending_reflect_skill',
+          source: 'reflect',
+          targetScope: parsedReflect.scope,
+          request: parsedReflect.request,
+          candidates
+        };
+        const text = buildPendingReflectSkillMessage(currentSession.planState);
+        await persistLocalExchange(line, text);
+        return { type: 'system', text };
       }
       if (parsedInput.command === 'retry') {
         const lastUser = [...currentSession.messages].reverse().find((m) => m.role === 'user');

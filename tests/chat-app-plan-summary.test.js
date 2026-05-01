@@ -3,15 +3,19 @@ import assert from 'node:assert/strict';
 
 import {
   buildPreToolNotice,
+  formatReflectApprovalLines,
   formatPlanApprovalLines,
   formatDeleteApprovalLines,
   injectPlanStateMessage,
   normalizeDeleteApprovalRequest,
+  parsePendingReflectSkillMessage,
   parsePendingPlanApprovalMessage,
   parsePlanExecutionResult,
   parsePlanApprovalAnswer,
+  parseReflectApprovalAnswer,
   parseDeleteApprovalAnswer,
   parseAutoPlanSummaryMessage,
+  formatPlanAgentLabel,
   parsePlanProgressLine,
   stripPlanExecutionResult
 } from '../src/tui/chat-app.js';
@@ -92,6 +96,16 @@ test('parsePlanProgressLine extracts plan step metadata from streamed text', () 
     title: '运行天气页面测试'
   });
   assert.equal(parsePlanProgressLine('普通文本'), null);
+});
+
+test('formatPlanAgentLabel includes role emoji and display name', () => {
+  const zhCopy = {
+    roleLabels: { planner: '📋 PLANNER', summarizer: '📝 SUMMARIZER', coder: '💻 CODER' }
+  };
+
+  assert.equal(formatPlanAgentLabel('planner', zhCopy), '📋 PLANNER');
+  assert.equal(formatPlanAgentLabel('summarizer', zhCopy), '📝 SUMMARIZER');
+  assert.equal(formatPlanAgentLabel('unknown', zhCopy), '💻 CODER');
 });
 
 test('parsePlanExecutionResult extracts status, verified, and next fields', () => {
@@ -391,4 +405,77 @@ test('formatPlanApprovalLines keeps the plan approval panel concise', () => {
   );
 
   assert.deepEqual(lines, ['确认执行计划？']);
+});
+
+test('parsePendingReflectSkillMessage extracts reflect draft metadata', () => {
+  const parsed = parsePendingReflectSkillMessage(`
+Reflect skill draft pending.
+Scope: project
+
+[1] fetch-hupu-basketball-news
+Confidence: 0.82
+Target: /repo/.codemini/skills/fetch-hupu-basketball-news/SKILL.md
+
+Use /yes to write this skill, /edit <feedback> to revise it, or /no to discard it.
+  `);
+
+  assert.deepEqual(parsed, {
+    scope: 'project',
+    name: 'fetch-hupu-basketball-news',
+    confidence: '0.82',
+    targetPath: '/repo/.codemini/skills/fetch-hupu-basketball-news/SKILL.md'
+  });
+});
+
+test('parsePendingReflectSkillMessage handles revised reflect draft text', () => {
+  const parsed = parsePendingReflectSkillMessage(`
+Reflect skill draft revised.
+Reflect skill draft pending.
+Scope: global
+
+[1] runtime-tool-call-success
+Confidence: 0.90
+Target: /home/user/.codex/skills/runtime-tool-call-success/SKILL.md
+  `);
+
+  assert.equal(parsed?.scope, 'global');
+  assert.equal(parsed?.name, 'runtime-tool-call-success');
+});
+
+test('formatReflectApprovalLines uses reflect-specific review copy', () => {
+  const lines = formatReflectApprovalLines(
+    {
+      reflectApproval: {
+        title: '审阅 Reflect 技能草稿？',
+        scopeLabel: '范围',
+        nameLabel: '名称',
+        targetLabel: '目标',
+        prompt: '输入 /yes 写入，输入 /edit <反馈> 修改，输入 /no 丢弃。'
+      }
+    },
+    {
+      scope: 'project',
+      name: 'fetch-hupu-basketball-news',
+      targetPath: '/repo/.codemini/skills/fetch-hupu-basketball-news/SKILL.md'
+    }
+  );
+
+  assert.deepEqual(lines, [
+    '审阅 Reflect 技能草稿？',
+    '范围: project',
+    '名称: fetch-hupu-basketball-news',
+    '目标: /repo/.codemini/skills/fetch-hupu-basketball-news/SKILL.md',
+    '输入 /yes 写入，输入 /edit <反馈> 修改，输入 /no 丢弃。'
+  ]);
+});
+
+test('parseReflectApprovalAnswer maps no to /no instead of plan reject', () => {
+  assert.deepEqual(parseReflectApprovalAnswer('/yes'), { action: 'approve', command: '/yes' });
+  assert.deepEqual(parseReflectApprovalAnswer('no'), { action: 'reject', command: '/no' });
+  assert.deepEqual(parseReflectApprovalAnswer('/edit tighten it'), {
+    action: 'edit',
+    feedback: 'tighten it',
+    command: '/edit tighten it'
+  });
+  assert.equal(parseReflectApprovalAnswer('/reject').action, 'invalid');
 });

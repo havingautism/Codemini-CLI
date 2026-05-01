@@ -1519,6 +1519,217 @@ test('slash brainstorm includes the user question in the rendered prompt', { con
   });
 });
 
+test('spec command asks for design-doc sections modeled after reflect spec format', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-spec-format-'));
+    const previousCwd = process.cwd();
+    let systemText = '';
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+      systemText = String(body.messages?.[0]?.content || '');
+      return makeJsonResponse({
+        choices: [{
+          message: {
+            content: [
+              '# Demo Feature Design',
+              '',
+              '## Summary',
+              'Add a demo feature.',
+              '',
+              '## Goals',
+              '- Keep the behavior clear.',
+              '',
+              '## Non-Goals',
+              '- Do not expand scope.',
+              '',
+              '## User Experience',
+              '- Use existing commands.',
+              '',
+              '## Architecture',
+              '- Reuse runtime paths.',
+              '',
+              '## Data / State Model',
+              '- No new durable state.',
+              '',
+              '## Safety Rules',
+              '- Require review.',
+              '',
+              '## Testing / Validation',
+              '- Run focused tests.'
+            ].join('\n')
+          }
+        }]
+      });
+    });
+
+    try {
+      process.chdir(cwd);
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-spec-design-format',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const result = await runtime.submit('/spec demo feature');
+      assert.equal(result.type, 'system');
+      assert.match(systemText, /## Summary/);
+      assert.match(systemText, /## Non-Goals/);
+      assert.match(systemText, /## Architecture/);
+      assert.match(systemText, /## Data \/ State Model/);
+      assert.match(systemText, /## Safety Rules/);
+      assert.match(systemText, /like an implementation-ready design document/i);
+      const specPath = String(result.text || '').replace(/^Spec created:\s*/i, '').trim();
+      assert.match(await fs.readFile(specPath, 'utf8'), /# Demo Feature Design/);
+    } finally {
+      process.chdir(previousCwd);
+      await restoreFetch();
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('reflect creates a pending skill draft and yes writes project skill without inbox', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-reflect-runtime-'));
+    const previousCwd = process.cwd();
+    let reflectedPrompt = '';
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+      reflectedPrompt = String(body.messages?.at(-1)?.content || '');
+      return makeJsonResponse({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              candidates: [{
+                name: 'runtime-tool-call-success',
+                description: 'Use when preserving a successful runtime tool-call chain.',
+                confidence: 0.88,
+                content: '## Workflow\n\n1. Inspect the previous tool-call failure.\n2. Preserve the corrected message shape.\n3. Verify the provider accepts the request.'
+              }]
+            })
+          }
+        }]
+      });
+    });
+
+    try {
+      process.chdir(cwd);
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-reflect-project-skill',
+          createdAt: now,
+          updatedAt: now,
+          messages: [
+            { role: 'user', content: '调用 provider tool_call 失败。', at: now },
+            { role: 'assistant', content: '调整 messages 格式后调用成功。', at: now }
+          ]
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const pending = await runtime.submit('/reflect 帮我沉淀上面 tool_call 成功链路');
+      assert.equal(pending.type, 'system');
+      assert.match(pending.text, /Reflect skill draft pending/i);
+      assert.match(pending.text, /runtime-tool-call-success/);
+      assert.match(reflectedPrompt, /帮我沉淀上面 tool_call 成功链路/);
+      await assert.rejects(
+        () => fs.access(path.join(cwd, '.codemini', 'skills', 'runtime-tool-call-success', 'SKILL.md')),
+        /ENOENT/
+      );
+
+      const accepted = await runtime.submit('/yes');
+      assert.equal(accepted.type, 'system');
+      assert.match(accepted.text, /Reflect skill written/i);
+      const skillPath = path.join(cwd, '.codemini', 'skills', 'runtime-tool-call-success', 'SKILL.md');
+      assert.match(await fs.readFile(skillPath, 'utf8'), /runtime-tool-call-success/);
+      const commands = await runtime.submit('/commands');
+      assert.match(commands.text, /\/runtime-tool-call-success/);
+      assert.deepEqual(await listInbox(), []);
+    } finally {
+      process.chdir(previousCwd);
+      await restoreFetch();
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('reflect edit regenerates pending draft and no discards it', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-reflect-edit-'));
+    const previousCwd = process.cwd();
+    let callCount = 0;
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      callCount += 1;
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+      const userText = String(body.messages?.at(-1)?.content || '');
+      if (callCount === 2) assert.match(userText, /名字改成 provider-tool-call-recovery/);
+      const name = callCount === 1 ? 'first-reflect-draft' : 'provider-tool-call-recovery';
+      return makeJsonResponse({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              candidates: [{
+                name,
+                description: 'Use when preserving a corrected provider workflow.',
+                content: '## Workflow\n\nKeep the corrected provider request chain.'
+              }]
+            })
+          }
+        }]
+      });
+    });
+
+    try {
+      process.chdir(cwd);
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-reflect-edit',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      await runtime.submit('/reflect preserve the provider success chain');
+      const edited = await runtime.submit('/edit 名字改成 provider-tool-call-recovery');
+      assert.equal(edited.type, 'system');
+      assert.match(edited.text, /provider-tool-call-recovery/);
+
+      const discarded = await runtime.submit('/no');
+      assert.equal(discarded.type, 'system');
+      assert.match(discarded.text, /discarded/i);
+      await assert.rejects(
+        () => fs.access(path.join(cwd, '.codemini', 'skills', 'provider-tool-call-recovery', 'SKILL.md')),
+        /ENOENT/
+      );
+    } finally {
+      process.chdir(previousCwd);
+      await restoreFetch();
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
 test('chat runtime does not auto-inject executing-plan-lite for ordinary implementation prompts', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let inspected = false;
@@ -1682,6 +1893,7 @@ test('plan auto keeps advisory plans lean instead of forcing reviewer and tester
       const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
       assert.equal(body.stream, undefined);
       assert.match(String(body.messages?.[1]?.content || ''), /Task class: advisory/i);
+      assert.match(String(body.messages?.[1]?.content || ''), /Always include a summarizer as the final step/i);
       return makeJsonResponse({
         choices: [
           {
@@ -1729,7 +1941,7 @@ test('plan auto keeps advisory plans lean instead of forcing reviewer and tester
       assert.match(result.text, /Approval: pending/i);
       assert.doesNotMatch(result.text, /reviewer/i);
       assert.doesNotMatch(result.text, /tester/i);
-      assert.doesNotMatch(result.text, /summarizer/i);
+      assert.match(result.text, /\[summarizer\] Synthesize final implementation status/i);
     } finally {
       await restoreFetch();
     }
@@ -1871,6 +2083,18 @@ test('plan auto run immediately executes the generated plan without pending appr
         ]);
       }
 
+      if (callIndex === 4) {
+        assert.equal(body.stream, true);
+        const scopedTask = String(body.messages?.[1]?.content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Accumulated plan file context/i);
+        assert.match(scopedTask, /Synthesize final implementation status/i);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Summary:\n- Optimization review completed.\nKey Findings:\n- Cache invalidation and config loading are the top opportunities.\nActions Taken:\n- Inspected core modules and identified recommendations.\nRemaining Issues:\n- none\nRecommended Next Steps:\n- Prioritize the config loading cleanup.' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
       throw new Error(`unexpected fetch call ${callIndex}`);
     });
 
@@ -1896,9 +2120,9 @@ test('plan auto run immediately executes the generated plan without pending appr
       assert.match(String(pending.text || ''), /Approval:\s*pending/i);
       const result = await runtime.submit('/yes');
       assert.equal(result.type, 'assistant');
-      assert.match(result.text, /Summarized optimization ideas/i);
-      assert.equal(callIndex, 3);
-      assert.equal(executionPrompts.length, 2);
+      assert.match(result.text, /Optimization review completed/i);
+      assert.equal(callIndex, 4);
+      assert.equal(executionPrompts.length, 3);
     } finally {
       await restoreFetch();
     }
@@ -2026,6 +2250,19 @@ test('plan auto run executes the approved plan prompt immediately', { concurrenc
         events.some(
           (event) =>
             event?.type === 'assistant:delta' && String(event.text || '').includes('[plan] Step 4/4 -> summarizer: Synthesize final implementation status')
+        )
+      );
+      assert.ok(
+        events.every(
+          (event) =>
+            event?.type !== 'assistant:delta' ||
+            !String(event.text || '').includes('Drafted login test cases')
+        )
+      );
+      assert.ok(
+        events.some(
+          (event) =>
+            event?.type === 'assistant:delta' && String(event.text || '').includes('Login test plan drafted and reviewed.')
         )
       );
       assert.equal(callIndex, 5);
@@ -2776,6 +3013,18 @@ test('plan auto run includes acceptance checklist for lightweight goals', { conc
         ]);
       }
 
+      if (callIndex === 4) {
+        const scopedTask = String(body.messages[1].content || '');
+        executionPrompts.push(scopedTask);
+        assert.match(scopedTask, /Accumulated plan file context/i);
+        return makeSseResponse([
+          {
+            choices: [{ delta: { content: 'Summary:\n- Helper change completed.\nKey Findings:\n- trimName(name) is exported.\nActions Taken:\n- Implemented and verified the helper.\nRemaining Issues:\n- Runtime usage sites were not checked.\nRecommended Next Steps:\n- Wire usage sites if needed.' } }]
+          },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
       throw new Error(`unexpected fetch call ${callIndex}`);
     });
 
@@ -2801,9 +3050,9 @@ test('plan auto run includes acceptance checklist for lightweight goals', { conc
       assert.match(String(pending.text || ''), /Approval:\s*pending/i);
       const result = await runtime.submit('/yes');
       assert.equal(result.type, 'assistant');
-      assert.match(result.text, /trimName\(name\) is exported/i);
-      assert.equal(callIndex, 3);
-      assert.equal(executionPrompts.length, 2);
+      assert.match(result.text, /Helper change completed/i);
+      assert.equal(callIndex, 4);
+      assert.equal(executionPrompts.length, 3);
     } finally {
       await restoreFetch();
     }
@@ -3225,6 +3474,13 @@ test('plan auto run stops the pipeline when a tester step fails exit criteria', 
         ]);
       }
 
+      if (callIndex === 4) {
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Summary:\n- Auth flow update stopped after verification failed.\nKey Findings:\n- Runtime retry behavior is still unverified.\nActions Taken:\n- Implemented and attempted verification.\nRemaining Issues:\n- Retry behavior requires follow-up.\nRecommended Next Steps:\n- Reproduce and verify runtime retry behavior.' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
       throw new Error(`unexpected fetch call ${callIndex}`);
     });
 
@@ -3256,15 +3512,16 @@ test('plan auto run stops the pipeline when a tester step fails exit criteria', 
       assert.ok(
         events.some(
           (event) =>
-            event?.type === 'assistant:delta' && String(event.text || '').includes('[plan] Step 2/2 -> tester: Verify auth flow update')
+            event?.type === 'assistant:delta' && String(event.text || '').includes('[plan] Step 2/3 -> tester: Verify auth flow update')
         )
       );
       assert.ok(
-        events.every(
-          (event) => event?.type !== 'assistant:delta' || !String(event.text || '').includes('summarizer')
+        events.some(
+          (event) =>
+            event?.type === 'assistant:delta' && String(event.text || '').includes('[plan] Step 3/3 -> summarizer: Synthesize final implementation status')
         )
       );
-      assert.equal(callIndex, 3);
+      assert.equal(callIndex, 4);
     } finally {
       await restoreFetch();
     }
@@ -3423,6 +3680,13 @@ test('plan auto run stops when coder output lacks implementation evidence', { co
         ]);
       }
 
+      if (callIndex === 3) {
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Summary:\n- Greeting helper work stopped before implementation evidence was produced.\nKey Findings:\n- The coder step reported no changed artifacts.\nActions Taken:\n- No implementation was confirmed.\nRemaining Issues:\n- greetUser(name) still needs implementation.\nRecommended Next Steps:\n- Re-run with a concrete code change.' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
       throw new Error(`unexpected fetch call ${callIndex}`);
     });
 
@@ -3456,7 +3720,13 @@ test('plan auto run stops when coder output lacks implementation evidence', { co
           (event) => event?.type !== 'assistant:delta' || !String(event.text || '').includes('Verify greeting helper')
         )
       );
-      assert.equal(callIndex, 2);
+      assert.ok(
+        events.some(
+          (event) =>
+            event?.type === 'assistant:delta' && String(event.text || '').includes('[plan] Step 3/3 -> summarizer: Synthesize final implementation status')
+        )
+      );
+      assert.equal(callIndex, 3);
     } finally {
       await restoreFetch();
     }
