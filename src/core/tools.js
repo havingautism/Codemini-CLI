@@ -345,28 +345,105 @@ async function webSearchQuery(config, args = {}) {
   if (!query) throw new Error('web_search requires query');
 
   const maxResults = clampNumber(normalizedArgs.max_results, 1, 20, 8);
-  const [{ search, SafeSearchType }] = await Promise.all([import('duck-duck-scrape')]);
-  const response = await search(query, {
-    safeSearch: SafeSearchType.MODERATE,
-    locale: String(normalizedArgs.locale || 'en-us').trim() || 'en-us',
-    region: String(normalizedArgs.region || 'wt-wt').trim() || 'wt-wt'
+  const locale = String(normalizedArgs.locale || config?.web?.search_locale || 'en-US').trim() || 'en-US';
+  const region = String(normalizedArgs.region || normalizedArgs.cc || config?.web?.search_region || (locale.toLowerCase().endsWith('-cn') ? 'CN' : 'US')).trim() || 'US';
+  const searchUrl = buildBingRssSearchUrl({
+    baseUrl: config?.web?.search_base_url,
+    query,
+    locale,
+    region
   });
+  const timeoutMs = clampNumber(normalizedArgs.timeout_ms || config?.web?.search_timeout_ms, 1_000, 60_000, 15_000);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(searchUrl, {
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'user-agent': 'CodeMiniCLI/0.4 web_search',
+        accept: 'application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5',
+        'accept-language': `${locale},en;q=0.8`
+      }
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) {
+    throw new Error(`web_search Bing RSS request failed: HTTP ${response.status}`);
+  }
+
+  const xml = await response.text();
+  const cheerio = await import('cheerio');
+  const parsed = parseBingRssResults(cheerio, xml, maxResults);
 
   return {
     query,
-    no_results: response?.noResults === true,
-    results: Array.isArray(response?.results)
-      ? response.results.slice(0, maxResults).map((item) => ({
-          title: String(item?.title || '').trim(),
-          url: String(item?.url || '').trim(),
-          description: normalizeWhitespace(item?.description || item?.rawDescription || ''),
-          hostname: String(item?.hostname || '').trim()
-        }))
-      : [],
-    related: Array.isArray(response?.related)
-      ? response.related.slice(0, 8).map((item) => String(item?.text || item?.raw || '').trim()).filter(Boolean)
-      : []
+    engine: 'bing_rss',
+    source_url: response.url || searchUrl,
+    no_results: parsed.results.length === 0,
+    results: parsed.results,
+    related: []
   };
+}
+
+function buildBingRssSearchUrl({ baseUrl, query, locale, region }) {
+  const url = new URL(String(baseUrl || 'https://cn.bing.com/search'));
+  url.searchParams.set('q', query);
+  url.searchParams.set('mkt', locale);
+  url.searchParams.set('setlang', locale);
+  url.searchParams.set('cc', region);
+  url.searchParams.set('format', 'rss');
+  return url.toString();
+}
+
+function parseBingRssResults(cheerio, xml, maxResults) {
+  const $ = cheerio.load(xml, { xmlMode: true });
+  const results = [];
+  const seenUrls = new Set();
+  $('item').each((_, element) => {
+    if (results.length >= maxResults) return false;
+    const title = normalizeWhitespace($(element).find('title').first().text());
+    const url = normalizeSearchResultUrl($(element).find('link').first().text());
+    if (!title || !url || seenUrls.has(url)) return undefined;
+    seenUrls.add(url);
+    results.push({
+      title,
+      url,
+      description: normalizeRssDescription(cheerio, $(element).find('description').first().text()),
+      hostname: hostnameFromUrl(url),
+      published_at: normalizeWhitespace($(element).find('pubDate').first().text())
+    });
+    return undefined;
+  });
+  return { results };
+}
+
+function normalizeSearchResultUrl(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  try {
+    const parsed = new URL(text);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return '';
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
+function normalizeRssDescription(cheerio, value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return normalizeWhitespace(cheerio.load(text).text() || text);
+}
+
+function hostnameFromUrl(value) {
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return '';
+  }
 }
 
 function findUniqueLineBlock(lines, blockContent) {
@@ -2145,15 +2222,15 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'web_search',
         description:
-          'Run a live web search through DuckDuckGo. Use this for keyword-based internet search. This tool respects config.web.search_enabled and will fail when network search is disabled.',
+          'Run a live web search by fetching Bing RSS results. Use this for keyword-based internet search. This tool respects config.web.search_enabled and will fail when network search is disabled.',
         parameters: {
           type: 'object',
           properties: {
             query: { type: 'string', description: 'Search query' },
             q: { type: 'string', description: 'Alias for query' },
             max_results: { type: 'number', description: 'Max results to return' },
-            locale: { type: 'string', description: 'DuckDuckGo locale such as en-us' },
-            region: { type: 'string', description: 'DuckDuckGo region such as wt-wt' }
+            locale: { type: 'string', description: 'Bing market and language such as en-US or zh-CN' },
+            region: { type: 'string', description: 'Bing country code such as US or CN' }
           },
           required: ['query']
         }

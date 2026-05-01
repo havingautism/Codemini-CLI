@@ -158,6 +158,7 @@ Typical contents:
 - `config.json`
 - `sessions\`
 - `skills\`
+- project skills are stored per workspace under `.codemini\skills\`
 - `input-history.json`
 
 ## 9. Skills
@@ -168,13 +169,19 @@ List installed skills:
 codemini skill list
 ```
 
-Install a local skill:
+Install a local skill into the current project:
 
 ```powershell
 codemini skill install C:\path\to\skill-folder
 ```
 
-Rebuild the local registry:
+Install a local skill globally:
+
+```powershell
+codemini skill install --scope=global C:\path\to\skill-folder
+```
+
+Rebuild the global registry:
 
 ```powershell
 codemini skill reindex

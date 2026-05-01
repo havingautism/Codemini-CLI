@@ -1236,6 +1236,61 @@ test('web_search is blocked when config disables network search', async () => {
   });
 });
 
+test('web_search fetches and parses Bing RSS results', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const originalFetch = globalThis.fetch;
+    const requested = [];
+    globalThis.fetch = async (url, options = {}) => {
+      requested.push({ url: String(url), headers: options.headers || {} });
+      return new Response(`<?xml version="1.0" encoding="utf-8" ?>
+<rss version="2.0">
+  <channel>
+    <title>Bing: latest example</title>
+    <item>
+      <title>Example News &amp; Notes</title>
+      <link>https://example.com/news</link>
+      <description>Fresh &lt;b&gt;reporting&lt;/b&gt; about the topic.</description>
+      <pubDate>Fri, 01 May 2026 00:18:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Second Story</title>
+      <link>https://second.example/story</link>
+      <description>Second result summary.</description>
+      <pubDate>Thu, 30 Apr 2026 10:42:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>`, {
+        status: 200,
+        headers: { 'content-type': 'application/rss+xml; charset=utf-8' }
+      });
+    };
+
+    try {
+      const { handlers } = await makeTools(workspaceRoot);
+      const result = await handlers.web_search({ query: 'latest example', max_results: 1, locale: 'en-US', region: 'US' });
+
+      assert.equal(result.query, 'latest example');
+      assert.equal(result.engine, 'bing_rss');
+      assert.equal(requested.length, 1);
+      assert.equal(requested[0].url, 'https://cn.bing.com/search?q=latest+example&mkt=en-US&setlang=en-US&cc=US&format=rss');
+      assert.match(requested[0].headers['user-agent'], /CodeMiniCLI/);
+      assert.equal(result.no_results, false);
+      assert.deepEqual(result.results, [
+        {
+          title: 'Example News & Notes',
+          url: 'https://example.com/news',
+          description: 'Fresh reporting about the topic.',
+          hostname: 'example.com',
+          published_at: 'Fri, 01 May 2026 00:18:00 GMT'
+        }
+      ]);
+      assert.deepEqual(result.related, []);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 test('web_fetch reads static page content and extracts links without requiring browser rendering', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const { handlers, formatters } = await makeTools(workspaceRoot);
