@@ -98,6 +98,12 @@ test('builtin skills are always present and cannot be disabled or overwritten', 
 
       const listOutput = await captureConsole(() => handleSkill(['list', '--scope=builtin']));
       assert.match(listOutput, /superpowers-lite@[\d.]+ \[builtin\] \(builtin\/default\)/);
+      assert.match(listOutput, /grill-me@[\d.]+ \[builtin\] \(builtin\/default\)/);
+
+      const commands = await loadCommandsAndSkills(process.cwd());
+      const superpowersLite = commands.get('superpowers-lite');
+      assert.match(superpowersLite?.content || '', /high-risk/i);
+      assert.match(superpowersLite?.content || '', /1-3 sharp questions/i);
     } finally {
       await fs.rm(sourceRoot, { recursive: true, force: true });
     }

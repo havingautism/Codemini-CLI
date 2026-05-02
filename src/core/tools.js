@@ -1922,24 +1922,6 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     {
       type: 'function',
       function: {
-        name: 'glob',
-        description:
-          'Find files by glob pattern. Use this when you already know a filename pattern such as src/**/*.ts.',
-        parameters: {
-          type: 'object',
-          properties: {
-            pattern: { type: 'string', description: 'Glob pattern' },
-            path: { type: 'string', description: 'Directory to search' },
-            include_hidden: { type: 'boolean', description: 'Include dotfiles' },
-            max_results: { type: 'number', description: 'Max results' }
-          },
-          required: ['pattern']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
         name: 'query_project_index',
         description:
           'Query the lightweight project index before broad file reads. Uses both project-map metadata and file-index symbols to suggest the most relevant files for the current task.',
@@ -2162,6 +2144,24 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
   ];
 
   const deferredDefinitions = {
+    glob: {
+      type: 'function',
+      function: {
+        name: 'glob',
+        description:
+          'Find files by glob pattern. Use this when you already know a filename pattern such as src/**/*.ts.',
+        parameters: {
+          type: 'object',
+          properties: {
+            pattern: { type: 'string', description: 'Glob pattern' },
+            path: { type: 'string', description: 'Directory to search' },
+            include_hidden: { type: 'boolean', description: 'Include dotfiles' },
+            max_results: { type: 'number', description: 'Max results' }
+          },
+          required: ['pattern']
+        }
+      }
+    },
     ast_query: {
       type: 'function',
       function: {

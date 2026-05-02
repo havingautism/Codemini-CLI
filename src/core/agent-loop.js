@@ -179,6 +179,10 @@ const DREAM_AUTO_CAPTURE_TOOLS = new Set([
 const DREAM_AUTO_CAPTURE_COOLDOWN_MS = 60_000;
 const lastAutoCaptureByTool = new Map();
 
+function isAutoCaptureEnabled(config = {}) {
+  return config?.memory?.enabled !== false && config?.memory?.auto_capture !== false;
+}
+
 function shouldAutoCaptureError(toolName, message) {
   if (!DREAM_AUTO_CAPTURE_TOOLS.has(toolName)) return false;
   const now = Date.now();
@@ -196,10 +200,6 @@ function shouldAutoCaptureError(toolName, message) {
     /command not found/i,
     /permission denied/i,
     /args\?\s/i,
-    /Raw tool arguments/i,
-    /edit requires/i,
-    /write requires/i,
-    /requires file/i,
     /path.*outside workspace/i,
     /escapes workspace/i
   ];
@@ -209,7 +209,7 @@ function shouldAutoCaptureError(toolName, message) {
 }
 
 async function captureToolFailure(toolName, message, args, config = {}) {
-  if (config?.memory?.enabled === false || config?.memory?.auto_capture === false) return;
+  if (!isAutoCaptureEnabled(config)) return;
   const summary = `[${toolName}] ${String(message).slice(0, 120)}`;
   const details = args
     ? `Tool: ${toolName}\nError: ${message}\nArgs: ${JSON.stringify(args).slice(0, 300)}`
@@ -805,7 +805,7 @@ export async function runAgentLoop({
         if (onEvent) {
           onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary: trimInline(message, 120) });
         }
-        if (shouldAutoCaptureError(toolName, message)) {
+        if (isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, message)) {
           await captureToolFailure(toolName, message, effectiveArgs, config).catch(() => {});
         }
         return {
@@ -828,13 +828,13 @@ export async function runAgentLoop({
         const stderr = String(toolResult.stderr || '');
         if (typeof exitCode === 'number' && exitCode !== 0 && stderr) {
           const failMsg = `exit ${exitCode}: ${stderr.slice(0, 120)}`;
-          if (shouldAutoCaptureError(toolName, failMsg)) {
+          if (isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, failMsg)) {
             await captureToolFailure(toolName, failMsg, effectiveArgs, config).catch(() => {});
           }
         }
         if (toolResult.error) {
           const errMsg = String(toolResult.error).slice(0, 120);
-          if (shouldAutoCaptureError(toolName, errMsg)) {
+          if (isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, errMsg)) {
             await captureToolFailure(toolName, errMsg, effectiveArgs, config).catch(() => {});
           }
         }

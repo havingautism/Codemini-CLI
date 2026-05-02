@@ -11,6 +11,7 @@ import path from 'node:path';
 
 const ROLE_TOOL_POLICY = {
   planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node', 'read_plan', 'update_plan'],
+  advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'read_plan'],
   coder: ['read', 'grep', 'list', 'edit', 'write', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'update_todos', 'read_plan', 'update_plan'],
   reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'read_plan'],
   tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'read_plan']
@@ -142,11 +143,11 @@ function normalizePlan(parsed, goal) {
 async function planPipeline({ goal, config, systemPrompt, model }) {
   const plannerPrompt = [
     'Create an execution plan and assign the best sub-agent role for each step.',
-    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester","task":"..."}]}. No markdown.',
+    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|advisor|coder|reviewer|tester","task":"..."}]}. No markdown.',
     `Available roles: ${HARNESS_ROLES.join(', ')}.`,
     'Prefer 3-5 steps total. The first step should usually inspect the target area.',
     'For implementation goals, include a reviewer or tester step near the end.',
-    'For advisory/analysis goals, keep it lean with planner/coder only.'
+    'For advisory/analysis goals, keep it lean with planner/advisor only; do not use coder unless code or files will be modified.'
   ].join('\n');
 
   const planning = await createChatCompletion({

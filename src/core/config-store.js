@@ -32,7 +32,8 @@ const DEFAULT_CONFIG = {
     hard_limit_pct: 98,
     tool_result_max_chars: 12000,
     read_file_default_lines: 220,
-    read_file_max_chars: 24000
+    read_file_max_chars: 24000,
+    prompt_budget_audit: false
   },
   execution: {
     mode: 'auto',
@@ -177,6 +178,8 @@ function normalizePolicyLists(config) {
   next.memory.project_binding = ['path', 'alias', 'path-or-alias'].includes(String(next.memory.project_binding || ''))
     ? String(next.memory.project_binding)
     : 'path-or-alias';
+  next.context = next.context || {};
+  next.context.prompt_budget_audit = next.context.prompt_budget_audit === true;
   next.web = next.web || {};
   next.web.search_enabled = next.web.search_enabled !== false;
   next.policy = next.policy || {};

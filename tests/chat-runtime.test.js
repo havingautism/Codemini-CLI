@@ -86,6 +86,7 @@ test('chat runtime reflects config and mode changes immediately for TUI refresh'
       sessionId: 'session-config-refresh',
       mode: 'auto',
       sdkProvider: 'openai-compatible',
+      agentRole: 'general',
       model: 'gpt-4.1-mini',
       maxContextTokens: 202752
     });
@@ -95,6 +96,7 @@ test('chat runtime reflects config and mode changes immediately for TUI refresh'
       sessionId: 'session-config-refresh',
       mode: 'auto',
       sdkProvider: 'openai-compatible',
+      agentRole: 'general',
       model: 'minimax',
       maxContextTokens: 202752
     });
@@ -104,6 +106,7 @@ test('chat runtime reflects config and mode changes immediately for TUI refresh'
       sessionId: 'session-config-refresh',
       mode: 'auto',
       sdkProvider: 'openai-compatible',
+      agentRole: 'general',
       model: 'minimax',
       maxContextTokens: 12345
     });
@@ -113,6 +116,7 @@ test('chat runtime reflects config and mode changes immediately for TUI refresh'
       sessionId: 'session-config-refresh',
       mode: 'auto',
       sdkProvider: 'anthropic',
+      agentRole: 'general',
       model: 'minimax',
       maxContextTokens: 12345
     });
@@ -122,9 +126,13 @@ test('chat runtime reflects config and mode changes immediately for TUI refresh'
       sessionId: 'session-config-refresh',
       mode: 'plan',
       sdkProvider: 'anthropic',
+      agentRole: 'general',
       model: 'minimax',
       maxContextTokens: 12345
     });
+
+    const status = await runtime.submit('/status');
+    assert.match(status.text, /role=general/);
   });
 });
 
@@ -147,6 +155,19 @@ test('plan auto role tool policy stays aligned with each role responsibility', (
   assert.ok(ROLE_TOOL_POLICY.coder.includes('delete'));
   assert.ok(ROLE_TOOL_POLICY.coder.includes('web_fetch'));
   assert.ok(ROLE_TOOL_POLICY.coder.includes('web_search'));
+
+  assert.deepEqual(ROLE_TOOL_POLICY.advisor, [
+    'read',
+    'grep',
+    'list',
+    'query_project_index',
+    'tool_search',
+    'read_plan'
+  ]);
+  assert.ok(!ROLE_TOOL_POLICY.advisor.includes('edit'));
+  assert.ok(!ROLE_TOOL_POLICY.advisor.includes('write'));
+  assert.ok(!ROLE_TOOL_POLICY.advisor.includes('delete'));
+  assert.ok(!ROLE_TOOL_POLICY.advisor.includes('run'));
 
   assert.ok(!ROLE_TOOL_POLICY.reviewer.includes('web_fetch'));
   assert.ok(!ROLE_TOOL_POLICY.reviewer.includes('web_search'));
@@ -304,6 +325,7 @@ test('chat runtime prioritizes important config completions near the top', { con
     assert.equal(runtime.getCompletionOptions('/tasks').length, 0);
     assert.ok(runtime.getCompletionOptions('/agents').some((item) => item.value === '/agents run'));
     assert.ok(runtime.getCompletionOptions('/agents run').some((item) => item.value === '/agents run planner '));
+    assert.ok(runtime.getCompletionOptions('/agents run').some((item) => item.value === '/agents run advisor '));
     assert.ok(runtime.getCompletionOptions('/checkpoint').some((item) => item.value === '/checkpoint create'));
     assert.ok(runtime.getCompletionOptions('/checkpoint list').some((item) => item.value === '/checkpoint list --all'));
     assert.ok(runtime.getCompletionOptions('/history').some((item) => item.value === '/history resume'));
@@ -881,6 +903,67 @@ test('chat runtime injects lightweight project index context into the system pro
 
       const result = await runtime.submit('update loginUser in src/auth.ts');
       assert.equal(result.text, 'ok');
+    } finally {
+      process.chdir(previousCwd);
+      await restoreFetch();
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('chat runtime emits prompt budget audit when enabled', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-prompt-budget-'));
+    const previousCwd = process.cwd();
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+      const systemText = String(body.messages?.[0]?.content || '');
+      assert.match(systemText, /Project Context:/);
+      assert.match(systemText, /Persistent Memory:/);
+      return makeSseResponse([
+        { choices: [{ delta: { content: 'ok' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] }
+      ]);
+    });
+
+    try {
+      process.chdir(cwd);
+      await fs.writeFile(path.join(cwd, 'package.json'), JSON.stringify({ name: 'demo', version: '1.0.0' }, null, 2));
+      await fs.mkdir(path.join(cwd, 'src'), { recursive: true });
+      await fs.writeFile(path.join(cwd, 'src', 'auth.ts'), 'export function loginUser(name) { return name; }\n', 'utf8');
+
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+      config.context.prompt_budget_audit = true;
+      await rememberMemory({ scope: 'project', content: 'src/auth.ts 是登录核心模块。', kind: 'module', workspaceRoot: cwd, config });
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-prompt-budget',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const events = [];
+      const result = await runtime.submit('update loginUser in src/auth.ts', (event) => events.push(event));
+      assert.equal(result.text, 'ok');
+
+      const audit = events.find((event) => event?.type === 'system_tool:end' && event.name === 'prompt_budget');
+      assert.ok(audit, 'expected prompt_budget system event');
+      assert.match(audit.summary, /prompt budget:/i);
+      assert.ok(audit.details.total.estimated_tokens > 0);
+      assert.ok(audit.details.max_context_tokens > 0);
+      assert.ok(audit.details.context_usage_pct > 0);
+      assert.ok(audit.details.components.some((component) => component.name === 'system_prompt'));
+      assert.ok(audit.details.components.some((component) => component.name === 'project_context'));
+      assert.ok(audit.details.components.some((component) => component.name === 'message_history'));
+      assert.ok(audit.details.components.some((component) => component.name === 'tool_schemas'));
     } finally {
       process.chdir(previousCwd);
       await restoreFetch();
@@ -1475,6 +1558,54 @@ test('chat runtime auto-injects brainstorm for greenfield generation requests', 
   });
 });
 
+test('chat runtime auto-injects grill-me only for explicit pressure-test requests', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    let inspected = false;
+    const events = [];
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+      const systemText = String(body.messages?.[0]?.content || '');
+      inspected = true;
+      assert.match(systemText, /\[Auto skill: superpowers-lite\]/);
+      assert.match(systemText, /\[Auto skill: grill-me\]/);
+      return makeSseResponse([
+        { choices: [{ delta: { content: '先压力测试关键假设。' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] }
+      ]);
+    });
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-auto-grill-me',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const result = await runtime.submit('Grill me on this deployment plan before I ship it.', (event) =>
+        events.push(event)
+      );
+      assert.equal(result.text, '先压力测试关键假设。');
+      assert.equal(inspected, true);
+      assert.deepEqual(
+        events.find((event) => event?.type === 'skill:auto')?.names,
+        ['superpowers-lite', 'grill-me']
+      );
+    } finally {
+      await restoreFetch();
+    }
+  });
+});
+
 test('slash brainstorm includes the user question in the rendered prompt', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let inspected = false;
@@ -1907,8 +2038,8 @@ test('plan auto keeps advisory plans lean instead of forcing reviewer and tester
                     task: 'Inspect the project layout and identify likely hot spots.'
                   },
                   {
-                    title: 'Summarize optimization ideas',
-                    role: 'coder',
+                    title: 'Advise on optimization opportunities',
+                    role: 'advisor',
                     task: 'Summarize the highest-value optimization opportunities.'
                   }
                 ]
@@ -1939,9 +2070,11 @@ test('plan auto keeps advisory plans lean instead of forcing reviewer and tester
       const result = await runtime.submit('/plan auto 帮我看看目前项目有什么可以优化的点');
       assert.equal(result.type, 'system');
       assert.match(result.text, /Approval: pending/i);
+      assert.match(result.text, /\[advisor\] Advise on optimization opportunities/i);
+      assert.doesNotMatch(result.text, /\[coder\]/i);
       assert.doesNotMatch(result.text, /reviewer/i);
       assert.doesNotMatch(result.text, /tester/i);
-      assert.match(result.text, /\[summarizer\] Synthesize final implementation status/i);
+      assert.match(result.text, /\[summarizer\] Synthesize final findings/i);
     } finally {
       await restoreFetch();
     }
@@ -2023,7 +2156,7 @@ test('plan auto run immediately executes the generated plan without pending appr
         assert.equal(body.stream, undefined);
         assert.match(String(body.messages?.[0]?.content || ''), /Planning policy:/i);
         assert.match(String(body.messages?.[1]?.content || ''), /Task class: advisory/i);
-        assert.match(String(body.messages?.[1]?.content || ''), /usually limit it to planner\/coder/i);
+        assert.match(String(body.messages?.[1]?.content || ''), /usually limit it to planner\/advisor/i);
         return makeJsonResponse({
           choices: [
             {
@@ -2038,7 +2171,7 @@ test('plan auto run immediately executes the generated plan without pending appr
                     },
                     {
                       title: 'Summarize optimization ideas',
-                      role: 'coder',
+                      role: 'advisor',
                       task: 'Summarize the most valuable optimization opportunities.'
                     },
                     {
@@ -2078,7 +2211,7 @@ test('plan auto run immediately executes the generated plan without pending appr
         assert.match(scopedTask, /Acceptance checklist:/i);
         assert.match(scopedTask, /Recommend optimizations/i);
         return makeSseResponse([
-          { choices: [{ delta: { content: 'Actions Taken:\n- Summarized optimization ideas\nFindings:\n- Cache invalidation and config loading are the top opportunities\nVerified:\n- Reviewed current module boundaries\nOpen Issues:\n- none\nArtifacts:\n- src/core/config-store.js\nNext Action:\n- none' } }] },
+          { choices: [{ delta: { content: 'Findings:\n- Cache invalidation and config loading are the top opportunities\nRecommendations:\n- Prioritize config loading cleanup\nTradeoffs:\n- Lower complexity versus modest refactor cost\nEvidence:\n- Reviewed current module boundaries\nOpen Questions:\n- none' } }] },
           { choices: [{ delta: {}, finish_reason: 'stop' }] }
         ]);
       }
@@ -2088,7 +2221,7 @@ test('plan auto run immediately executes the generated plan without pending appr
         const scopedTask = String(body.messages?.[1]?.content || '');
         executionPrompts.push(scopedTask);
         assert.match(scopedTask, /Accumulated plan file context/i);
-        assert.match(scopedTask, /Synthesize final implementation status/i);
+        assert.match(scopedTask, /Synthesize final findings/i);
         return makeSseResponse([
           { choices: [{ delta: { content: 'Summary:\n- Optimization review completed.\nKey Findings:\n- Cache invalidation and config loading are the top opportunities.\nActions Taken:\n- Inspected core modules and identified recommendations.\nRemaining Issues:\n- none\nRecommended Next Steps:\n- Prioritize the config loading cleanup.' } }] },
           { choices: [{ delta: {}, finish_reason: 'stop' }] }

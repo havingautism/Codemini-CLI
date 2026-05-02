@@ -110,7 +110,8 @@ Skills are reusable workflow patterns that guide how the agent approaches differ
 
 | Skill | Trigger | Description |
 |-------|---------|-------------|
-| **superpowers-lite** | Default for all coding work | Lightweight operating style: prefer structured tools, keep context tight, use sub-agents, verify before claiming success |
+| **superpowers-lite** | Default for all coding work | Lightweight operating style: prefer structured tools, keep context tight, use sub-agents, verify before claiming success; asks 1-3 sharp questions only for high-risk decisions |
+| **grill-me** | Explicit pressure-test requests | Optional scrutiny mode for plans, PRs, launches, and ideas; challenges assumptions without changing the default workflow |
 | **brainstorm** | Multiple reasonable approaches exist | Explores options and tradeoffs before coding; asks one question at a time to resolve uncertainty |
 | **writing-plans** | Non-trivial implementation task | Creates a step-by-step plan with exact file paths, code, and verification steps before touching code |
 
@@ -382,7 +383,8 @@ Skill 是可复用的工作流模式，指导 agent 如何处理不同类型的�
 
 | Skill | 触发条件 | 说明 |
 |-------|----------|------|
-| **superpowers-lite** | 所有编码工作的默认 skill | 轻量操作风格：优先结构化工具、保持上下文精简、使用 sub-agent、验证后再报告完成 |
+| **superpowers-lite** | 所有编码工作的默认 skill | 轻量操作风格：优先结构化工具、保持上下文精简、使用 sub-agent、验证后再报告完成；仅在高风险决策中提出 1-3 个尖锐问题 |
+| **grill-me** | 明确要求压力测试或拷问时 | 可选审查模式，用于方案、PR、发布和想法；挑战假设但不改变默认协作流程 |
 | **brainstorm** | 存在多种合理方案时 | 在编码前探索选项和权衡；每次只问一个问题来消除不确定性 |
 | **writing-plans** | 非平凡的实现任务 | 在动手之前创建包含精确文件路径、代码和验证步骤的分步计划 |
 

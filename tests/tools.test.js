@@ -9,7 +9,7 @@ import { getBuiltinTools } from '../src/core/tools.js';
 import { loadConfig } from '../src/core/config-store.js';
 import { classifyCommandIntent } from '../src/core/shell.js';
 import { runAgentLoop } from '../src/core/agent-loop.js';
-import { listMemories } from '../src/core/memory-store.js';
+import { listInbox, listMemories } from '../src/core/memory-store.js';
 import { sanitizeTextForModel } from '../src/core/tool-output.js';
 
 async function withTempWorkspace(run) {
@@ -17,6 +17,22 @@ async function withTempWorkspace(run) {
   try {
     await run(dir);
   } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function withTempConfigDir(run) {
+  const prev = process.env.CODEMINI_GLOBAL_DIR;
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-global-'));
+  process.env.CODEMINI_GLOBAL_DIR = dir;
+  try {
+    await run(dir);
+  } finally {
+    if (prev === undefined) {
+      delete process.env.CODEMINI_GLOBAL_DIR;
+    } else {
+      process.env.CODEMINI_GLOBAL_DIR = prev;
+    }
     await fs.rm(dir, { recursive: true, force: true });
   }
 }
@@ -1171,11 +1187,11 @@ test('builtin tool definitions expose only current primary and structured tools'
     // AST, memory, and background-task management tools are deferred
     assert.ok(!names.includes('ast_query'));
     assert.ok(!names.includes('read_ast_node'));
-    assert.ok(names.includes('glob'));
+    assert.ok(!names.includes('glob'));
     assert.ok(!names.includes('save_memory'));
     assert.ok(!names.includes('list_memory'));
     assert.ok(!names.includes('list_background_tasks'));
-    assert.ok(!('glob' in deferredDefinitions));
+    assert.ok('glob' in deferredDefinitions);
     assert.ok('ast_query' in deferredDefinitions);
     assert.ok('read_ast_node' in deferredDefinitions);
     assert.ok('web_fetch' in deferredDefinitions);
@@ -1507,6 +1523,7 @@ test('edit missing arguments suggests a repair shape using the most recently rea
 test('agent loop preserves raw invalid tool arguments so tool errors can explain the bad payload', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     const config = await loadConfig();
+    config.memory.auto_capture = false;
     const { definitions, handlers, formatters, deferredDefinitions } = getBuiltinTools({ workspaceRoot, config });
 
     const result = await runAgentLoop({
@@ -1518,6 +1535,7 @@ test('agent loop preserves raw invalid tool arguments so tool errors can explain
       toolHandlers: handlers,
       toolFormatters: formatters,
       deferredDefinitions,
+      config,
       requestCompletion: async ({ messages }) => {
         const hasToolResult = messages.some((msg) => msg.role === 'tool');
         if (!hasToolResult) {
@@ -1543,6 +1561,53 @@ test('agent loop preserves raw invalid tool arguments so tool errors can explain
     assert.ok(toolMessage);
     assert.match(String(toolMessage.content), /Raw tool arguments: \./i);
     assert.match(String(toolMessage.content), /old_text|new_text|rewrite_file/i);
+  });
+});
+
+test('agent loop auto-captures invalid edit tool call arguments into inbox', async () => {
+  await withTempConfigDir(async () => {
+    await withTempWorkspace(async (workspaceRoot) => {
+      const config = await loadConfig();
+      const { definitions, handlers, formatters, deferredDefinitions } = getBuiltinTools({ workspaceRoot, config });
+
+      await runAgentLoop({
+        systemPrompt: 'You are a test agent.',
+        userPrompt: 'test invalid tool args capture',
+        model: 'test-model',
+        maxSteps: 2,
+        toolDefinitions: definitions,
+        toolHandlers: handlers,
+        toolFormatters: formatters,
+        deferredDefinitions,
+        config,
+        requestCompletion: async ({ messages }) => {
+          const hasToolResult = messages.some((msg) => msg.role === 'tool');
+          if (!hasToolResult) {
+            return {
+              text: '',
+              toolCalls: [
+                {
+                  id: 'call_bad_edit_capture',
+                  name: 'edit',
+                  arguments: '.'
+                }
+              ]
+            };
+          }
+          return {
+            text: 'done',
+            toolCalls: []
+          };
+        }
+      });
+
+      const entries = await listInbox();
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].source, 'auto-capture');
+      assert.equal(entries[0].type, 'failure');
+      assert.match(entries[0].summary, /^\[edit\]/);
+      assert.match(entries[0].details, /Raw tool arguments: \./i);
+    });
   });
 });
 

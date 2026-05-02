@@ -45,6 +45,22 @@ const ROLE_STYLES = {
     badgeText: 'black',
     chrome: 'gray'
   },
+  general: {
+    accent: 'greenBright',
+    border: 'green',
+    text: 'greenBright',
+    badgeBg: 'green',
+    badgeText: 'black',
+    chrome: 'gray'
+  },
+  advisor: {
+    accent: 'blueBright',
+    border: 'blue',
+    text: 'blueBright',
+    badgeBg: 'blue',
+    badgeText: 'white',
+    chrome: 'gray'
+  },
   planner: {
     accent: 'magentaBright',
     border: 'magenta',
@@ -105,7 +121,7 @@ const ROLE_STYLES = {
 
 const TUI_COPY = {
   zh: {
-    roleLabels: { you: '👤 你', coder: '💻 CODER', planner: '📋 PLANNER', reviewer: '🔍 REVIEWER', tester: '🧪 TESTER', summarizer: '📝 SUMMARIZER', system: '⚙️ 系统', error: '❌ 错误', pending: '⏳ 等待中' },
+    roleLabels: { you: '👤 你', general: 'GENERAL', advisor: '💡 ADVISOR', coder: '💻 CODER', planner: '📋 PLANNER', reviewer: '🔍 REVIEWER', tester: '🧪 TESTER', summarizer: '📝 SUMMARIZER', system: '⚙️ 系统', error: '❌ 错误', pending: '⏳ 等待中' },
     generic: {
       waitingForInput: '等待输入',
       ready: '就绪',
@@ -219,6 +235,8 @@ const TUI_COPY = {
       doingProjectIndex: '正在初始化项目索引',
       doneFileIndex: '已刷新文件索引',
       doingFileIndex: '正在刷新文件索引',
+      donePromptBudget: '已测量 Prompt 预算',
+      doingPromptBudget: '正在测量 Prompt 预算',
       toolFailed: (name) => `工具执行失败: ${name}`,
       waitingModelContinue: (detail) => `${detail}，等待模型继续`,
       waitingModelAdjust: (detail) => `${detail}，等待模型调整`
@@ -330,7 +348,7 @@ const TUI_COPY = {
     }
   },
   en: {
-    roleLabels: { you: 'YOU', coder: 'CODER', planner: 'PLANNER', reviewer: 'REVIEWER', tester: 'TESTER', summarizer: 'SUMMARIZER', system: 'SYSTEM', error: 'ERROR', pending: 'PENDING' },
+    roleLabels: { you: 'YOU', general: 'GENERAL', advisor: 'ADVISOR', coder: 'CODER', planner: 'PLANNER', reviewer: 'REVIEWER', tester: 'TESTER', summarizer: 'SUMMARIZER', system: 'SYSTEM', error: 'ERROR', pending: 'PENDING' },
     generic: {
       waitingForInput: 'waiting for input',
       ready: 'ready',
@@ -444,6 +462,8 @@ const TUI_COPY = {
       doingProjectIndex: 'Initializing project index',
       doneFileIndex: 'File index refreshed',
       doingFileIndex: 'Refreshing file index',
+      donePromptBudget: 'Prompt budget measured',
+      doingPromptBudget: 'Measuring prompt budget',
       toolFailed: (name) => `Tool failed: ${name}`,
       waitingModelContinue: (detail) => `${detail}, waiting for model to continue`,
       waitingModelAdjust: (detail) => `${detail}, waiting for model to adjust`
@@ -572,7 +592,7 @@ function roleStyle(label) {
   return ROLE_STYLES[label] || ROLE_STYLES.system;
 }
 
-const PLAN_AGENT_ROLES = new Set(['planner', 'coder', 'reviewer', 'tester', 'summarizer']);
+const PLAN_AGENT_ROLES = new Set(['planner', 'advisor', 'coder', 'reviewer', 'tester', 'summarizer']);
 
 function normalizePlanAgentRole(role) {
   const roleKey = String(role || '').trim().toLowerCase();
@@ -945,7 +965,7 @@ export function buildUiMessagesFromSessionHistory(sessionMessages, nextId) {
       continue;
     }
     if (message.role === 'assistant') {
-      out.push({ id: nextId(), label: 'coder', text, color: 'greenBright' });
+      out.push({ id: nextId(), label: 'general', text, color: 'greenBright' });
       continue;
     }
     if (message.role === 'system') {
@@ -1325,7 +1345,7 @@ export function isIndexSystemToolName(name) {
 export function shouldShowCompletionFooter(msg) {
   if (!msg || msg.loading || (msg.phase || '').trim()) return false;
   const label = (msg.label || '').toLowerCase();
-  return label === 'coder' || label === 'planner' || label === 'reviewer' || label === 'tester';
+  return label === 'general' || label === 'advisor' || label === 'coder' || label === 'planner' || label === 'reviewer' || label === 'tester';
 }
 
 function describeToolActivity(name, copy, { done = false, blocked = false } = {}) {
@@ -3324,6 +3344,7 @@ function formatRuntimeSnapshot(snapshot) {
   if (!snapshot || typeof snapshot !== 'object') return '';
   return [
     `mode=${snapshot.mode || '-'}`,
+    `role=${snapshot.agentRole || 'general'}`,
     `model=${snapshot.model || '-'}`,
     `max_ctx=${snapshot.maxContextTokens || '-'}`,
     `session=${snapshot.sessionId || '-'}`
@@ -3553,7 +3574,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     const current = Number(last[1]);
     const total = Number(last[2]);
     const role = String(last[3] || '').trim().toLowerCase();
-    const normalizedRole = ['planner', 'coder', 'reviewer', 'tester', 'summarizer'].includes(role) ? role : 'coder';
+    const normalizedRole = PLAN_AGENT_ROLES.has(role) ? role : 'coder';
     const title = String(last[4] || '').trim();
 
     // Detect step transition — finalize old assistant and create a new one
@@ -3761,7 +3782,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
           ...prev,
           {
             id: nextId(),
-            label: 'coder',
+            label: 'general',
             text: sanitizeRenderableText(displayText),
             color: 'greenBright',
             autoSkillNames: activeAssistantAutoSkillNamesRef.current
@@ -3901,8 +3922,8 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     const aid = nextId();
     activeAssistantIdRef.current = aid;
     const planRole = activePlanStepRoleRef.current;
-    const label = planRole || 'coder';
-    const style = ROLE_STYLES[label] || ROLE_STYLES.coder;
+    const label = planRole || 'general';
+    const style = ROLE_STYLES[label] || ROLE_STYLES.general;
     const planStepInfo = activePlanStepInfoRef.current;
     const planStepTitle = activePlanStepTitleRef.current;
     const planStepDisplay = planStepInfo ? `${planStepInfo.current}/${planStepInfo.total} · ${planStepTitle}` : undefined;
@@ -4090,7 +4111,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
             const cleanedStandaloneText = stripPlanExecutionResult(String(displayText || event.text)).trim();
             setMessages((prev) => [
               ...prev,
-              { id: nextId(), label: 'coder', text: cleanedStandaloneText, color: 'greenBright' }
+              { id: nextId(), label: 'general', text: cleanedStandaloneText, color: 'greenBright' }
             ]);
           }
         }

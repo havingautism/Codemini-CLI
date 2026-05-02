@@ -227,7 +227,7 @@ test('restored session history skips empty assistant messages', () => {
   assert.deepEqual(
     messages.map((message) => ({ label: message.label, text: message.text })),
     [
-      { label: 'coder', text: '有内容的回答' },
+      { label: 'general', text: '有内容的回答' },
       { label: 'you', text: '继续' }
     ]
   );
@@ -606,7 +606,8 @@ test('isIndexSystemToolName matches index system tool events', () => {
   assert.equal(isIndexSystemToolName('read(src/app.ts)'), false);
 });
 
-test('shouldShowCompletionFooter only shows for completed coder replies', () => {
+test('shouldShowCompletionFooter shows for completed general and plan-agent replies', () => {
+  assert.equal(shouldShowCompletionFooter({ label: 'general', loading: false, phase: undefined }), true);
   assert.equal(shouldShowCompletionFooter({ label: 'coder', loading: false, phase: undefined }), true);
   assert.equal(shouldShowCompletionFooter({ label: 'coder', loading: true, phase: 'thinking' }), false);
   assert.equal(shouldShowCompletionFooter({ label: 'system', loading: false, phase: undefined }), false);

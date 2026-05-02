@@ -110,6 +110,7 @@ function getCompletionCopy(language = 'zh') {
         'context.tool_result_max_chars': '工具结果字符上限',
         'context.read_file_default_lines': 'read_file 默认行数窗口',
         'context.read_file_max_chars': 'read_file 字符上限',
+        'context.prompt_budget_audit': 'Prompt 预算审计开关',
         'sessions.max_sessions': '会话保留上限',
         'sessions.retention_days': '会话保留天数',
         'shell.default': '默认 shell',
@@ -127,7 +128,8 @@ function getCompletionCopy(language = 'zh') {
         'execution.mode': '可选：auto | normal | plan',
         'shell.default': '常用：bash | powershell',
         'policy.safe_mode': '可选：true | false',
-        'policy.allow_dangerous_commands': '可选：true | false'
+        'policy.allow_dangerous_commands': '可选：true | false',
+        'context.prompt_budget_audit': '可选：true | false'
       },
       describeSet: (label, hint) => `设置${label}${hint ? `（${hint}）` : ''}`,
       describeGet: (label, hint) => `查看${label}${hint ? `（${hint}）` : ''}`,
@@ -210,6 +212,7 @@ function getCompletionCopy(language = 'zh') {
         'context.tool_result_max_chars': 'tool result character limit',
         'context.read_file_default_lines': 'default read_file line window',
         'context.read_file_max_chars': 'read_file character limit',
+        'context.prompt_budget_audit': 'prompt budget audit switch',
         'sessions.max_sessions': 'stored session limit',
         'sessions.retention_days': 'session retention days',
         'shell.default': 'default shell',
@@ -227,7 +230,8 @@ function getCompletionCopy(language = 'zh') {
         'execution.mode': 'options: auto | normal | plan',
         'shell.default': 'common: bash | powershell',
         'policy.safe_mode': 'options: true | false',
-        'policy.allow_dangerous_commands': 'options: true | false'
+        'policy.allow_dangerous_commands': 'options: true | false',
+        'context.prompt_budget_audit': 'options: true | false'
       },
       describeSet: (label, hint) => `set the ${label}${hint ? ` (${hint})` : ''}`,
       describeGet: (label, hint) => `show the ${label}${hint ? ` (${hint})` : ''}`,
@@ -301,9 +305,10 @@ function describeConfigKey(key, mode = 'set', language = 'zh') {
   return mode === 'get' ? copy.describeGet(label, hint) : copy.describeSet(label, hint);
 }
 
-const SUB_AGENT_ROLES = ['planner', 'coder', 'reviewer', 'tester', 'summarizer'];
+const SUB_AGENT_ROLES = ['planner', 'advisor', 'coder', 'reviewer', 'tester', 'summarizer'];
 export const ROLE_TOOL_POLICY = {
   planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node', 'web_fetch', 'web_search', 'read_plan', 'update_plan'],
+  advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'read_plan'],
   coder: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
   reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'read_plan'],
   tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'read_plan'],
@@ -349,6 +354,25 @@ export function getSubAgentRolePrompt(role) {
       'Not Verified:',
       '- <what remains uncertain>',
       'Do not add a closing summary or "Next Action" — the pipeline handles what comes next.'
+    ].join('\n');
+  }
+  if (role === 'advisor') {
+    return [
+      'You are the advisor in a multi-step agent pipeline.',
+      'Your job: analyze the handed-off context and produce recommendations, tradeoffs, and evidence.',
+      'Do not edit files, write code, delete files, or run commands.',
+      'Output format — keep it short and direct:',
+      'Findings:',
+      '- <important observation, constraint, or "none">',
+      'Recommendations:',
+      '- <prioritized recommendation or "none">',
+      'Tradeoffs:',
+      '- <important tradeoff or "none">',
+      'Evidence:',
+      '- <files, docs, or observations checked>',
+      'Open Questions:',
+      '- <blocking uncertainty or "none">',
+      'Do not summarize your own work or add closing remarks — just deliver the structured advisory handoff and stop.'
     ].join('\n');
   }
   if (role === 'tester') {
@@ -720,6 +744,9 @@ function buildGoalRequirementPacket(goal, role) {
     lines.push('Verify the implementation against the original goal, not just syntax or smoke checks.');
     lines.push('Check each acceptance item explicitly before calling the work verified.');
     lines.push('If any requested behavior is unverified or contradicted by evidence, list it under Not Verified or Failures.');
+  } else if (role === 'advisor') {
+    lines.push('Advise against the acceptance checklist and original goal, not generic best practices.');
+    lines.push('Prioritize concrete recommendations, evidence, and tradeoffs. Do not implement changes.');
   } else if (role === 'coder') {
     lines.push('Implement against the acceptance checklist, not only the broad wording of the goal.');
   }
@@ -735,11 +762,11 @@ function buildAutoPlanPlannerGuidance() {
     '- Prefer the smallest local approach that satisfies the goal.',
     '- Do not output multiple alternative branches in the final plan.',
     '- Do not assume implementation should begin before the plan is coherent.',
-    '- Available sub-agent roles are planner, coder, reviewer, tester, and summarizer. Use only the non-summary roles the task actually needs.',
+    '- Available sub-agent roles are planner, advisor, coder, reviewer, tester, and summarizer. Use only the non-summary roles the task actually needs.',
     '- Always include a summarizer as the final step. The summarizer reads accumulated step results from the plan file and synthesizes the final summary. It does NOT re-analyze the codebase.',
-    '- Do not ask planner, coder, reviewer, or tester steps to produce the final summary. They should write detailed step results for the summarizer.',
+    '- Do not ask planner, advisor, coder, reviewer, or tester steps to produce the final summary. They should write detailed step results for the summarizer.',
     '- For implementation-heavy or risky changes, prefer adding review and/or verification steps.',
-    '- For analysis, recommendation, or planning-only goals, you may omit reviewer/tester if they do not add value.',
+    '- For analysis, recommendation, optimization, architecture feedback, or planning-only goals, prefer advisor over coder and omit reviewer/tester if they do not add value.',
     '- Prefer 3-5 steps total unless the task is clearly larger.',
     '- Keep the plan ordered, implementation-oriented, and easy for small sub-agents to follow.'
   ].join('\n');
@@ -757,6 +784,9 @@ function buildAutoPlanExecutionGuidance(role) {
   if (role === 'coder') {
     common.push('- Keep edits tightly scoped to the chosen plan direction.');
     common.push('- Avoid speculative cleanup or unrelated improvements.');
+  } else if (role === 'advisor') {
+    common.push('- Produce advisory findings and recommendations only; do not modify files or run commands.');
+    common.push('- Ground every recommendation in inspected evidence or mark it as an assumption.');
   } else if (role === 'reviewer') {
     common.push('- Review against the chosen plan direction and the acceptance checklist.');
     common.push('- Call out missing requested behavior, regression risk, and unverified claims.');
@@ -1070,6 +1100,10 @@ function selectAutoSkillNames(text = '') {
   const input = String(text || '').toLowerCase();
   const selected = ['superpowers-lite'];
 
+  const explicitGrillMe =
+    /\bgr+ill\s+me\b|\bpressure[- ]?test\b|\bstress[- ]?test\b|\bchallenge\s+(?:this|my|me)\b|\btear\s+(?:this|my)\s+.*apart\b/i.test(
+      input
+    ) || /(拷问|质询|压力测试|挑战一下|挑刺|狠狠审|喷一下|怼一下)/i.test(input);
   const explicitBrainstorm =
     /(brainstorm|头脑风暴|方案|思路|设计一下|设计方案|怎么做|如何做|approach|options?)/i.test(input);
   const ambiguitySignals =
@@ -1087,6 +1121,9 @@ function selectAutoSkillNames(text = '') {
 
   if (explicitBrainstorm || (ambiguitySignals && featureRequest) || greenfieldBuildRequest) {
     selected.push('brainstorm');
+  }
+  if (explicitGrillMe) {
+    selected.push('grill-me');
   }
   return selected;
 }
@@ -1266,11 +1303,31 @@ function summarizeGoalForStepTitle(goal, fallback = 'requested change') {
 function buildFallbackAutoPlan(goal) {
   const requirements = deriveGoalRequirements(goal);
   const lightweightGoal = isLightweightAutoPlanGoal(goal, requirements);
+  const taskClass = classifyPlanTaskClass(goal);
   const focus = summarizeGoalForStepTitle(goal);
   const summary =
     requirements.length > 0
       ? `Auto fallback plan for: ${requirements.join('; ')}`
       : `Auto fallback plan for: ${goal}`;
+
+  if (taskClass === 'advisory') {
+    return {
+      summary,
+      steps: [
+        {
+          title: 'Inspect the target area',
+          role: 'planner',
+          task: `Inspect the relevant project context for: ${goal}. Identify constraints, evidence, and likely high-value advisory areas.`
+        },
+        {
+          title: `Advise on ${focus}`,
+          role: 'advisor',
+          task: `Analyze the findings for: ${goal}. Produce prioritized recommendations, tradeoffs, evidence, and open questions without implementing changes.`
+        },
+        buildDefaultSummarizerStep(goal)
+      ]
+    };
+  }
 
   if (lightweightGoal) {
     const summarizerStep = buildDefaultSummarizerStep(goal);
@@ -1332,6 +1389,13 @@ function buildFallbackAutoPlan(goal) {
 function buildDefaultSummarizerStep(goal, source = []) {
   const existing = (Array.isArray(source) ? source : []).find((step) => step.role === 'summarizer');
   if (existing?.title && existing?.task) return existing;
+  if (classifyPlanTaskClass(goal) === 'advisory') {
+    return {
+      title: 'Synthesize final findings',
+      role: 'summarizer',
+      task: `Synthesize the advisory findings for: ${goal}. Read the accumulated observations, recommendations, tradeoffs, evidence, and open questions from earlier steps, then produce a concise final summary with the single best next action.`
+    };
+  }
   return {
     title: 'Synthesize final implementation status',
     role: 'summarizer',
@@ -1344,7 +1408,7 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
   const requirements = deriveGoalRequirements(goal);
   const lightweightGoal = isLightweightAutoPlanGoal(goal, requirements);
   const taskClass = classifyPlanTaskClass(goal);
-  const implementationSteps = source.filter((step) => step.role !== 'reviewer' && step.role !== 'tester' && step.role !== 'summarizer');
+  const implementationSteps = source.filter((step) => step.role !== 'advisor' && step.role !== 'reviewer' && step.role !== 'tester' && step.role !== 'summarizer');
   const primaryImplementationStep =
     implementationSteps.find((step) => step.role === 'coder') ||
     implementationSteps[0] || {
@@ -1367,11 +1431,41 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
   const hasTester = source.some((step) => step.role === 'tester');
 
   if (taskClass === 'advisory') {
-    const advisorySteps = source.filter((step) => step.role === 'planner' || step.role === 'coder');
-    const baseSteps = advisorySteps.length > 0 ? advisorySteps.slice(0, 6) : [primaryImplementationStep];
+    const advisorySteps = source
+      .filter((step) => step.role === 'planner' || step.role === 'advisor' || step.role === 'coder')
+      .map((step) =>
+        step.role === 'coder'
+          ? {
+              ...step,
+              role: 'advisor',
+              title: /^implement\b/i.test(String(step.title || '')) ? 'Advise on requested goal' : step.title
+            }
+          : step
+      );
+    const hasAdvisor = advisorySteps.some((step) => step.role === 'advisor');
+    const baseSteps =
+      advisorySteps.length > 0
+        ? advisorySteps.slice(0, 6)
+        : [
+            {
+              title: 'Advise on requested goal',
+              role: 'advisor',
+              task: `Analyze the goal and recommend the highest-value next steps for: ${goal}`
+            }
+          ];
+    const finalSteps = hasAdvisor
+      ? baseSteps
+      : [
+          ...baseSteps,
+          {
+            title: 'Advise on requested goal',
+            role: 'advisor',
+            task: `Analyze the goal and recommend the highest-value next steps for: ${goal}`
+          }
+        ];
     return {
       summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
-      steps: [...baseSteps, summarizerStep]
+      steps: [...finalSteps, summarizerStep]
     };
   }
 
@@ -1929,6 +2023,72 @@ function effectiveMaxContextTokens(config) {
   return 32000;
 }
 
+function estimateTextTokens(role, content) {
+  const text = String(content || '');
+  if (!text) return 0;
+  return estimateMessagesTokens([{ role, content: text }]);
+}
+
+function makePromptBudgetComponent(name, role, content) {
+  const text = String(content || '');
+  return {
+    name,
+    chars: text.length,
+    estimated_tokens: estimateTextTokens(role, text)
+  };
+}
+
+function buildPromptBudgetAudit({
+  systemPrompt = '',
+  projectContextSnippet = '',
+  projectContextGuidance = '',
+  messages = [],
+  toolDefinitions = [],
+  config = {}
+}) {
+  const toolSchemaText = JSON.stringify(toolDefinitions || []);
+  const messageTexts = (Array.isArray(messages) ? messages : []).map((message) => ({
+    role: message?.role || 'user',
+    content: message?.content || ''
+  }));
+  const components = [
+    makePromptBudgetComponent('system_prompt', 'system', systemPrompt),
+    makePromptBudgetComponent('project_context', 'system', projectContextSnippet),
+    makePromptBudgetComponent('project_context_guidance', 'system', projectContextGuidance),
+    {
+      name: 'message_history',
+      chars: messageTexts.reduce((total, message) => total + String(message.content || '').length, 0),
+      estimated_tokens: estimateMessagesTokens(messageTexts)
+    },
+    makePromptBudgetComponent('tool_schemas', 'system', toolSchemaText)
+  ];
+  const totalChars = components.reduce((total, component) => total + component.chars, 0);
+  const totalTokens = components.reduce((total, component) => total + component.estimated_tokens, 0);
+  const maxContextTokens = effectiveMaxContextTokens(config);
+  const contextUsagePct =
+    maxContextTokens > 0 ? Math.min(100, Math.max(0, (totalTokens / maxContextTokens) * 100)) : 0;
+  return {
+    components,
+    total: {
+      chars: totalChars,
+      estimated_tokens: totalTokens
+    },
+    max_context_tokens: maxContextTokens,
+    context_usage_pct: contextUsagePct
+  };
+}
+
+function summarizePromptBudgetAudit(audit) {
+  const totalTokens = audit?.total?.estimated_tokens || 0;
+  const maxContextTokens = audit?.max_context_tokens || 0;
+  const pct = Number(audit?.context_usage_pct || 0).toFixed(1);
+  const components = (audit?.components || [])
+    .filter((component) => component.estimated_tokens > 0)
+    .map((component) => `${component.name}=${component.estimated_tokens}`)
+    .join(', ');
+  return `prompt budget: ${totalTokens}/${maxContextTokens} est tokens (${pct}%)${components ? `; ${components}` : ''}`;
+}
+
 function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession }) {
   const parentTokens = estimateMessagesTokens(currentSession?.messages || []);
   const subTokens = extraSession ? estimateMessagesTokens(extraSession.messages || []) : 0;
@@ -1939,6 +2099,7 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     sessionId: currentSession?.id || '',
     mode: executionMode || config.execution?.mode || 'auto',
     sdkProvider: config.sdk?.provider || 'openai-compatible',
+    agentRole: 'general',
     model: model || config.model?.name || '',
     maxContextTokens
   };
@@ -2241,8 +2402,10 @@ async function askModel({
   }
 
   const projectContextSnippet = await buildProjectContextSnippet(process.cwd(), text).catch(() => '');
+  const projectContextGuidance =
+    'Use this project context as lightweight guidance and verify important details with fresh reads when needed.';
   const effectiveSystemPrompt = projectContextSnippet
-    ? `${systemPrompt}\n\n${projectContextSnippet}\n\nUse this project context as lightweight guidance and verify important details with fresh reads when needed.`
+    ? `${systemPrompt}\n\n${projectContextSnippet}\n\n${projectContextGuidance}`
     : systemPrompt;
 
   const { definitions, handlers, formatters, deferredDefinitions, dispose: disposeTools } = getBuiltinTools({
@@ -2271,6 +2434,31 @@ async function askModel({
   const filteredDeferred = Array.isArray(allowedTools)
     ? Object.fromEntries(Object.entries(deferredDefinitions).filter(([name]) => allowedTools.includes(name)))
     : deferredDefinitions;
+
+  if (config.context?.prompt_budget_audit === true && onAgentEvent) {
+    const auditId = `prompt-budget-${Date.now()}`;
+    const audit = buildPromptBudgetAudit({
+      systemPrompt,
+      projectContextSnippet,
+      projectContextGuidance: projectContextSnippet ? projectContextGuidance : '',
+      messages: session.messages.filter((m) => m.role !== 'system'),
+      toolDefinitions: filteredDefinitions,
+      config
+    });
+    onAgentEvent({
+      type: 'system_tool:start',
+      id: auditId,
+      name: 'prompt_budget',
+      summary: 'calculating prompt budget'
+    });
+    onAgentEvent({
+      type: 'system_tool:end',
+      id: auditId,
+      name: 'prompt_budget',
+      summary: summarizePromptBudgetAudit(audit),
+      details: audit
+    });
+  }
 
   let activeAssistantIndex = -1;
   const wrappedAgentEvent = (event) => {
@@ -2644,14 +2832,15 @@ async function buildAutoPlanAndRun({
     '- advisory = analysis, review, audit, optimization suggestions, architecture feedback, brainstorming, planning, or recommendation requests.',
     '- implementation = add/build/create/implement/refactor/fix/update/change behavior in code or files.',
     '- verification-heavy = the user explicitly asks to run tests, verify findings, reproduce a bug, prove a claim, or validate a result.',
-    '- For advisory goals, prefer only planner and coder roles. Do not use reviewer or tester unless the user explicitly asks for verification or review as a separate deliverable.',
+    '- For advisory goals, prefer planner and advisor roles. Do not use coder unless the plan will actually modify code or files.',
+    '- For advisory goals, do not use reviewer or tester unless the user explicitly asks for verification or review as a separate deliverable.',
     '- For advisory goals, do not emit generic filler steps such as "Test and verify", "Review recommendations", or other template-only steps.',
     '- For implementation goals, reviewer and tester are optional support roles, not defaults. Only include them when they clearly add value.',
     '- Every step title must be concrete and tied to the goal. Avoid vague titles like "Initial analysis", "Review recommendations", or "Test and verify" unless the user explicitly requested those activities.',
     '- If the task is purely to inspect the current project and suggest improvements, a lean 2-step or 3-step plan is preferred.',
-    '- Example advisory roles: planner -> inspect project shape, coder -> synthesize findings and prioritized recommendations.',
+    '- Example advisory roles: planner -> inspect project shape, advisor -> synthesize findings and prioritized recommendations.',
     '- Example implementation roles: planner -> inspect target area, coder -> implement change, tester -> verify changed behavior.',
-    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.'
+    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|advisor|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.'
   ].join('\n');
   let autoPlan = {
     summary: `Auto plan for: ${goal}`,
@@ -2676,15 +2865,15 @@ async function buildAutoPlanAndRun({
           role: 'user',
           content: [
             'Create an execution plan and assign best sub-agent role for each step.',
-            'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.',
-            'The available roles are planner, coder, reviewer, tester, and summarizer. Use only the non-summary roles the task actually needs.',
+            'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|advisor|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.',
+            'The available roles are planner, advisor, coder, reviewer, tester, and summarizer. Use only the non-summary roles the task actually needs.',
             'Always include a summarizer as the final step. The summarizer synthesizes prior step results without re-analyzing.',
-            'Planner, coder, reviewer, and tester steps should write detailed step results, not final summaries.',
+            'Planner, advisor, coder, reviewer, and tester steps should write detailed step results, not final summaries.',
             `Task class: ${normalizedTaskClass}`,
             'Before choosing roles, decide whether the request is advisory, implementation, or verification-heavy.',
             requirementPacket,
             'The first step should usually inspect or clarify the target area before implementation.',
-            'For analysis, recommendation, optimization, audit, or project-review goals, keep the plan lean and usually limit it to planner/coder.',
+            'For analysis, recommendation, optimization, audit, or project-review goals, keep the plan lean and usually limit it to planner/advisor.',
             'Do not include reviewer/tester for advisory goals unless the user explicitly asks to validate, verify, or independently review the findings.',
             'Avoid template-only titles like "Initial analysis", "Review recommendations", or "Test and verify" for advisory goals.',
             'For implementation-heavy changes, prefer review and/or testing steps near the end only when they materially improve confidence.',
@@ -2795,7 +2984,7 @@ async function revisePendingPlanWithModel({
   const prompt = [
     buildAutoPlanPlannerGuidance(),
     'You are revising an existing plan based on explicit user feedback.',
-    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.',
+    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|advisor|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.',
     'Keep roles minimal and only include steps that materially help the goal.',
     'Always keep a summarizer as the final step.'
   ].join('\n');
@@ -3123,7 +3312,7 @@ export async function createChatRuntime({
   ];
   const specTemplates = ['/spec <topic>'];
   const planTemplates = ['/plan <goal>', '/plan auto <goal>', '/plan approve', '/plan from-spec <spec-path?>'];
-  const agentTemplates = ['/agents list', '/agents run planner <task>', '/agents run coder <task>', '/agents run reviewer <task>', '/agents run tester <task>', '/agents run summarizer <task>'];
+  const agentTemplates = ['/agents list', '/agents run planner <task>', '/agents run advisor <task>', '/agents run coder <task>', '/agents run reviewer <task>', '/agents run tester <task>', '/agents run summarizer <task>'];
   const debugTemplates = ['/debug keys on', '/debug keys off', '/debug keys status'];
   const dreamTemplates = ['/dream', '/dream --dry-run', '/dream --scope=project', '/dream --scope=global'];
   const reflectTemplates = ['/reflect', '/reflect --scope=global <request>', '/reflect <request>'];
@@ -3353,7 +3542,7 @@ export async function createChatRuntime({
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         const sub = tokens[1] || '';
         if (sub === 'run') {
-          return ['planner', 'coder', 'reviewer', 'tester', 'summarizer']
+          return SUB_AGENT_ROLES
             .map((r) => registerSuggestion(`/agents run ${r} `, completionCopy.generic.agentCommand));
         }
         return ['list', 'run']
@@ -3362,7 +3551,7 @@ export async function createChatRuntime({
       }
       if (tokens[1] === 'run') {
         const rolePrefix = tokens[2] || '';
-        return ['planner', 'coder', 'reviewer', 'tester']
+        return SUB_AGENT_ROLES
           .filter((r) => r.startsWith(rolePrefix))
           .map((r) => registerSuggestion(`/agents run ${r} `, completionCopy.generic.agentCommand));
       }
@@ -3661,7 +3850,7 @@ export async function createChatRuntime({
         const todoCount = countActiveTodos(currentSession.todos);
         return {
           type: 'system',
-          text: `mode=${executionMode} | model=${model || config.model.name} | max_ctx=${effectiveMaxContextTokens(config)} | session=${currentSession.id} | todos=${todoCount}`
+          text: `mode=${executionMode} | role=general | model=${model || config.model.name} | max_ctx=${effectiveMaxContextTokens(config)} | session=${currentSession.id} | todos=${todoCount}`
         };
       }
       if (parsedInput.command === 'mode') {
@@ -4002,7 +4191,7 @@ export async function createChatRuntime({
         if (sub === 'list') {
           return {
             type: 'system',
-            text: 'Sub-agent roles: planner, coder, reviewer, tester, summarizer\nUse: /agents run <role> <task>'
+            text: 'Sub-agent roles: planner, advisor, coder, reviewer, tester, summarizer\nUse: /agents run <role> <task>'
           };
         }
         if (sub === 'run') {
@@ -4010,7 +4199,7 @@ export async function createChatRuntime({
           const task = parsedInput.args.slice(2).join(' ').trim();
           if (!role || !task) return { type: 'system', text: 'Usage: /agents run <role> <task>' };
           if (!SUB_AGENT_ROLES.includes(role)) {
-            return { type: 'system', text: 'Unknown role. Allowed: planner|coder|reviewer|tester|summarizer' };
+            return { type: 'system', text: 'Unknown role. Allowed: planner|advisor|coder|reviewer|tester|summarizer' };
           }
           const output = await runSubAgentTask({
             role,
