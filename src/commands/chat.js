@@ -42,6 +42,22 @@ function parseChatArgs(args) {
   return parsed;
 }
 
+export async function submitAndPrint(runtime, line, { output: out = process.stdout } = {}) {
+  let streamed = false;
+  const result = await runtime.submit(line, (event) => {
+    if (event?.type !== 'assistant:delta' || !event.text) return;
+    streamed = true;
+    out.write(String(event.text));
+  });
+  if (result.type === 'exit' || result.type === 'noop') return result;
+  if (streamed) {
+    out.write('\n');
+    return result;
+  }
+  if (result.text) out.write(`${result.text}\n`);
+  return result;
+}
+
 async function runPlainLoop(runtime) {
   console.log('CodeMini CLI plain mode. Use /help and /exit.');
   const rl = readline.createInterface({ input, output });
@@ -53,10 +69,8 @@ async function runPlainLoop(runtime) {
       } catch {
         break;
       }
-      const result = await runtime.submit(line);
+      const result = await submitAndPrint(runtime, line, { output });
       if (result.type === 'exit') break;
-      if (result.type === 'noop') continue;
-      if (result.text) console.log(result.text);
     }
   } finally {
     rl.close();
@@ -80,8 +94,7 @@ export async function handleChat(args) {
 
   try {
     if (parsed.prompt) {
-      const result = await runtime.submit(parsed.prompt);
-      if (result.text) console.log(result.text);
+      await submitAndPrint(runtime, parsed.prompt, { output: process.stdout });
       return;
     }
 
