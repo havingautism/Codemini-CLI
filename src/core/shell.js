@@ -220,7 +220,7 @@ export function runShellCommand({
   command,
   cwd = process.cwd(),
   shell = 'powershell',
-  timeoutMs = 120000
+  timeoutMs = 1800000
 }) {
   const shellSpec = resolveShell(shell);
   const shellCommand =

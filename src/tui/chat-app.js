@@ -2526,13 +2526,27 @@ export function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) 
     }
   };
 
+  const visiblePendingToolCalls = (existingCalls = []) => {
+    const pendingToolCalls = Array.isArray(msg?.pendingToolCalls) ? msg.pendingToolCalls : [];
+    return pendingToolCalls.filter((pending) => {
+      if (!pending) return false;
+      if (pending.id && existingCalls.some((tool) => tool?.id && tool.id === pending.id)) return false;
+      const pendingBase = parseToolDisplayName(pending.name).base;
+      return !existingCalls.some(
+        (tool) => parseToolDisplayName(tool?.name).base === pendingBase && tool?.status === 'running'
+      );
+    });
+  };
+
   if (Array.isArray(msg?.segments) && msg.segments.length > 0) {
-    const totalTools = msg.segments.filter(
+    const segmentTools = msg.segments.filter(
       (segment) =>
         segment.type === 'tool' ||
         segment.type === 'skill' ||
         (segment.type === 'system_tool' && (showToolDetails || !isIndexSystemToolName(segment.name)))
-    ).length;
+    );
+    const pendingToolCalls = visiblePendingToolCalls(segmentTools);
+    const totalTools = segmentTools.length + pendingToolCalls.length;
     let toolIndex = 0;
     for (const segment of msg.segments) {
       if (segment.type === 'tool' || segment.type === 'skill' || segment.type === 'system_tool') {
@@ -2545,19 +2559,14 @@ export function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) 
         pushTextRows(segment.text || '');
       }
     }
+    pendingToolCalls.forEach((tool) => {
+      pushActivityRows(tool, toolIndex, totalTools);
+      toolIndex += 1;
+    });
   } else {
     pushTextRows(msg?.text || '');
     const toolCalls = Array.isArray(msg?.toolCalls) ? msg.toolCalls : [];
-    const pendingToolCalls = Array.isArray(msg?.pendingToolCalls) ? msg.pendingToolCalls : [];
-    const visibleCalls = [
-      ...toolCalls,
-      ...pendingToolCalls.filter((pending) => {
-        if (!pending) return false;
-        if (pending.id && toolCalls.some((tool) => tool?.id && tool.id === pending.id)) return false;
-        const pendingBase = parseToolDisplayName(pending.name).base;
-        return !toolCalls.some((tool) => parseToolDisplayName(tool?.name).base === pendingBase && tool?.status === 'running');
-      })
-    ];
+    const visibleCalls = [...toolCalls, ...visiblePendingToolCalls(toolCalls)];
     visibleCalls.forEach((tool, idx) => pushActivityRows(tool, idx, visibleCalls.length));
   }
 

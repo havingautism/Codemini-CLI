@@ -45,11 +45,15 @@ test('loadConfig creates the default global config file on first initialization'
 
     const initial = await loadConfig();
     assert.equal(initial.ui.reply_language, 'zh');
+    assert.equal(initial.gateway.timeout_ms, 1800000);
+    assert.equal(initial.shell.timeout_ms, 1800000);
 
     const raw = await fs.readFile(configPath, 'utf8');
     const persisted = JSON.parse(raw);
     assert.equal(persisted.ui.reply_language, 'zh');
     assert.equal(persisted.execution.mode, 'auto');
+    assert.equal(persisted.gateway.timeout_ms, 1800000);
+    assert.equal(persisted.shell.timeout_ms, 1800000);
   });
 });
 

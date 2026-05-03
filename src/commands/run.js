@@ -71,7 +71,7 @@ function makeCompletionFn(config) {
       model,
       messages,
       tools,
-      timeoutMs: config.gateway.timeout_ms || 90000,
+      timeoutMs: config.gateway.timeout_ms || 1800000,
       maxRetries: config.gateway.max_retries ?? 2
     });
 }
@@ -159,7 +159,7 @@ async function planPipeline({ goal, config, systemPrompt, model }) {
       { role: 'system', content: `${systemPrompt}\n${plannerPrompt}` },
       { role: 'user', content: `Plan the following task:\n${goal}` }
     ],
-    timeoutMs: config.gateway.timeout_ms || 90000,
+    timeoutMs: config.gateway.timeout_ms || 1800000,
     maxRetries: config.gateway.max_retries ?? 2
   });
 

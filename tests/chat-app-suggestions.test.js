@@ -178,6 +178,58 @@ test('normalizeActivitySpacingRows trims blank lines before tools and leaves one
   assert.equal(rows[4].text, '现在继续检查 CSS 文件。');
 });
 
+test('buildMessageRows shows pending tool calls after streamed text segments', () => {
+  const rows = buildMessageRows(
+    {
+      id: 'assistant-1',
+      label: 'general',
+      color: 'greenBright',
+      text: 'Now I will write the report:',
+      segments: [{ type: 'text', text: 'Now I will write the report:' }],
+      pendingToolCalls: [
+        {
+          id: 'call-write-1',
+          type: 'tool',
+          name: 'Write(docs/requirements/report.md)',
+          status: 'pending',
+          arguments: { path: 'docs/requirements/report.md', content: '# Report' }
+        }
+      ]
+    },
+    false,
+    100
+  );
+
+  const activityRows = rows.filter((row) => row.kind === 'activity');
+  assert.equal(activityRows.length, 1);
+  assert.equal(activityRows[0].name, 'Write(docs/requirements/report.md)');
+  assert.equal(activityRows[0].status, 'pending');
+});
+
+test('buildMessageRows does not duplicate pending calls already represented by running segments', () => {
+  const rows = buildMessageRows(
+    {
+      id: 'assistant-1',
+      label: 'general',
+      color: 'greenBright',
+      segments: [
+        { type: 'text', text: 'Running tests now.' },
+        { type: 'tool', id: 'call-run-1', name: 'Run(npm test)', status: 'running' }
+      ],
+      pendingToolCalls: [
+        { id: 'call-run-1', type: 'tool', name: 'Run(npm test)', status: 'pending' },
+        { id: 'call-run-shadow', type: 'tool', name: 'Run(npm test)', status: 'pending' }
+      ]
+    },
+    false,
+    100
+  );
+
+  const activityRows = rows.filter((row) => row.kind === 'activity' && row.name === 'Run(npm test)');
+  assert.equal(activityRows.length, 1);
+  assert.equal(activityRows[0].status, 'running');
+});
+
 test('history list rows use semantic colors by line type', () => {
   const rows = buildMessageRows(
     {

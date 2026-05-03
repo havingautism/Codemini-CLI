@@ -1736,7 +1736,7 @@ async function buildAutoPlanFinalSummary({
           content: buildAutoPlanFinalSummaryUserPrompt({ goal, autoPlan, runItems, planningError })
         }
       ],
-      timeoutMs: config.gateway.timeout_ms || 90000,
+      timeoutMs: config.gateway.timeout_ms || 1800000,
       maxRetries: config.gateway.max_retries ?? 2
     });
     return trimInline(result.text || '', 600) || fallbackSummary;
@@ -1862,7 +1862,7 @@ async function buildSpecWithModel({
       { role: 'system', content: `${systemPrompt}\n${prompt}` },
       { role: 'user', content: `Topic: ${topic}` }
     ],
-    timeoutMs: config.gateway.timeout_ms || 90000,
+    timeoutMs: config.gateway.timeout_ms || 1800000,
     maxRetries: config.gateway.max_retries ?? 2
   });
   return String(result.text || '').trim();
@@ -1925,7 +1925,7 @@ async function buildPlanFromSpecWithModel({
         content: `Spec path: ${specPath || '(inline)'}\n\nProject implementation constraints:\n${projectConstraints}\n\n${specText}`
       }
     ],
-    timeoutMs: config.gateway.timeout_ms || 90000,
+    timeoutMs: config.gateway.timeout_ms || 1800000,
     maxRetries: config.gateway.max_retries ?? 2
   });
   return String(result.text || '').trim();
@@ -2539,7 +2539,7 @@ async function askModel({
         model: selectedModel,
         messages,
         tools,
-        timeoutMs: config.gateway.timeout_ms || 90000,
+        timeoutMs: config.gateway.timeout_ms || 1800000,
         maxRetries: config.gateway.max_retries ?? 2,
         signal,
         onTextDelta: (delta) => {
@@ -2883,7 +2883,7 @@ async function buildAutoPlanAndRun({
             .join('\n')
         }
       ],
-      timeoutMs: config.gateway.timeout_ms || 90000,
+      timeoutMs: config.gateway.timeout_ms || 1800000,
       maxRetries: config.gateway.max_retries ?? 2
     });
     const parsed = extractJsonBlock(planning.text || '');
@@ -3008,7 +3008,7 @@ async function revisePendingPlanWithModel({
         ].join('\n')
       }
     ],
-    timeoutMs: config.gateway.timeout_ms || 90000,
+    timeoutMs: config.gateway.timeout_ms || 1800000,
     maxRetries: config.gateway.max_retries ?? 2
   });
   const parsed = extractJsonBlock(result.text || '');

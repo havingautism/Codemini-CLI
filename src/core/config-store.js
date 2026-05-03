@@ -19,7 +19,7 @@ const DEFAULT_CONFIG = {
   gateway: {
     base_url: 'http://127.0.0.1:8000/v1',
     api_key: '',
-    timeout_ms: 90000,
+    timeout_ms: 1800000,
     max_retries: 2
   },
   model: {
@@ -57,7 +57,7 @@ const DEFAULT_CONFIG = {
   },
   shell: {
     default: normalizeShellName(process.platform === 'win32' ? 'powershell' : 'bash'),
-    timeout_ms: 120000
+    timeout_ms: 1800000
   },
   ui: {
     language: 'zh',

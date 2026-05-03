@@ -294,7 +294,7 @@ export async function createChatCompletion({
   messages,
   temperature = 0.2,
   tools,
-  timeoutMs = 90000,
+  timeoutMs = 1800000,
   maxTokens = 4096
 }) {
   const payload = buildPayload({ model, temperature, messages, tools, maxTokens });
@@ -317,7 +317,7 @@ export async function createChatCompletionStream({
   tools,
   onTextDelta,
   onToolCallDelta,
-  timeoutMs = 90000,
+  timeoutMs = 1800000,
   maxTokens = 4096,
   signal: externalSignal
 }) {

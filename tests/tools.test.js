@@ -927,6 +927,21 @@ test('opencode-style write and run tools execute through the existing runtime', 
   });
 });
 
+test('run tool honors per-command timeout override', async () => {
+  await withTempWorkspace(async (workspaceRoot) => {
+    const { handlers } = await makeToolsWithConfig(workspaceRoot, (config) => {
+      config.shell.default = 'bash';
+      config.shell.timeout_ms = 5000;
+      config.policy.command_allowlist = ['bash'];
+    });
+
+    await assert.rejects(
+      () => handlers.run({ command: "bash -lc 'sleep 0.2'", timeout: 50 }),
+      /Command timed out after 50ms/
+    );
+  });
+});
+
 test('sanitizeTextForModel strips ansi, collapses blank runs, and truncates wide lines', () => {
   const result = sanitizeTextForModel(
     '\u001b[31merror:\u001b[0m abcdefghijklmnopqrstuvwxyz\n\n\nnext line',

@@ -1044,7 +1044,7 @@ async function runCommand(root, config, args) {
     command,
     cwd: root,
     shell: config.shell.default,
-    timeoutMs: config.shell.timeout_ms
+    timeoutMs: Number(args?.timeout || args?.timeout_ms || args?.timeoutMs || config.shell.timeout_ms)
   });
   return { ...result, command };
 }
