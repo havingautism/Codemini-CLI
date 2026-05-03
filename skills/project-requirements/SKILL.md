@@ -8,6 +8,14 @@ Use this skill to reverse-engineer a project into a requirements document that p
 
 Default to an HTML report with lightweight interactions. Produce Markdown only when the user asks for a text-first artifact, a PR-friendly source document, or an additional companion file.
 
+User request:
+
+```text
+{{args}}
+```
+
+Honor any concrete user request above, such as output format, report path, focus area, API subset, diagram style, or language. If it is empty, generate the default HTML requirements report for the current workspace.
+
 ## Output
 
 Create the primary report at:
