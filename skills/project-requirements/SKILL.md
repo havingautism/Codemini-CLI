@@ -21,16 +21,18 @@ Honor any concrete user request above, such as output format, report path, focus
 Create the primary report at:
 
 ```text
-docs/requirements/YYYY-MM-DD-project-requirements.html
+docs/requirements/{{date}}-project-requirements.html
 ```
 
 If a companion Markdown file is useful, create:
 
 ```text
-docs/requirements/YYYY-MM-DD-project-requirements.md
+docs/requirements/{{date}}-project-requirements.md
 ```
 
 The HTML should be self-contained: inline CSS, inline JavaScript, no build step, no required external assets.
+
+When the target HTML file already exists and contains `REQUIREMENTS_*` marker sections, treat it as the canonical report shell. Edit those marker sections in place instead of replacing the whole file. Preserve the existing CSS, JavaScript, navigation, metadata, and surrounding structure unless the user explicitly asks to redesign the shell.
 
 Diagrams must be visible when the HTML is opened directly from disk:
 

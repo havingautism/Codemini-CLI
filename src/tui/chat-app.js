@@ -1386,6 +1386,7 @@ export function shouldRefreshRuntimeStateForEvent(event) {
     type === 'assistant:delta' ||
     type === 'assistant:response' ||
     type === 'tool:result' ||
+    type === 'plan:progress' ||
     type === 'compact:auto' ||
     type === 'dream:auto' ||
     type === 'dream:complete'
@@ -4182,13 +4183,6 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
           setRuntimeStatus(makeStatus(copy.runtime.toolBlocked, detail, 'redBright'));
           setInputStage('thinking');
           setActiveAssistantMeta({ loading: true, phase: 'thinking', liveStatus: copy.toolActivity.waitingModelAdjust(detail) });
-          setPlanState((prev) => ({
-            ...prev,
-            failed: prev.total > 0,
-            steps: (prev.steps || []).map((step) =>
-              step.index === prev.current ? { ...step, status: 'failed' } : step
-            )
-          }));
           updateActivityStatusOnActiveAssistant({
             type: 'tool',
             id: event.id,
@@ -4202,13 +4196,6 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
           setRuntimeStatus(makeStatus(copy.runtime.toolFailed, event.summary || detail, 'redBright'));
           setInputStage('thinking');
           setActiveAssistantMeta({ loading: true, phase: 'thinking', liveStatus: copy.toolActivity.waitingModelAdjust(detail) });
-          setPlanState((prev) => ({
-            ...prev,
-            failed: prev.total > 0,
-            steps: (prev.steps || []).map((step) =>
-              step.index === prev.current ? { ...step, status: 'failed' } : step
-            )
-          }));
           updateActivityStatusOnActiveAssistant({
             type: 'tool',
             id: event.id,
@@ -4284,6 +4271,52 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
                 status: 'pending'
               }))
             }));
+          }
+        }
+        if (event?.type === 'plan:progress') {
+          const current = Number(event.step || 0);
+          const total = Number(event.total || 0);
+          const status = String(event.status || '').trim().toLowerCase();
+          if (current > 0 && total > 0) {
+            const role = String(event.role || '').trim().toLowerCase();
+            const normalizedRole = PLAN_AGENT_ROLES.has(role) ? role : 'coder';
+            const title = String(event.title || '').trim();
+            setPlanState((prev) => {
+              const existingSteps = Array.isArray(prev.steps) ? prev.steps : [];
+              const merged = existingSteps.some((step) => step.index === current)
+                ? existingSteps.map((step) =>
+                    step.index === current
+                      ? {
+                          ...step,
+                          total,
+                          role: event.role || step.role || normalizedRole,
+                          title: title || step.title || '',
+                          status: status === 'failed' ? 'failed' : status === 'done' ? 'done' : status === 'running' ? 'active' : step.status
+                        }
+                      : step
+                  )
+                : [
+                    ...existingSteps,
+                    {
+                      index: current,
+                      total,
+                      role: event.role || normalizedRole,
+                      title,
+                      status: status === 'failed' ? 'failed' : status === 'done' ? 'done' : 'active'
+                    }
+                  ];
+              return {
+                ...prev,
+                current,
+                total,
+                role: event.role || prev.role || normalizedRole,
+                title: title || prev.title || '',
+                failed: status === 'failed' ? true : prev.failed,
+                completed: status === 'done' && current === total && !prev.failed,
+                pendingApproval: false,
+                steps: merged.sort((a, b) => a.index - b.index)
+              };
+            });
           }
         }
         if (event?.type === 'skill:start') {

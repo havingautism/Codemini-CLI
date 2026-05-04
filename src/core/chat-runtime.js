@@ -1,10 +1,11 @@
 import { parseInput } from './input-parser.js';
-import { loadCommandsAndSkills, renderCommandPrompt } from './command-loader.js';
+import { formatLocalDate, loadCommandsAndSkills, renderCommandPrompt } from './command-loader.js';
 import { runAgentLoop } from './agent-loop.js';
 import { setResultDir, clearResultStore } from './tool-result-store.js';
 import { trimInline, normalizePath } from './string-utils.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   createChatCompletion,
   createChatCompletionStream
@@ -38,6 +39,8 @@ import {
 } from './reflect-skill.js';
 
 const STREAM_SAVE_DEBOUNCE_MS = 120;
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PROJECT_REQUIREMENTS_TEMPLATE = path.resolve(MODULE_DIR, '..', '..', 'templates', 'project-requirements', 'report-shell.html');
 
 function toOpenAIMessages(sessionMessages) {
   const mapped = [];
@@ -312,7 +315,7 @@ export const ROLE_TOOL_POLICY = {
   coder: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
   reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'read_plan'],
   tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'read_plan'],
-  summarizer: ['read_plan']
+  summarizer: ['read', 'read_plan']
 };
 const SUB_AGENT_CONTEXT_MAX_MESSAGES = 4;
 const SUB_AGENT_CONTEXT_MAX_CHARS = 1200;
@@ -395,6 +398,7 @@ export function getSubAgentRolePrompt(role) {
       'You are the summarizer in a multi-step agent pipeline.',
       'Your job is to synthesize the results of all prior steps into a concise, actionable final summary.',
       'Do NOT re-analyze the codebase or make new tool calls unless the handed-off evidence is clearly insufficient.',
+      'You may read handed-off artifact files, such as generated reports, when needed to summarize or verify their existence.',
       'Instead, read the accumulated step results in the plan file context provided to you.',
       'Output format — keep it short and direct:',
       'Summary:',
@@ -2709,6 +2713,16 @@ async function executePlanWithSubAgents({
     if (signal?.aborted) break;
 
     emitPlanEvent({
+      type: 'plan:progress',
+      planFile: planFilePath,
+      step: i + 1,
+      total: steps.length,
+      role: step.role,
+      title: step.title,
+      status: 'running'
+    });
+
+    emitPlanEvent({
       type: 'assistant:delta',
       text: `\n[plan] Step ${i + 1}/${steps.length} -> ${step.role}: ${step.title}\n`
     });
@@ -2770,6 +2784,17 @@ async function executePlanWithSubAgents({
         stepRecord.artifactPaths
       );
     }
+
+    emitPlanEvent({
+      type: 'plan:progress',
+      planFile: planFilePath,
+      step: i + 1,
+      total: steps.length,
+      role: step.role,
+      title: step.title,
+      status: stepRecord.failed ? 'failed' : 'done',
+      summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output, 160)
+    });
 
     if (stepRecord.failed && i < steps.length - 1) {
       const summarizerIndex = steps.findIndex((candidate, index) => index > i && candidate.role === 'summarizer');
@@ -2966,6 +2991,313 @@ function renderAutoPlanMarkdown({
   lines.push(progressLine);
   lines.push(PLAN_MEMORY_MARKERS.progress[1]);
   return lines.join('\n');
+}
+
+function buildProjectRequirementsSteps(renderedSkillPrompt, args = []) {
+  const userArgs = args.join(' ').trim();
+  const requestedFocus = userArgs ? `User request/focus: ${userArgs}` : 'User request/focus: full workspace requirements report.';
+  const reportDate = formatLocalDate();
+  const reportPath = `docs/requirements/${reportDate}-project-requirements.html`;
+  const companionPath = `docs/requirements/${reportDate}-project-requirements.md`;
+  const reportContract = [
+    requestedFocus,
+    `Primary report path: ${reportPath}`,
+    `Optional companion Markdown path: ${companionPath}`,
+    'A pre-created HTML shell already exists at the primary report path.',
+    'Fill or replace only the named marker sections in that shell instead of rewriting the whole document.',
+    'Required marker sections: REQUIREMENTS_SUMMARY, REQUIREMENTS_ARCHITECTURE, REQUIREMENTS_INTERFACE_INVENTORY, REQUIREMENTS_API_CARDS, REQUIREMENTS_FLOWS, REQUIREMENTS_SECURITY, REQUIREMENTS_NONFUNCTIONAL, REQUIREMENTS_OPEN_QUESTIONS, REQUIREMENTS_EVIDENCE_INDEX.',
+    'Use EXTRACTED, INFERRED, and UNKNOWN labels. Preserve source evidence paths.',
+    'Do not invent dates; use the report paths above.'
+  ].join('\n');
+
+  return [
+    {
+      title: 'Map project interfaces and evidence',
+      role: 'planner',
+      task: [
+        'Map project interfaces and evidence before any report writing.',
+        reportContract,
+        'Inspect top-level docs, package manifests, route/command entry points, tests, and obvious interface files.',
+        'Produce a concise interface inventory grouped by CLI commands, HTTP/API/RPC surfaces, tools, storage/config, UI flows, and operations.',
+        'Include evidence paths and open questions. Do not write the final report.'
+      ].join('\n')
+    },
+    {
+      title: 'Analyze runtime, tools, and providers',
+      role: 'advisor',
+      task: [
+        'Analyze the core execution layer and tool/provider surfaces using the prior planner inventory.',
+        reportContract,
+        'Focus on runtime flow, agent loop, built-in/deferred tools, provider streaming/tool-call behavior, sessions, memory, and plan state.',
+        'Return requirement-ready findings with evidence paths, inferred requirements, edge cases, and unknowns. Do not write the final report.'
+      ].join('\n')
+    },
+    {
+      title: 'Analyze product flows, storage, security, and operations',
+      role: 'advisor',
+      task: [
+        'Analyze user-facing workflows and non-functional requirements using the accumulated plan context.',
+        reportContract,
+        'Cover core product journeys, persistence paths, configuration, security/policy behavior, deployment/operations notes, error handling, and acceptance criteria.',
+        'Return requirement-ready findings with evidence paths, inferred requirements, edge cases, and unknowns. Do not write the final report.'
+      ].join('\n')
+    },
+    {
+      title: 'Write requirements HTML report',
+      role: 'coder',
+      task: [
+        'Create the final project requirements report from the accumulated plan context.',
+        reportContract,
+        'Follow the project-requirements skill instructions below exactly, including chunked HTML writing for medium/large reports.',
+        'The final HTML must be self-contained and directly openable from disk.',
+        'Write the primary report to the exact primary report path above. Create the companion Markdown only if useful.',
+        'Skill instructions:',
+        renderedSkillPrompt
+      ].join('\n\n')
+    },
+    {
+      title: 'Review report coverage and traceability',
+      role: 'reviewer',
+      task: [
+        'Review the generated requirements report against the project-requirements contract and accumulated evidence.',
+        reportContract,
+        'Check that major interfaces are represented, evidence paths are present, inferred/unknown content is labeled, diagrams are visible without Mermaid as the only renderer, and the report path matches the required local date.',
+        'Report concrete gaps and risks only. Do not rewrite the whole report.'
+      ].join('\n')
+    },
+    {
+      title: 'Summarize final requirements report',
+      role: 'summarizer',
+      task: [
+        'Synthesize the project requirements pipeline results into a concise final status for the user.',
+        reportContract,
+        'Mention the generated report path, what was covered, what was not verified, and the best next action.',
+        'Do not re-analyze the codebase unless the accumulated evidence is clearly insufficient.'
+      ].join('\n')
+    }
+  ];
+}
+
+function renderProjectRequirementsPlanMarkdown({ goal, steps, reportPath, companionPath }) {
+  const autoPlan = {
+    summary: 'Dedicated sub-agent pipeline for project requirements discovery and HTML report generation.',
+    steps
+  };
+  const progressLines = steps
+    .map((step, index) => `- [ ] Step ${index + 1} [${step.role}] ${step.title}`)
+    .join('\n');
+  return [
+    `# Project Requirements Pipeline: ${goal}`,
+    '',
+    `Primary Report: ${reportPath}`,
+    `Optional Companion: ${companionPath}`,
+    '',
+    renderAutoPlanMarkdown({
+      goal,
+      autoPlan,
+      finalSummary: 'Project requirements pipeline created and will execute immediately.',
+      approvalText: 'No approval required. Triggered explicitly by /project-requirements.',
+      progressLine: progressLines
+    })
+  ].join('\n');
+}
+
+function replaceTemplateVariables(template, variables) {
+  let out = String(template || '');
+  for (const [key, value] of Object.entries(variables || {})) {
+    out = out.replaceAll(`{{${key}}}`, String(value ?? ''));
+  }
+  return out;
+}
+
+async function createProjectRequirementsShell({
+  reportPath,
+  companionPath,
+  manifestPath,
+  planFile,
+  goal,
+  steps
+}) {
+  const workspaceRoot = process.cwd();
+  const absoluteReportPath = path.resolve(workspaceRoot, reportPath);
+  const absoluteManifestPath = path.resolve(workspaceRoot, manifestPath);
+  await fs.mkdir(path.dirname(absoluteReportPath), { recursive: true });
+  const template = await fs.readFile(PROJECT_REQUIREMENTS_TEMPLATE, 'utf8');
+  const now = new Date().toISOString();
+  const html = replaceTemplateVariables(template, {
+    title: 'Project Requirements Report',
+    workspace_name: path.basename(workspaceRoot) || workspaceRoot,
+    date: formatLocalDate(),
+    generated_at: now
+  });
+  await fs.writeFile(absoluteReportPath, html, 'utf8');
+
+  const sectionNames = [
+    'summary',
+    'architecture',
+    'interfaces',
+    'requirements',
+    'flows',
+    'security',
+    'nonfunctional',
+    'questions',
+    'evidence'
+  ];
+  const manifest = {
+    status: 'running',
+    goal,
+    html: reportPath,
+    markdown: companionPath,
+    manifest: manifestPath,
+    plan: planFile,
+    createdAt: now,
+    updatedAt: now,
+    sections: Object.fromEntries(sectionNames.map((name) => [name, 'pending'])),
+    steps: steps.map((step, index) => ({
+      step: index + 1,
+      role: step.role,
+      title: step.title,
+      status: 'pending'
+    }))
+  };
+  await fs.writeFile(absoluteManifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  return manifest;
+}
+
+async function updateProjectRequirementsManifest(manifestPath, updates = {}) {
+  if (!manifestPath) return;
+  try {
+    const absoluteManifestPath = path.resolve(process.cwd(), manifestPath);
+    const current = JSON.parse(await fs.readFile(absoluteManifestPath, 'utf8'));
+    const next = {
+      ...current,
+      ...updates,
+      updatedAt: new Date().toISOString()
+    };
+    await fs.writeFile(absoluteManifestPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  } catch {
+    // Manifest is best-effort; plan file and events remain the source of truth.
+  }
+}
+
+async function runProjectRequirementsPipeline({
+  custom,
+  parsedInput,
+  currentSession,
+  config,
+  model,
+  systemPrompt,
+  onAgentEvent,
+  signal,
+  onSubSessionActive
+}) {
+  const renderedSkillPrompt = await expandFileMentions(renderCommandPrompt(custom, parsedInput.args), process.cwd());
+  const userFocus = parsedInput.args.join(' ').trim();
+  const goal = userFocus ? `project requirements report: ${userFocus}` : 'project requirements report';
+  const reportDate = formatLocalDate();
+  const reportPath = `docs/requirements/${reportDate}-project-requirements.html`;
+  const companionPath = `docs/requirements/${reportDate}-project-requirements.md`;
+  const manifestPath = `docs/requirements/${reportDate}-project-requirements.manifest.json`;
+  const steps = buildProjectRequirementsSteps(renderedSkillPrompt, parsedInput.args);
+  const planFile = await writeMarkdownInProjectDir(
+    'plans',
+    'project-requirements-pipeline',
+    renderProjectRequirementsPlanMarkdown({ goal, steps, reportPath, companionPath }),
+    'project-requirements',
+    currentSession.id
+  );
+  await createProjectRequirementsShell({
+    reportPath,
+    companionPath,
+    manifestPath,
+    planFile,
+    goal,
+    steps
+  });
+  const planState = {
+    status: 'approved',
+    source: 'project-requirements',
+    goal,
+    filePath: planFile,
+    summary: 'Dedicated sub-agent pipeline for project requirements report generation.',
+    finalSummary: 'Executing project requirements pipeline.',
+    steps
+  };
+  if (onAgentEvent) {
+    onAgentEvent({ type: 'skill:start', name: custom.name });
+    onAgentEvent({
+      type: 'plan:progress',
+      planFile,
+      reportPath,
+      manifestPath,
+      step: 0,
+      total: steps.length,
+      status: 'created',
+      summary: 'Project requirements pipeline created'
+    });
+  }
+  let execution;
+  try {
+    execution = await executePlanWithSubAgents({
+      planState,
+      parentSession: currentSession,
+      config,
+      model,
+      systemPrompt,
+      onAgentEvent,
+      signal,
+      onSubSessionActive
+    });
+  } catch (error) {
+    if (onAgentEvent) {
+      onAgentEvent({
+        type: 'skill:error',
+        name: custom.name,
+        summary: error instanceof Error ? error.message : String(error)
+      });
+    }
+    throw error;
+  }
+  if (onAgentEvent) {
+    onAgentEvent({
+      type: 'plan:progress',
+      planFile,
+      reportPath,
+      manifestPath,
+      step: steps.length,
+      total: steps.length,
+      status: execution.aborted ? 'aborted' : 'done',
+      summary: 'Project requirements pipeline finished'
+    });
+    onAgentEvent({ type: 'skill:end', name: custom.name });
+  }
+  const failedCount = Array.isArray(execution.results)
+    ? execution.results.filter((item) => item.failed).length
+    : 0;
+  await updateProjectRequirementsManifest(manifestPath, {
+    status: execution.aborted ? 'aborted' : failedCount > 0 ? 'failed' : 'completed',
+    failedCount
+  });
+  const text = [
+    execution.text || '',
+    '',
+    'Project requirements pipeline completed.',
+    `Plan File: ${planFile}`,
+    `Report Path: ${reportPath}`,
+    `Manifest: ${manifestPath}`,
+    `Steps: ${steps.length} total`,
+    `Failed: ${failedCount}`
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return {
+    type: 'assistant',
+    text,
+    planFile,
+    reportPath,
+    manifestPath,
+    aborted: !!execution.aborted
+  };
 }
 
 async function revisePendingPlanWithModel({
@@ -4540,6 +4872,23 @@ export async function createChatRuntime({
       }
       if (custom.metadata.type === 'skill' && !isSkillEnabled(config, custom.name, custom)) {
         return { type: 'system', text: `Skill is disabled: ${custom.name}` };
+      }
+      if (custom.metadata.type === 'skill' && custom.name === 'project-requirements') {
+        try {
+          return await runProjectRequirementsPipeline({
+            custom,
+            parsedInput,
+            currentSession,
+            config,
+            model,
+            systemPrompt: activeReplySystemPrompt,
+            onAgentEvent,
+            signal,
+            onSubSessionActive: (sub) => { activeSubSession = sub; }
+          });
+        } finally {
+          activeSubSession = null;
+        }
       }
 
       const customPrompt =

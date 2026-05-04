@@ -174,7 +174,7 @@ test('plan auto role tool policy stays aligned with each role responsibility', (
   assert.ok(!ROLE_TOOL_POLICY.tester.includes('web_fetch'));
   assert.ok(!ROLE_TOOL_POLICY.tester.includes('web_search'));
 
-  assert.deepEqual(ROLE_TOOL_POLICY.summarizer, ['read_plan']);
+  assert.deepEqual(ROLE_TOOL_POLICY.summarizer, ['read', 'read_plan']);
 });
 
 test('extractStepWorkingMemory keeps only actionable structured handoff items', () => {
@@ -1355,6 +1355,219 @@ test('chat runtime emits skill lifecycle events for explicit skill commands', { 
       assert.ok(events.some((event) => event?.type === 'skill:end' && event?.name === 'superpowers-lite'));
     } finally {
       await restoreFetch();
+    }
+  });
+});
+
+test('project requirements command runs a dedicated sub-agent pipeline with progress events', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-project-requirements-pipeline-'));
+    const previousCwd = process.cwd();
+    let callIndex = 0;
+    const executionPrompts = [];
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      callIndex += 1;
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+      assert.equal(body.stream, true);
+      const scopedPrompt = String(body.messages?.[1]?.content || '');
+      executionPrompts.push(scopedPrompt);
+      if (callIndex === 4) {
+        assert.match(scopedPrompt, /pre-created HTML shell/i);
+        assert.match(scopedPrompt, /REQUIREMENTS_INTERFACE_INVENTORY/);
+        const htmlShell = await fs.readFile(path.join(cwd, 'docs', 'requirements', '2026-05-04-project-requirements.html'), 'utf8');
+        assert.match(htmlShell, /REQUIREMENTS_SUMMARY/);
+        assert.match(htmlShell, /REQUIREMENTS_EVIDENCE_INDEX/);
+        const manifest = JSON.parse(await fs.readFile(path.join(cwd, 'docs', 'requirements', '2026-05-04-project-requirements.manifest.json'), 'utf8'));
+        assert.equal(manifest.status, 'running');
+        assert.match(manifest.html, /2026-05-04-project-requirements\.html$/);
+        assert.match(manifest.plan, /project-requirements/i);
+      }
+      const outputs = [
+        'Findings:\n- CLI and runtime surfaces mapped\nActions Taken:\n- Inspected README and src/cli.js\nOpen Issues:\n- none\nNext Action:\n- Analyze runtime surfaces',
+        'Findings:\n- Runtime and tool surfaces identified\nRecommendations:\n- Keep report grouped by interface\nTradeoffs:\n- More sections versus better traceability\nEvidence:\n- src/core/chat-runtime.js\nOpen Questions:\n- none',
+        'Findings:\n- Storage and security surfaces identified\nRecommendations:\n- Include session, config, memory, and policy sections\nTradeoffs:\n- none\nEvidence:\n- src/core/paths.js\nOpen Questions:\n- none',
+        'Actions Taken:\n- Wrote requirements HTML report\nFindings:\n- Report uses local date path\nVerified:\n- HTML path is recorded\nOpen Issues:\n- none\nArtifacts:\n- docs/requirements/2026-05-04-project-requirements.html\nNext Action:\n- Review report coverage',
+        'Findings:\n- none\nVerified:\n- Reviewed report coverage and evidence traceability\nNot Verified:\n- Browser rendering\nFailures:\n- none',
+        'Summary:\n- Project requirements pipeline completed.\nKey Findings:\n- Interfaces were mapped and report was produced.\nActions Taken:\n- Planned, analyzed, wrote, and reviewed the report.\nRemaining Issues:\n- Browser rendering was not verified.\nRecommended Next Steps:\n- Open the generated HTML report.'
+      ];
+      const content = outputs[callIndex - 1];
+      if (!content) throw new Error(`unexpected fetch call ${callIndex}`);
+      return makeSseResponse([
+        { choices: [{ delta: { content } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] }
+      ]);
+    });
+
+    process.chdir(cwd);
+    try {
+      await fs.writeFile(path.join(cwd, 'README.md'), '# Demo\n', 'utf8');
+      await fs.mkdir(path.join(cwd, 'src'), { recursive: true });
+      await fs.writeFile(path.join(cwd, 'src', 'cli.js'), 'export function runCli() {}\n', 'utf8');
+
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-project-requirements-pipeline',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const events = [];
+      const result = await runtime.submit('/project-requirements', (event) => events.push(event));
+
+      assert.equal(result.type, 'assistant');
+      assert.match(result.text, /Project requirements pipeline completed/i);
+      assert.equal(callIndex, 6);
+      assert.ok(executionPrompts[0].includes('Map project interfaces'));
+      assert.ok(executionPrompts[3].includes('docs/requirements/'));
+      assert.ok(events.some((event) => event?.type === 'plan:steps' && event.steps?.length === 6));
+      assert.ok(events.some((event) => event?.type === 'plan:progress' && event.status === 'running' && event.step === 1));
+      assert.ok(events.some((event) => event?.type === 'plan:progress' && event.status === 'done' && event.step === 6));
+      assert.match(String(result.reportPath || ''), /docs\/requirements\/2026-05-04-project-requirements\.html/);
+      assert.match(String(result.manifestPath || ''), /docs\/requirements\/2026-05-04-project-requirements\.manifest\.json/);
+      const planFile = String(result.planFile || '');
+      assert.match(planFile, /\.codemini[\\/]plans[\\/]session-project-requirements-pipeline[\\/].+project-requirements/i);
+      const planText = await fs.readFile(planFile, 'utf8');
+      assert.match(planText, /Project Requirements Pipeline/i);
+      assert.match(planText, /Step 6 \[summarizer\] Summarize final requirements report/i);
+    } finally {
+      process.chdir(previousCwd);
+      await restoreFetch();
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('plan progress treats recoverable tool errors as step activity instead of step failure', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-plan-recoverable-tool-error-'));
+    const previousCwd = process.cwd();
+    let callIndex = 0;
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      callIndex += 1;
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+
+      if (callIndex === 1) {
+        assert.equal(body.stream, undefined);
+        return makeJsonResponse({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summary: 'Inspect README with fallback.',
+                  steps: [
+                    {
+                      title: 'Inspect README',
+                      role: 'planner',
+                      task: 'Try to inspect README context and summarize findings.'
+                    },
+                    {
+                      title: 'Summarize result',
+                      role: 'summarizer',
+                      task: 'Summarize the inspection result.'
+                    }
+                  ]
+                })
+              }
+            }
+          ]
+        });
+      }
+
+      if (callIndex === 2) {
+        assert.equal(body.stream, true);
+        return makeSseResponse([
+          {
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'call_missing_read',
+                      function: {
+                        name: 'read',
+                        arguments: '{"path":"missing-readme.md"}'
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          { choices: [{ delta: {}, finish_reason: 'tool_calls' }] }
+        ]);
+      }
+
+      if (callIndex === 3) {
+        assert.equal(body.stream, true);
+        const toolMessage = (body.messages || []).find((message) => message?.role === 'tool' && message?.tool_call_id === 'call_missing_read');
+        assert.ok(toolMessage);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Findings:\n- README fallback inspection completed\nActions Taken:\n- Noted that missing-readme.md was unavailable and continued with available context\nOpen Issues:\n- none\nNext Action:\n- Summarize the outcome' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 4) {
+        assert.equal(body.stream, true);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Summary:\n- Inspection completed despite a recoverable tool error.\nKey Findings:\n- Missing optional file did not block the step.\nActions Taken:\n- Continued with available context.\nRemaining Issues:\n- none\nRecommended Next Steps:\n- none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      if (callIndex === 5) {
+        assert.equal(body.stream, true);
+        return makeSseResponse([
+          { choices: [{ delta: { content: 'Summary:\n- Inspection completed despite a recoverable tool error.\nKey Findings:\n- Missing optional file did not block the step.\nActions Taken:\n- Continued with available context.\nRemaining Issues:\n- none\nRecommended Next Steps:\n- none' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] }
+        ]);
+      }
+
+      throw new Error(`unexpected fetch call ${callIndex}`);
+    });
+
+    process.chdir(cwd);
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-plan-recoverable-tool-error',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const pending = await runtime.submit('/plan auto inspect README with fallback');
+      assert.equal(pending.type, 'system');
+      const events = [];
+      const result = await runtime.submit('/yes', (event) => events.push(event));
+
+      assert.equal(result.type, 'assistant');
+      assert.match(result.text, /Inspection completed despite a recoverable tool error/i);
+      assert.ok(events.some((event) => event?.type === 'tool:error' && event?.id === 'call_missing_read'));
+      assert.ok(events.some((event) => event?.type === 'plan:progress' && event.step === 1 && event.status === 'done'));
+      assert.ok(!events.some((event) => event?.type === 'plan:progress' && event.step === 1 && event.status === 'failed'));
+    } finally {
+      process.chdir(previousCwd);
+      await restoreFetch();
+      await fs.rm(cwd, { recursive: true, force: true });
     }
   });
 });

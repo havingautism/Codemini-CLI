@@ -104,6 +104,7 @@ test('shouldRefreshRuntimeStateForEvent only refreshes on events that can change
   assert.equal(shouldRefreshRuntimeStateForEvent({ type: 'assistant:delta' }), true);
   assert.equal(shouldRefreshRuntimeStateForEvent({ type: 'assistant:response' }), true);
   assert.equal(shouldRefreshRuntimeStateForEvent({ type: 'tool:result' }), true);
+  assert.equal(shouldRefreshRuntimeStateForEvent({ type: 'plan:progress' }), true);
   assert.equal(shouldRefreshRuntimeStateForEvent({ type: 'compact:auto' }), true);
   assert.equal(shouldRefreshRuntimeStateForEvent({ type: 'tool:start' }), false);
   assert.equal(shouldRefreshRuntimeStateForEvent({ type: 'skill:auto' }), false);

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { handleSkill } from '../src/commands/skill.js';
-import { loadCommandsAndSkills } from '../src/core/command-loader.js';
+import { loadCommandsAndSkills, renderCommandPrompt } from '../src/core/command-loader.js';
 
 async function withTempSkillEnv(run) {
   const previousCwd = process.cwd();
@@ -107,5 +107,21 @@ test('builtin skills are always present and cannot be disabled or overwritten', 
     } finally {
       await fs.rm(sourceRoot, { recursive: true, force: true });
     }
+  });
+});
+
+test('command rendering substitutes the local date for skill templates', { concurrency: false }, async () => {
+  await withTempSkillEnv(async () => {
+    const commands = await loadCommandsAndSkills(process.cwd());
+    const command = commands.get('project-requirements');
+    const rendered = renderCommandPrompt(command, []);
+    const today = new Date();
+    const yyyy = today.getFullYear();
+    const mm = String(today.getMonth() + 1).padStart(2, '0');
+    const dd = String(today.getDate()).padStart(2, '0');
+    const localDate = `${yyyy}-${mm}-${dd}`;
+
+    assert.match(rendered, new RegExp(`docs/requirements/${localDate}-project-requirements\\.html`));
+    assert.doesNotMatch(rendered, /YYYY-MM-DD-project-requirements/);
   });
 });

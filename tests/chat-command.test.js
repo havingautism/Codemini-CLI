@@ -45,3 +45,27 @@ test('submitAndPrint prints final text when no assistant deltas were emitted', a
 
   assert.deepEqual(writer.chunks, ['mode=auto\n']);
 });
+
+test('submitAndPrint writes tool call activity between streamed assistant deltas', async () => {
+  const writer = createWriter();
+  const runtime = {
+    async submit(_line, onEvent) {
+      onEvent({ type: 'assistant:delta', text: 'Checking' });
+      onEvent({ type: 'tool:start', name: 'read(README.md)' });
+      onEvent({ type: 'tool:end', name: 'read(README.md)', summary: 'README loaded' });
+      onEvent({ type: 'assistant:delta', text: 'Done' });
+      return { type: 'assistant', text: 'CheckingDone' };
+    }
+  };
+
+  await submitAndPrint(runtime, 'summarize readme', { output: writer });
+
+  assert.deepEqual(writer.chunks, [
+    'Checking',
+    '\n',
+    '[tool:start] read(README.md)\n',
+    '[tool:end] read(README.md) - README loaded\n',
+    'Done',
+    '\n'
+  ]);
+});

@@ -44,17 +44,67 @@ function parseChatArgs(args) {
 
 export async function submitAndPrint(runtime, line, { output: out = process.stdout } = {}) {
   let streamed = false;
+  let atLineStart = true;
+  const write = (text) => {
+    const value = String(text || '');
+    if (!value) return;
+    out.write(value);
+    atLineStart = value.endsWith('\n');
+  };
+  const writeActivity = (event, label) => {
+    const name = String(event?.name || '').trim();
+    if (!name) return;
+    const summary = String(event?.summary || '').trim();
+    if (!atLineStart) write('\n');
+    write(`[${label}] ${name}${summary ? ` - ${summary}` : ''}\n`);
+  };
   const result = await runtime.submit(line, (event) => {
-    if (event?.type !== 'assistant:delta' || !event.text) return;
-    streamed = true;
-    out.write(String(event.text));
+    if (event?.type === 'assistant:delta' && event.text) {
+      streamed = true;
+      write(event.text);
+      return;
+    }
+    if (event?.type === 'tool:start') {
+      streamed = true;
+      writeActivity(event, 'tool:start');
+      return;
+    }
+    if (event?.type === 'tool:end') {
+      streamed = true;
+      writeActivity(event, 'tool:end');
+      return;
+    }
+    if (event?.type === 'tool:blocked') {
+      streamed = true;
+      writeActivity(event, 'tool:blocked');
+      return;
+    }
+    if (event?.type === 'tool:error') {
+      streamed = true;
+      writeActivity(event, 'tool:error');
+      return;
+    }
+    if (event?.type === 'system_tool:start') {
+      streamed = true;
+      writeActivity(event, 'system:start');
+      return;
+    }
+    if (event?.type === 'system_tool:end') {
+      streamed = true;
+      writeActivity(event, 'system:end');
+      return;
+    }
+    if (event?.type === 'system_tool:error') {
+      streamed = true;
+      writeActivity(event, 'system:error');
+    }
   });
   if (result.type === 'exit' || result.type === 'noop') return result;
   if (streamed) {
-    out.write('\n');
+    if (!atLineStart) write('\n');
     return result;
   }
-  if (result.text) out.write(`${result.text}\n`);
+  if (result.text) write(`${result.text}\n`);
   return result;
 }
 

@@ -178,6 +178,14 @@ function loadInstalledSkillsFromRegistry(baseDir, registry, out) {
   }
 }
 
+export function formatLocalDate(date = new Date()) {
+  const value = date instanceof Date ? date : new Date(date);
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 function substituteVariables(text, args = []) {
   let out = text;
   args.forEach((arg, index) => {
@@ -185,6 +193,7 @@ function substituteVariables(text, args = []) {
   });
   out = out.replaceAll('{{args}}', args.join(' '));
   out = out.replaceAll('{{cwd}}', process.cwd());
+  out = out.replaceAll('{{date}}', formatLocalDate());
   return out;
 }
 
