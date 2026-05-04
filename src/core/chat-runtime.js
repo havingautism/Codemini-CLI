@@ -321,6 +321,19 @@ const SUB_AGENT_CONTEXT_MAX_MESSAGES = 4;
 const SUB_AGENT_CONTEXT_MAX_CHARS = 1200;
 const SUB_AGENT_EVIDENCE_MAX_ITEMS = 3;
 const SUB_AGENT_HANDOFF_MAX_ITEMS = 6;
+const PROJECT_REQUIREMENTS_SECTION_MARKERS = [
+  { key: 'summary', marker: 'REQUIREMENTS_SUMMARY', labels: ['1', 'summary', 'overview', 'project overview', 'executive summary', '项目概述', '项目总览', '概述'] },
+  { key: 'architecture', marker: 'REQUIREMENTS_ARCHITECTURE', labels: ['2', 'architecture', 'system architecture', 'system map', '架构', '系统架构图', '系统架构', '架构图'] },
+  { key: 'interfaces', marker: 'REQUIREMENTS_INTERFACE_INVENTORY', labels: ['3', 'interface inventory', 'interfaces', 'api inventory', '接口清单', '接口', 'api清单'] },
+  { key: 'requirements', marker: 'REQUIREMENTS_API_CARDS', labels: ['4', 'requirement cards', 'api cards', 'interface requirements', '接口需求卡片', '需求卡片'] },
+  { key: 'flows', marker: 'REQUIREMENTS_FLOWS', labels: ['5', 'flows', 'user flows', 'core flows', '核心用户流程', '用户流程', '流程'] },
+  { key: 'domain', marker: 'REQUIREMENTS_DOMAIN_MODEL', labels: ['6', 'domain model', 'data ownership', 'domain', '领域模型', '数据归属', '领域模型与数据归属'] },
+  { key: 'security', marker: 'REQUIREMENTS_SECURITY', labels: ['7', 'security', 'permissions', 'compliance', '权限', '安全', '合规', '权限、安全与合规'] },
+  { key: 'errors', marker: 'REQUIREMENTS_ERROR_HANDLING', labels: ['8', 'errors', 'edge cases', 'error handling', '异常处理', '边界情况', '异常处理与边界情况'] },
+  { key: 'nonfunctional', marker: 'REQUIREMENTS_NONFUNCTIONAL', labels: ['9', 'non-functional', 'nonfunctional', 'nfr', '非功能性需求', '非功能'] },
+  { key: 'questions', marker: 'REQUIREMENTS_OPEN_QUESTIONS', labels: ['10', 'open questions', 'unknowns', '待确认问题', '待确认', '问题'] },
+  { key: 'evidence', marker: 'REQUIREMENTS_EVIDENCE_INDEX', labels: ['11', 'evidence', 'source evidence', 'source evidence index', '源码证据索引', '证据索引', '源码证据'] }
+];
 const PLAN_MEMORY_MARKERS = {
   findings: ['<!-- plan-findings-start -->', '<!-- plan-findings-end -->'],
   progress: ['<!-- plan-progress-start -->', '<!-- plan-progress-end -->']
@@ -2993,7 +3006,41 @@ function renderAutoPlanMarkdown({
   return lines.join('\n');
 }
 
+function parseProjectRequirementsOptions(args = []) {
+  const raw = args.join(' ').trim();
+  const normalized = raw.toLowerCase();
+  const hasIgnoreIntent = /(忽略|跳过|不生成|不要|无需|排除|exclude|skip|omit|without|no\s+)/i.test(raw);
+  if (!hasIgnoreIntent) return { raw, ignoredSections: [] };
+
+  const ignored = [];
+  for (const section of PROJECT_REQUIREMENTS_SECTION_MARKERS) {
+    const matched = section.labels.some((label) => {
+      const value = String(label).toLowerCase();
+      if (/^\d+$/.test(value)) {
+        return new RegExp(`(^|[^0-9])${value}([^0-9]|$)`).test(normalized);
+      }
+      return normalized.includes(value);
+    });
+    if (matched) ignored.push(section);
+  }
+  return { raw, ignoredSections: ignored };
+}
+
+function renderProjectRequirementsSectionContract(ignoredSections = []) {
+  const ignored = new Set(ignoredSections.map((section) => section.marker));
+  const required = PROJECT_REQUIREMENTS_SECTION_MARKERS
+    .filter((section) => !ignored.has(section.marker))
+    .map((section) => section.marker);
+  const lines = [`Required marker sections: ${required.join(', ')}.`];
+  if (ignoredSections.length > 0) {
+    lines.push(`User-requested omitted sections: ${ignoredSections.map((section) => `${section.key} (${section.marker})`).join(', ')}.`);
+    lines.push('For omitted sections, leave the shell section visibly marked as omitted and do not spend analysis or writing budget filling it.');
+  }
+  return lines.join('\n');
+}
+
 function buildProjectRequirementsSteps(renderedSkillPrompt, args = []) {
+  const options = parseProjectRequirementsOptions(args);
   const userArgs = args.join(' ').trim();
   const requestedFocus = userArgs ? `User request/focus: ${userArgs}` : 'User request/focus: full workspace requirements report.';
   const reportDate = formatLocalDate();
@@ -3005,50 +3052,86 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = []) {
     `Optional companion Markdown path: ${companionPath}`,
     'A pre-created HTML shell already exists at the primary report path.',
     'Fill or replace only the named marker sections in that shell instead of rewriting the whole document.',
-    'Required marker sections: REQUIREMENTS_SUMMARY, REQUIREMENTS_ARCHITECTURE, REQUIREMENTS_INTERFACE_INVENTORY, REQUIREMENTS_API_CARDS, REQUIREMENTS_FLOWS, REQUIREMENTS_SECURITY, REQUIREMENTS_NONFUNCTIONAL, REQUIREMENTS_OPEN_QUESTIONS, REQUIREMENTS_EVIDENCE_INDEX.',
+    renderProjectRequirementsSectionContract(options.ignoredSections),
+    'For diagrams, write polished inline HTML/CSS or SVG directly in the report. Do not use Mermaid unless the user explicitly asks for Mermaid source.',
+    'Use a light blue, white, and cool gray banking/financial visual style: conservative, dense, readable, and enterprise-grade.',
+    'Prioritize API/interface-level business requirements. Every major interface should map to business capability, actor, trigger, inputs, outputs, rules, permissions, data reads/writes, errors, acceptance criteria, and evidence.',
     'Use EXTRACTED, INFERRED, and UNKNOWN labels. Preserve source evidence paths.',
     'Do not invent dates; use the report paths above.'
   ].join('\n');
 
   return [
     {
-      title: 'Map project interfaces and evidence',
+      title: '🧭 Map entry points and evidence sources',
       role: 'planner',
       task: [
-        'Map project interfaces and evidence before any report writing.',
+        'Map project entry points and evidence sources before any report writing.',
         reportContract,
         'Inspect top-level docs, package manifests, route/command entry points, tests, and obvious interface files.',
-        'Produce a concise interface inventory grouped by CLI commands, HTTP/API/RPC surfaces, tools, storage/config, UI flows, and operations.',
+        'Produce a concise evidence map grouped by docs, routes/commands, handlers, schemas, tests, configuration, storage, and operations.',
         'Include evidence paths and open questions. Do not write the final report.'
       ].join('\n')
     },
     {
-      title: 'Analyze runtime, tools, and providers',
-      role: 'advisor',
+      title: '📚 Build API and interface inventory',
+      role: 'planner',
       task: [
-        'Analyze the core execution layer and tool/provider surfaces using the prior planner inventory.',
+        'Build the canonical API/interface inventory using the evidence map.',
         reportContract,
-        'Focus on runtime flow, agent loop, built-in/deferred tools, provider streaming/tool-call behavior, sessions, memory, and plan state.',
-        'Return requirement-ready findings with evidence paths, inferred requirements, edge cases, and unknowns. Do not write the final report.'
+        'Enumerate every major HTTP endpoint, CLI command, tool call, MCP/RPC handler, queue/scheduled job, exported SDK function, and user-facing workflow entry point.',
+        'For each item include type, route/command/function, owner module, evidence path, likely actor, and whether it is EXTRACTED, INFERRED, or UNKNOWN.',
+        'Do not write the final report.'
       ].join('\n')
     },
     {
-      title: 'Analyze product flows, storage, security, and operations',
+      title: '🧩 Decompose business requirements per API',
       role: 'advisor',
       task: [
-        'Analyze user-facing workflows and non-functional requirements using the accumulated plan context.',
+        'Decompose business requirements for each major API/interface from the inventory.',
         reportContract,
-        'Cover core product journeys, persistence paths, configuration, security/policy behavior, deployment/operations notes, error handling, and acceptance criteria.',
-        'Return requirement-ready findings with evidence paths, inferred requirements, edge cases, and unknowns. Do not write the final report.'
+        'For each interface capture business capability, actor, user goal, trigger, inputs, outputs, preconditions, main flow, alternate flows, business rules, acceptance criteria, and open questions.',
+        'Keep findings API-centered rather than module-centered. Do not write the final report.'
       ].join('\n')
     },
     {
-      title: 'Write requirements HTML report',
+      title: '🔐 Analyze validation, permissions, and compliance',
+      role: 'advisor',
+      task: [
+        'Analyze validation, authorization, security, audit, and compliance implications per API/interface.',
+        reportContract,
+        'For each relevant interface identify validation rules, permission checks, sensitive data, audit/traceability needs, policy constraints, retry/rollback behavior, and UNKNOWN compliance gaps.',
+        'Return requirement-ready findings with evidence paths. Do not write the final report.'
+      ].join('\n')
+    },
+    {
+      title: '💾 Map data ownership and state changes',
+      role: 'advisor',
+      task: [
+        'Map data ownership, storage paths, state transitions, and side effects per API/interface.',
+        reportContract,
+        'Identify data reads, data writes, config/session/memory/file/database ownership, lifecycle states, cache/index behavior, external dependencies, and operational side effects.',
+        'Return requirement-ready findings with evidence paths. Do not write the final report.'
+      ].join('\n')
+    },
+    {
+      title: '🔄 Connect user flows to API dependencies',
+      role: 'advisor',
+      task: [
+        'Connect user-facing flows to the API/interface inventory and implementation dependencies.',
+        reportContract,
+        'Create flow-ready findings for core journeys, API dependency maps, sequence summaries, error paths, and cross-interface handoffs.',
+        'Favor clear business process decomposition over broad architecture prose. Do not write the final report.'
+      ].join('\n')
+    },
+    {
+      title: '🎨 Write banking-style requirements HTML report',
       role: 'coder',
       task: [
         'Create the final project requirements report from the accumulated plan context.',
         reportContract,
         'Follow the project-requirements skill instructions below exactly, including chunked HTML writing for medium/large reports.',
+        'Use the blue/white/gray banking-style shell and produce polished inline HTML/CSS/SVG diagrams. Keep the report professional, light, and conservative.',
+        'Organize the main requirements section primarily by API/interface business requirement cards.',
         'The final HTML must be self-contained and directly openable from disk.',
         'Write the primary report to the exact primary report path above. Create the companion Markdown only if useful.',
         'Skill instructions:',
@@ -3056,22 +3139,23 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = []) {
       ].join('\n\n')
     },
     {
-      title: 'Review report coverage and traceability',
+      title: '🔎 Review API coverage and traceability',
       role: 'reviewer',
       task: [
         'Review the generated requirements report against the project-requirements contract and accumulated evidence.',
         reportContract,
-        'Check that major interfaces are represented, evidence paths are present, inferred/unknown content is labeled, diagrams are visible without Mermaid as the only renderer, and the report path matches the required local date.',
+        'Check that major APIs/interfaces are represented, business requirements are decomposed per API, evidence paths are present, inferred/unknown content is labeled, diagrams are visible as inline HTML/CSS/SVG without external rendering libraries, and the report path matches the required local date.',
+        'Check that the visual style is light blue/white/gray and suitable for banking/financial review.',
         'Report concrete gaps and risks only. Do not rewrite the whole report.'
       ].join('\n')
     },
     {
-      title: 'Summarize final requirements report',
+      title: '🧾 Summarize final report and unresolved questions',
       role: 'summarizer',
       task: [
         'Synthesize the project requirements pipeline results into a concise final status for the user.',
         reportContract,
-        'Mention the generated report path, what was covered, what was not verified, and the best next action.',
+        'Mention the generated report path, API/interface coverage, strongest business requirement findings, unresolved questions, what was not verified, and the best next action.',
         'Do not re-analyze the codebase unless the accumulated evidence is clearly insufficient.'
       ].join('\n')
     }
@@ -3138,7 +3222,9 @@ async function createProjectRequirementsShell({
     'interfaces',
     'requirements',
     'flows',
+    'domain',
     'security',
+    'errors',
     'nonfunctional',
     'questions',
     'evidence'

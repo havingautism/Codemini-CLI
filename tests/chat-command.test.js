@@ -69,3 +69,47 @@ test('submitAndPrint writes tool call activity between streamed assistant deltas
     '\n'
   ]);
 });
+
+test('submitAndPrint hides system tool indexing events by default', async () => {
+  const writer = createWriter();
+  const runtime = {
+    async submit(_line, onEvent) {
+      onEvent({
+        type: 'system_tool:end',
+        name: 'project_index(.codemini/project-map.json,.codemini/file-index.json)',
+        summary: 'initialized demo/.codemini (10 files)'
+      });
+      onEvent({
+        type: 'system_tool:end',
+        name: 'file_index(docs/requirements/report.html)',
+        summary: 'removed demo/.codemini for docs/requirements/report.html'
+      });
+      onEvent({ type: 'assistant:delta', text: 'Done' });
+      return { type: 'assistant', text: 'Done' };
+    }
+  };
+
+  await submitAndPrint(runtime, 'generate requirements', { output: writer });
+
+  assert.deepEqual(writer.chunks, ['Done', '\n']);
+});
+
+test('submitAndPrint can show system tool events when requested', async () => {
+  const writer = createWriter();
+  const runtime = {
+    async submit(_line, onEvent) {
+      onEvent({
+        type: 'system_tool:end',
+        name: 'project_index(.codemini/project-map.json,.codemini/file-index.json)',
+        summary: 'initialized demo/.codemini (10 files)'
+      });
+      return { type: 'system', text: '' };
+    }
+  };
+
+  await submitAndPrint(runtime, 'index', { output: writer, showSystemTools: true });
+
+  assert.deepEqual(writer.chunks, [
+    '[system:end] project_index(.codemini/project-map.json,.codemini/file-index.json) - initialized demo/.codemini (10 files)\n'
+  ]);
+});

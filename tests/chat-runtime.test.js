@@ -1376,16 +1376,24 @@ test('project requirements command runs a dedicated sub-agent pipeline with prog
         assert.match(scopedPrompt, /REQUIREMENTS_INTERFACE_INVENTORY/);
         const htmlShell = await fs.readFile(path.join(cwd, 'docs', 'requirements', '2026-05-04-project-requirements.html'), 'utf8');
         assert.match(htmlShell, /REQUIREMENTS_SUMMARY/);
+        assert.match(htmlShell, /REQUIREMENTS_DOMAIN_MODEL/);
+        assert.match(htmlShell, /REQUIREMENTS_ERROR_HANDLING/);
         assert.match(htmlShell, /REQUIREMENTS_EVIDENCE_INDEX/);
+        assert.match(htmlShell, /flow-steps/);
+        assert.match(htmlShell, /dependency-map/);
+        assert.doesNotMatch(htmlShell, /mermaid/i);
         const manifest = JSON.parse(await fs.readFile(path.join(cwd, 'docs', 'requirements', '2026-05-04-project-requirements.manifest.json'), 'utf8'));
         assert.equal(manifest.status, 'running');
         assert.match(manifest.html, /2026-05-04-project-requirements\.html$/);
         assert.match(manifest.plan, /project-requirements/i);
       }
       const outputs = [
-        'Findings:\n- CLI and runtime surfaces mapped\nActions Taken:\n- Inspected README and src/cli.js\nOpen Issues:\n- none\nNext Action:\n- Analyze runtime surfaces',
-        'Findings:\n- Runtime and tool surfaces identified\nRecommendations:\n- Keep report grouped by interface\nTradeoffs:\n- More sections versus better traceability\nEvidence:\n- src/core/chat-runtime.js\nOpen Questions:\n- none',
-        'Findings:\n- Storage and security surfaces identified\nRecommendations:\n- Include session, config, memory, and policy sections\nTradeoffs:\n- none\nEvidence:\n- src/core/paths.js\nOpen Questions:\n- none',
+        'Findings:\n- Entry points and evidence sources mapped\nActions Taken:\n- Inspected README and src/cli.js\nOpen Issues:\n- none\nNext Action:\n- Build API inventory',
+        'Findings:\n- API and interface inventory built\nActions Taken:\n- Grouped CLI and runtime interfaces\nOpen Issues:\n- none\nNext Action:\n- Decompose business requirements',
+        'Findings:\n- API business requirements decomposed\nRecommendations:\n- Keep requirement cards grouped by interface\nTradeoffs:\n- More cards versus better traceability\nEvidence:\n- src/core/chat-runtime.js\nOpen Questions:\n- none',
+        'Findings:\n- Validation and permissions identified\nRecommendations:\n- Include security and compliance notes per API\nTradeoffs:\n- none\nEvidence:\n- src/core/tools.js\nOpen Questions:\n- none',
+        'Findings:\n- Storage and state ownership identified\nRecommendations:\n- Include session, config, memory, and file index ownership sections\nTradeoffs:\n- none\nEvidence:\n- src/core/paths.js\nOpen Questions:\n- none',
+        'Findings:\n- User flows connected to API dependencies\nRecommendations:\n- Include flow diagrams and dependency maps\nTradeoffs:\n- none\nEvidence:\n- src/core/chat-runtime.js\nOpen Questions:\n- none',
         'Actions Taken:\n- Wrote requirements HTML report\nFindings:\n- Report uses local date path\nVerified:\n- HTML path is recorded\nOpen Issues:\n- none\nArtifacts:\n- docs/requirements/2026-05-04-project-requirements.html\nNext Action:\n- Review report coverage',
         'Findings:\n- none\nVerified:\n- Reviewed report coverage and evidence traceability\nNot Verified:\n- Browser rendering\nFailures:\n- none',
         'Summary:\n- Project requirements pipeline completed.\nKey Findings:\n- Interfaces were mapped and report was produced.\nActions Taken:\n- Planned, analyzed, wrote, and reviewed the report.\nRemaining Issues:\n- Browser rendering was not verified.\nRecommended Next Steps:\n- Open the generated HTML report.'
@@ -1425,19 +1433,90 @@ test('project requirements command runs a dedicated sub-agent pipeline with prog
 
       assert.equal(result.type, 'assistant');
       assert.match(result.text, /Project requirements pipeline completed/i);
-      assert.equal(callIndex, 6);
-      assert.ok(executionPrompts[0].includes('Map project interfaces'));
-      assert.ok(executionPrompts[3].includes('docs/requirements/'));
-      assert.ok(events.some((event) => event?.type === 'plan:steps' && event.steps?.length === 6));
+      assert.equal(callIndex, 9);
+      assert.ok(executionPrompts[0].includes('Map project entry points'));
+      assert.ok(executionPrompts[2].includes('Decompose business requirements'));
+      assert.ok(executionPrompts[6].includes('docs/requirements/'));
+      assert.match(executionPrompts[6], /inline HTML\/CSS or SVG/i);
+      assert.match(executionPrompts[6], /banking-style/i);
+      assert.match(executionPrompts[6], /API\/interface business requirement cards/i);
+      assert.doesNotMatch(executionPrompts[6], /<pre class="mermaid">/i);
+      assert.ok(events.some((event) => event?.type === 'plan:steps' && event.steps?.length === 9));
       assert.ok(events.some((event) => event?.type === 'plan:progress' && event.status === 'running' && event.step === 1));
-      assert.ok(events.some((event) => event?.type === 'plan:progress' && event.status === 'done' && event.step === 6));
+      assert.ok(events.some((event) => event?.type === 'plan:progress' && event.status === 'done' && event.step === 9));
       assert.match(String(result.reportPath || ''), /docs\/requirements\/2026-05-04-project-requirements\.html/);
       assert.match(String(result.manifestPath || ''), /docs\/requirements\/2026-05-04-project-requirements\.manifest\.json/);
       const planFile = String(result.planFile || '');
       assert.match(planFile, /\.codemini[\\/]plans[\\/]session-project-requirements-pipeline[\\/].+project-requirements/i);
       const planText = await fs.readFile(planFile, 'utf8');
       assert.match(planText, /Project Requirements Pipeline/i);
-      assert.match(planText, /Step 6 \[summarizer\] Summarize final requirements report/i);
+      assert.match(planText, /Step 3 \[advisor\] 🧩 Decompose business requirements per API/i);
+      assert.match(planText, /Step 9 \[summarizer\] 🧾 Summarize final report and unresolved questions/i);
+    } finally {
+      process.chdir(previousCwd);
+      await restoreFetch();
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('project requirements command honors omitted section arguments in the generated contract', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-project-requirements-omit-sections-'));
+    const previousCwd = process.cwd();
+    let callIndex = 0;
+    const executionPrompts = [];
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      callIndex += 1;
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+      executionPrompts.push(String(body.messages?.[1]?.content || ''));
+      const outputs = [
+        'Findings:\n- CLI mapped\nActions Taken:\n- Read README\nOpen Issues:\n- none\nNext Action:\n- Continue',
+        'Findings:\n- API inventory mapped\nActions Taken:\n- Grouped interfaces\nOpen Issues:\n- none\nNext Action:\n- Continue',
+        'Findings:\n- Runtime mapped\nRecommendations:\n- none\nTradeoffs:\n- none\nEvidence:\n- README.md\nOpen Questions:\n- none',
+        'Findings:\n- Validation mapped\nRecommendations:\n- none\nTradeoffs:\n- none\nEvidence:\n- README.md\nOpen Questions:\n- none',
+        'Findings:\n- Data ownership mapped\nRecommendations:\n- none\nTradeoffs:\n- none\nEvidence:\n- README.md\nOpen Questions:\n- none',
+        'Findings:\n- Product flows mapped\nRecommendations:\n- none\nTradeoffs:\n- none\nEvidence:\n- README.md\nOpen Questions:\n- none',
+        'Actions Taken:\n- Wrote report with omitted sections marked\nFindings:\n- Omitted requested sections\nVerified:\n- none\nOpen Issues:\n- none\nArtifacts:\n- docs/requirements/2026-05-04-project-requirements.html\nNext Action:\n- Review',
+        'Findings:\n- none\nVerified:\n- Omitted sections were respected\nNot Verified:\n- none\nFailures:\n- none',
+        'Summary:\n- Completed.\nKey Findings:\n- Omitted requested sections.\nActions Taken:\n- Wrote report.\nRemaining Issues:\n- none\nRecommended Next Steps:\n- none'
+      ];
+      return makeSseResponse([
+        { choices: [{ delta: { content: outputs[callIndex - 1] || 'Summary:\n- Done' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] }
+      ]);
+    });
+
+    process.chdir(cwd);
+    try {
+      await fs.writeFile(path.join(cwd, 'README.md'), '# Demo\n', 'utf8');
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-project-requirements-omit-sections',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const result = await runtime.submit('/project-requirements 忽略第6章领域模型与数据归属，跳过第8章异常处理与边界情况');
+
+      assert.equal(result.type, 'assistant');
+      assert.equal(callIndex, 9);
+      const coderPrompt = executionPrompts[6] || '';
+      assert.match(coderPrompt, /User-requested omitted sections:/);
+      assert.match(coderPrompt, /domain \(REQUIREMENTS_DOMAIN_MODEL\)/);
+      assert.match(coderPrompt, /errors \(REQUIREMENTS_ERROR_HANDLING\)/);
+      const requiredLine = coderPrompt.match(/Required marker sections: .+/)?.[0] || '';
+      assert.doesNotMatch(requiredLine, /REQUIREMENTS_DOMAIN_MODEL/);
+      assert.doesNotMatch(requiredLine, /REQUIREMENTS_ERROR_HANDLING/);
+      assert.match(requiredLine, /REQUIREMENTS_SUMMARY/);
     } finally {
       process.chdir(previousCwd);
       await restoreFetch();

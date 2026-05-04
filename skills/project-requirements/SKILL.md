@@ -32,16 +32,40 @@ docs/requirements/{{date}}-project-requirements.md
 
 The HTML should be self-contained: inline CSS, inline JavaScript, no build step, no required external assets.
 
+Use a clean, modern documentation style inspired by Notion and Linear unless the user asks otherwise:
+
+- White background, warm neutral palette (#37352f text, #e9e9e7 borders), blue accents (#2383e2).
+- Favor generous whitespace, clean typography, and subtle hover transitions over dense layouts.
+- Cards should have rounded corners, minimal borders, and subtle shadow on hover.
+- Tables should have uppercase header labels, no row background by default (only on hover).
+- Use pill-shaped badges for evidence and risk labels — colored background + matching text, no emoji.
+- Diagrams should look like polished internal architecture or business process documentation.
+- Avoid playful palettes, strong gradients, decorative blobs, and visually loud illustrations.
+
+Evidence badge class names — use `.tag` or `.badge` with these variants:
+
+| Variant | Use for | Visual |
+|---|---|---|
+| `.tag.extracted` / `.badge.extracted` | Behavior directly supported by source code | Green text on green background |
+| `.tag.inferred` / `.badge.inferred` | Reasonable inference from code relationships | Orange text on orange background |
+| `.tag.unknown` / `.badge.unknown` | Needs user confirmation | Gray text on gray background |
+| `.tag.warn` / `.badge.warn` | Medium risk or warning | Orange text on orange background |
+| `.tag.danger` / `.badge.danger` | Critical/high risk | Red text on red background |
+| `.tag.ok` / `.badge.ok` | Low risk or passed check | Green text on green background |
+
+Risk level indicators in tables must use the badge variants above, never emoji. For example: `<span class="badge danger">CRITICAL</span>` not `🔴 CRITICAL`.
+
+Wrap each requirement card in `<details class="card">` with a `<summary>` containing the API name and a one-line description. This makes all cards collapsible by default.
+
 When the target HTML file already exists and contains `REQUIREMENTS_*` marker sections, treat it as the canonical report shell. Edit those marker sections in place instead of replacing the whole file. Preserve the existing CSS, JavaScript, navigation, metadata, and surrounding structure unless the user explicitly asks to redesign the shell.
 
-Diagrams must be visible when the HTML is opened directly from disk:
+Diagrams must be visible and polished when the HTML is opened directly from disk:
 
-- Prefer inline SVG for architecture maps, dependency graphs, sequence summaries, and state diagrams.
-- Use semantic SVG groups, `<title>`/`<desc>`, readable labels, arrow markers, and stable element ids so sections can link to diagram nodes.
-- For simple hierarchy diagrams, CSS grid/flex boxes with connector lines are also acceptable.
-- Do not rely on Mermaid rendering as the only visible diagram. Mermaid source may be included in a collapsible `<details>` block as an editable source-of-truth companion.
-- Use Mermaid CDN rendering only as optional progressive enhancement when the user accepts network access. The static inline SVG or CSS diagram must remain the fallback and primary offline view.
-- Avoid showing only raw Mermaid code blocks in the final HTML unless the user explicitly asks for source-only diagrams.
+- Prefer custom inline SVG, CSS grid/flex diagrams, timeline layouts, swimlanes, and styled cards for architecture maps, dependency graphs, flow summaries, and state/lifecycle diagrams.
+- Use semantic SVG groups, `<title>`/`<desc>`, readable labels, arrow markers, stable element ids, and source evidence links where useful.
+- Keep diagrams evidence-based and readable. Prefer fewer correct nodes over a dense speculative map.
+- Do not use Mermaid as the rendered diagram format unless the user explicitly asks for Mermaid source.
+- Avoid showing raw diagram source blocks in the final HTML unless the user explicitly asks for source-only diagrams.
 
 For medium or large projects, do not generate the entire HTML document in one model response or one huge `write` call. Create the report incrementally:
 
@@ -69,10 +93,12 @@ This chunked approach is required for HTML reports because inline CSS, JavaScrip
    - Tool calls, MCP handlers, RPC methods, queue jobs, scheduled tasks, or exported SDK functions.
    - UI flows only after the backend/interface layer is mapped, unless the project is frontend-only.
 4. Connect each API/interface to requirements:
+   - Business capability supported by the interface.
    - User goal and actor.
    - Trigger and entry point.
    - Request/input shape.
    - Response/output shape.
+   - Business rules and decision points.
    - Validation and permission rules.
    - Data read/write behavior.
    - Internal modules called.
@@ -80,12 +106,13 @@ This chunked approach is required for HTML reports because inline CSS, JavaScrip
    - Error cases and retry/rollback behavior.
    - Observability, audit, and security notes.
    - Acceptance criteria.
+   - Open questions that block final confirmation.
 5. Generate diagrams:
    - Product flowchart for the main user journey.
    - API dependency graph linking endpoints/commands to modules, data stores, and external services.
    - Sequence diagram for at least one high-value flow.
    - State or lifecycle diagram when the domain has clear states.
-   - Render each diagram as static inline SVG or CSS boxes in the HTML, with optional Mermaid source hidden in a collapsible details block.
+   - Render each diagram as polished inline HTML/CSS or SVG that is visible offline without external JavaScript.
 6. Write the report and preserve traceability:
    - Link sections with stable anchors.
    - Include code file paths for evidence.
@@ -158,30 +185,30 @@ Open questions:
 
 ## Diagram Patterns
 
-Use static diagrams when diagrams help compress complexity. In HTML output, render the visible diagram as inline SVG or CSS boxes. Include Mermaid only as optional source text when it helps future editing.
+Use custom HTML/CSS/SVG diagrams when diagrams help compress complexity. The visual output should look intentional, readable, and report-quality, not like raw generated graph syntax.
 
 Inline SVG architecture map:
 
 ```html
-<figure class="diagram" id="system-architecture">
+<figure class="diagram-card" id="system-architecture">
   <figcaption>System architecture</figcaption>
-  <svg viewBox="0 0 960 520" role="img" aria-labelledby="arch-title arch-desc">
+  <svg viewBox="0 0 960 380" role="img" aria-labelledby="arch-title arch-desc">
     <title id="arch-title">System architecture</title>
-    <desc id="arch-desc">CLI commands call runtime services, which use tools and data stores.</desc>
+    <desc id="arch-desc">CLI entry points call the runtime, which coordinates tools and persisted session state.</desc>
     <defs>
       <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
         <path d="M0,0 L0,6 L9,3 z"></path>
       </marker>
     </defs>
-    <g id="cli-layer">
-      <rect x="40" y="40" width="220" height="90" rx="8"></rect>
-      <text x="60" y="90">CLI Entry</text>
+    <g class="node">
+      <rect x="48" y="72" width="190" height="86" rx="10"></rect>
+      <text x="72" y="122">CLI Entry</text>
     </g>
-    <g id="runtime-layer">
-      <rect x="370" y="40" width="240" height="90" rx="8"></rect>
-      <text x="390" y="90">Runtime</text>
+    <g class="node">
+      <rect x="386" y="72" width="210" height="86" rx="10"></rect>
+      <text x="410" y="122">Runtime</text>
     </g>
-    <line x1="260" y1="85" x2="370" y2="85" marker-end="url(#arrow)"></line>
+    <line x1="238" y1="115" x2="386" y2="115" marker-end="url(#arrow)"></line>
   </svg>
 </figure>
 ```
@@ -189,50 +216,52 @@ Inline SVG architecture map:
 CSS box architecture map:
 
 ```html
-<section class="arch-map" aria-label="System architecture">
-  <a class="arch-node" href="#api-chat">Chat command</a>
-  <span class="arch-edge" aria-hidden="true">-></span>
-  <a class="arch-node" href="#runtime-agent-loop">Agent loop</a>
-  <span class="arch-edge" aria-hidden="true">-></span>
-  <a class="arch-node" href="#tools-write">Tools</a>
+<section class="dependency-map" aria-label="System architecture">
+  <a class="dep-node" href="#api-chat">Chat command</a>
+  <span class="dep-edge">→</span>
+  <a class="dep-node" href="#runtime-agent-loop">Agent loop</a>
+  <span class="dep-edge">→</span>
+  <a class="dep-node" href="#tools-write">Tools</a>
 </section>
 ```
 
-Optional Mermaid companion:
-
 Product flow:
 
-```mermaid
-flowchart TD
-  A[User starts task] --> B[System validates input]
-  B --> C[System performs core action]
-  C --> D[User receives result]
+```html
+<ol class="flow-steps" aria-label="Product flow">
+  <li><strong>User starts task</strong><span>Input is collected from CLI or UI.</span></li>
+  <li><strong>System validates input</strong><span>Policy, mode, and project context are checked.</span></li>
+  <li><strong>System performs core action</strong><span>Runtime coordinates model calls and tools.</span></li>
+  <li><strong>User receives result</strong><span>Final answer, artifacts, and evidence are returned.</span></li>
+</ol>
 ```
 
 API dependency map:
 
-```mermaid
-graph LR
-  API[API or command] --> Handler[Handler]
-  Handler --> Service[Service]
-  Service --> Store[(Data store)]
-  Service --> External[External service]
+```html
+<section class="dependency-map" aria-label="API dependency map">
+  <a class="dep-node" href="#api-command">API or command</a>
+  <span class="dep-edge">→</span>
+  <a class="dep-node" href="#handler">Handler</a>
+  <span class="dep-edge">→</span>
+  <a class="dep-node" href="#service">Service</a>
+  <span class="dep-edge">→</span>
+  <a class="dep-node" href="#store">Data store</a>
+</section>
 ```
 
 Sequence flow:
 
-```mermaid
-sequenceDiagram
-  participant User
-  participant API
-  participant Service
-  participant Store
-  User->>API: Request
-  API->>Service: Validate and execute
-  Service->>Store: Read/write data
-  Store-->>Service: Result
-  Service-->>API: Domain result
-  API-->>User: Response
+```html
+<table class="sequence-table">
+  <thead><tr><th>Step</th><th>Sender</th><th>Receiver</th><th>Message</th></tr></thead>
+  <tbody>
+    <tr><td>1</td><td>User</td><td>API</td><td>Request</td></tr>
+    <tr><td>2</td><td>API</td><td>Service</td><td>Validate and execute</td></tr>
+    <tr><td>3</td><td>Service</td><td>Store</td><td>Read/write data</td></tr>
+    <tr><td>4</td><td>API</td><td>User</td><td>Response</td></tr>
+  </tbody>
+</table>
 ```
 
 ## Quality Bar
@@ -245,3 +274,18 @@ The report is complete when:
 - Inferred requirements are labeled instead of stated as facts.
 - Open questions are grouped so the user can resolve them later.
 - The HTML can be opened directly from disk in a browser.
+
+## Content Guidelines
+
+Avoid duplication between sections:
+
+- The Executive Summary risk list should contain only the **top 2-3 most critical risks** with one-sentence descriptions. The full risk matrix belongs in the Security section only.
+- Key capabilities in the summary should be a concise table (name + one-liner + evidence). Detailed descriptions belong in the per-API requirement cards.
+- Non-functional findings should appear only in the Non-functional section, not duplicated in the summary.
+
+Open questions should be **actionable and specific**:
+
+- Do NOT list questions that can be answered by reading the source code (e.g. "What is the test coverage?", "Is there CI/CD?"). Instead, investigate and report the answer directly.
+- Do NOT list questions about whether a feature exists — check the code first and report what you find.
+- Only list questions that require **human decision-making**, **business context**, or **stakeholder input** that cannot be derived from the codebase.
+- Each open question should clearly state what decision or confirmation is needed and why it matters.

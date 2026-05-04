@@ -42,7 +42,7 @@ function parseChatArgs(args) {
   return parsed;
 }
 
-export async function submitAndPrint(runtime, line, { output: out = process.stdout } = {}) {
+export async function submitAndPrint(runtime, line, { output: out = process.stdout, showSystemTools = false } = {}) {
   let streamed = false;
   let atLineStart = true;
   const write = (text) => {
@@ -82,6 +82,9 @@ export async function submitAndPrint(runtime, line, { output: out = process.stdo
     if (event?.type === 'tool:error') {
       streamed = true;
       writeActivity(event, 'tool:error');
+      return;
+    }
+    if (!showSystemTools && String(event?.type || '').startsWith('system_tool:')) {
       return;
     }
     if (event?.type === 'system_tool:start') {

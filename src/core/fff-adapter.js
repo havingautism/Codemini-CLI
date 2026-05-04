@@ -111,7 +111,7 @@ class FffMcpClient {
       capabilities: {},
       clientInfo: {
         name: 'codemini-cli',
-        version: '0.4.5'
+        version: '0.4.6'
       }
     });
     this.sendNotification('notifications/initialized', {});
