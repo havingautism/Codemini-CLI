@@ -76,6 +76,9 @@ function sanitizeSession(session, fallbackId = '') {
     messages
   };
 
+  if (typeof session?.projectDir === 'string' && session.projectDir.trim()) {
+    out.projectDir = session.projectDir.trim();
+  }
   if (session?.model) out.model = String(session.model);
   if (session?.mode) out.mode = String(session.mode);
   const normalizedPlan = normalizePlanState(session?.planState);
@@ -148,7 +151,7 @@ async function loadSessionPayload(sessionId) {
   }
 }
 
-export async function createSession() {
+export async function createSession(projectDir = process.cwd()) {
   const sessionId = createSessionId();
   const dir = getSessionsDir();
   await fs.mkdir(dir, { recursive: true });
@@ -157,6 +160,7 @@ export async function createSession() {
     id: sessionId,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    projectDir: String(projectDir || process.cwd()),
     messages: []
   };
   await fs.writeFile(filePath, `${JSON.stringify(payload)}\n`, 'utf8');

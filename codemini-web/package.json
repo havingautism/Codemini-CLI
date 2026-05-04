@@ -1,0 +1,13 @@
+{
+  "name": "codemini-web",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Notion/Linear-styled web UI for CodeMini",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js --port 3210"
+  }
+}

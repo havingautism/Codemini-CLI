@@ -3538,6 +3538,9 @@ export async function createChatRuntime({
   systemPrompt,
   requestToolApproval
 }) {
+  if (session && typeof session === 'object' && !session.projectDir) {
+    session.projectDir = process.cwd();
+  }
   let activeRequestToolApproval = typeof requestToolApproval === 'function' ? requestToolApproval : null;
   const startupEvents = [];
   const initialIndex = await initializeProjectIndex(process.cwd()).catch(() => null);
@@ -5185,6 +5188,7 @@ export async function createChatRuntime({
     consumeStartupEvents: () => startupEvents.splice(0, startupEvents.length),
     getInputHistory: () => loadInputHistory(),
     getCurrentSessionId: () => currentSession.id,
+    getSessionMessages: () => currentSession.messages || [],
     setRequestToolApproval: (handler) => {
       activeRequestToolApproval = typeof handler === 'function' ? handler : null;
       return true;
