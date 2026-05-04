@@ -3341,8 +3341,23 @@ async function runProjectRequirementsPipeline({
         name: custom.name,
         summary: error instanceof Error ? error.message : String(error)
       });
+      onAgentEvent({ type: 'skill:end', name: custom.name });
     }
-    throw error;
+    if (manifestPath) {
+      await updateProjectRequirementsManifest(manifestPath, {
+        status: 'failed',
+        failedCount: steps.length,
+        error: error instanceof Error ? error.message : String(error)
+      }).catch(() => {});
+    }
+    return {
+      type: 'assistant',
+      text: `Project requirements pipeline failed: ${error instanceof Error ? error.message : String(error)}`,
+      planFile,
+      reportPath,
+      manifestPath,
+      aborted: true
+    };
   }
   if (onAgentEvent) {
     onAgentEvent({
@@ -5015,8 +5030,12 @@ export async function createChatRuntime({
             name: custom.name,
             summary: error instanceof Error ? error.message : String(error)
           });
+          onAgentEvent({ type: 'skill:end', name: custom.name });
         }
-        throw error;
+        return {
+          type: 'system',
+          text: `Skill "${custom.name}" failed: ${error instanceof Error ? error.message : String(error)}`
+        };
       }
       if (custom.metadata.type === 'skill' && onAgentEvent) {
         onAgentEvent({ type: 'skill:end', name: custom.name });

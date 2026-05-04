@@ -779,7 +779,16 @@ export async function runAgentLoop({
       if (onEvent) onEvent({ type: 'tool:start', name: displayName, id: call.id, arguments: effectiveArgs });
       const handler = toolHandlers[toolName];
       if (!handler) {
-        throw new Error(`Unknown tool: ${call.name}`);
+        const available = Object.keys(toolHandlers).join(', ');
+        const msg = `Unknown tool: "${toolName}". Available tools: ${available || '(none)'}`;
+        if (onEvent) {
+          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary: trimInline(msg, 200) });
+        }
+        return {
+          callId: call.id,
+          content: JSON.stringify({ error: msg }),
+          error: true
+        };
       }
 
       const blockedReason = blockedExplorationReason(toolName, effectiveArgs, analysisGuard);
