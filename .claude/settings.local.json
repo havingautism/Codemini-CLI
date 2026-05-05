@@ -176,7 +176,12 @@
       "Bash(python3 -c \"import json,sys; sessions=json.load\\(sys.stdin\\); [print\\(f\\\\\"{s['id'][:20]}... msgs={s.get\\('messageCount',0\\)} preview={s.get\\('preview',''\\)[:40]}\\\\\"\\) for s in sessions[:5]]\")",
       "Bash(curl -s -X POST http://localhost:3215/api/project/browse -H 'Content-Type: application/json' -d '{\"dir\":\"/mnt/e/Git Projects/qurio-coder\"}')",
       "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('path:', d['path']\\); [print\\(f\\\\\"  {x['name']} -> {x['path']}\\\\\"\\) for x in d['dirs'][:4]]\")",
-      "Bash(node -c client/components/tool-card.js)"
+      "Bash(node -c client/components/tool-card.js)",
+      "Bash(npx shadcn@latest init -d -y)",
+      "Bash(npx shadcn@latest add button --yes --overwrite)",
+      "Bash(npx shadcn@latest add input textarea select dialog badge scroll-area tooltip separator progress collapsible tabs popover --yes --overwrite)",
+      "Bash(npx shadcn@latest add sheet --yes --overwrite)",
+      "Bash(npx vite *)"
     ]
   }
 }

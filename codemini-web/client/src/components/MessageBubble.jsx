@@ -1,0 +1,183 @@
+import { useState, useMemo } from 'react';
+import { ToolCard } from './ToolCard';
+import { StreamdownRenderer } from './StreamdownRenderer';
+import { TodoList } from './TodoList';
+import { cn } from '@/lib/utils';
+import { formatTimestamp } from '../../utils/time.js';
+import { t } from '../../i18n/index.js';
+
+const ROLE_STYLES = {
+  you:        { badge: 'bg-(--accent-blue-bg) text-(--accent-blue)', label: 'You' },
+  general:    { badge: 'bg-(--accent-green-bg) text-(--accent-green)', label: 'General' },
+  coder:      { badge: 'bg-(--accent-green-bg) text-(--accent-green)', label: 'Coder' },
+  advisor:    { badge: 'bg-(--accent-blue-bg) text-(--accent-blue)', label: 'Advisor' },
+  planner:    { badge: 'bg-(--accent-purple-bg) text-(--accent-purple)', label: 'Planner' },
+  reviewer:   { badge: 'bg-(--accent-orange-bg) text-(--accent-orange)', label: 'Reviewer' },
+  tester:     { badge: 'bg-(--accent-blue-bg) text-(--accent-blue)', label: 'Tester' },
+  summarizer: { badge: 'bg-(--accent-cyan-bg) text-(--accent-cyan)', label: 'Summarizer' },
+  system:     { badge: 'bg-(--muted) text-(--muted-foreground)', label: 'System' },
+  error:      { badge: 'bg-(--accent-red-bg) text-(--accent-red)', label: 'Error' },
+  pending:    { badge: 'bg-(--accent-cyan-bg) text-(--accent-cyan)', label: 'Pending' },
+};
+
+const SKILL_BADGE_STYLES = {
+  running: 'bg-(--accent-blue-bg) text-(--accent-blue)',
+  done: 'bg-(--accent-green-bg) text-(--accent-green)',
+  error: 'bg-(--accent-red-bg) text-(--accent-red)',
+  auto: 'bg-(--accent-purple-bg) text-(--accent-purple)',
+};
+
+const TOOL_COLLAPSE_THRESHOLD = 3;
+
+function ToolGroup({ cards }) {
+  const [expanded, setExpanded] = useState(false);
+  const total = cards.length;
+  const shouldCollapse = total > TOOL_COLLAPSE_THRESHOLD && !expanded;
+  const hiddenCount = total - TOOL_COLLAPSE_THRESHOLD;
+  const visibleCards = shouldCollapse ? cards.slice(total - TOOL_COLLAPSE_THRESHOLD) : cards;
+
+  return (
+    <div className="space-y-2 mt-2">
+      {shouldCollapse && hiddenCount > 0 && (
+        <button
+          type="button"
+          className="block w-full py-1.5 px-3 text-[11px] text-(--accent-blue) cursor-pointer text-left bg-transparent border-0"
+          onClick={() => setExpanded(true)}
+        >
+          +{hiddenCount} more tool calls
+        </button>
+      )}
+      {visibleCards.map(card => (
+        <ToolCard key={card.id} card={card} />
+      ))}
+      {expanded && total > TOOL_COLLAPSE_THRESHOLD && (
+        <button
+          type="button"
+          className="block w-full py-1.5 px-3 text-[11px] text-(--accent-blue) cursor-pointer text-left bg-transparent border-0"
+          onClick={() => setExpanded(false)}
+        >
+          Collapse {hiddenCount} older tool calls
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Merge adjacent tool segments (possibly separated by empty text) into merged render groups
+function buildRenderGroups(segments) {
+  const groups = [];
+  let pendingTools = [];
+
+  const flushTools = () => {
+    if (pendingTools.length > 0) {
+      groups.push({ type: 'tools', cards: pendingTools });
+      pendingTools = [];
+    }
+  };
+
+  for (const seg of segments) {
+    if (seg.type === 'tools') {
+      pendingTools.push(...seg.cards);
+    } else if (seg.type === 'text') {
+      if (seg.text) {
+        // Non-empty text breaks the tool group
+        flushTools();
+        groups.push({ type: 'text', text: seg.text, isStreaming: seg.isStreaming });
+      }
+      // Empty text between tools: skip, keep accumulating
+    }
+  }
+  flushTools();
+  return groups;
+}
+
+export function MessageBubble({ message }) {
+  const { role, segments, skillBadges, fileChanges, startupTodos, text: legacyText, timestamp } = message;
+  const style = ROLE_STYLES[role] || ROLE_STYLES.general;
+  const ts = timestamp ? formatTimestamp(timestamp) : '';
+
+  const renderGroups = useMemo(() => buildRenderGroups(segments || []), [segments]);
+
+  if (role === 'system') {
+    return (
+      <div className="py-2 px-6 text-xs text-(--text-muted) text-center">
+        <div className="max-w-[860px] mx-auto px-3 py-1">
+          {legacyText}
+          {startupTodos && <TodoList todos={startupTodos} />}
+        </div>
+      </div>
+    );
+  }
+
+  const youText = role === 'you'
+    ? legacyText || segments?.filter(s => s.type === 'text').map(s => s.text).join('') || ''
+    : '';
+
+  return (
+    <div className={cn(
+      'py-2 my-[22px]',
+      role === 'you' && 'flex justify-end'
+    )}>
+      {role === 'you' ? (
+        <div className="w-fit max-w-full bg-(--bg-tertiary) rounded-2xl px-4 py-3">
+          {youText && <StreamdownRenderer text={youText} streaming={false} />}
+          {startupTodos && <TodoList todos={startupTodos} />}
+        </div>
+      ) : (
+        <div>
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className={cn(
+              'inline-flex items-center px-2 py-px rounded-full text-[11px] font-semibold uppercase tracking-[0.3px]',
+              style.badge
+            )}>
+              {style.label}
+            </span>
+            {ts && <span className="text-[11px] text-(--text-muted)">{ts}</span>}
+          </div>
+
+          {renderGroups.map((group, i) => {
+            if (group.type === 'text') {
+              return <StreamdownRenderer key={`t-${i}`} text={group.text} streaming={group.isStreaming} />;
+            }
+            if (group.type === 'tools') {
+              return <ToolGroup key={`tg-${i}`} cards={group.cards} />;
+            }
+            return null;
+          })}
+
+          {skillBadges?.length > 0 && (
+            <div className="flex flex-wrap gap-1 mt-2">
+              {skillBadges.map((b, i) => (
+                <span key={i} className={cn(
+                  'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium',
+                  SKILL_BADGE_STYLES[b.status]
+                )}>
+                  {b.status === 'auto' ? `${t('skillAuto')}: ${b.name}` : `${b.name} - ${t('skill' + b.status.charAt(0).toUpperCase() + b.status.slice(1))}`}
+                </span>
+              ))}
+            </div>
+          )}
+
+          {fileChanges?.length > 0 && (
+            <div className="mt-2 border border-(--border-default) rounded-lg bg-(--bg-secondary) p-3">
+              <div className="text-xs font-semibold text-(--text-secondary) mb-1">{t('fileChanges')}</div>
+              {fileChanges.map((c, i) => {
+                const actionColors = { edit: 'bg-(--accent-blue-bg) text-(--accent-blue)', create: 'bg-(--accent-green-bg) text-(--accent-green)', delete: 'bg-(--accent-red-bg) text-(--accent-red)' };
+                return (
+                  <div key={i} className="flex items-center gap-2 text-xs py-0.5 font-mono">
+                    <span className={cn('text-[10px] font-semibold px-[5px] py-px rounded', actionColors[c.action] || 'bg-(--muted) text-(--text-muted)')}>
+                      {c.action?.toUpperCase()}
+                    </span>
+                    <span className="truncate flex-1 text-(--text-primary)">{c.path}</span>
+                    {c.linesAdded != null && <span className="text-(--accent-green) text-[11px]">+{c.linesAdded}</span>}
+                    {c.linesRemoved != null && <span className="text-(--accent-red) text-[11px]">-{c.linesRemoved}</span>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
