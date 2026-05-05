@@ -1,12 +1,12 @@
-import React, { useEffect } from 'react';
-import { createRoot } from 'react-dom/client';
+import React, { useEffect } from "react";
+import { createRoot } from "react-dom/client";
 import {
   Outlet,
   RouterProvider,
   createRootRoute,
   createRoute,
-  createRouter
-} from '@tanstack/react-router';
+  createRouter,
+} from "@tanstack/react-router";
 import {
   Bot,
   ChevronDown,
@@ -18,9 +18,9 @@ import {
   Settings,
   SunMoon,
   Upload,
-  ArrowUp
-} from 'lucide-react';
-import '../style.css';
+  ArrowUp,
+} from "lucide-react";
+import "../style.css";
 
 function LegacyRouteView() {
   return <Outlet />;
@@ -39,42 +39,84 @@ function Shell() {
   useEffect(() => {
     if (window.__codeminiLegacyLoaded) return;
     window.__codeminiLegacyLoaded = true;
-    import('../main.js');
+    import("../main.js");
   }, []);
 
   return (
     <div id="app">
       <aside id="sidebar">
         <nav id="sidebar-nav">
-          <SidebarButton action="new-session" icon={Upload}>新对话</SidebarButton>
-          <SidebarButton view="sessions" icon={Search}>搜索对话</SidebarButton>
-          <SidebarButton view="config" icon={Grid2X2}>插件与设置</SidebarButton>
-          <SidebarButton view="config" icon={Clock3}>自动化设置</SidebarButton>
+          <SidebarButton action="new-session" icon={Upload}>
+            新对话
+          </SidebarButton>
+          <SidebarButton view="sessions" icon={Search}>
+            搜索对话
+          </SidebarButton>
+          {/* <SidebarButton view="config" icon={Grid2X2}>
+            插件与设置
+          </SidebarButton> */}
+          {/* <SidebarButton view="config" icon={Clock3}>自动化设置</SidebarButton> */}
 
-          <button className="sidebar-section-title collapsible-toggle" type="button" data-collapse-target="project-sidebar-section" aria-expanded="true">
+          <button
+            className="sidebar-section-title collapsible-toggle"
+            type="button"
+            data-collapse-target="project-sidebar-section"
+            aria-expanded="true"
+          >
             <span>项目</span>
-            <ChevronDown className="collapse-chevron" size={18} strokeWidth={1.8} />
+            <ChevronDown
+              className="collapse-chevron"
+              size={18}
+              strokeWidth={1.8}
+            />
           </button>
           <div id="project-sidebar-section" className="sidebar-collapsible">
             <div id="project-session-list" className="sidebar-session-list" />
           </div>
 
-          <button className="sidebar-section-title collapsible-toggle with-actions" type="button" data-collapse-target="conversation-sidebar-section" aria-expanded="true">
+          <button
+            className="sidebar-section-title collapsible-toggle with-actions"
+            type="button"
+            data-collapse-target="conversation-sidebar-section"
+            aria-expanded="true"
+          >
             <span>对话</span>
             <span className="collapse-actions">≡ ✎</span>
-            <ChevronDown className="collapse-chevron" size={18} strokeWidth={1.8} />
+            <ChevronDown
+              className="collapse-chevron"
+              size={18}
+              strokeWidth={1.8}
+            />
           </button>
-          <div id="conversation-sidebar-section" className="sidebar-collapsible">
-            <div id="conversation-session-list" className="sidebar-session-list" />
+          <div
+            id="conversation-sidebar-section"
+            className="sidebar-collapsible"
+          >
+            <div
+              id="conversation-session-list"
+              className="sidebar-session-list"
+            />
           </div>
         </nav>
 
         <div id="sidebar-footer">
-          <button id="theme-toggle" className="footer-button" type="button" title="切换明暗模式" aria-label="切换明暗模式">
+          <button
+            id="theme-toggle"
+            className="footer-button"
+            type="button"
+            title="切换明暗模式"
+            aria-label="切换明暗模式"
+          >
             <SunMoon className="theme-icon" size={18} strokeWidth={1.8} />
             <span className="theme-label">深色</span>
           </button>
-          <button id="settings-toggle" className="footer-button" type="button" title="设置" aria-label="设置">
+          <button
+            id="settings-toggle"
+            className="footer-button"
+            type="button"
+            title="设置"
+            aria-label="设置"
+          >
             <Settings size={18} strokeWidth={1.8} />
             <span>设置</span>
           </button>
@@ -96,14 +138,25 @@ function Shell() {
           <main id="chat-panel" />
           <div id="plan-progress" className="hidden" />
           <div id="approval-overlay" className="hidden" />
-          <button id="back-to-top" className="hidden" type="button" title="回到顶部" aria-label="回到顶部">
+          <button
+            id="back-to-top"
+            className="hidden"
+            type="button"
+            title="回到顶部"
+            aria-label="回到顶部"
+          >
             <ArrowUp size={16} strokeWidth={1.8} />
           </button>
           <footer id="input-area" className="input-area">
             <div id="autocomplete" className="hidden" />
             <div id="input-bar" />
             <div className="input-meta-row">
-              <button id="project-indicator" className="workspace-button" type="button" title="Current project">
+              <button
+                id="project-indicator"
+                className="workspace-button"
+                type="button"
+                title="Current project"
+              >
                 <Folder size={16} strokeWidth={1.8} />
                 <span id="project-path-display">...</span>
               </button>
@@ -119,44 +172,50 @@ function Shell() {
 }
 
 const rootRoute = createRootRoute({
-  component: LegacyRouteView
+  component: LegacyRouteView,
 });
 
 const shellRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/',
-  component: Shell
+  path: "/",
+  component: Shell,
 });
 
 const chatSessionRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/chat/$sessionId',
-  component: Shell
+  path: "/chat/$sessionId",
+  component: Shell,
 });
 
 const sessionsRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/sessions',
-  component: Shell
+  path: "/sessions",
+  component: Shell,
 });
 
 const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/settings',
-  component: Shell
+  path: "/settings",
+  component: Shell,
 });
 
 const configRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/config',
-  component: Shell
+  path: "/config",
+  component: Shell,
 });
 
-const routeTree = rootRoute.addChildren([shellRoute, chatSessionRoute, sessionsRoute, settingsRoute, configRoute]);
+const routeTree = rootRoute.addChildren([
+  shellRoute,
+  chatSessionRoute,
+  sessionsRoute,
+  settingsRoute,
+  configRoute,
+]);
 const router = createRouter({ routeTree });
 
 function App() {
   return <RouterProvider router={router} />;
 }
 
-createRoot(document.getElementById('root')).render(<App />);
+createRoot(document.getElementById("root")).render(<App />);

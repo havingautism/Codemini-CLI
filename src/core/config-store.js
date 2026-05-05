@@ -37,7 +37,7 @@ const DEFAULT_CONFIG = {
     prompt_budget_audit: false
   },
   execution: {
-    mode: 'auto',
+    mode: 'normal',
     always_allow_tools: [
       'read',
       'grep',
@@ -149,7 +149,7 @@ function normalizePolicyLists(config) {
   next.model.fast_name = String(next.model.fast_name || '').trim();
   next.execution.mode = ['auto', 'normal', 'plan'].includes(String(next.execution.mode || '').toLowerCase())
     ? String(next.execution.mode).toLowerCase()
-    : 'auto';
+    : 'normal';
   const rawTools = Array.isArray(next.execution.always_allow_tools)
     ? next.execution.always_allow_tools
     : [];

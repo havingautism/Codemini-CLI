@@ -2122,7 +2122,7 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     sessionId: currentSession?.id || '',
     sessionTitle: currentSession?.title || '',
     messageCount: Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0,
-    mode: executionMode || config.execution?.mode || 'auto',
+    mode: executionMode || config.execution?.mode || 'normal',
     sdkProvider: config.sdk?.provider || 'openai-compatible',
     agentRole: 'general',
     model: model || config.model?.name || '',
@@ -2489,7 +2489,7 @@ async function askModel({
       ? await generateSessionTitle({ userText: text, config, signal })
       : deriveSessionTitle(session.messages);
     session.model = model || config.model.name;
-    session.mode = executionMode || config.execution?.mode || 'auto';
+    session.mode = executionMode || config.execution?.mode || 'normal';
     if (persistSession) await saveSession(session);
   }
 
@@ -2605,7 +2605,7 @@ async function askModel({
     toolHandlers: filteredHandlers,
     initialMessages: toOpenAIMessages(session.messages),
     onEvent: wrappedAgentEvent,
-    executionMode: executionMode || config.execution?.mode || 'auto',
+    executionMode: executionMode || config.execution?.mode || 'normal',
     alwaysAllowTools:
       alwaysAllowTools || config.execution?.always_allow_tools || ['run', 'read', 'write'],
     toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
@@ -2660,7 +2660,7 @@ async function askModel({
       session.title = deriveSessionTitle(session.messages);
     }
     session.model = model || config.model.name;
-    session.mode = executionMode || config.execution?.mode || 'auto';
+    session.mode = executionMode || config.execution?.mode || 'normal';
     await flushScheduledSave();
     await saveSession(session);
     try {
@@ -3663,7 +3663,7 @@ export async function createChatRuntime({
     currentSession.model = model;
   }
   const baseSystemPrompt = systemPrompt;
-  let executionMode = config.execution?.mode || 'auto';
+  let executionMode = config.execution?.mode || 'normal';
   if (hasPendingPlanApproval(currentSession)) {
     executionMode = 'plan';
   }
@@ -4165,7 +4165,7 @@ export async function createChatRuntime({
       currentSession.title = deriveSessionTitle(currentSession.messages);
     }
     currentSession.model = model || config.model.name;
-    currentSession.mode = executionMode || config.execution?.mode || 'auto';
+    currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
   };
 
@@ -4180,7 +4180,7 @@ export async function createChatRuntime({
       currentSession.title = deriveSessionTitle(currentSession.messages);
     }
     currentSession.model = model || config.model.name;
-    currentSession.mode = executionMode || config.execution?.mode || 'auto';
+    currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
   };
 
@@ -4191,7 +4191,7 @@ export async function createChatRuntime({
       currentSession.title = deriveSessionTitle(currentSession.messages);
     }
     currentSession.model = model || config.model.name;
-    currentSession.mode = executionMode || config.execution?.mode || 'auto';
+    currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
   };
 
@@ -4382,7 +4382,7 @@ export async function createChatRuntime({
       if (parsedInput.command === 'new') {
         const fresh = await createSession();
         currentSession = fresh;
-        executionMode = config.execution?.mode || 'auto';
+        executionMode = config.execution?.mode || 'normal';
         compactState.backupMessages = null;
         setResultDir(path.join(getSessionsDir(), String(fresh.id)));
         historyIdCache = [fresh.id, ...historyIdCache.filter((id) => id !== fresh.id)];

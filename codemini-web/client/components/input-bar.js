@@ -19,7 +19,7 @@ export function createInputBar(container, { onSubmit, onAbort, onCompletionReque
     ),
     h('button', { className: 'permission-button', type: 'button', title: '权限' },
       icon('ShieldCheck', { size: 16 }),
-      h('span', { className: 'permission-label' }, '默认权限'),
+      h('span', { className: 'permission-label' }, '普通权限'),
       icon('ChevronDown', { size: 12 })
     )
   );
@@ -154,8 +154,8 @@ export function createInputBar(container, { onSubmit, onAbort, onCompletionReque
     if (!rs) return;
     if (modelLabel) modelLabel.textContent = rs.model || '未选择模型';
     if (permissionLabel) {
-      const mode = rs.mode || 'auto';
-      permissionLabel.textContent = mode === 'plan' ? '计划权限' : mode === 'normal' ? '普通权限' : '默认权限';
+      const mode = rs.mode || 'normal';
+      permissionLabel.textContent = mode === 'plan' ? '计划权限' : mode === 'normal' ? '普通权限' : '自动权限';
     }
   }
 
