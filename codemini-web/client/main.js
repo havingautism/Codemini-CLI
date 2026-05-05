@@ -24,7 +24,7 @@ const inputAreaEl = document.getElementById('input-area');
 const inputBarEl = document.getElementById('input-bar');
 const autocompleteEl = document.getElementById('autocomplete');
 const viewSessionsEl = document.getElementById('view-sessions');
-const viewConfigEl = document.getElementById('view-config');
+const configOverlayEl = document.getElementById('config-overlay');
 const themeToggleEl = document.getElementById('theme-toggle');
 const settingsToggleEl = document.getElementById('settings-toggle');
 const projectSessionListEl = document.getElementById('project-session-list');
@@ -43,7 +43,7 @@ const store = createStore({
 });
 
 // ── View Navigation ──
-const views = { chat: document.getElementById('view-chat'), sessions: viewSessionsEl, config: viewConfigEl };
+const views = { chat: document.getElementById('view-chat'), sessions: viewSessionsEl };
 const navItems = document.querySelectorAll('.nav-item');
 
 function parseRoute() {
@@ -77,7 +77,6 @@ function switchView(name, { updateUrl = true, replace = false } = {}) {
   store.set({ currentView: name });
   if (updateUrl) updateRoute(name, undefined, { replace });
   if (name === 'sessions') loadSessions();
-  if (name === 'config') loadConfig();
 }
 navItems.forEach(btn => btn.addEventListener('click', () => {
   if (btn.dataset.view) {
@@ -89,7 +88,7 @@ navItems.forEach(btn => btn.addEventListener('click', () => {
 document.querySelectorAll('[data-action="open-project"]').forEach((btn) => {
   btn.addEventListener('click', () => openProjectModal());
 });
-settingsToggleEl?.addEventListener('click', () => switchView('config'));
+settingsToggleEl?.addEventListener('click', () => { loadConfig(); configOverlayEl.classList.remove('hidden'); });
 document.querySelectorAll('.collapsible-toggle').forEach((btn) => {
   btn.addEventListener('click', () => {
     const target = document.getElementById(btn.dataset.collapseTarget);
@@ -143,7 +142,7 @@ const planProgress = createPlanProgress(planProgressEl);
 
 // ── Session & Config Panels ──
 const sessionPanel = createSessionPanel(viewSessionsEl, { onSwitch: handleSessionSwitch, onNew: handleSessionNew });
-const configPanel = createConfigPanel(viewConfigEl, { onSave: handleConfigSave });
+const configPanel = createConfigPanel(configOverlayEl, { onSave: handleConfigSave, onClose: () => configOverlayEl.classList.add('hidden') });
 
 // ── Project Selector (sidebar footer click → modal) ──
 initProjectSelector(handleProjectOpen);

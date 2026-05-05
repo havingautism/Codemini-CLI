@@ -1,4 +1,5 @@
 import { h, clear, escapeHtml } from '../utils/dom.js';
+import { icon } from '../utils/icons.js';
 
 const CONFIG_GROUPS = [
   {
@@ -49,30 +50,39 @@ function getNestedValue(obj, path) {
   return path.split('.').reduce((o, k) => o?.[k], obj);
 }
 
-export function createConfigPanel(container, { onSave }) {
-  return { container, onSave };
+export function createConfigPanel(container, { onSave, onClose }) {
+  return { container, onSave, onClose };
 }
 
 export function renderConfigPanel(panel, config) {
-  const { container, onSave } = panel;
+  const { container, onSave, onClose } = panel;
   clear(container);
 
-  const wrapper = h('div', { className: 'panel' });
-  wrapper.appendChild(h('div', { className: 'panel-title' }, 'Settings'));
+  const backdrop = h('div', { className: 'config-backdrop' });
+  const dialog = h('div', { className: 'config-dialog' });
 
+  const header = h('div', { className: 'config-dialog-header' },
+    h('span', { className: 'config-dialog-title' }, '设置'),
+    h('button', { className: 'config-dialog-close', type: 'button', onClick: () => onClose?.() },
+      icon('X', { size: 18 })
+    )
+  );
+
+  const body = h('div', { className: 'config-dialog-body' });
   const inputs = new Map();
 
   for (const group of CONFIG_GROUPS) {
-    const section = h('div', { className: 'config-group' });
+    const section = h('div', { className: 'config-section' },
+      h('div', { className: 'config-section-title' }, group.title)
+    );
     for (const key of group.keys) {
       const value = getNestedValue(config, key.path) ?? '';
-      const row = h('div', { className: 'config-row' },
-        h('label', { className: 'config-key' }, key.label)
+      const row = h('div', { className: 'config-field' },
+        h('label', { className: 'config-field-label' }, key.label)
       );
-
       let input;
       if (key.options) {
-        input = h('select', { className: 'config-value', dataset: { path: key.path } });
+        input = h('select', { className: 'config-field-input config-field-select', dataset: { path: key.path } });
         for (const opt of key.options) {
           const o = h('option', { value: opt }, opt);
           if (String(value) === opt) o.selected = true;
@@ -80,7 +90,7 @@ export function renderConfigPanel(panel, config) {
         }
       } else {
         input = h('input', {
-          className: 'config-value',
+          className: 'config-field-input',
           type: key.type || 'text',
           value: String(value),
           placeholder: key.placeholder || '',
@@ -91,11 +101,12 @@ export function renderConfigPanel(panel, config) {
       row.appendChild(input);
       section.appendChild(row);
     }
-    wrapper.appendChild(section);
+    body.appendChild(section);
   }
 
-  wrapper.appendChild(h('div', { className: 'action-row', style: { marginTop: '16px' } },
-    h('button', { className: 'btn-primary', onClick: () => {
+  const footer = h('div', { className: 'config-dialog-footer' },
+    h('button', { className: 'btn-secondary', type: 'button', onClick: () => onClose?.() }, '取消'),
+    h('button', { className: 'btn-primary config-save-btn', type: 'button', onClick: () => {
       const changes = [];
       for (const [path, { input, original }] of inputs) {
         const current = input.value;
@@ -103,10 +114,15 @@ export function renderConfigPanel(panel, config) {
           changes.push({ path, value: input.type === 'number' ? Number(current) : current });
         }
       }
-      if (changes.length) onSave(changes);
-      else alert('No changes detected.');
-    } }, 'Save Changes')
-  ));
+      if (changes.length) { onSave(changes); onClose?.(); }
+    } }, '保存更改')
+  );
 
-  container.appendChild(wrapper);
+  dialog.append(header, body, footer);
+  backdrop.appendChild(dialog);
+  container.appendChild(backdrop);
+
+  backdrop.addEventListener('click', (e) => {
+    if (e.target === backdrop) onClose?.();
+  });
 }

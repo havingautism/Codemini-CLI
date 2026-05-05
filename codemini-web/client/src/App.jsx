@@ -138,6 +138,7 @@ function Shell() {
           <main id="chat-panel" />
           <div id="plan-progress" className="hidden" />
           <div id="approval-overlay" className="hidden" />
+          <div id="config-overlay" className="hidden" />
           <button
             id="back-to-top"
             className="hidden"
@@ -165,7 +166,6 @@ function Shell() {
           </footer>
         </div>
         <div id="view-sessions" className="hidden" />
-        <div id="view-config" className="hidden" />
       </div>
     </div>
   );
