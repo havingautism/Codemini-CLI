@@ -25,7 +25,7 @@ export function renderSessions(panel, sessions, currentId) {
       const card = h('div', { className: `session-card ${isActive ? 'active' : ''}` },
         h('span', { className: 'session-id' }, (s.id || '').slice(-12)),
         h('div', { className: 'session-info-col' },
-          h('span', { className: 'session-info' }, s.messageCount > 0 ? `${s.messageCount} messages` : 'Empty'),
+          h('span', { className: 'session-info' }, escapeHtml(s.title || (s.messageCount > 0 ? `${s.messageCount} messages` : 'Empty'))),
           s.preview ? h('div', { className: 'session-preview' }, escapeHtml(s.preview)) : null
         ),
         h('span', { className: 'session-msgs' }, isActive ? 'Current' : ''),

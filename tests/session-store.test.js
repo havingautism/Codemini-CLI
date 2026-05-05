@@ -44,6 +44,7 @@ test('session-store persists snapshots as jsonl and loads the latest snapshot', 
 
     const loaded = await loadSession(id);
     assert.equal(loaded.id, id);
+    assert.equal(loaded.title, 'first');
     assert.equal(loaded.messages.length, 2);
     assert.equal(loaded.messages[1].content, 'second');
 
@@ -54,6 +55,57 @@ test('session-store persists snapshots as jsonl and loads the latest snapshot', 
       .map((line) => line.trim())
       .filter(Boolean);
     assert.equal(lines.length, 2);
+  });
+});
+
+test('session-store derives titles and preserves tool metadata', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const id = 'session-title-tool-meta';
+    await saveSession({
+      id,
+      createdAt: '2026-04-01T10:00:00.000Z',
+      updatedAt: '2026-04-01T10:00:00.000Z',
+      model: 'main-model',
+      mode: 'auto',
+      messages: [
+        { role: 'user', content: '请总结这个项目的 Web UI' },
+        {
+          role: 'assistant',
+          content: '',
+          tool_calls: [
+            {
+              id: 'call-read',
+              type: 'function',
+              function: { name: 'read', arguments: '{"path":"README.md"}' },
+              durationMs: 42,
+              summary: 'content from README.md lines 1-20',
+              status: 'done'
+            }
+          ]
+        },
+        {
+          role: 'tool',
+          tool_call_id: 'call-read',
+          content: '{"path":"README.md","phase":"content","start_line":1,"end_line":20,"total_lines":20}',
+          tool_duration_ms: 42,
+          tool_summary: 'content from README.md lines 1-20',
+          tool_status: 'done'
+        }
+      ]
+    });
+
+    const loaded = await loadSession(id);
+    assert.equal(loaded.title, '请总结这个项目的 Web UI');
+    assert.equal(loaded.model, 'main-model');
+    assert.equal(loaded.mode, 'auto');
+    assert.equal(loaded.messages[1].tool_calls[0].durationMs, 42);
+    assert.equal(loaded.messages[1].tool_calls[0].summary, 'content from README.md lines 1-20');
+    assert.equal(loaded.messages[2].tool_duration_ms, 42);
+
+    const listed = await listSessions(10);
+    const item = listed.find((entry) => entry.id === id);
+    assert.equal(item.title, '请总结这个项目的 Web UI');
+    assert.equal(item.model, 'main-model');
   });
 });
 

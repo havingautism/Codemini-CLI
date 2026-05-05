@@ -13,7 +13,15 @@ export function renderStreamdown(container, text, { streaming = false } = {}) {
   }
   container.classList.toggle('streaming-cursor', streaming);
   root.render(
-    <Streamdown parseIncompleteMarkdown>
+    <Streamdown
+      parseIncompleteMarkdown
+      lineNumbers={false}
+      controls={{
+        table: { copy: true, download: true, fullscreen: false },
+        code: { copy: true, download: false },
+        mermaid: { copy: true, download: false, fullscreen: false, panZoom: true }
+      }}
+    >
       {text || ''}
     </Streamdown>
   );

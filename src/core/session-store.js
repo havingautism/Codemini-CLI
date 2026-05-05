@@ -7,6 +7,7 @@ import { normalizeTodos } from './todo-state.js';
 const ALLOWED_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
 const SESSION_LEGACY_EXT = '.json';
 const SESSION_JSONL_EXT = '.jsonl';
+const DEFAULT_SESSION_TITLE = '新会话';
 
 function createSessionId() {
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
@@ -20,7 +21,7 @@ function sanitizeToolCall(tc, index) {
   const fnArgsRaw = tc?.function?.arguments ?? tc?.arguments ?? '{}';
   const fnArgs = typeof fnArgsRaw === 'string' ? fnArgsRaw : JSON.stringify(fnArgsRaw);
   if (!fnName) return null;
-  return {
+  const out = {
     id,
     type: 'function',
     function: {
@@ -28,6 +29,32 @@ function sanitizeToolCall(tc, index) {
       arguments: fnArgs
     }
   };
+  if (Number.isFinite(Number(tc?.durationMs))) out.durationMs = Number(tc.durationMs);
+  if (typeof tc?.summary === 'string' && tc.summary.trim()) out.summary = tc.summary.trim();
+  if (typeof tc?.status === 'string' && tc.status.trim()) out.status = tc.status.trim();
+  return out;
+}
+
+function normalizeWhitespace(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function stripMarkdown(value) {
+  return normalizeWhitespace(value)
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^[#>*\-\d.\s]+/g, '')
+    .trim();
+}
+
+export function deriveSessionTitle(messages = []) {
+  const firstUser = Array.isArray(messages)
+    ? messages.find((msg) => msg?.role === 'user' && normalizeWhitespace(msg?.content))
+    : null;
+  const text = stripMarkdown(firstUser?.content || '');
+  if (!text) return DEFAULT_SESSION_TITLE;
+  return text.length > 48 ? `${text.slice(0, 45).trimEnd()}...` : text;
 }
 
 function sanitizeMessage(msg) {
@@ -42,6 +69,9 @@ function sanitizeMessage(msg) {
   };
 
   if (msg?.tool_call_id) out.tool_call_id = String(msg.tool_call_id);
+  if (Number.isFinite(Number(msg?.tool_duration_ms))) out.tool_duration_ms = Number(msg.tool_duration_ms);
+  if (typeof msg?.tool_summary === 'string' && msg.tool_summary.trim()) out.tool_summary = msg.tool_summary.trim();
+  if (typeof msg?.tool_status === 'string' && msg.tool_status.trim()) out.tool_status = msg.tool_status.trim();
   if (typeof msg?.name === 'string' && msg.name.trim()) out.name = msg.name.trim();
   if (typeof msg?.at === 'string' && msg.at.trim()) out.at = msg.at;
   if (typeof msg?.reasoning_content === 'string' && msg.reasoning_content) {
@@ -73,6 +103,7 @@ function sanitizeSession(session, fallbackId = '') {
     id,
     createdAt,
     updatedAt,
+    title: normalizeWhitespace(session?.title) || deriveSessionTitle(messages),
     messages
   };
 
@@ -105,12 +136,16 @@ function summarizeParsedSession(parsed, filePath) {
   const updatedAt = parsed.updatedAt || parsed.createdAt || '';
   const latestMessage = Array.isArray(parsed.messages) ? parsed.messages.at(-1) : null;
   const preview = latestMessage?.content ? String(latestMessage.content).replace(/\s+/g, ' ').slice(0, 80) : '';
+  const messages = Array.isArray(parsed.messages) ? parsed.messages : [];
   return {
     id,
+    title: normalizeWhitespace(parsed.title) || deriveSessionTitle(messages),
     updatedAt,
     messageCount: Array.isArray(parsed.messages) ? parsed.messages.length : 0,
     preview,
-    projectDir: typeof parsed.projectDir === 'string' ? parsed.projectDir : ''
+    projectDir: typeof parsed.projectDir === 'string' ? parsed.projectDir : '',
+    model: typeof parsed.model === 'string' ? parsed.model : '',
+    mode: typeof parsed.mode === 'string' ? parsed.mode : ''
   };
 }
 
@@ -161,6 +196,7 @@ export async function createSession(projectDir = process.cwd()) {
     id: sessionId,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    title: DEFAULT_SESSION_TITLE,
     projectDir: String(projectDir || process.cwd()),
     messages: []
   };

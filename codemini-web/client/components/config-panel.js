@@ -14,6 +14,7 @@ const CONFIG_GROUPS = [
     title: 'Model',
     keys: [
       { path: 'model.name', label: 'Model Name', placeholder: 'gpt-4.1-mini' },
+      { path: 'model.fast_name', label: 'Fast Model Name', placeholder: 'fallback to Model Name when empty' },
       { path: 'model.max_context_tokens', label: 'Max Context Tokens', type: 'number' }
     ]
   },

@@ -32,6 +32,7 @@ const conversationSessionListEl = document.getElementById('conversation-session-
 const sidebarSessionLimits = { project: 20, conversation: 20 };
 const projectSessionLimits = new Map();
 const expandedProjectKeys = new Set();
+let creatingSession = false;
 
 // ── Store ──
 const store = createStore({
@@ -45,12 +46,36 @@ const store = createStore({
 const views = { chat: document.getElementById('view-chat'), sessions: viewSessionsEl, config: viewConfigEl };
 const navItems = document.querySelectorAll('.nav-item');
 
-function switchView(name) {
+function parseRoute() {
+  const path = window.location.pathname.replace(/\/+$/, '') || '/';
+  const chatMatch = path.match(/^\/chat\/([^/]+)$/);
+  if (chatMatch) return { view: 'chat', sessionId: decodeURIComponent(chatMatch[1]) };
+  if (path === '/sessions') return { view: 'sessions' };
+  if (path === '/settings' || path === '/config') return { view: 'config' };
+  return { view: 'chat' };
+}
+
+function routeFor(view, sessionId = store.get('runtimeState')?.sessionId) {
+  if (view === 'sessions') return '/sessions';
+  if (view === 'config') return '/settings';
+  return sessionId ? `/chat/${encodeURIComponent(sessionId)}` : '/';
+}
+
+function updateRoute(view, sessionId, { replace = false } = {}) {
+  const next = routeFor(view, sessionId);
+  if (window.location.pathname === next) return;
+  const state = { view, sessionId: sessionId || null };
+  if (replace) window.history.replaceState(state, '', next);
+  else window.history.pushState(state, '', next);
+}
+
+function switchView(name, { updateUrl = true, replace = false } = {}) {
   for (const [key, el] of Object.entries(views)) {
     el.classList.toggle('hidden', key !== name);
   }
   navItems.forEach(btn => btn.classList.toggle('active', btn.dataset.view === name));
   store.set({ currentView: name });
+  if (updateUrl) updateRoute(name, undefined, { replace });
   if (name === 'sessions') loadSessions();
   if (name === 'config') loadConfig();
 }
@@ -73,6 +98,17 @@ document.querySelectorAll('.collapsible-toggle').forEach((btn) => {
     btn.setAttribute('aria-expanded', String(!collapsed));
     btn.classList.toggle('collapsed', collapsed);
   });
+});
+
+window.addEventListener('popstate', async () => {
+  const route = parseRoute();
+  if (route.sessionId) {
+    await restoreRouteSession();
+    await loadStateQuiet();
+    await loadSessionMessages({ replace: true });
+    loadSidebarSessionsQuiet();
+  }
+  switchView(route.view, { updateUrl: false });
 });
 
 // ── Theme ──
@@ -123,6 +159,7 @@ function connectSSE() {
 
 // ── Init ──
 async function init() {
+  await restoreRouteSession();
   try { const res = await fetch('/api/startup-events'); for (const ev of await res.json()) renderStartupEvent(ev); } catch {}
   try {
     const res = await fetch('/api/state');
@@ -131,12 +168,29 @@ async function init() {
     statusBar.updateRuntimeState(state);
     inputBar.setRuntimeState(state);
     updateProjectDisplay(state.cwd);
+    updateRoute(parseRoute().view, state.sessionId, { replace: true });
   } catch {}
+  if (parseRoute().view === 'chat') await loadSessionMessages({ replace: true });
+  switchView(parseRoute().view, { updateUrl: false });
   try { inputBar.setHistory(await (await fetch('/api/history')).json()); } catch {}
   loadSidebarSessionsQuiet();
   connectSSE();
   inputBar.focus();
   statusBar.setLive(false);
+}
+
+async function restoreRouteSession() {
+  const route = parseRoute();
+  if (!route.sessionId) return;
+  try {
+    const state = await (await fetch('/api/state')).json();
+    if (state.sessionId === route.sessionId) return;
+    await fetch('/api/sessions/switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: route.sessionId })
+    });
+  } catch {}
 }
 
 // ── Event Dispatcher ──
@@ -158,6 +212,7 @@ function ensureTextTarget(wrapper) {
 
 function handleEvent(event) {
   if (!event?.type) return;
+  if (isProjectIndexEvent(event)) return;
   switch (event.type) {
     case 'connected': break;
     case 'assistant:start':
@@ -219,8 +274,9 @@ function handleEvent(event) {
     }
     case 'runtime:switched':
       chatPanel.clear(); activeMsg = null; pendingToolChanges = []; planProgress.hide();
+      updateRoute('chat', event.sessionId, { replace: false });
       loadStateQuiet().then(() => loadSidebarSessionsQuiet()); loadHistoryQuiet();
-      loadSessionMessages();
+      loadSessionMessages({ replace: true });
       break;
   }
 }
@@ -263,17 +319,34 @@ async function handleSessionSwitch(sessionId) {
   try {
     const res = await fetch('/api/sessions/switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }) });
     const result = await res.json();
-    if (result.ok) { switchView('chat'); updateProjectDisplay(result.cwd); await loadStateQuiet(); loadSidebarSessionsQuiet(); }
+    if (result.ok) {
+      switchView('chat', { updateUrl: false });
+      updateRoute('chat', sessionId);
+      updateProjectDisplay(result.cwd);
+      await loadStateQuiet();
+      await loadSessionMessages({ replace: true });
+      loadSidebarSessionsQuiet();
+    }
     else alert(result.message || 'Switch failed');
   } catch (err) { alert('Switch failed: ' + err.message); }
 }
 async function handleSessionNew() {
+  if (creatingSession) return;
+  creatingSession = true;
   try {
     const res = await fetch('/api/sessions/new', { method: 'POST' });
     const result = await res.json();
-    if (result.ok) { switchView('chat'); updateProjectDisplay(result.cwd); await loadStateQuiet(); loadSidebarSessionsQuiet(); }
+    if (result.ok) {
+      switchView('chat', { updateUrl: false });
+      updateRoute('chat', result.sessionId);
+      updateProjectDisplay(result.cwd);
+      await loadStateQuiet();
+      chatPanel.clear();
+      loadSidebarSessionsQuiet();
+    }
     else alert(result.message || 'Failed');
   } catch (err) { alert('Failed: ' + err.message); }
+  finally { creatingSession = false; }
 }
 
 // ── Config ──
@@ -298,7 +371,14 @@ async function handleProjectOpen(projectPath) {
   try {
     const res = await fetch('/api/project/open', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: projectPath }) });
     const result = await res.json();
-    if (result.ok) { updateProjectDisplay(result.cwd); switchView('chat'); await loadStateQuiet(); loadSidebarSessionsQuiet(); }
+    if (result.ok) {
+      updateProjectDisplay(result.cwd);
+      switchView('chat', { updateUrl: false });
+      updateRoute('chat', result.sessionId);
+      await loadStateQuiet();
+      chatPanel.clear();
+      loadSidebarSessionsQuiet();
+    }
     else alert(result.message || 'Failed');
   } catch (err) { alert('Failed: ' + err.message); }
 }
@@ -418,7 +498,7 @@ function appendSidebarSessionButton(container, session, currentId) {
   button.title = session.preview || session.id || '';
   const label = document.createElement('span');
   label.className = 'sidebar-session-title';
-  label.textContent = session.preview || (session.messageCount > 0 ? `${session.messageCount} messages` : '空对话');
+  label.textContent = session.title || session.preview || (session.messageCount > 0 ? `${session.messageCount} messages` : '空对话');
   const meta = document.createElement('span');
   meta.className = 'sidebar-session-meta';
   meta.textContent = session.updatedAt ? new Date(session.updatedAt).toLocaleDateString() : '';
@@ -434,9 +514,14 @@ function appendLoadMoreButton(container, count, onClick) {
   more.addEventListener('click', onClick);
   container.appendChild(more);
 }
-async function loadSessionMessages() {
+async function loadSessionMessages({ replace = false } = {}) {
   try {
     const messages = await (await fetch('/api/session/messages')).json();
+    if (replace) {
+      chatPanel.clear();
+      activeMsg = null;
+      pendingToolChanges = [];
+    }
     if (!Array.isArray(messages) || !messages.length) return;
     let assistantGroup = null;
     for (const msg of messages) {
@@ -460,14 +545,25 @@ async function loadSessionMessages() {
               name: tc.function?.name || tc.name || 'tool',
               type: 'tool:end',
               arguments: tc.function?.arguments || tc.arguments || {},
-              durationMs: 0,
-              summary: ''
+              durationMs: tc.durationMs,
+              summary: tc.summary || '',
+              status: tc.status || 'done'
             });
           }
         }
       } else if (msg.role === 'tool' && assistantGroup) {
+        const toolId = msg.toolCallId || msg.tool_call_id;
+        if (msg.toolSummary || Number.isFinite(Number(msg.toolDurationMs)) || msg.toolStatus) {
+          updateToolInMessage(assistantGroup, {
+            id: toolId,
+            name: 'tool',
+            type: msg.toolStatus === 'error' ? 'tool:error' : msg.toolStatus === 'blocked' ? 'tool:blocked' : 'tool:end',
+            durationMs: msg.toolDurationMs,
+            summary: msg.toolSummary || ''
+          });
+        }
         updateToolInMessage(assistantGroup, {
-          id: msg.toolCallId || msg.tool_call_id,
+          id: toolId,
           name: 'tool',
           type: 'tool:result',
           content: msg.content || ''
@@ -482,10 +578,19 @@ async function loadSessionMessages() {
 chatPanelEl.addEventListener('scroll', () => backToTopEl.classList.toggle('hidden', chatPanelEl.scrollTop <= 400));
 backToTopEl.addEventListener('click', () => chatPanelEl.scrollTo({ top: 0, behavior: 'smooth' }));
 
+function isProjectIndexEvent(event) {
+  const name = String(event?.name || '').toLowerCase();
+  const summary = String(event?.summary || '').toLowerCase();
+  return name.includes('project_index')
+    || name.includes('initializeprojectindex')
+    || summary.includes('project_index(')
+    || summary.includes('initialized ') && summary.includes('/.codemini');
+}
+
 function renderStartupEvent(event) {
   if (!event) return;
   const name = event.name || '';
-  if (name === 'project_index' || name === 'initializeProjectIndex') return;
+  if (isProjectIndexEvent(event)) return;
   if (event.type === 'system_tool' || event.type === 'tool') {
     const summary = event.summary || '';
     if (summary || name) chatPanel.append(createMessageBubble({ role: 'system', text: summary ? `${name}: ${summary}` : name, timestamp: new Date().toISOString() }));

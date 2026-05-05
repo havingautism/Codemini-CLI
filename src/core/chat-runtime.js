@@ -12,7 +12,7 @@ import {
 } from './provider/index.js';
 import { isDangerousCommand, runShellCommand } from './shell.js';
 import { getBuiltinTools } from './tools.js';
-import { createSession, listSessions, loadSession, pruneSessions, saveSession } from './session-store.js';
+import { createSession, deriveSessionTitle, listSessions, loadSession, pruneSessions, saveSession } from './session-store.js';
 import { getConfigValue, loadConfig, resetConfig, setConfigValue } from './config-store.js';
 import { evaluateCommandPolicy } from './command-policy.js';
 import { appendInputHistory, loadInputHistory } from './input-history-store.js';
@@ -102,6 +102,7 @@ function getCompletionCopy(language = 'zh') {
         'gateway.timeout_ms': '网关超时时间（毫秒）',
         'gateway.max_retries': '网关重试次数',
         'model.name': '当前模型名称',
+        'model.fast_name': '快速模型名称',
         'model.max_context_tokens': '模型上下文 token 上限',
         'ui.language': '界面语言',
         'ui.reply_language': '回复语言',
@@ -156,6 +157,7 @@ function getCompletionCopy(language = 'zh') {
         exit: '退出聊天',
         commands: '列出 slash/自定义命令',
         status: '查看运行状态（mode/model/session）',
+        model: '查看或切换模型',
         mode: '设置执行模式：normal|auto|plan',
         compact: '压缩消息上下文',
         checkpoint: '创建/查看/加载检查点',
@@ -193,6 +195,7 @@ function getCompletionCopy(language = 'zh') {
         retryCommand: '重试上一条用户请求',
         stopCommand: '中止当前回答',
         statusCommand: '查看运行状态',
+        modelCommand: '查看或切换模型',
         resumeSession: '恢复一个已保存的会话'
       }
     },
@@ -204,6 +207,7 @@ function getCompletionCopy(language = 'zh') {
         'gateway.timeout_ms': 'gateway timeout in milliseconds',
         'gateway.max_retries': 'gateway retry count',
         'model.name': 'active model name',
+        'model.fast_name': 'fast model name',
         'model.max_context_tokens': 'model context token limit',
         'ui.language': 'UI language',
         'ui.reply_language': 'reply language',
@@ -258,6 +262,7 @@ function getCompletionCopy(language = 'zh') {
         exit: 'exit chat',
         commands: 'list slash/custom commands',
         status: 'show runtime status (mode/model/session)',
+        model: 'show or switch model',
         mode: 'set execution mode: normal|auto|plan',
         compact: 'compress message context',
         checkpoint: 'create/list/load conversation checkpoints',
@@ -295,6 +300,7 @@ function getCompletionCopy(language = 'zh') {
         retryCommand: 'retry the last user request',
         stopCommand: 'stop the current response',
         statusCommand: 'show runtime status',
+        modelCommand: 'show or switch model',
         resumeSession: 'resume a saved session'
       }
     }
@@ -2114,10 +2120,14 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
   const contextUsagePct = maxContextTokens > 0 ? Math.min(100, Math.max(0, (currentContextTokens / maxContextTokens) * 100)) : 0;
   const snapshot = {
     sessionId: currentSession?.id || '',
+    sessionTitle: currentSession?.title || '',
+    messageCount: Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0,
     mode: executionMode || config.execution?.mode || 'auto',
     sdkProvider: config.sdk?.provider || 'openai-compatible',
     agentRole: 'general',
     model: model || config.model?.name || '',
+    mainModel: config.model?.name || '',
+    fastModel: config.model?.fast_name || config.model?.name || '',
     maxContextTokens
   };
   Object.defineProperties(snapshot, {
@@ -2143,6 +2153,65 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     }
   });
   return snapshot;
+}
+
+function resolveDefaultModel(config) {
+  return String(config?.model?.name || '').trim();
+}
+
+function resolveFastModel(config) {
+  return String(config?.model?.fast_name || config?.model?.lite_name || config?.model?.name || '').trim();
+}
+
+function normalizeGeneratedSessionTitle(value, fallback = '') {
+  const cleaned = String(value || '')
+    .replace(/^[\s"'`#：:「『【\[]+|[\s"'`。.!?？！」』】\]]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const title = cleaned || fallback || '';
+  if (!title) return '';
+  return title.length > 48 ? `${title.slice(0, 45).trimEnd()}...` : title;
+}
+
+function shouldReplaceSessionTitle(title) {
+  const value = String(title || '').trim();
+  return !value || value === '新会话' || value === 'New session';
+}
+
+async function generateSessionTitle({ userText, config, signal }) {
+  const fallback = normalizeGeneratedSessionTitle(deriveSessionTitle([{ role: 'user', content: userText }]));
+  const latestConfig = await loadConfig().catch(() => config);
+  const effectiveConfig = latestConfig || config;
+  const fastModel = resolveFastModel(effectiveConfig);
+  if (!fastModel) return fallback;
+  try {
+    const result = await createChatCompletion({
+      sdkProvider: effectiveConfig.sdk?.provider,
+      baseUrl: effectiveConfig.gateway.base_url,
+      apiKey: effectiveConfig.gateway.api_key,
+      model: fastModel,
+      messages: [
+        {
+          role: 'system',
+          content: [
+            'Generate a concise chat session title.',
+            'Return only the title text.',
+            'Use the same language as the user when possible.',
+            'No quotes, no markdown, no punctuation at the ends.',
+            'Maximum 16 Chinese characters or 8 English words.'
+          ].join(' ')
+        },
+        { role: 'user', content: String(userText || '').slice(0, 1200) }
+      ],
+      tools: [],
+      timeoutMs: Math.min(Number(effectiveConfig.gateway?.timeout_ms || 30000), 30000),
+      maxRetries: 0,
+      signal
+    });
+    return normalizeGeneratedSessionTitle(result?.text, fallback) || fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 function estimatePromptTokensForRequest(sessionMessages, userText = '') {
@@ -2414,7 +2483,13 @@ async function askModel({
   }
 
   if (text) {
+    const shouldGenerateTitle = !session.messages.some((msg) => msg?.role === 'user');
     session.messages.push(stampedMessage('user', text));
+    session.title = shouldGenerateTitle
+      ? await generateSessionTitle({ userText: text, config, signal })
+      : deriveSessionTitle(session.messages);
+    session.model = model || config.model.name;
+    session.mode = executionMode || config.execution?.mode || 'auto';
     if (persistSession) await saveSession(session);
   }
 
@@ -2581,6 +2656,11 @@ async function askModel({
     session.messages = loopResult.messages
       .filter((m) => m.role !== 'system')
       .map((m) => ({ ...m, at: new Date().toISOString() }));
+    if (shouldReplaceSessionTitle(session.title)) {
+      session.title = deriveSessionTitle(session.messages);
+    }
+    session.model = model || config.model.name;
+    session.mode = executionMode || config.execution?.mode || 'auto';
     await flushScheduledSave();
     await saveSession(session);
     try {
@@ -3511,7 +3591,8 @@ function compactHistoryPreview(value, maxChars = 72) {
 function formatHistoryList({ currentSession, sessions }) {
   const currentMessages = Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0;
   const lines = [
-    `Current session  ${currentSession.id}`,
+    `Current session  ${currentSession.title || currentSession.id}`,
+    `Session id       ${currentSession.id}`,
     `Messages         ${currentMessages}`,
     '',
     'Recent sessions'
@@ -3520,8 +3601,9 @@ function formatHistoryList({ currentSession, sessions }) {
   for (const [index, session] of sessions.entries()) {
     const count = Number(session.messageCount || 0);
     lines.push(
-      `${index + 1}. ${session.id}`,
-      `   ${count} ${count === 1 ? 'msg' : 'msgs'}  |  ${formatHistoryTimestamp(session.updatedAt)}`,
+      `${index + 1}. ${session.title || session.id}`,
+      `   id=${session.id}`,
+      `   ${count} ${count === 1 ? 'msg' : 'msgs'}  |  ${formatHistoryTimestamp(session.updatedAt)}${session.model ? `  |  ${session.model}` : ''}`,
       `   ${compactHistoryPreview(session.preview)}`,
       `   resume: /history resume ${session.id}`
     );
@@ -3576,6 +3658,10 @@ export async function createChatRuntime({
   }
   let currentSession = session;
   let config = initialConfig;
+  model = model || currentSession?.model || resolveDefaultModel(config);
+  if (currentSession && typeof currentSession === 'object') {
+    currentSession.model = model;
+  }
   const baseSystemPrompt = systemPrompt;
   let executionMode = config.execution?.mode || 'auto';
   if (hasPendingPlanApproval(currentSession)) {
@@ -3603,6 +3689,7 @@ export async function createChatRuntime({
   let historySessionCache = [
     {
       id: currentSession.id,
+      title: currentSession.title || deriveSessionTitle(currentSession.messages || []),
       messageCount: Array.isArray(currentSession.messages) ? currentSession.messages.length : 0
     }
   ];
@@ -3612,10 +3699,12 @@ export async function createChatRuntime({
       const merged = [
         {
           id: currentSession.id,
+          title: currentSession.title || deriveSessionTitle(currentSession.messages || []),
           messageCount: Array.isArray(currentSession.messages) ? currentSession.messages.length : 0
         },
         ...initialSessions.map((session) => ({
           id: session.id,
+          title: session.title || '',
           messageCount: Number(session.messageCount || 0)
         }))
       ];
@@ -3638,6 +3727,7 @@ export async function createChatRuntime({
     'gateway.base_url',
     'gateway.api_key',
     'model.name',
+    'model.fast_name',
     'ui.language',
     'ui.reply_language',
     'execution.mode',
@@ -3666,6 +3756,7 @@ export async function createChatRuntime({
   const commandPriorityOrder = [
     '/help',
     '/status',
+    '/model',
     '/config',
     '/memory',
     '/capture',
@@ -3690,6 +3781,7 @@ export async function createChatRuntime({
       { name: 'exit', description: completionCopy.commands.exit },
       { name: 'commands', description: completionCopy.commands.commands },
       { name: 'status', description: completionCopy.commands.status },
+      { name: 'model', description: completionCopy.commands.model },
       { name: 'mode', description: completionCopy.commands.mode },
       { name: 'compact', description: completionCopy.commands.compact },
       { name: 'checkpoint', description: completionCopy.commands.checkpoint },
@@ -3740,6 +3832,7 @@ export async function createChatRuntime({
   const historyTemplates = ['/history list', '/history current', '/history resume <session_id>'];
   const memoryTemplates = ['/memory list <scope>', '/memory search <scope> <query>', '/memory forget <scope> <id>'];
   const modeTemplates = ['/mode normal', '/mode auto', '/mode plan'];
+  const modelTemplates = ['/model current', '/model main', '/model fast', '/model set <name>'];
   const checkpointTemplates = [
     '/checkpoint create <name>',
     '/checkpoint list',
@@ -3758,6 +3851,7 @@ export async function createChatRuntime({
     ...memoryTemplates,
     ...historyTemplates,
     ...modeTemplates,
+    ...modelTemplates,
     ...checkpointTemplates,
     ...specTemplates,
     ...planTemplates,
@@ -3805,6 +3899,7 @@ export async function createChatRuntime({
       'memory',
       'compact',
       'mode',
+      'model',
       'checkpoint',
       'plan',
       'agents',
@@ -3824,6 +3919,7 @@ export async function createChatRuntime({
     for (const template of memoryTemplates) registerSuggestion(template, completionCopy.generic.memoryCommand);
     for (const template of historyTemplates) registerSuggestion(template, completionCopy.generic.historyCommand);
     for (const template of modeTemplates) registerSuggestion(template, completionCopy.generic.modeCommand);
+    for (const template of modelTemplates) registerSuggestion(template, completionCopy.generic.modelCommand || completionCopy.commands.model);
     for (const template of checkpointTemplates) registerSuggestion(template, completionCopy.generic.checkpointCommand);
     for (const template of specTemplates) registerSuggestion(template, completionCopy.generic.specCommand);
     for (const template of planTemplates) {
@@ -3918,6 +4014,15 @@ export async function createChatRuntime({
     if (commandPart === 'status') {
       return [registerSuggestion('/status', completionCopy.generic.statusCommand)];
     }
+    if (commandPart === 'model') {
+      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
+        const sub = tokens[1] || '';
+        return ['current', 'main', 'fast', 'set']
+          .filter((m) => m.startsWith(sub))
+          .map((m) => registerSuggestion(`/model ${m}${m === 'set' ? ' ' : ''}`, completionCopy.generic.modelCommand));
+      }
+      return materializeSuggestions(modelTemplates);
+    }
     if (commandPart === 'mode') {
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         const sub = tokens[1] || '';
@@ -4002,7 +4107,7 @@ export async function createChatRuntime({
             .filter((session) => String(session.id || '').startsWith(''))
             .map((session) => ({
               value: `/history resume ${session.id}`,
-              display: `/history resume ${session.id}  ·  ${Number(session.messageCount || 0)} msgs`,
+              display: `/history resume ${session.id}  ·  ${session.title || 'untitled'}  ·  ${Number(session.messageCount || 0)} msgs`,
               description: completionCopy.generic.resumeSession
             }));
           if (dynamic.length > 0) return dynamic;
@@ -4017,7 +4122,7 @@ export async function createChatRuntime({
           .filter((session) => String(session.id || '').startsWith(idPrefix))
           .map((session) => ({
             value: `/history resume ${session.id}`,
-            display: `/history resume ${session.id}  ·  ${Number(session.messageCount || 0)} msgs`,
+            display: `/history resume ${session.id}  ·  ${session.title || 'untitled'}  ·  ${Number(session.messageCount || 0)} msgs`,
             description: completionCopy.generic.resumeSession
           }));
         if (dynamic.length > 0) return dynamic;
@@ -4056,6 +4161,11 @@ export async function createChatRuntime({
     if (systemText) {
       currentSession.messages.push(stampedMessage('system', systemText));
     }
+    if (shouldReplaceSessionTitle(currentSession.title)) {
+      currentSession.title = deriveSessionTitle(currentSession.messages);
+    }
+    currentSession.model = model || config.model.name;
+    currentSession.mode = executionMode || config.execution?.mode || 'auto';
     await saveSession(currentSession);
   };
 
@@ -4066,12 +4176,22 @@ export async function createChatRuntime({
     if (assistantText) {
       currentSession.messages.push(stampedMessage('assistant', assistantText));
     }
+    if (shouldReplaceSessionTitle(currentSession.title)) {
+      currentSession.title = deriveSessionTitle(currentSession.messages);
+    }
+    currentSession.model = model || config.model.name;
+    currentSession.mode = executionMode || config.execution?.mode || 'auto';
     await saveSession(currentSession);
   };
 
   const persistUserExchange = async (userText) => {
     if (!userText) return;
     currentSession.messages.push(stampedMessage('user', userText));
+    if (shouldReplaceSessionTitle(currentSession.title)) {
+      currentSession.title = deriveSessionTitle(currentSession.messages);
+    }
+    currentSession.model = model || config.model.name;
+    currentSession.mode = executionMode || config.execution?.mode || 'auto';
     await saveSession(currentSession);
   };
 
@@ -4267,7 +4387,7 @@ export async function createChatRuntime({
         setResultDir(path.join(getSessionsDir(), String(fresh.id)));
         historyIdCache = [fresh.id, ...historyIdCache.filter((id) => id !== fresh.id)];
         historySessionCache = [
-          { id: fresh.id, messageCount: 0 },
+          { id: fresh.id, title: fresh.title || '', messageCount: 0 },
           ...historySessionCache.filter((s) => s.id !== fresh.id)
         ];
         return {
@@ -4279,7 +4399,7 @@ export async function createChatRuntime({
       if (parsedInput.command === 'help') {
         return {
           type: 'system',
-          text: 'Commands: /help /exit /new /stop /commands /status /mode /compact /checkpoint /spec /plan /yes /no /edit /reject /agents /config /memory /capture /inbox /dream /reflect /history /debug /retry /<custom> !<shell>'
+          text: 'Commands: /help /exit /new /stop /commands /status /model /mode /compact /checkpoint /spec /plan /yes /no /edit /reject /agents /config /memory /capture /inbox /dream /reflect /history /debug /retry /<custom> !<shell>'
         };
       }
       if (parsedInput.command === 'status') {
@@ -4288,6 +4408,31 @@ export async function createChatRuntime({
           type: 'system',
           text: `mode=${executionMode} | role=general | model=${model || config.model.name} | max_ctx=${effectiveMaxContextTokens(config)} | session=${currentSession.id} | todos=${todoCount}`
         };
+      }
+      if (parsedInput.command === 'model') {
+        const sub = String(parsedInput.args[0] || 'current').trim().toLowerCase();
+        const mainModel = resolveDefaultModel(config);
+        const fastModel = resolveFastModel(config);
+        if (sub === 'current' || sub === 'status') {
+          return {
+            type: 'system',
+            text: `Current model: ${model || mainModel}\nDefault model: ${mainModel}\nFast model: ${fastModel}${config.model?.fast_name ? '' : ' (fallback to default; set /config set model.fast_name <name>)'}`
+          };
+        }
+        if (sub === 'main' || sub === 'default') {
+          model = mainModel;
+        } else if (sub === 'fast') {
+          model = fastModel;
+        } else if (sub === 'set') {
+          const next = parsedInput.args.slice(1).join(' ').trim();
+          if (!next) return { type: 'system', text: 'Usage: /model set <name>' };
+          model = next;
+        } else {
+          return { type: 'system', text: 'Usage: /model current | /model main | /model fast | /model set <name>' };
+        }
+        currentSession.model = model;
+        await saveSession(currentSession);
+        return { type: 'system', text: `Model switched to: ${model}` };
       }
       if (parsedInput.command === 'mode') {
         const next = (parsedInput.args[0] || '').trim().toLowerCase();
@@ -4670,6 +4815,7 @@ export async function createChatRuntime({
           historyIdCache = sessions.map((s) => s.id);
           historySessionCache = sessions.map((s) => ({
             id: s.id,
+            title: s.title || '',
             messageCount: Number(s.messageCount || 0)
           }));
           if (sessions.length === 0) return { type: 'system', text: 'No sessions found' };
@@ -4695,7 +4841,7 @@ export async function createChatRuntime({
           }
           if (!historyIdCache.includes(targetId)) historyIdCache.unshift(targetId);
           historySessionCache = [
-            { id: targetId, messageCount: Array.isArray(loaded.messages) ? loaded.messages.length : 0 },
+            { id: targetId, title: loaded.title || deriveSessionTitle(loaded.messages || []), messageCount: Array.isArray(loaded.messages) ? loaded.messages.length : 0 },
             ...historySessionCache.filter((s) => s.id !== targetId)
           ];
           return {
@@ -5189,6 +5335,10 @@ export async function createChatRuntime({
     getInputHistory: () => loadInputHistory(),
     getCurrentSessionId: () => currentSession.id,
     getSessionMessages: () => currentSession.messages || [],
+    reloadConfig: async () => {
+      config = await loadConfig();
+      return config;
+    },
     setRequestToolApproval: (handler) => {
       activeRequestToolApproval = typeof handler === 'function' ? handler : null;
       return true;

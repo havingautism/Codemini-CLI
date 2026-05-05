@@ -22,6 +22,7 @@ function parseRunArgs(args) {
   const parsed = {
     task: '',
     model: undefined,
+    fast: false,
     maxSteps: 8,
     harness: null,
     pipeline: false
@@ -31,6 +32,10 @@ function parseRunArgs(args) {
     if (arg === '--model') {
       parsed.model = args[i + 1];
       i += 1;
+      continue;
+    }
+    if (arg === '--fast' || arg === '--lite') {
+      parsed.fast = true;
       continue;
     }
     if (arg === '--max-steps') {
@@ -239,6 +244,7 @@ export async function handleRun(args) {
   }
 
   const config = await loadConfig();
+  const selectedModel = parsed.fast ? (config.model?.fast_name || config.model?.name) : parsed.model;
   const systemPrompt = await buildSystemPrompt(config);
 
   if (parsed.pipeline) {
@@ -246,7 +252,7 @@ export async function handleRun(args) {
       task: parsed.task,
       config,
       systemPrompt,
-      model: parsed.model
+      model: selectedModel
     });
     for (const step of state.steps) {
       console.log(`\n--- [${step.role}] ${step.title} ---`);
@@ -261,7 +267,7 @@ export async function handleRun(args) {
       task: parsed.task,
       config,
       systemPrompt,
-      model: parsed.model,
+      model: selectedModel,
       maxSteps: parsed.maxSteps
     });
     console.log(result.text);
@@ -276,7 +282,7 @@ export async function handleRun(args) {
     const result = await runAgentLoop({
       systemPrompt,
       userPrompt: parsed.task,
-      model: parsed.model || config.model.name,
+      model: selectedModel || config.model.name,
       toolDefinitions: definitions,
       toolHandlers: handlers,
       toolFormatters: formatters,

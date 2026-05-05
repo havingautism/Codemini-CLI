@@ -28,9 +28,7 @@ export function createInputBar(container, { onSubmit, onAbort, onCompletionReque
       h('span', { className: 'model-loading' }, '正在加载模型'),
       icon('ChevronDown', { size: 12 })
     ),
-    h('button', { className: 'input-icon-button', type: 'button', title: '语音输入' },
-      icon('Mic')
-    )
+   
   );
   const sendBtn = h('button', {
     className: 'btn-send',

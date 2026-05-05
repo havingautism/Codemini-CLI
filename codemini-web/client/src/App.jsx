@@ -128,6 +128,12 @@ const shellRoute = createRoute({
   component: Shell
 });
 
+const chatSessionRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/chat/$sessionId',
+  component: Shell
+});
+
 const sessionsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/sessions',
@@ -140,7 +146,13 @@ const settingsRoute = createRoute({
   component: Shell
 });
 
-const routeTree = rootRoute.addChildren([shellRoute, sessionsRoute, settingsRoute]);
+const configRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/config',
+  component: Shell
+});
+
+const routeTree = rootRoute.addChildren([shellRoute, chatSessionRoute, sessionsRoute, settingsRoute, configRoute]);
 const router = createRouter({ routeTree });
 
 function App() {

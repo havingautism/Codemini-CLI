@@ -47,6 +47,7 @@ test('loadConfig creates the default global config file on first initialization'
     assert.equal(initial.ui.reply_language, 'zh');
     assert.equal(initial.gateway.timeout_ms, 1800000);
     assert.equal(initial.shell.timeout_ms, 1800000);
+    assert.equal(initial.model.fast_name, '');
 
     const raw = await fs.readFile(configPath, 'utf8');
     const persisted = JSON.parse(raw);
@@ -54,6 +55,18 @@ test('loadConfig creates the default global config file on first initialization'
     assert.equal(persisted.execution.mode, 'auto');
     assert.equal(persisted.gateway.timeout_ms, 1800000);
     assert.equal(persisted.shell.timeout_ms, 1800000);
+  });
+});
+
+test('config supports optional fast model and falls back when unset', async () => {
+  await withTempConfigDir(async () => {
+    const initial = await loadConfig();
+    assert.equal(initial.model.fast_name, '');
+    assert.equal(initial.model.name, 'gpt-4.1-mini');
+
+    await setConfigValue('model.fast_name', 'gpt-4.1-nano');
+    const updated = await loadConfig();
+    assert.equal(updated.model.fast_name, 'gpt-4.1-nano');
   });
 });
 

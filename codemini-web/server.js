@@ -30,13 +30,14 @@ const MIME_TYPES = {
 };
 
 function parseArgs(argv) {
-  const parsed = { port: 3210, session: undefined, model: undefined, project: undefined };
+  const parsed = { port: 3210, session: undefined, model: undefined, project: undefined, open: true };
   for (let i = 2; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--port' || arg === '-p') { parsed.port = parseInt(argv[++i], 10) || 3210; continue; }
     if (arg === '--session' || arg === '-s') { parsed.session = argv[++i]; continue; }
     if (arg === '--model' || arg === '-m') { parsed.model = argv[++i]; continue; }
     if (arg === '--project' || arg === '-d') { parsed.project = argv[++i]; continue; }
+    if (arg === '--no-open') { parsed.open = false; continue; }
   }
   return parsed;
 }
@@ -220,7 +221,9 @@ async function main() {
         filePath = path.join(CLIENT_DIR, 'index.html');
       } else {
         const relative = url.pathname.replace(/^\//, '');
-        filePath = path.join(CLIENT_DIR, relative);
+        filePath = path.extname(relative)
+          ? path.join(CLIENT_DIR, relative)
+          : path.join(CLIENT_DIR, 'index.html');
       }
       if (!filePath.startsWith(CLIENT_DIR)) { res.writeHead(403); res.end(); return; }
       await serveStatic(res, filePath);
@@ -280,6 +283,16 @@ async function main() {
     }
     if (req.method === 'POST' && url.pathname === '/api/sessions/new') {
       try {
+        const currentMessages = bridge.getSessionMessages();
+        if (!Array.isArray(currentMessages) || currentMessages.length === 0) {
+          jsonResponse(res, {
+            ok: true,
+            reused: true,
+            sessionId: bridge.getSessionId(),
+            cwd: currentProjectDir
+          });
+          return;
+        }
         const { runtime: newRuntime, session } = await buildRuntimeForSession({
           model: bridge.getState().model
         });
@@ -388,6 +401,7 @@ async function main() {
 
   server.listen(args.port, () => {
     console.log(`\n  CodeMini Web UI\n  http://localhost:${args.port}\n  Project: ${currentProjectDir}\n`);
+    if (!args.open) return;
     const openCmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
     import('node:child_process').then(({ exec }) => {
       exec(`${openCmd} http://localhost:${args.port}`, (err) => { if (err) console.log('  Could not auto-open browser.'); });

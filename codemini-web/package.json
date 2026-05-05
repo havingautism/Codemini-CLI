@@ -9,8 +9,8 @@
   "scripts": {
     "build": "bunx vite build --config vite.config.js",
     "start": "bun server.js",
-    "dev": "bunx vite --config vite.config.js --host 127.0.0.1 --port 5178",
-    "api": "bun server.js --port 3210"
+    "dev": "bun scripts/dev.js",
+    "api": "bun server.js --port 5000"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.2.4",

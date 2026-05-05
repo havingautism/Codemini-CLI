@@ -10,11 +10,11 @@ const VERSION = pkg.version;
 function printHelp() {
   console.log(`codemini ${VERSION}
 Usage:
-  codemini [prompt] [--plain]
-  codemini chat [prompt] [--plain]
-  codemini run <task> [--max-steps N] [--model <name>]
-  codemini run --harness <role> <task> [--max-steps N] [--model <name>]
-  codemini run --pipeline <task> [--model <name>]
+  codemini [prompt] [--plain] [--model <name>] [--fast]
+  codemini chat [prompt] [--plain] [--model <name>] [--fast]
+  codemini run <task> [--max-steps N] [--model <name>] [--fast]
+  codemini run --harness <role> <task> [--max-steps N] [--model <name>] [--fast]
+  codemini run --pipeline <task> [--model <name>] [--fast]
   codemini config set|get|list <key> [value]
   codemini doctor
   codemini skill list|install|enable|disable|inspect|reindex [--scope=project|global]

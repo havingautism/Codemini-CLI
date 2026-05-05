@@ -1,4 +1,22 @@
 import { ApprovalManager } from './approval-manager.js';
+import { summarizeToolResult } from '../../src/core/tool-result-store.js';
+
+function parseToolContent(content) {
+  if (typeof content !== 'string') return content;
+  const text = content.trim();
+  if (!text) return '';
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function summarizeHistoricalToolMessage(message) {
+  const explicit = String(message?.tool_summary || '').trim();
+  if (explicit) return explicit;
+  return summarizeToolResult(parseToolContent(message?.content || ''));
+}
 
 export class RuntimeBridge {
   #runtime = null;
@@ -82,6 +100,9 @@ export class RuntimeBridge {
         content: typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(c => c.text || '').join('') : ''),
         toolCalls: m.tool_calls || [],
         toolCallId: m.tool_call_id || null,
+        toolSummary: m.role === 'tool' ? summarizeHistoricalToolMessage(m) : null,
+        toolDurationMs: Number.isFinite(Number(m.tool_duration_ms)) ? Number(m.tool_duration_ms) : null,
+        toolStatus: m.tool_status || null,
         at: m.at || null
       }));
   }

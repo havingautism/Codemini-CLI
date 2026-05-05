@@ -2,6 +2,8 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
+const apiPort = process.env.CODEMINI_API_PORT || '3210';
+
 export default defineConfig({
   root: 'client',
   plugins: [react(), tailwindcss()],
@@ -11,7 +13,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://127.0.0.1:3210'
+      '/api': `http://127.0.0.1:${apiPort}`
     }
   }
 });
