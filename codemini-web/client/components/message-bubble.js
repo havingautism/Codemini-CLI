@@ -1,7 +1,6 @@
 import { h, clear, escapeHtml } from '../utils/dom.js';
 import { formatTimestamp } from '../utils/time.js';
-import { renderMarkdown } from './markdown-renderer.js';
-import { highlightCodeBlocks } from './code-block.js';
+import { renderStreamdown } from './streamdown-renderer.jsx';
 import { createToolCard, updateToolCard } from './tool-card.js';
 import { t } from '../i18n/index.js';
 
@@ -56,8 +55,7 @@ export function createMessageBubble(msg) {
 
   if (msg.text) {
     wrapper._currentText = msg.text;
-    body.innerHTML = renderMarkdown(msg.text);
-    highlightCodeBlocks(body);
+    renderStreamdown(body, msg.text);
   }
 
   if (msg.tools && msg.tools.length) {
@@ -86,18 +84,14 @@ export function startTextSegment(wrapper) {
 export function appendDelta(wrapper, text) {
   if (!wrapper || !text) return;
   wrapper._currentText += text;
-  wrapper._body.innerHTML = renderMarkdown(wrapper._currentText);
-  wrapper._body.classList.add('streaming-cursor');
   wrapper._isStreaming = true;
-  highlightCodeBlocks(wrapper._body);
+  renderStreamdown(wrapper._body, wrapper._currentText, { streaming: true });
 }
 
 export function finishStreaming(wrapper) {
   if (!wrapper) return;
-  wrapper._body.classList.remove('streaming-cursor');
   wrapper._isStreaming = false;
-  wrapper._body.innerHTML = renderMarkdown(wrapper._currentText);
-  highlightCodeBlocks(wrapper._body);
+  renderStreamdown(wrapper._body, wrapper._currentText, { streaming: false });
 }
 
 const TOOL_COLLAPSE_THRESHOLD = 3;

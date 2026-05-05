@@ -21,13 +21,20 @@ export function initProjectSelector(callback) {
 }
 
 export function updateProjectDisplay(cwd) {
+  const projectName = cwd?.split(/[/\\]/).pop() || cwd || '...';
   const display = document.getElementById('project-path-display');
-  if (display) display.textContent = cwd?.split(/[/\\]/).pop() || cwd || '...';
+  if (display) display.textContent = projectName;
+  const sidebarName = document.getElementById('sidebar-project-name');
+  if (sidebarName) sidebarName.textContent = projectName;
+  const chatTitle = document.getElementById('chat-title');
+  if (chatTitle) chatTitle.textContent = projectName;
+  const emptyTitle = document.querySelector('#empty-state h1');
+  if (emptyTitle) emptyTitle.textContent = `要在 ${projectName} 中构建什么?`;
   const trigger = document.getElementById('project-indicator');
   if (trigger) trigger.title = cwd || '';
 }
 
-async function openProjectModal() {
+export async function openProjectModal() {
   const overlay = ensureOverlay();
   overlay.classList.remove('hidden');
   clear(overlay);

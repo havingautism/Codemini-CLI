@@ -11,7 +11,13 @@ import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
 import { RuntimeBridge } from './lib/runtime-bridge.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CLIENT_DIR = path.join(__dirname, 'client');
+const CLIENT_SOURCE_DIR = path.join(__dirname, 'client');
+let CLIENT_DIR = CLIENT_SOURCE_DIR;
+try {
+  const distDir = path.join(__dirname, 'dist');
+  const stat = await fs.stat(distDir);
+  if (stat.isDirectory()) CLIENT_DIR = distDir;
+} catch {}
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -268,7 +274,7 @@ async function main() {
 
     // ── Session management ──
     if (req.method === 'GET' && url.pathname === '/api/sessions') {
-      const sessions = await listSessions(100);
+      const sessions = await listSessions(1000);
       jsonResponse(res, sessions);
       return;
     }

@@ -8,11 +8,11 @@ import { createAutocomplete } from './components/autocomplete.js';
 import { createApprovalDialog } from './components/approval-dialog.js';
 import { createPlanProgress } from './components/plan-progress.js';
 import { renderTodos } from './components/todo-list.js';
-import { renderMarkdown } from './components/markdown-renderer.js';
-import { highlightCodeBlocks } from './components/code-block.js';
+import { renderStreamdown } from './components/streamdown-renderer.jsx';
 import { createSessionPanel, renderSessions } from './components/session-panel.js';
 import { createConfigPanel, renderConfigPanel } from './components/config-panel.js';
-import { initProjectSelector, updateProjectDisplay } from './components/project-selector.js';
+import { initProjectSelector, updateProjectDisplay, openProjectModal } from './components/project-selector.js';
+import { icon } from './utils/icons.js';
 
 // ── DOM refs ──
 const statusBarEl = document.getElementById('status-bar');
@@ -21,9 +21,17 @@ const planProgressEl = document.getElementById('plan-progress');
 const approvalOverlay = document.getElementById('approval-overlay');
 const backToTopEl = document.getElementById('back-to-top');
 const inputAreaEl = document.getElementById('input-area');
+const inputBarEl = document.getElementById('input-bar');
 const autocompleteEl = document.getElementById('autocomplete');
 const viewSessionsEl = document.getElementById('view-sessions');
 const viewConfigEl = document.getElementById('view-config');
+const themeToggleEl = document.getElementById('theme-toggle');
+const settingsToggleEl = document.getElementById('settings-toggle');
+const projectSessionListEl = document.getElementById('project-session-list');
+const conversationSessionListEl = document.getElementById('conversation-session-list');
+const sidebarSessionLimits = { project: 20, conversation: 20 };
+const projectSessionLimits = new Map();
+const expandedProjectKeys = new Set();
 
 // ── Store ──
 const store = createStore({
@@ -46,12 +54,47 @@ function switchView(name) {
   if (name === 'sessions') loadSessions();
   if (name === 'config') loadConfig();
 }
-navItems.forEach(btn => btn.addEventListener('click', () => switchView(btn.dataset.view)));
+navItems.forEach(btn => btn.addEventListener('click', () => {
+  if (btn.dataset.view) {
+    switchView(btn.dataset.view);
+    return;
+  }
+  if (btn.dataset.action === 'new-session') handleSessionNew();
+}));
+document.querySelectorAll('[data-action="open-project"]').forEach((btn) => {
+  btn.addEventListener('click', () => openProjectModal());
+});
+settingsToggleEl?.addEventListener('click', () => switchView('config'));
+document.querySelectorAll('.collapsible-toggle').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const target = document.getElementById(btn.dataset.collapseTarget);
+    if (!target) return;
+    const collapsed = target.classList.toggle('collapsed');
+    btn.setAttribute('aria-expanded', String(!collapsed));
+    btn.classList.toggle('collapsed', collapsed);
+  });
+});
+
+// ── Theme ──
+function applyTheme(theme) {
+  const next = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem('codemini-theme', next);
+  if (themeToggleEl) {
+    themeToggleEl.querySelector('.theme-label').textContent = next === 'dark' ? '浅色' : '深色';
+    themeToggleEl.title = next === 'dark' ? '切换到浅色模式' : '切换到深色模式';
+  }
+}
+
+applyTheme(document.documentElement.dataset.theme || 'light');
+themeToggleEl?.addEventListener('click', () => {
+  applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+});
 
 // ── Chat Components ──
 const chatPanel = createChatPanel(chatPanelEl);
 const statusBar = createStatusBar(statusBarEl);
-const inputBar = createInputBar(inputAreaEl, {
+const inputBar = createInputBar(inputBarEl || inputAreaEl, {
   onSubmit: handleSubmit,
   onAbort: handleAbort,
   onCompletionRequest: handleCompletionRequest
@@ -86,9 +129,11 @@ async function init() {
     const state = await res.json();
     store.set({ runtimeState: state });
     statusBar.updateRuntimeState(state);
+    inputBar.setRuntimeState(state);
     updateProjectDisplay(state.cwd);
   } catch {}
   try { inputBar.setHistory(await (await fetch('/api/history')).json()); } catch {}
+  loadSidebarSessionsQuiet();
   connectSSE();
   inputBar.focus();
   statusBar.setLive(false);
@@ -101,8 +146,7 @@ let pendingToolChanges = [];
 function setMessageText(wrapper, text) {
   if (!wrapper) return;
   wrapper._currentText = text || '';
-  wrapper._body.innerHTML = renderMarkdown(wrapper._currentText);
-  highlightCodeBlocks(wrapper._body);
+  renderStreamdown(wrapper._body, wrapper._currentText);
 }
 
 function ensureTextTarget(wrapper) {
@@ -170,12 +214,12 @@ function handleEvent(event) {
       if (activeMsg) finishStreaming(activeMsg);
       if (result.type === 'system' && result.text) chatPanel.append(createMessageBubble({ role: 'system', text: result.text, timestamp: new Date().toISOString() }));
       activeMsg = null; store.set({ stage: 'idle', busy: false }); statusBar.setLive(false); inputBar.setBusy(false); inputBar.focus();
-      loadHistoryQuiet();
+      loadHistoryQuiet(); loadSidebarSessionsQuiet();
       break;
     }
     case 'runtime:switched':
       chatPanel.clear(); activeMsg = null; pendingToolChanges = []; planProgress.hide();
-      loadStateQuiet(); loadHistoryQuiet();
+      loadStateQuiet().then(() => loadSidebarSessionsQuiet()); loadHistoryQuiet();
       loadSessionMessages();
       break;
   }
@@ -212,13 +256,14 @@ async function loadSessions() {
     const sessions = await (await fetch('/api/sessions')).json();
     const currentId = store.get('runtimeState')?.sessionId;
     renderSessions(sessionPanel, sessions, currentId);
+    renderSidebarSessions(sessions, currentId);
   } catch (err) { console.error('loadSessions:', err); }
 }
 async function handleSessionSwitch(sessionId) {
   try {
     const res = await fetch('/api/sessions/switch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId }) });
     const result = await res.json();
-    if (result.ok) { switchView('chat'); updateProjectDisplay(result.cwd); }
+    if (result.ok) { switchView('chat'); updateProjectDisplay(result.cwd); await loadStateQuiet(); loadSidebarSessionsQuiet(); }
     else alert(result.message || 'Switch failed');
   } catch (err) { alert('Switch failed: ' + err.message); }
 }
@@ -226,7 +271,7 @@ async function handleSessionNew() {
   try {
     const res = await fetch('/api/sessions/new', { method: 'POST' });
     const result = await res.json();
-    if (result.ok) { switchView('chat'); updateProjectDisplay(result.cwd); }
+    if (result.ok) { switchView('chat'); updateProjectDisplay(result.cwd); await loadStateQuiet(); loadSidebarSessionsQuiet(); }
     else alert(result.message || 'Failed');
   } catch (err) { alert('Failed: ' + err.message); }
 }
@@ -253,7 +298,7 @@ async function handleProjectOpen(projectPath) {
   try {
     const res = await fetch('/api/project/open', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: projectPath }) });
     const result = await res.json();
-    if (result.ok) { updateProjectDisplay(result.cwd); switchView('chat'); }
+    if (result.ok) { updateProjectDisplay(result.cwd); switchView('chat'); await loadStateQuiet(); loadSidebarSessionsQuiet(); }
     else alert(result.message || 'Failed');
   } catch (err) { alert('Failed: ' + err.message); }
 }
@@ -262,7 +307,7 @@ async function handleProjectOpen(projectPath) {
 async function loadStateQuiet() {
   try {
     const state = await (await fetch('/api/state')).json();
-    store.set({ runtimeState: state }); statusBar.updateRuntimeState(state); updateProjectDisplay(state.cwd);
+    store.set({ runtimeState: state }); statusBar.updateRuntimeState(state); inputBar.setRuntimeState(state); updateProjectDisplay(state.cwd);
   } catch {}
 }
 async function loadStartupQuiet() {
@@ -270,6 +315,124 @@ async function loadStartupQuiet() {
 }
 async function loadHistoryQuiet() {
   try { inputBar.setHistory(await (await fetch('/api/history')).json()); } catch {}
+}
+async function loadSidebarSessionsQuiet() {
+  try {
+    const sessions = await (await fetch('/api/sessions')).json();
+    renderSidebarSessions(sessions, store.get('runtimeState')?.sessionId);
+  } catch {}
+}
+function renderSidebarSessions(sessions, currentId) {
+  renderSidebarProjectGroups(projectSessionListEl, sessions, currentId);
+  renderSidebarSessionList(conversationSessionListEl, sessions, currentId, 'conversation');
+}
+function getProjectKey(session) {
+  return session?.projectDir || 'unknown';
+}
+function getProjectName(projectDir) {
+  if (!projectDir || projectDir === 'unknown') return '未知项目';
+  return String(projectDir).split(/[/\\]/).filter(Boolean).pop() || projectDir;
+}
+function renderSidebarProjectGroups(container, sessions, currentId) {
+  if (!container) return;
+  container.textContent = '';
+  const allSessions = Array.isArray(sessions) ? sessions : [];
+  if (!allSessions.length) {
+    const empty = document.createElement('div');
+    empty.className = 'conversation-row';
+    empty.textContent = '暂无对话';
+    container.appendChild(empty);
+    return;
+  }
+
+  const groups = new Map();
+  for (const session of allSessions) {
+    const key = getProjectKey(session);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(session);
+  }
+
+  for (const [projectKey, projectSessions] of groups) {
+    const isExpanded = expandedProjectKeys.has(projectKey);
+    const projectButton = document.createElement('button');
+    projectButton.type = 'button';
+    projectButton.className = `project-row project-history-row ${isExpanded ? 'expanded' : ''}`;
+    projectButton.title = projectKey === 'unknown' ? '' : projectKey;
+    const name = document.createElement('span');
+    name.textContent = getProjectName(projectKey);
+    const count = document.createElement('span');
+    count.className = 'project-count';
+    count.textContent = String(projectSessions.length);
+    projectButton.append(icon('Folder'), name, count, icon('ChevronDown', { className: 'collapse-chevron' }));
+    projectButton.addEventListener('click', () => {
+      if (expandedProjectKeys.has(projectKey)) expandedProjectKeys.delete(projectKey);
+      else expandedProjectKeys.add(projectKey);
+      renderSidebarProjectGroups(container, allSessions, currentId);
+    });
+    container.appendChild(projectButton);
+
+    if (!isExpanded) continue;
+    const childList = document.createElement('div');
+    childList.className = 'sidebar-session-list project-child-session-list';
+    container.appendChild(childList);
+    renderProjectSessionList(childList, projectSessions, currentId, projectKey);
+  }
+}
+function renderProjectSessionList(container, sessions, currentId, projectKey) {
+  container.textContent = '';
+  const limit = projectSessionLimits.get(projectKey) || 20;
+  const visible = sessions.slice(0, limit);
+  for (const session of visible) appendSidebarSessionButton(container, session, currentId);
+  if (sessions.length > visible.length) {
+    appendLoadMoreButton(container, Math.min(20, sessions.length - visible.length), () => {
+      projectSessionLimits.set(projectKey, limit + 20);
+      renderProjectSessionList(container, sessions, currentId, projectKey);
+    });
+  }
+}
+function renderSidebarSessionList(container, sessions, currentId, kind) {
+  if (!container) return;
+  container.textContent = '';
+  const allSessions = Array.isArray(sessions) ? sessions : [];
+  const limit = sidebarSessionLimits[kind] || 20;
+  const visible = allSessions.slice(0, limit);
+  if (!visible.length) {
+    const empty = document.createElement('div');
+    empty.className = 'conversation-row';
+    empty.textContent = container === projectSessionListEl ? '暂无对话' : '暂无聊天';
+    container.appendChild(empty);
+    return;
+  }
+  for (const session of visible) appendSidebarSessionButton(container, session, currentId);
+  if (allSessions.length > visible.length) {
+    appendLoadMoreButton(container, Math.min(20, allSessions.length - visible.length), () => {
+      sidebarSessionLimits[kind] = limit + 20;
+      renderSidebarSessionList(container, allSessions, currentId, kind);
+    });
+  }
+}
+function appendSidebarSessionButton(container, session, currentId) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `sidebar-session ${session.id === currentId ? 'active' : ''}`;
+  button.title = session.preview || session.id || '';
+  const label = document.createElement('span');
+  label.className = 'sidebar-session-title';
+  label.textContent = session.preview || (session.messageCount > 0 ? `${session.messageCount} messages` : '空对话');
+  const meta = document.createElement('span');
+  meta.className = 'sidebar-session-meta';
+  meta.textContent = session.updatedAt ? new Date(session.updatedAt).toLocaleDateString() : '';
+  button.append(label, meta);
+  if (session.id !== currentId) button.addEventListener('click', () => handleSessionSwitch(session.id));
+  container.appendChild(button);
+}
+function appendLoadMoreButton(container, count, onClick) {
+  const more = document.createElement('button');
+  more.type = 'button';
+  more.className = 'sidebar-load-more';
+  more.textContent = `继续加载 ${count} 条`;
+  more.addEventListener('click', onClick);
+  container.appendChild(more);
 }
 async function loadSessionMessages() {
   try {

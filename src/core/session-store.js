@@ -109,7 +109,8 @@ function summarizeParsedSession(parsed, filePath) {
     id,
     updatedAt,
     messageCount: Array.isArray(parsed.messages) ? parsed.messages.length : 0,
-    preview
+    preview,
+    projectDir: typeof parsed.projectDir === 'string' ? parsed.projectDir : ''
   };
 }
 

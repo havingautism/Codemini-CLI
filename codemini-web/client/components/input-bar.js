@@ -1,29 +1,61 @@
 import { h } from '../utils/dom.js';
 import { t } from '../i18n/index.js';
+import { icon } from '../utils/icons.js';
 
 export function createInputBar(container, { onSubmit, onAbort, onCompletionRequest }) {
   const wrapper = h('div', { className: 'input-wrapper' });
+  const topRow = h('div', { className: 'input-top-row' });
   const textarea = h('textarea', {
     className: 'input-field',
-    placeholder: t('inputPlaceholder'),
+    placeholder: '可向 CodeMini 询问任何事。输入 @ 使用插件或提及文件',
     rows: '1',
     onKeyDown: handleKeyDown,
     onInput: handleInput
   });
+  const toolbar = h('div', { className: 'input-toolbar' });
+  const leftTools = h('div', { className: 'input-tool-group' },
+    h('button', { className: 'input-icon-button', type: 'button', title: '添加上下文' },
+      icon('Plus')
+    ),
+    h('button', { className: 'permission-button', type: 'button', title: '权限' },
+      icon('ShieldCheck', { size: 16 }),
+      h('span', { className: 'permission-label' }, '默认权限'),
+      icon('ChevronDown', { size: 12 })
+    )
+  );
+  const rightTools = h('div', { className: 'input-tool-group input-tool-group-right' },
+    h('button', { className: 'model-button', type: 'button', title: '模型' },
+      h('span', { className: 'model-loading' }, '正在加载模型'),
+      icon('ChevronDown', { size: 12 })
+    ),
+    h('button', { className: 'input-icon-button', type: 'button', title: '语音输入' },
+      icon('Mic')
+    )
+  );
+  const sendBtn = h('button', {
+    className: 'btn-send',
+    title: '发送',
+    type: 'button',
+    onClick: () => submitCurrent()
+  },
+    icon('ArrowUp')
+  );
   const abortBtn = h('button', {
     className: 'btn-abort',
     title: t('abort'),
     onClick: () => onAbort(),
     disabled: 'true'
   },
-    h('svg', { width: '16', height: '16', viewBox: '0 0 16 16', fill: 'none' },
-      h('rect', { x: '3', y: '7', width: '10', height: '2', rx: '1', fill: 'currentColor' })
-    )
+    icon('Minus', { size: 16 })
   );
   const hint = h('div', { className: 'input-hint' });
+  const modelLabel = rightTools.querySelector('.model-loading');
+  const permissionLabel = leftTools.querySelector('.permission-label');
 
-  wrapper.append(textarea, abortBtn);
-  container.className = 'input-area';
+  topRow.append(textarea);
+  toolbar.append(leftTools, rightTools, sendBtn, abortBtn);
+  wrapper.append(topRow, toolbar);
+  container.classList.add('input-bar');
   container.append(wrapper, hint);
 
   let history = [];
@@ -36,12 +68,7 @@ export function createInputBar(container, { onSubmit, onAbort, onCompletionReque
   function handleKeyDown(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      const val = textarea.value.trim();
-      if (!val) return;
-      onSubmit(val);
-      textarea.value = '';
-      textarea.style.height = 'auto';
-      historyIndex = -1;
+      submitCurrent();
       return;
     }
     if (e.key === 'ArrowUp') {
@@ -89,11 +116,21 @@ export function createInputBar(container, { onSubmit, onAbort, onCompletionReque
     }
   }
 
+  function submitCurrent() {
+    const val = textarea.value.trim();
+    if (!val || busy) return;
+    onSubmit(val);
+    textarea.value = '';
+    textarea.style.height = 'auto';
+    historyIndex = -1;
+  }
+
   function setBusy(v) {
     busy = v;
     textarea.disabled = v;
     abortBtn.disabled = !v;
-    textarea.placeholder = v ? t('inputDisabled') : t('inputPlaceholder');
+    sendBtn.disabled = v;
+    textarea.placeholder = v ? t('inputDisabled') : '可向 CodeMini 询问任何事。输入 @ 使用插件或提及文件';
   }
 
   function setHistory(h) {
@@ -115,9 +152,18 @@ export function createInputBar(container, { onSubmit, onAbort, onCompletionReque
     hint.textContent = text || '';
   }
 
+  function setRuntimeState(rs) {
+    if (!rs) return;
+    if (modelLabel) modelLabel.textContent = rs.model || '未选择模型';
+    if (permissionLabel) {
+      const mode = rs.mode || 'auto';
+      permissionLabel.textContent = mode === 'plan' ? '计划权限' : mode === 'normal' ? '普通权限' : '默认权限';
+    }
+  }
+
   function focus() {
     textarea.focus();
   }
 
-  return { setBusy, setHistory, setSuggestions, clearSuggestions, setHint, focus, get textarea() { return textarea; } };
+  return { setBusy, setHistory, setSuggestions, clearSuggestions, setHint, setRuntimeState, focus, get textarea() { return textarea; } };
 }
