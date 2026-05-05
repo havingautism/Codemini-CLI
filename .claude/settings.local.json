@@ -181,7 +181,15 @@
       "Bash(npx shadcn@latest add button --yes --overwrite)",
       "Bash(npx shadcn@latest add input textarea select dialog badge scroll-area tooltip separator progress collapsible tabs popover --yes --overwrite)",
       "Bash(npx shadcn@latest add sheet --yes --overwrite)",
-      "Bash(npx vite *)"
+      "Bash(npx vite *)",
+      "Bash(grep -oP 'data-streamdown=\\\\\\\\\"[^\"]*\\\\\\\\\"' node_modules/streamdown/dist/highlighted-body-OFNGDK62.js)",
+      "Bash(grep -oP 'streamdown[^,;}{\\)]*' node_modules/streamdown/dist/highlighted-body-OFNGDK62.js)",
+      "Bash(grep -oP 'theme[^,;}{]*' node_modules/streamdown/dist/chunk-BO2N2NFS.js)",
+      "Bash(grep -oP 'getThemes|createHighlighter|themes?[:=]|vn=|dark[^,;}{\\)]{0,50}' node_modules/streamdown/dist/chunk-BO2N2NFS.js)",
+      "Bash(curl -s http://localhost:5173/)",
+      "Bash(curl -s http://localhost:3000/)",
+      "Bash(npm ls *)",
+      "Bash(node -e \"const s = require\\('shiki/package.json'\\); console.log\\(s.version\\)\")"
     ]
   }
 }

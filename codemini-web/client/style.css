@@ -257,40 +257,47 @@
 .msg-body [data-streamdown="mermaid-block-actions"] [aria-label*="download" i] {
   display: none !important;
 }
-/* Code block: show header above with actions aligned right like table */
+/* Code block layout: header row with language + actions */
 .msg-body [data-streamdown="code-block"] {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0;
   margin: 14px 0 !important;
   padding: 0 !important;
 }
 .msg-body [data-streamdown="code-block-header"] {
-  min-height: 32px !important;
-  padding: 0 !important;
   display: flex !important;
   align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
+  justify-content: space-between;
+  min-height: 34px !important;
+  padding: 0 4px 0 0 !important;
+  color: var(--text-muted) !important;
+}
+.msg-body [data-streamdown="code-block-header"] span {
+  font-family: var(--font-mono) !important;
+  font-size: 12px !important;
+  text-transform: lowercase;
+  margin-left: 1px;
+  color: var(--text-muted);
 }
 .msg-body [data-streamdown="code-block"] > div:nth-child(2):has([data-streamdown="code-block-actions"]) {
-  position: relative !important;
-  top: auto !important;
-  right: auto !important;
-  z-index: 5 !important;
+  position: absolute !important;
+  top: 3px !important;
+  right: 0 !important;
+  z-index: 6 !important;
   height: auto !important;
   margin: 0 !important;
   pointer-events: auto !important;
 }
 .msg-body [data-streamdown="mermaid-block"] > div:has([data-streamdown="mermaid-block-actions"]) {
-  position: relative !important;
-  top: auto !important;
-  right: auto !important;
+  position: absolute !important;
+  top: 3px !important;
+  right: 0 !important;
   pointer-events: auto !important;
 }
 .msg-body [data-streamdown="code-block-body"] {
-  margin-top: 0 !important;
+  margin-top: 8px !important;
   border: 1px solid var(--border-default) !important;
   border-radius: var(--radius-lg) !important;
   background: transparent !important;
@@ -301,8 +308,8 @@
   padding: 12px 14px !important;
   background: transparent !important;
   font-family: var(--font-mono) !important;
-  font-size: 15px !important;
-  line-height: 1.55 !important;
+  font-size: 14px !important;
+  line-height: 1.6 !important;
 }
 .msg-body [data-streamdown="code-block-body"] code {
   display: block !important;
@@ -317,4 +324,11 @@
 .msg-body [data-streamdown="code-block-body"] code > span::before {
   display: none !important;
   content: none !important;
+}
+/* Shiki dual-theme syntax highlighting */
+[data-theme="light"] .msg-body [data-streamdown="code-block-body"] span[style*="--shiki-light"] {
+  color: var(--shiki-light) !important;
+}
+[data-theme="dark"] .msg-body [data-streamdown="code-block-body"] span[style*="--shiki-dark"] {
+  color: var(--shiki-dark) !important;
 }

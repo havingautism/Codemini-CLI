@@ -1,6 +1,9 @@
 import { Component } from 'react';
 import { Streamdown } from 'streamdown';
 import { cn } from '@/lib/utils';
+import { createCodePlugin } from '@/lib/shiki-plugin';
+
+const codePlugin = createCodePlugin();
 
 class StreamdownErrorBoundary extends Component {
   state = { hasError: false };
@@ -26,6 +29,7 @@ export function StreamdownRenderer({ text, streaming, className }) {
         <Streamdown
           parseIncompleteMarkdown
           showLineNumbers={false}
+          plugins={{ code: codePlugin }}
           controls={{
             tables: true,
             codeBlocks: true,
