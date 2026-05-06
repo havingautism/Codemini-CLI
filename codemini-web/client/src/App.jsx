@@ -91,8 +91,7 @@ function Shell() {
         onOpenSettings={() => actions.setConfigOpen(true)}
         onOpenSkills={() => actions.setSkillsOpen(true)}
         onOpenSouls={() => actions.setSoulsOpen(true)}
-        currentProjectDir={rs.cwd}
-        gitInfo={state.gitInfo}
+        gitBatch={state.gitBatch}
       />
 
       <div className="flex-1 flex flex-col min-w-0 bg-(--bg-secondary)">
@@ -104,7 +103,7 @@ function Shell() {
             onNew={actions.newSession}
           />
         ) : (
-          <div className="flex-1 flex flex-col min-h-0 bg-(--bg-primary) rounded-t-[18px] border border-(--border-default) border-b-0 relative overflow-hidden mt-1 mx-1">
+          <div className="flex-1 flex flex-col min-h-0 bg-(--bg-primary) rounded-[18px] border border-(--border-default) border-b-0 relative overflow-hidden my-1 mx-1">
             {/* Titlebar */}
             <div className="flex items-center justify-between h-[52px] px-5 shrink-0 border-b border-(--border-default)">
               <div className="flex items-center gap-2.5 min-w-0">

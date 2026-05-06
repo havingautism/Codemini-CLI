@@ -5,7 +5,6 @@ import {
   ChevronDown,
   ArrowUp,
   Minus,
-  Heart,
   Sparkles,
   Moon,
   Archive,
@@ -100,7 +99,6 @@ function SoulQuickSwitch() {
           className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)"
           title="灵魂切换"
         >
-          <Heart size={13} className={cn('shrink-0', active && active !== 'default' && 'text-pink-400')} style={{ fill: active && active !== 'default' ? 'currentColor' : 'none' }} />
           <span className="truncate max-w-[60px]">{active || 'default'}</span>
           <ChevronDown size={11} />
         </button>
@@ -119,12 +117,11 @@ function SoulQuickSwitch() {
               className={cn(
                 'w-full border-0 rounded-md px-2 py-1.5 text-left text-[12px] cursor-pointer flex items-center gap-2',
                 soul.active
-                  ? 'bg-(--bg-active) text-(--text-primary)'
+                  ? 'bg-(--bg-active) text-(--text-primary) font-medium'
                   : 'bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)'
               )}
               onClick={() => handleActivate(soul.name)}
             >
-              <Heart size={12} className="shrink-0" style={{ fill: soul.active ? 'currentColor' : 'none' }} />
               <span className="truncate flex-1">{soul.name}</span>
               <span className="text-[10px] text-(--text-muted) shrink-0">{soul.scope === 'builtin' ? '内置' : '自定义'}</span>
             </button>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Heart, Plus } from 'lucide-react';
+import { Plus, User } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -178,13 +178,12 @@ export function SoulPanel() {
                 : 'border-(--border-default) bg-transparent hover:bg-(--bg-hover)'
             )}
           >
-            <Heart
+            <User
               size={14}
               className={cn(
                 'shrink-0',
                 soul.active ? 'text-(--text-primary)' : 'text-(--text-muted)'
               )}
-              style={{ fill: soul.active ? 'currentColor' : 'none' }}
             />
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">

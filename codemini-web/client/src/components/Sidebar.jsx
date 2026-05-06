@@ -8,6 +8,7 @@ import {
   ChevronDown,
   Sparkles,
   Heart,
+  GitBranch,
 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
@@ -46,8 +47,7 @@ export function Sidebar({
   onOpenSettings,
   onOpenSkills,
   onOpenSouls,
-  currentProjectDir,
-  gitInfo,
+  gitBatch,
 }) {
   const [expandedProjects, setExpandedProjects] = useState(new Set());
 
@@ -72,9 +72,6 @@ export function Sidebar({
   const isDark =
     typeof document !== "undefined" &&
     document.documentElement.dataset.theme === "dark";
-  const normalizedCurrentProject = currentProjectDir
-    ? String(currentProjectDir).replace(/\\/g, "/").toLowerCase()
-    : "";
 
   return (
     <aside className="w-[260px] shrink-0 border-r border-(--border-default) flex flex-col bg-(--bg-secondary)">
@@ -141,13 +138,7 @@ export function Sidebar({
           ([projectKey, projectSessions]) => {
             const isExpanded =
               expandedProjects.has(projectKey) || projectGroups.size === 1;
-            const normalizedProjectKey = String(projectKey || "")
-              .replace(/\\/g, "/")
-              .toLowerCase();
-            const isCurrentGitProject =
-              Boolean(gitInfo?.isGit) &&
-              normalizedCurrentProject &&
-              normalizedProjectKey === normalizedCurrentProject;
+            const git = gitBatch?.[projectKey];
             return (
               <div key={projectKey}>
                 <button
@@ -159,11 +150,10 @@ export function Sidebar({
                   <span className="truncate flex-1">
                     {getProjectName(projectKey)}
                   </span>
-                  {isCurrentGitProject && (
+                  {git?.isGit && (
                     <GitHubIcon
-                      size={12}
+                      size={11}
                       className="shrink-0 text-(--text-muted)"
-                      aria-label="GitHub repository"
                     />
                   )}
                   <span className="text-[11px]">{projectSessions.length}</span>

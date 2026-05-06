@@ -95,6 +95,15 @@ export async function fetchGitInfo() {
   return res.json();
 }
 
+export async function fetchGitBatch(dirs) {
+  const res = await api('/api/git-batch', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ dirs })
+  });
+  return res.json();
+}
+
 export async function openProject(path) {
   const res = await api('/api/project/open', {
     method: 'POST',

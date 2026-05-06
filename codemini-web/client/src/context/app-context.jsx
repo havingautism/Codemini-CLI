@@ -39,7 +39,7 @@ const initialState = {
   live: false, stageLabel: '', messages: [], activeMsgId: null,
   pendingToolChanges: [], planSteps: [], approvalRequest: null,
   config: null, configOpen: false, projectOpen: false, skillsOpen: false, soulsOpen: false,
-  sessions: [], projectCwd: null, history: [], skills: [], gitInfo: null,
+  sessions: [], projectCwd: null, history: [], skills: [], gitInfo: null, gitBatch: {},
 };
 
 function collapseRenderedSkillPrompt(content) {
@@ -134,6 +134,15 @@ export function AppProvider({ children }) {
     } catch {}
   }, [update]);
 
+  const loadGitBatch = useCallback(async (sessions) => {
+    const dirs = [...new Set((sessions || []).map(s => s.projectDir).filter(Boolean))];
+    if (!dirs.length) return;
+    try {
+      const batch = await api.fetchGitBatch(dirs);
+      update({ gitBatch: batch });
+    } catch {}
+  }, [update]);
+
   const loadHistory = useCallback(async () => {
     try {
       const history = await api.fetchHistory();
@@ -144,9 +153,11 @@ export function AppProvider({ children }) {
   const loadSessions = useCallback(async () => {
     try {
       const sessions = await api.fetchSessions();
-      update({ sessions: Array.isArray(sessions) ? sessions : [] });
+      const list = Array.isArray(sessions) ? sessions : [];
+      update({ sessions: list });
+      loadGitBatch(list);
     } catch {}
-  }, [update]);
+  }, [update, loadGitBatch]);
 
   const loadSkills = useCallback(async () => {
     try {

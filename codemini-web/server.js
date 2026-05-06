@@ -339,6 +339,21 @@ async function main() {
       }
       return;
     }
+    if (req.method === 'POST' && url.pathname === '/api/git-batch') {
+      const { dirs } = await readBody(req);
+      const result = {};
+      for (const dir of (Array.isArray(dirs) ? dirs : [])) {
+        try {
+          const resolved = path.resolve(dir);
+          const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: resolved, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+          result[dir] = { isGit: true, branch };
+        } catch {
+          result[dir] = { isGit: false, branch: null };
+        }
+      }
+      jsonResponse(res, result);
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/api/project/open') {
       const { path: projectPath } = await readBody(req);
       if (!projectPath) { jsonResponse(res, { error: true, message: 'Missing path' }, 400); return; }
