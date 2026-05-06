@@ -7,6 +7,16 @@ async function api(path, opts = {}) {
   return res;
 }
 
+export async function fetchVersion() {
+  const res = await api('/api/version');
+  return res.json();
+}
+
+export async function runUpdate() {
+  const res = await api('/api/update', { method: 'POST' });
+  return res.json();
+}
+
 export async function fetchState() {
   const res = await api('/api/state');
   return res.json();

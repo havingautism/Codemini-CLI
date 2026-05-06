@@ -48,10 +48,15 @@ export function Sidebar({
   onOpenSkills,
   onOpenSouls,
   gitBatch,
+  versionInfo,
+  onUpdate,
+  updateStatus,
 }) {
   const [expandedProjects, setExpandedProjects] = useState(new Set());
 
   const allSessions = Array.isArray(sessions) ? sessions : [];
+  const currentSession = allSessions.find(s => s.id === currentSessionId);
+  const activeProjectKey = currentSession ? getProjectKey(currentSession) : null;
 
   const projectGroups = new Map();
   for (const session of allSessions) {
@@ -139,10 +144,16 @@ export function Sidebar({
             const isExpanded =
               expandedProjects.has(projectKey) || projectGroups.size === 1;
             const git = gitBatch?.[projectKey];
+            const isActive = projectKey === activeProjectKey;
             return (
               <div key={projectKey}>
                 <button
-                  className="w-full border-0 bg-transparent flex items-center gap-2 h-[28px] px-1.5 rounded-md cursor-pointer text-left text-[12px] font-medium tracking-[0.2px] text-(--text-muted) hover:text-(--text-secondary) hover:bg-(--bg-hover)"
+                  className={cn(
+                    "w-full border-0 bg-transparent flex items-center gap-2 h-[28px] px-1.5 rounded-md cursor-pointer text-left text-[12px] font-medium tracking-[0.2px] hover:bg-(--bg-hover)",
+                    isActive
+                      ? "text-(--text-primary)"
+                      : "text-(--text-muted) hover:text-(--text-secondary)"
+                  )}
                   onClick={() => toggleProject(projectKey)}
                   title={projectKey === "unknown" ? "" : projectKey}
                 >
@@ -205,23 +216,40 @@ export function Sidebar({
       </nav>
 
       {/* Footer */}
-      <div className="px-2.5 py-2 flex justify-center gap-1 border-t border-(--border-default)">
-        <button
-          className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
-          onClick={onToggleTheme}
-          title={isDark ? "浅色" : "深色"}
-          aria-label={isDark ? "切换浅色模式" : "切换深色模式"}
-        >
-          <SunMoon size={15} strokeWidth={1.8} />
-        </button>
-        <button
-          className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
-          onClick={onOpenSettings}
-          title="设置"
-          aria-label="打开设置"
-        >
-          <Settings size={15} strokeWidth={1.8} />
-        </button>
+      <div className="px-2.5 py-2 flex flex-col gap-1.5 border-t border-(--border-default)">
+        {versionInfo?.latest && versionInfo.latest !== versionInfo.current && (
+          <button
+            className="w-full border-0 bg-(--bg-tertiary) rounded-md px-2.5 py-1.5 cursor-pointer text-[11px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) flex items-center justify-center gap-1.5"
+            onClick={updateStatus === 'updating' ? undefined : onUpdate}
+            disabled={updateStatus === 'updating'}
+          >
+            {updateStatus === 'updating' ? (
+              <>更新中...</>
+            ) : updateStatus === 'done' ? (
+              <>已更新，请重启</>
+            ) : (
+              <>新版本 {versionInfo.latest} 可用，点击更新</>
+            )}
+          </button>
+        )}
+        <div className="flex items-center justify-center gap-1">
+          <button
+            className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
+            onClick={onToggleTheme}
+            title={isDark ? "浅色" : "深色"}
+            aria-label={isDark ? "切换浅色模式" : "切换深色模式"}
+          >
+            <SunMoon size={15} strokeWidth={1.8} />
+          </button>
+          <button
+            className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
+            onClick={onOpenSettings}
+            title="设置"
+            aria-label="打开设置"
+          >
+            <Settings size={15} strokeWidth={1.8} />
+          </button>
+        </div>
       </div>
     </aside>
   );

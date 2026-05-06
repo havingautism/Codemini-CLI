@@ -40,6 +40,7 @@ const initialState = {
   pendingToolChanges: [], planSteps: [], approvalRequest: null,
   config: null, configOpen: false, projectOpen: false, skillsOpen: false, soulsOpen: false,
   sessions: [], projectCwd: null, history: [], skills: [], gitInfo: null, gitBatch: {},
+  versionInfo: null, updateStatus: null,
 };
 
 function collapseRenderedSkillPrompt(content) {
@@ -454,6 +455,10 @@ export function AppProvider({ children }) {
       loadSessions();
       loadSkills();
       loadGitInfo();
+      try {
+        const vInfo = await api.fetchVersion();
+        update({ versionInfo: vInfo });
+      } catch {}
       connectSSE();
     })();
 
@@ -561,6 +566,27 @@ export function AppProvider({ children }) {
     setProjectOpen: (open) => update({ projectOpen: open }),
     setSkillsOpen: (open) => update({ skillsOpen: open }),
     setSoulsOpen: (open) => update({ soulsOpen: open }),
+
+    checkVersion: async () => {
+      try {
+        const info = await api.fetchVersion();
+        update({ versionInfo: info });
+      } catch {}
+    },
+
+    runUpdate: async () => {
+      update({ updateStatus: 'updating' });
+      try {
+        const result = await api.runUpdate();
+        if (result.ok) {
+          update({ updateStatus: 'done' });
+        } else {
+          update({ updateStatus: 'error' });
+        }
+      } catch {
+        update({ updateStatus: 'error' });
+      }
+    },
   };
 
   const value = { state, actions };

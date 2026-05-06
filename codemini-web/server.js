@@ -11,6 +11,9 @@ import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
 import { RuntimeBridge } from './lib/runtime-bridge.js';
 import { listSkillEntries } from '../src/commands/skill.js';
 import { readSkillRegistry, writeSkillRegistry, upsertSkillRegistryEntry } from '../src/core/skill-registry.js';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const pkg = require('../package.json');
 import { getSkillsDir, getBaseConfigDir } from '../src/core/paths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -249,6 +252,25 @@ async function main() {
     if (req.method === 'POST' && url.pathname === '/api/approval') {
       const { id, approved } = await readBody(req);
       jsonResponse(res, { ok: bridge.handleApproval(id, !!approved) });
+      return;
+    }
+
+    // ── Version ──
+    if (req.method === 'GET' && url.pathname === '/api/version') {
+      let latest = null;
+      try {
+        latest = execSync('npm view codemini-cli version', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+      } catch {}
+      jsonResponse(res, { current: pkg.version, latest });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/update') {
+      try {
+        const output = execSync('npm update -g codemini-cli', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 60000 });
+        jsonResponse(res, { ok: true, output: output.trim() });
+      } catch (err) {
+        jsonResponse(res, { ok: false, error: err.message }, 500);
+      }
       return;
     }
 

@@ -5,6 +5,7 @@ import {
   ChevronDown,
   ArrowUp,
   Minus,
+  Folder,
   Sparkles,
   Moon,
   Archive,
@@ -249,7 +250,7 @@ function CommandPalette({ query, onSelect, visible }) {
   );
 }
 
-export function InputBar({ onSubmit, onAbort, busy, runtimeState, history: externalHistory, onCompletionRequest }) {
+export function InputBar({ onSubmit, onAbort, busy, runtimeState, history: externalHistory, onCompletionRequest, onOpenProject, projectCwd }) {
   const [value, setValue] = useState('');
   const [history, setHistory] = useState([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -367,6 +368,11 @@ export function InputBar({ onSubmit, onAbort, busy, runtimeState, history: exter
           <div className="flex items-center gap-1">
             <button type="button" className="border-0 bg-transparent text-(--text-muted) min-w-[30px] h-[30px] rounded-lg inline-flex items-center justify-center shrink-0 cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)" title="添加上下文">
               <Plus size={16} />
+            </button>
+            <button type="button" className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)" title="切换工作区" onClick={onOpenProject}>
+              <Folder size={13} className="shrink-0" />
+              <span className="truncate max-w-[80px]">{projectCwd || '...'}</span>
+              <ChevronDown size={11} />
             </button>
             <button type="button" className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)" title="权限">
               <ShieldCheck size={14} />

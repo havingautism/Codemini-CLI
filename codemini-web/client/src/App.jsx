@@ -13,7 +13,7 @@ import { SkillDialog } from "@/components/SkillDialog.jsx";
 import { SoulDialog } from "@/components/SoulDialog.jsx";
 import { PlanProgress } from "@/components/PlanProgress.jsx";
 import { SessionPanel } from "@/components/SessionPanel.jsx";
-import { MoreHorizontal, Folder, CircleDot } from "lucide-react";
+import { MoreHorizontal, Terminal } from "lucide-react";
 import "../style.css";
 
 function GitHubIcon({ size = 14, className, ...props }) {
@@ -92,6 +92,9 @@ function Shell() {
         onOpenSkills={() => actions.setSkillsOpen(true)}
         onOpenSouls={() => actions.setSoulsOpen(true)}
         gitBatch={state.gitBatch}
+        versionInfo={state.versionInfo}
+        onUpdate={actions.runUpdate}
+        updateStatus={state.updateStatus}
       />
 
       <div className="flex-1 flex flex-col min-w-0 bg-(--bg-secondary)">
@@ -156,19 +159,18 @@ function Shell() {
                     ).json();
                   } catch {}
                 }}
+                onOpenProject={() => actions.setProjectOpen(true)}
+                projectCwd={state.projectCwd}
               />
 
               {/* Meta row */}
               <div className="flex items-center gap-3 pt-2 px-3 min-h-[28px] overflow-hidden">
-                <button
-                  className="border-0 bg-transparent text-(--text-muted) inline-flex items-center gap-1.5 max-w-[180px] h-6 px-1 rounded-md cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)"
-                  onClick={() => actions.setProjectOpen(true)}
-                >
-                  <Folder size={13} style={{ flexShrink: 0 }} />
-                  <span className="overflow-hidden text-ellipsis">
-                    {state.projectCwd || "..."}
+                {state.versionInfo?.current && (
+                  <span className="inline-flex items-center gap-1 text-[11px] text-(--text-muted) shrink-0">
+                    <Terminal size={11} />
+                    CodeMini CLI@{state.versionInfo.current}
                   </span>
-                </button>
+                )}
                 <StatusBar
                   runtimeState={state.runtimeState}
                   live={state.live}

@@ -67,78 +67,80 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
             选择
           </Button>
         </div>
-        <ScrollArea className="h-[280px] border border-(--border-default) rounded-lg">
-          {dirData && (
-            <div className="p-2">
-              {/* Breadcrumb */}
-              <div className="flex items-center gap-1 text-[12px] mb-2 px-2 flex-wrap text-(--text-secondary)">
-                {parts.map((part, i) => {
-                  const segPath =
-                    (isAbsolute ? "/" : "") + parts.slice(0, i + 1).join("/");
-                  return (
-                    <span key={i} className="flex items-center gap-1">
-                      {i > 0 && <span className="text-(--text-muted)">/</span>}
-                      <button
-                        onClick={() => {
-                          setPathInput(segPath);
-                          browseDir(segPath);
-                        }}
-                        className={cn(
-                          "hover:underline cursor-pointer border-0 bg-transparent",
-                          i === parts.length - 1
-                            ? "text-(--text-primary) font-medium"
-                            : "text-(--accent-blue)",
-                        )}
-                      >
-                        {part}
-                      </button>
-                    </span>
-                  );
-                })}
+        <div className="border border-(--border-default) rounded-lg overflow-hidden">
+          {/* Breadcrumb - fixed, not scrollable */}
+          <div className="flex items-center gap-1 text-[12px] px-3 py-2 border-b border-(--border-default) bg-(--bg-secondary) flex-wrap text-(--text-secondary)">
+            {parts.map((part, i) => {
+              const segPath =
+                (isAbsolute ? "/" : "") + parts.slice(0, i + 1).join("/");
+              return (
+                <span key={i} className="flex items-center gap-1">
+                  {i > 0 && <span className="text-(--text-muted)">/</span>}
+                  <button
+                    onClick={() => {
+                      setPathInput(segPath);
+                      browseDir(segPath);
+                    }}
+                    className={cn(
+                      "hover:underline cursor-pointer border-0 bg-transparent",
+                      i === parts.length - 1
+                        ? "text-(--text-primary) font-medium"
+                        : "text-(--accent-blue)",
+                    )}
+                  >
+                    {part}
+                  </button>
+                </span>
+              );
+            })}
+          </div>
+          {/* Directory list - scrollable */}
+          <ScrollArea className="h-[240px]">
+            {dirData && (
+              <div className="p-2">
+                {/* Parent */}
+                {parts.length > 0 && (
+                  <button
+                    className="w-full text-left px-2 py-1.5 text-[13px] hover:bg-(--bg-hover) rounded cursor-pointer flex items-center gap-2 border-0 bg-transparent text-(--text-secondary)"
+                    onClick={() => {
+                      const parentPath =
+                        (isAbsolute ? "/" : "") + parts.slice(0, -1).join("/");
+                      setPathInput(parentPath);
+                      browseDir(parentPath);
+                    }}
+                  >
+                    <span>..</span>
+                  </button>
+                )}
+
+                {/* Directories */}
+                {(dirData.dirs || []).map((d) => (
+                  <button
+                    key={d.path}
+                    className="w-full text-left px-2 py-1.5 text-[13px] hover:bg-(--bg-hover) rounded cursor-pointer flex items-center gap-2 border-0 bg-transparent text-(--text-secondary)"
+                    onClick={() => {
+                      setPathInput(d.path);
+                      browseDir(d.path);
+                    }}
+                  >
+                    <span className="flex-1 truncate">{d.name}</span>
+                    {d.isGit && (
+                      <span className="text-[11px] text-(--text-muted) bg-(--bg-tertiary) px-1.5 py-0.5 rounded">
+                        git
+                      </span>
+                    )}
+                  </button>
+                ))}
+
+                {!(dirData.dirs || []).length && !dirData.error && (
+                  <div className="text-center text-[12px] text-(--text-muted) py-4">
+                    无子目录
+                  </div>
+                )}
               </div>
-
-              {/* Parent */}
-              {parts.length > 0 && (
-                <button
-                  className="w-full text-left px-2 py-1.5 text-[13px] hover:bg-(--bg-hover) rounded cursor-pointer flex items-center gap-2 border-0 bg-transparent text-(--text-secondary)"
-                  onClick={() => {
-                    const parentPath =
-                      (isAbsolute ? "/" : "") + parts.slice(0, -1).join("/");
-                    setPathInput(parentPath);
-                    browseDir(parentPath);
-                  }}
-                >
-                  <span>..</span>
-                </button>
-              )}
-
-              {/* Directories */}
-              {(dirData.dirs || []).map((d) => (
-                <button
-                  key={d.path}
-                  className="w-full text-left px-2 py-1.5 text-[13px] hover:bg-(--bg-hover) rounded cursor-pointer flex items-center gap-2 border-0 bg-transparent text-(--text-secondary)"
-                  onClick={() => {
-                    setPathInput(d.path);
-                    browseDir(d.path);
-                  }}
-                >
-                  <span className="flex-1 truncate">{d.name}</span>
-                  {d.isGit && (
-                    <span className="text-[11px] text-(--text-muted) bg-(--bg-tertiary) px-1.5 py-0.5 rounded">
-                      git
-                    </span>
-                  )}
-                </button>
-              ))}
-
-              {!(dirData.dirs || []).length && !dirData.error && (
-                <div className="text-center text-[12px] text-(--text-muted) py-4">
-                  无子目录
-                </div>
-              )}
-            </div>
-          )}
-        </ScrollArea>
+            )}
+          </ScrollArea>
+        </div>
       </DialogContent>
     </Dialog>
   );
