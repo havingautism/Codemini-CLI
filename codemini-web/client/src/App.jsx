@@ -11,6 +11,7 @@ import { ConfigDialog } from "@/components/ConfigDialog.jsx";
 import { ProjectSelector } from "@/components/ProjectSelector.jsx";
 import { SkillDialog } from "@/components/SkillDialog.jsx";
 import { SoulDialog } from "@/components/SoulDialog.jsx";
+import { AboutDialog } from "@/components/AboutDialog.jsx";
 import { PlanProgress } from "@/components/PlanProgress.jsx";
 import { SessionPanel } from "@/components/SessionPanel.jsx";
 import { MoreHorizontal, Terminal } from "lucide-react";
@@ -91,6 +92,7 @@ function Shell() {
         onOpenSettings={() => actions.setConfigOpen(true)}
         onOpenSkills={() => actions.setSkillsOpen(true)}
         onOpenSouls={() => actions.setSoulsOpen(true)}
+        onOpenAbout={() => actions.setAboutOpen(true)}
         gitBatch={state.gitBatch}
         versionInfo={state.versionInfo}
         onUpdate={actions.runUpdate}
@@ -199,6 +201,12 @@ function Shell() {
       />
 
       <SoulDialog open={state.soulsOpen} onOpenChange={actions.setSoulsOpen} />
+
+      <AboutDialog
+        open={state.aboutOpen}
+        onOpenChange={actions.setAboutOpen}
+        version={state.versionInfo?.current}
+      />
 
       <ProjectSelector
         open={state.projectOpen}

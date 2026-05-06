@@ -38,7 +38,7 @@ const initialState = {
   stage: 'idle', busy: false, currentView: 'chat', runtimeState: null,
   live: false, stageLabel: '', messages: [], activeMsgId: null,
   pendingToolChanges: [], planSteps: [], approvalRequest: null,
-  config: null, configOpen: false, projectOpen: false, skillsOpen: false, soulsOpen: false,
+  config: null, configOpen: false, projectOpen: false, skillsOpen: false, soulsOpen: false, aboutOpen: false,
   sessions: [], projectCwd: null, history: [], skills: [], gitInfo: null, gitBatch: {},
   versionInfo: null, updateStatus: null,
 };
@@ -566,6 +566,7 @@ export function AppProvider({ children }) {
     setProjectOpen: (open) => update({ projectOpen: open }),
     setSkillsOpen: (open) => update({ skillsOpen: open }),
     setSoulsOpen: (open) => update({ soulsOpen: open }),
+    setAboutOpen: (open) => update({ aboutOpen: open }),
 
     checkVersion: async () => {
       try {

@@ -9,6 +9,7 @@ import {
   Sparkles,
   Heart,
   GitBranch,
+  Info,
 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
@@ -47,6 +48,7 @@ export function Sidebar({
   onOpenSettings,
   onOpenSkills,
   onOpenSouls,
+  onOpenAbout,
   gitBatch,
   versionInfo,
   onUpdate,
@@ -233,6 +235,14 @@ export function Sidebar({
           </button>
         )}
         <div className="flex items-center justify-center gap-1">
+          <button
+            className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
+            onClick={onOpenAbout}
+            title="关于"
+            aria-label="关于"
+          >
+            <Info size={15} strokeWidth={1.8} />
+          </button>
           <button
             className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
             onClick={onToggleTheme}
