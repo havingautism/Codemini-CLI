@@ -55,7 +55,7 @@ function toOpenAIMessages(sessionMessages) {
     }
     mapped.push({
       role: msg.role,
-      content: msg.content,
+      content: typeof msg.model_content === 'string' && msg.model_content ? msg.model_content : msg.content,
       ...(typeof msg.reasoning_content === 'string' && msg.reasoning_content ? { reasoning_content: msg.reasoning_content } : {}),
       ...(Array.isArray(msg.reasoning_details) && msg.reasoning_details.length > 0 ? { reasoning_details: msg.reasoning_details } : {}),
       ...(msg.tool_calls ? { tool_calls: msg.tool_calls } : {})
@@ -2399,6 +2399,7 @@ async function expandFileMentions(rawText, workspaceRoot = process.cwd()) {
 
 async function askModel({
   text,
+  modelText,
   session,
   config,
   model,
@@ -2413,10 +2414,11 @@ async function askModel({
   maxSteps: maxStepsOverride,
   skipAnalysisNudge = false
 }) {
+  const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
   const maxContextTokens = effectiveMaxContextTokens(config);
   const triggerPct = Number(config.context?.preflight_trigger_pct || 92);
   const hardPct = Number(config.context?.hard_limit_pct || 98);
-  const preflightTokens = estimatePromptTokensForRequest(session.messages, text);
+  const preflightTokens = estimatePromptTokensForRequest(session.messages, modelInputText);
   const preflightPct = (preflightTokens / maxContextTokens) * 100;
 
   if (preflightPct >= triggerPct) {
@@ -2484,7 +2486,9 @@ async function askModel({
 
   if (text) {
     const shouldGenerateTitle = !session.messages.some((msg) => msg?.role === 'user');
-    session.messages.push(stampedMessage('user', text));
+    const modelExtra =
+      typeof modelText === 'string' && modelText && modelText !== text ? { model_content: modelText } : {};
+    session.messages.push(stampedMessage('user', text, modelExtra));
     session.title = shouldGenerateTitle
       ? await generateSessionTitle({ userText: text, config, signal })
       : deriveSessionTitle(session.messages);
@@ -2493,7 +2497,7 @@ async function askModel({
     if (persistSession) await saveSession(session);
   }
 
-  const projectContextSnippet = await buildProjectContextSnippet(process.cwd(), text).catch(() => '');
+  const projectContextSnippet = await buildProjectContextSnippet(process.cwd(), modelInputText).catch(() => '');
   const projectContextGuidance =
     'Use this project context as lightweight guidance and verify important details with fresh reads when needed.';
   const effectiveSystemPrompt = projectContextSnippet
@@ -2553,6 +2557,22 @@ async function askModel({
   }
 
   let activeAssistantIndex = -1;
+  const pendingToolMeta = new Map();
+  const attachToolMetaToSessionCall = (toolId, meta = {}) => {
+    if (!toolId) return false;
+    for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+      const msg = session.messages[i];
+      if (msg?.role !== 'assistant' || !Array.isArray(msg.tool_calls)) continue;
+      const call = msg.tool_calls.find((tc) => String(tc?.id || '') === String(toolId));
+      if (!call) continue;
+      if (Number.isFinite(Number(meta.durationMs))) call.durationMs = Number(meta.durationMs);
+      if (typeof meta.summary === 'string' && meta.summary.trim()) call.summary = meta.summary.trim();
+      if (typeof meta.status === 'string' && meta.status.trim()) call.status = meta.status.trim();
+      msg.at = new Date().toISOString();
+      return true;
+    }
+    return false;
+  };
   const wrappedAgentEvent = (event) => {
     // Always accumulate messages in session (for token tracking), only save when persisting
     if (event?.type === 'assistant:start') {
@@ -2583,19 +2603,42 @@ async function askModel({
         if (persistSession) scheduleSessionSave();
       }
       activeAssistantIndex = -1;
+    } else if (event?.type === 'tool:end' || event?.type === 'tool:error' || event?.type === 'tool:blocked') {
+      const toolId = String(event.id || '');
+      if (toolId) {
+        const meta = {
+          durationMs: Number.isFinite(Number(event.durationMs)) ? Number(event.durationMs) : undefined,
+          summary: typeof event.summary === 'string' ? event.summary : '',
+          status:
+            event.type === 'tool:error'
+              ? 'error'
+              : event.type === 'tool:blocked'
+                ? 'blocked'
+                : 'done'
+        };
+        pendingToolMeta.set(toolId, meta);
+        if (attachToolMetaToSessionCall(toolId, meta) && persistSession) scheduleSessionSave();
+      }
     } else if (event?.type === 'tool:result') {
+      const toolId = String(event.id || '');
+      const meta = pendingToolMeta.get(toolId) || {};
       session.messages.push(
         stampedMessage('tool', event.content || '', {
-          tool_call_id: event.id || ''
+          tool_call_id: toolId,
+          ...(Number.isFinite(Number(meta.durationMs)) ? { tool_duration_ms: Number(meta.durationMs) } : {}),
+          ...(meta.summary ? { tool_summary: meta.summary } : {}),
+          ...(meta.status ? { tool_status: meta.status } : {})
         })
       );
+      pendingToolMeta.delete(toolId);
       if (persistSession) scheduleSessionSave();
     }
 
     if (onAgentEvent) onAgentEvent(event);
   };
 
-  const loopUserPrompt = persistSession ? '' : text;
+  const loopUserPrompt = persistSession ? '' : modelInputText;
+  const expectedModelText = typeof modelText === 'string' && modelText && modelText !== text ? modelText : '';
   const loopResult = await runAgentLoop({
     systemPrompt: effectiveSystemPrompt,
     userPrompt: loopUserPrompt,
@@ -2656,6 +2699,16 @@ async function askModel({
     session.messages = loopResult.messages
       .filter((m) => m.role !== 'system')
       .map((m) => ({ ...m, at: new Date().toISOString() }));
+    if (expectedModelText) {
+      for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+        const message = session.messages[i];
+        if (message?.role === 'user' && message.content === expectedModelText) {
+          message.content = text;
+          message.model_content = expectedModelText;
+          break;
+        }
+      }
+    }
     if (shouldReplaceSessionTitle(session.title)) {
       session.title = deriveSessionTitle(session.messages);
     }
@@ -5162,7 +5215,8 @@ export async function createChatRuntime({
       let result;
       try {
         result = await askModel({
-          text: rendered,
+          text: custom.metadata.type === 'skill' ? line : rendered,
+          modelText: custom.metadata.type === 'skill' ? rendered : undefined,
           session: currentSession,
           config,
           model,

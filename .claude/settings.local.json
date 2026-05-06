@@ -189,7 +189,8 @@
       "Bash(curl -s http://localhost:5173/)",
       "Bash(curl -s http://localhost:3000/)",
       "Bash(npm ls *)",
-      "Bash(node -e \"const s = require\\('shiki/package.json'\\); console.log\\(s.version\\)\")"
+      "Bash(node -e \"const s = require\\('shiki/package.json'\\); console.log\\(s.version\\)\")",
+      "Bash(node -e \"import\\('./server.js'\\).catch\\(e => { console.error\\(e.message\\); process.exit\\(1\\); }\\)\")"
     ]
   }
 }

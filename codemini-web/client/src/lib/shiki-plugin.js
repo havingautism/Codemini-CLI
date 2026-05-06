@@ -17,6 +17,7 @@ function getHighlighter() {
 
 const loadedLangs = new Set();
 async function ensureLang(lang) {
+  if (!lang) return;
   if (loadedLangs.has(lang)) return;
   const h = await getHighlighter();
   try {
@@ -30,8 +31,7 @@ async function ensureLang(lang) {
 }
 
 export function createCodePlugin() {
-  let ready = false;
-  getHighlighter().then(() => { ready = true; });
+  getHighlighter().catch(() => {});
 
   return {
     name: "shiki",
@@ -56,10 +56,20 @@ export function createCodePlugin() {
 
       // Language not loaded yet — load async then callback
       ensureLang(language).then(() => {
-        if (callback) callback(doHighlight(code, language));
+        if (callback) callback(doHighlight(code, language) || plainHighlight(code));
       });
-      return null;
+      return plainHighlight(code);
     },
+  };
+}
+
+function plainHighlight(code) {
+  const lines = String(code ?? "").split(/\r?\n/);
+  return {
+    fg: undefined,
+    bg: undefined,
+    rootStyle: undefined,
+    tokens: lines.map((line) => [{ content: line }]),
   };
 }
 

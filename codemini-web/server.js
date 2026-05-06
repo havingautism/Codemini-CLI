@@ -9,6 +9,9 @@ import { createChatRuntime } from '../src/core/chat-runtime.js';
 import { createSession, loadSession, listSessions, resolveSession } from '../src/core/session-store.js';
 import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
 import { RuntimeBridge } from './lib/runtime-bridge.js';
+import { listSkillEntries } from '../src/commands/skill.js';
+import { readSkillRegistry, writeSkillRegistry, upsertSkillRegistryEntry } from '../src/core/skill-registry.js';
+import { getSkillsDir, getBaseConfigDir } from '../src/core/paths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_SOURCE_DIR = path.join(__dirname, 'client');
@@ -326,6 +329,16 @@ async function main() {
       jsonResponse(res, { cwd: currentProjectDir });
       return;
     }
+    if (req.method === 'GET' && url.pathname === '/api/git') {
+      try {
+        const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+        const dirty = execSync('git status --porcelain', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim().length > 0;
+        jsonResponse(res, { isGit: true, branch, dirty });
+      } catch {
+        jsonResponse(res, { isGit: false, branch: null, dirty: false });
+      }
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/api/project/open') {
       const { path: projectPath } = await readBody(req);
       if (!projectPath) { jsonResponse(res, { error: true, message: 'Missing path' }, 400); return; }
@@ -392,6 +405,195 @@ async function main() {
       const key = url.pathname.slice('/api/config/get/'.length);
       const value = await getConfigValue(key);
       jsonResponse(res, { key, value });
+      return;
+    }
+
+    // ── Skills management ──
+    if (req.method === 'GET' && url.pathname === '/api/skills') {
+      try {
+        const skills = await listSkillEntries({ scope: 'all' });
+        jsonResponse(res, skills);
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/api/skills/') && url.pathname.endsWith('/content')) {
+      const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length, -'/content'.length));
+      try {
+        const entries = await listSkillEntries({ scope: 'all' });
+        const skill = entries.find(s => s.name === name);
+        if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
+        const content = await fs.readFile(skill.path, 'utf8');
+        jsonResponse(res, { name: skill.name, content, scope: skill.scope });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/skills/create') {
+      const { name, description, content } = await readBody(req);
+      if (!name || !content) { jsonResponse(res, { error: true, message: 'Missing name or content' }, 400); return; }
+      try {
+        const skillDir = path.join(getSkillsDir(), name);
+        await fs.mkdir(skillDir, { recursive: true });
+        const skillFile = path.join(skillDir, 'SKILL.md');
+        await fs.writeFile(skillFile, content, 'utf8');
+        const { createHash } = await import('node:crypto');
+        const hash = createHash('sha256').update(content).digest('hex');
+        await upsertSkillRegistryEntry(undefined, {
+          name, version: '0.1.0', description: description || '', enabled: true,
+          source: 'web-ui', entryFile: 'SKILL.md', sha256: hash, installedAt: new Date().toISOString()
+        });
+        const config = await loadConfig();
+        config.skills = config.skills || {};
+        config.skills.enabled = config.skills.enabled || {};
+        config.skills.enabled[name] = true;
+        await saveConfig(config);
+        jsonResponse(res, { ok: true, name });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'PUT' && url.pathname.startsWith('/api/skills/') && url.pathname.endsWith('/content')) {
+      const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length, -'/content'.length));
+      const { content } = await readBody(req);
+      if (!content) { jsonResponse(res, { error: true, message: 'Missing content' }, 400); return; }
+      try {
+        const entries = await listSkillEntries({ scope: 'all' });
+        const skill = entries.find(s => s.name === name);
+        if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
+        if (skill.scope === 'builtin') { jsonResponse(res, { error: true, message: 'Cannot edit builtin skill' }, 403); return; }
+        await fs.writeFile(skill.path, content, 'utf8');
+        jsonResponse(res, { ok: true });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'DELETE' && url.pathname.startsWith('/api/skills/')) {
+      const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length));
+      try {
+        const entries = await listSkillEntries({ scope: 'all' });
+        const skill = entries.find(s => s.name === name);
+        if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
+        if (skill.scope === 'builtin') { jsonResponse(res, { error: true, message: 'Cannot delete builtin skill' }, 403); return; }
+        const dir = path.dirname(skill.path);
+        await fs.rm(dir, { recursive: true, force: true });
+        const registry = await readSkillRegistry();
+        registry.skills = (registry.skills || []).filter(s => s.name !== name);
+        await writeSkillRegistry(undefined, registry);
+        const config = await loadConfig();
+        if (config.skills?.enabled) delete config.skills.enabled[name];
+        await saveConfig(config);
+        jsonResponse(res, { ok: true });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname.startsWith('/api/skills/') && url.pathname.endsWith('/toggle')) {
+      const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length, -'/toggle'.length));
+      const { enabled } = await readBody(req);
+      try {
+        const entries = await listSkillEntries({ scope: 'all' });
+        const skill = entries.find(s => s.name === name);
+        if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
+        if (skill.scope === 'builtin') { jsonResponse(res, { error: true, message: 'Cannot toggle builtin skill' }, 403); return; }
+        const config = await loadConfig();
+        config.skills = config.skills || {};
+        config.skills.enabled = config.skills.enabled || {};
+        config.skills.enabled[name] = !!enabled;
+        await saveConfig(config);
+        const registry = await readSkillRegistry();
+        const idx = registry.skills.findIndex(s => s.name === name);
+        if (idx !== -1) { registry.skills[idx].enabled = !!enabled; await writeSkillRegistry(undefined, registry); }
+        jsonResponse(res, { ok: true });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+
+    // ── Souls management ──
+    const _BUNDLED_SOULS_DIR = path.resolve(__dirname, '..', 'souls');
+    const _CUSTOM_SOULS_DIR = path.join(getBaseConfigDir(), 'souls');
+
+    if (req.method === 'GET' && url.pathname === '/api/souls') {
+      try {
+        const config = await loadConfig();
+        const activePreset = config?.soul?.preset || 'default';
+        const souls = [];
+        const bundledEntries = await fs.readdir(_BUNDLED_SOULS_DIR);
+        for (const file of bundledEntries) {
+          if (!file.endsWith('.md')) continue;
+          const sname = file.slice(0, -3);
+          const scontent = await fs.readFile(path.join(_BUNDLED_SOULS_DIR, file), 'utf8');
+          souls.push({ name: sname, scope: 'builtin', preview: scontent.split('\n').slice(0, 3).join('\n').slice(0, 120), active: sname === activePreset });
+        }
+        try {
+          const customEntries = await fs.readdir(_CUSTOM_SOULS_DIR);
+          for (const file of customEntries) {
+            if (!file.endsWith('.md')) continue;
+            const sname = file.slice(0, -3);
+            const scontent = await fs.readFile(path.join(_CUSTOM_SOULS_DIR, file), 'utf8');
+            souls.push({ name: sname, scope: 'custom', preview: scontent.split('\n').slice(0, 3).join('\n').slice(0, 120), active: sname === activePreset });
+          }
+        } catch {}
+        jsonResponse(res, souls);
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/api/souls/') && url.pathname.endsWith('/content')) {
+      const sname = decodeURIComponent(url.pathname.slice('/api/souls/'.length, -'/content'.length));
+      try {
+        const customPath = path.join(_CUSTOM_SOULS_DIR, `${sname}.md`);
+        try { const scontent = await fs.readFile(customPath, 'utf8'); jsonResponse(res, { name: sname, content: scontent, scope: 'custom' }); return; } catch {}
+        const bundledPath = path.join(_BUNDLED_SOULS_DIR, `${sname}.md`);
+        const scontent = await fs.readFile(bundledPath, 'utf8');
+        jsonResponse(res, { name: sname, content: scontent, scope: 'builtin' });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/souls/create') {
+      const { name: rawName, content: soulContent } = await readBody(req);
+      if (!rawName || !soulContent) { jsonResponse(res, { error: true, message: 'Missing name or content' }, 400); return; }
+      try {
+        const safeName = String(rawName).replace(/[^a-zA-Z0-9_-]/g, '');
+        if (!safeName) { jsonResponse(res, { error: true, message: 'Invalid name' }, 400); return; }
+        const bundledCheck = path.join(_BUNDLED_SOULS_DIR, `${safeName}.md`);
+        try { await fs.access(bundledCheck); jsonResponse(res, { error: true, message: 'Name conflicts with builtin soul' }, 409); return; } catch {}
+        await fs.mkdir(_CUSTOM_SOULS_DIR, { recursive: true });
+        await fs.writeFile(path.join(_CUSTOM_SOULS_DIR, `${safeName}.md`), soulContent, 'utf8');
+        jsonResponse(res, { ok: true, name: safeName });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'PUT' && url.pathname.startsWith('/api/souls/') && url.pathname.endsWith('/content')) {
+      const sname = decodeURIComponent(url.pathname.slice('/api/souls/'.length, -'/content'.length));
+      const { content: soulContent } = await readBody(req);
+      if (!soulContent) { jsonResponse(res, { error: true, message: 'Missing content' }, 400); return; }
+      try {
+        const customPath = path.join(_CUSTOM_SOULS_DIR, `${sname}.md`);
+        try { await fs.access(customPath); } catch { jsonResponse(res, { error: true, message: 'Custom soul not found' }, 404); return; }
+        await fs.writeFile(customPath, soulContent, 'utf8');
+        jsonResponse(res, { ok: true });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'DELETE' && url.pathname.startsWith('/api/souls/')) {
+      const sname = decodeURIComponent(url.pathname.slice('/api/souls/'.length));
+      try {
+        const bundledPath = path.join(_BUNDLED_SOULS_DIR, `${sname}.md`);
+        try { await fs.access(bundledPath); jsonResponse(res, { error: true, message: 'Cannot delete builtin soul' }, 403); return; } catch {}
+        const customPath = path.join(_CUSTOM_SOULS_DIR, `${sname}.md`);
+        await fs.unlink(customPath);
+        const config = await loadConfig();
+        if (config.soul?.preset === sname) { config.soul.preset = 'default'; await saveConfig(config); }
+        jsonResponse(res, { ok: true });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/souls/activate') {
+      const { name: sname } = await readBody(req);
+      if (!sname) { jsonResponse(res, { error: true, message: 'Missing name' }, 400); return; }
+      try {
+        const config = await loadConfig();
+        config.soul = config.soul || {};
+        config.soul.preset = sname;
+        config.soul.custom_path = '';
+        await saveConfig(config);
+        jsonResponse(res, { ok: true });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
     }
 

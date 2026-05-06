@@ -70,6 +70,11 @@ test('session-store derives titles and preserves tool metadata', { concurrency: 
       messages: [
         { role: 'user', content: '请总结这个项目的 Web UI' },
         {
+          role: 'user',
+          content: '/brainstorm 是否要拆分登录重试逻辑',
+          model_content: '[Executing skill: /brainstorm]\n\nCurrent question:\n是否要拆分登录重试逻辑'
+        },
+        {
           role: 'assistant',
           content: '',
           tool_calls: [
@@ -98,9 +103,11 @@ test('session-store derives titles and preserves tool metadata', { concurrency: 
     assert.equal(loaded.title, '请总结这个项目的 Web UI');
     assert.equal(loaded.model, 'main-model');
     assert.equal(loaded.mode, 'auto');
-    assert.equal(loaded.messages[1].tool_calls[0].durationMs, 42);
-    assert.equal(loaded.messages[1].tool_calls[0].summary, 'content from README.md lines 1-20');
-    assert.equal(loaded.messages[2].tool_duration_ms, 42);
+    assert.equal(loaded.messages[1].content, '/brainstorm 是否要拆分登录重试逻辑');
+    assert.match(loaded.messages[1].model_content, /\[Executing skill: \/brainstorm\]/);
+    assert.equal(loaded.messages[2].tool_calls[0].durationMs, 42);
+    assert.equal(loaded.messages[2].tool_calls[0].summary, 'content from README.md lines 1-20');
+    assert.equal(loaded.messages[3].tool_duration_ms, 42);
 
     const listed = await listSessions(10);
     const item = listed.find((entry) => entry.id === id);

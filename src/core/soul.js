@@ -7,6 +7,12 @@ import { buildSystemPromptWithReplyLanguage } from './reply-language.js';
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const BUNDLED_SOULS_DIR = path.resolve(MODULE_DIR, '..', '..', 'souls');
 
+function getCustomSoulsDir() {
+  return path.join(getBaseConfigDir(), 'souls');
+}
+
+export { BUNDLED_SOULS_DIR, getCustomSoulsDir };
+
 function normalizeSoulName(value) {
   const name = String(value || '').trim().toLowerCase();
   return name || 'default';
@@ -32,6 +38,13 @@ export async function loadSoulPrompt(config = {}) {
   }
 
   const preset = normalizeSoulName(config?.soul?.preset);
+  // Check custom souls dir first, then bundled
+  const customPresetPath = path.join(getCustomSoulsDir(), `${preset}.md`);
+  try {
+    const content = await fs.readFile(customPresetPath, 'utf8');
+    const text = String(content || '').trim();
+    if (text) return `[Soul preset: ${preset}]\n${text}`;
+  } catch {}
   const presetPath = path.join(BUNDLED_SOULS_DIR, `${preset}.md`);
   try {
     const content = await fs.readFile(presetPath, 'utf8');

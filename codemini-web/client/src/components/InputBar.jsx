@@ -1,13 +1,264 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Plus, ShieldCheck, ChevronDown, ArrowUp, Minus } from 'lucide-react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import {
+  Plus,
+  ShieldCheck,
+  ChevronDown,
+  ArrowUp,
+  Minus,
+  Heart,
+  Sparkles,
+  Moon,
+  Archive,
+  Database,
+  Inbox,
+  Camera,
+  RotateCcw,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { t } from '../../i18n/index.js';
+import * as api from '@/hooks/use-api';
+import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
+
+const IMPLICIT_SKILLS = new Set(['superpowers-lite']);
+
+const ACTION_COMMANDS = [
+  {
+    name: 'dream',
+    insert: '/dream ',
+    icon: Moon,
+    description: 'Run memory consolidation now. Auto dream still runs in the background when needed.',
+  },
+  {
+    name: 'compact',
+    insert: '/compact ',
+    icon: Archive,
+    description: 'Compress the current conversation context while keeping the useful working summary.',
+  },
+  {
+    name: 'memory',
+    insert: '/memory ',
+    icon: Database,
+    description: 'Inspect or manage remembered project and user context.',
+  },
+  {
+    name: 'capture',
+    insert: '/capture ',
+    icon: Camera,
+    description: 'Capture an explicit note into the memory inbox for later consolidation.',
+  },
+  {
+    name: 'inbox',
+    insert: '/inbox ',
+    icon: Inbox,
+    description: 'Review pending memory inbox entries.',
+  },
+  {
+    name: 'reflect',
+    insert: '/reflect ',
+    icon: Sparkles,
+    description: 'Draft or update a reusable skill from the current workflow.',
+  },
+  {
+    name: 'retry',
+    insert: '/retry ',
+    icon: RotateCcw,
+    description: 'Retry the last assistant turn.',
+  },
+];
+
+const ACTION_COMMAND_NAMES = new Set(ACTION_COMMANDS.map((command) => command.name));
+
+function SoulQuickSwitch() {
+  const [souls, setSouls] = useState([]);
+  const [active, setActive] = useState('');
+  const [open, setOpen] = useState(false);
+
+  const loadSouls = useCallback(async () => {
+    try {
+      const list = await api.fetchSouls();
+      const arr = Array.isArray(list) ? list : [];
+      setSouls(arr);
+      const current = arr.find(s => s.active);
+      setActive(current ? current.name : '');
+    } catch {}
+  }, []);
+
+  useEffect(() => { loadSouls(); }, [loadSouls]);
+
+  const handleActivate = async (name) => {
+    await api.activateSoul(name);
+    setActive(name);
+    setOpen(false);
+    loadSouls();
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)"
+          title="灵魂切换"
+        >
+          <Heart size={13} className={cn('shrink-0', active && active !== 'default' && 'text-pink-400')} style={{ fill: active && active !== 'default' ? 'currentColor' : 'none' }} />
+          <span className="truncate max-w-[60px]">{active || 'default'}</span>
+          <ChevronDown size={11} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        side="top"
+        align="start"
+        sideOffset={6}
+        className="w-52 p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-lg"
+      >
+        <div className="text-[11px] text-(--text-muted) px-2 py-1.5 font-medium">切换灵魂</div>
+        <div className="flex flex-col gap-0.5">
+          {souls.map(soul => (
+            <button
+              key={`${soul.scope}-${soul.name}`}
+              className={cn(
+                'w-full border-0 rounded-md px-2 py-1.5 text-left text-[12px] cursor-pointer flex items-center gap-2',
+                soul.active
+                  ? 'bg-(--bg-active) text-(--text-primary)'
+                  : 'bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)'
+              )}
+              onClick={() => handleActivate(soul.name)}
+            >
+              <Heart size={12} className="shrink-0" style={{ fill: soul.active ? 'currentColor' : 'none' }} />
+              <span className="truncate flex-1">{soul.name}</span>
+              <span className="text-[10px] text-(--text-muted) shrink-0">{soul.scope === 'builtin' ? '内置' : '自定义'}</span>
+            </button>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function CommandPalette({ query, onSelect, visible }) {
+  const [skills, setSkills] = useState([]);
+  const [hoveredItem, setHoveredItem] = useState(null);
+
+  useEffect(() => {
+    if (visible) {
+      api.fetchSkills().then(list => {
+        setSkills(Array.isArray(list)
+          ? list.filter(s =>
+              s.enabled !== false &&
+              !IMPLICIT_SKILLS.has(s.name) &&
+              !ACTION_COMMAND_NAMES.has(s.name)
+            )
+          : []);
+      }).catch(() => {});
+    }
+  }, [visible]);
+
+  const needle = query.trim().toLowerCase();
+  const actionItems = useMemo(() => (
+    ACTION_COMMANDS
+      .filter(command => !needle || command.name.includes(needle) || command.description.toLowerCase().includes(needle))
+      .map(command => ({ ...command, kind: 'action', key: `action-${command.name}` }))
+  ), [needle]);
+
+  const skillItems = useMemo(() => (
+    skills
+      .filter(skill => !needle || skill.name.toLowerCase().includes(needle) || (skill.description || '').toLowerCase().includes(needle))
+      .map(skill => ({
+        name: skill.name,
+        insert: `/${skill.name} `,
+        icon: Sparkles,
+        description: skill.description || 'Manual skill',
+        kind: 'skill',
+        key: `skill-${skill.name}`,
+      }))
+  ), [skills, needle]);
+
+  if (!visible) return null;
+  const hasItems = actionItems.length > 0 || skillItems.length > 0;
+
+  const renderSection = (title, items) => {
+    if (!items.length) return null;
+    return (
+      <div className="py-1">
+        <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.45px] text-(--text-muted)">
+          {title}
+        </div>
+        <div className="flex flex-col gap-0.5">
+          {items.map(item => {
+            const Icon = item.icon;
+            const isHovered = hoveredItem === item.key;
+            return (
+              <button
+                key={item.key}
+                className={cn(
+                  "w-full border-0 rounded-md px-2.5 py-2 text-left cursor-pointer grid grid-cols-[22px_minmax(96px,180px)_minmax(0,1fr)_auto] items-start gap-2 text-[12px] transition-colors",
+                  isHovered
+                    ? 'bg-(--bg-hover) text-(--text-primary)'
+                    : 'bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)'
+                )}
+                onClick={() => onSelect(item.insert)}
+                onMouseEnter={() => setHoveredItem(item.key)}
+                onMouseLeave={() => setHoveredItem(null)}
+              >
+                <span
+                  className={cn(
+                    'mt-0.5 inline-flex size-5 items-center justify-center rounded-md transition-colors',
+                    item.kind === 'action'
+                      ? 'bg-(--accent-cyan-bg) text-(--accent-cyan)'
+                      : 'bg-(--accent-purple-bg) text-(--accent-purple)',
+                    !isHovered && 'opacity-80'
+                  )}
+                >
+                  <Icon size={12} />
+                </span>
+                <span className="truncate font-medium leading-5 font-mono">/{item.name}</span>
+                <span
+                  className="text-(--text-muted) text-[11px] leading-5 overflow-hidden"
+                  style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}
+                >
+                  {item.description}
+                </span>
+                <span
+                  className={cn(
+                    'mt-0.5 rounded-full border px-1.5 py-0.5 text-[10px] uppercase leading-none',
+                    item.kind === 'action'
+                      ? 'border-(--accent-cyan)/25 text-(--accent-cyan)'
+                      : 'border-(--accent-purple)/25 text-(--accent-purple)'
+                  )}
+                >
+                  {item.kind}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="absolute bottom-full left-0 right-0 mb-1.5 max-h-[360px] overflow-y-auto rounded-xl border border-(--border-default) bg-(--bg-primary) shadow-lg z-50 animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95" style={{ scrollbarWidth: 'thin' }}>
+      <div className="px-2.5 py-1.5 text-[11px] text-(--text-muted) font-medium flex items-center gap-1.5 border-b border-(--border-default)">
+        <Sparkles size={11} />
+        Commands
+      </div>
+      {!hasItems && (
+        <div className="px-2.5 py-5 text-[12px] text-(--text-muted) text-center">No matching commands</div>
+      )}
+      {renderSection('Actions', actionItems)}
+      {actionItems.length > 0 && skillItems.length > 0 && <div className="mx-2.5 h-px bg-(--border-default)" />}
+      {renderSection('Skills', skillItems)}
+    </div>
+  );
+}
 
 export function InputBar({ onSubmit, onAbort, busy, runtimeState, history: externalHistory, onCompletionRequest }) {
   const [value, setValue] = useState('');
   const [history, setHistory] = useState([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [draftBeforeHistory, setDraftBeforeHistory] = useState('');
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [slashQuery, setSlashQuery] = useState('');
   const textareaRef = useRef(null);
 
   const rs = runtimeState || {};
@@ -24,17 +275,27 @@ export function InputBar({ onSubmit, onAbort, busy, runtimeState, history: exter
     if (!val || busy) return;
     onSubmit(val);
     setValue('');
+    setSlashOpen(false);
     setHistoryIndex(-1);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
   }, [value, busy, onSubmit]);
 
   const handleKeyDown = useCallback((e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
+      if (slashOpen) {
+        e.preventDefault();
+        return;
+      }
       e.preventDefault();
       submitCurrent();
       return;
     }
-    if (e.key === 'ArrowUp' && history.length > 0) {
+    if (slashOpen && e.key === 'Escape') {
+      e.preventDefault();
+      setSlashOpen(false);
+      return;
+    }
+    if (e.key === 'ArrowUp' && history.length > 0 && !slashOpen) {
       e.preventDefault();
       if (historyIndex === -1) setDraftBeforeHistory(value);
       const next = Math.min(historyIndex + 1, history.length - 1);
@@ -42,7 +303,7 @@ export function InputBar({ onSubmit, onAbort, busy, runtimeState, history: exter
       setValue(history[next]);
       return;
     }
-    if (e.key === 'ArrowDown' && historyIndex !== -1) {
+    if (e.key === 'ArrowDown' && historyIndex !== -1 && !slashOpen) {
       e.preventDefault();
       const next = historyIndex - 1;
       setHistoryIndex(next);
@@ -52,20 +313,42 @@ export function InputBar({ onSubmit, onAbort, busy, runtimeState, history: exter
     if (e.key === 'Tab') {
       e.preventDefault();
     }
-  }, [value, history, historyIndex, draftBeforeHistory, submitCurrent]);
+  }, [value, history, historyIndex, draftBeforeHistory, submitCurrent, slashOpen]);
 
   const handleInput = useCallback((e) => {
     const val = e.target.value;
     setValue(val);
     e.target.style.height = 'auto';
     e.target.style.height = Math.min(e.target.scrollHeight, 160) + 'px';
+
+    if (val === '/') {
+      setSlashOpen(true);
+      setSlashQuery('');
+    } else if (val.startsWith('/') && !val.includes(' ')) {
+      setSlashOpen(true);
+      setSlashQuery(val.slice(1));
+    } else {
+      setSlashOpen(false);
+    }
+
     if (val.startsWith('/') && onCompletionRequest) {
       onCompletionRequest(val);
     }
   }, [onCompletionRequest]);
 
+  const handleCommandSelect = useCallback((insert) => {
+    setValue(insert);
+    setSlashOpen(false);
+    textareaRef.current?.focus();
+  }, []);
+
   return (
-    <div className="w-full">
+    <div className="w-full relative">
+      <CommandPalette
+        query={slashQuery}
+        onSelect={handleCommandSelect}
+        visible={slashOpen}
+      />
       <div
         className="flex flex-col gap-2 p-[12px_14px_10px] border border-(--border-strong) rounded-2xl bg-(--bg-input)"
         style={{ boxShadow: 'var(--shadow-default)' }}
@@ -76,7 +359,7 @@ export function InputBar({ onSubmit, onAbort, busy, runtimeState, history: exter
             value={value}
             onChange={handleInput}
             onKeyDown={handleKeyDown}
-            placeholder={busy ? t('inputDisabled') : '可向 CodeMini 询问任何事。输入 @ 使用插件或提及文件'}
+            placeholder={busy ? t('inputDisabled') : '可向 CodeMini 询问任何事。输入 / 使用命令或技能'}
             disabled={busy}
             rows={1}
             className="flex-1 resize-none border-0 outline-none bg-transparent text-(--text-primary) min-h-[32px] max-h-[160px] p-0 leading-[1.5] text-[14px] placeholder:text-(--text-muted) disabled:opacity-50 disabled:cursor-not-allowed"
@@ -93,6 +376,7 @@ export function InputBar({ onSubmit, onAbort, busy, runtimeState, history: exter
               <span className="truncate">{mode === 'plan' ? '计划' : mode === 'normal' ? '普通' : '自动'}</span>
               <ChevronDown size={11} />
             </button>
+            <SoulQuickSwitch />
           </div>
           <div className="flex items-center gap-1.5 ml-auto">
             <button type="button" className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)" title="模型">

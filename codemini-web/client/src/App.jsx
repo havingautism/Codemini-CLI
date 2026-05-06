@@ -9,10 +9,28 @@ import { StatusBar } from "@/components/StatusBar.jsx";
 import { ApprovalDialog } from "@/components/ApprovalDialog.jsx";
 import { ConfigDialog } from "@/components/ConfigDialog.jsx";
 import { ProjectSelector } from "@/components/ProjectSelector.jsx";
+import { SkillDialog } from "@/components/SkillDialog.jsx";
+import { SoulDialog } from "@/components/SoulDialog.jsx";
 import { PlanProgress } from "@/components/PlanProgress.jsx";
 import { SessionPanel } from "@/components/SessionPanel.jsx";
-import { MoreHorizontal, Folder } from "lucide-react";
+import { MoreHorizontal, Folder, CircleDot } from "lucide-react";
 import "../style.css";
+
+function GitHubIcon({ size = 14, className, ...props }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="currentColor"
+      aria-hidden="true"
+      className={className}
+      {...props}
+    >
+      <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.09 3.29 9.4 7.86 10.93.58.1.79-.25.79-.56v-2.18c-3.2.69-3.87-1.36-3.87-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.55-.29-5.23-1.27-5.23-5.67 0-1.25.45-2.27 1.18-3.07-.12-.29-.51-1.46.11-3.03 0 0 .97-.31 3.16 1.17A10.98 10.98 0 0 1 12 6.07c.98 0 1.96.13 2.88.39 2.19-1.48 3.15-1.17 3.15-1.17.63 1.57.24 2.74.12 3.03.74.8 1.18 1.82 1.18 3.07 0 4.41-2.69 5.38-5.25 5.66.42.36.78 1.06.78 2.14v3.18c0 .31.21.67.8.56A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z" />
+    </svg>
+  );
+}
 
 class ErrorBoundary extends Component {
   state = { error: null };
@@ -71,6 +89,10 @@ function Shell() {
         onSwitchSession={actions.switchSession}
         onToggleTheme={actions.toggleTheme}
         onOpenSettings={() => actions.setConfigOpen(true)}
+        onOpenSkills={() => actions.setSkillsOpen(true)}
+        onOpenSouls={() => actions.setSoulsOpen(true)}
+        currentProjectDir={rs.cwd}
+        gitInfo={state.gitInfo}
       />
 
       <div className="flex-1 flex flex-col min-w-0 bg-(--bg-secondary)">
@@ -85,10 +107,21 @@ function Shell() {
           <div className="flex-1 flex flex-col min-h-0 bg-(--bg-primary) rounded-t-[18px] border border-(--border-default) border-b-0 relative overflow-hidden mt-1 mx-1">
             {/* Titlebar */}
             <div className="flex items-center justify-between h-[52px] px-5 shrink-0 border-b border-(--border-default)">
-              <span className="font-medium text-[14px] text-(--text-primary)">
-                {state.projectCwd || "qurio-coder"}
-              </span>
-              <button className="border-0 bg-transparent text-(--text-muted) rounded-md p-1.5 cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span className="font-medium text-[14px] text-(--text-primary) truncate">
+                  {state.projectCwd || "qurio-coder"}
+                </span>
+                {state.gitInfo?.isGit && (
+                  <span className="inline-flex items-center gap-1 text-[12px] text-(--text-muted) shrink-0">
+                    <GitHubIcon size={13} />
+                    <span>{state.gitInfo.branch}</span>
+                    {/* {state.gitInfo.dirty && (
+                      <CircleDot size={8} className="text-(--text-muted)" />
+                    )} */}
+                  </span>
+                )}
+              </div>
+              <button className="border-0 bg-transparent text-(--text-muted) rounded-md p-1.5 cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) shrink-0">
                 <MoreHorizontal size={16} />
               </button>
             </div>
@@ -104,6 +137,7 @@ function Shell() {
             <ChatPanel
               messages={state.messages}
               projectCwd={state.projectCwd}
+              skills={state.skills}
             />
 
             {/* Input Area */}
@@ -157,6 +191,13 @@ function Shell() {
         open={state.configOpen}
         onOpenChange={actions.setConfigOpen}
       />
+
+      <SkillDialog
+        open={state.skillsOpen}
+        onOpenChange={actions.setSkillsOpen}
+      />
+
+      <SoulDialog open={state.soulsOpen} onOpenChange={actions.setSoulsOpen} />
 
       <ProjectSelector
         open={state.projectOpen}

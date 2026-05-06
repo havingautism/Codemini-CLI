@@ -38,9 +38,21 @@ const initialState = {
   stage: 'idle', busy: false, currentView: 'chat', runtimeState: null,
   live: false, stageLabel: '', messages: [], activeMsgId: null,
   pendingToolChanges: [], planSteps: [], approvalRequest: null,
-  config: null, configOpen: false, projectOpen: false,
-  sessions: [], projectCwd: null, history: [],
+  config: null, configOpen: false, projectOpen: false, skillsOpen: false, soulsOpen: false,
+  sessions: [], projectCwd: null, history: [], skills: [], gitInfo: null,
 };
+
+function collapseRenderedSkillPrompt(content) {
+  const text = String(content || '');
+  const match = text.match(/^\[Executing skill: \/([^\]\s]+)\]\n\n/);
+  if (!match) return text;
+
+  const skillName = match[1];
+  const prefix = `/${skillName}`;
+  const currentQuestion = text.match(/\nCurrent question:\n([\s\S]+)$/);
+  if (currentQuestion?.[1]?.trim()) return `${prefix} ${currentQuestion[1].trim()}`;
+  return prefix;
+}
 
 function updateToolInSegments(segments, toolId, updater) {
   return segments.map(seg => {
@@ -115,6 +127,13 @@ export function AppProvider({ children }) {
     } catch { return null; }
   }, [update]);
 
+  const loadGitInfo = useCallback(async () => {
+    try {
+      const info = await api.fetchGitInfo();
+      update({ gitInfo: info });
+    } catch {}
+  }, [update]);
+
   const loadHistory = useCallback(async () => {
     try {
       const history = await api.fetchHistory();
@@ -129,6 +148,13 @@ export function AppProvider({ children }) {
     } catch {}
   }, [update]);
 
+  const loadSkills = useCallback(async () => {
+    try {
+      const skills = await api.fetchSkills();
+      update({ skills: Array.isArray(skills) ? skills : [] });
+    } catch {}
+  }, [update]);
+
   const loadSessionMessages = useCallback(async () => {
     try {
       const messages = await api.fetchSessionMessages();
@@ -138,9 +164,10 @@ export function AppProvider({ children }) {
       for (const msg of messages) {
         if (msg.role === 'user') {
           assistantGroup = null;
+          const visibleContent = collapseRenderedSkillPrompt(msg.content || '');
           processed.push({
             id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-u${processed.length}`,
-            role: 'you', segments: [{ type: 'text', text: msg.content || '', isStreaming: false }],
+            role: 'you', segments: [{ type: 'text', text: visibleContent, isStreaming: false }],
             skillBadges: [], fileChanges: [],
           });
         } else if (msg.role === 'assistant') {
@@ -360,6 +387,7 @@ export function AppProvider({ children }) {
         activeMsgRef.current = null;
         pendingChangesRef.current = [];
         loadState();
+        loadGitInfo();
         loadHistory();
         loadSessionMessages();
         loadSessions();
@@ -413,6 +441,8 @@ export function AppProvider({ children }) {
       await loadSessionMessages();
       loadHistory();
       loadSessions();
+      loadSkills();
+      loadGitInfo();
       connectSSE();
     })();
 
@@ -427,6 +457,7 @@ export function AppProvider({ children }) {
             await loadState();
             await loadSessionMessages();
             loadSessions();
+            loadGitInfo();
           }
         } catch {}
       }
@@ -472,6 +503,7 @@ export function AppProvider({ children }) {
           setState(prev => ({ ...prev, messages: [] }));
           await loadSessionMessages();
           loadSessions();
+          loadGitInfo();
         }
       } catch {}
     },
@@ -498,6 +530,7 @@ export function AppProvider({ children }) {
           await loadState();
           setState(prev => ({ ...prev, messages: [] }));
           loadSessions();
+          loadGitInfo();
         }
       } catch {}
     },
@@ -515,6 +548,8 @@ export function AppProvider({ children }) {
 
     setConfigOpen: (open) => update({ configOpen: open }),
     setProjectOpen: (open) => update({ projectOpen: open }),
+    setSkillsOpen: (open) => update({ skillsOpen: open }),
+    setSoulsOpen: (open) => update({ soulsOpen: open }),
   };
 
   const value = { state, actions };

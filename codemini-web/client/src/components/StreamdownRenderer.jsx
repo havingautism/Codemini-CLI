@@ -6,10 +6,34 @@ import { createCodePlugin } from '@/lib/shiki-plugin';
 const codePlugin = createCodePlugin();
 
 class StreamdownErrorBoundary extends Component {
-  state = { hasError: false };
+  state = { hasError: false, retryCount: 0 };
+  retryTimer = null;
 
   static getDerivedStateFromError() {
     return { hasError: true };
+  }
+
+  componentDidCatch(error) {
+    console.warn('Streamdown render failed; retrying with markdown renderer.', error);
+    if (this.state.retryCount >= 2) return;
+    clearTimeout(this.retryTimer);
+    this.retryTimer = window.setTimeout(() => {
+      this.setState(prev => ({ hasError: false, retryCount: prev.retryCount + 1 }));
+    }, 80);
+  }
+
+  componentDidUpdate(prevProps) {
+    if (
+      (prevProps.fallbackText !== this.props.fallbackText || prevProps.resetKey !== this.props.resetKey)
+      && (this.state.hasError || this.state.retryCount)
+    ) {
+      clearTimeout(this.retryTimer);
+      this.setState({ hasError: false, retryCount: 0 });
+    }
+  }
+
+  componentWillUnmount() {
+    clearTimeout(this.retryTimer);
   }
 
   render() {
@@ -21,12 +45,17 @@ class StreamdownErrorBoundary extends Component {
 }
 
 export function StreamdownRenderer({ text, streaming, className }) {
-  if (!text) return null;
+  const content = typeof text === 'string' ? text : String(text || '');
+  if (!content) return null;
+
+  const mode = streaming ? 'streaming' : 'static';
 
   return (
-    <StreamdownErrorBoundary fallbackText={text}>
+    <StreamdownErrorBoundary fallbackText={content} resetKey={mode}>
       <div className={cn('msg-body', streaming && 'streaming-cursor', className)}>
         <Streamdown
+          mode={mode}
+          isAnimating={streaming}
           parseIncompleteMarkdown
           showLineNumbers={false}
           plugins={{ code: codePlugin }}
@@ -36,7 +65,7 @@ export function StreamdownRenderer({ text, streaming, className }) {
             mermaid: { display: true, wrap: true },
           }}
         >
-          {text}
+          {content}
         </Streamdown>
       </div>
     </StreamdownErrorBoundary>

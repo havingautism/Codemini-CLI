@@ -65,7 +65,7 @@ async function setSkillEnabledConfig(name, enabled) {
   await saveConfig(config);
 }
 
-async function listSkillEntries({ scope = 'all', cwd = process.cwd() } = {}) {
+export async function listSkillEntries({ scope = 'all', cwd = process.cwd() } = {}) {
   const commands = await loadCommandsAndSkills(cwd);
   const config = await loadConfig();
   const entries = [];

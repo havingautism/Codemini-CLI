@@ -90,6 +90,11 @@ export async function fetchProject() {
   return res.json();
 }
 
+export async function fetchGitInfo() {
+  const res = await api('/api/git');
+  return res.json();
+}
+
 export async function openProject(path) {
   const res = await api('/api/project/open', {
     method: 'POST',
@@ -104,6 +109,96 @@ export async function browseDir(dir) {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ dir })
+  });
+  return res.json();
+}
+
+// ── Skills ──
+export async function fetchSkills() {
+  const res = await api('/api/skills');
+  return res.json();
+}
+
+export async function fetchSkillContent(name) {
+  const res = await api(`/api/skills/${encodeURIComponent(name)}/content`);
+  return res.json();
+}
+
+export async function createSkill({ name, description, content }) {
+  const res = await api('/api/skills/create', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ name, description, content })
+  });
+  return res.json();
+}
+
+export async function updateSkillContent(name, content) {
+  const res = await api(`/api/skills/${encodeURIComponent(name)}/content`, {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ content })
+  });
+  return res.json();
+}
+
+export async function deleteSkill(name) {
+  const res = await api(`/api/skills/${encodeURIComponent(name)}`, {
+    method: 'DELETE'
+  });
+  return res.json();
+}
+
+export async function toggleSkill(name, enabled) {
+  const res = await api(`/api/skills/${encodeURIComponent(name)}/toggle`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ enabled })
+  });
+  return res.json();
+}
+
+// ── Souls ──
+export async function fetchSouls() {
+  const res = await api('/api/souls');
+  return res.json();
+}
+
+export async function fetchSoulContent(name) {
+  const res = await api(`/api/souls/${encodeURIComponent(name)}/content`);
+  return res.json();
+}
+
+export async function createSoul({ name, content }) {
+  const res = await api('/api/souls/create', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ name, content })
+  });
+  return res.json();
+}
+
+export async function updateSoulContent(name, content) {
+  const res = await api(`/api/souls/${encodeURIComponent(name)}/content`, {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ content })
+  });
+  return res.json();
+}
+
+export async function deleteSoul(name) {
+  const res = await api(`/api/souls/${encodeURIComponent(name)}`, {
+    method: 'DELETE'
+  });
+  return res.json();
+}
+
+export async function activateSoul(name) {
+  const res = await api('/api/souls/activate', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ name })
   });
   return res.json();
 }
