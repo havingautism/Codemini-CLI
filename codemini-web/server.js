@@ -6,7 +6,7 @@ import { execSync } from 'node:child_process';
 
 import { loadConfig, saveConfig, setConfigValue, getConfigValue } from '../src/core/config-store.js';
 import { createChatRuntime } from '../src/core/chat-runtime.js';
-import { createSession, loadSession, listSessions, resolveSession } from '../src/core/session-store.js';
+import { createSession, loadSession, listSessions, resolveSession, deleteSession } from '../src/core/session-store.js';
 import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
 import { RuntimeBridge } from './lib/runtime-bridge.js';
 import { listSkillEntries } from '../src/commands/skill.js';
@@ -127,6 +127,22 @@ async function existingDirectoryForHint(rawHint) {
   return '';
 }
 
+const CODEWIKI_REPORT_RE = /^[^/\\]+-project-requirements\.html$/;
+
+function getRequirementsDir(projectDir) {
+  return path.join(projectDir, 'docs', 'requirements');
+}
+
+function isCodeWikiReportFile(fileName) {
+  return CODEWIKI_REPORT_RE.test(String(fileName || ''));
+}
+
+function codeWikiReportTitle(fileName) {
+  return String(fileName || '')
+    .replace(/-project-requirements\.html$/, '')
+    .replace(/-/g, ' ');
+}
+
 function commonPathPrefix(paths) {
   const normalized = paths.map((p) => path.resolve(p).split(path.sep).filter(Boolean));
   if (!normalized.length) return '';
@@ -238,15 +254,29 @@ async function main() {
 
     // ── Submit / Abort / Approval ──
     if (req.method === 'POST' && url.pathname === '/api/submit') {
-      const { line } = await readBody(req);
+      const { line, readOnlyCodeWiki } = await readBody(req);
       if (!line || typeof line !== 'string') { jsonResponse(res, { error: true, message: 'Missing "line" field' }, 400); return; }
-      const result = bridge.handleSubmit(line);
+      const result = bridge.handleSubmit(line, { readOnlyCodeWiki: readOnlyCodeWiki === true });
       jsonResponse(res, result);
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/abort') {
       bridge.handleAbort();
       jsonResponse(res, { ok: true });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/execution-mode') {
+      const { mode } = await readBody(req);
+      if (!mode || !['normal', 'auto', 'plan'].includes(mode)) {
+        jsonResponse(res, { error: true, message: 'Invalid mode' }, 400);
+        return;
+      }
+      if (bridge.isBusy()) {
+        jsonResponse(res, { error: true, message: 'Cannot switch execution mode while a request is running' }, 409);
+        return;
+      }
+      const ok = await bridge.setExecutionMode(mode);
+      jsonResponse(res, { ok });
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/approval') {
@@ -299,6 +329,105 @@ async function main() {
       jsonResponse(res, bridge.getSessionMessages());
       return;
     }
+    if (req.method === 'GET' && url.pathname === '/api/session/ui-messages') {
+      jsonResponse(res, await bridge.getUiMessages());
+      return;
+    }
+
+    // ── CodeWiki / project requirements reports ──
+    if (req.method === 'GET' && url.pathname === '/api/codewiki/reports') {
+      const requirementsDir = getRequirementsDir(currentProjectDir);
+      try {
+        const entries = await fs.readdir(requirementsDir, { withFileTypes: true });
+        const reports = [];
+        for (const entry of entries) {
+          if (!entry.isFile() || !isCodeWikiReportFile(entry.name)) continue;
+          const reportPath = path.join(requirementsDir, entry.name);
+          const stat = await fs.stat(reportPath);
+          reports.push({
+            file: entry.name,
+            title: codeWikiReportTitle(entry.name),
+            size: stat.size,
+            mtime: stat.mtime.toISOString()
+          });
+        }
+        reports.sort((a, b) => new Date(b.mtime) - new Date(a.mtime));
+        jsonResponse(res, { reports });
+      } catch (err) {
+        if (err?.code === 'ENOENT') jsonResponse(res, { reports: [] });
+        else jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname.startsWith('/api/codewiki/report/')) {
+      const fileName = decodeURIComponent(url.pathname.slice('/api/codewiki/report/'.length));
+      if (!isCodeWikiReportFile(fileName)) {
+        jsonResponse(res, { error: true, message: 'Invalid report file' }, 400);
+        return;
+      }
+      const requirementsDir = path.resolve(getRequirementsDir(currentProjectDir));
+      const reportPath = path.resolve(requirementsDir, fileName);
+      if (!reportPath.startsWith(`${requirementsDir}${path.sep}`)) {
+        jsonResponse(res, { error: true, message: 'Invalid report path' }, 403);
+        return;
+      }
+      await serveStatic(res, reportPath);
+      return;
+    }
+
+    if (req.method === 'DELETE' && url.pathname.startsWith('/api/codewiki/report/')) {
+      const fileName = decodeURIComponent(url.pathname.slice('/api/codewiki/report/'.length));
+      if (!isCodeWikiReportFile(fileName)) {
+        jsonResponse(res, { error: true, message: 'Invalid report file' }, 400);
+        return;
+      }
+      const requirementsDir = path.resolve(getRequirementsDir(currentProjectDir));
+      const reportPath = path.resolve(requirementsDir, fileName);
+      if (!reportPath.startsWith(`${requirementsDir}${path.sep}`)) {
+        jsonResponse(res, { error: true, message: 'Invalid report path' }, 403);
+        return;
+      }
+      try {
+        await fs.unlink(reportPath);
+        jsonResponse(res, { ok: true, file: fileName });
+      } catch (err) {
+        if (err?.code === 'ENOENT') jsonResponse(res, { error: true, message: 'Report not found' }, 404);
+        else jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/codewiki/generate') {
+      if (bridge.isBusy()) {
+        jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
+        return;
+      }
+      const { depth } = await readBody(req);
+      const normalizedDepth = ['fast', 'standard', 'deep'].includes(String(depth || '').toLowerCase())
+        ? String(depth).toLowerCase()
+        : 'standard';
+      const result = bridge.handleSubmit(`/project-requirements --${normalizedDepth}`);
+      jsonResponse(res, result);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/codewiki/ask') {
+      const { question } = await readBody(req);
+      if (!question || typeof question !== 'string') {
+        jsonResponse(res, { error: true, message: 'Missing "question" field' }, 400);
+        return;
+      }
+      if (bridge.isBusy()) {
+        jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
+        return;
+      }
+      const result = await bridge.handleCodeWikiAsk(
+        `请基于当前项目的 CodeWiki / project-requirements 报告回答这个问题：${question.trim()}`
+      );
+      jsonResponse(res, result, result?.error ? 500 : 200);
+      return;
+    }
 
     // ── Session management ──
     if (req.method === 'GET' && url.pathname === '/api/sessions') {
@@ -340,6 +469,36 @@ async function main() {
         await bridge.switchRuntime(newRuntime);
         currentProjectDir = process.cwd();
         jsonResponse(res, { ok: true, sessionId, cwd: currentProjectDir });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+    }
+
+    if (req.method === 'DELETE' && url.pathname.startsWith('/api/sessions/')) {
+      const sessionId = decodeURIComponent(url.pathname.slice('/api/sessions/'.length));
+      if (!sessionId) { jsonResponse(res, { error: true, message: 'Missing sessionId' }, 400); return; }
+      const deletingCurrent = sessionId === bridge.getSessionId();
+      if (deletingCurrent && bridge.isBusy()) {
+        jsonResponse(res, { error: true, message: 'Current session is busy' }, 409);
+        return;
+      }
+      try {
+        const result = await deleteSession(sessionId);
+        let nextSessionId = bridge.getSessionId();
+        let cwd = currentProjectDir;
+        if (deletingCurrent) {
+          const remaining = await listSessions(1000);
+          const next = remaining.find((session) => session.id !== sessionId);
+          const built = next
+            ? await buildRuntimeForSession({ sessionId: next.id, model: bridge.getState().model })
+            : await buildRuntimeForSession({ model: bridge.getState().model });
+          await bridge.switchRuntime(built.runtime);
+          currentProjectDir = process.cwd();
+          nextSessionId = built.session.id;
+          cwd = currentProjectDir;
+        }
+        jsonResponse(res, { ok: true, removed: result.removed, sessionId: nextSessionId, cwd });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }

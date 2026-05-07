@@ -7,11 +7,18 @@ import {
   Folder,
   ChevronDown,
   Sparkles,
-  Heart,
-  GitBranch,
+  User,
   Info,
+  BookOpenText,
+  MoreHorizontal,
 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { cn } from "@/lib/utils";
 
 function getProjectKey(session) {
@@ -53,12 +60,20 @@ export function Sidebar({
   versionInfo,
   onUpdate,
   updateStatus,
+  currentView,
+  onSwitchView,
+  onOpenProject,
+  onDeleteSession,
 }) {
   const [expandedProjects, setExpandedProjects] = useState(new Set());
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const allSessions = Array.isArray(sessions) ? sessions : [];
-  const currentSession = allSessions.find(s => s.id === currentSessionId);
-  const activeProjectKey = currentSession ? getProjectKey(currentSession) : null;
+  const currentSession = allSessions.find((s) => s.id === currentSessionId);
+  const activeProjectKey = currentSession
+    ? getProjectKey(currentSession)
+    : null;
 
   const projectGroups = new Map();
   for (const session of allSessions) {
@@ -79,6 +94,28 @@ export function Sidebar({
   const isDark =
     typeof document !== "undefined" &&
     document.documentElement.dataset.theme === "dark";
+
+  const openProjectCodeWiki = async (event, projectKey) => {
+    event.stopPropagation();
+    if (
+      projectKey &&
+      projectKey !== "unknown" &&
+      projectKey !== activeProjectKey &&
+      onOpenProject
+    ) {
+      await onOpenProject(projectKey, { view: "codewiki" });
+      return;
+    }
+    onSwitchView?.("codewiki", { projectPath: projectKey });
+  };
+
+  const confirmDeleteSession = async () => {
+    if (!pendingDelete) return;
+    setDeleting(true);
+    const result = await onDeleteSession?.(pendingDelete.id);
+    setDeleting(false);
+    if (!result?.error) setPendingDelete(null);
+  };
 
   return (
     <aside className="w-[260px] shrink-0 border-r border-(--border-default) flex flex-col bg-(--bg-secondary)">
@@ -130,7 +167,7 @@ export function Sidebar({
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onOpenSouls}
         >
-          <Heart
+          <User
             size={15}
             strokeWidth={2}
             className="text-(--text-secondary) shrink-0"
@@ -147,22 +184,45 @@ export function Sidebar({
               expandedProjects.has(projectKey) || projectGroups.size === 1;
             const git = gitBatch?.[projectKey];
             const isActive = projectKey === activeProjectKey;
+            const canOpenCodeWiki = projectKey !== "unknown";
             return (
               <div key={projectKey}>
-                <button
+                <div
                   className={cn(
-                    "w-full border-0 bg-transparent flex items-center gap-2 h-[28px] px-1.5 rounded-md cursor-pointer text-left text-[12px] font-medium tracking-[0.2px] hover:bg-(--bg-hover)",
+                    "w-full border-0 bg-transparent flex items-center gap-1 h-[28px] px-1.5 rounded-md text-left text-[12px] font-medium tracking-[0.2px] hover:bg-(--bg-hover)",
                     isActive
                       ? "text-(--text-primary)"
-                      : "text-(--text-muted) hover:text-(--text-secondary)"
+                      : "text-(--text-muted) hover:text-(--text-secondary)",
                   )}
-                  onClick={() => toggleProject(projectKey)}
                   title={projectKey === "unknown" ? "" : projectKey}
                 >
-                  <Folder size={13} className="shrink-0" />
-                  <span className="truncate flex-1">
-                    {getProjectName(projectKey)}
-                  </span>
+                  <button
+                    className="min-w-0 flex-1 border-0 bg-transparent flex items-center gap-2 text-left text-inherit cursor-pointer"
+                    onClick={() => toggleProject(projectKey)}
+                  >
+                    <Folder size={13} className="shrink-0" />
+                    <span className="truncate flex-1">
+                      {getProjectName(projectKey)}
+                    </span>
+                  </button>
+                  {canOpenCodeWiki && (
+                    <button
+                      type="button"
+                      className={cn(
+                        "inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-active) hover:text-(--text-primary)",
+                        currentView === "codewiki" &&
+                          isActive &&
+                          "bg-(--bg-active) text-(--text-primary)",
+                      )}
+                      title="打开 CodeWiki"
+                      aria-label={`打开 ${getProjectName(projectKey)} 的 CodeWiki`}
+                      onClick={(event) =>
+                        openProjectCodeWiki(event, projectKey)
+                      }
+                    >
+                      <BookOpenText size={13} strokeWidth={1.9} />
+                    </button>
+                  )}
                   {git?.isGit && (
                     <GitHubIcon
                       size={11}
@@ -170,25 +230,32 @@ export function Sidebar({
                     />
                   )}
                   <span className="text-[11px]">{projectSessions.length}</span>
-                  <ChevronDown
-                    size={13}
-                    className={cn(
-                      "transition-transform",
-                      !isExpanded && "-rotate-90",
-                    )}
-                  />
-                </button>
+                  <button
+                    type="button"
+                    className="border-0 bg-transparent inline-flex size-5 shrink-0 items-center justify-center rounded-md text-inherit cursor-pointer hover:bg-(--bg-active)"
+                    onClick={() => toggleProject(projectKey)}
+                    aria-label={isExpanded ? "折叠项目" : "展开项目"}
+                  >
+                    <ChevronDown
+                      size={13}
+                      className={cn(
+                        "transition-transform",
+                        !isExpanded && "-rotate-90",
+                      )}
+                    />
+                  </button>
+                </div>
                 {isExpanded && (
                   <div className="flex flex-col gap-1.5 py-1 pl-2">
                     {projectSessions.slice(0, 30).map((session) => (
-                      <button
+                      <div
                         key={session.id}
                         onClick={() =>
                           session.id !== currentSessionId &&
                           onSwitchSession(session.id)
                         }
                         className={cn(
-                          "w-full border-0 bg-transparent flex items-center gap-2 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] truncate",
+                          "group w-full border-0 bg-transparent flex items-center gap-2 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] truncate",
                           session.id === currentSessionId
                             ? "bg-(--bg-active) text-(--text-primary)"
                             : "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
@@ -201,7 +268,32 @@ export function Sidebar({
                               ? `${session.messageCount} 条消息`
                               : "空对话")}
                         </span>
-                      </button>
+                        <Popover>
+                          <PopoverTrigger asChild>
+                            <button
+                              type="button"
+                              className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) opacity-0 hover:bg-(--bg-active) hover:text-(--text-primary) group-hover:opacity-100 focus:opacity-100"
+                              onClick={(event) => event.stopPropagation()}
+                              aria-label="会话操作"
+                            >
+                              <MoreHorizontal size={14} />
+                            </button>
+                          </PopoverTrigger>
+                          <PopoverContent
+                            align="end"
+                            className="w-36 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              className="w-full rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
+                              onClick={() => setPendingDelete(session)}
+                            >
+                              删除
+                            </button>
+                          </PopoverContent>
+                        </Popover>
+                      </div>
                     ))}
                   </div>
                 )}
@@ -222,12 +314,12 @@ export function Sidebar({
         {versionInfo?.latest && versionInfo.latest !== versionInfo.current && (
           <button
             className="w-full border-0 bg-(--bg-tertiary) rounded-md px-2.5 py-1.5 cursor-pointer text-[11px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) flex items-center justify-center gap-1.5"
-            onClick={updateStatus === 'updating' ? undefined : onUpdate}
-            disabled={updateStatus === 'updating'}
+            onClick={updateStatus === "updating" ? undefined : onUpdate}
+            disabled={updateStatus === "updating"}
           >
-            {updateStatus === 'updating' ? (
+            {updateStatus === "updating" ? (
               <>更新中...</>
-            ) : updateStatus === 'done' ? (
+            ) : updateStatus === "done" ? (
               <>已更新，请重启</>
             ) : (
               <>新版本 {versionInfo.latest} 可用，点击更新</>
@@ -261,6 +353,14 @@ export function Sidebar({
           </button>
         </div>
       </div>
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title="删除会话？"
+        description={`会话「${pendingDelete?.title || pendingDelete?.preview || pendingDelete?.id || ""}」会从历史记录中移除，此操作不可撤销。`}
+        loading={deleting}
+        onOpenChange={(open) => !open && setPendingDelete(null)}
+        onConfirm={confirmDeleteSession}
+      />
     </aside>
   );
 }

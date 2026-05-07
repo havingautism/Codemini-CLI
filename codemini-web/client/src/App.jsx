@@ -6,7 +6,9 @@ import { Sidebar } from "@/components/Sidebar.jsx";
 import { ChatPanel } from "@/components/ChatPanel.jsx";
 import { InputBar } from "@/components/InputBar.jsx";
 import { StatusBar } from "@/components/StatusBar.jsx";
+import { CodeWikiPanel } from "@/components/CodeWikiPanel.jsx";
 import { ApprovalDialog } from "@/components/ApprovalDialog.jsx";
+import { PlanApprovalCard } from "@/components/PlanApprovalDialog.jsx";
 import { ConfigDialog } from "@/components/ConfigDialog.jsx";
 import { ProjectSelector } from "@/components/ProjectSelector.jsx";
 import { SkillDialog } from "@/components/SkillDialog.jsx";
@@ -97,6 +99,10 @@ function Shell() {
         versionInfo={state.versionInfo}
         onUpdate={actions.runUpdate}
         updateStatus={state.updateStatus}
+        currentView={state.currentView}
+        onSwitchView={actions.switchView}
+        onOpenProject={actions.openProject}
+        onDeleteSession={actions.deleteSession}
       />
 
       <div className="flex-1 flex flex-col min-w-0 bg-(--bg-secondary)">
@@ -106,6 +112,15 @@ function Shell() {
             currentId={currentId}
             onSwitch={actions.switchSession}
             onNew={actions.newSession}
+            onDelete={actions.deleteSession}
+          />
+        ) : state.currentView === "codewiki" ? (
+          <CodeWikiPanel
+            projectCwd={state.codewikiProjectPath?.split(/[/\\]/).pop() || state.projectCwd}
+            projectKey={state.codewikiProjectPath || state.runtimeState?.cwd || state.projectCwd || ""}
+            busy={state.busy}
+            planSteps={state.planSteps}
+            stageLabel={state.stageLabel}
           />
         ) : (
           <div className="flex-1 flex flex-col min-h-0 bg-(--bg-primary) rounded-[18px] border border-(--border-default) border-b-0 relative overflow-hidden my-1 mx-1">
@@ -130,8 +145,8 @@ function Shell() {
               </button>
             </div>
 
-            {/* Plan Progress */}
-            {state.planSteps?.length > 0 && (
+            {/* Plan Progress (during execution) */}
+            {state.planSteps?.length > 0 && !state.pendingPlanApproval && (
               <div className="px-4">
                 <PlanProgress steps={state.planSteps} />
               </div>
@@ -144,12 +159,19 @@ function Shell() {
               skills={state.skills}
             />
 
-            {/* Input Area */}
+            {/* Plan Review / Input Area */}
             <div className="w-[min(980px,calc(100%-64px))] mx-auto mb-4 shrink-0 z-30 bg-transparent relative">
+              {state.pendingPlanApproval && (
+                <div className="mb-3">
+                  <PlanApprovalCard plan={state.pendingPlanApproval} onAction={actions.approvePlan} disabled={state.busy} />
+                </div>
+              )}
               <InputBar
                 onSubmit={actions.submit}
                 onAbort={actions.abort}
                 busy={state.busy}
+                disabled={!!state.pendingPlanApproval}
+                disabledReason="请先在上方审阅计划，批准、修改或否决后再继续输入"
                 runtimeState={state.runtimeState}
                 history={state.history}
                 onCompletionRequest={async (input) => {

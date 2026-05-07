@@ -11,6 +11,7 @@ export const zh = {
   // Input
   inputPlaceholder: '输入消息或 / 命令...',
   inputDisabled: '等待当前请求完成...',
+  inputPlanReviewDisabled: '请先在上方审阅计划，批准、修改或否决后再继续输入',
   abort: '停止',
 
   // Approval
@@ -31,6 +32,18 @@ export const zh = {
   // Plan
   planTitle: '执行计划',
   planDone: '完成',
+  planReviewTitle: '审阅计划',
+  planReviewSummary: '摘要',
+  planReviewSteps: '计划步骤',
+  planApprove: '批准执行',
+  planReject: '否决',
+  planEdit: '修改计划',
+  planEditPlaceholder: '描述你的修改意见...',
+  planSubmitFeedback: '提交反馈',
+  planStepCount: '个步骤',
+  planReviewStatus: '等待审阅',
+  planWaitingReview: '正在等待计划审阅…',
+  waitingResponse: '正在等待回复…',
 
   // Skills
   skillRunning: '运行中',

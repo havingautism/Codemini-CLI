@@ -42,17 +42,34 @@ export async function fetchSessionMessages() {
   return res.json();
 }
 
-export async function submitLine(line) {
+export async function fetchSessionUiMessages() {
+  const res = await api('/api/session/ui-messages');
+  return res.json();
+}
+
+export async function submitLine(line, options = {}) {
   const res = await api('/api/submit', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ line })
+    body: JSON.stringify({
+      line,
+      ...(options.readOnlyCodeWiki ? { readOnlyCodeWiki: true } : {})
+    })
   });
   return res;
 }
 
 export async function abortRequest() {
   await api('/api/abort', { method: 'POST' });
+}
+
+export async function setExecutionMode(mode) {
+  const res = await api('/api/execution-mode', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ mode })
+  });
+  return res.json();
 }
 
 export async function submitApproval(id, approved) {
@@ -74,6 +91,11 @@ export async function switchSession(sessionId) {
     headers: JSON_HEADERS,
     body: JSON.stringify({ sessionId })
   });
+  return res.json();
+}
+
+export async function deleteSession(sessionId) {
+  const res = await api(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
   return res.json();
 }
 
@@ -219,5 +241,34 @@ export async function activateSoul(name) {
     headers: JSON_HEADERS,
     body: JSON.stringify({ name })
   });
+  return res.json();
+}
+
+// ── CodeWiki ──
+export async function fetchCodeWikiReports() {
+  const res = await api('/api/codewiki/reports');
+  return res.json();
+}
+
+export async function generateCodeWikiReport(depth = 'standard') {
+  const res = await api('/api/codewiki/generate', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ depth })
+  });
+  return res.json();
+}
+
+export async function askCodeWiki(question) {
+  const res = await api('/api/codewiki/ask', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ question })
+  });
+  return res.json();
+}
+
+export async function deleteCodeWikiReport(file) {
+  const res = await api(`/api/codewiki/report/${encodeURIComponent(file)}`, { method: 'DELETE' });
   return res.json();
 }

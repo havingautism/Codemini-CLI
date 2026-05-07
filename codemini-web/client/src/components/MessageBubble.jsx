@@ -272,6 +272,7 @@ export function MessageBubble({ message, skills = [] }) {
     startupTodos,
     text: legacyText,
     timestamp,
+    planStep,
   } = message;
   const style = ROLE_STYLES[role] || ROLE_STYLES.general;
   const ts = timestamp ? formatTimestamp(timestamp) : "";
@@ -284,6 +285,11 @@ export function MessageBubble({ message, skills = [] }) {
   if (role === "system") {
     const dreamNotice = getDreamNotice(legacyText);
     if (dreamNotice) return <DreamNotice notice={dreamNotice} />;
+
+    const isWaitingReview = legacyText?.includes('等待计划审阅') || legacyText?.includes('Waiting for plan review');
+    if (isWaitingReview) {
+      return null;
+    }
 
     return (
       <div className="py-2 px-6 text-xs text-(--text-muted) text-center">
@@ -343,6 +349,13 @@ export function MessageBubble({ message, skills = [] }) {
             }
             return null;
           })}
+
+          {planStep && renderGroups.length === 0 && planStep.status !== "done" && planStep.status !== "failed" && (
+            <div className="text-[12px] text-(--text-muted) inline-flex items-center gap-1.5">
+              <span className="inline-block size-1 rounded-full bg-(--accent-blue) animate-pulse" />
+              <span>等待工具调用或模型输出…</span>
+            </div>
+          )}
 
           {skillBadges?.length > 0 && (
             <div className="flex flex-wrap gap-1 mt-2">

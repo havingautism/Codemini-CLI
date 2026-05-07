@@ -89,6 +89,15 @@ function sanitizeMessage(msg) {
     if (toolCalls.length > 0) out.tool_calls = toolCalls;
   }
 
+  if (Array.isArray(msg?.plan_transcript)) {
+    out.plan_transcript = msg.plan_transcript
+      .filter((entry) => entry && typeof entry === 'object')
+      .map((entry) => ({
+        ...entry,
+        segments: Array.isArray(entry.segments) ? entry.segments : []
+      }));
+  }
+
   return out;
 }
 
@@ -126,10 +135,23 @@ function sessionPathById(sessionId, ext = SESSION_JSONL_EXT) {
   return path.join(getSessionsDir(), `${sessionId}${ext}`);
 }
 
+function isSafeSessionId(sessionId) {
+  return /^[A-Za-z0-9_.-]+$/.test(String(sessionId || ''));
+}
+
 function sessionIdFromFileName(fileName) {
   if (fileName.endsWith(SESSION_JSONL_EXT)) return fileName.slice(0, -SESSION_JSONL_EXT.length);
   if (fileName.endsWith(SESSION_LEGACY_EXT)) return fileName.slice(0, -SESSION_LEGACY_EXT.length);
   return '';
+}
+
+async function listSessionFiles() {
+  const dir = getSessionsDir();
+  await fs.mkdir(dir, { recursive: true });
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  return entries
+    .filter((e) => e.isFile() && (e.name.endsWith(SESSION_JSONL_EXT) || e.name.endsWith(SESSION_LEGACY_EXT)))
+    .map((e) => path.join(dir, e.name));
 }
 
 function summarizeParsedSession(parsed, filePath) {
@@ -227,12 +249,7 @@ export async function resolveSession(sessionId) {
 }
 
 export async function listSessions(limit = 30) {
-  const dir = getSessionsDir();
-  await fs.mkdir(dir, { recursive: true });
-  const entries = await fs.readdir(dir, { withFileTypes: true });
-  const files = entries
-    .filter((e) => e.isFile() && (e.name.endsWith(SESSION_JSONL_EXT) || e.name.endsWith(SESSION_LEGACY_EXT)))
-    .map((e) => path.join(dir, e.name));
+  const files = await listSessionFiles();
 
   const sessionsById = new Map();
   for (const file of files) {
@@ -252,6 +269,42 @@ export async function listSessions(limit = 30) {
   const sessions = Array.from(sessionsById.values());
   sessions.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
   return sessions.filter((s) => Number(s.messageCount || 0) > 0).slice(0, limit);
+}
+
+export async function deleteSession(sessionId) {
+  const id = String(sessionId || '').trim();
+  if (!id || !isSafeSessionId(id)) {
+    throw new Error('Invalid session id');
+  }
+
+  const files = await listSessionFiles();
+  const targets = new Set();
+  for (const file of files) {
+    const fileId = sessionIdFromFileName(path.basename(file));
+    if (fileId === id) {
+      targets.add(file);
+      continue;
+    }
+    try {
+      const parsed = file.endsWith(SESSION_JSONL_EXT) ? await loadLatestJsonlObject(file) : await tryReadJson(file);
+      if (String(parsed?.id || '').trim() === id) targets.add(file);
+    } catch {}
+  }
+
+  let removed = 0;
+  const fallbackTargets = [
+    sessionPathById(id, SESSION_JSONL_EXT),
+    sessionPathById(id, SESSION_LEGACY_EXT)
+  ];
+  for (const file of [...targets, ...fallbackTargets]) {
+    try {
+      await fs.unlink(file);
+      removed += 1;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
+  return { removed };
 }
 
 export async function pruneSessions(policy = {}) {

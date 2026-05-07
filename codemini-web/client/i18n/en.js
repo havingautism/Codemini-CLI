@@ -9,6 +9,7 @@ export const en = {
 
   inputPlaceholder: 'Type a message or / command...',
   inputDisabled: 'Waiting for current request to finish...',
+  inputPlanReviewDisabled: 'Review the plan above before continuing',
   abort: 'Stop',
 
   approveTitle: 'Confirm Action',
@@ -26,6 +27,18 @@ export const en = {
 
   planTitle: 'Execution Plan',
   planDone: 'Done',
+  planReviewTitle: 'Review Plan',
+  planReviewSummary: 'Summary',
+  planReviewSteps: 'Plan Steps',
+  planApprove: 'Approve',
+  planReject: 'Reject',
+  planEdit: 'Edit Plan',
+  planEditPlaceholder: 'Describe your changes...',
+  planSubmitFeedback: 'Submit Feedback',
+  planStepCount: 'steps',
+  planReviewStatus: 'Awaiting Review',
+  planWaitingReview: 'Waiting for plan review…',
+  waitingResponse: 'Waiting for response…',
 
   skillRunning: 'Running',
   skillDone: 'Done',

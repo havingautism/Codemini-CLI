@@ -315,6 +315,7 @@ function describeConfigKey(key, mode = 'set', language = 'zh') {
 }
 
 const SUB_AGENT_ROLES = ['planner', 'advisor', 'coder', 'reviewer', 'tester', 'summarizer'];
+const CODEWIKI_READ_ONLY_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan'];
 export const ROLE_TOOL_POLICY = {
   planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node', 'web_fetch', 'web_search', 'read_plan', 'update_plan'],
   advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'read_plan'],
@@ -2118,6 +2119,7 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
   const currentContextTokens = parentTokens + subTokens;
   const maxContextTokens = effectiveMaxContextTokens(config);
   const contextUsagePct = maxContextTokens > 0 ? Math.min(100, Math.max(0, (currentContextTokens / maxContextTokens) * 100)) : 0;
+  const planState = currentSession?.planState;
   const snapshot = {
     sessionId: currentSession?.id || '',
     sessionTitle: currentSession?.title || '',
@@ -2128,7 +2130,10 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     model: model || config.model?.name || '',
     mainModel: config.model?.name || '',
     fastModel: config.model?.fast_name || config.model?.name || '',
-    maxContextTokens
+    maxContextTokens,
+    pendingPlanApproval: planState?.status === 'pending_approval'
+      ? { goal: planState.goal, summary: planState.finalSummary || planState.summary, filePath: planState.filePath, steps: planState.steps || [] }
+      : null
   };
   Object.defineProperties(snapshot, {
     currentContextTokens: {
@@ -2138,11 +2143,6 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     },
     contextUsagePct: {
       value: contextUsagePct,
-      enumerable: false,
-      writable: false
-    },
-    pendingPlanApproval: {
-      value: currentSession?.planState?.status === 'pending_approval',
       enumerable: false,
       writable: false
     },
@@ -2178,12 +2178,16 @@ function shouldReplaceSessionTitle(title) {
   return !value || value === '新会话' || value === 'New session';
 }
 
-async function generateSessionTitle({ userText, config, signal }) {
+async function generateSessionTitle({ userText, assistantText = '', config, signal }) {
   const fallback = normalizeGeneratedSessionTitle(deriveSessionTitle([{ role: 'user', content: userText }]));
   const latestConfig = await loadConfig().catch(() => config);
   const effectiveConfig = latestConfig || config;
   const fastModel = resolveFastModel(effectiveConfig);
   if (!fastModel) return fallback;
+  const titleInput = [
+    `User:\n${String(userText || '').slice(0, 1200)}`,
+    assistantText ? `Assistant:\n${String(assistantText || '').slice(0, 1600)}` : ''
+  ].filter(Boolean).join('\n\n');
   try {
     const result = await createChatCompletion({
       sdkProvider: effectiveConfig.sdk?.provider,
@@ -2195,13 +2199,14 @@ async function generateSessionTitle({ userText, config, signal }) {
           role: 'system',
           content: [
             'Generate a concise chat session title.',
+            'Base it on the completed user-assistant exchange, not only the user prompt.',
             'Return only the title text.',
             'Use the same language as the user when possible.',
             'No quotes, no markdown, no punctuation at the ends.',
-            'Maximum 16 Chinese characters or 8 English words.'
+            'Maximum 18 Chinese characters or 8 English words.'
           ].join(' ')
         },
-        { role: 'user', content: String(userText || '').slice(0, 1200) }
+        { role: 'user', content: titleInput }
       ],
       tools: [],
       timeoutMs: Math.min(Number(effectiveConfig.gateway?.timeout_ms || 30000), 30000),
@@ -2421,7 +2426,7 @@ async function askModel({
   const preflightTokens = estimatePromptTokensForRequest(session.messages, modelInputText);
   const preflightPct = (preflightTokens / maxContextTokens) * 100;
 
-  if (preflightPct >= triggerPct) {
+  if (persistSession && preflightPct >= triggerPct) {
     const auto = compactMessagesLocally(session.messages, {
       mode: preflightPct >= hardPct ? 'aggressive' : 'conservative'
     });
@@ -2489,9 +2494,9 @@ async function askModel({
     const modelExtra =
       typeof modelText === 'string' && modelText && modelText !== text ? { model_content: modelText } : {};
     session.messages.push(stampedMessage('user', text, modelExtra));
-    session.title = shouldGenerateTitle
-      ? await generateSessionTitle({ userText: text, config, signal })
-      : deriveSessionTitle(session.messages);
+    if (!shouldGenerateTitle) {
+      session.title = deriveSessionTitle(session.messages);
+    }
     session.model = model || config.model.name;
     session.mode = executionMode || config.execution?.mode || 'normal';
     if (persistSession) await saveSession(session);
@@ -2710,7 +2715,12 @@ async function askModel({
       }
     }
     if (shouldReplaceSessionTitle(session.title)) {
-      session.title = deriveSessionTitle(session.messages);
+      session.title = await generateSessionTitle({
+        userText: text,
+        assistantText: loopResult.text || '',
+        config,
+        signal
+      });
     }
     session.model = model || config.model.name;
     session.mode = executionMode || config.execution?.mode || 'normal';
@@ -2817,7 +2827,60 @@ async function runSubAgentTask({
     blockedCount,
     toolErrorCount,
     hasErrorLine,
-    artifactPaths: artifactPaths.slice(0, SUB_AGENT_HANDOFF_MAX_ITEMS)
+    artifactPaths: artifactPaths.slice(0, SUB_AGENT_HANDOFF_MAX_ITEMS),
+    messages: Array.isArray(subSession.messages) ? structuredClone(subSession.messages) : []
+  };
+}
+
+function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }) {
+  const toolCardsById = new Map();
+  const toolCards = [];
+  const source = Array.isArray(messages) ? messages : [];
+
+  for (const msg of source) {
+    if (msg?.role === 'assistant' && Array.isArray(msg.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        const id = String(tc?.id || `tool-${toolCards.length + 1}`);
+        if (toolCardsById.has(id)) continue;
+        const card = {
+          id,
+          name: tc?.function?.name || tc?.name || 'tool',
+          arguments: tc?.function?.arguments || tc?.arguments || {},
+          status: tc?.status || 'done',
+          durationMs: Number.isFinite(Number(tc?.durationMs)) ? Number(tc.durationMs) : null,
+          summary: tc?.summary || '',
+          result: ''
+        };
+        toolCardsById.set(id, card);
+        toolCards.push(card);
+      }
+    } else if (msg?.role === 'tool') {
+      const id = String(msg.tool_call_id || '');
+      const card = toolCardsById.get(id);
+      if (!card) continue;
+      card.result = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content || '');
+      if (typeof msg.tool_summary === 'string' && msg.tool_summary.trim()) card.summary = msg.tool_summary.trim();
+      if (Number.isFinite(Number(msg.tool_duration_ms))) card.durationMs = Number(msg.tool_duration_ms);
+      if (typeof msg.tool_status === 'string' && msg.tool_status.trim()) card.status = msg.tool_status.trim();
+    }
+  }
+
+  const segments = [];
+  if (toolCards.length > 0) {
+    segments.push({ type: 'tools', cards: toolCards });
+  }
+  if (stepRecord.role === 'summarizer' && stepRecord.output) {
+    segments.push({ type: 'text', text: stepRecord.output, isStreaming: false });
+  }
+
+  return {
+    step: stepIndex + 1,
+    total: totalSteps,
+    role: stepRecord.role || 'general',
+    title: stepRecord.title || '',
+    status: stepRecord.failed ? 'failed' : 'done',
+    summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output || '', 160),
+    segments
   };
 }
 
@@ -2845,8 +2908,11 @@ async function executePlanWithSubAgents({
     return { text: '(no steps to execute)', aborted: false };
   }
 
+  emitPlanEvent({ type: 'assistant:start' });
+
   const priorSteps = [];
   const results = [];
+  const transcript = [];
 
   // Emit structured plan steps so TUI can show all steps with real role/title
   emitPlanEvent({
@@ -2857,6 +2923,15 @@ async function executePlanWithSubAgents({
   for (let i = 0; i < steps.length; i += 1) {
     const step = steps[i];
     if (signal?.aborted) break;
+
+    emitPlanEvent({
+      type: 'plan:step_start',
+      planFile: planFilePath,
+      step: i + 1,
+      total: steps.length,
+      role: step.role,
+      title: step.title
+    });
 
     emitPlanEvent({
       type: 'plan:progress',
@@ -2905,6 +2980,7 @@ async function executePlanWithSubAgents({
       toolErrorCount: output.toolErrorCount || 0,
       hasErrorLine: output.hasErrorLine || false,
       artifactPaths: output.artifactPaths || [],
+      messages: output.messages || [],
       failed:
         output.hasErrorLine ||
         stepOutputHasFailureSignals(step.role, output.text || ''),
@@ -2918,6 +2994,12 @@ async function executePlanWithSubAgents({
     }
     priorSteps.push(stepRecord);
     results.push(stepRecord);
+    transcript.push(buildPlanStepTranscript({
+      stepRecord,
+      stepIndex: i,
+      totalSteps: steps.length,
+      messages: output.messages || []
+    }));
 
     // Write step result to plan file for subsequent steps to read
     if (planFilePath) {
@@ -2933,6 +3015,17 @@ async function executePlanWithSubAgents({
 
     emitPlanEvent({
       type: 'plan:progress',
+      planFile: planFilePath,
+      step: i + 1,
+      total: steps.length,
+      role: step.role,
+      title: step.title,
+      status: stepRecord.failed ? 'failed' : 'done',
+      summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output, 160)
+    });
+
+    emitPlanEvent({
+      type: 'plan:step_done',
       planFile: planFilePath,
       step: i + 1,
       total: steps.length,
@@ -2981,7 +3074,11 @@ async function executePlanWithSubAgents({
   return {
     text: summaryLines.join('\n'),
     aborted: !!signal?.aborted,
-    results
+    results,
+    transcript,
+    sessionText:
+      [...results].reverse().find((r) => r.role === 'summarizer')?.output ||
+      summaryLines.join('\n')
   };
 }
 
@@ -3140,10 +3237,29 @@ function renderAutoPlanMarkdown({
 }
 
 function parseProjectRequirementsOptions(args = []) {
-  const raw = args.join(' ').trim();
+  let depth = 'standard';
+  const focusArgs = [];
+  for (const arg of Array.isArray(args) ? args : []) {
+    const value = String(arg || '').trim();
+    const normalized = value.toLowerCase();
+    if (['--fast', '--quick', '--lite', '--light', '--快速'].includes(normalized)) {
+      depth = 'fast';
+      continue;
+    }
+    if (['--standard', '--balanced', '--默认', '--标准'].includes(normalized)) {
+      depth = 'standard';
+      continue;
+    }
+    if (['--deep', '--full', '--thorough', '--深度'].includes(normalized)) {
+      depth = 'deep';
+      continue;
+    }
+    focusArgs.push(arg);
+  }
+  const raw = focusArgs.join(' ').trim();
   const normalized = raw.toLowerCase();
   const hasIgnoreIntent = /(忽略|跳过|不生成|不要|无需|排除|exclude|skip|omit|without|no\s+)/i.test(raw);
-  if (!hasIgnoreIntent) return { raw, ignoredSections: [] };
+  if (!hasIgnoreIntent) return { raw, focusArgs, depth, ignoredSections: [] };
 
   const ignored = [];
   for (const section of PROJECT_REQUIREMENTS_SECTION_MARKERS) {
@@ -3156,7 +3272,7 @@ function parseProjectRequirementsOptions(args = []) {
     });
     if (matched) ignored.push(section);
   }
-  return { raw, ignoredSections: ignored };
+  return { raw, focusArgs, depth, ignoredSections: ignored };
 }
 
 function renderProjectRequirementsSectionContract(ignoredSections = []) {
@@ -3174,7 +3290,7 @@ function renderProjectRequirementsSectionContract(ignoredSections = []) {
 
 function buildProjectRequirementsSteps(renderedSkillPrompt, args = []) {
   const options = parseProjectRequirementsOptions(args);
-  const userArgs = args.join(' ').trim();
+  const userArgs = options.raw;
   const requestedFocus = userArgs ? `User request/focus: ${userArgs}` : 'User request/focus: full workspace requirements report.';
   const reportDate = formatLocalDate();
   const reportPath = `docs/requirements/${reportDate}-project-requirements.html`;
@@ -3192,6 +3308,120 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = []) {
     'Use EXTRACTED, INFERRED, and UNKNOWN labels. Preserve source evidence paths.',
     'Do not invent dates; use the report paths above.'
   ].join('\n');
+
+  const writeReportStep = {
+    title: '🎨 Write banking-style requirements HTML report',
+    role: 'coder',
+    task: [
+      'Create the final project requirements report from the accumulated plan context.',
+      reportContract,
+      'Follow the project-requirements skill instructions below exactly, including chunked HTML writing for medium/large reports.',
+      'Use the blue/white/gray banking-style shell and produce polished inline HTML/CSS/SVG diagrams. Keep the report professional, light, and conservative.',
+      'Organize the main requirements section primarily by API/interface business requirement cards.',
+      'The final HTML must be self-contained and directly openable from disk.',
+      'Write the primary report to the exact primary report path above. Create the companion Markdown only if useful.',
+      'Skill instructions:',
+      renderedSkillPrompt
+    ].join('\n\n')
+  };
+  const reviewStep = {
+    title: '🔎 Review API coverage and traceability',
+    role: 'reviewer',
+    task: [
+      'Review the generated requirements report against the project-requirements contract and accumulated evidence.',
+      reportContract,
+      'Check that major APIs/interfaces are represented, business requirements are decomposed per API, evidence paths are present, inferred/unknown content is labeled, diagrams are visible as inline HTML/CSS/SVG without external rendering libraries, and the report path matches the required local date.',
+      'Check that the visual style is light blue/white/gray and suitable for banking/financial review.',
+      'Report concrete gaps and risks only. Do not rewrite the whole report.'
+    ].join('\n')
+  };
+  const summaryStep = {
+    title: '🧾 Summarize final report and unresolved questions',
+    role: 'summarizer',
+    task: [
+      'Synthesize the project requirements pipeline results into a concise final status for the user.',
+      reportContract,
+      'Mention the generated report path, API/interface coverage, strongest business requirement findings, unresolved questions, what was not verified, and the best next action.',
+      'Do not re-analyze the codebase unless the accumulated evidence is clearly insufficient.'
+    ].join('\n')
+  };
+
+  if (options.depth === 'fast') {
+    return [
+      {
+        title: '⚡ Map evidence and interfaces',
+        role: 'planner',
+        task: [
+          'Quickly map project evidence and build a practical API/interface inventory before report writing.',
+          reportContract,
+          'Inspect top-level docs, manifests, route/command entry points, obvious handlers, schemas, tests, and project index results when available.',
+          'Produce a concise evidence map and major interface inventory with evidence paths, prioritizing broad coverage over exhaustive edge cases.',
+          'Do not write the final report.'
+        ].join('\n')
+      },
+      {
+        title: '🧩 Synthesize requirements, flows, and risks',
+        role: 'advisor',
+        task: [
+          'Synthesize requirement-ready findings from the evidence map and interface inventory.',
+          reportContract,
+          'For major interfaces capture capability, actor, trigger, inputs, outputs, business rules, validation/permission notes, data reads/writes, core flow dependencies, risks, acceptance criteria, and open questions.',
+          'Keep findings compact and API-centered. Preserve evidence paths and EXTRACTED/INFERRED/UNKNOWN labels. Do not write the final report.'
+        ].join('\n')
+      },
+      writeReportStep,
+      {
+        title: '🔎 Review and summarize coverage',
+        role: 'reviewer',
+        task: [
+          'Review the generated report and produce the final user-facing status in one pass.',
+          reportContract,
+          'Check major interface coverage, evidence paths, EXTRACTED/INFERRED/UNKNOWN labels, visible diagrams, and report path.',
+          'Do not rewrite the whole report. Report concrete gaps, unresolved questions, and the single best next action.'
+        ].join('\n')
+      }
+    ];
+  }
+
+  if (options.depth === 'standard') {
+    return [
+      {
+        title: '🧭 Map entry points and evidence sources',
+        role: 'planner',
+        task: [
+          'Map project entry points and evidence sources before any report writing.',
+          reportContract,
+          'Inspect top-level docs, package manifests, route/command entry points, tests, obvious interface files, and project index results when useful.',
+          'Produce a concise evidence map grouped by docs, routes/commands, handlers, schemas, tests, configuration, storage, and operations.',
+          'Include evidence paths and open questions. Do not write the final report.'
+        ].join('\n')
+      },
+      {
+        title: '📚 Build API and interface inventory',
+        role: 'planner',
+        task: [
+          'Build the canonical API/interface inventory using the evidence map.',
+          reportContract,
+          'Enumerate every major HTTP endpoint, CLI command, tool call, MCP/RPC handler, queue/scheduled job, exported SDK function, and user-facing workflow entry point.',
+          'For each item include type, route/command/function, owner module, evidence path, likely actor, and whether it is EXTRACTED, INFERRED, or UNKNOWN.',
+          'Do not write the final report.'
+        ].join('\n')
+      },
+      {
+        title: '🧩 Decompose requirements, flows, data, and risks',
+        role: 'advisor',
+        task: [
+          'Decompose requirement-ready findings for each major API/interface from the inventory.',
+          reportContract,
+          'For each interface capture business capability, actor, user goal, trigger, inputs, outputs, preconditions, main/alternate flows, business rules, validation and permission checks, sensitive data, data reads/writes, side effects, acceptance criteria, and open questions.',
+          'Keep findings API-centered rather than module-centered. Preserve evidence paths and EXTRACTED/INFERRED/UNKNOWN labels. Do not write the final report.'
+        ].join('\n')
+      },
+      writeReportStep,
+      reviewStep,
+      summaryStep
+    ];
+  }
 
   return [
     {
@@ -3256,42 +3486,9 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = []) {
         'Favor clear business process decomposition over broad architecture prose. Do not write the final report.'
       ].join('\n')
     },
-    {
-      title: '🎨 Write banking-style requirements HTML report',
-      role: 'coder',
-      task: [
-        'Create the final project requirements report from the accumulated plan context.',
-        reportContract,
-        'Follow the project-requirements skill instructions below exactly, including chunked HTML writing for medium/large reports.',
-        'Use the blue/white/gray banking-style shell and produce polished inline HTML/CSS/SVG diagrams. Keep the report professional, light, and conservative.',
-        'Organize the main requirements section primarily by API/interface business requirement cards.',
-        'The final HTML must be self-contained and directly openable from disk.',
-        'Write the primary report to the exact primary report path above. Create the companion Markdown only if useful.',
-        'Skill instructions:',
-        renderedSkillPrompt
-      ].join('\n\n')
-    },
-    {
-      title: '🔎 Review API coverage and traceability',
-      role: 'reviewer',
-      task: [
-        'Review the generated requirements report against the project-requirements contract and accumulated evidence.',
-        reportContract,
-        'Check that major APIs/interfaces are represented, business requirements are decomposed per API, evidence paths are present, inferred/unknown content is labeled, diagrams are visible as inline HTML/CSS/SVG without external rendering libraries, and the report path matches the required local date.',
-        'Check that the visual style is light blue/white/gray and suitable for banking/financial review.',
-        'Report concrete gaps and risks only. Do not rewrite the whole report.'
-      ].join('\n')
-    },
-    {
-      title: '🧾 Summarize final report and unresolved questions',
-      role: 'summarizer',
-      task: [
-        'Synthesize the project requirements pipeline results into a concise final status for the user.',
-        reportContract,
-        'Mention the generated report path, API/interface coverage, strongest business requirement findings, unresolved questions, what was not verified, and the best next action.',
-        'Do not re-analyze the codebase unless the accumulated evidence is clearly insufficient.'
-      ].join('\n')
-    }
+    writeReportStep,
+    reviewStep,
+    summaryStep
   ];
 }
 
@@ -3333,7 +3530,8 @@ async function createProjectRequirementsShell({
   manifestPath,
   planFile,
   goal,
-  steps
+  steps,
+  depth = 'standard'
 }) {
   const workspaceRoot = process.cwd();
   const absoluteReportPath = path.resolve(workspaceRoot, reportPath);
@@ -3364,6 +3562,7 @@ async function createProjectRequirementsShell({
   ];
   const manifest = {
     status: 'running',
+    depth,
     goal,
     html: reportPath,
     markdown: companionPath,
@@ -3411,7 +3610,8 @@ async function runProjectRequirementsPipeline({
   onSubSessionActive
 }) {
   const renderedSkillPrompt = await expandFileMentions(renderCommandPrompt(custom, parsedInput.args), process.cwd());
-  const userFocus = parsedInput.args.join(' ').trim();
+  const options = parseProjectRequirementsOptions(parsedInput.args);
+  const userFocus = options.raw;
   const goal = userFocus ? `project requirements report: ${userFocus}` : 'project requirements report';
   const reportDate = formatLocalDate();
   const reportPath = `docs/requirements/${reportDate}-project-requirements.html`;
@@ -3431,15 +3631,17 @@ async function runProjectRequirementsPipeline({
     manifestPath,
     planFile,
     goal,
-    steps
+    steps,
+    depth: options.depth
   });
   const planState = {
     status: 'approved',
     source: 'project-requirements',
+    depth: options.depth,
     goal,
     filePath: planFile,
-    summary: 'Dedicated sub-agent pipeline for project requirements report generation.',
-    finalSummary: 'Executing project requirements pipeline.',
+    summary: `Dedicated ${options.depth} sub-agent pipeline for project requirements report generation.`,
+    finalSummary: `Executing ${options.depth} project requirements pipeline.`,
     steps
   };
   if (onAgentEvent) {
@@ -4222,15 +4424,19 @@ export async function createChatRuntime({
     await saveSession(currentSession);
   };
 
-  const persistAssistantExchange = async (userText, assistantText, { includeUser = true } = {}) => {
+  const persistAssistantExchange = async (userText, assistantText, { includeUser = true, extra = {} } = {}) => {
     if (includeUser && userText) {
       currentSession.messages.push(stampedMessage('user', userText));
     }
     if (assistantText) {
-      currentSession.messages.push(stampedMessage('assistant', assistantText));
+      currentSession.messages.push(stampedMessage('assistant', assistantText, extra));
     }
     if (shouldReplaceSessionTitle(currentSession.title)) {
-      currentSession.title = deriveSessionTitle(currentSession.messages);
+      currentSession.title = await generateSessionTitle({
+        userText,
+        assistantText,
+        config
+      });
     }
     currentSession.model = model || config.model.name;
     currentSession.mode = executionMode || config.execution?.mode || 'normal';
@@ -4378,12 +4584,13 @@ export async function createChatRuntime({
   let activeAbortController = null;
   let activeSubSession = null;
 
-  const submit = async (line, onAgentEvent) => {
+  const submit = async (line, onAgentEvent, options = {}) => {
     // 每次提交创建新的 AbortController，替代旧的
     activeAbortController = new AbortController();
     const { signal } = activeAbortController;
     const activeReplySystemPrompt = await buildActiveSystemPrompt();
     const parsedInput = parseInput(line);
+    const readOnlyCodeWiki = options?.readOnlyCodeWiki === true;
     const maybeAutoDreamFromRuntime = async () => {
       const threshold = Number(config?.memory?.auto_dream_threshold ?? 10);
       if (!(threshold > 0)) return null;
@@ -4417,7 +4624,7 @@ export async function createChatRuntime({
       }
     };
     try {
-      if (shouldPersistInputHistory(parsedInput)) {
+      if (!readOnlyCodeWiki && shouldPersistInputHistory(parsedInput)) {
         await appendInputHistory(line);
       }
     } catch {
@@ -4425,6 +4632,34 @@ export async function createChatRuntime({
     }
     if (parsedInput.type === 'empty') {
       return { type: 'noop' };
+    }
+    if (readOnlyCodeWiki) {
+      const expandedText = await expandFileMentions(line, process.cwd());
+      const readOnlySystemPrompt = [
+        activeReplySystemPrompt,
+        'CodeWiki repository Q&A mode:',
+        '- Answer questions about the current repository and generated CodeWiki/project-requirements report.',
+        '- This is read-only. Do not modify files, update plans, run shell commands, delete anything, write memories, or ask to perform side effects.',
+        '- Use only read-only project inspection tools when evidence is needed.',
+        '- Be concise and cite relevant files or report sections when useful.'
+      ].join('\n\n');
+      const transientSession = structuredClone(currentSession);
+      const result = await askModel({
+        text: expandedText,
+        session: transientSession,
+        config,
+        model,
+        systemPrompt: readOnlySystemPrompt,
+        onAgentEvent,
+        requestToolApproval: activeRequestToolApproval,
+        executionMode: 'auto',
+        alwaysAllowTools: CODEWIKI_READ_ONLY_TOOLS,
+        allowedTools: CODEWIKI_READ_ONLY_TOOLS,
+        persistSession: false,
+        maxSteps: 32,
+        signal
+      });
+      return { type: 'assistant', text: result.text, aborted: !!result.aborted };
     }
     if (parsedInput.type === 'shell') {
       const shell = await handleShellInput(parsedInput.command, config);
@@ -4541,9 +4776,13 @@ export async function createChatRuntime({
         });
         activeSubSession = null;
         currentSession.planState = null;
+        if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
         await removePlanFileIfPresent(planState);
         executionMode = 'auto';
-        await persistAssistantExchange(line, result.text || '', { includeUser: false });
+        await persistAssistantExchange(line, result.sessionText || result.text || '', {
+          includeUser: false,
+          extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
+        });
         return { type: 'assistant', text: result.text, aborted: !!result.aborted };
       }
       if (parsedInput.command === 'edit') {
@@ -4592,6 +4831,15 @@ export async function createChatRuntime({
         });
         currentSession.planState = revised;
         executionMode = 'plan';
+        if (onAgentEvent) {
+          onAgentEvent({
+            type: 'plan:pending_approval',
+            goal: currentSession.planState.goal,
+            summary: currentSession.planState.finalSummary || currentSession.planState.summary,
+            filePath: currentSession.planState.filePath,
+            steps: currentSession.planState.steps
+          });
+        }
         const text = `Plan revised.\n${buildPendingPlanApprovalMessage(currentSession.planState)}`;
         await persistLocalExchange(line, text);
         return { type: 'system', text };
@@ -4606,6 +4854,7 @@ export async function createChatRuntime({
         }
         if (hasPendingPlanApproval(currentSession)) {
           currentSession.planState = null;
+          if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
           executionMode = 'auto';
           const text = 'Pending plan rejected and cleared.';
           await persistLocalExchange(line, text, { includeUser: false });
@@ -4619,6 +4868,7 @@ export async function createChatRuntime({
         }
         const planState = { ...currentSession.planState };
         currentSession.planState = null;
+        if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
         await removePlanFileIfPresent(planState);
         executionMode = 'auto';
         const text = 'Pending plan rejected and cleared.';
@@ -4734,6 +4984,15 @@ export async function createChatRuntime({
             steps: Array.isArray(auto.steps) ? auto.steps : []
           };
           executionMode = 'plan';
+          if (onAgentEvent) {
+            onAgentEvent({
+              type: 'plan:pending_approval',
+              goal: currentSession.planState.goal,
+              summary: currentSession.planState.finalSummary || currentSession.planState.summary,
+              filePath: currentSession.planState.filePath,
+              steps: currentSession.planState.steps
+            });
+          }
           const text = buildAutoPlanSystemSummary(auto);
           await persistLocalExchange(line, text);
           return {
@@ -4759,9 +5018,13 @@ export async function createChatRuntime({
           });
           activeSubSession = null;
           currentSession.planState = null;
+          if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
           await removePlanFileIfPresent(planState);
           executionMode = 'auto';
-          await persistAssistantExchange(line, result.text || '', { includeUser: false });
+          await persistAssistantExchange(line, result.sessionText || result.text || '', {
+            includeUser: false,
+            extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
+          });
           return { type: 'assistant', text: result.text, aborted: !!result.aborted };
         }
         if (sub === 'stay') {
@@ -5262,8 +5525,12 @@ export async function createChatRuntime({
         });
         activeSubSession = null;
         currentSession.planState = null;
+        if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
         executionMode = 'auto';
-        await persistAssistantExchange(line, result.text || '', { includeUser: false });
+        await persistAssistantExchange(line, result.sessionText || result.text || '', {
+          includeUser: false,
+          extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
+        });
         return { type: 'assistant', text: result.text, aborted: !!result.aborted };
       }
       if (isStayInPlanText(parsedInput.text)) {
@@ -5273,6 +5540,7 @@ export async function createChatRuntime({
       }
       if (isRejectPlanText(parsedInput.text)) {
         currentSession.planState = null;
+        if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
         executionMode = 'auto';
         const text = 'Pending plan rejected and cleared.';
         await persistLocalExchange(line, text);
@@ -5282,6 +5550,43 @@ export async function createChatRuntime({
         type: 'system',
         text: buildPendingPlanApprovalMessage(currentSession.planState)
       };
+    }
+
+    // Plan mode with no pending plan → auto-generate structured plan
+    if (executionMode === 'plan') {
+      const expandedPlanText = await expandFileMentions(parsedInput.text, process.cwd());
+      await maybeAutoDreamFromRuntime();
+      const auto = await buildAutoPlanAndRun({
+        goal: expandedPlanText,
+        session: currentSession,
+        config,
+        model,
+        systemPrompt: activeReplySystemPrompt,
+        onAgentEvent,
+        sessionId: currentSession.id,
+        taskClass: classifyPlanTaskClass(expandedPlanText)
+      });
+      currentSession.planState = {
+        status: 'pending_approval',
+        source: 'auto',
+        goal: expandedPlanText,
+        filePath: auto.filePath,
+        summary: auto.summary || '',
+        finalSummary: auto.finalSummary || auto.summary || '',
+        steps: Array.isArray(auto.steps) ? auto.steps : []
+      };
+      if (onAgentEvent) {
+        onAgentEvent({
+          type: 'plan:pending_approval',
+          goal: currentSession.planState.goal,
+          summary: currentSession.planState.finalSummary || currentSession.planState.summary,
+          filePath: currentSession.planState.filePath,
+          steps: currentSession.planState.steps
+        });
+      }
+      const text = buildAutoPlanSystemSummary(auto);
+      await persistLocalExchange(line, text);
+      return { type: 'system', text };
     }
 
     if (compactState.autoEnabled) {
@@ -5392,6 +5697,13 @@ export async function createChatRuntime({
     reloadConfig: async () => {
       config = await loadConfig();
       return config;
+    },
+    setExecutionMode: async (next) => {
+      if (!['normal', 'auto', 'plan'].includes(next)) return false;
+      executionMode = next;
+      await setConfigValue('execution.mode', next);
+      config = await loadConfig();
+      return true;
     },
     setRequestToolApproval: (handler) => {
       activeRequestToolApproval = typeof handler === 'function' ? handler : null;
