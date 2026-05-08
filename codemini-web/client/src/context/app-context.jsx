@@ -323,14 +323,14 @@ export function AppProvider({ children }) {
 
   const loadSessionMessages = useCallback(async () => {
     try {
-      const uiMessages = await api.fetchSessionUiMessages();
-      if (Array.isArray(uiMessages) && uiMessages.length) {
-        update({ messages: uiMessages });
+      const messages = await api.fetchSessionMessages();
+      if (!Array.isArray(messages) || !messages.length) {
+        const uiMessages = await api.fetchSessionUiMessages();
+        if (Array.isArray(uiMessages) && uiMessages.length) {
+          update({ messages: uiMessages });
+        }
         return;
       }
-
-      const messages = await api.fetchSessionMessages();
-      if (!Array.isArray(messages) || !messages.length) return;
       const processed = [];
       let assistantGroup = null;
       for (const msg of messages) {

@@ -7,7 +7,7 @@ import {
   Settings,
   Folder,
   ChevronDown,
-  Sparkles,
+  Hammer,
   User,
   Info,
   BookOpenText,
@@ -130,11 +130,8 @@ export function Sidebar({
 
   return (
     <aside className="w-[260px] shrink-0 border-r border-(--border-default) flex flex-col bg-(--bg-secondary)">
-      <nav
-        className="flex-1 flex flex-col px-2.5 pt-3 pb-2 gap-0.5 overflow-y-auto"
-        style={{ scrollbarWidth: "thin" }}
-      >
-        {/* New Session */}
+      {/* Fixed top action buttons */}
+      <div className="shrink-0 px-2.5 pt-3 flex flex-col gap-0.5">
         <button
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onNewSession}
@@ -147,8 +144,7 @@ export function Sidebar({
           <span className="truncate">新对话</span>
         </button>
 
-        {/* Search */}
-        <button
+        {/* <button
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={() => {}}
         >
@@ -158,14 +154,13 @@ export function Sidebar({
             className="text-(--text-secondary) shrink-0"
           />
           <span className="truncate">搜索</span>
-        </button>
+        </button> */}
 
-        {/* Skills */}
         <button
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onOpenSkills}
         >
-          <Sparkles
+          <Hammer
             size={15}
             strokeWidth={2}
             className="text-(--text-secondary) shrink-0"
@@ -173,7 +168,6 @@ export function Sidebar({
           <span className="truncate">Skills</span>
         </button>
 
-        {/* Souls */}
         <button
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onOpenSouls}
@@ -187,8 +181,13 @@ export function Sidebar({
         </button>
 
         <Separator className="my-2 bg-(--border-default)" />
+      </div>
 
-        {/* Project Groups */}
+      {/* Scrollable project history */}
+      <nav
+        className="flex-1 min-h-0 flex flex-col px-2.5 pb-2 gap-0.5 overflow-y-auto"
+        style={{ scrollbarWidth: "thin" }}
+      >
         {Array.from(projectGroups.entries()).map(
           ([projectKey, projectSessions]) => {
             const isExpanded =
@@ -253,7 +252,9 @@ export function Sidebar({
                       className="shrink-0 text-(--text-muted)"
                     />
                   )}
-                  <span className="text-[11px]">{projectSessions.length}</span>
+                  <span className="text-[11px] px-2">
+                    {projectSessions.length}
+                  </span>
                   <button
                     type="button"
                     className="border-0 bg-transparent inline-flex size-5 shrink-0 items-center justify-center rounded-md text-inherit cursor-pointer hover:bg-(--bg-active)"
@@ -274,10 +275,13 @@ export function Sidebar({
                     {projectSessions.slice(0, 30).map((session) => (
                       <div
                         key={session.id}
-                        onClick={() =>
-                          session.id !== currentSessionId &&
-                          onSwitchSession(session.id)
-                        }
+                        onClick={() => {
+                          if (session.id !== currentSessionId) {
+                            onSwitchSession(session.id);
+                          } else if (currentView !== "chat") {
+                            onSwitchView?.("chat");
+                          }
+                        }}
                         className={cn(
                           "group w-full border-0 bg-transparent flex items-center gap-2 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] truncate",
                           session.id === currentSessionId
@@ -365,7 +369,11 @@ export function Sidebar({
             title={isDark ? "浅色" : "深色"}
             aria-label={isDark ? "切换浅色模式" : "切换深色模式"}
           >
-            {isDark ? <Sun size={15} strokeWidth={1.8} /> : <Moon size={15} strokeWidth={1.8} />}
+            {isDark ? (
+              <Moon size={15} strokeWidth={1.8} />
+            ) : (
+              <Sun size={15} strokeWidth={1.8} />
+            )}
           </button>
           <button
             className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"

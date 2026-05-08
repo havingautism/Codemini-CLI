@@ -83,7 +83,7 @@ function getGenerationProgress(steps, stageLabel) {
       : active?.title || stageLabel || "正在生成 CodeWiki",
     detail: failed
       ? failed.title
-      : `${done}/${planSteps.length} 个步骤完成${active?.role ? ` · ${active.role}` : ""}`,
+      : `${done}/${planSteps.length} 个步骤完成${active?.role ? ` · ${active.role.toUpperCase()}` : ""}`,
   };
 }
 
@@ -708,12 +708,12 @@ export function CodeWikiPanel({
 
         <aside className="border-l border-(--border-default) bg-(--bg-secondary) min-h-0 flex flex-col max-xl:hidden">
           <div className="p-4 border-b border-(--border-default)">
-            <div className="flex items-center gap-2 text-(--text-primary)">
+            {/* <div className="flex items-center gap-2 text-(--text-primary)">
               <MessageSquareText size={17} />
               <span className="font-medium text-[14px]">
                 Ask this repository
               </span>
-            </div>
+            </div> */}
             <p className="mt-2 text-[12px] leading-5 text-(--text-muted)">
               {generating
                 ? "CodeWiki 生成完成前暂不接受提问。"
@@ -727,8 +727,8 @@ export function CodeWikiPanel({
           >
             {chatMessages.length === 0 ? (
               <div className="rounded-xl border border-(--border-default) bg-(--bg-primary) p-4">
-                <Sparkles size={22} className="text-(--text-muted)" />
-                <p className="mt-4 text-[13px] font-medium text-(--text-primary)">
+                {/* <Sparkles size={22} className="text-(--text-muted)" /> */}
+                <p className="text-[13px] font-medium text-(--text-primary)">
                   {generating
                     ? "正在生成 CodeWiki"
                     : asking || busy

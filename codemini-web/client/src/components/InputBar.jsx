@@ -13,12 +13,14 @@ import {
   Minus,
   Folder,
   Sparkles,
+  Hammer,
   Moon,
   Archive,
   Database,
   Inbox,
   Camera,
   RotateCcw,
+  Ham,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
@@ -99,7 +101,8 @@ function ModeSelector({ current, disabled = false }) {
     setSwitching(true);
     try {
       const result = await api.setExecutionMode(mode);
-      if (result?.error) throw new Error(result.message || "Failed to switch mode");
+      if (result?.error)
+        throw new Error(result.message || "Failed to switch mode");
     } catch {
     } finally {
       setSwitching(false);
@@ -282,7 +285,7 @@ function CommandPalette({ query, onSelect, visible }) {
         .map((skill) => ({
           name: skill.name,
           insert: `/${skill.name} `,
-          icon: Sparkles,
+          icon: Hammer,
           description: skill.description || "Manual skill",
           kind: "skill",
           key: `skill-${skill.name}`,
@@ -524,7 +527,7 @@ export function InputBar({
                 ? t("inputDisabled")
                 : disabled
                   ? disabledReason || t("inputDisabled")
-                : "可向 CodeMini 询问任何事。输入 / 使用命令或技能"
+                  : "可向 CodeMini 询问任何事。输入 / 使用命令或技能"
             }
             disabled={inputLocked}
             rows={1}

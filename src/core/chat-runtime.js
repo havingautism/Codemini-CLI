@@ -3310,7 +3310,7 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = []) {
   ].join('\n');
 
   const writeReportStep = {
-    title: '🎨 Write banking-style requirements HTML report',
+    title: '🎨 Write requirements report',
     role: 'coder',
     task: [
       'Create the final project requirements report from the accumulated plan context.',

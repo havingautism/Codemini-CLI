@@ -2,6 +2,27 @@
 @import "streamdown/styles.css";
 @source "../node_modules/streamdown/dist/*.js";
 
+/* ── Geist Font Faces ── */
+@font-face {
+  font-family: "Geist";
+  src: url("../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist";
+  src: url("../node_modules/geist/dist/fonts/geist-sans/Geist-Italic%5Bwght%5D.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: italic;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
 @custom-variant dark (&[data-theme="dark"]);
 
 @theme inline {
@@ -9,14 +30,23 @@
   --color-foreground: var(--foreground);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
-  --color-sidebar: var(--sidebar);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-border: var(--border);
-  --color-input: var(--input);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
   --color-accent-blue: var(--accent-blue);
   --color-accent-green: var(--accent-green);
   --color-accent-red: var(--accent-red);
@@ -30,100 +60,116 @@
   --font-mono: var(--font-mono);
 }
 
-/* ── Design Tokens ── */
+/* ── Design Tokens (shadcn/ui neutral base) ── */
 :root {
   color-scheme: light;
   --background: #ffffff;
-  --foreground: #2f2f2c;
+  --foreground: #0a0a0a;
   --card: #ffffff;
-  --card-foreground: #2f2f2c;
-  --sidebar: #f8f8f7;
-  --sidebar-foreground: #2f2f2c;
-  --muted: #f1f1ef;
-  --muted-foreground: #72716d;
-  --border: #e5e4e2;
-  --input: #e5e4e2;
-  --primary: #2383e2;
-  --primary-foreground: #ffffff;
-  --radius: 0.5rem;
+  --card-foreground: #0a0a0a;
+  --popover: #ffffff;
+  --popover-foreground: #0a0a0a;
+  --primary: #171717;
+  --primary-foreground: #fafafa;
+  --secondary: #f5f5f5;
+  --secondary-foreground: #171717;
+  --muted: #f5f5f5;
+  --muted-foreground: #737373;
+  --accent: #f5f5f5;
+  --accent-foreground: #171717;
+  --destructive: #ef4444;
+  --destructive-foreground: #fafafa;
+  --border: #e5e5e5;
+  --input: #e5e5e5;
+  --ring: #a3a3a3;
+  --sidebar: #fafafa;
+  --sidebar-foreground: #0a0a0a;
   --bg-primary: #ffffff;
-  --bg-secondary: #f8f8f7;
-  --bg-tertiary: #f1f1ef;
-  --bg-hover: #ededeb;
-  --bg-active: #ededeb;
+  --bg-secondary: #f5f5f5;
+  --bg-tertiary: #f5f5f5;
+  --bg-hover: #e5e5e5;
+  --bg-active: #e5e5e5;
   --bg-input: #ffffff;
-  --text-primary: #2f2f2c;
-  --text-secondary: #72716d;
-  --text-muted: #aaa9a5;
-  --border-default: #e5e4e2;
-  --border-strong: #d3d1cc;
-  --accent-blue: #2383e2;
-  --accent-blue-bg: #e7f0fb;
-  --accent-green: #0f7b6c;
-  --accent-green-bg: #e6f4f0;
-  --accent-red: #d84f4f;
-  --accent-red-bg: #fce8e8;
-  --accent-orange: #ad7200;
-  --accent-orange-bg: #fef6e0;
-  --accent-purple: #6940a5;
-  --accent-purple-bg: #f0eaf8;
-  --accent-cyan: #0b6e99;
-  --accent-cyan-bg: #e0f0fa;
-  --accent-hover: #1668bd;
-  --shadow-sm: rgba(15, 15, 15, 0.06) 0 1px 2px;
-  --shadow-default: rgba(15, 15, 15, 0.06) 0 0 0 1px, rgba(15, 15, 15, 0.10) 0 8px 24px;
-  --shadow-lg: rgba(15, 15, 15, 0.10) 0 0 0 1px, rgba(15, 15, 15, 0.18) 0 16px 46px;
-  --radius-sm: 4px;
-  --radius: 6px;
-  --radius-lg: 8px;
-  --radius-xl: 16px;
-  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-  --font-mono: "SFMono-Regular", Menlo, Consolas, "PT Mono", monospace;
+  --text-primary: #0a0a0a;
+  --text-secondary: #737373;
+  --text-muted: #a3a3a3;
+  --border-default: #e5e5e5;
+  --border-strong: #d4d4d4;
+  --accent-blue: #2563eb;
+  --accent-blue-bg: #eff6ff;
+  --accent-green: #059669;
+  --accent-green-bg: #ecfdf5;
+  --accent-red: #dc2626;
+  --accent-red-bg: #fef2f2;
+  --accent-orange: #d97706;
+  --accent-orange-bg: #fffbeb;
+  --accent-purple: #7c3aed;
+  --accent-purple-bg: #f5f3ff;
+  --accent-cyan: #0891b2;
+  --accent-cyan-bg: #ecfeff;
+  --accent-hover: #1d4ed8;
+  --shadow-sm: rgba(0, 0, 0, 0.05) 0 1px 2px;
+  --shadow-default: rgba(0, 0, 0, 0.05) 0 0 0 1px, rgba(0, 0, 0, 0.08) 0 8px 24px;
+  --shadow-lg: rgba(0, 0, 0, 0.08) 0 0 0 1px, rgba(0, 0, 0, 0.16) 0 16px 46px;
+  --radius-sm: 0.25rem;
+  --radius: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --font-sans: "Geist", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   --transition: 140ms ease;
 }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --background: #171717;
-  --foreground: #ededeb;
-  --card: #202020;
-  --card-foreground: #ededeb;
-  --sidebar: #202020;
-  --sidebar-foreground: #ededeb;
-  --muted: #2a2a2a;
-  --muted-foreground: #b4b3af;
-  --border: #30302e;
-  --input: #484844;
-  --primary: #8ab7f8;
-  --primary-foreground: #171717;
-  --radius: 0.5rem;
-  --bg-primary: #171717;
-  --bg-secondary: #202020;
-  --bg-tertiary: #2a2a2a;
-  --bg-hover: #2f2f2f;
-  --bg-active: #343434;
-  --bg-input: #1f1f1f;
-  --text-primary: #ededeb;
-  --text-secondary: #b4b3af;
-  --text-muted: #7b7a76;
-  --border-default: #30302e;
-  --border-strong: #484844;
-  --accent-blue: #8ab7f8;
-  --accent-blue-bg: #1d2b3d;
-  --accent-green: #63d7be;
-  --accent-green-bg: #17352f;
-  --accent-red: #ff8b8b;
-  --accent-red-bg: #3b2020;
-  --accent-orange: #f2c36b;
-  --accent-orange-bg: #3a2b12;
-  --accent-purple: #c3a4ff;
-  --accent-purple-bg: #2c2440;
-  --accent-cyan: #7fd7ff;
-  --accent-cyan-bg: #17303d;
-  --accent-hover: #a6c8ff;
-  --shadow-sm: rgba(0, 0, 0, 0.24) 0 1px 2px;
-  --shadow-default: rgba(0, 0, 0, 0.35) 0 0 0 1px, rgba(0, 0, 0, 0.32) 0 10px 28px;
-  --shadow-lg: rgba(0, 0, 0, 0.40) 0 0 0 1px, rgba(0, 0, 0, 0.55) 0 18px 60px;
+  --background: #0a0a0a;
+  --foreground: #fafafa;
+  --card: #0a0a0a;
+  --card-foreground: #fafafa;
+  --popover: #0a0a0a;
+  --popover-foreground: #fafafa;
+  --primary: #fafafa;
+  --primary-foreground: #0a0a0a;
+  --secondary: #262626;
+  --secondary-foreground: #fafafa;
+  --muted: #262626;
+  --muted-foreground: #a3a3a3;
+  --accent: #262626;
+  --accent-foreground: #fafafa;
+  --destructive: #ef4444;
+  --destructive-foreground: #fafafa;
+  --border: #262626;
+  --input: #262626;
+  --ring: #737373;
+  --sidebar: #0a0a0a;
+  --sidebar-foreground: #fafafa;
+  --bg-primary: #0a0a0a;
+  --bg-secondary: #141414;
+  --bg-tertiary: #262626;
+  --bg-hover: #2e2e2e;
+  --bg-active: #333333;
+  --bg-input: #141414;
+  --text-primary: #fafafa;
+  --text-secondary: #a3a3a3;
+  --text-muted: #737373;
+  --border-default: #262626;
+  --border-strong: #404040;
+  --accent-blue: #60a5fa;
+  --accent-blue-bg: #172554;
+  --accent-green: #34d399;
+  --accent-green-bg: #022c22;
+  --accent-red: #f87171;
+  --accent-red-bg: #450a0a;
+  --accent-orange: #fbbf24;
+  --accent-orange-bg: #451a03;
+  --accent-purple: #a78bfa;
+  --accent-purple-bg: #2e1065;
+  --accent-cyan: #22d3ee;
+  --accent-cyan-bg: #083344;
+  --accent-hover: #93c5fd;
+  --shadow-sm: rgba(0, 0, 0, 0.3) 0 1px 2px;
+  --shadow-default: rgba(0, 0, 0, 0.4) 0 0 0 1px, rgba(0, 0, 0, 0.4) 0 10px 28px;
+  --shadow-lg: rgba(0, 0, 0, 0.5) 0 0 0 1px, rgba(0, 0, 0, 0.6) 0 18px 60px;
 }
 
 /* ── Prevent I-beam cursor on non-editable text ── */
