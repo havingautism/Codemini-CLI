@@ -9,11 +9,20 @@ node_modules/
 .codemini-project/
 storage/
 
+# Local AI assistant/editor state
+.claude/
+.codex
+.cursor/
+.continue/
+.aider*
+.windsurf/
+
 # Build/package artifacts
 *.tgz
 dist/
 coverage/
-./docs/
+docs/
+.superpowers/
 # Logs
 *.log
 npm-debug.log*
