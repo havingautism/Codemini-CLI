@@ -16,7 +16,7 @@ CodeMini CLI is a terminal coding assistant built for teams that want a sharper,
 
 It is designed around a deliberate idea: most coding workflows do not need a huge default tool surface or unrestricted shell behavior. Instead, CodeMini starts with a compact core, loads advanced tools on demand, and keeps the agent grounded in structured code operations, session todos, lightweight project indexing, and shell-aware safety rules.
 
-**Contents** — [Why CodeMini CLI](#why-codemini-cli) · [Installation](#installation) · [Quick Start](#quick-start) · [Commands](#commands) · [Personalities (Souls)](#personalities-souls) · [Tool Model](#how-the-tool-model-works) · [Core Capabilities](#core-capabilities) · [Reflect Skills](#reflect-skills) · [Dream Loop (Built-in Memory Evolution)](#dream-loop-built-in-memory-evolution) · [Project Index](#project-index) · [Good Fit](#good-fit) · [Documentation](#documentation) · [Development](#development) · [License](#license)
+**Contents** — [Why CodeMini CLI](#why-codemini-cli) · [Installation](#installation) · [Quick Start](#quick-start) · [Web UI](#web-ui) · [Commands](#commands) · [Personalities (Souls)](#personalities-souls) · [Tool Model](#how-the-tool-model-works) · [Core Capabilities](#core-capabilities) · [Reflect Skills](#reflect-skills) · [Dream Loop (Built-in Memory Evolution)](#dream-loop-built-in-memory-evolution) · [Project Index](#project-index) · [Good Fit](#good-fit) · [Documentation](#documentation) · [Development](#development) · [License](#license)
 
 ### Why CodeMini CLI
 
@@ -57,6 +57,57 @@ codemini doctor
 # 4. Start an interactive coding session
 codemini
 ```
+
+### Web UI
+
+CodeMini also includes a local Web UI under `codemini-web/`. It runs the same CodeMini runtime behind a browser interface, so you can keep the agent workflow visible while managing sessions, projects, approvals, skills, souls, and CodeWiki reports from one place.
+
+After installing the npm package, open it directly from any project:
+
+```bash
+codemini --web
+
+# Equivalent forms
+codemini web
+codemini -web
+```
+
+Useful options:
+
+```bash
+codemini --web --port 3210 --project /path/to/project
+codemini --web --session <session-id> --model <model-name> --no-open
+```
+
+For local Web UI development:
+
+```bash
+cd codemini-web
+bun install
+bun run dev
+```
+
+The dev script starts two local services and prints the exact URLs:
+
+- Web app: `http://127.0.0.1:5178` by default, or the next free port
+- API server: `http://127.0.0.1:5000` by default, or the next free port
+
+For a single built/served process:
+
+```bash
+cd codemini-web
+npm run build
+npm run start -- --port 3210
+```
+
+Current Web UI highlights:
+
+- Chat with the CodeMini runtime using the same sessions and configuration as the CLI
+- Switch projects and sessions without restarting the process
+- Review tool approvals and plan approvals in focused dialogs/cards
+- Manage config, skills, and soul presets from the browser
+- Browse CodeWiki / project-requirements reports, generate new reports, ask questions about them, and delete stale reports
+- See runtime status, active mode, git branch, version/update state, and live execution progress
 
 ### Optional: FFF Search Acceleration
 
@@ -330,6 +381,57 @@ codemini doctor
 # 4. 启动交互式编码会话
 codemini
 ```
+
+### Web UI
+
+CodeMini 也内置了一个本地 Web UI，位于 `codemini-web/`。它复用同一套 CodeMini runtime，只是把交互入口放到浏览器里，适合更直观地查看会话、项目、审批、技能、人格和 CodeWiki 报告。
+
+npm 包安装后，可以在任意项目目录直接打开：
+
+```bash
+codemini --web
+
+# 等价写法
+codemini web
+codemini -web
+```
+
+常用参数：
+
+```bash
+codemini --web --port 3210 --project /path/to/project
+codemini --web --session <session-id> --model <model-name> --no-open
+```
+
+本地开发 Web UI：
+
+```bash
+cd codemini-web
+bun install
+bun run dev
+```
+
+开发脚本会启动两个本地服务，并在终端打印实际地址：
+
+- Web 应用：默认 `http://127.0.0.1:5178`，如果端口占用会自动寻找下一个可用端口
+- API 服务：默认 `http://127.0.0.1:5000`，如果端口占用会自动寻找下一个可用端口
+
+如果想使用构建后的单进程服务：
+
+```bash
+cd codemini-web
+npm run build
+npm run start -- --port 3210
+```
+
+当前 Web UI 重点能力：
+
+- 使用和 CLI 相同的会话、配置与运行时进行对话
+- 在浏览器里切换项目和历史会话
+- 通过弹窗/卡片审阅 tool approval 和 plan approval
+- 管理配置、skills 和 soul 人格预设
+- 浏览 CodeWiki / project-requirements 报告，生成新报告，基于报告提问，并删除过期报告
+- 查看运行状态、执行模式、git 分支、版本更新状态和实时执行进度
 
 ### 可选：FFF 搜索加速
 

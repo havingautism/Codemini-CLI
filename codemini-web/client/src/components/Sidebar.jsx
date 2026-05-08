@@ -2,7 +2,8 @@ import { useState } from "react";
 import {
   Plus,
   Search,
-  SunMoon,
+  Sun,
+  Moon,
   Settings,
   Folder,
   ChevronDown,
@@ -109,6 +110,16 @@ export function Sidebar({
     onSwitchView?.("codewiki", { projectPath: projectKey });
   };
 
+  const openProjectNewSession = async (event, projectKey) => {
+    event.stopPropagation();
+    if (!projectKey || projectKey === "unknown") return;
+    if (projectKey === activeProjectKey) {
+      await onNewSession?.();
+      return;
+    }
+    await onOpenProject?.(projectKey, { view: "chat" });
+  };
+
   const confirmDeleteSession = async () => {
     if (!pendingDelete) return;
     setDeleting(true);
@@ -205,6 +216,19 @@ export function Sidebar({
                       {getProjectName(projectKey)}
                     </span>
                   </button>
+                  {canOpenCodeWiki && (
+                    <button
+                      type="button"
+                      className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-active) hover:text-(--text-primary)"
+                      title="在此项目中新建对话"
+                      aria-label={`在 ${getProjectName(projectKey)} 中新建对话`}
+                      onClick={(event) =>
+                        openProjectNewSession(event, projectKey)
+                      }
+                    >
+                      <Plus size={13} strokeWidth={2.1} />
+                    </button>
+                  )}
                   {canOpenCodeWiki && (
                     <button
                       type="button"
@@ -341,7 +365,7 @@ export function Sidebar({
             title={isDark ? "浅色" : "深色"}
             aria-label={isDark ? "切换浅色模式" : "切换深色模式"}
           >
-            <SunMoon size={15} strokeWidth={1.8} />
+            {isDark ? <Sun size={15} strokeWidth={1.8} /> : <Moon size={15} strokeWidth={1.8} />}
           </button>
           <button
             className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"

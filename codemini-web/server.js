@@ -413,19 +413,44 @@ async function main() {
     }
 
     if (req.method === 'POST' && url.pathname === '/api/codewiki/ask') {
-      const { question } = await readBody(req);
+      const { question, reportFile } = await readBody(req);
       if (!question || typeof question !== 'string') {
         jsonResponse(res, { error: true, message: 'Missing "question" field' }, 400);
         return;
       }
+      const selectedReport = isCodeWikiReportFile(reportFile) ? reportFile : '';
       if (bridge.isBusy()) {
         jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
         return;
       }
-      const result = await bridge.handleCodeWikiAsk(
-        `请基于当前项目的 CodeWiki / project-requirements 报告回答这个问题：${question.trim()}`
-      );
-      jsonResponse(res, result, result?.error ? 500 : 200);
+      const reportPath = selectedReport
+        ? path.join(getRequirementsDir(currentProjectDir), selectedReport)
+        : getRequirementsDir(currentProjectDir);
+      const prompt = [
+        '请基于当前项目和 CodeWiki / project-requirements HTML 报告回答下面的问题。',
+        `项目路径：${currentProjectDir}`,
+        `报告路径：${reportPath}`,
+        '',
+        '要求：',
+        '- 优先读取并参考上述 HTML 报告。',
+        '- 如果报告信息不足，可以只读检索项目文件补充证据。',
+        '- 不要修改文件，不要生成新报告，不要写入记忆。',
+        '',
+        `问题：${question.trim()}`
+      ].join('\n');
+
+      res.writeHead(200, {
+        'Content-Type': 'application/x-ndjson; charset=utf-8',
+        'Cache-Control': 'no-cache, no-transform',
+        'X-Accel-Buffering': 'no'
+      });
+      const writeEvent = (event) => {
+        try {
+          res.write(`${JSON.stringify(event)}\n`);
+        } catch {}
+      };
+      await bridge.handleCodeWikiAsk(prompt, writeEvent);
+      res.end();
       return;
     }
 

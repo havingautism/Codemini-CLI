@@ -11,15 +11,19 @@ import {
   Sparkles,
 } from "lucide-react";
 import {
-  askCodeWiki,
   deleteCodeWikiReport,
   fetchCodeWikiReports,
   generateCodeWikiReport,
+  streamCodeWikiAsk,
 } from "@/hooks/use-api.js";
 import { Progress } from "@/components/ui/progress";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
-import { StreamdownRenderer } from "@/components/StreamdownRenderer.jsx";
+import { MessageBubble } from "@/components/MessageBubble.jsx";
 import { cn } from "@/lib/utils";
 
 const GENERATION_DEPTHS = [
@@ -74,7 +78,9 @@ function getGenerationProgress(steps, stageLabel) {
     done,
     total: planSteps.length,
     pct: Math.max(8, Math.round((done / planSteps.length) * 100)),
-    label: failed ? "生成遇到问题" : active?.title || stageLabel || "正在生成 CodeWiki",
+    label: failed
+      ? "生成遇到问题"
+      : active?.title || stageLabel || "正在生成 CodeWiki",
     detail: failed
       ? failed.title
       : `${done}/${planSteps.length} 个步骤完成${active?.role ? ` · ${active.role}` : ""}`,
@@ -109,7 +115,163 @@ function GenerationProgress({ steps, stageLabel, compact = false }) {
   );
 }
 
-export function CodeWikiPanel({ projectCwd, projectKey, busy, planSteps = [], stageLabel = "" }) {
+function addToolToSegments(segments, toolCard) {
+  if (!Array.isArray(segments) || segments.length === 0) {
+    return [{ type: "tools", cards: [toolCard] }];
+  }
+  const last = segments[segments.length - 1];
+  if (last.type === "tools") {
+    return [
+      ...segments.slice(0, -1),
+      { ...last, cards: [...last.cards, toolCard] },
+    ];
+  }
+  return [...segments, { type: "tools", cards: [toolCard] }];
+}
+
+function updateToolInSegments(segments, toolId, updater) {
+  return (Array.isArray(segments) ? segments : []).map((seg) => {
+    if (seg.type !== "tools") return seg;
+    const index = seg.cards.findIndex((card) => card.id === toolId);
+    if (index === -1) return seg;
+    const cards = [...seg.cards];
+    cards[index] = updater(cards[index]);
+    return { ...seg, cards };
+  });
+}
+
+function ensureTextSegment(segments) {
+  const current = Array.isArray(segments) ? segments : [];
+  if (current.length === 0) {
+    return [{ type: "text", text: "", isStreaming: false }];
+  }
+  const last = current[current.length - 1];
+  if (last.type === "text") return current;
+  return [...current, { type: "text", text: "", isStreaming: false }];
+}
+
+function appendDeltaToSegments(segments, delta) {
+  const value = String(delta || "");
+  if (!value) return Array.isArray(segments) ? segments : [];
+  const current = ensureTextSegment(segments);
+  const last = current[current.length - 1];
+  return [
+    ...current.slice(0, -1),
+    { ...last, text: `${last.text || ""}${value}`, isStreaming: true },
+  ];
+}
+
+function replaceLastTextSegment(segments, text) {
+  const current = ensureTextSegment(segments);
+  const lastIndex = current.length - 1;
+  return current.map((seg, index) =>
+    index === lastIndex && seg.type === "text"
+      ? { ...seg, text, isStreaming: false }
+      : seg,
+  );
+}
+
+function finishStreamingSegments(segments) {
+  return (Array.isArray(segments) ? segments : []).map((seg) =>
+    seg.type === "text" ? { ...seg, isStreaming: false } : seg,
+  );
+}
+
+function applyCodeWikiEventToMessage(message, event) {
+  switch (event?.type) {
+    case "assistant:delta":
+      return {
+        ...message,
+        segments: appendDeltaToSegments(message.segments, event.text),
+      };
+    case "assistant:response":
+      return {
+        ...message,
+        segments: event.text
+          ? replaceLastTextSegment(message.segments, event.text)
+          : finishStreamingSegments(message.segments),
+      };
+    case "tool:start":
+      return {
+        ...message,
+        segments: addToolToSegments(message.segments, {
+          id: event.id,
+          name: event.name,
+          arguments: event.arguments,
+          status: "running",
+          durationMs: null,
+          summary: "",
+          result: "",
+        }),
+      };
+    case "tool:result":
+      return {
+        ...message,
+        segments: updateToolInSegments(message.segments, event.id, (card) => ({
+          ...card,
+          result: event.content || card.result || "",
+        })),
+      };
+    case "tool:end":
+      return {
+        ...message,
+        segments: updateToolInSegments(message.segments, event.id, (card) => ({
+          ...card,
+          status: "done",
+          durationMs: event.durationMs,
+          summary: event.summary || card.summary || "",
+        })),
+      };
+    case "tool:error":
+      return {
+        ...message,
+        segments: updateToolInSegments(message.segments, event.id, (card) => ({
+          ...card,
+          status: "error",
+          durationMs: event.durationMs,
+          summary: event.summary || card.summary || "",
+        })),
+      };
+    case "tool:blocked":
+      return {
+        ...message,
+        segments: updateToolInSegments(message.segments, event.id, (card) => ({
+          ...card,
+          status: "blocked",
+          summary: card.summary || "Tool blocked",
+        })),
+      };
+    case "codewiki:done":
+      return {
+        ...message,
+        loading: false,
+        segments: finishStreamingSegments(message.segments),
+      };
+    case "codewiki:error":
+      return {
+        ...message,
+        role: "error",
+        loading: false,
+        segments: [
+          {
+            type: "text",
+            text: event.message || "CodeWiki 问答失败",
+            isStreaming: false,
+          },
+        ],
+      };
+    default:
+      return message;
+  }
+}
+
+export function CodeWikiPanel({
+  projectCwd,
+  projectKey,
+  busy,
+  planSteps = [],
+  stageLabel = "",
+}) {
   const [reports, setReports] = useState([]);
   const [selectedFile, setSelectedFile] = useState("");
   const [loading, setLoading] = useState(true);
@@ -135,27 +297,28 @@ export function CodeWikiPanel({ projectCwd, projectKey, busy, planSteps = [], st
     ? `/api/codewiki/report/${encodeURIComponent(selected.file)}`
     : "";
 
-  const loadReports = useCallback(
-    async ({ preferNewest = false } = {}) => {
-      setLoading(true);
-      setError("");
-      try {
-        const data = await fetchCodeWikiReports();
-        const nextReports = Array.isArray(data?.reports) ? data.reports : [];
-        setReports(nextReports);
-        setSelectedFile((current) => {
-          if (preferNewest && nextReports[0]) return nextReports[0].file;
-          if (nextReports.some((report) => report.file === current)) return current;
-          return nextReports[0]?.file || "";
-        });
-      } catch (err) {
-        setError(err?.message || "无法加载 CodeWiki 报告");
-      } finally {
-        setLoading(false);
-      }
-    },
-    [],
-  );
+  const loadReports = useCallback(async ({ preferNewest = false } = {}) => {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await fetchCodeWikiReports();
+      const rawReports = Array.isArray(data?.reports) ? data.reports : [];
+      const nextReports = [...rawReports].sort(
+        (a, b) => new Date(b.mtime || 0) - new Date(a.mtime || 0),
+      );
+      setReports(nextReports);
+      setSelectedFile((current) => {
+        if (preferNewest && nextReports[0]) return nextReports[0].file;
+        if (nextReports.some((report) => report.file === current))
+          return current;
+        return nextReports[0]?.file || "";
+      });
+    } catch (err) {
+      setError(err?.message || "无法加载 CodeWiki 报告");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     setReports([]);
@@ -208,44 +371,59 @@ export function CodeWikiPanel({ projectCwd, projectKey, busy, planSteps = [], st
     event.preventDefault();
     const trimmed = question.trim();
     if (!trimmed || isWorking || asking) return;
-    const userMessage = {
-      id: `cw-user-${Date.now()}`,
-      role: "user",
-      text: trimmed,
-    };
-    const assistantId = `cw-assistant-${Date.now()}`;
+    const now = Date.now();
+    const assistantId = `cw-assistant-${now}`;
     setLastQuestion(trimmed);
     setQuestion("");
+    setError("");
     setChatMessages((current) => [
       ...current,
-      userMessage,
-      { id: assistantId, role: "assistant", text: "", loading: true },
+      {
+        id: `cw-user-${now}`,
+        role: "you",
+        text: trimmed,
+        segments: [{ type: "text", text: trimmed, isStreaming: false }],
+        timestamp: new Date().toISOString(),
+      },
+      {
+        id: assistantId,
+        role: "general",
+        text: "",
+        segments: [],
+        timestamp: new Date().toISOString(),
+        loading: true,
+      },
     ]);
     setAsking(true);
-    setError("");
     try {
-      const result = await askCodeWiki(trimmed);
-      if (result?.error) throw new Error(result.message || "问答失败");
-      setChatMessages((current) =>
-        current.map((message) =>
-          message.id === assistantId
-            ? {
-                ...message,
-                text: result?.text || "没有生成回答。",
-                loading: false,
-              }
-            : message,
-        ),
-      );
+      await streamCodeWikiAsk({
+        question: trimmed,
+        reportFile: selected?.file || "",
+        onEvent: (streamEvent) => {
+          setChatMessages((current) =>
+            current.map((message) =>
+              message.id === assistantId
+                ? applyCodeWikiEventToMessage(message, streamEvent)
+                : message,
+            ),
+          );
+        },
+      });
     } catch (err) {
       setChatMessages((current) =>
         current.map((message) =>
           message.id === assistantId
             ? {
                 ...message,
-                text: err?.message || "问答失败",
+                role: "error",
                 loading: false,
-                error: true,
+                segments: [
+                  {
+                    type: "text",
+                    text: err?.message || "CodeWiki 问答失败",
+                    isStreaming: false,
+                  },
+                ],
               }
             : message,
         ),
@@ -276,17 +454,21 @@ export function CodeWikiPanel({ projectCwd, projectKey, busy, planSteps = [], st
   };
 
   const isWorking = busy || generating;
+  const askInputLocked = isWorking || asking;
 
   return (
     <div className="flex-1 min-h-0 bg-(--bg-primary) rounded-[18px] border border-(--border-default) border-b-0 overflow-hidden my-1 mx-1">
-      <div className="grid h-full min-h-0 grid-cols-[260px_minmax(0,1fr)_340px] max-xl:grid-cols-[220px_minmax(0,1fr)] max-lg:grid-cols-1">
+      <div className="grid h-full min-h-0 grid-cols-[260px_minmax(0,1fr)_420px] max-xl:grid-cols-[220px_minmax(0,1fr)] max-lg:grid-cols-1">
         <aside className="border-r border-(--border-default) bg-(--bg-secondary) min-h-0 flex flex-col max-lg:hidden">
           <div className="p-4 border-b border-(--border-default)">
             <div className="flex items-center gap-2 text-(--text-primary)">
               <BookOpenText size={18} />
               <span className="font-semibold text-[15px]">CodeWiki</span>
             </div>
-            <p className="mt-2 text-[12px] leading-5 text-(--text-muted) truncate" title={projectCwd || ""}>
+            <p
+              className="mt-2 text-[12px] leading-5 text-(--text-muted) truncate"
+              title={projectCwd || ""}
+            >
               {projectCwd || "当前项目"}
             </p>
             <div className="mt-4 grid grid-cols-3 gap-1 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1">
@@ -296,7 +478,8 @@ export function CodeWikiPanel({ projectCwd, projectKey, busy, planSteps = [], st
                   type="button"
                   className={cn(
                     "h-7 rounded-md text-[12px] text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-60",
-                    generationDepth === item.value && "bg-(--bg-active) text-(--text-primary)",
+                    generationDepth === item.value &&
+                      "bg-(--bg-active) text-(--text-primary)",
                   )}
                   disabled={isWorking}
                   onClick={() => setGenerationDepth(item.value)}
@@ -310,16 +493,26 @@ export function CodeWikiPanel({ projectCwd, projectKey, busy, planSteps = [], st
               onClick={handleGenerate}
               disabled={isWorking}
             >
-              {generating ? <Loader2 size={15} className="animate-spin" /> : <Sparkles size={15} />}
-              {generating ? "生成中" : "生成 CodeWiki"}
+              {generating ? (
+                <Loader2 size={15} className="animate-spin" />
+              ) : (
+                <Sparkles size={15} />
+              )}
+              {generating ? "生成中" : "生成新的 CodeWiki"}
             </button>
             {generating && (
-              <GenerationProgress steps={planSteps} stageLabel={stageLabel} compact />
+              <GenerationProgress
+                steps={planSteps}
+                stageLabel={stageLabel}
+                compact
+              />
             )}
           </div>
 
           <div className="flex items-center justify-between px-4 py-3">
-            <span className="text-[12px] font-medium text-(--text-muted)">报告</span>
+            <span className="text-[12px] font-medium text-(--text-muted)">
+              报告
+            </span>
             <button
               className="inline-flex size-7 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
               onClick={() => loadReports({ preferNewest: true })}
@@ -357,9 +550,14 @@ export function CodeWikiPanel({ projectCwd, projectKey, busy, planSteps = [], st
                     setFrameError(false);
                   }}
                 >
-                  <span className="flex items-center gap-2 text-[13px] text-(--text-primary)">
-                    <FileText size={14} className="shrink-0 text-(--text-muted)" />
-                    <span className="min-w-0 flex-1 truncate">{report.title || report.file}</span>
+                  <span className="flex items-start gap-2 text-[13px] text-(--text-primary)">
+                    <FileText
+                      size={14}
+                      className="shrink-0 mt-0.5 text-(--text-muted)"
+                    />
+                    <span className="min-w-0 flex-1 break-words">
+                      {report.file}
+                    </span>
                     <Popover>
                       <PopoverTrigger asChild>
                         <button
@@ -388,7 +586,9 @@ export function CodeWikiPanel({ projectCwd, projectKey, busy, planSteps = [], st
                   </span>
                   <span className="mt-1 block truncate pl-6 text-[11px] text-(--text-muted)">
                     {formatReportDate(report.mtime)}
-                    {formatFileSize(report.size) ? ` · ${formatFileSize(report.size)}` : ""}
+                    {formatFileSize(report.size)
+                      ? ` · ${formatFileSize(report.size)}`
+                      : ""}
                   </span>
                 </div>
               ))}
@@ -397,7 +597,7 @@ export function CodeWikiPanel({ projectCwd, projectKey, busy, planSteps = [], st
         </aside>
 
         <main className="min-w-0 min-h-0 flex flex-col bg-(--bg-primary)">
-          <div className="h-[52px] px-5 border-b border-(--border-default) flex items-center justify-between gap-3">
+          {/* <div className="h-[52px] px-5 border-b border-(--border-default) flex items-center justify-between gap-3">
             <div className="min-w-0">
               <h1 className="text-[15px] font-semibold text-(--text-primary) truncate">
                 {selected?.title || "CodeWiki"}
@@ -414,7 +614,7 @@ export function CodeWikiPanel({ projectCwd, projectKey, busy, planSteps = [], st
               {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
               生成
             </button>
-          </div>
+          </div> */}
 
           {error && (
             <div className="mx-5 mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-400 inline-flex items-center gap-2">
@@ -427,17 +627,24 @@ export function CodeWikiPanel({ projectCwd, projectKey, busy, planSteps = [], st
             {!selected && !loading ? (
               <div className="h-full min-h-[420px] rounded-xl border border-dashed border-(--border-default) bg-(--bg-secondary) flex flex-col items-center justify-center text-center px-8">
                 <BookOpenText size={34} className="text-(--text-muted)" />
-                <h2 className="mt-4 text-[18px] font-semibold text-(--text-primary)">还没有 CodeWiki</h2>
+                <h2 className="mt-4 text-[18px] font-semibold text-(--text-primary)">
+                  还没有 CodeWiki
+                </h2>
                 <p className="mt-2 max-w-md text-[13px] leading-6 text-(--text-muted)">
-                  生成当前项目的 requirements 报告后，这里会展示架构图、接口需求、流程和风险说明。
+                  生成当前项目的 requirements
+                  报告后，这里会展示架构图、接口需求、流程和风险说明。
                 </p>
                 <button
                   className="mt-5 h-10 rounded-lg bg-(--text-primary) px-4 text-[13px] font-medium text-(--bg-primary) inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
                   onClick={handleGenerate}
                   disabled={isWorking}
                 >
-                  {generating ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
-                  {generating ? "正在生成" : "生成 CodeWiki"}
+                  {generating ? (
+                    <Loader2 size={16} className="animate-spin" />
+                  ) : (
+                    <Sparkles size={16} />
+                  )}
+                  {generating ? "正在生成" : "生成新的 CodeWiki"}
                 </button>
                 <div className="mt-3 grid w-full max-w-xs grid-cols-3 gap-1 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1">
                   {GENERATION_DEPTHS.map((item) => (
@@ -446,7 +653,8 @@ export function CodeWikiPanel({ projectCwd, projectKey, busy, planSteps = [], st
                       type="button"
                       className={cn(
                         "h-7 rounded-md text-[12px] text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-60",
-                        generationDepth === item.value && "bg-(--bg-active) text-(--text-primary)",
+                        generationDepth === item.value &&
+                          "bg-(--bg-active) text-(--text-primary)",
                       )}
                       disabled={isWorking}
                       onClick={() => setGenerationDepth(item.value)}
@@ -456,7 +664,10 @@ export function CodeWikiPanel({ projectCwd, projectKey, busy, planSteps = [], st
                   ))}
                 </div>
                 {generating && (
-                  <GenerationProgress steps={planSteps} stageLabel={stageLabel} />
+                  <GenerationProgress
+                    steps={planSteps}
+                    stageLabel={stageLabel}
+                  />
                 )}
               </div>
             ) : (
@@ -464,7 +675,9 @@ export function CodeWikiPanel({ projectCwd, projectKey, busy, planSteps = [], st
                 {frameError ? (
                   <div className="h-full flex flex-col items-center justify-center px-8 text-center">
                     <AlertCircle size={28} className="text-(--text-muted)" />
-                    <p className="mt-3 text-[13px] text-(--text-secondary)">报告加载失败。</p>
+                    <p className="mt-3 text-[13px] text-(--text-secondary)">
+                      报告加载失败。
+                    </p>
                     <button
                       className="mt-4 h-8 rounded-md border border-(--border-default) px-3 text-[12px] text-(--text-primary) hover:bg-(--bg-hover)"
                       onClick={() => setFrameError(false)}
@@ -497,73 +710,85 @@ export function CodeWikiPanel({ projectCwd, projectKey, busy, planSteps = [], st
           <div className="p-4 border-b border-(--border-default)">
             <div className="flex items-center gap-2 text-(--text-primary)">
               <MessageSquareText size={17} />
-              <span className="font-medium text-[14px]">Ask this repository</span>
+              <span className="font-medium text-[14px]">
+                Ask this repository
+              </span>
             </div>
             <p className="mt-2 text-[12px] leading-5 text-(--text-muted)">
               {generating
                 ? "CodeWiki 生成完成前暂不接受提问。"
-                : "只读问答，不会修改项目，也不会保存到会话历史。"}
+                : "临时只读问答，不会修改项目，也不会保存到会话历史。"}
             </p>
           </div>
 
-          <div ref={chatScrollRef} className="flex-1 min-h-0 overflow-y-auto p-4">
+          <div
+            ref={chatScrollRef}
+            className="flex-1 min-h-0 overflow-y-auto px-4 py-3"
+          >
             {chatMessages.length === 0 ? (
               <div className="rounded-xl border border-(--border-default) bg-(--bg-primary) p-4">
                 <Sparkles size={22} className="text-(--text-muted)" />
                 <p className="mt-4 text-[13px] font-medium text-(--text-primary)">
-                  {generating ? "正在生成 CodeWiki" : busy ? "当前请求处理中" : "可以问当前项目"}
+                  {generating
+                    ? "正在生成 CodeWiki"
+                    : asking || busy
+                      ? "当前问题处理中"
+                      : "可以问当前项目"}
                 </p>
                 <p className="mt-2 text-[12px] leading-5 text-(--text-muted)">
                   {generating
                     ? "生成完成后再基于报告提问。"
-                    : lastQuestion || "例如：主要业务流程是什么？哪些接口风险最高？"}
+                    : lastQuestion ||
+                      "例如：主要业务流程是什么？哪些接口风险最高？"}
                 </p>
               </div>
             ) : (
-              <div className="flex flex-col gap-3">
+              <div className="flex flex-col">
                 {chatMessages.map((message) => (
-                  <div
-                    key={message.id}
-                    className={cn(
-                      "max-w-[92%] rounded-xl px-3 py-2 text-[13px] leading-6",
-                      message.role === "user"
-                        ? "ml-auto bg-(--bg-active) text-(--text-primary)"
-                        : "mr-auto border border-(--border-default) bg-(--bg-primary) text-(--text-primary)",
-                      message.error && "border-(--accent-red)/40 bg-(--accent-red-bg) text-(--accent-red)",
-                    )}
-                  >
-                    {message.loading ? (
-                      <span className="inline-flex items-center gap-2 text-(--text-muted)">
-                        <Loader2 size={14} className="animate-spin" />
-                        正在回答...
-                      </span>
-                    ) : message.role === "assistant" && !message.error ? (
-                      <StreamdownRenderer text={message.text} streaming={false} />
-                    ) : (
-                      <span className="whitespace-pre-wrap">{message.text}</span>
-                    )}
+                  <div key={message.id}>
+                    <MessageBubble message={message} />
+                    {message.loading &&
+                      (!message.segments || message.segments.length === 0) && (
+                        <div className="mt-[-12px] mb-3 ml-1 inline-flex items-center gap-2 rounded-xl border border-(--border-default) bg-(--bg-primary) px-3 py-2 text-[12px] text-(--text-muted)">
+                          <Loader2 size={14} className="animate-spin" />
+                          正在回答...
+                        </div>
+                      )}
                   </div>
                 ))}
               </div>
             )}
           </div>
 
-          <form className="p-4 border-t border-(--border-default)" onSubmit={handleAsk}>
+          <form
+            className="p-4 border-t border-(--border-default)"
+            onSubmit={handleAsk}
+          >
             <div className="flex items-center gap-2 rounded-full border border-(--border-default) bg-(--bg-primary) px-3 py-2">
               <input
                 value={question}
                 onChange={(event) => setQuestion(event.target.value)}
-                placeholder={generating ? "CodeWiki 正在生成" : asking ? "正在回答..." : "Ask about this repository"}
-                disabled={isWorking || asking}
+                placeholder={
+                  generating
+                    ? "CodeWiki 正在生成"
+                    : asking || busy
+                      ? "正在回答..."
+                      : "Ask about this repository"
+                }
+                disabled={askInputLocked}
                 className="min-w-0 flex-1 border-0 bg-transparent text-[13px] text-(--text-primary) outline-none placeholder:text-(--text-muted) disabled:opacity-60"
               />
               <button
                 type="submit"
                 className="inline-flex size-7 items-center justify-center rounded-full text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-50"
-                disabled={isWorking || asking || !question.trim()}
+                disabled={askInputLocked || !question.trim()}
                 aria-label="发送问题"
               >
-                {asking ? <Loader2 size={15} className="animate-spin" /> : <SendHorizontal size={15} />}
+                {asking ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : (
+                  <SendHorizontal size={15} />
+                )}
               </button>
             </div>
           </form>

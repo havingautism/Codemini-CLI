@@ -3,6 +3,7 @@ import { handleRun } from './commands/run.js';
 import { handleConfig } from './commands/config.js';
 import { handleDoctor } from './commands/doctor.js';
 import { handleSkill } from './commands/skill.js';
+import { handleWeb } from './commands/web.js';
 import pkg from '../package.json' with { type: 'json' };
 
 const VERSION = pkg.version;
@@ -15,6 +16,8 @@ Usage:
   codemini run <task> [--max-steps N] [--model <name>] [--fast]
   codemini run --harness <role> <task> [--max-steps N] [--model <name>] [--fast]
   codemini run --pipeline <task> [--model <name>] [--fast]
+  codemini web [--port <port>] [--project <path>] [--session <id>] [--model <name>] [--no-open]
+  codemini --web [--port <port>] [--project <path>] [--session <id>] [--model <name>] [--no-open]
   codemini config set|get|list <key> [value]
   codemini doctor
   codemini skill list|install|enable|disable|inspect|reindex [--scope=project|global]
@@ -24,7 +27,7 @@ Usage:
 
 export async function runCli(args) {
   const [command, ...rest] = args;
-  const knownCommands = new Set(['chat', 'run', 'config', 'doctor', 'skill']);
+  const knownCommands = new Set(['chat', 'run', 'config', 'doctor', 'skill', 'web']);
 
   if (!command || command === '--help' || command === '-h') {
     if (!command) {
@@ -37,6 +40,11 @@ export async function runCli(args) {
 
   if (command === '--version' || command === '-v' || command === 'version') {
     console.log(VERSION);
+    return;
+  }
+
+  if (command === '--web' || command === '-web') {
+    await handleWeb(rest);
     return;
   }
 
@@ -60,6 +68,9 @@ export async function runCli(args) {
       return;
     case 'skill':
       await handleSkill(rest);
+      return;
+    case 'web':
+      await handleWeb(rest);
       return;
   }
 }
