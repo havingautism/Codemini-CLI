@@ -1936,6 +1936,10 @@ test('slash brainstorm includes the user question in the rendered prompt', { con
       const result = await runtime.submit('/brainstorm Should login retry stay local or become a shared helper?');
       assert.equal(result.text, '先比较方案。');
       assert.equal(inspected, true);
+      const persistedUser = runtime.getSessionMessages().find((msg) => msg.role === 'user');
+      assert.equal(persistedUser.content, '/brainstorm Should login retry stay local or become a shared helper?');
+      assert.match(persistedUser.model_content, /\[Executing skill: \/brainstorm\]/);
+      assert.match(persistedUser.model_content, /Current question:\nShould login retry stay local or become a shared helper\?/);
     } finally {
       await restoreFetch();
     }

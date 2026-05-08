@@ -753,13 +753,17 @@ export async function runAgentLoop({
       const effectiveArgs = approvalState.args || args;
 
       if (approvalState.errorContent) {
+        const summary = trimInline(approvalState.errorContent, 120);
         if (onEvent) {
-          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary: trimInline(approvalState.errorContent, 120) });
+          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary });
         }
         return {
           callId: call.id,
           content: approvalState.errorContent,
-          error: true
+          error: true,
+          durationMs: 0,
+          summary,
+          status: 'error'
         };
       }
 
@@ -772,7 +776,9 @@ export async function runAgentLoop({
         return {
           callId: call.id,
           content: JSON.stringify(blockedPayload),
-          blocked: true
+          blocked: true,
+          summary: 'Tool call requires approval',
+          status: 'blocked'
         };
       }
 
@@ -781,13 +787,17 @@ export async function runAgentLoop({
       if (!handler) {
         const available = Object.keys(toolHandlers).join(', ');
         const msg = `Unknown tool: "${toolName}". Available tools: ${available || '(none)'}`;
+        const summary = trimInline(msg, 200);
         if (onEvent) {
-          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary: trimInline(msg, 200) });
+          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary });
         }
         return {
           callId: call.id,
           content: JSON.stringify({ error: msg }),
-          error: true
+          error: true,
+          durationMs: 0,
+          summary,
+          status: 'error'
         };
       }
 
@@ -795,13 +805,17 @@ export async function runAgentLoop({
       if (blockedReason) {
         analysisGuard.blockedExplorations += 1;
         const content = clipToolResult({ error: blockedReason }, toolResultMaxChars);
+        const summary = trimInline(blockedReason, 120);
         if (onEvent) {
-          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary: trimInline(blockedReason, 120) });
+          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary });
         }
         return {
           callId: call.id,
           content,
-          error: true
+          error: true,
+          durationMs: 0,
+          summary,
+          status: 'error'
         };
       }
 
@@ -811,8 +825,9 @@ export async function runAgentLoop({
       } catch (error) {
         const durationMs = Date.now() - startedAt;
         const message = error instanceof Error ? error.message : String(error);
+        const summary = trimInline(message, 120);
         if (onEvent) {
-          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary: trimInline(message, 120) });
+          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary });
         }
         if (isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, message)) {
           await captureToolFailure(toolName, message, effectiveArgs, config).catch(() => {});
@@ -820,15 +835,19 @@ export async function runAgentLoop({
         return {
           callId: call.id,
           content: clipToolResult({ error: message }, toolResultMaxChars),
-          error: true
+          error: true,
+          durationMs,
+          summary,
+          status: 'error'
         };
       }
 
       const durationMs = Date.now() - startedAt;
+      const summary = summarizeToolResult(toolResult);
       /* 提取文件改动统计 */
       const fileChange = extractFileChange(toolName, toolResult);
       if (onEvent) {
-        onEvent({ type: 'tool:end', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary: summarizeToolResult(toolResult), fileChange });
+        onEvent({ type: 'tool:end', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary, fileChange });
       }
 
       // Auto-capture non-throwing tool failures (e.g. shell non-zero exit)
@@ -866,7 +885,7 @@ export async function runAgentLoop({
       // P0: Persist to disk if still large
       formatted = await storeResultIfNeeded(call.id, formatted, toolResult);
 
-      return { callId: call.id, content: formatted };
+      return { callId: call.id, content: formatted, durationMs, summary, status: 'done' };
     }
 
     // Separate read-only and write calls, preserving order
@@ -893,7 +912,8 @@ export async function runAgentLoop({
       if (!entry) continue;
 
       if (entry.blocked) {
-        messages.push({ role: 'tool', tool_call_id: call.id, content: entry.content });
+        attachToolCallSessionMeta(assistantMessage, call.id, { summary: entry.summary || '', status: entry.status || 'blocked' });
+        messages.push({ role: 'tool', tool_call_id: call.id, content: entry.content, tool_summary: entry.summary || '', tool_status: entry.status || 'blocked' });
         if (onEvent) {
           onEvent({ type: 'tool:result', name: displayName, id: call.id, arguments: args, content: entry.content, blocked: true });
         }
@@ -901,14 +921,16 @@ export async function runAgentLoop({
       }
 
       if (entry.error) {
-        messages.push({ role: 'tool', tool_call_id: call.id, content: entry.content });
+        attachToolCallSessionMeta(assistantMessage, call.id, { durationMs: entry.durationMs, summary: entry.summary || '', status: entry.status || 'error' });
+        messages.push({ role: 'tool', tool_call_id: call.id, content: entry.content, tool_duration_ms: entry.durationMs, tool_summary: entry.summary || '', tool_status: entry.status || 'error' });
         if (onEvent) {
           onEvent({ type: 'tool:result', name: displayName, id: call.id, arguments: args, content: entry.content, error: true });
         }
         continue;
       }
 
-      messages.push({ role: 'tool', tool_call_id: call.id, content: entry.content });
+      attachToolCallSessionMeta(assistantMessage, call.id, { durationMs: entry.durationMs, summary: entry.summary || '', status: entry.status || 'done' });
+      messages.push({ role: 'tool', tool_call_id: call.id, content: entry.content, tool_duration_ms: entry.durationMs, tool_summary: entry.summary || '', tool_status: entry.status || 'done' });
       if (onEvent) {
         onEvent({ type: 'tool:result', name: displayName, id: call.id, arguments: args, content: entry.content });
       }
@@ -942,4 +964,13 @@ function callsToPlanSummary(toolCalls = []) {
       const args = safeJsonParse(call?.arguments);
       return `- ${formatToolDisplayName(normalizeToolCallName(call?.name), args)}`;
     });
+}
+
+function attachToolCallSessionMeta(assistantMessage, callId, meta = {}) {
+  if (!assistantMessage || !Array.isArray(assistantMessage.tool_calls)) return;
+  const call = assistantMessage.tool_calls.find((tc) => String(tc?.id || '') === String(callId || ''));
+  if (!call) return;
+  if (Number.isFinite(Number(meta.durationMs))) call.durationMs = Number(meta.durationMs);
+  if (typeof meta.summary === 'string' && meta.summary.trim()) call.summary = meta.summary.trim();
+  if (typeof meta.status === 'string' && meta.status.trim()) call.status = meta.status.trim();
 }

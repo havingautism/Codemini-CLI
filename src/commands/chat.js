@@ -11,6 +11,7 @@ function parseChatArgs(args) {
     prompt: '',
     sessionId: undefined,
     model: undefined,
+    fast: false,
     system: undefined,
     plain: false
   };
@@ -25,6 +26,10 @@ function parseChatArgs(args) {
     if (arg === '--model') {
       parsed.model = args[i + 1];
       i += 1;
+      continue;
+    }
+    if (arg === '--fast' || arg === '--lite') {
+      parsed.fast = true;
       continue;
     }
     if (arg === '--system') {
@@ -134,6 +139,7 @@ export async function handleChat(args) {
   const parsed = parseChatArgs(args);
   const config = await loadConfig();
   const session = await resolveSession(parsed.sessionId);
+  const selectedModel = parsed.fast ? (config.model?.fast_name || config.model?.name) : parsed.model;
   const systemPrompt =
     parsed.system ||
     buildDefaultSystemPrompt(config);
@@ -141,7 +147,7 @@ export async function handleChat(args) {
   const runtime = await createChatRuntime({
     session,
     config,
-    model: parsed.model,
+    model: selectedModel,
     systemPrompt
   });
 
@@ -164,7 +170,7 @@ export async function handleChat(args) {
       React.createElement(ChatApp, {
         runtime,
         sessionId: session.id,
-        model: parsed.model || config.model.name,
+        model: selectedModel || config.model.name,
         sdkProvider: config.sdk?.provider || 'openai-compatible',
         language: config.ui?.language || 'zh',
         shellName: config.shell?.default || 'powershell',

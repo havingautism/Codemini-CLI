@@ -1,0 +1,17 @@
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { SkillPanel } from '@/components/SkillPanel.jsx';
+
+export function SkillDialog({ open, onOpenChange }) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-160 max-h-[80vh] overflow-hidden flex flex-col">
+        <DialogHeader>
+          <DialogTitle>Skills</DialogTitle>
+        </DialogHeader>
+        <div className="flex-1 overflow-y-auto pr-1" style={{ scrollbarWidth: 'thin' }}>
+          <SkillPanel />
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}

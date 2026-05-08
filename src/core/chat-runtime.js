@@ -12,7 +12,7 @@ import {
 } from './provider/index.js';
 import { isDangerousCommand, runShellCommand } from './shell.js';
 import { getBuiltinTools } from './tools.js';
-import { createSession, listSessions, loadSession, pruneSessions, saveSession } from './session-store.js';
+import { createSession, deriveSessionTitle, listSessions, loadSession, pruneSessions, saveSession } from './session-store.js';
 import { getConfigValue, loadConfig, resetConfig, setConfigValue } from './config-store.js';
 import { evaluateCommandPolicy } from './command-policy.js';
 import { appendInputHistory, loadInputHistory } from './input-history-store.js';
@@ -55,7 +55,7 @@ function toOpenAIMessages(sessionMessages) {
     }
     mapped.push({
       role: msg.role,
-      content: msg.content,
+      content: typeof msg.model_content === 'string' && msg.model_content ? msg.model_content : msg.content,
       ...(typeof msg.reasoning_content === 'string' && msg.reasoning_content ? { reasoning_content: msg.reasoning_content } : {}),
       ...(Array.isArray(msg.reasoning_details) && msg.reasoning_details.length > 0 ? { reasoning_details: msg.reasoning_details } : {}),
       ...(msg.tool_calls ? { tool_calls: msg.tool_calls } : {})
@@ -102,6 +102,7 @@ function getCompletionCopy(language = 'zh') {
         'gateway.timeout_ms': '网关超时时间（毫秒）',
         'gateway.max_retries': '网关重试次数',
         'model.name': '当前模型名称',
+        'model.fast_name': '快速模型名称',
         'model.max_context_tokens': '模型上下文 token 上限',
         'ui.language': '界面语言',
         'ui.reply_language': '回复语言',
@@ -156,6 +157,7 @@ function getCompletionCopy(language = 'zh') {
         exit: '退出聊天',
         commands: '列出 slash/自定义命令',
         status: '查看运行状态（mode/model/session）',
+        model: '查看或切换模型',
         mode: '设置执行模式：normal|auto|plan',
         compact: '压缩消息上下文',
         checkpoint: '创建/查看/加载检查点',
@@ -193,6 +195,7 @@ function getCompletionCopy(language = 'zh') {
         retryCommand: '重试上一条用户请求',
         stopCommand: '中止当前回答',
         statusCommand: '查看运行状态',
+        modelCommand: '查看或切换模型',
         resumeSession: '恢复一个已保存的会话'
       }
     },
@@ -204,6 +207,7 @@ function getCompletionCopy(language = 'zh') {
         'gateway.timeout_ms': 'gateway timeout in milliseconds',
         'gateway.max_retries': 'gateway retry count',
         'model.name': 'active model name',
+        'model.fast_name': 'fast model name',
         'model.max_context_tokens': 'model context token limit',
         'ui.language': 'UI language',
         'ui.reply_language': 'reply language',
@@ -258,6 +262,7 @@ function getCompletionCopy(language = 'zh') {
         exit: 'exit chat',
         commands: 'list slash/custom commands',
         status: 'show runtime status (mode/model/session)',
+        model: 'show or switch model',
         mode: 'set execution mode: normal|auto|plan',
         compact: 'compress message context',
         checkpoint: 'create/list/load conversation checkpoints',
@@ -295,6 +300,7 @@ function getCompletionCopy(language = 'zh') {
         retryCommand: 'retry the last user request',
         stopCommand: 'stop the current response',
         statusCommand: 'show runtime status',
+        modelCommand: 'show or switch model',
         resumeSession: 'resume a saved session'
       }
     }
@@ -309,6 +315,7 @@ function describeConfigKey(key, mode = 'set', language = 'zh') {
 }
 
 const SUB_AGENT_ROLES = ['planner', 'advisor', 'coder', 'reviewer', 'tester', 'summarizer'];
+const CODEWIKI_READ_ONLY_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan'];
 export const ROLE_TOOL_POLICY = {
   planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node', 'web_fetch', 'web_search', 'read_plan', 'update_plan'],
   advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'read_plan'],
@@ -2112,13 +2119,21 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
   const currentContextTokens = parentTokens + subTokens;
   const maxContextTokens = effectiveMaxContextTokens(config);
   const contextUsagePct = maxContextTokens > 0 ? Math.min(100, Math.max(0, (currentContextTokens / maxContextTokens) * 100)) : 0;
+  const planState = currentSession?.planState;
   const snapshot = {
     sessionId: currentSession?.id || '',
-    mode: executionMode || config.execution?.mode || 'auto',
+    sessionTitle: currentSession?.title || '',
+    messageCount: Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0,
+    mode: executionMode || config.execution?.mode || 'normal',
     sdkProvider: config.sdk?.provider || 'openai-compatible',
     agentRole: 'general',
     model: model || config.model?.name || '',
-    maxContextTokens
+    mainModel: config.model?.name || '',
+    fastModel: config.model?.fast_name || config.model?.name || '',
+    maxContextTokens,
+    pendingPlanApproval: planState?.status === 'pending_approval'
+      ? { goal: planState.goal, summary: planState.finalSummary || planState.summary, filePath: planState.filePath, steps: planState.steps || [] }
+      : null
   };
   Object.defineProperties(snapshot, {
     currentContextTokens: {
@@ -2131,11 +2146,6 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
       enumerable: false,
       writable: false
     },
-    pendingPlanApproval: {
-      value: currentSession?.planState?.status === 'pending_approval',
-      enumerable: false,
-      writable: false
-    },
     pendingReflectSkill: {
       value: currentSession?.planState?.status === 'pending_reflect_skill',
       enumerable: false,
@@ -2143,6 +2153,70 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     }
   });
   return snapshot;
+}
+
+function resolveDefaultModel(config) {
+  return String(config?.model?.name || '').trim();
+}
+
+function resolveFastModel(config) {
+  return String(config?.model?.fast_name || config?.model?.lite_name || config?.model?.name || '').trim();
+}
+
+function normalizeGeneratedSessionTitle(value, fallback = '') {
+  const cleaned = String(value || '')
+    .replace(/^[\s"'`#：:「『【\[]+|[\s"'`。.!?？！」』】\]]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const title = cleaned || fallback || '';
+  if (!title) return '';
+  return title.length > 48 ? `${title.slice(0, 45).trimEnd()}...` : title;
+}
+
+function shouldReplaceSessionTitle(title) {
+  const value = String(title || '').trim();
+  return !value || value === '新会话' || value === 'New session';
+}
+
+async function generateSessionTitle({ userText, assistantText = '', config, signal }) {
+  const fallback = normalizeGeneratedSessionTitle(deriveSessionTitle([{ role: 'user', content: userText }]));
+  const latestConfig = await loadConfig().catch(() => config);
+  const effectiveConfig = latestConfig || config;
+  const fastModel = resolveFastModel(effectiveConfig);
+  if (!fastModel) return fallback;
+  const titleInput = [
+    `User:\n${String(userText || '').slice(0, 1200)}`,
+    assistantText ? `Assistant:\n${String(assistantText || '').slice(0, 1600)}` : ''
+  ].filter(Boolean).join('\n\n');
+  try {
+    const result = await createChatCompletion({
+      sdkProvider: effectiveConfig.sdk?.provider,
+      baseUrl: effectiveConfig.gateway.base_url,
+      apiKey: effectiveConfig.gateway.api_key,
+      model: fastModel,
+      messages: [
+        {
+          role: 'system',
+          content: [
+            'Generate a concise chat session title.',
+            'Base it on the completed user-assistant exchange, not only the user prompt.',
+            'Return only the title text.',
+            'Use the same language as the user when possible.',
+            'No quotes, no markdown, no punctuation at the ends.',
+            'Maximum 18 Chinese characters or 8 English words.'
+          ].join(' ')
+        },
+        { role: 'user', content: titleInput }
+      ],
+      tools: [],
+      timeoutMs: Math.min(Number(effectiveConfig.gateway?.timeout_ms || 30000), 30000),
+      maxRetries: 0,
+      signal
+    });
+    return normalizeGeneratedSessionTitle(result?.text, fallback) || fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 function estimatePromptTokensForRequest(sessionMessages, userText = '') {
@@ -2330,6 +2404,7 @@ async function expandFileMentions(rawText, workspaceRoot = process.cwd()) {
 
 async function askModel({
   text,
+  modelText,
   session,
   config,
   model,
@@ -2344,13 +2419,14 @@ async function askModel({
   maxSteps: maxStepsOverride,
   skipAnalysisNudge = false
 }) {
+  const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
   const maxContextTokens = effectiveMaxContextTokens(config);
   const triggerPct = Number(config.context?.preflight_trigger_pct || 92);
   const hardPct = Number(config.context?.hard_limit_pct || 98);
-  const preflightTokens = estimatePromptTokensForRequest(session.messages, text);
+  const preflightTokens = estimatePromptTokensForRequest(session.messages, modelInputText);
   const preflightPct = (preflightTokens / maxContextTokens) * 100;
 
-  if (preflightPct >= triggerPct) {
+  if (persistSession && preflightPct >= triggerPct) {
     const auto = compactMessagesLocally(session.messages, {
       mode: preflightPct >= hardPct ? 'aggressive' : 'conservative'
     });
@@ -2414,11 +2490,19 @@ async function askModel({
   }
 
   if (text) {
-    session.messages.push(stampedMessage('user', text));
+    const shouldGenerateTitle = !session.messages.some((msg) => msg?.role === 'user');
+    const modelExtra =
+      typeof modelText === 'string' && modelText && modelText !== text ? { model_content: modelText } : {};
+    session.messages.push(stampedMessage('user', text, modelExtra));
+    if (!shouldGenerateTitle) {
+      session.title = deriveSessionTitle(session.messages);
+    }
+    session.model = model || config.model.name;
+    session.mode = executionMode || config.execution?.mode || 'normal';
     if (persistSession) await saveSession(session);
   }
 
-  const projectContextSnippet = await buildProjectContextSnippet(process.cwd(), text).catch(() => '');
+  const projectContextSnippet = await buildProjectContextSnippet(process.cwd(), modelInputText).catch(() => '');
   const projectContextGuidance =
     'Use this project context as lightweight guidance and verify important details with fresh reads when needed.';
   const effectiveSystemPrompt = projectContextSnippet
@@ -2478,6 +2562,22 @@ async function askModel({
   }
 
   let activeAssistantIndex = -1;
+  const pendingToolMeta = new Map();
+  const attachToolMetaToSessionCall = (toolId, meta = {}) => {
+    if (!toolId) return false;
+    for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+      const msg = session.messages[i];
+      if (msg?.role !== 'assistant' || !Array.isArray(msg.tool_calls)) continue;
+      const call = msg.tool_calls.find((tc) => String(tc?.id || '') === String(toolId));
+      if (!call) continue;
+      if (Number.isFinite(Number(meta.durationMs))) call.durationMs = Number(meta.durationMs);
+      if (typeof meta.summary === 'string' && meta.summary.trim()) call.summary = meta.summary.trim();
+      if (typeof meta.status === 'string' && meta.status.trim()) call.status = meta.status.trim();
+      msg.at = new Date().toISOString();
+      return true;
+    }
+    return false;
+  };
   const wrappedAgentEvent = (event) => {
     // Always accumulate messages in session (for token tracking), only save when persisting
     if (event?.type === 'assistant:start') {
@@ -2508,19 +2608,42 @@ async function askModel({
         if (persistSession) scheduleSessionSave();
       }
       activeAssistantIndex = -1;
+    } else if (event?.type === 'tool:end' || event?.type === 'tool:error' || event?.type === 'tool:blocked') {
+      const toolId = String(event.id || '');
+      if (toolId) {
+        const meta = {
+          durationMs: Number.isFinite(Number(event.durationMs)) ? Number(event.durationMs) : undefined,
+          summary: typeof event.summary === 'string' ? event.summary : '',
+          status:
+            event.type === 'tool:error'
+              ? 'error'
+              : event.type === 'tool:blocked'
+                ? 'blocked'
+                : 'done'
+        };
+        pendingToolMeta.set(toolId, meta);
+        if (attachToolMetaToSessionCall(toolId, meta) && persistSession) scheduleSessionSave();
+      }
     } else if (event?.type === 'tool:result') {
+      const toolId = String(event.id || '');
+      const meta = pendingToolMeta.get(toolId) || {};
       session.messages.push(
         stampedMessage('tool', event.content || '', {
-          tool_call_id: event.id || ''
+          tool_call_id: toolId,
+          ...(Number.isFinite(Number(meta.durationMs)) ? { tool_duration_ms: Number(meta.durationMs) } : {}),
+          ...(meta.summary ? { tool_summary: meta.summary } : {}),
+          ...(meta.status ? { tool_status: meta.status } : {})
         })
       );
+      pendingToolMeta.delete(toolId);
       if (persistSession) scheduleSessionSave();
     }
 
     if (onAgentEvent) onAgentEvent(event);
   };
 
-  const loopUserPrompt = persistSession ? '' : text;
+  const loopUserPrompt = persistSession ? '' : modelInputText;
+  const expectedModelText = typeof modelText === 'string' && modelText && modelText !== text ? modelText : '';
   const loopResult = await runAgentLoop({
     systemPrompt: effectiveSystemPrompt,
     userPrompt: loopUserPrompt,
@@ -2530,7 +2653,7 @@ async function askModel({
     toolHandlers: filteredHandlers,
     initialMessages: toOpenAIMessages(session.messages),
     onEvent: wrappedAgentEvent,
-    executionMode: executionMode || config.execution?.mode || 'auto',
+    executionMode: executionMode || config.execution?.mode || 'normal',
     alwaysAllowTools:
       alwaysAllowTools || config.execution?.always_allow_tools || ['run', 'read', 'write'],
     toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
@@ -2581,6 +2704,26 @@ async function askModel({
     session.messages = loopResult.messages
       .filter((m) => m.role !== 'system')
       .map((m) => ({ ...m, at: new Date().toISOString() }));
+    if (expectedModelText) {
+      for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+        const message = session.messages[i];
+        if (message?.role === 'user' && message.content === expectedModelText) {
+          message.content = text;
+          message.model_content = expectedModelText;
+          break;
+        }
+      }
+    }
+    if (shouldReplaceSessionTitle(session.title)) {
+      session.title = await generateSessionTitle({
+        userText: text,
+        assistantText: loopResult.text || '',
+        config,
+        signal
+      });
+    }
+    session.model = model || config.model.name;
+    session.mode = executionMode || config.execution?.mode || 'normal';
     await flushScheduledSave();
     await saveSession(session);
     try {
@@ -2684,7 +2827,60 @@ async function runSubAgentTask({
     blockedCount,
     toolErrorCount,
     hasErrorLine,
-    artifactPaths: artifactPaths.slice(0, SUB_AGENT_HANDOFF_MAX_ITEMS)
+    artifactPaths: artifactPaths.slice(0, SUB_AGENT_HANDOFF_MAX_ITEMS),
+    messages: Array.isArray(subSession.messages) ? structuredClone(subSession.messages) : []
+  };
+}
+
+function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }) {
+  const toolCardsById = new Map();
+  const toolCards = [];
+  const source = Array.isArray(messages) ? messages : [];
+
+  for (const msg of source) {
+    if (msg?.role === 'assistant' && Array.isArray(msg.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        const id = String(tc?.id || `tool-${toolCards.length + 1}`);
+        if (toolCardsById.has(id)) continue;
+        const card = {
+          id,
+          name: tc?.function?.name || tc?.name || 'tool',
+          arguments: tc?.function?.arguments || tc?.arguments || {},
+          status: tc?.status || 'done',
+          durationMs: Number.isFinite(Number(tc?.durationMs)) ? Number(tc.durationMs) : null,
+          summary: tc?.summary || '',
+          result: ''
+        };
+        toolCardsById.set(id, card);
+        toolCards.push(card);
+      }
+    } else if (msg?.role === 'tool') {
+      const id = String(msg.tool_call_id || '');
+      const card = toolCardsById.get(id);
+      if (!card) continue;
+      card.result = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content || '');
+      if (typeof msg.tool_summary === 'string' && msg.tool_summary.trim()) card.summary = msg.tool_summary.trim();
+      if (Number.isFinite(Number(msg.tool_duration_ms))) card.durationMs = Number(msg.tool_duration_ms);
+      if (typeof msg.tool_status === 'string' && msg.tool_status.trim()) card.status = msg.tool_status.trim();
+    }
+  }
+
+  const segments = [];
+  if (toolCards.length > 0) {
+    segments.push({ type: 'tools', cards: toolCards });
+  }
+  if (stepRecord.role === 'summarizer' && stepRecord.output) {
+    segments.push({ type: 'text', text: stepRecord.output, isStreaming: false });
+  }
+
+  return {
+    step: stepIndex + 1,
+    total: totalSteps,
+    role: stepRecord.role || 'general',
+    title: stepRecord.title || '',
+    status: stepRecord.failed ? 'failed' : 'done',
+    summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output || '', 160),
+    segments
   };
 }
 
@@ -2712,8 +2908,11 @@ async function executePlanWithSubAgents({
     return { text: '(no steps to execute)', aborted: false };
   }
 
+  emitPlanEvent({ type: 'assistant:start' });
+
   const priorSteps = [];
   const results = [];
+  const transcript = [];
 
   // Emit structured plan steps so TUI can show all steps with real role/title
   emitPlanEvent({
@@ -2724,6 +2923,15 @@ async function executePlanWithSubAgents({
   for (let i = 0; i < steps.length; i += 1) {
     const step = steps[i];
     if (signal?.aborted) break;
+
+    emitPlanEvent({
+      type: 'plan:step_start',
+      planFile: planFilePath,
+      step: i + 1,
+      total: steps.length,
+      role: step.role,
+      title: step.title
+    });
 
     emitPlanEvent({
       type: 'plan:progress',
@@ -2772,6 +2980,7 @@ async function executePlanWithSubAgents({
       toolErrorCount: output.toolErrorCount || 0,
       hasErrorLine: output.hasErrorLine || false,
       artifactPaths: output.artifactPaths || [],
+      messages: output.messages || [],
       failed:
         output.hasErrorLine ||
         stepOutputHasFailureSignals(step.role, output.text || ''),
@@ -2785,6 +2994,12 @@ async function executePlanWithSubAgents({
     }
     priorSteps.push(stepRecord);
     results.push(stepRecord);
+    transcript.push(buildPlanStepTranscript({
+      stepRecord,
+      stepIndex: i,
+      totalSteps: steps.length,
+      messages: output.messages || []
+    }));
 
     // Write step result to plan file for subsequent steps to read
     if (planFilePath) {
@@ -2800,6 +3015,17 @@ async function executePlanWithSubAgents({
 
     emitPlanEvent({
       type: 'plan:progress',
+      planFile: planFilePath,
+      step: i + 1,
+      total: steps.length,
+      role: step.role,
+      title: step.title,
+      status: stepRecord.failed ? 'failed' : 'done',
+      summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output, 160)
+    });
+
+    emitPlanEvent({
+      type: 'plan:step_done',
       planFile: planFilePath,
       step: i + 1,
       total: steps.length,
@@ -2848,7 +3074,11 @@ async function executePlanWithSubAgents({
   return {
     text: summaryLines.join('\n'),
     aborted: !!signal?.aborted,
-    results
+    results,
+    transcript,
+    sessionText:
+      [...results].reverse().find((r) => r.role === 'summarizer')?.output ||
+      summaryLines.join('\n')
   };
 }
 
@@ -3007,10 +3237,29 @@ function renderAutoPlanMarkdown({
 }
 
 function parseProjectRequirementsOptions(args = []) {
-  const raw = args.join(' ').trim();
+  let depth = 'standard';
+  const focusArgs = [];
+  for (const arg of Array.isArray(args) ? args : []) {
+    const value = String(arg || '').trim();
+    const normalized = value.toLowerCase();
+    if (['--fast', '--quick', '--lite', '--light', '--快速'].includes(normalized)) {
+      depth = 'fast';
+      continue;
+    }
+    if (['--standard', '--balanced', '--默认', '--标准'].includes(normalized)) {
+      depth = 'standard';
+      continue;
+    }
+    if (['--deep', '--full', '--thorough', '--深度'].includes(normalized)) {
+      depth = 'deep';
+      continue;
+    }
+    focusArgs.push(arg);
+  }
+  const raw = focusArgs.join(' ').trim();
   const normalized = raw.toLowerCase();
   const hasIgnoreIntent = /(忽略|跳过|不生成|不要|无需|排除|exclude|skip|omit|without|no\s+)/i.test(raw);
-  if (!hasIgnoreIntent) return { raw, ignoredSections: [] };
+  if (!hasIgnoreIntent) return { raw, focusArgs, depth, ignoredSections: [] };
 
   const ignored = [];
   for (const section of PROJECT_REQUIREMENTS_SECTION_MARKERS) {
@@ -3023,7 +3272,7 @@ function parseProjectRequirementsOptions(args = []) {
     });
     if (matched) ignored.push(section);
   }
-  return { raw, ignoredSections: ignored };
+  return { raw, focusArgs, depth, ignoredSections: ignored };
 }
 
 function renderProjectRequirementsSectionContract(ignoredSections = []) {
@@ -3041,7 +3290,7 @@ function renderProjectRequirementsSectionContract(ignoredSections = []) {
 
 function buildProjectRequirementsSteps(renderedSkillPrompt, args = []) {
   const options = parseProjectRequirementsOptions(args);
-  const userArgs = args.join(' ').trim();
+  const userArgs = options.raw;
   const requestedFocus = userArgs ? `User request/focus: ${userArgs}` : 'User request/focus: full workspace requirements report.';
   const reportDate = formatLocalDate();
   const reportPath = `docs/requirements/${reportDate}-project-requirements.html`;
@@ -3059,6 +3308,120 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = []) {
     'Use EXTRACTED, INFERRED, and UNKNOWN labels. Preserve source evidence paths.',
     'Do not invent dates; use the report paths above.'
   ].join('\n');
+
+  const writeReportStep = {
+    title: '🎨 Write banking-style requirements HTML report',
+    role: 'coder',
+    task: [
+      'Create the final project requirements report from the accumulated plan context.',
+      reportContract,
+      'Follow the project-requirements skill instructions below exactly, including chunked HTML writing for medium/large reports.',
+      'Use the blue/white/gray banking-style shell and produce polished inline HTML/CSS/SVG diagrams. Keep the report professional, light, and conservative.',
+      'Organize the main requirements section primarily by API/interface business requirement cards.',
+      'The final HTML must be self-contained and directly openable from disk.',
+      'Write the primary report to the exact primary report path above. Create the companion Markdown only if useful.',
+      'Skill instructions:',
+      renderedSkillPrompt
+    ].join('\n\n')
+  };
+  const reviewStep = {
+    title: '🔎 Review API coverage and traceability',
+    role: 'reviewer',
+    task: [
+      'Review the generated requirements report against the project-requirements contract and accumulated evidence.',
+      reportContract,
+      'Check that major APIs/interfaces are represented, business requirements are decomposed per API, evidence paths are present, inferred/unknown content is labeled, diagrams are visible as inline HTML/CSS/SVG without external rendering libraries, and the report path matches the required local date.',
+      'Check that the visual style is light blue/white/gray and suitable for banking/financial review.',
+      'Report concrete gaps and risks only. Do not rewrite the whole report.'
+    ].join('\n')
+  };
+  const summaryStep = {
+    title: '🧾 Summarize final report and unresolved questions',
+    role: 'summarizer',
+    task: [
+      'Synthesize the project requirements pipeline results into a concise final status for the user.',
+      reportContract,
+      'Mention the generated report path, API/interface coverage, strongest business requirement findings, unresolved questions, what was not verified, and the best next action.',
+      'Do not re-analyze the codebase unless the accumulated evidence is clearly insufficient.'
+    ].join('\n')
+  };
+
+  if (options.depth === 'fast') {
+    return [
+      {
+        title: '⚡ Map evidence and interfaces',
+        role: 'planner',
+        task: [
+          'Quickly map project evidence and build a practical API/interface inventory before report writing.',
+          reportContract,
+          'Inspect top-level docs, manifests, route/command entry points, obvious handlers, schemas, tests, and project index results when available.',
+          'Produce a concise evidence map and major interface inventory with evidence paths, prioritizing broad coverage over exhaustive edge cases.',
+          'Do not write the final report.'
+        ].join('\n')
+      },
+      {
+        title: '🧩 Synthesize requirements, flows, and risks',
+        role: 'advisor',
+        task: [
+          'Synthesize requirement-ready findings from the evidence map and interface inventory.',
+          reportContract,
+          'For major interfaces capture capability, actor, trigger, inputs, outputs, business rules, validation/permission notes, data reads/writes, core flow dependencies, risks, acceptance criteria, and open questions.',
+          'Keep findings compact and API-centered. Preserve evidence paths and EXTRACTED/INFERRED/UNKNOWN labels. Do not write the final report.'
+        ].join('\n')
+      },
+      writeReportStep,
+      {
+        title: '🔎 Review and summarize coverage',
+        role: 'reviewer',
+        task: [
+          'Review the generated report and produce the final user-facing status in one pass.',
+          reportContract,
+          'Check major interface coverage, evidence paths, EXTRACTED/INFERRED/UNKNOWN labels, visible diagrams, and report path.',
+          'Do not rewrite the whole report. Report concrete gaps, unresolved questions, and the single best next action.'
+        ].join('\n')
+      }
+    ];
+  }
+
+  if (options.depth === 'standard') {
+    return [
+      {
+        title: '🧭 Map entry points and evidence sources',
+        role: 'planner',
+        task: [
+          'Map project entry points and evidence sources before any report writing.',
+          reportContract,
+          'Inspect top-level docs, package manifests, route/command entry points, tests, obvious interface files, and project index results when useful.',
+          'Produce a concise evidence map grouped by docs, routes/commands, handlers, schemas, tests, configuration, storage, and operations.',
+          'Include evidence paths and open questions. Do not write the final report.'
+        ].join('\n')
+      },
+      {
+        title: '📚 Build API and interface inventory',
+        role: 'planner',
+        task: [
+          'Build the canonical API/interface inventory using the evidence map.',
+          reportContract,
+          'Enumerate every major HTTP endpoint, CLI command, tool call, MCP/RPC handler, queue/scheduled job, exported SDK function, and user-facing workflow entry point.',
+          'For each item include type, route/command/function, owner module, evidence path, likely actor, and whether it is EXTRACTED, INFERRED, or UNKNOWN.',
+          'Do not write the final report.'
+        ].join('\n')
+      },
+      {
+        title: '🧩 Decompose requirements, flows, data, and risks',
+        role: 'advisor',
+        task: [
+          'Decompose requirement-ready findings for each major API/interface from the inventory.',
+          reportContract,
+          'For each interface capture business capability, actor, user goal, trigger, inputs, outputs, preconditions, main/alternate flows, business rules, validation and permission checks, sensitive data, data reads/writes, side effects, acceptance criteria, and open questions.',
+          'Keep findings API-centered rather than module-centered. Preserve evidence paths and EXTRACTED/INFERRED/UNKNOWN labels. Do not write the final report.'
+        ].join('\n')
+      },
+      writeReportStep,
+      reviewStep,
+      summaryStep
+    ];
+  }
 
   return [
     {
@@ -3123,42 +3486,9 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = []) {
         'Favor clear business process decomposition over broad architecture prose. Do not write the final report.'
       ].join('\n')
     },
-    {
-      title: '🎨 Write banking-style requirements HTML report',
-      role: 'coder',
-      task: [
-        'Create the final project requirements report from the accumulated plan context.',
-        reportContract,
-        'Follow the project-requirements skill instructions below exactly, including chunked HTML writing for medium/large reports.',
-        'Use the blue/white/gray banking-style shell and produce polished inline HTML/CSS/SVG diagrams. Keep the report professional, light, and conservative.',
-        'Organize the main requirements section primarily by API/interface business requirement cards.',
-        'The final HTML must be self-contained and directly openable from disk.',
-        'Write the primary report to the exact primary report path above. Create the companion Markdown only if useful.',
-        'Skill instructions:',
-        renderedSkillPrompt
-      ].join('\n\n')
-    },
-    {
-      title: '🔎 Review API coverage and traceability',
-      role: 'reviewer',
-      task: [
-        'Review the generated requirements report against the project-requirements contract and accumulated evidence.',
-        reportContract,
-        'Check that major APIs/interfaces are represented, business requirements are decomposed per API, evidence paths are present, inferred/unknown content is labeled, diagrams are visible as inline HTML/CSS/SVG without external rendering libraries, and the report path matches the required local date.',
-        'Check that the visual style is light blue/white/gray and suitable for banking/financial review.',
-        'Report concrete gaps and risks only. Do not rewrite the whole report.'
-      ].join('\n')
-    },
-    {
-      title: '🧾 Summarize final report and unresolved questions',
-      role: 'summarizer',
-      task: [
-        'Synthesize the project requirements pipeline results into a concise final status for the user.',
-        reportContract,
-        'Mention the generated report path, API/interface coverage, strongest business requirement findings, unresolved questions, what was not verified, and the best next action.',
-        'Do not re-analyze the codebase unless the accumulated evidence is clearly insufficient.'
-      ].join('\n')
-    }
+    writeReportStep,
+    reviewStep,
+    summaryStep
   ];
 }
 
@@ -3200,7 +3530,8 @@ async function createProjectRequirementsShell({
   manifestPath,
   planFile,
   goal,
-  steps
+  steps,
+  depth = 'standard'
 }) {
   const workspaceRoot = process.cwd();
   const absoluteReportPath = path.resolve(workspaceRoot, reportPath);
@@ -3231,6 +3562,7 @@ async function createProjectRequirementsShell({
   ];
   const manifest = {
     status: 'running',
+    depth,
     goal,
     html: reportPath,
     markdown: companionPath,
@@ -3278,7 +3610,8 @@ async function runProjectRequirementsPipeline({
   onSubSessionActive
 }) {
   const renderedSkillPrompt = await expandFileMentions(renderCommandPrompt(custom, parsedInput.args), process.cwd());
-  const userFocus = parsedInput.args.join(' ').trim();
+  const options = parseProjectRequirementsOptions(parsedInput.args);
+  const userFocus = options.raw;
   const goal = userFocus ? `project requirements report: ${userFocus}` : 'project requirements report';
   const reportDate = formatLocalDate();
   const reportPath = `docs/requirements/${reportDate}-project-requirements.html`;
@@ -3298,15 +3631,17 @@ async function runProjectRequirementsPipeline({
     manifestPath,
     planFile,
     goal,
-    steps
+    steps,
+    depth: options.depth
   });
   const planState = {
     status: 'approved',
     source: 'project-requirements',
+    depth: options.depth,
     goal,
     filePath: planFile,
-    summary: 'Dedicated sub-agent pipeline for project requirements report generation.',
-    finalSummary: 'Executing project requirements pipeline.',
+    summary: `Dedicated ${options.depth} sub-agent pipeline for project requirements report generation.`,
+    finalSummary: `Executing ${options.depth} project requirements pipeline.`,
     steps
   };
   if (onAgentEvent) {
@@ -3511,7 +3846,8 @@ function compactHistoryPreview(value, maxChars = 72) {
 function formatHistoryList({ currentSession, sessions }) {
   const currentMessages = Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0;
   const lines = [
-    `Current session  ${currentSession.id}`,
+    `Current session  ${currentSession.title || currentSession.id}`,
+    `Session id       ${currentSession.id}`,
     `Messages         ${currentMessages}`,
     '',
     'Recent sessions'
@@ -3520,8 +3856,9 @@ function formatHistoryList({ currentSession, sessions }) {
   for (const [index, session] of sessions.entries()) {
     const count = Number(session.messageCount || 0);
     lines.push(
-      `${index + 1}. ${session.id}`,
-      `   ${count} ${count === 1 ? 'msg' : 'msgs'}  |  ${formatHistoryTimestamp(session.updatedAt)}`,
+      `${index + 1}. ${session.title || session.id}`,
+      `   id=${session.id}`,
+      `   ${count} ${count === 1 ? 'msg' : 'msgs'}  |  ${formatHistoryTimestamp(session.updatedAt)}${session.model ? `  |  ${session.model}` : ''}`,
       `   ${compactHistoryPreview(session.preview)}`,
       `   resume: /history resume ${session.id}`
     );
@@ -3538,6 +3875,9 @@ export async function createChatRuntime({
   systemPrompt,
   requestToolApproval
 }) {
+  if (session && typeof session === 'object' && !session.projectDir) {
+    session.projectDir = process.cwd();
+  }
   let activeRequestToolApproval = typeof requestToolApproval === 'function' ? requestToolApproval : null;
   const startupEvents = [];
   const initialIndex = await initializeProjectIndex(process.cwd()).catch(() => null);
@@ -3573,8 +3913,12 @@ export async function createChatRuntime({
   }
   let currentSession = session;
   let config = initialConfig;
+  model = model || currentSession?.model || resolveDefaultModel(config);
+  if (currentSession && typeof currentSession === 'object') {
+    currentSession.model = model;
+  }
   const baseSystemPrompt = systemPrompt;
-  let executionMode = config.execution?.mode || 'auto';
+  let executionMode = config.execution?.mode || 'normal';
   if (hasPendingPlanApproval(currentSession)) {
     executionMode = 'plan';
   }
@@ -3600,6 +3944,7 @@ export async function createChatRuntime({
   let historySessionCache = [
     {
       id: currentSession.id,
+      title: currentSession.title || deriveSessionTitle(currentSession.messages || []),
       messageCount: Array.isArray(currentSession.messages) ? currentSession.messages.length : 0
     }
   ];
@@ -3609,10 +3954,12 @@ export async function createChatRuntime({
       const merged = [
         {
           id: currentSession.id,
+          title: currentSession.title || deriveSessionTitle(currentSession.messages || []),
           messageCount: Array.isArray(currentSession.messages) ? currentSession.messages.length : 0
         },
         ...initialSessions.map((session) => ({
           id: session.id,
+          title: session.title || '',
           messageCount: Number(session.messageCount || 0)
         }))
       ];
@@ -3635,6 +3982,7 @@ export async function createChatRuntime({
     'gateway.base_url',
     'gateway.api_key',
     'model.name',
+    'model.fast_name',
     'ui.language',
     'ui.reply_language',
     'execution.mode',
@@ -3663,6 +4011,7 @@ export async function createChatRuntime({
   const commandPriorityOrder = [
     '/help',
     '/status',
+    '/model',
     '/config',
     '/memory',
     '/capture',
@@ -3687,6 +4036,7 @@ export async function createChatRuntime({
       { name: 'exit', description: completionCopy.commands.exit },
       { name: 'commands', description: completionCopy.commands.commands },
       { name: 'status', description: completionCopy.commands.status },
+      { name: 'model', description: completionCopy.commands.model },
       { name: 'mode', description: completionCopy.commands.mode },
       { name: 'compact', description: completionCopy.commands.compact },
       { name: 'checkpoint', description: completionCopy.commands.checkpoint },
@@ -3737,6 +4087,7 @@ export async function createChatRuntime({
   const historyTemplates = ['/history list', '/history current', '/history resume <session_id>'];
   const memoryTemplates = ['/memory list <scope>', '/memory search <scope> <query>', '/memory forget <scope> <id>'];
   const modeTemplates = ['/mode normal', '/mode auto', '/mode plan'];
+  const modelTemplates = ['/model current', '/model main', '/model fast', '/model set <name>'];
   const checkpointTemplates = [
     '/checkpoint create <name>',
     '/checkpoint list',
@@ -3755,6 +4106,7 @@ export async function createChatRuntime({
     ...memoryTemplates,
     ...historyTemplates,
     ...modeTemplates,
+    ...modelTemplates,
     ...checkpointTemplates,
     ...specTemplates,
     ...planTemplates,
@@ -3802,6 +4154,7 @@ export async function createChatRuntime({
       'memory',
       'compact',
       'mode',
+      'model',
       'checkpoint',
       'plan',
       'agents',
@@ -3821,6 +4174,7 @@ export async function createChatRuntime({
     for (const template of memoryTemplates) registerSuggestion(template, completionCopy.generic.memoryCommand);
     for (const template of historyTemplates) registerSuggestion(template, completionCopy.generic.historyCommand);
     for (const template of modeTemplates) registerSuggestion(template, completionCopy.generic.modeCommand);
+    for (const template of modelTemplates) registerSuggestion(template, completionCopy.generic.modelCommand || completionCopy.commands.model);
     for (const template of checkpointTemplates) registerSuggestion(template, completionCopy.generic.checkpointCommand);
     for (const template of specTemplates) registerSuggestion(template, completionCopy.generic.specCommand);
     for (const template of planTemplates) {
@@ -3915,6 +4269,15 @@ export async function createChatRuntime({
     if (commandPart === 'status') {
       return [registerSuggestion('/status', completionCopy.generic.statusCommand)];
     }
+    if (commandPart === 'model') {
+      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
+        const sub = tokens[1] || '';
+        return ['current', 'main', 'fast', 'set']
+          .filter((m) => m.startsWith(sub))
+          .map((m) => registerSuggestion(`/model ${m}${m === 'set' ? ' ' : ''}`, completionCopy.generic.modelCommand));
+      }
+      return materializeSuggestions(modelTemplates);
+    }
     if (commandPart === 'mode') {
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         const sub = tokens[1] || '';
@@ -3999,7 +4362,7 @@ export async function createChatRuntime({
             .filter((session) => String(session.id || '').startsWith(''))
             .map((session) => ({
               value: `/history resume ${session.id}`,
-              display: `/history resume ${session.id}  ·  ${Number(session.messageCount || 0)} msgs`,
+              display: `/history resume ${session.id}  ·  ${session.title || 'untitled'}  ·  ${Number(session.messageCount || 0)} msgs`,
               description: completionCopy.generic.resumeSession
             }));
           if (dynamic.length > 0) return dynamic;
@@ -4014,7 +4377,7 @@ export async function createChatRuntime({
           .filter((session) => String(session.id || '').startsWith(idPrefix))
           .map((session) => ({
             value: `/history resume ${session.id}`,
-            display: `/history resume ${session.id}  ·  ${Number(session.messageCount || 0)} msgs`,
+            display: `/history resume ${session.id}  ·  ${session.title || 'untitled'}  ·  ${Number(session.messageCount || 0)} msgs`,
             description: completionCopy.generic.resumeSession
           }));
         if (dynamic.length > 0) return dynamic;
@@ -4053,22 +4416,41 @@ export async function createChatRuntime({
     if (systemText) {
       currentSession.messages.push(stampedMessage('system', systemText));
     }
+    if (shouldReplaceSessionTitle(currentSession.title)) {
+      currentSession.title = deriveSessionTitle(currentSession.messages);
+    }
+    currentSession.model = model || config.model.name;
+    currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
   };
 
-  const persistAssistantExchange = async (userText, assistantText, { includeUser = true } = {}) => {
+  const persistAssistantExchange = async (userText, assistantText, { includeUser = true, extra = {} } = {}) => {
     if (includeUser && userText) {
       currentSession.messages.push(stampedMessage('user', userText));
     }
     if (assistantText) {
-      currentSession.messages.push(stampedMessage('assistant', assistantText));
+      currentSession.messages.push(stampedMessage('assistant', assistantText, extra));
     }
+    if (shouldReplaceSessionTitle(currentSession.title)) {
+      currentSession.title = await generateSessionTitle({
+        userText,
+        assistantText,
+        config
+      });
+    }
+    currentSession.model = model || config.model.name;
+    currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
   };
 
   const persistUserExchange = async (userText) => {
     if (!userText) return;
     currentSession.messages.push(stampedMessage('user', userText));
+    if (shouldReplaceSessionTitle(currentSession.title)) {
+      currentSession.title = deriveSessionTitle(currentSession.messages);
+    }
+    currentSession.model = model || config.model.name;
+    currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
   };
 
@@ -4202,12 +4584,13 @@ export async function createChatRuntime({
   let activeAbortController = null;
   let activeSubSession = null;
 
-  const submit = async (line, onAgentEvent) => {
+  const submit = async (line, onAgentEvent, options = {}) => {
     // 每次提交创建新的 AbortController，替代旧的
     activeAbortController = new AbortController();
     const { signal } = activeAbortController;
     const activeReplySystemPrompt = await buildActiveSystemPrompt();
     const parsedInput = parseInput(line);
+    const readOnlyCodeWiki = options?.readOnlyCodeWiki === true;
     const maybeAutoDreamFromRuntime = async () => {
       const threshold = Number(config?.memory?.auto_dream_threshold ?? 10);
       if (!(threshold > 0)) return null;
@@ -4241,7 +4624,7 @@ export async function createChatRuntime({
       }
     };
     try {
-      if (shouldPersistInputHistory(parsedInput)) {
+      if (!readOnlyCodeWiki && shouldPersistInputHistory(parsedInput)) {
         await appendInputHistory(line);
       }
     } catch {
@@ -4249,6 +4632,34 @@ export async function createChatRuntime({
     }
     if (parsedInput.type === 'empty') {
       return { type: 'noop' };
+    }
+    if (readOnlyCodeWiki) {
+      const expandedText = await expandFileMentions(line, process.cwd());
+      const readOnlySystemPrompt = [
+        activeReplySystemPrompt,
+        'CodeWiki repository Q&A mode:',
+        '- Answer questions about the current repository and generated CodeWiki/project-requirements report.',
+        '- This is read-only. Do not modify files, update plans, run shell commands, delete anything, write memories, or ask to perform side effects.',
+        '- Use only read-only project inspection tools when evidence is needed.',
+        '- Be concise and cite relevant files or report sections when useful.'
+      ].join('\n\n');
+      const transientSession = structuredClone(currentSession);
+      const result = await askModel({
+        text: expandedText,
+        session: transientSession,
+        config,
+        model,
+        systemPrompt: readOnlySystemPrompt,
+        onAgentEvent,
+        requestToolApproval: activeRequestToolApproval,
+        executionMode: 'auto',
+        alwaysAllowTools: CODEWIKI_READ_ONLY_TOOLS,
+        allowedTools: CODEWIKI_READ_ONLY_TOOLS,
+        persistSession: false,
+        maxSteps: 32,
+        signal
+      });
+      return { type: 'assistant', text: result.text, aborted: !!result.aborted };
     }
     if (parsedInput.type === 'shell') {
       const shell = await handleShellInput(parsedInput.command, config);
@@ -4259,12 +4670,12 @@ export async function createChatRuntime({
       if (parsedInput.command === 'new') {
         const fresh = await createSession();
         currentSession = fresh;
-        executionMode = config.execution?.mode || 'auto';
+        executionMode = config.execution?.mode || 'normal';
         compactState.backupMessages = null;
         setResultDir(path.join(getSessionsDir(), String(fresh.id)));
         historyIdCache = [fresh.id, ...historyIdCache.filter((id) => id !== fresh.id)];
         historySessionCache = [
-          { id: fresh.id, messageCount: 0 },
+          { id: fresh.id, title: fresh.title || '', messageCount: 0 },
           ...historySessionCache.filter((s) => s.id !== fresh.id)
         ];
         return {
@@ -4276,7 +4687,7 @@ export async function createChatRuntime({
       if (parsedInput.command === 'help') {
         return {
           type: 'system',
-          text: 'Commands: /help /exit /new /stop /commands /status /mode /compact /checkpoint /spec /plan /yes /no /edit /reject /agents /config /memory /capture /inbox /dream /reflect /history /debug /retry /<custom> !<shell>'
+          text: 'Commands: /help /exit /new /stop /commands /status /model /mode /compact /checkpoint /spec /plan /yes /no /edit /reject /agents /config /memory /capture /inbox /dream /reflect /history /debug /retry /<custom> !<shell>'
         };
       }
       if (parsedInput.command === 'status') {
@@ -4285,6 +4696,31 @@ export async function createChatRuntime({
           type: 'system',
           text: `mode=${executionMode} | role=general | model=${model || config.model.name} | max_ctx=${effectiveMaxContextTokens(config)} | session=${currentSession.id} | todos=${todoCount}`
         };
+      }
+      if (parsedInput.command === 'model') {
+        const sub = String(parsedInput.args[0] || 'current').trim().toLowerCase();
+        const mainModel = resolveDefaultModel(config);
+        const fastModel = resolveFastModel(config);
+        if (sub === 'current' || sub === 'status') {
+          return {
+            type: 'system',
+            text: `Current model: ${model || mainModel}\nDefault model: ${mainModel}\nFast model: ${fastModel}${config.model?.fast_name ? '' : ' (fallback to default; set /config set model.fast_name <name>)'}`
+          };
+        }
+        if (sub === 'main' || sub === 'default') {
+          model = mainModel;
+        } else if (sub === 'fast') {
+          model = fastModel;
+        } else if (sub === 'set') {
+          const next = parsedInput.args.slice(1).join(' ').trim();
+          if (!next) return { type: 'system', text: 'Usage: /model set <name>' };
+          model = next;
+        } else {
+          return { type: 'system', text: 'Usage: /model current | /model main | /model fast | /model set <name>' };
+        }
+        currentSession.model = model;
+        await saveSession(currentSession);
+        return { type: 'system', text: `Model switched to: ${model}` };
       }
       if (parsedInput.command === 'mode') {
         const next = (parsedInput.args[0] || '').trim().toLowerCase();
@@ -4340,9 +4776,13 @@ export async function createChatRuntime({
         });
         activeSubSession = null;
         currentSession.planState = null;
+        if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
         await removePlanFileIfPresent(planState);
         executionMode = 'auto';
-        await persistAssistantExchange(line, result.text || '', { includeUser: false });
+        await persistAssistantExchange(line, result.sessionText || result.text || '', {
+          includeUser: false,
+          extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
+        });
         return { type: 'assistant', text: result.text, aborted: !!result.aborted };
       }
       if (parsedInput.command === 'edit') {
@@ -4391,6 +4831,15 @@ export async function createChatRuntime({
         });
         currentSession.planState = revised;
         executionMode = 'plan';
+        if (onAgentEvent) {
+          onAgentEvent({
+            type: 'plan:pending_approval',
+            goal: currentSession.planState.goal,
+            summary: currentSession.planState.finalSummary || currentSession.planState.summary,
+            filePath: currentSession.planState.filePath,
+            steps: currentSession.planState.steps
+          });
+        }
         const text = `Plan revised.\n${buildPendingPlanApprovalMessage(currentSession.planState)}`;
         await persistLocalExchange(line, text);
         return { type: 'system', text };
@@ -4405,6 +4854,7 @@ export async function createChatRuntime({
         }
         if (hasPendingPlanApproval(currentSession)) {
           currentSession.planState = null;
+          if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
           executionMode = 'auto';
           const text = 'Pending plan rejected and cleared.';
           await persistLocalExchange(line, text, { includeUser: false });
@@ -4418,6 +4868,7 @@ export async function createChatRuntime({
         }
         const planState = { ...currentSession.planState };
         currentSession.planState = null;
+        if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
         await removePlanFileIfPresent(planState);
         executionMode = 'auto';
         const text = 'Pending plan rejected and cleared.';
@@ -4533,6 +4984,15 @@ export async function createChatRuntime({
             steps: Array.isArray(auto.steps) ? auto.steps : []
           };
           executionMode = 'plan';
+          if (onAgentEvent) {
+            onAgentEvent({
+              type: 'plan:pending_approval',
+              goal: currentSession.planState.goal,
+              summary: currentSession.planState.finalSummary || currentSession.planState.summary,
+              filePath: currentSession.planState.filePath,
+              steps: currentSession.planState.steps
+            });
+          }
           const text = buildAutoPlanSystemSummary(auto);
           await persistLocalExchange(line, text);
           return {
@@ -4558,9 +5018,13 @@ export async function createChatRuntime({
           });
           activeSubSession = null;
           currentSession.planState = null;
+          if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
           await removePlanFileIfPresent(planState);
           executionMode = 'auto';
-          await persistAssistantExchange(line, result.text || '', { includeUser: false });
+          await persistAssistantExchange(line, result.sessionText || result.text || '', {
+            includeUser: false,
+            extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
+          });
           return { type: 'assistant', text: result.text, aborted: !!result.aborted };
         }
         if (sub === 'stay') {
@@ -4667,6 +5131,7 @@ export async function createChatRuntime({
           historyIdCache = sessions.map((s) => s.id);
           historySessionCache = sessions.map((s) => ({
             id: s.id,
+            title: s.title || '',
             messageCount: Number(s.messageCount || 0)
           }));
           if (sessions.length === 0) return { type: 'system', text: 'No sessions found' };
@@ -4692,7 +5157,7 @@ export async function createChatRuntime({
           }
           if (!historyIdCache.includes(targetId)) historyIdCache.unshift(targetId);
           historySessionCache = [
-            { id: targetId, messageCount: Array.isArray(loaded.messages) ? loaded.messages.length : 0 },
+            { id: targetId, title: loaded.title || deriveSessionTitle(loaded.messages || []), messageCount: Array.isArray(loaded.messages) ? loaded.messages.length : 0 },
             ...historySessionCache.filter((s) => s.id !== targetId)
           ];
           return {
@@ -5013,7 +5478,8 @@ export async function createChatRuntime({
       let result;
       try {
         result = await askModel({
-          text: rendered,
+          text: custom.metadata.type === 'skill' ? line : rendered,
+          modelText: custom.metadata.type === 'skill' ? rendered : undefined,
           session: currentSession,
           config,
           model,
@@ -5059,8 +5525,12 @@ export async function createChatRuntime({
         });
         activeSubSession = null;
         currentSession.planState = null;
+        if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
         executionMode = 'auto';
-        await persistAssistantExchange(line, result.text || '', { includeUser: false });
+        await persistAssistantExchange(line, result.sessionText || result.text || '', {
+          includeUser: false,
+          extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
+        });
         return { type: 'assistant', text: result.text, aborted: !!result.aborted };
       }
       if (isStayInPlanText(parsedInput.text)) {
@@ -5070,6 +5540,7 @@ export async function createChatRuntime({
       }
       if (isRejectPlanText(parsedInput.text)) {
         currentSession.planState = null;
+        if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
         executionMode = 'auto';
         const text = 'Pending plan rejected and cleared.';
         await persistLocalExchange(line, text);
@@ -5079,6 +5550,43 @@ export async function createChatRuntime({
         type: 'system',
         text: buildPendingPlanApprovalMessage(currentSession.planState)
       };
+    }
+
+    // Plan mode with no pending plan → auto-generate structured plan
+    if (executionMode === 'plan') {
+      const expandedPlanText = await expandFileMentions(parsedInput.text, process.cwd());
+      await maybeAutoDreamFromRuntime();
+      const auto = await buildAutoPlanAndRun({
+        goal: expandedPlanText,
+        session: currentSession,
+        config,
+        model,
+        systemPrompt: activeReplySystemPrompt,
+        onAgentEvent,
+        sessionId: currentSession.id,
+        taskClass: classifyPlanTaskClass(expandedPlanText)
+      });
+      currentSession.planState = {
+        status: 'pending_approval',
+        source: 'auto',
+        goal: expandedPlanText,
+        filePath: auto.filePath,
+        summary: auto.summary || '',
+        finalSummary: auto.finalSummary || auto.summary || '',
+        steps: Array.isArray(auto.steps) ? auto.steps : []
+      };
+      if (onAgentEvent) {
+        onAgentEvent({
+          type: 'plan:pending_approval',
+          goal: currentSession.planState.goal,
+          summary: currentSession.planState.finalSummary || currentSession.planState.summary,
+          filePath: currentSession.planState.filePath,
+          steps: currentSession.planState.steps
+        });
+      }
+      const text = buildAutoPlanSystemSummary(auto);
+      await persistLocalExchange(line, text);
+      return { type: 'system', text };
     }
 
     if (compactState.autoEnabled) {
@@ -5185,6 +5693,18 @@ export async function createChatRuntime({
     consumeStartupEvents: () => startupEvents.splice(0, startupEvents.length),
     getInputHistory: () => loadInputHistory(),
     getCurrentSessionId: () => currentSession.id,
+    getSessionMessages: () => currentSession.messages || [],
+    reloadConfig: async () => {
+      config = await loadConfig();
+      return config;
+    },
+    setExecutionMode: async (next) => {
+      if (!['normal', 'auto', 'plan'].includes(next)) return false;
+      executionMode = next;
+      await setConfigValue('execution.mode', next);
+      config = await loadConfig();
+      return true;
+    },
     setRequestToolApproval: (handler) => {
       activeRequestToolApproval = typeof handler === 'function' ? handler : null;
       return true;
