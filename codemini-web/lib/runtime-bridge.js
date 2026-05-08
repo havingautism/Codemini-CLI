@@ -381,19 +381,26 @@ export class RuntimeBridge {
     return { accepted: true };
   }
 
-  async handleCodeWikiAsk(line) {
+  async handleCodeWikiAsk(line, onEvent = null) {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
     this.#busy = true;
+    const emit = (event) => {
+      if (typeof onEvent === 'function' && event?.type) onEvent(event);
+    };
     try {
-      const result = await this.#runtime.submit(line, null, { readOnlyCodeWiki: true });
-      return {
+      const result = await this.#runtime.submit(line, emit, { readOnlyCodeWiki: true });
+      const payload = {
         ok: true,
         type: result?.type || 'assistant',
         text: result?.text || '',
         aborted: !!result?.aborted
       };
+      emit({ type: 'codewiki:done', result: payload });
+      return payload;
     } catch (err) {
-      return { error: true, message: err?.message || 'Request failed' };
+      const payload = { error: true, message: err?.message || 'Request failed' };
+      emit({ type: 'codewiki:error', message: payload.message });
+      return payload;
     } finally {
       this.#busy = false;
     }

@@ -259,13 +259,38 @@ export async function generateCodeWikiReport(depth = 'standard') {
   return res.json();
 }
 
-export async function askCodeWiki(question) {
+export async function streamCodeWikiAsk({ question, reportFile = '', onEvent } = {}) {
   const res = await api('/api/codewiki/ask', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ question })
+    body: JSON.stringify({ question, reportFile })
   });
-  return res.json();
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.message || 'CodeWiki 问答失败');
+  }
+  if (!res.body) throw new Error('当前浏览器不支持流式响应');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newlineIndex = buffer.indexOf('\n');
+    while (newlineIndex !== -1) {
+      const line = buffer.slice(0, newlineIndex).trim();
+      buffer = buffer.slice(newlineIndex + 1);
+      if (line) onEvent?.(JSON.parse(line));
+      newlineIndex = buffer.indexOf('\n');
+    }
+  }
+
+  buffer += decoder.decode();
+  const tail = buffer.trim();
+  if (tail) onEvent?.(JSON.parse(tail));
 }
 
 export async function deleteCodeWikiReport(file) {

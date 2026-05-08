@@ -33,7 +33,7 @@ const CONFIG_GROUPS = [
   {
     title: 'Execution',
     keys: [
-      { path: 'execution.mode', label: 'Mode', options: ['normal', 'auto', 'plan'] }
+      { path: 'execution.mode', label: 'Mode', options: ['auto', 'plan'] }
     ]
   },
   {

@@ -126,6 +126,49 @@
   --shadow-lg: rgba(0, 0, 0, 0.40) 0 0 0 1px, rgba(0, 0, 0, 0.55) 0 18px 60px;
 }
 
+/* ── Prevent I-beam cursor on non-editable text ── */
+#root,
+#root * {
+  caret-color: transparent;
+  cursor: default;
+  user-select: none;
+}
+
+#root .msg-body,
+#root .msg-body * {
+  user-select: text;
+}
+
+#root button,
+#root button *,
+#root [role="button"],
+#root [role="button"] *,
+#root .cursor-pointer,
+#root .cursor-pointer *,
+#root a,
+#root a *,
+#root select,
+#root summary,
+#root summary *,
+#root label:has(input),
+#root label:has(input) * {
+  cursor: pointer;
+}
+
+#root input,
+#root textarea,
+#root [contenteditable="true"],
+#root [contenteditable="true"] * {
+  caret-color: auto;
+  cursor: text;
+  user-select: text;
+}
+
+#root .cursor-not-allowed,
+#root .cursor-not-allowed * {
+  cursor: not-allowed;
+}
+
 /* ── Streaming Cursor ── */
 .streaming-cursor::after {
   content: "";

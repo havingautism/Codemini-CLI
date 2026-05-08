@@ -2114,6 +2114,28 @@ test('agent loop rejects premature completion when broad analysis skipped releva
   });
 });
 
+test('agent loop can skip broad-analysis nudges for transient read-only Q&A', async () => {
+  const calls = [];
+
+  const result = await runAgentLoop({
+    systemPrompt: 'You are a test agent.',
+    userPrompt: '请基于 project-requirements report 一句话总结项目',
+    model: 'test-model',
+    maxSteps: 4,
+    skipAnalysisNudge: true,
+    requestCompletion: async ({ messages }) => {
+      calls.push(messages.at(-1));
+      return {
+        text: '这是一个基于 React 的组织架构图演示项目。',
+        toolCalls: []
+      };
+    }
+  });
+
+  assert.equal(result.text, '这是一个基于 React 的组织架构图演示项目。');
+  assert.equal(calls.length, 1);
+});
+
 test('agent loop accepts write aliases and edit content shorthand', async () => {
   await withTempWorkspace(async (workspaceRoot) => {
     await fs.mkdir(path.join(workspaceRoot, 'src'), { recursive: true });

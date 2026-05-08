@@ -32,7 +32,6 @@ import {
 const IMPLICIT_SKILLS = new Set(["superpowers-lite"]);
 
 const MODE_OPTIONS = [
-  { value: "normal", label: "普通", desc: "每次操作需确认" },
   { value: "auto", label: "自动", desc: "自动执行，复杂任务自动规划" },
   { value: "plan", label: "计划", desc: "仅规划不执行，审阅后再执行" },
 ];

@@ -4657,6 +4657,7 @@ export async function createChatRuntime({
         allowedTools: CODEWIKI_READ_ONLY_TOOLS,
         persistSession: false,
         maxSteps: 32,
+        skipAnalysisNudge: true,
         signal
       });
       return { type: 'assistant', text: result.text, aborted: !!result.aborted };
