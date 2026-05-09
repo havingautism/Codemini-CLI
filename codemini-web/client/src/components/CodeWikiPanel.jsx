@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { t } from "../../i18n/index.js";
 import {
   AlertCircle,
   BookOpenText,
@@ -26,11 +27,13 @@ import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { MessageBubble } from "@/components/MessageBubble.jsx";
 import { cn } from "@/lib/utils";
 
-const GENERATION_DEPTHS = [
-  { value: "fast", label: "快速" },
-  { value: "standard", label: "标准" },
-  { value: "deep", label: "深度" },
-];
+function getGenerationDepths() {
+  return [
+    { value: "fast", label: t("generationDepthFast") },
+    { value: "standard", label: t("generationDepthStandard") },
+    { value: "deep", label: t("generationDepthDeep") },
+  ];
+}
 
 function formatReportDate(value) {
   if (!value) return "";
@@ -61,8 +64,8 @@ function getGenerationProgress(steps, stageLabel) {
       done: 0,
       total: 0,
       pct: 8,
-      label: stageLabel || "正在启动项目需求分析",
-      detail: "准备扫描代码、接口和项目结构",
+      label: stageLabel || t("startingAnalysis"),
+      detail: t("preparingScan"),
     };
   }
 
@@ -79,11 +82,11 @@ function getGenerationProgress(steps, stageLabel) {
     total: planSteps.length,
     pct: Math.max(8, Math.round((done / planSteps.length) * 100)),
     label: failed
-      ? "生成遇到问题"
-      : active?.title || stageLabel || "正在生成 CodeWiki",
+      ? t("generationFailed")
+      : active?.title || stageLabel || t("generatingCodeWiki"),
     detail: failed
       ? failed.title
-      : `${done}/${planSteps.length} 个步骤完成${active?.role ? ` · ${active.role}` : ""}`,
+      : `${done}/${planSteps.length} ${t("stepsCompleted")}${active?.role ? ` · ${active.role.toUpperCase()}` : ""}`,
   };
 }
 
@@ -255,7 +258,7 @@ function applyCodeWikiEventToMessage(message, event) {
         segments: [
           {
             type: "text",
-            text: event.message || "CodeWiki 问答失败",
+            text: event.message || t("codewikiFailed"),
             isStreaming: false,
           },
         ],
@@ -314,7 +317,7 @@ export function CodeWikiPanel({
         return nextReports[0]?.file || "";
       });
     } catch (err) {
-      setError(err?.message || "无法加载 CodeWiki 报告");
+      setError(err?.message || t("failedToLoad"));
     } finally {
       setLoading(false);
     }
@@ -359,11 +362,11 @@ export function CodeWikiPanel({
       const result = await generateCodeWikiReport(generationDepth);
       if (result?.error) {
         setGenerating(false);
-        setError(result.message || "无法启动 CodeWiki 生成");
+        setError(result.message || t("failedToStart"));
       }
     } catch (err) {
       setGenerating(false);
-      setError(err?.message || "无法启动 CodeWiki 生成");
+      setError(err?.message || t("failedToStart"));
     }
   };
 
@@ -420,7 +423,7 @@ export function CodeWikiPanel({
                 segments: [
                   {
                     type: "text",
-                    text: err?.message || "CodeWiki 问答失败",
+                    text: err?.message || t("codewikiFailed"),
                     isStreaming: false,
                   },
                 ],
@@ -440,14 +443,14 @@ export function CodeWikiPanel({
     try {
       const result = await deleteCodeWikiReport(pendingDelete.file);
       if (result?.error) {
-        setError(result.message || "无法删除 CodeWiki 报告");
+        setError(result.message || t("failedToDelete"));
       } else {
         setPendingDelete(null);
         setFrameError(false);
         await loadReports({ preferNewest: false });
       }
     } catch (err) {
-      setError(err?.message || "无法删除 CodeWiki 报告");
+      setError(err?.message || t("failedToDelete"));
     } finally {
       setDeletingReport(false);
     }
@@ -469,10 +472,10 @@ export function CodeWikiPanel({
               className="mt-2 text-[12px] leading-5 text-(--text-muted) truncate"
               title={projectCwd || ""}
             >
-              {projectCwd || "当前项目"}
+              {projectCwd || t("currentProject")}
             </p>
             <div className="mt-4 grid grid-cols-3 gap-1 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1">
-              {GENERATION_DEPTHS.map((item) => (
+              {getGenerationDepths().map((item) => (
                 <button
                   key={item.value}
                   type="button"
@@ -498,7 +501,7 @@ export function CodeWikiPanel({
               ) : (
                 <Sparkles size={15} />
               )}
-              {generating ? "生成中" : "生成新的 CodeWiki"}
+              {generating ? t("generating") : t("generateNew")}
             </button>
             {generating && (
               <GenerationProgress
@@ -511,13 +514,13 @@ export function CodeWikiPanel({
 
           <div className="flex items-center justify-between px-4 py-3">
             <span className="text-[12px] font-medium text-(--text-muted)">
-              报告
+              {t("report")}
             </span>
             <button
               className="inline-flex size-7 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
               onClick={() => loadReports({ preferNewest: true })}
-              title="刷新报告"
-              aria-label="刷新报告"
+              title={t("refreshReport")}
+              aria-label={t("refreshReport")}
             >
               <RefreshCw size={14} />
             </button>
@@ -527,13 +530,13 @@ export function CodeWikiPanel({
             {loading && (
               <div className="px-3 py-6 text-[12px] text-(--text-muted) inline-flex items-center gap-2">
                 <Loader2 size={14} className="animate-spin" />
-                加载报告
+                {t("loadingReport")}
               </div>
             )}
 
             {!loading && reports.length === 0 && (
               <div className="mx-2 rounded-lg border border-dashed border-(--border-default) px-3 py-4 text-[12px] leading-5 text-(--text-muted)">
-                还没有 requirements 报告。生成后会出现在这里。
+                {t("noReportYet")}
               </div>
             )}
 
@@ -564,7 +567,7 @@ export function CodeWikiPanel({
                           type="button"
                           className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) opacity-0 hover:bg-(--bg-active) hover:text-(--text-primary) group-hover:opacity-100 focus:opacity-100"
                           onClick={(event) => event.stopPropagation()}
-                          aria-label="报告操作"
+                          aria-label={t("reportActions")}
                         >
                           <MoreHorizontal size={14} />
                         </button>
@@ -579,7 +582,7 @@ export function CodeWikiPanel({
                           className="w-full rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
                           onClick={() => setPendingDelete(report)}
                         >
-                          删除
+                          {t("deleteReport")}
                         </button>
                       </PopoverContent>
                     </Popover>
@@ -612,7 +615,7 @@ export function CodeWikiPanel({
               disabled={isWorking}
             >
               {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-              生成
+              {t("generate")}
             </button>
           </div> */}
 
@@ -628,11 +631,10 @@ export function CodeWikiPanel({
               <div className="h-full min-h-[420px] rounded-xl border border-dashed border-(--border-default) bg-(--bg-secondary) flex flex-col items-center justify-center text-center px-8">
                 <BookOpenText size={34} className="text-(--text-muted)" />
                 <h2 className="mt-4 text-[18px] font-semibold text-(--text-primary)">
-                  还没有 CodeWiki
+                  {t('noCodeWiki')}
                 </h2>
                 <p className="mt-2 max-w-md text-[13px] leading-6 text-(--text-muted)">
-                  生成当前项目的 requirements
-                  报告后，这里会展示架构图、接口需求、流程和风险说明。
+                  {t('reportWillShow')}
                 </p>
                 <button
                   className="mt-5 h-10 rounded-lg bg-(--text-primary) px-4 text-[13px] font-medium text-(--bg-primary) inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
@@ -644,10 +646,10 @@ export function CodeWikiPanel({
                   ) : (
                     <Sparkles size={16} />
                   )}
-                  {generating ? "正在生成" : "生成新的 CodeWiki"}
+                  {generating ? t("generating") : t("generateNew")}
                 </button>
                 <div className="mt-3 grid w-full max-w-xs grid-cols-3 gap-1 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1">
-                  {GENERATION_DEPTHS.map((item) => (
+                  {getGenerationDepths().map((item) => (
                     <button
                       key={item.value}
                       type="button"
@@ -676,13 +678,13 @@ export function CodeWikiPanel({
                   <div className="h-full flex flex-col items-center justify-center px-8 text-center">
                     <AlertCircle size={28} className="text-(--text-muted)" />
                     <p className="mt-3 text-[13px] text-(--text-secondary)">
-                      报告加载失败。
+                      {t("reportLoadFailed")}
                     </p>
                     <button
                       className="mt-4 h-8 rounded-md border border-(--border-default) px-3 text-[12px] text-(--text-primary) hover:bg-(--bg-hover)"
                       onClick={() => setFrameError(false)}
                     >
-                      重试
+                      {t("retry")}
                     </button>
                   </div>
                 ) : selected ? (
@@ -698,7 +700,7 @@ export function CodeWikiPanel({
                 ) : (
                   <div className="h-full flex items-center justify-center text-[13px] text-(--text-muted)">
                     <Loader2 size={16} className="mr-2 animate-spin" />
-                    加载中
+                    {t("loading")}
                   </div>
                 )}
               </div>
@@ -708,16 +710,16 @@ export function CodeWikiPanel({
 
         <aside className="border-l border-(--border-default) bg-(--bg-secondary) min-h-0 flex flex-col max-xl:hidden">
           <div className="p-4 border-b border-(--border-default)">
-            <div className="flex items-center gap-2 text-(--text-primary)">
+            {/* <div className="flex items-center gap-2 text-(--text-primary)">
               <MessageSquareText size={17} />
               <span className="font-medium text-[14px]">
                 Ask this repository
               </span>
-            </div>
+            </div> */}
             <p className="mt-2 text-[12px] leading-5 text-(--text-muted)">
               {generating
-                ? "CodeWiki 生成完成前暂不接受提问。"
-                : "临时只读问答，不会修改项目，也不会保存到会话历史。"}
+                ? t("noQuestionsDuringGeneration")
+                : t("tempReadOnlyQa")}
             </p>
           </div>
 
@@ -727,19 +729,19 @@ export function CodeWikiPanel({
           >
             {chatMessages.length === 0 ? (
               <div className="rounded-xl border border-(--border-default) bg-(--bg-primary) p-4">
-                <Sparkles size={22} className="text-(--text-muted)" />
-                <p className="mt-4 text-[13px] font-medium text-(--text-primary)">
+                {/* <Sparkles size={22} className="text-(--text-muted)" /> */}
+                <p className="text-[13px] font-medium text-(--text-primary)">
                   {generating
-                    ? "正在生成 CodeWiki"
+                    ? t("generatingCodeWiki")
                     : asking || busy
-                      ? "当前问题处理中"
-                      : "可以问当前项目"}
+                      ? t("processingQuestion")
+                      : t("canAskAboutProject")}
                 </p>
                 <p className="mt-2 text-[12px] leading-5 text-(--text-muted)">
                   {generating
-                    ? "生成完成后再基于报告提问。"
+                    ? t("askAfterGeneration")
                     : lastQuestion ||
-                      "例如：主要业务流程是什么？哪些接口风险最高？"}
+                      t("exampleQuestions")}
                 </p>
               </div>
             ) : (
@@ -751,7 +753,7 @@ export function CodeWikiPanel({
                       (!message.segments || message.segments.length === 0) && (
                         <div className="mt-[-12px] mb-3 ml-1 inline-flex items-center gap-2 rounded-xl border border-(--border-default) bg-(--bg-primary) px-3 py-2 text-[12px] text-(--text-muted)">
                           <Loader2 size={14} className="animate-spin" />
-                          正在回答...
+                          {t("answering")}
                         </div>
                       )}
                   </div>
@@ -770,9 +772,9 @@ export function CodeWikiPanel({
                 onChange={(event) => setQuestion(event.target.value)}
                 placeholder={
                   generating
-                    ? "CodeWiki 正在生成"
+                    ? t("generatingCodeWiki")
                     : asking || busy
-                      ? "正在回答..."
+                      ? t("answering")
                       : "Ask about this repository"
                 }
                 disabled={askInputLocked}
@@ -782,7 +784,7 @@ export function CodeWikiPanel({
                 type="submit"
                 className="inline-flex size-7 items-center justify-center rounded-full text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-50"
                 disabled={askInputLocked || !question.trim()}
-                aria-label="发送问题"
+                aria-label={t("sendingQuestion")}
               >
                 {asking ? (
                   <Loader2 size={15} className="animate-spin" />
@@ -796,8 +798,8 @@ export function CodeWikiPanel({
       </div>
       <ConfirmDialog
         open={!!pendingDelete}
-        title="删除 CodeWiki 报告？"
-        description={`报告「${pendingDelete?.title || pendingDelete?.file || ""}」会从当前项目历史报告中移除，此操作不可撤销。`}
+        title={t("deleteReportConfirm")}
+        description={t("deleteReportDescription").replace("{{report}}", pendingDelete?.title || pendingDelete?.file || "")}
         loading={deletingReport}
         onOpenChange={(open) => !open && setPendingDelete(null)}
         onConfirm={confirmDeleteReport}

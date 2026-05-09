@@ -36,10 +36,10 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
         <Plug size={13} className="shrink-0 opacity-70" />
         <span>{rs.sdkProvider?.toUpperCase() || "-"}</span>
       </span>
-      <span className="inline-flex items-center gap-1 whitespace-nowrap">
+      {/* <span className="inline-flex items-center gap-1 whitespace-nowrap">
         <ShieldCheck size={13} className="shrink-0 opacity-70" />
         <span>{mode.toUpperCase()}</span>
-      </span>
+      </span> */}
       {max > 0 && (
         <span className="inline-flex items-center gap-1 whitespace-nowrap">
           <ChartNoAxesCombined size={13} className="shrink-0 opacity-70" />

@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils';
 import { formatTimestamp } from '../../utils/time.js';
 import { MoreHorizontal } from 'lucide-react';
 import { useState } from 'react';
+import { t } from '../../i18n/index.js';
 
 export function SessionPanel({ sessions, currentId, onSwitch, onNew, onDelete }) {
   const allSessions = Array.isArray(sessions) ? sessions : [];
@@ -24,13 +25,13 @@ export function SessionPanel({ sessions, currentId, onSwitch, onNew, onDelete })
   return (
     <div className="p-6 max-w-3xl mx-auto">
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-[15px] font-semibold text-(--text-primary)">会话</h2>
-        <Button size="sm" onClick={onNew} className="text-[13px]">+ 新建会话</Button>
+        <h2 className="text-[15px] font-semibold text-(--text-primary)">{t('sessions')}</h2>
+        <Button size="sm" onClick={onNew} className="text-[13px]">+ {t('newChat')}</Button>
       </div>
       <ScrollArea className="h-[calc(100vh-160px)]">
         <div className="space-y-2">
           {allSessions.length === 0 && (
-            <div className="text-center text-(--text-muted) text-[13px] py-8">暂无对话</div>
+            <div className="text-center text-(--text-muted) text-[13px] py-8">{t('noSessions')}</div>
           )}
           {allSessions.map(session => (
             <div
@@ -47,7 +48,7 @@ export function SessionPanel({ sessions, currentId, onSwitch, onNew, onDelete })
                 </span>
                 <div className="flex items-center gap-2">
                   {session.id === currentId && (
-                    <Badge variant="secondary" className="text-[11px]">当前</Badge>
+                    <Badge variant="secondary" className="text-[11px]">{t('current')}</Badge>
                   )}
                   <Popover>
                     <PopoverTrigger asChild>
@@ -55,7 +56,7 @@ export function SessionPanel({ sessions, currentId, onSwitch, onNew, onDelete })
                         type="button"
                         className="inline-flex size-7 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
                         onClick={(event) => event.stopPropagation()}
-                        aria-label="会话操作"
+                        aria-label={t('sessionActions')}
                       >
                         <MoreHorizontal size={15} />
                       </button>
@@ -70,14 +71,14 @@ export function SessionPanel({ sessions, currentId, onSwitch, onNew, onDelete })
                         className="w-full rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
                         onClick={() => setPendingDelete(session)}
                       >
-                        删除
+                        {t('deleteSession')}
                       </button>
                     </PopoverContent>
                   </Popover>
                 </div>
               </div>
               <div className="text-[13px] font-medium truncate mt-1 text-(--text-primary)">
-                {session.title || session.preview || (session.messageCount > 0 ? `${session.messageCount} 条消息` : '空对话')}
+                {session.title || session.preview || (session.messageCount > 0 ? `${session.messageCount} ${t('messages')}` : t('emptyChat'))}
               </div>
               {session.updatedAt && (
                 <div className="text-[11px] text-(--text-muted) mt-1">
@@ -90,8 +91,8 @@ export function SessionPanel({ sessions, currentId, onSwitch, onNew, onDelete })
       </ScrollArea>
       <ConfirmDialog
         open={!!pendingDelete}
-        title="删除会话？"
-        description={`会话「${pendingDelete?.title || pendingDelete?.preview || pendingDelete?.id || ''}」会从历史记录中移除，此操作不可撤销。`}
+        title={t('deleteSessionConfirm')}
+        description={pendingDelete ? t('deleteSessionDescription').replace('{{session}}', pendingDelete.title || pendingDelete.preview || pendingDelete.id || '') : ''}
         loading={deleting}
         onOpenChange={(open) => !open && setPendingDelete(null)}
         onConfirm={confirmDelete}

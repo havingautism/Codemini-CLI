@@ -2,6 +2,7 @@ import React, { Component } from "react";
 import { createRoot } from "react-dom/client";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppProvider, useApp } from "@/context/app-context.jsx";
+import { t } from "../i18n/index.js";
 import { Sidebar } from "@/components/Sidebar.jsx";
 import { ChatPanel } from "@/components/ChatPanel.jsx";
 import { InputBar } from "@/components/InputBar.jsx";
@@ -53,7 +54,7 @@ class ErrorBoundary extends Component {
             fontSize: 13,
           }}
         >
-          <p style={{ fontWeight: 600, marginBottom: 8 }}>渲染错误</p>
+          <p style={{ fontWeight: 600, marginBottom: 8 }}>{t('renderError')}</p>
           <pre style={{ whiteSpace: "pre-wrap", opacity: 0.8 }}>
             {this.state.error?.message || String(this.state.error)}
           </pre>
@@ -69,7 +70,7 @@ class ErrorBoundary extends Component {
               cursor: "pointer",
             }}
           >
-            重试
+            {t('retry')}
           </button>
         </div>
       );
@@ -171,7 +172,7 @@ function Shell() {
                 onAbort={actions.abort}
                 busy={state.busy}
                 disabled={!!state.pendingPlanApproval}
-                disabledReason="请先在上方审阅计划，批准、修改或否决后再继续输入"
+                disabledReason={t('planReviewFirst')}
                 runtimeState={state.runtimeState}
                 history={state.history}
                 onCompletionRequest={async (input) => {

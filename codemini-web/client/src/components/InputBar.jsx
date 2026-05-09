@@ -13,12 +13,14 @@ import {
   Minus,
   Folder,
   Sparkles,
+  Hammer,
   Moon,
   Archive,
   Database,
   Inbox,
   Camera,
   RotateCcw,
+  Ham,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
@@ -31,10 +33,12 @@ import {
 
 const IMPLICIT_SKILLS = new Set(["superpowers-lite"]);
 
-const MODE_OPTIONS = [
-  { value: "auto", label: "自动", desc: "自动执行，复杂任务自动规划" },
-  { value: "plan", label: "计划", desc: "仅规划不执行，审阅后再执行" },
-];
+function getModeOptions() {
+  return [
+    { value: "auto", label: t("autoMode"), desc: t("autoModeDesc") },
+    { value: "plan", label: t("planMode"), desc: t("planModeDesc") },
+  ];
+}
 
 const ACTION_COMMANDS = [
   {
@@ -91,6 +95,7 @@ const ACTION_COMMAND_NAMES = new Set(
 function ModeSelector({ current, disabled = false }) {
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
+  const MODE_OPTIONS = getModeOptions();
   const active =
     MODE_OPTIONS.find((m) => m.value === current) || MODE_OPTIONS[0];
 
@@ -99,7 +104,8 @@ function ModeSelector({ current, disabled = false }) {
     setSwitching(true);
     try {
       const result = await api.setExecutionMode(mode);
-      if (result?.error) throw new Error(result.message || "Failed to switch mode");
+      if (result?.error)
+        throw new Error(result.message || "Failed to switch mode");
     } catch {
     } finally {
       setSwitching(false);
@@ -117,7 +123,7 @@ function ModeSelector({ current, disabled = false }) {
             (switching || disabled) && "opacity-50 pointer-events-none",
           )}
           disabled={disabled}
-          title={disabled ? "当前请求完成后可切换执行模式" : "切换执行模式"}
+          title={disabled ? t("switchModeDisabled") : t("switchMode")}
         >
           <ShieldCheck size={14} />
           <span className="truncate">{active.label}</span>
@@ -131,7 +137,7 @@ function ModeSelector({ current, disabled = false }) {
         className="w-56 p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-lg"
       >
         <div className="text-[11px] text-(--text-muted) px-2 py-1.5 font-medium">
-          执行模式
+          {t("executionMode")}
         </div>
         <div className="flex flex-col gap-0.5">
           {MODE_OPTIONS.map((opt) => (
@@ -191,7 +197,7 @@ function SoulQuickSwitch() {
         <button
           type="button"
           className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)"
-          title="灵魂切换"
+          title={t("soulSwitch")}
         >
           <span className="truncate max-w-[60px]">{active || "default"}</span>
           <ChevronDown size={11} />
@@ -204,7 +210,7 @@ function SoulQuickSwitch() {
         className="w-52 p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-lg"
       >
         <div className="text-[11px] text-(--text-muted) px-2 py-1.5 font-medium">
-          切换灵魂
+          {t("switchSoul")}
         </div>
         <div className="flex flex-col gap-0.5">
           {souls.map((soul) => (
@@ -220,7 +226,7 @@ function SoulQuickSwitch() {
             >
               <span className="truncate flex-1">{soul.name}</span>
               <span className="text-[10px] text-(--text-muted) shrink-0">
-                {soul.scope === "builtin" ? "内置" : "自定义"}
+                {soul.scope === "builtin" ? t("builtin") : t("custom")}
               </span>
             </button>
           ))}
@@ -282,7 +288,7 @@ function CommandPalette({ query, onSelect, visible }) {
         .map((skill) => ({
           name: skill.name,
           insert: `/${skill.name} `,
-          icon: Sparkles,
+          icon: Hammer,
           description: skill.description || "Manual skill",
           kind: "skill",
           key: `skill-${skill.name}`,
@@ -524,7 +530,7 @@ export function InputBar({
                 ? t("inputDisabled")
                 : disabled
                   ? disabledReason || t("inputDisabled")
-                : "可向 CodeMini 询问任何事。输入 / 使用命令或技能"
+                  : t("askAnything")
             }
             disabled={inputLocked}
             rows={1}
@@ -537,14 +543,14 @@ export function InputBar({
             <button
               type="button"
               className="border-0 bg-transparent text-(--text-muted) min-w-[30px] h-[30px] rounded-lg inline-flex items-center justify-center shrink-0 cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)"
-              title="添加上下文"
+              title={t("addContext")}
             >
               <Plus size={16} />
             </button>
             <button
               type="button"
               className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)"
-              title="切换工作区"
+              title={t("switchWorkspace")}
               onClick={onOpenProject}
             >
               <Folder size={13} className="shrink-0" />
@@ -581,7 +587,7 @@ export function InputBar({
                 )}
                 onClick={submitCurrent}
                 disabled={!value.trim() || inputLocked}
-                title="发送"
+                title={t("sending")}
               >
                 <ArrowUp size={16} />
               </button>

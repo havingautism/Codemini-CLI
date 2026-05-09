@@ -5,57 +5,59 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import * as api from '@/hooks/use-api';
-
-const CONFIG_GROUPS = [
-  {
-    title: 'Gateway',
-    keys: [
-      { path: 'gateway.base_url', label: 'Base URL', placeholder: 'http://127.0.0.1:8000/v1' },
-      { path: 'gateway.api_key', label: 'API Key', type: 'password', placeholder: 'sk-...' },
-      { path: 'gateway.timeout_ms', label: 'Timeout (ms)', type: 'number' },
-      { path: 'gateway.max_retries', label: 'Max Retries', type: 'number' }
-    ]
-  },
-  {
-    title: 'Model',
-    keys: [
-      { path: 'model.name', label: 'Model Name', placeholder: 'gpt-4.1-mini' },
-      { path: 'model.fast_name', label: 'Fast Model', placeholder: 'fallback to Model Name when empty' },
-      { path: 'model.max_context_tokens', label: 'Max Context Tokens', type: 'number' }
-    ]
-  },
-  {
-    title: 'SDK',
-    keys: [
-      { path: 'sdk.provider', label: 'Provider', options: ['openai-compatible', 'anthropic'] }
-    ]
-  },
-  {
-    title: 'Execution',
-    keys: [
-      { path: 'execution.mode', label: 'Mode', options: ['auto', 'plan'] }
-    ]
-  },
-  {
-    title: 'Shell',
-    keys: [
-      { path: 'shell.default', label: 'Default Shell', options: ['bash', 'powershell', 'zsh', 'cmd'] }
-    ]
-  },
-  {
-    title: 'UI',
-    keys: [
-      { path: 'ui.language', label: 'UI Language', options: ['zh', 'en'] },
-      { path: 'ui.reply_language', label: 'Reply Language', options: ['zh', 'en'] }
-    ]
-  }
-];
+import { t, setLocale } from '../../i18n/index.js';
 
 function getNestedValue(obj, path) {
   return path.split('.').reduce((o, k) => o?.[k], obj);
 }
 
 export function ConfigDialog({ open, onOpenChange }) {
+  // Define config groups inside the component to ensure proper translation
+  const CONFIG_GROUPS = [
+    {
+      title: t('gateway'),
+      keys: [
+        { path: 'gateway.base_url', label: t('baseUrl'), placeholder: 'http://127.0.0.1:8000/v1' },
+        { path: 'gateway.api_key', label: t('apiKey'), type: 'password', placeholder: 'sk-...' },
+        { path: 'gateway.timeout_ms', label: t('timeout'), type: 'number' },
+        { path: 'gateway.max_retries', label: t('maxRetries'), type: 'number' }
+      ]
+    },
+    {
+      title: t('model'),
+      keys: [
+        { path: 'model.name', label: t('modelName'), placeholder: 'gpt-4.1-mini' },
+        { path: 'model.fast_name', label: t('fastModel'), placeholder: 'fallback to Model Name when empty' },
+        { path: 'model.max_context_tokens', label: t('maxContextTokens'), type: 'number' }
+      ]
+    },
+    {
+      title: t('sdk'),
+      keys: [
+        { path: 'sdk.provider', label: t('provider'), options: ['openai-compatible', 'anthropic'] }
+      ]
+    },
+    {
+      title: t('execution'),
+      keys: [
+        { path: 'execution.mode', label: t('mode'), options: ['auto', 'plan'] }
+      ]
+    },
+    {
+      title: t('shell'),
+      keys: [
+        { path: 'shell.default', label: t('defaultShell'), options: ['bash', 'powershell', 'zsh', 'cmd'] }
+      ]
+    },
+    {
+      title: t('ui'),
+      keys: [
+        { path: 'ui.language', label: t('uiLanguage'), options: ['zh', 'en'] },
+        { path: 'ui.reply_language', label: t('replyLanguage'), options: ['zh', 'en'] }
+      ]
+    }
+  ];
+
   const [config, setConfig] = useState(null);
   const [changes, setChanges] = useState({});
 
@@ -84,6 +86,12 @@ export function ConfigDialog({ open, onOpenChange }) {
       for (const [path, value] of Object.entries(changes)) {
         const key = CONFIG_GROUPS.flatMap(g => g.keys).find(k => k.path === path);
         await api.setConfig(path, key?.type === 'number' ? Number(value) : value);
+        
+        // Update UI language immediately if changed
+        if (path === 'ui.language') {
+          setLocale(value);
+          window.location.reload(); // Reload to apply language changes
+        }
       }
       setChanges({});
       onOpenChange(false);
@@ -96,7 +104,7 @@ export function ConfigDialog({ open, onOpenChange }) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[640px] max-h-[80vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>设置</DialogTitle>
+          <DialogTitle>{t('settingsTitle')}</DialogTitle>
         </DialogHeader>
         <div className="space-y-5 py-1">
           {CONFIG_GROUPS.map((group, gi) => (
@@ -134,8 +142,8 @@ export function ConfigDialog({ open, onOpenChange }) {
           ))}
         </div>
         <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => onOpenChange(false)} className="text-[13px]">取消</Button>
-          <Button onClick={handleSave} disabled={!hasChanges} className="text-[13px]">保存更改</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)} className="text-[13px]">{t('cancel')}</Button>
+          <Button onClick={handleSave} disabled={!hasChanges} className="text-[13px]">{t('saveChanges')}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -1,13 +1,12 @@
 import { useState } from "react";
 import {
   Plus,
-  Search,
   Sun,
   Moon,
   Settings,
   Folder,
   ChevronDown,
-  Sparkles,
+  Hammer,
   User,
   Info,
   BookOpenText,
@@ -21,13 +20,14 @@ import {
 } from "@/components/ui/popover";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { cn } from "@/lib/utils";
+import { t } from "../../i18n/index.js";
 
 function getProjectKey(session) {
   return session?.projectDir || "unknown";
 }
 
 function getProjectName(projectDir) {
-  if (!projectDir || projectDir === "unknown") return "未知项目";
+  if (!projectDir || projectDir === "unknown") return t('unknownProject');
   return String(projectDir).split(/[/\\]/).filter(Boolean).pop() || projectDir;
 }
 
@@ -130,11 +130,8 @@ export function Sidebar({
 
   return (
     <aside className="w-[260px] shrink-0 border-r border-(--border-default) flex flex-col bg-(--bg-secondary)">
-      <nav
-        className="flex-1 flex flex-col px-2.5 pt-3 pb-2 gap-0.5 overflow-y-auto"
-        style={{ scrollbarWidth: "thin" }}
-      >
-        {/* New Session */}
+      {/* Fixed top action buttons */}
+      <div className="shrink-0 px-2.5 pt-3 flex flex-col gap-0.5">
         <button
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onNewSession}
@@ -144,11 +141,10 @@ export function Sidebar({
             strokeWidth={2}
             className="text-(--text-secondary) shrink-0"
           />
-          <span className="truncate">新对话</span>
+          <span className="truncate">{t('newChat')}</span>
         </button>
 
-        {/* Search */}
-        <button
+        {/* <button
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={() => {}}
         >
@@ -158,22 +154,20 @@ export function Sidebar({
             className="text-(--text-secondary) shrink-0"
           />
           <span className="truncate">搜索</span>
-        </button>
+        </button> */}
 
-        {/* Skills */}
         <button
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onOpenSkills}
         >
-          <Sparkles
+          <Hammer
             size={15}
             strokeWidth={2}
             className="text-(--text-secondary) shrink-0"
           />
-          <span className="truncate">Skills</span>
+          <span className="truncate">{t('skills')}</span>
         </button>
 
-        {/* Souls */}
         <button
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onOpenSouls}
@@ -183,12 +177,17 @@ export function Sidebar({
             strokeWidth={2}
             className="text-(--text-secondary) shrink-0"
           />
-          <span className="truncate">Souls</span>
+          <span className="truncate">{t('souls')}</span>
         </button>
 
         <Separator className="my-2 bg-(--border-default)" />
+      </div>
 
-        {/* Project Groups */}
+      {/* Scrollable project history */}
+      <nav
+        className="flex-1 min-h-0 flex flex-col px-2.5 pb-2 gap-0.5 overflow-y-auto"
+        style={{ scrollbarWidth: "thin" }}
+      >
         {Array.from(projectGroups.entries()).map(
           ([projectKey, projectSessions]) => {
             const isExpanded =
@@ -220,8 +219,8 @@ export function Sidebar({
                     <button
                       type="button"
                       className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-active) hover:text-(--text-primary)"
-                      title="在此项目中新建对话"
-                      aria-label={`在 ${getProjectName(projectKey)} 中新建对话`}
+                      title={t('newSessionInProject')}
+                      aria-label={`${t('newSessionInProject')} ${getProjectName(projectKey)}`}
                       onClick={(event) =>
                         openProjectNewSession(event, projectKey)
                       }
@@ -238,8 +237,8 @@ export function Sidebar({
                           isActive &&
                           "bg-(--bg-active) text-(--text-primary)",
                       )}
-                      title="打开 CodeWiki"
-                      aria-label={`打开 ${getProjectName(projectKey)} 的 CodeWiki`}
+                      title={t('openCodeWiki')}
+                      aria-label={`${t('openCodeWiki')} ${getProjectName(projectKey)}`}
                       onClick={(event) =>
                         openProjectCodeWiki(event, projectKey)
                       }
@@ -253,12 +252,14 @@ export function Sidebar({
                       className="shrink-0 text-(--text-muted)"
                     />
                   )}
-                  <span className="text-[11px]">{projectSessions.length}</span>
+                  <span className="text-[11px] px-2">
+                    {projectSessions.length}
+                  </span>
                   <button
                     type="button"
                     className="border-0 bg-transparent inline-flex size-5 shrink-0 items-center justify-center rounded-md text-inherit cursor-pointer hover:bg-(--bg-active)"
                     onClick={() => toggleProject(projectKey)}
-                    aria-label={isExpanded ? "折叠项目" : "展开项目"}
+                    aria-label={isExpanded ? t('collapseProject') : t('expandProject')}
                   >
                     <ChevronDown
                       size={13}
@@ -274,10 +275,13 @@ export function Sidebar({
                     {projectSessions.slice(0, 30).map((session) => (
                       <div
                         key={session.id}
-                        onClick={() =>
-                          session.id !== currentSessionId &&
-                          onSwitchSession(session.id)
-                        }
+                        onClick={() => {
+                          if (session.id !== currentSessionId) {
+                            onSwitchSession(session.id);
+                          } else if (currentView !== "chat") {
+                            onSwitchView?.("chat");
+                          }
+                        }}
                         className={cn(
                           "group w-full border-0 bg-transparent flex items-center gap-2 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] truncate",
                           session.id === currentSessionId
@@ -289,8 +293,8 @@ export function Sidebar({
                           {session.title ||
                             session.preview ||
                             (session.messageCount > 0
-                              ? `${session.messageCount} 条消息`
-                              : "空对话")}
+                              ? `${session.messageCount} ${t('messages')}`
+                              : t('emptyChat'))}
                         </span>
                         <Popover>
                           <PopoverTrigger asChild>
@@ -298,7 +302,7 @@ export function Sidebar({
                               type="button"
                               className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) opacity-0 hover:bg-(--bg-active) hover:text-(--text-primary) group-hover:opacity-100 focus:opacity-100"
                               onClick={(event) => event.stopPropagation()}
-                              aria-label="会话操作"
+                              aria-label={t('sessionActions')}
                             >
                               <MoreHorizontal size={14} />
                             </button>
@@ -313,7 +317,7 @@ export function Sidebar({
                               className="w-full rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
                               onClick={() => setPendingDelete(session)}
                             >
-                              删除
+                              {t('deleteSession')}
                             </button>
                           </PopoverContent>
                         </Popover>
@@ -328,7 +332,7 @@ export function Sidebar({
 
         {allSessions.length === 0 && (
           <div className="px-3 py-4 text-[12px] text-(--text-muted) text-center">
-            暂无对话
+            {t('noSessions')}
           </div>
         )}
       </nav>
@@ -342,11 +346,11 @@ export function Sidebar({
             disabled={updateStatus === "updating"}
           >
             {updateStatus === "updating" ? (
-              <>更新中...</>
+              <>{t('updating')}</>
             ) : updateStatus === "done" ? (
-              <>已更新，请重启</>
+              <>{t('updatedRestart')}</>
             ) : (
-              <>新版本 {versionInfo.latest} 可用，点击更新</>
+              <>{t('updateAvailable')}</>
             )}
           </button>
         )}
@@ -354,24 +358,28 @@ export function Sidebar({
           <button
             className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
             onClick={onOpenAbout}
-            title="关于"
-            aria-label="关于"
+            title={t('about')}
+            aria-label={t('about')}
           >
             <Info size={15} strokeWidth={1.8} />
           </button>
           <button
             className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
             onClick={onToggleTheme}
-            title={isDark ? "浅色" : "深色"}
-            aria-label={isDark ? "切换浅色模式" : "切换深色模式"}
+            title={isDark ? t('lightMode') : t('darkMode')}
+            aria-label={isDark ? t('switchToLightMode') : t('switchToDarkMode')}
           >
-            {isDark ? <Sun size={15} strokeWidth={1.8} /> : <Moon size={15} strokeWidth={1.8} />}
+            {isDark ? (
+              <Moon size={15} strokeWidth={1.8} />
+            ) : (
+              <Sun size={15} strokeWidth={1.8} />
+            )}
           </button>
           <button
             className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
             onClick={onOpenSettings}
-            title="设置"
-            aria-label="打开设置"
+            title={t('settings')}
+            aria-label={t('settings')}
           >
             <Settings size={15} strokeWidth={1.8} />
           </button>
@@ -379,8 +387,8 @@ export function Sidebar({
       </div>
       <ConfirmDialog
         open={!!pendingDelete}
-        title="删除会话？"
-        description={`会话「${pendingDelete?.title || pendingDelete?.preview || pendingDelete?.id || ""}」会从历史记录中移除，此操作不可撤销。`}
+        title={t('deleteSessionConfirm')}
+        description={pendingDelete ? t('deleteSessionDescription').replace('{{session}}', pendingDelete.title || pendingDelete.preview || pendingDelete.id || '') : ''}
         loading={deleting}
         onOpenChange={(open) => !open && setPendingDelete(null)}
         onConfirm={confirmDeleteSession}
