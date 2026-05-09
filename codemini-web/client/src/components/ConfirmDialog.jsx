@@ -7,21 +7,22 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { t } from "../../i18n/index.js";
 
 export function ConfirmDialog({
   open,
   title,
   description,
-  confirmLabel = "删除",
-  cancelLabel = "取消",
+  confirmLabel,
+  cancelLabel,
   loading = false,
   onOpenChange,
   onConfirm,
 }) {
   return (
     <Dialog open={open} onOpenChange={(next) => !loading && onOpenChange?.(next)}>
-      <DialogContent showCloseButton={!loading} className="sm:max-w-[380px]">
-        <DialogHeader>
+      <DialogContent className="sm:max-w-[380px]">
+        <DialogHeader showCloseButton={!loading}>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription className="leading-6">
             {description}
@@ -34,7 +35,7 @@ export function ConfirmDialog({
             disabled={loading}
             onClick={() => onOpenChange?.(false)}
           >
-            {cancelLabel}
+            {cancelLabel || t('cancel')}
           </Button>
           <Button
             type="button"
@@ -42,7 +43,7 @@ export function ConfirmDialog({
             disabled={loading}
             onClick={onConfirm}
           >
-            {loading ? "删除中" : confirmLabel}
+            {loading ? t('deleting') : (confirmLabel || t('delete'))}
           </Button>
         </DialogFooter>
       </DialogContent>

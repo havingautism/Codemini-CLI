@@ -86,7 +86,8 @@ function getDreamNotice(text) {
     return {
       status: "error",
       title: "Dream failed",
-      description: value.slice("Dream failed:".length).trim() || "Unknown error.",
+      description:
+        value.slice("Dream failed:".length).trim() || "Unknown error.",
     };
   }
   return null;
@@ -115,7 +116,8 @@ function DreamNotice({ notice }) {
             size={14}
             className={cn(
               "shrink-0",
-              notice.status === "running" && "animate-spin text-(--accent-cyan)",
+              notice.status === "running" &&
+                "animate-spin text-(--accent-cyan)",
               notice.status === "done" && "text-(--accent-green)",
             )}
           />
@@ -145,7 +147,7 @@ function ToolGroup({ cards }) {
     : cards;
 
   return (
-    <div className="space-y-2 mt-2">
+    <div className="space-y-2 my-2">
       {shouldCollapse && hiddenCount > 0 && (
         <button
           type="button"
@@ -286,7 +288,9 @@ export function MessageBubble({ message, skills = [] }) {
     const dreamNotice = getDreamNotice(legacyText);
     if (dreamNotice) return <DreamNotice notice={dreamNotice} />;
 
-    const isWaitingReview = legacyText?.includes('等待计划审阅') || legacyText?.includes('Waiting for plan review');
+    const isWaitingReview =
+      legacyText?.includes("等待计划审阅") ||
+      legacyText?.includes("Waiting for plan review");
     if (isWaitingReview) {
       return null;
     }
@@ -350,12 +354,15 @@ export function MessageBubble({ message, skills = [] }) {
             return null;
           })}
 
-          {planStep && renderGroups.length === 0 && planStep.status !== "done" && planStep.status !== "failed" && (
-            <div className="text-[12px] text-(--text-muted) inline-flex items-center gap-1.5">
-              <span className="inline-block size-1 rounded-full bg-(--accent-blue) animate-pulse" />
-              <span>等待工具调用或模型输出…</span>
-            </div>
-          )}
+          {planStep &&
+            renderGroups.length === 0 &&
+            planStep.status !== "done" &&
+            planStep.status !== "failed" && (
+              <div className="text-[12px] text-(--text-muted) inline-flex items-center gap-1.5">
+                <span className="inline-block size-1 rounded-full bg-(--accent-blue) animate-pulse" />
+                <span>等待工具调用或模型输出…</span>
+              </div>
+            )}
 
           {skillBadges?.length > 0 && (
             <div className="flex flex-wrap gap-1 mt-2">

@@ -12,6 +12,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import * as api from "@/hooks/use-api";
+import { t } from "../../i18n/index.js";
 
 function SkillEditor({ skill, onSave, onCancel }) {
   const [name, setName] = useState(skill?.name || "");
@@ -46,7 +47,7 @@ function SkillEditor({ skill, onSave, onCancel }) {
     <div className="space-y-3">
       <div className="flex items-center gap-3">
         <label className="text-[13px] text-(--text-muted) w-20 shrink-0">
-          名称
+          {t('name')}
         </label>
         <Input
           value={name}
@@ -59,7 +60,7 @@ function SkillEditor({ skill, onSave, onCancel }) {
       {isNew && (
         <div className="flex items-center gap-3">
           <label className="text-[13px] text-(--text-muted) w-20 shrink-0">
-            描述
+            {t('description')}
           </label>
           <Input
             value={description}
@@ -71,11 +72,11 @@ function SkillEditor({ skill, onSave, onCancel }) {
       )}
       <div>
         <label className="text-[13px] text-(--text-muted) mb-1.5 block">
-          SKILL.md 内容
+          {t('skillContent')}
         </label>
         {loading ? (
           <div className="text-[12px] text-(--text-muted) py-4 text-center">
-            加载中...
+            {t('loading')}...
           </div>
         ) : (
           <Textarea
@@ -88,14 +89,14 @@ function SkillEditor({ skill, onSave, onCancel }) {
       </div>
       <div className="flex justify-end gap-2">
         <Button variant="outline" onClick={onCancel} className="text-[13px]">
-          取消
+          {t('cancel')}
         </Button>
         <Button
           onClick={handleSave}
           disabled={loading || !content || (isNew && !name)}
           className="text-[13px]"
         >
-          {isNew ? "创建" : "保存"}
+          {isNew ? t('create') : t('save')}
         </Button>
       </div>
     </div>
@@ -123,11 +124,11 @@ function ViewDialog({ skill, open, onOpenChange }) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[600px] max-h-[80vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{skill?.name} - 内容预览</DialogTitle>
+          <DialogTitle>{skill?.name} {t('contentPreview')}</DialogTitle>
         </DialogHeader>
         {loading ? (
           <div className="text-[12px] text-(--text-muted) py-4 text-center">
-            加载中...
+            {t('loading')}...
           </div>
         ) : (
           <pre className="text-[13px] whitespace-pre-wrap break-all bg-(--bg-secondary) rounded-lg p-3 max-h-[400px] overflow-y-auto font-mono">
@@ -140,7 +141,7 @@ function ViewDialog({ skill, open, onOpenChange }) {
             onClick={() => onOpenChange(false)}
             className="text-[13px]"
           >
-            关闭
+            {t('close')}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -182,15 +183,15 @@ export function SkillPanel() {
   };
 
   const scopeLabel = (scope) => {
-    if (scope === "builtin") return "内置";
-    if (scope === "global") return "全局";
-    return "项目";
+    if (scope === "builtin") return t('builtin');
+    if (scope === "global") return t('globalScope');
+    return t('projectScope');
   };
 
   if (loading)
     return (
       <div className="text-[12px] text-(--text-muted) py-4 text-center">
-        加载中...
+        {t('loading')}...
       </div>
     );
 
@@ -201,7 +202,7 @@ export function SkillPanel() {
           onClick={() => setEditing("new")}
           size="xs"
         >
-          + 添加技能
+          {t('addSkill')}
         </Button>
       </div>
 
@@ -219,7 +220,7 @@ export function SkillPanel() {
 
       {skills.length === 0 && !editing && (
         <div className="text-[12px] text-(--text-muted) py-4 text-center">
-          暂无技能
+          {t('noSkills')}
         </div>
       )}
 
@@ -265,7 +266,7 @@ export function SkillPanel() {
                     onChange={(e) => handleToggle(skill.name, e.target.checked)}
                     className="accent-blue-500"
                   />
-                  启用
+                  {t('enable')}
                 </label>
               )}
               <Button
@@ -274,7 +275,7 @@ export function SkillPanel() {
                 onClick={() => setViewSkill(skill)}
                 className="text-[11px] h-6 px-2"
               >
-                查看
+                {t('view')}
               </Button>
               {skill.scope !== "builtin" && (
                 <>
@@ -284,18 +285,18 @@ export function SkillPanel() {
                     onClick={() => setEditing(skill)}
                     className="text-[11px] h-6 px-2"
                   >
-                    编辑
+                    {t('edit')}
                   </Button>
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={() => {
-                      if (confirm(`确定删除技能 "${skill.name}"？`))
+                      if (confirm(t('confirmDeleteSkill').replace('{{name}}', skill.name)))
                         handleDelete(skill.name);
                     }}
                     className="text-[11px] h-6 px-2 text-red-500 hover:text-red-400"
                   >
-                    删除
+                    {t('delete')}
                   </Button>
                 </>
               )}
