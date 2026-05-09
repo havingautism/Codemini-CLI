@@ -1,61 +1,101 @@
-import { useState, useEffect } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Separator } from '@/components/ui/separator';
-import * as api from '@/hooks/use-api';
-import { t, setLocale } from '../../i18n/index.js';
+import { useState, useEffect } from "react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import * as api from "@/hooks/use-api";
+import { t } from "../../i18n/index.js";
 
 function getNestedValue(obj, path) {
-  return path.split('.').reduce((o, k) => o?.[k], obj);
+  return path.split(".").reduce((o, k) => o?.[k], obj);
 }
 
 export function ConfigDialog({ open, onOpenChange }) {
   // Define config groups inside the component to ensure proper translation
   const CONFIG_GROUPS = [
     {
-      title: t('gateway'),
+      title: t("gateway"),
       keys: [
-        { path: 'gateway.base_url', label: t('baseUrl'), placeholder: 'http://127.0.0.1:8000/v1' },
-        { path: 'gateway.api_key', label: t('apiKey'), type: 'password', placeholder: 'sk-...' },
-        { path: 'gateway.timeout_ms', label: t('timeout'), type: 'number' },
-        { path: 'gateway.max_retries', label: t('maxRetries'), type: 'number' }
-      ]
+        {
+          path: "gateway.base_url",
+          label: t("baseUrl"),
+          placeholder: "http://127.0.0.1:8000/v1",
+        },
+        {
+          path: "gateway.api_key",
+          label: t("apiKey"),
+          type: "password",
+          placeholder: "sk-...",
+        },
+        { path: "gateway.timeout_ms", label: t("timeout"), type: "number" },
+        { path: "gateway.max_retries", label: t("maxRetries"), type: "number" },
+      ],
     },
     {
-      title: t('model'),
+      title: t("sdk"),
       keys: [
-        { path: 'model.name', label: t('modelName'), placeholder: 'gpt-4.1-mini' },
-        { path: 'model.fast_name', label: t('fastModel'), placeholder: 'fallback to Model Name when empty' },
-        { path: 'model.max_context_tokens', label: t('maxContextTokens'), type: 'number' }
-      ]
+        {
+          path: "sdk.provider",
+          label: t("provider"),
+          options: ["openai-compatible", "anthropic"],
+        },
+      ],
     },
     {
-      title: t('sdk'),
+      title: t("model"),
       keys: [
-        { path: 'sdk.provider', label: t('provider'), options: ['openai-compatible', 'anthropic'] }
-      ]
+        {
+          path: "model.name",
+          label: t("modelName"),
+          placeholder: "gpt-4.1-mini",
+        },
+        {
+          path: "model.fast_name",
+          label: t("fastModel"),
+          placeholder: "fallback to Model Name when empty",
+        },
+        {
+          path: "model.max_context_tokens",
+          label: t("maxContextTokens"),
+          type: "number",
+        },
+      ],
+    },
+
+    {
+      title: t("execution"),
+      keys: [
+        { path: "execution.mode", label: t("mode"), options: ["auto", "plan"] },
+        {
+          path: "ui.reply_language",
+          label: t("replyLanguage"),
+          options: ["zh", "en"],
+        },
+      ],
     },
     {
-      title: t('execution'),
+      title: t("shell"),
       keys: [
-        { path: 'execution.mode', label: t('mode'), options: ['auto', 'plan'] }
-      ]
+        {
+          path: "shell.default",
+          label: t("defaultShell"),
+          options: ["bash", "powershell", "zsh", "cmd"],
+        },
+      ],
     },
-    {
-      title: t('shell'),
-      keys: [
-        { path: 'shell.default', label: t('defaultShell'), options: ['bash', 'powershell', 'zsh', 'cmd'] }
-      ]
-    },
-    {
-      title: t('ui'),
-      keys: [
-        { path: 'ui.language', label: t('uiLanguage'), options: ['zh', 'en'] },
-        { path: 'ui.reply_language', label: t('replyLanguage'), options: ['zh', 'en'] }
-      ]
-    }
   ];
 
   const [config, setConfig] = useState(null);
@@ -63,20 +103,23 @@ export function ConfigDialog({ open, onOpenChange }) {
 
   useEffect(() => {
     if (open) {
-      api.fetchConfig().then(cfg => {
-        setConfig(cfg);
-        setChanges({});
-      }).catch(() => {});
+      api
+        .fetchConfig()
+        .then((cfg) => {
+          setConfig(cfg);
+          setChanges({});
+        })
+        .catch(() => {});
     }
   }, [open]);
 
   const handleChange = (path, value) => {
-    setChanges(prev => ({ ...prev, [path]: value }));
+    setChanges((prev) => ({ ...prev, [path]: value }));
   };
 
   const getValue = (path) => {
     if (path in changes) return changes[path];
-    return config ? String(getNestedValue(config, path) ?? '') : '';
+    return config ? String(getNestedValue(config, path) ?? "") : "";
   };
 
   const hasChanges = Object.keys(changes).length > 0;
@@ -84,19 +127,18 @@ export function ConfigDialog({ open, onOpenChange }) {
   const handleSave = async () => {
     try {
       for (const [path, value] of Object.entries(changes)) {
-        const key = CONFIG_GROUPS.flatMap(g => g.keys).find(k => k.path === path);
-        await api.setConfig(path, key?.type === 'number' ? Number(value) : value);
-        
-        // Update UI language immediately if changed
-        if (path === 'ui.language') {
-          setLocale(value);
-          window.location.reload(); // Reload to apply language changes
-        }
+        const key = CONFIG_GROUPS.flatMap((g) => g.keys).find(
+          (k) => k.path === path,
+        );
+        await api.setConfig(
+          path,
+          key?.type === "number" ? Number(value) : value,
+        );
       }
       setChanges({});
       onOpenChange(false);
     } catch (err) {
-      console.error('Config save failed:', err);
+      console.error("Config save failed:", err);
     }
   };
 
@@ -104,46 +146,69 @@ export function ConfigDialog({ open, onOpenChange }) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[640px] max-h-[80vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{t('settingsTitle')}</DialogTitle>
+          <DialogTitle>{t("settingsTitle")}</DialogTitle>
         </DialogHeader>
         <div className="space-y-5 py-1">
           {CONFIG_GROUPS.map((group, gi) => (
             <div key={group.title}>
-              <div className="text-[13px] font-semibold text-(--text-secondary) mb-2.5 uppercase tracking-[0.3px]">{group.title}</div>
+              <div className="text-[13px] font-semibold text-(--text-secondary) mb-2.5 uppercase tracking-[0.3px]">
+                {group.title}
+              </div>
               <div className="space-y-2.5">
                 {group.keys.map((key) => (
                   <div key={key.path} className="flex items-center gap-3">
-                    <label className="text-[13px] text-(--text-muted) w-32 shrink-0">{key.label}</label>
+                    <label className="text-[13px] text-(--text-muted) w-32 shrink-0">
+                      {key.label}
+                    </label>
                     {key.options ? (
-                      <Select value={getValue(key.path)} onValueChange={(v) => handleChange(key.path, v)}>
+                      <Select
+                        value={getValue(key.path)}
+                        onValueChange={(v) => handleChange(key.path, v)}
+                      >
                         <SelectTrigger className="flex-1 h-8 text-[13px]">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          {key.options.map(opt => (
-                            <SelectItem key={opt} value={opt}>{opt}</SelectItem>
+                          {key.options.map((opt) => (
+                            <SelectItem key={opt} value={opt}>
+                              {opt}
+                            </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
                     ) : (
                       <Input
-                        type={key.type || 'text'}
+                        type={key.type || "text"}
                         value={getValue(key.path)}
                         onChange={(e) => handleChange(key.path, e.target.value)}
-                        placeholder={key.placeholder || ''}
+                        placeholder={key.placeholder || ""}
                         className="flex-1 h-8 text-[13px]"
                       />
                     )}
                   </div>
                 ))}
               </div>
-              {gi < CONFIG_GROUPS.length - 1 && <Separator className="mt-4 bg-(--border-default)" />}
+              {gi < CONFIG_GROUPS.length - 1 && (
+                <Separator className="mt-4 bg-(--border-default)" />
+              )}
             </div>
           ))}
         </div>
         <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => onOpenChange(false)} className="text-[13px]">{t('cancel')}</Button>
-          <Button onClick={handleSave} disabled={!hasChanges} className="text-[13px]">{t('saveChanges')}</Button>
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            className="text-[13px]"
+          >
+            {t("cancel")}
+          </Button>
+          <Button
+            onClick={handleSave}
+            disabled={!hasChanges}
+            className="text-[13px]"
+          >
+            {t("saveChanges")}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

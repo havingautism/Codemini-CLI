@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Plus, User } from "lucide-react";
+import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import * as api from "@/hooks/use-api";
+import { t } from "../../i18n/index.js";
 
 function SoulEditor({ soul, onSave, onCancel }) {
   const [name, setName] = useState(soul?.name || "");
@@ -47,7 +48,7 @@ function SoulEditor({ soul, onSave, onCancel }) {
     <div className="space-y-3">
       <div className="flex items-center gap-3">
         <label className="text-[13px] text-(--text-muted) w-20 shrink-0">
-          名称
+          {t('name')}
         </label>
         <Input
           value={name}
@@ -59,11 +60,11 @@ function SoulEditor({ soul, onSave, onCancel }) {
       </div>
       <div>
         <label className="text-[13px] text-(--text-muted) mb-1.5 block">
-          灵魂内容
+          {t('soulContent')}
         </label>
         {loading ? (
           <div className="text-[12px] text-(--text-muted) py-4 text-center">
-            加载中...
+            {t('loading')}...
           </div>
         ) : (
           <Textarea
@@ -76,14 +77,14 @@ function SoulEditor({ soul, onSave, onCancel }) {
       </div>
       <div className="flex justify-end gap-2">
         <Button variant="outline" onClick={onCancel} className="text-[13px]">
-          取消
+          {t('cancel')}
         </Button>
         <Button
           onClick={handleSave}
           disabled={loading || !content || (isNew && !name)}
           className="text-[13px]"
         >
-          {isNew ? "创建" : "保存"}
+          {isNew ? t('create') : t('save')}
         </Button>
       </div>
     </div>
@@ -111,11 +112,11 @@ function ViewDialog({ soul, open, onOpenChange }) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[600px] max-h-[80vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{soul?.name} - 内容预览</DialogTitle>
+          <DialogTitle>{soul?.name} {t('contentPreview')}</DialogTitle>
         </DialogHeader>
         {loading ? (
           <div className="text-[12px] text-(--text-muted) py-4 text-center">
-            加载中...
+            {t('loading')}...
           </div>
         ) : (
           <pre className="text-[13px] whitespace-pre-wrap break-all bg-(--bg-secondary) rounded-lg p-3 max-h-[400px] overflow-y-auto font-mono">
@@ -128,7 +129,7 @@ function ViewDialog({ soul, open, onOpenChange }) {
             onClick={() => onOpenChange(false)}
             className="text-[13px]"
           >
-            关闭
+            {t('close')}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -172,7 +173,7 @@ export function SoulPanel() {
   if (loading)
     return (
       <div className="text-[12px] text-(--text-muted) py-4 text-center">
-        加载中...
+        {t('loading')}...
       </div>
     );
 
@@ -181,7 +182,7 @@ export function SoulPanel() {
       <div className="flex items-center justify-end">
         <Button onClick={() => setEditing("new")} size="xs">
           <Plus size={12} />
-          添加灵魂
+          {t('addSoul')}
         </Button>
       </div>
 
@@ -199,7 +200,7 @@ export function SoulPanel() {
 
       {souls.length === 0 && !editing && (
         <div className="text-[12px] text-(--text-muted) py-4 text-center">
-          暂无灵魂
+          {t('noSouls')}
         </div>
       )}
 
@@ -217,13 +218,6 @@ export function SoulPanel() {
                 : "border-(--border-default) bg-transparent hover:bg-(--bg-hover)",
             )}
           >
-            {/* <User
-              size={14}
-              className={cn(
-                'shrink-0',
-                soul.active ? 'text-(--text-primary)' : 'text-(--text-muted)'
-              )}
-            /> */}
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
                 <span className="text-[13px] font-medium text-(--text-primary) truncate">
@@ -233,11 +227,11 @@ export function SoulPanel() {
                   variant="outline"
                   className="text-[10px] px-1.5 py-0 h-4 rounded-md font-normal"
                 >
-                  {soul.scope === "builtin" ? "内置" : "自定义"}
+                  {soul.scope === "builtin" ? t('builtin') : t('custom')}
                 </Badge>
                 {soul.active && (
                   <Badge className="text-[10px] px-1.5 py-0 h-4 rounded-md bg-(--text-primary) text-(--bg-primary) border-0 font-normal">
-                    当前
+                    {t('current')}
                   </Badge>
                 )}
               </div>
@@ -254,7 +248,7 @@ export function SoulPanel() {
                 size="xs"
                 onClick={() => setViewSoul(soul)}
               >
-                查看
+                {t('view')}
               </Button>
               {!soul.active && (
                 <Button
@@ -262,7 +256,7 @@ export function SoulPanel() {
                   size="xs"
                   onClick={() => handleActivate(soul.name)}
                 >
-                  激活
+                  {t('activate')}
                 </Button>
               )}
               {soul.scope !== "builtin" && (
@@ -272,18 +266,18 @@ export function SoulPanel() {
                     size="xs"
                     onClick={() => setEditing(soul)}
                   >
-                    编辑
+                    {t('edit')}
                   </Button>
                   <Button
                     variant="ghost"
                     size="xs"
                     onClick={() => {
-                      if (confirm(`确定删除灵魂 "${soul.name}"？`))
+                      if (confirm(t('confirmDeleteSoul').replace('{{name}}', soul.name)))
                         handleDelete(soul.name);
                     }}
                     className="text-(--accent-red) hover:text-(--accent-red)"
                   >
-                    删除
+                    {t('delete')}
                   </Button>
                 </>
               )}

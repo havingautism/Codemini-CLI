@@ -49,7 +49,6 @@ function DialogOverlay({
 function DialogContent({
   className,
   children,
-  showCloseButton = true,
   ...props
 }) {
   return (
@@ -63,14 +62,6 @@ function DialogContent({
         )}
         {...props}>
         {children}
-        {showCloseButton && (
-          <DialogPrimitive.Close
-            data-slot="dialog-close"
-            className="absolute top-4 right-4 rounded-xs opacity-70 text-(--text-muted) transition-opacity hover:opacity-100 hover:text-(--text-primary) focus:outline-hidden disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4">
-            <XIcon />
-            <span className="sr-only">Close</span>
-          </DialogPrimitive.Close>
-        )}
       </DialogPrimitive.Content>
     </DialogPortal>
   );
@@ -78,13 +69,27 @@ function DialogContent({
 
 function DialogHeader({
   className,
+  showCloseButton = true,
+  children,
   ...props
 }) {
   return (
     <div
       data-slot="dialog-header"
-      className={cn("flex flex-col gap-2 text-center sm:text-left", className)}
-      {...props} />
+      className={cn("flex flex-row items-center justify-between gap-2 text-center sm:text-left", className)}
+      {...props}>
+      <div className="flex-1 min-w-0">
+        {children}
+      </div>
+      {showCloseButton && (
+        <DialogPrimitive.Close
+          data-slot="dialog-close"
+          className="shrink-0 rounded-xs opacity-70 text-(--text-muted) transition-opacity hover:opacity-100 hover:text-(--text-primary) focus:outline-hidden disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4">
+          <XIcon />
+          <span className="sr-only">Close</span>
+        </DialogPrimitive.Close>
+      )}
+    </div>
   );
 }
 

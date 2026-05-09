@@ -11,6 +11,8 @@ import {
   Info,
   BookOpenText,
   MoreHorizontal,
+  Globe,
+  Check,
 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -20,7 +22,7 @@ import {
 } from "@/components/ui/popover";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { cn } from "@/lib/utils";
-import { t } from "../../i18n/index.js";
+import { t, setLocale, getLocale } from "../../i18n/index.js";
 
 function getProjectKey(session) {
   return session?.projectDir || "unknown";
@@ -296,6 +298,11 @@ export function Sidebar({
                               ? `${session.messageCount} ${t('messages')}`
                               : t('emptyChat'))}
                         </span>
+                        {session.updatedAt && (
+                          <span className="text-[11px] text-(--text-muted) shrink-0 tabular-nums">
+                            {new Date(session.updatedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'numeric', day: 'numeric' })}
+                          </span>
+                        )}
                         <Popover>
                           <PopoverTrigger asChild>
                             <button
@@ -363,6 +370,42 @@ export function Sidebar({
           >
             <Info size={15} strokeWidth={1.8} />
           </button>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
+                title={t('switchLanguage')}
+                aria-label={t('switchLanguage')}
+              >
+                <Globe size={15} strokeWidth={1.8} />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="center"
+              side="top"
+              className="w-28 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+            >
+              {['zh', 'en'].map((locale) => (
+                <button
+                  key={locale}
+                  type="button"
+                  className={cn(
+                    "w-full rounded-md px-2.5 py-1.5 text-left text-[13px] flex items-center justify-between hover:bg-(--bg-hover)",
+                    getLocale() === locale && "text-(--text-primary) font-medium",
+                  )}
+                  onClick={() => {
+                    if (getLocale() !== locale) {
+                      setLocale(locale);
+                      window.location.reload();
+                    }
+                  }}
+                >
+                  <span>{locale === 'zh' ? '中文' : 'English'}</span>
+                  {getLocale() === locale && <Check size={13} />}
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
           <button
             className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
             onClick={onToggleTheme}

@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import * as api from "@/hooks/use-api";
+import { t } from "../../i18n/index.js";
 
 export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
   const [pathInput, setPathInput] = useState("");
@@ -53,18 +54,18 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>选择项目</DialogTitle>
+          <DialogTitle>{t('selectProject')}</DialogTitle>
         </DialogHeader>
         <div className="flex gap-2">
           <Input
             value={pathInput}
             onChange={(e) => setPathInput(e.target.value)}
-            placeholder="输入或浏览项目路径..."
+            placeholder={t('enterOrBrowse')}
             onKeyDown={(e) => e.key === "Enter" && handleOpen()}
             className="flex-1 h-8 text-[13px]"
           />
           <Button onClick={handleOpen} className="text-[13px] h-8">
-            选择
+            {t('select')}
           </Button>
         </div>
         <div className="border border-(--border-default) rounded-lg overflow-hidden">
@@ -134,7 +135,7 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
 
                 {!(dirData.dirs || []).length && !dirData.error && (
                   <div className="text-center text-[12px] text-(--text-muted) py-4">
-                    无子目录
+                    {t('noSubDirs')}
                   </div>
                 )}
               </div>
