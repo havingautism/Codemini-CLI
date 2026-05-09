@@ -10,7 +10,7 @@ Use this skill only when the task needs clarification or option comparison befor
 
 ## Anti-Pattern
 
-Do NOT skip this skill because "it's simple." Underspecified "simple" tasks cause the most wasted work. Even a few seconds of clarification beats a wrong implementation.
+Do NOT skip this skill for tasks that appear straightforward but lack clear requirements or constraints. Underspecified tasks cause the most wasted work. Even a few seconds of clarification beats a wrong implementation.
 
 ## Process
 
@@ -57,6 +57,7 @@ Suggested decision:
 ## Self-Review
 
 Before presenting options or a suggested decision, quickly check:
+
 - Are all options actually different, or are two of them the same idea in different words?
 - Does the recommended option match the user's stated constraints?
 - Did I invent requirements the user never mentioned? Remove them.
@@ -64,6 +65,7 @@ Before presenting options or a suggested decision, quickly check:
 ## Exit
 
 After the user approves a direction:
+
 - If the task is small and clear enough to implement directly → proceed to code.
 - If the task is non-trivial or touches multiple areas → YOU MUST invoke `writing-plans` to create an implementation plan before coding.
 

@@ -158,6 +158,7 @@ function Shell() {
               messages={state.messages}
               projectCwd={state.projectCwd}
               skills={state.skills}
+              gitInfo={state.gitInfo}
             />
 
             {/* Plan Review / Input Area */}

@@ -4,9 +4,9 @@ description: Concise workflow skill tuned for 30B-class models: prefer structure
 version: 0.3.0
 ---
 
-Use this skill as the default lightweight operating style for all coding work.
+Use this skill as the default operating style for all coding work, preferring lightweight approaches but invoking specialized skills when needed.
 
-This is the default, not an interrogation mode. Keep help calm and direct. For high-risk decisions only, add a light Grill Me pass: ask 1-3 sharp questions about assumptions, failure modes, or verification before proceeding. Challenge the plan, not the person.
+This is the default, not an interrogation mode. Keep help calm and direct. For decisions that affect multiple systems, involve irreversible changes, or have significant user impact only, add a light Grill Me pass: ask 1-3 sharp questions about assumptions, failure modes, or verification before proceeding. Challenge the plan, not the person.
 
 **Announce when using a skill:** Before following any route below, say "Using [skill name] to [purpose]" in your response. This signals intent and prevents silent skill skipping.
 
@@ -15,6 +15,7 @@ This is the default, not an interrogation mode. Keep help calm and direct. For h
 Before responding to ANY user message, check whether a skill applies. If there is even a small chance a skill is relevant, YOU MUST invoke it. This is not optional.
 
 **Skill check comes BEFORE:**
+
 - Clarifying questions
 - Code exploration
 - Writing code
@@ -24,43 +25,28 @@ Before responding to ANY user message, check whether a skill applies. If there i
 
 If you catch yourself thinking any of the following, STOP — you are about to skip a skill incorrectly:
 
-| Thought | Reality |
-|---|---|
-| "This is too simple for a skill" | Simple tasks derail too. Use the skill. |
-| "I need more context first" | Skills tell you HOW to gather context. Check first. |
-| "The skill is overkill here" | A lightweight pass is cheaper than rework. |
-| "I'll just do this one thing first" | Do the skill check BEFORE anything. |
-| "I already know what to do" | Knowing the concept ≠ following the process. |
+| Thought                             | Reality                                             |
+| ----------------------------------- | --------------------------------------------------- |
+| "This is too simple for a skill"    | Simple tasks derail too. Use the skill.             |
+| "I need more context first"         | Skills tell you HOW to gather context. Check first. |
+| "The skill is overkill here"        | A lightweight pass is cheaper than rework.          |
+| "I'll just do this one thing first" | Do the skill check BEFORE anything.                 |
+| "I already know what to do"         | Knowing the concept ≠ following the process.        |
 
 ## Routing
 
 Evaluate the user's request and YOU MUST follow exactly one route:
 
-1. **Task is clear, small, and obvious path:**
-   - Execute directly
-   - Do NOT invoke brainstorming
-
-2. **Non-trivial implementation that needs codebase exploration, touches multiple areas, or changes shared behavior:**
-   - YOU MUST invoke `writing-plans` skill
-   - Inspect first, then present an implementation plan for approval
-   - Do NOT jump straight into coding
-
-3. **Goal is clear but multiple reasonable approaches exist and the missing piece is user preference or tradeoff choice:**
-   - YOU MUST invoke `brainstorm` skill
-   - Follow brainstorm process — do NOT substitute it with ad-hoc questions
-
-4. **Request is missing a key constraint or success condition:**
-   - Ask exactly one clarifying question
-   - Do NOT give options or write code
-   - Stop and wait for the answer
-
-5. **Request is greenfield and underspecified** ("build a page", "make a site", "generate an app"):
-   - Treat as missing key constraints
-   - Ask one high-value question
-   - Do NOT assume features, scope, or storage model
-   - Stop and wait for the answer
+| Condition                                                                                                          | Action                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Task is clear, small, and obvious path                                                                             | Execute directly. Do NOT invoke brainstorming.                                                                                                |
+| Non-trivial implementation that needs codebase exploration, touches multiple areas, or changes shared behavior     | YOU MUST invoke `writing-plans` skill. Inspect first, then present an implementation plan for approval. Do NOT jump straight into coding.     |
+| Goal is clear but multiple reasonable approaches exist and the missing piece is user preference or tradeoff choice | YOU MUST invoke `brainstorm` skill. Follow brainstorm process — do NOT substitute it with ad-hoc questions.                                   |
+| Request is missing a key constraint or success condition                                                           | Ask exactly one clarifying question. Do NOT give options or write code. Stop and wait for the answer.                                         |
+| Request is greenfield and underspecified ("build a page", "make a site", "generate an app")                        | Treat as missing key constraints. Ask one high-value question. Do NOT assume features, scope, or storage model. Stop and wait for the answer. |
 
 **Decision boundary:**
+
 - Use `brainstorm` when one focused user answer will determine the direction.
 - Use `writing-plans` when the task is implementation-shaped but needs a plan before coding.
 - If both could apply, prefer `brainstorm` first when the core uncertainty is user intent; prefer `writing-plans` first when the core uncertainty is codebase impact.

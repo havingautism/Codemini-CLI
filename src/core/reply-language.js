@@ -6,8 +6,17 @@ export function normalizeReplyLanguage(value) {
   return 'zh';
 }
 
+export function getReplyLanguage(config = {}) {
+  if (typeof config === 'string') return normalizeReplyLanguage(config);
+  return normalizeReplyLanguage(config?.ui?.reply_language);
+}
+
+export function getReplyLanguageName(config = {}) {
+  return getReplyLanguage(config) === 'en' ? 'English' : 'Simplified Chinese';
+}
+
 export function buildSystemPromptWithReplyLanguage(baseSystemPrompt, config = {}) {
-  const replyLanguage = normalizeReplyLanguage(config?.ui?.reply_language);
+  const replyLanguage = getReplyLanguage(config);
   const directive =
     replyLanguage === 'en'
       ? [

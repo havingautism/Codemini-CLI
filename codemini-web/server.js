@@ -11,6 +11,7 @@ import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
 import { RuntimeBridge } from './lib/runtime-bridge.js';
 import { listSkillEntries } from '../src/commands/skill.js';
 import { readSkillRegistry, writeSkillRegistry, upsertSkillRegistryEntry } from '../src/core/skill-registry.js';
+import { getReplyLanguage } from '../src/core/reply-language.js';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
@@ -64,6 +65,37 @@ function jsonResponse(res, data, status = 200) {
   const body = JSON.stringify(data);
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
   res.end(body);
+}
+
+function buildCodeWikiAskPrompt({ question, reportPath, projectDir, replyLanguage }) {
+  if (getReplyLanguage(replyLanguage) === 'en') {
+    return [
+      'Answer the following question based on the current project and the CodeWiki / project-requirements HTML report.',
+      `Project path: ${projectDir}`,
+      `Report path: ${reportPath}`,
+      '',
+      'Requirements:',
+      '- Prefer reading and citing the HTML report above.',
+      '- If the report is insufficient, use read-only project inspection to gather supporting evidence.',
+      '- Do not modify files, generate a new report, or write memory.',
+      '- Respond in English unless the user explicitly asks for another language.',
+      '',
+      `Question: ${question.trim()}`
+    ].join('\n');
+  }
+  return [
+    '请基于当前项目和 CodeWiki / project-requirements HTML 报告回答下面的问题。',
+    `项目路径：${projectDir}`,
+    `报告路径：${reportPath}`,
+    '',
+    '要求：',
+    '- 优先读取并参考上述 HTML 报告。',
+    '- 如果报告信息不足，可以只读检索项目文件补充证据。',
+    '- 不要修改文件，不要生成新报告，不要写入记忆。',
+    '- 除非用户明确要求其他语言，否则使用简体中文回答。',
+    '',
+    `问题：${question.trim()}`
+  ].join('\n');
 }
 
 async function serveStatic(res, filePath) {
@@ -426,18 +458,12 @@ async function main() {
       const reportPath = selectedReport
         ? path.join(getRequirementsDir(currentProjectDir), selectedReport)
         : getRequirementsDir(currentProjectDir);
-      const prompt = [
-        '请基于当前项目和 CodeWiki / project-requirements HTML 报告回答下面的问题。',
-        `项目路径：${currentProjectDir}`,
-        `报告路径：${reportPath}`,
-        '',
-        '要求：',
-        '- 优先读取并参考上述 HTML 报告。',
-        '- 如果报告信息不足，可以只读检索项目文件补充证据。',
-        '- 不要修改文件，不要生成新报告，不要写入记忆。',
-        '',
-        `问题：${question.trim()}`
-      ].join('\n');
+      const prompt = buildCodeWikiAskPrompt({
+        question,
+        reportPath,
+        projectDir: currentProjectDir,
+        replyLanguage: bridge.getState()?.replyLanguage
+      });
 
       res.writeHead(200, {
         'Content-Type': 'application/x-ndjson; charset=utf-8',
@@ -538,10 +564,18 @@ async function main() {
     if (req.method === 'GET' && url.pathname === '/api/git') {
       try {
         const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-        const dirty = execSync('git status --porcelain', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim().length > 0;
-        jsonResponse(res, { isGit: true, branch, dirty });
+        const porcelain = execSync('git status --porcelain', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+        const lines = porcelain ? porcelain.split('\n') : [];
+        let staged = 0, modified = 0, untracked = 0;
+        for (const line of lines) {
+          const x = line[0], y = line[1];
+          if (x === '?' && y === '?') { untracked++; continue; }
+          if (x !== ' ' && x !== '?') staged++;
+          if (y === 'M' || y === 'D') modified++;
+        }
+        jsonResponse(res, { isGit: true, branch, dirty: lines.length > 0, staged, modified, untracked });
       } catch {
-        jsonResponse(res, { isGit: false, branch: null, dirty: false });
+        jsonResponse(res, { isGit: false, branch: null, dirty: false, staged: 0, modified: 0, untracked: 0 });
       }
       return;
     }

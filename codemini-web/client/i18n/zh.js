@@ -229,4 +229,11 @@ export const zh = {
   // Sidebar language
   language: '语言',
   switchLanguage: '切换语言',
+
+  // ChatPanel
+  buildInProject: '要在 {{project}} 中构建什么?',
+  gitStaged: '已暂存',
+  gitModified: '已修改',
+  gitUntracked: '未跟踪',
+  gitClean: '无变更',
 };

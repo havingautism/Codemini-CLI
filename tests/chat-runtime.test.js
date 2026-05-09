@@ -10,6 +10,7 @@ import {
   createChatRuntime,
   extractStepWorkingMemory
 } from '../src/core/chat-runtime.js';
+import { formatLocalDate } from '../src/core/command-loader.js';
 import { loadConfig } from '../src/core/config-store.js';
 import { listInbox, listMemories, rememberMemory } from '../src/core/memory-store.js';
 import { loadSession, saveSession } from '../src/core/session-store.js';
@@ -1363,6 +1364,7 @@ test('project requirements command runs a dedicated sub-agent pipeline with prog
   await withTempConfigDir(async () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-project-requirements-pipeline-'));
     const previousCwd = process.cwd();
+    const reportDate = formatLocalDate();
     let callIndex = 0;
     const executionPrompts = [];
     const restoreFetch = withMockFetch(async (_url, init) => {
@@ -1374,7 +1376,9 @@ test('project requirements command runs a dedicated sub-agent pipeline with prog
       if (callIndex === 4) {
         assert.match(scopedPrompt, /pre-created HTML shell/i);
         assert.match(scopedPrompt, /REQUIREMENTS_INTERFACE_INVENTORY/);
-        const htmlShell = await fs.readFile(path.join(cwd, 'docs', 'requirements', '2026-05-04-project-requirements.html'), 'utf8');
+        const htmlShell = await fs.readFile(path.join(cwd, 'docs', 'requirements', `${reportDate}-project-requirements.html`), 'utf8');
+        assert.match(htmlShell, /<html lang="zh-CN">/);
+        assert.match(htmlShell, /项目需求报告/);
         assert.match(htmlShell, /REQUIREMENTS_SUMMARY/);
         assert.match(htmlShell, /REQUIREMENTS_DOMAIN_MODEL/);
         assert.match(htmlShell, /REQUIREMENTS_ERROR_HANDLING/);
@@ -1382,9 +1386,9 @@ test('project requirements command runs a dedicated sub-agent pipeline with prog
         assert.match(htmlShell, /flow-steps/);
         assert.match(htmlShell, /dependency-map/);
         assert.doesNotMatch(htmlShell, /mermaid/i);
-        const manifest = JSON.parse(await fs.readFile(path.join(cwd, 'docs', 'requirements', '2026-05-04-project-requirements.manifest.json'), 'utf8'));
+        const manifest = JSON.parse(await fs.readFile(path.join(cwd, 'docs', 'requirements', `${reportDate}-project-requirements.manifest.json`), 'utf8'));
         assert.equal(manifest.status, 'running');
-        assert.match(manifest.html, /2026-05-04-project-requirements\.html$/);
+        assert.match(manifest.html, new RegExp(`${reportDate}-project-requirements\\.html$`));
         assert.match(manifest.plan, /project-requirements/i);
       }
       const outputs = [
@@ -1435,6 +1439,7 @@ test('project requirements command runs a dedicated sub-agent pipeline with prog
       assert.match(result.text, /Project requirements pipeline completed/i);
       assert.equal(callIndex, 9);
       assert.ok(executionPrompts[0].includes('Map project entry points'));
+      assert.match(executionPrompts[0], /Reply language: .*Simplified Chinese/i);
       assert.ok(executionPrompts[2].includes('Decompose business requirements'));
       assert.ok(executionPrompts[6].includes('docs/requirements/'));
       assert.match(executionPrompts[6], /inline HTML\/CSS or SVG/i);
@@ -1444,14 +1449,75 @@ test('project requirements command runs a dedicated sub-agent pipeline with prog
       assert.ok(events.some((event) => event?.type === 'plan:steps' && event.steps?.length === 9));
       assert.ok(events.some((event) => event?.type === 'plan:progress' && event.status === 'running' && event.step === 1));
       assert.ok(events.some((event) => event?.type === 'plan:progress' && event.status === 'done' && event.step === 9));
-      assert.match(String(result.reportPath || ''), /docs\/requirements\/2026-05-04-project-requirements\.html/);
-      assert.match(String(result.manifestPath || ''), /docs\/requirements\/2026-05-04-project-requirements\.manifest\.json/);
+      assert.match(String(result.reportPath || ''), new RegExp(`docs/requirements/${reportDate}-project-requirements\\.html`));
+      assert.match(String(result.manifestPath || ''), new RegExp(`docs/requirements/${reportDate}-project-requirements\\.manifest\\.json`));
       const planFile = String(result.planFile || '');
       assert.match(planFile, /\.codemini[\\/]plans[\\/]session-project-requirements-pipeline[\\/].+project-requirements/i);
       const planText = await fs.readFile(planFile, 'utf8');
       assert.match(planText, /Project Requirements Pipeline/i);
       assert.match(planText, /Step 3 \[advisor\] 🧩 Decompose business requirements per API/i);
       assert.match(planText, /Step 9 \[summarizer\] 🧾 Summarize final report and unresolved questions/i);
+    } finally {
+      process.chdir(previousCwd);
+      await restoreFetch();
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test('project requirements command localizes the CodeWiki shell from reply language', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-project-requirements-language-'));
+    const previousCwd = process.cwd();
+    const reportDate = formatLocalDate();
+    let callIndex = 0;
+    const executionPrompts = [];
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      callIndex += 1;
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+      executionPrompts.push(String(body.messages?.[1]?.content || ''));
+      const outputs = [
+        'Findings:\n- Entry points mapped\nActions Taken:\n- Read README\nOpen Issues:\n- none\nNext Action:\n- Continue',
+        'Findings:\n- Requirements synthesized\nRecommendations:\n- Keep report in English\nTradeoffs:\n- none\nEvidence:\n- README.md\nOpen Questions:\n- none',
+        'Actions Taken:\n- Wrote English requirements HTML report\nFindings:\n- Report shell is English\nVerified:\n- HTML path is recorded\nOpen Issues:\n- none\nArtifacts:\n- docs/requirements/2026-05-04-project-requirements.html\nNext Action:\n- Review',
+        'Findings:\n- English shell verified\nVerified:\n- Reviewed localized shell\nNot Verified:\n- Browser rendering\nFailures:\n- none'
+      ];
+      return makeSseResponse([
+        { choices: [{ delta: { content: outputs[callIndex - 1] || 'Summary:\n- Done' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] }
+      ]);
+    });
+
+    process.chdir(cwd);
+    try {
+      await fs.writeFile(path.join(cwd, 'README.md'), '# Demo\n', 'utf8');
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+      config.ui.reply_language = 'en';
+
+      const now = new Date().toISOString();
+      const runtime = await createChatRuntime({
+        session: {
+          id: 'session-project-requirements-language',
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const result = await runtime.submit('/project-requirements --fast');
+
+      assert.equal(result.type, 'assistant');
+      assert.equal(callIndex, 4);
+      assert.match(executionPrompts[0], /Reply language: .*English/i);
+      const htmlShell = await fs.readFile(path.join(cwd, 'docs', 'requirements', `${reportDate}-project-requirements.html`), 'utf8');
+      assert.match(htmlShell, /<html lang="en">/);
+      assert.match(htmlShell, /Project Requirements Report/);
+      assert.match(htmlShell, /Search APIs, modules, evidence/);
+      assert.doesNotMatch(htmlShell, /项目需求报告/);
     } finally {
       process.chdir(previousCwd);
       await restoreFetch();

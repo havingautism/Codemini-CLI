@@ -22,7 +22,7 @@ import {
   estimateMessagesTokens,
   parseCompactArgs
 } from './context-compact.js';
-import { buildSystemPromptWithReplyLanguage } from './reply-language.js';
+import { buildSystemPromptWithReplyLanguage, getReplyLanguage, getReplyLanguageName } from './reply-language.js';
 import { buildSystemPromptWithSoul } from './soul.js';
 import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir } from './paths.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
@@ -341,6 +341,104 @@ const PROJECT_REQUIREMENTS_SECTION_MARKERS = [
   { key: 'questions', marker: 'REQUIREMENTS_OPEN_QUESTIONS', labels: ['10', 'open questions', 'unknowns', '待确认问题', '待确认', '问题'] },
   { key: 'evidence', marker: 'REQUIREMENTS_EVIDENCE_INDEX', labels: ['11', 'evidence', 'source evidence', 'source evidence index', '源码证据索引', '证据索引', '源码证据'] }
 ];
+const PROJECT_REQUIREMENTS_SHELL_COPY = {
+  en: {
+    html_lang: 'en',
+    title: 'Project Requirements Report',
+    meta_workspace: 'Workspace',
+    meta_date: 'Date',
+    meta_generated: 'Generated',
+    nav_label: 'Report sections',
+    nav_summary: 'Summary',
+    nav_architecture: 'Architecture',
+    nav_interfaces: 'Interfaces',
+    nav_requirements: 'Requirements',
+    nav_flows: 'Flows',
+    nav_domain: 'Domain Model',
+    nav_security: 'Security',
+    nav_errors: 'Errors',
+    nav_nonfunctional: 'Non-functional',
+    nav_questions: 'Open Questions',
+    nav_evidence: 'Evidence',
+    search_placeholder: 'Search APIs, modules, evidence...',
+    expand_all: 'Expand all',
+    collapse_all: 'Collapse all',
+    questions_only: 'Questions only',
+    show_all_sections: 'Show all sections',
+    no_results: 'No matching content found.',
+    heading_summary: 'Executive Summary',
+    heading_architecture: 'System Architecture',
+    heading_interfaces: 'Interface Inventory',
+    heading_requirements: 'Requirement Cards',
+    heading_flows: 'Core Flows',
+    heading_domain: 'Domain Model And Data Ownership',
+    heading_security: 'Permissions, Security, And Compliance',
+    heading_errors: 'Error Handling And Edge Cases',
+    heading_nonfunctional: 'Non-functional Requirements',
+    heading_questions: 'Open Questions',
+    heading_evidence: 'Source Evidence Index',
+    pending_summary: 'Pending summary.',
+    pending_architecture: 'Pending architecture map.',
+    pending_interfaces: 'Pending interface inventory.',
+    pending_requirements: 'Pending requirement cards.',
+    pending_flows: 'Pending flow diagrams.',
+    pending_domain: 'Pending domain model and data ownership.',
+    pending_security: 'Pending permissions, security, and compliance notes.',
+    pending_errors: 'Pending error handling and edge cases.',
+    pending_nonfunctional: 'Pending non-functional requirements.',
+    pending_questions: 'Pending open questions.',
+    pending_evidence: 'Pending evidence index.',
+    back_to_top: 'Back to top'
+  },
+  zh: {
+    html_lang: 'zh-CN',
+    title: '项目需求报告',
+    meta_workspace: '工作区',
+    meta_date: '日期',
+    meta_generated: '生成时间',
+    nav_label: '报告章节',
+    nav_summary: '摘要',
+    nav_architecture: '系统架构',
+    nav_interfaces: '接口清单',
+    nav_requirements: '需求卡片',
+    nav_flows: '核心流程',
+    nav_domain: '领域模型',
+    nav_security: '权限与安全',
+    nav_errors: '异常与边界',
+    nav_nonfunctional: '非功能需求',
+    nav_questions: '开放问题',
+    nav_evidence: '证据索引',
+    search_placeholder: '搜索 API、模块、证据...',
+    expand_all: '全部展开',
+    collapse_all: '全部收起',
+    questions_only: '仅看问题',
+    show_all_sections: '显示全部章节',
+    no_results: '未找到匹配内容。',
+    heading_summary: '执行摘要',
+    heading_architecture: '系统架构',
+    heading_interfaces: '接口清单',
+    heading_requirements: '需求卡片',
+    heading_flows: '核心流程',
+    heading_domain: '领域模型与数据归属',
+    heading_security: '权限、安全与合规',
+    heading_errors: '异常处理与边界情况',
+    heading_nonfunctional: '非功能需求',
+    heading_questions: '开放问题',
+    heading_evidence: '源码证据索引',
+    pending_summary: '等待填写摘要。',
+    pending_architecture: '等待填写架构图。',
+    pending_interfaces: '等待填写接口清单。',
+    pending_requirements: '等待填写需求卡片。',
+    pending_flows: '等待填写流程图。',
+    pending_domain: '等待填写领域模型与数据归属。',
+    pending_security: '等待填写权限、安全与合规说明。',
+    pending_errors: '等待填写异常处理与边界情况。',
+    pending_nonfunctional: '等待填写非功能需求。',
+    pending_questions: '等待填写开放问题。',
+    pending_evidence: '等待填写证据索引。',
+    back_to_top: '返回顶部'
+  }
+};
 const PLAN_MEMORY_MARKERS = {
   findings: ['<!-- plan-findings-start -->', '<!-- plan-findings-end -->'],
   progress: ['<!-- plan-progress-start -->', '<!-- plan-progress-end -->']
@@ -2150,6 +2248,11 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
       value: currentSession?.planState?.status === 'pending_reflect_skill',
       enumerable: false,
       writable: false
+    },
+    replyLanguage: {
+      value: getReplyLanguage(config),
+      enumerable: false,
+      writable: false
     }
   });
   return snapshot;
@@ -3288,15 +3391,17 @@ function renderProjectRequirementsSectionContract(ignoredSections = []) {
   return lines.join('\n');
 }
 
-function buildProjectRequirementsSteps(renderedSkillPrompt, args = []) {
+function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = {}) {
   const options = parseProjectRequirementsOptions(args);
   const userArgs = options.raw;
   const requestedFocus = userArgs ? `User request/focus: ${userArgs}` : 'User request/focus: full workspace requirements report.';
+  const replyLanguageName = getReplyLanguageName(config);
   const reportDate = formatLocalDate();
   const reportPath = `docs/requirements/${reportDate}-project-requirements.html`;
   const companionPath = `docs/requirements/${reportDate}-project-requirements.md`;
   const reportContract = [
     requestedFocus,
+    `Reply language: write generated report prose, UI labels inserted into the report, review notes, and final user-facing status in ${replyLanguageName} unless the user explicitly requested a different language. Do not translate REQUIREMENTS_* marker names or source code identifiers.`,
     `Primary report path: ${reportPath}`,
     `Optional companion Markdown path: ${companionPath}`,
     'A pre-created HTML shell already exists at the primary report path.',
@@ -3531,7 +3636,8 @@ async function createProjectRequirementsShell({
   planFile,
   goal,
   steps,
-  depth = 'standard'
+  depth = 'standard',
+  config = {}
 }) {
   const workspaceRoot = process.cwd();
   const absoluteReportPath = path.resolve(workspaceRoot, reportPath);
@@ -3539,8 +3645,9 @@ async function createProjectRequirementsShell({
   await fs.mkdir(path.dirname(absoluteReportPath), { recursive: true });
   const template = await fs.readFile(PROJECT_REQUIREMENTS_TEMPLATE, 'utf8');
   const now = new Date().toISOString();
+  const shellCopy = PROJECT_REQUIREMENTS_SHELL_COPY[getReplyLanguage(config)] || PROJECT_REQUIREMENTS_SHELL_COPY.zh;
   const html = replaceTemplateVariables(template, {
-    title: 'Project Requirements Report',
+    ...shellCopy,
     workspace_name: path.basename(workspaceRoot) || workspaceRoot,
     date: formatLocalDate(),
     generated_at: now
@@ -3617,7 +3724,7 @@ async function runProjectRequirementsPipeline({
   const reportPath = `docs/requirements/${reportDate}-project-requirements.html`;
   const companionPath = `docs/requirements/${reportDate}-project-requirements.md`;
   const manifestPath = `docs/requirements/${reportDate}-project-requirements.manifest.json`;
-  const steps = buildProjectRequirementsSteps(renderedSkillPrompt, parsedInput.args);
+  const steps = buildProjectRequirementsSteps(renderedSkillPrompt, parsedInput.args, config);
   const planFile = await writeMarkdownInProjectDir(
     'plans',
     'project-requirements-pipeline',
@@ -3632,7 +3739,8 @@ async function runProjectRequirementsPipeline({
     planFile,
     goal,
     steps,
-    depth: options.depth
+    depth: options.depth,
+    config
   });
   const planState = {
     status: 'approved',

@@ -220,4 +220,11 @@ export const en = {
   // Sidebar language
   language: 'Language',
   switchLanguage: 'Switch Language',
+
+  // ChatPanel
+  buildInProject: 'What do you want to build in {{project}}?',
+  gitStaged: 'Staged',
+  gitModified: 'Modified',
+  gitUntracked: 'Untracked',
+  gitClean: 'Clean',
 };

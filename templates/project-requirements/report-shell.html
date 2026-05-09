@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="{{html_lang}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -406,103 +406,103 @@
   <header>
     <h1>{{title}}</h1>
     <div class="meta">
-      <span>Workspace: {{workspace_name}}</span>
-      <span>Date: {{date}}</span>
-      <span>Generated: {{generated_at}}</span>
+      <span>{{meta_workspace}}: {{workspace_name}}</span>
+      <span>{{meta_date}}: {{date}}</span>
+      <span>{{meta_generated}}: {{generated_at}}</span>
     </div>
   </header>
   <div class="layout">
-    <nav aria-label="Report sections">
-      <a href="#summary"><span class="nav-dot"></span>Summary</a>
-      <a href="#architecture"><span class="nav-dot"></span>Architecture</a>
-      <a href="#interfaces"><span class="nav-dot"></span>Interfaces</a>
-      <a href="#requirements"><span class="nav-dot"></span>Requirements</a>
-      <a href="#flows"><span class="nav-dot"></span>Flows</a>
-      <a href="#domain"><span class="nav-dot"></span>Domain Model</a>
-      <a href="#security"><span class="nav-dot"></span>Security</a>
-      <a href="#errors"><span class="nav-dot"></span>Errors</a>
-      <a href="#nonfunctional"><span class="nav-dot"></span>Non-functional</a>
-      <a href="#questions"><span class="nav-dot"></span>Open Questions</a>
-      <a href="#evidence"><span class="nav-dot"></span>Evidence</a>
+    <nav aria-label="{{nav_label}}">
+      <a href="#summary"><span class="nav-dot"></span>{{nav_summary}}</a>
+      <a href="#architecture"><span class="nav-dot"></span>{{nav_architecture}}</a>
+      <a href="#interfaces"><span class="nav-dot"></span>{{nav_interfaces}}</a>
+      <a href="#requirements"><span class="nav-dot"></span>{{nav_requirements}}</a>
+      <a href="#flows"><span class="nav-dot"></span>{{nav_flows}}</a>
+      <a href="#domain"><span class="nav-dot"></span>{{nav_domain}}</a>
+      <a href="#security"><span class="nav-dot"></span>{{nav_security}}</a>
+      <a href="#errors"><span class="nav-dot"></span>{{nav_errors}}</a>
+      <a href="#nonfunctional"><span class="nav-dot"></span>{{nav_nonfunctional}}</a>
+      <a href="#questions"><span class="nav-dot"></span>{{nav_questions}}</a>
+      <a href="#evidence"><span class="nav-dot"></span>{{nav_evidence}}</a>
     </nav>
     <main>
       <div class="controls">
         <div class="controls-bar">
-          <input id="report-search" type="search" placeholder="Search APIs, modules, evidence...">
-          <button id="toggle-details" type="button">Expand all</button>
-          <button id="show-questions" type="button">Questions only</button>
+          <input id="report-search" type="search" placeholder="{{search_placeholder}}">
+          <button id="toggle-details" type="button">{{expand_all}}</button>
+          <button id="show-questions" type="button">{{questions_only}}</button>
         </div>
-        <p class="no-results" id="no-results">No matching content found.</p>
+        <p class="no-results" id="no-results">{{no_results}}</p>
       </div>
       <section id="summary">
-        <h2>Executive Summary</h2>
+        <h2>{{heading_summary}}</h2>
         <!-- REQUIREMENTS_SUMMARY -->
-        <p class="placeholder">Pending summary.</p>
+        <p class="placeholder">{{pending_summary}}</p>
         <!-- /REQUIREMENTS_SUMMARY -->
       </section>
       <section id="architecture">
-        <h2>System Architecture</h2>
+        <h2>{{heading_architecture}}</h2>
         <!-- REQUIREMENTS_ARCHITECTURE -->
-        <p class="placeholder">Pending architecture map.</p>
+        <p class="placeholder">{{pending_architecture}}</p>
         <!-- /REQUIREMENTS_ARCHITECTURE -->
       </section>
       <section id="interfaces">
-        <h2>Interface Inventory</h2>
+        <h2>{{heading_interfaces}}</h2>
         <!-- REQUIREMENTS_INTERFACE_INVENTORY -->
-        <p class="placeholder">Pending interface inventory.</p>
+        <p class="placeholder">{{pending_interfaces}}</p>
         <!-- /REQUIREMENTS_INTERFACE_INVENTORY -->
       </section>
       <section id="requirements">
-        <h2>Requirement Cards</h2>
+        <h2>{{heading_requirements}}</h2>
         <!-- REQUIREMENTS_API_CARDS -->
-        <p class="placeholder">Pending requirement cards.</p>
+        <p class="placeholder">{{pending_requirements}}</p>
         <!-- /REQUIREMENTS_API_CARDS -->
       </section>
       <section id="flows">
-        <h2>Core Flows</h2>
+        <h2>{{heading_flows}}</h2>
         <!-- REQUIREMENTS_FLOWS -->
-        <p class="placeholder">Pending flow diagrams.</p>
+        <p class="placeholder">{{pending_flows}}</p>
         <!-- /REQUIREMENTS_FLOWS -->
       </section>
       <section id="domain">
-        <h2>Domain Model And Data Ownership</h2>
+        <h2>{{heading_domain}}</h2>
         <!-- REQUIREMENTS_DOMAIN_MODEL -->
-        <p class="placeholder">Pending domain model and data ownership.</p>
+        <p class="placeholder">{{pending_domain}}</p>
         <!-- /REQUIREMENTS_DOMAIN_MODEL -->
       </section>
       <section id="security">
-        <h2>Permissions, Security, And Compliance</h2>
+        <h2>{{heading_security}}</h2>
         <!-- REQUIREMENTS_SECURITY -->
-        <p class="placeholder">Pending permissions, security, and compliance notes.</p>
+        <p class="placeholder">{{pending_security}}</p>
         <!-- /REQUIREMENTS_SECURITY -->
       </section>
       <section id="errors">
-        <h2>Error Handling And Edge Cases</h2>
+        <h2>{{heading_errors}}</h2>
         <!-- REQUIREMENTS_ERROR_HANDLING -->
-        <p class="placeholder">Pending error handling and edge cases.</p>
+        <p class="placeholder">{{pending_errors}}</p>
         <!-- /REQUIREMENTS_ERROR_HANDLING -->
       </section>
       <section id="nonfunctional">
-        <h2>Non-functional Requirements</h2>
+        <h2>{{heading_nonfunctional}}</h2>
         <!-- REQUIREMENTS_NONFUNCTIONAL -->
-        <p class="placeholder">Pending non-functional requirements.</p>
+        <p class="placeholder">{{pending_nonfunctional}}</p>
         <!-- /REQUIREMENTS_NONFUNCTIONAL -->
       </section>
       <section id="questions">
-        <h2>Open Questions</h2>
+        <h2>{{heading_questions}}</h2>
         <!-- REQUIREMENTS_OPEN_QUESTIONS -->
-        <p class="placeholder">Pending open questions.</p>
+        <p class="placeholder">{{pending_questions}}</p>
         <!-- /REQUIREMENTS_OPEN_QUESTIONS -->
       </section>
       <section id="evidence">
-        <h2>Source Evidence Index</h2>
+        <h2>{{heading_evidence}}</h2>
         <!-- REQUIREMENTS_EVIDENCE_INDEX -->
-        <p class="placeholder">Pending evidence index.</p>
+        <p class="placeholder">{{pending_evidence}}</p>
         <!-- /REQUIREMENTS_EVIDENCE_INDEX -->
       </section>
     </main>
   </div>
-  <a href="#" id="back-to-top">Back to top</a>
+  <a href="#" id="back-to-top">{{back_to_top}}</a>
   <script>
     (() => {
       const search = document.querySelector('#report-search');
@@ -553,7 +553,7 @@
       toggleBtn?.addEventListener('click', () => {
         allOpen = !allOpen;
         document.querySelectorAll('details.card').forEach(d => d.open = allOpen);
-        toggleBtn.textContent = allOpen ? 'Collapse all' : 'Expand all';
+        toggleBtn.textContent = allOpen ? '{{collapse_all}}' : '{{expand_all}}';
       });
 
       /* ── Show questions only ── */
@@ -564,10 +564,10 @@
         const target = document.querySelector('#questions');
         if (questionsOnly) {
           sections.forEach(s => s.style.display = s === target ? '' : 'none');
-          questionsBtn.textContent = 'Show all sections';
+          questionsBtn.textContent = '{{show_all_sections}}';
         } else {
           sections.forEach(s => s.style.display = '');
-          questionsBtn.textContent = 'Questions only';
+          questionsBtn.textContent = '{{questions_only}}';
         }
       });
 
