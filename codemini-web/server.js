@@ -358,7 +358,7 @@ async function main() {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/session/messages') {
-      jsonResponse(res, bridge.getSessionMessages());
+      jsonResponse(res, { messages: bridge.getSessionMessages(), compact: bridge.getSessionCompactMeta() });
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/session/ui-messages') {
@@ -581,8 +581,12 @@ async function main() {
     }
     if (req.method === 'GET' && url.pathname === '/api/git-diff') {
       try {
-        const patch = execSync('git diff', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }) +
-          execSync('git diff --cached', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+        let patch;
+        try {
+          patch = execSync('git diff HEAD --no-color', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+        } catch {
+          patch = execSync('git diff --cached --no-color', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+        }
         const patchFiles = [];
         const seenPatchFiles = new Set();
         for (const line of patch.split('\n')) {

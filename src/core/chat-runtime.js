@@ -20,6 +20,7 @@ import { createCheckpoint, listCheckpoints, loadCheckpoint } from './checkpoint-
 import {
   compactMessagesLocally,
   estimateMessagesTokens,
+  microCompactMessages,
   parseCompactArgs
 } from './context-compact.js';
 import { getReplyLanguage, getReplyLanguageName } from './reply-language.js';
@@ -114,6 +115,8 @@ function getCompletionCopy(language = 'zh') {
         'context.read_file_default_lines': 'read_file 默认行数窗口',
         'context.read_file_max_chars': 'read_file 字符上限',
         'context.prompt_budget_audit': 'Prompt 预算审计开关',
+        'context.microcompact_enabled': '微压缩(micro-compact)开关',
+        'context.microcompact_keep_recent': '微压缩保留最近工具结果数',
         'sessions.max_sessions': '会话保留上限',
         'sessions.retention_days': '会话保留天数',
         'shell.default': '默认 shell',
@@ -219,6 +222,8 @@ function getCompletionCopy(language = 'zh') {
         'context.read_file_default_lines': 'default read_file line window',
         'context.read_file_max_chars': 'read_file character limit',
         'context.prompt_budget_audit': 'prompt budget audit switch',
+        'context.microcompact_enabled': 'micro-compact enabled',
+        'context.microcompact_keep_recent': 'micro-compact keep recent tool results',
         'sessions.max_sessions': 'stored session limit',
         'sessions.retention_days': 'session retention days',
         'shell.default': 'default shell',
@@ -2585,28 +2590,61 @@ async function askModel({
   signal,
   allowedTools,
   maxSteps: maxStepsOverride,
-  skipAnalysisNudge = false
+  skipAnalysisNudge = false,
+  compactedForModel: compactedInput = null,
+  onCompactedUpdate = null
 }) {
+  let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
   const maxContextTokens = effectiveMaxContextTokens(config);
-  const triggerPct = Number(config.context?.preflight_trigger_pct || 92);
+  const triggerPct = Number(config.context?.preflight_trigger_pct || 60);
   const hardPct = Number(config.context?.hard_limit_pct || 98);
-  const preflightTokens = estimatePromptTokensForRequest(session.messages, modelInputText);
+  const messagesForEstimate = compacted ?? session.messages;
+  const preflightTokens = estimatePromptTokensForRequest(messagesForEstimate, modelInputText);
   const preflightPct = (preflightTokens / maxContextTokens) * 100;
 
   if (persistSession && preflightPct >= triggerPct) {
-    const auto = compactMessagesLocally(session.messages, {
-      mode: preflightPct >= hardPct ? 'aggressive' : 'conservative'
-    });
-    if (auto.changed) {
-      session.messages = auto.compacted.map((m) => ({ ...m, at: new Date().toISOString() }));
-      await saveSession(session);
-      if (onAgentEvent) {
-        onAgentEvent({
-          type: 'compact:auto',
-          mode: preflightPct >= hardPct ? 'aggressive' : 'conservative',
-          threshold: Math.round(preflightPct)
-        });
+    const compactSource = compacted ?? session.messages;
+    // Phase 0: try micro-compact first (in-place tool result clearing)
+    const microEnabled = config.context?.microcompact_enabled !== false;
+    const microKeep = Number(config.context?.microcompact_keep_recent || 5);
+    let needsMacro = true;
+    if (microEnabled) {
+      const micro = microCompactMessages(compactSource, { keepRecent: microKeep, enabled: true });
+      if (micro.changed) {
+        compacted = micro.messages.map((m) => ({ ...m, at: new Date().toISOString() }));
+        if (onCompactedUpdate) onCompactedUpdate(compacted);
+        const afterMicroTokens = estimateMessagesTokens(compacted);
+        const afterMicroPct = (afterMicroTokens / maxContextTokens) * 100;
+        if (onAgentEvent) {
+          onAgentEvent({
+            type: 'compact:auto',
+            mode: 'micro',
+            threshold: Math.round(preflightPct),
+            tokensSaved: micro.tokensSaved
+          });
+        }
+        if (afterMicroPct < triggerPct) {
+          needsMacro = false;
+        }
+      }
+    }
+    if (needsMacro) {
+      const macroSource = compacted ?? compactSource;
+      const auto = compactMessagesLocally(macroSource, {
+        mode: preflightPct >= hardPct ? 'aggressive' : 'conservative',
+        force: true
+      });
+      if (auto.changed) {
+        compacted = auto.compacted.map((m) => ({ ...m, at: new Date().toISOString() }));
+        if (onCompactedUpdate) onCompactedUpdate(compacted, { boundaryIndex: auto.boundaryIndex, mode: preflightPct >= hardPct ? 'aggressive' : 'conservative' });
+        if (onAgentEvent) {
+          onAgentEvent({
+            type: 'compact:auto',
+            mode: preflightPct >= hardPct ? 'aggressive' : 'conservative',
+            threshold: Math.round(preflightPct)
+          });
+        }
       }
     }
   }
@@ -2816,6 +2854,7 @@ async function askModel({
     if (onAgentEvent) onAgentEvent(event);
   };
 
+  const sessionLenBeforeLoop = session.messages.length;
   const loopUserPrompt = persistSession ? '' : modelInputText;
   const expectedModelText = typeof modelText === 'string' && modelText && modelText !== text ? modelText : '';
   const loopResult = await runAgentLoop({
@@ -2825,7 +2864,7 @@ async function askModel({
     maxSteps: maxStepsOverride ?? Number(config.execution?.max_steps || 16),
     toolDefinitions: filteredDefinitions,
     toolHandlers: filteredHandlers,
-    initialMessages: toOpenAIMessages(session.messages),
+    initialMessages: toOpenAIMessages(compacted ?? session.messages),
     onEvent: wrappedAgentEvent,
     executionMode: executionMode || config.execution?.mode || 'normal',
     alwaysAllowTools:
@@ -2875,9 +2914,15 @@ async function askModel({
   });
 
   if (persistSession) {
-    session.messages = loopResult.messages
-      .filter((m) => m.role !== 'system')
-      .map((m) => ({ ...m, at: new Date().toISOString() }));
+    // Sync new messages to compacted view
+    if (compacted) {
+      const newMsgs = session.messages.slice(sessionLenBeforeLoop);
+      for (const msg of newMsgs) {
+        compacted.push({ ...msg });
+      }
+      if (onCompactedUpdate) onCompactedUpdate(compacted);
+    }
+    // Handle model_content rewrite on the new user message
     if (expectedModelText) {
       for (let i = session.messages.length - 1; i >= 0; i -= 1) {
         const message = session.messages[i];
@@ -4140,6 +4185,13 @@ export async function createChatRuntime({
     threshold: 60,
     mode: 'conservative'
   };
+  let compactedForModel = currentSession.compact?.view || null;
+  const setCompactedView = (view, meta = {}) => {
+    compactedForModel = view;
+    currentSession.compact = view
+      ? { view, timestamp: new Date().toISOString(), ...meta }
+      : null;
+  };
   let historyIdCache = [currentSession.id];
   let historySessionCache = [
     {
@@ -4198,6 +4250,8 @@ export async function createChatRuntime({
     'context.tool_result_max_chars',
     'context.read_file_default_lines',
     'context.read_file_max_chars',
+    'context.microcompact_enabled',
+    'context.microcompact_keep_recent',
     'sessions.max_sessions',
     'sessions.retention_days',
     'shell.timeout_ms',
@@ -4269,6 +4323,7 @@ export async function createChatRuntime({
   const compactOptions = [
     '--preview',
     '--restore',
+    '--micro',
     '--aggressive',
     '--conservative',
     '--default',
@@ -5526,7 +5581,9 @@ export async function createChatRuntime({
           onAgentEvent,
           requestToolApproval: activeRequestToolApproval,
           executionMode,
-          signal
+          signal,
+          compactedForModel,
+          onCompactedUpdate: setCompactedView
         });
         return { type: 'assistant', text: result.text, aborted: !!result.aborted };
       }
@@ -5590,18 +5647,35 @@ export async function createChatRuntime({
         if (cargs.mode) compactState.mode = cargs.mode;
 
         if (cargs.restore) {
-          if (!compactState.backupMessages) {
-            return { type: 'system', text: 'No backup available to restore' };
-          }
-          currentSession.messages = structuredClone(compactState.backupMessages);
-          await saveSession(currentSession);
-          const text = 'Context restored from backup';
+          setCompactedView(null);
+          const text = 'Context restored to full view';
           await persistLocalExchange(line, text, { includeUser: false });
           return { type: 'system', text };
         }
 
-        const beforeTokens = estimateMessagesTokens(currentSession.messages);
-        const result = compactMessagesLocally(currentSession.messages, { mode: compactState.mode });
+        const compactSource = compactedForModel ?? currentSession.messages;
+        const beforeTokens = estimateMessagesTokens(compactSource);
+
+        // --micro: only do micro-compact (in-place tool result clearing)
+        if (cargs.micro) {
+          const microKeep = Number(config.context?.microcompact_keep_recent || 5);
+          const micro = microCompactMessages(compactSource, { keepRecent: microKeep, enabled: true });
+          if (!micro.changed) {
+            return { type: 'system', text: 'Micro-compact: nothing to clear' };
+          }
+          const afterTokens = estimateMessagesTokens(micro.messages);
+          const report = `Micro-compact ${cargs.preview ? 'preview' : 'applied'}: ${beforeTokens} -> ${afterTokens} tokens (saved ${micro.tokensSaved})`;
+
+          if (cargs.preview) {
+            return { type: 'system', text: report };
+          }
+
+          setCompactedView(micro.messages.map((m) => ({ ...m, at: new Date().toISOString() })));
+          await persistLocalExchange(line, report, { includeUser: false });
+          return { type: 'system', text: report };
+        }
+
+        const result = compactMessagesLocally(compactSource, { mode: compactState.mode, force: true });
         if (!result.changed) {
           return { type: 'system', text: 'Nothing to compact yet' };
         }
@@ -5612,9 +5686,10 @@ export async function createChatRuntime({
           return { type: 'system', text: `${report}\n\n${result.summary}` };
         }
 
-        compactState.backupMessages = structuredClone(currentSession.messages);
-        currentSession.messages = result.compacted.map((m) => ({ ...m, at: new Date().toISOString() }));
-        await saveSession(currentSession);
+        setCompactedView(
+          result.compacted.map((m) => ({ ...m, at: new Date().toISOString() })),
+          { boundaryIndex: result.boundaryIndex, mode: compactState.mode }
+        );
         await captureCompactSummary({
           summary: result.summary,
           mode: compactState.mode,
@@ -5688,7 +5763,9 @@ export async function createChatRuntime({
           onAgentEvent,
           requestToolApproval: activeRequestToolApproval,
           executionMode,
-          signal
+          signal,
+          compactedForModel,
+          onCompactedUpdate: setCompactedView
         });
       } catch (error) {
         if (custom.metadata.type === 'skill' && onAgentEvent) {
@@ -5791,32 +5868,71 @@ export async function createChatRuntime({
     }
 
     if (compactState.autoEnabled) {
-      const currentTokens = estimateMessagesTokens(currentSession.messages);
+      const compactSource = compactedForModel ?? currentSession.messages;
+      const currentTokens = estimateMessagesTokens(compactSource);
       const maxTokens = effectiveMaxContextTokens(config);
       const usagePct = (currentTokens / maxTokens) * 100;
       if (usagePct >= compactState.threshold) {
-        const autoResult = compactMessagesLocally(currentSession.messages, {
-          mode: compactState.mode
-        });
-        if (autoResult.changed) {
-          compactState.backupMessages = structuredClone(currentSession.messages);
-          currentSession.messages = autoResult.compacted.map((m) => ({
-            ...m,
-            at: new Date().toISOString()
-          }));
-          await saveSession(currentSession);
-          await captureCompactSummary({
-            summary: autoResult.summary,
+        // Phase 0: try micro-compact first
+        const microEnabled = config.context?.microcompact_enabled !== false;
+        const microKeep = Number(config.context?.microcompact_keep_recent || 5);
+        let needsMacro = true;
+        if (microEnabled) {
+          const micro = microCompactMessages(compactSource, { keepRecent: microKeep, enabled: true });
+          if (micro.changed) {
+            setCompactedView(micro.messages.map((m) => ({
+              ...m,
+              at: new Date().toISOString()
+            })));
+            const afterMicroTokens = estimateMessagesTokens(compactedForModel);
+            const afterMicroPct = (afterMicroTokens / maxTokens) * 100;
+            if (onAgentEvent) {
+              onAgentEvent({
+                type: 'compact:auto',
+                mode: 'micro',
+                threshold: compactState.threshold,
+                tokensSaved: micro.tokensSaved
+              });
+            }
+            if (afterMicroPct < compactState.threshold) {
+              needsMacro = false;
+              await captureCompactSummary({
+                summary: `Micro-compact saved ${micro.tokensSaved} tokens`,
+                mode: 'micro',
+                beforeTokens: currentTokens,
+                afterTokens: afterMicroTokens
+              });
+            }
+          }
+        }
+        // Phase 1: macro compact if still over threshold
+        if (needsMacro) {
+          const macroSource = compactedForModel ?? compactSource;
+          const autoResult = compactMessagesLocally(macroSource, {
             mode: compactState.mode,
-            beforeTokens: currentTokens,
-            afterTokens: estimateMessagesTokens(currentSession.messages)
+            force: true
           });
-          if (onAgentEvent) {
-            onAgentEvent({
-              type: 'compact:auto',
+          if (autoResult.changed) {
+            setCompactedView(
+              autoResult.compacted.map((m) => ({
+                ...m,
+                at: new Date().toISOString()
+              })),
+              { boundaryIndex: autoResult.boundaryIndex, mode: compactState.mode }
+            );
+            await captureCompactSummary({
+              summary: autoResult.summary,
               mode: compactState.mode,
-              threshold: compactState.threshold
+              beforeTokens: currentTokens,
+              afterTokens: estimateMessagesTokens(compactedForModel)
             });
+            if (onAgentEvent) {
+              onAgentEvent({
+                type: 'compact:auto',
+                mode: compactState.mode,
+                threshold: compactState.threshold
+              });
+            }
           }
         }
       }
@@ -5889,7 +6005,9 @@ export async function createChatRuntime({
       onAgentEvent,
       requestToolApproval: activeRequestToolApproval,
       executionMode,
-      signal
+      signal,
+      compactedForModel,
+      onCompactedUpdate: setCompactedView
     });
     await saveDirectMemoryPrompt(expandedText);
     await captureUserPromptForDream(expandedText);
@@ -5912,6 +6030,7 @@ export async function createChatRuntime({
     getInputHistory: () => loadInputHistory(),
     getCurrentSessionId: () => currentSession.id,
     getSessionMessages: () => currentSession.messages || [],
+    getSessionCompact: () => currentSession.compact || null,
     reloadConfig: async () => {
       config = await loadConfig();
       return config;

@@ -2849,6 +2849,15 @@ export function moveSuggestionSelection(currentIndex, itemCount, direction, page
 }
 
 const MessageBubble = React.memo(function MessageBubble({ msg, loaderTick, showToolDetails, rowWindow = null, contentWidth = 72, copy }) {
+  if (msg?.dividerType === 'compact') {
+    return h(
+      Box,
+      { marginY: 1, flexDirection: 'row' },
+      h(Text, { color: 'yellow', dimColor: true }, '─── '),
+      h(Text, { color: 'yellow' }, msg.text || '以上内容已压缩'),
+      h(Text, { color: 'yellow', dimColor: true }, ' ───')
+    );
+  }
   if (msg?.planStrip) {
     return h(PlanStrip, { planState: msg.planState, copy });
   }
@@ -4375,7 +4384,8 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
             ...prev,
             {
               id: nextId(),
-              label: 'system',
+              label: 'divider',
+              dividerType: 'compact',
               text: copy.runtime.autoCompactTriggered(event.mode, event.threshold),
               color: 'yellowBright'
             }

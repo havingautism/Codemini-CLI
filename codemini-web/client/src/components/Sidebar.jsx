@@ -142,7 +142,11 @@ export function Sidebar({
       : "default";
     document.documentElement.dataset.palette = next;
     localStorage.setItem("codemini-theme-palette", next);
-    window.dispatchEvent(new CustomEvent("codemini-theme-palette-change", { detail: { palette: next } }));
+    window.dispatchEvent(
+      new CustomEvent("codemini-theme-palette-change", {
+        detail: { palette: next },
+      }),
+    );
     setThemePaletteState(next);
   };
 
@@ -179,7 +183,7 @@ export function Sidebar({
   };
 
   return (
-    <aside className="w-[260px] shrink-0 border-r border-(--border-default) flex flex-col bg-(--bg-secondary)">
+    <aside className="w-[260px] shrink-0 flex flex-col bg-(--bg-secondary)">
       {/* Fixed top action buttons */}
       <div className="shrink-0 px-2.5 pt-3 flex flex-col gap-0.5">
         <button
@@ -411,7 +415,9 @@ export function Sidebar({
       </nav>
 
       {/* Footer */}
-      <div className="px-2.5 py-2 flex flex-col gap-1.5 border-t border-(--border-default)">
+
+      <div className="px-2.5 py-2 flex flex-col gap-0">
+        <Separator className="my-2 bg-(--border-default)" />
         {versionInfo?.latest && versionInfo.latest !== versionInfo.current && (
           <button
             className="w-full border-0 bg-(--bg-tertiary) rounded-md px-2.5 py-1.5 cursor-pointer text-[11px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) flex items-center justify-center gap-1.5"

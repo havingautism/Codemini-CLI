@@ -323,8 +323,10 @@ export function AppProvider({ children }) {
 
   const loadSessionMessages = useCallback(async () => {
     try {
-      const messages = await api.fetchSessionMessages();
-      if (!Array.isArray(messages) || !messages.length) {
+      const data = await api.fetchSessionMessages();
+      const messages = Array.isArray(data) ? data : (data.messages || []);
+      const compactMeta = data?.compact || null;
+      if (!messages.length) {
         const uiMessages = await api.fetchSessionUiMessages();
         if (Array.isArray(uiMessages) && uiMessages.length) {
           update({ messages: uiMessages });
@@ -333,7 +335,20 @@ export function AppProvider({ children }) {
       }
       const processed = [];
       let assistantGroup = null;
-      for (const msg of messages) {
+      const compactBoundary = compactMeta?.boundaryIndex;
+      const dividerInserted = compactBoundary == null;
+      for (let mi = 0; mi < messages.length; mi++) {
+        const msg = messages[mi];
+        // Insert compact divider at the boundary position
+        if (!dividerInserted && mi >= compactBoundary) {
+          processed.push({
+            id: `msg-compact-divider-${Date.now()}`,
+            role: 'divider', dividerType: 'compact',
+            text: `以上内容已压缩 (${compactMeta.mode || ''})`,
+            timestamp: compactMeta.timestamp || new Date().toISOString()
+          });
+          dividerInserted = true;
+        }
         if (msg.role === 'user') {
           if (isPlanApprovalCommandLine(msg.content)) continue;
           assistantGroup = null;
@@ -629,7 +644,7 @@ export function AppProvider({ children }) {
       }
 
       case 'compact:auto':
-        addMessage({ role: 'system', text: `Context auto-compacted (${event.mode || ''}, ${event.threshold || ''}%)`, timestamp: new Date().toISOString() });
+        addMessage({ role: 'divider', dividerType: 'compact', text: `以上内容已压缩 (${event.mode || ''}, ${event.threshold || ''}%)`, timestamp: new Date().toISOString() });
         break;
 
       case 'dream:auto':

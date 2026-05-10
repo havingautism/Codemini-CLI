@@ -141,7 +141,9 @@ function SkillEditor({ skill, onSave, onCancel }) {
               value={content}
               onChange={(e) => setContent(e.target.value)}
               className="min-h-[240px] resize-y text-[13px] font-mono leading-5"
-              placeholder={"---\nname: my-skill\ndescription: ...\n---\n\nSkill instructions..."}
+              placeholder={
+                "---\nname: my-skill\ndescription: ...\n---\n\nSkill instructions..."
+              }
             />
           )}
         </div>
@@ -166,15 +168,17 @@ function SkillEditor({ skill, onSave, onCancel }) {
 function SkillEditorDialog({ skill, open, onSave, onOpenChange }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[760px] max-h-[86vh] overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="sm:max-w-[760px] max-h-[86vh] flex flex-col overflow-hidden">
+        <DialogHeader className="shrink-0">
           <DialogTitle>{skill ? t("editSkill") : t("newSkill")}</DialogTitle>
         </DialogHeader>
-        <SkillEditor
-          skill={skill}
-          onSave={onSave}
-          onCancel={() => onOpenChange(false)}
-        />
+        <div className="flex-1 overflow-y-auto min-h-0 pr-1">
+          <SkillEditor
+            skill={skill}
+            onSave={onSave}
+            onCancel={() => onOpenChange(false)}
+          />
+        </div>
       </DialogContent>
     </Dialog>
   );
@@ -196,23 +200,29 @@ function ViewDialog({ skill, open, onOpenChange }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[720px] max-h-[82vh] overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="sm:max-w-[720px] max-h-[82vh] flex flex-col overflow-hidden">
+        <DialogHeader className="shrink-0">
           <DialogTitle>
             {skill?.name} {t("contentPreview")}
           </DialogTitle>
         </DialogHeader>
-        {loading ? (
-          <div className="py-8 text-center text-[12px] text-(--text-muted)">
-            {t("loading")}...
-          </div>
-        ) : (
-          <pre className="max-h-[480px] overflow-y-auto rounded-lg bg-(--bg-secondary) p-3 text-[13px] whitespace-pre-wrap break-words font-mono leading-5">
-            {content}
-          </pre>
-        )}
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} size="sm">
+        <div className="flex-1 overflow-y-auto min-h-0 pr-1">
+          {loading ? (
+            <div className="py-8 text-center text-[12px] text-(--text-muted)">
+              {t("loading")}...
+            </div>
+          ) : (
+            <pre className="rounded-lg bg-(--bg-secondary) p-3 text-[13px] whitespace-pre-wrap break-words font-mono leading-5">
+              {content}
+            </pre>
+          )}
+        </div>
+        <DialogFooter className="shrink-0">
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            size="sm"
+          >
             {t("close")}
           </Button>
         </DialogFooter>
@@ -294,12 +304,12 @@ export function SkillPanel() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px]">
+            {/* <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px]">
               {enabledCount}/{skills.length} {t("enabled")}
             </Badge>
             <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px]">
               {customCount} {t("custom")}
-            </Badge>
+            </Badge> */}
             <Button onClick={() => setEditing("new")} size="sm">
               <Plus size={13} />
               {t("addSkill")}
@@ -341,7 +351,9 @@ export function SkillPanel() {
 
       {skills.length === 0 && !editing && (
         <div className="rounded-lg border border-dashed border-(--border-default) py-8 text-center">
-          <div className="text-[13px] text-(--text-primary)">{t("noSkills")}</div>
+          <div className="text-[13px] text-(--text-primary)">
+            {t("noSkills")}
+          </div>
           <div className="mt-1 text-[11px] text-(--text-muted)">
             {t("noSkillsHint")}
           </div>
@@ -354,7 +366,9 @@ export function SkillPanel() {
         </div>
       )}
 
-      <div className="grid max-h-[420px] gap-2 overflow-y-auto pr-1" style={{ scrollbarWidth: "thin" }}>
+      <div
+        className="grid max-h-[420px] gap-2 overflow-y-auto pr-1"
+      >
         {filteredSkills.map((skill) => {
           const enabled = isEnabled(skill);
           return (
@@ -397,7 +411,12 @@ export function SkillPanel() {
                 </div>
 
                 <div className="flex shrink-0 items-center gap-1">
-                  <Button variant="ghost" size="icon-xs" onClick={() => setViewSkill(skill)} title={t("view")}>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={() => setViewSkill(skill)}
+                    title={t("view")}
+                  >
                     <Eye size={13} />
                   </Button>
                   {!isBuiltin(skill) && (
@@ -407,14 +426,26 @@ export function SkillPanel() {
                         onClick={() => handleToggle(skill.name, !enabled)}
                         title={enabled ? t("disable") : t("enable")}
                       />
-                      <Button variant="ghost" size="icon-xs" onClick={() => setEditing(skill)} title={t("edit")}>
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        onClick={() => setEditing(skill)}
+                        title={t("edit")}
+                      >
                         <Pencil size={13} />
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon-xs"
                         onClick={() => {
-                          if (confirm(t("confirmDeleteSkill").replace("{{name}}", skill.name))) {
+                          if (
+                            confirm(
+                              t("confirmDeleteSkill").replace(
+                                "{{name}}",
+                                skill.name,
+                              ),
+                            )
+                          ) {
                             handleDelete(skill.name);
                           }
                         }}

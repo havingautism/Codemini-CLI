@@ -141,15 +141,17 @@ function SoulEditor({ soul, onSave, onCancel }) {
 function SoulEditorDialog({ soul, open, onSave, onOpenChange }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[720px] max-h-[86vh] overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="sm:max-w-[720px] max-h-[86vh] flex flex-col overflow-hidden">
+        <DialogHeader className="shrink-0">
           <DialogTitle>{soul ? t("editSoul") : t("newSoul")}</DialogTitle>
         </DialogHeader>
-        <SoulEditor
-          soul={soul}
-          onSave={onSave}
-          onCancel={() => onOpenChange(false)}
-        />
+        <div className="flex-1 overflow-y-auto min-h-0 pr-1">
+          <SoulEditor
+            soul={soul}
+            onSave={onSave}
+            onCancel={() => onOpenChange(false)}
+          />
+        </div>
       </DialogContent>
     </Dialog>
   );
@@ -171,23 +173,29 @@ function ViewDialog({ soul, open, onOpenChange }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[680px] max-h-[82vh] overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="sm:max-w-[680px] max-h-[82vh] flex flex-col overflow-hidden">
+        <DialogHeader className="shrink-0">
           <DialogTitle>
             {soul?.name} {t("contentPreview")}
           </DialogTitle>
         </DialogHeader>
-        {loading ? (
-          <div className="py-8 text-center text-[12px] text-(--text-muted)">
-            {t("loading")}...
-          </div>
-        ) : (
-          <pre className="max-h-[460px] overflow-y-auto rounded-lg bg-(--bg-secondary) p-3 text-[13px] whitespace-pre-wrap break-words font-mono leading-5">
-            {content}
-          </pre>
-        )}
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} size="sm">
+        <div className="flex-1 overflow-y-auto min-h-0 pr-1">
+          {loading ? (
+            <div className="py-8 text-center text-[12px] text-(--text-muted)">
+              {t("loading")}...
+            </div>
+          ) : (
+            <pre className="rounded-lg bg-(--bg-secondary) p-3 text-[13px] whitespace-pre-wrap break-words font-mono leading-5">
+              {content}
+            </pre>
+          )}
+        </div>
+        <DialogFooter className="shrink-0">
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            size="sm"
+          >
             {t("close")}
           </Button>
         </DialogFooter>
@@ -272,12 +280,12 @@ export function SoulPanel() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px]">
+            {/* <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px]">
               {souls.length} {t("items")}
             </Badge>
             <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px]">
               {customCount} {t("custom")}
-            </Badge>
+            </Badge> */}
             <Button onClick={() => setEditing("new")} size="sm">
               <Plus size={13} />
               {t("addSoul")}
@@ -319,7 +327,9 @@ export function SoulPanel() {
 
       {souls.length === 0 && !editing && (
         <div className="rounded-lg border border-dashed border-(--border-default) py-8 text-center">
-          <div className="text-[13px] text-(--text-primary)">{t("noSouls")}</div>
+          <div className="text-[13px] text-(--text-primary)">
+            {t("noSouls")}
+          </div>
           <div className="mt-1 text-[11px] text-(--text-muted)">
             {t("noSoulsHint")}
           </div>
@@ -332,7 +342,9 @@ export function SoulPanel() {
         </div>
       )}
 
-      <div className="grid max-h-[420px] gap-2 overflow-y-auto pr-1" style={{ scrollbarWidth: "thin" }}>
+      <div
+        className="grid max-h-[420px] gap-2 overflow-y-auto pr-1"
+      >
         {filteredSouls.map((soul) => (
           <div
             key={`${soul.scope}-${soul.name}`}
@@ -349,7 +361,10 @@ export function SoulPanel() {
                   <span className="truncate text-[13px] font-medium text-(--text-primary)">
                     {soul.name}
                   </span>
-                  <Badge variant="outline" className="h-4 rounded-md px-1.5 py-0 text-[10px]">
+                  <Badge
+                    variant="outline"
+                    className="h-4 rounded-md px-1.5 py-0 text-[10px]"
+                  >
                     {scopeLabel(soul.scope)}
                   </Badge>
                   {soul.active && (
@@ -363,7 +378,12 @@ export function SoulPanel() {
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-1">
-                <Button variant="ghost" size="icon-xs" onClick={() => setViewSoul(soul)} title={t("view")}>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={() => setViewSoul(soul)}
+                  title={t("view")}
+                >
                   <Eye size={13} />
                 </Button>
                 <SwitchControl
@@ -375,14 +395,26 @@ export function SoulPanel() {
                 />
                 {soul.scope !== "builtin" && (
                   <>
-                    <Button variant="ghost" size="icon-xs" onClick={() => setEditing(soul)} title={t("edit")}>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      onClick={() => setEditing(soul)}
+                      title={t("edit")}
+                    >
                       <Pencil size={13} />
                     </Button>
                     <Button
                       variant="ghost"
                       size="icon-xs"
                       onClick={() => {
-                        if (confirm(t("confirmDeleteSoul").replace("{{name}}", soul.name))) {
+                        if (
+                          confirm(
+                            t("confirmDeleteSoul").replace(
+                              "{{name}}",
+                              soul.name,
+                            ),
+                          )
+                        ) {
                           handleDelete(soul.name);
                         }
                       }}

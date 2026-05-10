@@ -9,7 +9,7 @@ export function SkillDialog({ open, onOpenChange }) {
         <DialogHeader>
           <DialogTitle>{t('skills')}</DialogTitle>
         </DialogHeader>
-        <div className="flex-1 overflow-y-auto pr-1" style={{ scrollbarWidth: 'thin' }}>
+        <div className="flex-1 overflow-y-auto min-h-0 pr-1">
           <SkillPanel />
         </div>
       </DialogContent>

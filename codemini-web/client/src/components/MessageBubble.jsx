@@ -284,6 +284,19 @@ export function MessageBubble({ message, skills = [] }) {
     [segments],
   );
 
+  if (role === "divider") {
+    return (
+      <div className="py-3 px-6 text-center">
+        <div className="max-w-[860px] mx-auto relative">
+          <div className="border-t border-border" />
+          <span className="text-xs text-(--text-muted) bg-(--bg-primary) px-2 absolute -top-2.5 left-1/2 -translate-x-1/2 whitespace-nowrap">
+            {text || "以上内容已压缩"}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
   if (role === "system") {
     const dreamNotice = getDreamNotice(legacyText);
     if (dreamNotice) return <DreamNotice notice={dreamNotice} />;

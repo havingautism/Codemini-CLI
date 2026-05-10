@@ -316,7 +316,7 @@
   --bg-secondary: #d9dce7;
   --bg-tertiary: #c5c8da;
   --bg-hover: #bfc6d9;
-  --bg-active: #a9b1d6;
+  --bg-active: #bfc6d9;
   --bg-input: #ffffff;
   --text-primary: #343b58;
   --text-secondary: #40434f;
@@ -475,7 +475,7 @@
   --bg-secondary: #21252b;
   --bg-tertiary: #2c313c;
   --bg-hover: #3e4451;
-  --bg-active: #4b5263;
+  --bg-active: #1d1e21;
   --bg-input: #1e222a;
   --text-primary: #abb2bf;
   --text-secondary: #9da5b4;
@@ -714,6 +714,29 @@
   --md-table-header-bg: #252526;
   --md-table-row-alt-bg: #252526;
   --md-link: #3794ff;
+}
+
+/* ── Thin themed scrollbars ── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-muted) 50%, transparent) transparent;
+}
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-muted) 50%, transparent);
+  border-radius: 3px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-muted) 70%, transparent);
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 /* ── Prevent I-beam cursor on non-editable text ── */

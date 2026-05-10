@@ -322,6 +322,15 @@ export class RuntimeBridge {
         }
         break;
       }
+      case 'compact:auto': {
+        this.#addUiMessage({
+          role: 'divider',
+          dividerType: 'compact',
+          text: `以上内容已压缩 (${event.mode || ''}, ${event.threshold || ''}%)`,
+          timestamp: new Date().toISOString()
+        });
+        break;
+      }
       default:
         break;
     }
@@ -457,6 +466,12 @@ export class RuntimeBridge {
         planTranscript: Array.isArray(m.plan_transcript) ? m.plan_transcript : null,
         at: m.at || null
       }));
+  }
+
+  getSessionCompactMeta() {
+    const compact = this.#runtime.getSessionCompact();
+    if (!compact) return null;
+    return { boundaryIndex: compact.boundaryIndex, mode: compact.mode, timestamp: compact.timestamp };
   }
 
   async getUiMessages() {
