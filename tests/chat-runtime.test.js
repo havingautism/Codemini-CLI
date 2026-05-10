@@ -754,6 +754,50 @@ test('plan approve deletes the pending auto plan file after successful execution
   });
 });
 
+test('chat runtime persists streamed assistant replies for reload', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const restoreFetch = withMockFetch(async () =>
+      makeSseResponse([
+        { choices: [{ delta: { content: 'persisted ' } }] },
+        { choices: [{ delta: { content: 'answer' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] }
+      ])
+    );
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+      const now = new Date().toISOString();
+      const sessionId = 'session-streamed-assistant-reload';
+      const runtime = await createChatRuntime({
+        session: {
+          id: sessionId,
+          createdAt: now,
+          updatedAt: now,
+          messages: []
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const result = await runtime.submit('hello');
+      assert.equal(result.text, 'persisted answer');
+
+      const loaded = await loadSession(sessionId);
+      assert.deepEqual(
+        loaded.messages.map((msg) => [msg.role, msg.content]),
+        [
+          ['user', 'hello'],
+          ['assistant', 'persisted answer']
+        ]
+      );
+    } finally {
+      await restoreFetch();
+    }
+  });
+});
+
 test('plan auto persists slash input even when approved execution fails mid-flight', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let callIndex = 0;

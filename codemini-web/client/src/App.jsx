@@ -89,6 +89,7 @@ function Shell() {
     <div className="flex h-screen bg-(--bg-primary) text-(--text-primary)">
       <Sidebar
         sessions={state.sessions}
+        sessionsLoading={state.sessionsLoading}
         currentSessionId={currentId}
         onNewSession={actions.newSession}
         onSwitchSession={actions.switchSession}
@@ -111,6 +112,7 @@ function Shell() {
         {state.currentView === "sessions" ? (
           <SessionPanel
             sessions={state.sessions}
+            sessionsLoading={state.sessionsLoading}
             currentId={currentId}
             onSwitch={actions.switchSession}
             onNew={actions.newSession}
@@ -173,6 +175,7 @@ function Shell() {
               projectCwd={state.projectCwd}
               skills={state.skills}
               gitInfo={state.gitInfo}
+              messagesLoading={state.messagesLoading}
             />
 
             {/* Plan Review / Input Area */}

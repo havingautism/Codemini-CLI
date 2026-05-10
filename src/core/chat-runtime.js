@@ -2818,6 +2818,22 @@ async function askModel({
         }
         current.at = new Date().toISOString();
         if (persistSession) scheduleSessionSave();
+      } else {
+        const assistantMessage = event.assistantMessage && typeof event.assistantMessage === 'object'
+          ? event.assistantMessage
+          : { content: event.text || '' };
+        session.messages.push(stampedMessage('assistant', assistantMessage.content || event.text || '', {
+          ...(typeof assistantMessage.reasoning_content === 'string' && assistantMessage.reasoning_content
+            ? { reasoning_content: assistantMessage.reasoning_content }
+            : {}),
+          ...(Array.isArray(assistantMessage.reasoning_details) && assistantMessage.reasoning_details.length > 0
+            ? { reasoning_details: assistantMessage.reasoning_details }
+            : {}),
+          ...(Array.isArray(assistantMessage.tool_calls) && assistantMessage.tool_calls.length > 0
+            ? { tool_calls: assistantMessage.tool_calls }
+            : {})
+        }));
+        if (persistSession) scheduleSessionSave();
       }
       activeAssistantIndex = -1;
     } else if (event?.type === 'tool:end' || event?.type === 'tool:error' || event?.type === 'tool:blocked') {
@@ -2879,9 +2895,9 @@ async function askModel({
     requestCompletion: async ({ messages, tools, model: selectedModel }) => {
       let started = false;
       const startAssistantStream = () => {
-        if (!started && onAgentEvent) {
+        if (!started) {
           started = true;
-          onAgentEvent({ type: 'assistant:start' });
+          wrappedAgentEvent({ type: 'assistant:start' });
         }
       };
 
@@ -2897,11 +2913,11 @@ async function askModel({
         signal,
         onTextDelta: (delta) => {
           startAssistantStream();
-          if (onAgentEvent) onAgentEvent({ type: 'assistant:delta', text: delta });
+          wrappedAgentEvent({ type: 'assistant:delta', text: delta });
         },
         onToolCallDelta: (toolCall) => {
           startAssistantStream();
-          if (onAgentEvent) onAgentEvent({ type: 'assistant:tool_call_delta', toolCall });
+          wrappedAgentEvent({ type: 'assistant:tool_call_delta', toolCall });
         }
       });
 

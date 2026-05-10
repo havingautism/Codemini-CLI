@@ -1,10 +1,10 @@
 import { useRef, useEffect, useState } from "react";
 import { ArrowUp, ArrowDown, GitBranch } from "lucide-react";
 import { MessageBubble } from "./MessageBubble";
-import { cn } from "@/lib/utils";
+import { Spinner } from "@/components/ui/spinner";
 import { t } from "../../i18n/index.js";
 
-export function ChatPanel({ messages, projectCwd, skills = [], gitInfo }) {
+export function ChatPanel({ messages, projectCwd, skills = [], gitInfo, messagesLoading }) {
   const scrollRef = useRef(null);
   const [autoScroll, setAutoScroll] = useState(true);
   const [showBackToTop, setShowBackToTop] = useState(false);
@@ -34,7 +34,12 @@ export function ChatPanel({ messages, projectCwd, skills = [], gitInfo }) {
 
   return (
     <div className="flex-1 relative overflow-hidden">
-      {messages.length === 0 && (
+      {messagesLoading && messages.length === 0 && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <Spinner />
+        </div>
+      )}
+      {!messagesLoading && messages.length === 0 && (
         <div className="absolute left-1/2 top-[38%] -translate-x-1/2 -translate-y-1/2 w-[min(760px,calc(100%-48px))] text-center pointer-events-none">
           <h1 className="text-[clamp(24px,2.4vw,36px)] font-medium leading-tight tracking-normal">
             {t("buildInProject").replace("{{project}}", projectCwd || "qurio-coder")}

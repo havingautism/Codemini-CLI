@@ -22,6 +22,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
+import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { t, setLocale, getLocale } from "../../i18n/index.js";
 
@@ -85,6 +86,7 @@ const THEME_PALETTES = [
 
 export function Sidebar({
   sessions,
+  sessionsLoading,
   currentSessionId,
   onNewSession,
   onSwitchSession,
@@ -407,7 +409,12 @@ export function Sidebar({
           },
         )}
 
-        {allSessions.length === 0 && (
+        {sessionsLoading && allSessions.length === 0 && (
+          <div className="px-3 py-4 text-center">
+            <Spinner className="justify-center" />
+          </div>
+        )}
+        {!sessionsLoading && allSessions.length === 0 && (
           <div className="px-3 py-4 text-[12px] text-(--text-muted) text-center">
             {t("noSessions")}
           </div>

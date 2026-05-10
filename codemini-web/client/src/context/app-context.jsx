@@ -48,6 +48,7 @@ const initialState = {
   sessions: [], projectCwd: null, history: [], skills: [], gitInfo: null, gitBatch: {},
   codewikiProjectPath: '',
   versionInfo: null, updateStatus: null,
+  initialLoading: true, sessionsLoading: false, messagesLoading: false,
 };
 
 function collapseRenderedSkillPrompt(content) {
@@ -293,12 +294,14 @@ export function AppProvider({ children }) {
   }, [update]);
 
   const loadSessions = useCallback(async () => {
+    update({ sessionsLoading: true });
     try {
       const sessions = await api.fetchSessions();
       const list = Array.isArray(sessions) ? sessions : [];
       update({ sessions: list });
       loadGitBatch(list);
     } catch {}
+    finally { update({ sessionsLoading: false }); }
   }, [update, loadGitBatch]);
 
   const openCodeWikiProjectFromRoute = useCallback(async (projectPath) => {
@@ -322,6 +325,7 @@ export function AppProvider({ children }) {
   }, [update]);
 
   const loadSessionMessages = useCallback(async () => {
+    update({ messagesLoading: true });
     try {
       const data = await api.fetchSessionMessages();
       const messages = Array.isArray(data) ? data : (data.messages || []);
@@ -416,6 +420,7 @@ export function AppProvider({ children }) {
       }
       update({ messages: processed });
     } catch {}
+    finally { update({ messagesLoading: false }); }
   }, [update]);
 
   const handleEvent = useCallback((event) => {
@@ -791,6 +796,7 @@ export function AppProvider({ children }) {
         const vInfo = await api.fetchVersion();
         update({ versionInfo: vInfo });
       } catch {}
+      update({ initialLoading: false });
       connectSSE();
     })();
 
@@ -805,6 +811,7 @@ export function AppProvider({ children }) {
           const currentState = await api.fetchState();
           if (currentState.sessionId !== route.sessionId) {
             await api.switchSession(route.sessionId);
+            update({ messagesLoading: true });
             setState(prev => ({ ...prev, messages: [] }));
             await loadState();
             await loadSessionMessages();
@@ -899,7 +906,7 @@ export function AppProvider({ children }) {
       try {
         const result = await api.switchSession(sessionId);
         if (result.ok) {
-          update({ currentView: 'chat' });
+          update({ currentView: 'chat', messagesLoading: true });
           updateRoute('chat', sessionId);
           await loadState();
           setState(prev => ({ ...prev, messages: [] }));
@@ -920,7 +927,7 @@ export function AppProvider({ children }) {
           sessions: prev.sessions.filter((session) => session.id !== sessionId)
         }));
         if (deletingCurrent) {
-          update({ currentView: 'chat' });
+          update({ currentView: 'chat', messagesLoading: true });
           if (result.sessionId) updateRoute('chat', result.sessionId, { replace: true });
           await loadState();
           setState(prev => ({ ...prev, messages: [] }));
