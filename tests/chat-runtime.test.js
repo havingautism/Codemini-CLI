@@ -798,6 +798,142 @@ test('chat runtime persists streamed assistant replies for reload', { concurrenc
   });
 });
 
+test('chat runtime sends new user prompt after compacted context', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const requestMessages = [];
+    const restoreFetch = withMockFetch(async (_url, init) => {
+      const body = JSON.parse(typeof init.body === 'string' ? init.body : String(init.body));
+      requestMessages.push(body.messages);
+      return makeSseResponse([
+        { choices: [{ delta: { content: 'compact followup ok' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] }
+      ]);
+    });
+
+    try {
+      const config = await loadConfig();
+      config.gateway.base_url = 'https://gateway.example/v1';
+      config.gateway.api_key = 'test-key';
+      const now = new Date().toISOString();
+      const sessionId = 'session-compact-followup';
+      const runtime = await createChatRuntime({
+        session: {
+          id: sessionId,
+          createdAt: now,
+          updatedAt: now,
+          title: 'compact followup',
+          messages: [
+            { role: 'user', content: 'original task', at: now },
+            { role: 'assistant', content: 'original answer', at: now }
+          ],
+          compact: {
+            view: [
+              { role: 'assistant', content: 'Context Summary\nGoal:\n- original task', at: now }
+            ],
+            timestamp: now,
+            boundaryIndex: 1,
+            mode: 'default'
+          }
+        },
+        config,
+        systemPrompt: 'You are a test assistant.'
+      });
+
+      const result = await runtime.submit('after compact prompt');
+      assert.equal(result.text, 'compact followup ok');
+      assert.equal(requestMessages[0].at(-1).role, 'user');
+      assert.equal(requestMessages[0].at(-1).content, 'after compact prompt');
+
+      const loaded = await loadSession(sessionId);
+      assert.equal(loaded.messages.at(-2)?.content, 'after compact prompt');
+      assert.equal(loaded.compact?.view?.at(-2)?.content, 'after compact prompt');
+    } finally {
+      await restoreFetch();
+    }
+  });
+});
+
+test('chat runtime keeps local command exchanges in compacted context', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const now = new Date().toISOString();
+    const sessionId = 'session-compact-local-command';
+    const runtime = await createChatRuntime({
+      session: {
+        id: sessionId,
+        createdAt: now,
+        updatedAt: now,
+        title: 'compact local command',
+        messages: [
+          { role: 'user', content: 'original task', at: now },
+          { role: 'assistant', content: 'original answer', at: now }
+        ],
+        compact: {
+          view: [
+            { role: 'assistant', content: 'Context Summary\nGoal:\n- original task', at: now }
+          ],
+          timestamp: now,
+          boundaryIndex: 1,
+          mode: 'default'
+        }
+      },
+      config: await loadConfig(),
+      systemPrompt: 'You are a test assistant.'
+    });
+
+    const result = await runtime.submit('/config set ui.reply_language en');
+    assert.match(result.text, /Set ui\.reply_language=en/);
+
+    const loaded = await loadSession(sessionId);
+    assert.equal(loaded.compact?.mode, 'default');
+    assert.equal(loaded.compact?.boundaryIndex, 1);
+    assert.equal(loaded.compact?.view?.at(-2)?.content, '/config set ui.reply_language en');
+    assert.equal(loaded.compact?.view?.at(-1)?.content, 'Set ui.reply_language=en');
+  });
+});
+
+test('chat runtime macro compact always records boundary in original session history', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const now = new Date().toISOString();
+    const messages = Array.from({ length: 16 }, (_, index) => ({
+      role: index % 2 === 0 ? 'user' : 'assistant',
+      content: `message ${index + 1}`,
+      at: now
+    }));
+    const sessionId = 'session-compact-original-boundary';
+    const runtime = await createChatRuntime({
+      session: {
+        id: sessionId,
+        createdAt: now,
+        updatedAt: now,
+        title: 'compact original boundary',
+        messages,
+        compact: {
+          view: [
+            { role: 'assistant', content: 'old summary', at: now },
+            ...messages.slice(8)
+          ],
+          timestamp: now,
+          boundaryIndex: 8,
+          mode: 'default'
+        }
+      },
+      config: await loadConfig(),
+      systemPrompt: 'You are a test assistant.'
+    });
+
+    const result = await runtime.submit('/compact --aggressive');
+    assert.match(result.text, /Compact applied/);
+
+    const loaded = await loadSession(sessionId);
+    assert.equal(loaded.messages.length, 17);
+    assert.equal(loaded.compact?.mode, 'aggressive');
+    assert.equal(loaded.compact?.boundaryIndex, 12);
+    assert.match(String(loaded.compact?.view?.[0]?.content || ''), /Context Summary/);
+    assert.equal(loaded.compact?.view?.[1]?.content, 'message 13');
+    assert.equal(loaded.compact?.view?.[4]?.content, 'message 16');
+  });
+});
+
 test('plan auto persists slash input even when approved execution fails mid-flight', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     let callIndex = 0;

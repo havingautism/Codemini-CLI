@@ -64,6 +64,15 @@ function toOpenAIMessages(sessionMessages) {
   return mapped;
 }
 
+function translateCompactBoundaryToOriginal(sourceIsCompacted, compactMeta, compactBoundaryIndex) {
+  const boundary = Number(compactBoundaryIndex);
+  if (!Number.isFinite(boundary)) return undefined;
+  if (!sourceIsCompacted) return Math.max(0, boundary);
+  const previousBoundary = Number(compactMeta?.boundaryIndex);
+  if (!Number.isFinite(previousBoundary)) return Math.max(0, boundary);
+  return Math.max(0, previousBoundary + Math.max(0, boundary - 1));
+}
+
 function slugify(input) {
   const base = String(input || '')
     .toLowerCase()
@@ -2630,14 +2639,20 @@ async function askModel({
       }
     }
     if (needsMacro) {
-      const macroSource = compacted ?? compactSource;
+      const sourceIsCompacted = Boolean(compacted);
+      const macroSource = compacted ?? session.messages;
       const auto = compactMessagesLocally(macroSource, {
         mode: preflightPct >= hardPct ? 'aggressive' : 'conservative',
         force: true
       });
       if (auto.changed) {
         compacted = auto.compacted.map((m) => ({ ...m, at: new Date().toISOString() }));
-        if (onCompactedUpdate) onCompactedUpdate(compacted, { boundaryIndex: auto.boundaryIndex, mode: preflightPct >= hardPct ? 'aggressive' : 'conservative' });
+        if (onCompactedUpdate) {
+          onCompactedUpdate(compacted, {
+            boundaryIndex: translateCompactBoundaryToOriginal(sourceIsCompacted, session.compact, auto.boundaryIndex),
+            mode: preflightPct >= hardPct ? 'aggressive' : 'conservative'
+          });
+        }
         if (onAgentEvent) {
           onAgentEvent({
             type: 'compact:auto',
@@ -2699,7 +2714,12 @@ async function askModel({
     const shouldGenerateTitle = !session.messages.some((msg) => msg?.role === 'user');
     const modelExtra =
       typeof modelText === 'string' && modelText && modelText !== text ? { model_content: modelText } : {};
-    session.messages.push(stampedMessage('user', text, modelExtra));
+    const userMessage = stampedMessage('user', text, modelExtra);
+    session.messages.push(userMessage);
+    if (compacted) {
+      compacted.push({ ...userMessage });
+      if (onCompactedUpdate) onCompactedUpdate(compacted);
+    }
     if (!shouldGenerateTitle) {
       session.title = deriveSessionTitle(session.messages);
     }
@@ -4205,8 +4225,15 @@ export async function createChatRuntime({
   const setCompactedView = (view, meta = {}) => {
     compactedForModel = view;
     currentSession.compact = view
-      ? { view, timestamp: new Date().toISOString(), ...meta }
+      ? { ...(currentSession.compact || {}), view, timestamp: new Date().toISOString(), ...meta }
       : null;
+  };
+  const appendSessionMessage = (message) => {
+    currentSession.messages.push(message);
+    if (compactedForModel) {
+      compactedForModel.push({ ...message });
+      setCompactedView(compactedForModel);
+    }
   };
   let historyIdCache = [currentSession.id];
   let historySessionCache = [
@@ -4682,10 +4709,10 @@ export async function createChatRuntime({
 
   const persistLocalExchange = async (userText, systemText, { includeUser = true } = {}) => {
     if (includeUser && userText) {
-      currentSession.messages.push(stampedMessage('user', userText));
+      appendSessionMessage(stampedMessage('user', userText));
     }
     if (systemText) {
-      currentSession.messages.push(stampedMessage('system', systemText));
+      appendSessionMessage(stampedMessage('system', systemText));
     }
     if (shouldReplaceSessionTitle(currentSession.title)) {
       currentSession.title = deriveSessionTitle(currentSession.messages);
@@ -4697,10 +4724,10 @@ export async function createChatRuntime({
 
   const persistAssistantExchange = async (userText, assistantText, { includeUser = true, extra = {} } = {}) => {
     if (includeUser && userText) {
-      currentSession.messages.push(stampedMessage('user', userText));
+      appendSessionMessage(stampedMessage('user', userText));
     }
     if (assistantText) {
-      currentSession.messages.push(stampedMessage('assistant', assistantText, extra));
+      appendSessionMessage(stampedMessage('assistant', assistantText, extra));
     }
     if (shouldReplaceSessionTitle(currentSession.title)) {
       currentSession.title = await generateSessionTitle({
@@ -4716,7 +4743,7 @@ export async function createChatRuntime({
 
   const persistUserExchange = async (userText) => {
     if (!userText) return;
-    currentSession.messages.push(stampedMessage('user', userText));
+    appendSessionMessage(stampedMessage('user', userText));
     if (shouldReplaceSessionTitle(currentSession.title)) {
       currentSession.title = deriveSessionTitle(currentSession.messages);
     }
@@ -5691,7 +5718,9 @@ export async function createChatRuntime({
           return { type: 'system', text: report };
         }
 
-        const result = compactMessagesLocally(compactSource, { mode: compactState.mode, force: true });
+        const sourceIsCompacted = Boolean(compactedForModel);
+        const macroSource = compactedForModel ?? currentSession.messages;
+        const result = compactMessagesLocally(macroSource, { mode: compactState.mode, force: true });
         if (!result.changed) {
           return { type: 'system', text: 'Nothing to compact yet' };
         }
@@ -5704,7 +5733,10 @@ export async function createChatRuntime({
 
         setCompactedView(
           result.compacted.map((m) => ({ ...m, at: new Date().toISOString() })),
-          { boundaryIndex: result.boundaryIndex, mode: compactState.mode }
+          {
+            boundaryIndex: translateCompactBoundaryToOriginal(sourceIsCompacted, currentSession.compact, result.boundaryIndex),
+            mode: compactState.mode
+          }
         );
         await captureCompactSummary({
           summary: result.summary,
@@ -5923,7 +5955,8 @@ export async function createChatRuntime({
         }
         // Phase 1: macro compact if still over threshold
         if (needsMacro) {
-          const macroSource = compactedForModel ?? compactSource;
+          const sourceIsCompacted = Boolean(compactedForModel);
+          const macroSource = compactedForModel ?? currentSession.messages;
           const autoResult = compactMessagesLocally(macroSource, {
             mode: compactState.mode,
             force: true
@@ -5934,7 +5967,14 @@ export async function createChatRuntime({
                 ...m,
                 at: new Date().toISOString()
               })),
-              { boundaryIndex: autoResult.boundaryIndex, mode: compactState.mode }
+              {
+                boundaryIndex: translateCompactBoundaryToOriginal(
+                  sourceIsCompacted,
+                  currentSession.compact,
+                  autoResult.boundaryIndex
+                ),
+                mode: compactState.mode
+              }
             );
             await captureCompactSummary({
               summary: autoResult.summary,
