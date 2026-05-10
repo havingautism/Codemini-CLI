@@ -336,7 +336,7 @@ export function AppProvider({ children }) {
       const processed = [];
       let assistantGroup = null;
       const compactBoundary = compactMeta?.boundaryIndex;
-      const dividerInserted = compactBoundary == null;
+      let dividerInserted = compactBoundary == null;
       for (let mi = 0; mi < messages.length; mi++) {
         const msg = messages[mi];
         // Insert compact divider at the boundary position
