@@ -256,6 +256,13 @@ export const zh = {
   // Sidebar language
   language: '语言',
   switchLanguage: '切换语言',
+  switchThemePalette: '切换主题配色',
+  themeDefault: 'Default',
+  themeCatppuccin: 'Catppuccin',
+  themeTokyoNight: 'Tokyo Night',
+  themeOne: 'One',
+  themeGithub: 'GitHub',
+  themeVSCode: 'VS Code',
 
   // ChatPanel
   buildInProject: '要在 {{project}} 中构建什么?',

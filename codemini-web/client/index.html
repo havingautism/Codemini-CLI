@@ -7,8 +7,10 @@
     <script>
       (() => {
         const stored = localStorage.getItem('codemini-theme');
+        const palette = localStorage.getItem('codemini-theme-palette') || 'default';
         const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
         document.documentElement.dataset.theme = stored || (prefersDark ? 'dark' : 'light');
+        document.documentElement.dataset.palette = palette;
       })();
     </script>
   </head>

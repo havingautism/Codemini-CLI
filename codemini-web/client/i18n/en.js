@@ -247,6 +247,13 @@ export const en = {
   // Sidebar language
   language: 'Language',
   switchLanguage: 'Switch Language',
+  switchThemePalette: 'Switch Theme Palette',
+  themeDefault: 'Default',
+  themeCatppuccin: 'Catppuccin',
+  themeTokyoNight: 'Tokyo Night',
+  themeOne: 'One',
+  themeGithub: 'GitHub',
+  themeVSCode: 'VS Code',
 
   // ChatPanel
   buildInProject: 'What do you want to build in {{project}}?',

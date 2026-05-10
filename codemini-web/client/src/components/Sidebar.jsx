@@ -13,6 +13,7 @@ import {
   MoreHorizontal,
   Globe,
   Check,
+  Palette,
 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -49,6 +50,39 @@ function GitHubIcon({ size = 14, className, ...props }) {
   );
 }
 
+const THEME_PALETTES = [
+  {
+    id: "default",
+    labelKey: "themeDefault",
+    swatches: ["#0a0a0a", "#f5f5f5", "#60a5fa"],
+  },
+  {
+    id: "catppuccin",
+    labelKey: "themeCatppuccin",
+    swatches: ["#1e1e2e", "#cba6f7", "#89b4fa"],
+  },
+  {
+    id: "tokyonight",
+    labelKey: "themeTokyoNight",
+    swatches: ["#1a1b26", "#7aa2f7", "#bb9af7"],
+  },
+  {
+    id: "one",
+    labelKey: "themeOne",
+    swatches: ["#282c34", "#61afef", "#c678dd"],
+  },
+  {
+    id: "github",
+    labelKey: "themeGithub",
+    swatches: ["#ffffff", "#0969da", "#24292f"],
+  },
+  {
+    id: "vscode",
+    labelKey: "themeVSCode",
+    swatches: ["#1e1e1e", "#007acc", "#d4d4d4"],
+  },
+];
+
 export function Sidebar({
   sessions,
   currentSessionId,
@@ -71,6 +105,10 @@ export function Sidebar({
   const [expandedProjects, setExpandedProjects] = useState(new Set());
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [themePalette, setThemePaletteState] = useState(() => {
+    if (typeof document === "undefined") return "default";
+    return document.documentElement.dataset.palette || "default";
+  });
 
   const allSessions = Array.isArray(sessions) ? sessions : [];
   const currentSession = allSessions.find((s) => s.id === currentSessionId);
@@ -97,6 +135,16 @@ export function Sidebar({
   const isDark =
     typeof document !== "undefined" &&
     document.documentElement.dataset.theme === "dark";
+
+  const setThemePalette = (palette) => {
+    const next = THEME_PALETTES.some((item) => item.id === palette)
+      ? palette
+      : "default";
+    document.documentElement.dataset.palette = next;
+    localStorage.setItem("codemini-theme-palette", next);
+    window.dispatchEvent(new CustomEvent("codemini-theme-palette-change", { detail: { palette: next } }));
+    setThemePaletteState(next);
+  };
 
   const openProjectCodeWiki = async (event, projectKey) => {
     event.stopPropagation();
@@ -388,6 +436,49 @@ export function Sidebar({
           >
             <Info size={15} strokeWidth={1.8} />
           </button>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
+                title={t("switchThemePalette")}
+                aria-label={t("switchThemePalette")}
+              >
+                <Palette size={15} strokeWidth={1.8} />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="center"
+              side="top"
+              className="w-44 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+            >
+              {THEME_PALETTES.map((palette) => (
+                <button
+                  key={palette.id}
+                  type="button"
+                  className={cn(
+                    "w-full rounded-md px-2.5 py-2 text-left text-[13px] flex items-center gap-2 hover:bg-(--bg-hover)",
+                    themePalette === palette.id &&
+                      "text-(--text-primary) font-medium",
+                  )}
+                  onClick={() => setThemePalette(palette.id)}
+                >
+                  <span className="flex shrink-0 -space-x-1">
+                    {palette.swatches.map((color) => (
+                      <span
+                        key={color}
+                        className="size-3 rounded-full border border-(--border-default)"
+                        style={{ backgroundColor: color }}
+                      />
+                    ))}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">
+                    {t(palette.labelKey)}
+                  </span>
+                  {themePalette === palette.id && <Check size={13} />}
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
           <Popover>
             <PopoverTrigger asChild>
               <button
