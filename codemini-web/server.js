@@ -579,6 +579,41 @@ async function main() {
       }
       return;
     }
+    if (req.method === 'GET' && url.pathname === '/api/git-diff') {
+      try {
+        const patch = execSync('git diff', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }) +
+          execSync('git diff --cached', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+        const patchFiles = [];
+        const seenPatchFiles = new Set();
+        for (const line of patch.split('\n')) {
+          const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+          if (!match) continue;
+          const filePath = match[2] || match[1];
+          if (!filePath || seenPatchFiles.has(filePath)) continue;
+          seenPatchFiles.add(filePath);
+          patchFiles.push(filePath);
+        }
+        const porcelain = execSync('git status --porcelain', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+        const statusByPath = new Map();
+        if (porcelain) {
+          for (const line of porcelain.split('\n')) {
+            const x = line[0], y = line[1], filePath = line.slice(3);
+            let status;
+            if (x === '?' && y === '?') status = '?';
+            else if (x === 'A' || y === 'A') status = 'A';
+            else if (x === 'D' || y === 'D') status = 'D';
+            else status = 'M';
+            const staged = (x !== ' ' && x !== '?');
+            statusByPath.set(filePath, { path: filePath, status, staged });
+          }
+        }
+        const files = patchFiles.map(filePath => statusByPath.get(filePath) || { path: filePath, status: 'M', staged: false });
+        jsonResponse(res, { patch, files });
+      } catch {
+        jsonResponse(res, { patch: '', files: [] });
+      }
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/api/git-batch') {
       const { dirs } = await readBody(req);
       const result = {};

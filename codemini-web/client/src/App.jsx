@@ -15,9 +15,10 @@ import { ProjectSelector } from "@/components/ProjectSelector.jsx";
 import { SkillDialog } from "@/components/SkillDialog.jsx";
 import { SoulDialog } from "@/components/SoulDialog.jsx";
 import { AboutDialog } from "@/components/AboutDialog.jsx";
+import { GitDiffDialog } from "@/components/GitDiffDialog.jsx";
 import { PlanProgress } from "@/components/PlanProgress.jsx";
 import { SessionPanel } from "@/components/SessionPanel.jsx";
-import { MoreHorizontal, Terminal } from "lucide-react";
+import { MoreHorizontal, Terminal, GitCompare } from "lucide-react";
 import "../style.css";
 
 function GitHubIcon({ size = 14, className, ...props }) {
@@ -143,10 +144,15 @@ function Shell() {
                   <span className="inline-flex items-center gap-1 text-[12px] text-(--text-muted) shrink-0">
                     <GitHubIcon size={13} />
                     <span>{state.gitInfo.branch}</span>
-                    {/* {state.gitInfo.dirty && (
-                      <CircleDot size={8} className="text-(--text-muted)" />
-                    )} */}
                   </span>
+                )}
+                {state.gitInfo?.isGit && state.gitInfo?.dirty && (
+                  <button
+                    onClick={() => actions.setGitDiffOpen(true)}
+                    className="inline-flex items-center gap-1 text-[12px] text-(--text-muted) shrink-0 border-0 bg-transparent cursor-pointer hover:text-(--text-primary) p-0"
+                  >
+                    <GitCompare size={13} />
+                  </button>
                 )}
               </div>
               <button className="border-0 bg-transparent text-(--text-muted) rounded-md p-1.5 cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) shrink-0">
@@ -242,6 +248,11 @@ function Shell() {
         open={state.aboutOpen}
         onOpenChange={actions.setAboutOpen}
         version={state.versionInfo?.current}
+      />
+
+      <GitDiffDialog
+        open={state.gitDiffOpen}
+        onOpenChange={actions.setGitDiffOpen}
       />
 
       <ProjectSelector

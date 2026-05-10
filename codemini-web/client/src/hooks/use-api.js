@@ -127,6 +127,11 @@ export async function fetchGitInfo() {
   return res.json();
 }
 
+export async function fetchGitDiff() {
+  const res = await api('/api/git-diff');
+  return res.json();
+}
+
 export async function fetchGitBatch(dirs) {
   const res = await api('/api/git-batch', {
     method: 'POST',

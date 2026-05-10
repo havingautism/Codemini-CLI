@@ -44,7 +44,7 @@ const initialState = {
   stage: 'idle', busy: false, currentView: 'chat', runtimeState: null,
   live: false, stageLabel: '', messages: [], activeMsgId: null,
   pendingToolChanges: [], planSteps: [], pendingPlanApproval: null, approvalRequest: null,
-  config: null, configOpen: false, projectOpen: false, skillsOpen: false, soulsOpen: false, aboutOpen: false,
+  config: null, configOpen: false, projectOpen: false, skillsOpen: false, soulsOpen: false, aboutOpen: false, gitDiffOpen: false,
   sessions: [], projectCwd: null, history: [], skills: [], gitInfo: null, gitBatch: {},
   codewikiProjectPath: '',
   versionInfo: null, updateStatus: null,
@@ -977,6 +977,7 @@ export function AppProvider({ children }) {
     setSkillsOpen: (open) => update({ skillsOpen: open }),
     setSoulsOpen: (open) => update({ soulsOpen: open }),
     setAboutOpen: (open) => update({ aboutOpen: open }),
+    setGitDiffOpen: (open) => update({ gitDiffOpen: open }),
 
     checkVersion: async () => {
       try {

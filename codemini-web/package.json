@@ -13,6 +13,7 @@
     "api": "node server.js --port 5000"
   },
   "dependencies": {
+    "@pierre/diffs": "^1.1.21",
     "@tailwindcss/vite": "^4.2.4",
     "@tanstack/react-router": "^1.169.1",
     "@vitejs/plugin-react": "^6.0.1",

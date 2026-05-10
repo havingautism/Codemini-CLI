@@ -5,7 +5,7 @@ import { t } from '../../i18n/index.js';
 export function SoulDialog({ open, onOpenChange }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-160 max-h-[80vh] overflow-hidden flex flex-col">
+      <DialogContent className="sm:max-w-[760px] max-h-[86vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle>{t('souls')}</DialogTitle>
         </DialogHeader>
