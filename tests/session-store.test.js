@@ -139,6 +139,39 @@ test('session-store can recover from a corrupted trailing jsonl line', { concurr
   });
 });
 
+test('session-store preserves compact context view metadata', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const id = 'session-compact-view';
+    await saveSession({
+      id,
+      createdAt: '2026-04-01T10:00:00.000Z',
+      updatedAt: '2026-04-01T10:00:00.000Z',
+      messages: [
+        { role: 'user', content: 'first user message' },
+        { role: 'assistant', content: 'first assistant message' },
+        { role: 'user', content: 'latest user message' }
+      ],
+      compact: {
+        view: [
+          { role: 'assistant', content: 'Context Summary\nGoal:\n- first user message' },
+          { role: 'user', content: 'latest user message' }
+        ],
+        timestamp: '2026-04-01T10:03:00.000Z',
+        boundaryIndex: 2,
+        mode: 'aggressive'
+      }
+    });
+
+    const loaded = await loadSession(id);
+    assert.equal(loaded.messages.length, 3);
+    assert.equal(loaded.compact?.view?.length, 2);
+    assert.equal(loaded.compact?.view?.[0]?.content, 'Context Summary\nGoal:\n- first user message');
+    assert.equal(loaded.compact?.timestamp, '2026-04-01T10:03:00.000Z');
+    assert.equal(loaded.compact?.boundaryIndex, 2);
+    assert.equal(loaded.compact?.mode, 'aggressive');
+  });
+});
+
 test('session-store still supports legacy .json session files', { concurrency: false }, async () => {
   await withTempConfigDir(async () => {
     const id = 'session-legacy-json';

@@ -1150,6 +1150,13 @@ test('compact applied captures summary into dream inbox for later consolidation'
       assert.match(entries[0].summary, /Context compacted/);
       assert.match(entries[0].details, /Context Summary/);
       assert.match(entries[0].details, /bun test tests\/auth\.test\.js/);
+
+      const loaded = await loadSession('session-compact-memory');
+      assert.equal(loaded.messages.length, 13);
+      assert.equal(loaded.compact?.mode, 'aggressive');
+      assert.equal(loaded.compact?.boundaryIndex, 8);
+      assert.match(String(loaded.compact?.view?.[0]?.content || ''), /Context Summary/);
+      assert.match(String(loaded.compact?.view?.[0]?.content || ''), /bun test tests\/auth\.test\.js/);
     } finally {
       process.chdir(previousCwd);
       await fs.rm(cwd, { recursive: true, force: true });
