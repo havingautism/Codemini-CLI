@@ -29,7 +29,7 @@ function getProjectKey(session) {
 }
 
 function getProjectName(projectDir) {
-  if (!projectDir || projectDir === "unknown") return t('unknownProject');
+  if (!projectDir || projectDir === "unknown") return t("unknownProject");
   return String(projectDir).split(/[/\\]/).filter(Boolean).pop() || projectDir;
 }
 
@@ -143,7 +143,7 @@ export function Sidebar({
             strokeWidth={2}
             className="text-(--text-secondary) shrink-0"
           />
-          <span className="truncate">{t('newChat')}</span>
+          <span className="truncate">{t("newChat")}</span>
         </button>
 
         {/* <button
@@ -167,7 +167,7 @@ export function Sidebar({
             strokeWidth={2}
             className="text-(--text-secondary) shrink-0"
           />
-          <span className="truncate">{t('skills')}</span>
+          <span className="truncate">{t("skills")}</span>
         </button>
 
         <button
@@ -179,7 +179,7 @@ export function Sidebar({
             strokeWidth={2}
             className="text-(--text-secondary) shrink-0"
           />
-          <span className="truncate">{t('souls')}</span>
+          <span className="truncate">{t("souls")}</span>
         </button>
 
         <Separator className="my-2 bg-(--border-default)" />
@@ -221,8 +221,8 @@ export function Sidebar({
                     <button
                       type="button"
                       className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-active) hover:text-(--text-primary)"
-                      title={t('newSessionInProject')}
-                      aria-label={`${t('newSessionInProject')} ${getProjectName(projectKey)}`}
+                      title={t("newSessionInProject")}
+                      aria-label={`${t("newSessionInProject")} ${getProjectName(projectKey)}`}
                       onClick={(event) =>
                         openProjectNewSession(event, projectKey)
                       }
@@ -239,8 +239,8 @@ export function Sidebar({
                           isActive &&
                           "bg-(--bg-active) text-(--text-primary)",
                       )}
-                      title={t('openCodeWiki')}
-                      aria-label={`${t('openCodeWiki')} ${getProjectName(projectKey)}`}
+                      title={t("openCodeWiki")}
+                      aria-label={`${t("openCodeWiki")} ${getProjectName(projectKey)}`}
                       onClick={(event) =>
                         openProjectCodeWiki(event, projectKey)
                       }
@@ -261,7 +261,9 @@ export function Sidebar({
                     type="button"
                     className="border-0 bg-transparent inline-flex size-5 shrink-0 items-center justify-center rounded-md text-inherit cursor-pointer hover:bg-(--bg-active)"
                     onClick={() => toggleProject(projectKey)}
-                    aria-label={isExpanded ? t('collapseProject') : t('expandProject')}
+                    aria-label={
+                      isExpanded ? t("collapseProject") : t("expandProject")
+                    }
                   >
                     <ChevronDown
                       size={13}
@@ -291,16 +293,32 @@ export function Sidebar({
                             : "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
                         )}
                       >
-                        <span className="truncate flex-1">
+                        <span
+                          className="truncate flex-1"
+                          title={
+                            session.title ||
+                            session.preview ||
+                            (session.messageCount > 0
+                              ? `${session.messageCount} ${t("messages")}`
+                              : t("emptyChat"))
+                          }
+                        >
                           {session.title ||
                             session.preview ||
                             (session.messageCount > 0
-                              ? `${session.messageCount} ${t('messages')}`
-                              : t('emptyChat'))}
+                              ? `${session.messageCount} ${t("messages")}`
+                              : t("emptyChat"))}
                         </span>
                         {session.updatedAt && (
                           <span className="text-[11px] text-(--text-muted) shrink-0 tabular-nums">
-                            {new Date(session.updatedAt).toLocaleDateString(undefined, { year: 'numeric', month: 'numeric', day: 'numeric' })}
+                            {new Date(session.updatedAt).toLocaleDateString(
+                              undefined,
+                              {
+                                year: "numeric",
+                                month: "numeric",
+                                day: "numeric",
+                              },
+                            )}
                           </span>
                         )}
                         <Popover>
@@ -309,7 +327,7 @@ export function Sidebar({
                               type="button"
                               className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) opacity-0 hover:bg-(--bg-active) hover:text-(--text-primary) group-hover:opacity-100 focus:opacity-100"
                               onClick={(event) => event.stopPropagation()}
-                              aria-label={t('sessionActions')}
+                              aria-label={t("sessionActions")}
                             >
                               <MoreHorizontal size={14} />
                             </button>
@@ -324,7 +342,7 @@ export function Sidebar({
                               className="w-full rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
                               onClick={() => setPendingDelete(session)}
                             >
-                              {t('deleteSession')}
+                              {t("deleteSession")}
                             </button>
                           </PopoverContent>
                         </Popover>
@@ -339,7 +357,7 @@ export function Sidebar({
 
         {allSessions.length === 0 && (
           <div className="px-3 py-4 text-[12px] text-(--text-muted) text-center">
-            {t('noSessions')}
+            {t("noSessions")}
           </div>
         )}
       </nav>
@@ -353,11 +371,11 @@ export function Sidebar({
             disabled={updateStatus === "updating"}
           >
             {updateStatus === "updating" ? (
-              <>{t('updating')}</>
+              <>{t("updating")}</>
             ) : updateStatus === "done" ? (
-              <>{t('updatedRestart')}</>
+              <>{t("updatedRestart")}</>
             ) : (
-              <>{t('updateAvailable')}</>
+              <>{t("updateAvailable")}</>
             )}
           </button>
         )}
@@ -365,8 +383,8 @@ export function Sidebar({
           <button
             className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
             onClick={onOpenAbout}
-            title={t('about')}
-            aria-label={t('about')}
+            title={t("about")}
+            aria-label={t("about")}
           >
             <Info size={15} strokeWidth={1.8} />
           </button>
@@ -374,8 +392,8 @@ export function Sidebar({
             <PopoverTrigger asChild>
               <button
                 className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
-                title={t('switchLanguage')}
-                aria-label={t('switchLanguage')}
+                title={t("switchLanguage")}
+                aria-label={t("switchLanguage")}
               >
                 <Globe size={15} strokeWidth={1.8} />
               </button>
@@ -385,13 +403,14 @@ export function Sidebar({
               side="top"
               className="w-28 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
             >
-              {['zh', 'en'].map((locale) => (
+              {["zh", "en"].map((locale) => (
                 <button
                   key={locale}
                   type="button"
                   className={cn(
                     "w-full rounded-md px-2.5 py-1.5 text-left text-[13px] flex items-center justify-between hover:bg-(--bg-hover)",
-                    getLocale() === locale && "text-(--text-primary) font-medium",
+                    getLocale() === locale &&
+                      "text-(--text-primary) font-medium",
                   )}
                   onClick={() => {
                     if (getLocale() !== locale) {
@@ -400,7 +419,7 @@ export function Sidebar({
                     }
                   }}
                 >
-                  <span>{locale === 'zh' ? '中文' : 'English'}</span>
+                  <span>{locale === "zh" ? "中文" : "English"}</span>
                   {getLocale() === locale && <Check size={13} />}
                 </button>
               ))}
@@ -409,8 +428,8 @@ export function Sidebar({
           <button
             className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
             onClick={onToggleTheme}
-            title={isDark ? t('lightMode') : t('darkMode')}
-            aria-label={isDark ? t('switchToLightMode') : t('switchToDarkMode')}
+            title={isDark ? t("lightMode") : t("darkMode")}
+            aria-label={isDark ? t("switchToLightMode") : t("switchToDarkMode")}
           >
             {isDark ? (
               <Moon size={15} strokeWidth={1.8} />
@@ -421,8 +440,8 @@ export function Sidebar({
           <button
             className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
             onClick={onOpenSettings}
-            title={t('settings')}
-            aria-label={t('settings')}
+            title={t("settings")}
+            aria-label={t("settings")}
           >
             <Settings size={15} strokeWidth={1.8} />
           </button>
@@ -430,8 +449,18 @@ export function Sidebar({
       </div>
       <ConfirmDialog
         open={!!pendingDelete}
-        title={t('deleteSessionConfirm')}
-        description={pendingDelete ? t('deleteSessionDescription').replace('{{session}}', pendingDelete.title || pendingDelete.preview || pendingDelete.id || '') : ''}
+        title={t("deleteSessionConfirm")}
+        description={
+          pendingDelete
+            ? t("deleteSessionDescription").replace(
+                "{{session}}",
+                pendingDelete.title ||
+                  pendingDelete.preview ||
+                  pendingDelete.id ||
+                  "",
+              )
+            : ""
+        }
         loading={deleting}
         onOpenChange={(open) => !open && setPendingDelete(null)}
         onConfirm={confirmDeleteSession}

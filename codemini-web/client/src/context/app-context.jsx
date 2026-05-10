@@ -686,6 +686,19 @@ export function AppProvider({ children }) {
         break;
       }
 
+      case 'runtime:state': {
+        const rs = event.state || {};
+        update({
+          runtimeState: { ...stateRef.current.runtimeState, ...rs },
+          pendingPlanApproval: rs?.pendingPlanApproval || null,
+          busy: !!rs.busy,
+          live: !!rs.busy,
+          stage: rs.busy ? stateRef.current.stage : 'idle',
+          stageLabel: rs.busy ? stateRef.current.stageLabel : ''
+        });
+        break;
+      }
+
       case 'runtime:switched': {
         setState(prev => ({ ...prev, messages: [], planSteps: [], pendingPlanApproval: null }));
         activeMsgRef.current = null;

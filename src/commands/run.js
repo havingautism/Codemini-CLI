@@ -2,10 +2,9 @@ import { loadConfig } from '../core/config-store.js';
 import { buildDefaultSystemPrompt } from '../core/default-system-prompt.js';
 import { runAgentLoop } from '../core/agent-loop.js';
 import { createChatCompletion } from '../core/provider/index.js';
-import { buildSystemPromptWithSoul } from '../core/soul.js';
 import { getBuiltinTools } from '../core/tools.js';
-import { buildMemorySnapshot } from '../core/memory-prompt.js';
 import { getSubAgentRolePrompt } from '../core/chat-runtime.js';
+import { composeSystemPrompt } from '../core/system-prompt-composer.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -82,9 +81,11 @@ function makeCompletionFn(config) {
 }
 
 async function buildSystemPrompt(config) {
-  const soulPrompt = await buildSystemPromptWithSoul(buildDefaultSystemPrompt(config), config);
-  const memorySnapshot = await buildMemorySnapshot({ config, workspaceRoot: process.cwd() }).catch(() => '');
-  return [soulPrompt, memorySnapshot].filter(Boolean).join('\n\n');
+  return composeSystemPrompt({
+    shellRulesPrompt: buildDefaultSystemPrompt(config),
+    config,
+    workspaceRoot: process.cwd()
+  });
 }
 
 async function runHarness({ role, task, config, systemPrompt, model, maxSteps }) {
@@ -98,9 +99,16 @@ async function runHarness({ role, task, config, systemPrompt, model, maxSteps })
   try {
     const filtered = filterToolsForRole(definitions, handlers, deferredDefinitions, role);
     const rolePrompt = getSubAgentRolePrompt(role);
+    const harnessSystemPrompt = await composeSystemPrompt({
+      shellRulesPrompt: systemPrompt,
+      config,
+      skillsPrompt: rolePrompt,
+      includeSoul: false,
+      includeMemory: false
+    });
 
     const result = await runAgentLoop({
-      systemPrompt: `${systemPrompt}\n${rolePrompt}`,
+      systemPrompt: harnessSystemPrompt,
       userPrompt: task,
       model: model || config.model.name,
       toolDefinitions: filtered.definitions,
@@ -154,6 +162,13 @@ async function planPipeline({ goal, config, systemPrompt, model }) {
     'For implementation goals, include a reviewer or tester step near the end.',
     'For advisory/analysis goals, keep it lean with planner/advisor only; do not use coder unless code or files will be modified.'
   ].join('\n');
+  const plannerSystemPrompt = await composeSystemPrompt({
+    shellRulesPrompt: systemPrompt,
+    config,
+    skillsPrompt: plannerPrompt,
+    includeSoul: false,
+    includeMemory: false
+  });
 
   const planning = await createChatCompletion({
     sdkProvider: config.sdk?.provider,
@@ -161,7 +176,7 @@ async function planPipeline({ goal, config, systemPrompt, model }) {
     apiKey: config.gateway.api_key,
     model: model || config.model.name,
     messages: [
-      { role: 'system', content: `${systemPrompt}\n${plannerPrompt}` },
+      { role: 'system', content: plannerSystemPrompt },
       { role: 'user', content: `Plan the following task:\n${goal}` }
     ],
     timeoutMs: config.gateway.timeout_ms || 1800000,

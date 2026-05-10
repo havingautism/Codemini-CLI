@@ -2,7 +2,7 @@
   "name": "codemini-web",
   "version": "0.1.0",
   "type": "module",
-  "description": "Notion/Linear-styled web UI for CodeMini",
+  "description": "Notion/Linear-styled web UI for Codemini",
   "engines": {
     "node": ">=22"
   },

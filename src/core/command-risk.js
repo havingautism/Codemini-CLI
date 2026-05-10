@@ -1,14 +1,22 @@
 import { collectCommandTokens, firstToken } from './command-policy.js';
 
 /* ── 只读命令 token ───────────────────────────────────────────── */
-const READ_ONLY_TOKENS = new Set([
+export const READ_ONLY_TOKENS = new Set([
   'ls', 'cat', 'head', 'tail', 'pwd', 'wc', 'sort', 'uniq',
   'cut', 'tr', 'basename', 'dirname', 'test', 'true', 'false',
   'whoami', 'uname', 'date', 'env', 'printenv', 'hostname',
   'rg', 'find', 'grep', 'ag', 'ack', 'fd', 'bat',
+  'get-childitem', 'get-content', 'get-location', 'get-command', 'get-help',
+  'get-item', 'get-process', 'select-string', 'select-object', 'where-object',
+  'foreach-object', 'measure-object', 'sort-object', 'compare-object',
+  'resolve-path', 'test-path',
   'git', 'node', 'npm', 'npx', 'python', 'python3', 'py', 'pip', 'pip3',
   'echo', 'printf', 'seq', 'yes'
 ]);
+
+export function getReadOnlyCommandTokens() {
+  return [...READ_ONLY_TOKENS].sort();
+}
 
 /* 只读时需要检查子命令的 token */
 const READ_ONLY_SUBCOMMANDS = {

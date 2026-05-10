@@ -535,15 +535,18 @@ export async function runAgentLoop({
   let pendingSummaryNudges = 0;
   const analysisGuard = createAnalysisGuardState(userPrompt);
   const alwaysAllowSet = new Set((Array.isArray(alwaysAllowTools) ? alwaysAllowTools : []).map((t) => String(t)));
-  let autoDreamChecked = false;
+  let lastAutoDreamCheckStep = 0;
 
   // Mutable tool list — grows as tool_search loads deferred tools
   const activeTools = [...toolDefinitions];
 
-  async function maybeRunAutoDream() {
-    if (autoDreamChecked) return;
-    autoDreamChecked = true;
+  async function maybeRunAutoDream(stepNumber = 0, { force = false } = {}) {
     if (executionMode === 'plan') return;
+    const interval = Math.max(1, Number(config?.memory?.auto_dream_check_interval_steps || 20));
+    const normalizedStep = Math.max(1, Number(stepNumber || 1));
+    if (!force && lastAutoDreamCheckStep > 0 && normalizedStep - lastAutoDreamCheckStep < interval) return;
+    if (force && lastAutoDreamCheckStep === normalizedStep) return;
+    lastAutoDreamCheckStep = normalizedStep;
     const autoDreamResult = await checkAutoDreamThreshold(config);
     if (!autoDreamResult) return;
     const dreamTool = toolHandlers['dream_consolidate'];
@@ -572,6 +575,7 @@ export async function runAgentLoop({
       break;
     }
     if (onEvent) onEvent({ type: 'step:start', step: step + 1 });
+    await maybeRunAutoDream(step + 1);
     const completion = await requestCompletion({
       model,
       messages,
@@ -638,7 +642,7 @@ export async function runAgentLoop({
         continue;
       }
       finalText = assistantText;
-      await maybeRunAutoDream();
+      await maybeRunAutoDream(step + 1, { force: true });
       return { text: finalText, messages, steps: step + 1 };
     }
 
@@ -655,7 +659,7 @@ export async function runAgentLoop({
       ]
         .filter(Boolean)
         .join('\n');
-      await maybeRunAutoDream();
+      await maybeRunAutoDream(step + 1, { force: true });
       return { text: finalText.trim(), messages, steps: step + 1 };
     }
 
@@ -949,7 +953,7 @@ export async function runAgentLoop({
   }
 
   const fallback = lastAssistantText || 'Stopped before final response.';
-  await maybeRunAutoDream();
+  await maybeRunAutoDream(maxSteps, { force: true });
   return {
     text: `${fallback}\n\n[stopped] Reached max tool steps (${maxSteps}). Try a narrower prompt or increase execution.max_steps.`,
     messages,

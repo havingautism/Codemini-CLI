@@ -54,7 +54,7 @@ class ErrorBoundary extends Component {
             fontSize: 13,
           }}
         >
-          <p style={{ fontWeight: 600, marginBottom: 8 }}>{t('renderError')}</p>
+          <p style={{ fontWeight: 600, marginBottom: 8 }}>{t("renderError")}</p>
           <pre style={{ whiteSpace: "pre-wrap", opacity: 0.8 }}>
             {this.state.error?.message || String(this.state.error)}
           </pre>
@@ -70,7 +70,7 @@ class ErrorBoundary extends Component {
               cursor: "pointer",
             }}
           >
-            {t('retry')}
+            {t("retry")}
           </button>
         </div>
       );
@@ -117,8 +117,16 @@ function Shell() {
           />
         ) : state.currentView === "codewiki" ? (
           <CodeWikiPanel
-            projectCwd={state.codewikiProjectPath?.split(/[/\\]/).pop() || state.projectCwd}
-            projectKey={state.codewikiProjectPath || state.runtimeState?.cwd || state.projectCwd || ""}
+            projectCwd={
+              state.codewikiProjectPath?.split(/[/\\]/).pop() ||
+              state.projectCwd
+            }
+            projectKey={
+              state.codewikiProjectPath ||
+              state.runtimeState?.cwd ||
+              state.projectCwd ||
+              ""
+            }
             busy={state.busy}
             planSteps={state.planSteps}
             stageLabel={state.stageLabel}
@@ -165,7 +173,11 @@ function Shell() {
             <div className="w-[min(980px,calc(100%-64px))] mx-auto mb-4 shrink-0 z-30 bg-transparent relative">
               {state.pendingPlanApproval && (
                 <div className="mb-3">
-                  <PlanApprovalCard plan={state.pendingPlanApproval} onAction={actions.approvePlan} disabled={state.busy} />
+                  <PlanApprovalCard
+                    plan={state.pendingPlanApproval}
+                    onAction={actions.approvePlan}
+                    disabled={state.busy}
+                  />
                 </div>
               )}
               <InputBar
@@ -173,7 +185,7 @@ function Shell() {
                 onAbort={actions.abort}
                 busy={state.busy}
                 disabled={!!state.pendingPlanApproval}
-                disabledReason={t('planReviewFirst')}
+                disabledReason={t("planReviewFirst")}
                 runtimeState={state.runtimeState}
                 history={state.history}
                 onCompletionRequest={async (input) => {
@@ -194,7 +206,7 @@ function Shell() {
                 {state.versionInfo?.current && (
                   <span className="inline-flex items-center gap-1 text-[11px] text-(--text-muted) shrink-0">
                     <Terminal size={11} />
-                    CodeMini CLI@{state.versionInfo.current}
+                    Codemini CLI@{state.versionInfo.current}
                   </span>
                 )}
                 <StatusBar

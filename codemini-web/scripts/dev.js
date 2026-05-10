@@ -60,7 +60,7 @@ function startProcess(proc, env = {}) {
 const apiPort = await findFreePort(Number(process.env.CODEMINI_API_PORT || 5000));
 const webPort = await findFreePort(Number(process.env.CODEMINI_WEB_PORT || 5178));
 
-console.log(`CodeMini dev server`);
+console.log(`Codemini dev server`);
 console.log(`  Web: http://127.0.0.1:${webPort}`);
 console.log(`  API: http://127.0.0.1:${apiPort}`);
 

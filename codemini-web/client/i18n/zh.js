@@ -1,6 +1,6 @@
 export const zh = {
   // Status bar
-  brand: 'CodeMini',
+  brand: 'Codemini',
   live: '运行中',
   idle: '空闲',
   sending: '发送中',
@@ -174,7 +174,7 @@ export const zh = {
   switchSoul: '切换灵魂',
   builtin: '内置',
   custom: '自定义',
-  askAnything: '可向 CodeMini 询问任何事。输入 / 使用命令或技能',
+  askAnything: '可向 Codemini 询问任何事。输入 / 使用命令或技能',
   addContext: '添加上下文',
   switchWorkspace: '切换工作区',
   
@@ -203,7 +203,7 @@ export const zh = {
   confirmDeleteSoul: '确定删除灵魂 "{{name}}"？',
 
   // AboutDialog
-  aboutTitle: '关于 CodeMini',
+  aboutTitle: '关于 Codemini',
   installation: '安装',
   startWebUI: '启动 Web UI',
   startWebUIDesc: '启动后浏览器会自动打开 Web 界面，也可以手动访问终端中显示的地址。',

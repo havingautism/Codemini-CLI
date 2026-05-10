@@ -115,6 +115,10 @@ export class RuntimeBridge {
     }
   }
 
+  #broadcastRuntimeState() {
+    this.#broadcast({ type: 'runtime:state', state: this.getState() });
+  }
+
   async #writeUiTranscriptSnapshot() {
     const sessionId = this.getSessionId();
     if (!sessionId) return;
@@ -377,6 +381,7 @@ export class RuntimeBridge {
       this.#broadcast({ type: 'submit:done', result: { type: 'error', text: err.message } });
     }).finally(() => {
       this.#busy = false;
+      this.#broadcastRuntimeState();
     });
     return { accepted: true };
   }
@@ -427,8 +432,9 @@ export class RuntimeBridge {
 
   getState() {
     const state = this.#runtime.getRuntimeState();
+    const serializableState = typeof state?.toJSON === 'function' ? state.toJSON() : state;
     return {
-      ...state,
+      ...serializableState,
       busy: this.#busy,
       requestInFlight: this.#busy,
       pendingPlanApproval: this.#busy ? null : state.pendingPlanApproval

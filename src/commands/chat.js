@@ -117,7 +117,7 @@ export async function submitAndPrint(runtime, line, { output: out = process.stdo
 }
 
 async function runPlainLoop(runtime) {
-  console.log('CodeMini CLI plain mode. Use /help and /exit.');
+  console.log('Codemini CLI plain mode. Use /help and /exit.');
   const rl = readline.createInterface({ input, output });
   try {
     while (true) {

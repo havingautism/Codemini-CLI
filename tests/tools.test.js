@@ -9,7 +9,7 @@ import { getBuiltinTools } from '../src/core/tools.js';
 import { loadConfig } from '../src/core/config-store.js';
 import { classifyCommandIntent } from '../src/core/shell.js';
 import { runAgentLoop } from '../src/core/agent-loop.js';
-import { listInbox, listMemories } from '../src/core/memory-store.js';
+import { captureToInbox, listInbox, listMemories, removeInboxEntry } from '../src/core/memory-store.js';
 import { sanitizeTextForModel } from '../src/core/tool-output.js';
 
 async function withTempWorkspace(run) {
@@ -1304,7 +1304,7 @@ test('web_search fetches and parses Bing RSS results', async () => {
       assert.equal(result.engine, 'bing_rss');
       assert.equal(requested.length, 1);
       assert.equal(requested[0].url, 'https://cn.bing.com/search?q=latest+example&mkt=en-US&setlang=en-US&cc=US&format=rss');
-      assert.match(requested[0].headers['user-agent'], /CodeMiniCLI/);
+      assert.match(requested[0].headers['user-agent'], /CodeminiCLI/);
       assert.equal(result.no_results, false);
       assert.deepEqual(result.results, [
         {
@@ -1331,7 +1331,7 @@ test('web_fetch reads static page content and extracts links without requiring b
       res.end(`<!doctype html>
 <html>
   <head>
-    <title>CodeMini Fetch Demo</title>
+    <title>Codemini Fetch Demo</title>
   </head>
   <body>
     <main>
@@ -1350,7 +1350,7 @@ test('web_fetch reads static page content and extracts links without requiring b
       const result = await handlers.web_fetch({ url, max_links: 5 });
 
       assert.equal(result.url, new URL(url).toString());
-      assert.equal(result.title, 'CodeMini Fetch Demo');
+      assert.equal(result.title, 'Codemini Fetch Demo');
       assert.equal(result.metadata.fetch_mode, 'static');
       assert.match(result.text, /Fetch Demo Title/);
       assert.match(result.text, /Hello from the fetch test/);
@@ -1360,7 +1360,7 @@ test('web_fetch reads static page content and extracts links without requiring b
 
       const formatted = formatters.web_fetch(result);
       assert.match(formatted, /\[web_fetch:/);
-      assert.match(formatted, /CodeMini Fetch Demo/);
+      assert.match(formatted, /Codemini Fetch Demo/);
       assert.match(formatted, /mode: static/);
     });
   });
@@ -1622,6 +1622,71 @@ test('agent loop auto-captures invalid edit tool call arguments into inbox', asy
       assert.equal(entries[0].type, 'failure');
       assert.match(entries[0].summary, /^\[edit\]/);
       assert.match(entries[0].details, /Raw tool arguments: \./i);
+    });
+  });
+});
+
+test('agent loop rechecks auto-dream threshold across long sessions', async () => {
+  await withTempConfigDir(async () => {
+    await withTempWorkspace(async (workspaceRoot) => {
+      const config = await loadConfig();
+      config.memory.auto_dream_threshold = 1;
+      config.memory.auto_dream_check_interval_steps = 2;
+      let stepCount = 0;
+      let dreamCount = 0;
+      const events = [];
+
+      const result = await runAgentLoop({
+        systemPrompt: 'You are a test agent.',
+        userPrompt: 'keep working',
+        model: 'test-model',
+        maxSteps: 5,
+        toolDefinitions: [
+          {
+            type: 'function',
+            function: {
+              name: 'noop',
+              description: 'no-op',
+              parameters: { type: 'object', properties: {} }
+            }
+          }
+        ],
+        toolHandlers: {
+          noop: async () => ({ ok: true }),
+          dream_consolidate: async () => {
+            dreamCount += 1;
+            const entries = await listInbox();
+            await Promise.all(entries.map((entry) => removeInboxEntry(entry.id)));
+            return { ok: true };
+          }
+        },
+        config,
+        onEvent: (event) => events.push(event),
+        requestCompletion: async () => {
+          stepCount += 1;
+          if (stepCount === 2) {
+            await captureToInbox({
+              scope: 'repo',
+              type: 'observation',
+              summary: 'new long-session inbox item',
+              details: 'created after the first auto-dream check',
+              source: 'test'
+            });
+          }
+          if (stepCount < 4) {
+            return {
+              text: '',
+              toolCalls: [{ id: `call_${stepCount}`, name: 'noop', arguments: '{}' }]
+            };
+          }
+          return { text: 'done', toolCalls: [] };
+        }
+      });
+
+      assert.equal(result.text, 'done');
+      assert.equal(dreamCount, 1);
+      assert.ok(events.some((event) => event?.type === 'dream:auto'));
+      assert.equal(workspaceRoot.length > 0, true);
     });
   });
 });

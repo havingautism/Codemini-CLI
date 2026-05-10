@@ -22,11 +22,10 @@ import {
   estimateMessagesTokens,
   parseCompactArgs
 } from './context-compact.js';
-import { buildSystemPromptWithReplyLanguage, getReplyLanguage, getReplyLanguageName } from './reply-language.js';
-import { buildSystemPromptWithSoul } from './soul.js';
+import { getReplyLanguage, getReplyLanguageName } from './reply-language.js';
+import { composeSystemPrompt } from './system-prompt-composer.js';
 import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir } from './paths.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
-import { buildMemorySnapshot } from './memory-prompt.js';
 import { forgetMemory, listMemories, rememberMemory, searchMemories, captureToInbox, listInbox } from './memory-store.js';
 import { runDreamConsolidation } from './dream-consolidate.js';
 import { normalizePlanState } from './plan-state.js';
@@ -581,16 +580,52 @@ function buildPipelineStepGuidance({ role, stepIndex, totalSteps, isFirst, isLas
   return lines.join('\n');
 }
 
-function buildSubAgentContextPacket(session) {
+function extractTaskKeywords(task) {
+  const text = String(task || '').toLowerCase();
+  const tokens = text.match(/[a-z0-9_./:-]{3,}|[\u4e00-\u9fa5]{2,}/g) || [];
+  const stop = new Set([
+    'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'task',
+    'please', 'update', 'change', 'fix', 'implement', 'review', 'test'
+  ]);
+  return [...new Set(tokens.filter((token) => !stop.has(token)))].slice(0, 24);
+}
+
+function scoreMessageForTask(message, keywords) {
+  if (!keywords.length) return 0;
+  const text = String(message?.content || '').toLowerCase();
+  if (!text) return 0;
+  let score = 0;
+  for (const keyword of keywords) {
+    if (text.includes(keyword)) score += keyword.includes('/') || keyword.includes('.') ? 3 : 1;
+  }
+  return score;
+}
+
+function buildSubAgentContextPacket(session, task = '') {
   const source = Array.isArray(session?.messages) ? session.messages : [];
-  const recent = source
+  const candidates = source
     .filter((msg) => msg && (msg.role === 'user' || msg.role === 'assistant'))
-    .slice(-SUB_AGENT_CONTEXT_MAX_MESSAGES);
-  if (recent.length === 0) return '';
+    .map((msg, index) => ({ msg, index }));
+  if (candidates.length === 0) return '';
+  const keywords = extractTaskKeywords(task);
+  const recentStart = Math.max(0, candidates.length - SUB_AGENT_CONTEXT_MAX_MESSAGES);
+  const ranked = candidates
+    .map((item, order) => ({
+      ...item,
+      score: scoreMessageForTask(item.msg, keywords),
+      recentScore: order >= recentStart ? 1 : 0
+    }))
+    .sort((a, b) => {
+      const scoreDelta = (b.score + b.recentScore) - (a.score + a.recentScore);
+      if (scoreDelta !== 0) return scoreDelta;
+      return b.index - a.index;
+    })
+    .slice(0, SUB_AGENT_CONTEXT_MAX_MESSAGES)
+    .sort((a, b) => a.index - b.index);
 
   const lines = [];
   let usedChars = 0;
-  for (const msg of recent) {
+  for (const { msg } of ranked) {
     const role = msg.role === 'assistant' ? 'assistant' : 'user';
     const text = trimInline(msg.content, 260);
     if (!text) continue;
@@ -601,7 +636,7 @@ function buildSubAgentContextPacket(session) {
   }
   if (lines.length === 0) return '';
   return [
-    'Scoped parent context (recent only, not full history):',
+    'Scoped parent context (task-relevant snippets, not full history):',
     ...lines,
     'Use this context only if it helps the current task.'
   ].join('\n');
@@ -1332,8 +1367,8 @@ function classifyAutoRoute(text = '') {
   };
 }
 
-function buildMediumTaskSystemPrompt(systemPrompt) {
-  const guidance = [
+function buildMediumTaskPromptBlock() {
+  return [
     'Task Mode: medium',
     'Execution guidance:',
     '- Give a brief execution outline before coding.',
@@ -1342,12 +1377,11 @@ function buildMediumTaskSystemPrompt(systemPrompt) {
     '- Verify the changed behavior before finishing.',
     '- If major ambiguity appears mid-task, say so clearly and ask for a plan instead of guessing.'
   ].join('\n');
-  return `${systemPrompt}\n\n${guidance}`;
 }
 
-function buildAutoSkillSystemPrompt(baseSystemPrompt, commands, config, text) {
+function buildAutoSkillPromptBlock(commands, config, text) {
   const selected = classifyAutoRoute(text).selectedSkills.filter((name) => isSkillEnabled(config, name, commands.get(name)));
-  if (selected.length === 0) return baseSystemPrompt;
+  if (selected.length === 0) return '';
 
   const blocks = [];
   for (const name of selected) {
@@ -1355,8 +1389,7 @@ function buildAutoSkillSystemPrompt(baseSystemPrompt, commands, config, text) {
     if (!skill || skill.metadata?.type !== 'skill') continue;
     blocks.push(`[Auto skill: ${name}]\n${skill.content}`);
   }
-  if (blocks.length === 0) return baseSystemPrompt;
-  return `${baseSystemPrompt}\n\n${blocks.join('\n\n')}`;
+  return blocks.join('\n\n');
 }
 
 function extractJsonBlock(text) {
@@ -1843,6 +1876,13 @@ async function buildAutoPlanFinalSummary({
   }
 
   try {
+    const summarySystemPrompt = await composeSystemPrompt({
+      shellRulesPrompt: systemPrompt,
+      config,
+      skillsPrompt: 'You are writing the final execution summary for a completed auto plan. Focus on closure, verification status, and the next action.',
+      includeSoul: false,
+      includeMemory: false
+    });
     const result = await createChatCompletion({
       sdkProvider: config.sdk?.provider,
       baseUrl: config.gateway.base_url,
@@ -1851,7 +1891,7 @@ async function buildAutoPlanFinalSummary({
       messages: [
         {
           role: 'system',
-          content: `${systemPrompt}\nYou are writing the final execution summary for a completed auto plan. Focus on closure, verification status, and the next action.`
+          content: summarySystemPrompt
         },
         {
           role: 'user',
@@ -1974,6 +2014,13 @@ async function buildSpecWithModel({
     '## Testing / Validation',
     'Make it concrete, scoped, and suitable for turning into a sub-agent implementation plan.'
   ].join('\n');
+  const specSystemPrompt = await composeSystemPrompt({
+    shellRulesPrompt: systemPrompt,
+    config,
+    skillsPrompt: prompt,
+    includeSoul: false,
+    includeMemory: false
+  });
 
   const result = await createChatCompletion({
     sdkProvider: config.sdk?.provider,
@@ -1981,7 +2028,7 @@ async function buildSpecWithModel({
     apiKey: config.gateway.api_key,
     model: model || config.model.name,
     messages: [
-      { role: 'system', content: `${systemPrompt}\n${prompt}` },
+      { role: 'system', content: specSystemPrompt },
       { role: 'user', content: `Topic: ${topic}` }
     ],
     timeoutMs: config.gateway.timeout_ms || 1800000,
@@ -2034,6 +2081,13 @@ async function buildPlanFromSpecWithModel({
     '## Task Breakdown',
     'Make the plan concrete and ordered for a coding agent.'
   ].join('\n');
+  const planSystemPrompt = await composeSystemPrompt({
+    shellRulesPrompt: systemPrompt,
+    config,
+    skillsPrompt: prompt,
+    includeSoul: false,
+    includeMemory: false
+  });
 
   const result = await createChatCompletion({
     sdkProvider: config.sdk?.provider,
@@ -2041,7 +2095,7 @@ async function buildPlanFromSpecWithModel({
     apiKey: config.gateway.api_key,
     model: model || config.model.name,
     messages: [
-      { role: 'system', content: `${systemPrompt}\n${prompt}` },
+      { role: 'system', content: planSystemPrompt },
       {
         role: 'user',
         content: `Spec path: ${specPath || '(inline)'}\n\nProject implementation constraints:\n${projectConstraints}\n\n${specText}`
@@ -2251,6 +2305,17 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     },
     replyLanguage: {
       value: getReplyLanguage(config),
+      enumerable: false,
+      writable: false
+    },
+    toJSON: {
+      value: () => ({
+        ...snapshot,
+        currentContextTokens,
+        contextUsagePct,
+        pendingReflectSkill: currentSession?.planState?.status === 'pending_reflect_skill',
+        replyLanguage: getReplyLanguage(config)
+      }),
       enumerable: false,
       writable: false
     }
@@ -2608,9 +2673,15 @@ async function askModel({
   const projectContextSnippet = await buildProjectContextSnippet(process.cwd(), modelInputText).catch(() => '');
   const projectContextGuidance =
     'Use this project context as lightweight guidance and verify important details with fresh reads when needed.';
-  const effectiveSystemPrompt = projectContextSnippet
-    ? `${systemPrompt}\n\n${projectContextSnippet}\n\n${projectContextGuidance}`
-    : systemPrompt;
+  const effectiveSystemPrompt = await composeSystemPrompt({
+    shellRulesPrompt: systemPrompt,
+    config,
+    workspaceRoot: process.cwd(),
+    includeSoul: false,
+    includeMemory: false,
+    projectContextSnippet,
+    projectContextGuidance
+  });
 
   const { definitions, handlers, formatters, deferredDefinitions, dispose: disposeTools } = getBuiltinTools({
     workspaceRoot: process.cwd(),
@@ -2855,7 +2926,7 @@ async function runSubAgentTask({
 }) {
   const subSession = { id: `sub-${Date.now()}`, messages: [] };
   const rolePrompt = getSubAgentRolePrompt(role);
-  const contextPacket = buildSubAgentContextPacket(parentSession);
+  const contextPacket = buildSubAgentContextPacket(parentSession, task || goal);
   const evidencePacket = buildSubAgentEvidencePacket(parentSession);
   const handoffPacket = buildStepArtifactPacket(priorSteps, role);
   const handoffFocusPaths = collectStepArtifacts(priorSteps, role)?.focusPaths || [];
@@ -2910,12 +2981,19 @@ async function runSubAgentTask({
   };
   const roleAllowedTools = ROLE_TOOL_POLICY[role];
   if (onSessionActive) onSessionActive(subSession);
+  const subSystemPrompt = await composeSystemPrompt({
+    shellRulesPrompt: systemPrompt,
+    config,
+    skillsPrompt: [rolePrompt, extraRolePrompt].filter(Boolean).join('\n\n'),
+    includeSoul: false,
+    includeMemory: false
+  });
   const subResult = await askModel({
     text: scopedTask,
     session: subSession,
     config,
     model,
-    systemPrompt: `${systemPrompt}\n${rolePrompt}${extraRolePrompt ? `\n${extraRolePrompt}` : ''}`,
+    systemPrompt: subSystemPrompt,
     onAgentEvent: wrappedOnAgentEvent,
     persistSession: false,
     executionMode: 'auto',
@@ -3225,13 +3303,20 @@ async function buildAutoPlanAndRun({
   };
   let planningError = '';
   try {
+    const plannerSystemPrompt = await composeSystemPrompt({
+      shellRulesPrompt: systemPrompt,
+      config,
+      skillsPrompt: plannerPrompt,
+      includeSoul: false,
+      includeMemory: false
+    });
     const planning = await createChatCompletion({
       sdkProvider: config.sdk?.provider,
       baseUrl: config.gateway.base_url,
       apiKey: config.gateway.api_key,
       model: model || config.model.name,
       messages: [
-        { role: 'system', content: `${systemPrompt}\n${plannerPrompt}` },
+        { role: 'system', content: plannerSystemPrompt },
         {
           role: 'user',
           content: [
@@ -3864,13 +3949,20 @@ async function revisePendingPlanWithModel({
     'Keep roles minimal and only include steps that materially help the goal.',
     'Always keep a summarizer as the final step.'
   ].join('\n');
+  const revisionSystemPrompt = await composeSystemPrompt({
+    shellRulesPrompt: systemPrompt,
+    config,
+    skillsPrompt: prompt,
+    includeSoul: false,
+    includeMemory: false
+  });
   const result = await createChatCompletion({
     sdkProvider: config.sdk?.provider,
     baseUrl: config.gateway.base_url,
     apiKey: config.gateway.api_key,
     model: model || config.model.name,
     messages: [
-      { role: 'system', content: `${systemPrompt}\n${prompt}` },
+      { role: 'system', content: revisionSystemPrompt },
       {
         role: 'user',
         content: [
@@ -4653,14 +4745,14 @@ export async function createChatRuntime({
   };
 
   const buildActiveSystemPrompt = async () => {
-    const soulPrompt = await buildSystemPromptWithSoul(baseSystemPrompt, config);
-    const memorySnapshot = await buildMemorySnapshot({
-      config,
-      workspaceRoot: process.cwd()
-    }).catch(() => '');
     const memoryGuide =
       'Persistent memory stores durable preferences and stable workflow knowledge. Verify changeable details from files, and only write memory for future-useful, non-sensitive facts.';
-    return [soulPrompt, memorySnapshot, memoryGuide].filter(Boolean).join('\n\n');
+    return composeSystemPrompt({
+      shellRulesPrompt: baseSystemPrompt,
+      config,
+      workspaceRoot: process.cwd(),
+      extraPrompts: [memoryGuide]
+    });
   };
 
   const isImmediateLocalInput = (line) => {
@@ -5766,10 +5858,27 @@ export async function createChatRuntime({
         names: selectedAutoSkills
       });
     }
-    const skillPrompt = buildAutoSkillSystemPrompt(activeReplySystemPrompt, commands, config, expandedText);
+    const autoSkillPrompt = buildAutoSkillPromptBlock(commands, config, expandedText);
+    const skillPrompt = autoSkillPrompt
+      ? await composeSystemPrompt({
+          shellRulesPrompt: activeReplySystemPrompt,
+          config,
+          workspaceRoot: process.cwd(),
+          skillsPrompt: autoSkillPrompt,
+          includeSoul: false,
+          includeMemory: false
+          })
+        : activeReplySystemPrompt;
     const routedSystemPrompt =
       autoRoute.mode === 'direct_medium'
-        ? buildMediumTaskSystemPrompt(skillPrompt)
+        ? await composeSystemPrompt({
+            shellRulesPrompt: skillPrompt,
+            config,
+            workspaceRoot: process.cwd(),
+            skillsPrompt: buildMediumTaskPromptBlock(),
+            includeSoul: false,
+            includeMemory: false
+          })
         : skillPrompt;
     const result = await askModel({
       text: expandedText,

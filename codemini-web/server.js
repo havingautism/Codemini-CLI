@@ -857,7 +857,7 @@ async function main() {
   });
 
   server.listen(args.port, () => {
-    console.log(`\n  CodeMini Web UI\n  http://localhost:${args.port}\n  Project: ${currentProjectDir}\n`);
+    console.log(`\n  Codemini Web UI\n  http://localhost:${args.port}\n  Project: ${currentProjectDir}\n`);
     if (!args.open) return;
     const openCmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
     import('node:child_process').then(({ exec }) => {

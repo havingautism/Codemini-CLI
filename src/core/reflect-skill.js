@@ -128,7 +128,7 @@ export async function buildReflectSkillDraft({
 } = {}) {
   const mode = String(request || '').trim() ? 'directed' : 'exploratory';
   const prompt = [
-    'Create a reusable Codex/CodeMini SKILL.md draft from a successful workflow.',
+    'Create a reusable Codex/Codemini SKILL.md draft from a successful workflow.',
     `Mode: ${mode}`,
     `Target scope: ${scope}`,
     request ? `User reflection request:\n${request}` : 'No explicit request was supplied. Be conservative and return no candidates if the recent context does not show a reusable success pattern.',

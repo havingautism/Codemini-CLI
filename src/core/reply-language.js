@@ -32,3 +32,9 @@ export function buildSystemPromptWithReplyLanguage(baseSystemPrompt, config = {}
 
   return `${String(baseSystemPrompt || '').trim()}\n\n${directive}`.trim();
 }
+
+export function stripReplyLanguageDirective(systemPrompt) {
+  return String(systemPrompt || '')
+    .replace(/\n{0,2}\[Reply language\]\n(?:Respond in (?:English|Simplified Chinese)\.\n)?Write generated documentation, user-facing text, and code comments in (?:English|Simplified Chinese) unless the user explicitly asks for a different language\./g, '')
+    .trim();
+}

@@ -47,7 +47,7 @@ function SkillEditor({ skill, onSave, onCancel }) {
     <div className="space-y-3">
       <div className="flex items-center gap-3">
         <label className="text-[13px] text-(--text-muted) w-20 shrink-0">
-          {t('name')}
+          {t("name")}
         </label>
         <Input
           value={name}
@@ -60,7 +60,7 @@ function SkillEditor({ skill, onSave, onCancel }) {
       {isNew && (
         <div className="flex items-center gap-3">
           <label className="text-[13px] text-(--text-muted) w-20 shrink-0">
-            {t('description')}
+            {t("description")}
           </label>
           <Input
             value={description}
@@ -72,11 +72,11 @@ function SkillEditor({ skill, onSave, onCancel }) {
       )}
       <div>
         <label className="text-[13px] text-(--text-muted) mb-1.5 block">
-          {t('skillContent')}
+          {t("skillContent")}
         </label>
         {loading ? (
           <div className="text-[12px] text-(--text-muted) py-4 text-center">
-            {t('loading')}...
+            {t("loading")}...
           </div>
         ) : (
           <Textarea
@@ -89,14 +89,14 @@ function SkillEditor({ skill, onSave, onCancel }) {
       </div>
       <div className="flex justify-end gap-2">
         <Button variant="outline" onClick={onCancel} className="text-[13px]">
-          {t('cancel')}
+          {t("cancel")}
         </Button>
         <Button
           onClick={handleSave}
           disabled={loading || !content || (isNew && !name)}
           className="text-[13px]"
         >
-          {isNew ? t('create') : t('save')}
+          {isNew ? t("create") : t("save")}
         </Button>
       </div>
     </div>
@@ -124,11 +124,13 @@ function ViewDialog({ skill, open, onOpenChange }) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[600px] max-h-[80vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>{skill?.name} {t('contentPreview')}</DialogTitle>
+          <DialogTitle>
+            {skill?.name} {t("contentPreview")}
+          </DialogTitle>
         </DialogHeader>
         {loading ? (
           <div className="text-[12px] text-(--text-muted) py-4 text-center">
-            {t('loading')}...
+            {t("loading")}...
           </div>
         ) : (
           <pre className="text-[13px] whitespace-pre-wrap break-all bg-(--bg-secondary) rounded-lg p-3 max-h-[400px] overflow-y-auto font-mono">
@@ -141,7 +143,7 @@ function ViewDialog({ skill, open, onOpenChange }) {
             onClick={() => onOpenChange(false)}
             className="text-[13px]"
           >
-            {t('close')}
+            {t("close")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -183,26 +185,23 @@ export function SkillPanel() {
   };
 
   const scopeLabel = (scope) => {
-    if (scope === "builtin") return t('builtin');
-    if (scope === "global") return t('globalScope');
-    return t('projectScope');
+    if (scope === "builtin") return t("builtin");
+    if (scope === "global") return t("globalScope");
+    return t("projectScope");
   };
 
   if (loading)
     return (
       <div className="text-[12px] text-(--text-muted) py-4 text-center">
-        {t('loading')}...
+        {t("loading")}...
       </div>
     );
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-end">
-        <Button
-          onClick={() => setEditing("new")}
-          size="xs"
-        >
-          {t('addSkill')}
+        <Button onClick={() => setEditing("new")} size="xs">
+          {t("addSkill")}
         </Button>
       </div>
 
@@ -220,7 +219,7 @@ export function SkillPanel() {
 
       {skills.length === 0 && !editing && (
         <div className="text-[12px] text-(--text-muted) py-4 text-center">
-          {t('noSkills')}
+          {t("noSkills")}
         </div>
       )}
 
@@ -231,7 +230,7 @@ export function SkillPanel() {
         {skills.map((skill) => (
           <div
             key={skill.name}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg border border-(--border-default) bg-(--bg-secondary) group"
+            className="flex items-center gap-2 px-3 py-2 rounded-lg border border-(--border-default) bg-(--bg-primary)  dark:bg-(--bg-secondary) group"
           >
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
@@ -266,7 +265,7 @@ export function SkillPanel() {
                     onChange={(e) => handleToggle(skill.name, e.target.checked)}
                     className="accent-blue-500"
                   />
-                  {t('enable')}
+                  {t("enable")}
                 </label>
               )}
               <Button
@@ -275,7 +274,7 @@ export function SkillPanel() {
                 onClick={() => setViewSkill(skill)}
                 className="text-[11px] h-6 px-2"
               >
-                {t('view')}
+                {t("view")}
               </Button>
               {skill.scope !== "builtin" && (
                 <>
@@ -285,18 +284,25 @@ export function SkillPanel() {
                     onClick={() => setEditing(skill)}
                     className="text-[11px] h-6 px-2"
                   >
-                    {t('edit')}
+                    {t("edit")}
                   </Button>
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={() => {
-                      if (confirm(t('confirmDeleteSkill').replace('{{name}}', skill.name)))
+                      if (
+                        confirm(
+                          t("confirmDeleteSkill").replace(
+                            "{{name}}",
+                            skill.name,
+                          ),
+                        )
+                      )
                         handleDelete(skill.name);
                     }}
                     className="text-[11px] h-6 px-2 text-red-500 hover:text-red-400"
                   >
-                    {t('delete')}
+                    {t("delete")}
                   </Button>
                 </>
               )}

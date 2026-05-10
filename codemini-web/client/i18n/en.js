@@ -1,5 +1,5 @@
 export const en = {
-  brand: 'CodeMini',
+  brand: 'Codemini',
   live: 'LIVE',
   idle: 'IDLE',
   sending: 'SENDING',
@@ -165,7 +165,7 @@ export const en = {
   switchSoul: 'Switch Soul',
   builtin: 'Built-in',
   custom: 'Custom',
-  askAnything: 'You can ask CodeMini anything. Type / to use commands or skills',
+  askAnything: 'You can ask Codemini anything. Type / to use commands or skills',
   addContext: 'Add Context',
   switchWorkspace: 'Switch Workspace',
   
@@ -194,7 +194,7 @@ export const en = {
   confirmDeleteSoul: 'Delete soul "{{name}}"?',
 
   // AboutDialog
-  aboutTitle: 'About CodeMini',
+  aboutTitle: 'About Codemini',
   installation: 'Installation',
   startWebUI: 'Start Web UI',
   startWebUIDesc: 'After starting, the browser will automatically open the Web interface. You can also manually visit the address shown in the terminal.',
