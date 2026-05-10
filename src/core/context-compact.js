@@ -1,6 +1,8 @@
 import { trimInline } from './string-utils.js';
 import { summarizeToolResult } from './tool-result-store.js';
 
+const MICRO_CLEAR_MARKER = '[Old tool result cleared by micro-compact]';
+
 function textFromContent(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -101,9 +103,64 @@ function buildLocalSummary(messages) {
   return lines.join('\n').trim();
 }
 
-export function compactMessagesLocally(messages, { mode = 'default' } = {}) {
+/**
+ * Micro-compact: in-place clearing of old tool result content.
+ * Does NOT change message count or order — only replaces tool result text
+ * with a lightweight marker, preserving conversation structure.
+ *
+ * Strategy inspired by Claude Code's Phase 0 micro-compact:
+ * keep recent N tool results intact, clear the rest.
+ */
+export function microCompactMessages(messages, { keepRecent = 5, enabled = true } = {}) {
+  if (!enabled || !Array.isArray(messages)) {
+    return { messages: [...messages], changed: false, tokensSaved: 0 };
+  }
+
+  // Collect indices of all tool-role messages
+  const toolIndices = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i].role === 'tool') toolIndices.push(i);
+  }
+
+  if (toolIndices.length <= keepRecent) {
+    return { messages: [...messages], changed: false, tokensSaved: 0 };
+  }
+
+  // Indices to clear = all except the last keepRecent
+  const keepSet = new Set(toolIndices.slice(-keepRecent));
+  const clearSet = new Set(toolIndices.filter((idx) => !keepSet.has(idx)));
+
+  if (clearSet.size === 0) {
+    return { messages: [...messages], changed: false, tokensSaved: 0 };
+  }
+
+  const beforeTokens = estimateMessagesTokens(messages);
+  const result = messages.map((msg, i) => {
+    if (!clearSet.has(i)) return msg;
+    const text = textFromContent(msg.content);
+    if (!text || text === MICRO_CLEAR_MARKER) return msg;
+    return { ...msg, content: MICRO_CLEAR_MARKER };
+  });
+  const afterTokens = estimateMessagesTokens(result);
+  const tokensSaved = beforeTokens - afterTokens;
+
+  if (tokensSaved <= 0) {
+    return { messages: [...messages], changed: false, tokensSaved: 0 };
+  }
+
+  return { messages: result, changed: true, tokensSaved };
+}
+
+export function compactMessagesLocally(messages, { mode = 'default', force = false } = {}) {
   const keepRecent = modeToKeepRecent(mode);
-  if (!Array.isArray(messages) || messages.length <= keepRecent + 1) {
+  if (!Array.isArray(messages) || messages.length <= 1) {
+    return {
+      compacted: [...(messages || [])],
+      changed: false
+    };
+  }
+  // Skip compact when message count is low enough to keep all, unless forced
+  if (!force && messages.length <= keepRecent + 1) {
     return {
       compacted: [...(messages || [])],
       changed: false
@@ -115,10 +172,13 @@ export function compactMessagesLocally(messages, { mode = 'default' } = {}) {
   const summary = buildLocalSummary(older);
   const compacted = [{ role: 'assistant', content: summary }, ...recent];
 
+  const boundaryIndex = Math.max(0, messages.length - keepRecent);
+
   return {
     compacted,
     changed: true,
-    summary
+    summary,
+    boundaryIndex
   };
 }
 
@@ -127,6 +187,7 @@ export function parseCompactArgs(args = []) {
     mode: 'default',
     preview: false,
     restore: false,
+    micro: false,
     auto: undefined,
     threshold: undefined
   };
@@ -135,6 +196,7 @@ export function parseCompactArgs(args = []) {
     const arg = args[i];
     if (arg === '--preview') parsed.preview = true;
     if (arg === '--restore') parsed.restore = true;
+    if (arg === '--micro') parsed.micro = true;
     if (arg === '--aggressive') parsed.mode = 'aggressive';
     if (arg === '--conservative') parsed.mode = 'conservative';
     if (arg === '--default') parsed.mode = 'default';

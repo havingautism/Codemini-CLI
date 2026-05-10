@@ -1,16 +1,22 @@
 import { createChatCompletion } from './provider/index.js';
+import { getReadOnlyCommandTokens } from './command-risk.js';
 
 const EVAL_TIMEOUT_MS = 15000;
 
-const SYSTEM_PROMPT = `You are a command safety evaluator for a coding assistant. Analyze the shell command and respond with valid JSON only, no markdown fences:
+function buildSystemPrompt() {
+  const readOnlyTokens = getReadOnlyCommandTokens().join(', ');
+  return `You are a command safety evaluator for a coding assistant. Analyze the shell command and respond with valid JSON only, no markdown fences:
 {"risk":"low|medium|high","description":"what this command does in one sentence","sideEffects":"potential side effects in one sentence, or none","recommendation":"allow|deny"}
 
 Rules:
-- Read-only commands (ls, cat, git status, git diff, grep, find, etc.) are low risk and allow.
+- Read-only command tokens are low risk and allow when used without write/network side effects: ${readOnlyTokens}.
+- Treat common read-only subcommands such as git status, git diff, git log, git show, npm list, npm view, node --version, python --version, rg, fd, bat, Get-ChildItem, Get-Content, Select-String, and Test-Path as low risk.
+- Consider the active shell and OS context, including Windows PowerShell command names and aliases.
 - Commands that install/uninstall packages, modify files, push code, start servers, or have network side effects are medium or high.
 - Destructive commands (rm -rf, format, sudo, dd) are high risk and deny.
 - Consider the workspace context: the command runs in the project directory.
 - Be concise. Maximum 1 sentence per field.`;
+}
 
 const FAIL_CLOSED_RESULT = Object.freeze({
   risk: 'high',
@@ -51,7 +57,7 @@ export async function evaluateCommandWithLLM({ command, config, workspaceRoot })
       apiKey: config?.gateway?.api_key,
       model: config?.model?.name,
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
+        { role: 'system', content: buildSystemPrompt() },
         { role: 'user', content: `Command: ${cmd}\nWorkspace: ${workspaceRoot || process.cwd()}` }
       ],
       temperature: 0,

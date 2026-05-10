@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import * as api from "@/hooks/use-api";
+import { Spinner } from "@/components/ui/spinner";
 import { t } from "../../i18n/index.js";
 
 function getNestedValue(obj, path) {
@@ -79,10 +80,45 @@ export function ConfigDialog({ open, onOpenChange }) {
       title: t("execution"),
       keys: [
         { path: "execution.mode", label: t("mode"), options: ["auto", "plan"] },
+        { path: "execution.max_steps", label: t("maxSteps"), type: "number" },
         {
           path: "ui.reply_language",
           label: t("replyLanguage"),
           options: ["zh", "en"],
+        },
+      ],
+    },
+    {
+      title: t("context"),
+      keys: [
+        {
+          path: "context.preflight_trigger_pct",
+          label: t("preflightTrigger"),
+          type: "number",
+          placeholder: "60",
+        },
+        {
+          path: "context.hard_limit_pct",
+          label: t("hardLimit"),
+          type: "number",
+          placeholder: "98",
+        },
+        {
+          path: "context.tool_result_max_chars",
+          label: t("toolResultMaxChars"),
+          type: "number",
+          placeholder: "12000",
+        },
+        {
+          path: "context.microcompact_enabled",
+          label: t("microcompactEnabled"),
+          options: ["true", "false"],
+        },
+        {
+          path: "context.microcompact_keep_recent",
+          label: t("microcompactKeepRecent"),
+          type: "number",
+          placeholder: "5",
         },
       ],
     },
@@ -100,16 +136,19 @@ export function ConfigDialog({ open, onOpenChange }) {
 
   const [config, setConfig] = useState(null);
   const [changes, setChanges] = useState({});
+  const [configLoading, setConfigLoading] = useState(false);
 
   useEffect(() => {
     if (open) {
+      setConfigLoading(true);
       api
         .fetchConfig()
         .then((cfg) => {
           setConfig(cfg);
           setChanges({});
         })
-        .catch(() => {});
+        .catch(() => {})
+        .finally(() => setConfigLoading(false));
     }
   }, [open]);
 
@@ -144,12 +183,17 @@ export function ConfigDialog({ open, onOpenChange }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[640px] max-h-[80vh] overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="sm:max-w-[640px] max-h-[80vh] flex flex-col">
+        <DialogHeader className="shrink-0">
           <DialogTitle>{t("settingsTitle")}</DialogTitle>
         </DialogHeader>
-        <div className="space-y-5 py-1">
-          {CONFIG_GROUPS.map((group, gi) => (
+        <div className="space-y-5 py-1 overflow-y-auto flex-1 min-h-0">
+          {configLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Spinner />
+            </div>
+          ) : (
+          CONFIG_GROUPS.map((group, gi) => (
             <div key={group.title}>
               <div className="text-[13px] font-semibold text-(--text-secondary) mb-2.5 uppercase tracking-[0.3px]">
                 {group.title}
@@ -192,9 +236,10 @@ export function ConfigDialog({ open, onOpenChange }) {
                 <Separator className="mt-4 bg-(--border-default)" />
               )}
             </div>
-          ))}
+          ))
+          )}
         </div>
-        <DialogFooter className="gap-2">
+        <DialogFooter className="gap-2 shrink-0">
           <Button
             variant="outline"
             onClick={() => onOpenChange(false)}

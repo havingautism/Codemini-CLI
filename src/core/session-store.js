@@ -108,6 +108,9 @@ function sanitizeSession(session, fallbackId = '') {
   const createdAt = String(session?.createdAt || now);
   const updatedAt = String(session?.updatedAt || now);
   const messages = Array.isArray(session?.messages) ? session.messages.map(sanitizeMessage).filter(Boolean) : [];
+  const compactView = Array.isArray(session?.compact?.view)
+    ? session.compact.view.map(sanitizeMessage).filter(Boolean)
+    : [];
 
   const out = {
     id,
@@ -127,6 +130,21 @@ function sanitizeSession(session, fallbackId = '') {
 
   const todos = normalizeTodos(session?.todos);
   if (todos.length > 0) out.todos = todos;
+
+  if (compactView.length > 0) {
+    out.compact = {
+      view: compactView,
+      timestamp: typeof session?.compact?.timestamp === 'string' && session.compact.timestamp.trim()
+        ? session.compact.timestamp
+        : now
+    };
+    if (Number.isFinite(Number(session?.compact?.boundaryIndex))) {
+      out.compact.boundaryIndex = Number(session.compact.boundaryIndex);
+    }
+    if (typeof session?.compact?.mode === 'string' && session.compact.mode.trim()) {
+      out.compact.mode = session.compact.mode.trim();
+    }
+  }
 
   return out;
 }

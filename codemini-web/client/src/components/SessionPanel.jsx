@@ -3,13 +3,14 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ConfirmDialog } from '@/components/ConfirmDialog.jsx';
+import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 import { formatTimestamp } from '../../utils/time.js';
 import { MoreHorizontal } from 'lucide-react';
 import { useState } from 'react';
 import { t } from '../../i18n/index.js';
 
-export function SessionPanel({ sessions, currentId, onSwitch, onNew, onDelete }) {
+export function SessionPanel({ sessions, sessionsLoading, currentId, onSwitch, onNew, onDelete }) {
   const allSessions = Array.isArray(sessions) ? sessions : [];
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
@@ -30,7 +31,12 @@ export function SessionPanel({ sessions, currentId, onSwitch, onNew, onDelete })
       </div>
       <ScrollArea className="h-[calc(100vh-160px)]">
         <div className="space-y-2">
-          {allSessions.length === 0 && (
+          {sessionsLoading && allSessions.length === 0 && (
+            <div className="flex items-center justify-center py-12">
+              <Spinner />
+            </div>
+          )}
+          {!sessionsLoading && allSessions.length === 0 && (
             <div className="text-center text-(--text-muted) text-[13px] py-8">{t('noSessions')}</div>
           )}
           {allSessions.map(session => (

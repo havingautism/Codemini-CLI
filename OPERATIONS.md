@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document is the day-to-day operator guide for CodeMini CLI.
+This document is the day-to-day operator guide for Codemini CLI.
 
 Use it for:
 - common commands

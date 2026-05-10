@@ -29,12 +29,14 @@ const DEFAULT_CONFIG = {
   },
   context: {
     max_tokens: 32000,
-    preflight_trigger_pct: 92,
+    preflight_trigger_pct: 60,
     hard_limit_pct: 98,
     tool_result_max_chars: 12000,
     read_file_default_lines: 220,
     read_file_max_chars: 24000,
-    prompt_budget_audit: false
+    prompt_budget_audit: false,
+    microcompact_enabled: true,
+    microcompact_keep_recent: 5
   },
   execution: {
     mode: 'normal',

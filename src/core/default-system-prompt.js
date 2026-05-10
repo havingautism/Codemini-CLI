@@ -1,9 +1,17 @@
 import os from 'node:os';
 import fs from 'node:fs';
+import path from 'node:path';
 import { getShellSystemPrompt } from './shell-profile.js';
+
+function formatToolPath(...segments) {
+  return JSON.stringify(path.join(process.cwd(), ...segments));
+}
 
 function getToolFewShotBlock() {
   const cwd = process.cwd();
+  const authServicePath = formatToolPath('src', 'auth', 'service.ts');
+  const reducerRangePath = JSON.stringify(`${path.join(cwd, 'src', 'store', 'reducer.ts')}:110-150`);
+  const notesPath = formatToolPath('notes.txt');
   return `# Tool Examples
 
 Use these as style examples for tool calls:
@@ -16,7 +24,7 @@ If the user mentions a project-relative path like src/app.ts, resolve it from ${
 User: compare the auth flow
 Assistant: first narrow the search with the project index
 Tool: query_project_index({"query":"auth flow","path":"src","max_results":3})
-Tool: read({"path":"${cwd}/src/auth/service.ts"})
+Tool: read({"path":${authServicePath}})
 
 If the visible tool list does not include a needed capability, load it with tool_search instead of assuming it does not exist.
 Example:
@@ -27,12 +35,12 @@ Tool: glob({"pattern":"src/**/*.ts"})
 User: rename loginUser to signInUser
 Assistant: first find the exact occurrences
 Tool: grep({"pattern":"loginUser","path":"src"})
-Tool: edit({"path":"${cwd}/src/auth/service.ts","old_text":"loginUser","new_text":"signInUser"})
+Tool: edit({"path":${authServicePath},"old_text":"loginUser","new_text":"signInUser"})
 
 3. Read a specific range
 User: inspect the reducer around line 120
 Assistant: read only the needed range
-Tool: read({"path":"${cwd}/src/store/reducer.ts:110-150"})
+Tool: read({"path":${reducerRangePath}})
 
 4. Track a complex task with todos
 User: update the login flow and verify it
@@ -43,7 +51,7 @@ Assistant: keep the checklist updated as each phase finishes, and do not give a 
 5. Create a new file
 User: add a notes file
 Assistant: create the file directly
-Tool: write({"path":"${cwd}/notes.txt","content":"todo\\n"})
+Tool: write({"path":${notesPath},"content":"todo\\n"})
 
 6. Save a high-signal observation to memory
 When you notice a reusable pattern, a user correction, a repeated failure, or a stable preference — save it to persistent memory. Choose scope carefully:

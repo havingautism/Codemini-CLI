@@ -266,7 +266,7 @@ async function webFetchPage(args = {}) {
         redirect: 'follow',
         signal: controller.signal,
         headers: {
-          'user-agent': 'CodeMiniCLI/0.4 web_fetch'
+          'user-agent': 'CodeminiCLI/0.4 web_fetch'
         }
       });
     } finally {
@@ -362,7 +362,7 @@ async function webSearchQuery(config, args = {}) {
       redirect: 'follow',
       signal: controller.signal,
       headers: {
-        'user-agent': 'CodeMiniCLI/0.4 web_search',
+        'user-agent': 'CodeminiCLI/0.4 web_search',
         accept: 'application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5',
         'accept-language': `${locale},en;q=0.8`
       }

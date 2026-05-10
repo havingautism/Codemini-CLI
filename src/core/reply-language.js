@@ -6,8 +6,17 @@ export function normalizeReplyLanguage(value) {
   return 'zh';
 }
 
+export function getReplyLanguage(config = {}) {
+  if (typeof config === 'string') return normalizeReplyLanguage(config);
+  return normalizeReplyLanguage(config?.ui?.reply_language);
+}
+
+export function getReplyLanguageName(config = {}) {
+  return getReplyLanguage(config) === 'en' ? 'English' : 'Simplified Chinese';
+}
+
 export function buildSystemPromptWithReplyLanguage(baseSystemPrompt, config = {}) {
-  const replyLanguage = normalizeReplyLanguage(config?.ui?.reply_language);
+  const replyLanguage = getReplyLanguage(config);
   const directive =
     replyLanguage === 'en'
       ? [
@@ -22,4 +31,10 @@ export function buildSystemPromptWithReplyLanguage(baseSystemPrompt, config = {}
         ].join('\n');
 
   return `${String(baseSystemPrompt || '').trim()}\n\n${directive}`.trim();
+}
+
+export function stripReplyLanguageDirective(systemPrompt) {
+  return String(systemPrompt || '')
+    .replace(/\n{0,2}\[Reply language\]\n(?:Respond in (?:English|Simplified Chinese)\.\n)?Write generated documentation, user-facing text, and code comments in (?:English|Simplified Chinese) unless the user explicitly asks for a different language\./g, '')
+    .trim();
 }

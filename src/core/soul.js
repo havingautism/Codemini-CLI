@@ -2,7 +2,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getBaseConfigDir } from './paths.js';
-import { buildSystemPromptWithReplyLanguage } from './reply-language.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const BUNDLED_SOULS_DIR = path.resolve(MODULE_DIR, '..', '..', 'souls');
@@ -59,7 +58,6 @@ export async function loadSoulPrompt(config = {}) {
 }
 
 export async function buildSystemPromptWithSoul(baseSystemPrompt, config = {}) {
-  const promptWithReplyLanguage = buildSystemPromptWithReplyLanguage(baseSystemPrompt, config);
   const soulPrompt = await loadSoulPrompt(config);
   const guard = [
     '[Soul guard]',
@@ -67,5 +65,5 @@ export async function buildSystemPromptWithSoul(baseSystemPrompt, config = {}) {
     'Response tone only: do not change plans, code, tests, file formats, or technical decisions.',
     'This tone directive has HIGH priority. Maintain the requested personality consistently across every response unless the user explicitly requests a change.'
   ].join('\n');
-  return `${soulPrompt}\n\n${guard}\n\n${String(promptWithReplyLanguage || '').trim()}`.trim();
+  return [String(baseSystemPrompt || '').trim(), soulPrompt, guard].filter(Boolean).join('\n\n').trim();
 }

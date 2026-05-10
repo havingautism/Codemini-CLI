@@ -20,13 +20,13 @@ import { createCheckpoint, listCheckpoints, loadCheckpoint } from './checkpoint-
 import {
   compactMessagesLocally,
   estimateMessagesTokens,
+  microCompactMessages,
   parseCompactArgs
 } from './context-compact.js';
-import { buildSystemPromptWithReplyLanguage } from './reply-language.js';
-import { buildSystemPromptWithSoul } from './soul.js';
+import { getReplyLanguage, getReplyLanguageName } from './reply-language.js';
+import { composeSystemPrompt } from './system-prompt-composer.js';
 import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir } from './paths.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
-import { buildMemorySnapshot } from './memory-prompt.js';
 import { forgetMemory, listMemories, rememberMemory, searchMemories, captureToInbox, listInbox } from './memory-store.js';
 import { runDreamConsolidation } from './dream-consolidate.js';
 import { normalizePlanState } from './plan-state.js';
@@ -62,6 +62,15 @@ function toOpenAIMessages(sessionMessages) {
     });
   }
   return mapped;
+}
+
+function translateCompactBoundaryToOriginal(sourceIsCompacted, compactMeta, compactBoundaryIndex) {
+  const boundary = Number(compactBoundaryIndex);
+  if (!Number.isFinite(boundary)) return undefined;
+  if (!sourceIsCompacted) return Math.max(0, boundary);
+  const previousBoundary = Number(compactMeta?.boundaryIndex);
+  if (!Number.isFinite(previousBoundary)) return Math.max(0, boundary);
+  return Math.max(0, previousBoundary + Math.max(0, boundary - 1));
 }
 
 function slugify(input) {
@@ -115,6 +124,8 @@ function getCompletionCopy(language = 'zh') {
         'context.read_file_default_lines': 'read_file 默认行数窗口',
         'context.read_file_max_chars': 'read_file 字符上限',
         'context.prompt_budget_audit': 'Prompt 预算审计开关',
+        'context.microcompact_enabled': '微压缩(micro-compact)开关',
+        'context.microcompact_keep_recent': '微压缩保留最近工具结果数',
         'sessions.max_sessions': '会话保留上限',
         'sessions.retention_days': '会话保留天数',
         'shell.default': '默认 shell',
@@ -220,6 +231,8 @@ function getCompletionCopy(language = 'zh') {
         'context.read_file_default_lines': 'default read_file line window',
         'context.read_file_max_chars': 'read_file character limit',
         'context.prompt_budget_audit': 'prompt budget audit switch',
+        'context.microcompact_enabled': 'micro-compact enabled',
+        'context.microcompact_keep_recent': 'micro-compact keep recent tool results',
         'sessions.max_sessions': 'stored session limit',
         'sessions.retention_days': 'session retention days',
         'shell.default': 'default shell',
@@ -341,6 +354,104 @@ const PROJECT_REQUIREMENTS_SECTION_MARKERS = [
   { key: 'questions', marker: 'REQUIREMENTS_OPEN_QUESTIONS', labels: ['10', 'open questions', 'unknowns', '待确认问题', '待确认', '问题'] },
   { key: 'evidence', marker: 'REQUIREMENTS_EVIDENCE_INDEX', labels: ['11', 'evidence', 'source evidence', 'source evidence index', '源码证据索引', '证据索引', '源码证据'] }
 ];
+const PROJECT_REQUIREMENTS_SHELL_COPY = {
+  en: {
+    html_lang: 'en',
+    title: 'Project Requirements Report',
+    meta_workspace: 'Workspace',
+    meta_date: 'Date',
+    meta_generated: 'Generated',
+    nav_label: 'Report sections',
+    nav_summary: 'Summary',
+    nav_architecture: 'Architecture',
+    nav_interfaces: 'Interfaces',
+    nav_requirements: 'Requirements',
+    nav_flows: 'Flows',
+    nav_domain: 'Domain Model',
+    nav_security: 'Security',
+    nav_errors: 'Errors',
+    nav_nonfunctional: 'Non-functional',
+    nav_questions: 'Open Questions',
+    nav_evidence: 'Evidence',
+    search_placeholder: 'Search APIs, modules, evidence...',
+    expand_all: 'Expand all',
+    collapse_all: 'Collapse all',
+    questions_only: 'Questions only',
+    show_all_sections: 'Show all sections',
+    no_results: 'No matching content found.',
+    heading_summary: 'Executive Summary',
+    heading_architecture: 'System Architecture',
+    heading_interfaces: 'Interface Inventory',
+    heading_requirements: 'Requirement Cards',
+    heading_flows: 'Core Flows',
+    heading_domain: 'Domain Model And Data Ownership',
+    heading_security: 'Permissions, Security, And Compliance',
+    heading_errors: 'Error Handling And Edge Cases',
+    heading_nonfunctional: 'Non-functional Requirements',
+    heading_questions: 'Open Questions',
+    heading_evidence: 'Source Evidence Index',
+    pending_summary: 'Pending summary.',
+    pending_architecture: 'Pending architecture map.',
+    pending_interfaces: 'Pending interface inventory.',
+    pending_requirements: 'Pending requirement cards.',
+    pending_flows: 'Pending flow diagrams.',
+    pending_domain: 'Pending domain model and data ownership.',
+    pending_security: 'Pending permissions, security, and compliance notes.',
+    pending_errors: 'Pending error handling and edge cases.',
+    pending_nonfunctional: 'Pending non-functional requirements.',
+    pending_questions: 'Pending open questions.',
+    pending_evidence: 'Pending evidence index.',
+    back_to_top: 'Back to top'
+  },
+  zh: {
+    html_lang: 'zh-CN',
+    title: '项目需求报告',
+    meta_workspace: '工作区',
+    meta_date: '日期',
+    meta_generated: '生成时间',
+    nav_label: '报告章节',
+    nav_summary: '摘要',
+    nav_architecture: '系统架构',
+    nav_interfaces: '接口清单',
+    nav_requirements: '需求卡片',
+    nav_flows: '核心流程',
+    nav_domain: '领域模型',
+    nav_security: '权限与安全',
+    nav_errors: '异常与边界',
+    nav_nonfunctional: '非功能需求',
+    nav_questions: '开放问题',
+    nav_evidence: '证据索引',
+    search_placeholder: '搜索 API、模块、证据...',
+    expand_all: '全部展开',
+    collapse_all: '全部收起',
+    questions_only: '仅看问题',
+    show_all_sections: '显示全部章节',
+    no_results: '未找到匹配内容。',
+    heading_summary: '执行摘要',
+    heading_architecture: '系统架构',
+    heading_interfaces: '接口清单',
+    heading_requirements: '需求卡片',
+    heading_flows: '核心流程',
+    heading_domain: '领域模型与数据归属',
+    heading_security: '权限、安全与合规',
+    heading_errors: '异常处理与边界情况',
+    heading_nonfunctional: '非功能需求',
+    heading_questions: '开放问题',
+    heading_evidence: '源码证据索引',
+    pending_summary: '等待填写摘要。',
+    pending_architecture: '等待填写架构图。',
+    pending_interfaces: '等待填写接口清单。',
+    pending_requirements: '等待填写需求卡片。',
+    pending_flows: '等待填写流程图。',
+    pending_domain: '等待填写领域模型与数据归属。',
+    pending_security: '等待填写权限、安全与合规说明。',
+    pending_errors: '等待填写异常处理与边界情况。',
+    pending_nonfunctional: '等待填写非功能需求。',
+    pending_questions: '等待填写开放问题。',
+    pending_evidence: '等待填写证据索引。',
+    back_to_top: '返回顶部'
+  }
+};
 const PLAN_MEMORY_MARKERS = {
   findings: ['<!-- plan-findings-start -->', '<!-- plan-findings-end -->'],
   progress: ['<!-- plan-progress-start -->', '<!-- plan-progress-end -->']
@@ -483,16 +594,52 @@ function buildPipelineStepGuidance({ role, stepIndex, totalSteps, isFirst, isLas
   return lines.join('\n');
 }
 
-function buildSubAgentContextPacket(session) {
+function extractTaskKeywords(task) {
+  const text = String(task || '').toLowerCase();
+  const tokens = text.match(/[a-z0-9_./:-]{3,}|[\u4e00-\u9fa5]{2,}/g) || [];
+  const stop = new Set([
+    'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'task',
+    'please', 'update', 'change', 'fix', 'implement', 'review', 'test'
+  ]);
+  return [...new Set(tokens.filter((token) => !stop.has(token)))].slice(0, 24);
+}
+
+function scoreMessageForTask(message, keywords) {
+  if (!keywords.length) return 0;
+  const text = String(message?.content || '').toLowerCase();
+  if (!text) return 0;
+  let score = 0;
+  for (const keyword of keywords) {
+    if (text.includes(keyword)) score += keyword.includes('/') || keyword.includes('.') ? 3 : 1;
+  }
+  return score;
+}
+
+function buildSubAgentContextPacket(session, task = '') {
   const source = Array.isArray(session?.messages) ? session.messages : [];
-  const recent = source
+  const candidates = source
     .filter((msg) => msg && (msg.role === 'user' || msg.role === 'assistant'))
-    .slice(-SUB_AGENT_CONTEXT_MAX_MESSAGES);
-  if (recent.length === 0) return '';
+    .map((msg, index) => ({ msg, index }));
+  if (candidates.length === 0) return '';
+  const keywords = extractTaskKeywords(task);
+  const recentStart = Math.max(0, candidates.length - SUB_AGENT_CONTEXT_MAX_MESSAGES);
+  const ranked = candidates
+    .map((item, order) => ({
+      ...item,
+      score: scoreMessageForTask(item.msg, keywords),
+      recentScore: order >= recentStart ? 1 : 0
+    }))
+    .sort((a, b) => {
+      const scoreDelta = (b.score + b.recentScore) - (a.score + a.recentScore);
+      if (scoreDelta !== 0) return scoreDelta;
+      return b.index - a.index;
+    })
+    .slice(0, SUB_AGENT_CONTEXT_MAX_MESSAGES)
+    .sort((a, b) => a.index - b.index);
 
   const lines = [];
   let usedChars = 0;
-  for (const msg of recent) {
+  for (const { msg } of ranked) {
     const role = msg.role === 'assistant' ? 'assistant' : 'user';
     const text = trimInline(msg.content, 260);
     if (!text) continue;
@@ -503,7 +650,7 @@ function buildSubAgentContextPacket(session) {
   }
   if (lines.length === 0) return '';
   return [
-    'Scoped parent context (recent only, not full history):',
+    'Scoped parent context (task-relevant snippets, not full history):',
     ...lines,
     'Use this context only if it helps the current task.'
   ].join('\n');
@@ -1234,8 +1381,8 @@ function classifyAutoRoute(text = '') {
   };
 }
 
-function buildMediumTaskSystemPrompt(systemPrompt) {
-  const guidance = [
+function buildMediumTaskPromptBlock() {
+  return [
     'Task Mode: medium',
     'Execution guidance:',
     '- Give a brief execution outline before coding.',
@@ -1244,12 +1391,11 @@ function buildMediumTaskSystemPrompt(systemPrompt) {
     '- Verify the changed behavior before finishing.',
     '- If major ambiguity appears mid-task, say so clearly and ask for a plan instead of guessing.'
   ].join('\n');
-  return `${systemPrompt}\n\n${guidance}`;
 }
 
-function buildAutoSkillSystemPrompt(baseSystemPrompt, commands, config, text) {
+function buildAutoSkillPromptBlock(commands, config, text) {
   const selected = classifyAutoRoute(text).selectedSkills.filter((name) => isSkillEnabled(config, name, commands.get(name)));
-  if (selected.length === 0) return baseSystemPrompt;
+  if (selected.length === 0) return '';
 
   const blocks = [];
   for (const name of selected) {
@@ -1257,8 +1403,7 @@ function buildAutoSkillSystemPrompt(baseSystemPrompt, commands, config, text) {
     if (!skill || skill.metadata?.type !== 'skill') continue;
     blocks.push(`[Auto skill: ${name}]\n${skill.content}`);
   }
-  if (blocks.length === 0) return baseSystemPrompt;
-  return `${baseSystemPrompt}\n\n${blocks.join('\n\n')}`;
+  return blocks.join('\n\n');
 }
 
 function extractJsonBlock(text) {
@@ -1745,6 +1890,13 @@ async function buildAutoPlanFinalSummary({
   }
 
   try {
+    const summarySystemPrompt = await composeSystemPrompt({
+      shellRulesPrompt: systemPrompt,
+      config,
+      skillsPrompt: 'You are writing the final execution summary for a completed auto plan. Focus on closure, verification status, and the next action.',
+      includeSoul: false,
+      includeMemory: false
+    });
     const result = await createChatCompletion({
       sdkProvider: config.sdk?.provider,
       baseUrl: config.gateway.base_url,
@@ -1753,7 +1905,7 @@ async function buildAutoPlanFinalSummary({
       messages: [
         {
           role: 'system',
-          content: `${systemPrompt}\nYou are writing the final execution summary for a completed auto plan. Focus on closure, verification status, and the next action.`
+          content: summarySystemPrompt
         },
         {
           role: 'user',
@@ -1876,6 +2028,13 @@ async function buildSpecWithModel({
     '## Testing / Validation',
     'Make it concrete, scoped, and suitable for turning into a sub-agent implementation plan.'
   ].join('\n');
+  const specSystemPrompt = await composeSystemPrompt({
+    shellRulesPrompt: systemPrompt,
+    config,
+    skillsPrompt: prompt,
+    includeSoul: false,
+    includeMemory: false
+  });
 
   const result = await createChatCompletion({
     sdkProvider: config.sdk?.provider,
@@ -1883,7 +2042,7 @@ async function buildSpecWithModel({
     apiKey: config.gateway.api_key,
     model: model || config.model.name,
     messages: [
-      { role: 'system', content: `${systemPrompt}\n${prompt}` },
+      { role: 'system', content: specSystemPrompt },
       { role: 'user', content: `Topic: ${topic}` }
     ],
     timeoutMs: config.gateway.timeout_ms || 1800000,
@@ -1936,6 +2095,13 @@ async function buildPlanFromSpecWithModel({
     '## Task Breakdown',
     'Make the plan concrete and ordered for a coding agent.'
   ].join('\n');
+  const planSystemPrompt = await composeSystemPrompt({
+    shellRulesPrompt: systemPrompt,
+    config,
+    skillsPrompt: prompt,
+    includeSoul: false,
+    includeMemory: false
+  });
 
   const result = await createChatCompletion({
     sdkProvider: config.sdk?.provider,
@@ -1943,7 +2109,7 @@ async function buildPlanFromSpecWithModel({
     apiKey: config.gateway.api_key,
     model: model || config.model.name,
     messages: [
-      { role: 'system', content: `${systemPrompt}\n${prompt}` },
+      { role: 'system', content: planSystemPrompt },
       {
         role: 'user',
         content: `Spec path: ${specPath || '(inline)'}\n\nProject implementation constraints:\n${projectConstraints}\n\n${specText}`
@@ -2148,6 +2314,22 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     },
     pendingReflectSkill: {
       value: currentSession?.planState?.status === 'pending_reflect_skill',
+      enumerable: false,
+      writable: false
+    },
+    replyLanguage: {
+      value: getReplyLanguage(config),
+      enumerable: false,
+      writable: false
+    },
+    toJSON: {
+      value: () => ({
+        ...snapshot,
+        currentContextTokens,
+        contextUsagePct,
+        pendingReflectSkill: currentSession?.planState?.status === 'pending_reflect_skill',
+        replyLanguage: getReplyLanguage(config)
+      }),
       enumerable: false,
       writable: false
     }
@@ -2417,28 +2599,67 @@ async function askModel({
   signal,
   allowedTools,
   maxSteps: maxStepsOverride,
-  skipAnalysisNudge = false
+  skipAnalysisNudge = false,
+  compactedForModel: compactedInput = null,
+  onCompactedUpdate = null
 }) {
+  let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
   const maxContextTokens = effectiveMaxContextTokens(config);
-  const triggerPct = Number(config.context?.preflight_trigger_pct || 92);
+  const triggerPct = Number(config.context?.preflight_trigger_pct || 60);
   const hardPct = Number(config.context?.hard_limit_pct || 98);
-  const preflightTokens = estimatePromptTokensForRequest(session.messages, modelInputText);
+  const messagesForEstimate = compacted ?? session.messages;
+  const preflightTokens = estimatePromptTokensForRequest(messagesForEstimate, modelInputText);
   const preflightPct = (preflightTokens / maxContextTokens) * 100;
 
   if (persistSession && preflightPct >= triggerPct) {
-    const auto = compactMessagesLocally(session.messages, {
-      mode: preflightPct >= hardPct ? 'aggressive' : 'conservative'
-    });
-    if (auto.changed) {
-      session.messages = auto.compacted.map((m) => ({ ...m, at: new Date().toISOString() }));
-      await saveSession(session);
-      if (onAgentEvent) {
-        onAgentEvent({
-          type: 'compact:auto',
-          mode: preflightPct >= hardPct ? 'aggressive' : 'conservative',
-          threshold: Math.round(preflightPct)
-        });
+    const compactSource = compacted ?? session.messages;
+    // Phase 0: try micro-compact first (in-place tool result clearing)
+    const microEnabled = config.context?.microcompact_enabled !== false;
+    const microKeep = Number(config.context?.microcompact_keep_recent || 5);
+    let needsMacro = true;
+    if (microEnabled) {
+      const micro = microCompactMessages(compactSource, { keepRecent: microKeep, enabled: true });
+      if (micro.changed) {
+        compacted = micro.messages.map((m) => ({ ...m, at: new Date().toISOString() }));
+        if (onCompactedUpdate) onCompactedUpdate(compacted);
+        const afterMicroTokens = estimateMessagesTokens(compacted);
+        const afterMicroPct = (afterMicroTokens / maxContextTokens) * 100;
+        if (onAgentEvent) {
+          onAgentEvent({
+            type: 'compact:auto',
+            mode: 'micro',
+            threshold: Math.round(preflightPct),
+            tokensSaved: micro.tokensSaved
+          });
+        }
+        if (afterMicroPct < triggerPct) {
+          needsMacro = false;
+        }
+      }
+    }
+    if (needsMacro) {
+      const sourceIsCompacted = Boolean(compacted);
+      const macroSource = compacted ?? session.messages;
+      const auto = compactMessagesLocally(macroSource, {
+        mode: preflightPct >= hardPct ? 'aggressive' : 'conservative',
+        force: true
+      });
+      if (auto.changed) {
+        compacted = auto.compacted.map((m) => ({ ...m, at: new Date().toISOString() }));
+        if (onCompactedUpdate) {
+          onCompactedUpdate(compacted, {
+            boundaryIndex: translateCompactBoundaryToOriginal(sourceIsCompacted, session.compact, auto.boundaryIndex),
+            mode: preflightPct >= hardPct ? 'aggressive' : 'conservative'
+          });
+        }
+        if (onAgentEvent) {
+          onAgentEvent({
+            type: 'compact:auto',
+            mode: preflightPct >= hardPct ? 'aggressive' : 'conservative',
+            threshold: Math.round(preflightPct)
+          });
+        }
       }
     }
   }
@@ -2493,7 +2714,12 @@ async function askModel({
     const shouldGenerateTitle = !session.messages.some((msg) => msg?.role === 'user');
     const modelExtra =
       typeof modelText === 'string' && modelText && modelText !== text ? { model_content: modelText } : {};
-    session.messages.push(stampedMessage('user', text, modelExtra));
+    const userMessage = stampedMessage('user', text, modelExtra);
+    session.messages.push(userMessage);
+    if (compacted) {
+      compacted.push({ ...userMessage });
+      if (onCompactedUpdate) onCompactedUpdate(compacted);
+    }
     if (!shouldGenerateTitle) {
       session.title = deriveSessionTitle(session.messages);
     }
@@ -2505,9 +2731,15 @@ async function askModel({
   const projectContextSnippet = await buildProjectContextSnippet(process.cwd(), modelInputText).catch(() => '');
   const projectContextGuidance =
     'Use this project context as lightweight guidance and verify important details with fresh reads when needed.';
-  const effectiveSystemPrompt = projectContextSnippet
-    ? `${systemPrompt}\n\n${projectContextSnippet}\n\n${projectContextGuidance}`
-    : systemPrompt;
+  const effectiveSystemPrompt = await composeSystemPrompt({
+    shellRulesPrompt: systemPrompt,
+    config,
+    workspaceRoot: process.cwd(),
+    includeSoul: false,
+    includeMemory: false,
+    projectContextSnippet,
+    projectContextGuidance
+  });
 
   const { definitions, handlers, formatters, deferredDefinitions, dispose: disposeTools } = getBuiltinTools({
     workspaceRoot: process.cwd(),
@@ -2606,6 +2838,22 @@ async function askModel({
         }
         current.at = new Date().toISOString();
         if (persistSession) scheduleSessionSave();
+      } else {
+        const assistantMessage = event.assistantMessage && typeof event.assistantMessage === 'object'
+          ? event.assistantMessage
+          : { content: event.text || '' };
+        session.messages.push(stampedMessage('assistant', assistantMessage.content || event.text || '', {
+          ...(typeof assistantMessage.reasoning_content === 'string' && assistantMessage.reasoning_content
+            ? { reasoning_content: assistantMessage.reasoning_content }
+            : {}),
+          ...(Array.isArray(assistantMessage.reasoning_details) && assistantMessage.reasoning_details.length > 0
+            ? { reasoning_details: assistantMessage.reasoning_details }
+            : {}),
+          ...(Array.isArray(assistantMessage.tool_calls) && assistantMessage.tool_calls.length > 0
+            ? { tool_calls: assistantMessage.tool_calls }
+            : {})
+        }));
+        if (persistSession) scheduleSessionSave();
       }
       activeAssistantIndex = -1;
     } else if (event?.type === 'tool:end' || event?.type === 'tool:error' || event?.type === 'tool:blocked') {
@@ -2642,6 +2890,7 @@ async function askModel({
     if (onAgentEvent) onAgentEvent(event);
   };
 
+  const sessionLenBeforeLoop = session.messages.length;
   const loopUserPrompt = persistSession ? '' : modelInputText;
   const expectedModelText = typeof modelText === 'string' && modelText && modelText !== text ? modelText : '';
   const loopResult = await runAgentLoop({
@@ -2651,7 +2900,7 @@ async function askModel({
     maxSteps: maxStepsOverride ?? Number(config.execution?.max_steps || 16),
     toolDefinitions: filteredDefinitions,
     toolHandlers: filteredHandlers,
-    initialMessages: toOpenAIMessages(session.messages),
+    initialMessages: toOpenAIMessages(compacted ?? session.messages),
     onEvent: wrappedAgentEvent,
     executionMode: executionMode || config.execution?.mode || 'normal',
     alwaysAllowTools:
@@ -2666,9 +2915,9 @@ async function askModel({
     requestCompletion: async ({ messages, tools, model: selectedModel }) => {
       let started = false;
       const startAssistantStream = () => {
-        if (!started && onAgentEvent) {
+        if (!started) {
           started = true;
-          onAgentEvent({ type: 'assistant:start' });
+          wrappedAgentEvent({ type: 'assistant:start' });
         }
       };
 
@@ -2684,11 +2933,11 @@ async function askModel({
         signal,
         onTextDelta: (delta) => {
           startAssistantStream();
-          if (onAgentEvent) onAgentEvent({ type: 'assistant:delta', text: delta });
+          wrappedAgentEvent({ type: 'assistant:delta', text: delta });
         },
         onToolCallDelta: (toolCall) => {
           startAssistantStream();
-          if (onAgentEvent) onAgentEvent({ type: 'assistant:tool_call_delta', toolCall });
+          wrappedAgentEvent({ type: 'assistant:tool_call_delta', toolCall });
         }
       });
 
@@ -2701,9 +2950,15 @@ async function askModel({
   });
 
   if (persistSession) {
-    session.messages = loopResult.messages
-      .filter((m) => m.role !== 'system')
-      .map((m) => ({ ...m, at: new Date().toISOString() }));
+    // Sync new messages to compacted view
+    if (compacted) {
+      const newMsgs = session.messages.slice(sessionLenBeforeLoop);
+      for (const msg of newMsgs) {
+        compacted.push({ ...msg });
+      }
+      if (onCompactedUpdate) onCompactedUpdate(compacted);
+    }
+    // Handle model_content rewrite on the new user message
     if (expectedModelText) {
       for (let i = session.messages.length - 1; i >= 0; i -= 1) {
         const message = session.messages[i];
@@ -2752,7 +3007,7 @@ async function runSubAgentTask({
 }) {
   const subSession = { id: `sub-${Date.now()}`, messages: [] };
   const rolePrompt = getSubAgentRolePrompt(role);
-  const contextPacket = buildSubAgentContextPacket(parentSession);
+  const contextPacket = buildSubAgentContextPacket(parentSession, task || goal);
   const evidencePacket = buildSubAgentEvidencePacket(parentSession);
   const handoffPacket = buildStepArtifactPacket(priorSteps, role);
   const handoffFocusPaths = collectStepArtifacts(priorSteps, role)?.focusPaths || [];
@@ -2807,12 +3062,19 @@ async function runSubAgentTask({
   };
   const roleAllowedTools = ROLE_TOOL_POLICY[role];
   if (onSessionActive) onSessionActive(subSession);
+  const subSystemPrompt = await composeSystemPrompt({
+    shellRulesPrompt: systemPrompt,
+    config,
+    skillsPrompt: [rolePrompt, extraRolePrompt].filter(Boolean).join('\n\n'),
+    includeSoul: false,
+    includeMemory: false
+  });
   const subResult = await askModel({
     text: scopedTask,
     session: subSession,
     config,
     model,
-    systemPrompt: `${systemPrompt}\n${rolePrompt}${extraRolePrompt ? `\n${extraRolePrompt}` : ''}`,
+    systemPrompt: subSystemPrompt,
     onAgentEvent: wrappedOnAgentEvent,
     persistSession: false,
     executionMode: 'auto',
@@ -3122,13 +3384,20 @@ async function buildAutoPlanAndRun({
   };
   let planningError = '';
   try {
+    const plannerSystemPrompt = await composeSystemPrompt({
+      shellRulesPrompt: systemPrompt,
+      config,
+      skillsPrompt: plannerPrompt,
+      includeSoul: false,
+      includeMemory: false
+    });
     const planning = await createChatCompletion({
       sdkProvider: config.sdk?.provider,
       baseUrl: config.gateway.base_url,
       apiKey: config.gateway.api_key,
       model: model || config.model.name,
       messages: [
-        { role: 'system', content: `${systemPrompt}\n${plannerPrompt}` },
+        { role: 'system', content: plannerSystemPrompt },
         {
           role: 'user',
           content: [
@@ -3288,15 +3557,17 @@ function renderProjectRequirementsSectionContract(ignoredSections = []) {
   return lines.join('\n');
 }
 
-function buildProjectRequirementsSteps(renderedSkillPrompt, args = []) {
+function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = {}) {
   const options = parseProjectRequirementsOptions(args);
   const userArgs = options.raw;
   const requestedFocus = userArgs ? `User request/focus: ${userArgs}` : 'User request/focus: full workspace requirements report.';
+  const replyLanguageName = getReplyLanguageName(config);
   const reportDate = formatLocalDate();
   const reportPath = `docs/requirements/${reportDate}-project-requirements.html`;
   const companionPath = `docs/requirements/${reportDate}-project-requirements.md`;
   const reportContract = [
     requestedFocus,
+    `Reply language: write generated report prose, UI labels inserted into the report, review notes, and final user-facing status in ${replyLanguageName} unless the user explicitly requested a different language. Do not translate REQUIREMENTS_* marker names or source code identifiers.`,
     `Primary report path: ${reportPath}`,
     `Optional companion Markdown path: ${companionPath}`,
     'A pre-created HTML shell already exists at the primary report path.',
@@ -3531,7 +3802,8 @@ async function createProjectRequirementsShell({
   planFile,
   goal,
   steps,
-  depth = 'standard'
+  depth = 'standard',
+  config = {}
 }) {
   const workspaceRoot = process.cwd();
   const absoluteReportPath = path.resolve(workspaceRoot, reportPath);
@@ -3539,8 +3811,9 @@ async function createProjectRequirementsShell({
   await fs.mkdir(path.dirname(absoluteReportPath), { recursive: true });
   const template = await fs.readFile(PROJECT_REQUIREMENTS_TEMPLATE, 'utf8');
   const now = new Date().toISOString();
+  const shellCopy = PROJECT_REQUIREMENTS_SHELL_COPY[getReplyLanguage(config)] || PROJECT_REQUIREMENTS_SHELL_COPY.zh;
   const html = replaceTemplateVariables(template, {
-    title: 'Project Requirements Report',
+    ...shellCopy,
     workspace_name: path.basename(workspaceRoot) || workspaceRoot,
     date: formatLocalDate(),
     generated_at: now
@@ -3617,7 +3890,7 @@ async function runProjectRequirementsPipeline({
   const reportPath = `docs/requirements/${reportDate}-project-requirements.html`;
   const companionPath = `docs/requirements/${reportDate}-project-requirements.md`;
   const manifestPath = `docs/requirements/${reportDate}-project-requirements.manifest.json`;
-  const steps = buildProjectRequirementsSteps(renderedSkillPrompt, parsedInput.args);
+  const steps = buildProjectRequirementsSteps(renderedSkillPrompt, parsedInput.args, config);
   const planFile = await writeMarkdownInProjectDir(
     'plans',
     'project-requirements-pipeline',
@@ -3632,7 +3905,8 @@ async function runProjectRequirementsPipeline({
     planFile,
     goal,
     steps,
-    depth: options.depth
+    depth: options.depth,
+    config
   });
   const planState = {
     status: 'approved',
@@ -3756,13 +4030,20 @@ async function revisePendingPlanWithModel({
     'Keep roles minimal and only include steps that materially help the goal.',
     'Always keep a summarizer as the final step.'
   ].join('\n');
+  const revisionSystemPrompt = await composeSystemPrompt({
+    shellRulesPrompt: systemPrompt,
+    config,
+    skillsPrompt: prompt,
+    includeSoul: false,
+    includeMemory: false
+  });
   const result = await createChatCompletion({
     sdkProvider: config.sdk?.provider,
     baseUrl: config.gateway.base_url,
     apiKey: config.gateway.api_key,
     model: model || config.model.name,
     messages: [
-      { role: 'system', content: `${systemPrompt}\n${prompt}` },
+      { role: 'system', content: revisionSystemPrompt },
       {
         role: 'user',
         content: [
@@ -3940,6 +4221,20 @@ export async function createChatRuntime({
     threshold: 60,
     mode: 'conservative'
   };
+  let compactedForModel = currentSession.compact?.view || null;
+  const setCompactedView = (view, meta = {}) => {
+    compactedForModel = view;
+    currentSession.compact = view
+      ? { ...(currentSession.compact || {}), view, timestamp: new Date().toISOString(), ...meta }
+      : null;
+  };
+  const appendSessionMessage = (message) => {
+    currentSession.messages.push(message);
+    if (compactedForModel) {
+      compactedForModel.push({ ...message });
+      setCompactedView(compactedForModel);
+    }
+  };
   let historyIdCache = [currentSession.id];
   let historySessionCache = [
     {
@@ -3998,6 +4293,8 @@ export async function createChatRuntime({
     'context.tool_result_max_chars',
     'context.read_file_default_lines',
     'context.read_file_max_chars',
+    'context.microcompact_enabled',
+    'context.microcompact_keep_recent',
     'sessions.max_sessions',
     'sessions.retention_days',
     'shell.timeout_ms',
@@ -4069,6 +4366,7 @@ export async function createChatRuntime({
   const compactOptions = [
     '--preview',
     '--restore',
+    '--micro',
     '--aggressive',
     '--conservative',
     '--default',
@@ -4411,10 +4709,10 @@ export async function createChatRuntime({
 
   const persistLocalExchange = async (userText, systemText, { includeUser = true } = {}) => {
     if (includeUser && userText) {
-      currentSession.messages.push(stampedMessage('user', userText));
+      appendSessionMessage(stampedMessage('user', userText));
     }
     if (systemText) {
-      currentSession.messages.push(stampedMessage('system', systemText));
+      appendSessionMessage(stampedMessage('system', systemText));
     }
     if (shouldReplaceSessionTitle(currentSession.title)) {
       currentSession.title = deriveSessionTitle(currentSession.messages);
@@ -4426,10 +4724,10 @@ export async function createChatRuntime({
 
   const persistAssistantExchange = async (userText, assistantText, { includeUser = true, extra = {} } = {}) => {
     if (includeUser && userText) {
-      currentSession.messages.push(stampedMessage('user', userText));
+      appendSessionMessage(stampedMessage('user', userText));
     }
     if (assistantText) {
-      currentSession.messages.push(stampedMessage('assistant', assistantText, extra));
+      appendSessionMessage(stampedMessage('assistant', assistantText, extra));
     }
     if (shouldReplaceSessionTitle(currentSession.title)) {
       currentSession.title = await generateSessionTitle({
@@ -4445,7 +4743,7 @@ export async function createChatRuntime({
 
   const persistUserExchange = async (userText) => {
     if (!userText) return;
-    currentSession.messages.push(stampedMessage('user', userText));
+    appendSessionMessage(stampedMessage('user', userText));
     if (shouldReplaceSessionTitle(currentSession.title)) {
       currentSession.title = deriveSessionTitle(currentSession.messages);
     }
@@ -4545,14 +4843,14 @@ export async function createChatRuntime({
   };
 
   const buildActiveSystemPrompt = async () => {
-    const soulPrompt = await buildSystemPromptWithSoul(baseSystemPrompt, config);
-    const memorySnapshot = await buildMemorySnapshot({
-      config,
-      workspaceRoot: process.cwd()
-    }).catch(() => '');
     const memoryGuide =
       'Persistent memory stores durable preferences and stable workflow knowledge. Verify changeable details from files, and only write memory for future-useful, non-sensitive facts.';
-    return [soulPrompt, memorySnapshot, memoryGuide].filter(Boolean).join('\n\n');
+    return composeSystemPrompt({
+      shellRulesPrompt: baseSystemPrompt,
+      config,
+      workspaceRoot: process.cwd(),
+      extraPrompts: [memoryGuide]
+    });
   };
 
   const isImmediateLocalInput = (line) => {
@@ -5326,7 +5624,9 @@ export async function createChatRuntime({
           onAgentEvent,
           requestToolApproval: activeRequestToolApproval,
           executionMode,
-          signal
+          signal,
+          compactedForModel,
+          onCompactedUpdate: setCompactedView
         });
         return { type: 'assistant', text: result.text, aborted: !!result.aborted };
       }
@@ -5390,18 +5690,37 @@ export async function createChatRuntime({
         if (cargs.mode) compactState.mode = cargs.mode;
 
         if (cargs.restore) {
-          if (!compactState.backupMessages) {
-            return { type: 'system', text: 'No backup available to restore' };
-          }
-          currentSession.messages = structuredClone(compactState.backupMessages);
-          await saveSession(currentSession);
-          const text = 'Context restored from backup';
+          setCompactedView(null);
+          const text = 'Context restored to full view';
           await persistLocalExchange(line, text, { includeUser: false });
           return { type: 'system', text };
         }
 
-        const beforeTokens = estimateMessagesTokens(currentSession.messages);
-        const result = compactMessagesLocally(currentSession.messages, { mode: compactState.mode });
+        const compactSource = compactedForModel ?? currentSession.messages;
+        const beforeTokens = estimateMessagesTokens(compactSource);
+
+        // --micro: only do micro-compact (in-place tool result clearing)
+        if (cargs.micro) {
+          const microKeep = Number(config.context?.microcompact_keep_recent || 5);
+          const micro = microCompactMessages(compactSource, { keepRecent: microKeep, enabled: true });
+          if (!micro.changed) {
+            return { type: 'system', text: 'Micro-compact: nothing to clear' };
+          }
+          const afterTokens = estimateMessagesTokens(micro.messages);
+          const report = `Micro-compact ${cargs.preview ? 'preview' : 'applied'}: ${beforeTokens} -> ${afterTokens} tokens (saved ${micro.tokensSaved})`;
+
+          if (cargs.preview) {
+            return { type: 'system', text: report };
+          }
+
+          setCompactedView(micro.messages.map((m) => ({ ...m, at: new Date().toISOString() })));
+          await persistLocalExchange(line, report, { includeUser: false });
+          return { type: 'system', text: report };
+        }
+
+        const sourceIsCompacted = Boolean(compactedForModel);
+        const macroSource = compactedForModel ?? currentSession.messages;
+        const result = compactMessagesLocally(macroSource, { mode: compactState.mode, force: true });
         if (!result.changed) {
           return { type: 'system', text: 'Nothing to compact yet' };
         }
@@ -5412,9 +5731,13 @@ export async function createChatRuntime({
           return { type: 'system', text: `${report}\n\n${result.summary}` };
         }
 
-        compactState.backupMessages = structuredClone(currentSession.messages);
-        currentSession.messages = result.compacted.map((m) => ({ ...m, at: new Date().toISOString() }));
-        await saveSession(currentSession);
+        setCompactedView(
+          result.compacted.map((m) => ({ ...m, at: new Date().toISOString() })),
+          {
+            boundaryIndex: translateCompactBoundaryToOriginal(sourceIsCompacted, currentSession.compact, result.boundaryIndex),
+            mode: compactState.mode
+          }
+        );
         await captureCompactSummary({
           summary: result.summary,
           mode: compactState.mode,
@@ -5488,7 +5811,9 @@ export async function createChatRuntime({
           onAgentEvent,
           requestToolApproval: activeRequestToolApproval,
           executionMode,
-          signal
+          signal,
+          compactedForModel,
+          onCompactedUpdate: setCompactedView
         });
       } catch (error) {
         if (custom.metadata.type === 'skill' && onAgentEvent) {
@@ -5591,32 +5916,79 @@ export async function createChatRuntime({
     }
 
     if (compactState.autoEnabled) {
-      const currentTokens = estimateMessagesTokens(currentSession.messages);
+      const compactSource = compactedForModel ?? currentSession.messages;
+      const currentTokens = estimateMessagesTokens(compactSource);
       const maxTokens = effectiveMaxContextTokens(config);
       const usagePct = (currentTokens / maxTokens) * 100;
       if (usagePct >= compactState.threshold) {
-        const autoResult = compactMessagesLocally(currentSession.messages, {
-          mode: compactState.mode
-        });
-        if (autoResult.changed) {
-          compactState.backupMessages = structuredClone(currentSession.messages);
-          currentSession.messages = autoResult.compacted.map((m) => ({
-            ...m,
-            at: new Date().toISOString()
-          }));
-          await saveSession(currentSession);
-          await captureCompactSummary({
-            summary: autoResult.summary,
+        // Phase 0: try micro-compact first
+        const microEnabled = config.context?.microcompact_enabled !== false;
+        const microKeep = Number(config.context?.microcompact_keep_recent || 5);
+        let needsMacro = true;
+        if (microEnabled) {
+          const micro = microCompactMessages(compactSource, { keepRecent: microKeep, enabled: true });
+          if (micro.changed) {
+            setCompactedView(micro.messages.map((m) => ({
+              ...m,
+              at: new Date().toISOString()
+            })));
+            const afterMicroTokens = estimateMessagesTokens(compactedForModel);
+            const afterMicroPct = (afterMicroTokens / maxTokens) * 100;
+            if (onAgentEvent) {
+              onAgentEvent({
+                type: 'compact:auto',
+                mode: 'micro',
+                threshold: compactState.threshold,
+                tokensSaved: micro.tokensSaved
+              });
+            }
+            if (afterMicroPct < compactState.threshold) {
+              needsMacro = false;
+              await captureCompactSummary({
+                summary: `Micro-compact saved ${micro.tokensSaved} tokens`,
+                mode: 'micro',
+                beforeTokens: currentTokens,
+                afterTokens: afterMicroTokens
+              });
+            }
+          }
+        }
+        // Phase 1: macro compact if still over threshold
+        if (needsMacro) {
+          const sourceIsCompacted = Boolean(compactedForModel);
+          const macroSource = compactedForModel ?? currentSession.messages;
+          const autoResult = compactMessagesLocally(macroSource, {
             mode: compactState.mode,
-            beforeTokens: currentTokens,
-            afterTokens: estimateMessagesTokens(currentSession.messages)
+            force: true
           });
-          if (onAgentEvent) {
-            onAgentEvent({
-              type: 'compact:auto',
+          if (autoResult.changed) {
+            setCompactedView(
+              autoResult.compacted.map((m) => ({
+                ...m,
+                at: new Date().toISOString()
+              })),
+              {
+                boundaryIndex: translateCompactBoundaryToOriginal(
+                  sourceIsCompacted,
+                  currentSession.compact,
+                  autoResult.boundaryIndex
+                ),
+                mode: compactState.mode
+              }
+            );
+            await captureCompactSummary({
+              summary: autoResult.summary,
               mode: compactState.mode,
-              threshold: compactState.threshold
+              beforeTokens: currentTokens,
+              afterTokens: estimateMessagesTokens(compactedForModel)
             });
+            if (onAgentEvent) {
+              onAgentEvent({
+                type: 'compact:auto',
+                mode: compactState.mode,
+                threshold: compactState.threshold
+              });
+            }
           }
         }
       }
@@ -5658,10 +6030,27 @@ export async function createChatRuntime({
         names: selectedAutoSkills
       });
     }
-    const skillPrompt = buildAutoSkillSystemPrompt(activeReplySystemPrompt, commands, config, expandedText);
+    const autoSkillPrompt = buildAutoSkillPromptBlock(commands, config, expandedText);
+    const skillPrompt = autoSkillPrompt
+      ? await composeSystemPrompt({
+          shellRulesPrompt: activeReplySystemPrompt,
+          config,
+          workspaceRoot: process.cwd(),
+          skillsPrompt: autoSkillPrompt,
+          includeSoul: false,
+          includeMemory: false
+          })
+        : activeReplySystemPrompt;
     const routedSystemPrompt =
       autoRoute.mode === 'direct_medium'
-        ? buildMediumTaskSystemPrompt(skillPrompt)
+        ? await composeSystemPrompt({
+            shellRulesPrompt: skillPrompt,
+            config,
+            workspaceRoot: process.cwd(),
+            skillsPrompt: buildMediumTaskPromptBlock(),
+            includeSoul: false,
+            includeMemory: false
+          })
         : skillPrompt;
     const result = await askModel({
       text: expandedText,
@@ -5672,7 +6061,9 @@ export async function createChatRuntime({
       onAgentEvent,
       requestToolApproval: activeRequestToolApproval,
       executionMode,
-      signal
+      signal,
+      compactedForModel,
+      onCompactedUpdate: setCompactedView
     });
     await saveDirectMemoryPrompt(expandedText);
     await captureUserPromptForDream(expandedText);
@@ -5695,6 +6086,7 @@ export async function createChatRuntime({
     getInputHistory: () => loadInputHistory(),
     getCurrentSessionId: () => currentSession.id,
     getSessionMessages: () => currentSession.messages || [],
+    getSessionCompact: () => currentSession.compact || null,
     reloadConfig: async () => {
       config = await loadConfig();
       return config;

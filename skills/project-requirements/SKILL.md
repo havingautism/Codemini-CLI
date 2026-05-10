@@ -16,6 +16,8 @@ User request:
 
 Honor any concrete user request above, such as output format, report path, focus area, API subset, diagram style, or language. If it is empty, generate the default HTML requirements report for the current workspace.
 
+Follow the active reply language from the system prompt for all generated report prose, user-facing labels, placeholder text, summaries, comments, and companion Markdown unless the user explicitly requests a different language. Do not translate source code identifiers, file paths, commands, API routes, or `REQUIREMENTS_*` marker names.
+
 ## Output
 
 Create the primary report at:

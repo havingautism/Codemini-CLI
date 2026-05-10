@@ -11,6 +11,7 @@ import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
 import { RuntimeBridge } from './lib/runtime-bridge.js';
 import { listSkillEntries } from '../src/commands/skill.js';
 import { readSkillRegistry, writeSkillRegistry, upsertSkillRegistryEntry } from '../src/core/skill-registry.js';
+import { getReplyLanguage } from '../src/core/reply-language.js';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const pkg = require('../package.json');
@@ -64,6 +65,37 @@ function jsonResponse(res, data, status = 200) {
   const body = JSON.stringify(data);
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
   res.end(body);
+}
+
+function buildCodeWikiAskPrompt({ question, reportPath, projectDir, replyLanguage }) {
+  if (getReplyLanguage(replyLanguage) === 'en') {
+    return [
+      'Answer the following question based on the current project and the CodeWiki / project-requirements HTML report.',
+      `Project path: ${projectDir}`,
+      `Report path: ${reportPath}`,
+      '',
+      'Requirements:',
+      '- Prefer reading and citing the HTML report above.',
+      '- If the report is insufficient, use read-only project inspection to gather supporting evidence.',
+      '- Do not modify files, generate a new report, or write memory.',
+      '- Respond in English unless the user explicitly asks for another language.',
+      '',
+      `Question: ${question.trim()}`
+    ].join('\n');
+  }
+  return [
+    '请基于当前项目和 CodeWiki / project-requirements HTML 报告回答下面的问题。',
+    `项目路径：${projectDir}`,
+    `报告路径：${reportPath}`,
+    '',
+    '要求：',
+    '- 优先读取并参考上述 HTML 报告。',
+    '- 如果报告信息不足，可以只读检索项目文件补充证据。',
+    '- 不要修改文件，不要生成新报告，不要写入记忆。',
+    '- 除非用户明确要求其他语言，否则使用简体中文回答。',
+    '',
+    `问题：${question.trim()}`
+  ].join('\n');
 }
 
 async function serveStatic(res, filePath) {
@@ -326,7 +358,7 @@ async function main() {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/session/messages') {
-      jsonResponse(res, bridge.getSessionMessages());
+      jsonResponse(res, { messages: bridge.getSessionMessages(), compact: bridge.getSessionCompactMeta() });
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/session/ui-messages') {
@@ -426,18 +458,12 @@ async function main() {
       const reportPath = selectedReport
         ? path.join(getRequirementsDir(currentProjectDir), selectedReport)
         : getRequirementsDir(currentProjectDir);
-      const prompt = [
-        '请基于当前项目和 CodeWiki / project-requirements HTML 报告回答下面的问题。',
-        `项目路径：${currentProjectDir}`,
-        `报告路径：${reportPath}`,
-        '',
-        '要求：',
-        '- 优先读取并参考上述 HTML 报告。',
-        '- 如果报告信息不足，可以只读检索项目文件补充证据。',
-        '- 不要修改文件，不要生成新报告，不要写入记忆。',
-        '',
-        `问题：${question.trim()}`
-      ].join('\n');
+      const prompt = buildCodeWikiAskPrompt({
+        question,
+        reportPath,
+        projectDir: currentProjectDir,
+        replyLanguage: bridge.getState()?.replyLanguage
+      });
 
       res.writeHead(200, {
         'Content-Type': 'application/x-ndjson; charset=utf-8',
@@ -538,10 +564,57 @@ async function main() {
     if (req.method === 'GET' && url.pathname === '/api/git') {
       try {
         const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-        const dirty = execSync('git status --porcelain', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim().length > 0;
-        jsonResponse(res, { isGit: true, branch, dirty });
+        const porcelain = execSync('git status --porcelain', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+        const lines = porcelain ? porcelain.split('\n') : [];
+        let staged = 0, modified = 0, untracked = 0;
+        for (const line of lines) {
+          const x = line[0], y = line[1];
+          if (x === '?' && y === '?') { untracked++; continue; }
+          if (x !== ' ' && x !== '?') staged++;
+          if (y === 'M' || y === 'D') modified++;
+        }
+        jsonResponse(res, { isGit: true, branch, dirty: lines.length > 0, staged, modified, untracked });
       } catch {
-        jsonResponse(res, { isGit: false, branch: null, dirty: false });
+        jsonResponse(res, { isGit: false, branch: null, dirty: false, staged: 0, modified: 0, untracked: 0 });
+      }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/git-diff') {
+      try {
+        let patch;
+        try {
+          patch = execSync('git diff HEAD --no-color', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+        } catch {
+          patch = execSync('git diff --cached --no-color', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+        }
+        const patchFiles = [];
+        const seenPatchFiles = new Set();
+        for (const line of patch.split('\n')) {
+          const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+          if (!match) continue;
+          const filePath = match[2] || match[1];
+          if (!filePath || seenPatchFiles.has(filePath)) continue;
+          seenPatchFiles.add(filePath);
+          patchFiles.push(filePath);
+        }
+        const porcelain = execSync('git status --porcelain', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+        const statusByPath = new Map();
+        if (porcelain) {
+          for (const line of porcelain.split('\n')) {
+            const x = line[0], y = line[1], filePath = line.slice(3);
+            let status;
+            if (x === '?' && y === '?') status = '?';
+            else if (x === 'A' || y === 'A') status = 'A';
+            else if (x === 'D' || y === 'D') status = 'D';
+            else status = 'M';
+            const staged = (x !== ' ' && x !== '?');
+            statusByPath.set(filePath, { path: filePath, status, staged });
+          }
+        }
+        const files = patchFiles.map(filePath => statusByPath.get(filePath) || { path: filePath, status: 'M', staged: false });
+        jsonResponse(res, { patch, files });
+      } catch {
+        jsonResponse(res, { patch: '', files: [] });
       }
       return;
     }
@@ -823,7 +896,7 @@ async function main() {
   });
 
   server.listen(args.port, () => {
-    console.log(`\n  CodeMini Web UI\n  http://localhost:${args.port}\n  Project: ${currentProjectDir}\n`);
+    console.log(`\n  Codemini Web UI\n  http://localhost:${args.port}\n  Project: ${currentProjectDir}\n`);
     if (!args.open) return;
     const openCmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
     import('node:child_process').then(({ exec }) => {

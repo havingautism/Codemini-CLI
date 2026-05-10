@@ -115,6 +115,10 @@ export class RuntimeBridge {
     }
   }
 
+  #broadcastRuntimeState() {
+    this.#broadcast({ type: 'runtime:state', state: this.getState() });
+  }
+
   async #writeUiTranscriptSnapshot() {
     const sessionId = this.getSessionId();
     if (!sessionId) return;
@@ -318,6 +322,15 @@ export class RuntimeBridge {
         }
         break;
       }
+      case 'compact:auto': {
+        this.#addUiMessage({
+          role: 'divider',
+          dividerType: 'compact',
+          text: `以上内容已压缩 (${event.mode || ''}, ${event.threshold || ''}%)`,
+          timestamp: new Date().toISOString()
+        });
+        break;
+      }
       default:
         break;
     }
@@ -377,6 +390,7 @@ export class RuntimeBridge {
       this.#broadcast({ type: 'submit:done', result: { type: 'error', text: err.message } });
     }).finally(() => {
       this.#busy = false;
+      this.#broadcastRuntimeState();
     });
     return { accepted: true };
   }
@@ -427,8 +441,9 @@ export class RuntimeBridge {
 
   getState() {
     const state = this.#runtime.getRuntimeState();
+    const serializableState = typeof state?.toJSON === 'function' ? state.toJSON() : state;
     return {
-      ...state,
+      ...serializableState,
       busy: this.#busy,
       requestInFlight: this.#busy,
       pendingPlanApproval: this.#busy ? null : state.pendingPlanApproval
@@ -451,6 +466,12 @@ export class RuntimeBridge {
         planTranscript: Array.isArray(m.plan_transcript) ? m.plan_transcript : null,
         at: m.at || null
       }));
+  }
+
+  getSessionCompactMeta() {
+    const compact = this.#runtime.getSessionCompact();
+    if (!compact) return null;
+    return { boundaryIndex: compact.boundaryIndex, mode: compact.mode, timestamp: compact.timestamp };
   }
 
   async getUiMessages() {

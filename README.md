@@ -1,4 +1,4 @@
-# [CodeMini CLI](https://github.com/havingautism/Codemini-CLI)
+# [Codemini CLI](https://github.com/havingautism/Codemini-CLI)
 
 [![npm version](https://img.shields.io/npm/v/codemini-cli.svg?style=flat-square)](https://www.npmjs.com/package/codemini-cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
@@ -12,13 +12,13 @@
 
 ## English
 
-CodeMini CLI is a terminal coding assistant built for teams that want a sharper, more controllable, and model-agnostic agent experience.
+Codemini CLI is a terminal coding assistant built for teams that want a sharper, more controllable, and model-agnostic agent experience.
 
-It is designed around a deliberate idea: most coding workflows do not need a huge default tool surface or unrestricted shell behavior. Instead, CodeMini starts with a compact core, loads advanced tools on demand, and keeps the agent grounded in structured code operations, session todos, lightweight project indexing, and shell-aware safety rules.
+It is designed around a deliberate idea: most coding workflows do not need a huge default tool surface or unrestricted shell behavior. Instead, Codemini starts with a compact core, loads advanced tools on demand, and keeps the agent grounded in structured code operations, session todos, lightweight project indexing, and shell-aware safety rules.
 
-**Contents** — [Why CodeMini CLI](#why-codemini-cli) · [Installation](#installation) · [Quick Start](#quick-start) · [Web UI](#web-ui) · [Commands](#commands) · [Personalities (Souls)](#personalities-souls) · [Tool Model](#how-the-tool-model-works) · [Core Capabilities](#core-capabilities) · [Reflect Skills](#reflect-skills) · [Dream Loop (Built-in Memory Evolution)](#dream-loop-built-in-memory-evolution) · [Project Index](#project-index) · [Good Fit](#good-fit) · [Documentation](#documentation) · [Development](#development) · [License](#license)
+**Contents** — [Why Codemini CLI](#why-codemini-cli) · [Installation](#installation) · [Quick Start](#quick-start) · [Web UI](#web-ui) · [Commands](#commands) · [Personalities (Souls)](#personalities-souls) · [Tool Model](#how-the-tool-model-works) · [Core Capabilities](#core-capabilities) · [Reflect Skills](#reflect-skills) · [Dream Loop (Built-in Memory Evolution)](#dream-loop-built-in-memory-evolution) · [Project Index](#project-index) · [Good Fit](#good-fit) · [Documentation](#documentation) · [Development](#development) · [License](#license)
 
-### Why CodeMini CLI
+### Why Codemini CLI
 
 - Built for practical coding workflows across both frontier-scale and smaller/internal models
 - Keeps the default tool list intentionally small, with additional tools discoverable through `tool_search`
@@ -60,7 +60,7 @@ codemini
 
 ### Web UI
 
-CodeMini also includes a local Web UI under `codemini-web/`. It runs the same CodeMini runtime behind a browser interface, so you can keep the agent workflow visible while managing sessions, projects, approvals, skills, souls, and CodeWiki reports from one place.
+Codemini also includes a local Web UI under `codemini-web/`. It runs the same Codemini runtime behind a browser interface, so you can keep the agent workflow visible while managing sessions, projects, approvals, skills, souls, and CodeWiki reports from one place.
 
 After installing the npm package, open it directly from any project:
 
@@ -102,7 +102,7 @@ npm run start -- --port 3210
 
 Current Web UI highlights:
 
-- Chat with the CodeMini runtime using the same sessions and configuration as the CLI
+- Chat with the Codemini runtime using the same sessions and configuration as the CLI
 - Switch projects and sessions without restarting the process
 - Review tool approvals and plan approvals in focused dialogs/cards
 - Manage config, skills, and soul presets from the browser
@@ -111,10 +111,10 @@ Current Web UI highlights:
 
 ### Optional: FFF Search Acceleration
 
-CodeMini CLI can optionally use `fff-mcp` as a faster backend for `grep`, `glob`, and part of `list`.
+Codemini CLI can optionally use `fff-mcp` as a faster backend for `grep`, `glob`, and part of `list`.
 
-- If `fff-mcp` is installed and available in `PATH`, CodeMini will reuse it automatically within the current session.
-- If `fff-mcp` is missing or fails to start, CodeMini falls back to its built-in search implementation automatically.
+- If `fff-mcp` is installed and available in `PATH`, Codemini will reuse it automatically within the current session.
+- If `fff-mcp` is missing or fails to start, Codemini falls back to its built-in search implementation automatically.
 - This means `fff-mcp` is an enhancement, not a hard dependency.
 - `codemini doctor` now reports `FFF MCP availability` so you can verify whether it is active.
 
@@ -147,7 +147,7 @@ playwright install chromium
 
 ### Personalities (Souls)
 
-CodeMini CLI supports swappable "soul" personalities that change tone and expression style without altering plan logic or code behavior.
+Codemini CLI supports swappable "soul" personalities that change tone and expression style without altering plan logic or code behavior.
 
 Built-in souls: `default`, `professional`, `ceo`, `playful`, `anime`, `caveman`, `pirate`
 
@@ -179,7 +179,7 @@ Bundled skills are built in, always enabled, and cannot be disabled or overwritt
 
 ### How The Tool Model Works
 
-CodeMini CLI intentionally separates tools into two layers:
+Codemini CLI intentionally separates tools into two layers:
 
 - **Default tools** — always visible, optimized for the most common coding path
 - **Deferred tools** — loaded only when needed through `tool_search`
@@ -230,7 +230,7 @@ Common forms:
 /reflect --scope=global <what to preserve>
 ```
 
-- `/reflect` is exploratory. CodeMini reviews recent context and proposes a skill only when there is a reusable pattern worth saving.
+- `/reflect` is exploratory. Codemini reviews recent context and proposes a skill only when there is a reusable pattern worth saving.
 - `/reflect <what to preserve>` is directed. Use it when you already know which successful chain should become a skill, such as `/reflect preserve the provider tool-call recovery workflow`.
 - `/reflect --scope=global <request>` writes the approved draft to the global skills directory instead of the current project.
 - The draft is previewed first. Use `/yes` to write it, `/edit <feedback>` to revise it, or `/no` to discard it.
@@ -270,7 +270,7 @@ Execution mode behavior:
 
 ### Project Index
 
-CodeMini CLI maintains a lightweight project index inside `.codemini/`:
+Codemini CLI maintains a lightweight project index inside `.codemini/`:
 
 - `project-map.json` — high-level repository facts such as languages, source roots, test roots, and entry candidates
 - `file-index.json` — per-file structure such as imports, exports, functions, classes, and lightweight symbol hints
@@ -301,7 +301,7 @@ Base config directory resolution order:
 
 ### Good Fit
 
-CodeMini CLI is a strong fit if you want:
+Codemini CLI is a strong fit if you want:
 
 - a coding CLI that behaves well with both large and small models
 - a controlled tool surface instead of an everything-is-exposed agent
@@ -338,7 +338,7 @@ npm start
 
 ## 简体中文
 
-CodeMini CLI 是一个面向真实开发环境的终端代码助手，目标不是"把所有能力都塞进默认界面"，而是做一个更克制、更清晰、更容易掌控的 coding agent CLI。
+Codemini CLI 是一个面向真实开发环境的终端代码助手，目标不是"把所有能力都塞进默认界面"，而是做一个更克制、更清晰、更容易掌控的 coding agent CLI。
 
 它围绕一个很明确的原则来设计：默认工具面尽量小，常用路径尽量顺，复杂能力按需加载。这样可以同时兼顾大模型与小模型，也适合团队在内部环境里做稳定、可控的日常开发协作。
 
@@ -384,7 +384,7 @@ codemini
 
 ### Web UI
 
-CodeMini 也内置了一个本地 Web UI，位于 `codemini-web/`。它复用同一套 CodeMini runtime，只是把交互入口放到浏览器里，适合更直观地查看会话、项目、审批、技能、人格和 CodeWiki 报告。
+Codemini 也内置了一个本地 Web UI，位于 `codemini-web/`。它复用同一套 Codemini runtime，只是把交互入口放到浏览器里，适合更直观地查看会话、项目、审批、技能、人格和 CodeWiki 报告。
 
 npm 包安装后，可以在任意项目目录直接打开：
 
@@ -435,10 +435,10 @@ npm run start -- --port 3210
 
 ### 可选：FFF 搜索加速
 
-CodeMini CLI 可以可选地使用 `fff-mcp` 作为 `grep`、`glob` 和部分 `list` 的更快后端。
+Codemini CLI 可以可选地使用 `fff-mcp` 作为 `grep`、`glob` 和部分 `list` 的更快后端。
 
-- 如果 `fff-mcp` 已安装并且在 `PATH` 中可用，CodeMini 会在当前会话内自动复用它。
-- 如果 `fff-mcp` 缺失或启动失败，CodeMini 会自动回退到内置搜索实现。
+- 如果 `fff-mcp` 已安装并且在 `PATH` 中可用，Codemini 会在当前会话内自动复用它。
+- 如果 `fff-mcp` 缺失或启动失败，Codemini 会自动回退到内置搜索实现。
 - 这意味着 `fff-mcp` 是增强项，不是硬依赖。
 - 现在可以通过 `codemini doctor` 里的 `FFF MCP availability` 看到它是否可用。
 
@@ -471,7 +471,7 @@ playwright install chromium
 
 ### 个性人格（Souls）
 
-CodeMini CLI 支持可切换的 "soul" 人格，仅改变语气和表达风格，不影响计划逻辑或代码行为。
+Codemini CLI 支持可切换的 "soul" 人格，仅改变语气和表达风格，不影响计划逻辑或代码行为。
 
 内置人格：`default`、`professional`、`ceo`、`playful`、`anime`、`caveman`、`pirate`
 
@@ -503,7 +503,7 @@ codemini skill inspect <name>                # 查看某个 skill 的详细信�
 
 ### 工具模型怎么设计
 
-CodeMini CLI 把工具分成两层：
+Codemini CLI 把工具分成两层：
 
 - **默认工具** — 永远可见，覆盖最常见的编码主路径
 - **延迟工具** — 只有在需要时才通过 `tool_search` 加载
@@ -554,7 +554,7 @@ CodeMini CLI 把工具分成两层：
 /reflect --scope=global <要沉淀的用户要求>
 ```
 
-- `/reflect` 是探索模式。CodeMini 会查看近期上下文，只有在确实有可复用模式时才提出 skill 草稿。
+- `/reflect` 是探索模式。Codemini 会查看近期上下文，只有在确实有可复用模式时才提出 skill 草稿。
 - `/reflect <用户要求>` 是定向模式。适合你已经知道要沉淀哪条成功链路，例如 `/reflect 把刚才 provider tool_call 恢复链路沉淀成 skill`。
 - `/reflect --scope=global <用户要求>` 会把确认后的草稿写到全局 skill 目录，而不是当前项目。
 - 草稿会先预览。用 `/yes` 写入，用 `/edit <反馈>` 修改，用 `/no` 放弃。
@@ -594,7 +594,7 @@ Inbox 和持久记忆的区别：
 
 ### 项目索引
 
-CodeMini CLI 会在 `.codemini/` 下维护一份轻量项目索引：
+Codemini CLI 会在 `.codemini/` 下维护一份轻量项目索引：
 
 - `project-map.json` — 记录仓库的高层结构事实，比如语言、源码目录、测试目录、入口候选
 - `file-index.json` — 记录文件级结构信息，比如 imports、exports、functions、classes 和轻量 symbol 提示
@@ -625,7 +625,7 @@ CodeMini CLI 会在 `.codemini/` 下维护一份轻量项目索引：
 
 ### 适合谁
 
-如果你想要的是下面这种工具，CodeMini CLI 会很合适：
+如果你想要的是下面这种工具，Codemini CLI 会很合适：
 
 - 能同时和大模型、小模型稳定协作的 coding CLI
 - 更克制、更可控的工具暴露方式

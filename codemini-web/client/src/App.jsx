@@ -15,9 +15,10 @@ import { ProjectSelector } from "@/components/ProjectSelector.jsx";
 import { SkillDialog } from "@/components/SkillDialog.jsx";
 import { SoulDialog } from "@/components/SoulDialog.jsx";
 import { AboutDialog } from "@/components/AboutDialog.jsx";
+import { GitDiffDialog } from "@/components/GitDiffDialog.jsx";
 import { PlanProgress } from "@/components/PlanProgress.jsx";
 import { SessionPanel } from "@/components/SessionPanel.jsx";
-import { MoreHorizontal, Terminal } from "lucide-react";
+import { MoreHorizontal, Terminal, GitCompare } from "lucide-react";
 import "../style.css";
 
 function GitHubIcon({ size = 14, className, ...props }) {
@@ -54,7 +55,7 @@ class ErrorBoundary extends Component {
             fontSize: 13,
           }}
         >
-          <p style={{ fontWeight: 600, marginBottom: 8 }}>{t('renderError')}</p>
+          <p style={{ fontWeight: 600, marginBottom: 8 }}>{t("renderError")}</p>
           <pre style={{ whiteSpace: "pre-wrap", opacity: 0.8 }}>
             {this.state.error?.message || String(this.state.error)}
           </pre>
@@ -70,7 +71,7 @@ class ErrorBoundary extends Component {
               cursor: "pointer",
             }}
           >
-            {t('retry')}
+            {t("retry")}
           </button>
         </div>
       );
@@ -88,6 +89,7 @@ function Shell() {
     <div className="flex h-screen bg-(--bg-primary) text-(--text-primary)">
       <Sidebar
         sessions={state.sessions}
+        sessionsLoading={state.sessionsLoading}
         currentSessionId={currentId}
         onNewSession={actions.newSession}
         onSwitchSession={actions.switchSession}
@@ -110,6 +112,7 @@ function Shell() {
         {state.currentView === "sessions" ? (
           <SessionPanel
             sessions={state.sessions}
+            sessionsLoading={state.sessionsLoading}
             currentId={currentId}
             onSwitch={actions.switchSession}
             onNew={actions.newSession}
@@ -117,8 +120,16 @@ function Shell() {
           />
         ) : state.currentView === "codewiki" ? (
           <CodeWikiPanel
-            projectCwd={state.codewikiProjectPath?.split(/[/\\]/).pop() || state.projectCwd}
-            projectKey={state.codewikiProjectPath || state.runtimeState?.cwd || state.projectCwd || ""}
+            projectCwd={
+              state.codewikiProjectPath?.split(/[/\\]/).pop() ||
+              state.projectCwd
+            }
+            projectKey={
+              state.codewikiProjectPath ||
+              state.runtimeState?.cwd ||
+              state.projectCwd ||
+              ""
+            }
             busy={state.busy}
             planSteps={state.planSteps}
             stageLabel={state.stageLabel}
@@ -135,10 +146,15 @@ function Shell() {
                   <span className="inline-flex items-center gap-1 text-[12px] text-(--text-muted) shrink-0">
                     <GitHubIcon size={13} />
                     <span>{state.gitInfo.branch}</span>
-                    {/* {state.gitInfo.dirty && (
-                      <CircleDot size={8} className="text-(--text-muted)" />
-                    )} */}
                   </span>
+                )}
+                {state.gitInfo?.isGit && state.gitInfo?.dirty && (
+                  <button
+                    onClick={() => actions.setGitDiffOpen(true)}
+                    className="inline-flex items-center gap-1 text-[12px] text-(--text-muted) shrink-0 border-0 bg-transparent cursor-pointer hover:text-(--text-primary) p-0"
+                  >
+                    <GitCompare size={13} />
+                  </button>
                 )}
               </div>
               <button className="border-0 bg-transparent text-(--text-muted) rounded-md p-1.5 cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) shrink-0">
@@ -158,13 +174,19 @@ function Shell() {
               messages={state.messages}
               projectCwd={state.projectCwd}
               skills={state.skills}
+              gitInfo={state.gitInfo}
+              messagesLoading={state.messagesLoading}
             />
 
             {/* Plan Review / Input Area */}
             <div className="w-[min(980px,calc(100%-64px))] mx-auto mb-4 shrink-0 z-30 bg-transparent relative">
               {state.pendingPlanApproval && (
                 <div className="mb-3">
-                  <PlanApprovalCard plan={state.pendingPlanApproval} onAction={actions.approvePlan} disabled={state.busy} />
+                  <PlanApprovalCard
+                    plan={state.pendingPlanApproval}
+                    onAction={actions.approvePlan}
+                    disabled={state.busy}
+                  />
                 </div>
               )}
               <InputBar
@@ -172,7 +194,7 @@ function Shell() {
                 onAbort={actions.abort}
                 busy={state.busy}
                 disabled={!!state.pendingPlanApproval}
-                disabledReason={t('planReviewFirst')}
+                disabledReason={t("planReviewFirst")}
                 runtimeState={state.runtimeState}
                 history={state.history}
                 onCompletionRequest={async (input) => {
@@ -193,7 +215,7 @@ function Shell() {
                 {state.versionInfo?.current && (
                   <span className="inline-flex items-center gap-1 text-[11px] text-(--text-muted) shrink-0">
                     <Terminal size={11} />
-                    CodeMini CLI@{state.versionInfo.current}
+                    Codemini CLI@{state.versionInfo.current}
                   </span>
                 )}
                 <StatusBar
@@ -229,6 +251,11 @@ function Shell() {
         open={state.aboutOpen}
         onOpenChange={actions.setAboutOpen}
         version={state.versionInfo?.current}
+      />
+
+      <GitDiffDialog
+        open={state.gitDiffOpen}
+        onOpenChange={actions.setGitDiffOpen}
       />
 
       <ProjectSelector

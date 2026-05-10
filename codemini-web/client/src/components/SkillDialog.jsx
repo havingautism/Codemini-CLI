@@ -5,11 +5,11 @@ import { t } from '../../i18n/index.js';
 export function SkillDialog({ open, onOpenChange }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-160 max-h-[80vh] overflow-hidden flex flex-col">
+      <DialogContent className="sm:max-w-[800px] max-h-[86vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle>{t('skills')}</DialogTitle>
         </DialogHeader>
-        <div className="flex-1 overflow-y-auto pr-1" style={{ scrollbarWidth: 'thin' }}>
+        <div className="flex-1 overflow-y-auto min-h-0 pr-1">
           <SkillPanel />
         </div>
       </DialogContent>

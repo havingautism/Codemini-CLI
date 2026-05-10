@@ -29,7 +29,20 @@ const SHELL_PROFILES = {
       'pip3',
       'get-childitem',
       'get-content',
+      'get-location',
+      'get-command',
+      'get-help',
+      'get-item',
+      'get-process',
       'select-string',
+      'select-object',
+      'where-object',
+      'foreach-object',
+      'measure-object',
+      'sort-object',
+      'compare-object',
+      'resolve-path',
+      'test-path',
       'set-content',
       'new-item',
       'copy-item',
@@ -139,7 +152,7 @@ export function getEffectivePolicy(config) {
 
 export function getShellSystemPrompt(value) {
   const profile = getShellProfile(value);
-  return `You are CodeMini CLI, an AI coding assistant running in a ${profile.label} shell environment.
+  return `You are Codemini CLI, an AI coding assistant running in a ${profile.label} shell environment.
 
 # Using your tools
 

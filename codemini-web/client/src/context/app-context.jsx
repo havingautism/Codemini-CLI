@@ -44,10 +44,11 @@ const initialState = {
   stage: 'idle', busy: false, currentView: 'chat', runtimeState: null,
   live: false, stageLabel: '', messages: [], activeMsgId: null,
   pendingToolChanges: [], planSteps: [], pendingPlanApproval: null, approvalRequest: null,
-  config: null, configOpen: false, projectOpen: false, skillsOpen: false, soulsOpen: false, aboutOpen: false,
+  config: null, configOpen: false, projectOpen: false, skillsOpen: false, soulsOpen: false, aboutOpen: false, gitDiffOpen: false,
   sessions: [], projectCwd: null, history: [], skills: [], gitInfo: null, gitBatch: {},
   codewikiProjectPath: '',
   versionInfo: null, updateStatus: null,
+  initialLoading: true, sessionsLoading: false, messagesLoading: false,
 };
 
 function collapseRenderedSkillPrompt(content) {
@@ -293,12 +294,14 @@ export function AppProvider({ children }) {
   }, [update]);
 
   const loadSessions = useCallback(async () => {
+    update({ sessionsLoading: true });
     try {
       const sessions = await api.fetchSessions();
       const list = Array.isArray(sessions) ? sessions : [];
       update({ sessions: list });
       loadGitBatch(list);
     } catch {}
+    finally { update({ sessionsLoading: false }); }
   }, [update, loadGitBatch]);
 
   const openCodeWikiProjectFromRoute = useCallback(async (projectPath) => {
@@ -322,9 +325,12 @@ export function AppProvider({ children }) {
   }, [update]);
 
   const loadSessionMessages = useCallback(async () => {
+    update({ messagesLoading: true });
     try {
-      const messages = await api.fetchSessionMessages();
-      if (!Array.isArray(messages) || !messages.length) {
+      const data = await api.fetchSessionMessages();
+      const messages = Array.isArray(data) ? data : (data.messages || []);
+      const compactMeta = data?.compact || null;
+      if (!messages.length) {
         const uiMessages = await api.fetchSessionUiMessages();
         if (Array.isArray(uiMessages) && uiMessages.length) {
           update({ messages: uiMessages });
@@ -333,7 +339,20 @@ export function AppProvider({ children }) {
       }
       const processed = [];
       let assistantGroup = null;
-      for (const msg of messages) {
+      const compactBoundary = compactMeta?.boundaryIndex;
+      let dividerInserted = compactBoundary == null;
+      for (let mi = 0; mi < messages.length; mi++) {
+        const msg = messages[mi];
+        // Insert compact divider at the boundary position
+        if (!dividerInserted && mi >= compactBoundary) {
+          processed.push({
+            id: `msg-compact-divider-${Date.now()}`,
+            role: 'divider', dividerType: 'compact',
+            text: `以上内容已压缩 (${compactMeta.mode || ''})`,
+            timestamp: compactMeta.timestamp || new Date().toISOString()
+          });
+          dividerInserted = true;
+        }
         if (msg.role === 'user') {
           if (isPlanApprovalCommandLine(msg.content)) continue;
           assistantGroup = null;
@@ -401,6 +420,7 @@ export function AppProvider({ children }) {
       }
       update({ messages: processed });
     } catch {}
+    finally { update({ messagesLoading: false }); }
   }, [update]);
 
   const handleEvent = useCallback((event) => {
@@ -629,7 +649,7 @@ export function AppProvider({ children }) {
       }
 
       case 'compact:auto':
-        addMessage({ role: 'system', text: `Context auto-compacted (${event.mode || ''}, ${event.threshold || ''}%)`, timestamp: new Date().toISOString() });
+        addMessage({ role: 'divider', dividerType: 'compact', text: `以上内容已压缩 (${event.mode || ''}, ${event.threshold || ''}%)`, timestamp: new Date().toISOString() });
         break;
 
       case 'dream:auto':
@@ -683,6 +703,19 @@ export function AppProvider({ children }) {
       case 'mode:changed': {
         const rs = event;
         update({ runtimeState: { ...stateRef.current.runtimeState, mode: rs.mode, ...rs } });
+        break;
+      }
+
+      case 'runtime:state': {
+        const rs = event.state || {};
+        update({
+          runtimeState: { ...stateRef.current.runtimeState, ...rs },
+          pendingPlanApproval: rs?.pendingPlanApproval || null,
+          busy: !!rs.busy,
+          live: !!rs.busy,
+          stage: rs.busy ? stateRef.current.stage : 'idle',
+          stageLabel: rs.busy ? stateRef.current.stageLabel : ''
+        });
         break;
       }
 
@@ -763,6 +796,7 @@ export function AppProvider({ children }) {
         const vInfo = await api.fetchVersion();
         update({ versionInfo: vInfo });
       } catch {}
+      update({ initialLoading: false });
       connectSSE();
     })();
 
@@ -777,6 +811,7 @@ export function AppProvider({ children }) {
           const currentState = await api.fetchState();
           if (currentState.sessionId !== route.sessionId) {
             await api.switchSession(route.sessionId);
+            update({ messagesLoading: true });
             setState(prev => ({ ...prev, messages: [] }));
             await loadState();
             await loadSessionMessages();
@@ -871,7 +906,7 @@ export function AppProvider({ children }) {
       try {
         const result = await api.switchSession(sessionId);
         if (result.ok) {
-          update({ currentView: 'chat' });
+          update({ currentView: 'chat', messagesLoading: true });
           updateRoute('chat', sessionId);
           await loadState();
           setState(prev => ({ ...prev, messages: [] }));
@@ -892,7 +927,7 @@ export function AppProvider({ children }) {
           sessions: prev.sessions.filter((session) => session.id !== sessionId)
         }));
         if (deletingCurrent) {
-          update({ currentView: 'chat' });
+          update({ currentView: 'chat', messagesLoading: true });
           if (result.sessionId) updateRoute('chat', result.sessionId, { replace: true });
           await loadState();
           setState(prev => ({ ...prev, messages: [] }));
@@ -964,6 +999,7 @@ export function AppProvider({ children }) {
     setSkillsOpen: (open) => update({ skillsOpen: open }),
     setSoulsOpen: (open) => update({ soulsOpen: open }),
     setAboutOpen: (open) => update({ aboutOpen: open }),
+    setGitDiffOpen: (open) => update({ gitDiffOpen: open }),
 
     checkVersion: async () => {
       try {
