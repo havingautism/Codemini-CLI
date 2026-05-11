@@ -104,6 +104,50 @@ function buildLocalSummary(messages) {
 }
 
 /**
+ * Build a conversation transcript from messages for LLM summarization input.
+ * Includes structured metadata (tool calls, file changes) alongside the text.
+ */
+export function buildTranscriptForLLM(messages) {
+  const parts = [];
+  for (const msg of messages) {
+    const text = textFromContent(msg.content).replace(/\s+/g, ' ').trim();
+    if (!text && !Array.isArray(msg.tool_calls) && msg.role !== 'user') continue;
+    if (msg.role === 'user') {
+      parts.push(`[User]\n${text.slice(0, 600)}`);
+    } else if (msg.role === 'assistant') {
+      let block = `[Assistant]\n${text.slice(0, 600)}`;
+      if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+        const toolNames = msg.tool_calls.map(tc => tc.function?.name || tc.name || 'tool').join(', ');
+        block += `\n[Called tools: ${toolNames}]`;
+      }
+      parts.push(block);
+    } else if (msg.role === 'tool') {
+      let parsed;
+      try { parsed = JSON.parse(text); } catch { parsed = null; }
+      if (parsed && typeof parsed === 'object') {
+        const summary = summarizeToolResult(parsed);
+        parts.push(`[Tool Result]\n${summary.slice(0, 400)}`);
+      } else {
+        parts.push(`[Tool Result]\n${text.slice(0, 300)}`);
+      }
+    }
+  }
+  return parts.join('\n\n');
+}
+
+export const COMPACT_SUMMARY_PROMPT = `Summarize the following conversation into a structured context summary that preserves all critical information for continuing the task. Be thorough and specific.
+
+Include:
+- The user's goal and requirements
+- Key decisions made and reasoning
+- Files that were read, modified, or created (with paths)
+- Current progress and what remains
+- Any errors encountered and how they were resolved
+- Important constraints or conventions discovered
+
+Write in the same language as the conversation. Be concise but do not omit important details.`;
+
+/**
  * Micro-compact: in-place clearing of old tool result content.
  * Does NOT change message count or order — only replaces tool result text
  * with a lightweight marker, preserving conversation structure.
@@ -151,7 +195,7 @@ export function microCompactMessages(messages, { keepRecent = 5, enabled = true 
   return { messages: result, changed: true, tokensSaved };
 }
 
-export function compactMessagesLocally(messages, { mode = 'default', force = false } = {}) {
+export async function compactMessagesLocally(messages, { mode = 'default', force = false, generateSummary = null } = {}) {
   const keepRecent = modeToKeepRecent(mode);
   if (!Array.isArray(messages) || messages.length <= 1) {
     return {
@@ -169,9 +213,19 @@ export function compactMessagesLocally(messages, { mode = 'default', force = fal
 
   const older = messages.slice(0, Math.max(0, messages.length - keepRecent));
   const recent = messages.slice(Math.max(0, messages.length - keepRecent));
-  const summary = buildLocalSummary(older);
-  const compacted = [{ role: 'assistant', content: summary }, ...recent];
 
+  let summary;
+  if (typeof generateSummary === 'function') {
+    try {
+      summary = await generateSummary(older);
+    } catch {
+      summary = buildLocalSummary(older);
+    }
+  } else {
+    summary = buildLocalSummary(older);
+  }
+
+  const compacted = [{ role: 'assistant', content: summary }, ...recent];
   const boundaryIndex = Math.max(0, messages.length - keepRecent);
 
   return {
