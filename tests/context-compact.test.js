@@ -12,7 +12,7 @@ test('estimateMessagesTokens charges non-ascii text more heavily than ascii text
   assert.ok(chineseOnly > asciiOnly);
 });
 
-test('compactMessagesLocally produces a structured summary that preserves work state', () => {
+test('compactMessagesLocally produces a structured summary that preserves work state', async () => {
   const messages = [
     { role: 'user', content: 'Fix login bug and run tests' },
     { role: 'assistant', content: 'I will inspect auth first.', tool_calls: [{ id: '1' }] },
@@ -25,7 +25,7 @@ test('compactMessagesLocally produces a structured summary that preserves work s
     { role: 'assistant', content: 'Tests are next.' }
   ];
 
-  const result = compactMessagesLocally(messages, { mode: 'aggressive' });
+  const result = await compactMessagesLocally(messages, { mode: 'aggressive' });
 
   assert.equal(result.changed, true);
   assert.match(result.summary, /Context Summary/);
