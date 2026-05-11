@@ -154,7 +154,7 @@
   --bg-secondary: #141414;
   --bg-tertiary: #262626;
   --bg-hover: #2e2e2e;
-  --bg-active: #333333;
+  --bg-active: #2e2e2e;
   --bg-input: #141414;
   --text-primary: #fafafa;
   --text-secondary: #a3a3a3;
@@ -210,7 +210,7 @@
   --bg-secondary: #e6e9ef;
   --bg-tertiary: #dce0e8;
   --bg-hover: #ccd0da;
-  --bg-active: #bcc0cc;
+  --bg-active: #ccd0da;
   --bg-input: #eff1f5;
   --text-primary: #4c4f69;
   --text-secondary: #6c6f85;
@@ -263,7 +263,7 @@
   --bg-secondary: #181825;
   --bg-tertiary: #313244;
   --bg-hover: #45475a;
-  --bg-active: #585b70;
+  --bg-active: #45475a;
   --bg-input: #11111b;
   --text-primary: #cdd6f4;
   --text-secondary: #bac2de;
@@ -369,7 +369,7 @@
   --bg-secondary: #16161e;
   --bg-tertiary: #24283b;
   --bg-hover: #292e42;
-  --bg-active: #3b4261;
+  --bg-active: #292e42;
   --bg-input: #15161e;
   --text-primary: #c0caf5;
   --text-secondary: #a9b1d6;
@@ -422,7 +422,7 @@
   --bg-secondary: #f0f0f0;
   --bg-tertiary: #e5e5e6;
   --bg-hover: #d7d7d8;
-  --bg-active: #c9c9ca;
+  --bg-active: #d7d7d8;
   --bg-input: #ffffff;
   --text-primary: #383a42;
   --text-secondary: #696c77;
@@ -475,7 +475,7 @@
   --bg-secondary: #21252b;
   --bg-tertiary: #2c313c;
   --bg-hover: #3e4451;
-  --bg-active: #1d1e21;
+  --bg-active: #3e4451;
   --bg-input: #1e222a;
   --text-primary: #abb2bf;
   --text-secondary: #9da5b4;
@@ -528,7 +528,7 @@
   --bg-secondary: #f6f8fa;
   --bg-tertiary: #eaeef2;
   --bg-hover: #eaeef2;
-  --bg-active: #d8dee4;
+  --bg-active: #eaeef2;
   --bg-input: #ffffff;
   --text-primary: #24292f;
   --text-secondary: #57606a;
@@ -581,7 +581,7 @@
   --bg-secondary: #010409;
   --bg-tertiary: #161b22;
   --bg-hover: #21262d;
-  --bg-active: #30363d;
+  --bg-active: #21262d;
   --bg-input: #010409;
   --text-primary: #e6edf3;
   --text-secondary: #c9d1d9;
@@ -634,7 +634,7 @@
   --bg-secondary: #f3f3f3;
   --bg-tertiary: #e8e8e8;
   --bg-hover: #e8e8e8;
-  --bg-active: #d4d4d4;
+  --bg-active: #e8e8e8;
   --bg-input: #ffffff;
   --text-primary: #1f1f1f;
   --text-secondary: #616161;
@@ -687,7 +687,7 @@
   --bg-secondary: #252526;
   --bg-tertiary: #2d2d30;
   --bg-hover: #2a2d2e;
-  --bg-active: #37373d;
+  --bg-active: #2a2d2e;
   --bg-input: #1e1e1e;
   --text-primary: #d4d4d4;
   --text-secondary: #cccccc;

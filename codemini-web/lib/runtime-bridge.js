@@ -98,6 +98,9 @@ export class RuntimeBridge {
     this.#runtime = runtime;
     this.#installApprovalHandler();
     this.#uiTranscriptSessionId = this.getSessionId();
+    runtime.setOnTitleUpdate?.((sessionId, title) => {
+      this.#broadcast({ type: 'session:title', sessionId, title });
+    });
   }
 
   #installApprovalHandler() {
@@ -525,6 +528,10 @@ export class RuntimeBridge {
     this.#uiPlanStepIds = new Map();
     this.#uiTranscriptSessionId = newRuntime.getCurrentSessionId?.() || '';
     this.#installApprovalHandler();
+    // Push title updates via SSE
+    newRuntime.setOnTitleUpdate?.((sessionId, title) => {
+      this.#broadcast({ type: 'session:title', sessionId, title });
+    });
     // Notify clients
     this.#broadcast({ type: 'runtime:switched', sessionId: newRuntime.getCurrentSessionId?.() });
   }

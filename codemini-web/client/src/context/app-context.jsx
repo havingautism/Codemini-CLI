@@ -45,7 +45,7 @@ const initialState = {
   live: false, stageLabel: '', messages: [], activeMsgId: null,
   pendingToolChanges: [], planSteps: [], pendingPlanApproval: null, approvalRequest: null,
   config: null, configOpen: false, projectOpen: false, skillsOpen: false, soulsOpen: false, aboutOpen: false, gitDiffOpen: false,
-  sessions: [], projectCwd: null, history: [], skills: [], gitInfo: null, gitBatch: {},
+  sessions: [], projectCwd: null, isGeneral: false, history: [], skills: [], gitInfo: null, gitBatch: {},
   codewikiProjectPath: '',
   versionInfo: null, updateStatus: null,
   initialLoading: true, sessionsLoading: false, messagesLoading: false,
@@ -251,12 +251,15 @@ export function AppProvider({ children }) {
   const loadState = useCallback(async () => {
     try {
       const rs = await api.fetchState();
-      const projectName = rs.cwd?.split(/[/\\]/).pop() || rs.cwd || '...';
+      const projectName = rs.isGeneral
+        ? '__codemini_general__'
+        : (rs.cwd?.split(/[/\\]/).pop() || rs.cwd || '...');
       const busy = !!rs.busy;
       setState(prev => ({
         ...prev,
         runtimeState: rs,
         projectCwd: projectName,
+        isGeneral: !!rs.isGeneral,
         pendingPlanApproval: rs?.pendingPlanApproval || null,
         busy,
         live: busy || prev.live,
@@ -729,6 +732,18 @@ export function AppProvider({ children }) {
         loadSessionMessages();
         loadSessions();
         if (stateRef.current.currentView !== 'codewiki') updateRoute('chat', event.sessionId);
+        break;
+      }
+
+      case 'session:title': {
+        if (event.sessionId && event.title) {
+          setState(prev => ({
+            ...prev,
+            sessions: prev.sessions.map(s =>
+              s.id === event.sessionId ? { ...s, title: event.title } : s
+            )
+          }));
+        }
         break;
       }
     }

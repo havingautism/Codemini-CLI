@@ -263,6 +263,13 @@ export const en = {
   themeGithub: 'GitHub',
   themeVSCode: 'VS Code',
 
+  // General workspace
+  generalChat: 'General Chat',
+  projectTask: 'Project Task',
+  generalChatDesc: 'Chat freely without binding to a project',
+  enterGeneral: 'Enter General Chat',
+  askAnythingGeneral: 'How can I help you?',
+
   // ChatPanel
   buildInProject: 'What do you want to build in {{project}}?',
   gitStaged: 'Staged',
@@ -278,4 +285,12 @@ export const en = {
   gitDiffDeleted: 'Deleted',
   gitDiffUntracked: 'Untracked',
   gitDiffNoDiffAvailable: 'No diff available',
+
+  // Conversation collection
+  conversations: 'Conversations',
+  noConversations: 'No conversations yet',
+  justNow: 'just now',
+  minutesAgo: 'm ago',
+  hoursAgo: 'h ago',
+  daysAgo: 'd ago',
 };

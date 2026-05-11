@@ -272,6 +272,13 @@ export const zh = {
   themeGithub: 'GitHub',
   themeVSCode: 'VS Code',
 
+  // General workspace
+  generalChat: '普通会话',
+  projectTask: '项目任务',
+  generalChatDesc: '无需绑定项目，自由对话',
+  enterGeneral: '进入普通会话',
+  askAnythingGeneral: '有什么可以帮你的?',
+
   // ChatPanel
   buildInProject: '要在 {{project}} 中构建什么?',
   gitStaged: '已暂存',
@@ -287,4 +294,12 @@ export const zh = {
   gitDiffDeleted: '已删除',
   gitDiffUntracked: '未跟踪',
   gitDiffNoDiffAvailable: '无差异内容',
+
+  // Conversation collection
+  conversations: '对话',
+  noConversations: '暂无聊天',
+  justNow: '刚刚',
+  minutesAgo: '分钟前',
+  hoursAgo: '小时前',
+  daysAgo: '天前',
 };

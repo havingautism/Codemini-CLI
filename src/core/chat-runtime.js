@@ -2720,7 +2720,7 @@ async function askModel({
       compacted.push({ ...userMessage });
       if (onCompactedUpdate) onCompactedUpdate(compacted);
     }
-    if (!shouldGenerateTitle) {
+    if (shouldReplaceSessionTitle(session.title)) {
       session.title = deriveSessionTitle(session.messages);
     }
     session.model = model || config.model.name;
@@ -2969,18 +2969,26 @@ async function askModel({
         }
       }
     }
-    if (shouldReplaceSessionTitle(session.title)) {
-      session.title = await generateSessionTitle({
-        userText: text,
-        assistantText: loopResult.text || '',
-        config,
-        signal
-      });
-    }
     session.model = model || config.model.name;
     session.mode = executionMode || config.execution?.mode || 'normal';
     await flushScheduledSave();
     await saveSession(session);
+    // Generate a better title asynchronously after saving
+    if (shouldReplaceSessionTitle(session.title)) {
+      const titleSessionId = session.id;
+      generateSessionTitle({
+        userText: text,
+        assistantText: loopResult.text || '',
+        config,
+        signal
+      }).then(async (generatedTitle) => {
+        if (generatedTitle && generatedTitle !== session.title) {
+          session.title = generatedTitle;
+          await saveSession(session);
+          onTitleUpdateCallback?.(titleSessionId, generatedTitle);
+        }
+      }).catch(() => {});
+    }
     try {
       await pruneSessions(config.sessions || {});
     } catch {
@@ -4160,6 +4168,7 @@ export async function createChatRuntime({
     session.projectDir = process.cwd();
   }
   let activeRequestToolApproval = typeof requestToolApproval === 'function' ? requestToolApproval : null;
+  let onTitleUpdateCallback = null;
   const startupEvents = [];
   const initialIndex = await initializeProjectIndex(process.cwd()).catch(() => null);
   if (initialIndex?.summary) {
@@ -4729,16 +4738,24 @@ export async function createChatRuntime({
     if (assistantText) {
       appendSessionMessage(stampedMessage('assistant', assistantText, extra));
     }
-    if (shouldReplaceSessionTitle(currentSession.title)) {
-      currentSession.title = await generateSessionTitle({
-        userText,
-        assistantText,
-        config
-      });
-    }
     currentSession.model = model || config.model.name;
     currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
+    // Generate a better title asynchronously after saving
+    if (shouldReplaceSessionTitle(currentSession.title)) {
+      const titleSessionId = currentSession.id;
+      generateSessionTitle({
+        userText,
+        assistantText,
+        config
+      }).then(async (generatedTitle) => {
+        if (generatedTitle && generatedTitle !== currentSession.title) {
+          currentSession.title = generatedTitle;
+          await saveSession(currentSession);
+          onTitleUpdateCallback?.(titleSessionId, generatedTitle);
+        }
+      }).catch(() => {});
+    }
   };
 
   const persistUserExchange = async (userText) => {
@@ -6101,6 +6118,9 @@ export async function createChatRuntime({
     setRequestToolApproval: (handler) => {
       activeRequestToolApproval = typeof handler === 'function' ? handler : null;
       return true;
+    },
+    setOnTitleUpdate: (cb) => {
+      onTitleUpdateCallback = typeof cb === 'function' ? cb : null;
     },
     dispose: async () => {
       if (typeof disposeTools === 'function') {
