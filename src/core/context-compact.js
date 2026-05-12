@@ -39,6 +39,103 @@ function modeToKeepRecent(mode) {
   return 6;
 }
 
+function getToolCallId(call) {
+  return String(call?.id || '').trim();
+}
+
+function getMessageToolCallIds(message) {
+  if (!Array.isArray(message?.tool_calls)) return [];
+  return message.tool_calls.map(getToolCallId).filter(Boolean);
+}
+
+function toolResultNote(message) {
+  const text = textFromContent(message?.content);
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { parsed = null; }
+  const summary = parsed && typeof parsed === 'object'
+    ? summarizeToolResult(parsed)
+    : text.replace(/\s+/g, ' ').trim();
+  const clipped = summary.length > 600 ? `${summary.slice(0, 597)}...` : summary;
+  return `[Compacted orphan tool result]\n${clipped || 'No content'}`;
+}
+
+function expandRecentStartToToolBoundary(messages, start) {
+  let adjusted = Math.max(0, Math.min(start, messages.length));
+  while (adjusted > 0 && messages[adjusted]?.role === 'tool') {
+    adjusted -= 1;
+  }
+  if (
+    adjusted > 0 &&
+    messages[adjusted]?.role !== 'assistant' &&
+    messages[adjusted + 1]?.role === 'tool'
+  ) {
+    adjusted += 1;
+  }
+  return adjusted;
+}
+
+function sanitizeRecentMessagesForModel(messages) {
+  const out = [];
+  let activeAssistantIndex = -1;
+  let expectedToolIds = new Set();
+  let matchedToolIds = new Set();
+
+  const finalizeActiveAssistant = () => {
+    if (activeAssistantIndex < 0) return;
+    const assistant = out[activeAssistantIndex];
+    if (!Array.isArray(assistant?.tool_calls)) {
+      activeAssistantIndex = -1;
+      expectedToolIds = new Set();
+      matchedToolIds = new Set();
+      return;
+    }
+    const toolCalls = assistant.tool_calls.filter((call) => matchedToolIds.has(getToolCallId(call)));
+    if (toolCalls.length > 0) {
+      out[activeAssistantIndex] = { ...assistant, tool_calls: toolCalls };
+    } else {
+      const { tool_calls, ...rest } = assistant;
+      out[activeAssistantIndex] = rest;
+    }
+    activeAssistantIndex = -1;
+    expectedToolIds = new Set();
+    matchedToolIds = new Set();
+  };
+
+  for (const message of messages) {
+    if (!message || typeof message !== 'object') continue;
+    if (message.role === 'assistant') {
+      finalizeActiveAssistant();
+      const clone = { ...message };
+      out.push(clone);
+      const ids = getMessageToolCallIds(clone);
+      if (ids.length > 0) {
+        activeAssistantIndex = out.length - 1;
+        expectedToolIds = new Set(ids);
+        matchedToolIds = new Set();
+      }
+      continue;
+    }
+
+    if (message.role === 'tool') {
+      const id = String(message.tool_call_id || '').trim();
+      if (id && expectedToolIds.has(id)) {
+        out.push({ ...message });
+        matchedToolIds.add(id);
+        continue;
+      }
+      finalizeActiveAssistant();
+      out.push({ role: 'assistant', content: toolResultNote(message), at: message.at });
+      continue;
+    }
+
+    finalizeActiveAssistant();
+    out.push({ ...message });
+  }
+
+  finalizeActiveAssistant();
+  return out;
+}
+
 function buildLocalSummary(messages) {
   const goal = [];
   const constraints = [];
@@ -211,8 +308,9 @@ export async function compactMessagesLocally(messages, { mode = 'default', force
     };
   }
 
-  const older = messages.slice(0, Math.max(0, messages.length - keepRecent));
-  const recent = messages.slice(Math.max(0, messages.length - keepRecent));
+  const recentStart = expandRecentStartToToolBoundary(messages, Math.max(0, messages.length - keepRecent));
+  const older = messages.slice(0, recentStart);
+  const recent = sanitizeRecentMessagesForModel(messages.slice(recentStart));
 
   let summary;
   if (typeof generateSummary === 'function') {
@@ -226,7 +324,7 @@ export async function compactMessagesLocally(messages, { mode = 'default', force
   }
 
   const compacted = [{ role: 'assistant', content: summary }, ...recent];
-  const boundaryIndex = Math.max(0, messages.length - keepRecent);
+  const boundaryIndex = recentStart;
 
   return {
     compacted,

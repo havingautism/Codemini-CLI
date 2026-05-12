@@ -242,6 +242,16 @@ export const zh = {
 
   // AboutDialog
   aboutTitle: '关于 Codemini',
+  aboutEyebrow: '本地 coding agent',
+  aboutTagline: '一个更克制、更可审计的 coding agent：CLI 的速度，Web UI 的可见性，项目记忆、技能、审批和干净的上下文管理都在一起。',
+  aboutFeatureRuntime: '同一套运行时',
+  aboutFeatureRuntimeDesc: 'CLI 和 Web UI 共享会话、配置、项目状态、技能和执行模式。',
+  aboutFeatureApprovals: '过程可审阅',
+  aboutFeatureApprovalsDesc: '工具调用、计划和高风险动作在执行前都能看清楚。',
+  aboutFeatureMemory: '上下文更稳',
+  aboutFeatureMemoryDesc: '压缩摘要、项目索引、记忆 inbox 和 dream consolidation 让长任务可继续。',
+  aboutFeatureConfig: '接入你的模型',
+  aboutFeatureConfigDesc: '支持 OpenAI 兼容网关或内部模型服务，不改变工作流。',
   installation: '安装',
   startWebUI: '启动 Web UI',
   startWebUIDesc: '启动后浏览器会自动打开 Web 界面，也可以手动访问终端中显示的地址。',

@@ -233,6 +233,16 @@ export const en = {
 
   // AboutDialog
   aboutTitle: 'About Codemini',
+  aboutEyebrow: 'Local coding agent',
+  aboutTagline: 'A compact, auditable coding agent with CLI speed, Web UI visibility, project memory, skills, approvals, and clean context management.',
+  aboutFeatureRuntime: 'One runtime',
+  aboutFeatureRuntimeDesc: 'CLI and Web UI share sessions, config, project state, skills, and execution mode.',
+  aboutFeatureApprovals: 'Reviewable work',
+  aboutFeatureApprovalsDesc: 'Tool calls, plans, and risky actions stay visible before they run.',
+  aboutFeatureMemory: 'Smarter context',
+  aboutFeatureMemoryDesc: 'Compact summaries, project index, memory inbox, and dream consolidation keep long work usable.',
+  aboutFeatureConfig: 'Bring your model',
+  aboutFeatureConfigDesc: 'Use OpenAI-compatible gateways or internal providers without changing the workflow.',
   installation: 'Installation',
   startWebUI: 'Start Web UI',
   startWebUIDesc: 'After starting, the browser will automatically open the Web interface. You can also manually visit the address shown in the terminal.',
