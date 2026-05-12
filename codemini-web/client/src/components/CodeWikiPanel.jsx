@@ -4,6 +4,7 @@ import {
   AlertCircle,
   BookOpenText,
   FileText,
+  GripVertical,
   Loader2,
   MessageSquareText,
   MoreHorizontal,
@@ -26,6 +27,19 @@ import {
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { MessageBubble } from "@/components/MessageBubble.jsx";
 import { cn } from "@/lib/utils";
+
+const CODEWIKI_QA_WIDTH_KEY = "codemini:codewiki:qa-width";
+const CODEWIKI_QA_MIN_WIDTH = 320;
+const CODEWIKI_QA_MAX_WIDTH = 760;
+const CODEWIKI_QA_DEFAULT_WIDTH = 420;
+
+function getInitialQaWidth() {
+  if (typeof window === "undefined") return CODEWIKI_QA_DEFAULT_WIDTH;
+  const stored = Number(window.localStorage.getItem(CODEWIKI_QA_WIDTH_KEY));
+  return Number.isFinite(stored)
+    ? Math.min(CODEWIKI_QA_MAX_WIDTH, Math.max(CODEWIKI_QA_MIN_WIDTH, stored))
+    : CODEWIKI_QA_DEFAULT_WIDTH;
+}
 
 function getGenerationDepths() {
   return [
@@ -289,7 +303,13 @@ export function CodeWikiPanel({
   const [generationDepth, setGenerationDepth] = useState("standard");
   const [chatMessages, setChatMessages] = useState([]);
   const [asking, setAsking] = useState(false);
+  const [qaWidth, setQaWidth] = useState(getInitialQaWidth);
+  const [qaResizing, setQaResizing] = useState(false);
   const chatScrollRef = useRef(null);
+  const qaResizeRef = useRef({
+    startX: 0,
+    startWidth: CODEWIKI_QA_DEFAULT_WIDTH,
+  });
 
   const selected = useMemo(
     () => reports.find((report) => report.file === selectedFile) || null,
@@ -352,6 +372,48 @@ export function CodeWikiPanel({
     setGenerating(false);
     setSawRuntimeBusy(false);
   }, [busy, generating, loadReports, sawRuntimeBusy]);
+
+  useEffect(() => {
+    window.localStorage.setItem(CODEWIKI_QA_WIDTH_KEY, String(qaWidth));
+  }, [qaWidth]);
+
+  const handleQaResizeStart = useCallback((event) => {
+    event.preventDefault();
+    setQaResizing(true);
+    qaResizeRef.current = {
+      startX: event.clientX,
+      startWidth: qaWidth,
+    };
+
+    const handleMove = (moveEvent) => {
+      const delta = qaResizeRef.current.startX - moveEvent.clientX;
+      const viewportMax = Math.max(
+        CODEWIKI_QA_MIN_WIDTH,
+        Math.min(CODEWIKI_QA_MAX_WIDTH, window.innerWidth - 720),
+      );
+      const nextWidth = Math.min(
+        viewportMax,
+        Math.max(
+          CODEWIKI_QA_MIN_WIDTH,
+          qaResizeRef.current.startWidth + delta,
+        ),
+      );
+      setQaWidth(nextWidth);
+    };
+
+    const handleEnd = () => {
+      setQaResizing(false);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleEnd);
+    };
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleEnd);
+  }, [qaWidth]);
 
   const handleGenerate = async () => {
     if (busy || generating) return;
@@ -461,7 +523,10 @@ export function CodeWikiPanel({
 
   return (
     <div className="flex-1 min-h-0 bg-(--bg-primary) rounded-[18px] border border-(--border-default) border-b-0 overflow-hidden my-1 mx-1">
-      <div className="grid h-full min-h-0 grid-cols-[260px_minmax(0,1fr)_420px] max-xl:grid-cols-[220px_minmax(0,1fr)] max-lg:grid-cols-1">
+      <div
+        className="codewiki-layout h-full min-h-0"
+        style={{ "--codewiki-qa-width": `${qaWidth}px` }}
+      >
         <aside className="border-r border-(--border-default) bg-(--bg-secondary) min-h-0 flex flex-col max-lg:hidden">
           <div className="p-4 border-b border-(--border-default)">
             <div className="flex items-center gap-2 text-(--text-primary)">
@@ -708,7 +773,20 @@ export function CodeWikiPanel({
           </div>
         </main>
 
-        <aside className="border-l border-(--border-default) bg-(--bg-secondary) min-h-0 flex flex-col max-xl:hidden">
+        <div
+          className="codewiki-resizer max-xl:hidden"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize CodeWiki Q&A panel"
+          title="Drag to resize"
+          onMouseDown={handleQaResizeStart}
+        >
+          <span className="codewiki-resizer-handle">
+            <GripVertical size={14} aria-hidden="true" />
+          </span>
+        </div>
+
+        <aside className="bg-(--bg-secondary) min-h-0 flex flex-col max-xl:hidden">
           <div className="p-4 border-b border-(--border-default)">
             {/* <div className="flex items-center gap-2 text-(--text-primary)">
               <MessageSquareText size={17} />
@@ -796,6 +874,7 @@ export function CodeWikiPanel({
           </form>
         </aside>
       </div>
+      {qaResizing && <div className="codewiki-resize-overlay" />}
       <ConfirmDialog
         open={!!pendingDelete}
         title={t("deleteReportConfirm")}

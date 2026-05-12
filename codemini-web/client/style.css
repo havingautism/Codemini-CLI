@@ -2,6 +2,67 @@
 @import "streamdown/styles.css";
 @source "../node_modules/streamdown/dist/*.js";
 
+.codewiki-layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr) 9px var(--codewiki-qa-width, 420px);
+}
+
+.codewiki-resizer {
+  position: relative;
+  min-width: 9px;
+  cursor: col-resize;
+  background: var(--bg-secondary);
+  border-left: 1px solid var(--border-default);
+  border-right: 1px solid var(--border-default);
+}
+
+.codewiki-resizer-handle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: inline-flex;
+  width: 22px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-primary);
+  color: var(--text-muted);
+  box-shadow: var(--shadow-sm);
+  transition:
+    background var(--transition),
+    border-color var(--transition),
+    color var(--transition);
+}
+
+.codewiki-resizer:hover .codewiki-resizer-handle,
+.codewiki-resizer:active .codewiki-resizer-handle {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.codewiki-resize-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  cursor: col-resize;
+}
+
+@media (max-width: 1279px) {
+  .codewiki-layout {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 1023px) {
+  .codewiki-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ── Geist Font Faces ── */
 @font-face {
   font-family: "Geist";
