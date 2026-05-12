@@ -80,6 +80,9 @@ export const zh = {
 
   // Config
   settingsTitle: '设置',
+  configRequired: '请先在设置中配置接口地址和 API Key',
+  configRequiredTitle: '需要先配置模型接口',
+  configRequiredDesc: '当前仍是新安装的默认接口地址。设置 Base URL、API Key 和模型后即可开始使用。',
   cancel: '取消',
   saveChanges: '保存更改',
   gateway: '网关',

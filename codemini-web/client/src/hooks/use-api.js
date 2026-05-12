@@ -109,12 +109,18 @@ export async function fetchConfig() {
   return res.json();
 }
 
+export async function fetchConfigStatus() {
+  const res = await api('/api/config/status');
+  return res.json();
+}
+
 export async function setConfig(key, value) {
-  await api('/api/config/set', {
+  const res = await api('/api/config/set', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ key, value })
   });
+  return res.json().catch(() => ({}));
 }
 
 export async function fetchProject() {

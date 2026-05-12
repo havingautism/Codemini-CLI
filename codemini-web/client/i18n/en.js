@@ -71,6 +71,9 @@ export const en = {
 
   // Config
   settingsTitle: 'Settings',
+  configRequired: 'Configure the API Base URL and API Key in Settings first',
+  configRequiredTitle: 'Model gateway setup required',
+  configRequiredDesc: 'This install is still using the default gateway endpoint. Set the Base URL, API Key, and model before chatting.',
   cancel: 'Cancel',
   saveChanges: 'Save Changes',
   gateway: 'Gateway',
