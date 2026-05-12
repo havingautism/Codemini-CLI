@@ -12,10 +12,8 @@ import { RuntimeBridge } from './lib/runtime-bridge.js';
 import { listSkillEntries } from '../src/commands/skill.js';
 import { readSkillRegistry, writeSkillRegistry, upsertSkillRegistryEntry } from '../src/core/skill-registry.js';
 import { getReplyLanguage } from '../src/core/reply-language.js';
-import { createRequire } from 'node:module';
-const require = createRequire(import.meta.url);
-const pkg = require('../package.json');
 import { getSkillsDir, getBaseConfigDir } from '../src/core/paths.js';
+import { VERSION } from '../src/core/version.js';
 
 const GENERAL_PROJECT_DIR = (() => {
   const base = getBaseConfigDir();
@@ -363,7 +361,7 @@ async function main() {
       try {
         latest = execSync('npm view codemini-cli version', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
       } catch {}
-      jsonResponse(res, { current: pkg.version, latest });
+      jsonResponse(res, { current: VERSION, latest });
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/update') {
