@@ -14,6 +14,7 @@ import {
   Globe,
   Check,
   Palette,
+  PencilLine,
 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -26,8 +27,9 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { t, setLocale, getLocale } from "../../i18n/index.js";
 
+const GENERAL_PROJECT_MARKER = "__codemini_general__";
+
 function getProjectKey(session) {
-  if (session?.isGeneral) return "__general__";
   return session?.projectDir || "unknown";
 }
 
@@ -51,6 +53,33 @@ function GitHubIcon({ size = 14, className, ...props }) {
       <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.09 3.29 9.4 7.86 10.93.58.1.79-.25.79-.56v-2.18c-3.2.69-3.87-1.36-3.87-1.36-.52-1.33-1.28-1.68-1.28-1.68-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.55-.29-5.23-1.27-5.23-5.67 0-1.25.45-2.27 1.18-3.07-.12-.29-.51-1.46.11-3.03 0 0 .97-.31 3.16 1.17A10.98 10.98 0 0 1 12 6.07c.98 0 1.96.13 2.88.39 2.19-1.48 3.15-1.17 3.15-1.17.63 1.57.24 2.74.12 3.03.74.8 1.18 1.82 1.18 3.07 0 4.41-2.69 5.38-5.25 5.66.42.36.78 1.06.78 2.14v3.18c0 .31.21.67.8.56A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z" />
     </svg>
   );
+}
+
+function getSessionLabel(session) {
+  return (
+    session?.title ||
+    session?.preview ||
+    (session?.messageCount > 0
+      ? `${session.messageCount} ${t("messages")}`
+      : t("emptyChat"))
+  );
+}
+
+function formatRelativeTime(value) {
+  const time = Date.parse(value || "");
+  if (!Number.isFinite(time)) return "";
+  const diffMs = Date.now() - time;
+  if (diffMs < 60_000) return t("justNow");
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 60) return `${minutes}${t("minutesAgo")}`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}${t("hoursAgo")}`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}${t("daysAgo")}`;
+  return new Date(time).toLocaleDateString(undefined, {
+    month: "numeric",
+    day: "numeric",
+  });
 }
 
 const THEME_PALETTES = [
@@ -116,12 +145,17 @@ export function Sidebar({
 
   const allSessions = Array.isArray(sessions) ? sessions : [];
   const currentSession = allSessions.find((s) => s.id === currentSessionId);
+  const activeIsGeneral = !!currentSession?.isGeneral;
   const activeProjectKey = currentSession
     ? getProjectKey(currentSession)
     : null;
+  const generalSessions = allSessions.filter((session) => session.isGeneral);
+  const projectSessionsOnly = allSessions.filter(
+    (session) => !session.isGeneral,
+  );
 
   const projectGroups = new Map();
-  for (const session of allSessions) {
+  for (const session of projectSessionsOnly) {
     const key = getProjectKey(session);
     if (!projectGroups.has(key)) projectGroups.set(key, []);
     projectGroups.get(key).push(session);
@@ -176,6 +210,14 @@ export function Sidebar({
       return;
     }
     await onOpenProject?.(projectKey, { view: "chat" });
+  };
+
+  const openGeneralNewSession = async () => {
+    if (activeIsGeneral) {
+      await onNewSession?.();
+      return;
+    }
+    await onOpenProject?.(GENERAL_PROJECT_MARKER, { view: "chat" });
   };
 
   const confirmDeleteSession = async () => {
@@ -243,7 +285,7 @@ export function Sidebar({
 
       {/* Scrollable project history */}
       <nav
-        className="flex-1 min-h-0 flex flex-col px-2.5 pb-2 gap-0.5 overflow-y-auto"
+        className="shrink-0 max-h-[52vh] flex flex-col px-2.5 pb-1 gap-0.5 overflow-y-auto"
         style={{ scrollbarWidth: "thin" }}
       >
         {Array.from(projectGroups.entries()).map(
@@ -252,8 +294,7 @@ export function Sidebar({
               expandedProjects.has(projectKey) || projectGroups.size === 1;
             const git = gitBatch?.[projectKey];
             const isActive = projectKey === activeProjectKey;
-            const groupIsGeneral = projectSessions[0]?.isGeneral;
-            const canOpenCodeWiki = projectKey !== "unknown" && !groupIsGeneral;
+            const canOpenCodeWiki = projectKey !== "unknown";
             return (
               <div key={projectKey}>
                 <div
@@ -271,7 +312,7 @@ export function Sidebar({
                   >
                     <Folder size={13} className="shrink-0" />
                     <span className="truncate flex-1">
-                      {getProjectName(projectKey, groupIsGeneral)}
+                      {getProjectName(projectKey)}
                     </span>
                   </button>
                   {canOpenCodeWiki && (
@@ -279,7 +320,7 @@ export function Sidebar({
                       type="button"
                       className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-active) hover:text-(--text-primary)"
                       title={t("newSessionInProject")}
-                      aria-label={`${t("newSessionInProject")} ${getProjectName(projectKey, groupIsGeneral)}`}
+                      aria-label={`${t("newSessionInProject")} ${getProjectName(projectKey)}`}
                       onClick={(event) =>
                         openProjectNewSession(event, projectKey)
                       }
@@ -297,7 +338,7 @@ export function Sidebar({
                           "bg-(--bg-active) text-(--text-primary)",
                       )}
                       title={t("openCodeWiki")}
-                      aria-label={`${t("openCodeWiki")} ${getProjectName(projectKey, groupIsGeneral)}`}
+                      aria-label={`${t("openCodeWiki")} ${getProjectName(projectKey)}`}
                       onClick={(event) =>
                         openProjectCodeWiki(event, projectKey)
                       }
@@ -352,30 +393,13 @@ export function Sidebar({
                       >
                         <span
                           className="truncate flex-1"
-                          title={
-                            session.title ||
-                            session.preview ||
-                            (session.messageCount > 0
-                              ? `${session.messageCount} ${t("messages")}`
-                              : t("emptyChat"))
-                          }
+                          title={getSessionLabel(session)}
                         >
-                          {session.title ||
-                            session.preview ||
-                            (session.messageCount > 0
-                              ? `${session.messageCount} ${t("messages")}`
-                              : t("emptyChat"))}
+                          {getSessionLabel(session)}
                         </span>
                         {session.updatedAt && (
                           <span className="text-[11px] text-(--text-muted) shrink-0 tabular-nums">
-                            {new Date(session.updatedAt).toLocaleDateString(
-                              undefined,
-                              {
-                                year: "numeric",
-                                month: "numeric",
-                                day: "numeric",
-                              },
-                            )}
+                            {formatRelativeTime(session.updatedAt)}
                           </span>
                         )}
                         <Popover>
@@ -417,16 +441,107 @@ export function Sidebar({
             <Spinner className="justify-center" />
           </div>
         )}
-        {!sessionsLoading && allSessions.length === 0 && (
-          <div className="px-3 py-4 text-[12px] text-(--text-muted) text-center">
-            {t("noSessions")}
-          </div>
-        )}
+        {!sessionsLoading &&
+          projectSessionsOnly.length === 0 &&
+          generalSessions.length === 0 && (
+            <div className="px-3 py-4 text-[12px] text-(--text-muted) text-center">
+              {t("noSessions")}
+            </div>
+          )}
       </nav>
+
+      <section className="shrink-0 px-2.5 pb-2">
+        <Separator className="my-2 bg-(--border-default)" />
+        <div className="flex items-center gap-2 px-1.5 pb-1.5">
+          <span className="min-w-0 flex-1 text-[12px] font-medium text-(--text-muted)">
+            {t("conversations")}
+          </span>
+          <button
+            type="button"
+            className="inline-flex size-7 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)"
+            title={t("newChat")}
+            aria-label={t("newChat")}
+            onClick={openGeneralNewSession}
+          >
+            <Plus size={14} strokeWidth={1.9} />
+          </button>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          {generalSessions.slice(0, 6).map((session) => {
+            const active =
+              session.id === currentSessionId && currentView === "chat";
+            return (
+              <div
+                key={session.id}
+                onClick={() => {
+                  if (session.id !== currentSessionId) {
+                    onSwitchSession(session.id);
+                  } else if (currentView !== "chat") {
+                    onSwitchView?.("chat");
+                  }
+                }}
+                className={cn(
+                  "group flex h-[34px] w-full cursor-pointer items-center gap-2 rounded-lg border-0 px-2 text-left text-[13px]",
+                  active
+                    ? "bg-(--bg-active) text-(--text-primary)"
+                    : "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+                )}
+              >
+                <span
+                  className="min-w-0 flex-1 truncate font-medium"
+                  title={getSessionLabel(session)}
+                >
+                  {getSessionLabel(session)}
+                </span>
+                {session.updatedAt && (
+                  <span className="shrink-0 text-[11px] tabular-nums text-(--text-muted)">
+                    {formatRelativeTime(session.updatedAt)}
+                  </span>
+                )}
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) opacity-0 hover:bg-(--bg-active) hover:text-(--text-primary) group-hover:opacity-100 focus:opacity-100"
+                      onClick={(event) => event.stopPropagation()}
+                      aria-label={t("sessionActions")}
+                    >
+                      <MoreHorizontal size={14} />
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent
+                    align="end"
+                    className="w-36 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      className="w-full rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
+                      onClick={() => setPendingDelete(session)}
+                    >
+                      {t("deleteSession")}
+                    </button>
+                  </PopoverContent>
+                </Popover>
+              </div>
+            );
+          })}
+          {!sessionsLoading && generalSessions.length === 0 && (
+            <button
+              type="button"
+              onClick={openGeneralNewSession}
+              className="h-[34px] rounded-lg border-0 bg-transparent px-2 text-left text-[13px] text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+            >
+              {t("noConversations")}
+            </button>
+          )}
+        </div>
+      </section>
 
       {/* Footer */}
 
-      <div className="px-2.5 py-2 flex flex-col gap-0">
+      <div className="mt-auto px-2.5 py-2 flex flex-col gap-0">
         <Separator className="my-2 bg-(--border-default)" />
         {versionInfo?.latest && versionInfo.latest !== versionInfo.current && (
           <button
@@ -452,6 +567,16 @@ export function Sidebar({
           >
             <Info size={15} strokeWidth={1.8} />
           </button>
+          <a
+            href="https://github.com/havingautism/Codemini-CLI"
+            target="_blank"
+            rel="noreferrer"
+            className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
+            title={t("projectRepository")}
+            aria-label={t("projectRepository")}
+          >
+            <GitHubIcon size={15} />
+          </a>
           <Popover>
             <PopoverTrigger asChild>
               <button

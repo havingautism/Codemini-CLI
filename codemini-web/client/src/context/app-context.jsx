@@ -18,13 +18,11 @@ function parseRoute() {
   const params = new URLSearchParams(window.location.search);
   const chatMatch = path.match(/^\/chat\/([^/]+)$/);
   if (chatMatch) return { view: 'chat', sessionId: decodeURIComponent(chatMatch[1]) };
-  if (path === '/sessions') return { view: 'sessions' };
   if (path === '/codewiki') return { view: 'codewiki', projectPath: params.get('project') || '' };
   return { view: 'chat' };
 }
 
 function routeFor(view, sessionId, options = {}) {
-  if (view === 'sessions') return '/sessions';
   if (view === 'codewiki') {
     const projectPath = String(options.projectPath || '').trim();
     return projectPath ? `/codewiki?project=${encodeURIComponent(projectPath)}` : '/codewiki';
@@ -1012,7 +1010,6 @@ export function AppProvider({ children }) {
         ? options.projectPath || stateRef.current.codewikiProjectPath || stateRef.current.runtimeState?.cwd || ''
         : stateRef.current.codewikiProjectPath;
       update({ currentView: view, codewikiProjectPath });
-      if (view === 'sessions') updateRoute(view);
       if (view === 'codewiki') {
         updateRoute(view, null, { projectPath: codewikiProjectPath });
       }

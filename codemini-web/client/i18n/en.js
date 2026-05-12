@@ -243,6 +243,7 @@ export const en = {
   aboutFeatureMemoryDesc: 'Compact summaries, project index, memory inbox, and dream consolidation keep long work usable.',
   aboutFeatureConfig: 'Bring your model',
   aboutFeatureConfigDesc: 'Use OpenAI-compatible gateways or internal providers without changing the workflow.',
+  projectRepository: 'GitHub repository',
   installation: 'Installation',
   startWebUI: 'Start Web UI',
   startWebUIDesc: 'After starting, the browser will automatically open the Web interface. You can also manually visit the address shown in the terminal.',
