@@ -37,6 +37,7 @@
     "codemini-web/server.js",
     "codemini-web/lib",
     "codemini-web/dist",
+    "codemini-web/codemini_logo.png",
     "souls",
     "templates",
     "skills",
