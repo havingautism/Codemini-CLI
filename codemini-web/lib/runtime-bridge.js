@@ -98,6 +98,9 @@ export class RuntimeBridge {
     this.#runtime = runtime;
     this.#installApprovalHandler();
     this.#uiTranscriptSessionId = this.getSessionId();
+    runtime.setOnTitleUpdate?.((sessionId, title) => {
+      this.#broadcast({ type: 'session:title', sessionId, title });
+    });
   }
 
   #installApprovalHandler() {
@@ -117,6 +120,10 @@ export class RuntimeBridge {
 
   #broadcastRuntimeState() {
     this.#broadcast({ type: 'runtime:state', state: this.getState() });
+  }
+
+  broadcastRuntimeState() {
+    this.#broadcastRuntimeState();
   }
 
   async #writeUiTranscriptSnapshot() {
@@ -435,6 +442,10 @@ export class RuntimeBridge {
     return ok;
   }
 
+  async reloadConfig() {
+    return this.#runtime.reloadConfig?.();
+  }
+
   handleApproval(id, approved) {
     return this.#approval.resolve(id, approved);
   }
@@ -525,6 +536,10 @@ export class RuntimeBridge {
     this.#uiPlanStepIds = new Map();
     this.#uiTranscriptSessionId = newRuntime.getCurrentSessionId?.() || '';
     this.#installApprovalHandler();
+    // Push title updates via SSE
+    newRuntime.setOnTitleUpdate?.((sessionId, title) => {
+      this.#broadcast({ type: 'session:title', sessionId, title });
+    });
     // Notify clients
     this.#broadcast({ type: 'runtime:switched', sessionId: newRuntime.getCurrentSessionId?.() });
   }

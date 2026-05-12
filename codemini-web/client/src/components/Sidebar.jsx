@@ -27,10 +27,12 @@ import { cn } from "@/lib/utils";
 import { t, setLocale, getLocale } from "../../i18n/index.js";
 
 function getProjectKey(session) {
+  if (session?.isGeneral) return "__general__";
   return session?.projectDir || "unknown";
 }
 
-function getProjectName(projectDir) {
+function getProjectName(projectDir, isGeneral) {
+  if (isGeneral) return t("generalChat");
   if (!projectDir || projectDir === "unknown") return t("unknownProject");
   return String(projectDir).split(/[/\\]/).filter(Boolean).pop() || projectDir;
 }
@@ -250,7 +252,8 @@ export function Sidebar({
               expandedProjects.has(projectKey) || projectGroups.size === 1;
             const git = gitBatch?.[projectKey];
             const isActive = projectKey === activeProjectKey;
-            const canOpenCodeWiki = projectKey !== "unknown";
+            const groupIsGeneral = projectSessions[0]?.isGeneral;
+            const canOpenCodeWiki = projectKey !== "unknown" && !groupIsGeneral;
             return (
               <div key={projectKey}>
                 <div
@@ -268,7 +271,7 @@ export function Sidebar({
                   >
                     <Folder size={13} className="shrink-0" />
                     <span className="truncate flex-1">
-                      {getProjectName(projectKey)}
+                      {getProjectName(projectKey, groupIsGeneral)}
                     </span>
                   </button>
                   {canOpenCodeWiki && (
@@ -276,7 +279,7 @@ export function Sidebar({
                       type="button"
                       className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-active) hover:text-(--text-primary)"
                       title={t("newSessionInProject")}
-                      aria-label={`${t("newSessionInProject")} ${getProjectName(projectKey)}`}
+                      aria-label={`${t("newSessionInProject")} ${getProjectName(projectKey, groupIsGeneral)}`}
                       onClick={(event) =>
                         openProjectNewSession(event, projectKey)
                       }
@@ -294,7 +297,7 @@ export function Sidebar({
                           "bg-(--bg-active) text-(--text-primary)",
                       )}
                       title={t("openCodeWiki")}
-                      aria-label={`${t("openCodeWiki")} ${getProjectName(projectKey)}`}
+                      aria-label={`${t("openCodeWiki")} ${getProjectName(projectKey, groupIsGeneral)}`}
                       onClick={(event) =>
                         openProjectCodeWiki(event, projectKey)
                       }

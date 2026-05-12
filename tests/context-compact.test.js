@@ -12,7 +12,7 @@ test('estimateMessagesTokens charges non-ascii text more heavily than ascii text
   assert.ok(chineseOnly > asciiOnly);
 });
 
-test('compactMessagesLocally produces a structured summary that preserves work state', () => {
+test('compactMessagesLocally produces a structured summary that preserves work state', async () => {
   const messages = [
     { role: 'user', content: 'Fix login bug and run tests' },
     { role: 'assistant', content: 'I will inspect auth first.', tool_calls: [{ id: '1' }] },
@@ -25,7 +25,7 @@ test('compactMessagesLocally produces a structured summary that preserves work s
     { role: 'assistant', content: 'Tests are next.' }
   ];
 
-  const result = compactMessagesLocally(messages, { mode: 'aggressive' });
+  const result = await compactMessagesLocally(messages, { mode: 'aggressive' });
 
   assert.equal(result.changed, true);
   assert.match(result.summary, /Context Summary/);
@@ -38,6 +38,48 @@ test('compactMessagesLocally produces a structured summary that preserves work s
   assert.match(result.summary, /src\/auth\.js/);
   assert.match(result.summary, /npm test/);
   assert.match(result.summary, /Keep the API stable/);
+});
+
+test('compactMessagesLocally keeps assistant tool call with recent tool result', async () => {
+  const messages = [
+    { role: 'user', content: 'older task' },
+    {
+      role: 'assistant',
+      content: 'I will read the file.',
+      tool_calls: [{ id: 'call_read', type: 'function', function: { name: 'read', arguments: '{}' } }]
+    },
+    { role: 'tool', tool_call_id: 'call_read', content: 'file contents' },
+    { role: 'assistant', content: 'read complete' },
+    { role: 'user', content: 'continue' },
+    { role: 'assistant', content: 'ok' }
+  ];
+
+  const result = await compactMessagesLocally(messages, { mode: 'aggressive', force: true });
+
+  assert.equal(result.boundaryIndex, 1);
+  assert.equal(result.compacted[1].role, 'assistant');
+  assert.equal(result.compacted[1].tool_calls?.[0]?.id, 'call_read');
+  assert.equal(result.compacted[2].role, 'tool');
+  assert.equal(result.compacted[2].tool_call_id, 'call_read');
+});
+
+test('compactMessagesLocally converts orphan recent tool results to assistant notes', async () => {
+  const messages = [
+    { role: 'user', content: 'older task' },
+    { role: 'assistant', content: 'older answer' },
+    { role: 'tool', tool_call_id: 'missing_call', content: JSON.stringify({ path: 'src/a.js', action: 'read' }) },
+    { role: 'assistant', content: 'continue' },
+    { role: 'user', content: 'finish' }
+  ];
+
+  const result = await compactMessagesLocally(messages, { mode: 'aggressive', force: true });
+
+  const orphanNote = result.compacted.find((message) =>
+    String(message.content || '').includes('Compacted orphan tool result')
+  );
+  assert.ok(orphanNote);
+  assert.equal(result.compacted.some((message) => message.role === 'tool'), false);
+  assert.match(orphanNote.content, /src\/a\.js/);
 });
 
 test('microCompactMessages clears old tool results, keeps recent ones', () => {

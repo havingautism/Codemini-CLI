@@ -555,7 +555,7 @@ export function InputBar({
             >
               <Folder size={13} className="shrink-0" />
               <span className="truncate max-w-[80px]">
-                {projectCwd || "..."}
+                {projectCwd === '__codemini_general__' ? t('generalChat') : (projectCwd || "...")}
               </span>
               <ChevronDown size={11} />
             </button>

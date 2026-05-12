@@ -1,6 +1,6 @@
 {
   "name": "codemini-cli",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "description": "Coding CLI optimized for small-model workflows and Windows PowerShell",
   "keywords": [
     "cli",
@@ -29,7 +29,10 @@
     "test": "node --test tests/*.test.js",
     "build:web": "npm install --prefix codemini-web && npm run build --prefix codemini-web",
     "prepack": "npm run build:web",
-    "pack:offline": "npm pack"
+    "pack:offline": "npm pack",
+    "bump:patch": "npm version patch --no-git-tag-version",
+    "bump:minor": "npm version minor --no-git-tag-version",
+    "bump:major": "npm version major --no-git-tag-version"
   },
   "files": [
     "bin",
@@ -37,6 +40,7 @@
     "codemini-web/server.js",
     "codemini-web/lib",
     "codemini-web/dist",
+    "codemini-web/codemini_logo.png",
     "souls",
     "templates",
     "skills",

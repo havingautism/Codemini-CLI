@@ -140,7 +140,7 @@ function Shell() {
             <div className="flex items-center justify-between h-[52px] px-5 shrink-0 border-b border-(--border-default)">
               <div className="flex items-center gap-2.5 min-w-0">
                 <span className="font-medium text-[14px] text-(--text-primary) truncate">
-                  {state.projectCwd || "qurio-coder"}
+                  {state.isGeneral ? t('generalChat') : (state.projectCwd || "qurio-coder")}
                 </span>
                 {state.gitInfo?.isGit && (
                   <span className="inline-flex items-center gap-1 text-[12px] text-(--text-muted) shrink-0">
@@ -176,6 +176,7 @@ function Shell() {
               skills={state.skills}
               gitInfo={state.gitInfo}
               messagesLoading={state.messagesLoading}
+              isGeneral={state.isGeneral}
             />
 
             {/* Plan Review / Input Area */}
@@ -238,6 +239,8 @@ function Shell() {
       <ConfigDialog
         open={state.configOpen}
         onOpenChange={actions.setConfigOpen}
+        status={state.configStatus}
+        onSaved={actions.refreshConfigStatus}
       />
 
       <SkillDialog

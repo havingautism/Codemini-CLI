@@ -44,8 +44,8 @@ const initialState = {
   stage: 'idle', busy: false, currentView: 'chat', runtimeState: null,
   live: false, stageLabel: '', messages: [], activeMsgId: null,
   pendingToolChanges: [], planSteps: [], pendingPlanApproval: null, approvalRequest: null,
-  config: null, configOpen: false, projectOpen: false, skillsOpen: false, soulsOpen: false, aboutOpen: false, gitDiffOpen: false,
-  sessions: [], projectCwd: null, history: [], skills: [], gitInfo: null, gitBatch: {},
+  config: null, configStatus: null, configOpen: false, projectOpen: false, skillsOpen: false, soulsOpen: false, aboutOpen: false, gitDiffOpen: false,
+  sessions: [], projectCwd: null, isGeneral: false, history: [], skills: [], gitInfo: null, gitBatch: {},
   codewikiProjectPath: '',
   versionInfo: null, updateStatus: null,
   initialLoading: true, sessionsLoading: false, messagesLoading: false,
@@ -251,12 +251,15 @@ export function AppProvider({ children }) {
   const loadState = useCallback(async () => {
     try {
       const rs = await api.fetchState();
-      const projectName = rs.cwd?.split(/[/\\]/).pop() || rs.cwd || '...';
+      const projectName = rs.isGeneral
+        ? '__codemini_general__'
+        : (rs.cwd?.split(/[/\\]/).pop() || rs.cwd || '...');
       const busy = !!rs.busy;
       setState(prev => ({
         ...prev,
         runtimeState: rs,
         projectCwd: projectName,
+        isGeneral: !!rs.isGeneral,
         pendingPlanApproval: rs?.pendingPlanApproval || null,
         busy,
         live: busy || prev.live,
@@ -268,6 +271,19 @@ export function AppProvider({ children }) {
       }));
       return rs;
     } catch { return null; }
+  }, [update]);
+
+  const loadConfigStatus = useCallback(async ({ openIfRequired = false } = {}) => {
+    try {
+      const configStatus = await api.fetchConfigStatus();
+      update({
+        configStatus,
+        configOpen: openIfRequired && configStatus?.setupRequired ? true : stateRef.current.configOpen
+      });
+      return configStatus;
+    } catch {
+      return null;
+    }
   }, [update]);
 
   const loadGitInfo = useCallback(async () => {
@@ -731,6 +747,18 @@ export function AppProvider({ children }) {
         if (stateRef.current.currentView !== 'codewiki') updateRoute('chat', event.sessionId);
         break;
       }
+
+      case 'session:title': {
+        if (event.sessionId && event.title) {
+          setState(prev => ({
+            ...prev,
+            sessions: prev.sessions.map(s =>
+              s.id === event.sessionId ? { ...s, title: event.title } : s
+            )
+          }));
+        }
+        break;
+      }
     }
   }, [addMessage, update, loadHistory, loadSessions, loadState, loadSessionMessages]);
 
@@ -765,6 +793,8 @@ export function AppProvider({ children }) {
       } else if (route.view === 'codewiki' && route.projectPath) {
         await openCodeWikiProjectFromRoute(route.projectPath);
       }
+
+      await loadConfigStatus({ openIfRequired: true });
 
       try {
         const startupEvents = await api.fetchStartupEvents();
@@ -835,7 +865,7 @@ export function AppProvider({ children }) {
       clearTimeout(reconnectRef.current);
       window.removeEventListener('popstate', handlePopState);
     };
-  }, [addMessage, connectSSE, loadGitInfo, loadHistory, loadSessionMessages, loadSessions, loadSkills, loadState, openCodeWikiProjectFromRoute, update]);
+  }, [addMessage, connectSSE, loadConfigStatus, loadGitInfo, loadHistory, loadSessionMessages, loadSessions, loadSkills, loadState, openCodeWikiProjectFromRoute, update]);
 
   const actions = {
     submit: async (line, options = {}) => {
@@ -854,6 +884,10 @@ export function AppProvider({ children }) {
       try {
         const res = await api.submitLine(line, { readOnlyCodeWiki: options.readOnlyCodeWiki === true });
         const result = await res.json().catch(() => ({}));
+        if (result?.code === 'CONFIG_REQUIRED') {
+          update({ configOpen: true, configStatus: result.configStatus || stateRef.current.configStatus });
+          throw new Error(t('configRequired'));
+        }
         if (result?.error) throw new Error(result.message || 'Request failed');
       } catch (err) {
         if (approvingPlan) planRunPendingRef.current = false;
@@ -995,6 +1029,7 @@ export function AppProvider({ children }) {
     },
 
     setConfigOpen: (open) => update({ configOpen: open }),
+    refreshConfigStatus: () => loadConfigStatus(),
     setProjectOpen: (open) => update({ projectOpen: open }),
     setSkillsOpen: (open) => update({ skillsOpen: open }),
     setSoulsOpen: (open) => update({ soulsOpen: open }),

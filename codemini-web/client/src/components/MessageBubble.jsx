@@ -286,7 +286,7 @@ export function MessageBubble({ message, skills = [] }) {
 
   if (role === "divider") {
     return (
-      <div className="py-3 px-6 text-center">
+      <div data-message-id={message.id} className="py-3 px-6 text-center">
         <div className="max-w-[860px] mx-auto relative">
           <div className="border-t border-border" />
           <span className="text-xs text-(--text-muted) bg-(--bg-primary) px-2 absolute -top-2.5 left-1/2 -translate-x-1/2 whitespace-nowrap">
@@ -309,7 +309,7 @@ export function MessageBubble({ message, skills = [] }) {
     }
 
     return (
-      <div className="py-2 px-6 text-xs text-(--text-muted) text-center">
+      <div data-message-id={message.id} className="py-2 px-6 text-xs text-(--text-muted) text-center">
         <div className="max-w-[860px] mx-auto px-3 py-1">
           {legacyText}
           {startupTodos && <TodoList todos={startupTodos} />}
@@ -329,7 +329,7 @@ export function MessageBubble({ message, skills = [] }) {
       : "";
 
   return (
-    <div className={cn("py-2 my-[22px]", role === "you" && "flex justify-end")}>
+    <div data-message-id={message.id} className={cn("py-2 my-[22px]", role === "you" && "flex justify-end")}>
       {role === "you" ? (
         <div className="w-fit max-w-full bg-(--bg-tertiary) rounded-2xl px-4 py-3">
           {youText && <UserText text={youText} skills={skills} />}

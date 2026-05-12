@@ -21,7 +21,9 @@ import {
   compactMessagesLocally,
   estimateMessagesTokens,
   microCompactMessages,
-  parseCompactArgs
+  parseCompactArgs,
+  buildTranscriptForLLM,
+  COMPACT_SUMMARY_PROMPT
 } from './context-compact.js';
 import { getReplyLanguage, getReplyLanguageName } from './reply-language.js';
 import { composeSystemPrompt } from './system-prompt-composer.js';
@@ -2401,6 +2403,33 @@ async function generateSessionTitle({ userText, assistantText = '', config, sign
   }
 }
 
+function createCompactSummaryGenerator(config, signal) {
+  return async (olderMessages) => {
+    const latestConfig = await loadConfig().catch(() => config);
+    const effectiveConfig = latestConfig || config;
+    const fastModel = resolveFastModel(effectiveConfig);
+    if (!fastModel) throw new Error('No fast model');
+    const transcript = buildTranscriptForLLM(olderMessages);
+    const result = await createChatCompletion({
+      sdkProvider: effectiveConfig.sdk?.provider,
+      baseUrl: effectiveConfig.gateway.base_url,
+      apiKey: effectiveConfig.gateway.api_key,
+      model: fastModel,
+      messages: [
+        { role: 'system', content: COMPACT_SUMMARY_PROMPT },
+        { role: 'user', content: transcript.slice(0, 12000) }
+      ],
+      tools: [],
+      timeoutMs: Math.min(Number(effectiveConfig.gateway?.timeout_ms || 30000), 60000),
+      maxRetries: 0,
+      signal
+    });
+    const text = result?.text?.trim();
+    if (!text) throw new Error('Empty summary');
+    return text;
+  };
+}
+
 function estimatePromptTokensForRequest(sessionMessages, userText = '') {
   const tokenMsgs = [
     ...(Array.isArray(sessionMessages) ? sessionMessages : []),
@@ -2641,9 +2670,10 @@ async function askModel({
     if (needsMacro) {
       const sourceIsCompacted = Boolean(compacted);
       const macroSource = compacted ?? session.messages;
-      const auto = compactMessagesLocally(macroSource, {
+      const auto = await compactMessagesLocally(macroSource, {
         mode: preflightPct >= hardPct ? 'aggressive' : 'conservative',
-        force: true
+        force: true,
+        generateSummary: createCompactSummaryGenerator(config, signal)
       });
       if (auto.changed) {
         compacted = auto.compacted.map((m) => ({ ...m, at: new Date().toISOString() }));
@@ -2720,7 +2750,7 @@ async function askModel({
       compacted.push({ ...userMessage });
       if (onCompactedUpdate) onCompactedUpdate(compacted);
     }
-    if (!shouldGenerateTitle) {
+    if (shouldReplaceSessionTitle(session.title)) {
       session.title = deriveSessionTitle(session.messages);
     }
     session.model = model || config.model.name;
@@ -2969,18 +2999,26 @@ async function askModel({
         }
       }
     }
-    if (shouldReplaceSessionTitle(session.title)) {
-      session.title = await generateSessionTitle({
-        userText: text,
-        assistantText: loopResult.text || '',
-        config,
-        signal
-      });
-    }
     session.model = model || config.model.name;
     session.mode = executionMode || config.execution?.mode || 'normal';
     await flushScheduledSave();
     await saveSession(session);
+    // Generate a better title asynchronously after saving
+    if (shouldReplaceSessionTitle(session.title)) {
+      const titleSessionId = session.id;
+      generateSessionTitle({
+        userText: text,
+        assistantText: loopResult.text || '',
+        config,
+        signal
+      }).then(async (generatedTitle) => {
+        if (generatedTitle && generatedTitle !== session.title) {
+          session.title = generatedTitle;
+          await saveSession(session);
+          onTitleUpdateCallback?.(titleSessionId, generatedTitle);
+        }
+      }).catch(() => {});
+    }
     try {
       await pruneSessions(config.sessions || {});
     } catch {
@@ -4160,6 +4198,7 @@ export async function createChatRuntime({
     session.projectDir = process.cwd();
   }
   let activeRequestToolApproval = typeof requestToolApproval === 'function' ? requestToolApproval : null;
+  let onTitleUpdateCallback = null;
   const startupEvents = [];
   const initialIndex = await initializeProjectIndex(process.cwd()).catch(() => null);
   if (initialIndex?.summary) {
@@ -4729,16 +4768,24 @@ export async function createChatRuntime({
     if (assistantText) {
       appendSessionMessage(stampedMessage('assistant', assistantText, extra));
     }
-    if (shouldReplaceSessionTitle(currentSession.title)) {
-      currentSession.title = await generateSessionTitle({
-        userText,
-        assistantText,
-        config
-      });
-    }
     currentSession.model = model || config.model.name;
     currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
+    // Generate a better title asynchronously after saving
+    if (shouldReplaceSessionTitle(currentSession.title)) {
+      const titleSessionId = currentSession.id;
+      generateSessionTitle({
+        userText,
+        assistantText,
+        config
+      }).then(async (generatedTitle) => {
+        if (generatedTitle && generatedTitle !== currentSession.title) {
+          currentSession.title = generatedTitle;
+          await saveSession(currentSession);
+          onTitleUpdateCallback?.(titleSessionId, generatedTitle);
+        }
+      }).catch(() => {});
+    }
   };
 
   const persistUserExchange = async (userText) => {
@@ -5720,7 +5767,7 @@ export async function createChatRuntime({
 
         const sourceIsCompacted = Boolean(compactedForModel);
         const macroSource = compactedForModel ?? currentSession.messages;
-        const result = compactMessagesLocally(macroSource, { mode: compactState.mode, force: true });
+        const result = await compactMessagesLocally(macroSource, { mode: compactState.mode, force: true, generateSummary: createCompactSummaryGenerator(config, null) });
         if (!result.changed) {
           return { type: 'system', text: 'Nothing to compact yet' };
         }
@@ -5957,9 +6004,10 @@ export async function createChatRuntime({
         if (needsMacro) {
           const sourceIsCompacted = Boolean(compactedForModel);
           const macroSource = compactedForModel ?? currentSession.messages;
-          const autoResult = compactMessagesLocally(macroSource, {
+          const autoResult = await compactMessagesLocally(macroSource, {
             mode: compactState.mode,
-            force: true
+            force: true,
+            generateSummary: createCompactSummaryGenerator(config, null)
           });
           if (autoResult.changed) {
             setCompactedView(
@@ -6101,6 +6149,9 @@ export async function createChatRuntime({
     setRequestToolApproval: (handler) => {
       activeRequestToolApproval = typeof handler === 'function' ? handler : null;
       return true;
+    },
+    setOnTitleUpdate: (cb) => {
+      onTitleUpdateCallback = typeof cb === 'function' ? cb : null;
     },
     dispose: async () => {
       if (typeof disposeTools === 'function') {

@@ -39,6 +39,103 @@ function modeToKeepRecent(mode) {
   return 6;
 }
 
+function getToolCallId(call) {
+  return String(call?.id || '').trim();
+}
+
+function getMessageToolCallIds(message) {
+  if (!Array.isArray(message?.tool_calls)) return [];
+  return message.tool_calls.map(getToolCallId).filter(Boolean);
+}
+
+function toolResultNote(message) {
+  const text = textFromContent(message?.content);
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { parsed = null; }
+  const summary = parsed && typeof parsed === 'object'
+    ? summarizeToolResult(parsed)
+    : text.replace(/\s+/g, ' ').trim();
+  const clipped = summary.length > 600 ? `${summary.slice(0, 597)}...` : summary;
+  return `[Compacted orphan tool result]\n${clipped || 'No content'}`;
+}
+
+function expandRecentStartToToolBoundary(messages, start) {
+  let adjusted = Math.max(0, Math.min(start, messages.length));
+  while (adjusted > 0 && messages[adjusted]?.role === 'tool') {
+    adjusted -= 1;
+  }
+  if (
+    adjusted > 0 &&
+    messages[adjusted]?.role !== 'assistant' &&
+    messages[adjusted + 1]?.role === 'tool'
+  ) {
+    adjusted += 1;
+  }
+  return adjusted;
+}
+
+function sanitizeRecentMessagesForModel(messages) {
+  const out = [];
+  let activeAssistantIndex = -1;
+  let expectedToolIds = new Set();
+  let matchedToolIds = new Set();
+
+  const finalizeActiveAssistant = () => {
+    if (activeAssistantIndex < 0) return;
+    const assistant = out[activeAssistantIndex];
+    if (!Array.isArray(assistant?.tool_calls)) {
+      activeAssistantIndex = -1;
+      expectedToolIds = new Set();
+      matchedToolIds = new Set();
+      return;
+    }
+    const toolCalls = assistant.tool_calls.filter((call) => matchedToolIds.has(getToolCallId(call)));
+    if (toolCalls.length > 0) {
+      out[activeAssistantIndex] = { ...assistant, tool_calls: toolCalls };
+    } else {
+      const { tool_calls, ...rest } = assistant;
+      out[activeAssistantIndex] = rest;
+    }
+    activeAssistantIndex = -1;
+    expectedToolIds = new Set();
+    matchedToolIds = new Set();
+  };
+
+  for (const message of messages) {
+    if (!message || typeof message !== 'object') continue;
+    if (message.role === 'assistant') {
+      finalizeActiveAssistant();
+      const clone = { ...message };
+      out.push(clone);
+      const ids = getMessageToolCallIds(clone);
+      if (ids.length > 0) {
+        activeAssistantIndex = out.length - 1;
+        expectedToolIds = new Set(ids);
+        matchedToolIds = new Set();
+      }
+      continue;
+    }
+
+    if (message.role === 'tool') {
+      const id = String(message.tool_call_id || '').trim();
+      if (id && expectedToolIds.has(id)) {
+        out.push({ ...message });
+        matchedToolIds.add(id);
+        continue;
+      }
+      finalizeActiveAssistant();
+      out.push({ role: 'assistant', content: toolResultNote(message), at: message.at });
+      continue;
+    }
+
+    finalizeActiveAssistant();
+    out.push({ ...message });
+  }
+
+  finalizeActiveAssistant();
+  return out;
+}
+
 function buildLocalSummary(messages) {
   const goal = [];
   const constraints = [];
@@ -104,6 +201,50 @@ function buildLocalSummary(messages) {
 }
 
 /**
+ * Build a conversation transcript from messages for LLM summarization input.
+ * Includes structured metadata (tool calls, file changes) alongside the text.
+ */
+export function buildTranscriptForLLM(messages) {
+  const parts = [];
+  for (const msg of messages) {
+    const text = textFromContent(msg.content).replace(/\s+/g, ' ').trim();
+    if (!text && !Array.isArray(msg.tool_calls) && msg.role !== 'user') continue;
+    if (msg.role === 'user') {
+      parts.push(`[User]\n${text.slice(0, 600)}`);
+    } else if (msg.role === 'assistant') {
+      let block = `[Assistant]\n${text.slice(0, 600)}`;
+      if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+        const toolNames = msg.tool_calls.map(tc => tc.function?.name || tc.name || 'tool').join(', ');
+        block += `\n[Called tools: ${toolNames}]`;
+      }
+      parts.push(block);
+    } else if (msg.role === 'tool') {
+      let parsed;
+      try { parsed = JSON.parse(text); } catch { parsed = null; }
+      if (parsed && typeof parsed === 'object') {
+        const summary = summarizeToolResult(parsed);
+        parts.push(`[Tool Result]\n${summary.slice(0, 400)}`);
+      } else {
+        parts.push(`[Tool Result]\n${text.slice(0, 300)}`);
+      }
+    }
+  }
+  return parts.join('\n\n');
+}
+
+export const COMPACT_SUMMARY_PROMPT = `Summarize the following conversation into a structured context summary that preserves all critical information for continuing the task. Be thorough and specific.
+
+Include:
+- The user's goal and requirements
+- Key decisions made and reasoning
+- Files that were read, modified, or created (with paths)
+- Current progress and what remains
+- Any errors encountered and how they were resolved
+- Important constraints or conventions discovered
+
+Write in the same language as the conversation. Be concise but do not omit important details.`;
+
+/**
  * Micro-compact: in-place clearing of old tool result content.
  * Does NOT change message count or order — only replaces tool result text
  * with a lightweight marker, preserving conversation structure.
@@ -151,7 +292,7 @@ export function microCompactMessages(messages, { keepRecent = 5, enabled = true 
   return { messages: result, changed: true, tokensSaved };
 }
 
-export function compactMessagesLocally(messages, { mode = 'default', force = false } = {}) {
+export async function compactMessagesLocally(messages, { mode = 'default', force = false, generateSummary = null } = {}) {
   const keepRecent = modeToKeepRecent(mode);
   if (!Array.isArray(messages) || messages.length <= 1) {
     return {
@@ -167,12 +308,23 @@ export function compactMessagesLocally(messages, { mode = 'default', force = fal
     };
   }
 
-  const older = messages.slice(0, Math.max(0, messages.length - keepRecent));
-  const recent = messages.slice(Math.max(0, messages.length - keepRecent));
-  const summary = buildLocalSummary(older);
-  const compacted = [{ role: 'assistant', content: summary }, ...recent];
+  const recentStart = expandRecentStartToToolBoundary(messages, Math.max(0, messages.length - keepRecent));
+  const older = messages.slice(0, recentStart);
+  const recent = sanitizeRecentMessagesForModel(messages.slice(recentStart));
 
-  const boundaryIndex = Math.max(0, messages.length - keepRecent);
+  let summary;
+  if (typeof generateSummary === 'function') {
+    try {
+      summary = await generateSummary(older);
+    } catch {
+      summary = buildLocalSummary(older);
+    }
+  } else {
+    summary = buildLocalSummary(older);
+  }
+
+  const compacted = [{ role: 'assistant', content: summary }, ...recent];
+  const boundaryIndex = recentStart;
 
   return {
     compacted,

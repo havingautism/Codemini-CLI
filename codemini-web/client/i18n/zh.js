@@ -80,6 +80,9 @@ export const zh = {
 
   // Config
   settingsTitle: '设置',
+  configRequired: '请先在设置中配置接口地址和 API Key',
+  configRequiredTitle: '需要先配置模型接口',
+  configRequiredDesc: '当前仍是新安装的默认接口地址。设置 Base URL、API Key 和模型后即可开始使用。',
   cancel: '取消',
   saveChanges: '保存更改',
   gateway: '网关',
@@ -239,6 +242,16 @@ export const zh = {
 
   // AboutDialog
   aboutTitle: '关于 Codemini',
+  aboutEyebrow: '本地 coding agent',
+  aboutTagline: '一个更克制、更可审计的 coding agent：CLI 的速度，Web UI 的可见性，项目记忆、技能、审批和干净的上下文管理都在一起。',
+  aboutFeatureRuntime: '同一套运行时',
+  aboutFeatureRuntimeDesc: 'CLI 和 Web UI 共享会话、配置、项目状态、技能和执行模式。',
+  aboutFeatureApprovals: '过程可审阅',
+  aboutFeatureApprovalsDesc: '工具调用、计划和高风险动作在执行前都能看清楚。',
+  aboutFeatureMemory: '上下文更稳',
+  aboutFeatureMemoryDesc: '压缩摘要、项目索引、记忆 inbox 和 dream consolidation 让长任务可继续。',
+  aboutFeatureConfig: '接入你的模型',
+  aboutFeatureConfigDesc: '支持 OpenAI 兼容网关或内部模型服务，不改变工作流。',
   installation: '安装',
   startWebUI: '启动 Web UI',
   startWebUIDesc: '启动后浏览器会自动打开 Web 界面，也可以手动访问终端中显示的地址。',
@@ -272,6 +285,13 @@ export const zh = {
   themeGithub: 'GitHub',
   themeVSCode: 'VS Code',
 
+  // General workspace
+  generalChat: '普通会话',
+  projectTask: '项目任务',
+  generalChatDesc: '无需绑定项目，自由对话',
+  enterGeneral: '进入普通会话',
+  askAnythingGeneral: '有什么可以帮你的?',
+
   // ChatPanel
   buildInProject: '要在 {{project}} 中构建什么?',
   gitStaged: '已暂存',
@@ -287,4 +307,12 @@ export const zh = {
   gitDiffDeleted: '已删除',
   gitDiffUntracked: '未跟踪',
   gitDiffNoDiffAvailable: '无差异内容',
+
+  // Conversation collection
+  conversations: '对话',
+  noConversations: '暂无聊天',
+  justNow: '刚刚',
+  minutesAgo: '分钟前',
+  hoursAgo: '小时前',
+  daysAgo: '天前',
 };

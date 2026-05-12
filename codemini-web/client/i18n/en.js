@@ -71,6 +71,9 @@ export const en = {
 
   // Config
   settingsTitle: 'Settings',
+  configRequired: 'Configure the API Base URL and API Key in Settings first',
+  configRequiredTitle: 'Model gateway setup required',
+  configRequiredDesc: 'This install is still using the default gateway endpoint. Set the Base URL, API Key, and model before chatting.',
   cancel: 'Cancel',
   saveChanges: 'Save Changes',
   gateway: 'Gateway',
@@ -230,6 +233,16 @@ export const en = {
 
   // AboutDialog
   aboutTitle: 'About Codemini',
+  aboutEyebrow: 'Local coding agent',
+  aboutTagline: 'A compact, auditable coding agent with CLI speed, Web UI visibility, project memory, skills, approvals, and clean context management.',
+  aboutFeatureRuntime: 'One runtime',
+  aboutFeatureRuntimeDesc: 'CLI and Web UI share sessions, config, project state, skills, and execution mode.',
+  aboutFeatureApprovals: 'Reviewable work',
+  aboutFeatureApprovalsDesc: 'Tool calls, plans, and risky actions stay visible before they run.',
+  aboutFeatureMemory: 'Smarter context',
+  aboutFeatureMemoryDesc: 'Compact summaries, project index, memory inbox, and dream consolidation keep long work usable.',
+  aboutFeatureConfig: 'Bring your model',
+  aboutFeatureConfigDesc: 'Use OpenAI-compatible gateways or internal providers without changing the workflow.',
   installation: 'Installation',
   startWebUI: 'Start Web UI',
   startWebUIDesc: 'After starting, the browser will automatically open the Web interface. You can also manually visit the address shown in the terminal.',
@@ -263,6 +276,13 @@ export const en = {
   themeGithub: 'GitHub',
   themeVSCode: 'VS Code',
 
+  // General workspace
+  generalChat: 'General Chat',
+  projectTask: 'Project Task',
+  generalChatDesc: 'Chat freely without binding to a project',
+  enterGeneral: 'Enter General Chat',
+  askAnythingGeneral: 'How can I help you?',
+
   // ChatPanel
   buildInProject: 'What do you want to build in {{project}}?',
   gitStaged: 'Staged',
@@ -278,4 +298,12 @@ export const en = {
   gitDiffDeleted: 'Deleted',
   gitDiffUntracked: 'Untracked',
   gitDiffNoDiffAvailable: 'No diff available',
+
+  // Conversation collection
+  conversations: 'Conversations',
+  noConversations: 'No conversations yet',
+  justNow: 'just now',
+  minutesAgo: 'm ago',
+  hoursAgo: 'h ago',
+  daysAgo: 'd ago',
 };

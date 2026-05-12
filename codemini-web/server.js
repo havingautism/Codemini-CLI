@@ -12,11 +12,13 @@ import { RuntimeBridge } from './lib/runtime-bridge.js';
 import { listSkillEntries } from '../src/commands/skill.js';
 import { readSkillRegistry, writeSkillRegistry, upsertSkillRegistryEntry } from '../src/core/skill-registry.js';
 import { getReplyLanguage } from '../src/core/reply-language.js';
-import { createRequire } from 'node:module';
-const require = createRequire(import.meta.url);
-const pkg = require('../package.json');
 import { getSkillsDir, getBaseConfigDir } from '../src/core/paths.js';
+import { VERSION } from '../src/core/version.js';
 
+const GENERAL_PROJECT_DIR = (() => {
+  const base = getBaseConfigDir();
+  return path.join(base, 'workspace');
+})();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_SOURCE_DIR = path.join(__dirname, 'client');
 let CLIENT_DIR = CLIENT_SOURCE_DIR;
@@ -35,6 +37,24 @@ const MIME_TYPES = {
   '.png': 'image/png',
   '.ico': 'image/x-icon'
 };
+
+const DEFAULT_GATEWAY_BASE_URL = 'http://127.0.0.1:8000/v1';
+
+function normalizeBaseUrl(value) {
+  return String(value || '').trim().replace(/\/+$/, '');
+}
+
+function getConfigStatus(config) {
+  const baseUrl = normalizeBaseUrl(config?.gateway?.base_url);
+  const apiKey = String(config?.gateway?.api_key || '').trim();
+  const setupRequired = !baseUrl || (baseUrl === DEFAULT_GATEWAY_BASE_URL && !apiKey);
+  return {
+    setupRequired,
+    baseUrl,
+    hasApiKey: !!apiKey,
+    reason: setupRequired ? 'gateway_not_configured' : ''
+  };
+}
 
 function parseArgs(argv) {
   const parsed = { port: 3210, session: undefined, model: undefined, project: undefined, open: true };
@@ -217,7 +237,8 @@ async function inferSessionProjectDir(session) {
 
 async function buildRuntimeForSession({ sessionId, model, projectDir }) {
   const config = await loadConfig();
-  const session = sessionId ? await loadSession(sessionId) : await createSession(projectDir || process.cwd());
+  const resolvedDir = projectDir || process.cwd();
+  const session = sessionId ? await loadSession(sessionId) : await createSession(resolvedDir);
   const sessionProjectDir = projectDir ? normalizeProjectPath(projectDir) : await inferSessionProjectDir(session);
   if (sessionProjectDir) {
     try {
@@ -233,13 +254,19 @@ async function buildRuntimeForSession({ sessionId, model, projectDir }) {
     model: model || config.model?.name,
     systemPrompt
   });
-  return { runtime, config, session, cwd: process.cwd() };
+  return { runtime, config, session, cwd: process.cwd(), isGeneral: process.cwd() === GENERAL_PROJECT_DIR };
 }
 
 async function main() {
   const args = parseArgs(process.argv);
 
+  // Ensure general workspace directory exists
+  await fs.mkdir(GENERAL_PROJECT_DIR, { recursive: true });
+
   // Set initial project directory
+  if (!args.project && !args.session) {
+    process.chdir(GENERAL_PROJECT_DIR);
+  }
   if (args.project) {
     try {
       const resolved = path.resolve(args.project);
@@ -288,6 +315,17 @@ async function main() {
     if (req.method === 'POST' && url.pathname === '/api/submit') {
       const { line, readOnlyCodeWiki } = await readBody(req);
       if (!line || typeof line !== 'string') { jsonResponse(res, { error: true, message: 'Missing "line" field' }, 400); return; }
+      const currentConfig = await loadConfig();
+      const configStatus = getConfigStatus(currentConfig);
+      if (configStatus.setupRequired) {
+        jsonResponse(res, {
+          error: true,
+          code: 'CONFIG_REQUIRED',
+          message: 'Gateway is not configured. Open Settings and set the API Base URL and API Key.',
+          configStatus
+        }, 409);
+        return;
+      }
       const result = bridge.handleSubmit(line, { readOnlyCodeWiki: readOnlyCodeWiki === true });
       jsonResponse(res, result);
       return;
@@ -323,7 +361,7 @@ async function main() {
       try {
         latest = execSync('npm view codemini-cli version', { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
       } catch {}
-      jsonResponse(res, { current: pkg.version, latest });
+      jsonResponse(res, { current: VERSION, latest });
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/update') {
@@ -338,7 +376,7 @@ async function main() {
 
     // ── Runtime state ──
     if (req.method === 'GET' && url.pathname === '/api/state') {
-      jsonResponse(res, { ...bridge.getState(), cwd: currentProjectDir });
+      jsonResponse(res, { ...bridge.getState(), cwd: currentProjectDir, isGeneral: currentProjectDir === GENERAL_PROJECT_DIR });
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/completions') {
@@ -450,6 +488,17 @@ async function main() {
         jsonResponse(res, { error: true, message: 'Missing "question" field' }, 400);
         return;
       }
+      const currentConfig = await loadConfig();
+      const configStatus = getConfigStatus(currentConfig);
+      if (configStatus.setupRequired) {
+        jsonResponse(res, {
+          error: true,
+          code: 'CONFIG_REQUIRED',
+          message: 'Gateway is not configured. Open Settings and set the API Base URL and API Key.',
+          configStatus
+        }, 409);
+        return;
+      }
       const selectedReport = isCodeWikiReportFile(reportFile) ? reportFile : '';
       if (bridge.isBusy()) {
         jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
@@ -483,7 +532,8 @@ async function main() {
     // ── Session management ──
     if (req.method === 'GET' && url.pathname === '/api/sessions') {
       const sessions = await listSessions(1000);
-      jsonResponse(res, sessions);
+      const enriched = sessions.map(s => ({ ...s, isGeneral: s.projectDir === GENERAL_PROJECT_DIR }));
+      jsonResponse(res, enriched);
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/sessions/new') {
@@ -494,16 +544,18 @@ async function main() {
             ok: true,
             reused: true,
             sessionId: bridge.getSessionId(),
-            cwd: currentProjectDir
+            cwd: currentProjectDir,
+            isGeneral: currentProjectDir === GENERAL_PROJECT_DIR
           });
           return;
         }
         const { runtime: newRuntime, session } = await buildRuntimeForSession({
-          model: bridge.getState().model
+          model: bridge.getState().model,
+          projectDir: currentProjectDir
         });
         await bridge.switchRuntime(newRuntime);
         currentProjectDir = process.cwd();
-        jsonResponse(res, { ok: true, sessionId: session.id, cwd: currentProjectDir });
+        jsonResponse(res, { ok: true, sessionId: session.id, cwd: currentProjectDir, isGeneral: currentProjectDir === GENERAL_PROJECT_DIR });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
@@ -513,13 +565,13 @@ async function main() {
       const { sessionId } = await readBody(req);
       if (!sessionId) { jsonResponse(res, { error: true, message: 'Missing sessionId' }, 400); return; }
       try {
-        const { runtime: newRuntime } = await buildRuntimeForSession({
+        const { runtime: newRuntime, session: switchedSession } = await buildRuntimeForSession({
           sessionId,
           model: bridge.getState().model
         });
         await bridge.switchRuntime(newRuntime);
         currentProjectDir = process.cwd();
-        jsonResponse(res, { ok: true, sessionId, cwd: currentProjectDir });
+        jsonResponse(res, { ok: true, sessionId, cwd: currentProjectDir, isGeneral: currentProjectDir === GENERAL_PROJECT_DIR });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
@@ -543,13 +595,13 @@ async function main() {
           const next = remaining.find((session) => session.id !== sessionId);
           const built = next
             ? await buildRuntimeForSession({ sessionId: next.id, model: bridge.getState().model })
-            : await buildRuntimeForSession({ model: bridge.getState().model });
+            : await buildRuntimeForSession({ model: bridge.getState().model, projectDir: currentProjectDir });
           await bridge.switchRuntime(built.runtime);
           currentProjectDir = process.cwd();
           nextSessionId = built.session.id;
           cwd = currentProjectDir;
         }
-        jsonResponse(res, { ok: true, removed: result.removed, sessionId: nextSessionId, cwd });
+        jsonResponse(res, { ok: true, removed: result.removed, sessionId: nextSessionId, cwd, isGeneral: currentProjectDir === GENERAL_PROJECT_DIR });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
@@ -558,7 +610,7 @@ async function main() {
 
     // ── Project management ──
     if (req.method === 'GET' && url.pathname === '/api/project') {
-      jsonResponse(res, { cwd: currentProjectDir });
+      jsonResponse(res, { cwd: currentProjectDir, isGeneral: currentProjectDir === GENERAL_PROJECT_DIR });
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/git') {
@@ -637,7 +689,10 @@ async function main() {
       const { path: projectPath } = await readBody(req);
       if (!projectPath) { jsonResponse(res, { error: true, message: 'Missing path' }, 400); return; }
       try {
-        const resolved = path.resolve(projectPath);
+        // Client marker for general workspace
+        const resolved = projectPath === '__codemini_general__'
+          ? GENERAL_PROJECT_DIR
+          : path.resolve(projectPath);
         const stat = await fs.stat(resolved);
         if (!stat.isDirectory()) throw new Error('Not a directory');
         process.chdir(resolved);
@@ -647,7 +702,7 @@ async function main() {
           model: bridge.getState().model
         });
         await bridge.switchRuntime(newRuntime);
-        jsonResponse(res, { ok: true, cwd: currentProjectDir, sessionId: session.id });
+        jsonResponse(res, { ok: true, cwd: currentProjectDir, sessionId: session.id, isGeneral: currentProjectDir === GENERAL_PROJECT_DIR });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 400);
       }
@@ -678,6 +733,11 @@ async function main() {
     }
 
     // ── Config management ──
+    if (req.method === 'GET' && url.pathname === '/api/config/status') {
+      const config = await loadConfig();
+      jsonResponse(res, getConfigStatus(config));
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/api/config') {
       const config = await loadConfig();
       jsonResponse(res, config);
@@ -689,6 +749,8 @@ async function main() {
       try {
         await setConfigValue(key, value);
         const config = await loadConfig();
+        await bridge.reloadConfig();
+        bridge.broadcastRuntimeState();
         jsonResponse(res, { ok: true, config });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);

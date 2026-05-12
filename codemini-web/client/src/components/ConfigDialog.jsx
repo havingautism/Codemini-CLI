@@ -24,7 +24,7 @@ function getNestedValue(obj, path) {
   return path.split(".").reduce((o, k) => o?.[k], obj);
 }
 
-export function ConfigDialog({ open, onOpenChange }) {
+export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
   // Define config groups inside the component to ensure proper translation
   const CONFIG_GROUPS = [
     {
@@ -174,6 +174,7 @@ export function ConfigDialog({ open, onOpenChange }) {
           key?.type === "number" ? Number(value) : value,
         );
       }
+      await onSaved?.();
       setChanges({});
       onOpenChange(false);
     } catch (err) {
@@ -187,56 +188,66 @@ export function ConfigDialog({ open, onOpenChange }) {
         <DialogHeader className="shrink-0">
           <DialogTitle>{t("settingsTitle")}</DialogTitle>
         </DialogHeader>
-        <div className="space-y-5 py-1 overflow-y-auto flex-1 min-h-0">
+        <div className="space-y-5 px-2.5 py-1 overflow-y-auto flex-1 min-h-0">
+          {status?.setupRequired && (
+            <div className="rounded-md border border-(--border-default) bg-(--bg-secondary) px-3 py-2 text-[13px] text-(--text-primary)">
+              <div className="font-medium">{t("configRequiredTitle")}</div>
+              <div className="mt-1 text-(--text-secondary)">
+                {t("configRequiredDesc")}
+              </div>
+            </div>
+          )}
           {configLoading ? (
             <div className="flex items-center justify-center py-12">
               <Spinner />
             </div>
           ) : (
-          CONFIG_GROUPS.map((group, gi) => (
-            <div key={group.title}>
-              <div className="text-[13px] font-semibold text-(--text-secondary) mb-2.5 uppercase tracking-[0.3px]">
-                {group.title}
+            CONFIG_GROUPS.map((group, gi) => (
+              <div key={group.title}>
+                <div className="text-[13px] font-semibold text-(--text-secondary) mb-2.5 uppercase tracking-[0.3px]">
+                  {group.title}
+                </div>
+                <div className="space-y-2.5">
+                  {group.keys.map((key) => (
+                    <div key={key.path} className="flex items-center gap-3">
+                      <label className="text-[13px] text-(--text-muted) w-32 shrink-0">
+                        {key.label}
+                      </label>
+                      {key.options ? (
+                        <Select
+                          value={getValue(key.path)}
+                          onValueChange={(v) => handleChange(key.path, v)}
+                        >
+                          <SelectTrigger className="flex-1 h-8 text-[13px]">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {key.options.map((opt) => (
+                              <SelectItem key={opt} value={opt}>
+                                {opt}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <Input
+                          type={key.type || "text"}
+                          value={getValue(key.path)}
+                          onChange={(e) =>
+                            handleChange(key.path, e.target.value)
+                          }
+                          placeholder={key.placeholder || ""}
+                          className="flex-1 h-8 text-[13px]"
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {gi < CONFIG_GROUPS.length - 1 && (
+                  <Separator className="mt-4 bg-(--border-default)" />
+                )}
               </div>
-              <div className="space-y-2.5">
-                {group.keys.map((key) => (
-                  <div key={key.path} className="flex items-center gap-3">
-                    <label className="text-[13px] text-(--text-muted) w-32 shrink-0">
-                      {key.label}
-                    </label>
-                    {key.options ? (
-                      <Select
-                        value={getValue(key.path)}
-                        onValueChange={(v) => handleChange(key.path, v)}
-                      >
-                        <SelectTrigger className="flex-1 h-8 text-[13px]">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {key.options.map((opt) => (
-                            <SelectItem key={opt} value={opt}>
-                              {opt}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <Input
-                        type={key.type || "text"}
-                        value={getValue(key.path)}
-                        onChange={(e) => handleChange(key.path, e.target.value)}
-                        placeholder={key.placeholder || ""}
-                        className="flex-1 h-8 text-[13px]"
-                      />
-                    )}
-                  </div>
-                ))}
-              </div>
-              {gi < CONFIG_GROUPS.length - 1 && (
-                <Separator className="mt-4 bg-(--border-default)" />
-              )}
-            </div>
-          ))
+            ))
           )}
         </div>
         <DialogFooter className="gap-2 shrink-0">
