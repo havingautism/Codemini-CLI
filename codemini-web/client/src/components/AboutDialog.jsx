@@ -5,14 +5,36 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
-import { BrainCircuit, CheckCircle2, Settings2, Terminal, Workflow } from "lucide-react";
+import {
+  BrainCircuit,
+  CheckCircle2,
+  Settings2,
+  Terminal,
+  Workflow,
+} from "lucide-react";
 import { t } from "../../i18n/index.js";
 
 const FEATURES = [
-  { icon: Workflow, title: "aboutFeatureRuntime", text: "aboutFeatureRuntimeDesc" },
-  { icon: CheckCircle2, title: "aboutFeatureApprovals", text: "aboutFeatureApprovalsDesc" },
-  { icon: BrainCircuit, title: "aboutFeatureMemory", text: "aboutFeatureMemoryDesc" },
-  { icon: Settings2, title: "aboutFeatureConfig", text: "aboutFeatureConfigDesc" },
+  {
+    icon: Workflow,
+    title: "aboutFeatureRuntime",
+    text: "aboutFeatureRuntimeDesc",
+  },
+  {
+    icon: CheckCircle2,
+    title: "aboutFeatureApprovals",
+    text: "aboutFeatureApprovalsDesc",
+  },
+  {
+    icon: BrainCircuit,
+    title: "aboutFeatureMemory",
+    text: "aboutFeatureMemoryDesc",
+  },
+  {
+    icon: Settings2,
+    title: "aboutFeatureConfig",
+    text: "aboutFeatureConfigDesc",
+  },
 ];
 
 export function AboutDialog({ open, onOpenChange, version }) {
@@ -31,9 +53,9 @@ export function AboutDialog({ open, onOpenChange, version }) {
               className="h-16 w-16 shrink-0 rounded-[14px] border border-(--border-default) bg-(--bg-secondary) p-2"
             />
             <div className="min-w-0">
-              <div className="text-[12px] font-medium uppercase tracking-[0.18em] text-(--text-muted)">
+              {/* <div className="text-[12px] font-medium uppercase tracking-[0.18em] text-(--text-muted)">
                 {t("aboutEyebrow")}
-              </div>
+              </div> */}
               <h2 className="mt-1 text-[24px] font-semibold leading-tight text-(--text-primary)">
                 Codemini CLI
               </h2>
@@ -113,7 +135,9 @@ export function AboutDialog({ open, onOpenChange, version }) {
                 <span className="font-medium text-(--text-primary)">
                   {t("workspace")}
                 </span>
-                <p className="mt-1 text-(--text-muted)">{t("workspaceUsage")}</p>
+                <p className="mt-1 text-(--text-muted)">
+                  {t("workspaceUsage")}
+                </p>
               </div>
             </div>
           </div>

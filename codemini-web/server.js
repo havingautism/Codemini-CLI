@@ -19,6 +19,12 @@ const GENERAL_PROJECT_DIR = (() => {
   const base = getBaseConfigDir();
   return path.join(base, 'workspace');
 })();
+
+function isGeneralProjectDir(value) {
+  if (!value) return false;
+  return path.resolve(value) === path.resolve(GENERAL_PROJECT_DIR);
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_SOURCE_DIR = path.join(__dirname, 'client');
 let CLIENT_DIR = CLIENT_SOURCE_DIR;
@@ -254,7 +260,7 @@ async function buildRuntimeForSession({ sessionId, model, projectDir }) {
     model: model || config.model?.name,
     systemPrompt
   });
-  return { runtime, config, session, cwd: process.cwd(), isGeneral: process.cwd() === GENERAL_PROJECT_DIR };
+  return { runtime, config, session, cwd: process.cwd(), isGeneral: isGeneralProjectDir(process.cwd()) };
 }
 
 async function main() {
@@ -376,7 +382,7 @@ async function main() {
 
     // ── Runtime state ──
     if (req.method === 'GET' && url.pathname === '/api/state') {
-      jsonResponse(res, { ...bridge.getState(), cwd: currentProjectDir, isGeneral: currentProjectDir === GENERAL_PROJECT_DIR });
+      jsonResponse(res, { ...bridge.getState(), cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) });
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/completions') {
@@ -532,7 +538,7 @@ async function main() {
     // ── Session management ──
     if (req.method === 'GET' && url.pathname === '/api/sessions') {
       const sessions = await listSessions(1000);
-      const enriched = sessions.map(s => ({ ...s, isGeneral: s.projectDir === GENERAL_PROJECT_DIR }));
+      const enriched = sessions.map(s => ({ ...s, isGeneral: isGeneralProjectDir(s.projectDir) }));
       jsonResponse(res, enriched);
       return;
     }
@@ -545,7 +551,7 @@ async function main() {
             reused: true,
             sessionId: bridge.getSessionId(),
             cwd: currentProjectDir,
-            isGeneral: currentProjectDir === GENERAL_PROJECT_DIR
+            isGeneral: isGeneralProjectDir(currentProjectDir)
           });
           return;
         }
@@ -555,7 +561,7 @@ async function main() {
         });
         await bridge.switchRuntime(newRuntime);
         currentProjectDir = process.cwd();
-        jsonResponse(res, { ok: true, sessionId: session.id, cwd: currentProjectDir, isGeneral: currentProjectDir === GENERAL_PROJECT_DIR });
+        jsonResponse(res, { ok: true, sessionId: session.id, cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
@@ -571,7 +577,7 @@ async function main() {
         });
         await bridge.switchRuntime(newRuntime);
         currentProjectDir = process.cwd();
-        jsonResponse(res, { ok: true, sessionId, cwd: currentProjectDir, isGeneral: currentProjectDir === GENERAL_PROJECT_DIR });
+        jsonResponse(res, { ok: true, sessionId, cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
@@ -601,7 +607,7 @@ async function main() {
           nextSessionId = built.session.id;
           cwd = currentProjectDir;
         }
-        jsonResponse(res, { ok: true, removed: result.removed, sessionId: nextSessionId, cwd, isGeneral: currentProjectDir === GENERAL_PROJECT_DIR });
+        jsonResponse(res, { ok: true, removed: result.removed, sessionId: nextSessionId, cwd, isGeneral: isGeneralProjectDir(currentProjectDir) });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
@@ -610,7 +616,7 @@ async function main() {
 
     // ── Project management ──
     if (req.method === 'GET' && url.pathname === '/api/project') {
-      jsonResponse(res, { cwd: currentProjectDir, isGeneral: currentProjectDir === GENERAL_PROJECT_DIR });
+      jsonResponse(res, { cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) });
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/git') {
@@ -690,19 +696,31 @@ async function main() {
       if (!projectPath) { jsonResponse(res, { error: true, message: 'Missing path' }, 400); return; }
       try {
         // Client marker for general workspace
-        const resolved = projectPath === '__codemini_general__'
-          ? GENERAL_PROJECT_DIR
-          : path.resolve(projectPath);
+        const openingGeneral = projectPath === '__codemini_general__';
+        const resolved = openingGeneral ? GENERAL_PROJECT_DIR : path.resolve(projectPath);
         const stat = await fs.stat(resolved);
         if (!stat.isDirectory()) throw new Error('Not a directory');
-        process.chdir(resolved);
-        currentProjectDir = process.cwd();
-        // Re-init runtime in new project
-        const { runtime: newRuntime, session } = await buildRuntimeForSession({
-          model: bridge.getState().model
-        });
+        let built;
+        if (openingGeneral) {
+          const all = await listSessions(1000, { includeEmpty: true });
+          const reusable = all.find((session) =>
+            isGeneralProjectDir(session.projectDir) &&
+            Number(session.messageCount || 0) === 0
+          );
+          built = reusable
+            ? await buildRuntimeForSession({ sessionId: reusable.id, model: bridge.getState().model })
+            : await buildRuntimeForSession({ model: bridge.getState().model, projectDir: GENERAL_PROJECT_DIR });
+        } else {
+          process.chdir(resolved);
+          currentProjectDir = process.cwd();
+          built = await buildRuntimeForSession({
+            model: bridge.getState().model
+          });
+        }
+        const { runtime: newRuntime, session } = built;
         await bridge.switchRuntime(newRuntime);
-        jsonResponse(res, { ok: true, cwd: currentProjectDir, sessionId: session.id, isGeneral: currentProjectDir === GENERAL_PROJECT_DIR });
+        currentProjectDir = process.cwd();
+        jsonResponse(res, { ok: true, cwd: currentProjectDir, sessionId: session.id, isGeneral: isGeneralProjectDir(currentProjectDir) });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 400);
       }

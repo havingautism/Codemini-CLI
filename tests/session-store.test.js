@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { getSessionsDir } from '../src/core/paths.js';
-import { listSessions, loadSession, saveSession } from '../src/core/session-store.js';
+import { createSession, listSessions, loadSession, saveSession } from '../src/core/session-store.js';
 
 async function withTempConfigDir(run) {
   const prev = process.env.CODEMINI_GLOBAL_DIR;
@@ -192,5 +192,59 @@ test('session-store still supports legacy .json session files', { concurrency: f
     assert.equal(loaded.id, id);
     assert.equal(loaded.messages.length, 1);
     assert.equal(loaded.messages[0].content, 'legacy data');
+  });
+});
+
+test('session-store maintains a lightweight session index for listing', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const sessionsDir = getSessionsDir();
+    await saveSession({
+      id: 'session-index-visible',
+      createdAt: '2026-04-01T10:00:00.000Z',
+      updatedAt: '2026-04-01T10:00:00.000Z',
+      messages: [{ role: 'user', content: 'indexed session' }]
+    });
+    await createSession('/tmp/empty-project');
+
+    const indexPath = path.join(sessionsDir, 'index.json');
+    const index = JSON.parse(await fs.readFile(indexPath, 'utf8'));
+    assert.equal(index.version, 1);
+    assert.ok(index.sessions.some((item) => item.id === 'session-index-visible'));
+
+    const visible = await listSessions(10);
+    assert.ok(visible.some((item) => item.id === 'session-index-visible'));
+    assert.ok(visible.every((item) => item.messageCount > 0));
+
+    const withEmpty = await listSessions(10, { includeEmpty: true });
+    assert.ok(withEmpty.some((item) => item.messageCount === 0));
+  });
+});
+
+test('session-store rebuilds a stale session index from disk', { concurrency: false }, async () => {
+  await withTempConfigDir(async () => {
+    const sessionsDir = getSessionsDir();
+    await fs.mkdir(sessionsDir, { recursive: true });
+    await fs.writeFile(
+      path.join(sessionsDir, 'session-index-manual.jsonl'),
+      `${JSON.stringify({
+        id: 'session-index-manual',
+        createdAt: '2026-04-01T10:00:00.000Z',
+        updatedAt: '2026-04-01T10:00:00.000Z',
+        messages: [{ role: 'user', content: 'manual session' }]
+      })}\n`,
+      'utf8'
+    );
+    await fs.writeFile(
+      path.join(sessionsDir, 'index.json'),
+      JSON.stringify({ version: 1, files: [], sessions: [] }),
+      'utf8'
+    );
+
+    const listed = await listSessions(10);
+    assert.ok(listed.some((item) => item.id === 'session-index-manual'));
+
+    const rebuilt = JSON.parse(await fs.readFile(path.join(sessionsDir, 'index.json'), 'utf8'));
+    assert.ok(rebuilt.files.some((item) => item.name === 'session-index-manual.jsonl'));
+    assert.ok(rebuilt.sessions.some((item) => item.id === 'session-index-manual'));
   });
 });

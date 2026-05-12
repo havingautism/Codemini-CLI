@@ -252,6 +252,7 @@ export const zh = {
   aboutFeatureMemoryDesc: '压缩摘要、项目索引、记忆 inbox 和 dream consolidation 让长任务可继续。',
   aboutFeatureConfig: '接入你的模型',
   aboutFeatureConfigDesc: '支持 OpenAI 兼容网关或内部模型服务，不改变工作流。',
+  projectRepository: 'GitHub 项目主页',
   installation: '安装',
   startWebUI: '启动 Web UI',
   startWebUIDesc: '启动后浏览器会自动打开 Web 界面，也可以手动访问终端中显示的地址。',

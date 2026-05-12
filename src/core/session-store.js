@@ -7,6 +7,8 @@ import { normalizeTodos } from './todo-state.js';
 const ALLOWED_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
 const SESSION_LEGACY_EXT = '.json';
 const SESSION_JSONL_EXT = '.jsonl';
+const SESSION_INDEX_FILE = 'index.json';
+const SESSION_INDEX_VERSION = 1;
 const DEFAULT_SESSION_TITLE = '新会话';
 
 function createSessionId() {
@@ -153,6 +155,10 @@ function sessionPathById(sessionId, ext = SESSION_JSONL_EXT) {
   return path.join(getSessionsDir(), `${sessionId}${ext}`);
 }
 
+function sessionIndexPath() {
+  return path.join(getSessionsDir(), SESSION_INDEX_FILE);
+}
+
 function isSafeSessionId(sessionId) {
   return /^[A-Za-z0-9_.-]+$/.test(String(sessionId || ''));
 }
@@ -170,6 +176,35 @@ async function listSessionFiles() {
   return entries
     .filter((e) => e.isFile() && (e.name.endsWith(SESSION_JSONL_EXT) || e.name.endsWith(SESSION_LEGACY_EXT)))
     .map((e) => path.join(dir, e.name));
+}
+
+async function listSessionFileMeta() {
+  const files = await listSessionFiles();
+  const meta = [];
+  for (const file of files) {
+    try {
+      const stat = await fs.stat(file);
+      meta.push({
+        name: path.basename(file),
+        size: stat.size,
+        mtimeMs: Math.trunc(stat.mtimeMs)
+      });
+    } catch {
+      continue;
+    }
+  }
+  meta.sort((a, b) => a.name.localeCompare(b.name));
+  return meta;
+}
+
+function sameSessionFileMeta(a = [], b = []) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i]?.name !== b[i]?.name) return false;
+    if (Number(a[i]?.size || 0) !== Number(b[i]?.size || 0)) return false;
+    if (Number(a[i]?.mtimeMs || 0) !== Number(b[i]?.mtimeMs || 0)) return false;
+  }
+  return true;
 }
 
 function summarizeParsedSession(parsed, filePath) {
@@ -193,6 +228,88 @@ function summarizeParsedSession(parsed, filePath) {
 async function tryReadJson(filePath) {
   const raw = await fs.readFile(filePath, 'utf8');
   return JSON.parse(raw);
+}
+
+async function readSessionIndex() {
+  try {
+    const index = await tryReadJson(sessionIndexPath());
+    if (index?.version !== SESSION_INDEX_VERSION || !Array.isArray(index?.sessions) || !Array.isArray(index?.files)) {
+      return null;
+    }
+    return index;
+  } catch {
+    return null;
+  }
+}
+
+async function writeSessionIndex(index) {
+  const dir = getSessionsDir();
+  await fs.mkdir(dir, { recursive: true });
+  const filePath = sessionIndexPath();
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const payload = {
+    version: SESSION_INDEX_VERSION,
+    updatedAt: new Date().toISOString(),
+    files: Array.isArray(index?.files) ? index.files : [],
+    sessions: Array.isArray(index?.sessions) ? index.sessions : []
+  };
+  await fs.writeFile(tempPath, `${JSON.stringify(payload)}\n`, 'utf8');
+  await fs.rename(tempPath, filePath);
+}
+
+async function rebuildSessionIndex(fileMeta = null) {
+  const files = await listSessionFiles();
+  const sessionsById = new Map();
+  for (const file of files) {
+    try {
+      const parsed = file.endsWith(SESSION_JSONL_EXT) ? await loadLatestJsonlObject(file) : await tryReadJson(file);
+      const summary = summarizeParsedSession(parsed, file);
+      if (!summary.id) continue;
+      const existing = sessionsById.get(summary.id);
+      if (!existing || String(summary.updatedAt) > String(existing.updatedAt)) {
+        sessionsById.set(summary.id, summary);
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  const sessions = Array.from(sessionsById.values());
+  sessions.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+  const filesMeta = fileMeta || await listSessionFileMeta();
+  const index = { files: filesMeta, sessions };
+  await writeSessionIndex(index);
+  return { ...index, version: SESSION_INDEX_VERSION };
+}
+
+async function getSessionIndex() {
+  const fileMeta = await listSessionFileMeta();
+  const index = await readSessionIndex();
+  if (index && sameSessionFileMeta(index.files, fileMeta)) return index;
+  return rebuildSessionIndex(fileMeta);
+}
+
+async function upsertSessionIndexEntry(session, filePath) {
+  try {
+    const summary = summarizeParsedSession(session, filePath);
+    if (!summary.id) return;
+    const stat = await fs.stat(filePath);
+    const fileEntry = {
+      name: path.basename(filePath),
+      size: stat.size,
+      mtimeMs: Math.trunc(stat.mtimeMs)
+    };
+    const index = await readSessionIndex();
+    const files = Array.isArray(index?.files) ? index.files.filter((entry) => entry?.name !== fileEntry.name) : [];
+    files.push(fileEntry);
+    files.sort((a, b) => a.name.localeCompare(b.name));
+    const sessions = Array.isArray(index?.sessions) ? index.sessions.filter((entry) => entry?.id !== summary.id) : [];
+    sessions.push(summary);
+    sessions.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+    await writeSessionIndex({ files, sessions });
+  } catch {
+    // Index updates are an optimization; session data remains authoritative.
+  }
 }
 
 async function loadLatestJsonlObject(filePath) {
@@ -242,6 +359,7 @@ export async function createSession(projectDir = process.cwd()) {
     messages: []
   };
   await fs.writeFile(filePath, `${JSON.stringify(payload)}\n`, 'utf8');
+  await upsertSessionIndexEntry(payload, filePath);
   return payload;
 }
 
@@ -257,6 +375,7 @@ export async function saveSession(session) {
   normalized.updatedAt = new Date().toISOString();
   const filePath = sessionPathById(normalized.id, SESSION_JSONL_EXT);
   await fs.appendFile(filePath, `${JSON.stringify(normalized)}\n`, 'utf8');
+  await upsertSessionIndexEntry(normalized, filePath);
 }
 
 export async function resolveSession(sessionId) {
@@ -266,27 +385,11 @@ export async function resolveSession(sessionId) {
   return createSession();
 }
 
-export async function listSessions(limit = 30) {
-  const files = await listSessionFiles();
-
-  const sessionsById = new Map();
-  for (const file of files) {
-    try {
-      const parsed = file.endsWith(SESSION_JSONL_EXT) ? await loadLatestJsonlObject(file) : await tryReadJson(file);
-      const summary = summarizeParsedSession(parsed, file);
-      if (!summary.id) continue;
-      const existing = sessionsById.get(summary.id);
-      if (!existing || String(summary.updatedAt) > String(existing.updatedAt)) {
-        sessionsById.set(summary.id, summary);
-      }
-    } catch {
-      continue;
-    }
-  }
-
-  const sessions = Array.from(sessionsById.values());
-  sessions.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
-  return sessions.filter((s) => Number(s.messageCount || 0) > 0).slice(0, limit);
+export async function listSessions(limit = 30, { includeEmpty = false } = {}) {
+  const index = await getSessionIndex();
+  return [...index.sessions]
+    .filter((s) => includeEmpty || Number(s.messageCount || 0) > 0)
+    .slice(0, limit);
 }
 
 export async function deleteSession(sessionId) {
@@ -321,6 +424,11 @@ export async function deleteSession(sessionId) {
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
     }
+  }
+  if (removed > 0) {
+    try {
+      await rebuildSessionIndex();
+    } catch {}
   }
   return { removed };
 }
@@ -359,5 +467,8 @@ export async function pruneSessions(policy = {}) {
       continue;
     }
   }
+  try {
+    await rebuildSessionIndex();
+  } catch {}
   return { removed, kept: keepIds.size };
 }
