@@ -44,7 +44,7 @@ const initialState = {
   stage: 'idle', busy: false, currentView: 'chat', runtimeState: null,
   live: false, stageLabel: '', messages: [], activeMsgId: null,
   pendingToolChanges: [], planSteps: [], pendingPlanApproval: null, approvalRequest: null,
-  config: null, configOpen: false, projectOpen: false, skillsOpen: false, soulsOpen: false, aboutOpen: false, gitDiffOpen: false,
+  config: null, configStatus: null, configOpen: false, projectOpen: false, skillsOpen: false, soulsOpen: false, aboutOpen: false, gitDiffOpen: false,
   sessions: [], projectCwd: null, isGeneral: false, history: [], skills: [], gitInfo: null, gitBatch: {},
   codewikiProjectPath: '',
   versionInfo: null, updateStatus: null,
@@ -271,6 +271,19 @@ export function AppProvider({ children }) {
       }));
       return rs;
     } catch { return null; }
+  }, [update]);
+
+  const loadConfigStatus = useCallback(async ({ openIfRequired = false } = {}) => {
+    try {
+      const configStatus = await api.fetchConfigStatus();
+      update({
+        configStatus,
+        configOpen: openIfRequired && configStatus?.setupRequired ? true : stateRef.current.configOpen
+      });
+      return configStatus;
+    } catch {
+      return null;
+    }
   }, [update]);
 
   const loadGitInfo = useCallback(async () => {
@@ -781,6 +794,8 @@ export function AppProvider({ children }) {
         await openCodeWikiProjectFromRoute(route.projectPath);
       }
 
+      await loadConfigStatus({ openIfRequired: true });
+
       try {
         const startupEvents = await api.fetchStartupEvents();
         for (const ev of startupEvents) {
@@ -850,7 +865,7 @@ export function AppProvider({ children }) {
       clearTimeout(reconnectRef.current);
       window.removeEventListener('popstate', handlePopState);
     };
-  }, [addMessage, connectSSE, loadGitInfo, loadHistory, loadSessionMessages, loadSessions, loadSkills, loadState, openCodeWikiProjectFromRoute, update]);
+  }, [addMessage, connectSSE, loadConfigStatus, loadGitInfo, loadHistory, loadSessionMessages, loadSessions, loadSkills, loadState, openCodeWikiProjectFromRoute, update]);
 
   const actions = {
     submit: async (line, options = {}) => {
@@ -869,6 +884,10 @@ export function AppProvider({ children }) {
       try {
         const res = await api.submitLine(line, { readOnlyCodeWiki: options.readOnlyCodeWiki === true });
         const result = await res.json().catch(() => ({}));
+        if (result?.code === 'CONFIG_REQUIRED') {
+          update({ configOpen: true, configStatus: result.configStatus || stateRef.current.configStatus });
+          throw new Error(t('configRequired'));
+        }
         if (result?.error) throw new Error(result.message || 'Request failed');
       } catch (err) {
         if (approvingPlan) planRunPendingRef.current = false;
@@ -1010,6 +1029,7 @@ export function AppProvider({ children }) {
     },
 
     setConfigOpen: (open) => update({ configOpen: open }),
+    refreshConfigStatus: () => loadConfigStatus(),
     setProjectOpen: (open) => update({ projectOpen: open }),
     setSkillsOpen: (open) => update({ skillsOpen: open }),
     setSoulsOpen: (open) => update({ soulsOpen: open }),

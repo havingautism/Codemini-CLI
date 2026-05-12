@@ -239,6 +239,8 @@ function Shell() {
       <ConfigDialog
         open={state.configOpen}
         onOpenChange={actions.setConfigOpen}
+        status={state.configStatus}
+        onSaved={actions.refreshConfigStatus}
       />
 
       <SkillDialog

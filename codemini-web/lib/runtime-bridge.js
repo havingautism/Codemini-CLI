@@ -122,6 +122,10 @@ export class RuntimeBridge {
     this.#broadcast({ type: 'runtime:state', state: this.getState() });
   }
 
+  broadcastRuntimeState() {
+    this.#broadcastRuntimeState();
+  }
+
   async #writeUiTranscriptSnapshot() {
     const sessionId = this.getSessionId();
     if (!sessionId) return;
@@ -436,6 +440,10 @@ export class RuntimeBridge {
     const ok = await this.#runtime.setExecutionMode(mode);
     if (ok) this.#broadcast({ type: 'mode:changed', mode, ...this.getState() });
     return ok;
+  }
+
+  async reloadConfig() {
+    return this.#runtime.reloadConfig?.();
   }
 
   handleApproval(id, approved) {

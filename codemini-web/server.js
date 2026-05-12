@@ -40,6 +40,24 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon'
 };
 
+const DEFAULT_GATEWAY_BASE_URL = 'http://127.0.0.1:8000/v1';
+
+function normalizeBaseUrl(value) {
+  return String(value || '').trim().replace(/\/+$/, '');
+}
+
+function getConfigStatus(config) {
+  const baseUrl = normalizeBaseUrl(config?.gateway?.base_url);
+  const apiKey = String(config?.gateway?.api_key || '').trim();
+  const setupRequired = !baseUrl || (baseUrl === DEFAULT_GATEWAY_BASE_URL && !apiKey);
+  return {
+    setupRequired,
+    baseUrl,
+    hasApiKey: !!apiKey,
+    reason: setupRequired ? 'gateway_not_configured' : ''
+  };
+}
+
 function parseArgs(argv) {
   const parsed = { port: 3210, session: undefined, model: undefined, project: undefined, open: true };
   for (let i = 2; i < argv.length; i++) {
@@ -299,6 +317,17 @@ async function main() {
     if (req.method === 'POST' && url.pathname === '/api/submit') {
       const { line, readOnlyCodeWiki } = await readBody(req);
       if (!line || typeof line !== 'string') { jsonResponse(res, { error: true, message: 'Missing "line" field' }, 400); return; }
+      const currentConfig = await loadConfig();
+      const configStatus = getConfigStatus(currentConfig);
+      if (configStatus.setupRequired) {
+        jsonResponse(res, {
+          error: true,
+          code: 'CONFIG_REQUIRED',
+          message: 'Gateway is not configured. Open Settings and set the API Base URL and API Key.',
+          configStatus
+        }, 409);
+        return;
+      }
       const result = bridge.handleSubmit(line, { readOnlyCodeWiki: readOnlyCodeWiki === true });
       jsonResponse(res, result);
       return;
@@ -459,6 +488,17 @@ async function main() {
       const { question, reportFile } = await readBody(req);
       if (!question || typeof question !== 'string') {
         jsonResponse(res, { error: true, message: 'Missing "question" field' }, 400);
+        return;
+      }
+      const currentConfig = await loadConfig();
+      const configStatus = getConfigStatus(currentConfig);
+      if (configStatus.setupRequired) {
+        jsonResponse(res, {
+          error: true,
+          code: 'CONFIG_REQUIRED',
+          message: 'Gateway is not configured. Open Settings and set the API Base URL and API Key.',
+          configStatus
+        }, 409);
         return;
       }
       const selectedReport = isCodeWikiReportFile(reportFile) ? reportFile : '';
@@ -695,6 +735,11 @@ async function main() {
     }
 
     // ── Config management ──
+    if (req.method === 'GET' && url.pathname === '/api/config/status') {
+      const config = await loadConfig();
+      jsonResponse(res, getConfigStatus(config));
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/api/config') {
       const config = await loadConfig();
       jsonResponse(res, config);
@@ -706,6 +751,8 @@ async function main() {
       try {
         await setConfigValue(key, value);
         const config = await loadConfig();
+        await bridge.reloadConfig();
+        bridge.broadcastRuntimeState();
         jsonResponse(res, { ok: true, config });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
