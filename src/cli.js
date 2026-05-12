@@ -4,9 +4,7 @@ import { handleConfig } from './commands/config.js';
 import { handleDoctor } from './commands/doctor.js';
 import { handleSkill } from './commands/skill.js';
 import { handleWeb } from './commands/web.js';
-import pkg from '../package.json' with { type: 'json' };
-
-const VERSION = pkg.version;
+import { VERSION } from './core/version.js';
 
 function printHelp() {
   console.log(`codemini ${VERSION}

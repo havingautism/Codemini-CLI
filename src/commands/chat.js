@@ -4,7 +4,7 @@ import { loadConfig } from '../core/config-store.js';
 import { createChatRuntime } from '../core/chat-runtime.js';
 import { buildDefaultSystemPrompt } from '../core/default-system-prompt.js';
 import { resolveSession } from '../core/session-store.js';
-import pkg from '../../package.json' with { type: 'json' };
+import { VERSION } from '../core/version.js';
 
 function parseChatArgs(args) {
   const parsed = {
@@ -175,7 +175,7 @@ export async function handleChat(args) {
         language: config.ui?.language || 'zh',
         shellName: config.shell?.default || 'powershell',
         safeMode: config.policy?.safe_mode !== false,
-        version: pkg.version
+        version: VERSION
       })
     );
 

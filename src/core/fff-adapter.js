@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { LANGUAGE_FILE_TYPES } from './constants.js';
+import { getPackageInfo } from './version.js';
 
 const DEFAULT_COMMAND = 'fff-mcp';
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -109,10 +110,7 @@ class FffMcpClient {
     await this.sendRequest('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
-      clientInfo: {
-        name: 'codemini-cli',
-        version: '0.5.5'
-      }
+      clientInfo: getPackageInfo()
     });
     this.sendNotification('notifications/initialized', {});
   }
@@ -383,4 +381,3 @@ export function createFffAdapter({ workspaceRoot, config }) {
     }
   };
 }
-
