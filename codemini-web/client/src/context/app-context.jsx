@@ -691,6 +691,9 @@ export function AppProvider({ children }) {
             addMessage({ role: 'system', text: result.text, timestamp: new Date().toISOString() });
           }
         }
+        if (result.type === 'error' && result.text) {
+          addMessage({ role: 'error', text: `Failed: ${result.text}`, timestamp: new Date().toISOString() });
+        }
         setActiveMsg(null);
         planRunPendingRef.current = false;
         planStepMessagesRef.current = new Map();
