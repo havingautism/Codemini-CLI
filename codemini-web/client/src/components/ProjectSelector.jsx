@@ -35,11 +35,14 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
           const cwd = data.cwd || "";
           if (data.isGeneral) {
             setMode("general");
+            setPathInput("");
+            setCurrentDir("");
+            browseDir("");
           } else {
             setMode("project");
             setPathInput(cwd);
-            setCurrentDir(cwd || "/");
-            browseDir(cwd || "/");
+            setCurrentDir(cwd || "");
+            browseDir(cwd || "");
           }
         })
         .catch(() => {});
@@ -50,7 +53,7 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
     try {
       const data = await api.browseDir(dir);
       setDirData(data);
-      setCurrentDir(dir);
+      setCurrentDir(data.path ?? dir);
     } catch {}
   };
 
@@ -68,8 +71,18 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
   };
 
   const normalizedPath = (currentDir || "").replace(/\\/g, "/");
-  const isAbsolute = normalizedPath.startsWith("/");
+  const isDrivePath = /^[A-Za-z]:($|\/)/.test(normalizedPath);
+  const isAbsolute = normalizedPath.startsWith("/") || isDrivePath;
   const parts = normalizedPath.split("/").filter(Boolean);
+  const makePathFromParts = (nextParts) => {
+    if (!nextParts.length) return "";
+    if (/^[A-Za-z]:$/.test(nextParts[0])) {
+      return nextParts.length === 1
+        ? `${nextParts[0]}/`
+        : `${nextParts[0]}/${nextParts.slice(1).join("/")}`;
+    }
+    return `${isAbsolute ? "/" : ""}${nextParts.join("/")}`;
+  };
 
   const activeMode =
     MODE_OPTIONS.find((m) => m.value === mode) || MODE_OPTIONS[1];
@@ -139,8 +152,7 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
               {/* Breadcrumb */}
               <div className="flex items-center gap-1 text-[12px] px-3 py-2 border-b border-(--border-default) bg-(--bg-secondary) flex-wrap text-(--text-secondary)">
                 {parts.map((part, i) => {
-                  const segPath =
-                    (isAbsolute ? "/" : "") + parts.slice(0, i + 1).join("/");
+                  const segPath = makePathFromParts(parts.slice(0, i + 1));
                   return (
                     <span key={i} className="flex items-center gap-1">
                       {i > 0 && <span className="text-(--text-muted)">/</span>}
@@ -170,15 +182,30 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
                       <button
                         className="w-full text-left px-2 py-1.5 text-[13px] hover:bg-(--bg-hover) rounded cursor-pointer flex items-center gap-2 border-0 bg-transparent text-(--text-secondary)"
                         onClick={() => {
-                          const parentPath =
-                            (isAbsolute ? "/" : "") +
-                            parts.slice(0, -1).join("/");
+                          const parentPath = makePathFromParts(parts.slice(0, -1));
                           setPathInput(parentPath);
                           browseDir(parentPath);
                         }}
                       >
                         <span>..</span>
                       </button>
+                    )}
+                    {(dirData.roots || []).length > 0 && (
+                      <div className="grid grid-cols-2 gap-2 mb-2">
+                        {(dirData.roots || []).map((d) => (
+                          <button
+                            key={d.path}
+                            className="text-left px-3 py-2 text-[13px] hover:bg-(--bg-hover) rounded cursor-pointer flex items-center gap-2 border border-(--border-default) bg-(--bg-input) text-(--text-primary)"
+                            onClick={() => {
+                              setPathInput(d.path);
+                              browseDir(d.path);
+                            }}
+                          >
+                            <span className="font-medium">{d.name}</span>
+                            <span className="text-(--text-muted) truncate">{d.path}</span>
+                          </button>
+                        ))}
+                      </div>
                     )}
                     {(dirData.dirs || []).map((d) => (
                       <button
@@ -197,7 +224,9 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
                         )}
                       </button>
                     ))}
-                    {!(dirData.dirs || []).length && !dirData.error && (
+                    {!(dirData.roots || []).length &&
+                      !(dirData.dirs || []).length &&
+                      !dirData.error && (
                       <div className="text-center text-[12px] text-(--text-muted) py-4">
                         {t("noSubDirs")}
                       </div>
