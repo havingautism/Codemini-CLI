@@ -4242,6 +4242,21 @@ export async function createChatRuntime({
   if (hasPendingPlanApproval(currentSession)) {
     executionMode = 'plan';
   }
+  const syncRuntimeFromConfig = async ({ model: nextModel } = {}) => {
+    const configuredMode = String(config.execution?.mode || 'normal');
+    executionMode = hasPendingPlanApproval(currentSession)
+      ? 'plan'
+      : (['normal', 'auto', 'plan'].includes(configuredMode) ? configuredMode : 'normal');
+
+    const resolvedModel = String(nextModel || '').trim();
+    if (resolvedModel) {
+      model = resolvedModel;
+      if (currentSession && typeof currentSession === 'object') {
+        currentSession.model = model;
+        await saveSession(currentSession).catch(() => {});
+      }
+    }
+  };
   const commands = await loadCommandsAndSkills();
   const reloadCommandsAndSkills = async () => {
     const next = await loadCommandsAndSkills();
@@ -5708,6 +5723,9 @@ export async function createChatRuntime({
           if (!key || !value) return { type: 'system', text: 'Usage: /config set <key> <value>' };
           await setConfigValue(key, value);
           config = await loadConfig();
+          await syncRuntimeFromConfig(
+            key === 'model.name' ? { model: config.model?.name } : {}
+          );
           const text = `Set ${key}=${value}`;
           await persistLocalExchange(line, text);
           return { type: 'system', text };
@@ -5716,6 +5734,7 @@ export async function createChatRuntime({
         if (sub === 'reset') {
           await resetConfig();
           config = await loadConfig();
+          await syncRuntimeFromConfig({ model: resolveDefaultModel(config) });
           compactState.threshold = 60;
           compactState.mode = 'conservative';
           compactState.autoEnabled = true;
@@ -6135,8 +6154,9 @@ export async function createChatRuntime({
     getCurrentSessionId: () => currentSession.id,
     getSessionMessages: () => currentSession.messages || [],
     getSessionCompact: () => currentSession.compact || null,
-    reloadConfig: async () => {
+    reloadConfig: async (options = {}) => {
       config = await loadConfig();
+      await syncRuntimeFromConfig(options);
       return config;
     },
     setExecutionMode: async (next) => {

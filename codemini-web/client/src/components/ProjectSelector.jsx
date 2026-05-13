@@ -8,6 +8,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { ChevronDown } from "lucide-react";
 import * as api from "@/hooks/use-api";
@@ -52,6 +59,14 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
   const browseDir = async (dir) => {
     try {
       const data = await api.browseDir(dir);
+      const defaultRoot = !dir && !data.path && data.roots?.[0]?.path;
+      if (defaultRoot) {
+        const rootData = await api.browseDir(defaultRoot);
+        setDirData(rootData);
+        setCurrentDir(rootData.path ?? defaultRoot);
+        setPathInput(rootData.path ?? defaultRoot);
+        return;
+      }
       setDirData(data);
       setCurrentDir(data.path ?? dir);
     } catch {}
@@ -83,6 +98,16 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
     }
     return `${isAbsolute ? "/" : ""}${nextParts.join("/")}`;
   };
+  const roots = dirData?.roots || [];
+  const normalizeRootMatch = (value) => String(value || "").replace(/\\/g, "/").toLowerCase();
+  const activeRoot = roots
+    .slice()
+    .sort((a, b) => normalizeRootMatch(b.path).length - normalizeRootMatch(a.path).length)
+    .find((root) => {
+      const rootPath = normalizeRootMatch(root.path);
+      const dirPath = normalizeRootMatch(currentDir || pathInput);
+      return rootPath && (dirPath === rootPath || dirPath.startsWith(rootPath.endsWith("/") ? rootPath : `${rootPath}/`));
+    });
 
   const activeMode =
     MODE_OPTIONS.find((m) => m.value === mode) || MODE_OPTIONS[1];
@@ -137,6 +162,27 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
         ) : (
           <>
             <div className="flex gap-2">
+              {roots.length > 0 && (
+                <Select
+                  value={activeRoot?.path || roots[0]?.path}
+                  onValueChange={(nextPath) => {
+                    setPathInput(nextPath);
+                    browseDir(nextPath);
+                  }}
+                >
+                  <SelectTrigger className="w-[132px] h-8 bg-(--bg-input) text-(--text-primary)">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="start">
+                    {roots.map((root) => (
+                      <SelectItem key={root.path} value={root.path}>
+                        <span className="font-medium">{root.name}</span>
+                        <span className="text-(--text-muted) truncate">{root.path}</span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
               <Input
                 value={pathInput}
                 onChange={(e) => setPathInput(e.target.value)}
@@ -190,23 +236,6 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
                         <span>..</span>
                       </button>
                     )}
-                    {(dirData.roots || []).length > 0 && (
-                      <div className="grid grid-cols-2 gap-2 mb-2">
-                        {(dirData.roots || []).map((d) => (
-                          <button
-                            key={d.path}
-                            className="text-left px-3 py-2 text-[13px] hover:bg-(--bg-hover) rounded cursor-pointer flex items-center gap-2 border border-(--border-default) bg-(--bg-input) text-(--text-primary)"
-                            onClick={() => {
-                              setPathInput(d.path);
-                              browseDir(d.path);
-                            }}
-                          >
-                            <span className="font-medium">{d.name}</span>
-                            <span className="text-(--text-muted) truncate">{d.path}</span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
                     {(dirData.dirs || []).map((d) => (
                       <button
                         key={d.path}
@@ -224,8 +253,7 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
                         )}
                       </button>
                     ))}
-                    {!(dirData.roots || []).length &&
-                      !(dirData.dirs || []).length &&
+                    {!(dirData.dirs || []).length &&
                       !dirData.error && (
                       <div className="text-center text-[12px] text-(--text-muted) py-4">
                         {t("noSubDirs")}
