@@ -20,18 +20,39 @@ const GENERAL_PROJECT_DIR = (() => {
   return path.join(base, 'workspace');
 })();
 
-async function listWindowsDriveRoots() {
-  if (process.platform !== 'win32') return [];
-  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+async function listProjectRoots() {
+  if (process.platform === 'win32') {
+    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+    const roots = [];
+    await Promise.all(letters.map(async (letter) => {
+      const drivePath = `${letter}:\\`;
+      try {
+        await fs.access(drivePath);
+        roots.push({ name: `${letter}:`, path: drivePath, isGit: false, isDrive: true });
+      } catch {}
+    }));
+    return roots.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  const candidates = [
+    { name: '/', path: path.resolve('/') },
+    { name: 'Home', path: process.env.HOME || process.env.USERPROFILE || '' },
+    { name: 'Current', path: process.cwd() },
+  ];
+  const seen = new Set();
   const roots = [];
-  await Promise.all(letters.map(async (letter) => {
-    const drivePath = `${letter}:\\`;
+  for (const candidate of candidates) {
+    if (!candidate.path) continue;
+    const resolved = path.resolve(candidate.path);
+    if (seen.has(resolved)) continue;
     try {
-      await fs.access(drivePath);
-      roots.push({ name: `${letter}:`, path: drivePath, isGit: false, isDrive: true });
+      const stat = await fs.stat(resolved);
+      if (!stat.isDirectory()) continue;
+      seen.add(resolved);
+      roots.push({ name: candidate.name, path: resolved, isGit: false, isDrive: false });
     } catch {}
-  }));
-  return roots.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  return roots;
 }
 
 function isGeneralProjectDir(value) {
@@ -742,7 +763,7 @@ async function main() {
     }
     if (req.method === 'POST' && url.pathname === '/api/project/browse') {
       const { dir } = await readBody(req);
-      const roots = await listWindowsDriveRoots();
+      const roots = await listProjectRoots();
       if (!dir && roots.length) {
         jsonResponse(res, { path: '', roots, dirs: [] });
         return;
@@ -786,7 +807,9 @@ async function main() {
       try {
         await setConfigValue(key, value);
         const config = await loadConfig();
-        await bridge.reloadConfig();
+        await bridge.reloadConfig(
+          key === 'model.name' ? { model: config.model?.name } : {}
+        );
         bridge.broadcastRuntimeState();
         jsonResponse(res, { ok: true, config });
       } catch (err) {

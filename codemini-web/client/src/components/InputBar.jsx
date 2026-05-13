@@ -6,12 +6,13 @@ import React, {
   useMemo,
 } from "react";
 import {
-  Plus,
+  Paperclip,
   ShieldCheck,
   ChevronDown,
   ArrowUp,
   Minus,
   Folder,
+  MessageCircle,
   Sparkles,
   Hammer,
   Moon,
@@ -20,7 +21,6 @@ import {
   Inbox,
   Camera,
   RotateCcw,
-  Ham,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
@@ -92,6 +92,9 @@ const ACTION_COMMAND_NAMES = new Set(
   ACTION_COMMANDS.map((command) => command.name),
 );
 
+const INPUT_PILL_CLASS =
+  "border border-(--border-default) bg-(--bg-primary)/30 text-(--text-secondary) h-8 rounded-full inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[13px] whitespace-nowrap transition-colors hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)";
+
 function ModeSelector({ current, disabled = false }) {
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
@@ -119,7 +122,8 @@ function ModeSelector({ current, disabled = false }) {
         <button
           type="button"
           className={cn(
-            "border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)",
+            INPUT_PILL_CLASS,
+            "px-3 hover:border-(--accent-blue)/55 hover:bg-(--accent-blue-bg) hover:text-(--accent-blue)",
             (switching || disabled) && "opacity-50 pointer-events-none",
           )}
           disabled={disabled}
@@ -196,7 +200,7 @@ function SoulQuickSwitch() {
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)"
+          className={cn(INPUT_PILL_CLASS, "px-3")}
           title={t("soulSwitch")}
         >
           <span className="truncate max-w-[60px]">{active || "default"}</span>
@@ -411,6 +415,7 @@ export function InputBar({
   const rs = runtimeState || {};
   const mode = rs.mode || "normal";
   const inputLocked = busy || disabled;
+  const isGeneralChat = projectCwd === "__codemini_general__";
 
   useEffect(() => {
     if (externalHistory && externalHistory.length && history.length === 0) {
@@ -516,10 +521,14 @@ export function InputBar({
         visible={slashOpen}
       />
       <div
-        className="flex flex-col gap-2 p-[12px_14px_10px] border border-(--border-strong) rounded-2xl bg-(--bg-input)"
-        style={{ boxShadow: "var(--shadow-default)" }}
+        className="flex flex-col gap-4 border border-(--border-default) rounded-[28px] px-3 py-2 transition-colors"
+        style={{
+          background:
+            "color-mix(in srgb, var(--bg-tertiary) 72%, var(--bg-input))",
+          // boxShadow: "var(--shadow-default)",
+        }}
       >
-        <div className="flex min-h-[32px]">
+        <div className="flex min-h-[58px]">
           <textarea
             ref={textareaRef}
             value={value}
@@ -530,47 +539,51 @@ export function InputBar({
                 ? t("inputDisabled")
                 : disabled
                   ? disabledReason || t("inputDisabled")
-                  : t("askAnything")
+                  : t("sendMessageToCodeminiWithSlash")
             }
             disabled={inputLocked}
             rows={1}
-            className="flex-1 resize-none border-0 outline-none bg-transparent text-(--text-primary) min-h-[32px] max-h-[160px] p-0 leading-[1.5] text-[14px] placeholder:text-(--text-muted) disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 resize-none border-0 outline-none bg-transparent text-(--text-primary) min-h-[34px] max-h-[160px] p-1 leading-[1.55] text-[16px] placeholder:text-(--text-muted) disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ height: "auto" }}
           />
         </div>
-        <div className="flex items-center gap-1.5 min-h-[30px] flex-wrap">
-          <div className="flex items-center gap-1">
+        <div className="flex items-center gap-2 min-h-9 flex-wrap">
+          <div className="flex items-center gap-2 min-w-0">
             <button
               type="button"
-              className="border-0 bg-transparent text-(--text-muted) min-w-[30px] h-[30px] rounded-lg inline-flex items-center justify-center shrink-0 cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)"
-              title={t("addContext")}
-            >
-              <Plus size={16} />
-            </button>
-            <button
-              type="button"
-              className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)"
+              className={cn(INPUT_PILL_CLASS, "px-3")}
               title={t("switchWorkspace")}
               onClick={onOpenProject}
             >
-              <Folder size={13} className="shrink-0" />
+              {isGeneralChat ? (
+                <MessageCircle size={13} className="shrink-0" />
+              ) : (
+                <Folder size={13} className="shrink-0" />
+              )}
               <span className="truncate max-w-[80px]">
-                {projectCwd === '__codemini_general__' ? t('generalChat') : (projectCwd || "...")}
+                {isGeneralChat ? t("generalChat") : projectCwd || "..."}
               </span>
               <ChevronDown size={11} />
             </button>
             <ModeSelector current={mode} disabled={inputLocked} />
             <SoulQuickSwitch />
           </div>
-          <div className="flex items-center gap-1.5 ml-auto">
+          <div className="flex items-center gap-2 ml-auto">
             {/* <button type="button" className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)" title="模型">
               <span className={cn('truncate', !rs.model && 'opacity-50')}>{rs.model || '加载中'}</span>
               <ChevronDown size={11} />
             </button> */}
+            <button
+              type="button"
+              className="border-0 bg-transparent text-(--text-secondary) min-w-9 h-9 rounded-full inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
+              title={t("addContext")}
+            >
+              <Paperclip size={18} />
+            </button>
             {busy ? (
               <button
                 type="button"
-                className="border-0 text-(--accent-red) min-w-[32px] h-[32px] rounded-full inline-flex items-center justify-center shrink-0 cursor-pointer bg-(--accent-red-bg) hover:opacity-80"
+                className="border-0 text-(--accent-red) min-w-9 h-9 rounded-full inline-flex items-center justify-center shrink-0 cursor-pointer bg-(--accent-red-bg) transition-opacity hover:opacity-80"
                 onClick={onAbort}
                 title={t("abort")}
               >
@@ -580,10 +593,10 @@ export function InputBar({
               <button
                 type="button"
                 className={cn(
-                  "border-0 min-w-[34px] w-[34px] h-[34px] rounded-full inline-flex items-center justify-center shrink-0 cursor-pointer transition-all",
+                  "border-0 min-w-10 w-10 h-10 rounded-full inline-flex items-center justify-center shrink-0 cursor-pointer transition-all",
                   value.trim() && !inputLocked
-                    ? "bg-(--text-primary) text-(--bg-primary) hover:opacity-90"
-                    : "bg-(--text-muted)/30 text-(--bg-primary) cursor-not-allowed",
+                    ? "bg-(--accent-blue) text-white hover:bg-(--accent-hover)"
+                    : "bg-(--text-muted)/25 text-(--text-muted) cursor-not-allowed",
                 )}
                 onClick={submitCurrent}
                 disabled={!value.trim() || inputLocked}

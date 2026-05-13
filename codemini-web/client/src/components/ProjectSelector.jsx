@@ -8,6 +8,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { ChevronDown } from "lucide-react";
 import * as api from "@/hooks/use-api";
@@ -52,6 +59,14 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
   const browseDir = async (dir) => {
     try {
       const data = await api.browseDir(dir);
+      const defaultRoot = !dir && !data.path && data.roots?.[0]?.path;
+      if (defaultRoot) {
+        const rootData = await api.browseDir(defaultRoot);
+        setDirData(rootData);
+        setCurrentDir(rootData.path ?? defaultRoot);
+        setPathInput(rootData.path ?? defaultRoot);
+        return;
+      }
       setDirData(data);
       setCurrentDir(data.path ?? dir);
     } catch {}
@@ -83,6 +98,16 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
     }
     return `${isAbsolute ? "/" : ""}${nextParts.join("/")}`;
   };
+  const roots = dirData?.roots || [];
+  const normalizeRootMatch = (value) => String(value || "").replace(/\\/g, "/").toLowerCase();
+  const activeRoot = roots
+    .slice()
+    .sort((a, b) => normalizeRootMatch(b.path).length - normalizeRootMatch(a.path).length)
+    .find((root) => {
+      const rootPath = normalizeRootMatch(root.path);
+      const dirPath = normalizeRootMatch(currentDir || pathInput);
+      return rootPath && (dirPath === rootPath || dirPath.startsWith(rootPath.endsWith("/") ? rootPath : `${rootPath}/`));
+    });
 
   const activeMode =
     MODE_OPTIONS.find((m) => m.value === mode) || MODE_OPTIONS[1];
@@ -137,6 +162,27 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
         ) : (
           <>
             <div className="flex gap-2">
+              {roots.length > 0 && (
+                <Select
+                  value={activeRoot?.path || roots[0]?.path}
+                  onValueChange={(nextPath) => {
+                    setPathInput(nextPath);
+                    browseDir(nextPath);
+                  }}
+                >
+                  <SelectTrigger className="w-[132px] h-8 bg-(--bg-input) text-(--text-primary)">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="start">
+                    {roots.map((root) => (
+                      <SelectItem key={root.path} value={root.path}>
+                        <span className="font-medium">{root.name}</span>
+                        <span className="text-(--text-muted) truncate">{root.path}</span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
               <Input
                 value={pathInput}
                 onChange={(e) => setPathInput(e.target.value)}

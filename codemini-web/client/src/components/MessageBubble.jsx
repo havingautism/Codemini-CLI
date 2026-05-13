@@ -10,7 +10,14 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { CheckCircle2, Loader2, Moon, XCircle } from "lucide-react";
+import {
+  Check,
+  CheckCircle2,
+  Copy,
+  Loader2,
+  Moon,
+  XCircle,
+} from "lucide-react";
 
 const ROLE_STYLES = {
   you: { badge: "bg-(--accent-blue-bg) text-(--accent-blue)", label: "You" },
@@ -265,7 +272,102 @@ function UserText({ text, skills = [] }) {
   );
 }
 
-export function MessageBubble({ message, skills = [] }) {
+function getMessageText(message) {
+  const text = String(message?.text || "");
+  if (text) return text;
+  return (message?.segments || [])
+    .filter((segment) => segment.type === "text")
+    .map((segment) => String(segment.text || ""))
+    .join("");
+}
+
+async function writeClipboard(text) {
+  const value = String(text || "");
+  if (!value) return false;
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return true;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const ok = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  return ok;
+}
+
+function MessageActionButton({
+  label,
+  copiedLabel,
+  copied = false,
+  disabled = false,
+  onClick,
+  children,
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={copied ? copiedLabel || label : label}
+          disabled={disabled}
+          onClick={onClick}
+          className="inline-flex size-8 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-45"
+        >
+          {copied ? <Check size={17} /> : children}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>
+        {copied ? copiedLabel || label : label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function MessageActions({
+  text,
+  align = "left",
+  className,
+}) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    const ok = await writeClipboard(text);
+    if (!ok) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1200);
+  }
+
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-1",
+        align === "right" ? "justify-end" : "justify-start",
+        className,
+      )}
+    >
+      <MessageActionButton
+        label={t("copyMessage")}
+        copiedLabel={t("copied")}
+        copied={copied}
+        disabled={!text}
+        onClick={handleCopy}
+      >
+        <Copy size={17} />
+      </MessageActionButton>
+    </div>
+  );
+}
+
+export function MessageBubble({
+  message,
+  skills = [],
+}) {
   const {
     role,
     segments,
@@ -327,13 +429,27 @@ export function MessageBubble({ message, skills = [] }) {
           .join("") ||
         ""
       : "";
+  const messageText = role === "you" ? youText : getMessageText(message);
 
   return (
-    <div data-message-id={message.id} className={cn("py-2 my-[22px]", role === "you" && "flex justify-end")}>
+    <div
+      data-message-id={message.id}
+      className={cn(
+        "py-2 my-[22px] group/message",
+        role === "you" && "flex justify-end",
+      )}
+    >
       {role === "you" ? (
-        <div className="w-fit max-w-full bg-(--bg-tertiary) rounded-2xl px-4 py-3">
-          {youText && <UserText text={youText} skills={skills} />}
-          {startupTodos && <TodoList todos={startupTodos} />}
+        <div className="flex w-fit max-w-full flex-col items-end">
+          <div className="w-fit max-w-full bg-(--bg-tertiary) rounded-2xl px-4 py-3">
+            {youText && <UserText text={youText} skills={skills} />}
+            {startupTodos && <TodoList todos={startupTodos} />}
+          </div>
+          <MessageActions
+            text={messageText}
+            align="right"
+            className="mt-1 min-h-8 opacity-0 pointer-events-none transition-opacity group-hover/message:pointer-events-auto group-hover/message:opacity-100 group-focus-within/message:pointer-events-auto group-focus-within/message:opacity-100"
+          />
         </div>
       ) : (
         <div>
@@ -438,6 +554,10 @@ export function MessageBubble({ message, skills = [] }) {
               })}
             </div>
           )}
+          <MessageActions
+            text={messageText}
+            className="mt-2 min-h-8"
+          />
         </div>
       )}
     </div>

@@ -42,5 +42,5 @@ test.md
 测试.md
 新测试.md
 
-# Local real-API smoke tests
-tests/test-*.mjs
+# Local tests
+tests/

@@ -232,6 +232,17 @@ export function Sidebar({
     <aside className="w-[260px] shrink-0 flex flex-col bg-(--bg-secondary)">
       {/* Fixed top action buttons */}
       <div className="shrink-0 px-2.5 pt-3 flex flex-col gap-0.5">
+        <div className="mb-2 flex h-10 items-center gap-2.5 px-2">
+          <img
+            src="/codemini_logo.png"
+            alt=""
+            className="size-6 shrink-0 rounded-md"
+            draggable={false}
+          />
+          <div className="min-w-0 truncate text-[23px] font-semibold leading-6 text-(--text-primary)">
+            {t("brand")}
+          </div>
+        </div>
         <button
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onNewSession}

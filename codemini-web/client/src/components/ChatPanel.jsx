@@ -228,7 +228,11 @@ export function ChatPanel({
         <div className="relative">
           <div className="w-[min(960px,calc(100%-96px))] mx-auto">
             {messages.map((msg) => (
-              <MessageBubble key={msg.id} message={msg} skills={skills} />
+              <MessageBubble
+                key={msg.id}
+                message={msg}
+                skills={skills}
+              />
             ))}
           </div>
         </div>

@@ -442,8 +442,8 @@ export class RuntimeBridge {
     return ok;
   }
 
-  async reloadConfig() {
-    return this.#runtime.reloadConfig?.();
+  async reloadConfig(options = {}) {
+    return this.#runtime.reloadConfig?.(options);
   }
 
   handleApproval(id, approved) {
