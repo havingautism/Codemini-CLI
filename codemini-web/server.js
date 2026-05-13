@@ -20,6 +20,20 @@ const GENERAL_PROJECT_DIR = (() => {
   return path.join(base, 'workspace');
 })();
 
+async function listWindowsDriveRoots() {
+  if (process.platform !== 'win32') return [];
+  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+  const roots = [];
+  await Promise.all(letters.map(async (letter) => {
+    const drivePath = `${letter}:\\`;
+    try {
+      await fs.access(drivePath);
+      roots.push({ name: `${letter}:`, path: drivePath, isGit: false, isDrive: true });
+    } catch {}
+  }));
+  return roots.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 function isGeneralProjectDir(value) {
   if (!value) return false;
   return path.resolve(value) === path.resolve(GENERAL_PROJECT_DIR);
@@ -728,6 +742,11 @@ async function main() {
     }
     if (req.method === 'POST' && url.pathname === '/api/project/browse') {
       const { dir } = await readBody(req);
+      const roots = await listWindowsDriveRoots();
+      if (!dir && roots.length) {
+        jsonResponse(res, { path: '', roots, dirs: [] });
+        return;
+      }
       const base = dir ? path.resolve(dir) : path.resolve('/');
       try {
         const entries = await fs.readdir(base, { withFileTypes: true });
@@ -743,9 +762,9 @@ async function main() {
         await Promise.all(dirs.map(async (d) => {
           try { await fs.access(path.join(d.path, '.git')); d.isGit = true; } catch {}
         }));
-        jsonResponse(res, { path: base, dirs });
+        jsonResponse(res, { path: base, roots, dirs });
       } catch (err) {
-        jsonResponse(res, { path: base, dirs: [], error: err.message });
+        jsonResponse(res, { path: base, roots, dirs: [], error: err.message });
       }
       return;
     }
