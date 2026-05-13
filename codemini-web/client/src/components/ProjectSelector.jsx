@@ -236,6 +236,23 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
                         <span>..</span>
                       </button>
                     )}
+                    {(dirData.roots || []).length > 0 && (
+                      <div className="grid grid-cols-2 gap-2 mb-2">
+                        {(dirData.roots || []).map((d) => (
+                          <button
+                            key={d.path}
+                            className="text-left px-3 py-2 text-[13px] hover:bg-(--bg-hover) rounded cursor-pointer flex items-center gap-2 border border-(--border-default) bg-(--bg-input) text-(--text-primary)"
+                            onClick={() => {
+                              setPathInput(d.path);
+                              browseDir(d.path);
+                            }}
+                          >
+                            <span className="font-medium">{d.name}</span>
+                            <span className="text-(--text-muted) truncate">{d.path}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     {(dirData.dirs || []).map((d) => (
                       <button
                         key={d.path}
@@ -253,7 +270,8 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
                         )}
                       </button>
                     ))}
-                    {!(dirData.dirs || []).length &&
+                    {!(dirData.roots || []).length &&
+                      !(dirData.dirs || []).length &&
                       !dirData.error && (
                       <div className="text-center text-[12px] text-(--text-muted) py-4">
                         {t("noSubDirs")}
