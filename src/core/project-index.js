@@ -25,6 +25,7 @@ const PROJECT_MARKER_FILES = new Set([
 const LANGUAGE_BY_EXT = EXTENSION_LANGUAGE_MAP;
 
 const initCache = new BoundedCache({ maxSize: 32, ttlMs: 10 * 60 * 1000 });
+const ignoreRulesCache = new BoundedCache({ maxSize: 128, ttlMs: 60 * 1000 });
 const PROJECT_CONTEXT_MAX_FILES = 6;
 
 function clipList(values, max = 32) {
@@ -92,9 +93,24 @@ function gitignorePatternToRegex(pattern) {
 }
 
 async function readIgnoreFileRules(cwd, fileName) {
+  const filePath = path.join(cwd, fileName);
+  const stat = await safeStat(filePath);
+  const cacheKey = `${filePath}:${Number(stat?.mtimeMs || 0)}:${Number(stat?.size || 0)}`;
+  if (ignoreRulesCache.has(cacheKey)) return ignoreRulesCache.get(cacheKey);
+
+  for (const key of ignoreRulesCache.keys()) {
+    if (String(key).startsWith(`${filePath}:`) && key !== cacheKey) {
+      ignoreRulesCache.delete(key);
+    }
+  }
+
   try {
-    const raw = await fs.readFile(path.join(cwd, fileName), 'utf8');
-    return raw
+    if (!stat?.isFile()) {
+      ignoreRulesCache.set(cacheKey, []);
+      return [];
+    }
+    const raw = await fs.readFile(filePath, 'utf8');
+    const rules = raw
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter((line) => line && !line.startsWith('#'))
@@ -114,7 +130,10 @@ async function readIgnoreFileRules(cwd, fileName) {
         };
       })
       .filter((rule) => rule.normalized);
+    ignoreRulesCache.set(cacheKey, rules);
+    return rules;
   } catch {
+    ignoreRulesCache.set(cacheKey, []);
     return [];
   }
 }

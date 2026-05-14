@@ -128,6 +128,8 @@ function getCompletionCopy(language = 'zh') {
         'context.prompt_budget_audit': 'Prompt 预算审计开关',
         'context.microcompact_enabled': '微压缩(micro-compact)开关',
         'context.microcompact_keep_recent': '微压缩保留最近工具结果数',
+        'context.project_instructions_enabled': '项目 AGENTS.md 注入开关',
+        'context.project_instructions_max_chars': '项目 AGENTS.md 字符上限',
         'sessions.max_sessions': '会话保留上限',
         'sessions.retention_days': '会话保留天数',
         'shell.default': '默认 shell',
@@ -148,7 +150,9 @@ function getCompletionCopy(language = 'zh') {
         'policy.safe_mode': '可选：true | false',
         'policy.allowed_paths': 'JSON 数组，例如 ["D:\\\\shared"]',
         'policy.allow_dangerous_commands': '可选：true | false',
-        'context.prompt_budget_audit': '可选：true | false'
+        'context.prompt_budget_audit': '可选：true | false',
+        'context.project_instructions_enabled': '可选：true | false',
+        'context.project_instructions_max_chars': '建议：8000-12000'
       },
       describeSet: (label, hint) => `设置${label}${hint ? `（${hint}）` : ''}`,
       describeGet: (label, hint) => `查看${label}${hint ? `（${hint}）` : ''}`,
@@ -237,6 +241,8 @@ function getCompletionCopy(language = 'zh') {
         'context.prompt_budget_audit': 'prompt budget audit switch',
         'context.microcompact_enabled': 'micro-compact enabled',
         'context.microcompact_keep_recent': 'micro-compact keep recent tool results',
+        'context.project_instructions_enabled': 'project AGENTS.md injection switch',
+        'context.project_instructions_max_chars': 'project AGENTS.md character limit',
         'sessions.max_sessions': 'stored session limit',
         'sessions.retention_days': 'session retention days',
         'shell.default': 'default shell',
@@ -257,7 +263,9 @@ function getCompletionCopy(language = 'zh') {
         'policy.safe_mode': 'options: true | false',
         'policy.allowed_paths': 'JSON array, for example ["D:\\\\shared"]',
         'policy.allow_dangerous_commands': 'options: true | false',
-        'context.prompt_budget_audit': 'options: true | false'
+        'context.prompt_budget_audit': 'options: true | false',
+        'context.project_instructions_enabled': 'options: true | false',
+        'context.project_instructions_max_chars': 'recommended: 8000-12000'
       },
       describeSet: (label, hint) => `set the ${label}${hint ? ` (${hint})` : ''}`,
       describeGet: (label, hint) => `show the ${label}${hint ? ` (${hint})` : ''}`,
@@ -2287,7 +2295,10 @@ function summarizePromptBudgetAudit(audit) {
 }
 
 function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession }) {
-  const parentTokens = estimateMessagesTokens(currentSession?.messages || []);
+  const activeParentMessages = Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
+    ? currentSession.compact.view
+    : currentSession?.messages || [];
+  const parentTokens = estimateMessagesTokens(activeParentMessages);
   const subTokens = extraSession ? estimateMessagesTokens(extraSession.messages || []) : 0;
   const currentContextTokens = parentTokens + subTokens;
   const maxContextTokens = effectiveMaxContextTokens(config);
@@ -4388,6 +4399,8 @@ export async function createChatRuntime({
     'context.read_file_max_chars',
     'context.microcompact_enabled',
     'context.microcompact_keep_recent',
+    'context.project_instructions_enabled',
+    'context.project_instructions_max_chars',
     'sessions.max_sessions',
     'sessions.retention_days',
     'shell.timeout_ms',

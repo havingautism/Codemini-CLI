@@ -36,7 +36,9 @@ const DEFAULT_CONFIG = {
     read_file_max_chars: 24000,
     prompt_budget_audit: false,
     microcompact_enabled: true,
-    microcompact_keep_recent: 5
+    microcompact_keep_recent: 5,
+    project_instructions_enabled: true,
+    project_instructions_max_chars: 12000
   },
   execution: {
     mode: 'normal',
