@@ -77,9 +77,15 @@ export async function listSkillEntries({ scope = 'all', cwd = process.cwd() } = 
       name: command.name,
       version: command.metadata?.version || '0.0.0',
       description: command.metadata?.description || '',
+      mode: command.metadata?.mode || '',
+      triggers: Array.isArray(command.metadata?.triggers) ? command.metadata.triggers : [],
       scope: itemScope,
       path: command.path,
-      enabled: itemScope === 'builtin' ? true : config.skills?.enabled?.[command.name] !== false
+      enabled: command.metadata?.enabled === false
+        ? false
+        : itemScope === 'builtin'
+          ? true
+          : config.skills?.enabled?.[command.name] !== false
     });
   }
   return entries.sort((a, b) => `${a.scope}:${a.name}`.localeCompare(`${b.scope}:${b.name}`));
@@ -93,14 +99,19 @@ async function readSkillMeta(name, { scope = 'all', cwd = process.cwd() } = {}) 
   }
   const dir = path.dirname(found.path);
   const manifestPath = path.join(dir, 'manifest.json');
+  const catalogPath = path.join(path.dirname(dir), 'codemini.skills.json');
   let manifest = null;
   try {
-    manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+    const catalog = JSON.parse(await fs.readFile(catalogPath, 'utf8'));
+    manifest = catalog?.skills?.[found.name] || null;
   } catch {
-    manifest = null;
+    try {
+      manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+    } catch {
+      manifest = null;
+    }
   }
-  const entryFile = manifest?.entry || 'SKILL.md';
-  const skillPath = found.path || path.join(dir, entryFile);
+  const skillPath = found.path || path.join(dir, 'SKILL.md');
   try {
     const content = await fs.readFile(skillPath, 'utf8');
     const firstLines = content.split('\n').slice(0, 20).join('\n');

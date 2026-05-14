@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "skills": {
+    "superpowers-lite": {
+      "description": "Default concise workflow for coding tasks; keep context tight, choose the right route, and verify before claiming success.",
+      "mode": "always",
+      "triggers": [],
+      "enabled": true,
+      "priority": 100
+    },
+    "brainstorm": {
+      "description": "Use when a feature or behavior request has multiple reasonable approaches and the missing piece is user preference, tradeoff choice, or key constraint.",
+      "mode": "agent_requested",
+      "triggers": [],
+      "enabled": true,
+      "priority": 70
+    },
+    "writing-plans": {
+      "description": "Use when you have a clear goal or approved design for a non-trivial task, before touching code.",
+      "mode": "agent_requested",
+      "triggers": [],
+      "enabled": true,
+      "priority": 75
+    },
+    "grill-me": {
+      "description": "Use when the user explicitly asks to pressure-test a plan, architecture choice, PR, launch, or product idea.",
+      "mode": "agent_requested",
+      "triggers": [],
+      "enabled": true,
+      "priority": 65
+    },
+    "project-requirements": {
+      "description": "Create a project requirements report with repository inspection and structured output artifacts.",
+      "mode": "manual",
+      "triggers": [],
+      "enabled": true,
+      "priority": 50
+    }
+  }
+}

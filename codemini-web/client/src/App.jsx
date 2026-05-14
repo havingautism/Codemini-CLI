@@ -10,6 +10,8 @@ import { StatusBar } from "@/components/StatusBar.jsx";
 import { CodeWikiPanel } from "@/components/CodeWikiPanel.jsx";
 import { ApprovalDialog } from "@/components/ApprovalDialog.jsx";
 import { PlanApprovalCard } from "@/components/PlanApprovalDialog.jsx";
+import { ReflectApprovalCard } from "@/components/ReflectApprovalDialog.jsx";
+import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
 import { ConfigDialog } from "@/components/ConfigDialog.jsx";
 import { ProjectSelector } from "@/components/ProjectSelector.jsx";
 import { SkillDialog } from "@/components/SkillDialog.jsx";
@@ -171,6 +173,7 @@ function Shell() {
 
             {/* Plan Review / Input Area */}
             <div className="w-[min(980px,calc(100%-64px))] mx-auto mb-4 shrink-0 z-30 bg-transparent relative">
+              <RuntimeActivityStrip activities={state.runtimeActivities} />
               {state.pendingPlanApproval && (
                 <div className="mb-3">
                   <PlanApprovalCard
@@ -180,12 +183,25 @@ function Shell() {
                   />
                 </div>
               )}
+              {state.pendingReflectApproval && (
+                <div className="mb-3">
+                  <ReflectApprovalCard
+                    draft={state.pendingReflectApproval}
+                    onAction={actions.approveReflect}
+                    disabled={state.busy}
+                  />
+                </div>
+              )}
               <InputBar
                 onSubmit={actions.submit}
                 onAbort={actions.abort}
                 busy={state.busy}
-                disabled={!!state.pendingPlanApproval}
-                disabledReason={t("planReviewFirst")}
+                disabled={!!state.pendingPlanApproval || !!state.pendingReflectApproval}
+                disabledReason={
+                  state.pendingReflectApproval
+                    ? t("reflectReviewFirst")
+                    : t("planReviewFirst")
+                }
                 runtimeState={state.runtimeState}
                 history={state.history}
                 onCompletionRequest={async (input) => {

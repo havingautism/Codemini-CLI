@@ -136,6 +136,7 @@ function getCompletionCopy(language = 'zh') {
         'soul.preset': 'soul 预设',
         'soul.custom_path': '自定义 soul 路径',
         'policy.safe_mode': '安全模式开关',
+        'policy.allowed_paths': '安全模式目录白名单',
         'policy.allow_dangerous_commands': '危险命令开关'
       },
       optionHints: {
@@ -145,6 +146,7 @@ function getCompletionCopy(language = 'zh') {
         'execution.mode': '可选：auto | normal | plan',
         'shell.default': '常用：bash | powershell',
         'policy.safe_mode': '可选：true | false',
+        'policy.allowed_paths': 'JSON 数组，例如 ["D:\\\\shared"]',
         'policy.allow_dangerous_commands': '可选：true | false',
         'context.prompt_budget_audit': '可选：true | false'
       },
@@ -243,6 +245,7 @@ function getCompletionCopy(language = 'zh') {
         'soul.preset': 'soul preset',
         'soul.custom_path': 'custom soul prompt path',
         'policy.safe_mode': 'safe mode switch',
+        'policy.allowed_paths': 'safe-mode allowed path roots',
         'policy.allow_dangerous_commands': 'dangerous command allowance'
       },
       optionHints: {
@@ -252,6 +255,7 @@ function getCompletionCopy(language = 'zh') {
         'execution.mode': 'options: auto | normal | plan',
         'shell.default': 'common: bash | powershell',
         'policy.safe_mode': 'options: true | false',
+        'policy.allowed_paths': 'JSON array, for example ["D:\\\\shared"]',
         'policy.allow_dangerous_commands': 'options: true | false',
         'context.prompt_budget_audit': 'options: true | false'
       },
@@ -1265,6 +1269,7 @@ function isBundledSkillCommand(command) {
 }
 
 function isSkillEnabled(config, name, command = null) {
+  if (command?.metadata?.enabled === false) return false;
   if (isBundledSkillCommand(command)) return true;
   return config.skills?.enabled?.[name] !== false;
 }
@@ -2301,6 +2306,9 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     maxContextTokens,
     pendingPlanApproval: planState?.status === 'pending_approval'
       ? { goal: planState.goal, summary: planState.finalSummary || planState.summary, filePath: planState.filePath, steps: planState.steps || [] }
+      : null,
+    pendingReflectSkill: planState?.status === 'pending_reflect_skill'
+      ? buildPendingReflectSkillSnapshot(planState)
       : null
   };
   Object.defineProperties(snapshot, {
@@ -2314,11 +2322,6 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
       enumerable: false,
       writable: false
     },
-    pendingReflectSkill: {
-      value: currentSession?.planState?.status === 'pending_reflect_skill',
-      enumerable: false,
-      writable: false
-    },
     replyLanguage: {
       value: getReplyLanguage(config),
       enumerable: false,
@@ -2329,7 +2332,6 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
         ...snapshot,
         currentContextTokens,
         contextUsagePct,
-        pendingReflectSkill: currentSession?.planState?.status === 'pending_reflect_skill',
         replyLanguage: getReplyLanguage(config)
       }),
       enumerable: false,
@@ -2511,6 +2513,21 @@ function buildPendingReflectSkillMessage(reflectState) {
   lines.push('');
   lines.push('Use /yes to write this skill, /edit <feedback> to revise it, or /no to discard it.');
   return lines.join('\n');
+}
+
+function buildPendingReflectSkillSnapshot(reflectState) {
+  const candidates = Array.isArray(reflectState?.candidates) ? reflectState.candidates : [];
+  const candidate = candidates[0] || null;
+  if (!candidate) return null;
+  return {
+    scope: reflectState?.targetScope || 'project',
+    request: reflectState?.request || '',
+    name: candidate.name || '',
+    description: candidate.description || '',
+    confidence: Number(candidate.confidence ?? 0.75),
+    targetPath: candidate.targetPath || '',
+    content: candidate.content || ''
+  };
 }
 
 function buildApprovedPlanExecutionPrompt(planState, approvalText = '') {
@@ -2740,8 +2757,10 @@ async function askModel({
     }
   }
 
+  const shouldGenerateTitle = text
+    ? !session.messages.some((msg) => msg?.role === 'user')
+    : false;
   if (text) {
-    const shouldGenerateTitle = !session.messages.some((msg) => msg?.role === 'user');
     const modelExtra =
       typeof modelText === 'string' && modelText && modelText !== text ? { model_content: modelText } : {};
     const userMessage = stampedMessage('user', text, modelExtra);
@@ -2773,7 +2792,16 @@ async function askModel({
 
   const { definitions, handlers, formatters, deferredDefinitions, dispose: disposeTools } = getBuiltinTools({
     workspaceRoot: process.cwd(),
-    config,
+    config: {
+      ...config,
+      policy: {
+        ...(config.policy || {}),
+        allowed_paths: [
+          ...(Array.isArray(config.policy?.allowed_paths) ? config.policy.allowed_paths : []),
+          path.join(getSessionsDir(), String(session.id))
+        ]
+      }
+    },
     sessionId: session.id,
     onSystemEvent: onAgentEvent,
     getTodos: () => normalizeTodos(session.todos),
@@ -3004,7 +3032,7 @@ async function askModel({
     await flushScheduledSave();
     await saveSession(session);
     // Generate a better title asynchronously after saving
-    if (shouldReplaceSessionTitle(session.title)) {
+    if (shouldGenerateTitle) {
       const titleSessionId = session.id;
       generateSessionTitle({
         userText: text,
@@ -4242,11 +4270,22 @@ export async function createChatRuntime({
   if (hasPendingPlanApproval(currentSession)) {
     executionMode = 'plan';
   }
+  let compactState = null;
+  const normalizeCompactThreshold = (value, fallback = 60) => {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return fallback;
+    return Math.min(95, Math.max(50, num));
+  };
+  const syncCompactStateFromConfig = () => {
+    if (!compactState) return;
+    compactState.threshold = normalizeCompactThreshold(config.context?.preflight_trigger_pct, 60);
+  };
   const syncRuntimeFromConfig = async ({ model: nextModel } = {}) => {
     const configuredMode = String(config.execution?.mode || 'normal');
     executionMode = hasPendingPlanApproval(currentSession)
       ? 'plan'
       : (['normal', 'auto', 'plan'].includes(configuredMode) ? configuredMode : 'normal');
+    syncCompactStateFromConfig();
 
     const resolvedModel = String(nextModel || '').trim();
     if (resolvedModel) {
@@ -4269,10 +4308,10 @@ export async function createChatRuntime({
   // Set up tool result store under session directory
   const sessionResultsDir = path.join(getSessionsDir(), String(currentSession.id));
   setResultDir(sessionResultsDir);
-  const compactState = {
+  compactState = {
     backupMessages: null,
     autoEnabled: true,
-    threshold: 60,
+    threshold: normalizeCompactThreshold(config.context?.preflight_trigger_pct, 60),
     mode: 'conservative'
   };
   let compactedForModel = currentSession.compact?.view || null;
@@ -4356,6 +4395,7 @@ export async function createChatRuntime({
     'soul.preset',
     'soul.custom_path',
     'policy.safe_mode',
+    'policy.allowed_paths',
     'policy.allow_dangerous_commands'
   ];
 
@@ -4777,6 +4817,11 @@ export async function createChatRuntime({
   };
 
   const persistAssistantExchange = async (userText, assistantText, { includeUser = true, extra = {} } = {}) => {
+    const priorUserCount = currentSession.messages.filter((msg) => msg?.role === 'user').length;
+    const priorAssistantCount = currentSession.messages.filter((msg) => msg?.role === 'assistant').length;
+    const shouldGenerateTitle =
+      (includeUser && userText && priorUserCount === 0) ||
+      (!includeUser && userText && priorUserCount === 1 && priorAssistantCount === 0);
     if (includeUser && userText) {
       appendSessionMessage(stampedMessage('user', userText));
     }
@@ -4787,7 +4832,7 @@ export async function createChatRuntime({
     currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
     // Generate a better title asynchronously after saving
-    if (shouldReplaceSessionTitle(currentSession.title)) {
+    if (shouldGenerateTitle || shouldReplaceSessionTitle(currentSession.title)) {
       const titleSessionId = currentSession.id;
       generateSessionTitle({
         userText,
@@ -5115,6 +5160,7 @@ export async function createChatRuntime({
           });
           currentSession.planState = null;
           executionMode = 'auto';
+          if (onAgentEvent) onAgentEvent({ type: 'reflect:approval_cleared' });
           await reloadCommandsAndSkills();
           const text = `Reflect skill written and loaded: /${written.draft.name}\nPath: ${written.filePath}`;
           await persistLocalExchange(line, text, { includeUser: false });
@@ -5172,6 +5218,12 @@ export async function createChatRuntime({
               workspaceRoot: process.cwd()
             })
           };
+          if (onAgentEvent) {
+            onAgentEvent({
+              type: 'reflect:pending_approval',
+              draft: buildPendingReflectSkillSnapshot(currentSession.planState)
+            });
+          }
           const text = `Reflect skill draft revised.\n${buildPendingReflectSkillMessage(currentSession.planState)}`;
           await persistLocalExchange(line, text);
           return { type: 'system', text };
@@ -5209,6 +5261,7 @@ export async function createChatRuntime({
         if (hasPendingReflectSkill(currentSession)) {
           currentSession.planState = null;
           executionMode = 'auto';
+          if (onAgentEvent) onAgentEvent({ type: 'reflect:approval_cleared' });
           const text = 'Reflect skill draft discarded.';
           await persistLocalExchange(line, text, { includeUser: false });
           return { type: 'system', text };
@@ -5668,6 +5721,12 @@ export async function createChatRuntime({
           request: parsedReflect.request,
           candidates
         };
+        if (onAgentEvent) {
+          onAgentEvent({
+            type: 'reflect:pending_approval',
+            draft: buildPendingReflectSkillSnapshot(currentSession.planState)
+          });
+        }
         const text = buildPendingReflectSkillMessage(currentSession.planState);
         await persistLocalExchange(line, text);
         return { type: 'system', text };
@@ -5735,7 +5794,7 @@ export async function createChatRuntime({
           await resetConfig();
           config = await loadConfig();
           await syncRuntimeFromConfig({ model: resolveDefaultModel(config) });
-          compactState.threshold = 60;
+          syncCompactStateFromConfig();
           compactState.mode = 'conservative';
           compactState.autoEnabled = true;
           const text = 'Config reset complete';

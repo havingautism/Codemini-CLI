@@ -89,6 +89,7 @@ const DEFAULT_CONFIG = {
   policy: {
     safe_mode: true,
     allow_dangerous_commands: false,
+    allowed_paths: [],
     command_allowlist: [],
     blocked_commands: [],
     blocked_path_patterns: [],
@@ -195,6 +196,9 @@ function normalizePolicyLists(config) {
   next.policy.command_allowlist = uniqueStrings(
     Array.isArray(next.policy.command_allowlist) ? next.policy.command_allowlist : []
   );
+  next.policy.allowed_paths = uniqueStrings(
+    Array.isArray(next.policy.allowed_paths) ? next.policy.allowed_paths : []
+  );
   next.policy.blocked_commands = uniqueStrings(
     Array.isArray(next.policy.blocked_commands) ? next.policy.blocked_commands : []
   );
@@ -212,6 +216,13 @@ function parseValue(input) {
   if (input === 'true') return true;
   if (input === 'false') return false;
   if (input === 'null') return null;
+  if ((input.startsWith('[') && input.endsWith(']')) || (input.startsWith('{') && input.endsWith('}'))) {
+    try {
+      return JSON.parse(input);
+    } catch {
+      return input;
+    }
+  }
   if (!Number.isNaN(Number(input)) && input.trim() !== '') return Number(input);
   return input;
 }

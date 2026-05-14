@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { Eye, FileCode2, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { Eye, FileCode2, Pencil, Plus, Search, SlidersHorizontal, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -17,6 +17,7 @@ import * as api from "@/hooks/use-api";
 import { t } from "../../i18n/index.js";
 
 const FILTERS = ["all", "enabled", "builtin", "custom"];
+const SKILL_MODES = ["always", "auto_attach", "agent_requested", "manual"];
 
 function SwitchControl({ checked, onClick, title }) {
   return (
@@ -54,19 +55,28 @@ function isBuiltin(skill) {
 }
 
 function isEnabled(skill) {
-  return isBuiltin(skill) || skill?.enabled !== false;
+  return skill?.enabled !== false;
 }
 
 function SkillEditor({ skill, onSave, onCancel }) {
   const [name, setName] = useState(skill?.name || "");
   const [description, setDescription] = useState(skill?.description || "");
+  const [mode, setMode] = useState(skill?.mode || "agent_requested");
+  const [triggers, setTriggers] = useState((skill?.triggers || []).join(", "));
+  const [priority, setPriority] = useState(skill?.priority ?? 50);
+  const [enabled, setEnabled] = useState(isEnabled(skill));
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(false);
   const isNew = !skill;
+  const contentReadOnly = isBuiltin(skill);
 
   useEffect(() => {
     setName(skill?.name || "");
     setDescription(skill?.description || "");
+    setMode(skill?.mode || "agent_requested");
+    setTriggers((skill?.triggers || []).join(", "));
+    setPriority(skill?.priority ?? 50);
+    setEnabled(isEnabled(skill));
     if (!skill) {
       setContent("");
       return;
@@ -80,10 +90,24 @@ function SkillEditor({ skill, onSave, onCancel }) {
   }, [skill]);
 
   const handleSave = async () => {
+    const metadata = {
+      description,
+      mode,
+      triggers: triggers
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+      enabled,
+      priority: Number(priority) || 0,
+    };
     if (isNew) {
       await api.createSkill({ name, description, content });
+      await api.updateSkillMetadata(name, metadata);
     } else {
-      await api.updateSkillContent(skill.name, content);
+      await api.updateSkillMetadata(skill.name, metadata);
+      if (!contentReadOnly) {
+        await api.updateSkillContent(skill.name, content);
+      }
     }
     onSave();
   };
@@ -115,19 +139,77 @@ function SkillEditor({ skill, onSave, onCancel }) {
             className="h-8 text-[13px]"
           />
         </div>
-        {isNew && (
-          <div className="grid gap-1.5">
-            <label className="text-[12px] text-(--text-muted)">
-              {t("description")}
-            </label>
-            <Input
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder={t("skillDescriptionPlaceholder")}
-              className="h-8 text-[13px]"
-            />
+        <div className="grid gap-1.5">
+          <label className="text-[12px] text-(--text-muted)">
+            {t("description")}
+          </label>
+          <Input
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder={t("skillDescriptionPlaceholder")}
+            className="h-8 text-[13px]"
+          />
+        </div>
+
+        <div className="rounded-md border border-(--border-default) bg-(--bg-secondary) p-3">
+          <div className="mb-2 flex items-center gap-2 text-[12px] font-medium text-(--text-primary)">
+            <SlidersHorizontal size={13} />
+            {t("skillRoutingSettings")}
           </div>
-        )}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-1.5">
+              <label className="text-[12px] text-(--text-muted)">
+                {t("skillMode")}
+              </label>
+              <select
+                value={mode}
+                onChange={(e) => setMode(e.target.value)}
+                className="h-8 rounded-md border border-(--border-default) bg-(--bg-primary) px-2 text-[13px] text-(--text-primary)"
+              >
+                {SKILL_MODES.map((item) => (
+                  <option key={item} value={item}>
+                    {t(`skillMode_${item}`)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="grid gap-1.5">
+              <label className="text-[12px] text-(--text-muted)">
+                {t("skillPriority")}
+              </label>
+              <Input
+                type="number"
+                min="0"
+                max="100"
+                value={priority}
+                onChange={(e) => setPriority(e.target.value)}
+                className="h-8 text-[13px]"
+              />
+            </div>
+            <div className="grid gap-1.5 sm:col-span-2">
+              <label className="text-[12px] text-(--text-muted)">
+                {t("skillTriggers")}
+              </label>
+              <Input
+                value={triggers}
+                onChange={(e) => setTriggers(e.target.value)}
+                placeholder="after_edit, before_final"
+                className="h-8 text-[13px]"
+              />
+            </div>
+            <div className="flex items-center justify-between rounded-md border border-(--border-default) bg-(--bg-primary) px-2 py-1.5 sm:col-span-2">
+              <span className="text-[12px] text-(--text-muted)">
+                {enabled ? t("enabled") : t("disabled")}
+              </span>
+              <SwitchControl
+                checked={enabled}
+                onClick={() => setEnabled((value) => !value)}
+                title={enabled ? t("disable") : t("enable")}
+              />
+            </div>
+          </div>
+        </div>
+
         <div className="grid gap-1.5">
           <label className="text-[12px] text-(--text-muted)">
             {t("skillContent")}
@@ -140,6 +222,7 @@ function SkillEditor({ skill, onSave, onCancel }) {
             <Textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
+              disabled={contentReadOnly}
               className="min-h-[240px] resize-y text-[13px] font-mono leading-5"
               placeholder={
                 "---\nname: my-skill\ndescription: ...\n---\n\nSkill instructions..."
@@ -155,7 +238,7 @@ function SkillEditor({ skill, onSave, onCancel }) {
         </Button>
         <Button
           onClick={handleSave}
-          disabled={loading || !content.trim() || (isNew && !name.trim())}
+          disabled={loading || (!contentReadOnly && !content.trim()) || (isNew && !name.trim())}
           size="sm"
         >
           {isNew ? t("create") : t("save")}
@@ -404,10 +487,23 @@ export function SkillPanel() {
                         v{skill.version}
                       </span>
                     )}
+                    {skill.mode && (
+                      <Badge
+                        variant="outline"
+                        className="h-4 rounded-md px-1.5 py-0 text-[10px]"
+                      >
+                        {t(`skillMode_${skill.mode}`)}
+                      </Badge>
+                    )}
                   </div>
                   <div className="mt-1 line-clamp-2 text-[11px] leading-4 text-(--text-muted)">
                     {skill.description || t("noDescription")}
                   </div>
+                  {skill.triggers?.length > 0 && (
+                    <div className="mt-1 truncate text-[10px] text-(--text-muted)">
+                      {t("skillTriggers")}: {skill.triggers.join(", ")}
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex shrink-0 items-center gap-1">
@@ -419,21 +515,21 @@ export function SkillPanel() {
                   >
                     <Eye size={13} />
                   </Button>
+                  <SwitchControl
+                    checked={enabled}
+                    onClick={() => handleToggle(skill.name, !enabled)}
+                    title={enabled ? t("disable") : t("enable")}
+                  />
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    onClick={() => setEditing(skill)}
+                    title={isBuiltin(skill) ? t("skillRoutingSettings") : t("edit")}
+                  >
+                    {isBuiltin(skill) ? <SlidersHorizontal size={13} /> : <Pencil size={13} />}
+                  </Button>
                   {!isBuiltin(skill) && (
                     <>
-                      <SwitchControl
-                        checked={enabled}
-                        onClick={() => handleToggle(skill.name, !enabled)}
-                        title={enabled ? t("disable") : t("enable")}
-                      />
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        onClick={() => setEditing(skill)}
-                        title={t("edit")}
-                      >
-                        <Pencil size={13} />
-                      </Button>
                       <Button
                         variant="ghost"
                         size="icon-xs"

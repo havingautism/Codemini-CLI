@@ -152,6 +152,15 @@ codemini skill install --scope=global <path>
 codemini skill inspect <name>
 ```
 
+Routing metadata is kept in a top-level catalog, so third-party `SKILL.md` files can stay unchanged:
+
+```text
+skills/codemini.skills.json
+.codemini/skills/codemini.skills.json
+```
+
+The catalog stores lightweight routing fields such as `description`, `mode`, `triggers`, `enabled`, and `priority`. Codemini reads that metadata at startup and loads the full `SKILL.md` body only when a skill is selected or invoked. If the catalog is missing or incomplete, Codemini falls back to the skill directory and `SKILL.md` frontmatter.
+
 ### Souls
 
 Souls change tone and expression style without changing tool policy or execution behavior.
@@ -164,6 +173,12 @@ default, professional, ceo, playful, anime, caveman, pirate
 
 ```bash
 codemini config set soul.preset professional
+```
+
+Safe mode normally restricts file tools and absolute shell paths to the current workspace. Add explicit extra roots when a project needs shared assets or sibling repositories:
+
+```bash
+codemini config set policy.allowed_paths '["D:\\shared-assets","E:\\sibling-repo"]'
 ```
 
 ### Memory And Dream Loop
@@ -367,6 +382,15 @@ codemini skill install --scope=global <path>
 codemini skill inspect <name>
 ```
 
+路由元数据集中放在顶层 catalog，第三方 `SKILL.md` 可以保持原样：
+
+```text
+skills/codemini.skills.json
+.codemini/skills/codemini.skills.json
+```
+
+catalog 维护 `description`、`mode`、`triggers`、`enabled`、`priority` 等轻量路由字段。Codemini 启动时只读取这些元数据，只有 skill 被命中或显式调用时才读取完整 `SKILL.md`。如果 catalog 缺失或不完整，会回退到 skill 目录和 `SKILL.md` frontmatter。
+
 ### Souls
 
 Soul 只改变语气和表达风格，不改变工具策略或执行逻辑。
@@ -379,6 +403,12 @@ default, professional, ceo, playful, anime, caveman, pirate
 
 ```bash
 codemini config set soul.preset professional
+```
+
+Safe mode 默认把文件工具和 shell 绝对路径限制在当前工作区。需要访问共享素材或兄弟仓库时，可以显式加入额外根目录：
+
+```bash
+codemini config set policy.allowed_paths '["D:\\shared-assets","E:\\sibling-repo"]'
 ```
 
 ### 记忆与 Dream Loop

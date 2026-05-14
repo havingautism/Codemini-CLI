@@ -196,7 +196,25 @@ function suggestionForToken(token, config) {
   return 'Prefer structured tools like read, edit, write, grep, glob, and list first. If you need shell fallback, use allowed shell commands for search and local context such as rg, find, grep, sed, cat, or ls.';
 }
 
-function validateCdSegment(command, workspaceRoot) {
+function allowedPathRoots(workspaceRoot, config = {}) {
+  return [
+    workspaceRoot,
+    ...(Array.isArray(config?.policy?.allowed_paths) ? config.policy.allowed_paths : [])
+  ]
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .map((item) => path.resolve(item));
+}
+
+function isWithinAnyRoot(candidatePath, roots = []) {
+  const resolvedCandidate = path.resolve(candidatePath);
+  return roots.some((root) => {
+    const relative = path.relative(root, resolvedCandidate);
+    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  });
+}
+
+function validateCdSegment(command, workspaceRoot, config = {}) {
   const tokens = tokenizeTopLevel(command);
   if (tokens.length === 1) {
     return { allowed: false, reason: 'cd requires a target path in safe mode' };
@@ -210,11 +228,9 @@ function validateCdSegment(command, workspaceRoot) {
     return { allowed: false, reason: 'cd target is not allowed in safe mode' };
   }
 
-  const resolvedRoot = path.resolve(workspaceRoot);
-  const resolvedTarget = path.resolve(resolvedRoot, rawTarget);
-  const relative = path.relative(resolvedRoot, resolvedTarget);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    return { allowed: false, reason: `cd escapes workspace: ${rawTarget}` };
+  const resolvedTarget = path.resolve(path.resolve(workspaceRoot), rawTarget);
+  if (!isWithinAnyRoot(resolvedTarget, allowedPathRoots(workspaceRoot, config))) {
+    return { allowed: false, reason: `cd escapes workspace or allowed paths: ${rawTarget}` };
   }
 
   return { allowed: true };
@@ -246,7 +262,7 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
   for (const item of inspectedTokens) {
     if (SHELL_KEYWORDS.has(item.token)) continue;
     if (item.token === 'cd') {
-      const cdCheck = validateCdSegment(item.raw, workspaceRoot);
+      const cdCheck = validateCdSegment(item.raw, workspaceRoot, config);
       if (!cdCheck.allowed) {
         return { allowed: false, reason: cdCheck.reason, suggestion: suggestionForToken(item.token, config) };
       }
@@ -263,11 +279,19 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
     }
   }
 
-  const workspaceLower = String(workspaceRoot).toLowerCase().replace(/\//g, '\\');
+  const allowedLower = allowedPathRoots(workspaceRoot, config).map((item) => item.toLowerCase().replace(/\//g, '\\'));
   const windowsAbsPath = lower.match(/[a-z]:\\[^\s'"]+/g) || [];
   for (const p of windowsAbsPath) {
-    if (!p.startsWith(workspaceLower)) {
-      return { allowed: false, reason: `absolute path outside workspace: ${p}`, suggestion: suggestionForToken(token, config) };
+    if (!allowedLower.some((root) => p === root || p.startsWith(`${root}\\`))) {
+      return { allowed: false, reason: `absolute path outside workspace or allowed paths: ${p}`, suggestion: suggestionForToken(token, config) };
+    }
+  }
+
+  const posixAbsPath = cmd.match(/(?<![:/\w])\/(?!\/)[^\s'"]+/g) || [];
+  const allowedResolved = allowedPathRoots(workspaceRoot, config);
+  for (const p of posixAbsPath) {
+    if (!isWithinAnyRoot(p, allowedResolved)) {
+      return { allowed: false, reason: `absolute path outside workspace or allowed paths: ${p}`, suggestion: suggestionForToken(token, config) };
     }
   }
 
