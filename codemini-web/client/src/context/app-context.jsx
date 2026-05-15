@@ -1015,15 +1015,17 @@ export function AppProvider({ children }) {
         try {
           const currentState = await api.fetchState();
           if (currentState.sessionId !== route.sessionId) {
-            await api.switchSession(route.sessionId);
             update({ messagesLoading: true });
             setState(prev => ({ ...prev, messages: [] }));
+            await api.switchSession(route.sessionId);
             await loadState();
             await loadSessionMessages();
             loadSessions();
             loadGitInfo();
           }
-        } catch {}
+        } catch {
+          update({ messagesLoading: false });
+        }
       } else if (route.view === 'codewiki') {
         if (route.projectPath) await openCodeWikiProjectFromRoute(route.projectPath);
         const rs = await loadState();
@@ -1153,18 +1155,24 @@ export function AppProvider({ children }) {
     },
 
     switchSession: async (sessionId) => {
+      const currentSessionId = stateRef.current.runtimeState?.sessionId;
+      if (!sessionId || sessionId === currentSessionId) return;
+      update({ currentView: 'chat', messagesLoading: true });
+      setState(prev => ({ ...prev, messages: [] }));
       try {
         const result = await api.switchSession(sessionId);
         if (result.ok) {
-          update({ currentView: 'chat', messagesLoading: true });
           updateRoute('chat', sessionId);
           await loadState();
-          setState(prev => ({ ...prev, messages: [] }));
           await loadSessionMessages();
           loadSessions();
           loadGitInfo();
+        } else {
+          update({ messagesLoading: false });
         }
-      } catch {}
+      } catch {
+        update({ messagesLoading: false });
+      }
     },
 
     deleteSession: async (sessionId) => {
@@ -1192,23 +1200,38 @@ export function AppProvider({ children }) {
     },
 
     newSession: async () => {
+      update({ currentView: 'chat', messagesLoading: true });
+      setState(prev => ({ ...prev, messages: [] }));
       try {
         const result = await api.newSession();
         if (result.ok) {
-          update({ currentView: 'chat' });
           if (result.sessionId) updateRoute('chat', result.sessionId);
           await loadState();
-          setState(prev => ({ ...prev, messages: [] }));
           loadSessions();
+          update({ messagesLoading: false });
+        } else {
+          update({ messagesLoading: false });
         }
-      } catch {}
+      } catch {
+        update({ messagesLoading: false });
+      }
     },
 
     openProject: async (projectPath, options = {}) => {
+      const nextView = options.view || 'chat';
+      const pendingCodeWikiProjectPath = nextView === 'codewiki'
+        ? projectPath
+        : stateRef.current.codewikiProjectPath;
+      update({
+        currentView: nextView,
+        projectOpen: false,
+        messagesLoading: nextView === 'chat',
+        codewikiProjectPath: pendingCodeWikiProjectPath,
+      });
+      if (nextView === 'chat') setState(prev => ({ ...prev, messages: [] }));
       try {
         const result = await api.openProject(projectPath);
         if (result.ok) {
-          const nextView = options.view || 'chat';
           const nextCodeWikiProjectPath = nextView === 'codewiki'
             ? result.cwd || projectPath
             : stateRef.current.codewikiProjectPath;
@@ -1216,11 +1239,15 @@ export function AppProvider({ children }) {
           if (nextView === 'codewiki') updateRoute('codewiki', null, { projectPath: nextCodeWikiProjectPath });
           else if (result.sessionId) updateRoute('chat', result.sessionId);
           await loadState();
-          setState(prev => ({ ...prev, messages: [] }));
           loadSessions();
           loadGitInfo();
+          if (nextView === 'chat') update({ messagesLoading: false });
+        } else if (nextView === 'chat') {
+          update({ messagesLoading: false });
         }
-      } catch {}
+      } catch {
+        if (nextView === 'chat') update({ messagesLoading: false });
+      }
     },
 
     switchView: (view, options = {}) => {
