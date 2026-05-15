@@ -56,6 +56,7 @@ const BANNER = [
 /* opentui colors directly */
 const BANNER_COLORS = ["brightmagenta", "brightred", "brightyellow", "brightcyan", "brightmagenta"];
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const APP_BACKGROUND = "#282a36";
 
 function nextMessageIdFactory() {
   let id = 0;
@@ -157,7 +158,7 @@ function ContextProgressMeter(props: { runtimeState: any }) {
     return result;
   });
   return (
-    <box flexDirection="row" justifyContent="flex-end" alignItems="center">
+    <box flexDirection="row" justifyContent="flex-end" alignItems="center" width={24} flexShrink={0}>
       <text fg="gray">{"上下文 "}</text>
       <text fg={activeColor()}>{`${Math.round(pct())}% `}</text>
       <For each={bars()}>{(b) => <text fg={b.color}>{"|"}</text>}</For>
@@ -167,7 +168,14 @@ function ContextProgressMeter(props: { runtimeState: any }) {
 
 function SignatureBar(props: { version: string }) {
   return (
-    <box flexDirection="row" marginTop={1} justifyContent="space-between">
+    <box
+      flexDirection="row"
+      marginTop={1}
+      justifyContent="space-between"
+      backgroundColor={APP_BACKGROUND}
+      shouldFill={true}
+      zIndex={10}
+    >
       <text fg="gray">{" "}</text>
       <box flexDirection="row">
         <text fg="gray">{"developed by "}</text>
@@ -439,6 +447,21 @@ export function App(props: any) {
       : []
   );
   const messageWidth = createMemo(() => Math.max(24, dimensions().width - 8));
+  const footerPanelHeight = createMemo(() => {
+    let height = 0;
+    if (commandSuggestions().length > 0) {
+      const page = getSuggestionPageState(commandSuggestions(), menuIndex(), 8);
+      height += 3 + Math.min(8, page.pageItems.length);
+    }
+    if (pendingQueue().length > 0) height += 2 + Math.min(3, pendingQueue().length);
+    if (pendingDeleteApproval()) height += 7;
+    if (pendingRunApproval()) height += 7;
+    return height;
+  });
+  const fixedFooterHeight = createMemo(() => 1 + footerPanelHeight() + 6 + 2);
+  const scrollHeight = createMemo(() =>
+    Math.max(6, Number(dimensions().height || 24) - fixedFooterHeight())
+  );
   let scrollRef: ScrollBoxRenderable | undefined;
   let inputRef: InputRenderable | undefined;
   let deleteApprovalResolver: any = null;
@@ -729,13 +752,31 @@ export function App(props: any) {
   const runRequest = createMemo(() => pendingRunApproval());
 
   return (
-    <box flexDirection="column" paddingLeft={1} paddingRight={1}>
+    <box
+      flexDirection="column"
+      paddingLeft={1}
+      paddingRight={1}
+      height={dimensions().height}
+      overflow="hidden"
+      backgroundColor={APP_BACKGROUND}
+      shouldFill={true}
+    >
       <scrollbox
         ref={(ref: ScrollBoxRenderable) => { scrollRef = ref; }}
         stickyScroll={true}
         stickyStart="bottom"
-        flexGrow={1}
-        minHeight={10}
+        height={scrollHeight()}
+        maxHeight={scrollHeight()}
+        flexGrow={0}
+        flexShrink={0}
+        minHeight={6}
+        overflow="hidden"
+        viewportCulling={true}
+        rootOptions={{ overflow: "hidden", height: scrollHeight(), maxHeight: scrollHeight() }}
+        wrapperOptions={{ overflow: "hidden", height: scrollHeight(), maxHeight: scrollHeight() }}
+        viewportOptions={{ overflow: "hidden", height: scrollHeight(), maxHeight: scrollHeight() }}
+        contentOptions={{ overflow: "hidden" }}
+        zIndex={0}
       >
         <Banner
           sessionId={props.sessionId}
@@ -756,8 +797,20 @@ export function App(props: any) {
           )}
         </For>
       </scrollbox>
-      <box flexDirection="row" justifyContent="space-between" width="100%" flexWrap="no-wrap">
-        <box flexDirection="row">
+      <box
+        flexDirection="row"
+        justifyContent="space-between"
+        width={Math.max(1, dimensions().width - 2)}
+        height={1}
+        flexGrow={0}
+        flexShrink={0}
+        flexWrap="no-wrap"
+        overflow="hidden"
+        backgroundColor={APP_BACKGROUND}
+        shouldFill={true}
+        zIndex={10}
+      >
+        <box flexDirection="row" flexGrow={1} flexShrink={1} overflow="hidden">
           <text fg="gray">{`${showToolDetails() ? copy.generic.toolSummaryExpanded : copy.generic.toolSummaryCollapsed} (Ctrl+T)`}</text>
           <text fg="gray">{"  ·  "}</text>
           <text fg={streaming() ? "brightgreen" : "gray"}>
@@ -775,9 +828,14 @@ export function App(props: any) {
         border={true}
         borderStyle="rounded"
         borderColor="cyan"
+        backgroundColor={APP_BACKGROUND}
+        shouldFill={true}
         paddingX={1}
         paddingY={0}
         height={5}
+        flexGrow={0}
+        flexShrink={0}
+        zIndex={10}
       >
         <box flexDirection="row" justifyContent="space-between">
           <box flexDirection="row">
