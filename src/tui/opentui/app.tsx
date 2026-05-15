@@ -1,4 +1,4 @@
-import { createCliRenderer, type InputRenderable, type KeyEvent, type ScrollBoxRenderable } from "@opentui/core";
+import { createCliRenderer, SyntaxStyle, type InputRenderable, type KeyEvent, type ScrollBoxRenderable } from "@opentui/core";
 import { render, useKeyboard, useTerminalDimensions } from "@opentui/solid";
 import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 
@@ -7,6 +7,8 @@ import {
   buildUiMessagesFromSessionHistory,
   collapseActivityChainRows,
   formatSuggestionDescription,
+  formatPlanApprovalLines,
+  formatReflectApprovalLines,
   getCopy,
   getPendingUserMessageMeta,
   getSuggestionPageState,
@@ -14,7 +16,12 @@ import {
   moveSuggestionSelection,
   normalizeDeleteApprovalRequest,
   normalizeRunApprovalRequest,
+  parseAutoPlanSummaryMessage,
   parseDeleteApprovalAnswer,
+  parsePendingPlanApprovalMessage,
+  parsePendingReflectSkillMessage,
+  parsePlanApprovalAnswer,
+  parseReflectApprovalAnswer,
   roleStyle,
   sanitizeRenderableText,
   shouldAppendAssistantResult,
@@ -56,6 +63,8 @@ const BANNER = [
 /* opentui colors directly */
 const BANNER_COLORS = ["brightmagenta", "brightred", "brightyellow", "brightcyan", "brightmagenta"];
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const APP_BACKGROUND = "#282a36";
+const MARKDOWN_STYLE = SyntaxStyle.create();
 
 function nextMessageIdFactory() {
   let id = 0;
@@ -65,6 +74,35 @@ function nextMessageIdFactory() {
 function getSuggestionValue(item: any) { return typeof item === "string" ? item : String(item?.value || ""); }
 function getSuggestionDisplay(item: any) { return typeof item === "string" ? item : String(item?.display || item?.value || ""); }
 function getSuggestionDescription(item: any) { return typeof item === "string" ? "" : String(item?.description || ""); }
+
+function groupCommandSuggestions(items: any[]) {
+  const categoryMap: Record<string, string> = {
+    help: "Core",
+    exit: "Core",
+    commands: "Core",
+    status: "Runtime",
+    mode: "Runtime",
+    compact: "Runtime",
+    retry: "Runtime",
+    tasks: "Workspace",
+    checkpoint: "Workspace",
+    history: "Workspace",
+    config: "Config",
+    debug: "Config",
+    spec: "Planning",
+    plan: "Planning",
+    agents: "Planning"
+  };
+  const grouped = new Map<string, any[]>();
+  for (const item of Array.isArray(items) ? items : []) {
+    const value = getSuggestionValue(item);
+    const root = String(value || "").trim().slice(1).split(/\s+/)[0] || "other";
+    const category = categoryMap[root] || "Other";
+    if (!grouped.has(category)) grouped.set(category, []);
+    grouped.get(category)!.push(item);
+  }
+  return Array.from(grouped.entries());
+}
 
 function buildStartupMessage(copy: any) {
   const hints = Array.isArray(copy?.generic?.startupHints) ? copy.generic.startupHints : [];
@@ -84,6 +122,41 @@ function patchMessages(messages: any[], messageId: string, patch: any) {
 
 function appendPlainMessage(messages: any[], message: any) {
   return [...messages, message];
+}
+
+function hasMessageActivities(message: any) {
+  return (Array.isArray(message?.toolCalls) && message.toolCalls.length > 0)
+    || (Array.isArray(message?.pendingToolCalls) && message.pendingToolCalls.length > 0)
+    || (Array.isArray(message?.segments) && message.segments.some((s: any) => s?.type && s.type !== "text"));
+}
+
+function shouldRenderMarkdownContent(message: any) {
+  const text = String(message?.text || "");
+  if (!text.trim()) return false;
+  if (message?.label === "you" || message?.label === "system" || message?.label === "error") return false;
+  return true;
+}
+
+function isStructuralMessageRow(row: any) {
+  return [
+    "activity",
+    "activity-summary",
+    "activity-collapsed",
+    "todo-item",
+    "todo-gap",
+    "status",
+    "plan-progress"
+  ].includes(row?.kind);
+}
+
+function commandNeedsInput(value: string) {
+  return /<[^>]+>/.test(value) || value.endsWith(" ");
+}
+
+function editableCommandTemplate(value: string) {
+  return String(value || "")
+    .replace(/\s*<[^>]+>\??/g, "")
+    .trimEnd();
 }
 
 /* ─── Visual components ─── */
@@ -157,7 +230,7 @@ function ContextProgressMeter(props: { runtimeState: any }) {
     return result;
   });
   return (
-    <box flexDirection="row" justifyContent="flex-end" alignItems="center">
+    <box flexDirection="row" justifyContent="flex-end" alignItems="center" width={24} flexShrink={0}>
       <text fg="gray">{"上下文 "}</text>
       <text fg={activeColor()}>{`${Math.round(pct())}% `}</text>
       <For each={bars()}>{(b) => <text fg={b.color}>{"|"}</text>}</For>
@@ -167,13 +240,63 @@ function ContextProgressMeter(props: { runtimeState: any }) {
 
 function SignatureBar(props: { version: string }) {
   return (
-    <box flexDirection="row" marginTop={1} justifyContent="space-between">
+    <box
+      flexDirection="row"
+      marginTop={1}
+      justifyContent="space-between"
+      backgroundColor={APP_BACKGROUND}
+      shouldFill={true}
+      zIndex={20}
+    >
       <text fg="gray">{" "}</text>
       <box flexDirection="row">
         <text fg="gray">{"developed by "}</text>
         <text fg="brightmagenta">{"@havingautism"}</text>
       </box>
       <text fg="gray">{`v${props.version}`}</text>
+    </box>
+  );
+}
+
+function TopBar(props: {
+  sessionId: string;
+  model: string;
+  shellName: string;
+  safeMode: boolean;
+  busy: boolean;
+  streaming: boolean;
+  loaderTick: number;
+  runtimeState: any;
+}) {
+  const shortSession = String(props.sessionId || "").slice(-8) || "-";
+  return (
+    <box
+      flexDirection="row"
+      justifyContent="space-between"
+      height={3}
+      paddingX={1}
+      paddingY={0}
+      border={true}
+      borderStyle="rounded"
+      borderColor="gray"
+      backgroundColor={APP_BACKGROUND}
+      shouldFill={true}
+      flexShrink={0}
+    >
+      <box flexDirection="row" alignItems="center">
+        <text fg="brightcyan">{"codemini"}</text>
+        <text fg="gray">{`  ${props.model}`}</text>
+        <text fg="gray">{`  #${shortSession}`}</text>
+      </box>
+      <box flexDirection="row" alignItems="center">
+        <text fg={props.safeMode ? "brightgreen" : "brightred"}>{props.safeMode ? "safe" : "unsafe"}</text>
+        <text fg="gray">{`  ${props.shellName || "powershell"}  `}</text>
+        <text fg={props.streaming ? "brightgreen" : "gray"}>
+          {props.busy ? `running ${SPINNER_FRAMES[props.loaderTick % SPINNER_FRAMES.length]}` : "idle"}
+        </text>
+        <text fg="gray">{"  "}</text>
+        <ContextProgressMeter runtimeState={props.runtimeState} />
+      </box>
     </box>
   );
 }
@@ -226,6 +349,35 @@ function renderRow(row: any, index: number, loaderTick: number) {
   return <box key={`gen-${index}`}><text fg={row.color ? c(row.color) : "white"}>{row.text || " "}</text></box>;
 }
 
+function MarkdownMessageContent(props: any) {
+  const structuralRows = createMemo(() => {
+    if (!hasMessageActivities(props.message)) return [];
+    return (props.rows || []).filter((row: any) => isStructuralMessageRow(row));
+  });
+  return (
+    <box flexDirection="column">
+      <For each={structuralRows()}>
+        {(row: any, idx: () => number) => renderRow(row, idx(), props.loaderTick)}
+      </For>
+      <markdown
+        content={String(props.message?.text || "")}
+        syntaxStyle={MARKDOWN_STYLE}
+        fg={c(roleStyle(props.message?.label).text || "white")}
+        bg={APP_BACKGROUND}
+        conceal={true}
+        concealCode={false}
+        streaming={Boolean(props.message?.loading)}
+        tableOptions={{
+          widthMode: "full",
+          wrapMode: "word",
+          borders: true,
+          borderColor: "gray"
+        }}
+      />
+    </box>
+  );
+}
+
 function SimpleMessageRow(props: any) {
   const theme = createMemo(() => roleStyle(props.message.label));
   const rows = createMemo(() =>
@@ -247,9 +399,16 @@ function SimpleMessageRow(props: any) {
     <box flexDirection="row" marginBottom={1} paddingLeft={1}>
       <text fg={c(theme().badgeText)} bg={c(theme().badgeBg)}>{` ${messageLabel(props.message.label, props.copy)} `}</text>
       <text fg="gray">{" "}</text>
-      <For each={rows()}>
-        {(row: any, idx: () => number) => renderRow(row, idx(), props.loaderTick)}
-      </For>
+      <Show
+        when={shouldRenderMarkdownContent(props.message)}
+        fallback={
+          <For each={rows()}>
+            {(row: any, idx: () => number) => renderRow(row, idx(), props.loaderTick)}
+          </For>
+        }
+      >
+        <MarkdownMessageContent message={props.message} rows={rows()} loaderTick={props.loaderTick} />
+      </Show>
     </box>
   );
 }
@@ -277,9 +436,16 @@ function BorderedMessageBubble(props: any) {
           <text fg="gray">{` ${props.message.planStep}`}</text>
         </Show>
       </box>
-      <For each={rows()}>
-        {(row: any, idx: () => number) => renderRow(row, idx(), props.loaderTick)}
-      </For>
+      <Show
+        when={shouldRenderMarkdownContent(props.message)}
+        fallback={
+          <For each={rows()}>
+            {(row: any, idx: () => number) => renderRow(row, idx(), props.loaderTick)}
+          </For>
+        }
+      >
+        <MarkdownMessageContent message={props.message} rows={rows()} loaderTick={props.loaderTick} />
+      </Show>
     </box>
   );
 }
@@ -302,39 +468,58 @@ function MessageBubble(props: any) {
   );
 }
 
-function SuggestionPanel(props: any) {
+function CommandPaletteModal(props: any) {
   if (!props.items || props.items.length === 0) return null;
-  const page = createMemo(() => getSuggestionPageState(props.items, props.menuIndex, 8));
+  const page = createMemo(() => getSuggestionPageState(props.items, props.menuIndex, 12));
+  const grouped = createMemo(() => groupCommandSuggestions(page().pageItems));
   return (
     <box
       flexDirection="column"
+      flexGrow={1}
       marginTop={1}
+      marginBottom={1}
       border={true}
       borderStyle="rounded"
       borderColor="magenta"
-      paddingX={1}
-      paddingY={0}
+      backgroundColor={APP_BACKGROUND}
+      shouldFill={true}
+      paddingX={2}
+      paddingY={1}
     >
-      <box marginBottom={1} flexDirection="row">
-        <text fg="brightmagenta">{props.copy.generic.commandPaletteGroupedSuggestions}</text>
-        <text fg="gray">{`  ${page().pageIndex + 1}/${page().pageCount}`}</text>
+      <box marginBottom={1} flexDirection="row" justifyContent="space-between">
+        <box flexDirection="row">
+          <text fg="brightmagenta">{props.copy.generic.commandPaletteGroupedSelect}</text>
+          <text fg="gray">{"  Enter 执行/填入 · Esc 关闭 · ↑↓ 选择"}</text>
+        </box>
+        <text fg="gray">{`${page().pageIndex + 1}/${page().pageCount}`}</text>
       </box>
-      <For each={page().pageItems}>
-        {(item: any, idx: () => number) => {
-          const active = props.menuIndex === page().pageStart + idx();
-          return (
+      <For each={grouped()}>
+        {([group, items]: any) => (
+          <box flexDirection="column">
             <box flexDirection="row">
-              <text fg={active ? "black" : "brightmagenta"} bg={active ? "brightmagenta" : undefined}>
-                {`${active ? " > " : "   "}${getSuggestionDisplay(item)}`}
-              </text>
-              <Show when={getSuggestionDescription(item)}>
-                <text fg={active ? "black" : "gray"} bg={active ? "brightmagenta" : undefined}>
-                  {`  ${formatSuggestionDescription(getSuggestionDescription(item), 42)}`}
-                </text>
-              </Show>
+              <text fg="gray">{`${String(group).toUpperCase()} `}</text>
+              <text fg="black" bg="gray">{` ${items.length} `}</text>
             </box>
-          );
-        }}
+            <For each={items}>
+              {(item: any) => {
+                const absoluteIndex = page().pageItems.indexOf(item) + page().pageStart;
+                const active = Boolean(props.menuIndex === absoluteIndex);
+                return (
+                  <box flexDirection="row">
+                    <text fg={active ? "black" : "brightmagenta"} bg={active ? "brightmagenta" : undefined}>
+                      {`${active ? " > " : "   "}${getSuggestionDisplay(item)}`}
+                    </text>
+                    <Show when={getSuggestionDescription(item)}>
+                      <text fg={active ? "black" : "gray"} bg={active ? "brightmagenta" : undefined}>
+                        {`  ${formatSuggestionDescription(getSuggestionDescription(item), 42)}`}
+                      </text>
+                    </Show>
+                  </box>
+                );
+              }}
+            </For>
+          </box>
+        )}
       </For>
     </box>
   );
@@ -385,6 +570,50 @@ function RunApprovalPanel(props: any) {
   );
 }
 
+function PlanApprovalPanel(props: any) {
+  if (!props.request) return null;
+  const lines = formatPlanApprovalLines(props.copy, props.request);
+  return (
+    <box
+      marginTop={1}
+      flexDirection="column"
+      border={true}
+      borderStyle="rounded"
+      borderColor="brightyellow"
+      backgroundColor={APP_BACKGROUND}
+      shouldFill={true}
+      paddingX={1}
+      paddingY={0}
+    >
+      <For each={lines}>{(line: string) => <text fg="brightyellow">{line}</text>}</For>
+      <text fg="gray">{props.copy.planApproval.prompt}</text>
+      <Show when={props.errorText}><text fg="brightyellow">{props.errorText}</text></Show>
+    </box>
+  );
+}
+
+function ReflectApprovalPanel(props: any) {
+  if (!props.request) return null;
+  const lines = formatReflectApprovalLines(props.copy, props.request);
+  return (
+    <box
+      marginTop={1}
+      flexDirection="column"
+      border={true}
+      borderStyle="rounded"
+      borderColor="brightyellow"
+      backgroundColor={APP_BACKGROUND}
+      shouldFill={true}
+      paddingX={1}
+      paddingY={0}
+    >
+      <For each={lines}>{(line: string) => <text fg="brightyellow">{line}</text>}</For>
+      <text fg="gray">{props.copy.reflectApproval.prompt}</text>
+      <Show when={props.errorText}><text fg="brightyellow">{props.errorText}</text></Show>
+    </box>
+  );
+}
+
 function PendingPanel(props: any) {
   if (!props.queue || props.queue.length === 0) return null;
   return (
@@ -424,8 +653,11 @@ export function App(props: any) {
   const [loaderTick, setLoaderTick] = createSignal(0);
   const [menuIndex, setMenuIndex] = createSignal(0);
   const [suggestionNav, setSuggestionNav] = createSignal(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = createSignal(false);
   const [pendingDeleteApproval, setPendingDeleteApproval] = createSignal<any>(null);
   const [pendingRunApproval, setPendingRunApproval] = createSignal<any>(null);
+  const [pendingPlanApproval, setPendingPlanApproval] = createSignal<any>(null);
+  const [pendingReflectApproval, setPendingReflectApproval] = createSignal<any>(null);
   const [approvalError, setApprovalError] = createSignal("");
   const [activeAssistantId, setActiveAssistantId] = createSignal<string | null>(null);
   const [pinnedToBottom, setPinnedToBottom] = createSignal(true);
@@ -434,10 +666,15 @@ export function App(props: any) {
 
   const dimensions = useTerminalDimensions();
   const commandSuggestions = createMemo(() =>
-    inputValue().startsWith("/") && !pendingDeleteApproval() && !pendingRunApproval()
-      ? props.runtime.getCompletionOptions(inputValue()) || []
+    (commandPaletteOpen() || inputValue().startsWith("/")) &&
+    !pendingDeleteApproval() &&
+    !pendingRunApproval() &&
+    !pendingPlanApproval() &&
+    !pendingReflectApproval()
+      ? props.runtime.getCompletionOptions(commandPaletteOpen() ? "/" : inputValue()) || []
       : []
   );
+  const inputBoxHeight = createMemo(() => 5);
   const messageWidth = createMemo(() => Math.max(24, dimensions().width - 8));
   let scrollRef: ScrollBoxRenderable | undefined;
   let inputRef: InputRenderable | undefined;
@@ -484,6 +721,39 @@ export function App(props: any) {
     patchMessage(messageId, { loading: true, phase: "queued", liveStatus: copy.runtime.queuedWaiting });
   };
 
+  const dispatchLine = (line: string) => {
+    const messageId = nextId();
+    const immediateLocal = typeof props.runtime.isImmediateLocalInput === "function" && props.runtime.isImmediateLocalInput(line);
+    const pendingMeta = getPendingUserMessageMeta(copy, { immediateLocal, inFlight: busy() });
+    setMessages((prev) => appendPlainMessage(prev, {
+      id: messageId, label: "you", text: line, color: "white",
+      loading: true, phase: pendingMeta.phase, liveStatus: pendingMeta.liveStatus
+    }));
+    setHistory((prev) => [...prev, line]);
+    setHistoryIndex(null); setHistoryMatches([]); setDraftBeforeHistory("");
+    setInputValue(""); setSuggestionNav(false); setCommandPaletteOpen(false);
+    if (busy() && !immediateLocal) { queueSubmission(line, messageId); return; }
+    runSubmission(line, messageId);
+  };
+
+  const selectPaletteCommand = () => {
+    const items = commandSuggestions();
+    if (items.length === 0) return false;
+    const selected = items[Math.min(menuIndex(), items.length - 1)];
+    const value = getSuggestionValue(selected).trim();
+    if (!value) return false;
+    if (commandNeedsInput(value)) {
+      const editable = editableCommandTemplate(value);
+      setInputValue(editable ? `${editable} ` : value);
+      setCommandPaletteOpen(false);
+      setSuggestionNav(false);
+      setMenuIndex(0);
+      return true;
+    }
+    dispatchLine(value);
+    return true;
+  };
+
   const appendSystemMessage = (text: string, label = "system", color = "brightyellow") => {
     setMessages((prev) => appendPlainMessage(prev, {
       id: nextId(), label, text: sanitizeRenderableText(text), color
@@ -508,6 +778,25 @@ export function App(props: any) {
         setMessages((prev) => appendPlainMessage(prev, { id: nextId(), label: "coder", text: cleaned, color: "brightgreen" }));
       }
     } else if (result?.type === "system" && result.text) {
+      const planSummary = parseAutoPlanSummaryMessage(result.text || "");
+      const pendingPlan = planSummary?.approval === "pending"
+        ? {
+            goal: planSummary.planSummary || "",
+            summary: planSummary.finalSummary || planSummary.planSummary || "",
+            filePath: planSummary.filePath || ""
+          }
+        : parsePendingPlanApprovalMessage(result.text || "");
+      if (pendingPlan) {
+        setPendingPlanApproval(pendingPlan);
+        setPendingReflectApproval(null);
+        setApprovalError("");
+      }
+      const pendingReflect = parsePendingReflectSkillMessage(result.text || "");
+      if (pendingReflect) {
+        setPendingReflectApproval(pendingReflect);
+        setPendingPlanApproval(null);
+        setApprovalError("");
+      }
       appendSystemMessage(result.text);
     } else if (result?.text) {
       appendSystemMessage(result.text, "coder", "brightgreen");
@@ -571,6 +860,8 @@ export function App(props: any) {
     setBusy(true);
     setStreaming(true);
     setApprovalError("");
+    setPendingPlanApproval(null);
+    setPendingReflectApproval(null);
     props.runtime.submit(line, handleEvent)
       .then((result: any) => handleResult(result, userMessageId))
       .catch((error: any) => {
@@ -582,7 +873,17 @@ export function App(props: any) {
 
   const submitCurrentInput = () => {
     const raw = inputValue().trim();
+    if (commandPaletteOpen()) {
+      if (selectPaletteCommand()) return;
+    }
     if (!raw) return;
+    const slashCandidates = commandSuggestions();
+    if (slashCandidates.length > 0 && (suggestionNav() || raw === "/")) {
+      const selected = slashCandidates[Math.min(menuIndex(), slashCandidates.length - 1)];
+      setInputValue(getSuggestionValue(selected));
+      setSuggestionNav(false);
+      return;
+    }
     if (pendingDeleteApproval()) {
       const answer = parseDeleteApprovalAnswer(raw);
       if (answer !== "approve" && answer !== "deny") { setApprovalError(copy.deleteApproval.invalidAnswer); return; }
@@ -601,18 +902,43 @@ export function App(props: any) {
       if (resolver) resolver({ approved: answer === "approve" });
       return;
     }
-    const messageId = nextId();
-    const immediateLocal = typeof props.runtime.isImmediateLocalInput === "function" && props.runtime.isImmediateLocalInput(raw);
-    const pendingMeta = getPendingUserMessageMeta(copy, { immediateLocal, inFlight: busy() });
-    setMessages((prev) => appendPlainMessage(prev, {
-      id: messageId, label: "you", text: raw, color: "white",
-      loading: true, phase: pendingMeta.phase, liveStatus: pendingMeta.liveStatus
-    }));
-    setHistory((prev) => [...prev, raw]);
-    setHistoryIndex(null); setHistoryMatches([]); setDraftBeforeHistory("");
-    setInputValue(""); setSuggestionNav(false);
-    if (busy() && !immediateLocal) { queueSubmission(raw, messageId); return; }
-    runSubmission(raw, messageId);
+    if (pendingPlanApproval()) {
+      const parsed = parsePlanApprovalAnswer(raw);
+      if (parsed.action === "approve" || parsed.action === "reject" || parsed.action === "edit") {
+        setPendingPlanApproval(null);
+        setApprovalError("");
+        setInputValue("");
+        runSubmission(parsed.command, "");
+        return;
+      }
+      setApprovalError(parsed.action === "missing_feedback" ? copy.planApproval.missingFeedback : copy.planApproval.invalidAnswer);
+      return;
+    }
+    if (pendingReflectApproval()) {
+      const parsed = parseReflectApprovalAnswer(raw);
+      if (parsed.action === "approve" || parsed.action === "reject" || parsed.action === "edit") {
+        setPendingReflectApproval(null);
+        setApprovalError("");
+        setInputValue("");
+        runSubmission(parsed.command, "");
+        return;
+      }
+      setApprovalError(parsed.action === "missing_feedback" ? copy.reflectApproval.missingFeedback : copy.reflectApproval.invalidAnswer);
+      return;
+    }
+    let line = raw;
+    if (suggestionNav() && slashCandidates.length > 0) {
+      const selected = slashCandidates[Math.min(menuIndex(), slashCandidates.length - 1)];
+      line = getSuggestionValue(selected).trim() || raw;
+    }
+    if (line === "/stop" && busy() && typeof props.runtime.abort === "function") {
+      props.runtime.abort();
+      setHistory((prev) => [...prev, line]);
+      setInputValue("");
+      setSuggestionNav(false);
+      return;
+    }
+    dispatchLine(line);
   };
 
   let loaderTimer: ReturnType<typeof setInterval> | null = null;
@@ -657,12 +983,37 @@ export function App(props: any) {
     if (pinnedToBottom()) setTimeout(() => scrollToBottom(), 0);
   });
 
+  createEffect(() => {
+    const count = commandSuggestions().length;
+    if (count === 0) {
+      if (!commandPaletteOpen()) setSuggestionNav(false);
+      setMenuIndex(0);
+      return;
+    }
+    if (menuIndex() >= count) setMenuIndex(0);
+  });
+
   useKeyboard((event: KeyEvent) => {
     if (event.ctrl && event.name === "c") {
+      if (commandPaletteOpen()) { setCommandPaletteOpen(false); setMenuIndex(0); return; }
       if (busy() && typeof props.runtime.abort === "function") { props.runtime.abort(); return; }
       props.onExit(); return;
     }
+    if ((event.ctrl && event.name === "k") || (event.ctrl && event.name === "p")) {
+      setCommandPaletteOpen((prev) => !prev);
+      setSuggestionNav(true);
+      setMenuIndex(0);
+      return;
+    }
     if (event.ctrl && event.name === "t") { setShowToolDetails((p) => !p); return; }
+    if (commandPaletteOpen()) {
+      if (event.name === "escape") { setCommandPaletteOpen(false); setMenuIndex(0); return; }
+      if (event.name === "up") { setMenuIndex((p) => moveSuggestionSelection(p, commandSuggestions().length, "up")); return; }
+      if (event.name === "down") { setMenuIndex((p) => moveSuggestionSelection(p, commandSuggestions().length, "down")); return; }
+      if (event.name === "left") { setMenuIndex((p) => moveSuggestionSelection(p, commandSuggestions().length, "left")); return; }
+      if (event.name === "right") { setMenuIndex((p) => moveSuggestionSelection(p, commandSuggestions().length, "right")); return; }
+      if (event.name === "return" || event.name === "enter") { selectPaletteCommand(); return; }
+    }
     if (!scrollRef) return;
     if (event.name === "pageup") { scrollRef.scrollBy(-Math.max(1, Math.floor(scrollRef.height / 2))); setPinnedToBottom(false); return; }
     if (event.name === "pagedown") { scrollRef.scrollBy(Math.max(1, Math.floor(scrollRef.height / 2))); return; }
@@ -671,9 +1022,25 @@ export function App(props: any) {
   });
 
   const handleInputKey = (event: KeyEvent) => {
+    if ((event.ctrl && event.name === "k") || (event.ctrl && event.name === "p")) {
+      event.preventDefault();
+      setCommandPaletteOpen((prev) => !prev);
+      setSuggestionNav(true);
+      setMenuIndex(0);
+      return;
+    }
+    if (commandPaletteOpen()) {
+      if (event.name === "escape") { event.preventDefault(); setCommandPaletteOpen(false); setMenuIndex(0); return; }
+      if (event.name === "up") { event.preventDefault(); setMenuIndex((p) => moveSuggestionSelection(p, commandSuggestions().length, "up")); return; }
+      if (event.name === "down") { event.preventDefault(); setMenuIndex((p) => moveSuggestionSelection(p, commandSuggestions().length, "down")); return; }
+      if (event.name === "left") { event.preventDefault(); setMenuIndex((p) => moveSuggestionSelection(p, commandSuggestions().length, "left")); return; }
+      if (event.name === "right") { event.preventDefault(); setMenuIndex((p) => moveSuggestionSelection(p, commandSuggestions().length, "right")); return; }
+      if (event.name === "return" || event.name === "enter") { event.preventDefault(); selectPaletteCommand(); return; }
+    }
     if (event.name === "up") {
-      if (suggestionNav() && commandSuggestions().length > 0) {
+      if (commandSuggestions().length > 0) {
         event.preventDefault();
+        setSuggestionNav(true);
         setMenuIndex((p) => moveSuggestionSelection(p, commandSuggestions().length, "up"));
         return;
       }
@@ -695,8 +1062,9 @@ export function App(props: any) {
       return;
     }
     if (event.name === "down") {
-      if (suggestionNav() && commandSuggestions().length > 0) {
+      if (commandSuggestions().length > 0) {
         event.preventDefault();
+        setSuggestionNav(true);
         setMenuIndex((p) => moveSuggestionSelection(p, commandSuggestions().length, "down"));
         return;
       }
@@ -708,14 +1076,22 @@ export function App(props: any) {
       setHistoryIndex(next); setInputValue(historyMatches()[next] || "");
       return;
     }
-    if (event.name === "left" && suggestionNav() && commandSuggestions().length > 0) {
-      event.preventDefault(); setMenuIndex((p) => moveSuggestionSelection(p, commandSuggestions().length, "left")); return;
+    if (event.name === "left" && commandSuggestions().length > 0) {
+      event.preventDefault(); setSuggestionNav(true); setMenuIndex((p) => moveSuggestionSelection(p, commandSuggestions().length, "left")); return;
     }
-    if (event.name === "right" && suggestionNav() && commandSuggestions().length > 0) {
-      event.preventDefault(); setMenuIndex((p) => moveSuggestionSelection(p, commandSuggestions().length, "right")); return;
+    if (event.name === "right" && commandSuggestions().length > 0) {
+      event.preventDefault(); setSuggestionNav(true); setMenuIndex((p) => moveSuggestionSelection(p, commandSuggestions().length, "right")); return;
+    }
+    if (event.name === "escape" && commandSuggestions().length > 0) {
+      event.preventDefault(); setInputValue(""); setSuggestionNav(false); setMenuIndex(0); return;
     }
     if (event.name === "tab" && commandSuggestions().length > 0) {
       event.preventDefault();
+      if (commandSuggestions().length === 1) {
+        setInputValue(getSuggestionValue(commandSuggestions()[0]));
+        setSuggestionNav(false);
+        return;
+      }
       if (!suggestionNav()) { setSuggestionNav(true); setMenuIndex(0); return; }
       setInputValue(getSuggestionValue(commandSuggestions()[Math.min(menuIndex(), commandSuggestions().length - 1)]));
       setSuggestionNav(false); return;
@@ -727,92 +1103,162 @@ export function App(props: any) {
 
   const deleteRequest = createMemo(() => pendingDeleteApproval());
   const runRequest = createMemo(() => pendingRunApproval());
+  const planRequest = createMemo(() => pendingPlanApproval());
+  const reflectRequest = createMemo(() => pendingReflectApproval());
+
+  createEffect(() => {
+    const state = runtimeState();
+    if (state && Object.prototype.hasOwnProperty.call(state, "pendingPlanApproval") && !state.pendingPlanApproval && !busy()) {
+      setPendingPlanApproval(null);
+    }
+    if (state && Object.prototype.hasOwnProperty.call(state, "pendingReflectSkill") && !state.pendingReflectSkill && !busy()) {
+      setPendingReflectApproval(null);
+    }
+  });
 
   return (
-    <box flexDirection="column" paddingLeft={1} paddingRight={1}>
-      <scrollbox
-        ref={(ref: ScrollBoxRenderable) => { scrollRef = ref; }}
-        stickyScroll={true}
-        stickyStart="bottom"
-        flexGrow={1}
-        minHeight={10}
+    <box
+      flexDirection="column"
+      paddingLeft={1}
+      paddingRight={1}
+      height={dimensions().height}
+      overflow="hidden"
+      position="relative"
+      backgroundColor={APP_BACKGROUND}
+      shouldFill={true}
+    >
+      <TopBar
+        sessionId={props.sessionId}
+        model={props.model}
+        shellName={props.shellName}
+        safeMode={props.safeMode}
+        busy={busy()}
+        streaming={streaming()}
+        loaderTick={loaderTick()}
+        runtimeState={runtimeState()}
+      />
+      <Show
+        when={commandPaletteOpen()}
+        fallback={
+          <scrollbox
+            ref={(ref: ScrollBoxRenderable) => { scrollRef = ref; }}
+            stickyScroll={true}
+            stickyStart="bottom"
+            flexGrow={1}
+            flexShrink={1}
+            minHeight={10}
+          >
+            <For each={messages().filter((message: any) => !isBlankSystemMessage(message))}>
+              {(message: any) => (
+                <MessageBubble
+                  message={message}
+                  loaderTick={loaderTick()}
+                  showToolDetails={showToolDetails()}
+                  contentWidth={messageWidth()}
+                  copy={copy}
+                />
+              )}
+            </For>
+          </scrollbox>
+        }
       >
-        <Banner
-          sessionId={props.sessionId}
-          model={props.model}
-          sdkProvider={props.sdkProvider}
-          shellName={props.shellName}
-          safeMode={props.safeMode}
-        />
-        <For each={messages().filter((message: any) => !isBlankSystemMessage(message))}>
-          {(message: any) => (
-            <MessageBubble
-              message={message}
-              loaderTick={loaderTick()}
-              showToolDetails={showToolDetails()}
-              contentWidth={messageWidth()}
-              copy={copy}
-            />
-          )}
-        </For>
-      </scrollbox>
-      <box flexDirection="row" justifyContent="space-between" width="100%" flexWrap="no-wrap">
-        <box flexDirection="row">
-          <text fg="gray">{`${showToolDetails() ? copy.generic.toolSummaryExpanded : copy.generic.toolSummaryCollapsed} (Ctrl+T)`}</text>
-          <text fg="gray">{"  ·  "}</text>
-          <text fg={streaming() ? "brightgreen" : "gray"}>
-            {`${getInlineStatusText({ busy: busy(), copy })}${streaming() ? ` ${SPINNER_FRAMES[loaderTick() % SPINNER_FRAMES.length]}` : ""}`}
-          </text>
-        </box>
-        <ContextProgressMeter runtimeState={runtimeState()} />
-      </box>
-      <SuggestionPanel items={commandSuggestions()} menuIndex={menuIndex()} copy={copy} />
-      <PendingPanel queue={pendingQueue()} copy={copy} />
-      <DeleteApprovalPanel request={deleteRequest()} errorText={approvalError()} copy={copy} />
-      <RunApprovalPanel request={runRequest()} errorText={approvalError()} copy={copy} />
+        <CommandPaletteModal items={commandSuggestions()} menuIndex={menuIndex()} copy={copy} />
+      </Show>
       <box
-        marginTop={1}
-        border={true}
-        borderStyle="rounded"
-        borderColor="cyan"
-        paddingX={1}
-        paddingY={0}
-        height={5}
+        flexDirection="column"
+        width="100%"
+        flexShrink={0}
+        backgroundColor={APP_BACKGROUND}
+        shouldFill={true}
+        zIndex={20}
       >
-        <box flexDirection="row" justifyContent="space-between">
+        <box
+          flexDirection="row"
+          justifyContent="space-between"
+          width="100%"
+          height={1}
+          flexWrap="no-wrap"
+          overflow="hidden"
+          backgroundColor={APP_BACKGROUND}
+          shouldFill={true}
+        >
+          <box flexDirection="row" flexGrow={1} flexShrink={1} overflow="hidden">
+            <text fg="gray">{`${showToolDetails() ? copy.generic.toolSummaryExpanded : copy.generic.toolSummaryCollapsed} (Ctrl+T)`}</text>
+            <text fg="gray">{"  ·  "}</text>
+            <text fg={streaming() ? "brightgreen" : "gray"}>
+              {`${getInlineStatusText({ busy: busy(), copy })}${streaming() ? ` ${SPINNER_FRAMES[loaderTick() % SPINNER_FRAMES.length]}` : ""}`}
+            </text>
+          </box>
+          <ContextProgressMeter runtimeState={runtimeState()} />
+        </box>
+        <PendingPanel queue={pendingQueue()} copy={copy} />
+        <DeleteApprovalPanel request={deleteRequest()} errorText={approvalError()} copy={copy} />
+        <RunApprovalPanel request={runRequest()} errorText={approvalError()} copy={copy} />
+        <PlanApprovalPanel request={planRequest()} errorText={approvalError()} copy={copy} />
+        <ReflectApprovalPanel request={reflectRequest()} errorText={approvalError()} copy={copy} />
+        <box
+          marginTop={1}
+          border={true}
+          borderStyle="rounded"
+          borderColor="cyan"
+          backgroundColor={APP_BACKGROUND}
+          shouldFill={true}
+          paddingX={1}
+          paddingY={0}
+          height={inputBoxHeight()}
+          flexShrink={0}
+        >
+          <box flexDirection="row" justifyContent="space-between">
+            <box flexDirection="row">
+              <text fg="gray">{
+                pendingPlanApproval()
+                  ? copy.planApproval.inputLocked
+                  : pendingReflectApproval()
+                    ? copy.reflectApproval.inputLocked
+                    : "输入 / 或 Ctrl+K 打开命令面板"
+              }</text>
+            </box>
+            <Show when={pendingQueue().length > 0}>
+              <text fg="brightcyan">{`${copy.generic.queued} ${pendingQueue().length}`}</text>
+            </Show>
+          </box>
           <box flexDirection="row">
-            <text fg="gray">{copy.suggestion.singleTab}</text>
+            <text fg="cyan">{"codemini> "}</text>
+            <box flexGrow={1}>
+              <input
+                ref={(ref: InputRenderable) => { inputRef = ref; }}
+                focused={true}
+                flexGrow={1}
+                width="100%"
+                value={inputValue()}
+                placeholder={
+                  pendingDeleteApproval() ? copy.deleteApproval.inputLocked
+                    : pendingRunApproval() ? copy.runApproval.inputLocked
+                      : pendingPlanApproval() ? copy.planApproval.answerPlaceholder
+                        : pendingReflectApproval() ? copy.reflectApproval.answerPlaceholder
+                          : ""
+                }
+                onInput={(value: string) => {
+                  if (value === "/") {
+                    setCommandPaletteOpen(true);
+                    setSuggestionNav(true);
+                    setMenuIndex(0);
+                    setInputValue("");
+                    setApprovalError("");
+                    return;
+                  }
+                  setInputValue(value);
+                  if (suggestionNav()) setSuggestionNav(false);
+                  setApprovalError("");
+                }}
+                onKeyDown={handleInputKey}
+                onSubmit={() => submitCurrentInput()}
+              />
+            </box>
           </box>
-          <Show when={pendingQueue().length > 0}>
-            <text fg="brightcyan">{`${copy.generic.queued} ${pendingQueue().length}`}</text>
-          </Show>
         </box>
-        <box flexDirection="row">
-          <text fg="cyan">{"codemini> "}</text>
-          <box flexGrow={1}>
-            <input
-              ref={(ref: InputRenderable) => { inputRef = ref; }}
-              focused={true}
-              flexGrow={1}
-              width="100%"
-              value={inputValue()}
-              placeholder={
-                pendingDeleteApproval() ? copy.deleteApproval.inputLocked
-                  : pendingRunApproval() ? copy.runApproval.inputLocked
-                    : ""
-              }
-              onInput={(value: string) => {
-                setInputValue(value);
-                if (suggestionNav()) setSuggestionNav(false);
-                setApprovalError("");
-              }}
-              onKeyDown={handleInputKey}
-              onSubmit={() => submitCurrentInput()}
-            />
-          </box>
-        </box>
+        <SignatureBar version={props.version} />
       </box>
-      <SignatureBar version={props.version} />
     </box>
   );
 }
