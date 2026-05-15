@@ -47,26 +47,29 @@ export function GitDiffDialog({ open, onOpenChange }) {
     return () => ob.disconnect();
   }, [getIsDark]);
 
-  const getPatchForFile = useCallback((filePath) => {
-    if (!data?.patch || !filePath) return "";
-    const lines = data.patch.split("\n");
-    const result = [];
-    let inFile = false;
-    for (const line of lines) {
-      if (line.startsWith("diff --git ")) {
-        const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
-        if (match && (match[1] === filePath || match[2] === filePath)) {
-          inFile = true;
+  const getPatchForFile = useCallback(
+    (filePath) => {
+      if (!data?.patch || !filePath) return "";
+      const lines = data.patch.split("\n");
+      const result = [];
+      let inFile = false;
+      for (const line of lines) {
+        if (line.startsWith("diff --git ")) {
+          const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+          if (match && (match[1] === filePath || match[2] === filePath)) {
+            inFile = true;
+            result.push(line);
+          } else {
+            inFile = false;
+          }
+        } else if (inFile) {
           result.push(line);
-        } else {
-          inFile = false;
         }
-      } else if (inFile) {
-        result.push(line);
       }
-    }
-    return result.join("\n");
-  }, [data?.patch]);
+      return result.join("\n");
+    },
+    [data?.patch],
+  );
 
   const filesWithDiff = useMemo(() => {
     if (!Array.isArray(data?.files)) return [];
@@ -93,7 +96,10 @@ export function GitDiffDialog({ open, onOpenChange }) {
       setSelectedFile(null);
       return;
     }
-    if (!selectedFile || !filesWithDiff.some((file) => file.path === selectedFile)) {
+    if (
+      !selectedFile ||
+      !filesWithDiff.some((file) => file.path === selectedFile)
+    ) {
       setSelectedFile(filesWithDiff[0].path);
     }
   }, [filesWithDiff, open, selectedFile]);
@@ -126,7 +132,7 @@ export function GitDiffDialog({ open, onOpenChange }) {
                   key={f.path}
                   onClick={() => setSelectedFile(f.path)}
                   className={cn(
-                    "w-full text-left px-3 my-1 py-1.5 text-[12px] cursor-pointer flex items-center gap-2 border-0 bg-transparent",
+                    "w-full text-left px-1 m-1 py-1.5 text-[12px] rounded-md cursor-pointer flex items-center gap-2 border-0 bg-transparent",
                     selectedFile === f.path
                       ? "bg-(--bg-hover) text-(--text-primary)"
                       : "text-(--text-secondary) hover:bg-(--bg-hover)",

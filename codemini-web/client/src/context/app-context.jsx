@@ -41,7 +41,7 @@ function updateRoute(view, sessionId, { replace = false, projectPath = '' } = {}
 const initialState = {
   stage: 'idle', busy: false, currentView: 'chat', runtimeState: null,
   live: false, stageLabel: '', messages: [], activeMsgId: null,
-  pendingToolChanges: [], planSteps: [], pendingPlanApproval: null, approvalRequest: null,
+  pendingToolChanges: [], planSteps: [], pendingPlanApproval: null, pendingReflectApproval: null, runtimeActivities: [], approvalRequest: null,
   config: null, configStatus: null, configOpen: false, projectOpen: false, skillsOpen: false, soulsOpen: false, aboutOpen: false, gitDiffOpen: false,
   sessions: [], projectCwd: null, isGeneral: false, history: [], skills: [], gitInfo: null, gitBatch: {},
   codewikiProjectPath: '',
@@ -118,6 +118,87 @@ function isPlanSystemSummaryText(text) {
     || value.includes('Plan created and waiting for approval')
     || value.includes('Pending plan approval')
     || (value.includes('Plan File:') && value.includes('/yes'));
+}
+
+function isReflectSystemSummaryText(text) {
+  const value = String(text || '');
+  return value.includes('Reflect skill draft pending.')
+    || value.includes('Reflect skill draft revised.')
+    || value.includes('Reflect skill written and loaded:')
+    || value.includes('Reflect skill draft discarded.');
+}
+
+function getRuntimeActivityFromSystemText(text) {
+  const value = String(text || '').trim();
+  if (value.startsWith('Reflect skill written and loaded:')) {
+    const command = value.match(/\/[A-Za-z0-9_-]+/)?.[0] || '';
+    return { key: 'reflect', status: 'done', emoji: '✨', label: t('runtimeActivityReflectSaved'), detail: command };
+  }
+  if (value.startsWith('Reflect skill draft revised.')) {
+    return { key: 'reflect', status: 'running', emoji: '📝', label: t('runtimeActivityReflectRevised') };
+  }
+  if (value.startsWith('Reflect skill draft pending.')) {
+    return { key: 'reflect', status: 'running', emoji: '🪞', label: t('runtimeActivityReflectPending') };
+  }
+  if (value.startsWith('Reflect skill draft discarded.')) {
+    return { key: 'reflect', status: 'done', emoji: '🗑️', label: t('runtimeActivityReflectDiscarded') };
+  }
+  if (value.startsWith('Reflect found no reusable skill candidate.')) {
+    return { key: 'reflect', status: 'done', emoji: '🪞', label: t('runtimeActivityReflectNone') };
+  }
+  if (value.startsWith('Dream failed:')) {
+    return { key: 'dream', status: 'error', emoji: '⚠️', label: t('runtimeActivityDreamError'), detail: value.slice('Dream failed:'.length).trim() };
+  }
+  if (value.startsWith('Dream done')) {
+    return { key: 'dream', status: 'done', emoji: '🌙', label: t('runtimeActivityDreamDone') };
+  }
+  if (value.startsWith('Micro-compact')) {
+    return {
+      key: 'compact',
+      status: 'done',
+      emoji: '🪄',
+      label: value.includes(' preview') ? t('runtimeActivityMicroCompactPreview') : t('runtimeActivityMicroCompactDone'),
+      detail: value.split('\n')[0]
+    };
+  }
+  if (value.startsWith('Compact ') || value === 'Context restored to full view') {
+    return {
+      key: 'compact',
+      status: 'done',
+      emoji: '🧳',
+      label: value.includes(' preview') ? t('runtimeActivityCompactPreview') : t('runtimeActivityCompactDone'),
+      detail: value.split('\n')[0]
+    };
+  }
+  if (value.startsWith('Captured to inbox:')) {
+    return { key: 'inbox', status: 'done', emoji: '📥', label: t('runtimeActivityInboxCaptured') };
+  }
+  if (value.startsWith('Inbox (') || value === 'Inbox is empty.') {
+    return { key: 'inbox', status: 'done', emoji: '📬', label: t('runtimeActivityInboxListed') };
+  }
+  return null;
+}
+
+function restoreRuntimeActivitiesFromMessages(messages) {
+  const byKey = new Map();
+  for (const msg of messages || []) {
+    if (msg?.role !== 'assistant') continue;
+    const activity = getRuntimeActivityFromSystemText(msg.content);
+    if (!activity) continue;
+    const key = activity.key || 'runtime';
+    byKey.set(key, {
+      id: `runtime-${key}`,
+      key,
+      status: activity.status || 'done',
+      emoji: activity.emoji || '•',
+      label: activity.label || '',
+      detail: activity.detail || '',
+      timestamp: msg.at || new Date().toISOString(),
+    });
+  }
+  return [...byKey.values()]
+    .sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)))
+    .slice(0, 3);
 }
 
 function isPlanApprovalLine(line) {
@@ -225,6 +306,7 @@ export function AppProvider({ children }) {
   const pendingChangesRef = useRef([]);
   const planRunPendingRef = useRef(false);
   const planStepMessagesRef = useRef(new Map());
+  const activityTimersRef = useRef(new Map());
   const sseRef = useRef(null);
   const reconnectRef = useRef(null);
 
@@ -240,6 +322,43 @@ export function AppProvider({ children }) {
     setState(prev => ({ ...prev, messages: [...prev.messages, newMsg] }));
     return id;
   }, []);
+
+  const clearRuntimeActivityLater = useCallback((id, delay = 6500) => {
+    clearTimeout(activityTimersRef.current.get(id));
+    const timer = setTimeout(() => {
+      activityTimersRef.current.delete(id);
+      setState(prev => ({
+        ...prev,
+        runtimeActivities: prev.runtimeActivities.filter((activity) => activity.id !== id)
+      }));
+    }, delay);
+    activityTimersRef.current.set(id, timer);
+  }, []);
+
+  const upsertRuntimeActivity = useCallback((activity) => {
+    const key = activity.key || activity.id || 'runtime';
+    const id = `runtime-${key}`;
+    const next = {
+      id,
+      key,
+      status: activity.status || 'done',
+      emoji: activity.emoji || '•',
+      label: activity.label || '',
+      detail: activity.detail || '',
+      sticky: activity.sticky === true || key === 'reflect',
+      timestamp: new Date().toISOString(),
+    };
+    clearTimeout(activityTimersRef.current.get(id));
+    activityTimersRef.current.delete(id);
+    setState(prev => ({
+      ...prev,
+      runtimeActivities: [
+        next,
+        ...prev.runtimeActivities.filter((item) => item.id !== id)
+      ].slice(0, 4)
+    }));
+    if (next.status !== 'running' && !next.sticky) clearRuntimeActivityLater(id);
+  }, [clearRuntimeActivityLater]);
 
   const setActiveMsg = useCallback((id) => {
     activeMsgRef.current = id;
@@ -259,6 +378,7 @@ export function AppProvider({ children }) {
         projectCwd: projectName,
         isGeneral: !!rs.isGeneral,
         pendingPlanApproval: rs?.pendingPlanApproval || null,
+        pendingReflectApproval: rs?.pendingReflectSkill || null,
         busy,
         live: busy || prev.live,
         stage: busy ? 'thinking' : prev.stage,
@@ -344,6 +464,7 @@ export function AppProvider({ children }) {
       const data = await api.fetchSessionMessages();
       const messages = Array.isArray(data) ? data : (data.messages || []);
       const compactMeta = data?.compact || null;
+      const restoredActivities = restoreRuntimeActivitiesFromMessages(messages);
       if (!messages.length) {
         const uiMessages = await api.fetchSessionUiMessages();
         if (Array.isArray(uiMessages) && uiMessages.length) {
@@ -377,6 +498,12 @@ export function AppProvider({ children }) {
             skillBadges: [], fileChanges: [],
           });
         } else if (msg.role === 'assistant') {
+          const hiddenActivity = getRuntimeActivityFromSystemText(msg.content);
+          if (hiddenActivity && isReflectSystemSummaryText(msg.content)) {
+            assistantGroup = null;
+            continue;
+          }
+
           if (Array.isArray(msg.planTranscript) && msg.planTranscript.length) {
             assistantGroup = null;
             for (const block of msg.planTranscript) {
@@ -432,7 +559,7 @@ export function AppProvider({ children }) {
           }
         }
       }
-      update({ messages: processed });
+      update({ messages: processed, runtimeActivities: restoredActivities });
     } catch {}
     finally { update({ messagesLoading: false }); }
   }, [update]);
@@ -642,6 +769,25 @@ export function AppProvider({ children }) {
         break;
       }
 
+      case 'reflect:pending_approval': {
+        upsertRuntimeActivity({
+          key: 'reflect',
+          status: 'running',
+          emoji: stateRef.current.pendingReflectApproval ? '📝' : '🪞',
+          label: stateRef.current.pendingReflectApproval
+            ? t('runtimeActivityReflectRevised')
+            : t('runtimeActivityReflectPending'),
+          detail: event.draft?.name ? `/${event.draft.name}` : ''
+        });
+        update({ pendingReflectApproval: event.draft || null });
+        break;
+      }
+
+      case 'reflect:approval_cleared': {
+        update({ pendingReflectApproval: null });
+        break;
+      }
+
       case 'skill:start': {
         if (activeId) setState(prev => ({ ...prev, messages: prev.messages.map(m => m.id === activeId ? { ...m, skillBadges: [...m.skillBadges, { name: event.name, status: 'running' }] } : m) }));
         break;
@@ -663,13 +809,33 @@ export function AppProvider({ children }) {
       }
 
       case 'compact:auto':
+        upsertRuntimeActivity({
+          key: 'compact',
+          status: 'done',
+          emoji: '🧳',
+          label: t('runtimeActivityCompactDone'),
+          detail: `${event.mode || 'auto'} ${event.threshold ? `${event.threshold}%` : ''}`.trim()
+        });
         addMessage({ role: 'divider', dividerType: 'compact', text: `以上内容已压缩 (${event.mode || ''}, ${event.threshold || ''}%)`, timestamp: new Date().toISOString() });
         break;
 
       case 'dream:auto':
+        upsertRuntimeActivity({
+          key: 'dream',
+          status: 'running',
+          emoji: '💤',
+          label: t('runtimeActivityDreamRunning')
+        });
         addMessage({ role: 'system', text: 'Dream triggered...', timestamp: new Date().toISOString() });
         break;
       case 'dream:complete':
+        upsertRuntimeActivity({
+          key: 'dream',
+          status: event.report?.ok === false ? 'error' : 'done',
+          emoji: event.report?.ok === false ? '⚠️' : '🌙',
+          label: event.report?.ok === false ? t('runtimeActivityDreamError') : t('runtimeActivityDreamDone'),
+          detail: event.report?.error || ''
+        });
         addMessage({ role: 'system', text: 'Dream complete', timestamp: new Date().toISOString() });
         break;
 
@@ -687,7 +853,14 @@ export function AppProvider({ children }) {
           setState(prev => ({ ...prev, messages: prev.messages.map(m => m.id === activeId ? { ...m, segments: m.segments.map(seg => seg.type === 'text' ? { ...seg, isStreaming: false } : seg) } : m) }));
         }
         if (result.type === 'system' && result.text) {
-          if (!stateRef.current.pendingPlanApproval && !isPlanSystemSummaryText(result.text)) {
+          const activity = getRuntimeActivityFromSystemText(result.text);
+          if (activity) upsertRuntimeActivity(activity);
+          if (
+            !stateRef.current.pendingPlanApproval &&
+            !stateRef.current.pendingReflectApproval &&
+            !isPlanSystemSummaryText(result.text) &&
+            !isReflectSystemSummaryText(result.text)
+          ) {
             addMessage({ role: 'system', text: result.text, timestamp: new Date().toISOString() });
           }
         }
@@ -728,6 +901,7 @@ export function AppProvider({ children }) {
         update({
           runtimeState: { ...stateRef.current.runtimeState, ...rs },
           pendingPlanApproval: rs?.pendingPlanApproval || null,
+          pendingReflectApproval: rs?.pendingReflectSkill || null,
           busy: !!rs.busy,
           live: !!rs.busy,
           stage: rs.busy ? stateRef.current.stage : 'idle',
@@ -737,7 +911,7 @@ export function AppProvider({ children }) {
       }
 
       case 'runtime:switched': {
-        setState(prev => ({ ...prev, messages: [], planSteps: [], pendingPlanApproval: null }));
+        setState(prev => ({ ...prev, messages: [], planSteps: [], pendingPlanApproval: null, pendingReflectApproval: null, runtimeActivities: [] }));
         activeMsgRef.current = null;
         pendingChangesRef.current = [];
         loadState();
@@ -761,7 +935,7 @@ export function AppProvider({ children }) {
         break;
       }
     }
-  }, [addMessage, update, loadHistory, loadSessions, loadState, loadSessionMessages]);
+  }, [addMessage, update, upsertRuntimeActivity, loadHistory, loadSessions, loadState, loadSessionMessages]);
 
   const connectSSE = useCallback(() => {
     if (sseRef.current) sseRef.current.close();
@@ -864,6 +1038,8 @@ export function AppProvider({ children }) {
     return () => {
       if (sseRef.current) sseRef.current.close();
       clearTimeout(reconnectRef.current);
+      for (const timer of activityTimersRef.current.values()) clearTimeout(timer);
+      activityTimersRef.current.clear();
       window.removeEventListener('popstate', handlePopState);
     };
   }, [addMessage, connectSSE, loadConfigStatus, loadGitInfo, loadHistory, loadSessionMessages, loadSessions, loadSkills, loadState, openCodeWikiProjectFromRoute, update]);
@@ -932,6 +1108,45 @@ export function AppProvider({ children }) {
         if (result?.error) throw new Error(result.message || 'Request failed');
       } catch (err) {
         planRunPendingRef.current = false;
+        addMessage({ role: 'error', text: `Failed: ${err.message}`, timestamp: new Date().toISOString() });
+        update({ busy: false, live: false, stage: 'idle', stageLabel: '' });
+      }
+    },
+
+    approveReflect: async (action, feedback) => {
+      const draft = stateRef.current.pendingReflectApproval;
+      if (!draft) return;
+      upsertRuntimeActivity({
+        key: 'reflect',
+        status: 'running',
+        emoji: action === 'approve' ? '💾' : action === 'reject' ? '🗑️' : '📝',
+        label: action === 'approve'
+          ? t('runtimeActivityReflectSaving')
+          : action === 'reject'
+            ? t('runtimeActivityReflectDiscarding')
+            : t('runtimeActivityReflectRevising'),
+        detail: draft.name ? `/${draft.name}` : ''
+      });
+      if (action === 'reject') {
+        update({ pendingReflectApproval: null });
+      }
+      update({ busy: true, live: true, stage: 'thinking', stageLabel: t('waitingResponse') });
+      try {
+        const command = action === 'approve'
+          ? '/yes'
+          : action === 'reject'
+            ? '/no'
+            : feedback?.trim()
+              ? `/edit ${feedback.trim()}`
+              : '';
+        if (!command) {
+          update({ busy: false, live: false, stage: 'idle', stageLabel: '' });
+          return;
+        }
+        const res = await api.submitLine(command);
+        const result = await res.json().catch(() => ({}));
+        if (result?.error) throw new Error(result.message || 'Request failed');
+      } catch (err) {
         addMessage({ role: 'error', text: `Failed: ${err.message}`, timestamp: new Date().toISOString() });
         update({ busy: false, live: false, stage: 'idle', stageLabel: '' });
       }

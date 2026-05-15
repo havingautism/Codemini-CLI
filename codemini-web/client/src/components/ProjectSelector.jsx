@@ -99,14 +99,26 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
     return `${isAbsolute ? "/" : ""}${nextParts.join("/")}`;
   };
   const roots = dirData?.roots || [];
-  const normalizeRootMatch = (value) => String(value || "").replace(/\\/g, "/").toLowerCase();
+  const normalizeRootMatch = (value) =>
+    String(value || "")
+      .replace(/\\/g, "/")
+      .toLowerCase();
   const activeRoot = roots
     .slice()
-    .sort((a, b) => normalizeRootMatch(b.path).length - normalizeRootMatch(a.path).length)
+    .sort(
+      (a, b) =>
+        normalizeRootMatch(b.path).length - normalizeRootMatch(a.path).length,
+    )
     .find((root) => {
       const rootPath = normalizeRootMatch(root.path);
       const dirPath = normalizeRootMatch(currentDir || pathInput);
-      return rootPath && (dirPath === rootPath || dirPath.startsWith(rootPath.endsWith("/") ? rootPath : `${rootPath}/`));
+      return (
+        rootPath &&
+        (dirPath === rootPath ||
+          dirPath.startsWith(
+            rootPath.endsWith("/") ? rootPath : `${rootPath}/`,
+          ))
+      );
     });
 
   const activeMode =
@@ -177,7 +189,9 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
                     {roots.map((root) => (
                       <SelectItem key={root.path} value={root.path}>
                         <span className="font-medium">{root.name}</span>
-                        <span className="text-(--text-muted) truncate">{root.path}</span>
+                        <span className="text-(--text-muted) truncate">
+                          {root.path}
+                        </span>
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -228,7 +242,9 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
                       <button
                         className="w-full text-left px-2 py-1.5 text-[13px] hover:bg-(--bg-hover) rounded cursor-pointer flex items-center gap-2 border-0 bg-transparent text-(--text-secondary)"
                         onClick={() => {
-                          const parentPath = makePathFromParts(parts.slice(0, -1));
+                          const parentPath = makePathFromParts(
+                            parts.slice(0, -1),
+                          );
                           setPathInput(parentPath);
                           browseDir(parentPath);
                         }}
@@ -236,7 +252,7 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
                         <span>..</span>
                       </button>
                     )}
-                    {(dirData.roots || []).length > 0 && (
+                    {/* {(dirData.roots || []).length > 0 && (
                       <div className="grid grid-cols-2 gap-2 mb-2">
                         {(dirData.roots || []).map((d) => (
                           <button
@@ -252,7 +268,7 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
                           </button>
                         ))}
                       </div>
-                    )}
+                    )} */}
                     {(dirData.dirs || []).map((d) => (
                       <button
                         key={d.path}
@@ -273,10 +289,10 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
                     {!(dirData.roots || []).length &&
                       !(dirData.dirs || []).length &&
                       !dirData.error && (
-                      <div className="text-center text-[12px] text-(--text-muted) py-4">
-                        {t("noSubDirs")}
-                      </div>
-                    )}
+                        <div className="text-center text-[12px] text-(--text-muted) py-4">
+                          {t("noSubDirs")}
+                        </div>
+                      )}
                   </div>
                 )}
               </ScrollArea>

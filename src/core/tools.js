@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
@@ -59,16 +60,48 @@ function isWithinResolvedRoot(resolvedRoot, candidatePath) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-async function resolveInWorkspace(root, targetPath = '.') {
+async function getAllowedRealRoots(root, config = {}) {
+  const roots = [
+    root,
+    ...(Array.isArray(config?.policy?.allowed_paths) ? config.policy.allowed_paths : [])
+  ]
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
+  const out = [];
+  for (const item of roots) {
+    try {
+      out.push(await fs.realpath(path.resolve(item)));
+    } catch {
+      continue;
+    }
+  }
+  return out;
+}
+
+function isWithinAnyResolvedRoot(roots, candidatePath) {
+  return roots.some((resolvedRoot) => isWithinResolvedRoot(resolvedRoot, candidatePath));
+}
+
+function resolvesOutsideRoot(root, targetPath = '.') {
+  const text = String(targetPath || '').trim();
+  if (!text || text === '.') return false;
+  return !isWithinResolvedRoot(path.resolve(root), path.resolve(root, text));
+}
+
+async function resolveInWorkspace(root, targetPath = '.', config = {}) {
   const absRoot = path.resolve(root);
-  const realRoot = await fs.realpath(absRoot);
+  const realRoots = await getAllowedRealRoots(absRoot, config);
+  if (realRoots.length === 0) {
+    throw new Error(`Path escapes workspace: ${targetPath}`);
+  }
   const absTarget = path.resolve(absRoot, targetPath);
   const realTarget = await realpathIfExists(absTarget);
   if (realTarget) {
-    if (!isWithinResolvedRoot(realRoot, realTarget)) {
+    if (!isWithinAnyResolvedRoot(realRoots, realTarget)) {
       throw new Error(`Path escapes workspace: ${targetPath}`);
     }
-    return realTarget;
+    const linkStat = await fs.lstat(absTarget);
+    return linkStat.isSymbolicLink() ? realTarget : absTarget;
   }
 
   let probe = path.dirname(absTarget);
@@ -84,10 +117,10 @@ async function resolveInWorkspace(root, targetPath = '.') {
   }
 
   const resolvedTarget = path.join(resolvedProbe, path.relative(probe, absTarget));
-  if (!isWithinResolvedRoot(realRoot, resolvedTarget)) {
+  if (!isWithinAnyResolvedRoot(realRoots, resolvedTarget)) {
     throw new Error(`Path escapes workspace: ${targetPath}`);
   }
-  return resolvedTarget;
+  return absTarget;
 }
 
 async function getBackgroundTasksDir(root) {
@@ -95,6 +128,17 @@ async function getBackgroundTasksDir(root) {
 }
 
 function toWorkspaceRelative(root, absPath) {
+  const roots = [path.resolve(root)];
+  try {
+    const realRoot = realpathSync(root);
+    if (realRoot) roots.push(realRoot);
+  } catch {}
+  for (const candidateRoot of roots) {
+    const relative = path.relative(candidateRoot, absPath);
+    if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+      return normalizePath(relative);
+    }
+  }
   return normalizePath(path.relative(path.resolve(root), absPath));
 }
 
@@ -544,8 +588,8 @@ async function mapLimit(items, limit, worker) {
 
 const WALKER_CONCURRENCY = 8;
 
-async function walkTextFiles(root, startPath = '.', fileTypes = []) {
-  const abs = await resolveInWorkspace(root, startPath);
+async function walkTextFiles(root, startPath = '.', fileTypes = [], config = {}) {
+  const abs = await resolveInWorkspace(root, startPath, config);
   const allowedExts = new Set((Array.isArray(fileTypes) ? fileTypes : []).map((item) => `.${String(item || '').replace(/^\./, '')}`));
 
   async function visit(current) {
@@ -565,8 +609,8 @@ async function walkTextFiles(root, startPath = '.', fileTypes = []) {
   return visit(abs);
 }
 
-async function walkWorkspaceEntries(root, startPath = '.', { includeHidden = false } = {}) {
-  const abs = await resolveInWorkspace(root, startPath);
+async function walkWorkspaceEntries(root, startPath = '.', { includeHidden = false, config = {} } = {}) {
+  const abs = await resolveInWorkspace(root, startPath, config);
 
   async function visit(current) {
     const stat = await fs.stat(current);
@@ -799,8 +843,8 @@ function findEnclosingSymbolLine(lines, anchorLine) {
   return 0;
 }
 
-async function getFileState(root, relativePath) {
-  const target = await resolveInWorkspace(root, relativePath);
+async function getFileState(root, relativePath, config = {}) {
+  const target = await resolveInWorkspace(root, relativePath, config);
   const stat = await fs.stat(target);
   const content = await fs.readFile(target, 'utf8');
   return {
@@ -811,9 +855,9 @@ async function getFileState(root, relativePath) {
   };
 }
 
-async function readFile(root, args) {
+async function readFile(root, args, config = {}) {
   const normalizedArgs = normalizeReadArgs(args);
-  const target = await resolveInWorkspace(root, normalizedArgs?.path);
+  const target = await resolveInWorkspace(root, normalizedArgs?.path, config);
   const stat = await fs.stat(target);
   const text = await fs.readFile(target, 'utf8');
   const lines = splitLines(text);
@@ -893,7 +937,7 @@ async function readFile(root, args) {
   };
 }
 
-async function writeFile(root, args) {
+async function writeFile(root, args, config = {}) {
   const normalizedArgs = normalizeWriteArgs(args);
   const rawPath = String(normalizedArgs?.path || '').trim();
   if (!rawPath) {
@@ -902,7 +946,7 @@ async function writeFile(root, args) {
   if (rawPath === '.' || rawPath === './') {
     throw new Error('write requires a file path, not the workspace root');
   }
-  const target = await resolveInWorkspace(root, rawPath);
+  const target = await resolveInWorkspace(root, rawPath, config);
   try {
     const stat = await fs.stat(target);
     if (stat.isDirectory()) {
@@ -954,21 +998,21 @@ async function writeFile(root, args) {
   };
 }
 
-async function prepareDeleteTarget(root, args) {
+async function prepareDeleteTarget(root, args, config = {}) {
   const normalizedArgs = normalizePathArgs(args, ['file', 'file_path', 'target', 'directory', 'dir']);
   const rawPath = String(normalizedArgs?.path || '').trim();
   if (!rawPath) {
     throw new Error('delete requires a file or directory path');
   }
   const absRoot = path.resolve(root);
-  const realRoot = await fs.realpath(absRoot);
+  const realRoots = await getAllowedRealRoots(absRoot, config);
   const originalTarget = path.resolve(absRoot, rawPath);
   if (originalTarget === absRoot) {
     throw new Error('delete requires a path inside the workspace, not the workspace root');
   }
-  const resolvedTarget = await resolveInWorkspace(root, rawPath);
-  if (resolvedTarget === realRoot) {
-    throw new Error('delete requires a path inside the workspace, not the workspace root');
+  const resolvedTarget = await resolveInWorkspace(root, rawPath, config);
+  if (realRoots.some((realRoot) => resolvedTarget === realRoot)) {
+    throw new Error('delete requires a path inside the workspace or allowed paths, not an allowed root');
   }
 
   let rawStat;
@@ -998,8 +1042,8 @@ async function prepareDeleteTarget(root, args) {
   };
 }
 
-async function deletePath(root, args) {
-  const target = await prepareDeleteTarget(root, args);
+async function deletePath(root, args, config = {}) {
+  const target = await prepareDeleteTarget(root, args, config);
   await fs.rm(target.originalTarget, { recursive: true, force: false });
 
   return {
@@ -1350,13 +1394,13 @@ async function stopBackgroundTask(_root, args) {
   return { ...snapshotBackgroundTask(task), stopped: true };
 }
 
-async function builtinGrep(root, args) {
+async function builtinGrep(root, args, config = {}) {
   const normalizedArgs = normalizePatternArgs(args, ['query', 'symbol', 'q'], ['directory', 'dir', 'cwd']);
   const pattern = String(normalizedArgs?.pattern || '').trim();
   if (!pattern) throw new Error('grep requires pattern');
   const maxResults = Math.max(1, Math.min(200, Number(normalizedArgs?.max_results || 50)));
   const caseSensitive = Boolean(normalizedArgs?.case_sensitive);
-  const files = await walkTextFiles(root, normalizedArgs?.path || '.', normalizeFileTypes(normalizedArgs));
+  const files = await walkTextFiles(root, normalizedArgs?.path || '.', normalizeFileTypes(normalizedArgs), config);
   const regex = normalizedArgs?.regex
     ? new RegExp(pattern, caseSensitive ? 'g' : 'gi')
     : new RegExp(escapeRegex(pattern), caseSensitive ? 'g' : 'gi');
@@ -1385,14 +1429,15 @@ async function builtinGrep(root, args) {
   return { pattern, matches, truncated: false };
 }
 
-async function builtinGlob(root, args) {
+async function builtinGlob(root, args, config = {}) {
   const normalizedArgs = normalizePatternArgs(args, ['glob', 'query'], ['directory', 'dir', 'cwd']);
   const pattern = String(normalizedArgs?.pattern || '').trim();
   if (!pattern) throw new Error('glob requires pattern');
   const maxResults = Math.max(1, Math.min(500, Number(normalizedArgs?.max_results || 200)));
   const regex = globToRegex(pattern);
   const entries = await walkWorkspaceEntries(root, normalizedArgs?.path || '.', {
-    includeHidden: Boolean(normalizedArgs?.include_hidden)
+    includeHidden: Boolean(normalizedArgs?.include_hidden),
+    config
   });
   const matches = entries
     .filter((entry) => entry.type === 'file' && regex.test(entry.path))
@@ -1405,10 +1450,10 @@ async function builtinGlob(root, args) {
   };
 }
 
-async function builtinList(root, args) {
+async function builtinList(root, args, config = {}) {
   const normalizedArgs = normalizePathArgs(args, ['dir', 'directory', 'target']);
   const relativePath = String(normalizedArgs?.path || '.').trim() || '.';
-  const target = await resolveInWorkspace(root, relativePath);
+  const target = await resolveInWorkspace(root, relativePath, config);
   const entries = await fs.readdir(target, { withFileTypes: true });
   const includeHidden = Boolean(normalizedArgs?.include_hidden);
   const items = entries
@@ -1428,10 +1473,10 @@ async function builtinList(root, args) {
   };
 }
 
-async function readBlock(root, args) {
+async function readBlock(root, args, config = {}) {
   const relativePath = String(args?.path || '').trim();
   if (!relativePath) throw new Error('read_block requires path');
-  const { lines } = await getFileState(root, relativePath);
+  const { lines } = await getFileState(root, relativePath, config);
   const symbol = String(args?.symbol || '').trim();
   const anchorLine = symbol ? findSymbolDefinition(lines, symbol) : Number(args?.line || args?.anchor_line || 1);
   const range = findBlockRange(lines, anchorLine);
@@ -1445,12 +1490,12 @@ async function readBlock(root, args) {
   };
 }
 
-async function readSymbolContext(root, args) {
+async function readSymbolContext(root, args, config = {}) {
   const relativePath = String(args?.path || '').trim();
   const symbol = String(args?.symbol || '').trim();
   if (!relativePath || !symbol) throw new Error('read_symbol_context requires path and symbol');
-  const { lines } = await getFileState(root, relativePath);
-  const mainBlock = await readBlock(root, { path: relativePath, symbol });
+  const { lines } = await getFileState(root, relativePath, config);
+  const mainBlock = await readBlock(root, { path: relativePath, symbol }, config);
   return {
     file: relativePath,
     symbol,
@@ -1468,11 +1513,11 @@ async function readSymbolContext(root, args) {
   };
 }
 
-async function validateEdit(root, args) {
+async function validateEdit(root, args, config = {}) {
   const relativePath = String(args?.path || '').trim();
   const kind = String(args?.kind || '').trim();
   if (!relativePath || !kind) throw new Error('validate_edit requires path and kind');
-  const { content, lines } = await getFileState(root, relativePath);
+  const { content, lines } = await getFileState(root, relativePath, config);
 
   if (kind === 'replace_block') {
     const startLine = Number(args?.target?.start_line || args?.start_line);
@@ -1563,11 +1608,11 @@ function editResult(pathText, action, beforeContent, afterContent, changedLine =
   };
 }
 
-async function replaceBlock(root, args) {
+async function replaceBlock(root, args, config = {}) {
   const relativePath = String(args?.path || '').trim();
   const newContent = String(args?.new_content || args?.content || '');
   const target = args?.target || {};
-  const state = await getFileState(root, relativePath);
+  const state = await getFileState(root, relativePath, config);
   const resolved = resolveReplaceBlockTarget(state, target);
   if (!resolved) {
     throw new Error('replace_block old_hash mismatch; retry through edit with a symbol or line hint');
@@ -1582,11 +1627,11 @@ async function replaceBlock(root, args) {
   return editResult(relativePath, 'replace_block', state.content, afterContent, resolved.start_line);
 }
 
-async function replaceText(root, args) {
+async function replaceText(root, args, config = {}) {
   const relativePath = String(args?.path || '').trim();
   const oldText = String(args?.old_text || '');
   const newText = String(args?.new_text || '');
-  const state = await getFileState(root, relativePath);
+  const state = await getFileState(root, relativePath, config);
   const occurrences = state.content.split(oldText).length - 1;
   if (occurrences !== 1) {
     throw new Error(
@@ -1601,11 +1646,11 @@ async function replaceText(root, args) {
   return editResult(relativePath, 'replace_text', state.content, afterContent, changedLine);
 }
 
-async function insertRelative(root, args, mode) {
+async function insertRelative(root, args, mode, config = {}) {
   const relativePath = String(args?.path || '').trim();
   const anchorText = String(args?.anchor_text || '');
   const content = String(args?.content || '');
-  const state = await getFileState(root, relativePath);
+  const state = await getFileState(root, relativePath, config);
   const occurrences = state.content.split(anchorText).length - 1;
   if (occurrences !== 1) {
     throw new Error(occurrences === 0 ? `${mode} anchor not found` : `${mode} anchor not unique`);
@@ -1617,7 +1662,7 @@ async function insertRelative(root, args, mode) {
   return editResult(relativePath, mode, state.content, afterContent, changedLine);
 }
 
-async function openTarget(root, args) {
+async function openTarget(root, args, config = {}) {
   const file = String(args?.file || args?.path || '').trim();
   if (!file) throw new Error('open_target requires file');
   const symbol = String(args?.symbol || '').trim();
@@ -1629,8 +1674,8 @@ async function openTarget(root, args) {
         max_related_calls: args?.max_related_calls,
         max_related_imports: args?.max_related_imports,
         max_related_types: args?.max_related_types
-      })
-    : { file, symbol: '', main_block: await readBlock(root, { path: file, line }), related: { imports: [], local_symbols: [] } };
+      }, config)
+    : { file, symbol: '', main_block: await readBlock(root, { path: file, line }, config), related: { imports: [], local_symbols: [] } };
   const block = mainBlock.main_block || mainBlock;
   return {
     file,
@@ -1682,7 +1727,7 @@ function normalizeEditTargetArgs(args = {}) {
   };
 }
 
-async function editTarget(root, args) {
+async function editTarget(root, args, config = {}) {
   const normalized = normalizeEditTargetArgs(args);
   const file = normalized.file;
   const astTarget = normalized.ast_target;
@@ -1736,26 +1781,26 @@ async function editTarget(root, args) {
           file,
           symbol: edit.symbol || args?.symbol,
           line: edit.line || args?.line
-        })
+        }, config)
       ).edit;
     try {
       return await replaceBlock(root, {
         path: file,
         target: resolvedTarget,
         new_content: edit.new_content
-      });
+      }, config);
     } catch (error) {
       if (!/old_hash mismatch/i.test(String(error?.message || ''))) throw error;
       const validation = await validateEdit(root, {
         path: file,
         kind: 'replace_block',
         target: resolvedTarget
-      });
+      }, config);
       return replaceBlock(root, {
         path: file,
         target: validation.target,
         new_content: edit.new_content
-      });
+      }, config);
     }
   }
   if (kind === 'replace_text') {
@@ -1763,20 +1808,20 @@ async function editTarget(root, args) {
       path: file,
       old_text: edit.old_text,
       new_text: edit.new_text
-    });
+    }, config);
   }
   if (kind === 'insert_before') {
-    return insertRelative(root, { path: file, anchor_text: edit.anchor_text, content: edit.content }, 'insert_before');
+    return insertRelative(root, { path: file, anchor_text: edit.anchor_text, content: edit.content }, 'insert_before', config);
   }
   if (kind === 'insert_after') {
-    return insertRelative(root, { path: file, anchor_text: edit.anchor_text, content: edit.content }, 'insert_after');
+    return insertRelative(root, { path: file, anchor_text: edit.anchor_text, content: edit.content }, 'insert_after', config);
   }
   if (kind === 'rewrite_file') {
     return writeFile(root, {
       path: file,
       content: edit.new_content ?? edit.content ?? '',
       full_file_rewrite: true
-    });
+    }, config);
   }
   throw new Error(`edit does not support kind: ${kind}`);
 }
@@ -2370,36 +2415,39 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
   }
 
   async function grep(args) {
-    if (activeFffAdapter?.grep) {
+    const normalizedArgs = normalizePatternArgs(args, ['query', 'symbol', 'q'], ['directory', 'dir', 'cwd']);
+    if (!resolvesOutsideRoot(workspaceRoot, normalizedArgs?.path || '.') && activeFffAdapter?.grep) {
       try {
         await ensureFffConnected();
         const result = await activeFffAdapter.grep(args);
         if (result && Array.isArray(result.matches)) return result;
       } catch {}
     }
-    return builtinGrep(workspaceRoot, args);
+    return builtinGrep(workspaceRoot, args, config);
   }
 
   async function glob(args) {
-    if (activeFffAdapter?.glob) {
+    const normalizedArgs = normalizePatternArgs(args, ['glob', 'query'], ['directory', 'dir', 'cwd']);
+    if (!resolvesOutsideRoot(workspaceRoot, normalizedArgs?.path || '.') && activeFffAdapter?.glob) {
       try {
         await ensureFffConnected();
         const result = await activeFffAdapter.glob(args);
         if (result && Array.isArray(result.matches)) return result;
       } catch {}
     }
-    return builtinGlob(workspaceRoot, args);
+    return builtinGlob(workspaceRoot, args, config);
   }
 
   async function list(args) {
-    if (activeFffAdapter?.list) {
+    const normalizedArgs = normalizePathArgs(args, ['dir', 'directory', 'target']);
+    if (!resolvesOutsideRoot(workspaceRoot, normalizedArgs?.path || '.') && activeFffAdapter?.list) {
       try {
         await ensureFffConnected();
         const result = await activeFffAdapter.list(args);
         if (result && Array.isArray(result.items)) return result;
       } catch {}
     }
-    return builtinList(workspaceRoot, args);
+    return builtinList(workspaceRoot, args, config);
   }
 
   const handlers = {
@@ -2455,7 +2503,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
           typeof args?.max_chars === 'number'
             ? args.max_chars
             : config.context?.read_file_max_chars ?? 24000
-      });
+      }, config);
       const readPath = String(result?.path || args?.path || '').trim();
       if (readPath) lastReadPath = readPath;
       return result;
@@ -2487,25 +2535,26 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       const astTarget = resolveCachedAstTarget(args, { requireAstScope: normalizedKind === 'replace_block' });
       const result = await editTarget(
         workspaceRoot,
-        astTarget ? { ...args, ast_target: astTarget, recent_file: lastReadPath } : { ...args, recent_file: lastReadPath }
+        astTarget ? { ...args, ast_target: astTarget, recent_file: lastReadPath } : { ...args, recent_file: lastReadPath },
+        config
       );
       if (result?.path) await refreshProjectFile(result.path);
       return result;
     },
     write: async (args) => {
       await ensureProjectIndex();
-      const result = await writeFile(workspaceRoot, args);
+      const result = await writeFile(workspaceRoot, args, config);
       if (result?.path) await refreshProjectFile(result.path);
       return result;
     },
     delete: Object.assign(async (args) => {
       await ensureProjectIndex();
-      const result = await deletePath(workspaceRoot, args);
+      const result = await deletePath(workspaceRoot, args, config);
       if (result?.path) await refreshProjectFile(result.path);
       return result;
     }, {
       prepareApproval: async (args) => {
-        const target = await prepareDeleteTarget(workspaceRoot, args);
+        const target = await prepareDeleteTarget(workspaceRoot, args, config);
         return {
           path: target.path,
           name: target.name,

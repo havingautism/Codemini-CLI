@@ -457,7 +457,8 @@ export class RuntimeBridge {
       ...serializableState,
       busy: this.#busy,
       requestInFlight: this.#busy,
-      pendingPlanApproval: this.#busy ? null : state.pendingPlanApproval
+      pendingPlanApproval: this.#busy ? null : serializableState.pendingPlanApproval,
+      pendingReflectSkill: this.#busy ? null : serializableState.pendingReflectSkill
     };
   }
 

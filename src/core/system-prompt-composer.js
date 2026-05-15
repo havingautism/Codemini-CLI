@@ -1,4 +1,5 @@
 import { buildMemorySnapshot } from './memory-prompt.js';
+import { loadProjectInstructions } from './project-instructions.js';
 import { buildSystemPromptWithReplyLanguage, stripReplyLanguageDirective } from './reply-language.js';
 import { buildSystemPromptWithSoul } from './soul.js';
 
@@ -17,6 +18,8 @@ export async function composeSystemPrompt({
   skillsPrompt = '',
   memorySnapshot,
   includeMemory = true,
+  projectInstructionsSnippet,
+  includeProjectInstructions = true,
   projectContextSnippet = '',
   projectContextGuidance = '',
   extraPrompts = [],
@@ -30,8 +33,15 @@ export async function composeSystemPrompt({
     : includeMemory
       ? await buildMemorySnapshot({ config, workspaceRoot }).catch(() => '')
       : '';
+  const projectInstructionsPrompt = projectInstructionsSnippet !== undefined
+    ? projectInstructionsSnippet
+    : includeProjectInstructions
+      ? await loadProjectInstructions({ cwd: workspaceRoot, config }).catch(() => '')
+      : '';
+  const hasProjectInstructions = /\bProject Instructions:\s*\n/i.test(shellAndSoul);
   const body = joinPromptParts([
     shellAndSoul,
+    hasProjectInstructions ? '' : projectInstructionsPrompt,
     skillsPrompt,
     memoryPrompt,
     projectContextSnippet,

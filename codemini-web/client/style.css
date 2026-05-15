@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 @import "streamdown/styles.css";
 @source "../node_modules/streamdown/dist/*.js";
 
@@ -83,8 +85,6 @@
   font-weight: 100 900;
   font-display: swap;
 }
-
-@custom-variant dark (&[data-theme="dark"]);
 
 @theme inline {
   --color-background: var(--background);

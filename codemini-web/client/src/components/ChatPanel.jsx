@@ -43,7 +43,7 @@ function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
     >
       {/* Expanded card */}
       {expanded && (
-        <div className="flex flex-col gap-px rounded-lg bg-(--bg-secondary) border border-(--border-default) p-1.5 max-w-[180px] max-h-[60vh] overflow-y-auto shadow-lg">
+        <div className="flex flex-col gap-px rounded-lg bg-(--bg-primary) border border-(--border-default) p-1.5 max-w-[180px] max-h-[60vh] overflow-y-auto shadow-lg">
           {userMessages.map((um, i) => (
             <button
               key={um.id}
@@ -52,11 +52,8 @@ function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
               onMouseLeave={() => setHoveredIndex(-1)}
               className={cn(
                 "text-left text-[11px] leading-tight px-2 py-1 rounded-md truncate transition-colors cursor-pointer max-w-full",
-                i === activeNavIndex
-                  ? "text-(--accent-blue)"
-                  : "text-(--text-muted)",
-                hoveredIndex === i &&
-                  "bg-(--accent-blue-bg) text-(--accent-blue)",
+                i === activeNavIndex ? "text-primary" : "text-(--text-muted)",
+                hoveredIndex === i && "bg-primary/10 text-primary",
               )}
             >
               {um.text || "..."}
@@ -74,9 +71,9 @@ function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
             className={cn(
               "h-0.5 rounded-sm transition-all duration-150 cursor-pointer",
               i === activeNavIndex
-                ? "w-5 bg-(--accent-blue)"
+                ? "w-5 bg-primary"
                 : hoveredIndex === i
-                  ? "w-4 bg-(--accent-blue)/50"
+                  ? "w-4 bg-primary/50"
                   : "w-3 bg-(--text-muted)",
             )}
           />
@@ -228,11 +225,7 @@ export function ChatPanel({
         <div className="relative">
           <div className="w-[min(960px,calc(100%-96px))] mx-auto">
             {messages.map((msg) => (
-              <MessageBubble
-                key={msg.id}
-                message={msg}
-                skills={skills}
-              />
+              <MessageBubble key={msg.id} message={msg} skills={skills} />
             ))}
           </div>
         </div>
@@ -245,8 +238,8 @@ export function ChatPanel({
       <div className="absolute right-7 bottom-0 flex flex-col gap-2 z-20">
         {showScrollToBottom && (
           <button
-            className="w-9 h-9 rounded-full bg-(--bg-input) border border-(--border-default) cursor-pointer flex items-center justify-center text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) animate-in fade-in-0 zoom-in-95"
-            style={{ boxShadow: "var(--shadow-default)" }}
+            className="w-9 h-9 rounded-full bg-(--bg-primary) dark:bg-(--bg-secondary) border border-(--border-default) cursor-pointer flex items-center justify-center text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) animate-in fade-in-0 zoom-in-95"
+            // style={{ boxShadow: "var(--shadow-default)" }}
             onClick={() => {
               setAutoScroll(true);
               scrollRef.current?.scrollTo({

@@ -15,7 +15,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Separator } from "@/components/ui/separator";
+import { CircleHelp } from "lucide-react";
 import * as api from "@/hooks/use-api";
 import { Spinner } from "@/components/ui/spinner";
 import { t } from "../../i18n/index.js";
@@ -132,6 +138,27 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
         },
       ],
     },
+    {
+      title: t("policy"),
+      keys: [
+        {
+          path: "policy.safe_mode",
+          label: t("safeMode"),
+          options: ["true", "false"],
+        },
+        {
+          path: "policy.allowed_paths",
+          label: t("allowedPaths"),
+          placeholder: '["D:\\\\shared-assets","E:\\\\sibling-repo"]',
+          help: t("allowedPathsHelp"),
+        },
+        {
+          path: "policy.allow_dangerous_commands",
+          label: t("allowDangerousCommands"),
+          options: ["false", "true"],
+        },
+      ],
+    },
   ];
 
   const [config, setConfig] = useState(null);
@@ -158,7 +185,11 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
 
   const getValue = (path) => {
     if (path in changes) return changes[path];
-    return config ? String(getNestedValue(config, path) ?? "") : "";
+    const value = config ? getNestedValue(config, path) : "";
+    if (Array.isArray(value) || (value && typeof value === "object")) {
+      return JSON.stringify(value);
+    }
+    return String(value ?? "");
   };
 
   const hasChanges = Object.keys(changes).length > 0;
@@ -211,7 +242,23 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
                   {group.keys.map((key) => (
                     <div key={key.path} className="flex items-center gap-3">
                       <label className="text-[13px] text-(--text-muted) w-32 shrink-0">
-                        {key.label}
+                        <span>{key.label}</span>
+                        {key.help && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <button
+                                type="button"
+                                className="ml-1 inline-flex align-[-2px] text-(--text-muted) hover:text-(--text-primary)"
+                                aria-label={key.help}
+                              >
+                                <CircleHelp size={13} strokeWidth={1.8} />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent side="right" className="max-w-[300px] leading-relaxed">
+                              {key.help}
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
                       </label>
                       {key.options ? (
                         <Select

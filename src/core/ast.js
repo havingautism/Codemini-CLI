@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { Parser, Language, Query } from 'web-tree-sitter';
 import { LANGUAGE_ALIASES, EXTENSION_LANGUAGE_MAP } from './constants.js';
 import { sha256Prefixed as sha256 } from './crypto-utils.js';
+import { BoundedCache } from './bounded-cache.js';
 
 const require = createRequire(import.meta.url);
 
@@ -43,7 +44,7 @@ const parserInitPromise = Parser.init({
     return scriptName === 'web-tree-sitter.wasm' ? TREE_SITTER_WASM_PATH : scriptName;
   }
 });
-const languageCache = new Map();
+const languageCache = new BoundedCache({ maxSize: 16, ttlMs: 60 * 60 * 1000 });
 
 function clipText(text, maxLen = 220) {
   const normalized = String(text || '').replace(/\s+/g, ' ').trim();
@@ -113,15 +114,34 @@ async function loadLanguage(language) {
   if (languageCache.has(language)) return languageCache.get(language);
   const wasmPath = LANGUAGE_WASM_PATHS[language];
   if (!wasmPath) throw new Error(`Unsupported Tree-sitter language: ${language}`);
-  const loaded = await Language.load(wasmPath);
-  languageCache.set(language, loaded);
-  return loaded;
+  const loadPromise = Language.load(wasmPath);
+  languageCache.set(language, loadPromise);
+  try {
+    return await loadPromise;
+  } catch (error) {
+    languageCache.delete(language);
+    throw error;
+  }
 }
 
-async function parseContent(content, language) {
+async function getParser(language) {
   const loadedLanguage = await loadLanguage(language);
   const parser = new Parser();
   parser.setLanguage(loadedLanguage);
+  return { parser, loadedLanguage };
+}
+
+function deleteParsed(parsed) {
+  try {
+    parsed?.tree?.delete?.();
+  } catch {}
+  try {
+    parsed?.parser?.delete?.();
+  } catch {}
+}
+
+async function parseContent(content, language) {
+  const { parser, loadedLanguage } = await getParser(language);
   const tree = parser.parse(content);
   return { parser, tree, loadedLanguage };
 }
@@ -188,8 +208,7 @@ export async function findEnclosingSymbol(content, filePath, line) {
   } catch {
     return null;
   } finally {
-    if (tree) tree.delete();
-    if (parser) parser.delete();
+    deleteParsed({ tree, parser });
   }
 }
 
@@ -223,8 +242,7 @@ export async function queryAst(root, args) {
   }
 
   query.delete();
-  parsed.tree.delete();
-  parsed.parser.delete();
+  deleteParsed(parsed);
 
   return {
     path: relativePath,
@@ -261,8 +279,7 @@ export async function readAstNode(root, args) {
     child_summaries: node.namedChildren.slice(0, 8).map((child) => summarizeNode(child))
   };
 
-  parsed.tree.delete();
-  parsed.parser.delete();
+  deleteParsed(parsed);
   return result;
 }
 
@@ -277,15 +294,13 @@ export async function resolveAstTarget(root, relativePath, astTarget) {
   const parsed = await parseFile(root, relativePath, astTarget.language);
   const node = exactNodeForTarget(parsed.tree.rootNode, astTarget);
   if (!node) {
-    parsed.tree.delete();
-    parsed.parser.delete();
+    deleteParsed(parsed);
     throw new Error('AST target no longer matches the current file');
   }
 
   const currentHash = sha256(node.text);
   if (String(astTarget.range_hash || '') !== currentHash) {
-    parsed.tree.delete();
-    parsed.parser.delete();
+    deleteParsed(parsed);
     throw new Error('ast_target range_hash mismatch; the selected node changed and is now stale');
   }
 

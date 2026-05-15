@@ -5,6 +5,7 @@ import React, {
   useEffect,
   useMemo,
 } from "react";
+import { Separator } from "@/components/ui/separator";
 import {
   Paperclip,
   ShieldCheck,
@@ -374,10 +375,10 @@ function CommandPalette({ query, onSelect, visible }) {
       className="absolute bottom-full left-0 right-0 mb-1.5 max-h-[360px] overflow-y-auto rounded-xl border border-(--border-default) bg-(--bg-primary) shadow-lg z-50 animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
       style={{ scrollbarWidth: "thin" }}
     >
-      <div className="px-2.5 py-1.5 text-[11px] text-(--text-muted) font-medium flex items-center gap-1.5 border-b border-(--border-default)">
-        <Sparkles size={11} />
+      {/* <div className="px-2.5 py-1.5 text-[11px] text-(--text-muted) font-medium flex items-center gap-1.5 uppercase tracking-[0.45px]">
         Commands
       </div>
+      <Separator className="my-2 bg-(--border-default)" /> */}
       {!hasItems && (
         <div className="px-2.5 py-5 text-[12px] text-(--text-muted) text-center">
           No matching commands
@@ -385,7 +386,7 @@ function CommandPalette({ query, onSelect, visible }) {
       )}
       {renderSection("Actions", actionItems)}
       {actionItems.length > 0 && skillItems.length > 0 && (
-        <div className="mx-2.5 h-px bg-(--border-default)" />
+        <Separator className=" my-1 bg-(--border-default)" />
       )}
       {renderSection("Skills", skillItems)}
     </div>
@@ -521,12 +522,12 @@ export function InputBar({
         visible={slashOpen}
       />
       <div
-        className="flex flex-col gap-4 border border-(--border-default) rounded-[28px] px-3 py-2 transition-colors"
-        style={{
-          background:
-            "color-mix(in srgb, var(--bg-tertiary) 72%, var(--bg-input))",
-          // boxShadow: "var(--shadow-default)",
-        }}
+        className="flex flex-col gap-4 rounded-[28px] px-3 py-2 transition-colors bg-(--bg-primary/50) dark:bg-(--bg-secondary) shadow-(--shadow-default) dark:shadow-none"
+        // style={{
+        //   background:
+        //     "color-mix(in srgb, var(--bg-tertiary) 72%, var(--bg-input))",
+        //   // boxShadow: "var(--shadow-default)",
+        // }}
       >
         <div className="flex min-h-[58px]">
           <textarea

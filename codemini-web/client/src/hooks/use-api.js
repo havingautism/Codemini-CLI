@@ -194,6 +194,15 @@ export async function updateSkillContent(name, content) {
   return res.json();
 }
 
+export async function updateSkillMetadata(name, metadata) {
+  const res = await api(`/api/skills/${encodeURIComponent(name)}/metadata`, {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(metadata || {})
+  });
+  return res.json();
+}
+
 export async function deleteSkill(name) {
   const res = await api(`/api/skills/${encodeURIComponent(name)}`, {
     method: 'DELETE'
