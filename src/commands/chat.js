@@ -167,12 +167,16 @@ function findBunBin() {
   return 'bun';
 }
 
-function runOpenTuiProcess({ parsed, session, config, systemPrompt }) {
+function resolveChatGlobalDir(cwd = process.cwd()) {
+  return process.env.CODEMINI_GLOBAL_DIR || path.resolve(cwd, '.codemini-global');
+}
+
+function runOpenTuiProcess({ parsed, session, config, systemPrompt, globalDir }) {
   return new Promise((resolve, reject) => {
     const bunBin = findBunBin();
     const cwd = process.cwd();
     const entryScript = path.resolve(cwd, 'src/tui/opentui/entry.js');
-    const globalDir = path.resolve(cwd, '.codemini-global');
+    const resolvedGlobalDir = globalDir || resolveChatGlobalDir(cwd);
 
     const args = [
       'run',
@@ -188,7 +192,7 @@ function runOpenTuiProcess({ parsed, session, config, systemPrompt }) {
       '--sdk-provider',
       config.sdk?.provider || 'openai-compatible',
       '--global-dir',
-      globalDir,
+      resolvedGlobalDir,
     ];
     if (config.policy?.safe_mode === false) {
       args.push('--unsafe');
@@ -220,6 +224,8 @@ function runOpenTuiProcess({ parsed, session, config, systemPrompt }) {
 
 export async function handleChat(args) {
   const parsed = parseChatArgs(args);
+  const globalDir = resolveChatGlobalDir();
+  process.env.CODEMINI_GLOBAL_DIR = globalDir;
   const config = await loadConfig();
   const session = await resolveSession(parsed.sessionId);
   const selectedModel = parsed.fast ? (config.model?.fast_name || config.model?.name) : parsed.model;
@@ -247,7 +253,7 @@ export async function handleChat(args) {
 
     // Dispose the node-side runtime — the bun child process creates its own.
     await runtime.dispose?.();
-    await runOpenTuiProcess({ parsed, session, config, systemPrompt });
+    await runOpenTuiProcess({ parsed, session, config, systemPrompt, globalDir });
   } finally {
     // runtime already disposed for the opentui path; clean up for plain/prompt paths.
     await runtime.dispose?.().catch(() => {});
