@@ -1,16 +1,18 @@
 import { parseInput } from './input-parser.js';
-import { loadCommandsAndSkills, renderCommandPrompt } from './command-loader.js';
-import { runAgentLoop, setResultDir, clearResultStore } from './agent-loop.js';
+import { formatLocalDate, loadCommandsAndSkills, renderCommandPrompt } from './command-loader.js';
+import { runAgentLoop } from './agent-loop.js';
+import { setResultDir, clearResultStore } from './tool-result-store.js';
 import { trimInline, normalizePath } from './string-utils.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   createChatCompletion,
   createChatCompletionStream
 } from './provider/index.js';
 import { isDangerousCommand, runShellCommand } from './shell.js';
 import { getBuiltinTools } from './tools.js';
-import { createSession, listSessions, loadSession, pruneSessions, saveSession } from './session-store.js';
+import { createSession, deriveSessionTitle, listSessions, loadSession, pruneSessions, saveSession } from './session-store.js';
 import { getConfigValue, loadConfig, resetConfig, setConfigValue } from './config-store.js';
 import { evaluateCommandPolicy } from './command-policy.js';
 import { appendInputHistory, loadInputHistory } from './input-history-store.js';
@@ -18,19 +20,29 @@ import { createCheckpoint, listCheckpoints, loadCheckpoint } from './checkpoint-
 import {
   compactMessagesLocally,
   estimateMessagesTokens,
-  parseCompactArgs
+  microCompactMessages,
+  parseCompactArgs,
+  buildTranscriptForLLM,
+  COMPACT_SUMMARY_PROMPT
 } from './context-compact.js';
-import { buildSystemPromptWithReplyLanguage } from './reply-language.js';
-import { buildSystemPromptWithSoul } from './soul.js';
+import { getReplyLanguage, getReplyLanguageName } from './reply-language.js';
+import { composeSystemPrompt } from './system-prompt-composer.js';
 import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir } from './paths.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
-import { buildMemorySnapshot } from './memory-prompt.js';
-import { forgetMemory, listMemories, searchMemories, captureToInbox, listInbox } from './memory-store.js';
+import { forgetMemory, listMemories, rememberMemory, searchMemories, captureToInbox, listInbox } from './memory-store.js';
 import { runDreamConsolidation } from './dream-consolidate.js';
 import { normalizePlanState } from './plan-state.js';
 import { countActiveTodos, normalizeTodos } from './todo-state.js';
+import {
+  attachReflectTargets,
+  buildReflectSkillDraft,
+  parseReflectScope,
+  writeReflectSkillDraft
+} from './reflect-skill.js';
 
 const STREAM_SAVE_DEBOUNCE_MS = 120;
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PROJECT_REQUIREMENTS_TEMPLATE = path.resolve(MODULE_DIR, '..', '..', 'templates', 'project-requirements', 'report-shell.html');
 
 function toOpenAIMessages(sessionMessages) {
   const mapped = [];
@@ -45,13 +57,22 @@ function toOpenAIMessages(sessionMessages) {
     }
     mapped.push({
       role: msg.role,
-      content: msg.content,
+      content: typeof msg.model_content === 'string' && msg.model_content ? msg.model_content : msg.content,
       ...(typeof msg.reasoning_content === 'string' && msg.reasoning_content ? { reasoning_content: msg.reasoning_content } : {}),
       ...(Array.isArray(msg.reasoning_details) && msg.reasoning_details.length > 0 ? { reasoning_details: msg.reasoning_details } : {}),
       ...(msg.tool_calls ? { tool_calls: msg.tool_calls } : {})
     });
   }
   return mapped;
+}
+
+function translateCompactBoundaryToOriginal(sourceIsCompacted, compactMeta, compactBoundaryIndex) {
+  const boundary = Number(compactBoundaryIndex);
+  if (!Number.isFinite(boundary)) return undefined;
+  if (!sourceIsCompacted) return Math.max(0, boundary);
+  const previousBoundary = Number(compactMeta?.boundaryIndex);
+  if (!Number.isFinite(previousBoundary)) return Math.max(0, boundary);
+  return Math.max(0, previousBoundary + Math.max(0, boundary - 1));
 }
 
 function slugify(input) {
@@ -92,6 +113,7 @@ function getCompletionCopy(language = 'zh') {
         'gateway.timeout_ms': '网关超时时间（毫秒）',
         'gateway.max_retries': '网关重试次数',
         'model.name': '当前模型名称',
+        'model.fast_name': '快速模型名称',
         'model.max_context_tokens': '模型上下文 token 上限',
         'ui.language': '界面语言',
         'ui.reply_language': '回复语言',
@@ -103,6 +125,11 @@ function getCompletionCopy(language = 'zh') {
         'context.tool_result_max_chars': '工具结果字符上限',
         'context.read_file_default_lines': 'read_file 默认行数窗口',
         'context.read_file_max_chars': 'read_file 字符上限',
+        'context.prompt_budget_audit': 'Prompt 预算审计开关',
+        'context.microcompact_enabled': '微压缩(micro-compact)开关',
+        'context.microcompact_keep_recent': '微压缩保留最近工具结果数',
+        'context.project_instructions_enabled': '项目 AGENTS.md 注入开关',
+        'context.project_instructions_max_chars': '项目 AGENTS.md 字符上限',
         'sessions.max_sessions': '会话保留上限',
         'sessions.retention_days': '会话保留天数',
         'shell.default': '默认 shell',
@@ -111,6 +138,7 @@ function getCompletionCopy(language = 'zh') {
         'soul.preset': 'soul 预设',
         'soul.custom_path': '自定义 soul 路径',
         'policy.safe_mode': '安全模式开关',
+        'policy.allowed_paths': '安全模式目录白名单',
         'policy.allow_dangerous_commands': '危险命令开关'
       },
       optionHints: {
@@ -120,7 +148,11 @@ function getCompletionCopy(language = 'zh') {
         'execution.mode': '可选：auto | normal | plan',
         'shell.default': '常用：bash | powershell',
         'policy.safe_mode': '可选：true | false',
-        'policy.allow_dangerous_commands': '可选：true | false'
+        'policy.allowed_paths': 'JSON 数组，例如 ["D:\\\\shared"]',
+        'policy.allow_dangerous_commands': '可选：true | false',
+        'context.prompt_budget_audit': '可选：true | false',
+        'context.project_instructions_enabled': '可选：true | false',
+        'context.project_instructions_max_chars': '建议：8000-12000'
       },
       describeSet: (label, hint) => `设置${label}${hint ? `（${hint}）` : ''}`,
       describeGet: (label, hint) => `查看${label}${hint ? `（${hint}）` : ''}`,
@@ -144,6 +176,7 @@ function getCompletionCopy(language = 'zh') {
         exit: '退出聊天',
         commands: '列出 slash/自定义命令',
         status: '查看运行状态（mode/model/session）',
+        model: '查看或切换模型',
         mode: '设置执行模式：normal|auto|plan',
         compact: '压缩消息上下文',
         checkpoint: '创建/查看/加载检查点',
@@ -153,12 +186,14 @@ function getCompletionCopy(language = 'zh') {
         config: '设置/读取/列出/重置配置',
         memory: '查看/搜索/删除持久记忆',
         dream: '整理记忆收件箱（dream consolidation）',
+        reflect: '复盘成功链路并生成可审阅 skill 草稿',
         history: '查看/恢复会话',
         debug: '运行时调试开关',
         retry: '重试上一条用户请求',
         stop: '中止当前回答',
         new: '开始新会话',
         yes: '确认当前待审批计划并开始执行',
+        no: '放弃当前待审批事项',
         edit: '修改当前待审批计划',
         reject: '拒绝当前待审批计划'
       },
@@ -172,12 +207,14 @@ function getCompletionCopy(language = 'zh') {
         agentCommand: '子代理命令',
         memoryCommand: '记忆命令',
         dreamCommand: '记忆整理命令',
+        reflectCommand: '复盘生成 skill 草稿',
         debugCommand: '调试命令',
         keyboardDebugCommand: '键盘调试命令',
         compactCommand: '上下文压缩命令',
         retryCommand: '重试上一条用户请求',
         stopCommand: '中止当前回答',
         statusCommand: '查看运行状态',
+        modelCommand: '查看或切换模型',
         resumeSession: '恢复一个已保存的会话'
       }
     },
@@ -189,6 +226,7 @@ function getCompletionCopy(language = 'zh') {
         'gateway.timeout_ms': 'gateway timeout in milliseconds',
         'gateway.max_retries': 'gateway retry count',
         'model.name': 'active model name',
+        'model.fast_name': 'fast model name',
         'model.max_context_tokens': 'model context token limit',
         'ui.language': 'UI language',
         'ui.reply_language': 'reply language',
@@ -200,6 +238,11 @@ function getCompletionCopy(language = 'zh') {
         'context.tool_result_max_chars': 'tool result character limit',
         'context.read_file_default_lines': 'default read_file line window',
         'context.read_file_max_chars': 'read_file character limit',
+        'context.prompt_budget_audit': 'prompt budget audit switch',
+        'context.microcompact_enabled': 'micro-compact enabled',
+        'context.microcompact_keep_recent': 'micro-compact keep recent tool results',
+        'context.project_instructions_enabled': 'project AGENTS.md injection switch',
+        'context.project_instructions_max_chars': 'project AGENTS.md character limit',
         'sessions.max_sessions': 'stored session limit',
         'sessions.retention_days': 'session retention days',
         'shell.default': 'default shell',
@@ -208,6 +251,7 @@ function getCompletionCopy(language = 'zh') {
         'soul.preset': 'soul preset',
         'soul.custom_path': 'custom soul prompt path',
         'policy.safe_mode': 'safe mode switch',
+        'policy.allowed_paths': 'safe-mode allowed path roots',
         'policy.allow_dangerous_commands': 'dangerous command allowance'
       },
       optionHints: {
@@ -217,7 +261,11 @@ function getCompletionCopy(language = 'zh') {
         'execution.mode': 'options: auto | normal | plan',
         'shell.default': 'common: bash | powershell',
         'policy.safe_mode': 'options: true | false',
-        'policy.allow_dangerous_commands': 'options: true | false'
+        'policy.allowed_paths': 'JSON array, for example ["D:\\\\shared"]',
+        'policy.allow_dangerous_commands': 'options: true | false',
+        'context.prompt_budget_audit': 'options: true | false',
+        'context.project_instructions_enabled': 'options: true | false',
+        'context.project_instructions_max_chars': 'recommended: 8000-12000'
       },
       describeSet: (label, hint) => `set the ${label}${hint ? ` (${hint})` : ''}`,
       describeGet: (label, hint) => `show the ${label}${hint ? ` (${hint})` : ''}`,
@@ -241,6 +289,7 @@ function getCompletionCopy(language = 'zh') {
         exit: 'exit chat',
         commands: 'list slash/custom commands',
         status: 'show runtime status (mode/model/session)',
+        model: 'show or switch model',
         mode: 'set execution mode: normal|auto|plan',
         compact: 'compress message context',
         checkpoint: 'create/list/load conversation checkpoints',
@@ -250,12 +299,14 @@ function getCompletionCopy(language = 'zh') {
         config: 'set/get/list/reset config values',
         memory: 'list/search/delete persistent memories',
         dream: 'consolidate memory inbox (dream)',
+        reflect: 'reflect on a successful workflow and draft a reusable skill',
         history: 'list/resume sessions',
         debug: 'runtime debug switches',
         retry: 'retry the last user request',
         stop: 'stop the current response',
         new: 'start a new session',
         yes: 'approve the pending plan and start execution',
+        no: 'discard the pending item',
         edit: 'revise the pending plan',
         reject: 'reject the pending plan'
       },
@@ -269,12 +320,14 @@ function getCompletionCopy(language = 'zh') {
         agentCommand: 'sub-agent command',
         memoryCommand: 'memory command',
         dreamCommand: 'dream consolidation command',
+        reflectCommand: 'reflect skill draft command',
         debugCommand: 'debug command',
         keyboardDebugCommand: 'keyboard debug command',
         compactCommand: 'context compaction command',
         retryCommand: 'retry the last user request',
         stopCommand: 'stop the current response',
         statusCommand: 'show runtime status',
+        modelCommand: 'show or switch model',
         resumeSession: 'resume a saved session'
       }
     }
@@ -288,18 +341,131 @@ function describeConfigKey(key, mode = 'set', language = 'zh') {
   return mode === 'get' ? copy.describeGet(label, hint) : copy.describeSet(label, hint);
 }
 
-const SUB_AGENT_ROLES = ['planner', 'coder', 'reviewer', 'tester', 'summarizer'];
+const SUB_AGENT_ROLES = ['planner', 'advisor', 'coder', 'reviewer', 'tester', 'summarizer'];
+const CODEWIKI_READ_ONLY_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan'];
 export const ROLE_TOOL_POLICY = {
   planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node', 'web_fetch', 'web_search', 'read_plan', 'update_plan'],
+  advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'read_plan'],
   coder: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
   reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'read_plan'],
   tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'read_plan'],
-  summarizer: ['read_plan']
+  summarizer: ['read', 'read_plan']
 };
 const SUB_AGENT_CONTEXT_MAX_MESSAGES = 4;
 const SUB_AGENT_CONTEXT_MAX_CHARS = 1200;
 const SUB_AGENT_EVIDENCE_MAX_ITEMS = 3;
 const SUB_AGENT_HANDOFF_MAX_ITEMS = 6;
+const PROJECT_REQUIREMENTS_SECTION_MARKERS = [
+  { key: 'summary', marker: 'REQUIREMENTS_SUMMARY', labels: ['1', 'summary', 'overview', 'project overview', 'executive summary', '项目概述', '项目总览', '概述'] },
+  { key: 'architecture', marker: 'REQUIREMENTS_ARCHITECTURE', labels: ['2', 'architecture', 'system architecture', 'system map', '架构', '系统架构图', '系统架构', '架构图'] },
+  { key: 'interfaces', marker: 'REQUIREMENTS_INTERFACE_INVENTORY', labels: ['3', 'interface inventory', 'interfaces', 'api inventory', '接口清单', '接口', 'api清单'] },
+  { key: 'requirements', marker: 'REQUIREMENTS_API_CARDS', labels: ['4', 'requirement cards', 'api cards', 'interface requirements', '接口需求卡片', '需求卡片'] },
+  { key: 'flows', marker: 'REQUIREMENTS_FLOWS', labels: ['5', 'flows', 'user flows', 'core flows', '核心用户流程', '用户流程', '流程'] },
+  { key: 'domain', marker: 'REQUIREMENTS_DOMAIN_MODEL', labels: ['6', 'domain model', 'data ownership', 'domain', '领域模型', '数据归属', '领域模型与数据归属'] },
+  { key: 'security', marker: 'REQUIREMENTS_SECURITY', labels: ['7', 'security', 'permissions', 'compliance', '权限', '安全', '合规', '权限、安全与合规'] },
+  { key: 'errors', marker: 'REQUIREMENTS_ERROR_HANDLING', labels: ['8', 'errors', 'edge cases', 'error handling', '异常处理', '边界情况', '异常处理与边界情况'] },
+  { key: 'nonfunctional', marker: 'REQUIREMENTS_NONFUNCTIONAL', labels: ['9', 'non-functional', 'nonfunctional', 'nfr', '非功能性需求', '非功能'] },
+  { key: 'questions', marker: 'REQUIREMENTS_OPEN_QUESTIONS', labels: ['10', 'open questions', 'unknowns', '待确认问题', '待确认', '问题'] },
+  { key: 'evidence', marker: 'REQUIREMENTS_EVIDENCE_INDEX', labels: ['11', 'evidence', 'source evidence', 'source evidence index', '源码证据索引', '证据索引', '源码证据'] }
+];
+const PROJECT_REQUIREMENTS_SHELL_COPY = {
+  en: {
+    html_lang: 'en',
+    title: 'Project Requirements Report',
+    meta_workspace: 'Workspace',
+    meta_date: 'Date',
+    meta_generated: 'Generated',
+    nav_label: 'Report sections',
+    nav_summary: 'Summary',
+    nav_architecture: 'Architecture',
+    nav_interfaces: 'Interfaces',
+    nav_requirements: 'Requirements',
+    nav_flows: 'Flows',
+    nav_domain: 'Domain Model',
+    nav_security: 'Security',
+    nav_errors: 'Errors',
+    nav_nonfunctional: 'Non-functional',
+    nav_questions: 'Open Questions',
+    nav_evidence: 'Evidence',
+    search_placeholder: 'Search APIs, modules, evidence...',
+    expand_all: 'Expand all',
+    collapse_all: 'Collapse all',
+    questions_only: 'Questions only',
+    show_all_sections: 'Show all sections',
+    no_results: 'No matching content found.',
+    heading_summary: 'Executive Summary',
+    heading_architecture: 'System Architecture',
+    heading_interfaces: 'Interface Inventory',
+    heading_requirements: 'Requirement Cards',
+    heading_flows: 'Core Flows',
+    heading_domain: 'Domain Model And Data Ownership',
+    heading_security: 'Permissions, Security, And Compliance',
+    heading_errors: 'Error Handling And Edge Cases',
+    heading_nonfunctional: 'Non-functional Requirements',
+    heading_questions: 'Open Questions',
+    heading_evidence: 'Source Evidence Index',
+    pending_summary: 'Pending summary.',
+    pending_architecture: 'Pending architecture map.',
+    pending_interfaces: 'Pending interface inventory.',
+    pending_requirements: 'Pending requirement cards.',
+    pending_flows: 'Pending flow diagrams.',
+    pending_domain: 'Pending domain model and data ownership.',
+    pending_security: 'Pending permissions, security, and compliance notes.',
+    pending_errors: 'Pending error handling and edge cases.',
+    pending_nonfunctional: 'Pending non-functional requirements.',
+    pending_questions: 'Pending open questions.',
+    pending_evidence: 'Pending evidence index.',
+    back_to_top: 'Back to top'
+  },
+  zh: {
+    html_lang: 'zh-CN',
+    title: '项目需求报告',
+    meta_workspace: '工作区',
+    meta_date: '日期',
+    meta_generated: '生成时间',
+    nav_label: '报告章节',
+    nav_summary: '摘要',
+    nav_architecture: '系统架构',
+    nav_interfaces: '接口清单',
+    nav_requirements: '需求卡片',
+    nav_flows: '核心流程',
+    nav_domain: '领域模型',
+    nav_security: '权限与安全',
+    nav_errors: '异常与边界',
+    nav_nonfunctional: '非功能需求',
+    nav_questions: '开放问题',
+    nav_evidence: '证据索引',
+    search_placeholder: '搜索 API、模块、证据...',
+    expand_all: '全部展开',
+    collapse_all: '全部收起',
+    questions_only: '仅看问题',
+    show_all_sections: '显示全部章节',
+    no_results: '未找到匹配内容。',
+    heading_summary: '执行摘要',
+    heading_architecture: '系统架构',
+    heading_interfaces: '接口清单',
+    heading_requirements: '需求卡片',
+    heading_flows: '核心流程',
+    heading_domain: '领域模型与数据归属',
+    heading_security: '权限、安全与合规',
+    heading_errors: '异常处理与边界情况',
+    heading_nonfunctional: '非功能需求',
+    heading_questions: '开放问题',
+    heading_evidence: '源码证据索引',
+    pending_summary: '等待填写摘要。',
+    pending_architecture: '等待填写架构图。',
+    pending_interfaces: '等待填写接口清单。',
+    pending_requirements: '等待填写需求卡片。',
+    pending_flows: '等待填写流程图。',
+    pending_domain: '等待填写领域模型与数据归属。',
+    pending_security: '等待填写权限、安全与合规说明。',
+    pending_errors: '等待填写异常处理与边界情况。',
+    pending_nonfunctional: '等待填写非功能需求。',
+    pending_questions: '等待填写开放问题。',
+    pending_evidence: '等待填写证据索引。',
+    back_to_top: '返回顶部'
+  }
+};
 const PLAN_MEMORY_MARKERS = {
   findings: ['<!-- plan-findings-start -->', '<!-- plan-findings-end -->'],
   progress: ['<!-- plan-progress-start -->', '<!-- plan-progress-end -->']
@@ -338,6 +504,25 @@ export function getSubAgentRolePrompt(role) {
       'Do not add a closing summary or "Next Action" — the pipeline handles what comes next.'
     ].join('\n');
   }
+  if (role === 'advisor') {
+    return [
+      'You are the advisor in a multi-step agent pipeline.',
+      'Your job: analyze the handed-off context and produce recommendations, tradeoffs, and evidence.',
+      'Do not edit files, write code, delete files, or run commands.',
+      'Output format — keep it short and direct:',
+      'Findings:',
+      '- <important observation, constraint, or "none">',
+      'Recommendations:',
+      '- <prioritized recommendation or "none">',
+      'Tradeoffs:',
+      '- <important tradeoff or "none">',
+      'Evidence:',
+      '- <files, docs, or observations checked>',
+      'Open Questions:',
+      '- <blocking uncertainty or "none">',
+      'Do not summarize your own work or add closing remarks — just deliver the structured advisory handoff and stop.'
+    ].join('\n');
+  }
   if (role === 'tester') {
     return [
       'You are the tester in a multi-step agent pipeline.',
@@ -358,6 +543,7 @@ export function getSubAgentRolePrompt(role) {
       'You are the summarizer in a multi-step agent pipeline.',
       'Your job is to synthesize the results of all prior steps into a concise, actionable final summary.',
       'Do NOT re-analyze the codebase or make new tool calls unless the handed-off evidence is clearly insufficient.',
+      'You may read handed-off artifact files, such as generated reports, when needed to summarize or verify their existence.',
       'Instead, read the accumulated step results in the plan file context provided to you.',
       'Output format — keep it short and direct:',
       'Summary:',
@@ -413,22 +599,61 @@ function buildPipelineStepGuidance({ role, stepIndex, totalSteps, isFirst, isLas
   lines.push('- If you discover something new, record it under the requested headings instead of burying it in prose.');
   lines.push('- Continue the established direction unless you have concrete contradictory evidence.');
   lines.push('- Output only what the next step needs to know. Skip obvious observations.');
-  if (isLast) {
+  if (role !== 'summarizer') {
+    lines.push('- Do not produce a final overall summary; the final summarizer step owns synthesis.');
+  }
+  if (isLast && role === 'summarizer') {
     lines.push('- Since you are the final step, give a concise overall verdict the user can act on.');
   }
   return lines.join('\n');
 }
 
-function buildSubAgentContextPacket(session) {
+function extractTaskKeywords(task) {
+  const text = String(task || '').toLowerCase();
+  const tokens = text.match(/[a-z0-9_./:-]{3,}|[\u4e00-\u9fa5]{2,}/g) || [];
+  const stop = new Set([
+    'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'task',
+    'please', 'update', 'change', 'fix', 'implement', 'review', 'test'
+  ]);
+  return [...new Set(tokens.filter((token) => !stop.has(token)))].slice(0, 24);
+}
+
+function scoreMessageForTask(message, keywords) {
+  if (!keywords.length) return 0;
+  const text = String(message?.content || '').toLowerCase();
+  if (!text) return 0;
+  let score = 0;
+  for (const keyword of keywords) {
+    if (text.includes(keyword)) score += keyword.includes('/') || keyword.includes('.') ? 3 : 1;
+  }
+  return score;
+}
+
+function buildSubAgentContextPacket(session, task = '') {
   const source = Array.isArray(session?.messages) ? session.messages : [];
-  const recent = source
+  const candidates = source
     .filter((msg) => msg && (msg.role === 'user' || msg.role === 'assistant'))
-    .slice(-SUB_AGENT_CONTEXT_MAX_MESSAGES);
-  if (recent.length === 0) return '';
+    .map((msg, index) => ({ msg, index }));
+  if (candidates.length === 0) return '';
+  const keywords = extractTaskKeywords(task);
+  const recentStart = Math.max(0, candidates.length - SUB_AGENT_CONTEXT_MAX_MESSAGES);
+  const ranked = candidates
+    .map((item, order) => ({
+      ...item,
+      score: scoreMessageForTask(item.msg, keywords),
+      recentScore: order >= recentStart ? 1 : 0
+    }))
+    .sort((a, b) => {
+      const scoreDelta = (b.score + b.recentScore) - (a.score + a.recentScore);
+      if (scoreDelta !== 0) return scoreDelta;
+      return b.index - a.index;
+    })
+    .slice(0, SUB_AGENT_CONTEXT_MAX_MESSAGES)
+    .sort((a, b) => a.index - b.index);
 
   const lines = [];
   let usedChars = 0;
-  for (const msg of recent) {
+  for (const { msg } of ranked) {
     const role = msg.role === 'assistant' ? 'assistant' : 'user';
     const text = trimInline(msg.content, 260);
     if (!text) continue;
@@ -439,7 +664,7 @@ function buildSubAgentContextPacket(session) {
   }
   if (lines.length === 0) return '';
   return [
-    'Scoped parent context (recent only, not full history):',
+    'Scoped parent context (task-relevant snippets, not full history):',
     ...lines,
     'Use this context only if it helps the current task.'
   ].join('\n');
@@ -704,6 +929,9 @@ function buildGoalRequirementPacket(goal, role) {
     lines.push('Verify the implementation against the original goal, not just syntax or smoke checks.');
     lines.push('Check each acceptance item explicitly before calling the work verified.');
     lines.push('If any requested behavior is unverified or contradicted by evidence, list it under Not Verified or Failures.');
+  } else if (role === 'advisor') {
+    lines.push('Advise against the acceptance checklist and original goal, not generic best practices.');
+    lines.push('Prioritize concrete recommendations, evidence, and tradeoffs. Do not implement changes.');
   } else if (role === 'coder') {
     lines.push('Implement against the acceptance checklist, not only the broad wording of the goal.');
   }
@@ -719,10 +947,11 @@ function buildAutoPlanPlannerGuidance() {
     '- Prefer the smallest local approach that satisfies the goal.',
     '- Do not output multiple alternative branches in the final plan.',
     '- Do not assume implementation should begin before the plan is coherent.',
-    '- Available sub-agent roles are planner, coder, reviewer, tester, and summarizer. Use only the roles the task actually needs.',
-    '- The summarizer role reads accumulated step results from the plan file and synthesizes a final summary. It does NOT re-analyze the codebase. Prefer summarizer as the final step for multi-step plans.',
+    '- Available sub-agent roles are planner, advisor, coder, reviewer, tester, and summarizer. Use only the non-summary roles the task actually needs.',
+    '- Always include a summarizer as the final step. The summarizer reads accumulated step results from the plan file and synthesizes the final summary. It does NOT re-analyze the codebase.',
+    '- Do not ask planner, advisor, coder, reviewer, or tester steps to produce the final summary. They should write detailed step results for the summarizer.',
     '- For implementation-heavy or risky changes, prefer adding review and/or verification steps.',
-    '- For analysis, recommendation, or planning-only goals, you may omit reviewer/tester if they do not add value.',
+    '- For analysis, recommendation, optimization, architecture feedback, or planning-only goals, prefer advisor over coder and omit reviewer/tester if they do not add value.',
     '- Prefer 3-5 steps total unless the task is clearly larger.',
     '- Keep the plan ordered, implementation-oriented, and easy for small sub-agents to follow.'
   ].join('\n');
@@ -740,6 +969,9 @@ function buildAutoPlanExecutionGuidance(role) {
   if (role === 'coder') {
     common.push('- Keep edits tightly scoped to the chosen plan direction.');
     common.push('- Avoid speculative cleanup or unrelated improvements.');
+  } else if (role === 'advisor') {
+    common.push('- Produce advisory findings and recommendations only; do not modify files or run commands.');
+    common.push('- Ground every recommendation in inspected evidence or mark it as an assumption.');
   } else if (role === 'reviewer') {
     common.push('- Review against the chosen plan direction and the acceptance checklist.');
     common.push('- Call out missing requested behavior, regression risk, and unverified claims.');
@@ -1040,7 +1272,13 @@ async function buildTesterVerificationPacket(focusPaths = []) {
   return lines.join('\n');
 }
 
-function isSkillEnabled(config, name) {
+function isBundledSkillCommand(command) {
+  return command?.metadata?.type === 'skill' && command?.source === 'bundled-skill';
+}
+
+function isSkillEnabled(config, name, command = null) {
+  if (command?.metadata?.enabled === false) return false;
+  if (isBundledSkillCommand(command)) return true;
   return config.skills?.enabled?.[name] !== false;
 }
 
@@ -1048,6 +1286,10 @@ function selectAutoSkillNames(text = '') {
   const input = String(text || '').toLowerCase();
   const selected = ['superpowers-lite'];
 
+  const explicitGrillMe =
+    /\bgr+ill\s+me\b|\bpressure[- ]?test\b|\bstress[- ]?test\b|\bchallenge\s+(?:this|my|me)\b|\btear\s+(?:this|my)\s+.*apart\b/i.test(
+      input
+    ) || /(拷问|质询|压力测试|挑战一下|挑刺|狠狠审|喷一下|怼一下)/i.test(input);
   const explicitBrainstorm =
     /(brainstorm|头脑风暴|方案|思路|设计一下|设计方案|怎么做|如何做|approach|options?)/i.test(input);
   const ambiguitySignals =
@@ -1065,6 +1307,9 @@ function selectAutoSkillNames(text = '') {
 
   if (explicitBrainstorm || (ambiguitySignals && featureRequest) || greenfieldBuildRequest) {
     selected.push('brainstorm');
+  }
+  if (explicitGrillMe) {
+    selected.push('grill-me');
   }
   return selected;
 }
@@ -1151,8 +1396,8 @@ function classifyAutoRoute(text = '') {
   };
 }
 
-function buildMediumTaskSystemPrompt(systemPrompt) {
-  const guidance = [
+function buildMediumTaskPromptBlock() {
+  return [
     'Task Mode: medium',
     'Execution guidance:',
     '- Give a brief execution outline before coding.',
@@ -1161,12 +1406,11 @@ function buildMediumTaskSystemPrompt(systemPrompt) {
     '- Verify the changed behavior before finishing.',
     '- If major ambiguity appears mid-task, say so clearly and ask for a plan instead of guessing.'
   ].join('\n');
-  return `${systemPrompt}\n\n${guidance}`;
 }
 
-function buildAutoSkillSystemPrompt(baseSystemPrompt, commands, config, text) {
-  const selected = classifyAutoRoute(text).selectedSkills.filter((name) => isSkillEnabled(config, name));
-  if (selected.length === 0) return baseSystemPrompt;
+function buildAutoSkillPromptBlock(commands, config, text) {
+  const selected = classifyAutoRoute(text).selectedSkills.filter((name) => isSkillEnabled(config, name, commands.get(name)));
+  if (selected.length === 0) return '';
 
   const blocks = [];
   for (const name of selected) {
@@ -1174,8 +1418,7 @@ function buildAutoSkillSystemPrompt(baseSystemPrompt, commands, config, text) {
     if (!skill || skill.metadata?.type !== 'skill') continue;
     blocks.push(`[Auto skill: ${name}]\n${skill.content}`);
   }
-  if (blocks.length === 0) return baseSystemPrompt;
-  return `${baseSystemPrompt}\n\n${blocks.join('\n\n')}`;
+  return blocks.join('\n\n');
 }
 
 function extractJsonBlock(text) {
@@ -1244,13 +1487,34 @@ function summarizeGoalForStepTitle(goal, fallback = 'requested change') {
 function buildFallbackAutoPlan(goal) {
   const requirements = deriveGoalRequirements(goal);
   const lightweightGoal = isLightweightAutoPlanGoal(goal, requirements);
+  const taskClass = classifyPlanTaskClass(goal);
   const focus = summarizeGoalForStepTitle(goal);
   const summary =
     requirements.length > 0
       ? `Auto fallback plan for: ${requirements.join('; ')}`
       : `Auto fallback plan for: ${goal}`;
 
+  if (taskClass === 'advisory') {
+    return {
+      summary,
+      steps: [
+        {
+          title: 'Inspect the target area',
+          role: 'planner',
+          task: `Inspect the relevant project context for: ${goal}. Identify constraints, evidence, and likely high-value advisory areas.`
+        },
+        {
+          title: `Advise on ${focus}`,
+          role: 'advisor',
+          task: `Analyze the findings for: ${goal}. Produce prioritized recommendations, tradeoffs, evidence, and open questions without implementing changes.`
+        },
+        buildDefaultSummarizerStep(goal)
+      ]
+    };
+  }
+
   if (lightweightGoal) {
+    const summarizerStep = buildDefaultSummarizerStep(goal);
     return {
       summary,
       steps: [
@@ -1263,7 +1527,8 @@ function buildFallbackAutoPlan(goal) {
           title: 'Verify the change',
           role: 'tester',
           task: `Verify the completed change for: ${goal}. Run the most relevant focused checks available and report concrete evidence plus anything still unverified.`
-        }
+        },
+        summarizerStep
       ]
     };
   }
@@ -1308,6 +1573,13 @@ function buildFallbackAutoPlan(goal) {
 function buildDefaultSummarizerStep(goal, source = []) {
   const existing = (Array.isArray(source) ? source : []).find((step) => step.role === 'summarizer');
   if (existing?.title && existing?.task) return existing;
+  if (classifyPlanTaskClass(goal) === 'advisory') {
+    return {
+      title: 'Synthesize final findings',
+      role: 'summarizer',
+      task: `Synthesize the advisory findings for: ${goal}. Read the accumulated observations, recommendations, tradeoffs, evidence, and open questions from earlier steps, then produce a concise final summary with the single best next action.`
+    };
+  }
   return {
     title: 'Synthesize final implementation status',
     role: 'summarizer',
@@ -1320,7 +1592,7 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
   const requirements = deriveGoalRequirements(goal);
   const lightweightGoal = isLightweightAutoPlanGoal(goal, requirements);
   const taskClass = classifyPlanTaskClass(goal);
-  const implementationSteps = source.filter((step) => step.role !== 'reviewer' && step.role !== 'tester' && step.role !== 'summarizer');
+  const implementationSteps = source.filter((step) => step.role !== 'advisor' && step.role !== 'reviewer' && step.role !== 'tester' && step.role !== 'summarizer');
   const primaryImplementationStep =
     implementationSteps.find((step) => step.role === 'coder') ||
     implementationSteps[0] || {
@@ -1343,17 +1615,49 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
   const hasTester = source.some((step) => step.role === 'tester');
 
   if (taskClass === 'advisory') {
-    const advisorySteps = source.filter((step) => step.role === 'planner' || step.role === 'coder');
+    const advisorySteps = source
+      .filter((step) => step.role === 'planner' || step.role === 'advisor' || step.role === 'coder')
+      .map((step) =>
+        step.role === 'coder'
+          ? {
+              ...step,
+              role: 'advisor',
+              title: /^implement\b/i.test(String(step.title || '')) ? 'Advise on requested goal' : step.title
+            }
+          : step
+      );
+    const hasAdvisor = advisorySteps.some((step) => step.role === 'advisor');
+    const baseSteps =
+      advisorySteps.length > 0
+        ? advisorySteps.slice(0, 6)
+        : [
+            {
+              title: 'Advise on requested goal',
+              role: 'advisor',
+              task: `Analyze the goal and recommend the highest-value next steps for: ${goal}`
+            }
+          ];
+    const finalSteps = hasAdvisor
+      ? baseSteps
+      : [
+          ...baseSteps,
+          {
+            title: 'Advise on requested goal',
+            role: 'advisor',
+            task: `Analyze the goal and recommend the highest-value next steps for: ${goal}`
+          }
+        ];
     return {
       summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
-      steps: advisorySteps.length > 0 ? advisorySteps.slice(0, 6) : [primaryImplementationStep]
+      steps: [...finalSteps, summarizerStep]
     };
   }
 
   if (lightweightGoal) {
+    const baseSteps = hasTester ? [primaryImplementationStep, testerStep] : [primaryImplementationStep];
     return {
       summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
-      steps: hasTester ? [primaryImplementationStep, testerStep] : [primaryImplementationStep]
+      steps: [...baseSteps, summarizerStep]
     };
   }
 
@@ -1362,11 +1666,9 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
     ...(hasReviewer ? [reviewerStep] : []),
     ...(testerStep ? [testerStep] : [])
   ];
-  const needsSummarizer = executionSteps.length >= 3;
-
   return {
     summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
-    steps: needsSummarizer ? [...executionSteps, summarizerStep] : executionSteps
+    steps: [...executionSteps, summarizerStep]
   };
 }
 
@@ -1603,6 +1905,13 @@ async function buildAutoPlanFinalSummary({
   }
 
   try {
+    const summarySystemPrompt = await composeSystemPrompt({
+      shellRulesPrompt: systemPrompt,
+      config,
+      skillsPrompt: 'You are writing the final execution summary for a completed auto plan. Focus on closure, verification status, and the next action.',
+      includeSoul: false,
+      includeMemory: false
+    });
     const result = await createChatCompletion({
       sdkProvider: config.sdk?.provider,
       baseUrl: config.gateway.base_url,
@@ -1611,14 +1920,14 @@ async function buildAutoPlanFinalSummary({
       messages: [
         {
           role: 'system',
-          content: `${systemPrompt}\nYou are writing the final execution summary for a completed auto plan. Focus on closure, verification status, and the next action.`
+          content: summarySystemPrompt
         },
         {
           role: 'user',
           content: buildAutoPlanFinalSummaryUserPrompt({ goal, autoPlan, runItems, planningError })
         }
       ],
-      timeoutMs: config.gateway.timeout_ms || 90000,
+      timeoutMs: config.gateway.timeout_ms || 1800000,
       maxRetries: config.gateway.max_retries ?? 2
     });
     return trimInline(result.text || '', 600) || fallbackSummary;
@@ -1642,37 +1951,65 @@ async function writeMarkdownInProjectDir(subDir, title, body, fallbackName, sess
   return filePath;
 }
 
+async function removePlanFileIfPresent(planState) {
+  const filePath = String(planState?.filePath || '').trim();
+  if (!filePath) return;
+  try {
+    await fs.unlink(filePath);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      // Best-effort cleanup: keep the main approval flow moving.
+    }
+  }
+}
+
 function buildSpecTemplate(topic) {
   return `
-# Spec: ${topic}
+# ${topic} Design
 
-## 1. Background
-- Why this work is needed
-- Existing pain points
+## Summary
+- Problem statement
+- Desired outcome
+- Why this is worth doing
 
-## 2. Goals
+## Goals
 - Primary goal
-- Non-goals
+- Secondary goals
 
-## 3. Scope
-- In scope
-- Out of scope
+## Non-Goals
+- Out-of-scope behavior
+- Explicitly rejected approaches
 
-## 4. Requirements
+## User Experience / Command Behavior
+- User-facing commands or flows
+- Review or approval behavior
+- Expected outputs
+
+## Architecture
+- Main modules and responsibilities
+- Data flow
+- Integration points
+
+## Data / State Model
+- New or changed state
+- Persistence locations
+- Lifecycle and cleanup behavior
+
+## Safety Rules
+- Guardrails
+- Permission or approval requirements
+- Failure behavior
+
+## Requirements
 - Functional requirements
 - Non-functional requirements
 - Win10 compatibility requirements
 
-## 5. Design
-- Architecture sketch
-- Data flow
-- Key interfaces/commands
-
-## 6. Risks and Mitigations
+## Risks and Mitigations
 - Risk
 - Mitigation
 
-## 7. Validation
+## Testing / Validation
 - Test strategy
 - Acceptance checklist
 `;
@@ -1691,18 +2028,28 @@ async function buildSpecWithModel({
   systemPrompt
 }) {
   const prompt = [
-    'Write a practical engineering spec in markdown.',
+    'Write a practical engineering spec in markdown, like an implementation-ready design document.',
     'Use these sections exactly:',
-    '# Spec: <title>',
-    '## 1. Background',
-    '## 2. Goals',
-    '## 3. Scope',
-    '## 4. Requirements',
-    '## 5. Design',
-    '## 6. Risks and Mitigations',
-    '## 7. Validation',
-    'Make it implementation-oriented and suitable for a Win10-first internal coding CLI.'
+    '# <Feature> Design',
+    '## Summary',
+    '## Goals',
+    '## Non-Goals',
+    '## User Experience / Command Behavior',
+    '## Architecture',
+    '## Data / State Model',
+    '## Safety Rules',
+    '## Requirements',
+    '## Risks and Mitigations',
+    '## Testing / Validation',
+    'Make it concrete, scoped, and suitable for turning into a sub-agent implementation plan.'
   ].join('\n');
+  const specSystemPrompt = await composeSystemPrompt({
+    shellRulesPrompt: systemPrompt,
+    config,
+    skillsPrompt: prompt,
+    includeSoul: false,
+    includeMemory: false
+  });
 
   const result = await createChatCompletion({
     sdkProvider: config.sdk?.provider,
@@ -1710,10 +2057,10 @@ async function buildSpecWithModel({
     apiKey: config.gateway.api_key,
     model: model || config.model.name,
     messages: [
-      { role: 'system', content: `${systemPrompt}\n${prompt}` },
+      { role: 'system', content: specSystemPrompt },
       { role: 'user', content: `Topic: ${topic}` }
     ],
-    timeoutMs: config.gateway.timeout_ms || 90000,
+    timeoutMs: config.gateway.timeout_ms || 1800000,
     maxRetries: config.gateway.max_retries ?? 2
   });
   return String(result.text || '').trim();
@@ -1763,6 +2110,13 @@ async function buildPlanFromSpecWithModel({
     '## Task Breakdown',
     'Make the plan concrete and ordered for a coding agent.'
   ].join('\n');
+  const planSystemPrompt = await composeSystemPrompt({
+    shellRulesPrompt: systemPrompt,
+    config,
+    skillsPrompt: prompt,
+    includeSoul: false,
+    includeMemory: false
+  });
 
   const result = await createChatCompletion({
     sdkProvider: config.sdk?.provider,
@@ -1770,13 +2124,13 @@ async function buildPlanFromSpecWithModel({
     apiKey: config.gateway.api_key,
     model: model || config.model.name,
     messages: [
-      { role: 'system', content: `${systemPrompt}\n${prompt}` },
+      { role: 'system', content: planSystemPrompt },
       {
         role: 'user',
         content: `Spec path: ${specPath || '(inline)'}\n\nProject implementation constraints:\n${projectConstraints}\n\n${specText}`
       }
     ],
-    timeoutMs: config.gateway.timeout_ms || 90000,
+    timeoutMs: config.gateway.timeout_ms || 1800000,
     maxRetries: config.gateway.max_retries ?? 2
   });
   return String(result.text || '').trim();
@@ -1874,18 +2228,99 @@ function effectiveMaxContextTokens(config) {
   return 32000;
 }
 
+function estimateTextTokens(role, content) {
+  const text = String(content || '');
+  if (!text) return 0;
+  return estimateMessagesTokens([{ role, content: text }]);
+}
+
+function makePromptBudgetComponent(name, role, content) {
+  const text = String(content || '');
+  return {
+    name,
+    chars: text.length,
+    estimated_tokens: estimateTextTokens(role, text)
+  };
+}
+
+function buildPromptBudgetAudit({
+  systemPrompt = '',
+  projectContextSnippet = '',
+  projectContextGuidance = '',
+  messages = [],
+  toolDefinitions = [],
+  config = {}
+}) {
+  const toolSchemaText = JSON.stringify(toolDefinitions || []);
+  const messageTexts = (Array.isArray(messages) ? messages : []).map((message) => ({
+    role: message?.role || 'user',
+    content: message?.content || ''
+  }));
+  const components = [
+    makePromptBudgetComponent('system_prompt', 'system', systemPrompt),
+    makePromptBudgetComponent('project_context', 'system', projectContextSnippet),
+    makePromptBudgetComponent('project_context_guidance', 'system', projectContextGuidance),
+    {
+      name: 'message_history',
+      chars: messageTexts.reduce((total, message) => total + String(message.content || '').length, 0),
+      estimated_tokens: estimateMessagesTokens(messageTexts)
+    },
+    makePromptBudgetComponent('tool_schemas', 'system', toolSchemaText)
+  ];
+  const totalChars = components.reduce((total, component) => total + component.chars, 0);
+  const totalTokens = components.reduce((total, component) => total + component.estimated_tokens, 0);
+  const maxContextTokens = effectiveMaxContextTokens(config);
+  const contextUsagePct =
+    maxContextTokens > 0 ? Math.min(100, Math.max(0, (totalTokens / maxContextTokens) * 100)) : 0;
+  return {
+    components,
+    total: {
+      chars: totalChars,
+      estimated_tokens: totalTokens
+    },
+    max_context_tokens: maxContextTokens,
+    context_usage_pct: contextUsagePct
+  };
+}
+
+function summarizePromptBudgetAudit(audit) {
+  const totalTokens = audit?.total?.estimated_tokens || 0;
+  const maxContextTokens = audit?.max_context_tokens || 0;
+  const pct = Number(audit?.context_usage_pct || 0).toFixed(1);
+  const components = (audit?.components || [])
+    .filter((component) => component.estimated_tokens > 0)
+    .map((component) => `${component.name}=${component.estimated_tokens}`)
+    .join(', ');
+  return `prompt budget: ${totalTokens}/${maxContextTokens} est tokens (${pct}%)${components ? `; ${components}` : ''}`;
+}
+
 function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession }) {
-  const parentTokens = estimateMessagesTokens(currentSession?.messages || []);
+  const activeParentMessages = Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
+    ? currentSession.compact.view
+    : currentSession?.messages || [];
+  const parentTokens = estimateMessagesTokens(activeParentMessages);
   const subTokens = extraSession ? estimateMessagesTokens(extraSession.messages || []) : 0;
   const currentContextTokens = parentTokens + subTokens;
   const maxContextTokens = effectiveMaxContextTokens(config);
   const contextUsagePct = maxContextTokens > 0 ? Math.min(100, Math.max(0, (currentContextTokens / maxContextTokens) * 100)) : 0;
+  const planState = currentSession?.planState;
   const snapshot = {
     sessionId: currentSession?.id || '',
-    mode: executionMode || config.execution?.mode || 'auto',
+    sessionTitle: currentSession?.title || '',
+    messageCount: Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0,
+    mode: executionMode || config.execution?.mode || 'normal',
     sdkProvider: config.sdk?.provider || 'openai-compatible',
+    agentRole: 'general',
     model: model || config.model?.name || '',
-    maxContextTokens
+    mainModel: config.model?.name || '',
+    fastModel: config.model?.fast_name || config.model?.name || '',
+    maxContextTokens,
+    pendingPlanApproval: planState?.status === 'pending_approval'
+      ? { goal: planState.goal, summary: planState.finalSummary || planState.summary, filePath: planState.filePath, steps: planState.steps || [] }
+      : null,
+    pendingReflectSkill: planState?.status === 'pending_reflect_skill'
+      ? buildPendingReflectSkillSnapshot(planState)
+      : null
   };
   Object.defineProperties(snapshot, {
     currentContextTokens: {
@@ -1898,13 +2333,114 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
       enumerable: false,
       writable: false
     },
-    pendingPlanApproval: {
-      value: currentSession?.planState?.status === 'pending_approval',
+    replyLanguage: {
+      value: getReplyLanguage(config),
+      enumerable: false,
+      writable: false
+    },
+    toJSON: {
+      value: () => ({
+        ...snapshot,
+        currentContextTokens,
+        contextUsagePct,
+        replyLanguage: getReplyLanguage(config)
+      }),
       enumerable: false,
       writable: false
     }
   });
   return snapshot;
+}
+
+function resolveDefaultModel(config) {
+  return String(config?.model?.name || '').trim();
+}
+
+function resolveFastModel(config) {
+  return String(config?.model?.fast_name || config?.model?.lite_name || config?.model?.name || '').trim();
+}
+
+function normalizeGeneratedSessionTitle(value, fallback = '') {
+  const cleaned = String(value || '')
+    .replace(/^[\s"'`#：:「『【\[]+|[\s"'`。.!?？！」』】\]]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const title = cleaned || fallback || '';
+  if (!title) return '';
+  return title.length > 48 ? `${title.slice(0, 45).trimEnd()}...` : title;
+}
+
+function shouldReplaceSessionTitle(title) {
+  const value = String(title || '').trim();
+  return !value || value === '新会话' || value === 'New session';
+}
+
+async function generateSessionTitle({ userText, assistantText = '', config, signal }) {
+  const fallback = normalizeGeneratedSessionTitle(deriveSessionTitle([{ role: 'user', content: userText }]));
+  const latestConfig = await loadConfig().catch(() => config);
+  const effectiveConfig = latestConfig || config;
+  const fastModel = resolveFastModel(effectiveConfig);
+  if (!fastModel) return fallback;
+  const titleInput = [
+    `User:\n${String(userText || '').slice(0, 1200)}`,
+    assistantText ? `Assistant:\n${String(assistantText || '').slice(0, 1600)}` : ''
+  ].filter(Boolean).join('\n\n');
+  try {
+    const result = await createChatCompletion({
+      sdkProvider: effectiveConfig.sdk?.provider,
+      baseUrl: effectiveConfig.gateway.base_url,
+      apiKey: effectiveConfig.gateway.api_key,
+      model: fastModel,
+      messages: [
+        {
+          role: 'system',
+          content: [
+            'Generate a concise chat session title.',
+            'Base it on the completed user-assistant exchange, not only the user prompt.',
+            'Return only the title text.',
+            'Use the same language as the user when possible.',
+            'No quotes, no markdown, no punctuation at the ends.',
+            'Maximum 18 Chinese characters or 8 English words.'
+          ].join(' ')
+        },
+        { role: 'user', content: titleInput }
+      ],
+      tools: [],
+      timeoutMs: Math.min(Number(effectiveConfig.gateway?.timeout_ms || 30000), 30000),
+      maxRetries: 0,
+      signal
+    });
+    return normalizeGeneratedSessionTitle(result?.text, fallback) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function createCompactSummaryGenerator(config, signal) {
+  return async (olderMessages) => {
+    const latestConfig = await loadConfig().catch(() => config);
+    const effectiveConfig = latestConfig || config;
+    const fastModel = resolveFastModel(effectiveConfig);
+    if (!fastModel) throw new Error('No fast model');
+    const transcript = buildTranscriptForLLM(olderMessages);
+    const result = await createChatCompletion({
+      sdkProvider: effectiveConfig.sdk?.provider,
+      baseUrl: effectiveConfig.gateway.base_url,
+      apiKey: effectiveConfig.gateway.api_key,
+      model: fastModel,
+      messages: [
+        { role: 'system', content: COMPACT_SUMMARY_PROMPT },
+        { role: 'user', content: transcript.slice(0, 12000) }
+      ],
+      tools: [],
+      timeoutMs: Math.min(Number(effectiveConfig.gateway?.timeout_ms || 30000), 60000),
+      maxRetries: 0,
+      signal
+    });
+    const text = result?.text?.trim();
+    if (!text) throw new Error('Empty summary');
+    return text;
+  };
 }
 
 function estimatePromptTokensForRequest(sessionMessages, userText = '') {
@@ -1926,6 +2462,10 @@ function stampedMessage(role, content, extra = {}) {
 
 function hasPendingPlanApproval(session) {
   return session?.planState?.status === 'pending_approval';
+}
+
+function hasPendingReflectSkill(session) {
+  return session?.planState?.status === 'pending_reflect_skill';
 }
 
 function isApprovalText(text = '') {
@@ -1962,6 +2502,43 @@ function buildPendingPlanApprovalMessage(planState) {
     'Use /yes to execute this plan, /edit <feedback> to revise it, or /reject to discard it.'
   ];
   return lines.join('\n');
+}
+
+function buildPendingReflectSkillMessage(reflectState) {
+  const candidates = Array.isArray(reflectState?.candidates) ? reflectState.candidates : [];
+  if (candidates.length === 0) {
+    return 'Reflect found no reusable skill candidate.';
+  }
+  const lines = [
+    'Reflect skill draft pending.',
+    `Scope: ${reflectState?.targetScope || 'project'}`
+  ];
+  for (const candidate of candidates) {
+    lines.push('');
+    lines.push(`[${candidate.id || 1}] ${candidate.name}`);
+    lines.push(`Confidence: ${Number(candidate.confidence ?? 0.75).toFixed(2)}`);
+    lines.push(`Target: ${candidate.targetPath || '-'}`);
+    lines.push('');
+    lines.push(String(candidate.content || '').trim());
+  }
+  lines.push('');
+  lines.push('Use /yes to write this skill, /edit <feedback> to revise it, or /no to discard it.');
+  return lines.join('\n');
+}
+
+function buildPendingReflectSkillSnapshot(reflectState) {
+  const candidates = Array.isArray(reflectState?.candidates) ? reflectState.candidates : [];
+  const candidate = candidates[0] || null;
+  if (!candidate) return null;
+  return {
+    scope: reflectState?.targetScope || 'project',
+    request: reflectState?.request || '',
+    name: candidate.name || '',
+    description: candidate.description || '',
+    confidence: Number(candidate.confidence ?? 0.75),
+    targetPath: candidate.targetPath || '',
+    content: candidate.content || ''
+  };
 }
 
 function buildApprovedPlanExecutionPrompt(planState, approvalText = '') {
@@ -2066,6 +2643,7 @@ async function expandFileMentions(rawText, workspaceRoot = process.cwd()) {
 
 async function askModel({
   text,
+  modelText,
   session,
   config,
   model,
@@ -2078,27 +2656,68 @@ async function askModel({
   signal,
   allowedTools,
   maxSteps: maxStepsOverride,
-  skipAnalysisNudge = false
+  skipAnalysisNudge = false,
+  compactedForModel: compactedInput = null,
+  onCompactedUpdate = null
 }) {
+  let compacted = compactedInput;
+  const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
   const maxContextTokens = effectiveMaxContextTokens(config);
-  const triggerPct = Number(config.context?.preflight_trigger_pct || 92);
+  const triggerPct = Number(config.context?.preflight_trigger_pct || 60);
   const hardPct = Number(config.context?.hard_limit_pct || 98);
-  const preflightTokens = estimatePromptTokensForRequest(session.messages, text);
+  const messagesForEstimate = compacted ?? session.messages;
+  const preflightTokens = estimatePromptTokensForRequest(messagesForEstimate, modelInputText);
   const preflightPct = (preflightTokens / maxContextTokens) * 100;
 
-  if (preflightPct >= triggerPct) {
-    const auto = compactMessagesLocally(session.messages, {
-      mode: preflightPct >= hardPct ? 'aggressive' : 'conservative'
-    });
-    if (auto.changed) {
-      session.messages = auto.compacted.map((m) => ({ ...m, at: new Date().toISOString() }));
-      await saveSession(session);
-      if (onAgentEvent) {
-        onAgentEvent({
-          type: 'compact:auto',
-          mode: preflightPct >= hardPct ? 'aggressive' : 'conservative',
-          threshold: Math.round(preflightPct)
-        });
+  if (persistSession && preflightPct >= triggerPct) {
+    const compactSource = compacted ?? session.messages;
+    // Phase 0: try micro-compact first (in-place tool result clearing)
+    const microEnabled = config.context?.microcompact_enabled !== false;
+    const microKeep = Number(config.context?.microcompact_keep_recent || 5);
+    let needsMacro = true;
+    if (microEnabled) {
+      const micro = microCompactMessages(compactSource, { keepRecent: microKeep, enabled: true });
+      if (micro.changed) {
+        compacted = micro.messages.map((m) => ({ ...m, at: new Date().toISOString() }));
+        if (onCompactedUpdate) onCompactedUpdate(compacted);
+        const afterMicroTokens = estimateMessagesTokens(compacted);
+        const afterMicroPct = (afterMicroTokens / maxContextTokens) * 100;
+        if (onAgentEvent) {
+          onAgentEvent({
+            type: 'compact:auto',
+            mode: 'micro',
+            threshold: Math.round(preflightPct),
+            tokensSaved: micro.tokensSaved
+          });
+        }
+        if (afterMicroPct < triggerPct) {
+          needsMacro = false;
+        }
+      }
+    }
+    if (needsMacro) {
+      const sourceIsCompacted = Boolean(compacted);
+      const macroSource = compacted ?? session.messages;
+      const auto = await compactMessagesLocally(macroSource, {
+        mode: preflightPct >= hardPct ? 'aggressive' : 'conservative',
+        force: true,
+        generateSummary: createCompactSummaryGenerator(config, signal)
+      });
+      if (auto.changed) {
+        compacted = auto.compacted.map((m) => ({ ...m, at: new Date().toISOString() }));
+        if (onCompactedUpdate) {
+          onCompactedUpdate(compacted, {
+            boundaryIndex: translateCompactBoundaryToOriginal(sourceIsCompacted, session.compact, auto.boundaryIndex),
+            mode: preflightPct >= hardPct ? 'aggressive' : 'conservative'
+          });
+        }
+        if (onAgentEvent) {
+          onAgentEvent({
+            type: 'compact:auto',
+            mode: preflightPct >= hardPct ? 'aggressive' : 'conservative',
+            threshold: Math.round(preflightPct)
+          });
+        }
       }
     }
   }
@@ -2149,19 +2768,51 @@ async function askModel({
     }
   }
 
+  const shouldGenerateTitle = text
+    ? !session.messages.some((msg) => msg?.role === 'user')
+    : false;
   if (text) {
-    session.messages.push(stampedMessage('user', text));
+    const modelExtra =
+      typeof modelText === 'string' && modelText && modelText !== text ? { model_content: modelText } : {};
+    const userMessage = stampedMessage('user', text, modelExtra);
+    session.messages.push(userMessage);
+    if (compacted) {
+      compacted.push({ ...userMessage });
+      if (onCompactedUpdate) onCompactedUpdate(compacted);
+    }
+    if (shouldReplaceSessionTitle(session.title)) {
+      session.title = deriveSessionTitle(session.messages);
+    }
+    session.model = model || config.model.name;
+    session.mode = executionMode || config.execution?.mode || 'normal';
     if (persistSession) await saveSession(session);
   }
 
-  const projectContextSnippet = await buildProjectContextSnippet(process.cwd(), text).catch(() => '');
-  const effectiveSystemPrompt = projectContextSnippet
-    ? `${systemPrompt}\n\n${projectContextSnippet}\n\nUse this project context as lightweight guidance and verify important details with fresh reads when needed.`
-    : systemPrompt;
+  const projectContextSnippet = await buildProjectContextSnippet(process.cwd(), modelInputText).catch(() => '');
+  const projectContextGuidance =
+    'Use this project context as lightweight guidance and verify important details with fresh reads when needed.';
+  const effectiveSystemPrompt = await composeSystemPrompt({
+    shellRulesPrompt: systemPrompt,
+    config,
+    workspaceRoot: process.cwd(),
+    includeSoul: false,
+    includeMemory: false,
+    projectContextSnippet,
+    projectContextGuidance
+  });
 
   const { definitions, handlers, formatters, deferredDefinitions, dispose: disposeTools } = getBuiltinTools({
     workspaceRoot: process.cwd(),
-    config,
+    config: {
+      ...config,
+      policy: {
+        ...(config.policy || {}),
+        allowed_paths: [
+          ...(Array.isArray(config.policy?.allowed_paths) ? config.policy.allowed_paths : []),
+          path.join(getSessionsDir(), String(session.id))
+        ]
+      }
+    },
     sessionId: session.id,
     onSystemEvent: onAgentEvent,
     getTodos: () => normalizeTodos(session.todos),
@@ -2186,7 +2837,48 @@ async function askModel({
     ? Object.fromEntries(Object.entries(deferredDefinitions).filter(([name]) => allowedTools.includes(name)))
     : deferredDefinitions;
 
+  if (config.context?.prompt_budget_audit === true && onAgentEvent) {
+    const auditId = `prompt-budget-${Date.now()}`;
+    const audit = buildPromptBudgetAudit({
+      systemPrompt,
+      projectContextSnippet,
+      projectContextGuidance: projectContextSnippet ? projectContextGuidance : '',
+      messages: session.messages.filter((m) => m.role !== 'system'),
+      toolDefinitions: filteredDefinitions,
+      config
+    });
+    onAgentEvent({
+      type: 'system_tool:start',
+      id: auditId,
+      name: 'prompt_budget',
+      summary: 'calculating prompt budget'
+    });
+    onAgentEvent({
+      type: 'system_tool:end',
+      id: auditId,
+      name: 'prompt_budget',
+      summary: summarizePromptBudgetAudit(audit),
+      details: audit
+    });
+  }
+
   let activeAssistantIndex = -1;
+  const pendingToolMeta = new Map();
+  const attachToolMetaToSessionCall = (toolId, meta = {}) => {
+    if (!toolId) return false;
+    for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+      const msg = session.messages[i];
+      if (msg?.role !== 'assistant' || !Array.isArray(msg.tool_calls)) continue;
+      const call = msg.tool_calls.find((tc) => String(tc?.id || '') === String(toolId));
+      if (!call) continue;
+      if (Number.isFinite(Number(meta.durationMs))) call.durationMs = Number(meta.durationMs);
+      if (typeof meta.summary === 'string' && meta.summary.trim()) call.summary = meta.summary.trim();
+      if (typeof meta.status === 'string' && meta.status.trim()) call.status = meta.status.trim();
+      msg.at = new Date().toISOString();
+      return true;
+    }
+    return false;
+  };
   const wrappedAgentEvent = (event) => {
     // Always accumulate messages in session (for token tracking), only save when persisting
     if (event?.type === 'assistant:start') {
@@ -2215,21 +2907,61 @@ async function askModel({
         }
         current.at = new Date().toISOString();
         if (persistSession) scheduleSessionSave();
+      } else {
+        const assistantMessage = event.assistantMessage && typeof event.assistantMessage === 'object'
+          ? event.assistantMessage
+          : { content: event.text || '' };
+        session.messages.push(stampedMessage('assistant', assistantMessage.content || event.text || '', {
+          ...(typeof assistantMessage.reasoning_content === 'string' && assistantMessage.reasoning_content
+            ? { reasoning_content: assistantMessage.reasoning_content }
+            : {}),
+          ...(Array.isArray(assistantMessage.reasoning_details) && assistantMessage.reasoning_details.length > 0
+            ? { reasoning_details: assistantMessage.reasoning_details }
+            : {}),
+          ...(Array.isArray(assistantMessage.tool_calls) && assistantMessage.tool_calls.length > 0
+            ? { tool_calls: assistantMessage.tool_calls }
+            : {})
+        }));
+        if (persistSession) scheduleSessionSave();
       }
       activeAssistantIndex = -1;
+    } else if (event?.type === 'tool:end' || event?.type === 'tool:error' || event?.type === 'tool:blocked') {
+      const toolId = String(event.id || '');
+      if (toolId) {
+        const meta = {
+          durationMs: Number.isFinite(Number(event.durationMs)) ? Number(event.durationMs) : undefined,
+          summary: typeof event.summary === 'string' ? event.summary : '',
+          status:
+            event.type === 'tool:error'
+              ? 'error'
+              : event.type === 'tool:blocked'
+                ? 'blocked'
+                : 'done'
+        };
+        pendingToolMeta.set(toolId, meta);
+        if (attachToolMetaToSessionCall(toolId, meta) && persistSession) scheduleSessionSave();
+      }
     } else if (event?.type === 'tool:result') {
+      const toolId = String(event.id || '');
+      const meta = pendingToolMeta.get(toolId) || {};
       session.messages.push(
         stampedMessage('tool', event.content || '', {
-          tool_call_id: event.id || ''
+          tool_call_id: toolId,
+          ...(Number.isFinite(Number(meta.durationMs)) ? { tool_duration_ms: Number(meta.durationMs) } : {}),
+          ...(meta.summary ? { tool_summary: meta.summary } : {}),
+          ...(meta.status ? { tool_status: meta.status } : {})
         })
       );
+      pendingToolMeta.delete(toolId);
       if (persistSession) scheduleSessionSave();
     }
 
     if (onAgentEvent) onAgentEvent(event);
   };
 
-  const loopUserPrompt = persistSession ? '' : text;
+  const sessionLenBeforeLoop = session.messages.length;
+  const loopUserPrompt = persistSession ? '' : modelInputText;
+  const expectedModelText = typeof modelText === 'string' && modelText && modelText !== text ? modelText : '';
   const loopResult = await runAgentLoop({
     systemPrompt: effectiveSystemPrompt,
     userPrompt: loopUserPrompt,
@@ -2237,9 +2969,9 @@ async function askModel({
     maxSteps: maxStepsOverride ?? Number(config.execution?.max_steps || 16),
     toolDefinitions: filteredDefinitions,
     toolHandlers: filteredHandlers,
-    initialMessages: toOpenAIMessages(session.messages),
+    initialMessages: toOpenAIMessages(compacted ?? session.messages),
     onEvent: wrappedAgentEvent,
-    executionMode: executionMode || config.execution?.mode || 'auto',
+    executionMode: executionMode || config.execution?.mode || 'normal',
     alwaysAllowTools:
       alwaysAllowTools || config.execution?.always_allow_tools || ['run', 'read', 'write'],
     toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
@@ -2252,9 +2984,9 @@ async function askModel({
     requestCompletion: async ({ messages, tools, model: selectedModel }) => {
       let started = false;
       const startAssistantStream = () => {
-        if (!started && onAgentEvent) {
+        if (!started) {
           started = true;
-          onAgentEvent({ type: 'assistant:start' });
+          wrappedAgentEvent({ type: 'assistant:start' });
         }
       };
 
@@ -2265,16 +2997,16 @@ async function askModel({
         model: selectedModel,
         messages,
         tools,
-        timeoutMs: config.gateway.timeout_ms || 90000,
+        timeoutMs: config.gateway.timeout_ms || 1800000,
         maxRetries: config.gateway.max_retries ?? 2,
         signal,
         onTextDelta: (delta) => {
           startAssistantStream();
-          if (onAgentEvent) onAgentEvent({ type: 'assistant:delta', text: delta });
+          wrappedAgentEvent({ type: 'assistant:delta', text: delta });
         },
         onToolCallDelta: (toolCall) => {
           startAssistantStream();
-          if (onAgentEvent) onAgentEvent({ type: 'assistant:tool_call_delta', toolCall });
+          wrappedAgentEvent({ type: 'assistant:tool_call_delta', toolCall });
         }
       });
 
@@ -2287,11 +3019,45 @@ async function askModel({
   });
 
   if (persistSession) {
-    session.messages = loopResult.messages
-      .filter((m) => m.role !== 'system')
-      .map((m) => ({ ...m, at: new Date().toISOString() }));
+    // Sync new messages to compacted view
+    if (compacted) {
+      const newMsgs = session.messages.slice(sessionLenBeforeLoop);
+      for (const msg of newMsgs) {
+        compacted.push({ ...msg });
+      }
+      if (onCompactedUpdate) onCompactedUpdate(compacted);
+    }
+    // Handle model_content rewrite on the new user message
+    if (expectedModelText) {
+      for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+        const message = session.messages[i];
+        if (message?.role === 'user' && message.content === expectedModelText) {
+          message.content = text;
+          message.model_content = expectedModelText;
+          break;
+        }
+      }
+    }
+    session.model = model || config.model.name;
+    session.mode = executionMode || config.execution?.mode || 'normal';
     await flushScheduledSave();
     await saveSession(session);
+    // Generate a better title asynchronously after saving
+    if (shouldGenerateTitle) {
+      const titleSessionId = session.id;
+      generateSessionTitle({
+        userText: text,
+        assistantText: loopResult.text || '',
+        config,
+        signal
+      }).then(async (generatedTitle) => {
+        if (generatedTitle && generatedTitle !== session.title) {
+          session.title = generatedTitle;
+          await saveSession(session);
+          onTitleUpdateCallback?.(titleSessionId, generatedTitle);
+        }
+      }).catch(() => {});
+    }
     try {
       await pruneSessions(config.sessions || {});
     } catch {
@@ -2318,7 +3084,7 @@ async function runSubAgentTask({
 }) {
   const subSession = { id: `sub-${Date.now()}`, messages: [] };
   const rolePrompt = getSubAgentRolePrompt(role);
-  const contextPacket = buildSubAgentContextPacket(parentSession);
+  const contextPacket = buildSubAgentContextPacket(parentSession, task || goal);
   const evidencePacket = buildSubAgentEvidencePacket(parentSession);
   const handoffPacket = buildStepArtifactPacket(priorSteps, role);
   const handoffFocusPaths = collectStepArtifacts(priorSteps, role)?.focusPaths || [];
@@ -2363,16 +3129,29 @@ async function runSubAgentTask({
         }
       } catch {}
     }
+    if (
+      role !== 'summarizer' &&
+      ['assistant:start', 'assistant:delta', 'assistant:response', 'assistant:tool_call_delta'].includes(String(evt?.type || ''))
+    ) {
+      return;
+    }
     if (onAgentEvent) onAgentEvent(evt);
   };
   const roleAllowedTools = ROLE_TOOL_POLICY[role];
   if (onSessionActive) onSessionActive(subSession);
+  const subSystemPrompt = await composeSystemPrompt({
+    shellRulesPrompt: systemPrompt,
+    config,
+    skillsPrompt: [rolePrompt, extraRolePrompt].filter(Boolean).join('\n\n'),
+    includeSoul: false,
+    includeMemory: false
+  });
   const subResult = await askModel({
     text: scopedTask,
     session: subSession,
     config,
     model,
-    systemPrompt: `${systemPrompt}\n${rolePrompt}${extraRolePrompt ? `\n${extraRolePrompt}` : ''}`,
+    systemPrompt: subSystemPrompt,
     onAgentEvent: wrappedOnAgentEvent,
     persistSession: false,
     executionMode: 'auto',
@@ -2387,7 +3166,60 @@ async function runSubAgentTask({
     blockedCount,
     toolErrorCount,
     hasErrorLine,
-    artifactPaths: artifactPaths.slice(0, SUB_AGENT_HANDOFF_MAX_ITEMS)
+    artifactPaths: artifactPaths.slice(0, SUB_AGENT_HANDOFF_MAX_ITEMS),
+    messages: Array.isArray(subSession.messages) ? structuredClone(subSession.messages) : []
+  };
+}
+
+function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }) {
+  const toolCardsById = new Map();
+  const toolCards = [];
+  const source = Array.isArray(messages) ? messages : [];
+
+  for (const msg of source) {
+    if (msg?.role === 'assistant' && Array.isArray(msg.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        const id = String(tc?.id || `tool-${toolCards.length + 1}`);
+        if (toolCardsById.has(id)) continue;
+        const card = {
+          id,
+          name: tc?.function?.name || tc?.name || 'tool',
+          arguments: tc?.function?.arguments || tc?.arguments || {},
+          status: tc?.status || 'done',
+          durationMs: Number.isFinite(Number(tc?.durationMs)) ? Number(tc.durationMs) : null,
+          summary: tc?.summary || '',
+          result: ''
+        };
+        toolCardsById.set(id, card);
+        toolCards.push(card);
+      }
+    } else if (msg?.role === 'tool') {
+      const id = String(msg.tool_call_id || '');
+      const card = toolCardsById.get(id);
+      if (!card) continue;
+      card.result = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content || '');
+      if (typeof msg.tool_summary === 'string' && msg.tool_summary.trim()) card.summary = msg.tool_summary.trim();
+      if (Number.isFinite(Number(msg.tool_duration_ms))) card.durationMs = Number(msg.tool_duration_ms);
+      if (typeof msg.tool_status === 'string' && msg.tool_status.trim()) card.status = msg.tool_status.trim();
+    }
+  }
+
+  const segments = [];
+  if (toolCards.length > 0) {
+    segments.push({ type: 'tools', cards: toolCards });
+  }
+  if (stepRecord.role === 'summarizer' && stepRecord.output) {
+    segments.push({ type: 'text', text: stepRecord.output, isStreaming: false });
+  }
+
+  return {
+    step: stepIndex + 1,
+    total: totalSteps,
+    role: stepRecord.role || 'general',
+    title: stepRecord.title || '',
+    status: stepRecord.failed ? 'failed' : 'done',
+    summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output || '', 160),
+    segments
   };
 }
 
@@ -2415,8 +3247,11 @@ async function executePlanWithSubAgents({
     return { text: '(no steps to execute)', aborted: false };
   }
 
+  emitPlanEvent({ type: 'assistant:start' });
+
   const priorSteps = [];
   const results = [];
+  const transcript = [];
 
   // Emit structured plan steps so TUI can show all steps with real role/title
   emitPlanEvent({
@@ -2427,6 +3262,25 @@ async function executePlanWithSubAgents({
   for (let i = 0; i < steps.length; i += 1) {
     const step = steps[i];
     if (signal?.aborted) break;
+
+    emitPlanEvent({
+      type: 'plan:step_start',
+      planFile: planFilePath,
+      step: i + 1,
+      total: steps.length,
+      role: step.role,
+      title: step.title
+    });
+
+    emitPlanEvent({
+      type: 'plan:progress',
+      planFile: planFilePath,
+      step: i + 1,
+      total: steps.length,
+      role: step.role,
+      title: step.title,
+      status: 'running'
+    });
 
     emitPlanEvent({
       type: 'assistant:delta',
@@ -2465,6 +3319,7 @@ async function executePlanWithSubAgents({
       toolErrorCount: output.toolErrorCount || 0,
       hasErrorLine: output.hasErrorLine || false,
       artifactPaths: output.artifactPaths || [],
+      messages: output.messages || [],
       failed:
         output.hasErrorLine ||
         stepOutputHasFailureSignals(step.role, output.text || ''),
@@ -2478,6 +3333,12 @@ async function executePlanWithSubAgents({
     }
     priorSteps.push(stepRecord);
     results.push(stepRecord);
+    transcript.push(buildPlanStepTranscript({
+      stepRecord,
+      stepIndex: i,
+      totalSteps: steps.length,
+      messages: output.messages || []
+    }));
 
     // Write step result to plan file for subsequent steps to read
     if (planFilePath) {
@@ -2491,7 +3352,36 @@ async function executePlanWithSubAgents({
       );
     }
 
-    if (stepRecord.failed && i < steps.length - 1) break;
+    emitPlanEvent({
+      type: 'plan:progress',
+      planFile: planFilePath,
+      step: i + 1,
+      total: steps.length,
+      role: step.role,
+      title: step.title,
+      status: stepRecord.failed ? 'failed' : 'done',
+      summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output, 160)
+    });
+
+    emitPlanEvent({
+      type: 'plan:step_done',
+      planFile: planFilePath,
+      step: i + 1,
+      total: steps.length,
+      role: step.role,
+      title: step.title,
+      status: stepRecord.failed ? 'failed' : 'done',
+      summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output, 160)
+    });
+
+    if (stepRecord.failed && i < steps.length - 1) {
+      const summarizerIndex = steps.findIndex((candidate, index) => index > i && candidate.role === 'summarizer');
+      if (summarizerIndex > i) {
+        i = summarizerIndex - 1;
+        continue;
+      }
+      break;
+    }
   }
 
   const summaryLines = [];
@@ -2523,7 +3413,11 @@ async function executePlanWithSubAgents({
   return {
     text: summaryLines.join('\n'),
     aborted: !!signal?.aborted,
-    results
+    results,
+    transcript,
+    sessionText:
+      [...results].reverse().find((r) => r.role === 'summarizer')?.output ||
+      summaryLines.join('\n')
   };
 }
 
@@ -2545,14 +3439,15 @@ async function buildAutoPlanAndRun({
     '- advisory = analysis, review, audit, optimization suggestions, architecture feedback, brainstorming, planning, or recommendation requests.',
     '- implementation = add/build/create/implement/refactor/fix/update/change behavior in code or files.',
     '- verification-heavy = the user explicitly asks to run tests, verify findings, reproduce a bug, prove a claim, or validate a result.',
-    '- For advisory goals, prefer only planner and coder roles. Do not use reviewer or tester unless the user explicitly asks for verification or review as a separate deliverable.',
+    '- For advisory goals, prefer planner and advisor roles. Do not use coder unless the plan will actually modify code or files.',
+    '- For advisory goals, do not use reviewer or tester unless the user explicitly asks for verification or review as a separate deliverable.',
     '- For advisory goals, do not emit generic filler steps such as "Test and verify", "Review recommendations", or other template-only steps.',
     '- For implementation goals, reviewer and tester are optional support roles, not defaults. Only include them when they clearly add value.',
     '- Every step title must be concrete and tied to the goal. Avoid vague titles like "Initial analysis", "Review recommendations", or "Test and verify" unless the user explicitly requested those activities.',
     '- If the task is purely to inspect the current project and suggest improvements, a lean 2-step or 3-step plan is preferred.',
-    '- Example advisory roles: planner -> inspect project shape, coder -> synthesize findings and prioritized recommendations.',
+    '- Example advisory roles: planner -> inspect project shape, advisor -> synthesize findings and prioritized recommendations.',
     '- Example implementation roles: planner -> inspect target area, coder -> implement change, tester -> verify changed behavior.',
-    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.'
+    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|advisor|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.'
   ].join('\n');
   let autoPlan = {
     summary: `Auto plan for: ${goal}`,
@@ -2566,25 +3461,33 @@ async function buildAutoPlanAndRun({
   };
   let planningError = '';
   try {
+    const plannerSystemPrompt = await composeSystemPrompt({
+      shellRulesPrompt: systemPrompt,
+      config,
+      skillsPrompt: plannerPrompt,
+      includeSoul: false,
+      includeMemory: false
+    });
     const planning = await createChatCompletion({
       sdkProvider: config.sdk?.provider,
       baseUrl: config.gateway.base_url,
       apiKey: config.gateway.api_key,
       model: model || config.model.name,
       messages: [
-        { role: 'system', content: `${systemPrompt}\n${plannerPrompt}` },
+        { role: 'system', content: plannerSystemPrompt },
         {
           role: 'user',
           content: [
             'Create an execution plan and assign best sub-agent role for each step.',
-            'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.',
-            'The available roles are planner, coder, reviewer, tester, and summarizer. Use only the roles the task actually needs.',
-            'The summarizer role synthesizes prior step results without re-analyzing. Use it as the final step for plans with 3+ steps.',
+            'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|advisor|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.',
+            'The available roles are planner, advisor, coder, reviewer, tester, and summarizer. Use only the non-summary roles the task actually needs.',
+            'Always include a summarizer as the final step. The summarizer synthesizes prior step results without re-analyzing.',
+            'Planner, advisor, coder, reviewer, and tester steps should write detailed step results, not final summaries.',
             `Task class: ${normalizedTaskClass}`,
             'Before choosing roles, decide whether the request is advisory, implementation, or verification-heavy.',
             requirementPacket,
             'The first step should usually inspect or clarify the target area before implementation.',
-            'For analysis, recommendation, optimization, audit, or project-review goals, keep the plan lean and usually limit it to planner/coder.',
+            'For analysis, recommendation, optimization, audit, or project-review goals, keep the plan lean and usually limit it to planner/advisor.',
             'Do not include reviewer/tester for advisory goals unless the user explicitly asks to validate, verify, or independently review the findings.',
             'Avoid template-only titles like "Initial analysis", "Review recommendations", or "Test and verify" for advisory goals.',
             'For implementation-heavy changes, prefer review and/or testing steps near the end only when they materially improve confidence.',
@@ -2594,7 +3497,7 @@ async function buildAutoPlanAndRun({
             .join('\n')
         }
       ],
-      timeoutMs: config.gateway.timeout_ms || 90000,
+      timeoutMs: config.gateway.timeout_ms || 1800000,
       maxRetries: config.gateway.max_retries ?? 2
     });
     const parsed = extractJsonBlock(planning.text || '');
@@ -2679,6 +3582,511 @@ function renderAutoPlanMarkdown({
   return lines.join('\n');
 }
 
+function parseProjectRequirementsOptions(args = []) {
+  let depth = 'standard';
+  const focusArgs = [];
+  for (const arg of Array.isArray(args) ? args : []) {
+    const value = String(arg || '').trim();
+    const normalized = value.toLowerCase();
+    if (['--fast', '--quick', '--lite', '--light', '--快速'].includes(normalized)) {
+      depth = 'fast';
+      continue;
+    }
+    if (['--standard', '--balanced', '--默认', '--标准'].includes(normalized)) {
+      depth = 'standard';
+      continue;
+    }
+    if (['--deep', '--full', '--thorough', '--深度'].includes(normalized)) {
+      depth = 'deep';
+      continue;
+    }
+    focusArgs.push(arg);
+  }
+  const raw = focusArgs.join(' ').trim();
+  const normalized = raw.toLowerCase();
+  const hasIgnoreIntent = /(忽略|跳过|不生成|不要|无需|排除|exclude|skip|omit|without|no\s+)/i.test(raw);
+  if (!hasIgnoreIntent) return { raw, focusArgs, depth, ignoredSections: [] };
+
+  const ignored = [];
+  for (const section of PROJECT_REQUIREMENTS_SECTION_MARKERS) {
+    const matched = section.labels.some((label) => {
+      const value = String(label).toLowerCase();
+      if (/^\d+$/.test(value)) {
+        return new RegExp(`(^|[^0-9])${value}([^0-9]|$)`).test(normalized);
+      }
+      return normalized.includes(value);
+    });
+    if (matched) ignored.push(section);
+  }
+  return { raw, focusArgs, depth, ignoredSections: ignored };
+}
+
+function renderProjectRequirementsSectionContract(ignoredSections = []) {
+  const ignored = new Set(ignoredSections.map((section) => section.marker));
+  const required = PROJECT_REQUIREMENTS_SECTION_MARKERS
+    .filter((section) => !ignored.has(section.marker))
+    .map((section) => section.marker);
+  const lines = [`Required marker sections: ${required.join(', ')}.`];
+  if (ignoredSections.length > 0) {
+    lines.push(`User-requested omitted sections: ${ignoredSections.map((section) => `${section.key} (${section.marker})`).join(', ')}.`);
+    lines.push('For omitted sections, leave the shell section visibly marked as omitted and do not spend analysis or writing budget filling it.');
+  }
+  return lines.join('\n');
+}
+
+function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = {}) {
+  const options = parseProjectRequirementsOptions(args);
+  const userArgs = options.raw;
+  const requestedFocus = userArgs ? `User request/focus: ${userArgs}` : 'User request/focus: full workspace requirements report.';
+  const replyLanguageName = getReplyLanguageName(config);
+  const reportDate = formatLocalDate();
+  const reportPath = `docs/requirements/${reportDate}-project-requirements.html`;
+  const companionPath = `docs/requirements/${reportDate}-project-requirements.md`;
+  const reportContract = [
+    requestedFocus,
+    `Reply language: write generated report prose, UI labels inserted into the report, review notes, and final user-facing status in ${replyLanguageName} unless the user explicitly requested a different language. Do not translate REQUIREMENTS_* marker names or source code identifiers.`,
+    `Primary report path: ${reportPath}`,
+    `Optional companion Markdown path: ${companionPath}`,
+    'A pre-created HTML shell already exists at the primary report path.',
+    'Fill or replace only the named marker sections in that shell instead of rewriting the whole document.',
+    renderProjectRequirementsSectionContract(options.ignoredSections),
+    'For diagrams, write polished inline HTML/CSS or SVG directly in the report. Do not use Mermaid unless the user explicitly asks for Mermaid source.',
+    'Use a light blue, white, and cool gray banking/financial visual style: conservative, dense, readable, and enterprise-grade.',
+    'Prioritize API/interface-level business requirements. Every major interface should map to business capability, actor, trigger, inputs, outputs, rules, permissions, data reads/writes, errors, acceptance criteria, and evidence.',
+    'Use EXTRACTED, INFERRED, and UNKNOWN labels. Preserve source evidence paths.',
+    'Do not invent dates; use the report paths above.'
+  ].join('\n');
+
+  const writeReportStep = {
+    title: '🎨 Write requirements report',
+    role: 'coder',
+    task: [
+      'Create the final project requirements report from the accumulated plan context.',
+      reportContract,
+      'Follow the project-requirements skill instructions below exactly, including chunked HTML writing for medium/large reports.',
+      'Use the blue/white/gray banking-style shell and produce polished inline HTML/CSS/SVG diagrams. Keep the report professional, light, and conservative.',
+      'Organize the main requirements section primarily by API/interface business requirement cards.',
+      'The final HTML must be self-contained and directly openable from disk.',
+      'Write the primary report to the exact primary report path above. Create the companion Markdown only if useful.',
+      'Skill instructions:',
+      renderedSkillPrompt
+    ].join('\n\n')
+  };
+  const reviewStep = {
+    title: '🔎 Review API coverage and traceability',
+    role: 'reviewer',
+    task: [
+      'Review the generated requirements report against the project-requirements contract and accumulated evidence.',
+      reportContract,
+      'Check that major APIs/interfaces are represented, business requirements are decomposed per API, evidence paths are present, inferred/unknown content is labeled, diagrams are visible as inline HTML/CSS/SVG without external rendering libraries, and the report path matches the required local date.',
+      'Check that the visual style is light blue/white/gray and suitable for banking/financial review.',
+      'Report concrete gaps and risks only. Do not rewrite the whole report.'
+    ].join('\n')
+  };
+  const summaryStep = {
+    title: '🧾 Summarize final report and unresolved questions',
+    role: 'summarizer',
+    task: [
+      'Synthesize the project requirements pipeline results into a concise final status for the user.',
+      reportContract,
+      'Mention the generated report path, API/interface coverage, strongest business requirement findings, unresolved questions, what was not verified, and the best next action.',
+      'Do not re-analyze the codebase unless the accumulated evidence is clearly insufficient.'
+    ].join('\n')
+  };
+
+  if (options.depth === 'fast') {
+    return [
+      {
+        title: '⚡ Map evidence and interfaces',
+        role: 'planner',
+        task: [
+          'Quickly map project evidence and build a practical API/interface inventory before report writing.',
+          reportContract,
+          'Inspect top-level docs, manifests, route/command entry points, obvious handlers, schemas, tests, and project index results when available.',
+          'Produce a concise evidence map and major interface inventory with evidence paths, prioritizing broad coverage over exhaustive edge cases.',
+          'Do not write the final report.'
+        ].join('\n')
+      },
+      {
+        title: '🧩 Synthesize requirements, flows, and risks',
+        role: 'advisor',
+        task: [
+          'Synthesize requirement-ready findings from the evidence map and interface inventory.',
+          reportContract,
+          'For major interfaces capture capability, actor, trigger, inputs, outputs, business rules, validation/permission notes, data reads/writes, core flow dependencies, risks, acceptance criteria, and open questions.',
+          'Keep findings compact and API-centered. Preserve evidence paths and EXTRACTED/INFERRED/UNKNOWN labels. Do not write the final report.'
+        ].join('\n')
+      },
+      writeReportStep,
+      {
+        title: '🔎 Review and summarize coverage',
+        role: 'reviewer',
+        task: [
+          'Review the generated report and produce the final user-facing status in one pass.',
+          reportContract,
+          'Check major interface coverage, evidence paths, EXTRACTED/INFERRED/UNKNOWN labels, visible diagrams, and report path.',
+          'Do not rewrite the whole report. Report concrete gaps, unresolved questions, and the single best next action.'
+        ].join('\n')
+      }
+    ];
+  }
+
+  if (options.depth === 'standard') {
+    return [
+      {
+        title: '🧭 Map entry points and evidence sources',
+        role: 'planner',
+        task: [
+          'Map project entry points and evidence sources before any report writing.',
+          reportContract,
+          'Inspect top-level docs, package manifests, route/command entry points, tests, obvious interface files, and project index results when useful.',
+          'Produce a concise evidence map grouped by docs, routes/commands, handlers, schemas, tests, configuration, storage, and operations.',
+          'Include evidence paths and open questions. Do not write the final report.'
+        ].join('\n')
+      },
+      {
+        title: '📚 Build API and interface inventory',
+        role: 'planner',
+        task: [
+          'Build the canonical API/interface inventory using the evidence map.',
+          reportContract,
+          'Enumerate every major HTTP endpoint, CLI command, tool call, MCP/RPC handler, queue/scheduled job, exported SDK function, and user-facing workflow entry point.',
+          'For each item include type, route/command/function, owner module, evidence path, likely actor, and whether it is EXTRACTED, INFERRED, or UNKNOWN.',
+          'Do not write the final report.'
+        ].join('\n')
+      },
+      {
+        title: '🧩 Decompose requirements, flows, data, and risks',
+        role: 'advisor',
+        task: [
+          'Decompose requirement-ready findings for each major API/interface from the inventory.',
+          reportContract,
+          'For each interface capture business capability, actor, user goal, trigger, inputs, outputs, preconditions, main/alternate flows, business rules, validation and permission checks, sensitive data, data reads/writes, side effects, acceptance criteria, and open questions.',
+          'Keep findings API-centered rather than module-centered. Preserve evidence paths and EXTRACTED/INFERRED/UNKNOWN labels. Do not write the final report.'
+        ].join('\n')
+      },
+      writeReportStep,
+      reviewStep,
+      summaryStep
+    ];
+  }
+
+  return [
+    {
+      title: '🧭 Map entry points and evidence sources',
+      role: 'planner',
+      task: [
+        'Map project entry points and evidence sources before any report writing.',
+        reportContract,
+        'Inspect top-level docs, package manifests, route/command entry points, tests, and obvious interface files.',
+        'Produce a concise evidence map grouped by docs, routes/commands, handlers, schemas, tests, configuration, storage, and operations.',
+        'Include evidence paths and open questions. Do not write the final report.'
+      ].join('\n')
+    },
+    {
+      title: '📚 Build API and interface inventory',
+      role: 'planner',
+      task: [
+        'Build the canonical API/interface inventory using the evidence map.',
+        reportContract,
+        'Enumerate every major HTTP endpoint, CLI command, tool call, MCP/RPC handler, queue/scheduled job, exported SDK function, and user-facing workflow entry point.',
+        'For each item include type, route/command/function, owner module, evidence path, likely actor, and whether it is EXTRACTED, INFERRED, or UNKNOWN.',
+        'Do not write the final report.'
+      ].join('\n')
+    },
+    {
+      title: '🧩 Decompose business requirements per API',
+      role: 'advisor',
+      task: [
+        'Decompose business requirements for each major API/interface from the inventory.',
+        reportContract,
+        'For each interface capture business capability, actor, user goal, trigger, inputs, outputs, preconditions, main flow, alternate flows, business rules, acceptance criteria, and open questions.',
+        'Keep findings API-centered rather than module-centered. Do not write the final report.'
+      ].join('\n')
+    },
+    {
+      title: '🔐 Analyze validation, permissions, and compliance',
+      role: 'advisor',
+      task: [
+        'Analyze validation, authorization, security, audit, and compliance implications per API/interface.',
+        reportContract,
+        'For each relevant interface identify validation rules, permission checks, sensitive data, audit/traceability needs, policy constraints, retry/rollback behavior, and UNKNOWN compliance gaps.',
+        'Return requirement-ready findings with evidence paths. Do not write the final report.'
+      ].join('\n')
+    },
+    {
+      title: '💾 Map data ownership and state changes',
+      role: 'advisor',
+      task: [
+        'Map data ownership, storage paths, state transitions, and side effects per API/interface.',
+        reportContract,
+        'Identify data reads, data writes, config/session/memory/file/database ownership, lifecycle states, cache/index behavior, external dependencies, and operational side effects.',
+        'Return requirement-ready findings with evidence paths. Do not write the final report.'
+      ].join('\n')
+    },
+    {
+      title: '🔄 Connect user flows to API dependencies',
+      role: 'advisor',
+      task: [
+        'Connect user-facing flows to the API/interface inventory and implementation dependencies.',
+        reportContract,
+        'Create flow-ready findings for core journeys, API dependency maps, sequence summaries, error paths, and cross-interface handoffs.',
+        'Favor clear business process decomposition over broad architecture prose. Do not write the final report.'
+      ].join('\n')
+    },
+    writeReportStep,
+    reviewStep,
+    summaryStep
+  ];
+}
+
+function renderProjectRequirementsPlanMarkdown({ goal, steps, reportPath, companionPath }) {
+  const autoPlan = {
+    summary: 'Dedicated sub-agent pipeline for project requirements discovery and HTML report generation.',
+    steps
+  };
+  const progressLines = steps
+    .map((step, index) => `- [ ] Step ${index + 1} [${step.role}] ${step.title}`)
+    .join('\n');
+  return [
+    `# Project Requirements Pipeline: ${goal}`,
+    '',
+    `Primary Report: ${reportPath}`,
+    `Optional Companion: ${companionPath}`,
+    '',
+    renderAutoPlanMarkdown({
+      goal,
+      autoPlan,
+      finalSummary: 'Project requirements pipeline created and will execute immediately.',
+      approvalText: 'No approval required. Triggered explicitly by /project-requirements.',
+      progressLine: progressLines
+    })
+  ].join('\n');
+}
+
+function replaceTemplateVariables(template, variables) {
+  let out = String(template || '');
+  for (const [key, value] of Object.entries(variables || {})) {
+    out = out.replaceAll(`{{${key}}}`, String(value ?? ''));
+  }
+  return out;
+}
+
+async function createProjectRequirementsShell({
+  reportPath,
+  companionPath,
+  manifestPath,
+  planFile,
+  goal,
+  steps,
+  depth = 'standard',
+  config = {}
+}) {
+  const workspaceRoot = process.cwd();
+  const absoluteReportPath = path.resolve(workspaceRoot, reportPath);
+  const absoluteManifestPath = path.resolve(workspaceRoot, manifestPath);
+  await fs.mkdir(path.dirname(absoluteReportPath), { recursive: true });
+  const template = await fs.readFile(PROJECT_REQUIREMENTS_TEMPLATE, 'utf8');
+  const now = new Date().toISOString();
+  const shellCopy = PROJECT_REQUIREMENTS_SHELL_COPY[getReplyLanguage(config)] || PROJECT_REQUIREMENTS_SHELL_COPY.zh;
+  const html = replaceTemplateVariables(template, {
+    ...shellCopy,
+    workspace_name: path.basename(workspaceRoot) || workspaceRoot,
+    date: formatLocalDate(),
+    generated_at: now
+  });
+  await fs.writeFile(absoluteReportPath, html, 'utf8');
+
+  const sectionNames = [
+    'summary',
+    'architecture',
+    'interfaces',
+    'requirements',
+    'flows',
+    'domain',
+    'security',
+    'errors',
+    'nonfunctional',
+    'questions',
+    'evidence'
+  ];
+  const manifest = {
+    status: 'running',
+    depth,
+    goal,
+    html: reportPath,
+    markdown: companionPath,
+    manifest: manifestPath,
+    plan: planFile,
+    createdAt: now,
+    updatedAt: now,
+    sections: Object.fromEntries(sectionNames.map((name) => [name, 'pending'])),
+    steps: steps.map((step, index) => ({
+      step: index + 1,
+      role: step.role,
+      title: step.title,
+      status: 'pending'
+    }))
+  };
+  await fs.writeFile(absoluteManifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  return manifest;
+}
+
+async function updateProjectRequirementsManifest(manifestPath, updates = {}) {
+  if (!manifestPath) return;
+  try {
+    const absoluteManifestPath = path.resolve(process.cwd(), manifestPath);
+    const current = JSON.parse(await fs.readFile(absoluteManifestPath, 'utf8'));
+    const next = {
+      ...current,
+      ...updates,
+      updatedAt: new Date().toISOString()
+    };
+    await fs.writeFile(absoluteManifestPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  } catch {
+    // Manifest is best-effort; plan file and events remain the source of truth.
+  }
+}
+
+async function runProjectRequirementsPipeline({
+  custom,
+  parsedInput,
+  currentSession,
+  config,
+  model,
+  systemPrompt,
+  onAgentEvent,
+  signal,
+  onSubSessionActive
+}) {
+  const renderedSkillPrompt = await expandFileMentions(renderCommandPrompt(custom, parsedInput.args), process.cwd());
+  const options = parseProjectRequirementsOptions(parsedInput.args);
+  const userFocus = options.raw;
+  const goal = userFocus ? `project requirements report: ${userFocus}` : 'project requirements report';
+  const reportDate = formatLocalDate();
+  const reportPath = `docs/requirements/${reportDate}-project-requirements.html`;
+  const companionPath = `docs/requirements/${reportDate}-project-requirements.md`;
+  const manifestPath = `docs/requirements/${reportDate}-project-requirements.manifest.json`;
+  const steps = buildProjectRequirementsSteps(renderedSkillPrompt, parsedInput.args, config);
+  const planFile = await writeMarkdownInProjectDir(
+    'plans',
+    'project-requirements-pipeline',
+    renderProjectRequirementsPlanMarkdown({ goal, steps, reportPath, companionPath }),
+    'project-requirements',
+    currentSession.id
+  );
+  await createProjectRequirementsShell({
+    reportPath,
+    companionPath,
+    manifestPath,
+    planFile,
+    goal,
+    steps,
+    depth: options.depth,
+    config
+  });
+  const planState = {
+    status: 'approved',
+    source: 'project-requirements',
+    depth: options.depth,
+    goal,
+    filePath: planFile,
+    summary: `Dedicated ${options.depth} sub-agent pipeline for project requirements report generation.`,
+    finalSummary: `Executing ${options.depth} project requirements pipeline.`,
+    steps
+  };
+  if (onAgentEvent) {
+    onAgentEvent({ type: 'skill:start', name: custom.name });
+    onAgentEvent({
+      type: 'plan:progress',
+      planFile,
+      reportPath,
+      manifestPath,
+      step: 0,
+      total: steps.length,
+      status: 'created',
+      summary: 'Project requirements pipeline created'
+    });
+  }
+  let execution;
+  try {
+    execution = await executePlanWithSubAgents({
+      planState,
+      parentSession: currentSession,
+      config,
+      model,
+      systemPrompt,
+      onAgentEvent,
+      signal,
+      onSubSessionActive
+    });
+  } catch (error) {
+    if (onAgentEvent) {
+      onAgentEvent({
+        type: 'skill:error',
+        name: custom.name,
+        summary: error instanceof Error ? error.message : String(error)
+      });
+      onAgentEvent({ type: 'skill:end', name: custom.name });
+    }
+    if (manifestPath) {
+      await updateProjectRequirementsManifest(manifestPath, {
+        status: 'failed',
+        failedCount: steps.length,
+        error: error instanceof Error ? error.message : String(error)
+      }).catch(() => {});
+    }
+    return {
+      type: 'assistant',
+      text: `Project requirements pipeline failed: ${error instanceof Error ? error.message : String(error)}`,
+      planFile,
+      reportPath,
+      manifestPath,
+      aborted: true
+    };
+  }
+  if (onAgentEvent) {
+    onAgentEvent({
+      type: 'plan:progress',
+      planFile,
+      reportPath,
+      manifestPath,
+      step: steps.length,
+      total: steps.length,
+      status: execution.aborted ? 'aborted' : 'done',
+      summary: 'Project requirements pipeline finished'
+    });
+    onAgentEvent({ type: 'skill:end', name: custom.name });
+  }
+  const failedCount = Array.isArray(execution.results)
+    ? execution.results.filter((item) => item.failed).length
+    : 0;
+  await updateProjectRequirementsManifest(manifestPath, {
+    status: execution.aborted ? 'aborted' : failedCount > 0 ? 'failed' : 'completed',
+    failedCount
+  });
+  const text = [
+    execution.text || '',
+    '',
+    'Project requirements pipeline completed.',
+    `Plan File: ${planFile}`,
+    `Report Path: ${reportPath}`,
+    `Manifest: ${manifestPath}`,
+    `Steps: ${steps.length} total`,
+    `Failed: ${failedCount}`
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return {
+    type: 'assistant',
+    text,
+    planFile,
+    reportPath,
+    manifestPath,
+    aborted: !!execution.aborted
+  };
+}
+
 async function revisePendingPlanWithModel({
   planState,
   feedback,
@@ -2695,16 +4103,24 @@ async function revisePendingPlanWithModel({
   const prompt = [
     buildAutoPlanPlannerGuidance(),
     'You are revising an existing plan based on explicit user feedback.',
-    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.',
-    'Keep roles minimal and only include steps that materially help the goal.'
+    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|advisor|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.',
+    'Keep roles minimal and only include steps that materially help the goal.',
+    'Always keep a summarizer as the final step.'
   ].join('\n');
+  const revisionSystemPrompt = await composeSystemPrompt({
+    shellRulesPrompt: systemPrompt,
+    config,
+    skillsPrompt: prompt,
+    includeSoul: false,
+    includeMemory: false
+  });
   const result = await createChatCompletion({
     sdkProvider: config.sdk?.provider,
     baseUrl: config.gateway.base_url,
     apiKey: config.gateway.api_key,
     model: model || config.model.name,
     messages: [
-      { role: 'system', content: `${systemPrompt}\n${prompt}` },
+      { role: 'system', content: revisionSystemPrompt },
       {
         role: 'user',
         content: [
@@ -2718,7 +4134,7 @@ async function revisePendingPlanWithModel({
         ].join('\n')
       }
     ],
-    timeoutMs: config.gateway.timeout_ms || 90000,
+    timeoutMs: config.gateway.timeout_ms || 1800000,
     maxRetries: config.gateway.max_retries ?? 2
   });
   const parsed = extractJsonBlock(result.text || '');
@@ -2770,6 +4186,46 @@ async function handleShellInput(shellText, config) {
   return { text: chunks.join('\n') };
 }
 
+function formatHistoryTimestamp(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 'updated unknown';
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return `updated ${raw}`;
+  return `updated ${parsed.toISOString().slice(0, 16).replace('T', ' ')}`;
+}
+
+function compactHistoryPreview(value, maxChars = 72) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '(no preview)';
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
+}
+
+function formatHistoryList({ currentSession, sessions }) {
+  const currentMessages = Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0;
+  const lines = [
+    `Current session  ${currentSession.title || currentSession.id}`,
+    `Session id       ${currentSession.id}`,
+    `Messages         ${currentMessages}`,
+    '',
+    'Recent sessions'
+  ];
+
+  for (const [index, session] of sessions.entries()) {
+    const count = Number(session.messageCount || 0);
+    lines.push(
+      `${index + 1}. ${session.title || session.id}`,
+      `   id=${session.id}`,
+      `   ${count} ${count === 1 ? 'msg' : 'msgs'}  |  ${formatHistoryTimestamp(session.updatedAt)}${session.model ? `  |  ${session.model}` : ''}`,
+      `   ${compactHistoryPreview(session.preview)}`,
+      `   resume: /history resume ${session.id}`
+    );
+  }
+
+  lines.push('', 'Tip: use /history resume <session_id>');
+  return lines.join('\n');
+}
+
 export async function createChatRuntime({
   session,
   config: initialConfig,
@@ -2777,7 +4233,11 @@ export async function createChatRuntime({
   systemPrompt,
   requestToolApproval
 }) {
+  if (session && typeof session === 'object' && !session.projectDir) {
+    session.projectDir = process.cwd();
+  }
   let activeRequestToolApproval = typeof requestToolApproval === 'function' ? requestToolApproval : null;
+  let onTitleUpdateCallback = null;
   const startupEvents = [];
   const initialIndex = await initializeProjectIndex(process.cwd()).catch(() => null);
   if (initialIndex?.summary) {
@@ -2812,26 +4272,78 @@ export async function createChatRuntime({
   }
   let currentSession = session;
   let config = initialConfig;
+  model = model || currentSession?.model || resolveDefaultModel(config);
+  if (currentSession && typeof currentSession === 'object') {
+    currentSession.model = model;
+  }
   const baseSystemPrompt = systemPrompt;
-  let executionMode = config.execution?.mode || 'auto';
+  let executionMode = config.execution?.mode || 'normal';
   if (hasPendingPlanApproval(currentSession)) {
     executionMode = 'plan';
   }
+  let compactState = null;
+  const normalizeCompactThreshold = (value, fallback = 60) => {
+    const num = Number(value);
+    if (!Number.isFinite(num)) return fallback;
+    return Math.min(95, Math.max(50, num));
+  };
+  const syncCompactStateFromConfig = () => {
+    if (!compactState) return;
+    compactState.threshold = normalizeCompactThreshold(config.context?.preflight_trigger_pct, 60);
+  };
+  const syncRuntimeFromConfig = async ({ model: nextModel } = {}) => {
+    const configuredMode = String(config.execution?.mode || 'normal');
+    executionMode = hasPendingPlanApproval(currentSession)
+      ? 'plan'
+      : (['normal', 'auto', 'plan'].includes(configuredMode) ? configuredMode : 'normal');
+    syncCompactStateFromConfig();
+
+    const resolvedModel = String(nextModel || '').trim();
+    if (resolvedModel) {
+      model = resolvedModel;
+      if (currentSession && typeof currentSession === 'object') {
+        currentSession.model = model;
+        await saveSession(currentSession).catch(() => {});
+      }
+    }
+  };
   const commands = await loadCommandsAndSkills();
+  const reloadCommandsAndSkills = async () => {
+    const next = await loadCommandsAndSkills();
+    commands.clear();
+    for (const [name, command] of next.entries()) {
+      commands.set(name, command);
+    }
+  };
 
   // Set up tool result store under session directory
   const sessionResultsDir = path.join(getSessionsDir(), String(currentSession.id));
   setResultDir(sessionResultsDir);
-  const compactState = {
+  compactState = {
     backupMessages: null,
     autoEnabled: true,
-    threshold: 60,
+    threshold: normalizeCompactThreshold(config.context?.preflight_trigger_pct, 60),
     mode: 'conservative'
+  };
+  let compactedForModel = currentSession.compact?.view || null;
+  const setCompactedView = (view, meta = {}) => {
+    compactedForModel = view;
+    currentSession.compact = view
+      ? { ...(currentSession.compact || {}), view, timestamp: new Date().toISOString(), ...meta }
+      : null;
+  };
+  const appendSessionMessage = (message) => {
+    currentSession.messages.push(message);
+    if (compactedForModel) {
+      compactedForModel.push({ ...message });
+      setCompactedView(compactedForModel);
+    }
   };
   let historyIdCache = [currentSession.id];
   let historySessionCache = [
     {
       id: currentSession.id,
+      title: currentSession.title || deriveSessionTitle(currentSession.messages || []),
       messageCount: Array.isArray(currentSession.messages) ? currentSession.messages.length : 0
     }
   ];
@@ -2841,10 +4353,12 @@ export async function createChatRuntime({
       const merged = [
         {
           id: currentSession.id,
+          title: currentSession.title || deriveSessionTitle(currentSession.messages || []),
           messageCount: Array.isArray(currentSession.messages) ? currentSession.messages.length : 0
         },
         ...initialSessions.map((session) => ({
           id: session.id,
+          title: session.title || '',
           messageCount: Number(session.messageCount || 0)
         }))
       ];
@@ -2867,6 +4381,7 @@ export async function createChatRuntime({
     'gateway.base_url',
     'gateway.api_key',
     'model.name',
+    'model.fast_name',
     'ui.language',
     'ui.reply_language',
     'execution.mode',
@@ -2882,6 +4397,10 @@ export async function createChatRuntime({
     'context.tool_result_max_chars',
     'context.read_file_default_lines',
     'context.read_file_max_chars',
+    'context.microcompact_enabled',
+    'context.microcompact_keep_recent',
+    'context.project_instructions_enabled',
+    'context.project_instructions_max_chars',
     'sessions.max_sessions',
     'sessions.retention_days',
     'shell.timeout_ms',
@@ -2889,12 +4408,14 @@ export async function createChatRuntime({
     'soul.preset',
     'soul.custom_path',
     'policy.safe_mode',
+    'policy.allowed_paths',
     'policy.allow_dangerous_commands'
   ];
 
   const commandPriorityOrder = [
     '/help',
     '/status',
+    '/model',
     '/config',
     '/memory',
     '/capture',
@@ -2919,6 +4440,7 @@ export async function createChatRuntime({
       { name: 'exit', description: completionCopy.commands.exit },
       { name: 'commands', description: completionCopy.commands.commands },
       { name: 'status', description: completionCopy.commands.status },
+      { name: 'model', description: completionCopy.commands.model },
       { name: 'mode', description: completionCopy.commands.mode },
       { name: 'compact', description: completionCopy.commands.compact },
       { name: 'checkpoint', description: completionCopy.commands.checkpoint },
@@ -2928,6 +4450,7 @@ export async function createChatRuntime({
       { name: 'config', description: completionCopy.commands.config },
       { name: 'memory', description: completionCopy.commands.memory },
       { name: 'dream', description: completionCopy.commands.dream },
+      { name: 'reflect', description: completionCopy.commands.reflect },
       { name: 'history', description: completionCopy.commands.history },
       { name: 'debug', description: completionCopy.commands.debug },
       { name: 'retry', description: completionCopy.commands.retry },
@@ -2936,7 +4459,7 @@ export async function createChatRuntime({
     ];
     const out = [];
     for (const cmd of commands.values()) {
-      if (cmd.metadata.type === 'skill' && config.skills?.enabled?.[cmd.name] === false) {
+      if (cmd.metadata.type === 'skill' && !isSkillEnabled(config, cmd.name, cmd)) {
         continue;
       }
       out.push({
@@ -2950,6 +4473,7 @@ export async function createChatRuntime({
   const compactOptions = [
     '--preview',
     '--restore',
+    '--micro',
     '--aggressive',
     '--conservative',
     '--default',
@@ -2968,6 +4492,7 @@ export async function createChatRuntime({
   const historyTemplates = ['/history list', '/history current', '/history resume <session_id>'];
   const memoryTemplates = ['/memory list <scope>', '/memory search <scope> <query>', '/memory forget <scope> <id>'];
   const modeTemplates = ['/mode normal', '/mode auto', '/mode plan'];
+  const modelTemplates = ['/model current', '/model main', '/model fast', '/model set <name>'];
   const checkpointTemplates = [
     '/checkpoint create <name>',
     '/checkpoint list',
@@ -2976,21 +4501,24 @@ export async function createChatRuntime({
   ];
   const specTemplates = ['/spec <topic>'];
   const planTemplates = ['/plan <goal>', '/plan auto <goal>', '/plan approve', '/plan from-spec <spec-path?>'];
-  const agentTemplates = ['/agents list', '/agents run planner <task>', '/agents run coder <task>', '/agents run reviewer <task>', '/agents run tester <task>', '/agents run summarizer <task>'];
+  const agentTemplates = ['/agents list', '/agents run planner <task>', '/agents run advisor <task>', '/agents run coder <task>', '/agents run reviewer <task>', '/agents run tester <task>', '/agents run summarizer <task>'];
   const debugTemplates = ['/debug keys on', '/debug keys off', '/debug keys status'];
   const dreamTemplates = ['/dream', '/dream --dry-run', '/dream --scope=project', '/dream --scope=global'];
+  const reflectTemplates = ['/reflect', '/reflect --scope=global <request>', '/reflect <request>'];
   const compactTemplates = compactOptions.map((opt) => `/compact ${opt}`);
   const slashTemplates = [
     ...configTemplates,
     ...memoryTemplates,
     ...historyTemplates,
     ...modeTemplates,
+    ...modelTemplates,
     ...checkpointTemplates,
     ...specTemplates,
     ...planTemplates,
     ...agentTemplates,
     ...debugTemplates,
     ...dreamTemplates,
+    ...reflectTemplates,
     ...compactTemplates,
     '/retry',
     '/status'
@@ -3031,6 +4559,7 @@ export async function createChatRuntime({
       'memory',
       'compact',
       'mode',
+      'model',
       'checkpoint',
       'plan',
       'agents',
@@ -3050,6 +4579,7 @@ export async function createChatRuntime({
     for (const template of memoryTemplates) registerSuggestion(template, completionCopy.generic.memoryCommand);
     for (const template of historyTemplates) registerSuggestion(template, completionCopy.generic.historyCommand);
     for (const template of modeTemplates) registerSuggestion(template, completionCopy.generic.modeCommand);
+    for (const template of modelTemplates) registerSuggestion(template, completionCopy.generic.modelCommand || completionCopy.commands.model);
     for (const template of checkpointTemplates) registerSuggestion(template, completionCopy.generic.checkpointCommand);
     for (const template of specTemplates) registerSuggestion(template, completionCopy.generic.specCommand);
     for (const template of planTemplates) {
@@ -3058,6 +4588,7 @@ export async function createChatRuntime({
     for (const template of agentTemplates) registerSuggestion(template, completionCopy.generic.agentCommand);
     for (const template of debugTemplates) registerSuggestion(template, completionCopy.generic.debugCommand);
     for (const template of dreamTemplates) registerSuggestion(template, completionCopy.generic.dreamCommand);
+    for (const template of reflectTemplates) registerSuggestion(template, completionCopy.generic.reflectCommand);
     for (const template of compactTemplates) registerSuggestion(template, completionCopy.generic.compactCommand);
     registerSuggestion('/retry', completionCopy.generic.retryCommand);
     registerSuggestion('/status', completionCopy.generic.statusCommand);
@@ -3143,6 +4674,15 @@ export async function createChatRuntime({
     if (commandPart === 'status') {
       return [registerSuggestion('/status', completionCopy.generic.statusCommand)];
     }
+    if (commandPart === 'model') {
+      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
+        const sub = tokens[1] || '';
+        return ['current', 'main', 'fast', 'set']
+          .filter((m) => m.startsWith(sub))
+          .map((m) => registerSuggestion(`/model ${m}${m === 'set' ? ' ' : ''}`, completionCopy.generic.modelCommand));
+      }
+      return materializeSuggestions(modelTemplates);
+    }
     if (commandPart === 'mode') {
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         const sub = tokens[1] || '';
@@ -3203,7 +4743,7 @@ export async function createChatRuntime({
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         const sub = tokens[1] || '';
         if (sub === 'run') {
-          return ['planner', 'coder', 'reviewer', 'tester', 'summarizer']
+          return SUB_AGENT_ROLES
             .map((r) => registerSuggestion(`/agents run ${r} `, completionCopy.generic.agentCommand));
         }
         return ['list', 'run']
@@ -3212,7 +4752,7 @@ export async function createChatRuntime({
       }
       if (tokens[1] === 'run') {
         const rolePrefix = tokens[2] || '';
-        return ['planner', 'coder', 'reviewer', 'tester']
+        return SUB_AGENT_ROLES
           .filter((r) => r.startsWith(rolePrefix))
           .map((r) => registerSuggestion(`/agents run ${r} `, completionCopy.generic.agentCommand));
       }
@@ -3227,7 +4767,7 @@ export async function createChatRuntime({
             .filter((session) => String(session.id || '').startsWith(''))
             .map((session) => ({
               value: `/history resume ${session.id}`,
-              display: `/history resume ${session.id}  ·  ${Number(session.messageCount || 0)} msgs`,
+              display: `/history resume ${session.id}  ·  ${session.title || 'untitled'}  ·  ${Number(session.messageCount || 0)} msgs`,
               description: completionCopy.generic.resumeSession
             }));
           if (dynamic.length > 0) return dynamic;
@@ -3242,7 +4782,7 @@ export async function createChatRuntime({
           .filter((session) => String(session.id || '').startsWith(idPrefix))
           .map((session) => ({
             value: `/history resume ${session.id}`,
-            display: `/history resume ${session.id}  ·  ${Number(session.messageCount || 0)} msgs`,
+            display: `/history resume ${session.id}  ·  ${session.title || 'untitled'}  ·  ${Number(session.messageCount || 0)} msgs`,
             description: completionCopy.generic.resumeSession
           }));
         if (dynamic.length > 0) return dynamic;
@@ -3276,39 +4816,161 @@ export async function createChatRuntime({
 
   const persistLocalExchange = async (userText, systemText, { includeUser = true } = {}) => {
     if (includeUser && userText) {
-      currentSession.messages.push(stampedMessage('user', userText));
+      appendSessionMessage(stampedMessage('user', userText));
     }
     if (systemText) {
-      currentSession.messages.push(stampedMessage('system', systemText));
+      appendSessionMessage(stampedMessage('system', systemText));
     }
+    if (shouldReplaceSessionTitle(currentSession.title)) {
+      currentSession.title = deriveSessionTitle(currentSession.messages);
+    }
+    currentSession.model = model || config.model.name;
+    currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
   };
 
-  const persistAssistantExchange = async (userText, assistantText, { includeUser = true } = {}) => {
+  const persistAssistantExchange = async (userText, assistantText, { includeUser = true, extra = {} } = {}) => {
+    const priorUserCount = currentSession.messages.filter((msg) => msg?.role === 'user').length;
+    const priorAssistantCount = currentSession.messages.filter((msg) => msg?.role === 'assistant').length;
+    const shouldGenerateTitle =
+      (includeUser && userText && priorUserCount === 0) ||
+      (!includeUser && userText && priorUserCount === 1 && priorAssistantCount === 0);
     if (includeUser && userText) {
-      currentSession.messages.push(stampedMessage('user', userText));
+      appendSessionMessage(stampedMessage('user', userText));
     }
     if (assistantText) {
-      currentSession.messages.push(stampedMessage('assistant', assistantText));
+      appendSessionMessage(stampedMessage('assistant', assistantText, extra));
     }
+    currentSession.model = model || config.model.name;
+    currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
+    // Generate a better title asynchronously after saving
+    if (shouldGenerateTitle || shouldReplaceSessionTitle(currentSession.title)) {
+      const titleSessionId = currentSession.id;
+      generateSessionTitle({
+        userText,
+        assistantText,
+        config
+      }).then(async (generatedTitle) => {
+        if (generatedTitle && generatedTitle !== currentSession.title) {
+          currentSession.title = generatedTitle;
+          await saveSession(currentSession);
+          onTitleUpdateCallback?.(titleSessionId, generatedTitle);
+        }
+      }).catch(() => {});
+    }
   };
 
   const persistUserExchange = async (userText) => {
     if (!userText) return;
-    currentSession.messages.push(stampedMessage('user', userText));
+    appendSessionMessage(stampedMessage('user', userText));
+    if (shouldReplaceSessionTitle(currentSession.title)) {
+      currentSession.title = deriveSessionTitle(currentSession.messages);
+    }
+    currentSession.model = model || config.model.name;
+    currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
   };
 
-  const buildActiveSystemPrompt = async () => {
-    const soulPrompt = await buildSystemPromptWithSoul(baseSystemPrompt, config);
-    const memorySnapshot = await buildMemorySnapshot({
-      config,
+  const captureCompactSummary = async ({ summary, mode, beforeTokens, afterTokens }) => {
+    if (config?.memory?.enabled === false || config?.memory?.auto_capture === false) return null;
+    const normalizedSummary = String(summary || '').trim();
+    if (!normalizedSummary) return null;
+    const entrySummary = `Context compacted (${mode}): ${beforeTokens} -> ${afterTokens} tokens`;
+    return captureToInbox({
+      scope: 'repo',
+      type: 'observation',
+      summary: entrySummary,
+      details: normalizedSummary,
+      tags: ['compact', 'context-summary'],
+      source: 'auto-compact'
+    }).catch(() => null);
+  };
+
+  const shouldAutoCaptureUserPrompt = (text) => {
+    if (config?.memory?.enabled === false || config?.memory?.auto_capture === false) return false;
+    const value = String(text || '').replace(/\s+/g, ' ').trim();
+    if (value.length < 12) return false;
+    const actionPattern =
+      /\b(add|build|fix|implement|change|update|refactor|test|debug|remember|capture|continue|review)\b|实现|增加|添加|修复|修改|更新|重构|测试|调试|记住|继续|检查|沉淀|捕获/i;
+    return actionPattern.test(value);
+  };
+
+  const classifyDirectMemoryPrompt = (text) => {
+    if (config?.memory?.enabled === false || config?.memory?.auto_capture === false) return null;
+    const value = String(text || '').replace(/\s+/g, ' ').trim();
+    if (value.length < 6) return null;
+    const userPreferencePattern =
+      /(?:记住|请记住|以后|后续|我偏好|我的偏好|我喜欢|我习惯|不要再|别再|always remember|remember that|i prefer|my preference|don't|do not)/i;
+    if (!userPreferencePattern.test(value)) return null;
+    const projectPattern = /(?:本项目|这个项目|当前项目|这个仓库|当前仓库|repo|repository|project)/i;
+    const isProject = projectPattern.test(value);
+    return {
+      scope: isProject ? 'project' : 'user',
+      kind: isProject ? 'workflow' : 'preference',
+      content: value
+    };
+  };
+
+  const saveDirectMemoryPrompt = async (text) => {
+    const direct = classifyDirectMemoryPrompt(text);
+    if (!direct) return null;
+    const existing = await listMemories({
+      scope: direct.scope,
       workspaceRoot: process.cwd()
-    }).catch(() => '');
+    }).catch(() => []);
+    const directText = String(direct.content || '').toLowerCase();
+    const directTokens = new Set(directText.match(/[a-z0-9_\u4e00-\u9fa5]+/g) || []);
+    const directAsciiTokens = new Set(directText.match(/[a-z0-9_]{4,}/g) || []);
+    const overlapsExisting = existing.some((item) => {
+      const existingText = `${item.content || ''} ${item.summary || ''}`.toLowerCase();
+      for (const token of directAsciiTokens) {
+        if (existingText.includes(token)) return true;
+      }
+      let hits = 0;
+      for (const token of directTokens) {
+        if (token.length < 2) continue;
+        if (existingText.includes(token)) hits += 1;
+        if (hits >= 2) return true;
+      }
+      return false;
+    });
+    if (overlapsExisting) return null;
+    return rememberMemory({
+      scope: direct.scope,
+      content: direct.content,
+      kind: direct.kind,
+      summary: direct.content.slice(0, 80),
+      source: 'auto-user-directive',
+      replaceSimilar: true,
+      workspaceRoot: process.cwd(),
+      config
+    }).catch(() => null);
+  };
+
+  const captureUserPromptForDream = async (text) => {
+    if (classifyDirectMemoryPrompt(text)) return null;
+    if (!shouldAutoCaptureUserPrompt(text)) return null;
+    const value = String(text || '').replace(/\s+/g, ' ').trim();
+    return captureToInbox({
+      scope: 'repo',
+      type: 'observation',
+      summary: `User task: ${value.slice(0, 120)}`,
+      details: value,
+      tags: ['user-prompt'],
+      source: 'auto-user-prompt'
+    }).catch(() => null);
+  };
+
+  const buildActiveSystemPrompt = async () => {
     const memoryGuide =
       'Persistent memory stores durable preferences and stable workflow knowledge. Verify changeable details from files, and only write memory for future-useful, non-sensitive facts.';
-    return [soulPrompt, memorySnapshot, memoryGuide].filter(Boolean).join('\n\n');
+    return composeSystemPrompt({
+      shellRulesPrompt: baseSystemPrompt,
+      config,
+      workspaceRoot: process.cwd(),
+      extraPrompts: [memoryGuide]
+    });
   };
 
   const isImmediateLocalInput = (line) => {
@@ -3340,12 +5002,13 @@ export async function createChatRuntime({
   let activeAbortController = null;
   let activeSubSession = null;
 
-  const submit = async (line, onAgentEvent) => {
+  const submit = async (line, onAgentEvent, options = {}) => {
     // 每次提交创建新的 AbortController，替代旧的
     activeAbortController = new AbortController();
     const { signal } = activeAbortController;
     const activeReplySystemPrompt = await buildActiveSystemPrompt();
     const parsedInput = parseInput(line);
+    const readOnlyCodeWiki = options?.readOnlyCodeWiki === true;
     const maybeAutoDreamFromRuntime = async () => {
       const threshold = Number(config?.memory?.auto_dream_threshold ?? 10);
       if (!(threshold > 0)) return null;
@@ -3379,7 +5042,7 @@ export async function createChatRuntime({
       }
     };
     try {
-      if (shouldPersistInputHistory(parsedInput)) {
+      if (!readOnlyCodeWiki && shouldPersistInputHistory(parsedInput)) {
         await appendInputHistory(line);
       }
     } catch {
@@ -3387,6 +5050,35 @@ export async function createChatRuntime({
     }
     if (parsedInput.type === 'empty') {
       return { type: 'noop' };
+    }
+    if (readOnlyCodeWiki) {
+      const expandedText = await expandFileMentions(line, process.cwd());
+      const readOnlySystemPrompt = [
+        activeReplySystemPrompt,
+        'CodeWiki repository Q&A mode:',
+        '- Answer questions about the current repository and generated CodeWiki/project-requirements report.',
+        '- This is read-only. Do not modify files, update plans, run shell commands, delete anything, write memories, or ask to perform side effects.',
+        '- Use only read-only project inspection tools when evidence is needed.',
+        '- Be concise and cite relevant files or report sections when useful.'
+      ].join('\n\n');
+      const transientSession = structuredClone(currentSession);
+      const result = await askModel({
+        text: expandedText,
+        session: transientSession,
+        config,
+        model,
+        systemPrompt: readOnlySystemPrompt,
+        onAgentEvent,
+        requestToolApproval: activeRequestToolApproval,
+        executionMode: 'auto',
+        alwaysAllowTools: CODEWIKI_READ_ONLY_TOOLS,
+        allowedTools: CODEWIKI_READ_ONLY_TOOLS,
+        persistSession: false,
+        maxSteps: 32,
+        skipAnalysisNudge: true,
+        signal
+      });
+      return { type: 'assistant', text: result.text, aborted: !!result.aborted };
     }
     if (parsedInput.type === 'shell') {
       const shell = await handleShellInput(parsedInput.command, config);
@@ -3397,12 +5089,12 @@ export async function createChatRuntime({
       if (parsedInput.command === 'new') {
         const fresh = await createSession();
         currentSession = fresh;
-        executionMode = config.execution?.mode || 'auto';
+        executionMode = config.execution?.mode || 'normal';
         compactState.backupMessages = null;
         setResultDir(path.join(getSessionsDir(), String(fresh.id)));
         historyIdCache = [fresh.id, ...historyIdCache.filter((id) => id !== fresh.id)];
         historySessionCache = [
-          { id: fresh.id, messageCount: 0 },
+          { id: fresh.id, title: fresh.title || '', messageCount: 0 },
           ...historySessionCache.filter((s) => s.id !== fresh.id)
         ];
         return {
@@ -3414,15 +5106,40 @@ export async function createChatRuntime({
       if (parsedInput.command === 'help') {
         return {
           type: 'system',
-          text: 'Commands: /help /exit /new /stop /commands /status /mode /compact /checkpoint /spec /plan /yes /edit /reject /agents /config /memory /capture /inbox /dream /history /debug /retry /<custom> !<shell>'
+          text: 'Commands: /help /exit /new /stop /commands /status /model /mode /compact /checkpoint /spec /plan /yes /no /edit /reject /agents /config /memory /capture /inbox /dream /reflect /history /debug /retry /<custom> !<shell>'
         };
       }
       if (parsedInput.command === 'status') {
         const todoCount = countActiveTodos(currentSession.todos);
         return {
           type: 'system',
-          text: `mode=${executionMode} | model=${model || config.model.name} | max_ctx=${effectiveMaxContextTokens(config)} | session=${currentSession.id} | todos=${todoCount}`
+          text: `mode=${executionMode} | role=general | model=${model || config.model.name} | max_ctx=${effectiveMaxContextTokens(config)} | session=${currentSession.id} | todos=${todoCount}`
         };
+      }
+      if (parsedInput.command === 'model') {
+        const sub = String(parsedInput.args[0] || 'current').trim().toLowerCase();
+        const mainModel = resolveDefaultModel(config);
+        const fastModel = resolveFastModel(config);
+        if (sub === 'current' || sub === 'status') {
+          return {
+            type: 'system',
+            text: `Current model: ${model || mainModel}\nDefault model: ${mainModel}\nFast model: ${fastModel}${config.model?.fast_name ? '' : ' (fallback to default; set /config set model.fast_name <name>)'}`
+          };
+        }
+        if (sub === 'main' || sub === 'default') {
+          model = mainModel;
+        } else if (sub === 'fast') {
+          model = fastModel;
+        } else if (sub === 'set') {
+          const next = parsedInput.args.slice(1).join(' ').trim();
+          if (!next) return { type: 'system', text: 'Usage: /model set <name>' };
+          model = next;
+        } else {
+          return { type: 'system', text: 'Usage: /model current | /model main | /model fast | /model set <name>' };
+        }
+        currentSession.model = model;
+        await saveSession(currentSession);
+        return { type: 'system', text: `Model switched to: ${model}` };
       }
       if (parsedInput.command === 'mode') {
         const next = (parsedInput.args[0] || '').trim().toLowerCase();
@@ -3440,6 +5157,28 @@ export async function createChatRuntime({
         return { type: 'system', text };
       }
       if (parsedInput.command === 'yes') {
+        if (hasPendingReflectSkill(currentSession)) {
+          const state = { ...currentSession.planState };
+          const candidate = Array.isArray(state.candidates) ? state.candidates[0] : null;
+          if (!candidate) {
+            currentSession.planState = null;
+            const text = 'No reflect skill draft to write.';
+            await persistLocalExchange(line, text, { includeUser: false });
+            return { type: 'system', text };
+          }
+          const written = await writeReflectSkillDraft({
+            draft: candidate,
+            scope: state.targetScope || 'project',
+            workspaceRoot: process.cwd()
+          });
+          currentSession.planState = null;
+          executionMode = 'auto';
+          if (onAgentEvent) onAgentEvent({ type: 'reflect:approval_cleared' });
+          await reloadCommandsAndSkills();
+          const text = `Reflect skill written and loaded: /${written.draft.name}\nPath: ${written.filePath}`;
+          await persistLocalExchange(line, text, { includeUser: false });
+          return { type: 'system', text };
+        }
         if (!hasPendingPlanApproval(currentSession)) {
           return { type: 'system', text: 'No pending plan approval. Use /plan auto <goal> first.' };
         }
@@ -3457,11 +5196,51 @@ export async function createChatRuntime({
         });
         activeSubSession = null;
         currentSession.planState = null;
+        if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
+        await removePlanFileIfPresent(planState);
         executionMode = 'auto';
-        await persistAssistantExchange(line, result.text || '', { includeUser: false });
+        await persistAssistantExchange(line, result.sessionText || result.text || '', {
+          includeUser: false,
+          extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
+        });
         return { type: 'assistant', text: result.text, aborted: !!result.aborted };
       }
       if (parsedInput.command === 'edit') {
+        if (hasPendingReflectSkill(currentSession)) {
+          const feedback = parsedInput.args.join(' ').trim();
+          if (!feedback) {
+            return { type: 'system', text: 'Usage: /edit <feedback>' };
+          }
+          const state = { ...currentSession.planState };
+          const previousDraft = Array.isArray(state.candidates) ? state.candidates[0] : null;
+          const drafts = await buildReflectSkillDraft({
+            request: state.request || '',
+            scope: state.targetScope || 'project',
+            session: currentSession,
+            config,
+            model,
+            systemPrompt: activeReplySystemPrompt,
+            previousDraft,
+            feedback
+          });
+          currentSession.planState = {
+            ...state,
+            candidates: attachReflectTargets({
+              candidates: drafts,
+              scope: state.targetScope || 'project',
+              workspaceRoot: process.cwd()
+            })
+          };
+          if (onAgentEvent) {
+            onAgentEvent({
+              type: 'reflect:pending_approval',
+              draft: buildPendingReflectSkillSnapshot(currentSession.planState)
+            });
+          }
+          const text = `Reflect skill draft revised.\n${buildPendingReflectSkillMessage(currentSession.planState)}`;
+          await persistLocalExchange(line, text);
+          return { type: 'system', text };
+        }
         if (!hasPendingPlanApproval(currentSession)) {
           return { type: 'system', text: 'No pending plan approval. Use /plan auto <goal> first.' };
         }
@@ -3478,15 +5257,46 @@ export async function createChatRuntime({
         });
         currentSession.planState = revised;
         executionMode = 'plan';
+        if (onAgentEvent) {
+          onAgentEvent({
+            type: 'plan:pending_approval',
+            goal: currentSession.planState.goal,
+            summary: currentSession.planState.finalSummary || currentSession.planState.summary,
+            filePath: currentSession.planState.filePath,
+            steps: currentSession.planState.steps
+          });
+        }
         const text = `Plan revised.\n${buildPendingPlanApprovalMessage(currentSession.planState)}`;
         await persistLocalExchange(line, text);
         return { type: 'system', text };
+      }
+      if (parsedInput.command === 'no') {
+        if (hasPendingReflectSkill(currentSession)) {
+          currentSession.planState = null;
+          executionMode = 'auto';
+          if (onAgentEvent) onAgentEvent({ type: 'reflect:approval_cleared' });
+          const text = 'Reflect skill draft discarded.';
+          await persistLocalExchange(line, text, { includeUser: false });
+          return { type: 'system', text };
+        }
+        if (hasPendingPlanApproval(currentSession)) {
+          currentSession.planState = null;
+          if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
+          executionMode = 'auto';
+          const text = 'Pending plan rejected and cleared.';
+          await persistLocalExchange(line, text, { includeUser: false });
+          return { type: 'system', text };
+        }
+        return { type: 'system', text: 'No pending reflect skill draft.' };
       }
       if (parsedInput.command === 'reject') {
         if (!hasPendingPlanApproval(currentSession)) {
           return { type: 'system', text: 'No pending plan approval.' };
         }
+        const planState = { ...currentSession.planState };
         currentSession.planState = null;
+        if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
+        await removePlanFileIfPresent(planState);
         executionMode = 'auto';
         const text = 'Pending plan rejected and cleared.';
         await persistLocalExchange(line, text);
@@ -3601,6 +5411,15 @@ export async function createChatRuntime({
             steps: Array.isArray(auto.steps) ? auto.steps : []
           };
           executionMode = 'plan';
+          if (onAgentEvent) {
+            onAgentEvent({
+              type: 'plan:pending_approval',
+              goal: currentSession.planState.goal,
+              summary: currentSession.planState.finalSummary || currentSession.planState.summary,
+              filePath: currentSession.planState.filePath,
+              steps: currentSession.planState.steps
+            });
+          }
           const text = buildAutoPlanSystemSummary(auto);
           await persistLocalExchange(line, text);
           return {
@@ -3626,8 +5445,13 @@ export async function createChatRuntime({
           });
           activeSubSession = null;
           currentSession.planState = null;
+          if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
+          await removePlanFileIfPresent(planState);
           executionMode = 'auto';
-          await persistAssistantExchange(line, result.text || '', { includeUser: false });
+          await persistAssistantExchange(line, result.sessionText || result.text || '', {
+            includeUser: false,
+            extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
+          });
           return { type: 'assistant', text: result.text, aborted: !!result.aborted };
         }
         if (sub === 'stay') {
@@ -3691,7 +5515,7 @@ export async function createChatRuntime({
         if (sub === 'list') {
           return {
             type: 'system',
-            text: 'Sub-agent roles: planner, coder, reviewer, tester, summarizer\nUse: /agents run <role> <task>'
+            text: 'Sub-agent roles: planner, advisor, coder, reviewer, tester, summarizer\nUse: /agents run <role> <task>'
           };
         }
         if (sub === 'run') {
@@ -3699,7 +5523,7 @@ export async function createChatRuntime({
           const task = parsedInput.args.slice(2).join(' ').trim();
           if (!role || !task) return { type: 'system', text: 'Usage: /agents run <role> <task>' };
           if (!SUB_AGENT_ROLES.includes(role)) {
-            return { type: 'system', text: 'Unknown role. Allowed: planner|coder|reviewer|tester|summarizer' };
+            return { type: 'system', text: 'Unknown role. Allowed: planner|advisor|coder|reviewer|tester|summarizer' };
           }
           const output = await runSubAgentTask({
             role,
@@ -3734,16 +5558,13 @@ export async function createChatRuntime({
           historyIdCache = sessions.map((s) => s.id);
           historySessionCache = sessions.map((s) => ({
             id: s.id,
+            title: s.title || '',
             messageCount: Number(s.messageCount || 0)
           }));
           if (sessions.length === 0) return { type: 'system', text: 'No sessions found' };
-          const rows = sessions.map(
-            (s, idx) =>
-              `${idx + 1}. ${s.id} | msgs:${s.messageCount} | updated:${s.updatedAt || '-'}${s.preview ? ` | ${s.preview}` : ''}`
-          );
           return {
             type: 'system',
-            text: `Current: ${currentSession.id}\n${rows.join('\n')}\nUse /history resume <session_id>`
+            text: formatHistoryList({ currentSession, sessions })
           };
         }
         if (sub === 'current') {
@@ -3763,7 +5584,7 @@ export async function createChatRuntime({
           }
           if (!historyIdCache.includes(targetId)) historyIdCache.unshift(targetId);
           historySessionCache = [
-            { id: targetId, messageCount: Array.isArray(loaded.messages) ? loaded.messages.length : 0 },
+            { id: targetId, title: loaded.title || deriveSessionTitle(loaded.messages || []), messageCount: Array.isArray(loaded.messages) ? loaded.messages.length : 0 },
             ...historySessionCache.filter((s) => s.id !== targetId)
           ];
           return {
@@ -3886,6 +5707,43 @@ export async function createChatRuntime({
           return { type: 'system', text: `Dream failed: ${err.message}` };
         }
       }
+      if (parsedInput.command === 'reflect') {
+        const parsedReflect = parseReflectScope(parsedInput.args);
+        const drafts = await buildReflectSkillDraft({
+          request: parsedReflect.request,
+          scope: parsedReflect.scope,
+          session: currentSession,
+          config,
+          model,
+          systemPrompt: activeReplySystemPrompt
+        });
+        const candidates = attachReflectTargets({
+          candidates: drafts,
+          scope: parsedReflect.scope,
+          workspaceRoot: process.cwd()
+        });
+        if (candidates.length === 0) {
+          const text = 'Reflect found no reusable skill candidate.';
+          await persistLocalExchange(line, text);
+          return { type: 'system', text };
+        }
+        currentSession.planState = {
+          status: 'pending_reflect_skill',
+          source: 'reflect',
+          targetScope: parsedReflect.scope,
+          request: parsedReflect.request,
+          candidates
+        };
+        if (onAgentEvent) {
+          onAgentEvent({
+            type: 'reflect:pending_approval',
+            draft: buildPendingReflectSkillSnapshot(currentSession.planState)
+          });
+        }
+        const text = buildPendingReflectSkillMessage(currentSession.planState);
+        await persistLocalExchange(line, text);
+        return { type: 'system', text };
+      }
       if (parsedInput.command === 'retry') {
         const lastUser = [...currentSession.messages].reverse().find((m) => m.role === 'user');
         if (!lastUser?.content) {
@@ -3900,7 +5758,9 @@ export async function createChatRuntime({
           onAgentEvent,
           requestToolApproval: activeRequestToolApproval,
           executionMode,
-          signal
+          signal,
+          compactedForModel,
+          onCompactedUpdate: setCompactedView
         });
         return { type: 'assistant', text: result.text, aborted: !!result.aborted };
       }
@@ -3935,6 +5795,9 @@ export async function createChatRuntime({
           if (!key || !value) return { type: 'system', text: 'Usage: /config set <key> <value>' };
           await setConfigValue(key, value);
           config = await loadConfig();
+          await syncRuntimeFromConfig(
+            key === 'model.name' ? { model: config.model?.name } : {}
+          );
           const text = `Set ${key}=${value}`;
           await persistLocalExchange(line, text);
           return { type: 'system', text };
@@ -3943,7 +5806,8 @@ export async function createChatRuntime({
         if (sub === 'reset') {
           await resetConfig();
           config = await loadConfig();
-          compactState.threshold = 60;
+          await syncRuntimeFromConfig({ model: resolveDefaultModel(config) });
+          syncCompactStateFromConfig();
           compactState.mode = 'conservative';
           compactState.autoEnabled = true;
           const text = 'Config reset complete';
@@ -3964,18 +5828,37 @@ export async function createChatRuntime({
         if (cargs.mode) compactState.mode = cargs.mode;
 
         if (cargs.restore) {
-          if (!compactState.backupMessages) {
-            return { type: 'system', text: 'No backup available to restore' };
-          }
-          currentSession.messages = structuredClone(compactState.backupMessages);
-          await saveSession(currentSession);
-          const text = 'Context restored from backup';
+          setCompactedView(null);
+          const text = 'Context restored to full view';
           await persistLocalExchange(line, text, { includeUser: false });
           return { type: 'system', text };
         }
 
-        const beforeTokens = estimateMessagesTokens(currentSession.messages);
-        const result = compactMessagesLocally(currentSession.messages, { mode: compactState.mode });
+        const compactSource = compactedForModel ?? currentSession.messages;
+        const beforeTokens = estimateMessagesTokens(compactSource);
+
+        // --micro: only do micro-compact (in-place tool result clearing)
+        if (cargs.micro) {
+          const microKeep = Number(config.context?.microcompact_keep_recent || 5);
+          const micro = microCompactMessages(compactSource, { keepRecent: microKeep, enabled: true });
+          if (!micro.changed) {
+            return { type: 'system', text: 'Micro-compact: nothing to clear' };
+          }
+          const afterTokens = estimateMessagesTokens(micro.messages);
+          const report = `Micro-compact ${cargs.preview ? 'preview' : 'applied'}: ${beforeTokens} -> ${afterTokens} tokens (saved ${micro.tokensSaved})`;
+
+          if (cargs.preview) {
+            return { type: 'system', text: report };
+          }
+
+          setCompactedView(micro.messages.map((m) => ({ ...m, at: new Date().toISOString() })));
+          await persistLocalExchange(line, report, { includeUser: false });
+          return { type: 'system', text: report };
+        }
+
+        const sourceIsCompacted = Boolean(compactedForModel);
+        const macroSource = compactedForModel ?? currentSession.messages;
+        const result = await compactMessagesLocally(macroSource, { mode: compactState.mode, force: true, generateSummary: createCompactSummaryGenerator(config, null) });
         if (!result.changed) {
           return { type: 'system', text: 'Nothing to compact yet' };
         }
@@ -3986,9 +5869,19 @@ export async function createChatRuntime({
           return { type: 'system', text: `${report}\n\n${result.summary}` };
         }
 
-        compactState.backupMessages = structuredClone(currentSession.messages);
-        currentSession.messages = result.compacted.map((m) => ({ ...m, at: new Date().toISOString() }));
-        await saveSession(currentSession);
+        setCompactedView(
+          result.compacted.map((m) => ({ ...m, at: new Date().toISOString() })),
+          {
+            boundaryIndex: translateCompactBoundaryToOriginal(sourceIsCompacted, currentSession.compact, result.boundaryIndex),
+            mode: compactState.mode
+          }
+        );
+        await captureCompactSummary({
+          summary: result.summary,
+          mode: compactState.mode,
+          beforeTokens,
+          afterTokens
+        });
         await persistLocalExchange(line, report, { includeUser: false });
         return { type: 'system', text: report };
       }
@@ -4005,8 +5898,25 @@ export async function createChatRuntime({
       if (!custom) {
         return { type: 'system', text: `Unknown slash command: /${parsedInput.command}` };
       }
-      if (custom.metadata.type === 'skill' && config.skills?.enabled?.[custom.name] === false) {
+      if (custom.metadata.type === 'skill' && !isSkillEnabled(config, custom.name, custom)) {
         return { type: 'system', text: `Skill is disabled: ${custom.name}` };
+      }
+      if (custom.metadata.type === 'skill' && custom.name === 'project-requirements') {
+        try {
+          return await runProjectRequirementsPipeline({
+            custom,
+            parsedInput,
+            currentSession,
+            config,
+            model,
+            systemPrompt: activeReplySystemPrompt,
+            onAgentEvent,
+            signal,
+            onSubSessionActive: (sub) => { activeSubSession = sub; }
+          });
+        } finally {
+          activeSubSession = null;
+        }
       }
 
       const customPrompt =
@@ -4030,7 +5940,8 @@ export async function createChatRuntime({
       let result;
       try {
         result = await askModel({
-          text: rendered,
+          text: custom.metadata.type === 'skill' ? line : rendered,
+          modelText: custom.metadata.type === 'skill' ? rendered : undefined,
           session: currentSession,
           config,
           model,
@@ -4038,7 +5949,9 @@ export async function createChatRuntime({
           onAgentEvent,
           requestToolApproval: activeRequestToolApproval,
           executionMode,
-          signal
+          signal,
+          compactedForModel,
+          onCompactedUpdate: setCompactedView
         });
       } catch (error) {
         if (custom.metadata.type === 'skill' && onAgentEvent) {
@@ -4047,8 +5960,12 @@ export async function createChatRuntime({
             name: custom.name,
             summary: error instanceof Error ? error.message : String(error)
           });
+          onAgentEvent({ type: 'skill:end', name: custom.name });
         }
-        throw error;
+        return {
+          type: 'system',
+          text: `Skill "${custom.name}" failed: ${error instanceof Error ? error.message : String(error)}`
+        };
       }
       if (custom.metadata.type === 'skill' && onAgentEvent) {
         onAgentEvent({ type: 'skill:end', name: custom.name });
@@ -4072,8 +5989,12 @@ export async function createChatRuntime({
         });
         activeSubSession = null;
         currentSession.planState = null;
+        if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
         executionMode = 'auto';
-        await persistAssistantExchange(line, result.text || '', { includeUser: false });
+        await persistAssistantExchange(line, result.sessionText || result.text || '', {
+          includeUser: false,
+          extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
+        });
         return { type: 'assistant', text: result.text, aborted: !!result.aborted };
       }
       if (isStayInPlanText(parsedInput.text)) {
@@ -4083,6 +6004,7 @@ export async function createChatRuntime({
       }
       if (isRejectPlanText(parsedInput.text)) {
         currentSession.planState = null;
+        if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
         executionMode = 'auto';
         const text = 'Pending plan rejected and cleared.';
         await persistLocalExchange(line, text);
@@ -4094,27 +6016,118 @@ export async function createChatRuntime({
       };
     }
 
+    // Plan mode with no pending plan → auto-generate structured plan
+    if (executionMode === 'plan') {
+      const expandedPlanText = await expandFileMentions(parsedInput.text, process.cwd());
+      await maybeAutoDreamFromRuntime();
+      const auto = await buildAutoPlanAndRun({
+        goal: expandedPlanText,
+        session: currentSession,
+        config,
+        model,
+        systemPrompt: activeReplySystemPrompt,
+        onAgentEvent,
+        sessionId: currentSession.id,
+        taskClass: classifyPlanTaskClass(expandedPlanText)
+      });
+      currentSession.planState = {
+        status: 'pending_approval',
+        source: 'auto',
+        goal: expandedPlanText,
+        filePath: auto.filePath,
+        summary: auto.summary || '',
+        finalSummary: auto.finalSummary || auto.summary || '',
+        steps: Array.isArray(auto.steps) ? auto.steps : []
+      };
+      if (onAgentEvent) {
+        onAgentEvent({
+          type: 'plan:pending_approval',
+          goal: currentSession.planState.goal,
+          summary: currentSession.planState.finalSummary || currentSession.planState.summary,
+          filePath: currentSession.planState.filePath,
+          steps: currentSession.planState.steps
+        });
+      }
+      const text = buildAutoPlanSystemSummary(auto);
+      await persistLocalExchange(line, text);
+      return { type: 'system', text };
+    }
+
     if (compactState.autoEnabled) {
-      const currentTokens = estimateMessagesTokens(currentSession.messages);
+      const compactSource = compactedForModel ?? currentSession.messages;
+      const currentTokens = estimateMessagesTokens(compactSource);
       const maxTokens = effectiveMaxContextTokens(config);
       const usagePct = (currentTokens / maxTokens) * 100;
       if (usagePct >= compactState.threshold) {
-        const autoResult = compactMessagesLocally(currentSession.messages, {
-          mode: compactState.mode
-        });
-        if (autoResult.changed) {
-          compactState.backupMessages = structuredClone(currentSession.messages);
-          currentSession.messages = autoResult.compacted.map((m) => ({
-            ...m,
-            at: new Date().toISOString()
-          }));
-          await saveSession(currentSession);
-          if (onAgentEvent) {
-            onAgentEvent({
-              type: 'compact:auto',
+        // Phase 0: try micro-compact first
+        const microEnabled = config.context?.microcompact_enabled !== false;
+        const microKeep = Number(config.context?.microcompact_keep_recent || 5);
+        let needsMacro = true;
+        if (microEnabled) {
+          const micro = microCompactMessages(compactSource, { keepRecent: microKeep, enabled: true });
+          if (micro.changed) {
+            setCompactedView(micro.messages.map((m) => ({
+              ...m,
+              at: new Date().toISOString()
+            })));
+            const afterMicroTokens = estimateMessagesTokens(compactedForModel);
+            const afterMicroPct = (afterMicroTokens / maxTokens) * 100;
+            if (onAgentEvent) {
+              onAgentEvent({
+                type: 'compact:auto',
+                mode: 'micro',
+                threshold: compactState.threshold,
+                tokensSaved: micro.tokensSaved
+              });
+            }
+            if (afterMicroPct < compactState.threshold) {
+              needsMacro = false;
+              await captureCompactSummary({
+                summary: `Micro-compact saved ${micro.tokensSaved} tokens`,
+                mode: 'micro',
+                beforeTokens: currentTokens,
+                afterTokens: afterMicroTokens
+              });
+            }
+          }
+        }
+        // Phase 1: macro compact if still over threshold
+        if (needsMacro) {
+          const sourceIsCompacted = Boolean(compactedForModel);
+          const macroSource = compactedForModel ?? currentSession.messages;
+          const autoResult = await compactMessagesLocally(macroSource, {
+            mode: compactState.mode,
+            force: true,
+            generateSummary: createCompactSummaryGenerator(config, null)
+          });
+          if (autoResult.changed) {
+            setCompactedView(
+              autoResult.compacted.map((m) => ({
+                ...m,
+                at: new Date().toISOString()
+              })),
+              {
+                boundaryIndex: translateCompactBoundaryToOriginal(
+                  sourceIsCompacted,
+                  currentSession.compact,
+                  autoResult.boundaryIndex
+                ),
+                mode: compactState.mode
+              }
+            );
+            await captureCompactSummary({
+              summary: autoResult.summary,
               mode: compactState.mode,
-              threshold: compactState.threshold
+              beforeTokens: currentTokens,
+              afterTokens: estimateMessagesTokens(compactedForModel)
             });
+            if (onAgentEvent) {
+              onAgentEvent({
+                type: 'compact:auto',
+                mode: compactState.mode,
+                threshold: compactState.threshold
+              });
+            }
           }
         }
       }
@@ -4149,17 +6162,34 @@ export async function createChatRuntime({
       return { type: 'system', text };
     }
 
-    const selectedAutoSkills = autoRoute.selectedSkills.filter((name) => isSkillEnabled(config, name));
+    const selectedAutoSkills = autoRoute.selectedSkills.filter((name) => isSkillEnabled(config, name, commands.get(name)));
     if (selectedAutoSkills.length > 0 && onAgentEvent) {
       onAgentEvent({
         type: 'skill:auto',
         names: selectedAutoSkills
       });
     }
-    const skillPrompt = buildAutoSkillSystemPrompt(activeReplySystemPrompt, commands, config, expandedText);
+    const autoSkillPrompt = buildAutoSkillPromptBlock(commands, config, expandedText);
+    const skillPrompt = autoSkillPrompt
+      ? await composeSystemPrompt({
+          shellRulesPrompt: activeReplySystemPrompt,
+          config,
+          workspaceRoot: process.cwd(),
+          skillsPrompt: autoSkillPrompt,
+          includeSoul: false,
+          includeMemory: false
+          })
+        : activeReplySystemPrompt;
     const routedSystemPrompt =
       autoRoute.mode === 'direct_medium'
-        ? buildMediumTaskSystemPrompt(skillPrompt)
+        ? await composeSystemPrompt({
+            shellRulesPrompt: skillPrompt,
+            config,
+            workspaceRoot: process.cwd(),
+            skillsPrompt: buildMediumTaskPromptBlock(),
+            includeSoul: false,
+            includeMemory: false
+          })
         : skillPrompt;
     const result = await askModel({
       text: expandedText,
@@ -4170,8 +6200,12 @@ export async function createChatRuntime({
       onAgentEvent,
       requestToolApproval: activeRequestToolApproval,
       executionMode,
-      signal
+      signal,
+      compactedForModel,
+      onCompactedUpdate: setCompactedView
     });
+    await saveDirectMemoryPrompt(expandedText);
+    await captureUserPromptForDream(expandedText);
     return { type: 'assistant', text: result.text, aborted: !!result.aborted };
   };
 
@@ -4190,9 +6224,26 @@ export async function createChatRuntime({
     consumeStartupEvents: () => startupEvents.splice(0, startupEvents.length),
     getInputHistory: () => loadInputHistory(),
     getCurrentSessionId: () => currentSession.id,
+    getSessionMessages: () => currentSession.messages || [],
+    getSessionCompact: () => currentSession.compact || null,
+    reloadConfig: async (options = {}) => {
+      config = await loadConfig();
+      await syncRuntimeFromConfig(options);
+      return config;
+    },
+    setExecutionMode: async (next) => {
+      if (!['normal', 'auto', 'plan'].includes(next)) return false;
+      executionMode = next;
+      await setConfigValue('execution.mode', next);
+      config = await loadConfig();
+      return true;
+    },
     setRequestToolApproval: (handler) => {
       activeRequestToolApproval = typeof handler === 'function' ? handler : null;
       return true;
+    },
+    setOnTitleUpdate: (cb) => {
+      onTitleUpdateCallback = typeof cb === 'function' ? cb : null;
     },
     dispose: async () => {
       if (typeof disposeTools === 'function') {

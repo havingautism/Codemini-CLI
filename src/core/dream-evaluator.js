@@ -22,6 +22,26 @@ Rules:
 - General coding/environment knowledge → scope "global"
 - If in doubt, discard. Memory is expensive; only promote what future sessions will genuinely benefit from.`;
 
+const MAINTENANCE_SYSTEM_PROMPT = `You are maintaining an existing persistent memory bucket for a coding assistant.
+
+Your job:
+1. Merge duplicates and near-duplicates.
+2. Summarize clusters into fewer, higher-signal memories.
+3. Remove stale, contradictory, trivial, or overly specific noise.
+4. Preserve important exact commands, file paths, preferences, and constraints.
+5. Keep memories scoped exactly to the bucket you receive.
+
+Respond with valid JSON only, no markdown fences:
+{"items":[{"kind":"preference|workflow|pattern|observation|correction|decision|failure|architecture|module|note","content":"durable memory text","summary":"under 80 chars","confidence":0.5,"pinned":false,"lifecycle":"longterm|operational"}],"archives":[{"source_ids":["mem_..."],"reason":"merged|stale|duplicate|noise|contradiction"}]}
+
+Rules:
+- Prefer fewer, clearer items, but do not collapse unrelated facts.
+- User preferences belong in user memory and should not become project rules.
+- Project conventions belong in project memory and should not become user preferences.
+- Global memory is only for reusable cross-project/tool/environment knowledge.
+- If a pinned item is still valid, keep it.
+- Return at least one item if the input has useful durable content.`;
+
 function parseResults(text) {
   try {
     const json = JSON.parse(text);
@@ -95,5 +115,71 @@ export async function evaluateInboxBatch({ entries, config, workspaceRoot }) {
       action: 'discard',
       reason: 'LLM evaluation failed'
     }));
+  }
+}
+
+function parseMaintenanceResult(text) {
+  try {
+    const json = JSON.parse(text);
+    const items = Array.isArray(json?.items) ? json.items : [];
+    const archives = Array.isArray(json?.archives) ? json.archives : [];
+    return {
+      items: items
+        .map((item) => ({
+          kind: String(item.kind || 'note').slice(0, 40),
+          content: String(item.content || '').slice(0, 600),
+          summary: String(item.summary || item.content || '').slice(0, 120),
+          confidence: Math.min(1, Math.max(0.5, Number(item.confidence) || 0.8)),
+          pinned: item.pinned === true,
+          lifecycle: ['longterm', 'operational'].includes(String(item.lifecycle || '')) ? String(item.lifecycle) : undefined
+        }))
+        .filter((item) => item.content.trim()),
+      archives: archives.map((archive) => ({
+        source_ids: Array.isArray(archive.source_ids) ? archive.source_ids.map((id) => String(id)).filter(Boolean) : [],
+        reason: String(archive.reason || '').slice(0, 160)
+      }))
+    };
+  } catch {
+    return { items: [], archives: [] };
+  }
+}
+
+export async function evaluateMemoryMaintenance({ scope, items, config, workspaceRoot }) {
+  const sourceItems = Array.isArray(items) ? items : [];
+  if (sourceItems.length === 0) return { items: [], archives: [] };
+
+  const compactItems = sourceItems.map((item) => ({
+    id: item.id,
+    kind: item.kind,
+    content: String(item.content || '').slice(0, 600),
+    summary: String(item.summary || '').slice(0, 160),
+    confidence: item.confidence,
+    pinned: item.pinned === true,
+    lifecycle: item.lifecycle || ''
+  }));
+
+  try {
+    const result = await createChatCompletion({
+      sdkProvider: config?.sdk?.provider,
+      baseUrl: config?.gateway?.base_url,
+      apiKey: config?.gateway?.api_key,
+      model: config?.model?.name,
+      messages: [
+        { role: 'system', content: MAINTENANCE_SYSTEM_PROMPT },
+        {
+          role: 'user',
+          content: `Maintain this ${scope} memory bucket. Workspace: ${workspaceRoot || process.cwd()}\n\n${JSON.stringify(compactItems, null, 2)}`
+        }
+      ],
+      temperature: 0,
+      timeoutMs: EVAL_TIMEOUT_MS
+    });
+    return parseMaintenanceResult(result?.text || '');
+  } catch (error) {
+    return {
+      items: sourceItems,
+      archives: [],
+      error: String(error?.message || error || 'memory maintenance failed')
+    };
   }
 }

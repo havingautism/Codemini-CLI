@@ -54,6 +54,36 @@ async function parseJsonResponse(response) {
   return response.json();
 }
 
+function isRetryableStatus(status) {
+  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+}
+
+function isRetryableError(error) {
+  const name = String(error?.name || '');
+  if (name === 'AbortError' || name === 'TimeoutError') return false;
+  const message = String(error?.message || error || '');
+  return /fetch failed|network|socket|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(message);
+}
+
+async function fetchWithRetry(url, init, { maxRetries = 0 } = {}) {
+  const attempts = Math.max(0, Number(maxRetries) || 0) + 1;
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, init);
+      if (response.ok || !isRetryableStatus(response.status) || attempt === attempts - 1) {
+        return response;
+      }
+      await response.arrayBuffer().catch(() => null);
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableError(error) || attempt === attempts - 1) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+  }
+  throw lastError || new Error('Gateway request failed');
+}
+
 async function* iterateSseEvents(stream) {
   const decoder = new TextDecoder();
   let buffer = '';
@@ -314,16 +344,16 @@ export async function createChatCompletion({
   messages,
   temperature = 0.2,
   tools,
-  timeoutMs = 90000,
+  timeoutMs = 1800000,
   maxRetries = 2
 }) {
   const payload = buildPayload({ model, temperature, messages, tools });
-  const response = await fetch(buildChatCompletionsUrl(baseUrl), {
+  const response = await fetchWithRetry(buildChatCompletionsUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
     body: JSON.stringify(payload),
     signal: AbortSignal.timeout(timeoutMs)
-  });
+  }, { maxRetries });
   const data = await parseJsonResponse(response);
   const message = data?.choices?.[0]?.message || {};
   const text = sanitizeMiniMaxText(model, extractTextContent(message.content));
@@ -369,7 +399,7 @@ export async function createChatCompletionStream({
   tools,
   onTextDelta,
   onToolCallDelta,
-  timeoutMs = 90000,
+  timeoutMs = 1800000,
   maxRetries = 2,
   signal: externalSignal
 }) {
@@ -386,12 +416,12 @@ export async function createChatCompletionStream({
     }
   }
   const payload = buildPayload({ model, temperature, messages, tools, stream: true });
-  const response = await fetch(buildChatCompletionsUrl(baseUrl), {
+  const response = await fetchWithRetry(buildChatCompletionsUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
     body: JSON.stringify(payload),
     signal: controller.signal
-  });
+  }, { maxRetries });
   if (!response.ok || !response.body) {
     const text = await response.text().catch(() => '');
     throw new Error(`Gateway error ${response.status}: ${text || response.statusText}`);
@@ -402,7 +432,8 @@ export async function createChatCompletionStream({
   let usage = null;
   let miniMaxStreamState = { rawContent: '', visibleText: '' };
 
-  for await (const chunk of iterateSseEvents(response.body)) {
+  try {
+    for await (const chunk of iterateSseEvents(response.body)) {
     usage = chunk?.usage || usage;
     const choice0 = chunk?.choices?.[0] || {};
     const delta = choice0?.delta || {};
@@ -452,6 +483,10 @@ export async function createChatCompletionStream({
     if (choice0?.finish_reason) {
       break;
     }
+    }
+  } finally {
+    timeoutSignal.removeEventListener('abort', onAbort);
+    if (externalSignal) externalSignal.removeEventListener('abort', onAbort);
   }
 
   const result = buildFinalStreamResult(text, toolCallsByIndex, usage, messages);

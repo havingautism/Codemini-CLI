@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
@@ -15,7 +16,7 @@ import {
 import { evaluateCommandPolicy } from './command-policy.js';
 import { findEnclosingSymbol, queryAst, readAstNode, resolveAstTarget } from './ast.js';
 import { initializeProjectIndex, queryProjectIndex, refreshIndexedFile } from './project-index.js';
-import { checkReadDedup } from './agent-loop.js';
+import { checkReadDedup } from './tool-result-store.js';
 import { TOOL_SKIP_DIRS as SKIP_DIRS, TEXT_EXTENSIONS, CODE_WRITE_GUARD_EXTENSIONS, LANGUAGE_FILE_TYPES } from './constants.js';
 import { sha256Prefixed as sha256, sha256 as sha256Hash } from './crypto-utils.js';
 import { forgetMemory, listMemories, rememberMemory, searchMemories, captureToInbox } from './memory-store.js';
@@ -23,6 +24,20 @@ import { runDreamConsolidation } from './dream-consolidate.js';
 import { normalizePlanState } from './plan-state.js';
 import { normalizeTodos } from './todo-state.js';
 import { createFffAdapter } from './fff-adapter.js';
+import {
+  getToolOutputSanitizeOptions,
+  sanitizePreviewLines,
+  sanitizeTextForModel,
+  summarizeRunOutput
+} from './tool-output.js';
+import {
+  normalizePathArgs,
+  normalizePatternArgs,
+  normalizeReadArgs,
+  normalizeWebFetchArgs,
+  normalizeWebSearchArgs,
+  normalizeWriteArgs
+} from './tool-args.js';
 const BACKGROUND_TASK_RECENT_OUTPUT_LIMIT = 80;
 const BACKGROUND_TASK_POLL_MS = 150;
 const MAX_AST_ENCLOSING_BYTES = 300_000;
@@ -45,16 +60,48 @@ function isWithinResolvedRoot(resolvedRoot, candidatePath) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-async function resolveInWorkspace(root, targetPath = '.') {
+async function getAllowedRealRoots(root, config = {}) {
+  const roots = [
+    root,
+    ...(Array.isArray(config?.policy?.allowed_paths) ? config.policy.allowed_paths : [])
+  ]
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
+  const out = [];
+  for (const item of roots) {
+    try {
+      out.push(await fs.realpath(path.resolve(item)));
+    } catch {
+      continue;
+    }
+  }
+  return out;
+}
+
+function isWithinAnyResolvedRoot(roots, candidatePath) {
+  return roots.some((resolvedRoot) => isWithinResolvedRoot(resolvedRoot, candidatePath));
+}
+
+function resolvesOutsideRoot(root, targetPath = '.') {
+  const text = String(targetPath || '').trim();
+  if (!text || text === '.') return false;
+  return !isWithinResolvedRoot(path.resolve(root), path.resolve(root, text));
+}
+
+async function resolveInWorkspace(root, targetPath = '.', config = {}) {
   const absRoot = path.resolve(root);
-  const realRoot = await fs.realpath(absRoot);
+  const realRoots = await getAllowedRealRoots(absRoot, config);
+  if (realRoots.length === 0) {
+    throw new Error(`Path escapes workspace: ${targetPath}`);
+  }
   const absTarget = path.resolve(absRoot, targetPath);
   const realTarget = await realpathIfExists(absTarget);
   if (realTarget) {
-    if (!isWithinResolvedRoot(realRoot, realTarget)) {
+    if (!isWithinAnyResolvedRoot(realRoots, realTarget)) {
       throw new Error(`Path escapes workspace: ${targetPath}`);
     }
-    return realTarget;
+    const linkStat = await fs.lstat(absTarget);
+    return linkStat.isSymbolicLink() ? realTarget : absTarget;
   }
 
   let probe = path.dirname(absTarget);
@@ -70,10 +117,10 @@ async function resolveInWorkspace(root, targetPath = '.') {
   }
 
   const resolvedTarget = path.join(resolvedProbe, path.relative(probe, absTarget));
-  if (!isWithinResolvedRoot(realRoot, resolvedTarget)) {
+  if (!isWithinAnyResolvedRoot(realRoots, resolvedTarget)) {
     throw new Error(`Path escapes workspace: ${targetPath}`);
   }
-  return resolvedTarget;
+  return absTarget;
 }
 
 async function getBackgroundTasksDir(root) {
@@ -81,6 +128,17 @@ async function getBackgroundTasksDir(root) {
 }
 
 function toWorkspaceRelative(root, absPath) {
+  const roots = [path.resolve(root)];
+  try {
+    const realRoot = realpathSync(root);
+    if (realRoot) roots.push(realRoot);
+  } catch {}
+  for (const candidateRoot of roots) {
+    const relative = path.relative(candidateRoot, absPath);
+    if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+      return normalizePath(relative);
+    }
+  }
   return normalizePath(path.relative(path.resolve(root), absPath));
 }
 
@@ -92,133 +150,6 @@ function trimLinePreview(line, maxLen = 180) {
 
 function splitLines(text) {
   return String(text || '').split('\n');
-}
-
-function parseInlineReadRange(value) {
-  const text = String(value || '').trim();
-  if (!text) return null;
-  const match = text.match(/^(.*?):(\d+)(?:-(\d+))?$/);
-  if (!match) return null;
-  const [, maybePath, startRaw, endRaw] = match;
-  if (!maybePath || /^(?:[A-Za-z])$/.test(maybePath)) return null;
-  const startLine = Number(startRaw);
-  const endLine = Number(endRaw || startRaw);
-  if (!Number.isFinite(startLine) || startLine <= 0) return null;
-  if (!Number.isFinite(endLine) || endLine < startLine) return null;
-  return {
-    path: maybePath,
-    start_line: startLine,
-    end_line: endLine
-  };
-}
-
-function normalizeReadArgs(rawArgs) {
-  const source =
-    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
-      ? { ...rawArgs }
-      : { path: typeof rawArgs === 'string' ? rawArgs : '' };
-
-  const normalized = { ...source };
-  const aliasPath = String(source.path || source.file_path || source.file || source.target || '').trim();
-  if (aliasPath) normalized.path = aliasPath;
-
-  if (!Number.isFinite(Number(normalized.start_line)) && Number.isFinite(Number(source.offset))) {
-    normalized.start_line = Number(source.offset);
-  }
-
-  if (!Number.isFinite(Number(normalized.end_line)) && Number.isFinite(Number(source.limit))) {
-    const startLine = Number(normalized.start_line);
-    const limit = Number(source.limit);
-    if (startLine > 0 && limit > 0) {
-      normalized.end_line = startLine + limit - 1;
-    }
-  }
-
-  const inlineRange = parseInlineReadRange(normalized.path);
-  if (inlineRange) {
-    normalized.path = inlineRange.path;
-    if (!Number.isFinite(Number(normalized.start_line))) normalized.start_line = inlineRange.start_line;
-    if (!Number.isFinite(Number(normalized.end_line))) normalized.end_line = inlineRange.end_line;
-  }
-
-  return normalized;
-}
-
-function normalizePathArgs(rawArgs, aliases = []) {
-  const source =
-    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
-      ? { ...rawArgs }
-      : { path: typeof rawArgs === 'string' ? rawArgs : '' };
-  const normalized = { ...source };
-  const keys = ['path', ...aliases];
-  for (const key of keys) {
-    const value = String(source?.[key] || '').trim();
-    if (value) {
-      normalized.path = value;
-      break;
-    }
-  }
-  return normalized;
-}
-
-function normalizePatternArgs(rawArgs, aliases = [], defaultPathAliases = []) {
-  const source =
-    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
-      ? { ...rawArgs }
-      : { pattern: typeof rawArgs === 'string' ? rawArgs : '' };
-  const normalized = { ...source };
-  for (const key of ['pattern', ...aliases]) {
-    const value = String(source?.[key] || '').trim();
-    if (value) {
-      normalized.pattern = value;
-      break;
-    }
-  }
-  for (const key of ['path', ...defaultPathAliases]) {
-    const value = String(source?.[key] || '').trim();
-    if (value) {
-      normalized.path = value;
-      break;
-    }
-  }
-  return normalized;
-}
-
-function normalizeWriteArgs(rawArgs) {
-  const source =
-    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
-      ? { ...rawArgs }
-      : { path: typeof rawArgs === 'string' ? rawArgs : '' };
-  const normalized = { ...source };
-  const filePath = String(source.path || source.file_path || source.file || '').trim();
-  if (filePath) normalized.path = filePath;
-  if (normalized.content == null) {
-    if (source.text != null) normalized.content = source.text;
-    if (source.new_content != null) normalized.content = source.new_content;
-  }
-  return normalized;
-}
-
-function normalizeWebFetchArgs(rawArgs) {
-  const source =
-    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
-      ? { ...rawArgs }
-      : { url: typeof rawArgs === 'string' ? rawArgs : '' };
-  const normalized = { ...source };
-  const url = String(source.url || source.href || source.link || source.target || '').trim();
-  if (url) normalized.url = url;
-  return normalized;
-}
-
-function normalizeWebSearchArgs(rawArgs) {
-  const source =
-    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
-      ? { ...rawArgs }
-      : { query: typeof rawArgs === 'string' ? rawArgs : '' };
-  const normalized = { ...source };
-  const query = String(source.query || source.q || source.keyword || '').trim();
-  if (query) normalized.query = query;
-  return normalized;
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -285,6 +216,55 @@ function collectPageLinks($, pageUrl, maxLinks = 20) {
   return links;
 }
 
+function extractPageContent(cheerio, html, pageUrl, { maxLinks, status = null, contentType = '', fetchMode = 'static' } = {}) {
+  const $ = cheerio.load(html);
+  $('script, style, noscript').remove();
+  const bodyText = $('body').text() || $.root().text();
+  const text = String(bodyText || '').replace(/[^\S\n]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  const title = trimPreview($('title').first().text(), 240);
+  const description = extractHtmlMeta($, 'description') || extractHtmlMeta($, 'og:description');
+  const links = collectPageLinks($, pageUrl, maxLinks);
+
+  return {
+    final_url: pageUrl,
+    title,
+    description,
+    text,
+    links,
+    metadata: {
+      status,
+      fetched_at: new Date().toISOString(),
+      content_type: contentType,
+      fetch_mode: fetchMode,
+      lang: String($('html').attr('lang') || '').trim()
+    }
+  };
+}
+
+function shouldTryBrowserRender(html, text) {
+  if (String(text || '').trim().length >= 120) return false;
+  return /<script\b/i.test(html) ||
+    /id=["']__(?:next|nuxt)["']/i.test(html) ||
+    /data-reactroot|ng-version|window\.__/i.test(html);
+}
+
+function playwrightInstallHint() {
+  return 'For JavaScript-rendered pages, install Playwright for richer web_fetch results: npm install -g playwright && playwright install chromium';
+}
+
+async function loadOptionalPlaywright() {
+  try {
+    return await import('playwright');
+  } catch (error) {
+    const code = String(error?.code || '');
+    const message = String(error?.message || '');
+    if (code === 'ERR_MODULE_NOT_FOUND' || /Cannot find package 'playwright'|Cannot find module 'playwright'/i.test(message)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 async function buildPlaywrightLaunchEnv() {
   const localLibDir = path.join(
     process.env.HOME || '',
@@ -317,44 +297,85 @@ async function webFetchPage(args = {}) {
     ? String(normalizedArgs.wait_until).trim()
     : 'domcontentloaded';
 
-  const [{ chromium }, cheerio] = await Promise.all([import('playwright'), import('cheerio')]);
-
-  // Crawlee is intentionally disabled for now so single-page reads stay lightweight.
-  // If we later need multi-URL crawl orchestration, retries, or request queues, we can re-enable it here.
-
-  const browser = await chromium.launch({
-    headless: true,
-    env: await buildPlaywrightLaunchEnv()
-  });
+  const cheerio = await import('cheerio');
+  let staticResult = null;
+  let staticHtml = '';
+  let staticError = null;
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let response;
+    try {
+      response = await fetch(url, {
+        redirect: 'follow',
+        signal: controller.signal,
+        headers: {
+          'user-agent': 'CodeminiCLI/0.4 web_fetch'
+        }
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+    staticHtml = await response.text();
+    staticResult = {
+      url,
+      ...extractPageContent(cheerio, staticHtml, response.url || url, {
+        maxLinks,
+        status: response.status,
+        contentType: response.headers.get('content-type') || '',
+        fetchMode: 'static'
+      })
+    };
+    if (!shouldTryBrowserRender(staticHtml, staticResult.text)) {
+      return staticResult;
+    }
+  } catch (error) {
+    staticError = error;
+  }
+
+  const playwright = await loadOptionalPlaywright();
+  if (!playwright) {
+    if (staticResult) {
+      return {
+        ...staticResult,
+        warnings: [playwrightInstallHint()]
+      };
+    }
+    throw new Error(`web_fetch failed and browser rendering is unavailable. ${playwrightInstallHint()}. Static fetch error: ${staticError?.message || staticError}`);
+  }
+
+  let browser;
+  try {
+    browser = await playwright.chromium.launch({
+      headless: true,
+      env: await buildPlaywrightLaunchEnv()
+    });
     const page = await browser.newPage();
     const response = await page.goto(url, { waitUntil, timeout: timeoutMs });
     const finalUrl = page.url();
     const html = await page.content();
-    const $ = cheerio.load(html);
-    const bodyText = $('body').text() || $.root().text();
-    const text = String(bodyText || '').replace(/[^\S\n]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
-    const title = trimPreview($('title').first().text() || (await page.title()), 240);
-    const description = extractHtmlMeta($, 'description') || extractHtmlMeta($, 'og:description');
-    const links = collectPageLinks($, finalUrl, maxLinks);
-
-    return {
+    const rendered = {
       url,
-      final_url: finalUrl,
-      title,
-      description,
-      text,
-      links,
-      metadata: {
+      ...extractPageContent(cheerio, html, finalUrl, {
+        maxLinks,
         status: response?.status?.() ?? null,
-        fetched_at: new Date().toISOString(),
-        content_type: response?.headers?.()['content-type'] || '',
-        wait_until: waitUntil,
-        lang: String($('html').attr('lang') || '').trim()
-      }
+        contentType: response?.headers?.()['content-type'] || '',
+        fetchMode: 'browser'
+      })
     };
+    rendered.metadata.wait_until = waitUntil;
+    rendered.title = rendered.title || trimPreview(await page.title(), 240);
+    return rendered;
+  } catch (error) {
+    if (staticResult) {
+      return {
+        ...staticResult,
+        warnings: [`Browser rendering fallback failed: ${error?.message || error}`]
+      };
+    }
+    throw error;
   } finally {
-    await browser.close();
+    if (browser) await browser.close();
   }
 }
 
@@ -368,28 +389,105 @@ async function webSearchQuery(config, args = {}) {
   if (!query) throw new Error('web_search requires query');
 
   const maxResults = clampNumber(normalizedArgs.max_results, 1, 20, 8);
-  const [{ search, SafeSearchType }] = await Promise.all([import('duck-duck-scrape')]);
-  const response = await search(query, {
-    safeSearch: SafeSearchType.MODERATE,
-    locale: String(normalizedArgs.locale || 'en-us').trim() || 'en-us',
-    region: String(normalizedArgs.region || 'wt-wt').trim() || 'wt-wt'
+  const locale = String(normalizedArgs.locale || config?.web?.search_locale || 'en-US').trim() || 'en-US';
+  const region = String(normalizedArgs.region || normalizedArgs.cc || config?.web?.search_region || (locale.toLowerCase().endsWith('-cn') ? 'CN' : 'US')).trim() || 'US';
+  const searchUrl = buildBingRssSearchUrl({
+    baseUrl: config?.web?.search_base_url,
+    query,
+    locale,
+    region
   });
+  const timeoutMs = clampNumber(normalizedArgs.timeout_ms || config?.web?.search_timeout_ms, 1_000, 60_000, 15_000);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(searchUrl, {
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'user-agent': 'CodeminiCLI/0.4 web_search',
+        accept: 'application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.5',
+        'accept-language': `${locale},en;q=0.8`
+      }
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) {
+    throw new Error(`web_search Bing RSS request failed: HTTP ${response.status}`);
+  }
+
+  const xml = await response.text();
+  const cheerio = await import('cheerio');
+  const parsed = parseBingRssResults(cheerio, xml, maxResults);
 
   return {
     query,
-    no_results: response?.noResults === true,
-    results: Array.isArray(response?.results)
-      ? response.results.slice(0, maxResults).map((item) => ({
-          title: String(item?.title || '').trim(),
-          url: String(item?.url || '').trim(),
-          description: normalizeWhitespace(item?.description || item?.rawDescription || ''),
-          hostname: String(item?.hostname || '').trim()
-        }))
-      : [],
-    related: Array.isArray(response?.related)
-      ? response.related.slice(0, 8).map((item) => String(item?.text || item?.raw || '').trim()).filter(Boolean)
-      : []
+    engine: 'bing_rss',
+    source_url: response.url || searchUrl,
+    no_results: parsed.results.length === 0,
+    results: parsed.results,
+    related: []
   };
+}
+
+function buildBingRssSearchUrl({ baseUrl, query, locale, region }) {
+  const url = new URL(String(baseUrl || 'https://cn.bing.com/search'));
+  url.searchParams.set('q', query);
+  url.searchParams.set('mkt', locale);
+  url.searchParams.set('setlang', locale);
+  url.searchParams.set('cc', region);
+  url.searchParams.set('format', 'rss');
+  return url.toString();
+}
+
+function parseBingRssResults(cheerio, xml, maxResults) {
+  const $ = cheerio.load(xml, { xmlMode: true });
+  const results = [];
+  const seenUrls = new Set();
+  $('item').each((_, element) => {
+    if (results.length >= maxResults) return false;
+    const title = normalizeWhitespace($(element).find('title').first().text());
+    const url = normalizeSearchResultUrl($(element).find('link').first().text());
+    if (!title || !url || seenUrls.has(url)) return undefined;
+    seenUrls.add(url);
+    results.push({
+      title,
+      url,
+      description: normalizeRssDescription(cheerio, $(element).find('description').first().text()),
+      hostname: hostnameFromUrl(url),
+      published_at: normalizeWhitespace($(element).find('pubDate').first().text())
+    });
+    return undefined;
+  });
+  return { results };
+}
+
+function normalizeSearchResultUrl(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  try {
+    const parsed = new URL(text);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return '';
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
+function normalizeRssDescription(cheerio, value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return normalizeWhitespace(cheerio.load(text).text() || text);
+}
+
+function hostnameFromUrl(value) {
+  try {
+    return new URL(value).hostname;
+  } catch {
+    return '';
+  }
 }
 
 function findUniqueLineBlock(lines, blockContent) {
@@ -490,8 +588,8 @@ async function mapLimit(items, limit, worker) {
 
 const WALKER_CONCURRENCY = 8;
 
-async function walkTextFiles(root, startPath = '.', fileTypes = []) {
-  const abs = await resolveInWorkspace(root, startPath);
+async function walkTextFiles(root, startPath = '.', fileTypes = [], config = {}) {
+  const abs = await resolveInWorkspace(root, startPath, config);
   const allowedExts = new Set((Array.isArray(fileTypes) ? fileTypes : []).map((item) => `.${String(item || '').replace(/^\./, '')}`));
 
   async function visit(current) {
@@ -511,8 +609,8 @@ async function walkTextFiles(root, startPath = '.', fileTypes = []) {
   return visit(abs);
 }
 
-async function walkWorkspaceEntries(root, startPath = '.', { includeHidden = false } = {}) {
-  const abs = await resolveInWorkspace(root, startPath);
+async function walkWorkspaceEntries(root, startPath = '.', { includeHidden = false, config = {} } = {}) {
+  const abs = await resolveInWorkspace(root, startPath, config);
 
   async function visit(current) {
     const stat = await fs.stat(current);
@@ -745,8 +843,8 @@ function findEnclosingSymbolLine(lines, anchorLine) {
   return 0;
 }
 
-async function getFileState(root, relativePath) {
-  const target = await resolveInWorkspace(root, relativePath);
+async function getFileState(root, relativePath, config = {}) {
+  const target = await resolveInWorkspace(root, relativePath, config);
   const stat = await fs.stat(target);
   const content = await fs.readFile(target, 'utf8');
   return {
@@ -757,9 +855,9 @@ async function getFileState(root, relativePath) {
   };
 }
 
-async function readFile(root, args) {
+async function readFile(root, args, config = {}) {
   const normalizedArgs = normalizeReadArgs(args);
-  const target = await resolveInWorkspace(root, normalizedArgs?.path);
+  const target = await resolveInWorkspace(root, normalizedArgs?.path, config);
   const stat = await fs.stat(target);
   const text = await fs.readFile(target, 'utf8');
   const lines = splitLines(text);
@@ -839,7 +937,7 @@ async function readFile(root, args) {
   };
 }
 
-async function writeFile(root, args) {
+async function writeFile(root, args, config = {}) {
   const normalizedArgs = normalizeWriteArgs(args);
   const rawPath = String(normalizedArgs?.path || '').trim();
   if (!rawPath) {
@@ -848,7 +946,7 @@ async function writeFile(root, args) {
   if (rawPath === '.' || rawPath === './') {
     throw new Error('write requires a file path, not the workspace root');
   }
-  const target = await resolveInWorkspace(root, rawPath);
+  const target = await resolveInWorkspace(root, rawPath, config);
   try {
     const stat = await fs.stat(target);
     if (stat.isDirectory()) {
@@ -900,21 +998,21 @@ async function writeFile(root, args) {
   };
 }
 
-async function prepareDeleteTarget(root, args) {
+async function prepareDeleteTarget(root, args, config = {}) {
   const normalizedArgs = normalizePathArgs(args, ['file', 'file_path', 'target', 'directory', 'dir']);
   const rawPath = String(normalizedArgs?.path || '').trim();
   if (!rawPath) {
     throw new Error('delete requires a file or directory path');
   }
   const absRoot = path.resolve(root);
-  const realRoot = await fs.realpath(absRoot);
+  const realRoots = await getAllowedRealRoots(absRoot, config);
   const originalTarget = path.resolve(absRoot, rawPath);
   if (originalTarget === absRoot) {
     throw new Error('delete requires a path inside the workspace, not the workspace root');
   }
-  const resolvedTarget = await resolveInWorkspace(root, rawPath);
-  if (resolvedTarget === realRoot) {
-    throw new Error('delete requires a path inside the workspace, not the workspace root');
+  const resolvedTarget = await resolveInWorkspace(root, rawPath, config);
+  if (realRoots.some((realRoot) => resolvedTarget === realRoot)) {
+    throw new Error('delete requires a path inside the workspace or allowed paths, not an allowed root');
   }
 
   let rawStat;
@@ -944,8 +1042,8 @@ async function prepareDeleteTarget(root, args) {
   };
 }
 
-async function deletePath(root, args) {
-  const target = await prepareDeleteTarget(root, args);
+async function deletePath(root, args, config = {}) {
+  const target = await prepareDeleteTarget(root, args, config);
   await fs.rm(target.originalTarget, { recursive: true, force: false });
 
   return {
@@ -990,7 +1088,7 @@ async function runCommand(root, config, args) {
     command,
     cwd: root,
     shell: config.shell.default,
-    timeoutMs: config.shell.timeout_ms
+    timeoutMs: Number(args?.timeout || args?.timeout_ms || args?.timeoutMs || config.shell.timeout_ms)
   });
   return { ...result, command };
 }
@@ -1012,10 +1110,9 @@ function shellCommandForBackgroundTask(command, shellSpec) {
 }
 
 function appendRecentOutput(task, chunk) {
-  const lines = String(chunk || '')
-    .split(/\r?\n/)
-    .map((line) => trimLinePreview(line, 220))
-    .filter(Boolean);
+  const lines = sanitizePreviewLines(chunk, { maxLineLength: 220 }).map((line) =>
+    trimLinePreview(line, 220)
+  );
   if (lines.length === 0) return;
   for (const line of lines) {
     backgroundTaskLogCursorCounter += 1;
@@ -1297,13 +1394,13 @@ async function stopBackgroundTask(_root, args) {
   return { ...snapshotBackgroundTask(task), stopped: true };
 }
 
-async function builtinGrep(root, args) {
+async function builtinGrep(root, args, config = {}) {
   const normalizedArgs = normalizePatternArgs(args, ['query', 'symbol', 'q'], ['directory', 'dir', 'cwd']);
   const pattern = String(normalizedArgs?.pattern || '').trim();
   if (!pattern) throw new Error('grep requires pattern');
   const maxResults = Math.max(1, Math.min(200, Number(normalizedArgs?.max_results || 50)));
   const caseSensitive = Boolean(normalizedArgs?.case_sensitive);
-  const files = await walkTextFiles(root, normalizedArgs?.path || '.', normalizeFileTypes(normalizedArgs));
+  const files = await walkTextFiles(root, normalizedArgs?.path || '.', normalizeFileTypes(normalizedArgs), config);
   const regex = normalizedArgs?.regex
     ? new RegExp(pattern, caseSensitive ? 'g' : 'gi')
     : new RegExp(escapeRegex(pattern), caseSensitive ? 'g' : 'gi');
@@ -1332,14 +1429,15 @@ async function builtinGrep(root, args) {
   return { pattern, matches, truncated: false };
 }
 
-async function builtinGlob(root, args) {
+async function builtinGlob(root, args, config = {}) {
   const normalizedArgs = normalizePatternArgs(args, ['glob', 'query'], ['directory', 'dir', 'cwd']);
   const pattern = String(normalizedArgs?.pattern || '').trim();
   if (!pattern) throw new Error('glob requires pattern');
   const maxResults = Math.max(1, Math.min(500, Number(normalizedArgs?.max_results || 200)));
   const regex = globToRegex(pattern);
   const entries = await walkWorkspaceEntries(root, normalizedArgs?.path || '.', {
-    includeHidden: Boolean(normalizedArgs?.include_hidden)
+    includeHidden: Boolean(normalizedArgs?.include_hidden),
+    config
   });
   const matches = entries
     .filter((entry) => entry.type === 'file' && regex.test(entry.path))
@@ -1352,10 +1450,10 @@ async function builtinGlob(root, args) {
   };
 }
 
-async function builtinList(root, args) {
+async function builtinList(root, args, config = {}) {
   const normalizedArgs = normalizePathArgs(args, ['dir', 'directory', 'target']);
   const relativePath = String(normalizedArgs?.path || '.').trim() || '.';
-  const target = await resolveInWorkspace(root, relativePath);
+  const target = await resolveInWorkspace(root, relativePath, config);
   const entries = await fs.readdir(target, { withFileTypes: true });
   const includeHidden = Boolean(normalizedArgs?.include_hidden);
   const items = entries
@@ -1375,10 +1473,10 @@ async function builtinList(root, args) {
   };
 }
 
-async function readBlock(root, args) {
+async function readBlock(root, args, config = {}) {
   const relativePath = String(args?.path || '').trim();
   if (!relativePath) throw new Error('read_block requires path');
-  const { lines } = await getFileState(root, relativePath);
+  const { lines } = await getFileState(root, relativePath, config);
   const symbol = String(args?.symbol || '').trim();
   const anchorLine = symbol ? findSymbolDefinition(lines, symbol) : Number(args?.line || args?.anchor_line || 1);
   const range = findBlockRange(lines, anchorLine);
@@ -1392,12 +1490,12 @@ async function readBlock(root, args) {
   };
 }
 
-async function readSymbolContext(root, args) {
+async function readSymbolContext(root, args, config = {}) {
   const relativePath = String(args?.path || '').trim();
   const symbol = String(args?.symbol || '').trim();
   if (!relativePath || !symbol) throw new Error('read_symbol_context requires path and symbol');
-  const { lines } = await getFileState(root, relativePath);
-  const mainBlock = await readBlock(root, { path: relativePath, symbol });
+  const { lines } = await getFileState(root, relativePath, config);
+  const mainBlock = await readBlock(root, { path: relativePath, symbol }, config);
   return {
     file: relativePath,
     symbol,
@@ -1415,11 +1513,11 @@ async function readSymbolContext(root, args) {
   };
 }
 
-async function validateEdit(root, args) {
+async function validateEdit(root, args, config = {}) {
   const relativePath = String(args?.path || '').trim();
   const kind = String(args?.kind || '').trim();
   if (!relativePath || !kind) throw new Error('validate_edit requires path and kind');
-  const { content, lines } = await getFileState(root, relativePath);
+  const { content, lines } = await getFileState(root, relativePath, config);
 
   if (kind === 'replace_block') {
     const startLine = Number(args?.target?.start_line || args?.start_line);
@@ -1469,17 +1567,28 @@ async function validateEdit(root, args) {
 function countChangedLines(beforeContent, afterContent) {
   const before = splitLines(beforeContent);
   const after = splitLines(afterContent);
-  let added = 0;
-  let removed = 0;
-  const maxLen = Math.max(before.length, after.length);
-  for (let i = 0; i < maxLen; i += 1) {
-    const b = before[i];
-    const a = after[i];
-    if (b === undefined && a !== undefined) added += 1;
-    else if (a === undefined && b !== undefined) removed += 1;
-    else if (b !== a) { added += 1; removed += 1; }
+  const m = before.length;
+  const n = after.length;
+  // LCS via rolling DP — O(m*n) time, O(min(m,n)) space
+  const short = m <= n ? before : after;
+  const long = m <= n ? after : before;
+  const shortLen = short.length;
+  const longLen = long.length;
+  let prev = new Array(longLen + 1).fill(0);
+  let curr = new Array(longLen + 1).fill(0);
+  for (let i = 1; i <= shortLen; i++) {
+    for (let j = 1; j <= longLen; j++) {
+      if (short[i - 1] === long[j - 1]) {
+        curr[j] = prev[j - 1] + 1;
+      } else {
+        curr[j] = Math.max(prev[j], curr[j - 1]);
+      }
+    }
+    [prev, curr] = [curr, prev];
+    curr.fill(0);
   }
-  return { added, removed };
+  const lcsLen = prev[longLen];
+  return { added: n - lcsLen, removed: m - lcsLen };
 }
 
 function editResult(pathText, action, beforeContent, afterContent, changedLine = 1) {
@@ -1499,11 +1608,11 @@ function editResult(pathText, action, beforeContent, afterContent, changedLine =
   };
 }
 
-async function replaceBlock(root, args) {
+async function replaceBlock(root, args, config = {}) {
   const relativePath = String(args?.path || '').trim();
   const newContent = String(args?.new_content || args?.content || '');
   const target = args?.target || {};
-  const state = await getFileState(root, relativePath);
+  const state = await getFileState(root, relativePath, config);
   const resolved = resolveReplaceBlockTarget(state, target);
   if (!resolved) {
     throw new Error('replace_block old_hash mismatch; retry through edit with a symbol or line hint');
@@ -1518,11 +1627,11 @@ async function replaceBlock(root, args) {
   return editResult(relativePath, 'replace_block', state.content, afterContent, resolved.start_line);
 }
 
-async function replaceText(root, args) {
+async function replaceText(root, args, config = {}) {
   const relativePath = String(args?.path || '').trim();
   const oldText = String(args?.old_text || '');
   const newText = String(args?.new_text || '');
-  const state = await getFileState(root, relativePath);
+  const state = await getFileState(root, relativePath, config);
   const occurrences = state.content.split(oldText).length - 1;
   if (occurrences !== 1) {
     throw new Error(
@@ -1537,11 +1646,11 @@ async function replaceText(root, args) {
   return editResult(relativePath, 'replace_text', state.content, afterContent, changedLine);
 }
 
-async function insertRelative(root, args, mode) {
+async function insertRelative(root, args, mode, config = {}) {
   const relativePath = String(args?.path || '').trim();
   const anchorText = String(args?.anchor_text || '');
   const content = String(args?.content || '');
-  const state = await getFileState(root, relativePath);
+  const state = await getFileState(root, relativePath, config);
   const occurrences = state.content.split(anchorText).length - 1;
   if (occurrences !== 1) {
     throw new Error(occurrences === 0 ? `${mode} anchor not found` : `${mode} anchor not unique`);
@@ -1553,7 +1662,7 @@ async function insertRelative(root, args, mode) {
   return editResult(relativePath, mode, state.content, afterContent, changedLine);
 }
 
-async function openTarget(root, args) {
+async function openTarget(root, args, config = {}) {
   const file = String(args?.file || args?.path || '').trim();
   if (!file) throw new Error('open_target requires file');
   const symbol = String(args?.symbol || '').trim();
@@ -1565,8 +1674,8 @@ async function openTarget(root, args) {
         max_related_calls: args?.max_related_calls,
         max_related_imports: args?.max_related_imports,
         max_related_types: args?.max_related_types
-      })
-    : { file, symbol: '', main_block: await readBlock(root, { path: file, line }), related: { imports: [], local_symbols: [] } };
+      }, config)
+    : { file, symbol: '', main_block: await readBlock(root, { path: file, line }, config), related: { imports: [], local_symbols: [] } };
   const block = mainBlock.main_block || mainBlock;
   return {
     file,
@@ -1618,7 +1727,7 @@ function normalizeEditTargetArgs(args = {}) {
   };
 }
 
-async function editTarget(root, args) {
+async function editTarget(root, args, config = {}) {
   const normalized = normalizeEditTargetArgs(args);
   const file = normalized.file;
   const astTarget = normalized.ast_target;
@@ -1672,26 +1781,26 @@ async function editTarget(root, args) {
           file,
           symbol: edit.symbol || args?.symbol,
           line: edit.line || args?.line
-        })
+        }, config)
       ).edit;
     try {
       return await replaceBlock(root, {
         path: file,
         target: resolvedTarget,
         new_content: edit.new_content
-      });
+      }, config);
     } catch (error) {
       if (!/old_hash mismatch/i.test(String(error?.message || ''))) throw error;
       const validation = await validateEdit(root, {
         path: file,
         kind: 'replace_block',
         target: resolvedTarget
-      });
+      }, config);
       return replaceBlock(root, {
         path: file,
         target: validation.target,
         new_content: edit.new_content
-      });
+      }, config);
     }
   }
   if (kind === 'replace_text') {
@@ -1699,20 +1808,20 @@ async function editTarget(root, args) {
       path: file,
       old_text: edit.old_text,
       new_text: edit.new_text
-    });
+    }, config);
   }
   if (kind === 'insert_before') {
-    return insertRelative(root, { path: file, anchor_text: edit.anchor_text, content: edit.content }, 'insert_before');
+    return insertRelative(root, { path: file, anchor_text: edit.anchor_text, content: edit.content }, 'insert_before', config);
   }
   if (kind === 'insert_after') {
-    return insertRelative(root, { path: file, anchor_text: edit.anchor_text, content: edit.content }, 'insert_after');
+    return insertRelative(root, { path: file, anchor_text: edit.anchor_text, content: edit.content }, 'insert_after', config);
   }
   if (kind === 'rewrite_file') {
     return writeFile(root, {
       path: file,
       content: edit.new_content ?? edit.content ?? '',
       full_file_rewrite: true
-    });
+    }, config);
   }
   throw new Error(`edit does not support kind: ${kind}`);
 }
@@ -1803,20 +1912,14 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'read',
         description:
-          'Inspect code or text files. Use read(path) for normal file or line-window reads, read(ast_target=...) for a node-scoped AST read, and read(path, query=..., capture_name=...) to run an inline Tree-sitter query before returning the first matched node. Prefer the AST forms when targeting a function, class, or method and you want tighter context. Demo-style aliases like file_path, offset, and limit are accepted. Use metadata_only=true only when you want file metadata without content. Do not use run with cat, head, or tail for file reads.',
+          'Inspect code or text files. Use read(path) for normal file or line-window reads. Use start_line and end_line for ranges, or path:"src/app.ts:10-40" for inline ranges. Prefer this over run with cat, head, or tail.',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string', description: 'File path to read. You can also include an inline range like src/app.ts:10-40.' },
-            file_path: { type: 'string', description: 'Alias for path' },
             start_line: { type: 'number', description: '1-based start line' },
             end_line: { type: 'number', description: 'Inclusive end line' },
-            offset: { type: 'number', description: 'Alias for start_line' },
-            limit: { type: 'number', description: 'Number of lines to read starting from offset/start_line' },
             max_chars: { type: 'number', description: 'Max chars to return' },
-            include_content: { type: 'boolean', description: 'Legacy compatibility flag. Content is returned by default.' },
-            read_token: { type: 'string', description: 'Legacy compatibility token. No longer required for content reads.' },
-            metadata_only: { type: 'boolean', description: 'Set true to return metadata without content.' },
             ast_target: { type: 'object', description: 'AST target from ast_query or a prior AST selection. When provided, read returns that node instead of a line window.' },
             query: { type: 'string', description: 'Optional Tree-sitter query to run inline before reading the first matched AST node. Use with path for one-shot function/class/method reads.' },
             capture_name: { type: 'string', description: 'Optional capture name to select when query is provided.' },
@@ -1831,14 +1934,12 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'grep',
         description:
-          'Search file contents. Use this for code search before read or edit. Aliases like query and directory are accepted. Do not use run with grep or rg for normal code search.',
+          'Search file contents. Use this for code search before read or edit. Do not use run with grep or rg for normal code search.',
         parameters: {
           type: 'object',
           properties: {
             pattern: { type: 'string', description: 'Search pattern' },
-            query: { type: 'string', description: 'Alias for pattern' },
             path: { type: 'string', description: 'Directory or file to search' },
-            directory: { type: 'string', description: 'Alias for path' },
             regex: { type: 'boolean', description: 'Treat pattern as regex' },
             case_sensitive: { type: 'boolean', description: 'Case-sensitive matching' },
             max_results: { type: 'number', description: 'Max matches to return' },
@@ -1853,34 +1954,13 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       type: 'function',
       function: {
         name: 'list',
-        description: 'List files and directories in a workspace path. Use this for quick directory discovery before deeper reads. Aliases like directory are accepted, and plain string paths are tolerated by the runtime.',
+        description: 'List files and directories in a workspace path. Use this for quick directory discovery before deeper reads.',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string', description: 'Directory path to list' },
-            directory: { type: 'string', description: 'Alias for path' },
             include_hidden: { type: 'boolean', description: 'Include dotfiles' }
           }
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'glob',
-        description:
-          'Find files by glob pattern. Use this when you already know a filename pattern such as src/**/*.ts. Aliases like query and directory are accepted.',
-        parameters: {
-          type: 'object',
-          properties: {
-            pattern: { type: 'string', description: 'Glob pattern' },
-            path: { type: 'string', description: 'Directory to search' },
-            query: { type: 'string', description: 'Alias for pattern' },
-            directory: { type: 'string', description: 'Alias for path' },
-            include_hidden: { type: 'boolean', description: 'Include dotfiles' },
-            max_results: { type: 'number', description: 'Max results' }
-          },
-          required: ['pattern']
         }
       }
     },
@@ -1907,18 +1987,14 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'edit',
         description:
-          'Edit existing files. Prefer one of these shapes: 1) {file, old_text, new_text} for exact text replacement, 2) {file, symbol, edit:{kind:"replace_block", new_content:"..."}} for block replacement, 3) {file, anchor_text, position:"before"|"after", content:"..."} for inserts. Demo-style aliases {file_path, old_string, new_string} are also accepted. Read first unless the exact target is already known, and prefer read(ast_target=...) or read(path, query=...) before symbol- or block-level edits when you want tighter context. Prefer this over write for existing code changes.',
+          'Edit existing files. Prefer one of these shapes: 1) {path, old_text, new_text} for exact text replacement, 2) {path, symbol, edit:{kind:"replace_block", new_content:"..."}} for block replacement, 3) {path, anchor_text, position:"before"|"after", content:"..."} for inserts. Read first unless the exact target is already known. Prefer this over write for existing code changes.',
         parameters: {
           type: 'object',
           properties: {
-            file: { type: 'string', description: 'File path to edit' },
-            path: { type: 'string', description: 'Alias for file' },
-            file_path: { type: 'string', description: 'Alias for file, compatible with simpler demo-style tool calls' },
+            path: { type: 'string', description: 'File path to edit' },
             new_content: { type: 'string', description: 'Replacement content' },
             old_text: { type: 'string', description: 'Exact text to replace' },
             new_text: { type: 'string', description: 'Replacement text' },
-            old_string: { type: 'string', description: 'Alias for old_text' },
-            new_string: { type: 'string', description: 'Alias for new_text' },
             anchor_text: { type: 'string', description: 'Anchor text for inserts' },
             content: { type: 'string', description: 'Content to insert or append' },
             position: { type: 'string', description: 'before or after' },
@@ -1929,7 +2005,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
             line: { type: 'number', description: 'Line to target' },
             edit: { type: 'object', description: 'Structured edit input' }
           },
-          required: ['file']
+          required: ['path']
         }
       }
     },
@@ -1938,16 +2014,12 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'write',
         description:
-          'Create a new file or overwrite a file. Always include path and content. Aliases like file, file_path, text, and new_content are accepted. Use this for new files or explicit full rewrites only. Example: {path:"src/page.html", content:"..."} . If the file path is not decided yet, do not call write yet. Prefer edit for existing code changes.',
+          'Create a new file or overwrite a file. Always include path and content. Use this for new files or explicit full rewrites only. Example: {path:"src/page.html", content:"..."} . If the file path is not decided yet, do not call write yet. Prefer edit for existing code changes.',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string', description: 'Required file path like src/app.js or pages/index.html. Never omit this.' },
-            file_path: { type: 'string', description: 'Alias for path, compatible with simpler demo-style tool calls' },
-            file: { type: 'string', description: 'Alias for path' },
             content: { type: 'string', description: 'Content to write' },
-            text: { type: 'string', description: 'Alias for content' },
-            new_content: { type: 'string', description: 'Alias for content' },
             append: { type: 'boolean', description: 'Append instead of overwrite' },
             full_file_rewrite: { type: 'boolean', description: 'Set true for whole-file rewrites' }
           },
@@ -1960,15 +2032,11 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'delete',
         description:
-          'Delete a file or directory inside the workspace. Use path, file, or file_path to point at the target. Missing targets fail. Workspace escape attempts are rejected.',
+          'Delete a file or directory inside the workspace. Missing targets fail. Workspace escape attempts are rejected.',
         parameters: {
           type: 'object',
           properties: {
-            path: { type: 'string', description: 'File or directory path to delete' },
-            file: { type: 'string', description: 'Alias for path' },
-            file_path: { type: 'string', description: 'Alias for path' },
-            directory: { type: 'string', description: 'Alias for path' },
-            dir: { type: 'string', description: 'Alias for path' }
+            path: { type: 'string', description: 'File or directory path to delete' }
           },
           required: ['path']
         }
@@ -2121,6 +2189,24 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
   ];
 
   const deferredDefinitions = {
+    glob: {
+      type: 'function',
+      function: {
+        name: 'glob',
+        description:
+          'Find files by glob pattern. Use this when you already know a filename pattern such as src/**/*.ts.',
+        parameters: {
+          type: 'object',
+          properties: {
+            pattern: { type: 'string', description: 'Glob pattern' },
+            path: { type: 'string', description: 'Directory to search' },
+            include_hidden: { type: 'boolean', description: 'Include dotfiles' },
+            max_results: { type: 'number', description: 'Max results' }
+          },
+          required: ['pattern']
+        }
+      }
+    },
     ast_query: {
       type: 'function',
       function: {
@@ -2162,7 +2248,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'web_fetch',
         description:
-          'Fetch and read a live web page. Uses Playwright to render the page, Cheerio to extract structured content, and Crawlee request handling to normalize the fetch flow. Use this for direct URL reads, not for keyword search.',
+          'Fetch and read a live web page. Uses a lightweight fetch + Cheerio reader by default, then falls back to optional Playwright browser rendering for JavaScript-heavy pages when Playwright is installed. Use this for direct URL reads, not for keyword search.',
         parameters: {
           type: 'object',
           properties: {
@@ -2181,15 +2267,15 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'web_search',
         description:
-          'Run a live web search through DuckDuckGo. Use this for keyword-based internet search. This tool respects config.web.search_enabled and will fail when network search is disabled.',
+          'Run a live web search by fetching Bing RSS results. Use this for keyword-based internet search. This tool respects config.web.search_enabled and will fail when network search is disabled.',
         parameters: {
           type: 'object',
           properties: {
             query: { type: 'string', description: 'Search query' },
             q: { type: 'string', description: 'Alias for query' },
             max_results: { type: 'number', description: 'Max results to return' },
-            locale: { type: 'string', description: 'DuckDuckGo locale such as en-us' },
-            region: { type: 'string', description: 'DuckDuckGo region such as wt-wt' }
+            locale: { type: 'string', description: 'Bing market and language such as en-US or zh-CN' },
+            region: { type: 'string', description: 'Bing country code such as US or CN' }
           },
           required: ['query']
         }
@@ -2266,7 +2352,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'dream_consolidate',
         description:
-          'Run a dream loop consolidation pass over inbox entries. Reads recent inbox items, deduplicates, evaluates lifecycle progression (observed → candidate → operational/longterm), promotes stable patterns into persistent memory, archives expired items, and writes an audit report. Use during off-hours or explicit maintenance.',
+          'Run a dream loop pass over inbox entries and existing memory buckets. Reads recent inbox items, deduplicates, evaluates lifecycle progression (observed → candidate → operational/longterm), promotes stable patterns into persistent memory, then uses LLM maintenance to merge/summarize/clean stale user/global/project memories when their bucket changed since the last maintenance marker. Writes an audit report. Use during off-hours or explicit maintenance.',
         parameters: {
           type: 'object',
           properties: {
@@ -2329,36 +2415,39 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
   }
 
   async function grep(args) {
-    if (activeFffAdapter?.grep) {
+    const normalizedArgs = normalizePatternArgs(args, ['query', 'symbol', 'q'], ['directory', 'dir', 'cwd']);
+    if (!resolvesOutsideRoot(workspaceRoot, normalizedArgs?.path || '.') && activeFffAdapter?.grep) {
       try {
         await ensureFffConnected();
         const result = await activeFffAdapter.grep(args);
         if (result && Array.isArray(result.matches)) return result;
       } catch {}
     }
-    return builtinGrep(workspaceRoot, args);
+    return builtinGrep(workspaceRoot, args, config);
   }
 
   async function glob(args) {
-    if (activeFffAdapter?.glob) {
+    const normalizedArgs = normalizePatternArgs(args, ['glob', 'query'], ['directory', 'dir', 'cwd']);
+    if (!resolvesOutsideRoot(workspaceRoot, normalizedArgs?.path || '.') && activeFffAdapter?.glob) {
       try {
         await ensureFffConnected();
         const result = await activeFffAdapter.glob(args);
         if (result && Array.isArray(result.matches)) return result;
       } catch {}
     }
-    return builtinGlob(workspaceRoot, args);
+    return builtinGlob(workspaceRoot, args, config);
   }
 
   async function list(args) {
-    if (activeFffAdapter?.list) {
+    const normalizedArgs = normalizePathArgs(args, ['dir', 'directory', 'target']);
+    if (!resolvesOutsideRoot(workspaceRoot, normalizedArgs?.path || '.') && activeFffAdapter?.list) {
       try {
         await ensureFffConnected();
         const result = await activeFffAdapter.list(args);
         if (result && Array.isArray(result.items)) return result;
       } catch {}
     }
-    return builtinList(workspaceRoot, args);
+    return builtinList(workspaceRoot, args, config);
   }
 
   const handlers = {
@@ -2414,7 +2503,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
           typeof args?.max_chars === 'number'
             ? args.max_chars
             : config.context?.read_file_max_chars ?? 24000
-      });
+      }, config);
       const readPath = String(result?.path || args?.path || '').trim();
       if (readPath) lastReadPath = readPath;
       return result;
@@ -2446,25 +2535,26 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       const astTarget = resolveCachedAstTarget(args, { requireAstScope: normalizedKind === 'replace_block' });
       const result = await editTarget(
         workspaceRoot,
-        astTarget ? { ...args, ast_target: astTarget, recent_file: lastReadPath } : { ...args, recent_file: lastReadPath }
+        astTarget ? { ...args, ast_target: astTarget, recent_file: lastReadPath } : { ...args, recent_file: lastReadPath },
+        config
       );
       if (result?.path) await refreshProjectFile(result.path);
       return result;
     },
     write: async (args) => {
       await ensureProjectIndex();
-      const result = await writeFile(workspaceRoot, args);
+      const result = await writeFile(workspaceRoot, args, config);
       if (result?.path) await refreshProjectFile(result.path);
       return result;
     },
     delete: Object.assign(async (args) => {
       await ensureProjectIndex();
-      const result = await deletePath(workspaceRoot, args);
+      const result = await deletePath(workspaceRoot, args, config);
       if (result?.path) await refreshProjectFile(result.path);
       return result;
     }, {
       prepareApproval: async (args) => {
-        const target = await prepareDeleteTarget(workspaceRoot, args);
+        const target = await prepareDeleteTarget(workspaceRoot, args, config);
         return {
           path: target.path,
           name: target.name,
@@ -2595,7 +2685,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     }
   };
 
-  const formatters = {
+  const rawFormatters = {
     read(result) {
       if (typeof result === 'string') return result;
       if (!result || typeof result !== 'object') return String(result);
@@ -2794,9 +2884,11 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         }
         return parts.join('\n');
       }
+      const runSummary = summarizeRunOutput(result);
+      if (runSummary) return runSummary;
       const command = String(result.command || '').slice(0, 200);
-      const stdout = String(result.stdout || '').slice(0, 500);
-      const stderr = String(result.stderr || '').slice(0, 500);
+      const stdout = String(result.stdout || '');
+      const stderr = String(result.stderr || '');
       const code = result.code ?? 0;
       const parts = [`[exit: ${code}]`];
       if (command) parts.push(`command: ${command}`);
@@ -2857,8 +2949,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       const kind = result.kind || '';
       const content = result.content || result.source || '';
       const header = `${kind} ${name}`;
-      if (typeof content !== 'string' || content.length <= 2000) return `${header}\n${content}`;
-      return `${header}\n${content.slice(0, 1200)}\n... [omitted ${content.length - 1600} chars] ...\n${content.slice(-400)}`;
+      return `${header}\n${content}`;
     },
 
     web_fetch(result) {
@@ -2867,12 +2958,17 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       if (result.title) lines.push(`title: ${result.title}`);
       if (result.description) lines.push(`description: ${trimPreview(result.description, 200)}`);
       if (result.metadata?.status) lines.push(`status: ${result.metadata.status}`);
+      if (result.metadata?.fetch_mode) lines.push(`mode: ${result.metadata.fetch_mode}`);
+      if (Array.isArray(result.warnings)) {
+        for (const warning of result.warnings.slice(0, 3)) {
+          if (warning) lines.push(`warning: ${warning}`);
+        }
+      }
       if (Array.isArray(result.links) && result.links.length > 0) {
         lines.push(`links: ${result.links.slice(0, 5).map((item) => item.href).join(', ')}`);
       }
       if (result.text) {
-        const t = result.text.length <= 1200 ? result.text : result.text.slice(0, 1200) + '\n... [truncated]';
-        lines.push(t);
+        lines.push(result.text);
       }
       return lines.join('\n');
     },
@@ -2913,6 +3009,13 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       return `${result.task_id || '?'} stopped${result.exit_code != null ? ` (exit ${result.exit_code})` : ''}`;
     }
   };
+
+  const formatters = Object.fromEntries(
+    Object.entries(rawFormatters).map(([name, formatter]) => [
+      name,
+      (result, args) => sanitizeTextForModel(formatter(result, args), getToolOutputSanitizeOptions(name))
+    ])
+  );
 
   async function dispose() {
     if (activeFffAdapter?.dispose) {

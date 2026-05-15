@@ -1,0 +1,257 @@
+import { useRef, useEffect, useState, useMemo, useCallback } from "react";
+import { ArrowDown, GitBranch } from "lucide-react";
+import { MessageBubble } from "./MessageBubble";
+import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
+import { t } from "../../i18n/index.js";
+
+function truncate(text, max = 36) {
+  const s = String(text || "")
+    .replace(/\n/g, " ")
+    .trim();
+  return s.length > max ? s.slice(0, max) + "..." : s;
+}
+
+function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
+  const [expanded, setExpanded] = useState(false);
+  const [hoveredIndex, setHoveredIndex] = useState(-1);
+  const hideTimerRef = useRef(null);
+
+  const handleMouseEnter = useCallback(() => {
+    clearTimeout(hideTimerRef.current);
+    setExpanded(true);
+  }, []);
+
+  const handleMouseLeave = useCallback(() => {
+    hideTimerRef.current = setTimeout(() => {
+      setExpanded(false);
+      setHoveredIndex(-1);
+    }, 150);
+  }, []);
+
+  useEffect(() => {
+    return () => clearTimeout(hideTimerRef.current);
+  }, []);
+
+  if (userMessages.length <= 1) return null;
+
+  return (
+    <div
+      className="fixed right-5 top-1/2 -translate-y-1/2 pointer-events-auto z-30 flex items-center gap-1"
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+    >
+      {/* Expanded card */}
+      {expanded && (
+        <div className="flex flex-col gap-px rounded-lg bg-(--bg-primary) border border-(--border-default) p-1.5 max-w-[180px] max-h-[60vh] overflow-y-auto shadow-lg">
+          {userMessages.map((um, i) => (
+            <button
+              key={um.id}
+              onClick={() => scrollToMessage(um.id)}
+              onMouseEnter={() => setHoveredIndex(i)}
+              onMouseLeave={() => setHoveredIndex(-1)}
+              className={cn(
+                "text-left text-[11px] leading-tight px-2 py-1 rounded-md truncate transition-colors cursor-pointer max-w-full",
+                i === activeNavIndex ? "text-primary" : "text-(--text-muted)",
+                hoveredIndex === i && "bg-primary/10 text-primary",
+              )}
+            >
+              {um.text || "..."}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Tick-mark indicators */}
+      <div className="flex flex-col items-end gap-6 py-1">
+        {userMessages.map((um, i) => (
+          <button
+            key={um.id}
+            onClick={() => scrollToMessage(um.id)}
+            className={cn(
+              "h-0.5 rounded-sm transition-all duration-150 cursor-pointer",
+              i === activeNavIndex
+                ? "w-5 bg-primary"
+                : hoveredIndex === i
+                  ? "w-4 bg-primary/50"
+                  : "w-3 bg-(--text-muted)",
+            )}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function ChatPanel({
+  messages,
+  projectCwd,
+  skills = [],
+  gitInfo,
+  messagesLoading,
+  isGeneral = false,
+}) {
+  const scrollRef = useRef(null);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [activeNavIndex, setActiveNavIndex] = useState(-1);
+
+  const userMessages = useMemo(
+    () =>
+      messages
+        .filter((m) => m.role === "you")
+        .map((m) => ({
+          id: m.id,
+          text: truncate(
+            m.text ||
+              m.segments
+                ?.filter((s) => s.type === "text")
+                .map((s) => s.text)
+                .join("") ||
+              "",
+          ),
+        })),
+    [messages],
+  );
+
+  const scrollToMessage = useCallback((msgId) => {
+    const el = scrollRef.current?.querySelector(`[data-message-id="${msgId}"]`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, []);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const handleScroll = () => {
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      setAutoScroll(atBottom);
+      setShowScrollToBottom(!atBottom && el.scrollTop > 100);
+
+      // Update active nav index based on visible position
+      const userEls = el.querySelectorAll(
+        '[data-message-id][class*="justify-end"]',
+      );
+      if (userEls.length === 0) {
+        setActiveNavIndex(-1);
+        return;
+      }
+      const midLine = el.scrollTop + el.clientHeight * 0.4;
+      let last = -1;
+      userEls.forEach((uel, i) => {
+        if (uel.offsetTop <= midLine) last = i;
+      });
+      setActiveNavIndex(last);
+    };
+    el.addEventListener("scroll", handleScroll);
+    return () => el.removeEventListener("scroll", handleScroll);
+  }, []);
+
+  useEffect(() => {
+    if (autoScroll && scrollRef.current) {
+      requestAnimationFrame(() => {
+        if (scrollRef.current)
+          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      });
+    }
+  }, [messages, autoScroll]);
+
+  return (
+    <div className="flex-1 relative overflow-hidden">
+      {messagesLoading && messages.length === 0 && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          <Spinner />
+        </div>
+      )}
+      {!messagesLoading && messages.length === 0 && (
+        <div className="absolute left-1/2 top-[38%] -translate-x-1/2 -translate-y-1/2 w-[min(760px,calc(100%-48px))] text-center pointer-events-none">
+          {isGeneral ? (
+            <h1 className="text-[clamp(24px,2.4vw,36px)] font-medium leading-tight tracking-normal">
+              {t("askAnythingGeneral")}
+            </h1>
+          ) : (
+            <>
+              <h1 className="text-[clamp(24px,2.4vw,36px)] font-medium leading-tight tracking-normal">
+                {t("buildInProject").replace(
+                  "{{project}}",
+                  projectCwd || "qurio-coder",
+                )}
+              </h1>
+              {gitInfo?.isGit && (
+                <div className="mt-4 flex items-center justify-center gap-3 text-[13px] text-(--text-muted)">
+                  <span className="inline-flex items-center gap-1.5">
+                    <GitBranch size={13} />
+                    <span>{gitInfo.branch}</span>
+                  </span>
+                  {gitInfo.dirty ? (
+                    <>
+                      {gitInfo.staged > 0 && (
+                        <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
+                          <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                          {t("gitStaged")} {gitInfo.staged}
+                        </span>
+                      )}
+                      {gitInfo.modified > 0 && (
+                        <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                          <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                          {t("gitModified")} {gitInfo.modified}
+                        </span>
+                      )}
+                      {gitInfo.untracked > 0 && (
+                        <span className="inline-flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                          {t("gitUntracked")} {gitInfo.untracked}
+                        </span>
+                      )}
+                    </>
+                  ) : (
+                    <span className="inline-flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                      {t("gitClean")}
+                    </span>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+      <div
+        ref={scrollRef}
+        className="h-full overflow-y-auto py-[44px_0_28px] scroll-smooth"
+        style={{ scrollbarWidth: "thin" }}
+      >
+        <div className="relative">
+          <div className="w-[min(960px,calc(100%-96px))] mx-auto">
+            {messages.map((msg) => (
+              <MessageBubble key={msg.id} message={msg} skills={skills} />
+            ))}
+          </div>
+        </div>
+      </div>
+      <UserMessageNav
+        userMessages={userMessages}
+        activeNavIndex={activeNavIndex}
+        scrollToMessage={scrollToMessage}
+      />
+      <div className="absolute right-7 bottom-0 flex flex-col gap-2 z-20">
+        {showScrollToBottom && (
+          <button
+            className="w-9 h-9 rounded-full bg-(--bg-primary) dark:bg-(--bg-secondary) border border-(--border-default) cursor-pointer flex items-center justify-center text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) animate-in fade-in-0 zoom-in-95"
+            // style={{ boxShadow: "var(--shadow-default)" }}
+            onClick={() => {
+              setAutoScroll(true);
+              scrollRef.current?.scrollTo({
+                top: scrollRef.current.scrollHeight,
+                behavior: "smooth",
+              });
+            }}
+          >
+            <ArrowDown size={16} />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}

@@ -56,6 +56,18 @@ function renderReport(report) {
     lines.push('');
   }
 
+  if (report.maintenance?.length) {
+    lines.push('## Memory Maintenance');
+    for (const item of report.maintenance) {
+      if (item.skipped) {
+        lines.push(`- [${item.scope}] skipped: ${item.reason}`);
+      } else {
+        lines.push(`- [${item.scope}] ${item.before} -> ${item.after} item(s)${item.changed ? ' changed' : ' marked clean'}`);
+      }
+    }
+    lines.push('');
+  }
+
   if (report.disagreements?.length) {
     lines.push('## Reviewer Disagreements');
     for (const d of report.disagreements) {

@@ -34,9 +34,8 @@ import {
   shouldRenderPlainSystemNotice
 } from "./presentation.js";
 
-/* ─── Ink → opentui color mapping ─── */
 /* opentui uses lowercase compound: "brightcyan" not "cyanBright" */
-function c(inkColor: string): string {
+function c(legacyColor: string): string {
   const map: Record<string, string> = {
     cyanBright: "brightcyan", redBright: "brightred", yellowBright: "brightyellow",
     magentaBright: "brightmagenta", blueBright: "brightblue", greenBright: "brightgreen",
@@ -44,7 +43,7 @@ function c(inkColor: string): string {
     cyan: "cyan", red: "red", yellow: "yellow", magenta: "magenta",
     blue: "blue", green: "green", white: "white", black: "black", gray: "gray", grey: "grey",
   };
-  return map[inkColor] || inkColor;
+  return map[legacyColor] || legacyColor;
 }
 
 const BANNER = [

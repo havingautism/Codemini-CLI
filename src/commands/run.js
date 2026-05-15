@@ -2,15 +2,15 @@ import { loadConfig } from '../core/config-store.js';
 import { buildDefaultSystemPrompt } from '../core/default-system-prompt.js';
 import { runAgentLoop } from '../core/agent-loop.js';
 import { createChatCompletion } from '../core/provider/index.js';
-import { buildSystemPromptWithSoul } from '../core/soul.js';
 import { getBuiltinTools } from '../core/tools.js';
-import { buildMemorySnapshot } from '../core/memory-prompt.js';
 import { getSubAgentRolePrompt } from '../core/chat-runtime.js';
+import { composeSystemPrompt } from '../core/system-prompt-composer.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
 const ROLE_TOOL_POLICY = {
   planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node', 'read_plan', 'update_plan'],
+  advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'read_plan'],
   coder: ['read', 'grep', 'list', 'edit', 'write', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'update_todos', 'read_plan', 'update_plan'],
   reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'read_plan'],
   tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'read_plan']
@@ -21,6 +21,7 @@ function parseRunArgs(args) {
   const parsed = {
     task: '',
     model: undefined,
+    fast: false,
     maxSteps: 8,
     harness: null,
     pipeline: false
@@ -30,6 +31,10 @@ function parseRunArgs(args) {
     if (arg === '--model') {
       parsed.model = args[i + 1];
       i += 1;
+      continue;
+    }
+    if (arg === '--fast' || arg === '--lite') {
+      parsed.fast = true;
       continue;
     }
     if (arg === '--max-steps') {
@@ -70,15 +75,17 @@ function makeCompletionFn(config) {
       model,
       messages,
       tools,
-      timeoutMs: config.gateway.timeout_ms || 90000,
+      timeoutMs: config.gateway.timeout_ms || 1800000,
       maxRetries: config.gateway.max_retries ?? 2
     });
 }
 
 async function buildSystemPrompt(config) {
-  const soulPrompt = await buildSystemPromptWithSoul(buildDefaultSystemPrompt(config), config);
-  const memorySnapshot = await buildMemorySnapshot({ config, workspaceRoot: process.cwd() }).catch(() => '');
-  return [soulPrompt, memorySnapshot].filter(Boolean).join('\n\n');
+  return composeSystemPrompt({
+    shellRulesPrompt: buildDefaultSystemPrompt(config),
+    config,
+    workspaceRoot: process.cwd()
+  });
 }
 
 async function runHarness({ role, task, config, systemPrompt, model, maxSteps }) {
@@ -92,9 +99,16 @@ async function runHarness({ role, task, config, systemPrompt, model, maxSteps })
   try {
     const filtered = filterToolsForRole(definitions, handlers, deferredDefinitions, role);
     const rolePrompt = getSubAgentRolePrompt(role);
+    const harnessSystemPrompt = await composeSystemPrompt({
+      shellRulesPrompt: systemPrompt,
+      config,
+      skillsPrompt: rolePrompt,
+      includeSoul: false,
+      includeMemory: false
+    });
 
     const result = await runAgentLoop({
-      systemPrompt: `${systemPrompt}\n${rolePrompt}`,
+      systemPrompt: harnessSystemPrompt,
       userPrompt: task,
       model: model || config.model.name,
       toolDefinitions: filtered.definitions,
@@ -142,12 +156,19 @@ function normalizePlan(parsed, goal) {
 async function planPipeline({ goal, config, systemPrompt, model }) {
   const plannerPrompt = [
     'Create an execution plan and assign the best sub-agent role for each step.',
-    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|coder|reviewer|tester","task":"..."}]}. No markdown.',
+    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|advisor|coder|reviewer|tester","task":"..."}]}. No markdown.',
     `Available roles: ${HARNESS_ROLES.join(', ')}.`,
     'Prefer 3-5 steps total. The first step should usually inspect the target area.',
     'For implementation goals, include a reviewer or tester step near the end.',
-    'For advisory/analysis goals, keep it lean with planner/coder only.'
+    'For advisory/analysis goals, keep it lean with planner/advisor only; do not use coder unless code or files will be modified.'
   ].join('\n');
+  const plannerSystemPrompt = await composeSystemPrompt({
+    shellRulesPrompt: systemPrompt,
+    config,
+    skillsPrompt: plannerPrompt,
+    includeSoul: false,
+    includeMemory: false
+  });
 
   const planning = await createChatCompletion({
     sdkProvider: config.sdk?.provider,
@@ -155,10 +176,10 @@ async function planPipeline({ goal, config, systemPrompt, model }) {
     apiKey: config.gateway.api_key,
     model: model || config.model.name,
     messages: [
-      { role: 'system', content: `${systemPrompt}\n${plannerPrompt}` },
+      { role: 'system', content: plannerSystemPrompt },
       { role: 'user', content: `Plan the following task:\n${goal}` }
     ],
-    timeoutMs: config.gateway.timeout_ms || 90000,
+    timeoutMs: config.gateway.timeout_ms || 1800000,
     maxRetries: config.gateway.max_retries ?? 2
   });
 
@@ -238,6 +259,7 @@ export async function handleRun(args) {
   }
 
   const config = await loadConfig();
+  const selectedModel = parsed.fast ? (config.model?.fast_name || config.model?.name) : parsed.model;
   const systemPrompt = await buildSystemPrompt(config);
 
   if (parsed.pipeline) {
@@ -245,7 +267,7 @@ export async function handleRun(args) {
       task: parsed.task,
       config,
       systemPrompt,
-      model: parsed.model
+      model: selectedModel
     });
     for (const step of state.steps) {
       console.log(`\n--- [${step.role}] ${step.title} ---`);
@@ -260,7 +282,7 @@ export async function handleRun(args) {
       task: parsed.task,
       config,
       systemPrompt,
-      model: parsed.model,
+      model: selectedModel,
       maxSteps: parsed.maxSteps
     });
     console.log(result.text);
@@ -275,7 +297,7 @@ export async function handleRun(args) {
     const result = await runAgentLoop({
       systemPrompt,
       userPrompt: parsed.task,
-      model: parsed.model || config.model.name,
+      model: selectedModel || config.model.name,
       toolDefinitions: definitions,
       toolHandlers: handlers,
       toolFormatters: formatters,

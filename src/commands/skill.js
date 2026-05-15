@@ -3,7 +3,9 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { copyRecursive } from '../core/fs-utils.js';
-import { getSkillsDir } from '../core/paths.js';
+import { loadConfig, saveConfig } from '../core/config-store.js';
+import { loadCommandsAndSkills } from '../core/command-loader.js';
+import { getProjectSkillsDir, getSkillsDir } from '../core/paths.js';
 import {
   computeFileSha256,
   readSkillRegistry,
@@ -11,32 +13,111 @@ import {
   writeSkillRegistry
 } from '../core/skill-registry.js';
 
-async function listSkillEntries() {
-  const registry = await readSkillRegistry();
-  const byName = new Map((registry.skills || []).map((s) => [s.name, s]));
-  await fs.mkdir(getSkillsDir(), { recursive: true });
-  const entries = await fs.readdir(getSkillsDir(), { withFileTypes: true });
-  const names = entries.filter((e) => e.isDirectory()).map((e) => e.name).sort();
-  return names.map((name) => byName.get(name) || { name, version: 'unknown', enabled: true });
+function parseScopeArgs(args = [], { defaultScope = 'project', allowAll = false } = {}) {
+  let scope = defaultScope;
+  const rest = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = String(args[index] || '');
+    if (arg === '--global') {
+      scope = 'global';
+      continue;
+    }
+    if (arg === '--project') {
+      scope = 'project';
+      continue;
+    }
+    if (arg === '--scope') {
+      const next = String(args[index + 1] || '').toLowerCase();
+      if (['project', 'global', ...(allowAll ? ['all', 'builtin'] : [])].includes(next)) {
+        scope = next;
+        index += 1;
+        continue;
+      }
+    }
+    if (arg.startsWith('--scope=')) {
+      const value = arg.slice('--scope='.length).toLowerCase();
+      if (['project', 'global', ...(allowAll ? ['all', 'builtin'] : [])].includes(value)) {
+        scope = value;
+        continue;
+      }
+    }
+    rest.push(arg);
+  }
+  return { scope, rest };
 }
 
-async function readSkillMeta(name) {
-  const dir = path.join(getSkillsDir(), name);
+function baseDirForScope(scope, cwd = process.cwd()) {
+  return scope === 'global' ? getSkillsDir() : getProjectSkillsDir(cwd);
+}
+
+function scopeFromSource(source = '') {
+  if (source === 'bundled-skill') return 'builtin';
+  if (source === 'project-skill') return 'project';
+  if (source === 'global-skill' || source === 'registry-skill') return 'global';
+  return source || 'unknown';
+}
+
+async function setSkillEnabledConfig(name, enabled) {
+  const config = await loadConfig();
+  config.skills = config.skills || {};
+  config.skills.enabled = config.skills.enabled || {};
+  config.skills.enabled[name] = enabled;
+  await saveConfig(config);
+}
+
+export async function listSkillEntries({ scope = 'all', cwd = process.cwd() } = {}) {
+  const commands = await loadCommandsAndSkills(cwd);
+  const config = await loadConfig();
+  const entries = [];
+  for (const command of commands.values()) {
+    if (command.metadata?.type !== 'skill') continue;
+    const itemScope = scopeFromSource(command.source);
+    if (scope !== 'all' && itemScope !== scope) continue;
+    entries.push({
+      name: command.name,
+      version: command.metadata?.version || '0.0.0',
+      description: command.metadata?.description || '',
+      mode: command.metadata?.mode || '',
+      triggers: Array.isArray(command.metadata?.triggers) ? command.metadata.triggers : [],
+      scope: itemScope,
+      path: command.path,
+      enabled: command.metadata?.enabled === false
+        ? false
+        : itemScope === 'builtin'
+          ? true
+          : config.skills?.enabled?.[command.name] !== false
+    });
+  }
+  return entries.sort((a, b) => `${a.scope}:${a.name}`.localeCompare(`${b.scope}:${b.name}`));
+}
+
+async function readSkillMeta(name, { scope = 'all', cwd = process.cwd() } = {}) {
+  const entries = await listSkillEntries({ scope, cwd });
+  const found = entries.find((item) => item.name === name);
+  if (!found) {
+    return { exists: false, path: '', preview: '', manifest: null };
+  }
+  const dir = path.dirname(found.path);
   const manifestPath = path.join(dir, 'manifest.json');
+  const catalogPath = path.join(path.dirname(dir), 'codemini.skills.json');
   let manifest = null;
   try {
-    manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+    const catalog = JSON.parse(await fs.readFile(catalogPath, 'utf8'));
+    manifest = catalog?.skills?.[found.name] || null;
   } catch {
-    manifest = null;
+    try {
+      manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+    } catch {
+      manifest = null;
+    }
   }
-  const entryFile = manifest?.entry || 'SKILL.md';
-  const skillPath = path.join(dir, entryFile);
+  const skillPath = found.path || path.join(dir, 'SKILL.md');
   try {
     const content = await fs.readFile(skillPath, 'utf8');
     const firstLines = content.split('\n').slice(0, 20).join('\n');
-    return { exists: true, path: skillPath, preview: firstLines, manifest };
+    return { exists: true, path: skillPath, preview: firstLines, manifest, scope: found.scope };
   } catch {
-    return { exists: false, path: skillPath, preview: '', manifest };
+    return { exists: false, path: skillPath, preview: '', manifest, scope: found.scope };
   }
 }
 
@@ -104,11 +185,15 @@ async function resolveSkillSourceDir(sourcePath) {
   throw new Error('skill install supports <skill-dir>, <SKILL.md>, or <skill.tgz>');
 }
 
-async function installSkill(sourcePath) {
+async function installSkill(sourcePath, { scope = 'project', cwd = process.cwd() } = {}) {
   const resolved = await resolveSkillSourceDir(sourcePath);
   const manifest = await readManifestSafe(resolved.dir);
   const folderName = manifest?.name || path.basename(resolved.dir);
-  const targetDir = path.join(getSkillsDir(), folderName);
+  const bundled = (await listSkillEntries({ scope: 'builtin', cwd })).find((item) => item.name === folderName);
+  if (bundled) {
+    throw new Error(`cannot install over builtin skill: ${folderName}`);
+  }
+  const targetDir = path.join(baseDirForScope(scope, cwd), folderName);
   await fs.rm(targetDir, { recursive: true, force: true });
   await copyRecursive(resolved.dir, targetDir);
 
@@ -117,16 +202,19 @@ async function installSkill(sourcePath) {
   await fs.access(entryPath);
 
   const hash = await computeFileSha256(entryPath);
-  await upsertSkillRegistryEntry(undefined, {
-    name: folderName,
-    version: manifest?.version || '0.0.0',
-    description: manifest?.description || '',
-    enabled: true,
-    source: sourcePath,
-    entryFile,
-    sha256: hash,
-    installedAt: new Date().toISOString()
-  });
+  if (scope === 'global') {
+    await upsertSkillRegistryEntry(undefined, {
+      name: folderName,
+      version: manifest?.version || '0.0.0',
+      description: manifest?.description || '',
+      enabled: true,
+      source: sourcePath,
+      entryFile,
+      sha256: hash,
+      installedAt: new Date().toISOString()
+    });
+  }
+  await setSkillEnabledConfig(folderName, true);
 
   if (resolved.cleanupDir) {
     await fs.rm(resolved.cleanupDir, { recursive: true, force: true });
@@ -135,19 +223,28 @@ async function installSkill(sourcePath) {
   return folderName;
 }
 
-async function setEnabled(name, enabled) {
-  const registry = await readSkillRegistry();
-  const idx = registry.skills.findIndex((s) => s.name === name);
-  if (idx === -1) {
+async function setEnabled(name, enabled, { cwd = process.cwd() } = {}) {
+  const entries = await listSkillEntries({ scope: 'all', cwd });
+  const found = entries.find((item) => item.name === name);
+  if (!found) {
     throw new Error(`skill not found: ${name}`);
   }
-  registry.skills[idx].enabled = enabled;
-  await writeSkillRegistry(undefined, registry);
+  if (found.scope === 'builtin') {
+    throw new Error(`builtin skill cannot be ${enabled ? 'enabled' : 'disabled'}: ${name}`);
+  }
+  await setSkillEnabledConfig(name, enabled);
+  const registry = await readSkillRegistry();
+  const idx = registry.skills.findIndex((s) => s.name === name);
+  if (idx !== -1) {
+    registry.skills[idx].enabled = enabled;
+    await writeSkillRegistry(undefined, registry);
+  }
 }
 
-async function reindexSkills() {
-  await fs.mkdir(getSkillsDir(), { recursive: true });
-  const entries = await fs.readdir(getSkillsDir(), { withFileTypes: true });
+async function reindexSkills({ scope = 'global', cwd = process.cwd() } = {}) {
+  const baseDir = baseDirForScope(scope, cwd);
+  await fs.mkdir(baseDir, { recursive: true });
+  const entries = await fs.readdir(baseDir, { withFileTypes: true });
   const registry = await readSkillRegistry();
   const byName = new Map((registry.skills || []).map((s) => [s.name, s]));
   const rebuilt = [];
@@ -155,7 +252,7 @@ async function reindexSkills() {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const name = entry.name;
-    const dir = path.join(getSkillsDir(), name);
+    const dir = path.join(baseDir, name);
     const manifest = await readManifestSafe(dir);
     const entryFile = manifest?.entry || 'SKILL.md';
     const entryPath = path.join(dir, entryFile);
@@ -178,22 +275,24 @@ async function reindexSkills() {
     });
   }
 
-  await writeSkillRegistry(undefined, {
-    version: 1,
-    skills: rebuilt
-  });
+  if (scope === 'global') {
+    await writeSkillRegistry(undefined, {
+      version: 1,
+      skills: rebuilt
+    });
+  }
 
   return rebuilt.length;
 }
 
 function usage() {
   console.log(`Usage:
-  codemini skill list
-  codemini skill install <path>
+  codemini skill list [--scope=all|project|global|builtin]
+  codemini skill install [--scope=project|global] <path>
   codemini skill enable <name>
   codemini skill disable <name>
-  codemini skill inspect <name>
-  codemini skill reindex`);
+  codemini skill inspect [--scope=all|project|global|builtin] <name>
+  codemini skill reindex [--scope=project|global]`);
 }
 
 export async function handleSkill(args) {
@@ -204,26 +303,27 @@ export async function handleSkill(args) {
   }
 
   if (sub === 'list') {
-    const entries = await listSkillEntries();
+    const { scope } = parseScopeArgs(rest, { defaultScope: 'all', allowAll: true });
+    const entries = await listSkillEntries({ scope });
     if (entries.length === 0) {
       console.log('No installed skills');
       return;
     }
     for (const item of entries) {
-      const state = item.enabled !== false ? 'enabled' : 'disabled';
-      console.log(`${item.name}@${item.version || '0.0.0'} (${state})`);
+      const state = item.scope === 'builtin' ? 'builtin/default' : (item.enabled !== false ? 'enabled' : 'disabled');
+      console.log(`${item.name}@${item.version || '0.0.0'} [${item.scope}] (${state})`);
     }
     return;
   }
 
   if (sub === 'install') {
-    const sourcePath = rest[0];
+    const { scope, rest: positional } = parseScopeArgs(rest, { defaultScope: 'project' });
+    const sourcePath = positional[0];
     if (!sourcePath) {
       throw new Error('skill install requires <path>');
     }
-    const installedName = await installSkill(sourcePath);
-    await setEnabled(installedName, true);
-    console.log(`Installed skill: ${installedName}`);
+    const installedName = await installSkill(sourcePath, { scope });
+    console.log(`Installed skill: ${installedName} (${scope})`);
     return;
   }
 
@@ -238,25 +338,28 @@ export async function handleSkill(args) {
   }
 
   if (sub === 'inspect') {
-    const name = rest[0];
+    const { scope, rest: positional } = parseScopeArgs(rest, { defaultScope: 'all', allowAll: true });
+    const name = positional[0];
     if (!name) {
       throw new Error('skill inspect requires <name>');
     }
-    const meta = await readSkillMeta(name);
+    const meta = await readSkillMeta(name, { scope });
     if (!meta.exists) {
       throw new Error(`skill not found: ${name}`);
     }
     if (meta.manifest) {
       console.log(`Manifest: ${JSON.stringify(meta.manifest, null, 2)}\n`);
     }
+    console.log(`Scope: ${meta.scope}\n`);
     console.log(`Path: ${meta.path}\n`);
     console.log(meta.preview);
     return;
   }
 
   if (sub === 'reindex') {
-    const count = await reindexSkills();
-    console.log(`Reindexed skills: ${count}`);
+    const { scope } = parseScopeArgs(rest, { defaultScope: 'global' });
+    const count = await reindexSkills({ scope });
+    console.log(`Reindexed skills: ${count} (${scope})`);
     return;
   }
 

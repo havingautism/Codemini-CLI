@@ -1,0 +1,35 @@
+{
+  "name": "codemini-web",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Notion/Linear-styled web UI for Codemini",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "vite build --config vite.config.js",
+    "start": "node server.js",
+    "dev": "bun scripts/dev.js",
+    "api": "node server.js --port 5000"
+  },
+  "dependencies": {
+    "@pierre/diffs": "^1.1.21",
+    "@tailwindcss/vite": "^4.2.4",
+    "@tanstack/react-router": "^1.169.1",
+    "@vitejs/plugin-react": "^6.0.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "geist": "^1.7.0",
+    "lucide": "^1.14.0",
+    "lucide-react": "^1.14.0",
+    "radix-ui": "^1.4.3",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "shiki": "^4.0.2",
+    "sonner": "^2.0.7",
+    "streamdown": "^2.5.0",
+    "tailwind-merge": "^3.5.0",
+    "tailwindcss": "^4.2.4",
+    "vite": "^8.0.10"
+  }
+}

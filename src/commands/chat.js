@@ -9,7 +9,6 @@ import { loadConfig } from '../core/config-store.js';
 import { createChatRuntime } from '../core/chat-runtime.js';
 import { buildDefaultSystemPrompt } from '../core/default-system-prompt.js';
 import { resolveSession } from '../core/session-store.js';
-import pkg from '../../package.json' with { type: 'json' };
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -18,6 +17,7 @@ function parseChatArgs(args) {
     prompt: '',
     sessionId: undefined,
     model: undefined,
+    fast: false,
     system: undefined,
     plain: false
   };
@@ -32,6 +32,10 @@ function parseChatArgs(args) {
     if (arg === '--model') {
       parsed.model = args[i + 1];
       i += 1;
+      continue;
+    }
+    if (arg === '--fast' || arg === '--lite') {
+      parsed.fast = true;
       continue;
     }
     if (arg === '--system') {
@@ -49,8 +53,77 @@ function parseChatArgs(args) {
   return parsed;
 }
 
+export async function submitAndPrint(runtime, line, { output: out = process.stdout, showSystemTools = false } = {}) {
+  let streamed = false;
+  let atLineStart = true;
+  const write = (text) => {
+    const value = String(text || '');
+    if (!value) return;
+    out.write(value);
+    atLineStart = value.endsWith('\n');
+  };
+  const writeActivity = (event, label) => {
+    const name = String(event?.name || '').trim();
+    if (!name) return;
+    const summary = String(event?.summary || '').trim();
+    if (!atLineStart) write('\n');
+    write(`[${label}] ${name}${summary ? ` - ${summary}` : ''}\n`);
+  };
+  const result = await runtime.submit(line, (event) => {
+    if (event?.type === 'assistant:delta' && event.text) {
+      streamed = true;
+      write(event.text);
+      return;
+    }
+    if (event?.type === 'tool:start') {
+      streamed = true;
+      writeActivity(event, 'tool:start');
+      return;
+    }
+    if (event?.type === 'tool:end') {
+      streamed = true;
+      writeActivity(event, 'tool:end');
+      return;
+    }
+    if (event?.type === 'tool:blocked') {
+      streamed = true;
+      writeActivity(event, 'tool:blocked');
+      return;
+    }
+    if (event?.type === 'tool:error') {
+      streamed = true;
+      writeActivity(event, 'tool:error');
+      return;
+    }
+    if (!showSystemTools && String(event?.type || '').startsWith('system_tool:')) {
+      return;
+    }
+    if (event?.type === 'system_tool:start') {
+      streamed = true;
+      writeActivity(event, 'system:start');
+      return;
+    }
+    if (event?.type === 'system_tool:end') {
+      streamed = true;
+      writeActivity(event, 'system:end');
+      return;
+    }
+    if (event?.type === 'system_tool:error') {
+      streamed = true;
+      writeActivity(event, 'system:error');
+    }
+  });
+  if (result.type === 'exit' || result.type === 'noop') return result;
+  if (streamed) {
+    if (!atLineStart) write('\n');
+    return result;
+  }
+  if (result.text) write(`${result.text}\n`);
+  return result;
+}
+
 async function runPlainLoop(runtime) {
-  console.log('CodeMini CLI plain mode. Use /help and /exit.');
+  console.log('Codemini CLI plain mode. Use /help and /exit.');
   const rl = readline.createInterface({ input, output });
   try {
     while (true) {
@@ -60,10 +133,8 @@ async function runPlainLoop(runtime) {
       } catch {
         break;
       }
-      const result = await runtime.submit(line);
+      const result = await submitAndPrint(runtime, line, { output });
       if (result.type === 'exit') break;
-      if (result.type === 'noop') continue;
-      if (result.text) console.log(result.text);
     }
   } finally {
     rl.close();
@@ -151,6 +222,7 @@ export async function handleChat(args) {
   const parsed = parseChatArgs(args);
   const config = await loadConfig();
   const session = await resolveSession(parsed.sessionId);
+  const selectedModel = parsed.fast ? (config.model?.fast_name || config.model?.name) : parsed.model;
   const systemPrompt =
     parsed.system ||
     buildDefaultSystemPrompt(config);
@@ -158,14 +230,13 @@ export async function handleChat(args) {
   const runtime = await createChatRuntime({
     session,
     config,
-    model: parsed.model,
+    model: selectedModel,
     systemPrompt
   });
 
   try {
     if (parsed.prompt) {
-      const result = await runtime.submit(parsed.prompt);
-      if (result.text) console.log(result.text);
+      await submitAndPrint(runtime, parsed.prompt, { output: process.stdout });
       return;
     }
 

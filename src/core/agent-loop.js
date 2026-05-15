@@ -1,10 +1,10 @@
-import os from 'node:os';
 import path from 'node:path';
-import fs from 'node:fs/promises';
-import { BoundedCache } from './bounded-cache.js';
 import { trimInline as _trimInline, normalizePath } from './string-utils.js';
 import { captureToInbox, listInbox } from './memory-store.js';
 import { requiresApprovalEvaluation } from './command-risk.js';
+import { getToolOutputSanitizeOptions, sanitizeTextForModel } from './tool-output.js';
+import { normalizeToolArguments } from './tool-args.js';
+import { storeResultIfNeeded, summarizeToolResult } from './tool-result-store.js';
 
 /**
  * 安全解析 JSON 字符串。
@@ -22,20 +22,6 @@ function safeJsonParse(raw) {
       _parseError: parseError.message
     };
   }
-}
-
-function parseInlineRangePath(value) {
-  const text = String(value || '').trim();
-  if (!text) return null;
-  const match = text.match(/^(.*?):(\d+)(?:-(\d+))?$/);
-  if (!match) return null;
-  const [, maybePath, startRaw, endRaw] = match;
-  if (!maybePath || /^(?:[A-Za-z])$/.test(maybePath)) return null;
-  const start = Number(startRaw);
-  const end = Number(endRaw || startRaw);
-  if (!Number.isFinite(start) || start <= 0) return null;
-  if (!Number.isFinite(end) || end < start) return null;
-  return { path: maybePath, start_line: start, end_line: end };
 }
 
 function buildDeleteApprovalDetails(source, rawPath) {
@@ -73,97 +59,13 @@ function buildDeleteCancellationResult(args) {
   };
 }
 
-function normalizeToolArguments(toolName, args, rawArguments) {
-  const rawText = typeof rawArguments === 'string' ? rawArguments.trim() : '';
-  const primitive =
-    args == null || Array.isArray(args) || typeof args !== 'object'
-      ? args
-      : null;
-  const source =
-    args && typeof args === 'object' && !Array.isArray(args)
-      ? { ...args }
-      : {};
-
-  if (primitive != null && typeof primitive !== 'object') {
-    source._raw = rawText || String(primitive);
-  } else if (!source._raw && rawText && source._invalid_json) {
-    source._raw = rawText;
-  }
-
-  const stringValue =
-    typeof primitive === 'string'
-      ? primitive.trim()
-      : String(source._raw || '').trim();
-
-  if (toolName === 'read') {
-    const value = String(source.path || source.file_path || source.file || stringValue || '').trim();
-    if (value) source.path = value;
-    if (source.offset != null && source.start_line == null) source.start_line = source.offset;
-    if (source.limit != null && source.end_line == null && Number(source.start_line) > 0) {
-      source.end_line = Number(source.start_line) + Number(source.limit) - 1;
-    }
-    const range = parseInlineRangePath(source.path);
-    if (range) {
-      source.path = range.path;
-      if (source.start_line == null) source.start_line = range.start_line;
-      if (source.end_line == null) source.end_line = range.end_line;
-    }
-    return source;
-  }
-
-  if (toolName === 'list') {
-    const value = String(source.path || source.dir || source.directory || stringValue || '.').trim();
-    return { ...source, path: value || '.' };
-  }
-
-  if (toolName === 'glob') {
-    const pattern = String(source.pattern || source.glob || source.query || stringValue || '').trim();
-    if (pattern) source.pattern = pattern;
-    if (!source.path && source.directory) source.path = source.directory;
-    return source;
-  }
-
-  if (toolName === 'grep') {
-    const pattern = String(source.pattern || source.query || source.symbol || source.q || stringValue || '').trim();
-    if (pattern) source.pattern = pattern;
-    if (!source.path && (source.directory || source.dir || source.cwd)) {
-      source.path = source.directory || source.dir || source.cwd;
-    }
-    return source;
-  }
-
-  if (toolName === 'write') {
-    const value = String(source.path || source.file_path || source.file || stringValue || '').trim();
-    if (value) source.path = value;
-    if (source.content == null && source.text != null) source.content = source.text;
-    if (source.content == null && source.new_content != null) source.content = source.new_content;
-    return source;
-  }
-
-  if (toolName === 'edit') {
-    const value = String(source.path || source.file || source.file_path || '').trim();
-    if (value && !source.path) source.path = value;
-    return source;
-  }
-
-  if (toolName === 'delete') {
-    const value = String(source.path || source.file_path || source.file || source.target || source.directory || source.dir || stringValue || '').trim();
-    if (value) source.path = value;
-    const approval = buildDeleteApprovalDetails(source, source.path);
-    if (approval) source.approval = approval;
-    return source;
-  }
-
-  return source;
-}
-
 function emptyToolResultMarker(toolName) {
   const name = String(toolName || 'tool').trim() || 'tool';
   return `(${name} completed with no output)`;
 }
 
 function clipToolResult(result, maxChars = 12000) {
-  const raw = typeof result === 'string' ? result : JSON.stringify(result);
+  const raw = sanitizeTextForModel(typeof result === 'string' ? result : JSON.stringify(result));
   if (!maxChars || raw.length <= maxChars) return raw;
   return `${raw.slice(0, maxChars)}\n... [tool result truncated ${raw.length - maxChars} chars]`;
 }
@@ -171,8 +73,9 @@ function clipToolResult(result, maxChars = 12000) {
 function compactToolResult(result, toolName, args, maxChars = 12000) {
   if (result === null || result === undefined) return 'no output';
   if (typeof result === 'string') {
-    if (result.length <= maxChars) return result;
-    return `${result.slice(0, maxChars)}\n... [tool result truncated ${result.length - maxChars} chars, original: ${result.length}]`;
+    const sanitized = sanitizeTextForModel(result);
+    if (sanitized.length <= maxChars) return sanitized;
+    return `${sanitized.slice(0, maxChars)}\n... [tool result truncated ${sanitized.length - maxChars} chars, original: ${sanitized.length}]`;
   }
   if (typeof result !== 'object') return String(result);
 
@@ -257,107 +160,6 @@ function compactToolResult(result, toolName, args, maxChars = 12000) {
   return clipToolResult(obj, Math.min(maxChars, 4000));
 }
 
-// ─── P0: Large result disk store ─────────────────────────────────────
-
-const TOOL_RESULT_DISK_THRESHOLD = 6000;
-const PREVIEW_SIZE_BYTES = 2000;
-const TOOL_RESULTS_SUBDIR = 'tool-results';
-
-let currentResultDir = null;
-let resultDirReady = false;
-const storedResults = new BoundedCache({
-  maxSize: 64,
-  ttlMs: 30 * 60 * 1000,
-  onEvict(key, value) {
-    if (value?.filePath) {
-      fs.unlink(value.filePath).catch(() => {});
-    }
-  }
-}); // callId -> { filePath, summary }
-const readCache = new BoundedCache({ maxSize: 128, ttlMs: 10 * 60 * 1000 });   // "path:startLine:endLine:mtimeMs" -> true
-
-function generatePreview(content) {
-  if (content.length <= PREVIEW_SIZE_BYTES) {
-    return { preview: content, hasMore: false };
-  }
-  const truncated = content.slice(0, PREVIEW_SIZE_BYTES);
-  const lastNewline = truncated.lastIndexOf('\n');
-  const cutPoint = lastNewline > PREVIEW_SIZE_BYTES * 0.5 ? lastNewline : PREVIEW_SIZE_BYTES;
-  return { preview: content.slice(0, cutPoint), hasMore: true };
-}
-
-function formatFileSize(chars) {
-  if (chars < 1024) return `${chars} B`;
-  return `${(chars / 1024).toFixed(1)} KB`;
-}
-
-export function setResultDir(dir) {
-  currentResultDir = dir ? path.join(dir, TOOL_RESULTS_SUBDIR) : null;
-  resultDirReady = false;
-}
-
-async function ensureResultDir() {
-  if (!currentResultDir) return false;
-  if (!resultDirReady) {
-    await fs.mkdir(currentResultDir, { recursive: true });
-    resultDirReady = true;
-  }
-  return true;
-}
-
-async function storeResultIfNeeded(callId, formattedContent, rawResult) {
-  if (formattedContent.length <= TOOL_RESULT_DISK_THRESHOLD) {
-    return formattedContent;
-  }
-  try {
-    const ready = await ensureResultDir();
-    const dir = ready ? currentResultDir : path.join(os.tmpdir(), 'codemini-results');
-    if (!resultDirReady && dir === currentResultDir) {
-      await fs.mkdir(dir, { recursive: true });
-    } else if (!resultDirReady) {
-      await fs.mkdir(dir, { recursive: true });
-    }
-    const filePath = path.join(dir, `${callId}.txt`);
-    const payload = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult, null, 2);
-    await fs.writeFile(filePath, payload, 'utf-8');
-    const summary = summarizeToolResult(rawResult);
-    const { preview, hasMore } = generatePreview(payload);
-    storedResults.set(callId, { filePath, summary });
-
-    return `<persisted-output>
-Output too large (${formatFileSize(payload.length)}). Full output saved to: ${filePath}
-
-Preview (first ${formatFileSize(PREVIEW_SIZE_BYTES)}):
-${preview}${hasMore ? '\n...' : ''}
-
-Summary: ${summary}
-</persisted-output>`;
-  } catch {
-    return formattedContent;
-  }
-}
-
-export function clearResultStore() {
-  const files = [];
-  for (const [, val] of storedResults.entries()) {
-    files.push(val.filePath);
-  }
-  storedResults.clear();
-  readCache.clear();
-  return Promise.allSettled(files.map((f) => fs.unlink(f).catch(() => {})));
-}
-
-// ─── Read deduplication ─────────────────────────────────────────────
-
-export function checkReadDedup(filePath, startLine, endLine, mtimeMs) {
-  const key = `${filePath}:${startLine || 0}:${endLine || 0}:${mtimeMs}`;
-  if (readCache.has(key)) {
-    return true;
-  }
-  readCache.set(key, true);
-  return false;
-}
-
 // ─── P1a: Read-only tool classification ──────────────────────────────
 
 const READ_ONLY_TOOLS = new Set([
@@ -377,6 +179,10 @@ const DREAM_AUTO_CAPTURE_TOOLS = new Set([
 const DREAM_AUTO_CAPTURE_COOLDOWN_MS = 60_000;
 const lastAutoCaptureByTool = new Map();
 
+function isAutoCaptureEnabled(config = {}) {
+  return config?.memory?.enabled !== false && config?.memory?.auto_capture !== false;
+}
+
 function shouldAutoCaptureError(toolName, message) {
   if (!DREAM_AUTO_CAPTURE_TOOLS.has(toolName)) return false;
   const now = Date.now();
@@ -394,10 +200,6 @@ function shouldAutoCaptureError(toolName, message) {
     /command not found/i,
     /permission denied/i,
     /args\?\s/i,
-    /Raw tool arguments/i,
-    /edit requires/i,
-    /write requires/i,
-    /requires file/i,
     /path.*outside workspace/i,
     /escapes workspace/i
   ];
@@ -406,18 +208,19 @@ function shouldAutoCaptureError(toolName, message) {
   return true;
 }
 
-function fireAndForgetCapture(toolName, message, args) {
+async function captureToolFailure(toolName, message, args, config = {}) {
+  if (!isAutoCaptureEnabled(config)) return;
   const summary = `[${toolName}] ${String(message).slice(0, 120)}`;
   const details = args
     ? `Tool: ${toolName}\nError: ${message}\nArgs: ${JSON.stringify(args).slice(0, 300)}`
     : `Tool: ${toolName}\nError: ${message}`;
-  captureToInbox({
-    scope: 'auto',
+  await captureToInbox({
+    scope: 'repo',
     type: 'failure',
     summary,
     details,
     source: 'auto-capture'
-  }).catch(() => {});
+  });
 }
 
 async function checkAutoDreamThreshold(config) {
@@ -458,108 +261,6 @@ function extractFileChange(toolName, result) {
   }
 
   return null;
-}
-
-export function summarizeToolResult(result) {
-  if (result === null || result === undefined) return 'no output';
-  if (typeof result === 'string') {
-    const oneLine = result.replace(/\s+/g, ' ').trim();
-    return oneLine.length > 90 ? `${oneLine.slice(0, 87)}...` : oneLine || 'empty string';
-  }
-  if (typeof result === 'object') {
-    const obj = result;
-    if (Array.isArray(obj)) return `array(${obj.length})`;
-    if ('deleted' in obj && 'path' in obj) {
-      const kind = trimInline(obj.type || 'item', 16);
-      const target = trimInline(obj.path || '', 96);
-      if (obj.deleted) return target ? `deleted ${kind} ${target}` : `deleted ${kind}`;
-      if (obj.cancelled) return target ? `cancelled delete ${target}` : 'cancelled delete';
-    }
-    if ('path' in obj && 'action' in obj) {
-      const p = String(obj.path || '');
-      const action = String(obj.action || 'write');
-      const line = Number(obj.changed_line || 1);
-      const suffix =
-        action === 'delete'
-          ? 'deleted'
-          : action === 'create'
-            ? 'created'
-            : action === 'patch'
-              ? 'patched'
-              : action === 'replace_block' || action === 'replace_text'
-                ? 'edited'
-                : action === 'append'
-                  ? 'appended'
-                  : 'updated';
-      return p ? `${suffix} ${p}${line > 0 ? ` @L${line}` : ''}` : suffix;
-    }
-    if ('path' in obj && 'phase' in obj) {
-      const phase = String(obj.phase || '');
-      const p = String(obj.path || '');
-      const total = Number(obj.total_lines);
-      const start =
-        Number(obj.suggested_start_line || obj.start_line) > 0
-          ? Number(obj.suggested_start_line || obj.start_line)
-          : 1;
-      const end =
-        Number(obj.suggested_end_line || obj.end_line) >= start
-          ? Number(obj.suggested_end_line || obj.end_line)
-          : start;
-      const rangeText = start > 0 && end >= start ? ` lines ${start}-${end}` : '';
-      const totalText = total > 0 ? ` of ${total}` : '';
-      const enclosingText = obj.enclosing_symbol ? ` in ${obj.enclosing_symbol}` : '';
-      const errorText = obj.error ? ` (${trimInline(obj.error, 64)})` : '';
-      const truncatedText = obj.truncated ? ' [truncated]' : '';
-      return phase === 'metadata'
-        ? `metadata for ${p}${rangeText}${totalText}${errorText}`
-        : `content from ${p}${rangeText}${totalText}${enclosingText}${truncatedText}`;
-    }
-    if ('stdout' in obj || 'stderr' in obj || 'code' in obj) {
-      const stdout = trimInline(obj.stdout || '', 96);
-      const stderr = trimInline(obj.stderr || '', 96);
-      const command = trimInline(obj.command || '', 72);
-      const lead = command ? `${command} -> ` : '';
-      if (stdout) return `${lead}exit ${obj.code ?? 0}\nstdout: ${stdout}`;
-      if (stderr) return `${lead}exit ${obj.code ?? 0}\nstderr: ${stderr}`;
-      return `${lead}exit ${obj.code ?? 0}`;
-    }
-    if ('task_id' in obj && 'startup_confirmed' in obj) {
-      const status = trimInline(obj.status || 'unknown', 32);
-      const taskId = trimInline(obj.task_id || '', 24);
-      const source = trimInline(obj.startup_source || '', 24);
-      const outputFile = trimInline(obj.output_file || '', 72);
-      const output = Array.isArray(obj.recent_output) ? trimInline(obj.recent_output.slice(-1)[0] || '', 96) : '';
-      return `${taskId || 'task'} ${status}${source ? ` (${source})` : ''}${outputFile ? ` -> ${outputFile}` : ''}${output ? `\n${output}` : ''}`;
-    }
-    if ('tasks' in obj && Array.isArray(obj.tasks)) {
-      const count = obj.tasks.length;
-      const first = obj.tasks[0];
-      const lead = first?.task_id ? `${trimInline(first.task_id, 24)} ${trimInline(first.status || 'unknown', 24)}` : '';
-      return `tasks(${count})${lead ? `\n${lead}` : ''}`;
-    }
-    if ('files' in obj && Array.isArray(obj.files)) {
-      return `patched ${obj.files.length} file(s)`;
-    }
-    if ('diff' in obj && 'new_hash' in obj && 'path' in obj) {
-      const p = String(obj.path || '');
-      return p ? `diff preview for ${p}` : 'diff preview';
-    }
-    if ('created' in obj && Array.isArray(obj.created)) {
-      return `created ${obj.created.length} task(s)`;
-    }
-    if ('tasks' in obj && Array.isArray(obj.tasks)) {
-      return `${obj.tasks.length} task(s)`;
-    }
-    if ('newTodos' in obj && Array.isArray(obj.newTodos)) {
-      return obj.newTodos.length > 0 ? `updated ${obj.newTodos.length} todo item(s)` : 'cleared todo list';
-    }
-    if ('newPlan' in obj) {
-      return obj.newPlan ? `updated plan state (${String(obj.newPlan.status || 'draft')})` : 'cleared plan state';
-    }
-    const keys = Object.keys(obj);
-    return keys.length > 0 ? `keys: ${keys.slice(0, 5).join(',')}` : 'object';
-  }
-  return String(result);
 }
 
 export const trimInline = _trimInline;
@@ -748,6 +449,14 @@ function formatToolDisplayName(name, args) {
     const command = trimInline(args?.command || '', 96);
     return command ? `run(${command})` : name;
   }
+  if (name === 'web_fetch') {
+    const url = trimInline(args?.url || args?.href || '', 96);
+    return url ? `web_fetch(${url})` : name;
+  }
+  if (name === 'web_search') {
+    const query = trimInline(args?.query || args?.q || '', 96);
+    return query ? `web_search(${query})` : name;
+  }
   if (name === 'edit') {
     const target = trimInline(args?.path || args?.file || '.', 96) || '.';
     return `edit(${target})`;
@@ -775,14 +484,17 @@ function formatToolDisplayName(name, args) {
 // ─── Format a single tool result using per-tool formatter or fallback ──
 
 function formatToolResult(toolResult, toolName, args, toolFormatters, toolResultMaxChars) {
+  const sanitizeOptions = getToolOutputSanitizeOptions(toolName);
   if (toolFormatters && typeof toolFormatters[toolName] === 'function') {
     const formatted = toolFormatters[toolName](toolResult, args);
     if (typeof formatted === 'string') {
-      return formatted.trim() ? formatted : emptyToolResultMarker(toolName);
+      const sanitized = sanitizeTextForModel(formatted, sanitizeOptions);
+      return sanitized.trim() ? sanitized : emptyToolResultMarker(toolName);
     }
   }
   const fallback = compactToolResult(toolResult, toolName, args, toolResultMaxChars);
-  return String(fallback || '').trim() ? fallback : emptyToolResultMarker(toolName);
+  const sanitizedFallback = sanitizeTextForModel(fallback, sanitizeOptions);
+  return String(sanitizedFallback || '').trim() ? sanitizedFallback : emptyToolResultMarker(toolName);
 }
 
 // ─── Main agent loop ────────────────────────────────────────────────
@@ -823,15 +535,18 @@ export async function runAgentLoop({
   let pendingSummaryNudges = 0;
   const analysisGuard = createAnalysisGuardState(userPrompt);
   const alwaysAllowSet = new Set((Array.isArray(alwaysAllowTools) ? alwaysAllowTools : []).map((t) => String(t)));
-  let autoDreamChecked = false;
+  let lastAutoDreamCheckStep = 0;
 
   // Mutable tool list — grows as tool_search loads deferred tools
   const activeTools = [...toolDefinitions];
 
-  async function maybeRunAutoDream() {
-    if (autoDreamChecked) return;
-    autoDreamChecked = true;
+  async function maybeRunAutoDream(stepNumber = 0, { force = false } = {}) {
     if (executionMode === 'plan') return;
+    const interval = Math.max(1, Number(config?.memory?.auto_dream_check_interval_steps || 20));
+    const normalizedStep = Math.max(1, Number(stepNumber || 1));
+    if (!force && lastAutoDreamCheckStep > 0 && normalizedStep - lastAutoDreamCheckStep < interval) return;
+    if (force && lastAutoDreamCheckStep === normalizedStep) return;
+    lastAutoDreamCheckStep = normalizedStep;
     const autoDreamResult = await checkAutoDreamThreshold(config);
     if (!autoDreamResult) return;
     const dreamTool = toolHandlers['dream_consolidate'];
@@ -860,6 +575,7 @@ export async function runAgentLoop({
       break;
     }
     if (onEvent) onEvent({ type: 'step:start', step: step + 1 });
+    await maybeRunAutoDream(step + 1);
     const completion = await requestCompletion({
       model,
       messages,
@@ -926,7 +642,7 @@ export async function runAgentLoop({
         continue;
       }
       finalText = assistantText;
-      await maybeRunAutoDream();
+      await maybeRunAutoDream(step + 1, { force: true });
       return { text: finalText, messages, steps: step + 1 };
     }
 
@@ -943,7 +659,7 @@ export async function runAgentLoop({
       ]
         .filter(Boolean)
         .join('\n');
-      await maybeRunAutoDream();
+      await maybeRunAutoDream(step + 1, { force: true });
       return { text: finalText.trim(), messages, steps: step + 1 };
     }
 
@@ -1041,13 +757,17 @@ export async function runAgentLoop({
       const effectiveArgs = approvalState.args || args;
 
       if (approvalState.errorContent) {
+        const summary = trimInline(approvalState.errorContent, 120);
         if (onEvent) {
-          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary: trimInline(approvalState.errorContent, 120) });
+          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary });
         }
         return {
           callId: call.id,
           content: approvalState.errorContent,
-          error: true
+          error: true,
+          durationMs: 0,
+          summary,
+          status: 'error'
         };
       }
 
@@ -1060,27 +780,46 @@ export async function runAgentLoop({
         return {
           callId: call.id,
           content: JSON.stringify(blockedPayload),
-          blocked: true
+          blocked: true,
+          summary: 'Tool call requires approval',
+          status: 'blocked'
         };
       }
 
       if (onEvent) onEvent({ type: 'tool:start', name: displayName, id: call.id, arguments: effectiveArgs });
       const handler = toolHandlers[toolName];
       if (!handler) {
-        throw new Error(`Unknown tool: ${call.name}`);
+        const available = Object.keys(toolHandlers).join(', ');
+        const msg = `Unknown tool: "${toolName}". Available tools: ${available || '(none)'}`;
+        const summary = trimInline(msg, 200);
+        if (onEvent) {
+          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary });
+        }
+        return {
+          callId: call.id,
+          content: JSON.stringify({ error: msg }),
+          error: true,
+          durationMs: 0,
+          summary,
+          status: 'error'
+        };
       }
 
       const blockedReason = blockedExplorationReason(toolName, effectiveArgs, analysisGuard);
       if (blockedReason) {
         analysisGuard.blockedExplorations += 1;
         const content = clipToolResult({ error: blockedReason }, toolResultMaxChars);
+        const summary = trimInline(blockedReason, 120);
         if (onEvent) {
-          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary: trimInline(blockedReason, 120) });
+          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary });
         }
         return {
           callId: call.id,
           content,
-          error: true
+          error: true,
+          durationMs: 0,
+          summary,
+          status: 'error'
         };
       }
 
@@ -1090,24 +829,29 @@ export async function runAgentLoop({
       } catch (error) {
         const durationMs = Date.now() - startedAt;
         const message = error instanceof Error ? error.message : String(error);
+        const summary = trimInline(message, 120);
         if (onEvent) {
-          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary: trimInline(message, 120) });
+          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary });
         }
-        if (shouldAutoCaptureError(toolName, message)) {
-          fireAndForgetCapture(toolName, message, effectiveArgs);
+        if (isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, message)) {
+          await captureToolFailure(toolName, message, effectiveArgs, config).catch(() => {});
         }
         return {
           callId: call.id,
           content: clipToolResult({ error: message }, toolResultMaxChars),
-          error: true
+          error: true,
+          durationMs,
+          summary,
+          status: 'error'
         };
       }
 
       const durationMs = Date.now() - startedAt;
+      const summary = summarizeToolResult(toolResult);
       /* 提取文件改动统计 */
       const fileChange = extractFileChange(toolName, toolResult);
       if (onEvent) {
-        onEvent({ type: 'tool:end', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary: summarizeToolResult(toolResult), fileChange });
+        onEvent({ type: 'tool:end', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary, fileChange });
       }
 
       // Auto-capture non-throwing tool failures (e.g. shell non-zero exit)
@@ -1116,14 +860,14 @@ export async function runAgentLoop({
         const stderr = String(toolResult.stderr || '');
         if (typeof exitCode === 'number' && exitCode !== 0 && stderr) {
           const failMsg = `exit ${exitCode}: ${stderr.slice(0, 120)}`;
-          if (shouldAutoCaptureError(toolName, failMsg)) {
-            fireAndForgetCapture(toolName, failMsg, effectiveArgs);
+          if (isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, failMsg)) {
+            await captureToolFailure(toolName, failMsg, effectiveArgs, config).catch(() => {});
           }
         }
         if (toolResult.error) {
           const errMsg = String(toolResult.error).slice(0, 120);
-          if (shouldAutoCaptureError(toolName, errMsg)) {
-            fireAndForgetCapture(toolName, errMsg, effectiveArgs);
+          if (isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, errMsg)) {
+            await captureToolFailure(toolName, errMsg, effectiveArgs, config).catch(() => {});
           }
         }
       }
@@ -1145,7 +889,7 @@ export async function runAgentLoop({
       // P0: Persist to disk if still large
       formatted = await storeResultIfNeeded(call.id, formatted, toolResult);
 
-      return { callId: call.id, content: formatted };
+      return { callId: call.id, content: formatted, durationMs, summary, status: 'done' };
     }
 
     // Separate read-only and write calls, preserving order
@@ -1172,7 +916,8 @@ export async function runAgentLoop({
       if (!entry) continue;
 
       if (entry.blocked) {
-        messages.push({ role: 'tool', tool_call_id: call.id, content: entry.content });
+        attachToolCallSessionMeta(assistantMessage, call.id, { summary: entry.summary || '', status: entry.status || 'blocked' });
+        messages.push({ role: 'tool', tool_call_id: call.id, content: entry.content, tool_summary: entry.summary || '', tool_status: entry.status || 'blocked' });
         if (onEvent) {
           onEvent({ type: 'tool:result', name: displayName, id: call.id, arguments: args, content: entry.content, blocked: true });
         }
@@ -1180,14 +925,16 @@ export async function runAgentLoop({
       }
 
       if (entry.error) {
-        messages.push({ role: 'tool', tool_call_id: call.id, content: entry.content });
+        attachToolCallSessionMeta(assistantMessage, call.id, { durationMs: entry.durationMs, summary: entry.summary || '', status: entry.status || 'error' });
+        messages.push({ role: 'tool', tool_call_id: call.id, content: entry.content, tool_duration_ms: entry.durationMs, tool_summary: entry.summary || '', tool_status: entry.status || 'error' });
         if (onEvent) {
           onEvent({ type: 'tool:result', name: displayName, id: call.id, arguments: args, content: entry.content, error: true });
         }
         continue;
       }
 
-      messages.push({ role: 'tool', tool_call_id: call.id, content: entry.content });
+      attachToolCallSessionMeta(assistantMessage, call.id, { durationMs: entry.durationMs, summary: entry.summary || '', status: entry.status || 'done' });
+      messages.push({ role: 'tool', tool_call_id: call.id, content: entry.content, tool_duration_ms: entry.durationMs, tool_summary: entry.summary || '', tool_status: entry.status || 'done' });
       if (onEvent) {
         onEvent({ type: 'tool:result', name: displayName, id: call.id, arguments: args, content: entry.content });
       }
@@ -1206,7 +953,7 @@ export async function runAgentLoop({
   }
 
   const fallback = lastAssistantText || 'Stopped before final response.';
-  await maybeRunAutoDream();
+  await maybeRunAutoDream(maxSteps, { force: true });
   return {
     text: `${fallback}\n\n[stopped] Reached max tool steps (${maxSteps}). Try a narrower prompt or increase execution.max_steps.`,
     messages,
@@ -1221,4 +968,13 @@ function callsToPlanSummary(toolCalls = []) {
       const args = safeJsonParse(call?.arguments);
       return `- ${formatToolDisplayName(normalizeToolCallName(call?.name), args)}`;
     });
+}
+
+function attachToolCallSessionMeta(assistantMessage, callId, meta = {}) {
+  if (!assistantMessage || !Array.isArray(assistantMessage.tool_calls)) return;
+  const call = assistantMessage.tool_calls.find((tc) => String(tc?.id || '') === String(callId || ''));
+  if (!call) return;
+  if (Number.isFinite(Number(meta.durationMs))) call.durationMs = Number(meta.durationMs);
+  if (typeof meta.summary === 'string' && meta.summary.trim()) call.summary = meta.summary.trim();
+  if (typeof meta.status === 'string' && meta.status.trim()) call.status = meta.status.trim();
 }

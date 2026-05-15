@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document is the day-to-day operator guide for CodeMini CLI.
+This document is the day-to-day operator guide for Codemini CLI.
 
 Use it for:
 - common commands
@@ -202,8 +202,10 @@ or revise/discard before execution:
 ```powershell
 codemini skill list
 codemini skill inspect superpowers-lite
-codemini skill enable brainstorm
-codemini skill disable brainstorm
+codemini skill install .\my-skill
+codemini skill install --scope=global .\my-skill
+codemini skill enable my-skill
+codemini skill disable my-skill
 codemini skill reindex
 ```
 

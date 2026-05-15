@@ -19,23 +19,29 @@ const DEFAULT_CONFIG = {
   gateway: {
     base_url: 'http://127.0.0.1:8000/v1',
     api_key: '',
-    timeout_ms: 90000,
+    timeout_ms: 1800000,
     max_retries: 2
   },
   model: {
     name: 'gpt-4.1-mini',
+    fast_name: '',
     max_context_tokens: 202752
   },
   context: {
     max_tokens: 32000,
-    preflight_trigger_pct: 92,
+    preflight_trigger_pct: 60,
     hard_limit_pct: 98,
     tool_result_max_chars: 12000,
     read_file_default_lines: 220,
-    read_file_max_chars: 24000
+    read_file_max_chars: 24000,
+    prompt_budget_audit: false,
+    microcompact_enabled: true,
+    microcompact_keep_recent: 5,
+    project_instructions_enabled: true,
+    project_instructions_max_chars: 12000
   },
   execution: {
-    mode: 'auto',
+    mode: 'normal',
     always_allow_tools: [
       'read',
       'grep',
@@ -56,7 +62,7 @@ const DEFAULT_CONFIG = {
   },
   shell: {
     default: normalizeShellName(process.platform === 'win32' ? 'powershell' : 'bash'),
-    timeout_ms: 120000
+    timeout_ms: 1800000
   },
   ui: {
     language: 'zh',
@@ -65,6 +71,7 @@ const DEFAULT_CONFIG = {
   memory: {
     enabled: true,
     auto_write: true,
+    auto_capture: true,
     inject_on_session_start: true,
     auto_dream_threshold: 10,
     max_items_per_scope: 12,
@@ -84,6 +91,7 @@ const DEFAULT_CONFIG = {
   policy: {
     safe_mode: true,
     allow_dangerous_commands: false,
+    allowed_paths: [],
     command_allowlist: [],
     blocked_commands: [],
     blocked_path_patterns: [],
@@ -138,9 +146,15 @@ function normalizePolicyLists(config) {
   next.shell = next.shell || {};
   next.shell.default = normalizeShellName(next.shell.default);
   next.execution = next.execution || {};
+  next.model = next.model || {};
+  if (typeof next.model.fast_name !== 'string' && typeof next.model.lite_name === 'string') {
+    next.model.fast_name = next.model.lite_name;
+  }
+  next.model.name = String(next.model.name || DEFAULT_CONFIG.model.name).trim() || DEFAULT_CONFIG.model.name;
+  next.model.fast_name = String(next.model.fast_name || '').trim();
   next.execution.mode = ['auto', 'normal', 'plan'].includes(String(next.execution.mode || '').toLowerCase())
     ? String(next.execution.mode).toLowerCase()
-    : 'auto';
+    : 'normal';
   const rawTools = Array.isArray(next.execution.always_allow_tools)
     ? next.execution.always_allow_tools
     : [];
@@ -165,6 +179,7 @@ function normalizePolicyLists(config) {
   next.memory = next.memory || {};
   next.memory.enabled = next.memory.enabled !== false;
   next.memory.auto_write = next.memory.auto_write !== false;
+  next.memory.auto_capture = next.memory.auto_capture !== false;
   next.memory.inject_on_session_start = next.memory.inject_on_session_start !== false;
   next.memory.max_items_per_scope = Math.max(1, Number(next.memory.max_items_per_scope || 12));
   next.memory.auto_dream_threshold = Number(next.memory.auto_dream_threshold ?? 10);
@@ -175,11 +190,16 @@ function normalizePolicyLists(config) {
   next.memory.project_binding = ['path', 'alias', 'path-or-alias'].includes(String(next.memory.project_binding || ''))
     ? String(next.memory.project_binding)
     : 'path-or-alias';
+  next.context = next.context || {};
+  next.context.prompt_budget_audit = next.context.prompt_budget_audit === true;
   next.web = next.web || {};
   next.web.search_enabled = next.web.search_enabled !== false;
   next.policy = next.policy || {};
   next.policy.command_allowlist = uniqueStrings(
     Array.isArray(next.policy.command_allowlist) ? next.policy.command_allowlist : []
+  );
+  next.policy.allowed_paths = uniqueStrings(
+    Array.isArray(next.policy.allowed_paths) ? next.policy.allowed_paths : []
   );
   next.policy.blocked_commands = uniqueStrings(
     Array.isArray(next.policy.blocked_commands) ? next.policy.blocked_commands : []
@@ -198,6 +218,13 @@ function parseValue(input) {
   if (input === 'true') return true;
   if (input === 'false') return false;
   if (input === 'null') return null;
+  if ((input.startsWith('[') && input.endsWith(']')) || (input.startsWith('{') && input.endsWith('}'))) {
+    try {
+      return JSON.parse(input);
+    } catch {
+      return input;
+    }
+  }
   if (!Number.isNaN(Number(input)) && input.trim() !== '') return Number(input);
   return input;
 }
