@@ -2,6 +2,7 @@ import { useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
 import { StreamdownRenderer } from "./StreamdownRenderer";
 import { TodoList } from "./TodoList";
+import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { formatTimestamp } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
@@ -147,6 +148,7 @@ function DreamNotice({ notice }) {
 function ToolGroup({ cards }) {
   const [expanded, setExpanded] = useState(false);
   const total = cards.length;
+  const hasRunningTool = cards.some((card) => card.status === "running");
   const shouldCollapse = total > TOOL_COLLAPSE_THRESHOLD && !expanded;
   const hiddenCount = total - TOOL_COLLAPSE_THRESHOLD;
   const visibleCards = shouldCollapse
@@ -167,6 +169,12 @@ function ToolGroup({ cards }) {
       {visibleCards.map((card) => (
         <ToolCard key={card.id} card={card} />
       ))}
+      {hasRunningTool && (
+        <div className="flex items-center gap-2 px-3 py-1.5 text-[11px] text-(--text-muted)">
+          <Spinner className="text-(--accent-cyan)" />
+          <span>{t("tooling")}</span>
+        </div>
+      )}
       {expanded && total > TOOL_COLLAPSE_THRESHOLD && (
         <button
           type="button"
@@ -178,6 +186,27 @@ function ToolGroup({ cards }) {
       )}
     </div>
   );
+}
+
+function mergeFileChanges(fileChanges = []) {
+  const byPath = new Map();
+  const order = [];
+  const actionRank = { delete: 3, create: 2, edit: 1 };
+  for (const change of fileChanges) {
+    const path = String(change?.path || "");
+    if (!path) continue;
+    if (!byPath.has(path)) {
+      byPath.set(path, { ...change, linesAdded: 0, linesRemoved: 0 });
+      order.push(path);
+    }
+    const existing = byPath.get(path);
+    existing.linesAdded += Number(change.linesAdded || 0);
+    existing.linesRemoved += Number(change.linesRemoved || 0);
+    const currentRank = actionRank[existing.action] || 0;
+    const nextRank = actionRank[change.action] || 0;
+    if (nextRank > currentRank) existing.action = change.action;
+  }
+  return order.map((path) => byPath.get(path));
 }
 
 // Merge adjacent tool segments (possibly separated by empty text) into merged render groups
@@ -385,6 +414,10 @@ export function MessageBubble({
     () => buildRenderGroups(segments || []),
     [segments],
   );
+  const mergedFileChanges = useMemo(
+    () => mergeFileChanges(fileChanges || []),
+    [fileChanges],
+  );
 
   if (role === "divider") {
     return (
@@ -511,12 +544,12 @@ export function MessageBubble({
             </div>
           )}
 
-          {fileChanges?.length > 0 && (
+          {mergedFileChanges.length > 0 && (
             <div className="mt-2 border border-(--border-default) rounded-lg bg-(--bg-secondary) p-3">
               <div className="text-xs font-semibold text-(--text-secondary) mb-1">
                 {t("fileChanges")}
               </div>
-              {fileChanges.map((c, i) => {
+              {mergedFileChanges.map((c, i) => {
                 const actionColors = {
                   edit: "bg-(--accent-blue-bg) text-(--accent-blue)",
                   create: "bg-(--accent-green-bg) text-(--accent-green)",

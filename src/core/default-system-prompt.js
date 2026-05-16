@@ -101,10 +101,17 @@ OS Version: ${os.version || os.release()}
 </env>`;
 }
 
-export function buildDefaultSystemPrompt(config = {}) {
-  return `${getShellSystemPrompt(config?.shell?.default)}
+function normalizePromptBlocks(blocks) {
+  if (!blocks) return [];
+  if (Array.isArray(blocks)) return blocks.filter(Boolean).map(String);
+  return [String(blocks)].filter(Boolean);
+}
 
-${getToolFewShotBlock()}
-
-${getEnvBlock()}`;
+export function buildDefaultSystemPrompt(config = {}, options = {}) {
+  return [
+    getShellSystemPrompt(config?.shell?.default),
+    getToolFewShotBlock(),
+    getEnvBlock(),
+    ...normalizePromptBlocks(options.extraPrompts)
+  ].filter(Boolean).join('\n\n');
 }

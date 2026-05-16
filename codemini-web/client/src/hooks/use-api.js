@@ -176,11 +176,20 @@ export async function fetchSkillContent(name) {
   return res.json();
 }
 
-export async function createSkill({ name, description, content }) {
+export async function createSkill({ name, description, content, scope }) {
   const res = await api('/api/skills/create', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ name, description, content })
+    body: JSON.stringify({ name, description, content, scope })
+  });
+  return res.json();
+}
+
+export async function installSkill({ source, scope }) {
+  const res = await api('/api/skills/install', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ source, scope })
   });
   return res.json();
 }
