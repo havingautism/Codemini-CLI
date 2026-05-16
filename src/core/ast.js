@@ -86,9 +86,11 @@ function selectEditableNode(node) {
 }
 
 function astTargetForNode(relativePath, language, node) {
+  const name = String(node.childForFieldName?.('name')?.text || '').trim();
   return {
     path: relativePath,
     language,
+    ...(name ? { name } : {}),
     node_type: node.type,
     start_line: node.startPosition.row + 1,
     start_column: node.startPosition.column + 1,

@@ -31,7 +31,9 @@ import {
   summarizeRunOutput
 } from './tool-output.js';
 import {
+  normalizeFilePathValue,
   normalizePathArgs,
+  parseInlineRangePath,
   normalizePatternArgs,
   normalizeReadArgs,
   normalizeWebFetchArgs,
@@ -162,6 +164,16 @@ function normalizeWhitespace(value) {
   return String(value || '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function semanticBoolean(value, fallback = false) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  const text = String(value ?? '').trim().toLowerCase();
+  if (!text) return fallback;
+  if (['true', '1', 'yes', 'y', 'on'].includes(text)) return true;
+  if (['false', '0', 'no', 'n', 'off'].includes(text)) return false;
+  return Boolean(value);
 }
 
 function trimPreview(value, maxLen = 300) {
@@ -1395,7 +1407,7 @@ async function stopBackgroundTask(_root, args) {
 }
 
 async function builtinGrep(root, args, config = {}) {
-  const normalizedArgs = normalizePatternArgs(args, ['query', 'symbol', 'q'], ['directory', 'dir', 'cwd']);
+  const normalizedArgs = normalizePatternArgs(args, ['query', 'symbol', 'q'], ['directory', 'dir', 'cwd', 'file_path', 'file']);
   const pattern = String(normalizedArgs?.pattern || '').trim();
   if (!pattern) throw new Error('grep requires pattern');
   const maxResults = Math.max(1, Math.min(200, Number(normalizedArgs?.max_results || 50)));
@@ -1430,7 +1442,7 @@ async function builtinGrep(root, args, config = {}) {
 }
 
 async function builtinGlob(root, args, config = {}) {
-  const normalizedArgs = normalizePatternArgs(args, ['glob', 'query'], ['directory', 'dir', 'cwd']);
+  const normalizedArgs = normalizePatternArgs(args, ['glob', 'query'], ['directory', 'dir', 'cwd', 'file_path', 'file']);
   const pattern = String(normalizedArgs?.pattern || '').trim();
   if (!pattern) throw new Error('glob requires pattern');
   const maxResults = Math.max(1, Math.min(500, Number(normalizedArgs?.max_results || 200)));
@@ -1451,7 +1463,7 @@ async function builtinGlob(root, args, config = {}) {
 }
 
 async function builtinList(root, args, config = {}) {
-  const normalizedArgs = normalizePathArgs(args, ['dir', 'directory', 'target']);
+  const normalizedArgs = normalizePathArgs(args, ['dir', 'directory', 'file_path', 'file', 'target']);
   const relativePath = String(normalizedArgs?.path || '.').trim() || '.';
   const target = await resolveInWorkspace(root, relativePath, config);
   const entries = await fs.readdir(target, { withFileTypes: true });
@@ -1608,6 +1620,23 @@ function editResult(pathText, action, beforeContent, afterContent, changedLine =
   };
 }
 
+function lineRangeToOffsets(content, startLineRaw, endLineRaw) {
+  const lines = splitLines(content);
+  const totalLines = lines.length;
+  const startLine = Math.max(1, Math.min(totalLines, Number(startLineRaw) || 1));
+  const endLine = Math.max(startLine, Math.min(totalLines, Number(endLineRaw) || startLine));
+  let startOffset = 0;
+  for (let i = 1; i < startLine; i += 1) {
+    startOffset += lines[i - 1].length + 1;
+  }
+  let endOffset = startOffset;
+  for (let i = startLine; i <= endLine; i += 1) {
+    endOffset += lines[i - 1].length;
+    if (i < endLine) endOffset += 1;
+  }
+  return { startLine, endLine, startOffset, endOffset };
+}
+
 async function replaceBlock(root, args, config = {}) {
   const relativePath = String(args?.path || '').trim();
   const newContent = String(args?.new_content || args?.content || '');
@@ -1631,18 +1660,45 @@ async function replaceText(root, args, config = {}) {
   const relativePath = String(args?.path || '').trim();
   const oldText = String(args?.old_text || '');
   const newText = String(args?.new_text || '');
+  const replaceAll = semanticBoolean(args?.replace_all ?? args?.replaceAll);
   const state = await getFileState(root, relativePath, config);
-  const occurrences = state.content.split(oldText).length - 1;
+  if (!oldText) {
+    throw new Error('replace_text requires old_text');
+  }
+  const rangeStart = Number(args?.start_line || args?.line);
+  const rangeEnd = Number(args?.end_line || args?.line);
+  const hasRange = Number.isFinite(rangeStart) && rangeStart > 0;
+  const range = hasRange
+    ? lineRangeToOffsets(state.content, rangeStart, Number.isFinite(rangeEnd) && rangeEnd >= rangeStart ? rangeEnd : rangeStart)
+    : null;
+  const searchContent = range ? state.content.slice(range.startOffset, range.endOffset) : state.content;
+  const occurrences = searchContent.split(oldText).length - 1;
   if (occurrences !== 1) {
+    if (replaceAll && occurrences > 0) {
+      const replaced = searchContent.replaceAll(oldText, newText);
+      const afterContent = range
+        ? `${state.content.slice(0, range.startOffset)}${replaced}${state.content.slice(range.endOffset)}`
+        : state.content.replaceAll(oldText, newText);
+      await fs.writeFile(state.target, afterContent, 'utf8');
+      const changedLine = range
+        ? range.startLine + splitLines(searchContent.slice(0, searchContent.indexOf(oldText))).length - 1
+        : splitLines(state.content.slice(0, state.content.indexOf(oldText))).length;
+      return editResult(relativePath, 'replace_text', state.content, afterContent, changedLine);
+    }
     throw new Error(
       occurrences === 0
-        ? 'replace_text old_text not found; use edit with a symbol or line hint for block edits'
-        : 'replace_text old_text not unique; use a larger unique fragment or retry through edit'
+        ? 'replace_text old_text not found'
+        : 'replace_text old_text not unique; add a line range like path:"file.js:10-30" or set replace_all=true'
     );
   }
-  const afterContent = state.content.replace(oldText, newText);
+  const replaced = searchContent.replace(oldText, newText);
+  const afterContent = range
+    ? `${state.content.slice(0, range.startOffset)}${replaced}${state.content.slice(range.endOffset)}`
+    : state.content.replace(oldText, newText);
   await fs.writeFile(state.target, afterContent, 'utf8');
-  const changedLine = splitLines(state.content.slice(0, state.content.indexOf(oldText))).length;
+  const changedLine = range
+    ? range.startLine + splitLines(searchContent.slice(0, searchContent.indexOf(oldText))).length - 1
+    : splitLines(state.content.slice(0, state.content.indexOf(oldText))).length;
   return editResult(relativePath, 'replace_text', state.content, afterContent, changedLine);
 }
 
@@ -1692,18 +1748,31 @@ async function openTarget(root, args, config = {}) {
 }
 
 function normalizeEditTargetArgs(args = {}) {
-  const file = String(args?.file || args?.path || args?.file_path || '').trim();
+  const rawFile = String(args?.file || args?.path || args?.file_path || '').trim();
+  const inlineRange = parseInlineRangePath(rawFile);
+  const file = normalizeFilePathValue(rawFile, { stripInlineRange: true }).trim();
   const nestedEdit = args?.edit && typeof args.edit === 'object' ? args.edit : null;
+  const startLine = args?.start_line ?? args?.line ?? inlineRange?.start_line;
+  const endLine = args?.end_line ?? inlineRange?.end_line ?? args?.line;
   if (nestedEdit) {
     const normalizedEdit = { ...nestedEdit };
     if (normalizedEdit.new_content == null && normalizedEdit.content != null) {
       normalizedEdit.new_content = normalizedEdit.content;
     }
+    if (normalizedEdit.old_text == null && normalizedEdit.old_string != null) {
+      normalizedEdit.old_text = normalizedEdit.old_string;
+    }
     if (normalizedEdit.new_text == null && normalizedEdit.content != null && normalizedEdit.old_text != null) {
       normalizedEdit.new_text = normalizedEdit.content;
     }
+    if (normalizedEdit.new_text == null && normalizedEdit.new_string != null) {
+      normalizedEdit.new_text = normalizedEdit.new_string;
+    }
     return {
+      path: file,
       file,
+      start_line: startLine,
+      end_line: endLine,
       ast_target: normalizedEdit.ast_target ?? args?.ast_target,
       edit: normalizedEdit
     };
@@ -1711,7 +1780,10 @@ function normalizeEditTargetArgs(args = {}) {
   const topLevelOldText = args?.old_text ?? args?.old_string;
   const topLevelContent = args?.content;
   return {
+    path: file,
     file,
+    start_line: startLine,
+    end_line: endLine,
     ast_target: args?.ast_target,
     edit: {
       kind: args?.kind,
@@ -1722,14 +1794,15 @@ function normalizeEditTargetArgs(args = {}) {
       old_string: args?.old_string,
       new_string: args?.new_string,
       anchor_text: args?.anchor_text,
-      content: args?.content
+      content: args?.content,
+      replace_all: args?.replace_all ?? args?.replaceAll
     }
   };
 }
 
 async function editTarget(root, args, config = {}) {
   const normalized = normalizeEditTargetArgs(args);
-  const file = normalized.file;
+  const file = normalized.file || normalizeFilePathValue(args?.recent_file || '', { stripInlineRange: true }).trim();
   const astTarget = normalized.ast_target;
   const edit = normalized.edit || {};
   let kind = String(edit.kind || '').trim();
@@ -1755,10 +1828,15 @@ async function editTarget(root, args, config = {}) {
   if (!file || !kind) {
     const recentFile = String(args?.recent_file || '').trim();
     const rawArgs = typeof args?._raw === 'string' && args._raw.trim() ? ` Raw tool arguments: ${args._raw.trim()}.` : '';
+    const missing = !file
+      ? 'file path'
+      : edit.old_text != null && edit.new_text == null && edit.content == null
+        ? 'new_text'
+        : 'edit operation';
     const hint = recentFile
       ? ` If you meant the recently read file ${recentFile}, use edit with {file:"${recentFile}", old_text:"...", new_text:"..."} for a text replacement, or {file:"${recentFile}", edit:{kind:"rewrite_file", new_content:"..."}} for a full rewrite.`
       : ' Use edit with {file:"path", old_text:"...", new_text:"..."} for a text replacement, or {file:"path", edit:{kind:"rewrite_file", new_content:"..."}} for a full rewrite.';
-    throw new Error(`edit requires file and edit.kind.${rawArgs}${hint}`);
+    throw new Error(`edit requires ${missing}.${rawArgs}${hint}`);
   }
   if (astTarget) {
     if (kind !== 'replace_block') {
@@ -1807,7 +1885,10 @@ async function editTarget(root, args, config = {}) {
     return replaceText(root, {
       path: file,
       old_text: edit.old_text,
-      new_text: edit.new_text
+      new_text: edit.new_text,
+      replace_all: edit.replace_all ?? args?.replace_all ?? args?.replaceAll,
+      start_line: edit.start_line ?? normalized.start_line,
+      end_line: edit.end_line ?? normalized.end_line
     }, config);
   }
   if (kind === 'insert_before') {
@@ -1833,8 +1914,9 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
   const astSelectionCache = new Map();
   let lastAstTarget = null;
   let lastReadPath = '';
+  let lastReadRange = null;
   const rememberAstSelection = (filePath, astTarget) => {
-    const key = String(filePath || '').trim();
+    const key = normalizePath(filePath).trim();
     if (!key || !astTarget) return;
     lastAstTarget = astTarget;
     astSelectionCache.set(key, astTarget);
@@ -1851,11 +1933,11 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         args?.edit?.target
     );
   const resolveCachedAstTarget = (args = {}, { requireAstScope = false } = {}) => {
-    const file = String(args?.path || args?.file || args?.ast_target?.path || '').trim();
+    const file = normalizeFilePathValue(args?.path || args?.file || args?.file_path || args?.ast_target?.path || '', { stripInlineRange: true }).trim();
     if (args?.ast_target) return args.ast_target;
     if (file) {
       if (requireAstScope && hasExplicitBlockHints(args)) return null;
-      return astSelectionCache.get(file) || lastAstTarget || null;
+      return astSelectionCache.get(file) || null;
     }
     return lastAstTarget || null;
   };
@@ -1912,11 +1994,13 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'read',
         description:
-          'Inspect code or text files. Use read(path) for normal file or line-window reads. Use start_line and end_line for ranges, or path:"src/app.ts:10-40" for inline ranges. Prefer this over run with cat, head, or tail.',
+          'Inspect code or text files. Use {path} for normal reads; file_path/file are accepted aliases. Use start_line/end_line or path:"src/app.ts:10-40" for ranges. Normal code reads include enclosing symbol metadata when available; read with query returns the matched AST node and ast_target.',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string', description: 'File path to read. You can also include an inline range like src/app.ts:10-40.' },
+            file_path: { type: 'string', description: 'Alias for path' },
+            file: { type: 'string', description: 'Alias for path' },
             start_line: { type: 'number', description: '1-based start line' },
             end_line: { type: 'number', description: 'Inclusive end line' },
             max_chars: { type: 'number', description: 'Max chars to return' },
@@ -1939,7 +2023,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
           type: 'object',
           properties: {
             pattern: { type: 'string', description: 'Search pattern' },
-            path: { type: 'string', description: 'Directory or file to search' },
+            path: { type: 'string', description: 'Directory or file to search. file_path/file/dir/directory/cwd are accepted aliases.' },
             regex: { type: 'boolean', description: 'Treat pattern as regex' },
             case_sensitive: { type: 'boolean', description: 'Case-sensitive matching' },
             max_results: { type: 'number', description: 'Max matches to return' },
@@ -1958,7 +2042,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         parameters: {
           type: 'object',
           properties: {
-            path: { type: 'string', description: 'Directory path to list' },
+            path: { type: 'string', description: 'Directory path to list. file_path/file/dir/directory are accepted aliases.' },
             include_hidden: { type: 'boolean', description: 'Include dotfiles' }
           }
         }
@@ -1969,7 +2053,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'query_project_index',
         description:
-          'Query the lightweight project index before broad file reads. Uses both project-map metadata and file-index symbols to suggest the most relevant files for the current task.',
+          'Query the lightweight project index before broad file reads. Returns relevant files plus Symbol Graph summaries: symbol_id, type, range, signature, calls, called_by, imports, writes, and emits.',
         parameters: {
           type: 'object',
           properties: {
@@ -1987,14 +2071,21 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'edit',
         description:
-          'Edit existing files. Prefer one of these shapes: 1) {path, old_text, new_text} for exact text replacement, 2) {path, symbol, edit:{kind:"replace_block", new_content:"..."}} for block replacement, 3) {path, anchor_text, position:"before"|"after", content:"..."} for inserts. Read first unless the exact target is already known. Prefer this over write for existing code changes.',
+          'Edit existing files. Prefer {path, old_text, new_text}; old_string/new_string and file_path/file are accepted aliases. If old_text is repeated, use path:"file:10-30" or rely on the most recent read range. Set replace_all=true to replace every match. Advanced kind/ast_target edits are still supported.',
         parameters: {
           type: 'object',
           properties: {
-            path: { type: 'string', description: 'File path to edit' },
+            path: { type: 'string', description: 'File path to edit. Inline ranges like src/app.js:10-30 are accepted.' },
+            file_path: { type: 'string', description: 'Alias for path' },
+            file: { type: 'string', description: 'Alias for path' },
             new_content: { type: 'string', description: 'Replacement content' },
             old_text: { type: 'string', description: 'Exact text to replace' },
             new_text: { type: 'string', description: 'Replacement text' },
+            old_string: { type: 'string', description: 'Alias for old_text' },
+            new_string: { type: 'string', description: 'Alias for new_text' },
+            replace_all: { type: 'boolean', description: 'Replace all matching old_text occurrences' },
+            start_line: { type: 'number', description: 'Optional range start for disambiguating old_text' },
+            end_line: { type: 'number', description: 'Optional range end for disambiguating old_text' },
             anchor_text: { type: 'string', description: 'Anchor text for inserts' },
             content: { type: 'string', description: 'Content to insert or append' },
             position: { type: 'string', description: 'before or after' },
@@ -2014,11 +2105,13 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'write',
         description:
-          'Create a new file or overwrite a file. Always include path and content. Use this for new files or explicit full rewrites only. Example: {path:"src/page.html", content:"..."} . If the file path is not decided yet, do not call write yet. Prefer edit for existing code changes.',
+          'Create a new file or overwrite a file. Always include path and content; file_path/file are accepted aliases. Use this for new files or explicit full rewrites only. Prefer edit for existing code changes.',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string', description: 'Required file path like src/app.js or pages/index.html. Never omit this.' },
+            file_path: { type: 'string', description: 'Alias for path' },
+            file: { type: 'string', description: 'Alias for path' },
             content: { type: 'string', description: 'Content to write' },
             append: { type: 'boolean', description: 'Append instead of overwrite' },
             full_file_rewrite: { type: 'boolean', description: 'Set true for whole-file rewrites' }
@@ -2036,7 +2129,10 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         parameters: {
           type: 'object',
           properties: {
-            path: { type: 'string', description: 'File or directory path to delete' }
+            path: { type: 'string', description: 'File or directory path to delete. file_path/file/target are accepted aliases.' },
+            file_path: { type: 'string', description: 'Alias for path' },
+            file: { type: 'string', description: 'Alias for path' },
+            target: { type: 'string', description: 'Alias for path' }
           },
           required: ['path']
         }
@@ -2439,7 +2535,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
   }
 
   async function list(args) {
-    const normalizedArgs = normalizePathArgs(args, ['dir', 'directory', 'target']);
+    const normalizedArgs = normalizePathArgs(args, ['dir', 'directory', 'file_path', 'file', 'target']);
     if (!resolvesOutsideRoot(workspaceRoot, normalizedArgs?.path || '.') && activeFffAdapter?.list) {
       try {
         await ensureFffConnected();
@@ -2462,9 +2558,12 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
           ast_target: directAstTarget
         });
         if (directAstTarget?.path) rememberAstSelection(directAstTarget.path, directAstTarget);
-        const readPath = String(result?.path || directAstTarget?.path || '').trim();
-        if (readPath) lastReadPath = readPath;
-        return result;
+        const readPath = normalizePath(result?.path || directAstTarget?.path || '').trim();
+        if (readPath) {
+          lastReadPath = readPath;
+          lastReadRange = null;
+        }
+        return { ...result, ast_target: directAstTarget };
       }
 
       if (inlineQuery) {
@@ -2486,10 +2585,26 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
           path: firstTarget.path,
           ast_target: firstTarget
         });
-        const readPath = String(result?.path || firstTarget?.path || '').trim();
-        if (readPath) lastReadPath = readPath;
+        const readPath = normalizePath(result?.path || firstTarget?.path || '').trim();
+        if (readPath) {
+          lastReadPath = readPath;
+          lastReadRange = null;
+        }
         return {
-          ...result,
+          path: result.path,
+          language: result.language,
+          node: result.node,
+          content: result.content,
+          ast_target: firstTarget,
+          symbol: {
+            symbol_id: `${result.path}#${firstTarget.name || firstTarget.node_type || `${result.node.start_line}-${result.node.end_line}`}`,
+            type: result.node.node_type,
+            file: result.path,
+            range: {
+              start_line: result.node.start_line,
+              end_line: result.node.end_line
+            }
+          },
           query: inlineQuery,
           capture_name: String(args?.capture_name || '').trim() || undefined,
           matches: queryResult.matches.length
@@ -2504,8 +2619,13 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
             ? args.max_chars
             : config.context?.read_file_max_chars ?? 24000
       }, config);
-      const readPath = String(result?.path || args?.path || '').trim();
-      if (readPath) lastReadPath = readPath;
+      const readPath = normalizePath(result?.path || args?.path || '').trim();
+      if (readPath) {
+        lastReadPath = readPath;
+        lastReadRange = result?.phase === 'content'
+          ? { path: readPath, start_line: result.start_line, end_line: result.end_line }
+          : null;
+      }
       return result;
     },
     query_project_index: async (args) => {
@@ -2533,9 +2653,20 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       await ensureProjectIndex();
       const normalizedKind = String(args?.edit?.kind || args?.kind || '').trim();
       const astTarget = resolveCachedAstTarget(args, { requireAstScope: normalizedKind === 'replace_block' });
+      const editPath = normalizeFilePathValue(args?.path || args?.file || args?.file_path || '', { stripInlineRange: true }).trim();
+      const shouldUseRecentReadRange =
+        editPath &&
+        lastReadRange?.path === editPath &&
+        !Number.isFinite(Number(args?.start_line || args?.line || args?.edit?.start_line)) &&
+        !Number.isFinite(Number(args?.end_line || args?.edit?.end_line));
+      const rangeArgs = shouldUseRecentReadRange
+        ? { start_line: lastReadRange.start_line, end_line: lastReadRange.end_line }
+        : {};
       const result = await editTarget(
         workspaceRoot,
-        astTarget ? { ...args, ast_target: astTarget, recent_file: lastReadPath } : { ...args, recent_file: lastReadPath },
+        astTarget
+          ? { ...args, ...rangeArgs, ast_target: astTarget, recent_file: lastReadPath }
+          : { ...args, ...rangeArgs, recent_file: lastReadPath },
         config
       );
       if (result?.path) await refreshProjectFile(result.path);

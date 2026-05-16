@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { normalizePath } from './string-utils.js';
 
 export function parseInlineRangePath(value) {
   const text = String(value || '').trim();
@@ -18,6 +19,33 @@ export function parseInlineRangePath(value) {
   };
 }
 
+export function normalizeFilePathValue(value, { stripInlineRange = false } = {}) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  const inlineRange = stripInlineRange ? parseInlineRangePath(text) : null;
+  return normalizePath(inlineRange?.path || text);
+}
+
+function normalizePathValueWithInlineRange(value) {
+  const text = String(value || '').trim();
+  if (!text) return { path: '', inlineRange: null };
+  const inlineRange = parseInlineRangePath(text);
+  return {
+    path: normalizePath(inlineRange?.path || text),
+    inlineRange
+  };
+}
+
+function normalizeBooleanValue(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  const text = String(value ?? '').trim().toLowerCase();
+  if (!text) return undefined;
+  if (['true', '1', 'yes', 'y', 'on'].includes(text)) return true;
+  if (['false', '0', 'no', 'n', 'off'].includes(text)) return false;
+  return Boolean(value);
+}
+
 export function normalizeReadArgs(rawArgs) {
   const source =
     rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
@@ -25,8 +53,9 @@ export function normalizeReadArgs(rawArgs) {
       : { path: typeof rawArgs === 'string' ? rawArgs : '' };
 
   const normalized = { ...source };
-  const aliasPath = String(source.path || source.file_path || source.file || source.target || '').trim();
-  if (aliasPath) normalized.path = aliasPath;
+  const aliasPath = source.path || source.file_path || source.file || source.target || '';
+  const normalizedPath = normalizePathValueWithInlineRange(aliasPath);
+  if (normalizedPath.path) normalized.path = normalizedPath.path;
 
   if (!Number.isFinite(Number(normalized.start_line)) && Number.isFinite(Number(source.offset))) {
     normalized.start_line = Number(source.offset);
@@ -40,9 +69,9 @@ export function normalizeReadArgs(rawArgs) {
     }
   }
 
-  const inlineRange = parseInlineRangePath(normalized.path);
+  const inlineRange = normalizedPath.inlineRange || parseInlineRangePath(normalized.path);
   if (inlineRange) {
-    normalized.path = inlineRange.path;
+    normalized.path = normalizePath(inlineRange.path);
     if (!Number.isFinite(Number(normalized.start_line))) normalized.start_line = inlineRange.start_line;
     if (!Number.isFinite(Number(normalized.end_line))) normalized.end_line = inlineRange.end_line;
   }
@@ -58,7 +87,7 @@ export function normalizePathArgs(rawArgs, aliases = []) {
   const normalized = { ...source };
   const keys = ['path', ...aliases];
   for (const key of keys) {
-    const value = String(source?.[key] || '').trim();
+    const value = normalizeFilePathValue(source?.[key] || '', { stripInlineRange: true });
     if (value) {
       normalized.path = value;
       break;
@@ -81,7 +110,7 @@ export function normalizePatternArgs(rawArgs, aliases = [], defaultPathAliases =
     }
   }
   for (const key of ['path', ...defaultPathAliases]) {
-    const value = String(source?.[key] || '').trim();
+    const value = normalizeFilePathValue(source?.[key] || '', { stripInlineRange: true });
     if (value) {
       normalized.path = value;
       break;
@@ -96,8 +125,12 @@ export function normalizeWriteArgs(rawArgs) {
       ? { ...rawArgs }
       : { path: typeof rawArgs === 'string' ? rawArgs : '' };
   const normalized = { ...source };
-  const filePath = String(source.path || source.file_path || source.file || '').trim();
+  const filePath = normalizeFilePathValue(source.path || source.file_path || source.file || '', { stripInlineRange: true });
   if (filePath) normalized.path = filePath;
+  const append = normalizeBooleanValue(source.append);
+  const fullFileRewrite = normalizeBooleanValue(source.full_file_rewrite);
+  if (append !== undefined) normalized.append = append;
+  if (fullFileRewrite !== undefined) normalized.full_file_rewrite = fullFileRewrite;
   if (normalized.content == null) {
     if (source.text != null) normalized.content = source.text;
     if (source.new_content != null) normalized.content = source.new_content;
@@ -156,14 +189,26 @@ export function normalizeToolArguments(toolName, args, rawArguments) {
       : String(source._raw || '').trim();
 
   if (toolName === 'read') return normalizeReadArgs({ ...source, ...(stringValue && !source.path ? { path: stringValue } : {}) });
-  if (toolName === 'list') return normalizePathArgs({ ...source, ...(stringValue && !source.path ? { path: stringValue } : {}) }, ['dir', 'directory']);
-  if (toolName === 'glob') return normalizePatternArgs({ ...source, ...(stringValue && !source.pattern ? { pattern: stringValue } : {}) }, ['glob', 'query'], ['directory']);
-  if (toolName === 'grep') return normalizePatternArgs({ ...source, ...(stringValue && !source.pattern ? { pattern: stringValue } : {}) }, ['query', 'symbol', 'q'], ['directory', 'dir', 'cwd']);
+  if (toolName === 'list') return normalizePathArgs({ ...source, ...(stringValue && !source.path ? { path: stringValue } : {}) }, ['dir', 'directory', 'file_path', 'file', 'target']);
+  if (toolName === 'glob') return normalizePatternArgs({ ...source, ...(stringValue && !source.pattern ? { pattern: stringValue } : {}) }, ['glob', 'query'], ['directory', 'dir', 'cwd', 'file_path', 'file']);
+  if (toolName === 'grep') return normalizePatternArgs({ ...source, ...(stringValue && !source.pattern ? { pattern: stringValue } : {}) }, ['query', 'symbol', 'q'], ['directory', 'dir', 'cwd', 'file_path', 'file']);
   if (toolName === 'write') return normalizeWriteArgs({ ...source, ...(stringValue && !source.path ? { path: stringValue } : {}) });
 
   if (toolName === 'edit') {
-    const value = String(source.path || source.file || source.file_path || '').trim();
+    const rawPathValue = source.path || source.file || source.file_path || stringValue || '';
+    const inlineRange = parseInlineRangePath(rawPathValue);
+    const value = normalizeFilePathValue(rawPathValue, { stripInlineRange: true });
     if (value && !source.path) source.path = value;
+    if (value && source.path) source.path = value;
+    if (inlineRange) {
+      if (!Number.isFinite(Number(source.start_line))) source.start_line = inlineRange.start_line;
+      if (!Number.isFinite(Number(source.end_line))) source.end_line = inlineRange.end_line;
+    }
+    if (source.old_text == null && source.old_string != null) source.old_text = source.old_string;
+    if (source.new_text == null && source.new_string != null) source.new_text = source.new_string;
+    if (source.new_text == null && source.content != null && source.old_text != null) source.new_text = source.content;
+    const replaceAll = normalizeBooleanValue(source.replace_all ?? source.replaceAll);
+    if (replaceAll !== undefined) source.replace_all = replaceAll;
     return source;
   }
 

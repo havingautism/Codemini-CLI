@@ -254,6 +254,158 @@ function extractMatches(regex, text, group = 1) {
   return out;
 }
 
+function lineNumberForIndex(content, index) {
+  return String(content || '').slice(0, Math.max(0, index)).split(/\r?\n/).length;
+}
+
+function findBraceRange(content, openBraceIndex) {
+  if (openBraceIndex < 0) return null;
+  let depth = 0;
+  for (let index = openBraceIndex; index < content.length; index += 1) {
+    const ch = content[index];
+    if (ch === '{') depth += 1;
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return { start: openBraceIndex, end: index + 1 };
+    }
+  }
+  return null;
+}
+
+function inferSymbolType(kind) {
+  if (kind === 'class') return 'class';
+  if (kind === 'method') return 'method';
+  if (kind === 'const') return 'function';
+  return 'function';
+}
+
+function extractCallNames(content) {
+  return clipList(
+    extractMatches(/\b([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)?)\s*\(/g, content)
+      .filter((name) => !['if', 'for', 'while', 'switch', 'return', 'function', 'class', 'catch'].includes(String(name).split('.')[0])),
+    64
+  );
+}
+
+function extractSemanticWrites(calls) {
+  return clipList((calls || []).filter((name) => /\.(insert|update|upsert|delete|save|write|create)$/i.test(String(name)) || /^(insert|update|upsert|delete|save|write|create)$/i.test(String(name))), 16);
+}
+
+function extractSemanticEmits(calls, content) {
+  const eventNames = extractMatches(/\b(?:emit|publish|dispatch)\s*\(\s*['"`]([^'"`]+)['"`]/g, content);
+  return clipList([
+    ...eventNames,
+    ...(calls || []).filter((name) => /\.(emit|publish|dispatch)$/i.test(String(name)) || /^(emit|publish|dispatch)$/i.test(String(name)))
+  ], 16);
+}
+
+function extractSymbolDefinitions(relativePath, content, imports = []) {
+  const definitions = [];
+  const patterns = [
+    { kind: 'class', regex: /\b(?:export\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)[^{]*\{/g },
+    { kind: 'function', regex: /\b(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^)]*\)\s*\{/g },
+    { kind: 'const', regex: /\b(?:export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{/g },
+    { kind: 'python', regex: /^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*:/gm },
+    { kind: 'go', regex: /^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\([^)]*\)\s*\{/gm }
+  ];
+
+  for (const { kind, regex } of patterns) {
+    for (const match of String(content || '').matchAll(regex)) {
+      const name = String(match[1] || '').trim();
+      if (!name) continue;
+      const start = match.index || 0;
+      const openBrace = content.indexOf('{', start);
+      const braceRange = openBrace >= 0 ? findBraceRange(content, openBrace) : null;
+      const end = braceRange?.end || content.indexOf('\n', start + String(match[0] || '').length);
+      const safeEnd = end > start ? end : start + String(match[0] || '').length;
+      const body = content.slice(start, safeEnd);
+      const startLine = lineNumberForIndex(content, start);
+      const endLine = lineNumberForIndex(content, safeEnd);
+      const signature = trimInline(String(match[0] || '').replace(/\s*\{\s*$/, '').replace(/\s*:\s*$/, ''), 220);
+      const calls = extractCallNames(body);
+      definitions.push({
+        symbol_id: `${relativePath}#${name}`,
+        name,
+        type: inferSymbolType(kind),
+        file: relativePath,
+        range: { start_line: startLine, end_line: endLine },
+        signature,
+        calls,
+        called_by: [],
+        imports: clipList(imports, 12),
+        writes: extractSemanticWrites(calls),
+        emits: extractSemanticEmits(calls, body),
+        used_by: []
+      });
+
+      if (kind === 'class' && braceRange) {
+        const classBodyStart = openBrace + 1;
+        const classBody = content.slice(classBodyStart, braceRange.end - 1);
+        for (const methodMatch of classBody.matchAll(/^\s*(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\([^)]*\)\s*\{/gm)) {
+          const methodName = String(methodMatch[1] || '').trim();
+          if (!methodName || ['if', 'for', 'while', 'switch', 'catch'].includes(methodName)) continue;
+          const leadingWhitespace = String(methodMatch[0] || '').search(/\S/);
+          const methodStart = classBodyStart + (methodMatch.index || 0) + Math.max(0, leadingWhitespace);
+          const methodOpenBrace = content.indexOf('{', methodStart);
+          const methodBraceRange = findBraceRange(content, methodOpenBrace);
+          const methodEnd = methodBraceRange?.end || methodStart + String(methodMatch[0] || '').length;
+          const methodBody = content.slice(methodStart, methodEnd);
+          const methodCalls = extractCallNames(methodBody);
+          definitions.push({
+            symbol_id: `${relativePath}#${name}.${methodName}`,
+            name: `${name}.${methodName}`,
+            type: 'method',
+            file: relativePath,
+            range: {
+              start_line: lineNumberForIndex(content, methodStart),
+              end_line: lineNumberForIndex(content, methodEnd)
+            },
+            signature: trimInline(`${name}.${String(methodMatch[0] || '').replace(/\s*\{\s*$/, '')}`, 220),
+            calls: methodCalls,
+            called_by: [],
+            imports: clipList(imports, 12),
+            writes: extractSemanticWrites(methodCalls),
+            emits: extractSemanticEmits(methodCalls, methodBody),
+            used_by: []
+          });
+        }
+      }
+    }
+  }
+
+  return definitions
+    .sort((left, right) => left.range.start_line - right.range.start_line || left.name.localeCompare(right.name))
+    .slice(0, 200);
+}
+
+function enrichSymbolGraph(files) {
+  const nextFiles = (Array.isArray(files) ? files : []).map((entry) => ({
+    ...entry,
+    symbols: Array.isArray(entry.symbols) ? entry.symbols.map((symbol) => ({ ...symbol, called_by: [], used_by: [] })) : []
+  }));
+  const symbols = nextFiles.flatMap((entry) => entry.symbols || []);
+  const byName = new Map();
+  for (const symbol of symbols) {
+    const shortName = String(symbol.name || '').split('.').pop();
+    if (!shortName) continue;
+    if (!byName.has(shortName)) byName.set(shortName, []);
+    byName.get(shortName).push(symbol);
+  }
+
+  for (const source of symbols) {
+    for (const rawCall of source.calls || []) {
+      const callName = String(rawCall || '').split('.').pop();
+      const targets = byName.get(callName) || [];
+      for (const target of targets) {
+        if (!target?.symbol_id || target.symbol_id === source.symbol_id) continue;
+        target.called_by = clipList([...(target.called_by || []), source.symbol_id], 32);
+      }
+    }
+  }
+
+  return nextFiles;
+}
+
 function buildFileEntry(relativePath, content, stat) {
   const ext = path.extname(relativePath).toLowerCase();
   const imports = clipList([
@@ -280,9 +432,8 @@ function buildFileEntry(relativePath, content, stat) {
   const classes = clipList([
     ...extractMatches(/\bclass\s+([A-Za-z0-9_$]+)/g, content)
   ]);
-  const calls = clipList([
-    ...extractMatches(/\b([A-Za-z0-9_$]+)\s*\(/g, content).filter((name) => !['if', 'for', 'while', 'switch', 'return', 'function', 'class', 'catch'].includes(name))
-  ], 64);
+  const calls = extractCallNames(content);
+  const symbols = extractSymbolDefinitions(relativePath, content, imports);
 
   return {
     file: relativePath,
@@ -294,7 +445,8 @@ function buildFileEntry(relativePath, content, stat) {
     exports,
     functions,
     classes,
-    calls
+    calls,
+    symbols
   };
 }
 
@@ -348,12 +500,13 @@ async function scanProject(cwd) {
     if (!(dir in directories)) directories[dir] = categorizeDirectory(dir);
   }
 
-  const files = [];
+  let files = [];
   for (const filePath of sourceFiles) {
     const content = await fs.readFile(filePath, 'utf8');
     const stat = await fs.stat(filePath);
     files.push(buildFileEntry(rel(cwd, filePath), content, stat));
   }
+  files = enrichSymbolGraph(files);
 
   return {
     workspaceKind,
@@ -457,9 +610,10 @@ export async function refreshIndexedFile(cwd = process.cwd(), relativePath = '')
     }
   }
 
+  const enrichedFiles = enrichSymbolGraph(files);
   await writeJson(fileIndexPath, {
     updatedAt: new Date().toISOString(),
-    files: files.sort((left, right) => left.file.localeCompare(right.file))
+    files: enrichedFiles.sort((left, right) => left.file.localeCompare(right.file))
   });
 
   return {
@@ -507,8 +661,12 @@ export async function buildProjectContextSnippet(cwd = process.cwd(), userText =
   if (selected.length > 0) {
     lines.push('- relevant_files:');
     for (const entry of selected) {
+      const symbolText = (entry.symbols || [])
+        .slice(0, 4)
+        .map((symbol) => `${symbol.name}@${symbol.range?.start_line || '?'}`)
+        .join(', ');
       lines.push(
-        `  - ${entry.file} :: exports=[${(entry.exports || []).slice(0, 4).join(', ')}] functions=[${(entry.functions || []).slice(0, 4).join(', ')}] classes=[${(entry.classes || []).slice(0, 4).join(', ')}]`
+        `  - ${entry.file} :: symbols=[${symbolText}] exports=[${(entry.exports || []).slice(0, 4).join(', ')}] classes=[${(entry.classes || []).slice(0, 4).join(', ')}]`
       );
     }
   }
@@ -547,6 +705,7 @@ export async function queryProjectIndex(cwd = process.cwd(), args = {}) {
     let score = 0;
     const reasons = [];
     const fileText = relativePath.toLowerCase();
+    const symbolMatches = [];
     for (const token of tokens) {
       if (!token) continue;
       if (fileText.includes(token)) {
@@ -569,6 +728,23 @@ export async function queryProjectIndex(cwd = process.cwd(), args = {}) {
         score += 2;
         reasons.push(`import:${token}`);
       }
+      for (const symbol of entry.symbols || []) {
+        const nameText = String(symbol.name || '').toLowerCase();
+        const idText = String(symbol.symbol_id || '').toLowerCase();
+        if (nameText.includes(token) || idText.includes(token)) {
+          score += 6;
+          reasons.push(`symbol:${token}`);
+          symbolMatches.push(symbol);
+        } else if ((symbol.calls || []).some((value) => String(value).toLowerCase().includes(token))) {
+          score += 3;
+          reasons.push(`calls:${token}`);
+          symbolMatches.push(symbol);
+        } else if ((symbol.called_by || []).some((value) => String(value).toLowerCase().includes(token))) {
+          score += 3;
+          reasons.push(`called_by:${token}`);
+          symbolMatches.push(symbol);
+        }
+      }
     }
 
     if (!query) {
@@ -586,7 +762,19 @@ export async function queryProjectIndex(cwd = process.cwd(), args = {}) {
       exports: clipList(entry.exports || [], 6),
       functions: clipList(entry.functions || [], 6),
       classes: clipList(entry.classes || [], 6),
-      imports: clipList(entry.imports || [], 6)
+      imports: clipList(entry.imports || [], 6),
+      symbols: clipList((symbolMatches.length > 0 ? symbolMatches : entry.symbols || []).map((symbol) => ({
+        symbol_id: symbol.symbol_id,
+        name: symbol.name,
+        type: symbol.type,
+        range: symbol.range,
+        signature: symbol.signature,
+        calls: clipList(symbol.calls || [], 8),
+        called_by: clipList(symbol.called_by || [], 8),
+        imports: clipList(symbol.imports || [], 6),
+        writes: clipList(symbol.writes || [], 6),
+        emits: clipList(symbol.emits || [], 6)
+      })), 6)
     });
   }
 
