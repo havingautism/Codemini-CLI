@@ -8,12 +8,14 @@ import {
   Loader2,
   MessageSquareText,
   MoreHorizontal,
+  Network,
   RefreshCw,
   SendHorizontal,
   Sparkles,
 } from "lucide-react";
 import {
   deleteCodeWikiReport,
+  fetchCodeWikiSymbolGraph,
   fetchCodeWikiReports,
   generateCodeWikiReport,
   streamCodeWikiAsk,
@@ -32,6 +34,7 @@ const CODEWIKI_QA_WIDTH_KEY = "codemini:codewiki:qa-width";
 const CODEWIKI_QA_MIN_WIDTH = 320;
 const CODEWIKI_QA_MAX_WIDTH = 760;
 const CODEWIKI_QA_DEFAULT_WIDTH = 420;
+const CODEWIKI_SYMBOL_GRAPH_ENABLED = false;
 
 function getInitialQaWidth() {
   if (typeof window === "undefined") return CODEWIKI_QA_DEFAULT_WIDTH;
@@ -128,6 +131,219 @@ function GenerationProgress({ steps, stageLabel, compact = false }) {
       <p className="mt-2 truncate text-[11px] text-(--text-muted)">
         {progress.detail}
       </p>
+    </div>
+  );
+}
+
+function buildGraphLayout(graph) {
+  const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph?.edges) ? graph.edges : [];
+  const columns = Math.max(1, Math.min(nodes.length <= 6 ? 3 : 5, nodes.length));
+  const nodeWidth = 188;
+  const nodeHeight = 64;
+  const colWidth = 250;
+  const rowHeight = 132;
+  const width = Math.max(520, columns * colWidth + 80);
+  const height = Math.max(380, Math.ceil(nodes.length / columns) * rowHeight + 120);
+  const positioned = nodes.map((node, index) => {
+    const col = index % columns;
+    const row = Math.floor(index / columns);
+    return {
+      ...node,
+      nodeWidth,
+      nodeHeight,
+      x: Math.round(40 + colWidth * col + colWidth / 2),
+      y: 76 + row * rowHeight,
+    };
+  });
+  const byId = new Map(positioned.map((node) => [node.id, node]));
+  const visibleEdges = edges
+    .map((edge) => ({ ...edge, sourceNode: byId.get(edge.source), targetNode: byId.get(edge.target) }))
+    .filter((edge) => edge.sourceNode && edge.targetNode);
+  return { width, height, nodes: positioned, edges: visibleEdges };
+}
+
+function SymbolGraphView({ graph, loading, error, onRefresh }) {
+  const [selectedId, setSelectedId] = useState("");
+  const layout = useMemo(() => buildGraphLayout(graph), [graph]);
+  const selected =
+    layout.nodes.find((node) => node.id === selectedId) || layout.nodes[0] || null;
+
+  useEffect(() => {
+    if (!layout.nodes.length) {
+      if (selectedId) setSelectedId("");
+      return;
+    }
+    if (!selectedId || !layout.nodes.some((node) => node.id === selectedId)) {
+      setSelectedId(layout.nodes[0].id);
+    }
+  }, [layout.nodes, selectedId]);
+
+  if (loading) {
+    return (
+      <div className="h-full flex items-center justify-center text-[13px] text-(--text-muted)">
+        <Loader2 size={16} className="mr-2 animate-spin" />
+        Loading code graph
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center px-8 text-center">
+        <AlertCircle size={28} className="text-(--text-muted)" />
+        <p className="mt-3 text-[13px] text-(--text-secondary)">{error}</p>
+        <button
+          className="mt-4 h-8 rounded-md border border-(--border-default) px-3 text-[12px] text-(--text-primary) hover:bg-(--bg-hover)"
+          onClick={onRefresh}
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+
+  if (!layout.nodes.length) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center px-8 text-center">
+        <Network size={30} className="text-(--text-muted)" />
+        <p className="mt-3 text-[13px] text-(--text-secondary)">
+          No symbols indexed yet.
+        </p>
+        <button
+          className="mt-4 h-8 rounded-md border border-(--border-default) px-3 text-[12px] text-(--text-primary) hover:bg-(--bg-hover)"
+          onClick={onRefresh}
+        >
+          Refresh graph
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full min-h-0 grid grid-cols-[minmax(0,1fr)_320px] bg-(--bg-secondary)">
+      <div className="min-w-0 min-h-0 overflow-auto p-6">
+        <svg
+          className="block max-w-none"
+          width={layout.width}
+          height={layout.height}
+          viewBox={`0 0 ${layout.width} ${layout.height}`}
+          role="img"
+          aria-label="Code symbol graph"
+        >
+          <defs>
+            <marker id="codewiki-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+              <path d="M0,0 L8,4 L0,8 Z" fill="var(--text-muted)" />
+            </marker>
+          </defs>
+          {layout.edges.map((edge, index) => {
+            const sx = edge.sourceNode.x;
+            const sy = edge.sourceNode.y;
+            const tx = edge.targetNode.x;
+            const ty = edge.targetNode.y;
+            const midY = (sy + ty) / 2;
+            return (
+              <path
+                key={`${edge.source}-${edge.target}-${edge.kind}-${index}`}
+                d={`M ${sx} ${sy + 24} C ${sx} ${midY}, ${tx} ${midY}, ${tx} ${ty - 24}`}
+                fill="none"
+                stroke={edge.kind === "calls" ? "var(--accent-blue)" : "var(--text-muted)"}
+                strokeOpacity="0.42"
+                strokeWidth="1.4"
+                markerEnd="url(#codewiki-arrow)"
+              />
+            );
+          })}
+          {layout.nodes.map((node) => {
+            const active = node.id === selected?.id;
+            const fill =
+              node.type === "class"
+                ? "var(--accent-purple-bg)"
+                : node.type === "method"
+                  ? "var(--accent-blue-bg)"
+                  : "var(--bg-primary)";
+            return (
+              <g
+                key={node.id}
+                transform={`translate(${node.x - node.nodeWidth / 2} ${node.y - node.nodeHeight / 2})`}
+                className="cursor-pointer"
+                onClick={() => setSelectedId(node.id)}
+              >
+                <rect
+                  width={node.nodeWidth}
+                  height={node.nodeHeight}
+                  rx="8"
+                  fill={fill}
+                  stroke={active ? "var(--text-primary)" : "var(--border-default)"}
+                  strokeWidth={active ? 2 : 1}
+                />
+                <text x="12" y="23" fill="var(--text-primary)" fontSize="12" fontWeight="600">
+                  {String(node.label || "").slice(0, 20)}
+                </text>
+                <text x="12" y="42" fill="var(--text-muted)" fontSize="10">
+                  {String(`${node.type} · ${String(node.file || "").split("/").pop()}`).slice(0, 28)}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+      <aside className="min-h-0 border-l border-(--border-default) bg-(--bg-primary) p-4 overflow-y-auto">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-[12px] font-medium text-(--text-muted)">Code Graph</p>
+            <p className="mt-1 text-[11px] text-(--text-muted)">
+              {graph?.stats?.displayed_nodes || 0} nodes · {graph?.stats?.displayed_edges || 0} edges
+            </p>
+          </div>
+          <button
+            type="button"
+            className="inline-flex size-7 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+            onClick={onRefresh}
+            aria-label="Refresh graph"
+          >
+            <RefreshCw size={14} />
+          </button>
+        </div>
+        {selected && (
+          <div className="mt-5">
+            <h2 className="break-words text-[15px] font-semibold text-(--text-primary)">
+              {selected.label}
+            </h2>
+            <p className="mt-1 break-words text-[12px] text-(--text-muted)">
+              {selected.file}:{selected.range?.start_line || "?"}-{selected.range?.end_line || "?"}
+            </p>
+            {selected.signature && (
+              <pre className="mt-3 whitespace-pre-wrap rounded-lg border border-(--border-default) bg-(--bg-secondary) p-3 text-[11px] leading-5 text-(--text-secondary)">
+                {selected.signature}
+              </pre>
+            )}
+            {[
+              ["Calls", selected.calls],
+              ["Called by", selected.called_by],
+              ["Writes", selected.writes],
+              ["Emits", selected.emits],
+              ["Imports", selected.imports],
+            ].map(([label, values]) => (
+              <div key={label} className="mt-4">
+                <p className="text-[11px] font-medium uppercase tracking-wide text-(--text-muted)">
+                  {label}
+                </p>
+                <div className="mt-2 flex flex-col gap-1.5">
+                  {(Array.isArray(values) && values.length ? values : ["None"]).map((value) => (
+                    <span
+                      key={`${label}-${value}`}
+                      className="rounded-md border border-(--border-default) bg-(--bg-secondary) px-2 py-1 text-[11px] text-(--text-secondary)"
+                    >
+                      {value}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </aside>
     </div>
   );
 }
@@ -291,7 +507,11 @@ export function CodeWikiPanel({
 }) {
   const [reports, setReports] = useState([]);
   const [selectedFile, setSelectedFile] = useState("");
+  const [activeDoc, setActiveDoc] = useState("report");
   const [loading, setLoading] = useState(true);
+  const [graphLoading, setGraphLoading] = useState(false);
+  const [graphError, setGraphError] = useState("");
+  const [symbolGraph, setSymbolGraph] = useState(null);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
   const [frameError, setFrameError] = useState(false);
@@ -317,14 +537,28 @@ export function CodeWikiPanel({
   );
 
   const reportUrl = selected
-    ? `/api/codewiki/report/${encodeURIComponent(selected.file)}`
+    ? `/api/codewiki/report/${encodeURIComponent(selected.file)}${projectKey ? `?project=${encodeURIComponent(projectKey)}` : ""}`
     : "";
+
+  const loadSymbolGraph = useCallback(async () => {
+    setGraphLoading(true);
+    setGraphError("");
+    try {
+      const data = await fetchCodeWikiSymbolGraph(projectKey);
+      setSymbolGraph(data);
+      if (data?.error) setGraphError(data.error);
+    } catch (err) {
+      setGraphError(err?.message || "Failed to load code graph");
+    } finally {
+      setGraphLoading(false);
+    }
+  }, [projectKey]);
 
   const loadReports = useCallback(async ({ preferNewest = false } = {}) => {
     setLoading(true);
     setError("");
     try {
-      const data = await fetchCodeWikiReports();
+      const data = await fetchCodeWikiReports(projectKey);
       const rawReports = Array.isArray(data?.reports) ? data.reports : [];
       const nextReports = [...rawReports].sort(
         (a, b) => new Date(b.mtime || 0) - new Date(a.mtime || 0),
@@ -341,18 +575,22 @@ export function CodeWikiPanel({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [projectKey]);
 
   useEffect(() => {
     setReports([]);
     setSelectedFile("");
+    setActiveDoc("report");
     setFrameError(false);
     setQuestion("");
     setLastQuestion("");
     setChatMessages([]);
     setAsking(false);
+    setSymbolGraph(null);
+    setGraphError("");
     loadReports({ preferNewest: true });
-  }, [loadReports, projectKey]);
+    if (CODEWIKI_SYMBOL_GRAPH_ENABLED) loadSymbolGraph();
+  }, [loadReports, loadSymbolGraph, projectKey]);
 
   useEffect(() => {
     const el = chatScrollRef.current;
@@ -421,7 +659,7 @@ export function CodeWikiPanel({
     setGenerating(true);
     setSawRuntimeBusy(false);
     try {
-      const result = await generateCodeWikiReport(generationDepth);
+      const result = await generateCodeWikiReport(generationDepth, projectKey);
       if (result?.error) {
         setGenerating(false);
         setError(result.message || t("failedToStart"));
@@ -464,6 +702,7 @@ export function CodeWikiPanel({
       await streamCodeWikiAsk({
         question: trimmed,
         reportFile: selected?.file || "",
+        project: projectKey,
         onEvent: (streamEvent) => {
           setChatMessages((current) =>
             current.map((message) =>
@@ -503,7 +742,7 @@ export function CodeWikiPanel({
     setDeletingReport(true);
     setError("");
     try {
-      const result = await deleteCodeWikiReport(pendingDelete.file);
+      const result = await deleteCodeWikiReport(pendingDelete.file, projectKey);
       if (result?.error) {
         setError(result.message || t("failedToDelete"));
       } else {
@@ -579,19 +818,51 @@ export function CodeWikiPanel({
 
           <div className="flex items-center justify-between px-4 py-3">
             <span className="text-[12px] font-medium text-(--text-muted)">
-              {t("report")}
+              Documents
             </span>
             <button
               className="inline-flex size-7 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
-              onClick={() => loadReports({ preferNewest: true })}
-              title={t("refreshReport")}
-              aria-label={t("refreshReport")}
+              onClick={() => {
+                loadReports({ preferNewest: true });
+                if (CODEWIKI_SYMBOL_GRAPH_ENABLED) loadSymbolGraph();
+              }}
+              title="Refresh"
+              aria-label="Refresh"
             >
               <RefreshCw size={14} />
             </button>
           </div>
 
           <div className="flex-1 overflow-y-auto px-2 pb-4">
+            {CODEWIKI_SYMBOL_GRAPH_ENABLED && (
+              <div
+                className={cn(
+                  "group mb-2 w-full rounded-lg px-3 py-2 text-left hover:bg-(--bg-hover) cursor-pointer",
+                  activeDoc === "graph" && "bg-(--bg-active)",
+                )}
+                onClick={() => {
+                  setActiveDoc("graph");
+                  if (!symbolGraph && !graphLoading) loadSymbolGraph();
+                }}
+              >
+                <span className="flex items-start gap-2 text-[13px] text-(--text-primary)">
+                  <Network
+                    size={14}
+                    className="shrink-0 mt-0.5 text-(--text-muted)"
+                  />
+                  <span className="min-w-0 flex-1">代码关系</span>
+                  {graphLoading && (
+                    <Loader2 size={13} className="mt-0.5 shrink-0 animate-spin text-(--text-muted)" />
+                  )}
+                </span>
+                <span className="mt-1 block truncate pl-6 text-[11px] text-(--text-muted)">
+                  {symbolGraph?.stats
+                    ? `${symbolGraph.stats.displayed_nodes || 0} nodes · ${symbolGraph.stats.displayed_edges || 0} edges`
+                    : "Symbol Graph"}
+                </span>
+              </div>
+            )}
+
             {loading && (
               <div className="px-3 py-6 text-[12px] text-(--text-muted) inline-flex items-center gap-2">
                 <Loader2 size={14} className="animate-spin" />
@@ -611,9 +882,12 @@ export function CodeWikiPanel({
                   key={report.file}
                   className={cn(
                     "group w-full rounded-lg px-3 py-2 text-left hover:bg-(--bg-hover) cursor-pointer",
-                    selectedFile === report.file && "bg-(--bg-active)",
+                    activeDoc === "report" &&
+                      selectedFile === report.file &&
+                      "bg-(--bg-active)",
                   )}
                   onClick={() => {
+                    setActiveDoc("report");
                     setSelectedFile(report.file);
                     setFrameError(false);
                   }}
@@ -692,7 +966,16 @@ export function CodeWikiPanel({
           )}
 
           <div className="flex-1 min-h-0 p-4">
-            {!selected && !loading ? (
+            {CODEWIKI_SYMBOL_GRAPH_ENABLED && activeDoc === "graph" ? (
+              <div className="h-full min-h-[420px] overflow-hidden rounded-xl border border-(--border-default) bg-(--bg-secondary)">
+                <SymbolGraphView
+                  graph={symbolGraph}
+                  loading={graphLoading}
+                  error={graphError}
+                  onRefresh={loadSymbolGraph}
+                />
+              </div>
+            ) : !selected && !loading ? (
               <div className="h-full min-h-[420px] rounded-xl border border-dashed border-(--border-default) bg-(--bg-secondary) flex flex-col items-center justify-center text-center px-8">
                 <BookOpenText size={34} className="text-(--text-muted)" />
                 <h2 className="mt-4 text-[18px] font-semibold text-(--text-primary)">

@@ -12,7 +12,9 @@ import { RuntimeBridge } from './lib/runtime-bridge.js';
 import { installSkillSource, listSkillEntries } from '../src/commands/skill.js';
 import { computeFileSha256, readSkillRegistry, upsertSkillRegistryEntry, writeSkillRegistry } from '../src/core/skill-registry.js';
 import { getReplyLanguage } from '../src/core/reply-language.js';
-import { getBaseConfigDir, getProjectSkillsDir, getSkillsDir } from '../src/core/paths.js';
+import { getBaseConfigDir, getFileIndexPath, getProjectSkillsDir, getSkillsDir } from '../src/core/paths.js';
+import { initializeProjectIndex } from '../src/core/project-index.js';
+import { INDEX_SKIP_DIRS } from '../src/core/constants.js';
 import { VERSION } from '../src/core/version.js';
 
 const GENERAL_PROJECT_DIR = (() => {
@@ -273,6 +275,16 @@ function normalizeProjectPath(value) {
   return path.resolve(raw);
 }
 
+async function resolveCodeWikiProjectDir(url, fallbackDir) {
+  const requested = normalizeProjectPath(url.searchParams.get('project') || '');
+  if (!requested) return fallbackDir;
+  try {
+    const stat = await fs.stat(requested);
+    if (stat.isDirectory()) return requested;
+  } catch {}
+  return fallbackDir;
+}
+
 function tryParseJson(value) {
   try { return JSON.parse(String(value || '')); } catch { return null; }
 }
@@ -329,6 +341,159 @@ function codeWikiReportTitle(fileName) {
   return String(fileName || '')
     .replace(/-project-requirements\.html$/, '')
     .replace(/-/g, ' ');
+}
+
+function clipGraphList(values, max = 12) {
+  return [...new Set((Array.isArray(values) ? values : []).filter(Boolean))].slice(0, max);
+}
+
+const CODEWIKI_GRAPH_NOISY_NAMES = new Set([
+  '__init__',
+  '__enter__',
+  '__exit__',
+  '__getitem__',
+  '__setitem__',
+  '__delitem__',
+  '__contains__',
+  '__len__',
+  '__iter__',
+  '__next__',
+  '__call__',
+  'get',
+  'set',
+  'add',
+  'run',
+  'close',
+  'open',
+  'read',
+  'write',
+  'send',
+  'recv',
+  'poll',
+  'update',
+  'copy',
+  'size',
+  'apply'
+]);
+
+function normalizeGraphPath(value = '') {
+  return String(value || '').replace(/\\/g, '/').replace(/^\.\/+/, '');
+}
+
+function isDependencyLikeGraphPath(file = '') {
+  const normalized = normalizeGraphPath(file);
+  const segments = normalized.split('/').filter(Boolean);
+  return segments.some(
+    (segment) =>
+      INDEX_SKIP_DIRS.has(segment) ||
+      /^venv[-_]/i.test(segment) ||
+      /\.egg-info$/i.test(segment) ||
+      /^python\d+(?:\.\d+)?$/i.test(segment)
+  );
+}
+
+function isNoisyGraphSymbol(symbol = {}) {
+  const name = String(symbol.name || symbol.symbol_id || '').split('.').pop();
+  if (!name) return true;
+  if (CODEWIKI_GRAPH_NOISY_NAMES.has(name)) return true;
+  return /^__.*__$/.test(name);
+}
+
+function sourceRootScore(file = '') {
+  const normalized = normalizeGraphPath(file);
+  if (normalized.startsWith('src/')) return 8;
+  if (normalized.startsWith('codemini-web/client/src/')) return 8;
+  if (normalized.startsWith('codemini-web/server.js')) return 7;
+  if (normalized.startsWith('codemini-web/')) return 5;
+  if (normalized.startsWith('tests/')) return 1;
+  return 3;
+}
+
+function buildCodeWikiSymbolGraph(fileIndex, { maxNodes = 42 } = {}) {
+  const files = Array.isArray(fileIndex?.files) ? fileIndex.files : [];
+  const sourceFiles = files.filter((entry) => !isDependencyLikeGraphPath(entry.file));
+  const symbols = sourceFiles
+    .flatMap((entry) =>
+      (Array.isArray(entry.symbols) ? entry.symbols : []).map((symbol) => ({
+        ...symbol,
+        file: symbol.file || entry.file
+      }))
+    )
+    .filter((symbol) => !isDependencyLikeGraphPath(symbol.file) && !isNoisyGraphSymbol(symbol));
+  const ranked = symbols
+    .map((symbol) => {
+      const calls = Array.isArray(symbol.calls) ? symbol.calls.length : 0;
+      const calledBy = Array.isArray(symbol.called_by) ? symbol.called_by.length : 0;
+      const writes = Array.isArray(symbol.writes) ? symbol.writes.length : 0;
+      const emits = Array.isArray(symbol.emits) ? symbol.emits.length : 0;
+      const typeBoost = symbol.type === 'class' ? 8 : symbol.type === 'method' ? 4 : 2;
+      return {
+        symbol,
+        score: sourceRootScore(symbol.file) + typeBoost + calledBy * 4 + calls * 2 + writes * 2 + emits * 2
+      };
+    })
+    .sort((a, b) => b.score - a.score || String(a.symbol.symbol_id).localeCompare(String(b.symbol.symbol_id)))
+    .slice(0, maxNodes)
+    .map((item) => item.symbol);
+
+  const byId = new Map(ranked.map((symbol) => [String(symbol.symbol_id || ''), symbol]));
+  const byShortName = new Map();
+  for (const symbol of ranked) {
+    const shortName = String(symbol.name || '').split('.').pop();
+    if (!shortName) continue;
+    if (!byShortName.has(shortName)) byShortName.set(shortName, []);
+    byShortName.get(shortName).push(symbol);
+  }
+
+  const nodes = ranked.map((symbol) => ({
+    id: symbol.symbol_id,
+    label: symbol.name || symbol.symbol_id,
+    type: symbol.type || 'symbol',
+    file: symbol.file || '',
+    range: symbol.range || null,
+    signature: symbol.signature || '',
+    calls: clipGraphList(symbol.calls || [], 8),
+    called_by: clipGraphList(symbol.called_by || [], 8),
+    imports: clipGraphList(symbol.imports || [], 6),
+    writes: clipGraphList(symbol.writes || [], 6),
+    emits: clipGraphList(symbol.emits || [], 6)
+  }));
+
+  const edgeMap = new Map();
+  const addEdge = (source, target, kind, label = '') => {
+    if (!source || !target || source === target) return;
+    if (!byId.has(source) || !byId.has(target)) return;
+    const key = `${source}->${target}:${kind}`;
+    if (!edgeMap.has(key)) edgeMap.set(key, { source, target, kind, label });
+  };
+
+  for (const symbol of ranked) {
+    const source = String(symbol.symbol_id || '');
+    for (const call of symbol.calls || []) {
+      const shortName = String(call || '').split('.').pop();
+      for (const target of byShortName.get(shortName) || []) {
+        addEdge(source, target.symbol_id, 'calls', call);
+      }
+    }
+    for (const caller of symbol.called_by || []) {
+      addEdge(caller, source, 'called_by');
+    }
+  }
+
+  const edges = [...edgeMap.values()].slice(0, 80);
+
+  return {
+    updatedAt: fileIndex?.updatedAt || '',
+    stats: {
+      files: files.length,
+      source_files: sourceFiles.length,
+      symbols: symbols.length,
+      displayed_nodes: nodes.length,
+      displayed_edges: edges.length
+    },
+    nodes,
+    edges
+  };
 }
 
 function commonPathPrefix(paths) {
@@ -545,7 +710,8 @@ async function main() {
 
     // ── CodeWiki / project requirements reports ──
     if (req.method === 'GET' && url.pathname === '/api/codewiki/reports') {
-      const requirementsDir = getRequirementsDir(currentProjectDir);
+      const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
+      const requirementsDir = getRequirementsDir(codeWikiProjectDir);
       try {
         const entries = await fs.readdir(requirementsDir, { withFileTypes: true });
         const reports = [];
@@ -569,13 +735,35 @@ async function main() {
       return;
     }
 
+    if (req.method === 'GET' && url.pathname === '/api/codewiki/symbol-graph') {
+      try {
+        const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
+        const initialized = await initializeProjectIndex(codeWikiProjectDir);
+        const projectRoot = initialized?.projectRoot || codeWikiProjectDir;
+        const fileIndexPath = getFileIndexPath(projectRoot);
+        const fileIndex = JSON.parse(await fs.readFile(fileIndexPath, 'utf8'));
+        const maxNodes = Math.max(12, Math.min(80, Number(url.searchParams.get('max_nodes') || 42)));
+        jsonResponse(res, buildCodeWikiSymbolGraph(fileIndex, { maxNodes }));
+      } catch (err) {
+        jsonResponse(res, {
+          updatedAt: '',
+          stats: { files: 0, symbols: 0, displayed_nodes: 0, displayed_edges: 0 },
+          nodes: [],
+          edges: [],
+          error: err?.message || String(err)
+        });
+      }
+      return;
+    }
+
     if (req.method === 'GET' && url.pathname.startsWith('/api/codewiki/report/')) {
       const fileName = decodeURIComponent(url.pathname.slice('/api/codewiki/report/'.length));
       if (!isCodeWikiReportFile(fileName)) {
         jsonResponse(res, { error: true, message: 'Invalid report file' }, 400);
         return;
       }
-      const requirementsDir = path.resolve(getRequirementsDir(currentProjectDir));
+      const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
+      const requirementsDir = path.resolve(getRequirementsDir(codeWikiProjectDir));
       const reportPath = path.resolve(requirementsDir, fileName);
       if (!reportPath.startsWith(`${requirementsDir}${path.sep}`)) {
         jsonResponse(res, { error: true, message: 'Invalid report path' }, 403);
@@ -591,7 +779,8 @@ async function main() {
         jsonResponse(res, { error: true, message: 'Invalid report file' }, 400);
         return;
       }
-      const requirementsDir = path.resolve(getRequirementsDir(currentProjectDir));
+      const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
+      const requirementsDir = path.resolve(getRequirementsDir(codeWikiProjectDir));
       const reportPath = path.resolve(requirementsDir, fileName);
       if (!reportPath.startsWith(`${requirementsDir}${path.sep}`)) {
         jsonResponse(res, { error: true, message: 'Invalid report path' }, 403);
@@ -616,6 +805,15 @@ async function main() {
       const normalizedDepth = ['fast', 'standard', 'deep'].includes(String(depth || '').toLowerCase())
         ? String(depth).toLowerCase()
         : 'standard';
+      const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
+      if (codeWikiProjectDir !== currentProjectDir) {
+        const { runtime } = await buildRuntimeForSession({
+          model: bridge.getState().model,
+          projectDir: codeWikiProjectDir
+        });
+        await bridge.switchRuntime(runtime);
+        currentProjectDir = process.cwd();
+      }
       const result = bridge.handleSubmit(`/project-requirements --${normalizedDepth}`);
       jsonResponse(res, result);
       return;
@@ -643,13 +841,14 @@ async function main() {
         jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
         return;
       }
+      const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
       const reportPath = selectedReport
-        ? path.join(getRequirementsDir(currentProjectDir), selectedReport)
-        : getRequirementsDir(currentProjectDir);
+        ? path.join(getRequirementsDir(codeWikiProjectDir), selectedReport)
+        : getRequirementsDir(codeWikiProjectDir);
       const prompt = buildCodeWikiAskPrompt({
         question,
         reportPath,
-        projectDir: currentProjectDir,
+        projectDir: codeWikiProjectDir,
         replyLanguage: bridge.getState()?.replyLanguage
       });
 

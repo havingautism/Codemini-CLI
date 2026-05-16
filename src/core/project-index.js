@@ -164,8 +164,9 @@ function matchesGitignoreRule(rule, relativePath, isDirectory) {
 function shouldIgnorePath(relativePath, isDirectory, gitignoreRules = []) {
   const normalizedPath = normalizeRelativePath(relativePath);
   if (!normalizedPath) return false;
-  const topName = normalizedPath.split('/')[0];
-  if (topName && SKIP_DIRS.has(topName)) return true;
+  const segments = normalizedPath.split('/').filter(Boolean);
+  if (segments.some((segment) => SKIP_DIRS.has(segment))) return true;
+  if (segments.some((segment) => /^venv[-_]/i.test(segment) || /\.egg-info$/i.test(segment))) return true;
   let ignored = false;
   for (const rule of gitignoreRules) {
     if (!matchesGitignoreRule(rule, normalizedPath, isDirectory)) continue;
