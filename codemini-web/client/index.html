@@ -7,11 +7,23 @@
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <script>
       (() => {
-        const stored = localStorage.getItem('codemini-theme');
+        const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+        function applyTheme() {
+          const stored = localStorage.getItem('codemini-theme');
+          const isAuto = !stored || stored === 'auto';
+          const prefersDark = mq && mq.matches;
+          const resolved = isAuto ? (prefersDark ? 'dark' : 'light') : stored;
+          document.documentElement.dataset.theme = resolved;
+        }
+        applyTheme();
         const palette = localStorage.getItem('codemini-theme-palette') || 'default';
-        const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-        document.documentElement.dataset.theme = stored || (prefersDark ? 'dark' : 'light');
         document.documentElement.dataset.palette = palette;
+        if (mq) {
+          mq.addEventListener('change', () => {
+            const stored = localStorage.getItem('codemini-theme');
+            if (!stored || stored === 'auto') applyTheme();
+          });
+        }
       })();
     </script>
   </head>

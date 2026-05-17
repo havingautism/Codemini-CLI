@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Plus,
   Sun,
   Moon,
+  Monitor,
   Settings,
   Folder,
   ChevronDown,
@@ -122,6 +123,7 @@ export function Sidebar({
   onNewSession,
   onSwitchSession,
   onToggleTheme,
+  onSetTheme,
   onOpenSettings,
   onOpenSkills,
   onOpenSouls,
@@ -142,6 +144,29 @@ export function Sidebar({
     if (typeof document === "undefined") return "default";
     return document.documentElement.dataset.palette || "default";
   });
+  const [resolvedTheme, setResolvedTheme] = useState(() => {
+    if (typeof document === "undefined") return "light";
+    return document.documentElement.dataset.theme || "light";
+  });
+  const [themeMode, setThemeMode] = useState(() => {
+    if (typeof window === "undefined") return "auto";
+    return localStorage.getItem("codemini-theme") || "auto";
+  });
+  useEffect(() => {
+    const mq = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+    const sync = () => {
+      setResolvedTheme(document.documentElement.dataset.theme || "light");
+      setThemeMode(localStorage.getItem("codemini-theme") || "auto");
+    };
+    const observer = new MutationObserver(sync);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    if (mq) mq.addEventListener("change", sync);
+    return () => {
+      observer.disconnect();
+      if (mq) mq.removeEventListener("change", sync);
+    };
+  }, []);
+  const isDark = resolvedTheme === "dark";
 
   const allSessions = Array.isArray(sessions) ? sessions : [];
   const currentSession = allSessions.find((s) => s.id === currentSessionId);
@@ -169,10 +194,6 @@ export function Sidebar({
       return next;
     });
   };
-
-  const isDark =
-    typeof document !== "undefined" &&
-    document.documentElement.dataset.theme === "dark";
 
   const setThemePalette = (palette) => {
     const next = THEME_PALETTES.some((item) => item.id === palette)
@@ -668,18 +689,48 @@ export function Sidebar({
               ))}
             </PopoverContent>
           </Popover>
-          <button
-            className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
-            onClick={onToggleTheme}
-            title={isDark ? t("lightMode") : t("darkMode")}
-            aria-label={isDark ? t("switchToLightMode") : t("switchToDarkMode")}
-          >
-            {isDark ? (
-              <Moon size={15} strokeWidth={1.8} />
-            ) : (
-              <Sun size={15} strokeWidth={1.8} />
-            )}
-          </button>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
+                title={t("switchTheme")}
+                aria-label={t("switchTheme")}
+              >
+                {isDark ? (
+                  <Moon size={15} strokeWidth={1.8} />
+                ) : (
+                  <Sun size={15} strokeWidth={1.8} />
+                )}
+              </button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="center"
+              side="top"
+              className="w-28 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+            >
+              {[
+                { mode: "light", icon: Sun, label: t("lightMode") },
+                { mode: "dark", icon: Moon, label: t("darkMode") },
+                { mode: "auto", icon: Monitor, label: t("autoModeTheme") },
+              ].map(({ mode, icon: Icon, label }) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className={cn(
+                      "w-full rounded-md px-2.5 py-1.5 text-left text-[13px] flex items-center justify-between hover:bg-(--bg-hover)",
+                      themeMode === mode && "text-(--text-primary) font-medium",
+                    )}
+                    onClick={() => onSetTheme(mode)}
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <Icon size={13} strokeWidth={1.8} />
+                      <span>{label}</span>
+                    </span>
+                    {themeMode === mode && <Check size={13} />}
+                  </button>
+                ))}
+            </PopoverContent>
+          </Popover>
           <button
             className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
             onClick={onOpenSettings}
