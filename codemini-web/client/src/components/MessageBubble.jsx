@@ -595,7 +595,82 @@ function MessageActionButton({
   );
 }
 
-function MessageActions({ text, align = "left", className }) {
+function formatUsageNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "0";
+  if (number >= 1_000_000) return `${(number / 1_000_000).toFixed(number >= 10_000_000 ? 0 : 1)}M`;
+  if (number >= 1000) return `${(number / 1000).toFixed(number >= 10_000 ? 0 : 1)}k`;
+  return String(Math.round(number));
+}
+
+function getUsageSummary(usage) {
+  if (!usage || typeof usage !== "object") return null;
+  const total = Number(usage.totalTokens || 0);
+  const input = Number(usage.inputTokens || 0);
+  const output = Number(usage.outputTokens || 0);
+  const cached = Number(usage.cachedInputTokens || 0);
+  const cacheWrite = Number(usage.cacheWriteInputTokens || 0);
+  const reasoning = Number(usage.reasoningOutputTokens || 0);
+  const requests = Number(usage.requests || 0);
+  if (![total, input, output, cached, cacheWrite, reasoning].some((value) => Number.isFinite(value) && value > 0)) return null;
+  const cacheBase = total || input + output;
+  const cachePct = cacheBase > 0 ? (cached / cacheBase) * 100 : 0;
+  const labelParts = [`${formatUsageNumber(total || input + output)} ${t("usageTokens")}`];
+  if (cached > 0 || input > 0) {
+    labelParts.push(`${t("usageCache")} ${formatUsageNumber(cached)} (${cachePct.toFixed(1)}%)`);
+  }
+  const detailParts = [
+    `${t("usageInput")} ${formatUsageNumber(input)}`,
+    `${t("usageOutput")} ${formatUsageNumber(output)}`,
+    `${t("usageTotal")} ${formatUsageNumber(total || input + output)}`,
+  ];
+  if (cached > 0 || input > 0) detailParts.push(`${t("usageCacheHit")} ${formatUsageNumber(cached)} (${cachePct.toFixed(1)}%)`);
+  if (cacheWrite > 0) detailParts.push(`${t("usageCacheWrite")} ${formatUsageNumber(cacheWrite)}`);
+  if (reasoning > 0) detailParts.push(`${t("usageReasoning")} ${formatUsageNumber(reasoning)}`);
+  if (requests > 1) detailParts.push(t("usageRequests").replace("{{count}}", requests));
+  return {
+    label: labelParts.join(" · "),
+    details: detailParts.join(" · "),
+  };
+}
+
+function UsageBadge({ usage }) {
+  const summary = getUsageSummary(usage);
+  if (!summary) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex h-8 max-w-full items-center truncate rounded-md px-1.5 text-[11px] text-(--text-muted)">
+          {summary.label}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>
+        {summary.details}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function isMessageComplete(message, renderGroups = []) {
+  if (message?.planStep && !["done", "failed"].includes(String(message.planStep.status || ""))) {
+    return false;
+  }
+  const groups = Array.isArray(renderGroups) ? renderGroups : [];
+  const hasStreamingSegment = (segment) => {
+    if (!segment || typeof segment !== "object") return false;
+    if (segment.isStreaming) return true;
+    if (segment.type === "tools") {
+      return (segment.cards || []).some((card) => card.status === "running");
+    }
+    if (segment.type === "process") {
+      return (segment.groups || []).some(hasStreamingSegment);
+    }
+    return false;
+  };
+  return !groups.some(hasStreamingSegment);
+}
+
+function MessageActions({ text, usage = null, align = "left", className }) {
   const [copied, setCopied] = useState(false);
 
   async function handleCopy() {
@@ -622,6 +697,7 @@ function MessageActions({ text, align = "left", className }) {
       >
         <Copy size={17} />
       </MessageActionButton>
+      <UsageBadge usage={usage} />
     </div>
   );
 }
@@ -636,6 +712,7 @@ export function MessageBubble({ message, skills = [] }) {
     text: legacyText,
     timestamp,
     planStep,
+    usage,
   } = message;
   const style = ROLE_STYLES[role] || ROLE_STYLES.general;
   const ts = timestamp ? formatTimestamp(timestamp) : "";
@@ -700,6 +777,7 @@ export function MessageBubble({ message, skills = [] }) {
         ""
       : "";
   const messageText = role === "you" ? youText : getMessageText(message);
+  const messageComplete = role === "you" || isMessageComplete(message, renderGroups);
 
   return (
     <div
@@ -715,11 +793,14 @@ export function MessageBubble({ message, skills = [] }) {
             {youText && <UserText text={youText} skills={skills} />}
             {startupTodos && <TodoList todos={startupTodos} />}
           </div>
-          <MessageActions
-            text={messageText}
-            align="right"
-            className="mt-1 min-h-8 opacity-0 pointer-events-none transition-opacity group-hover/message:pointer-events-auto group-hover/message:opacity-100 group-focus-within/message:pointer-events-auto group-focus-within/message:opacity-100"
-          />
+          {messageComplete && (
+            <MessageActions
+              text={messageText}
+              usage={usage}
+              align="right"
+              className="mt-1 min-h-8 opacity-0 pointer-events-none transition-opacity group-hover/message:pointer-events-auto group-hover/message:opacity-100 group-focus-within/message:pointer-events-auto group-focus-within/message:opacity-100"
+            />
+          )}
         </div>
       ) : (
         <div>
@@ -830,7 +911,9 @@ export function MessageBubble({ message, skills = [] }) {
               })}
             </div>
           )}
-          <MessageActions text={messageText} className="mt-2 min-h-8" />
+          {messageComplete && (
+            <MessageActions text={messageText} usage={usage} className="mt-2 min-h-8" />
+          )}
         </div>
       )}
     </div>

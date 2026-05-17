@@ -223,6 +223,7 @@ function buildPayload({ model, temperature, messages, tools, stream = false }) {
   };
   if (stream) {
     payload.stream = true;
+    payload.stream_options = { include_usage: true };
   }
   if (Array.isArray(tools) && tools.length > 0) {
     payload.tools = tools;
@@ -416,13 +417,25 @@ export async function createChatCompletionStream({
       externalSignal.addEventListener('abort', onAbort, { once: true });
     }
   }
+  const url = buildChatCompletionsUrl(baseUrl);
   const payload = buildPayload({ model, temperature, messages, tools, stream: true });
-  const response = await fetchWithRetry(buildChatCompletionsUrl(baseUrl), {
+  const buildRequest = (bodyPayload) => ({
     method: 'POST',
     headers: createHeaders(apiKey),
-    body: JSON.stringify(payload),
+    body: JSON.stringify(bodyPayload),
     signal: controller.signal
-  }, { maxRetries });
+  });
+  let response = await fetchWithRetry(url, buildRequest(payload), { maxRetries });
+  if (!response.ok && payload.stream_options) {
+    const errorText = await response.text().catch(() => '');
+    if (/\b(stream_options|include_usage|unsupported|unknown|unrecognized|forbidden)\b/i.test(errorText)) {
+      const fallbackPayload = { ...payload };
+      delete fallbackPayload.stream_options;
+      response = await fetchWithRetry(url, buildRequest(fallbackPayload), { maxRetries });
+    } else {
+      throw new Error(`Gateway error ${response.status}: ${errorText || response.statusText}`);
+    }
+  }
   if (!response.ok || !response.body) {
     const text = await response.text().catch(() => '');
     throw new Error(`Gateway error ${response.status}: ${text || response.statusText}`);

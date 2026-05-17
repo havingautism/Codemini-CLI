@@ -137,6 +137,28 @@ function finishThinkingSegments(segments) {
   ));
 }
 
+function normalizeUsage(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  const out = {};
+  for (const key of ['inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'reasoningOutputTokens', 'requests']) {
+    const value = Number(usage?.[key]);
+    if (Number.isFinite(value)) out[key] = Math.max(0, Math.round(value));
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function mergeUsage(left, right) {
+  const a = normalizeUsage(left);
+  const b = normalizeUsage(right);
+  if (!a) return b;
+  if (!b) return a;
+  const out = {};
+  for (const key of ['inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'reasoningOutputTokens', 'requests']) {
+    out[key] = Math.max(0, Math.round(Number(a[key] || 0) + Number(b[key] || 0)));
+  }
+  return out;
+}
+
 function getReasoningTextFromDetails(details) {
   if (!Array.isArray(details)) return '';
   return details
@@ -350,6 +372,7 @@ function createPlanTranscriptMessage(block, suffix) {
     segments: Array.isArray(block.segments) ? block.segments : [],
     skillBadges: [],
     fileChanges: [],
+    usage: normalizeUsage(block.usage),
     planStep: {
       step: block.step,
       total: block.total,
@@ -601,6 +624,7 @@ export function AppProvider({ children }) {
             };
             processed.push(assistantGroup);
           }
+          assistantGroup.usage = mergeUsage(assistantGroup.usage, msg.usage);
           const reasoningText = getMessageReasoningText(msg);
           if (reasoningText) {
             assistantGroup.segments.push({
@@ -704,9 +728,17 @@ export function AppProvider({ children }) {
               const text = stripPlanProgressText(event.text);
               const segs = ensureTextSegment(withReasoning.segments);
               const lastIdx = segs.length - 1;
-              return { ...withReasoning, segments: finishThinkingSegments(segs).map((seg, i) => i === lastIdx && seg.type === 'text' ? { ...seg, text, isStreaming: false } : seg) };
+              return {
+                ...withReasoning,
+                usage: mergeUsage(withReasoning.usage, event.usage || event.assistantMessage?.usage),
+                segments: finishThinkingSegments(segs).map((seg, i) => i === lastIdx && seg.type === 'text' ? { ...seg, text, isStreaming: false } : seg)
+              };
             }
-            return { ...withReasoning, segments: finishThinkingSegments(withReasoning.segments).map(seg => seg.type === 'text' ? { ...seg, isStreaming: false } : seg) };
+            return {
+              ...withReasoning,
+              usage: mergeUsage(withReasoning.usage, event.usage || event.assistantMessage?.usage),
+              segments: finishThinkingSegments(withReasoning.segments).map(seg => seg.type === 'text' ? { ...seg, isStreaming: false } : seg)
+            };
           }) }));
         }
         break;

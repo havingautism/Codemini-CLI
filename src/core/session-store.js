@@ -41,6 +41,28 @@ function normalizeWhitespace(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function sanitizeUsage(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  const out = {};
+  const copyNumber = (from, to = from) => {
+    const value = Number(usage?.[from]);
+    if (Number.isFinite(value)) out[to] = Math.max(0, Math.round(value));
+  };
+  copyNumber('inputTokens');
+  copyNumber('outputTokens');
+  copyNumber('totalTokens');
+  copyNumber('cachedInputTokens');
+  copyNumber('cacheWriteInputTokens');
+  copyNumber('reasoningOutputTokens');
+  copyNumber('requests');
+  if (Array.isArray(usage.raw) && usage.raw.length > 0) {
+    out.raw = usage.raw.filter((item) => item && typeof item === 'object').map((item) => ({ ...item }));
+  } else if (usage.raw && typeof usage.raw === 'object') {
+    out.raw = [{ ...usage.raw }];
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 function stripMarkdown(value) {
   return normalizeWhitespace(value)
     .replace(/```[\s\S]*?```/g, ' ')
@@ -99,6 +121,8 @@ function sanitizeMessage(msg) {
     const toolCalls = msg.tool_calls.map(sanitizeToolCall).filter(Boolean);
     if (toolCalls.length > 0) out.tool_calls = toolCalls;
   }
+  const usage = sanitizeUsage(msg?.usage);
+  if (usage) out.usage = usage;
 
   if (Array.isArray(msg?.plan_transcript)) {
     out.plan_transcript = msg.plan_transcript

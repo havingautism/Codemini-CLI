@@ -93,6 +93,15 @@ export const zh = {
   processed: '已处理',
   processedFor: '已处理 {{duration}}',
   processedDetails: '{{thoughts}} 段思考，{{tools}} 个工具',
+  usageTokens: 'tokens',
+  usageCache: '缓存',
+  usageInput: '输入',
+  usageOutput: '输出',
+  usageTotal: '总计',
+  usageCacheHit: '缓存命中',
+  usageCacheWrite: '缓存写入',
+  usageReasoning: '推理',
+  usageRequests: '{{count}} 次请求',
 
   // Sidebar
   newChat: '新对话',

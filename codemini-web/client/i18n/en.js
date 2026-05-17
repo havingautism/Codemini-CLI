@@ -84,6 +84,15 @@ export const en = {
   processed: 'Processed',
   processedFor: 'Processed for {{duration}}',
   processedDetails: '{{thoughts}} thoughts, {{tools}} tools',
+  usageTokens: 'tokens',
+  usageCache: 'cache',
+  usageInput: 'input',
+  usageOutput: 'output',
+  usageTotal: 'total',
+  usageCacheHit: 'cache hit',
+  usageCacheWrite: 'cache write',
+  usageReasoning: 'reasoning',
+  usageRequests: '{{count}} requests',
 
   // Sidebar
   newChat: 'New Chat',

@@ -131,6 +131,28 @@ function hasThinkingSegment(segments) {
   return (Array.isArray(segments) ? segments : []).some((seg) => seg.type === 'thinking' && String(seg.text || '').trim());
 }
 
+function normalizeUiUsage(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  const out = {};
+  for (const key of ['inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'reasoningOutputTokens', 'requests']) {
+    const value = Number(usage?.[key]);
+    if (Number.isFinite(value)) out[key] = Math.max(0, Math.round(value));
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function mergeUiUsage(left, right) {
+  const a = normalizeUiUsage(left);
+  const b = normalizeUiUsage(right);
+  if (!a) return b;
+  if (!b) return a;
+  const out = {};
+  for (const key of ['inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'reasoningOutputTokens', 'requests']) {
+    out[key] = Math.max(0, Math.round(Number(a[key] || 0) + Number(b[key] || 0)));
+  }
+  return out;
+}
+
 function createPlanStepUiMessage(event) {
   return {
     id: `plan-step-${event.step}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -313,7 +335,8 @@ export class RuntimeBridge {
         if (this.#uiActiveMsgId) {
           this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
             ...message,
-            segments: finishThinkingSegments(message.segments)
+            segments: finishThinkingSegments(message.segments),
+            usage: mergeUiUsage(message.usage, event.usage || event.assistantMessage?.usage) || message.usage || null
           }));
         }
         break;
@@ -582,6 +605,7 @@ export class RuntimeBridge {
         toolDurationMs: Number.isFinite(Number(m.tool_duration_ms)) ? Number(m.tool_duration_ms) : null,
         toolStatus: m.tool_status || null,
         planTranscript: Array.isArray(m.plan_transcript) ? m.plan_transcript : null,
+        usage: normalizeUiUsage(m.usage),
         at: m.at || null
       }));
   }
