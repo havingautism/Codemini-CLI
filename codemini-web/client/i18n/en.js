@@ -24,6 +24,9 @@ export const en = {
   toolDone: 'Done',
   toolError: 'Error',
   toolBlocked: 'Blocked',
+  toolGroupTools: 'Ran {{count}} tools',
+  toolGroupCommands: 'Ran {{count}} commands',
+  toolGroupExpand: 'Click to expand',
 
   planTitle: 'Execution Plan',
   planDone: 'Done',
@@ -74,6 +77,13 @@ export const en = {
 
   contextUsage: 'Context',
   fileChanges: 'File Changes',
+  thought: 'Thought process',
+  thoughtFor: 'Thought for {{duration}}',
+  thinkingNow: 'Thinking...',
+  thoughtForNow: 'Thinking for {{duration}}',
+  processed: 'Processed',
+  processedFor: 'Processed for {{duration}}',
+  processedDetails: '{{thoughts}} thoughts, {{tools}} tools',
 
   // Sidebar
   newChat: 'New Chat',

@@ -2892,9 +2892,23 @@ async function askModel({
         current.at = new Date().toISOString();
         if (persistSession) scheduleSessionSave();
       }
+    } else if (event?.type === 'assistant:reasoning_delta') {
+      if (activeAssistantIndex >= 0 && session.messages[activeAssistantIndex]) {
+        const current = session.messages[activeAssistantIndex];
+        const now = new Date();
+        if (!current.reasoning_started_at) current.reasoning_started_at = now.toISOString();
+        current.reasoning_content = `${current.reasoning_content || ''}${event.text || ''}`;
+        current.reasoning_duration_ms = Math.max(
+          0,
+          now.getTime() - Date.parse(current.reasoning_started_at)
+        );
+        current.at = now.toISOString();
+        if (persistSession) scheduleSessionSave();
+      }
     } else if (event?.type === 'assistant:response') {
       if (activeAssistantIndex >= 0 && session.messages[activeAssistantIndex]) {
         const current = session.messages[activeAssistantIndex];
+        const now = new Date();
         current.content = event.assistantMessage?.content ?? event.text ?? current.content;
         if (typeof event.assistantMessage?.reasoning_content === 'string' && event.assistantMessage.reasoning_content) {
           current.reasoning_content = event.assistantMessage.reasoning_content;
@@ -2905,7 +2919,14 @@ async function askModel({
         if (Array.isArray(event.assistantMessage?.tool_calls) && event.assistantMessage.tool_calls.length > 0) {
           current.tool_calls = event.assistantMessage.tool_calls;
         }
-        current.at = new Date().toISOString();
+        if ((current.reasoning_content || current.reasoning_details) && current.reasoning_started_at) {
+          current.reasoning_ended_at = current.reasoning_ended_at || now.toISOString();
+          current.reasoning_duration_ms = Math.max(
+            Number(current.reasoning_duration_ms || 0),
+            Date.parse(current.reasoning_ended_at) - Date.parse(current.reasoning_started_at)
+          );
+        }
+        current.at = now.toISOString();
         if (persistSession) scheduleSessionSave();
       } else {
         const assistantMessage = event.assistantMessage && typeof event.assistantMessage === 'object'
@@ -3003,6 +3024,10 @@ async function askModel({
         onTextDelta: (delta) => {
           startAssistantStream();
           wrappedAgentEvent({ type: 'assistant:delta', text: delta });
+        },
+        onReasoningDelta: (delta) => {
+          startAssistantStream();
+          wrappedAgentEvent({ type: 'assistant:reasoning_delta', text: delta });
         },
         onToolCallDelta: (toolCall) => {
           startAssistantStream();
@@ -3131,7 +3156,7 @@ async function runSubAgentTask({
     }
     if (
       role !== 'summarizer' &&
-      ['assistant:start', 'assistant:delta', 'assistant:response', 'assistant:tool_call_delta'].includes(String(evt?.type || ''))
+      ['assistant:start', 'assistant:delta', 'assistant:reasoning_delta', 'assistant:response', 'assistant:tool_call_delta'].includes(String(evt?.type || ''))
     ) {
       return;
     }

@@ -92,6 +92,70 @@ function appendDeltaToSegments(segments, delta) {
   return [...segs.slice(0, -1), { ...last, text: (last.text || '') + delta, isStreaming: true }];
 }
 
+function appendThinkingToSegments(segments, delta, isStreaming = true) {
+  const value = String(delta || '');
+  if (!value) return segments || [];
+  const segs = Array.isArray(segments) ? segments : [];
+  const now = new Date().toISOString();
+  const nowMs = Date.parse(now);
+  const last = segs[segs.length - 1];
+  if (last?.type === 'thinking') {
+    const startedAt = last.startedAt || now;
+    return [...segs.slice(0, -1), {
+      ...last,
+      text: `${last.text || ''}${value}`,
+      isStreaming,
+      startedAt,
+      endedAt: isStreaming ? null : (last.endedAt || now),
+      durationMs: Math.max(Number(last.durationMs || 0), nowMs - Date.parse(startedAt))
+    }];
+  }
+  return [...segs, { type: 'thinking', text: value, isStreaming, startedAt: now, endedAt: isStreaming ? null : now, durationMs: isStreaming ? 0 : null }];
+}
+
+function resolveThinkingDurationMs(seg, endedAt) {
+  const explicit = Number(seg?.durationMs);
+  const startMs = Date.parse(seg?.startedAt || '');
+  const endMs = Date.parse(seg?.endedAt || endedAt || '');
+  const measured = Number.isFinite(startMs) && Number.isFinite(endMs) ? Math.max(0, endMs - startMs) : null;
+  if (Number.isFinite(explicit) && measured != null) return Math.max(explicit, measured);
+  if (Number.isFinite(explicit)) return Math.max(0, explicit);
+  return measured;
+}
+
+function finishThinkingSegments(segments) {
+  const endedAt = new Date().toISOString();
+  return (Array.isArray(segments) ? segments : []).map((seg) => (
+    seg.type === 'thinking'
+      ? {
+          ...seg,
+          isStreaming: false,
+          endedAt: seg.endedAt || endedAt,
+          durationMs: resolveThinkingDurationMs(seg, endedAt)
+        }
+      : seg
+  ));
+}
+
+function getReasoningTextFromDetails(details) {
+  if (!Array.isArray(details)) return '';
+  return details
+    .map((block) => {
+      if (!block || typeof block !== 'object') return '';
+      if (block.type === 'thinking') return block.thinking || block.text || '';
+      if (block.type === 'reasoning' || block.type === 'reasoning_content') return block.text || block.reasoning_content || '';
+      if (block.type === 'redacted_thinking') return '[redacted thinking]';
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function getMessageReasoningText(msg) {
+  return String(msg?.reasoningContent || msg?.reasoning_content || '').trim()
+    || getReasoningTextFromDetails(msg?.reasoningDetails || msg?.reasoning_details).trim();
+}
+
 function stripPlanProgressText(text) {
   return String(text || '').replace(/(?:^|\n)\[plan\]\s+Step\s+\d+\/\d+\s+->[^\n]*\n?/g, '');
 }
@@ -338,6 +402,7 @@ export function AppProvider({ children }) {
   const upsertRuntimeActivity = useCallback((activity) => {
     const key = activity.key || activity.id || 'runtime';
     const id = `runtime-${key}`;
+    const clearAfterMs = Number(activity.clearAfterMs);
     const next = {
       id,
       key,
@@ -357,7 +422,11 @@ export function AppProvider({ children }) {
         ...prev.runtimeActivities.filter((item) => item.id !== id)
       ].slice(0, 4)
     }));
-    if (next.status !== 'running' && !next.sticky) clearRuntimeActivityLater(id);
+    if (next.status !== 'running' && !next.sticky) {
+      clearRuntimeActivityLater(id, Number.isFinite(clearAfterMs) ? clearAfterMs : 6500);
+    } else if (next.status === 'running' && Number.isFinite(clearAfterMs)) {
+      clearRuntimeActivityLater(id, clearAfterMs);
+    }
   }, [clearRuntimeActivityLater]);
 
   const setActiveMsg = useCallback((id) => {
@@ -532,6 +601,17 @@ export function AppProvider({ children }) {
             };
             processed.push(assistantGroup);
           }
+          const reasoningText = getMessageReasoningText(msg);
+          if (reasoningText) {
+            assistantGroup.segments.push({
+              type: 'thinking',
+              text: reasoningText,
+              isStreaming: false,
+              startedAt: msg.reasoningStartedAt || msg.at || null,
+              endedAt: msg.reasoningEndedAt || msg.at || null,
+              durationMs: Number.isFinite(Number(msg.reasoningDurationMs)) ? Number(msg.reasoningDurationMs) : null,
+            });
+          }
           if (msg.content) assistantGroup.segments.push({ type: 'text', text: msg.content, isStreaming: false });
           if (msg.toolCalls && msg.toolCalls.length) {
             assistantGroup.segments.push({
@@ -600,19 +680,33 @@ export function AppProvider({ children }) {
         break;
       }
 
+      case 'assistant:reasoning_delta': {
+        if (activeId && event.text) {
+          setState(prev => ({ ...prev, messages: prev.messages.map(m =>
+            m.id === activeId ? { ...m, segments: appendThinkingToSegments(m.segments, event.text, true) } : m
+          ) }));
+        }
+        update({ stage: 'thinking', live: true, stageLabel: t('thinking') });
+        break;
+      }
+
       case 'assistant:tool_call_delta': break;
 
       case 'assistant:response': {
         if (activeId) {
           setState(prev => ({ ...prev, messages: prev.messages.map(m => {
             if (m.id !== activeId) return m;
+            const reasoningText = getMessageReasoningText(event.assistantMessage);
+            const withReasoning = reasoningText && !(Array.isArray(m.segments) ? m.segments : []).some((seg) => seg.type === 'thinking' && String(seg.text || '').trim())
+              ? { ...m, segments: appendThinkingToSegments(m.segments, reasoningText, false) }
+              : m;
             if (event.text) {
               const text = stripPlanProgressText(event.text);
-              const segs = ensureTextSegment(m.segments);
+              const segs = ensureTextSegment(withReasoning.segments);
               const lastIdx = segs.length - 1;
-              return { ...m, segments: segs.map((seg, i) => i === lastIdx && seg.type === 'text' ? { ...seg, text, isStreaming: false } : seg) };
+              return { ...withReasoning, segments: finishThinkingSegments(segs).map((seg, i) => i === lastIdx && seg.type === 'text' ? { ...seg, text, isStreaming: false } : seg) };
             }
-            return { ...m, segments: m.segments.map(seg => seg.type === 'text' ? { ...seg, isStreaming: false } : seg) };
+            return { ...withReasoning, segments: finishThinkingSegments(withReasoning.segments).map(seg => seg.type === 'text' ? { ...seg, isStreaming: false } : seg) };
           }) }));
         }
         break;
@@ -722,7 +816,7 @@ export function AppProvider({ children }) {
             if (m.id !== msgId) return m;
             return {
               ...m,
-              segments: m.segments.map(seg => seg.type === 'text' ? { ...seg, isStreaming: false } : seg),
+              segments: finishThinkingSegments(m.segments).map(seg => seg.type === 'text' ? { ...seg, isStreaming: false } : seg),
               planStep: {
                 ...(m.planStep || {}),
                 status: event.status || 'done',
@@ -820,11 +914,19 @@ export function AppProvider({ children }) {
         break;
 
       case 'dream:auto':
+        {
+          const currentDream = stateRef.current.runtimeActivities.find((activity) => activity.key === 'dream');
+          const finishedRecently = currentDream
+            && currentDream.status !== 'running'
+            && Date.now() - Date.parse(currentDream.timestamp || '') < 10000;
+          if (finishedRecently) break;
+        }
         upsertRuntimeActivity({
           key: 'dream',
           status: 'running',
           emoji: '💤',
-          label: t('runtimeActivityDreamRunning')
+          label: t('runtimeActivityDreamRunning'),
+          clearAfterMs: 30 * 60 * 1000
         });
         addMessage({ role: 'system', text: 'Dream triggered...', timestamp: new Date().toISOString() });
         break;
@@ -834,7 +936,8 @@ export function AppProvider({ children }) {
           status: event.report?.ok === false ? 'error' : 'done',
           emoji: event.report?.ok === false ? '⚠️' : '🌙',
           label: event.report?.ok === false ? t('runtimeActivityDreamError') : t('runtimeActivityDreamDone'),
-          detail: event.report?.error || ''
+          detail: event.report?.error || '',
+          clearAfterMs: 2500
         });
         addMessage({ role: 'system', text: 'Dream complete', timestamp: new Date().toISOString() });
         break;
@@ -850,7 +953,11 @@ export function AppProvider({ children }) {
           pendingChangesRef.current = [];
         }
         if (activeId) {
-          setState(prev => ({ ...prev, messages: prev.messages.map(m => m.id === activeId ? { ...m, segments: m.segments.map(seg => seg.type === 'text' ? { ...seg, isStreaming: false } : seg) } : m) }));
+          setState(prev => ({ ...prev, messages: prev.messages.map(m => (
+            m.id === activeId
+              ? { ...m, segments: finishThinkingSegments(m.segments).map(seg => seg.type === 'text' ? { ...seg, isStreaming: false } : seg) }
+              : m
+          )) }));
         }
         if (result.type === 'system' && result.text) {
           const activity = getRuntimeActivityFromSystemText(result.text);

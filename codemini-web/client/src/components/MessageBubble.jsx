@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
 import { StreamdownRenderer } from "./StreamdownRenderer";
 import { TodoList } from "./TodoList";
@@ -14,7 +14,10 @@ import {
 import {
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Copy,
+  Brain,
   Loader2,
   Moon,
   XCircle,
@@ -65,7 +68,161 @@ const SKILL_BADGE_STYLES = {
   auto: "bg-(--accent-purple-bg) text-(--accent-purple)",
 };
 
-const TOOL_COLLAPSE_THRESHOLD = 3;
+const TOOL_COLLAPSE_THRESHOLD = 1;
+const COLLAPSE_ROW_CLASS =
+  "flex w-full cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover)";
+const COLLAPSE_CHEVRON_CLASS = "size-[14px] shrink-0 text-(--text-muted)";
+const COLLAPSE_ICON_CLASS =
+  "flex size-[18px] shrink-0 items-center justify-center";
+
+function formatThoughtDuration(ms) {
+  if (!Number.isFinite(Number(ms))) return "";
+  const total = Math.max(0, Math.round(Number(ms) / 1000));
+  if (total < 60) return `${total}s`;
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+function getThoughtElapsed(segment, tick) {
+  if (!segment.isStreaming && Number.isFinite(Number(segment.durationMs))) {
+    return Math.max(0, Number(segment.durationMs));
+  }
+  const start = Date.parse(segment.startedAt || "");
+  if (!Number.isFinite(start)) return null;
+  const end = segment.isStreaming ? tick : Date.parse(segment.endedAt || "");
+  if (!Number.isFinite(end)) return null;
+  return Math.max(0, end - start);
+}
+
+function ThoughtBlock({ segment }) {
+  const [open, setOpen] = useState(false);
+  const [tick, setTick] = useState(Date.now());
+
+  useEffect(() => {
+    if (!segment.isStreaming) return undefined;
+    const timer = window.setInterval(() => setTick(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [segment.isStreaming]);
+
+  const elapsed = formatThoughtDuration(getThoughtElapsed(segment, tick));
+  const label = segment.isStreaming
+    ? t("thinkingNow")
+    : elapsed
+      ? t("thoughtFor").replace("{{duration}}", elapsed)
+      : t("thought");
+
+  return (
+    <div className="my-3 text-(--text-secondary)">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className={cn(COLLAPSE_ROW_CLASS, "font-medium text-(--text-muted) hover:text-(--text-primary)")}
+        aria-expanded={open}
+      >
+        <ChevronRight
+          size={14}
+          className={cn(COLLAPSE_CHEVRON_CLASS, "transition-transform", open && "rotate-90")}
+        />
+        <span className={COLLAPSE_ICON_CLASS}>
+          {segment.isStreaming ? (
+            <Loader2 size={14} className="animate-spin text-(--accent-cyan)" />
+          ) : (
+            <Brain size={15} />
+          )}
+        </span>
+        <span>{label}</span>
+        {segment.isStreaming && elapsed && (
+          <span className="text-(--text-muted)">{elapsed}</span>
+        )}
+      </button>
+      {open && (
+        <StreamdownRenderer
+          text={segment.text}
+          streaming={segment.isStreaming}
+          className="mt-2 pl-[52px] text-[13px] italic leading-6 text-(--text-secondary)"
+        />
+      )}
+    </div>
+  );
+}
+
+function getToolDurationMs(cards = []) {
+  return cards.reduce((sum, card) => {
+    const value = Number(card?.durationMs);
+    return Number.isFinite(value) ? sum + Math.max(0, value) : sum;
+  }, 0);
+}
+
+function getThinkingDurationMs(segment) {
+  const value = Number(segment?.durationMs);
+  if (Number.isFinite(value)) return Math.max(0, value);
+  return getThoughtElapsed(segment, Date.now()) || 0;
+}
+
+function isProcessGroup(group) {
+  return group?.type === "thinking" || group?.type === "tools";
+}
+
+function isProcessGroupRunning(group) {
+  if (group?.type === "thinking") return group.isStreaming;
+  if (group?.type === "tools") {
+    return (group.cards || []).some((card) => card.status === "running");
+  }
+  return false;
+}
+
+function getProcessGroupItemCount(group) {
+  if (group?.type === "thinking") return 1;
+  if (group?.type === "tools") return Math.max(1, group.cards?.length || 0);
+  return 0;
+}
+
+function getProcessGroupDurationMs(group) {
+  if (group?.type === "thinking") return getThinkingDurationMs(group);
+  if (group?.type === "tools") return getToolDurationMs(group.cards || []);
+  return 0;
+}
+
+function shouldCollapseProcessGroups(groups) {
+  if (!groups.length || groups.some(isProcessGroupRunning)) return false;
+  const itemCount = groups.reduce((sum, group) => sum + getProcessGroupItemCount(group), 0);
+  const toolCount = groups.reduce((sum, group) => (
+    group.type === "tools" ? sum + Math.max(1, group.cards?.length || 0) : sum
+  ), 0);
+  return itemCount >= 4 || (toolCount >= 2 && groups.length >= 3);
+}
+
+function collapseProcessGroups(groups, { disabled = false } = {}) {
+  if (disabled) return groups;
+  const collapsed = [];
+  let pending = [];
+
+  const flush = () => {
+    if (!pending.length) return;
+    if (shouldCollapseProcessGroups(pending)) {
+      collapsed.push({
+        type: "process",
+        groups: pending,
+        durationMs: pending.reduce((sum, group) => sum + getProcessGroupDurationMs(group), 0),
+      });
+    } else {
+      collapsed.push(...pending);
+    }
+    pending = [];
+  };
+
+  for (const group of groups) {
+    if (isProcessGroup(group)) {
+      pending.push(group);
+      continue;
+    }
+    flush();
+    collapsed.push(group);
+  }
+  flush();
+  return collapsed;
+}
 
 function getDreamNotice(text) {
   const value = String(text || "");
@@ -149,40 +306,115 @@ function ToolGroup({ cards }) {
   const [expanded, setExpanded] = useState(false);
   const total = cards.length;
   const hasRunningTool = cards.some((card) => card.status === "running");
-  const shouldCollapse = total > TOOL_COLLAPSE_THRESHOLD && !expanded;
-  const hiddenCount = total - TOOL_COLLAPSE_THRESHOLD;
-  const visibleCards = shouldCollapse
-    ? cards.slice(total - TOOL_COLLAPSE_THRESHOLD)
-    : cards;
+  const shouldUseSummaryHeader = total > TOOL_COLLAPSE_THRESHOLD;
+  const runCount = cards.filter((card) => {
+    const name = String(card.name || "").toLowerCase();
+    return name === "run" || name.startsWith("run(");
+  }).length;
+  const summaryLabel =
+    runCount === total
+      ? t("toolGroupCommands").replace("{{count}}", total)
+      : t("toolGroupTools").replace("{{count}}", total);
 
   return (
-    <div className="space-y-2 my-2">
-      {shouldCollapse && hiddenCount > 0 && (
+    <div className="my-2">
+      {shouldUseSummaryHeader && (
         <button
           type="button"
-          className="block w-full py-1.5 px-3 text-[11px] text-(--accent-blue) cursor-pointer text-left bg-transparent border-0"
-          onClick={() => setExpanded(true)}
+          className={COLLAPSE_ROW_CLASS}
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
         >
-          +{hiddenCount} more tool calls
+          {expanded ? (
+            <ChevronDown size={14} className={COLLAPSE_CHEVRON_CLASS} />
+          ) : (
+            <ChevronRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
+          )}
+          <span className={COLLAPSE_ICON_CLASS}>
+            <span
+              className={cn(
+                "inline-block size-1.5 rounded-full",
+                hasRunningTool
+                  ? "animate-pulse bg-(--accent-blue)"
+                  : "bg-(--accent-green)",
+              )}
+            />
+          </span>
+          <span className="font-medium">{summaryLabel}</span>
+          {/* {!expanded && (
+            <span className="text-(--text-muted)">{t("toolGroupExpand")}</span>
+          )} */}
         </button>
       )}
-      {visibleCards.map((card) => (
-        <ToolCard key={card.id} card={card} />
-      ))}
+      {(!shouldUseSummaryHeader || expanded) && (
+        <div
+          className={cn(
+            "space-y-1",
+            shouldUseSummaryHeader &&
+              "relative ml-4.5 pl-6 mt-2 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)",
+          )}
+        >
+          {cards.map((card) => (
+            <ToolCard key={card.id} card={card} />
+          ))}
+        </div>
+      )}
       {hasRunningTool && (
         <div className="flex items-center gap-2 px-3 py-1.5 text-[11px] text-(--text-muted)">
           <Spinner className="text-(--accent-cyan)" />
           <span>{t("tooling")}</span>
         </div>
       )}
-      {expanded && total > TOOL_COLLAPSE_THRESHOLD && (
-        <button
-          type="button"
-          className="block w-full py-1.5 px-3 text-[11px] text-(--accent-blue) cursor-pointer text-left bg-transparent border-0"
-          onClick={() => setExpanded(false)}
-        >
-          Collapse {hiddenCount} older tool calls
-        </button>
+    </div>
+  );
+}
+
+function ProcessGroup({ group }) {
+  const [expanded, setExpanded] = useState(false);
+  const duration = formatThoughtDuration(group.durationMs);
+  const label = duration
+    ? t("processedFor").replace("{{duration}}", duration)
+    : t("processed");
+  const toolCount = group.groups.reduce((sum, item) => (
+    item.type === "tools" ? sum + Math.max(1, item.cards?.length || 0) : sum
+  ), 0);
+  const thoughtCount = group.groups.filter((item) => item.type === "thinking").length;
+
+  return (
+    <div className="my-3">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className={COLLAPSE_ROW_CLASS}
+        aria-expanded={expanded}
+      >
+        {expanded ? (
+          <ChevronDown size={14} className={COLLAPSE_CHEVRON_CLASS} />
+        ) : (
+          <ChevronRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
+        )}
+        <span className={COLLAPSE_ICON_CLASS}>
+          <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
+        </span>
+        <span className="font-medium">{label}</span>
+        <span className="min-w-0 truncate text-(--text-muted)">
+          {t("processedDetails")
+            .replace("{{thoughts}}", thoughtCount)
+            .replace("{{tools}}", toolCount)}
+        </span>
+      </button>
+      {expanded && (
+        <div className="relative ml-4.5 mt-2 space-y-1 pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
+          {group.groups.map((item, index) => {
+            if (item.type === "thinking") {
+              return <ThoughtBlock key={`p-th-${index}`} segment={item} />;
+            }
+            if (item.type === "tools") {
+              return <ToolGroup key={`p-tg-${index}`} cards={item.cards} />;
+            }
+            return null;
+          })}
+        </div>
       )}
     </div>
   );
@@ -235,6 +467,11 @@ function buildRenderGroups(segments) {
         });
       }
       // Empty text between tools: skip, keep accumulating
+    } else if (seg.type === "thinking") {
+      if (seg.text) {
+        flushTools();
+        groups.push({ type: "thinking", ...seg });
+      }
     }
   }
   flushTools();
@@ -358,11 +595,7 @@ function MessageActionButton({
   );
 }
 
-function MessageActions({
-  text,
-  align = "left",
-  className,
-}) {
+function MessageActions({ text, align = "left", className }) {
   const [copied, setCopied] = useState(false);
 
   async function handleCopy() {
@@ -393,10 +626,7 @@ function MessageActions({
   );
 }
 
-export function MessageBubble({
-  message,
-  skills = [],
-}) {
+export function MessageBubble({ message, skills = [] }) {
   const {
     role,
     segments,
@@ -411,7 +641,11 @@ export function MessageBubble({
   const ts = timestamp ? formatTimestamp(timestamp) : "";
 
   const renderGroups = useMemo(
-    () => buildRenderGroups(segments || []),
+    () => {
+      const groups = buildRenderGroups(segments || []);
+      const hasStreamingText = groups.some((group) => group.type === "text" && group.isStreaming);
+      return collapseProcessGroups(groups, { disabled: hasStreamingText });
+    },
     [segments],
   );
   const mergedFileChanges = useMemo(
@@ -444,7 +678,10 @@ export function MessageBubble({
     }
 
     return (
-      <div data-message-id={message.id} className="py-2 px-6 text-xs text-(--text-muted) text-center">
+      <div
+        data-message-id={message.id}
+        className="py-2 px-6 text-xs text-(--text-muted) text-center"
+      >
         <div className="max-w-[860px] mx-auto px-3 py-1">
           {legacyText}
           {startupTodos && <TodoList todos={startupTodos} />}
@@ -512,6 +749,12 @@ export function MessageBubble({
             }
             if (group.type === "tools") {
               return <ToolGroup key={`tg-${i}`} cards={group.cards} />;
+            }
+            if (group.type === "thinking") {
+              return <ThoughtBlock key={`th-${i}`} segment={group} />;
+            }
+            if (group.type === "process") {
+              return <ProcessGroup key={`pg-${i}`} group={group} />;
             }
             return null;
           })}
@@ -587,10 +830,7 @@ export function MessageBubble({
               })}
             </div>
           )}
-          <MessageActions
-            text={messageText}
-            className="mt-2 min-h-8"
-          />
+          <MessageActions text={messageText} className="mt-2 min-h-8" />
         </div>
       )}
     </div>

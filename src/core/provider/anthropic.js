@@ -405,6 +405,7 @@ export async function createChatCompletionStream({
   temperature = 0.2,
   tools,
   onTextDelta,
+  onReasoningDelta,
   onToolCallDelta,
   timeoutMs = 1800000,
   maxTokens = 4096,
@@ -478,8 +479,10 @@ export async function createChatCompletionStream({
 
     if (delta.type === 'thinking_delta') {
       const current = thinkingBlocksByIndex.get(index) || { type: 'thinking', thinking: '' };
-      current.thinking = `${current.thinking || ''}${String(delta.thinking || '')}`;
+      const thinkingDelta = String(delta.thinking || '');
+      current.thinking = `${current.thinking || ''}${thinkingDelta}`;
       thinkingBlocksByIndex.set(index, current);
+      if (thinkingDelta && onReasoningDelta) onReasoningDelta(thinkingDelta);
       continue;
     }
 

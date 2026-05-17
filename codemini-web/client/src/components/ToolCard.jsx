@@ -1,20 +1,31 @@
 import { useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  FilePenLine,
+  FileText,
+  Folder,
+  Globe,
+  Search,
+  Terminal,
+  Trash2,
+  Wrench,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatDuration } from "../../utils/time.js";
 
 const TOOL_ICONS = {
-  read: "\u{1F4D6}",
-  edit: "\u{270F}\u{FE0F}",
-  write: "\u{1F4DD}",
-  delete: "\u{1F5D1}\u{FE0F}",
-  run: "\u{2699}\u{FE0F}",
-  grep: "\u{1F50D}",
-  glob: "\u{1F4C2}",
-  list: "\u{1F4C1}",
-  web_fetch: "\u{1F310}",
-  web_search: "\u{1F50E}",
-  default: "\u{1F527}",
+  read: FileText,
+  edit: FilePenLine,
+  write: FilePenLine,
+  delete: Trash2,
+  run: Terminal,
+  grep: Search,
+  glob: Folder,
+  list: Folder,
+  web_fetch: Globe,
+  web_search: Search,
+  default: Wrench,
 };
 
 function extractToolName(name) {
@@ -64,49 +75,217 @@ function formatDetail(value) {
   }
 }
 
+function parseMaybeJson(value) {
+  if (!value) return null;
+  if (typeof value === "object") return value;
+  if (typeof value !== "string") return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function basename(pathText) {
+  const value = String(pathText || "").replace(/\\/g, "/");
+  return value.split("/").filter(Boolean).pop() || value;
+}
+
+function getNestedEdit(args) {
+  if (!args || typeof args !== "object") return {};
+  return args.edit && typeof args.edit === "object" ? args.edit : args;
+}
+
+function getFileToolMeta(toolName, args, result, summary) {
+  if (!["edit", "write", "delete"].includes(toolName)) return null;
+  const parsedArgs = parseMaybeJson(args) || {};
+  const parsedResult = parseMaybeJson(result) || {};
+  const edit = getNestedEdit(parsedArgs);
+  const pathText =
+    parsedResult.path ||
+    parsedArgs.path ||
+    parsedArgs.file ||
+    parsedArgs.file_path ||
+    "";
+  const added = Number(
+    parsedResult.lines_added ?? parsedResult.linesAdded ?? 0,
+  );
+  const removed = Number(
+    parsedResult.lines_removed ?? parsedResult.linesRemoved ?? 0,
+  );
+  const oldText = edit.old_text ?? edit.old_string ?? parsedArgs.old_text;
+  const newText =
+    edit.new_text ??
+    edit.new_string ??
+    edit.new_content ??
+    edit.content ??
+    parsedArgs.new_text ??
+    parsedArgs.content;
+  const changedLine = Number(parsedResult.changed_line || parsedArgs.line || 0);
+  return {
+    path: String(pathText || extractKeyArg(args, toolName) || ""),
+    action: String(
+      parsedResult.action || (toolName === "write" ? "write" : toolName),
+    ),
+    added,
+    removed,
+    changedLine,
+    diffPreview: String(parsedResult.diff_preview || ""),
+    oldText: typeof oldText === "string" ? oldText : "",
+    newText: typeof newText === "string" ? newText : "",
+    summary: String(summary || ""),
+  };
+}
+
+function buildPreviewLines(meta) {
+  if (!meta) return [];
+  if (meta.oldText || meta.newText) {
+    const oldLines = meta.oldText
+      ? meta.oldText.split(/\r?\n/).slice(0, 6)
+      : [];
+    const newLines = meta.newText
+      ? meta.newText.split(/\r?\n/).slice(0, 6)
+      : [];
+    return [
+      ...oldLines.map((text, idx) => ({
+        type: "remove",
+        number: meta.changedLine ? meta.changedLine + idx : "",
+        text,
+      })),
+      ...newLines.map((text, idx) => ({
+        type: "add",
+        number: meta.changedLine ? meta.changedLine + idx : "",
+        text,
+      })),
+    ].slice(0, 10);
+  }
+  const preview =
+    meta.diffPreview || meta.summary.split("\n").slice(1).join("\n");
+  return String(preview || "")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .slice(0, 8)
+    .map((line) => {
+      const match = line.match(/^(\d+)\|\s?(.*)$/);
+      return {
+        type: "add",
+        number: match ? match[1] : "",
+        text: match ? match[2] : line,
+      };
+    });
+}
+
+function FilePreview({ meta }) {
+  const lines = buildPreviewLines(meta);
+  if (!lines.length) return null;
+  return (
+    <div className="mt-2 overflow-hidden rounded-md border border-(--border-default) bg-(--bg-secondary)">
+      <div className="flex items-center gap-2 border-b border-(--border-default) px-3 py-2 font-mono text-xs">
+        <span className="min-w-0 flex-1 truncate text-(--text-primary)">
+          {basename(meta.path) || "file"}
+        </span>
+        {meta.added > 0 && (
+          <span className="text-(--accent-green)">+{meta.added}</span>
+        )}
+        {meta.removed > 0 && (
+          <span className="text-(--accent-red)">-{meta.removed}</span>
+        )}
+      </div>
+      <div className="max-h-64 overflow-auto font-mono text-xs leading-6">
+        {lines.map((line, idx) => (
+          <div
+            key={idx}
+            className={cn(
+              "grid grid-cols-[42px_1fr] border-l-3 px-0",
+              line.type === "remove"
+                ? "border-(--accent-red) bg-(--accent-red-bg)"
+                : "border-(--accent-green) bg-(--accent-green-bg)",
+            )}
+          >
+            <span className="select-none pr-3 text-right text-(--text-muted)">
+              {line.number}
+            </span>
+            <span className="min-w-0 overflow-hidden text-ellipsis whitespace-pre text-(--text-primary)">
+              {line.text || " "}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 const STATUS_STYLES = {
   running: "bg-[var(--accent-blue)] animate-pulse",
   done: "bg-[var(--accent-green)]",
   error: "bg-[var(--accent-red)]",
   blocked: "bg-[var(--accent-orange)]",
 };
+const TOOL_ROW_CLASS =
+  "flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-[13px] hover:bg-[var(--bg-hover)]";
+const TOOL_CHEVRON_CLASS = "size-[14px] shrink-0 text-(--text-muted)";
+const TOOL_ICON_CLASS =
+  "flex size-[18px] shrink-0 items-center justify-center rounded text-(--text-muted)";
 
 export function ToolCard({ card }) {
   const [open, setOpen] = useState(false);
   const toolName = extractToolName(card.name);
-  const icon = TOOL_ICONS[toolName] || TOOL_ICONS.default;
+  const Icon = TOOL_ICONS[toolName] || TOOL_ICONS.default;
   const keyArg = extractKeyArg(card.arguments, toolName);
-  const nameText =
-    keyArg && !String(card.name).includes("(")
-      ? `${card.name}(${keyArg})`
-      : card.name;
+  const fileMeta = getFileToolMeta(
+    toolName,
+    card.arguments,
+    card.result,
+    card.summary,
+  );
+  const nameText = fileMeta?.path || keyArg || card.name;
 
   const sections = [];
   if (card.arguments != null && card.arguments !== "")
     sections.push(["Arguments", formatDetail(card.arguments)]);
-  if (card.summary) sections.push(["Summary", String(card.summary)]);
-  if (card.result) sections.push(["Result", formatDetail(card.result)]);
+  if (card.summary && !fileMeta)
+    sections.push(["Summary", String(card.summary)]);
+  if (card.result && !fileMeta)
+    sections.push(["Result", formatDetail(card.result)]);
 
   return (
     <div
       className={cn(
-        "border border-[var(--border-default)] rounded-lg bg-[var(--bg-primary)] dark:bg-[var(--bg-secondary)] my-2 overflow-hidden",
-        card.status === "error" && "border-[var(--accent-red)]/40",
-        card.status === "blocked" && "border-[var(--accent-orange)]/40",
+        "overflow-hidden bg-transparent",
+        card.status === "error" &&
+          "rounded-md ring-1 ring-[var(--accent-red)]/25",
+        card.status === "blocked" &&
+          "rounded-md ring-1 ring-[var(--accent-orange)]/25",
       )}
     >
-      {/* Header */}
       <div
-        className="flex items-center gap-2 px-3 py-2 cursor-pointer select-none text-[13px] hover:bg-[var(--bg-hover)]"
+        className={TOOL_ROW_CLASS}
         onClick={() => setOpen(!open)}
       >
-        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        <span className="w-[18px] h-[18px] flex items-center justify-center text-xs rounded shrink-0">
-          {icon}
+        {open ? (
+          <ChevronDown size={14} className={TOOL_CHEVRON_CLASS} />
+        ) : (
+          <ChevronRight size={14} className={TOOL_CHEVRON_CLASS} />
+        )}
+        <span className={TOOL_ICON_CLASS}>
+          <Icon size={14} />
         </span>
-        <span className="font-mono text-xs font-semibold text-[var(--text-primary)] min-w-0 overflow-hidden text-ellipsis whitespace-nowrap flex-1">
+        <span className="font-medium capitalize text-(--text-secondary)">
+          {toolName}
+        </span>
+        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xs font-normal text-(--text-muted)">
           {nameText}
         </span>
+        {fileMeta?.added > 0 && (
+          <span className="font-mono text-xs text-(--accent-green)">
+            +{fileMeta.added}
+          </span>
+        )}
+        {fileMeta?.removed > 0 && (
+          <span className="font-mono text-xs text-(--accent-red)">
+            -{fileMeta.removed}
+          </span>
+        )}
         {card.durationMs != null && (
           <span className="text-[11px] text-[var(--text-muted)] font-mono ml-auto shrink-0">
             {formatDuration(card.durationMs)}
@@ -120,10 +299,18 @@ export function ToolCard({ card }) {
         />
       </div>
 
-      {/* Collapsible body */}
       {open && (
-        <div className="px-3 py-2.5 border-t border-[var(--border-default)]">
-          {sections.length === 0 ? (
+        <div className="pb-2 pl-8 pr-2">
+          {fileMeta ? (
+            <>
+              {fileMeta.summary && (
+                <div className="text-xs text-(--text-muted) pt-1">
+                  {fileMeta.summary.split("\n")[0]}
+                </div>
+              )}
+              <FilePreview meta={fileMeta} />
+            </>
+          ) : sections.length === 0 ? (
             <div className="text-xs text-[var(--text-muted)]">
               No details yet
             </div>
@@ -139,13 +326,6 @@ export function ToolCard({ card }) {
               </div>
             ))
           )}
-        </div>
-      )}
-
-      {/* Summary when collapsed */}
-      {card.summary && !open && (
-        <div className="px-3 py-2 text-xs text-[var(--text-secondary)]">
-          {card.summary}
         </div>
       )}
     </div>

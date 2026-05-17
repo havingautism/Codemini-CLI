@@ -28,6 +28,9 @@ export const zh = {
   toolDone: '完成',
   toolError: '错误',
   toolBlocked: '已阻止',
+  toolGroupTools: '已运行 {{count}} 个工具',
+  toolGroupCommands: '已运行 {{count}} 条命令',
+  toolGroupExpand: '点击展开',
 
   // Plan
   planTitle: '执行计划',
@@ -83,6 +86,13 @@ export const zh = {
 
   // File changes
   fileChanges: '文件变更',
+  thought: '思考过程',
+  thoughtFor: '思考了 {{duration}}',
+  thinkingNow: '正在思考中...',
+  thoughtForNow: '已思考 {{duration}}',
+  processed: '已处理',
+  processedFor: '已处理 {{duration}}',
+  processedDetails: '{{thoughts}} 段思考，{{tools}} 个工具',
 
   // Sidebar
   newChat: '新对话',

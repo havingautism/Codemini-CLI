@@ -398,6 +398,7 @@ export async function createChatCompletionStream({
   temperature = 0.2,
   tools,
   onTextDelta,
+  onReasoningDelta,
   onToolCallDelta,
   timeoutMs = 1800000,
   maxRetries = 2,
@@ -441,6 +442,7 @@ export async function createChatCompletionStream({
     const reasoningDelta = extractReasoningContent(delta.reasoning_content);
     if (reasoningDelta) {
       reasoningContent += reasoningDelta;
+      if (onReasoningDelta) onReasoningDelta(reasoningDelta);
     }
     if (isMiniMaxModel(model)) {
       const next = nextMiniMaxVisibleChunk(miniMaxStreamState, content);

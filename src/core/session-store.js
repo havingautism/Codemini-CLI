@@ -80,6 +80,15 @@ function sanitizeMessage(msg) {
   if (typeof msg?.reasoning_content === 'string' && msg.reasoning_content) {
     out.reasoning_content = msg.reasoning_content;
   }
+  if (typeof msg?.reasoning_started_at === 'string' && msg.reasoning_started_at.trim()) {
+    out.reasoning_started_at = msg.reasoning_started_at;
+  }
+  if (typeof msg?.reasoning_ended_at === 'string' && msg.reasoning_ended_at.trim()) {
+    out.reasoning_ended_at = msg.reasoning_ended_at;
+  }
+  if (Number.isFinite(Number(msg?.reasoning_duration_ms))) {
+    out.reasoning_duration_ms = Math.max(0, Math.round(Number(msg.reasoning_duration_ms)));
+  }
   if (Array.isArray(msg?.reasoning_details) && msg.reasoning_details.length > 0) {
     out.reasoning_details = msg.reasoning_details
       .filter((detail) => detail && typeof detail === 'object')
