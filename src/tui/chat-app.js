@@ -270,6 +270,7 @@ const TUI_COPY = {
       skillCompleted: '技能已完成',
       skillFailed: '技能执行失败',
       autoSkillInjected: (names) => `自动启用技能: ${names.map((name) => `/${name}`).join(', ')}`,
+      contextLabel: '上下文',
       compactingContext: '正在压缩上下文',
       autoCompactTriggered: (mode, threshold) => `自动压缩已触发（${mode}，阈值 ${threshold}%）`,
       requestFailed: '请求失败',
@@ -497,6 +498,7 @@ const TUI_COPY = {
       skillCompleted: 'skill completed',
       skillFailed: 'skill failed',
       autoSkillInjected: (names) => `auto-enabled skills: ${names.map((name) => `/${name}`).join(', ')}`,
+      contextLabel: 'Context',
       compactingContext: 'compacting context',
       autoCompactTriggered: (mode, threshold) => `auto-compact triggered (${mode}, threshold ${threshold}%)`,
       requestFailed: 'request failed',
@@ -1444,7 +1446,7 @@ function RuntimeStrip({ busy, runtimeStatus, loaderTick, copy }) {
   );
 }
 
-function ContextProgressMeter({ runtimeState, runtimeStatus, compact = false }) {
+function ContextProgressMeter({ runtimeState, runtimeStatus, compact = false, copy }) {
   const maxContextTokens = Number(runtimeState?.maxContextTokens || 0);
   const currentContextTokens = Number(runtimeState?.currentContextTokens || 0);
   const pctRaw =
@@ -1466,7 +1468,7 @@ function ContextProgressMeter({ runtimeState, runtimeStatus, compact = false }) 
     return h(
       Box,
       { justifyContent: 'flex-end', alignItems: 'center' },
-      h(Text, { color: 'gray' }, '上下文 '),
+      h(Text, { color: 'gray' }, `${copy?.runtime?.contextLabel ?? '上下文'} `),
       h(Text, { color: activeColor }, `${Math.round(pct)}% `),
       h(
         Box,
@@ -1479,7 +1481,7 @@ function ContextProgressMeter({ runtimeState, runtimeStatus, compact = false }) 
   return h(
     Box,
     { justifyContent: 'flex-end', alignItems: 'center' },
-    h(Text, { color: 'gray' }, '上下文 '),
+    h(Text, { color: 'gray' }, `${copy?.runtime?.contextLabel ?? '上下文'} `),
     h(Text, { color: activeColor }, `${Math.round(pct)}% `),
     h(
       Box,
@@ -1573,7 +1575,7 @@ function Header({ sessionId, model, sdkProvider, shellName, safeMode = true }) {
         )
       ),
       h(Box, { height: 1 }),
-      h(Text, { color: 'gray' }, 'optimized for small-model workflows'),
+      h(Text, { color: 'gray' }, 'An extremely restrained coding + tasks CLI. Every platform. Every terminal. Minimal by design.'),
       h(Box, { height: 1 }),
       h(
         Box,
@@ -5111,7 +5113,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
           `${showToolDetails ? copy.generic.toolSummaryExpanded : copy.generic.toolSummaryCollapsed} (${copy.generic.toggleToolSummary})  ·  ${copy.generic.scrollHint}`
         )
       ),
-      h(ContextProgressMeter, { runtimeState, runtimeStatus, compact: true })
+      h(ContextProgressMeter, { runtimeState, runtimeStatus, compact: true, copy })
     ),
     h(SuggestionPanel, { commandSuggestions, suggestionNav, menuIndex, copy }),
     h(PendingPanel, { pendingQueue, copy }),

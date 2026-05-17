@@ -160,8 +160,9 @@ export function AboutDialog({ open, onOpenChange, version }) {
         </div>
 
         <div className="text-center text-[11px] text-(--text-muted) pt-1">
-          Codemini CLI{version ? `@${version}` : ""} - Coding assistant
-          optimized for small-model workflows
+          Codemini CLI{version ? `@${version}` : ""} - Coding assistant An
+          extremely restrained coding + tasks CLI. Every platform. Every
+          terminal. Minimal by design.
         </div>
       </DialogContent>
     </Dialog>
