@@ -1,7 +1,7 @@
 {
   "name": "codemini-cli",
-  "version": "0.5.10",
-  "description": "Coding CLI optimized for small-model workflows and Windows PowerShell",
+  "version": "0.5.12",
+  "description": "An extremely restrained coding + tasks CLI. Every platform. Every terminal. Minimal by design.",
   "keywords": [
     "cli",
     "ai",

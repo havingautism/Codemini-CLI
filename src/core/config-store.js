@@ -215,6 +215,7 @@ function getNested(obj, keyPath) {
 }
 
 function parseValue(input) {
+  if (typeof input !== 'string') return input;
   if (input === 'true') return true;
   if (input === 'false') return false;
   if (input === 'null') return null;

@@ -1,10 +1,17 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { Eye, FileCode2, Pencil, Plus, Search, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Download, Eye, FileCode2, Pencil, Plus, Search, SlidersHorizontal, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -61,6 +68,7 @@ function isEnabled(skill) {
 function SkillEditor({ skill, onSave, onCancel }) {
   const [name, setName] = useState(skill?.name || "");
   const [description, setDescription] = useState(skill?.description || "");
+  const [scope, setScope] = useState(skill?.scope || "project");
   const [mode, setMode] = useState(skill?.mode || "agent_requested");
   const [triggers, setTriggers] = useState((skill?.triggers || []).join(", "));
   const [priority, setPriority] = useState(skill?.priority ?? 50);
@@ -73,6 +81,7 @@ function SkillEditor({ skill, onSave, onCancel }) {
   useEffect(() => {
     setName(skill?.name || "");
     setDescription(skill?.description || "");
+    setScope(skill?.scope || "project");
     setMode(skill?.mode || "agent_requested");
     setTriggers((skill?.triggers || []).join(", "));
     setPriority(skill?.priority ?? 50);
@@ -92,6 +101,7 @@ function SkillEditor({ skill, onSave, onCancel }) {
   const handleSave = async () => {
     const metadata = {
       description,
+      scope,
       mode,
       triggers: triggers
         .split(",")
@@ -101,7 +111,7 @@ function SkillEditor({ skill, onSave, onCancel }) {
       priority: Number(priority) || 0,
     };
     if (isNew) {
-      await api.createSkill({ name, description, content });
+      await api.createSkill({ name, description, content, scope });
       await api.updateSkillMetadata(name, metadata);
     } else {
       await api.updateSkillMetadata(skill.name, metadata);
@@ -113,126 +123,149 @@ function SkillEditor({ skill, onSave, onCancel }) {
   };
 
   return (
-    <div className="space-y-3">
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <div>
-          <div className="text-[13px] font-medium text-(--text-primary)">
-            {isNew ? t("newSkill") : t("editSkill")}
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div>
+            <div className="text-[13px] font-medium text-(--text-primary)">
+              {isNew ? t("newSkill") : t("editSkill")}
+            </div>
+            <div className="mt-0.5 text-[11px] text-(--text-muted)">
+              {t("skillEditorHint")}
+            </div>
           </div>
-          <div className="mt-0.5 text-[11px] text-(--text-muted)">
-            {t("skillEditorHint")}
-          </div>
-        </div>
-        <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px]">
-          {isNew ? t("projectScope") : scopeLabel(skill.scope)}
-        </Badge>
-      </div>
-
-      <div className="grid gap-3">
-        <div className="grid gap-1.5">
-          <label className="text-[12px] text-(--text-muted)">{t("name")}</label>
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            disabled={!isNew}
-            placeholder="my-skill"
-            className="h-8 text-[13px]"
-          />
-        </div>
-        <div className="grid gap-1.5">
-          <label className="text-[12px] text-(--text-muted)">
-            {t("description")}
-          </label>
-          <Input
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder={t("skillDescriptionPlaceholder")}
-            className="h-8 text-[13px]"
-          />
+          <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px]">
+            {scopeLabel(scope)}
+          </Badge>
         </div>
 
-        <div className="rounded-md border border-(--border-default) bg-(--bg-secondary) p-3">
-          <div className="mb-2 flex items-center gap-2 text-[12px] font-medium text-(--text-primary)">
-            <SlidersHorizontal size={13} />
-            {t("skillRoutingSettings")}
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-3">
+          {(isNew || !isBuiltin(skill)) && (
             <div className="grid gap-1.5">
-              <label className="text-[12px] text-(--text-muted)">
-                {t("skillMode")}
-              </label>
-              <select
-                value={mode}
-                onChange={(e) => setMode(e.target.value)}
-                className="h-8 rounded-md border border-(--border-default) bg-(--bg-primary) px-2 text-[13px] text-(--text-primary)"
+              <label className="text-[12px] text-(--text-muted)">{t("skillScope")}</label>
+              <Select
+                value={scope}
+                onValueChange={setScope}
               >
-                {SKILL_MODES.map((item) => (
-                  <option key={item} value={item}>
-                    {t(`skillMode_${item}`)}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectItem value="project">{t("projectScope")}</SelectItem>
+                  <SelectItem value="global">{t("globalScope")}</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
-            <div className="grid gap-1.5">
-              <label className="text-[12px] text-(--text-muted)">
-                {t("skillPriority")}
-              </label>
-              <Input
-                type="number"
-                min="0"
-                max="100"
-                value={priority}
-                onChange={(e) => setPriority(e.target.value)}
-                className="h-8 text-[13px]"
-              />
+          )}
+          <div className="grid gap-1.5">
+            <label className="text-[12px] text-(--text-muted)">{t("name")}</label>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              disabled={!isNew}
+              placeholder="my-skill"
+              className="h-8 text-[13px]"
+            />
+          </div>
+          <div className="grid gap-1.5">
+            <label className="text-[12px] text-(--text-muted)">
+              {t("description")}
+            </label>
+            <Input
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder={t("skillDescriptionPlaceholder")}
+              className="h-8 text-[13px]"
+            />
+          </div>
+
+          <div className="rounded-md border border-(--border-default) bg-(--bg-secondary) p-3">
+            <div className="mb-2 flex items-center gap-2 text-[12px] font-medium text-(--text-primary)">
+              <SlidersHorizontal size={13} />
+              {t("skillRoutingSettings")}
             </div>
-            <div className="grid gap-1.5 sm:col-span-2">
-              <label className="text-[12px] text-(--text-muted)">
-                {t("skillTriggers")}
-              </label>
-              <Input
-                value={triggers}
-                onChange={(e) => setTriggers(e.target.value)}
-                placeholder="after_edit, before_final"
-                className="h-8 text-[13px]"
-              />
-            </div>
-            <div className="flex items-center justify-between rounded-md border border-(--border-default) bg-(--bg-primary) px-2 py-1.5 sm:col-span-2">
-              <span className="text-[12px] text-(--text-muted)">
-                {enabled ? t("enabled") : t("disabled")}
-              </span>
-              <SwitchControl
-                checked={enabled}
-                onClick={() => setEnabled((value) => !value)}
-                title={enabled ? t("disable") : t("enable")}
-              />
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-1.5">
+                <label className="text-[12px] text-(--text-muted)">
+                  {t("skillMode")}
+                </label>
+                <Select
+                  value={mode}
+                  onValueChange={setMode}
+                >
+                  <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="start">
+                    {SKILL_MODES.map((item) => (
+                      <SelectItem key={item} value={item}>
+                        {t(`skillMode_${item}`)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-1.5">
+                <label className="text-[12px] text-(--text-muted)">
+                  {t("skillPriority")}
+                </label>
+                <Input
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={priority}
+                  onChange={(e) => setPriority(e.target.value)}
+                  className="h-8 text-[13px]"
+                />
+              </div>
+              <div className="grid gap-1.5 sm:col-span-2">
+                <label className="text-[12px] text-(--text-muted)">
+                  {t("skillTriggers")}
+                </label>
+                <Input
+                  value={triggers}
+                  onChange={(e) => setTriggers(e.target.value)}
+                  placeholder="after_edit, before_final"
+                  className="h-8 text-[13px]"
+                />
+              </div>
+              <div className="flex items-center justify-between rounded-md border border-(--border-default) bg-(--bg-primary) px-2 py-1.5 sm:col-span-2">
+                <span className="text-[12px] text-(--text-muted)">
+                  {enabled ? t("enabled") : t("disabled")}
+                </span>
+                <SwitchControl
+                  checked={enabled}
+                  onClick={() => setEnabled((value) => !value)}
+                  title={enabled ? t("disable") : t("enable")}
+                />
+              </div>
             </div>
           </div>
-        </div>
 
-        <div className="grid gap-1.5">
-          <label className="text-[12px] text-(--text-muted)">
-            {t("skillContent")}
-          </label>
-          {loading ? (
-            <div className="rounded-md border border-(--border-default) py-8 text-center text-[12px] text-(--text-muted)">
-              {t("loading")}...
-            </div>
-          ) : (
-            <Textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              disabled={contentReadOnly}
-              className="min-h-[240px] resize-y text-[13px] font-mono leading-5"
-              placeholder={
-                "---\nname: my-skill\ndescription: ...\n---\n\nSkill instructions..."
-              }
-            />
-          )}
+          <div className="grid gap-1.5">
+            <label className="text-[12px] text-(--text-muted)">
+              {t("skillContent")}
+            </label>
+            {loading ? (
+              <div className="rounded-md border border-(--border-default) py-8 text-center text-[12px] text-(--text-muted)">
+                {t("loading")}...
+              </div>
+            ) : (
+              <Textarea
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                disabled={contentReadOnly}
+                className="min-h-[360px] resize-y text-[13px] font-mono leading-5"
+                placeholder={
+                  "---\nname: my-skill\ndescription: ...\n---\n\nSkill instructions..."
+                }
+              />
+            )}
+          </div>
         </div>
       </div>
 
-      <div className="mt-3 flex justify-end gap-2">
+      <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-(--border-default) bg-(--bg-primary) pt-3">
         <Button variant="outline" onClick={onCancel} size="sm">
           {t("cancel")}
         </Button>
@@ -251,17 +284,15 @@ function SkillEditor({ skill, onSave, onCancel }) {
 function SkillEditorDialog({ skill, open, onSave, onOpenChange }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[760px] max-h-[86vh] flex flex-col overflow-hidden">
+      <DialogContent className="sm:max-w-[760px] h-[86vh] max-h-[86vh] flex flex-col overflow-hidden">
         <DialogHeader className="shrink-0">
           <DialogTitle>{skill ? t("editSkill") : t("newSkill")}</DialogTitle>
         </DialogHeader>
-        <div className="flex-1 overflow-y-auto min-h-0 pr-1">
-          <SkillEditor
-            skill={skill}
-            onSave={onSave}
-            onCancel={() => onOpenChange(false)}
-          />
-        </div>
+        <SkillEditor
+          skill={skill}
+          onSave={onSave}
+          onCancel={() => onOpenChange(false)}
+        />
       </DialogContent>
     </Dialog>
   );
@@ -321,6 +352,10 @@ export function SkillPanel() {
   const [viewSkill, setViewSkill] = useState(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
+  const [installSource, setInstallSource] = useState("");
+  const [installScope, setInstallScope] = useState("project");
+  const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState("");
 
   const loadSkills = useCallback(async () => {
     setLoading(true);
@@ -348,6 +383,23 @@ export function SkillPanel() {
   const handleSave = () => {
     setEditing(null);
     loadSkills();
+  };
+
+  const handleInstall = async () => {
+    const source = installSource.trim();
+    if (!source) return;
+    setInstalling(true);
+    setInstallError("");
+    try {
+      const result = await api.installSkill({ source, scope: installScope });
+      if (result?.error) throw new Error(result.message || "Install failed");
+      setInstallSource("");
+      await loadSkills();
+    } catch (err) {
+      setInstallError(err.message || "Install failed");
+    } finally {
+      setInstalling(false);
+    }
   };
 
   const enabledCount = skills.filter(isEnabled).length;
@@ -399,6 +451,38 @@ export function SkillPanel() {
             </Button>
           </div>
         </div>
+      </div>
+
+      <div className="rounded-lg border border-(--border-default) bg-(--bg-secondary) p-3">
+        <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto] sm:items-center">
+          <Input
+            value={installSource}
+            onChange={(e) => setInstallSource(e.target.value)}
+            placeholder={t("skillInstallPlaceholder")}
+            className="h-8 text-[13px]"
+          />
+          <Select
+            value={installScope}
+            onValueChange={setInstallScope}
+          >
+            <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px] sm:w-[104px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="start">
+              <SelectItem value="project">{t("projectScope")}</SelectItem>
+              <SelectItem value="global">{t("globalScope")}</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button onClick={handleInstall} disabled={installing || !installSource.trim()} size="sm">
+            <Download size={13} />
+            {installing ? t("installing") : t("installSkill")}
+          </Button>
+        </div>
+        {installError && (
+          <div className="mt-2 text-[11px] text-(--accent-red)">
+            {installError}
+          </div>
+        )}
       </div>
 
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">

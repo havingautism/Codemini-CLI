@@ -144,7 +144,7 @@ export function ToolCard({ card }) {
 
       {/* Summary when collapsed */}
       {card.summary && !open && (
-        <div className="px-3 pb-2 text-xs text-[var(--text-secondary)]">
+        <div className="px-3 py-2 text-xs text-[var(--text-secondary)]">
           {card.summary}
         </div>
       )}

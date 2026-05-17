@@ -446,6 +446,12 @@ export class RuntimeBridge {
     return this.#runtime.reloadConfig?.(options);
   }
 
+  async reloadCommandsAndSkills() {
+    const ok = await this.#runtime.reloadCommandsAndSkills?.();
+    if (ok) this.#broadcastRuntimeState();
+    return ok;
+  }
+
   handleApproval(id, approved) {
     return this.#approval.resolve(id, approved);
   }

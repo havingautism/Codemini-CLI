@@ -95,6 +95,7 @@ function Shell() {
         onNewSession={actions.newSession}
         onSwitchSession={actions.switchSession}
         onToggleTheme={actions.toggleTheme}
+        onSetTheme={actions.setTheme}
         onOpenSettings={() => actions.setConfigOpen(true)}
         onOpenSkills={() => actions.setSkillsOpen(true)}
         onOpenSouls={() => actions.setSoulsOpen(true)}

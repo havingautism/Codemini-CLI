@@ -5894,9 +5894,13 @@ export async function createChatRuntime({
         return { type: 'system', text: rows.join('\n') };
       }
 
-      const custom = commands.get(parsedInput.command);
+      let custom = commands.get(parsedInput.command);
       if (!custom) {
-        return { type: 'system', text: `Unknown slash command: /${parsedInput.command}` };
+        await reloadCommandsAndSkills();
+        custom = commands.get(parsedInput.command);
+        if (!custom) {
+          return { type: 'system', text: `Unknown slash command: /${parsedInput.command}` };
+        }
       }
       if (custom.metadata.type === 'skill' && !isSkillEnabled(config, custom.name, custom)) {
         return { type: 'system', text: `Skill is disabled: ${custom.name}` };
@@ -6230,6 +6234,10 @@ export async function createChatRuntime({
       config = await loadConfig();
       await syncRuntimeFromConfig(options);
       return config;
+    },
+    reloadCommandsAndSkills: async () => {
+      await reloadCommandsAndSkills();
+      return true;
     },
     setExecutionMode: async (next) => {
       if (!['normal', 'auto', 'plan'].includes(next)) return false;

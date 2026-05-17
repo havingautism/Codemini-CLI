@@ -9,10 +9,12 @@ import { createChatRuntime } from '../src/core/chat-runtime.js';
 import { createSession, loadSession, listSessions, resolveSession, deleteSession } from '../src/core/session-store.js';
 import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
 import { RuntimeBridge } from './lib/runtime-bridge.js';
-import { listSkillEntries } from '../src/commands/skill.js';
-import { readSkillRegistry, writeSkillRegistry } from '../src/core/skill-registry.js';
+import { installSkillSource, listSkillEntries } from '../src/commands/skill.js';
+import { computeFileSha256, readSkillRegistry, upsertSkillRegistryEntry, writeSkillRegistry } from '../src/core/skill-registry.js';
 import { getReplyLanguage } from '../src/core/reply-language.js';
-import { getBaseConfigDir, getProjectSkillsDir } from '../src/core/paths.js';
+import { getBaseConfigDir, getFileIndexPath, getProjectSkillsDir, getSkillsDir } from '../src/core/paths.js';
+import { initializeProjectIndex } from '../src/core/project-index.js';
+import { INDEX_SKIP_DIRS } from '../src/core/constants.js';
 import { VERSION } from '../src/core/version.js';
 
 const GENERAL_PROJECT_DIR = (() => {
@@ -22,6 +24,19 @@ const GENERAL_PROJECT_DIR = (() => {
 
 const SKILL_CATALOG_FILE = 'codemini.skills.json';
 const SKILL_MODES = new Set(['always', 'auto_attach', 'agent_requested', 'manual']);
+const SKILL_SCOPES = new Set(['project', 'global']);
+
+function normalizeSkillScope(scope) {
+  return SKILL_SCOPES.has(scope) ? scope : 'project';
+}
+
+function isSafeSkillName(name = '') {
+  return /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name);
+}
+
+function skillBaseDirForScope(scope, projectDir) {
+  return scope === 'global' ? getSkillsDir() : getProjectSkillsDir(projectDir);
+}
 
 function normalizeSkillMetadataPatch(input = {}) {
   const out = {};
@@ -41,7 +56,11 @@ function normalizeSkillMetadataPatch(input = {}) {
 }
 
 async function readProjectSkillCatalog(projectDir) {
-  const catalogPath = path.join(getProjectSkillsDir(projectDir), SKILL_CATALOG_FILE);
+  return readSkillCatalogFromDir(getProjectSkillsDir(projectDir));
+}
+
+async function readSkillCatalogFromDir(skillBaseDir) {
+  const catalogPath = path.join(skillBaseDir, SKILL_CATALOG_FILE);
   try {
     const parsed = JSON.parse(await fs.readFile(catalogPath, 'utf8'));
     return parsed && typeof parsed === 'object' ? parsed : { version: 1, skills: {} };
@@ -51,7 +70,11 @@ async function readProjectSkillCatalog(projectDir) {
 }
 
 async function writeProjectSkillCatalog(projectDir, catalog) {
-  const catalogPath = path.join(getProjectSkillsDir(projectDir), SKILL_CATALOG_FILE);
+  return writeSkillCatalogToDir(getProjectSkillsDir(projectDir), catalog);
+}
+
+async function writeSkillCatalogToDir(skillBaseDir, catalog) {
+  const catalogPath = path.join(skillBaseDir, SKILL_CATALOG_FILE);
   await fs.mkdir(path.dirname(catalogPath), { recursive: true });
   const next = {
     version: 1,
@@ -61,12 +84,23 @@ async function writeProjectSkillCatalog(projectDir, catalog) {
 }
 
 async function upsertProjectSkillMetadata(projectDir, name, patch) {
-  const catalog = await readProjectSkillCatalog(projectDir);
+  return upsertSkillCatalogMetadata(getProjectSkillsDir(projectDir), name, patch);
+}
+
+async function upsertSkillCatalogMetadata(skillBaseDir, name, patch) {
+  const catalog = await readSkillCatalogFromDir(skillBaseDir);
   catalog.skills = catalog.skills || {};
   const prior = catalog.skills[name] && typeof catalog.skills[name] === 'object' ? catalog.skills[name] : {};
   catalog.skills[name] = { ...prior, ...normalizeSkillMetadataPatch(patch) };
-  await writeProjectSkillCatalog(projectDir, catalog);
+  await writeSkillCatalogToDir(skillBaseDir, catalog);
   return catalog.skills[name];
+}
+
+async function deleteSkillCatalogMetadata(skillBaseDir, name) {
+  const catalog = await readSkillCatalogFromDir(skillBaseDir);
+  if (!catalog.skills?.[name]) return;
+  delete catalog.skills[name];
+  await writeSkillCatalogToDir(skillBaseDir, catalog);
 }
 
 async function listProjectRoots() {
@@ -107,6 +141,16 @@ async function listProjectRoots() {
 function isGeneralProjectDir(value) {
   if (!value) return false;
   return path.resolve(value) === path.resolve(GENERAL_PROJECT_DIR);
+}
+
+function getGeneralChatSystemPromptBlock() {
+  return `# General Chat Mode
+
+This is a general conversation, not an opened project workspace.
+- The working directory is Codemini's internal general workspace. Do not treat it as a user project.
+- Use filesystem read, write, and edit tools only as auxiliary scratch or artifact tools when the user explicitly needs local files.
+- When the user asks to rewrite or transform remote content, fetch or read the content and answer with the rewritten text unless they explicitly ask you to create or modify a local file.
+- Before making persistent filesystem changes in this mode, make sure the user requested a local artifact and use an obvious user-facing path or file name.`;
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -231,6 +275,16 @@ function normalizeProjectPath(value) {
   return path.resolve(raw);
 }
 
+async function resolveCodeWikiProjectDir(url, fallbackDir) {
+  const requested = normalizeProjectPath(url.searchParams.get('project') || '');
+  if (!requested) return fallbackDir;
+  try {
+    const stat = await fs.stat(requested);
+    if (stat.isDirectory()) return requested;
+  } catch {}
+  return fallbackDir;
+}
+
 function tryParseJson(value) {
   try { return JSON.parse(String(value || '')); } catch { return null; }
 }
@@ -289,6 +343,159 @@ function codeWikiReportTitle(fileName) {
     .replace(/-/g, ' ');
 }
 
+function clipGraphList(values, max = 12) {
+  return [...new Set((Array.isArray(values) ? values : []).filter(Boolean))].slice(0, max);
+}
+
+const CODEWIKI_GRAPH_NOISY_NAMES = new Set([
+  '__init__',
+  '__enter__',
+  '__exit__',
+  '__getitem__',
+  '__setitem__',
+  '__delitem__',
+  '__contains__',
+  '__len__',
+  '__iter__',
+  '__next__',
+  '__call__',
+  'get',
+  'set',
+  'add',
+  'run',
+  'close',
+  'open',
+  'read',
+  'write',
+  'send',
+  'recv',
+  'poll',
+  'update',
+  'copy',
+  'size',
+  'apply'
+]);
+
+function normalizeGraphPath(value = '') {
+  return String(value || '').replace(/\\/g, '/').replace(/^\.\/+/, '');
+}
+
+function isDependencyLikeGraphPath(file = '') {
+  const normalized = normalizeGraphPath(file);
+  const segments = normalized.split('/').filter(Boolean);
+  return segments.some(
+    (segment) =>
+      INDEX_SKIP_DIRS.has(segment) ||
+      /^venv[-_]/i.test(segment) ||
+      /\.egg-info$/i.test(segment) ||
+      /^python\d+(?:\.\d+)?$/i.test(segment)
+  );
+}
+
+function isNoisyGraphSymbol(symbol = {}) {
+  const name = String(symbol.name || symbol.symbol_id || '').split('.').pop();
+  if (!name) return true;
+  if (CODEWIKI_GRAPH_NOISY_NAMES.has(name)) return true;
+  return /^__.*__$/.test(name);
+}
+
+function sourceRootScore(file = '') {
+  const normalized = normalizeGraphPath(file);
+  if (normalized.startsWith('src/')) return 8;
+  if (normalized.startsWith('codemini-web/client/src/')) return 8;
+  if (normalized.startsWith('codemini-web/server.js')) return 7;
+  if (normalized.startsWith('codemini-web/')) return 5;
+  if (normalized.startsWith('tests/')) return 1;
+  return 3;
+}
+
+function buildCodeWikiSymbolGraph(fileIndex, { maxNodes = 42 } = {}) {
+  const files = Array.isArray(fileIndex?.files) ? fileIndex.files : [];
+  const sourceFiles = files.filter((entry) => !isDependencyLikeGraphPath(entry.file));
+  const symbols = sourceFiles
+    .flatMap((entry) =>
+      (Array.isArray(entry.symbols) ? entry.symbols : []).map((symbol) => ({
+        ...symbol,
+        file: symbol.file || entry.file
+      }))
+    )
+    .filter((symbol) => !isDependencyLikeGraphPath(symbol.file) && !isNoisyGraphSymbol(symbol));
+  const ranked = symbols
+    .map((symbol) => {
+      const calls = Array.isArray(symbol.calls) ? symbol.calls.length : 0;
+      const calledBy = Array.isArray(symbol.called_by) ? symbol.called_by.length : 0;
+      const writes = Array.isArray(symbol.writes) ? symbol.writes.length : 0;
+      const emits = Array.isArray(symbol.emits) ? symbol.emits.length : 0;
+      const typeBoost = symbol.type === 'class' ? 8 : symbol.type === 'method' ? 4 : 2;
+      return {
+        symbol,
+        score: sourceRootScore(symbol.file) + typeBoost + calledBy * 4 + calls * 2 + writes * 2 + emits * 2
+      };
+    })
+    .sort((a, b) => b.score - a.score || String(a.symbol.symbol_id).localeCompare(String(b.symbol.symbol_id)))
+    .slice(0, maxNodes)
+    .map((item) => item.symbol);
+
+  const byId = new Map(ranked.map((symbol) => [String(symbol.symbol_id || ''), symbol]));
+  const byShortName = new Map();
+  for (const symbol of ranked) {
+    const shortName = String(symbol.name || '').split('.').pop();
+    if (!shortName) continue;
+    if (!byShortName.has(shortName)) byShortName.set(shortName, []);
+    byShortName.get(shortName).push(symbol);
+  }
+
+  const nodes = ranked.map((symbol) => ({
+    id: symbol.symbol_id,
+    label: symbol.name || symbol.symbol_id,
+    type: symbol.type || 'symbol',
+    file: symbol.file || '',
+    range: symbol.range || null,
+    signature: symbol.signature || '',
+    calls: clipGraphList(symbol.calls || [], 8),
+    called_by: clipGraphList(symbol.called_by || [], 8),
+    imports: clipGraphList(symbol.imports || [], 6),
+    writes: clipGraphList(symbol.writes || [], 6),
+    emits: clipGraphList(symbol.emits || [], 6)
+  }));
+
+  const edgeMap = new Map();
+  const addEdge = (source, target, kind, label = '') => {
+    if (!source || !target || source === target) return;
+    if (!byId.has(source) || !byId.has(target)) return;
+    const key = `${source}->${target}:${kind}`;
+    if (!edgeMap.has(key)) edgeMap.set(key, { source, target, kind, label });
+  };
+
+  for (const symbol of ranked) {
+    const source = String(symbol.symbol_id || '');
+    for (const call of symbol.calls || []) {
+      const shortName = String(call || '').split('.').pop();
+      for (const target of byShortName.get(shortName) || []) {
+        addEdge(source, target.symbol_id, 'calls', call);
+      }
+    }
+    for (const caller of symbol.called_by || []) {
+      addEdge(caller, source, 'called_by');
+    }
+  }
+
+  const edges = [...edgeMap.values()].slice(0, 80);
+
+  return {
+    updatedAt: fileIndex?.updatedAt || '',
+    stats: {
+      files: files.length,
+      source_files: sourceFiles.length,
+      symbols: symbols.length,
+      displayed_nodes: nodes.length,
+      displayed_edges: edges.length
+    },
+    nodes,
+    edges
+  };
+}
+
 function commonPathPrefix(paths) {
   const normalized = paths.map((p) => path.resolve(p).split(path.sep).filter(Boolean));
   if (!normalized.length) return '';
@@ -341,14 +548,17 @@ async function buildRuntimeForSession({ sessionId, model, projectDir }) {
     } catch {}
   }
   session.projectDir = process.cwd();
-  const systemPrompt = buildDefaultSystemPrompt(config);
+  const isGeneral = isGeneralProjectDir(process.cwd());
+  const systemPrompt = buildDefaultSystemPrompt(config, {
+    extraPrompts: isGeneral ? [getGeneralChatSystemPromptBlock()] : []
+  });
   const runtime = await createChatRuntime({
     session,
     config,
     model: model || config.model?.name,
     systemPrompt
   });
-  return { runtime, config, session, cwd: process.cwd(), isGeneral: isGeneralProjectDir(process.cwd()) };
+  return { runtime, config, session, cwd: process.cwd(), isGeneral };
 }
 
 async function main() {
@@ -500,7 +710,8 @@ async function main() {
 
     // ── CodeWiki / project requirements reports ──
     if (req.method === 'GET' && url.pathname === '/api/codewiki/reports') {
-      const requirementsDir = getRequirementsDir(currentProjectDir);
+      const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
+      const requirementsDir = getRequirementsDir(codeWikiProjectDir);
       try {
         const entries = await fs.readdir(requirementsDir, { withFileTypes: true });
         const reports = [];
@@ -524,13 +735,35 @@ async function main() {
       return;
     }
 
+    if (req.method === 'GET' && url.pathname === '/api/codewiki/symbol-graph') {
+      try {
+        const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
+        const initialized = await initializeProjectIndex(codeWikiProjectDir);
+        const projectRoot = initialized?.projectRoot || codeWikiProjectDir;
+        const fileIndexPath = getFileIndexPath(projectRoot);
+        const fileIndex = JSON.parse(await fs.readFile(fileIndexPath, 'utf8'));
+        const maxNodes = Math.max(12, Math.min(80, Number(url.searchParams.get('max_nodes') || 42)));
+        jsonResponse(res, buildCodeWikiSymbolGraph(fileIndex, { maxNodes }));
+      } catch (err) {
+        jsonResponse(res, {
+          updatedAt: '',
+          stats: { files: 0, symbols: 0, displayed_nodes: 0, displayed_edges: 0 },
+          nodes: [],
+          edges: [],
+          error: err?.message || String(err)
+        });
+      }
+      return;
+    }
+
     if (req.method === 'GET' && url.pathname.startsWith('/api/codewiki/report/')) {
       const fileName = decodeURIComponent(url.pathname.slice('/api/codewiki/report/'.length));
       if (!isCodeWikiReportFile(fileName)) {
         jsonResponse(res, { error: true, message: 'Invalid report file' }, 400);
         return;
       }
-      const requirementsDir = path.resolve(getRequirementsDir(currentProjectDir));
+      const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
+      const requirementsDir = path.resolve(getRequirementsDir(codeWikiProjectDir));
       const reportPath = path.resolve(requirementsDir, fileName);
       if (!reportPath.startsWith(`${requirementsDir}${path.sep}`)) {
         jsonResponse(res, { error: true, message: 'Invalid report path' }, 403);
@@ -546,7 +779,8 @@ async function main() {
         jsonResponse(res, { error: true, message: 'Invalid report file' }, 400);
         return;
       }
-      const requirementsDir = path.resolve(getRequirementsDir(currentProjectDir));
+      const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
+      const requirementsDir = path.resolve(getRequirementsDir(codeWikiProjectDir));
       const reportPath = path.resolve(requirementsDir, fileName);
       if (!reportPath.startsWith(`${requirementsDir}${path.sep}`)) {
         jsonResponse(res, { error: true, message: 'Invalid report path' }, 403);
@@ -571,6 +805,15 @@ async function main() {
       const normalizedDepth = ['fast', 'standard', 'deep'].includes(String(depth || '').toLowerCase())
         ? String(depth).toLowerCase()
         : 'standard';
+      const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
+      if (codeWikiProjectDir !== currentProjectDir) {
+        const { runtime } = await buildRuntimeForSession({
+          model: bridge.getState().model,
+          projectDir: codeWikiProjectDir
+        });
+        await bridge.switchRuntime(runtime);
+        currentProjectDir = process.cwd();
+      }
       const result = bridge.handleSubmit(`/project-requirements --${normalizedDepth}`);
       jsonResponse(res, result);
       return;
@@ -598,13 +841,14 @@ async function main() {
         jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
         return;
       }
+      const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
       const reportPath = selectedReport
-        ? path.join(getRequirementsDir(currentProjectDir), selectedReport)
-        : getRequirementsDir(currentProjectDir);
+        ? path.join(getRequirementsDir(codeWikiProjectDir), selectedReport)
+        : getRequirementsDir(codeWikiProjectDir);
       const prompt = buildCodeWikiAskPrompt({
         question,
         reportPath,
-        projectDir: currentProjectDir,
+        projectDir: codeWikiProjectDir,
         replyLanguage: bridge.getState()?.replyLanguage
       });
 
@@ -897,26 +1141,54 @@ async function main() {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/skills/create') {
-      const { name, description, content } = await readBody(req);
+      const { name, description, content, scope: rawScope } = await readBody(req);
       if (!name || !content) { jsonResponse(res, { error: true, message: 'Missing name or content' }, 400); return; }
+      if (!isSafeSkillName(name)) { jsonResponse(res, { error: true, message: 'Invalid skill name' }, 400); return; }
       try {
-        const skillDir = path.join(getProjectSkillsDir(currentProjectDir), name);
+        const scope = normalizeSkillScope(rawScope);
+        const skillBaseDir = skillBaseDirForScope(scope, currentProjectDir);
+        const skillDir = path.join(skillBaseDir, name);
         await fs.mkdir(skillDir, { recursive: true });
         const skillFile = path.join(skillDir, 'SKILL.md');
         await fs.writeFile(skillFile, content, 'utf8');
-        await upsertProjectSkillMetadata(currentProjectDir, name, {
-          description: description || '',
-          mode: 'agent_requested',
-          triggers: [],
-          enabled: true,
-          priority: 50
-        });
+        if (scope === 'global') {
+          await upsertSkillRegistryEntry(undefined, {
+            name,
+            version: '0.0.0',
+            description: description || '',
+            enabled: true,
+            source: 'web-create',
+            entryFile: 'SKILL.md',
+            sha256: await computeFileSha256(skillFile),
+            installedAt: new Date().toISOString()
+          });
+        } else {
+          await upsertProjectSkillMetadata(currentProjectDir, name, {
+            description: description || '',
+            mode: 'agent_requested',
+            triggers: [],
+            enabled: true,
+            priority: 50
+          });
+        }
         const config = await loadConfig();
         config.skills = config.skills || {};
         config.skills.enabled = config.skills.enabled || {};
         config.skills.enabled[name] = true;
         await saveConfig(config);
-        jsonResponse(res, { ok: true, name });
+        await bridge.reloadCommandsAndSkills();
+        jsonResponse(res, { ok: true, name, scope });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/skills/install') {
+      const { source, scope: rawScope } = await readBody(req);
+      if (!source) { jsonResponse(res, { error: true, message: 'Missing source' }, 400); return; }
+      try {
+        const scope = normalizeSkillScope(rawScope);
+        const installed = await installSkillSource(source, { scope, cwd: currentProjectDir });
+        await bridge.reloadCommandsAndSkills();
+        jsonResponse(res, { ok: true, installed, scope });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
     }
@@ -930,6 +1202,7 @@ async function main() {
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
         if (skill.scope === 'builtin') { jsonResponse(res, { error: true, message: 'Cannot edit builtin skill' }, 403); return; }
         await fs.writeFile(skill.path, content, 'utf8');
+        await bridge.reloadCommandsAndSkills();
         jsonResponse(res, { ok: true });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
@@ -937,7 +1210,7 @@ async function main() {
     if (req.method === 'DELETE' && url.pathname.startsWith('/api/skills/')) {
       const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length));
       try {
-        const entries = await listSkillEntries({ scope: 'all' });
+        const entries = await listSkillEntries({ scope: 'all', cwd: currentProjectDir });
         const skill = entries.find(s => s.name === name);
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
         if (skill.scope === 'builtin') { jsonResponse(res, { error: true, message: 'Cannot delete builtin skill' }, 403); return; }
@@ -951,9 +1224,11 @@ async function main() {
           delete catalog.skills[name];
           await writeProjectSkillCatalog(currentProjectDir, catalog);
         }
+        await deleteSkillCatalogMetadata(getSkillsDir(), name);
         const config = await loadConfig();
         if (config.skills?.enabled) delete config.skills.enabled[name];
         await saveConfig(config);
+        await bridge.reloadCommandsAndSkills();
         jsonResponse(res, { ok: true });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
@@ -965,7 +1240,58 @@ async function main() {
         const entries = await listSkillEntries({ scope: 'all', cwd: currentProjectDir });
         const skill = entries.find(s => s.name === name);
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
-        const metadata = await upsertProjectSkillMetadata(currentProjectDir, name, body || {});
+        if (skill.scope === 'builtin' && body?.scope && body.scope !== 'builtin') {
+          jsonResponse(res, { error: true, message: 'Cannot move builtin skill' }, 403);
+          return;
+        }
+        const metadataPatch = normalizeSkillMetadataPatch(body || {});
+        let metadata = metadataPatch;
+        const requestedScope = body?.scope ? normalizeSkillScope(body.scope) : skill.scope;
+        let nextScope = skill.scope;
+
+        if (skill.scope !== 'builtin' && requestedScope !== skill.scope) {
+          const sourceDir = path.dirname(skill.path);
+          const targetBaseDir = skillBaseDirForScope(requestedScope, currentProjectDir);
+          const targetDir = path.join(targetBaseDir, name);
+          await fs.rm(targetDir, { recursive: true, force: true });
+          await fs.mkdir(path.dirname(targetDir), { recursive: true });
+          await fs.cp(sourceDir, targetDir, { recursive: true, force: true });
+          await fs.rm(sourceDir, { recursive: true, force: true });
+          if (requestedScope === 'global') {
+            await deleteSkillCatalogMetadata(getProjectSkillsDir(currentProjectDir), name);
+            await upsertSkillRegistryEntry(undefined, {
+              name,
+              version: skill.version || '0.0.0',
+              description: metadataPatch.description ?? skill.description ?? '',
+              enabled: metadataPatch.enabled !== undefined ? metadataPatch.enabled : skill.enabled !== false,
+              source: 'web-move',
+              entryFile: 'SKILL.md',
+              sha256: await computeFileSha256(path.join(targetDir, 'SKILL.md')),
+              installedAt: new Date().toISOString()
+            });
+          } else {
+            const registry = await readSkillRegistry();
+            registry.skills = (registry.skills || []).filter(s => s.name !== name);
+            await writeSkillRegistry(undefined, registry);
+            await deleteSkillCatalogMetadata(getSkillsDir(), name);
+          }
+          nextScope = requestedScope;
+        }
+
+        if (nextScope === 'global') {
+          await upsertSkillRegistryEntry(undefined, {
+            name,
+            ...(metadataPatch.description !== undefined ? { description: metadataPatch.description } : {}),
+            ...(metadataPatch.enabled !== undefined ? { enabled: metadataPatch.enabled } : {})
+          });
+          metadata = await upsertSkillCatalogMetadata(getSkillsDir(), name, body || {});
+        } else if (nextScope === 'project') {
+          metadata = await upsertProjectSkillMetadata(currentProjectDir, name, body || {});
+        } else if (skill.scope !== 'builtin') {
+          metadata = await upsertProjectSkillMetadata(currentProjectDir, name, body || {});
+        } else {
+          metadata = await upsertProjectSkillMetadata(currentProjectDir, name, body || {});
+        }
         if (skill.scope !== 'builtin' && body?.enabled !== undefined) {
           const config = await loadConfig();
           config.skills = config.skills || {};
@@ -976,6 +1302,7 @@ async function main() {
           const idx = registry.skills.findIndex(s => s.name === name);
           if (idx !== -1) { registry.skills[idx].enabled = body.enabled !== false; await writeSkillRegistry(undefined, registry); }
         }
+        await bridge.reloadCommandsAndSkills();
         jsonResponse(res, { ok: true, name, metadata });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
@@ -989,6 +1316,7 @@ async function main() {
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
         if (skill.scope === 'builtin') {
           const metadata = await upsertProjectSkillMetadata(currentProjectDir, name, { enabled });
+          await bridge.reloadCommandsAndSkills();
           jsonResponse(res, { ok: true, name, metadata });
           return;
         }
@@ -1000,6 +1328,7 @@ async function main() {
         const registry = await readSkillRegistry();
         const idx = registry.skills.findIndex(s => s.name === name);
         if (idx !== -1) { registry.skills[idx].enabled = !!enabled; await writeSkillRegistry(undefined, registry); }
+        await bridge.reloadCommandsAndSkills();
         jsonResponse(res, { ok: true });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;

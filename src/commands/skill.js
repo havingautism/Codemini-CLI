@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { copyRecursive } from '../core/fs-utils.js';
 import { loadConfig, saveConfig } from '../core/config-store.js';
 import { loadCommandsAndSkills } from '../core/command-loader.js';
@@ -48,6 +48,60 @@ function parseScopeArgs(args = [], { defaultScope = 'project', allowAll = false 
 
 function baseDirForScope(scope, cwd = process.cwd()) {
   return scope === 'global' ? getSkillsDir() : getProjectSkillsDir(cwd);
+}
+
+function isGitLikeSource(value = '') {
+  const text = String(value || '').trim();
+  return (
+    /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+(?:\/tree\/[^/\s]+)?\/?$/i.test(text) ||
+    /^git@github\.com:[^/\s]+\/[^/\s]+(?:\.git)?$/i.test(text) ||
+    /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(text)
+  );
+}
+
+function normalizeNpxSkillSource(value = '') {
+  const text = String(value || '').trim();
+  const match = text.match(/^npx\s+skills(?:@[\w.-]+)?\s+add\s+(.+)$/i);
+  return match ? match[1].trim().split(/\s+/)[0] : text;
+}
+
+function normalizeGitSource(source = '') {
+  const raw = normalizeNpxSkillSource(source);
+  const githubTree = raw.match(/^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/tree\/([^/\s]+)(?:\/)?$/i);
+  if (githubTree) {
+    const [, owner, repo, branch] = githubTree;
+    return { url: `https://github.com/${owner}/${repo}.git`, branch };
+  }
+  if (/^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/?$/i.test(raw)) {
+    return { url: raw.replace(/\/$/, '') + '.git', branch: null };
+  }
+  if (/^git@github\.com:/i.test(raw)) {
+    return { url: raw.endsWith('.git') ? raw : `${raw}.git`, branch: null };
+  }
+  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(raw)) {
+    return { url: `https://github.com/${raw}.git`, branch: null };
+  }
+  return null;
+}
+
+async function runGitClone(source, destDir) {
+  const normalized = normalizeGitSource(source);
+  if (!normalized) {
+    throw new Error(`unsupported git skill source: ${source}`);
+  }
+  await new Promise((resolve, reject) => {
+    const args = ['clone', '--depth', '1'];
+    if (normalized.branch) args.push('--branch', normalized.branch);
+    args.push(normalized.url, destDir);
+    const child = execFile('git', args, { windowsHide: true }, (error, stdout, stderr) => {
+      if (error) {
+        reject(new Error(`git clone failed: ${stderr || stdout || error.message}`));
+        return;
+      }
+      resolve();
+    });
+    child.stdin?.end();
+  });
 }
 
 function scopeFromSource(source = '') {
@@ -185,7 +239,31 @@ async function resolveSkillSourceDir(sourcePath) {
   throw new Error('skill install supports <skill-dir>, <SKILL.md>, or <skill.tgz>');
 }
 
-async function installSkill(sourcePath, { scope = 'project', cwd = process.cwd() } = {}) {
+async function findSkillDirs(rootDir) {
+  const found = [];
+  async function walk(dir, depth = 0) {
+    if (depth > 5) return;
+    let entries;
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    if (entries.some((entry) => entry.isFile() && entry.name === 'SKILL.md')) {
+      found.push(dir);
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (['.git', 'node_modules', 'dist', 'build'].includes(entry.name)) continue;
+      await walk(path.join(dir, entry.name), depth + 1);
+    }
+  }
+  await walk(rootDir);
+  return found;
+}
+
+export async function installSkill(sourcePath, { scope = 'project', cwd = process.cwd(), sourceLabel = sourcePath } = {}) {
   const resolved = await resolveSkillSourceDir(sourcePath);
   const manifest = await readManifestSafe(resolved.dir);
   const folderName = manifest?.name || path.basename(resolved.dir);
@@ -208,7 +286,7 @@ async function installSkill(sourcePath, { scope = 'project', cwd = process.cwd()
       version: manifest?.version || '0.0.0',
       description: manifest?.description || '',
       enabled: true,
-      source: sourcePath,
+      source: sourceLabel,
       entryFile,
       sha256: hash,
       installedAt: new Date().toISOString()
@@ -221,6 +299,62 @@ async function installSkill(sourcePath, { scope = 'project', cwd = process.cwd()
   }
 
   return folderName;
+}
+
+async function installSkillDirs(skillDirs, { scope, cwd, sourceLabel }) {
+  const installed = [];
+  const skipped = [];
+  for (const dir of skillDirs) {
+    try {
+      installed.push(await installSkill(dir, { scope, cwd, sourceLabel }));
+    } catch (err) {
+      if (/cannot install over builtin skill:/i.test(err.message || '')) {
+        skipped.push({ dir, reason: err.message });
+        continue;
+      }
+      throw err;
+    }
+  }
+  if (installed.length === 0 && skipped.length > 0) {
+    throw new Error(skipped.map((item) => item.reason).join('\n'));
+  }
+  return installed;
+}
+
+export async function installSkillSource(source, { scope = 'project', cwd = process.cwd() } = {}) {
+  const normalizedSource = normalizeNpxSkillSource(source);
+  const tmp = isGitLikeSource(normalizedSource)
+    ? await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-skill-git-'))
+    : null;
+  try {
+    if (tmp) {
+      await runGitClone(normalizedSource, tmp);
+      const skillDirs = await findSkillDirs(tmp);
+      if (skillDirs.length === 0) {
+        throw new Error('No SKILL.md found in git repository');
+      }
+      return await installSkillDirs(skillDirs, { scope, cwd, sourceLabel: normalizedSource });
+    }
+
+    try {
+      const resolved = await resolveSkillSourceDir(normalizedSource);
+      if (resolved.cleanupDir) {
+        await fs.rm(resolved.cleanupDir, { recursive: true, force: true });
+      }
+      return [await installSkill(normalizedSource, { scope, cwd })];
+    } catch (err) {
+      const absSrc = path.resolve(normalizedSource);
+      const stat = await fs.stat(absSrc);
+      if (!stat.isDirectory()) throw err;
+      const skillDirs = await findSkillDirs(absSrc);
+      if (skillDirs.length === 0) throw err;
+      return await installSkillDirs(skillDirs, { scope, cwd, sourceLabel: normalizedSource });
+    }
+  } finally {
+    if (tmp) {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  }
 }
 
 async function setEnabled(name, enabled, { cwd = process.cwd() } = {}) {
@@ -318,12 +452,12 @@ export async function handleSkill(args) {
 
   if (sub === 'install') {
     const { scope, rest: positional } = parseScopeArgs(rest, { defaultScope: 'project' });
-    const sourcePath = positional[0];
+    const sourcePath = positional.join(' ').trim();
     if (!sourcePath) {
       throw new Error('skill install requires <path>');
     }
-    const installedName = await installSkill(sourcePath, { scope });
-    console.log(`Installed skill: ${installedName} (${scope})`);
+    const installedNames = await installSkillSource(sourcePath, { scope });
+    console.log(`Installed skill${installedNames.length === 1 ? '' : 's'}: ${installedNames.join(', ')} (${scope})`);
     return;
   }
 

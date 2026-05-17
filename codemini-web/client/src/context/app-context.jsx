@@ -1265,9 +1265,17 @@ export function AppProvider({ children }) {
     },
 
     toggleTheme: () => {
-      const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-      document.documentElement.dataset.theme = next;
-      localStorage.setItem('codemini-theme', next);
+      const stored = localStorage.getItem('codemini-theme') || 'auto';
+      const cycle = { light: 'dark', dark: 'auto', auto: 'light' };
+      const next = cycle[stored] || 'auto';
+      appActions.setTheme(next);
+    },
+
+    setTheme: (mode) => {
+      localStorage.setItem('codemini-theme', mode);
+      const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+      const resolved = mode === 'auto' ? (mq && mq.matches ? 'dark' : 'light') : mode;
+      document.documentElement.dataset.theme = resolved;
     },
 
     setConfigOpen: (open) => update({ configOpen: open }),

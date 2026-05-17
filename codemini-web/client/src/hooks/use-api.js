@@ -176,11 +176,20 @@ export async function fetchSkillContent(name) {
   return res.json();
 }
 
-export async function createSkill({ name, description, content }) {
+export async function createSkill({ name, description, content, scope }) {
   const res = await api('/api/skills/create', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ name, description, content })
+    body: JSON.stringify({ name, description, content, scope })
+  });
+  return res.json();
+}
+
+export async function installSkill({ source, scope }) {
+  const res = await api('/api/skills/install', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ source, scope })
   });
   return res.json();
 }
@@ -265,13 +274,22 @@ export async function activateSoul(name) {
 }
 
 // ── CodeWiki ──
-export async function fetchCodeWikiReports() {
-  const res = await api('/api/codewiki/reports');
+function codeWikiProjectQuery(project = '') {
+  return project ? `?project=${encodeURIComponent(project)}` : '';
+}
+
+export async function fetchCodeWikiReports(project = '') {
+  const res = await api(`/api/codewiki/reports${codeWikiProjectQuery(project)}`);
   return res.json();
 }
 
-export async function generateCodeWikiReport(depth = 'standard') {
-  const res = await api('/api/codewiki/generate', {
+export async function fetchCodeWikiSymbolGraph(project = '') {
+  const res = await api(`/api/codewiki/symbol-graph${codeWikiProjectQuery(project)}`);
+  return res.json();
+}
+
+export async function generateCodeWikiReport(depth = 'standard', project = '') {
+  const res = await api(`/api/codewiki/generate${codeWikiProjectQuery(project)}`, {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ depth })
@@ -279,8 +297,8 @@ export async function generateCodeWikiReport(depth = 'standard') {
   return res.json();
 }
 
-export async function streamCodeWikiAsk({ question, reportFile = '', onEvent } = {}) {
-  const res = await api('/api/codewiki/ask', {
+export async function streamCodeWikiAsk({ question, reportFile = '', project = '', onEvent } = {}) {
+  const res = await api(`/api/codewiki/ask${codeWikiProjectQuery(project)}`, {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ question, reportFile })
@@ -313,7 +331,7 @@ export async function streamCodeWikiAsk({ question, reportFile = '', onEvent } =
   if (tail) onEvent?.(JSON.parse(tail));
 }
 
-export async function deleteCodeWikiReport(file) {
-  const res = await api(`/api/codewiki/report/${encodeURIComponent(file)}`, { method: 'DELETE' });
+export async function deleteCodeWikiReport(file, project = '') {
+  const res = await api(`/api/codewiki/report/${encodeURIComponent(file)}${codeWikiProjectQuery(project)}`, { method: 'DELETE' });
   return res.json();
 }
