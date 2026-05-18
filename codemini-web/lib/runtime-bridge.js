@@ -134,7 +134,7 @@ function hasThinkingSegment(segments) {
 function normalizeUiUsage(usage) {
   if (!usage || typeof usage !== 'object') return null;
   const out = {};
-  for (const key of ['inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'reasoningOutputTokens', 'requests']) {
+  for (const key of ['inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheMissInputTokens', 'cacheWriteInputTokens', 'reasoningOutputTokens', 'requests']) {
     const value = Number(usage?.[key]);
     if (Number.isFinite(value)) out[key] = Math.max(0, Math.round(value));
   }
@@ -147,7 +147,7 @@ function mergeUiUsage(left, right) {
   if (!a) return b;
   if (!b) return a;
   const out = {};
-  for (const key of ['inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'reasoningOutputTokens', 'requests']) {
+  for (const key of ['inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheMissInputTokens', 'cacheWriteInputTokens', 'reasoningOutputTokens', 'requests']) {
     out[key] = Math.max(0, Math.round(Number(a[key] || 0) + Number(b[key] || 0)));
   }
   return out;

@@ -84,6 +84,13 @@ function formatThoughtDuration(ms) {
   return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
+function formatProcessDuration(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  if (value < 1000) return `${Math.max(1, Math.round(value))}ms`;
+  return formatThoughtDuration(value);
+}
+
 function getThoughtElapsed(segment, tick) {
   if (!segment.isStreaming && Number.isFinite(Number(segment.durationMs))) {
     return Math.max(0, Number(segment.durationMs));
@@ -113,16 +120,23 @@ function ThoughtBlock({ segment }) {
       : t("thought");
 
   return (
-    <div className="my-3 text-(--text-secondary)">
+    <div className="my-3 text-(--text-primary)">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className={cn(COLLAPSE_ROW_CLASS, "font-medium text-(--text-muted) hover:text-(--text-primary)")}
+        className={cn(
+          COLLAPSE_ROW_CLASS,
+          "font-medium",
+        )}
         aria-expanded={open}
       >
         <ChevronRight
           size={14}
-          className={cn(COLLAPSE_CHEVRON_CLASS, "transition-transform", open && "rotate-90")}
+          className={cn(
+            COLLAPSE_CHEVRON_CLASS,
+            "transition-transform",
+            open && "rotate-90",
+          )}
         />
         <span className={COLLAPSE_ICON_CLASS}>
           {segment.isStreaming ? (
@@ -133,15 +147,17 @@ function ThoughtBlock({ segment }) {
         </span>
         <span>{label}</span>
         {segment.isStreaming && elapsed && (
-          <span className="text-(--text-muted)">{elapsed}</span>
+          <span>{elapsed}</span>
         )}
       </button>
       {open && (
-        <StreamdownRenderer
-          text={segment.text}
-          streaming={segment.isStreaming}
-          className="mt-2 pl-[52px] text-[13px] italic leading-6 text-(--text-secondary)"
-        />
+        <div className="relative ml-4.5 mt-1.5 pl-8 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
+          <StreamdownRenderer
+            text={segment.text}
+            streaming={segment.isStreaming}
+            className="pl-5 text-[13px] italic leading-5 text-(--text-secondary)"
+          />
+        </div>
       )}
     </div>
   );
@@ -186,10 +202,17 @@ function getProcessGroupDurationMs(group) {
 
 function shouldCollapseProcessGroups(groups) {
   if (!groups.length || groups.some(isProcessGroupRunning)) return false;
-  const itemCount = groups.reduce((sum, group) => sum + getProcessGroupItemCount(group), 0);
-  const toolCount = groups.reduce((sum, group) => (
-    group.type === "tools" ? sum + Math.max(1, group.cards?.length || 0) : sum
-  ), 0);
+  const itemCount = groups.reduce(
+    (sum, group) => sum + getProcessGroupItemCount(group),
+    0,
+  );
+  const toolCount = groups.reduce(
+    (sum, group) =>
+      group.type === "tools"
+        ? sum + Math.max(1, group.cards?.length || 0)
+        : sum,
+    0,
+  );
   return itemCount >= 4 || (toolCount >= 2 && groups.length >= 3);
 }
 
@@ -204,7 +227,10 @@ function collapseProcessGroups(groups, { disabled = false } = {}) {
       collapsed.push({
         type: "process",
         groups: pending,
-        durationMs: pending.reduce((sum, group) => sum + getProcessGroupDurationMs(group), 0),
+        durationMs: pending.reduce(
+          (sum, group) => sum + getProcessGroupDurationMs(group),
+          0,
+        ),
       });
     } else {
       collapsed.push(...pending);
@@ -371,14 +397,18 @@ function ToolGroup({ cards }) {
 
 function ProcessGroup({ group }) {
   const [expanded, setExpanded] = useState(false);
-  const duration = formatThoughtDuration(group.durationMs);
+  const duration = formatProcessDuration(group.durationMs);
   const label = duration
     ? t("processedFor").replace("{{duration}}", duration)
     : t("processed");
-  const toolCount = group.groups.reduce((sum, item) => (
-    item.type === "tools" ? sum + Math.max(1, item.cards?.length || 0) : sum
-  ), 0);
-  const thoughtCount = group.groups.filter((item) => item.type === "thinking").length;
+  const toolCount = group.groups.reduce(
+    (sum, item) =>
+      item.type === "tools" ? sum + Math.max(1, item.cards?.length || 0) : sum,
+    0,
+  );
+  const thoughtCount = group.groups.filter(
+    (item) => item.type === "thinking",
+  ).length;
 
   return (
     <div className="my-3">
@@ -598,8 +628,10 @@ function MessageActionButton({
 function formatUsageNumber(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) return "0";
-  if (number >= 1_000_000) return `${(number / 1_000_000).toFixed(number >= 10_000_000 ? 0 : 1)}M`;
-  if (number >= 1000) return `${(number / 1000).toFixed(number >= 10_000 ? 0 : 1)}k`;
+  if (number >= 1_000_000)
+    return `${(number / 1_000_000).toFixed(number >= 10_000_000 ? 0 : 1)}M`;
+  if (number >= 1000)
+    return `${(number / 1000).toFixed(number >= 10_000 ? 0 : 1)}k`;
   return String(Math.round(number));
 }
 
@@ -609,25 +641,45 @@ function getUsageSummary(usage) {
   const input = Number(usage.inputTokens || 0);
   const output = Number(usage.outputTokens || 0);
   const cached = Number(usage.cachedInputTokens || 0);
+  const cacheMiss = Number(usage.cacheMissInputTokens || 0);
   const cacheWrite = Number(usage.cacheWriteInputTokens || 0);
   const reasoning = Number(usage.reasoningOutputTokens || 0);
   const requests = Number(usage.requests || 0);
-  if (![total, input, output, cached, cacheWrite, reasoning].some((value) => Number.isFinite(value) && value > 0)) return null;
-  const cacheBase = total || input + output;
+  if (
+    ![total, input, output, cached, cacheWrite, reasoning].some(
+      (value) => Number.isFinite(value) && value > 0,
+    )
+  )
+    return null;
+  const cacheBase = cacheMiss > 0 ? cached + cacheMiss : input;
   const cachePct = cacheBase > 0 ? (cached / cacheBase) * 100 : 0;
-  const labelParts = [`${formatUsageNumber(total || input + output)} ${t("usageTokens")}`];
+  const labelParts = [
+    `${formatUsageNumber(total || input + output)} ${t("usageTokens")}`,
+  ];
   if (cached > 0 || input > 0) {
-    labelParts.push(`${t("usageCache")} ${formatUsageNumber(cached)} (${cachePct.toFixed(1)}%)`);
+    labelParts.push(
+      `${t("usageCache")} ${formatUsageNumber(cached)} (${cachePct.toFixed(1)}%)`,
+    );
   }
   const detailParts = [
     `${t("usageInput")} ${formatUsageNumber(input)}`,
     `${t("usageOutput")} ${formatUsageNumber(output)}`,
     `${t("usageTotal")} ${formatUsageNumber(total || input + output)}`,
   ];
-  if (cached > 0 || input > 0) detailParts.push(`${t("usageCacheHit")} ${formatUsageNumber(cached)} (${cachePct.toFixed(1)}%)`);
-  if (cacheWrite > 0) detailParts.push(`${t("usageCacheWrite")} ${formatUsageNumber(cacheWrite)}`);
-  if (reasoning > 0) detailParts.push(`${t("usageReasoning")} ${formatUsageNumber(reasoning)}`);
-  if (requests > 1) detailParts.push(t("usageRequests").replace("{{count}}", requests));
+  if (cached > 0 || input > 0)
+    detailParts.push(
+      `${t("usageCacheHit")} ${formatUsageNumber(cached)} (${cachePct.toFixed(1)}%)`,
+    );
+  if (cacheMiss > 0)
+    detailParts.push(`${t("usageCacheMiss")} ${formatUsageNumber(cacheMiss)}`);
+  if (cacheWrite > 0)
+    detailParts.push(
+      `${t("usageCacheWrite")} ${formatUsageNumber(cacheWrite)}`,
+    );
+  if (reasoning > 0)
+    detailParts.push(`${t("usageReasoning")} ${formatUsageNumber(reasoning)}`);
+  if (requests > 1)
+    detailParts.push(t("usageRequests").replace("{{count}}", requests));
   return {
     label: labelParts.join(" · "),
     details: detailParts.join(" · "),
@@ -652,7 +704,11 @@ function UsageBadge({ usage }) {
 }
 
 function isMessageComplete(message, renderGroups = []) {
-  if (message?.planStep && !["done", "failed"].includes(String(message.planStep.status || ""))) {
+  if (message?.isComplete === false) return false;
+  if (
+    message?.planStep &&
+    !["done", "failed"].includes(String(message.planStep.status || ""))
+  ) {
     return false;
   }
   const groups = Array.isArray(renderGroups) ? renderGroups : [];
@@ -670,7 +726,23 @@ function isMessageComplete(message, renderGroups = []) {
   return !groups.some(hasStreamingSegment);
 }
 
-function MessageActions({ text, usage = null, align = "left", className }) {
+function shouldShowMessageActions(message, messageComplete) {
+  if (!messageComplete) return false;
+  const planStep = message?.planStep;
+  if (!planStep) return true;
+  return (
+    String(planStep.role || "").toLowerCase() === "summarizer" &&
+    Number(planStep.step) === Number(planStep.total)
+  );
+}
+
+function MessageActions({
+  text,
+  usage = null,
+  showUsage = true,
+  align = "left",
+  className,
+}) {
   const [copied, setCopied] = useState(false);
 
   async function handleCopy() {
@@ -697,7 +769,7 @@ function MessageActions({ text, usage = null, align = "left", className }) {
       >
         <Copy size={17} />
       </MessageActionButton>
-      <UsageBadge usage={usage} />
+      {showUsage && <UsageBadge usage={usage} />}
     </div>
   );
 }
@@ -717,14 +789,13 @@ export function MessageBubble({ message, skills = [] }) {
   const style = ROLE_STYLES[role] || ROLE_STYLES.general;
   const ts = timestamp ? formatTimestamp(timestamp) : "";
 
-  const renderGroups = useMemo(
-    () => {
-      const groups = buildRenderGroups(segments || []);
-      const hasStreamingText = groups.some((group) => group.type === "text" && group.isStreaming);
-      return collapseProcessGroups(groups, { disabled: hasStreamingText });
-    },
-    [segments],
-  );
+  const renderGroups = useMemo(() => {
+    const groups = buildRenderGroups(segments || []);
+    const hasStreamingText = groups.some(
+      (group) => group.type === "text" && group.isStreaming,
+    );
+    return collapseProcessGroups(groups, { disabled: hasStreamingText });
+  }, [segments]);
   const mergedFileChanges = useMemo(
     () => mergeFileChanges(fileChanges || []),
     [fileChanges],
@@ -777,7 +848,9 @@ export function MessageBubble({ message, skills = [] }) {
         ""
       : "";
   const messageText = role === "you" ? youText : getMessageText(message);
-  const messageComplete = role === "you" || isMessageComplete(message, renderGroups);
+  const messageComplete =
+    role === "you" || isMessageComplete(message, renderGroups);
+  const showActions = shouldShowMessageActions(message, messageComplete);
 
   return (
     <div
@@ -793,14 +866,16 @@ export function MessageBubble({ message, skills = [] }) {
             {youText && <UserText text={youText} skills={skills} />}
             {startupTodos && <TodoList todos={startupTodos} />}
           </div>
-          {messageComplete && (
-            <MessageActions
-              text={messageText}
-              usage={usage}
-              align="right"
-              className="mt-1 min-h-8 opacity-0 pointer-events-none transition-opacity group-hover/message:pointer-events-auto group-hover/message:opacity-100 group-focus-within/message:pointer-events-auto group-focus-within/message:opacity-100"
-            />
-          )}
+          <MessageActions
+            text={messageText}
+            usage={usage}
+            showUsage={messageComplete}
+            align="right"
+            className={cn(
+              "mt-1 min-h-8 opacity-0 pointer-events-none transition-opacity group-hover/message:pointer-events-auto group-hover/message:opacity-100 group-focus-within/message:pointer-events-auto group-focus-within/message:opacity-100",
+              !showActions && "hidden",
+            )}
+          />
         </div>
       ) : (
         <div>
@@ -911,9 +986,12 @@ export function MessageBubble({ message, skills = [] }) {
               })}
             </div>
           )}
-          {messageComplete && (
-            <MessageActions text={messageText} usage={usage} className="mt-2 min-h-8" />
-          )}
+          <MessageActions
+            text={messageText}
+            usage={usage}
+            showUsage={showActions}
+            className={cn("mt-2 min-h-8", !showActions && "hidden")}
+          />
         </div>
       )}
     </div>

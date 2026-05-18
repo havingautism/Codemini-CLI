@@ -90,6 +90,7 @@ export const en = {
   usageOutput: 'output',
   usageTotal: 'total',
   usageCacheHit: 'cache hit',
+  usageCacheMiss: 'cache miss',
   usageCacheWrite: 'cache write',
   usageReasoning: 'reasoning',
   usageRequests: '{{count}} requests',

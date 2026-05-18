@@ -99,6 +99,7 @@ export const zh = {
   usageOutput: '输出',
   usageTotal: '总计',
   usageCacheHit: '缓存命中',
+  usageCacheMiss: '缓存未命中',
   usageCacheWrite: '缓存写入',
   usageReasoning: '推理',
   usageRequests: '{{count}} 次请求',

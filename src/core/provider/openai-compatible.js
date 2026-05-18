@@ -145,6 +145,21 @@ function normalizeIncomingToolCallArguments(argumentsValue) {
   }
 }
 
+function extractUsageObject(data) {
+  if (!data || typeof data !== 'object') return null;
+  return data.usage
+    || data.usage_metadata
+    || data.usageMetadata
+    || data.token_usage
+    || data.tokenUsage
+    || data.meta?.tokens
+    || data.meta?.billed_units
+    || data.meta?.billedUnits
+    || data.response?.usage
+    || data.response?.usage_metadata
+    || null;
+}
+
 function sanitizeGatewayMessages(messages) {
   const source = Array.isArray(messages) ? messages : [];
   return source
@@ -371,7 +386,7 @@ export async function createChatCompletion({
       return {
         text: '',
         toolCalls: [],
-        usage: data?.usage || null,
+        usage: extractUsageObject(data),
         incomplete: true
       };
     }
@@ -381,7 +396,7 @@ export async function createChatCompletion({
   return {
     text,
     toolCalls,
-    usage: data?.usage || null,
+    usage: extractUsageObject(data),
     assistantMessage: buildAssistantMessage({
       text,
       toolCalls,
@@ -448,7 +463,7 @@ export async function createChatCompletionStream({
 
   try {
     for await (const chunk of iterateSseEvents(response.body)) {
-    usage = chunk?.usage || usage;
+    usage = extractUsageObject(chunk) || usage;
     const choice0 = chunk?.choices?.[0] || {};
     const delta = choice0?.delta || {};
     const content = delta.content;

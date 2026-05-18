@@ -52,6 +52,7 @@ function sanitizeUsage(usage) {
   copyNumber('outputTokens');
   copyNumber('totalTokens');
   copyNumber('cachedInputTokens');
+  copyNumber('cacheMissInputTokens');
   copyNumber('cacheWriteInputTokens');
   copyNumber('reasoningOutputTokens');
   copyNumber('requests');
@@ -127,10 +128,15 @@ function sanitizeMessage(msg) {
   if (Array.isArray(msg?.plan_transcript)) {
     out.plan_transcript = msg.plan_transcript
       .filter((entry) => entry && typeof entry === 'object')
-      .map((entry) => ({
-        ...entry,
-        segments: Array.isArray(entry.segments) ? entry.segments : []
-      }));
+      .map((entry) => {
+        const { usage, ...rest } = entry;
+        const cleanUsage = sanitizeUsage(usage);
+        return {
+          ...rest,
+          ...(cleanUsage ? { usage: cleanUsage } : {}),
+          segments: Array.isArray(entry.segments) ? entry.segments : []
+        };
+      });
   }
 
   return out;

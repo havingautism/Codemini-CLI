@@ -162,7 +162,13 @@ function normalizeModelUsage(usage) {
     ['token_usage', 'prompt_tokens'],
     ['token_usage', 'input_tokens'],
     ['tokenUsage', 'promptTokens'],
-    ['tokenUsage', 'inputTokens']
+    ['tokenUsage', 'inputTokens'],
+    ['tokens', 'input_tokens'],
+    ['tokens', 'inputTokens'],
+    ['tokens', 'prompt_tokens'],
+    ['tokens', 'promptTokens'],
+    ['billed_units', 'input_tokens'],
+    ['billedUnits', 'inputTokens']
   ]);
   const inputTokens = explicitInputTokens ?? (
     promptCacheHitTokens != null || promptCacheMissTokens != null
@@ -189,7 +195,13 @@ function normalizeModelUsage(usage) {
     ['token_usage', 'completion_tokens'],
     ['token_usage', 'output_tokens'],
     ['tokenUsage', 'completionTokens'],
-    ['tokenUsage', 'outputTokens']
+    ['tokenUsage', 'outputTokens'],
+    ['tokens', 'output_tokens'],
+    ['tokens', 'outputTokens'],
+    ['tokens', 'completion_tokens'],
+    ['tokens', 'completionTokens'],
+    ['billed_units', 'output_tokens'],
+    ['billedUnits', 'outputTokens']
   ]);
   const explicitTotal = firstFiniteNumber(usage, [
     ['total_tokens'],
@@ -200,7 +212,9 @@ function normalizeModelUsage(usage) {
     ['usage_metadata', 'total_token_count'],
     ['usageMetadata', 'totalTokenCount'],
     ['token_usage', 'total_tokens'],
-    ['tokenUsage', 'totalTokens']
+    ['tokenUsage', 'totalTokens'],
+    ['tokens', 'total_tokens'],
+    ['tokens', 'totalTokens']
   ]);
   const cachedInputTokens = firstFiniteNumber(usage, [
     ['prompt_tokens_details', 'cached_tokens'],
@@ -223,10 +237,18 @@ function normalizeModelUsage(usage) {
     ['usageMetadata', 'cachedContentTokenCount'],
     ['token_usage', 'prompt_tokens_details', 'cached_tokens'],
     ['tokenUsage', 'promptTokensDetails', 'cachedTokens'],
+    ['tokens', 'cached_tokens'],
+    ['tokens', 'cachedTokens'],
     ['prompt_cache_hit_tokens'],
     ['promptCacheHitTokens'],
     ['cache_hit_tokens'],
     ['cacheHitTokens']
+  ]);
+  const cacheMissInputTokens = firstFiniteNumber(usage, [
+    ['prompt_cache_miss_tokens'],
+    ['promptCacheMissTokens'],
+    ['cache_miss_tokens'],
+    ['cacheMissTokens']
   ]);
   const cacheWriteInputTokens = firstFiniteNumber(usage, [
     ['cache_creation_input_tokens'],
@@ -254,7 +276,11 @@ function normalizeModelUsage(usage) {
     ['outputTokensDetails', 'reasoningTokens'],
     ['reasoning_tokens'],
     ['reasoningTokens'],
-    ['usage', 'completion_tokens_details', 'reasoning_tokens']
+    ['thoughts_token_count'],
+    ['thoughtsTokenCount'],
+    ['usage', 'completion_tokens_details', 'reasoning_tokens'],
+    ['usage_metadata', 'thoughts_token_count'],
+    ['usageMetadata', 'thoughtsTokenCount']
   ]);
   const totalTokens = explicitTotal ?? (
     inputTokens != null || outputTokens != null
@@ -275,6 +301,7 @@ function normalizeModelUsage(usage) {
     outputTokens: Math.round(outputTokens || 0),
     totalTokens: Math.round(totalTokens || 0),
     cachedInputTokens: Math.round(cachedInputTokens || 0),
+    cacheMissInputTokens: Math.round(cacheMissInputTokens || 0),
     cacheWriteInputTokens: Math.round(cacheWriteInputTokens || 0),
     reasoningOutputTokens: Math.round(reasoningOutputTokens || 0),
     requests: 1,
@@ -289,6 +316,7 @@ function cloneModelUsage(usage) {
     outputTokens: Math.max(0, Math.round(Number(usage.outputTokens || 0))),
     totalTokens: Math.max(0, Math.round(Number(usage.totalTokens || 0))),
     cachedInputTokens: Math.max(0, Math.round(Number(usage.cachedInputTokens || 0))),
+    cacheMissInputTokens: Math.max(0, Math.round(Number(usage.cacheMissInputTokens || 0))),
     cacheWriteInputTokens: Math.max(0, Math.round(Number(usage.cacheWriteInputTokens || 0))),
     reasoningOutputTokens: Math.max(0, Math.round(Number(usage.reasoningOutputTokens || 0))),
     requests: Math.max(0, Math.round(Number(usage.requests || 0))),
@@ -306,6 +334,7 @@ function mergeModelUsage(left, right) {
     outputTokens: a.outputTokens + b.outputTokens,
     totalTokens: a.totalTokens + b.totalTokens,
     cachedInputTokens: a.cachedInputTokens + b.cachedInputTokens,
+    cacheMissInputTokens: a.cacheMissInputTokens + b.cacheMissInputTokens,
     cacheWriteInputTokens: a.cacheWriteInputTokens + b.cacheWriteInputTokens,
     reasoningOutputTokens: a.reasoningOutputTokens + b.reasoningOutputTokens,
     requests: a.requests + b.requests,
@@ -3432,8 +3461,12 @@ function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }
   const toolCardsById = new Map();
   const toolCards = [];
   const source = Array.isArray(messages) ? messages : [];
+  let usage = null;
 
   for (const msg of source) {
+    if (msg?.role === 'assistant' && msg.usage) {
+      usage = mergeModelUsage(usage, msg.usage);
+    }
     if (msg?.role === 'assistant' && Array.isArray(msg.tool_calls)) {
       for (const tc of msg.tool_calls) {
         const id = String(tc?.id || `tool-${toolCards.length + 1}`);
@@ -3476,7 +3509,8 @@ function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }
     title: stepRecord.title || '',
     status: stepRecord.failed ? 'failed' : 'done',
     summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output || '', 160),
-    segments
+    segments,
+    ...(usage ? { usage } : {})
   };
 }
 

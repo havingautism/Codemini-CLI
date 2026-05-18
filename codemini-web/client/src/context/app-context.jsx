@@ -140,7 +140,7 @@ function finishThinkingSegments(segments) {
 function normalizeUsage(usage) {
   if (!usage || typeof usage !== 'object') return null;
   const out = {};
-  for (const key of ['inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'reasoningOutputTokens', 'requests']) {
+  for (const key of ['inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheMissInputTokens', 'cacheWriteInputTokens', 'reasoningOutputTokens', 'requests']) {
     const value = Number(usage?.[key]);
     if (Number.isFinite(value)) out[key] = Math.max(0, Math.round(value));
   }
@@ -153,7 +153,7 @@ function mergeUsage(left, right) {
   if (!a) return b;
   if (!b) return a;
   const out = {};
-  for (const key of ['inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheWriteInputTokens', 'reasoningOutputTokens', 'requests']) {
+  for (const key of ['inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheMissInputTokens', 'cacheWriteInputTokens', 'reasoningOutputTokens', 'requests']) {
     out[key] = Math.max(0, Math.round(Number(a[key] || 0) + Number(b[key] || 0)));
   }
   return out;
@@ -304,6 +304,7 @@ function createPlanStepMessage(event) {
   return {
     id,
     role: event.role || 'general',
+    isComplete: false,
     text: '',
     segments: [],
     skillBadges: [],
@@ -686,8 +687,10 @@ export function AppProvider({ children }) {
         }
         let msgId = activeId;
         if (!msgId) {
-          msgId = addMessage({ role: 'general', timestamp: new Date().toISOString(), text: '', isStreaming: false });
+          msgId = addMessage({ role: 'general', timestamp: new Date().toISOString(), text: '', isStreaming: false, isComplete: false });
           setActiveMsg(msgId);
+        } else {
+          setState(prev => ({ ...prev, messages: prev.messages.map(m => m.id === msgId ? { ...m, isComplete: false } : m) }));
         }
         update({ stage: 'thinking', busy: true, live: true, stageLabel: t('thinking') });
         break;
@@ -834,7 +837,7 @@ export function AppProvider({ children }) {
             ]
           }));
         } else {
-          setState(prev => ({ ...prev, messages: prev.messages.map(m => m.id === msgId ? { ...m, planStep: { ...(m.planStep || {}), status: 'running' } } : m) }));
+          setState(prev => ({ ...prev, messages: prev.messages.map(m => m.id === msgId ? { ...m, isComplete: false, planStep: { ...(m.planStep || {}), status: 'running' } } : m) }));
         }
         setActiveMsg(msgId);
         update({ stage: 'tooling', busy: true, live: true, stageLabel: `${event.role || 'agent'}: ${event.title || ''}`.trim() });
@@ -849,6 +852,7 @@ export function AppProvider({ children }) {
             return {
               ...m,
               segments: finishThinkingSegments(m.segments).map(seg => seg.type === 'text' ? { ...seg, isStreaming: false } : seg),
+              isComplete: true,
               planStep: {
                 ...(m.planStep || {}),
                 status: event.status || 'done',
@@ -987,7 +991,7 @@ export function AppProvider({ children }) {
         if (activeId) {
           setState(prev => ({ ...prev, messages: prev.messages.map(m => (
             m.id === activeId
-              ? { ...m, segments: finishThinkingSegments(m.segments).map(seg => seg.type === 'text' ? { ...seg, isStreaming: false } : seg) }
+              ? { ...m, isComplete: true, segments: finishThinkingSegments(m.segments).map(seg => seg.type === 'text' ? { ...seg, isStreaming: false } : seg) }
               : m
           )) }));
         }
