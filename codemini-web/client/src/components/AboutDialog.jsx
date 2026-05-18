@@ -48,7 +48,7 @@ export function AboutDialog({ open, onOpenChange, version }) {
         <div className="space-y-5">
           <div className="flex items-start gap-4">
             <img
-              src="/codemini_logo.png"
+              src="/logos/codemini_logo.png"
               alt="Codemini"
               className="h-16 w-16 shrink-0 rounded-[14px] border border-(--border-default) bg-(--bg-secondary) p-2"
             />

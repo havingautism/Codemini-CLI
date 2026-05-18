@@ -58,6 +58,10 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
           path: "sdk.provider",
           label: t("provider"),
           options: ["openai-compatible", "anthropic"],
+          optionLogos: {
+            "openai-compatible": "/logos/openai.svg",
+            anthropic: "/logos/claude-color.svg",
+          },
         },
       ],
     },
@@ -271,7 +275,18 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
                           <SelectContent>
                             {key.options.map((opt) => (
                               <SelectItem key={opt} value={opt}>
-                                {opt}
+                                <span className="inline-flex items-center gap-1.5">
+                                  {key.optionLogos?.[opt] && (
+                                    <img
+                                      src={key.optionLogos[opt]}
+                                      alt=""
+                                      width={13}
+                                      height={13}
+                                      className="shrink-0 rounded-sm object-contain"
+                                    />
+                                  )}
+                                  {key.optionLogos ? opt.toUpperCase() : opt}
+                                </span>
                               </SelectItem>
                             ))}
                           </SelectContent>

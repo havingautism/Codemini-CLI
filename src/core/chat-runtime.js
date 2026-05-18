@@ -87,6 +87,261 @@ function nowStamp() {
   return new Date().toISOString().replace(/[:.]/g, '-');
 }
 
+function numberFromPath(obj, pathParts) {
+  let current = obj;
+  for (const part of pathParts) {
+    if (!current || typeof current !== 'object') return null;
+    current = current[part];
+  }
+  const value = Number(current);
+  return Number.isFinite(value) ? Math.max(0, value) : null;
+}
+
+function firstFiniteNumber(obj, paths) {
+  for (const pathParts of paths) {
+    const value = numberFromPath(obj, pathParts);
+    if (value != null) return value;
+  }
+  return null;
+}
+
+function sumFiniteNumbers(obj, paths) {
+  let sum = 0;
+  let found = false;
+  for (const pathParts of paths) {
+    const value = numberFromPath(obj, pathParts);
+    if (value != null) {
+      sum += value;
+      found = true;
+    }
+  }
+  return found ? sum : null;
+}
+
+function collectRawUsage(usage) {
+  if (!usage || typeof usage !== 'object') return [];
+  if (Array.isArray(usage.raw)) {
+    return usage.raw
+      .filter((item) => item && typeof item === 'object')
+      .map((item) => ({ ...item }));
+  }
+  return [{ ...usage }];
+}
+
+function normalizeModelUsage(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  const promptCacheHitTokens = firstFiniteNumber(usage, [
+    ['prompt_cache_hit_tokens'],
+    ['promptCacheHitTokens'],
+    ['cache_hit_tokens'],
+    ['cacheHitTokens']
+  ]);
+  const promptCacheMissTokens = firstFiniteNumber(usage, [
+    ['prompt_cache_miss_tokens'],
+    ['promptCacheMissTokens'],
+    ['cache_miss_tokens'],
+    ['cacheMissTokens']
+  ]);
+  const explicitInputTokens = firstFiniteNumber(usage, [
+    ['prompt_tokens'],
+    ['input_tokens'],
+    ['inputTokens'],
+    ['promptTokens'],
+    ['prompt_token_count'],
+    ['promptTokenCount'],
+    ['input_token_count'],
+    ['inputTokenCount'],
+    ['input_total_tokens'],
+    ['total_input_tokens'],
+    ['usage', 'prompt_tokens'],
+    ['usage', 'input_tokens'],
+    ['usage_metadata', 'prompt_token_count'],
+    ['usage_metadata', 'input_token_count'],
+    ['usageMetadata', 'promptTokenCount'],
+    ['usageMetadata', 'inputTokenCount'],
+    ['token_usage', 'prompt_tokens'],
+    ['token_usage', 'input_tokens'],
+    ['tokenUsage', 'promptTokens'],
+    ['tokenUsage', 'inputTokens'],
+    ['tokens', 'input_tokens'],
+    ['tokens', 'inputTokens'],
+    ['tokens', 'prompt_tokens'],
+    ['tokens', 'promptTokens'],
+    ['billed_units', 'input_tokens'],
+    ['billedUnits', 'inputTokens']
+  ]);
+  const inputTokens = explicitInputTokens ?? (
+    promptCacheHitTokens != null || promptCacheMissTokens != null
+      ? Number(promptCacheHitTokens || 0) + Number(promptCacheMissTokens || 0)
+      : null
+  );
+  const outputTokens = firstFiniteNumber(usage, [
+    ['completion_tokens'],
+    ['output_tokens'],
+    ['outputTokens'],
+    ['completionTokens'],
+    ['completion_token_count'],
+    ['completionTokenCount'],
+    ['output_token_count'],
+    ['outputTokenCount'],
+    ['candidates_token_count'],
+    ['candidatesTokenCount'],
+    ['usage', 'completion_tokens'],
+    ['usage', 'output_tokens'],
+    ['usage_metadata', 'candidates_token_count'],
+    ['usage_metadata', 'output_token_count'],
+    ['usageMetadata', 'candidatesTokenCount'],
+    ['usageMetadata', 'outputTokenCount'],
+    ['token_usage', 'completion_tokens'],
+    ['token_usage', 'output_tokens'],
+    ['tokenUsage', 'completionTokens'],
+    ['tokenUsage', 'outputTokens'],
+    ['tokens', 'output_tokens'],
+    ['tokens', 'outputTokens'],
+    ['tokens', 'completion_tokens'],
+    ['tokens', 'completionTokens'],
+    ['billed_units', 'output_tokens'],
+    ['billedUnits', 'outputTokens']
+  ]);
+  const explicitTotal = firstFiniteNumber(usage, [
+    ['total_tokens'],
+    ['totalTokens'],
+    ['total_token_count'],
+    ['totalTokenCount'],
+    ['usage', 'total_tokens'],
+    ['usage_metadata', 'total_token_count'],
+    ['usageMetadata', 'totalTokenCount'],
+    ['token_usage', 'total_tokens'],
+    ['tokenUsage', 'totalTokens'],
+    ['tokens', 'total_tokens'],
+    ['tokens', 'totalTokens']
+  ]);
+  const cachedInputTokens = firstFiniteNumber(usage, [
+    ['prompt_tokens_details', 'cached_tokens'],
+    ['input_tokens_details', 'cached_tokens'],
+    ['promptTokensDetails', 'cachedTokens'],
+    ['inputTokensDetails', 'cachedTokens'],
+    ['cache_read_input_tokens'],
+    ['cacheReadInputTokens'],
+    ['cache_read_tokens'],
+    ['cacheReadTokens'],
+    ['cached_tokens'],
+    ['cachedTokens'],
+    ['cached_input_tokens'],
+    ['cachedInputTokens'],
+    ['cached_content_token_count'],
+    ['cachedContentTokenCount'],
+    ['usage', 'prompt_tokens_details', 'cached_tokens'],
+    ['usage', 'input_tokens_details', 'cached_tokens'],
+    ['usage_metadata', 'cached_content_token_count'],
+    ['usageMetadata', 'cachedContentTokenCount'],
+    ['token_usage', 'prompt_tokens_details', 'cached_tokens'],
+    ['tokenUsage', 'promptTokensDetails', 'cachedTokens'],
+    ['tokens', 'cached_tokens'],
+    ['tokens', 'cachedTokens'],
+    ['prompt_cache_hit_tokens'],
+    ['promptCacheHitTokens'],
+    ['cache_hit_tokens'],
+    ['cacheHitTokens']
+  ]);
+  const cacheMissInputTokens = firstFiniteNumber(usage, [
+    ['prompt_cache_miss_tokens'],
+    ['promptCacheMissTokens'],
+    ['cache_miss_tokens'],
+    ['cacheMissTokens']
+  ]);
+  const cacheWriteInputTokens = firstFiniteNumber(usage, [
+    ['cache_creation_input_tokens'],
+    ['cacheCreationInputTokens'],
+    ['cache_write_input_tokens'],
+    ['cacheWriteInputTokens'],
+    ['cache_creation_tokens'],
+    ['cacheCreationTokens'],
+    ['usage', 'cache_creation_input_tokens'],
+    ['usage', 'cache_write_input_tokens'],
+    ['token_usage', 'cache_creation_input_tokens'],
+    ['tokenUsage', 'cacheCreationInputTokens']
+  ]) ?? sumFiniteNumbers(usage, [
+    ['cache_creation', 'ephemeral_5m_input_tokens'],
+    ['cache_creation', 'ephemeral_1h_input_tokens'],
+    ['cacheCreation', 'ephemeral5mInputTokens'],
+    ['cacheCreation', 'ephemeral1hInputTokens'],
+    ['usage', 'cache_creation', 'ephemeral_5m_input_tokens'],
+    ['usage', 'cache_creation', 'ephemeral_1h_input_tokens']
+  ]);
+  const reasoningOutputTokens = firstFiniteNumber(usage, [
+    ['completion_tokens_details', 'reasoning_tokens'],
+    ['output_tokens_details', 'reasoning_tokens'],
+    ['completionTokensDetails', 'reasoningTokens'],
+    ['outputTokensDetails', 'reasoningTokens'],
+    ['reasoning_tokens'],
+    ['reasoningTokens'],
+    ['thoughts_token_count'],
+    ['thoughtsTokenCount'],
+    ['usage', 'completion_tokens_details', 'reasoning_tokens'],
+    ['usage_metadata', 'thoughts_token_count'],
+    ['usageMetadata', 'thoughtsTokenCount']
+  ]);
+  const totalTokens = explicitTotal ?? (
+    inputTokens != null || outputTokens != null
+      ? Number(inputTokens || 0) + Number(outputTokens || 0)
+      : null
+  );
+  if (
+    inputTokens == null &&
+    outputTokens == null &&
+    totalTokens == null &&
+    cachedInputTokens == null &&
+    cacheWriteInputTokens == null
+  ) {
+    return null;
+  }
+  return {
+    inputTokens: Math.round(inputTokens || 0),
+    outputTokens: Math.round(outputTokens || 0),
+    totalTokens: Math.round(totalTokens || 0),
+    cachedInputTokens: Math.round(cachedInputTokens || 0),
+    cacheMissInputTokens: Math.round(cacheMissInputTokens || 0),
+    cacheWriteInputTokens: Math.round(cacheWriteInputTokens || 0),
+    reasoningOutputTokens: Math.round(reasoningOutputTokens || 0),
+    requests: 1,
+    raw: collectRawUsage(usage)
+  };
+}
+
+function cloneModelUsage(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  return {
+    inputTokens: Math.max(0, Math.round(Number(usage.inputTokens || 0))),
+    outputTokens: Math.max(0, Math.round(Number(usage.outputTokens || 0))),
+    totalTokens: Math.max(0, Math.round(Number(usage.totalTokens || 0))),
+    cachedInputTokens: Math.max(0, Math.round(Number(usage.cachedInputTokens || 0))),
+    cacheMissInputTokens: Math.max(0, Math.round(Number(usage.cacheMissInputTokens || 0))),
+    cacheWriteInputTokens: Math.max(0, Math.round(Number(usage.cacheWriteInputTokens || 0))),
+    reasoningOutputTokens: Math.max(0, Math.round(Number(usage.reasoningOutputTokens || 0))),
+    requests: Math.max(0, Math.round(Number(usage.requests || 0))),
+    raw: Array.isArray(usage.raw) ? usage.raw.map((item) => ({ ...item })) : []
+  };
+}
+
+function mergeModelUsage(left, right) {
+  const a = cloneModelUsage(left);
+  const b = cloneModelUsage(right);
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    totalTokens: a.totalTokens + b.totalTokens,
+    cachedInputTokens: a.cachedInputTokens + b.cachedInputTokens,
+    cacheMissInputTokens: a.cacheMissInputTokens + b.cacheMissInputTokens,
+    cacheWriteInputTokens: a.cacheWriteInputTokens + b.cacheWriteInputTokens,
+    reasoningOutputTokens: a.reasoningOutputTokens + b.reasoningOutputTokens,
+    requests: a.requests + b.requests,
+    raw: [...a.raw, ...b.raw]
+  };
+}
+
 function prioritizeByPreferredOrder(items, preferredOrder) {
   const source = Array.isArray(items) ? items : [];
   const priorities = new Map((Array.isArray(preferredOrder) ? preferredOrder : []).map((value, index) => [value, index]));
@@ -2892,9 +3147,25 @@ async function askModel({
         current.at = new Date().toISOString();
         if (persistSession) scheduleSessionSave();
       }
-    } else if (event?.type === 'assistant:response') {
+    } else if (event?.type === 'assistant:reasoning_delta') {
       if (activeAssistantIndex >= 0 && session.messages[activeAssistantIndex]) {
         const current = session.messages[activeAssistantIndex];
+        const now = new Date();
+        if (!current.reasoning_started_at) current.reasoning_started_at = now.toISOString();
+        current.reasoning_content = `${current.reasoning_content || ''}${event.text || ''}`;
+        current.reasoning_duration_ms = Math.max(
+          0,
+          now.getTime() - Date.parse(current.reasoning_started_at)
+        );
+        current.at = now.toISOString();
+        if (persistSession) scheduleSessionSave();
+      }
+    } else if (event?.type === 'assistant:response') {
+      const eventUsage = normalizeModelUsage(event.usage || event.assistantMessage?.usage);
+      if (eventUsage) event.usage = eventUsage;
+      if (activeAssistantIndex >= 0 && session.messages[activeAssistantIndex]) {
+        const current = session.messages[activeAssistantIndex];
+        const now = new Date();
         current.content = event.assistantMessage?.content ?? event.text ?? current.content;
         if (typeof event.assistantMessage?.reasoning_content === 'string' && event.assistantMessage.reasoning_content) {
           current.reasoning_content = event.assistantMessage.reasoning_content;
@@ -2905,7 +3176,17 @@ async function askModel({
         if (Array.isArray(event.assistantMessage?.tool_calls) && event.assistantMessage.tool_calls.length > 0) {
           current.tool_calls = event.assistantMessage.tool_calls;
         }
-        current.at = new Date().toISOString();
+        if (eventUsage) {
+          current.usage = mergeModelUsage(current.usage, eventUsage);
+        }
+        if ((current.reasoning_content || current.reasoning_details) && current.reasoning_started_at) {
+          current.reasoning_ended_at = current.reasoning_ended_at || now.toISOString();
+          current.reasoning_duration_ms = Math.max(
+            Number(current.reasoning_duration_ms || 0),
+            Date.parse(current.reasoning_ended_at) - Date.parse(current.reasoning_started_at)
+          );
+        }
+        current.at = now.toISOString();
         if (persistSession) scheduleSessionSave();
       } else {
         const assistantMessage = event.assistantMessage && typeof event.assistantMessage === 'object'
@@ -2920,7 +3201,8 @@ async function askModel({
             : {}),
           ...(Array.isArray(assistantMessage.tool_calls) && assistantMessage.tool_calls.length > 0
             ? { tool_calls: assistantMessage.tool_calls }
-            : {})
+            : {}),
+          ...(eventUsage ? { usage: eventUsage } : {})
         }));
         if (persistSession) scheduleSessionSave();
       }
@@ -3003,6 +3285,10 @@ async function askModel({
         onTextDelta: (delta) => {
           startAssistantStream();
           wrappedAgentEvent({ type: 'assistant:delta', text: delta });
+        },
+        onReasoningDelta: (delta) => {
+          startAssistantStream();
+          wrappedAgentEvent({ type: 'assistant:reasoning_delta', text: delta });
         },
         onToolCallDelta: (toolCall) => {
           startAssistantStream();
@@ -3131,7 +3417,7 @@ async function runSubAgentTask({
     }
     if (
       role !== 'summarizer' &&
-      ['assistant:start', 'assistant:delta', 'assistant:response', 'assistant:tool_call_delta'].includes(String(evt?.type || ''))
+      ['assistant:start', 'assistant:delta', 'assistant:reasoning_delta', 'assistant:response', 'assistant:tool_call_delta'].includes(String(evt?.type || ''))
     ) {
       return;
     }
@@ -3175,8 +3461,12 @@ function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }
   const toolCardsById = new Map();
   const toolCards = [];
   const source = Array.isArray(messages) ? messages : [];
+  let usage = null;
 
   for (const msg of source) {
+    if (msg?.role === 'assistant' && msg.usage) {
+      usage = mergeModelUsage(usage, msg.usage);
+    }
     if (msg?.role === 'assistant' && Array.isArray(msg.tool_calls)) {
       for (const tc of msg.tool_calls) {
         const id = String(tc?.id || `tool-${toolCards.length + 1}`);
@@ -3219,7 +3509,8 @@ function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }
     title: stepRecord.title || '',
     status: stepRecord.failed ? 'failed' : 'done',
     summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output || '', 160),
-    segments
+    segments,
+    ...(usage ? { usage } : {})
   };
 }
 

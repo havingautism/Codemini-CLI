@@ -59,7 +59,7 @@ export function PlanProgress({ steps }) {
                   ? "✗"
                   : step.status === "running"
                     ? "▶"
-                    : step.index + 1}
+                    : i + 1}
             </span>
             <Badge
               variant="outline"

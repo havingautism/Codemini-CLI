@@ -618,6 +618,7 @@ export async function runAgentLoop({
         step: step + 1,
         text: assistantText,
         toolCalls: toolCalls.map((tc) => tc.name),
+        usage: completion.usage || null,
         assistantMessage
       });
     }

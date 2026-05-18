@@ -41,6 +41,29 @@ function normalizeWhitespace(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function sanitizeUsage(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  const out = {};
+  const copyNumber = (from, to = from) => {
+    const value = Number(usage?.[from]);
+    if (Number.isFinite(value)) out[to] = Math.max(0, Math.round(value));
+  };
+  copyNumber('inputTokens');
+  copyNumber('outputTokens');
+  copyNumber('totalTokens');
+  copyNumber('cachedInputTokens');
+  copyNumber('cacheMissInputTokens');
+  copyNumber('cacheWriteInputTokens');
+  copyNumber('reasoningOutputTokens');
+  copyNumber('requests');
+  if (Array.isArray(usage.raw) && usage.raw.length > 0) {
+    out.raw = usage.raw.filter((item) => item && typeof item === 'object').map((item) => ({ ...item }));
+  } else if (usage.raw && typeof usage.raw === 'object') {
+    out.raw = [{ ...usage.raw }];
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 function stripMarkdown(value) {
   return normalizeWhitespace(value)
     .replace(/```[\s\S]*?```/g, ' ')
@@ -80,6 +103,15 @@ function sanitizeMessage(msg) {
   if (typeof msg?.reasoning_content === 'string' && msg.reasoning_content) {
     out.reasoning_content = msg.reasoning_content;
   }
+  if (typeof msg?.reasoning_started_at === 'string' && msg.reasoning_started_at.trim()) {
+    out.reasoning_started_at = msg.reasoning_started_at;
+  }
+  if (typeof msg?.reasoning_ended_at === 'string' && msg.reasoning_ended_at.trim()) {
+    out.reasoning_ended_at = msg.reasoning_ended_at;
+  }
+  if (Number.isFinite(Number(msg?.reasoning_duration_ms))) {
+    out.reasoning_duration_ms = Math.max(0, Math.round(Number(msg.reasoning_duration_ms)));
+  }
   if (Array.isArray(msg?.reasoning_details) && msg.reasoning_details.length > 0) {
     out.reasoning_details = msg.reasoning_details
       .filter((detail) => detail && typeof detail === 'object')
@@ -90,14 +122,21 @@ function sanitizeMessage(msg) {
     const toolCalls = msg.tool_calls.map(sanitizeToolCall).filter(Boolean);
     if (toolCalls.length > 0) out.tool_calls = toolCalls;
   }
+  const usage = sanitizeUsage(msg?.usage);
+  if (usage) out.usage = usage;
 
   if (Array.isArray(msg?.plan_transcript)) {
     out.plan_transcript = msg.plan_transcript
       .filter((entry) => entry && typeof entry === 'object')
-      .map((entry) => ({
-        ...entry,
-        segments: Array.isArray(entry.segments) ? entry.segments : []
-      }));
+      .map((entry) => {
+        const { usage, ...rest } = entry;
+        const cleanUsage = sanitizeUsage(usage);
+        return {
+          ...rest,
+          ...(cleanUsage ? { usage: cleanUsage } : {}),
+          segments: Array.isArray(entry.segments) ? entry.segments : []
+        };
+      });
   }
 
   return out;

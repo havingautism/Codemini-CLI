@@ -61,6 +61,98 @@ function appendTextSegment(segments, delta, isStreaming = true) {
   return [...current, { type: 'text', text: value, isStreaming }];
 }
 
+function appendThinkingSegment(segments, delta, isStreaming = true) {
+  const value = String(delta || '');
+  if (!value) return segments || [];
+  const current = Array.isArray(segments) ? segments : [];
+  const now = new Date().toISOString();
+  const nowMs = Date.parse(now);
+  const last = current[current.length - 1];
+  if (last?.type === 'thinking') {
+    const startedAt = last.startedAt || now;
+    return [
+      ...current.slice(0, -1),
+      {
+        ...last,
+        text: `${last.text || ''}${value}`,
+        isStreaming,
+        startedAt,
+        endedAt: isStreaming ? null : (last.endedAt || now),
+        durationMs: Math.max(Number(last.durationMs || 0), nowMs - Date.parse(startedAt))
+      }
+    ];
+  }
+  return [...current, { type: 'thinking', text: value, isStreaming, startedAt: now, endedAt: isStreaming ? null : now, durationMs: isStreaming ? 0 : null }];
+}
+
+function resolveThinkingDurationMs(seg, endedAt) {
+  const explicit = Number(seg?.durationMs);
+  const startMs = Date.parse(seg?.startedAt || '');
+  const endMs = Date.parse(seg?.endedAt || endedAt || '');
+  const measured = Number.isFinite(startMs) && Number.isFinite(endMs) ? Math.max(0, endMs - startMs) : null;
+  if (Number.isFinite(explicit) && measured != null) return Math.max(explicit, measured);
+  if (Number.isFinite(explicit)) return Math.max(0, explicit);
+  return measured;
+}
+
+function finishThinkingSegments(segments) {
+  const endedAt = new Date().toISOString();
+  return (Array.isArray(segments) ? segments : []).map((seg) => (
+    seg.type === 'thinking'
+      ? {
+          ...seg,
+          isStreaming: false,
+          endedAt: seg.endedAt || endedAt,
+          durationMs: resolveThinkingDurationMs(seg, endedAt)
+        }
+      : seg
+  ));
+}
+
+function getReasoningTextFromAssistantMessage(message = {}) {
+  if (typeof message.reasoning_content === 'string' && message.reasoning_content.trim()) {
+    return message.reasoning_content.trim();
+  }
+  if (!Array.isArray(message.reasoning_details)) return '';
+  return message.reasoning_details
+    .map((block) => {
+      if (!block || typeof block !== 'object') return '';
+      if (block.type === 'thinking') return block.thinking || block.text || '';
+      if (block.type === 'reasoning' || block.type === 'reasoning_content') return block.text || block.reasoning_content || '';
+      if (block.type === 'redacted_thinking') return '[redacted thinking]';
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+}
+
+function hasThinkingSegment(segments) {
+  return (Array.isArray(segments) ? segments : []).some((seg) => seg.type === 'thinking' && String(seg.text || '').trim());
+}
+
+function normalizeUiUsage(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  const out = {};
+  for (const key of ['inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheMissInputTokens', 'cacheWriteInputTokens', 'reasoningOutputTokens', 'requests']) {
+    const value = Number(usage?.[key]);
+    if (Number.isFinite(value)) out[key] = Math.max(0, Math.round(value));
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+function mergeUiUsage(left, right) {
+  const a = normalizeUiUsage(left);
+  const b = normalizeUiUsage(right);
+  if (!a) return b;
+  if (!b) return a;
+  const out = {};
+  for (const key of ['inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheMissInputTokens', 'cacheWriteInputTokens', 'reasoningOutputTokens', 'requests']) {
+    out[key] = Math.max(0, Math.round(Number(a[key] || 0) + Number(b[key] || 0)));
+  }
+  return out;
+}
+
 function createPlanStepUiMessage(event) {
   return {
     id: `plan-step-${event.step}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -214,12 +306,37 @@ export class RuntimeBridge {
         }
         break;
       }
+      case 'assistant:reasoning_delta': {
+        if (this.#uiActiveMsgId && event.text) {
+          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
+            ...message,
+            segments: appendThinkingSegment(message.segments, event.text, true)
+          }));
+        }
+        break;
+      }
       case 'assistant:response': {
+        const reasoningText = getReasoningTextFromAssistantMessage(event.assistantMessage);
+        if (this.#uiActiveMsgId && reasoningText) {
+          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
+            ...message,
+            segments: hasThinkingSegment(message.segments)
+              ? message.segments
+              : appendThinkingSegment(message.segments, reasoningText, false)
+          }));
+        }
         if (this.#uiActiveMsgId && event.text) {
           const text = stripPlanProgressText(event.text);
           this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
             ...message,
             segments: text ? [{ type: 'text', text, isStreaming: false }] : message.segments
+          }));
+        }
+        if (this.#uiActiveMsgId) {
+          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
+            ...message,
+            segments: finishThinkingSegments(message.segments),
+            usage: mergeUiUsage(message.usage, event.usage || event.assistantMessage?.usage) || message.usage || null
           }));
         }
         break;
@@ -382,7 +499,8 @@ export class RuntimeBridge {
       if (this.#uiActiveMsgId) {
         this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
           ...message,
-          segments: message.segments.map((seg) => seg.type === 'text' ? { ...seg, isStreaming: false } : seg)
+          segments: finishThinkingSegments(message.segments)
+            .map((seg) => seg.type === 'text' ? { ...seg, isStreaming: false } : seg)
         }));
       }
       this.#uiActiveMsgId = null;
@@ -476,12 +594,18 @@ export class RuntimeBridge {
       .map(m => ({
         role: m.role,
         content: typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(c => c.text || '').join('') : ''),
+        reasoningContent: typeof m.reasoning_content === 'string' ? m.reasoning_content : '',
+        reasoningDetails: Array.isArray(m.reasoning_details) ? m.reasoning_details : [],
+        reasoningStartedAt: m.reasoning_started_at || null,
+        reasoningEndedAt: m.reasoning_ended_at || null,
+        reasoningDurationMs: Number.isFinite(Number(m.reasoning_duration_ms)) ? Number(m.reasoning_duration_ms) : null,
         toolCalls: m.tool_calls || [],
         toolCallId: m.tool_call_id || null,
         toolSummary: m.role === 'tool' ? summarizeHistoricalToolMessage(m) : null,
         toolDurationMs: Number.isFinite(Number(m.tool_duration_ms)) ? Number(m.tool_duration_ms) : null,
         toolStatus: m.tool_status || null,
         planTranscript: Array.isArray(m.plan_transcript) ? m.plan_transcript : null,
+        usage: normalizeUiUsage(m.usage),
         at: m.at || null
       }));
   }

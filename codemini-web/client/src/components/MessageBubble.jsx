@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
 import { StreamdownRenderer } from "./StreamdownRenderer";
 import { TodoList } from "./TodoList";
@@ -14,7 +14,10 @@ import {
 import {
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Copy,
+  Brain,
   Loader2,
   Moon,
   XCircle,
@@ -65,7 +68,187 @@ const SKILL_BADGE_STYLES = {
   auto: "bg-(--accent-purple-bg) text-(--accent-purple)",
 };
 
-const TOOL_COLLAPSE_THRESHOLD = 3;
+const TOOL_COLLAPSE_THRESHOLD = 1;
+const COLLAPSE_ROW_CLASS =
+  "flex w-full cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover)";
+const COLLAPSE_CHEVRON_CLASS = "size-[14px] shrink-0 text-(--text-muted)";
+const COLLAPSE_ICON_CLASS =
+  "flex size-[18px] shrink-0 items-center justify-center";
+
+function formatThoughtDuration(ms) {
+  if (!Number.isFinite(Number(ms))) return "";
+  const total = Math.max(0, Math.round(Number(ms) / 1000));
+  if (total < 60) return `${total}s`;
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
+function formatProcessDuration(ms) {
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  if (value < 1000) return `${Math.max(1, Math.round(value))}ms`;
+  return formatThoughtDuration(value);
+}
+
+function getThoughtElapsed(segment, tick) {
+  if (!segment.isStreaming && Number.isFinite(Number(segment.durationMs))) {
+    return Math.max(0, Number(segment.durationMs));
+  }
+  const start = Date.parse(segment.startedAt || "");
+  if (!Number.isFinite(start)) return null;
+  const end = segment.isStreaming ? tick : Date.parse(segment.endedAt || "");
+  if (!Number.isFinite(end)) return null;
+  return Math.max(0, end - start);
+}
+
+function ThoughtBlock({ segment }) {
+  const [open, setOpen] = useState(false);
+  const [tick, setTick] = useState(Date.now());
+
+  useEffect(() => {
+    if (!segment.isStreaming) return undefined;
+    const timer = window.setInterval(() => setTick(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [segment.isStreaming]);
+
+  const elapsed = formatThoughtDuration(getThoughtElapsed(segment, tick));
+  const label = segment.isStreaming
+    ? t("thinkingNow")
+    : elapsed
+      ? t("thoughtFor").replace("{{duration}}", elapsed)
+      : t("thought");
+
+  return (
+    <div className="my-3 text-(--text-primary)">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className={cn(
+          COLLAPSE_ROW_CLASS,
+          "font-medium",
+        )}
+        aria-expanded={open}
+      >
+        <ChevronRight
+          size={14}
+          className={cn(
+            COLLAPSE_CHEVRON_CLASS,
+            "transition-transform",
+            open && "rotate-90",
+          )}
+        />
+        <span className={COLLAPSE_ICON_CLASS}>
+          {segment.isStreaming ? (
+            <Loader2 size={14} className="animate-spin text-(--accent-cyan)" />
+          ) : (
+            <Brain size={15} />
+          )}
+        </span>
+        <span>{label}</span>
+        {segment.isStreaming && elapsed && (
+          <span>{elapsed}</span>
+        )}
+      </button>
+      {open && (
+        <div className="relative ml-4.5 mt-1.5 pl-8 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
+          <StreamdownRenderer
+            text={segment.text}
+            streaming={segment.isStreaming}
+            className="pl-5 text-[13px] italic leading-5 text-(--text-secondary)"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function getToolDurationMs(cards = []) {
+  return cards.reduce((sum, card) => {
+    const value = Number(card?.durationMs);
+    return Number.isFinite(value) ? sum + Math.max(0, value) : sum;
+  }, 0);
+}
+
+function getThinkingDurationMs(segment) {
+  const value = Number(segment?.durationMs);
+  if (Number.isFinite(value)) return Math.max(0, value);
+  return getThoughtElapsed(segment, Date.now()) || 0;
+}
+
+function isProcessGroup(group) {
+  return group?.type === "thinking" || group?.type === "tools";
+}
+
+function isProcessGroupRunning(group) {
+  if (group?.type === "thinking") return group.isStreaming;
+  if (group?.type === "tools") {
+    return (group.cards || []).some((card) => card.status === "running");
+  }
+  return false;
+}
+
+function getProcessGroupItemCount(group) {
+  if (group?.type === "thinking") return 1;
+  if (group?.type === "tools") return Math.max(1, group.cards?.length || 0);
+  return 0;
+}
+
+function getProcessGroupDurationMs(group) {
+  if (group?.type === "thinking") return getThinkingDurationMs(group);
+  if (group?.type === "tools") return getToolDurationMs(group.cards || []);
+  return 0;
+}
+
+function shouldCollapseProcessGroups(groups) {
+  if (!groups.length || groups.some(isProcessGroupRunning)) return false;
+  const itemCount = groups.reduce(
+    (sum, group) => sum + getProcessGroupItemCount(group),
+    0,
+  );
+  const toolCount = groups.reduce(
+    (sum, group) =>
+      group.type === "tools"
+        ? sum + Math.max(1, group.cards?.length || 0)
+        : sum,
+    0,
+  );
+  return itemCount >= 4 || (toolCount >= 2 && groups.length >= 3);
+}
+
+function collapseProcessGroups(groups, { disabled = false } = {}) {
+  if (disabled) return groups;
+  const collapsed = [];
+  let pending = [];
+
+  const flush = () => {
+    if (!pending.length) return;
+    if (shouldCollapseProcessGroups(pending)) {
+      collapsed.push({
+        type: "process",
+        groups: pending,
+        durationMs: pending.reduce(
+          (sum, group) => sum + getProcessGroupDurationMs(group),
+          0,
+        ),
+      });
+    } else {
+      collapsed.push(...pending);
+    }
+    pending = [];
+  };
+
+  for (const group of groups) {
+    if (isProcessGroup(group)) {
+      pending.push(group);
+      continue;
+    }
+    flush();
+    collapsed.push(group);
+  }
+  flush();
+  return collapsed;
+}
 
 function getDreamNotice(text) {
   const value = String(text || "");
@@ -149,40 +332,119 @@ function ToolGroup({ cards }) {
   const [expanded, setExpanded] = useState(false);
   const total = cards.length;
   const hasRunningTool = cards.some((card) => card.status === "running");
-  const shouldCollapse = total > TOOL_COLLAPSE_THRESHOLD && !expanded;
-  const hiddenCount = total - TOOL_COLLAPSE_THRESHOLD;
-  const visibleCards = shouldCollapse
-    ? cards.slice(total - TOOL_COLLAPSE_THRESHOLD)
-    : cards;
+  const shouldUseSummaryHeader = total > TOOL_COLLAPSE_THRESHOLD;
+  const runCount = cards.filter((card) => {
+    const name = String(card.name || "").toLowerCase();
+    return name === "run" || name.startsWith("run(");
+  }).length;
+  const summaryLabel =
+    runCount === total
+      ? t("toolGroupCommands").replace("{{count}}", total)
+      : t("toolGroupTools").replace("{{count}}", total);
 
   return (
-    <div className="space-y-2 my-2">
-      {shouldCollapse && hiddenCount > 0 && (
+    <div className="my-2">
+      {shouldUseSummaryHeader && (
         <button
           type="button"
-          className="block w-full py-1.5 px-3 text-[11px] text-(--accent-blue) cursor-pointer text-left bg-transparent border-0"
-          onClick={() => setExpanded(true)}
+          className={COLLAPSE_ROW_CLASS}
+          onClick={() => setExpanded((value) => !value)}
+          aria-expanded={expanded}
         >
-          +{hiddenCount} more tool calls
+          {expanded ? (
+            <ChevronDown size={14} className={COLLAPSE_CHEVRON_CLASS} />
+          ) : (
+            <ChevronRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
+          )}
+          <span className={COLLAPSE_ICON_CLASS}>
+            <span
+              className={cn(
+                "inline-block size-1.5 rounded-full",
+                hasRunningTool
+                  ? "animate-pulse bg-(--accent-blue)"
+                  : "bg-(--accent-green)",
+              )}
+            />
+          </span>
+          <span className="font-medium">{summaryLabel}</span>
+          {/* {!expanded && (
+            <span className="text-(--text-muted)">{t("toolGroupExpand")}</span>
+          )} */}
         </button>
       )}
-      {visibleCards.map((card) => (
-        <ToolCard key={card.id} card={card} />
-      ))}
+      {(!shouldUseSummaryHeader || expanded) && (
+        <div
+          className={cn(
+            "space-y-1",
+            shouldUseSummaryHeader &&
+              "relative ml-4.5 pl-6 mt-2 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)",
+          )}
+        >
+          {cards.map((card) => (
+            <ToolCard key={card.id} card={card} />
+          ))}
+        </div>
+      )}
       {hasRunningTool && (
         <div className="flex items-center gap-2 px-3 py-1.5 text-[11px] text-(--text-muted)">
           <Spinner className="text-(--accent-cyan)" />
           <span>{t("tooling")}</span>
         </div>
       )}
-      {expanded && total > TOOL_COLLAPSE_THRESHOLD && (
-        <button
-          type="button"
-          className="block w-full py-1.5 px-3 text-[11px] text-(--accent-blue) cursor-pointer text-left bg-transparent border-0"
-          onClick={() => setExpanded(false)}
-        >
-          Collapse {hiddenCount} older tool calls
-        </button>
+    </div>
+  );
+}
+
+function ProcessGroup({ group }) {
+  const [expanded, setExpanded] = useState(false);
+  const duration = formatProcessDuration(group.durationMs);
+  const label = duration
+    ? t("processedFor").replace("{{duration}}", duration)
+    : t("processed");
+  const toolCount = group.groups.reduce(
+    (sum, item) =>
+      item.type === "tools" ? sum + Math.max(1, item.cards?.length || 0) : sum,
+    0,
+  );
+  const thoughtCount = group.groups.filter(
+    (item) => item.type === "thinking",
+  ).length;
+
+  return (
+    <div className="my-3">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className={COLLAPSE_ROW_CLASS}
+        aria-expanded={expanded}
+      >
+        {expanded ? (
+          <ChevronDown size={14} className={COLLAPSE_CHEVRON_CLASS} />
+        ) : (
+          <ChevronRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
+        )}
+        <span className={COLLAPSE_ICON_CLASS}>
+          <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
+        </span>
+        <span className="font-medium">{label}</span>
+        <span className="min-w-0 truncate text-(--text-muted)">
+          {t("processedDetails")
+            .replace("{{thoughts}}", thoughtCount)
+            .replace("{{tools}}", toolCount)}
+        </span>
+      </button>
+      {expanded && (
+        <div className="relative ml-4.5 mt-2 space-y-1 pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
+          {group.groups.map((item, index) => {
+            if (item.type === "thinking") {
+              return <ThoughtBlock key={`p-th-${index}`} segment={item} />;
+            }
+            if (item.type === "tools") {
+              return <ToolGroup key={`p-tg-${index}`} cards={item.cards} />;
+            }
+            return null;
+          })}
+        </div>
       )}
     </div>
   );
@@ -235,6 +497,11 @@ function buildRenderGroups(segments) {
         });
       }
       // Empty text between tools: skip, keep accumulating
+    } else if (seg.type === "thinking") {
+      if (seg.text) {
+        flushTools();
+        groups.push({ type: "thinking", ...seg });
+      }
     }
   }
   flushTools();
@@ -358,8 +625,121 @@ function MessageActionButton({
   );
 }
 
+function formatUsageNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "0";
+  if (number >= 1_000_000)
+    return `${(number / 1_000_000).toFixed(number >= 10_000_000 ? 0 : 1)}M`;
+  if (number >= 1000)
+    return `${(number / 1000).toFixed(number >= 10_000 ? 0 : 1)}k`;
+  return String(Math.round(number));
+}
+
+function getUsageSummary(usage) {
+  if (!usage || typeof usage !== "object") return null;
+  const total = Number(usage.totalTokens || 0);
+  const input = Number(usage.inputTokens || 0);
+  const output = Number(usage.outputTokens || 0);
+  const cached = Number(usage.cachedInputTokens || 0);
+  const cacheMiss = Number(usage.cacheMissInputTokens || 0);
+  const cacheWrite = Number(usage.cacheWriteInputTokens || 0);
+  const reasoning = Number(usage.reasoningOutputTokens || 0);
+  const requests = Number(usage.requests || 0);
+  if (
+    ![total, input, output, cached, cacheWrite, reasoning].some(
+      (value) => Number.isFinite(value) && value > 0,
+    )
+  )
+    return null;
+  const cacheBase = cacheMiss > 0 ? cached + cacheMiss : input;
+  const cachePct = cacheBase > 0 ? (cached / cacheBase) * 100 : 0;
+  const labelParts = [
+    `${formatUsageNumber(total || input + output)} ${t("usageTokens")}`,
+  ];
+  if (cached > 0 || input > 0) {
+    labelParts.push(
+      `${t("usageCache")} ${formatUsageNumber(cached)} (${cachePct.toFixed(1)}%)`,
+    );
+  }
+  const detailParts = [
+    `${t("usageInput")} ${formatUsageNumber(input)}`,
+    `${t("usageOutput")} ${formatUsageNumber(output)}`,
+    `${t("usageTotal")} ${formatUsageNumber(total || input + output)}`,
+  ];
+  if (cached > 0 || input > 0)
+    detailParts.push(
+      `${t("usageCacheHit")} ${formatUsageNumber(cached)} (${cachePct.toFixed(1)}%)`,
+    );
+  if (cacheMiss > 0)
+    detailParts.push(`${t("usageCacheMiss")} ${formatUsageNumber(cacheMiss)}`);
+  if (cacheWrite > 0)
+    detailParts.push(
+      `${t("usageCacheWrite")} ${formatUsageNumber(cacheWrite)}`,
+    );
+  if (reasoning > 0)
+    detailParts.push(`${t("usageReasoning")} ${formatUsageNumber(reasoning)}`);
+  if (requests > 1)
+    detailParts.push(t("usageRequests").replace("{{count}}", requests));
+  return {
+    label: labelParts.join(" · "),
+    details: detailParts.join(" · "),
+  };
+}
+
+function UsageBadge({ usage }) {
+  const summary = getUsageSummary(usage);
+  if (!summary) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex h-8 max-w-full items-center truncate rounded-md px-1.5 text-[11px] text-(--text-muted)">
+          {summary.label}
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>
+        {summary.details}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function isMessageComplete(message, renderGroups = []) {
+  if (message?.isComplete === false) return false;
+  if (
+    message?.planStep &&
+    !["done", "failed"].includes(String(message.planStep.status || ""))
+  ) {
+    return false;
+  }
+  const groups = Array.isArray(renderGroups) ? renderGroups : [];
+  const hasStreamingSegment = (segment) => {
+    if (!segment || typeof segment !== "object") return false;
+    if (segment.isStreaming) return true;
+    if (segment.type === "tools") {
+      return (segment.cards || []).some((card) => card.status === "running");
+    }
+    if (segment.type === "process") {
+      return (segment.groups || []).some(hasStreamingSegment);
+    }
+    return false;
+  };
+  return !groups.some(hasStreamingSegment);
+}
+
+function shouldShowMessageActions(message, messageComplete) {
+  if (!messageComplete) return false;
+  const planStep = message?.planStep;
+  if (!planStep) return true;
+  return (
+    String(planStep.role || "").toLowerCase() === "summarizer" &&
+    Number(planStep.step) === Number(planStep.total)
+  );
+}
+
 function MessageActions({
   text,
+  usage = null,
+  showUsage = true,
   align = "left",
   className,
 }) {
@@ -389,14 +769,12 @@ function MessageActions({
       >
         <Copy size={17} />
       </MessageActionButton>
+      {showUsage && <UsageBadge usage={usage} />}
     </div>
   );
 }
 
-export function MessageBubble({
-  message,
-  skills = [],
-}) {
+export function MessageBubble({ message, skills = [] }) {
   const {
     role,
     segments,
@@ -406,14 +784,18 @@ export function MessageBubble({
     text: legacyText,
     timestamp,
     planStep,
+    usage,
   } = message;
   const style = ROLE_STYLES[role] || ROLE_STYLES.general;
   const ts = timestamp ? formatTimestamp(timestamp) : "";
 
-  const renderGroups = useMemo(
-    () => buildRenderGroups(segments || []),
-    [segments],
-  );
+  const renderGroups = useMemo(() => {
+    const groups = buildRenderGroups(segments || []);
+    const hasStreamingText = groups.some(
+      (group) => group.type === "text" && group.isStreaming,
+    );
+    return collapseProcessGroups(groups, { disabled: hasStreamingText });
+  }, [segments]);
   const mergedFileChanges = useMemo(
     () => mergeFileChanges(fileChanges || []),
     [fileChanges],
@@ -444,7 +826,10 @@ export function MessageBubble({
     }
 
     return (
-      <div data-message-id={message.id} className="py-2 px-6 text-xs text-(--text-muted) text-center">
+      <div
+        data-message-id={message.id}
+        className="py-2 px-6 text-xs text-(--text-muted) text-center"
+      >
         <div className="max-w-[860px] mx-auto px-3 py-1">
           {legacyText}
           {startupTodos && <TodoList todos={startupTodos} />}
@@ -463,6 +848,9 @@ export function MessageBubble({
         ""
       : "";
   const messageText = role === "you" ? youText : getMessageText(message);
+  const messageComplete =
+    role === "you" || isMessageComplete(message, renderGroups);
+  const showActions = shouldShowMessageActions(message, messageComplete);
 
   return (
     <div
@@ -480,8 +868,13 @@ export function MessageBubble({
           </div>
           <MessageActions
             text={messageText}
+            usage={usage}
+            showUsage={messageComplete}
             align="right"
-            className="mt-1 min-h-8 opacity-0 pointer-events-none transition-opacity group-hover/message:pointer-events-auto group-hover/message:opacity-100 group-focus-within/message:pointer-events-auto group-focus-within/message:opacity-100"
+            className={cn(
+              "mt-1 min-h-8 opacity-0 pointer-events-none transition-opacity group-hover/message:pointer-events-auto group-hover/message:opacity-100 group-focus-within/message:pointer-events-auto group-focus-within/message:opacity-100",
+              !showActions && "hidden",
+            )}
           />
         </div>
       ) : (
@@ -512,6 +905,12 @@ export function MessageBubble({
             }
             if (group.type === "tools") {
               return <ToolGroup key={`tg-${i}`} cards={group.cards} />;
+            }
+            if (group.type === "thinking") {
+              return <ThoughtBlock key={`th-${i}`} segment={group} />;
+            }
+            if (group.type === "process") {
+              return <ProcessGroup key={`pg-${i}`} group={group} />;
             }
             return null;
           })}
@@ -589,7 +988,9 @@ export function MessageBubble({
           )}
           <MessageActions
             text={messageText}
-            className="mt-2 min-h-8"
+            usage={usage}
+            showUsage={showActions}
+            className={cn("mt-2 min-h-8", !showActions && "hidden")}
           />
         </div>
       )}

@@ -255,7 +255,7 @@ export function Sidebar({
       <div className="shrink-0 px-2.5 pt-3 flex flex-col gap-0.5">
         <div className="mb-2 flex h-10 items-center gap-2.5 px-2">
           <img
-            src="/codemini_logo.png"
+            src="/logos/codemini_logo.png"
             alt=""
             className="size-6 shrink-0 rounded-md"
             draggable={false}

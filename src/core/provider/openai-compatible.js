@@ -145,6 +145,21 @@ function normalizeIncomingToolCallArguments(argumentsValue) {
   }
 }
 
+function extractUsageObject(data) {
+  if (!data || typeof data !== 'object') return null;
+  return data.usage
+    || data.usage_metadata
+    || data.usageMetadata
+    || data.token_usage
+    || data.tokenUsage
+    || data.meta?.tokens
+    || data.meta?.billed_units
+    || data.meta?.billedUnits
+    || data.response?.usage
+    || data.response?.usage_metadata
+    || null;
+}
+
 function sanitizeGatewayMessages(messages) {
   const source = Array.isArray(messages) ? messages : [];
   return source
@@ -223,6 +238,7 @@ function buildPayload({ model, temperature, messages, tools, stream = false }) {
   };
   if (stream) {
     payload.stream = true;
+    payload.stream_options = { include_usage: true };
   }
   if (Array.isArray(tools) && tools.length > 0) {
     payload.tools = tools;
@@ -370,7 +386,7 @@ export async function createChatCompletion({
       return {
         text: '',
         toolCalls: [],
-        usage: data?.usage || null,
+        usage: extractUsageObject(data),
         incomplete: true
       };
     }
@@ -380,7 +396,7 @@ export async function createChatCompletion({
   return {
     text,
     toolCalls,
-    usage: data?.usage || null,
+    usage: extractUsageObject(data),
     assistantMessage: buildAssistantMessage({
       text,
       toolCalls,
@@ -398,6 +414,7 @@ export async function createChatCompletionStream({
   temperature = 0.2,
   tools,
   onTextDelta,
+  onReasoningDelta,
   onToolCallDelta,
   timeoutMs = 1800000,
   maxRetries = 2,
@@ -415,13 +432,25 @@ export async function createChatCompletionStream({
       externalSignal.addEventListener('abort', onAbort, { once: true });
     }
   }
+  const url = buildChatCompletionsUrl(baseUrl);
   const payload = buildPayload({ model, temperature, messages, tools, stream: true });
-  const response = await fetchWithRetry(buildChatCompletionsUrl(baseUrl), {
+  const buildRequest = (bodyPayload) => ({
     method: 'POST',
     headers: createHeaders(apiKey),
-    body: JSON.stringify(payload),
+    body: JSON.stringify(bodyPayload),
     signal: controller.signal
-  }, { maxRetries });
+  });
+  let response = await fetchWithRetry(url, buildRequest(payload), { maxRetries });
+  if (!response.ok && payload.stream_options) {
+    const errorText = await response.text().catch(() => '');
+    if (/\b(stream_options|include_usage|unsupported|unknown|unrecognized|forbidden)\b/i.test(errorText)) {
+      const fallbackPayload = { ...payload };
+      delete fallbackPayload.stream_options;
+      response = await fetchWithRetry(url, buildRequest(fallbackPayload), { maxRetries });
+    } else {
+      throw new Error(`Gateway error ${response.status}: ${errorText || response.statusText}`);
+    }
+  }
   if (!response.ok || !response.body) {
     const text = await response.text().catch(() => '');
     throw new Error(`Gateway error ${response.status}: ${text || response.statusText}`);
@@ -434,13 +463,14 @@ export async function createChatCompletionStream({
 
   try {
     for await (const chunk of iterateSseEvents(response.body)) {
-    usage = chunk?.usage || usage;
+    usage = extractUsageObject(chunk) || usage;
     const choice0 = chunk?.choices?.[0] || {};
     const delta = choice0?.delta || {};
     const content = delta.content;
     const reasoningDelta = extractReasoningContent(delta.reasoning_content);
     if (reasoningDelta) {
       reasoningContent += reasoningDelta;
+      if (onReasoningDelta) onReasoningDelta(reasoningDelta);
     }
     if (isMiniMaxModel(model)) {
       const next = nextMiniMaxVisibleChunk(miniMaxStreamState, content);
