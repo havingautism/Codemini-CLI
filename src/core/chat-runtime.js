@@ -128,7 +128,7 @@ function collectRawUsage(usage) {
   return [{ ...usage }];
 }
 
-function normalizeModelUsage(usage) {
+export function normalizeModelUsage(usage) {
   if (!usage || typeof usage !== 'object') return null;
   const promptCacheHitTokens = firstFiniteNumber(usage, [
     ['prompt_cache_hit_tokens'],
@@ -170,11 +170,12 @@ function normalizeModelUsage(usage) {
     ['billed_units', 'input_tokens'],
     ['billedUnits', 'inputTokens']
   ]);
-  const inputTokens = explicitInputTokens ?? (
-    promptCacheHitTokens != null || promptCacheMissTokens != null
-      ? Number(promptCacheHitTokens || 0) + Number(promptCacheMissTokens || 0)
-      : null
-  );
+  const cacheReadInputTokens = firstFiniteNumber(usage, [
+    ['cache_read_input_tokens'],
+    ['cacheReadInputTokens'],
+    ['cache_read_tokens'],
+    ['cacheReadTokens']
+  ]);
   const outputTokens = firstFiniteNumber(usage, [
     ['completion_tokens'],
     ['output_tokens'],
@@ -244,7 +245,7 @@ function normalizeModelUsage(usage) {
     ['cache_hit_tokens'],
     ['cacheHitTokens']
   ]);
-  const cacheMissInputTokens = firstFiniteNumber(usage, [
+  const explicitCacheMissInputTokens = firstFiniteNumber(usage, [
     ['prompt_cache_miss_tokens'],
     ['promptCacheMissTokens'],
     ['cache_miss_tokens'],
@@ -269,6 +270,22 @@ function normalizeModelUsage(usage) {
     ['usage', 'cache_creation', 'ephemeral_5m_input_tokens'],
     ['usage', 'cache_creation', 'ephemeral_1h_input_tokens']
   ]);
+  const hasAnthropicSplitCacheInput = explicitInputTokens != null
+    && (cacheReadInputTokens != null || cacheWriteInputTokens != null)
+    && promptCacheHitTokens == null;
+  const cacheMissInputTokens = explicitCacheMissInputTokens ?? (
+    hasAnthropicSplitCacheInput
+      ? Number(explicitInputTokens || 0) + Number(cacheWriteInputTokens || 0)
+      : null
+  );
+  const inputTokens = explicitInputTokens != null
+    ? Number(explicitInputTokens || 0)
+      + (hasAnthropicSplitCacheInput ? Number(cacheReadInputTokens || 0) + Number(cacheWriteInputTokens || 0) : 0)
+    : (
+      promptCacheHitTokens != null || promptCacheMissTokens != null
+        ? Number(promptCacheHitTokens || 0) + Number(promptCacheMissTokens || 0)
+        : null
+    );
   const reasoningOutputTokens = firstFiniteNumber(usage, [
     ['completion_tokens_details', 'reasoning_tokens'],
     ['output_tokens_details', 'reasoning_tokens'],
@@ -3143,8 +3160,16 @@ async function askModel({
     } else if (event?.type === 'assistant:delta') {
       if (activeAssistantIndex >= 0 && session.messages[activeAssistantIndex]) {
         const current = session.messages[activeAssistantIndex];
+        const now = new Date();
+        if (current.reasoning_started_at && !current.reasoning_ended_at) {
+          current.reasoning_ended_at = now.toISOString();
+          current.reasoning_duration_ms = Math.max(
+            Number(current.reasoning_duration_ms || 0),
+            Date.parse(current.reasoning_ended_at) - Date.parse(current.reasoning_started_at)
+          );
+        }
         current.content = `${current.content || ''}${event.text || ''}`;
-        current.at = new Date().toISOString();
+        current.at = now.toISOString();
         if (persistSession) scheduleSessionSave();
       }
     } else if (event?.type === 'assistant:reasoning_delta') {
@@ -3207,6 +3232,20 @@ async function askModel({
         if (persistSession) scheduleSessionSave();
       }
       activeAssistantIndex = -1;
+    } else if (event?.type === 'tool:start') {
+      if (activeAssistantIndex >= 0 && session.messages[activeAssistantIndex]) {
+        const current = session.messages[activeAssistantIndex];
+        const now = new Date();
+        if (current.reasoning_started_at && !current.reasoning_ended_at) {
+          current.reasoning_ended_at = now.toISOString();
+          current.reasoning_duration_ms = Math.max(
+            Number(current.reasoning_duration_ms || 0),
+            Date.parse(current.reasoning_ended_at) - Date.parse(current.reasoning_started_at)
+          );
+          current.at = now.toISOString();
+          if (persistSession) scheduleSessionSave();
+        }
+      }
     } else if (event?.type === 'tool:end' || event?.type === 'tool:error' || event?.type === 'tool:blocked') {
       const toolId = String(event.id || '');
       if (toolId) {

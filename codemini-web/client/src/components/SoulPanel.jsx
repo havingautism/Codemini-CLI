@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { Eye, Pencil, Plus, Search, Trash2, Wand2 } from "lucide-react";
+import { Eye, Pencil, Plus, Search, Trash2, Drama } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -265,7 +265,7 @@ export function SoulPanel() {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <Wand2 size={14} className="text-(--text-muted)" />
+              <Drama size={14} className="text-(--text-muted)" />
               <span className="text-[13px] font-medium text-(--text-primary)">
                 {activeSoul?.name || t("noActiveSoul")}
               </span>
@@ -342,9 +342,7 @@ export function SoulPanel() {
         </div>
       )}
 
-      <div
-        className="grid max-h-[420px] gap-2 overflow-y-auto pr-1"
-      >
+      <div className="grid max-h-[420px] gap-2 overflow-y-auto pr-1">
         {filteredSouls.map((soul) => (
           <div
             key={`${soul.scope}-${soul.name}`}

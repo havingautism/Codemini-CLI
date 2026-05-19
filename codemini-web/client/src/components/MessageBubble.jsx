@@ -467,8 +467,195 @@ function mergeFileChanges(fileChanges = []) {
     const currentRank = actionRank[existing.action] || 0;
     const nextRank = actionRank[change.action] || 0;
     if (nextRank > currentRank) existing.action = change.action;
+    if (!existing.diffPreview && change.diffPreview) {
+      existing.diffPreview = change.diffPreview;
+      existing.changedLine = change.changedLine;
+    }
   }
   return order.map((path) => byPath.get(path));
+}
+
+function parseMaybeJson(value) {
+  if (!value) return null;
+  if (typeof value === "object") return value;
+  if (typeof value !== "string") return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function extractToolName(name) {
+  return String(name || "").split(".")[0].toLowerCase();
+}
+
+function extractFileChangeFromToolCard(card) {
+  const toolName = extractToolName(card?.name);
+  if (!["edit", "write", "delete"].includes(toolName)) return null;
+  if (card?.fileChange?.path) return card.fileChange;
+  const result = parseMaybeJson(card?.result);
+  if (!result || typeof result !== "object") return null;
+  if (result.deleted) {
+    const path = String(result.path || "");
+    return path
+      ? { path, action: "delete", linesAdded: 0, linesRemoved: 0 }
+      : null;
+  }
+  if (!("path" in result) || !("action" in result)) return null;
+  const path = String(result.path || "");
+  if (!path) return null;
+  return {
+    path,
+    action: String(result.action || "") === "create" ? "create" : "edit",
+    linesAdded: Number(result.lines_added ?? result.linesAdded ?? 0),
+    linesRemoved: Number(result.lines_removed ?? result.linesRemoved ?? 0),
+    changedLine: Number(result.changed_line ?? result.changedLine ?? 0),
+    diffPreview: String(result.diff_preview ?? result.diffPreview ?? ""),
+  };
+}
+
+function collectFileChangesFromSegments(segments = []) {
+  const changes = [];
+  for (const segment of Array.isArray(segments) ? segments : []) {
+    if (segment?.type === "tools") {
+      for (const card of Array.isArray(segment.cards) ? segment.cards : []) {
+        const change = extractFileChangeFromToolCard(card);
+        if (change?.path) changes.push(change);
+      }
+    }
+    if (segment?.type === "process") {
+      for (const group of Array.isArray(segment.groups) ? segment.groups : []) {
+        changes.push(...collectFileChangesFromSegments([group]));
+      }
+    }
+  }
+  return changes;
+}
+
+function basename(pathText) {
+  const value = String(pathText || "").replace(/\\/g, "/");
+  return value.split("/").filter(Boolean).pop() || value || "file";
+}
+
+function buildFileChangePreviewLines(change) {
+  return String(change?.diffPreview || "")
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      const match = line.match(/^(\d+)\|\s?(.*)$/);
+      return {
+        number: match ? match[1] : "",
+        text: match ? match[2] : line,
+        type: change.action === "delete" ? "remove" : "add",
+      };
+    });
+}
+
+function FileChangePreview({ change }) {
+  const lines = buildFileChangePreviewLines(change);
+  if (!lines.length) return null;
+  return (
+    <div className="overflow-hidden bg-(--bg-primary)">
+      <div className="max-h-[420px] overflow-auto font-mono text-xs leading-6">
+        {lines.map((line, idx) => (
+          <div
+            key={idx}
+            className={cn(
+              "grid min-w-full grid-cols-[52px_max-content] border-l-3",
+              line.type === "remove"
+                ? "border-(--accent-red) bg-(--accent-red-bg)"
+                : "border-(--accent-green) bg-(--accent-green-bg)",
+            )}
+          >
+            <span className="select-none pr-3 text-right text-(--text-muted)">
+              {line.number}
+            </span>
+            <span className="whitespace-pre pr-4 text-(--text-primary)">
+              {line.text || " "}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FileChangesSummary({ changes }) {
+  const [openFiles, setOpenFiles] = useState(() => new Set());
+  const actionColors = {
+    edit: "bg-(--accent-blue-bg) text-(--accent-blue)",
+    create: "bg-(--accent-green-bg) text-(--accent-green)",
+    delete: "bg-(--accent-red-bg) text-(--accent-red)",
+  };
+
+  return (
+    <div className="mt-2 overflow-hidden rounded-lg border border-(--border-default) bg-(--bg-secondary)">
+      {changes.map((c, i) => {
+        const key = `${c.path}-${i}`;
+        const fileOpen = openFiles.has(key);
+        const hasPreview = Boolean(c.diffPreview);
+        return (
+          <div key={key} className="border-t border-(--border-default) first:border-t-0">
+            <button
+              type="button"
+              onClick={() => {
+                if (!hasPreview) return;
+                setOpenFiles((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(key)) next.delete(key);
+                  else next.add(key);
+                  return next;
+                });
+              }}
+              className={cn(
+                "flex w-full items-center gap-2 border-0 bg-transparent px-3 py-2.5 text-left font-mono text-xs",
+                hasPreview
+                  ? "cursor-pointer hover:bg-(--bg-hover)"
+                  : "cursor-default",
+              )}
+            >
+              {hasPreview ? (
+                fileOpen ? (
+                  <ChevronDown size={13} className="shrink-0 text-(--text-muted)" />
+                ) : (
+                  <ChevronRight size={13} className="shrink-0 text-(--text-muted)" />
+                )
+              ) : (
+                <span className="w-[13px] shrink-0" />
+              )}
+              <span
+                className={cn(
+                  "rounded px-[5px] py-px text-[10px] font-semibold",
+                  actionColors[c.action] || "bg-(--muted) text-(--text-muted)",
+                )}
+              >
+                {c.action?.toUpperCase()}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-(--text-primary)">
+                {c.path}
+              </span>
+              {c.linesAdded != null && (
+                <span className="text-[11px] text-(--accent-green)">
+                  +{c.linesAdded}
+                </span>
+              )}
+              {c.linesRemoved != null && (
+                <span className="text-[11px] text-(--accent-red)">
+                  -{c.linesRemoved}
+                </span>
+              )}
+            </button>
+            {fileOpen && (
+              <div className="border-t border-(--border-default)">
+                <FileChangePreview change={c} />
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 // Merge adjacent tool segments (possibly separated by empty text) into merged render groups
@@ -651,7 +838,10 @@ function getUsageSummary(usage) {
     )
   )
     return null;
-  const cacheBase = cacheMiss > 0 ? cached + cacheMiss : input;
+  const cacheBase =
+    cacheMiss > 0 || cacheWrite > 0
+      ? cached + cacheMiss + cacheWrite
+      : input;
   const cachePct = cacheBase > 0 ? (cached / cacheBase) * 100 : 0;
   const labelParts = [
     `${formatUsageNumber(total || input + output)} ${t("usageTokens")}`,
@@ -794,11 +984,21 @@ export function MessageBubble({ message, skills = [] }) {
     const hasStreamingText = groups.some(
       (group) => group.type === "text" && group.isStreaming,
     );
-    return collapseProcessGroups(groups, { disabled: hasStreamingText });
-  }, [segments]);
+    const messageInProgress =
+      message?.isComplete === false ||
+      (message?.planStep &&
+        !["done", "failed"].includes(String(message.planStep.status || "")));
+    return collapseProcessGroups(groups, {
+      disabled: hasStreamingText || messageInProgress,
+    });
+  }, [message?.isComplete, message?.planStep, segments]);
   const mergedFileChanges = useMemo(
-    () => mergeFileChanges(fileChanges || []),
-    [fileChanges],
+    () =>
+      mergeFileChanges([
+        ...(fileChanges || []),
+        ...collectFileChangesFromSegments(segments || []),
+      ]),
+    [fileChanges, segments],
   );
 
   if (role === "divider") {
@@ -944,47 +1144,7 @@ export function MessageBubble({ message, skills = [] }) {
           )}
 
           {mergedFileChanges.length > 0 && (
-            <div className="mt-2 border border-(--border-default) rounded-lg bg-(--bg-secondary) p-3">
-              <div className="text-xs font-semibold text-(--text-secondary) mb-1">
-                {t("fileChanges")}
-              </div>
-              {mergedFileChanges.map((c, i) => {
-                const actionColors = {
-                  edit: "bg-(--accent-blue-bg) text-(--accent-blue)",
-                  create: "bg-(--accent-green-bg) text-(--accent-green)",
-                  delete: "bg-(--accent-red-bg) text-(--accent-red)",
-                };
-                return (
-                  <div
-                    key={i}
-                    className="flex items-center gap-2 text-xs py-0.5 font-mono"
-                  >
-                    <span
-                      className={cn(
-                        "text-[10px] font-semibold px-[5px] py-px rounded",
-                        actionColors[c.action] ||
-                          "bg-(--muted) text-(--text-muted)",
-                      )}
-                    >
-                      {c.action?.toUpperCase()}
-                    </span>
-                    <span className="truncate flex-1 text-(--text-primary)">
-                      {c.path}
-                    </span>
-                    {c.linesAdded != null && (
-                      <span className="text-(--accent-green) text-[11px]">
-                        +{c.linesAdded}
-                      </span>
-                    )}
-                    {c.linesRemoved != null && (
-                      <span className="text-(--accent-red) text-[11px]">
-                        -{c.linesRemoved}
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+            <FileChangesSummary changes={mergedFileChanges} />
           )}
           <MessageActions
             text={messageText}

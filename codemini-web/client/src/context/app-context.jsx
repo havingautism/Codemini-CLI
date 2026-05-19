@@ -182,6 +182,49 @@ function stripPlanProgressText(text) {
   return String(text || '').replace(/(?:^|\n)\[plan\]\s+Step\s+\d+\/\d+\s+->[^\n]*\n?/g, '');
 }
 
+function parseToolResult(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  if (typeof value !== 'string') return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function extractFileChangeFromToolResult(toolName, result) {
+  const name = String(toolName || '').split('.')[0].toLowerCase();
+  if (!['edit', 'write', 'delete'].includes(name) || !result || typeof result !== 'object') return null;
+  if (result.deleted) {
+    const path = String(result.path || '');
+    return path ? { path, action: 'delete', linesAdded: 0, linesRemoved: 0 } : null;
+  }
+  if (!('path' in result) || !('action' in result)) return null;
+  const path = String(result.path || '');
+  if (!path) return null;
+  return {
+    path,
+    action: String(result.action || '') === 'create' ? 'create' : 'edit',
+    linesAdded: Number(result.lines_added ?? result.linesAdded ?? 0),
+    linesRemoved: Number(result.lines_removed ?? result.linesRemoved ?? 0),
+    changedLine: Number(result.changed_line ?? result.changedLine ?? 0),
+    diffPreview: String(result.diff_preview ?? result.diffPreview ?? ''),
+  };
+}
+
+function collectFileChangesFromSegments(segments = []) {
+  const changes = [];
+  for (const segment of Array.isArray(segments) ? segments : []) {
+    if (segment?.type !== 'tools') continue;
+    for (const card of Array.isArray(segment.cards) ? segment.cards : []) {
+      const change = card.fileChange || extractFileChangeFromToolResult(card.name, parseToolResult(card.result));
+      if (change?.path) changes.push(change);
+    }
+  }
+  return changes;
+}
+
 // Helper to update messages immutably while preserving all other state
 function mapMessages(prev, activeId, mapper) {
   return { ...prev, messages: prev.messages.map(m => m.id === activeId ? mapper(m) : m) };
@@ -367,12 +410,13 @@ function createHistoricalPlanStepMessage(block, suffix) {
 }
 
 function createPlanTranscriptMessage(block, suffix) {
+  const segments = Array.isArray(block.segments) ? block.segments : [];
   return {
     id: `plan-transcript-${Date.now()}-${suffix}-${block.step || 0}`,
     role: block.role || 'general',
-    segments: Array.isArray(block.segments) ? block.segments : [],
+    segments,
     skillBadges: [],
-    fileChanges: [],
+    fileChanges: Array.isArray(block.fileChanges) ? block.fileChanges : collectFileChangesFromSegments(segments),
     usage: normalizeUsage(block.usage),
     planStep: {
       step: block.step,
@@ -639,13 +683,19 @@ export function AppProvider({ children }) {
           }
           if (msg.content) assistantGroup.segments.push({ type: 'text', text: msg.content, isStreaming: false });
           if (msg.toolCalls && msg.toolCalls.length) {
+            const cards = msg.toolCalls.map(tc => ({
+              id: tc.id, name: tc.function?.name || tc.name || 'tool',
+              arguments: tc.function?.arguments || tc.arguments || {},
+              status: tc.status || 'done', durationMs: tc.durationMs, summary: tc.summary || '', result: '',
+              ...(tc.fileChange ? { fileChange: tc.fileChange } : {}),
+            }));
+            const toolChanges = collectFileChangesFromSegments([{ type: 'tools', cards }]);
+            if (toolChanges.length) {
+              assistantGroup.fileChanges = [...(assistantGroup.fileChanges || []), ...toolChanges];
+            }
             assistantGroup.segments.push({
               type: 'tools',
-              cards: msg.toolCalls.map(tc => ({
-                id: tc.id, name: tc.function?.name || tc.name || 'tool',
-                arguments: tc.function?.arguments || tc.arguments || {},
-                status: tc.status || 'done', durationMs: tc.durationMs, summary: tc.summary || '', result: '',
-              })),
+              cards,
             });
           }
         } else if (msg.role === 'tool' && assistantGroup) {
@@ -660,6 +710,11 @@ export function AppProvider({ children }) {
             if (msg.toolStatus === 'error') card.status = 'error';
             if (msg.toolStatus === 'blocked') card.status = 'blocked';
             if (msg.content) card.result = msg.content;
+            const change = extractFileChangeFromToolResult(card.name, parseToolResult(msg.content));
+            if (change?.path) {
+              card.fileChange = change;
+              assistantGroup.fileChanges = [...(assistantGroup.fileChanges || []), change];
+            }
             break;
           }
         }
@@ -700,7 +755,7 @@ export function AppProvider({ children }) {
         const delta = stripPlanProgressText(event.text);
         if (activeId && delta) {
           setState(prev => ({ ...prev, messages: prev.messages.map(m =>
-            m.id === activeId ? { ...m, segments: appendDeltaToSegments(m.segments, delta) } : m
+            m.id === activeId ? { ...m, segments: appendDeltaToSegments(finishThinkingSegments(m.segments), delta) } : m
           ) }));
         }
         update({ stage: 'streaming', live: true, stageLabel: t('streaming') });
@@ -751,7 +806,7 @@ export function AppProvider({ children }) {
         update({ stage: 'tooling', live: true, stageLabel: t('tooling') });
         if (activeId) {
           const toolCard = { id: event.id, name: event.name, arguments: event.arguments, status: 'running', durationMs: null, summary: '', result: '' };
-          setState(prev => ({ ...prev, messages: prev.messages.map(m => m.id === activeId ? { ...m, segments: addToolToSegments(m.segments, toolCard) } : m) }));
+          setState(prev => ({ ...prev, messages: prev.messages.map(m => m.id === activeId ? { ...m, segments: addToolToSegments(finishThinkingSegments(m.segments), toolCard) } : m) }));
         }
         break;
       }

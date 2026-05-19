@@ -61,6 +61,16 @@ function appendTextSegment(segments, delta, isStreaming = true) {
   return [...current, { type: 'text', text: value, isStreaming }];
 }
 
+function replaceTextSegment(segments, text, isStreaming = false) {
+  const value = String(text || '');
+  const current = Array.isArray(segments) ? segments : [];
+  const index = current.findLastIndex((seg) => seg?.type === 'text');
+  if (index === -1) return value ? [...current, { type: 'text', text: value, isStreaming }] : current;
+  return current.map((seg, i) => (
+    i === index ? { ...seg, text: value, isStreaming } : seg
+  ));
+}
+
 function appendThinkingSegment(segments, delta, isStreaming = true) {
   const value = String(delta || '');
   if (!value) return segments || [];
@@ -301,7 +311,7 @@ export class RuntimeBridge {
         if (this.#uiActiveMsgId && delta) {
           this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
             ...message,
-            segments: appendTextSegment(message.segments, delta, true)
+            segments: appendTextSegment(finishThinkingSegments(message.segments), delta, true)
           }));
         }
         break;
@@ -329,7 +339,9 @@ export class RuntimeBridge {
           const text = stripPlanProgressText(event.text);
           this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
             ...message,
-            segments: text ? [{ type: 'text', text, isStreaming: false }] : message.segments
+            segments: text
+              ? replaceTextSegment(finishThinkingSegments(message.segments), text, false)
+              : message.segments
           }));
         }
         if (this.#uiActiveMsgId) {
@@ -346,7 +358,7 @@ export class RuntimeBridge {
           const toolCard = { id: event.id, name: event.name, arguments: event.arguments, status: 'running', durationMs: null, summary: '', result: '' };
           this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
             ...message,
-            segments: addToolToSegments(message.segments, toolCard)
+            segments: addToolToSegments(finishThinkingSegments(message.segments), toolCard)
           }));
         }
         break;
@@ -355,11 +367,15 @@ export class RuntimeBridge {
         if (this.#uiActiveMsgId) {
           this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
             ...message,
+            fileChanges: event.fileChange?.path
+              ? [...(Array.isArray(message.fileChanges) ? message.fileChanges : []), event.fileChange]
+              : (Array.isArray(message.fileChanges) ? message.fileChanges : []),
             segments: updateToolInSegments(message.segments, event.id, (card) => ({
               ...card,
               status: 'done',
               durationMs: event.durationMs,
-              summary: event.summary || card.summary
+              summary: event.summary || card.summary,
+              ...(event.fileChange ? { fileChange: event.fileChange } : {})
             }))
           }));
         }

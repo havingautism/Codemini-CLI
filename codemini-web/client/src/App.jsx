@@ -226,7 +226,7 @@ function Shell() {
               <div className="flex items-center gap-3 pt-2 px-3 min-h-[28px] overflow-hidden">
                 {state.versionInfo?.current && (
                   <span className="inline-flex items-center gap-1 text-[11px] text-(--text-muted) shrink-0">
-                    <span className="inline-flex h-2.5 w-3.5 items-center justify-center rounded-[3px] bg-black text-white dark:bg-white dark:text-black">
+                    <span className="inline-flex h-3 w-3.5 items-center justify-center rounded-[3px] bg-black text-white dark:bg-white dark:text-black">
                       <Terminal size={12} strokeWidth={2.5} />
                     </span>
                     Codemini CLI@{state.versionInfo.current}

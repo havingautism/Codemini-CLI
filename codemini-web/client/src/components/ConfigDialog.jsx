@@ -89,7 +89,16 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
     {
       title: t("execution"),
       keys: [
-        { path: "execution.mode", label: t("mode"), options: ["auto", "plan"] },
+        {
+          path: "execution.mode",
+          label: t("mode"),
+          options: ["normal", "auto", "plan"],
+          optionLabels: {
+            normal: t("normalExecutionMode"),
+            auto: t("autoMode"),
+            plan: t("planMode"),
+          },
+        },
         { path: "execution.max_steps", label: t("maxSteps"), type: "number" },
         {
           path: "ui.reply_language",
@@ -285,7 +294,7 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
                                       className="shrink-0 rounded-sm object-contain"
                                     />
                                   )}
-                                  {key.optionLogos ? opt.toUpperCase() : opt}
+                                  {key.optionLabels?.[opt] || (key.optionLogos ? opt.toUpperCase() : opt)}
                                 </span>
                               </SelectItem>
                             ))}

@@ -256,7 +256,9 @@ function extractFileChange(toolName, result) {
       path: String(result.path || ''),
       action: isCreate ? 'create' : 'edit',
       linesAdded: added,
-      linesRemoved: removed
+      linesRemoved: removed,
+      changedLine: Number(result.changed_line || 0),
+      diffPreview: String(result.diff_preview || '')
     };
   }
 
@@ -711,7 +713,7 @@ export async function runAgentLoop({
             });
             approvalArgs = { ...args, _risk: evaluation.risk, _evaluation: evaluation };
             /* LLM says low-risk + allow → auto-approve, skip confirmation panel */
-            if (evaluation.risk === 'low' && evaluation.recommendation === 'allow') {
+            if (executionMode !== 'normal' && evaluation.risk === 'low' && evaluation.recommendation === 'allow') {
               approvalResults.set(call.id, { approved: true, args: approvalArgs });
               continue;
             }

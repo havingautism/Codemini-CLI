@@ -16,6 +16,7 @@ import {
   Check,
   Palette,
   PencilLine,
+  Drama,
 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -308,7 +309,7 @@ export function Sidebar({
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onOpenSouls}
         >
-          <User
+          <Drama
             size={15}
             strokeWidth={2}
             className="text-(--text-secondary) shrink-0"

@@ -996,15 +996,13 @@ async function writeFile(root, args, config = {}) {
       break;
     }
   }
-  const previewStart = Math.max(0, (changeLine || 1) - 1);
-  const previewLines = afterLines.slice(previewStart, previewStart + 6);
   const changed = countChangedLines(before, after);
   return {
     ok: true,
     path: rawPath,
     action: normalizedArgs?.append ? 'append' : existed ? 'overwrite' : 'create',
     changed_line: changeLine || Math.max(1, afterLines.length),
-    diff_preview: previewLines.map((line, idx) => `${previewStart + idx + 1}| ${line}`).join('\n'),
+    diff_preview: afterLines.map((line, idx) => `${idx + 1}| ${line}`).join('\n'),
     lines_added: changed.added,
     lines_removed: changed.removed
   };
@@ -1605,8 +1603,7 @@ function countChangedLines(beforeContent, afterContent) {
 
 function editResult(pathText, action, beforeContent, afterContent, changedLine = 1) {
   const afterLines = splitLines(afterContent);
-  const previewStart = Math.max(0, changedLine - 1);
-  const diffPreview = afterLines.slice(previewStart, previewStart + 6).map((line, idx) => `${previewStart + idx + 1}| ${line}`).join('\n');
+  const diffPreview = afterLines.map((line, idx) => `${idx + 1}| ${line}`).join('\n');
   const changed = countChangedLines(beforeContent, afterContent);
   return {
     ok: true,

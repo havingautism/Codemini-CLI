@@ -140,12 +140,8 @@ function getFileToolMeta(toolName, args, result, summary) {
 function buildPreviewLines(meta) {
   if (!meta) return [];
   if (meta.oldText || meta.newText) {
-    const oldLines = meta.oldText
-      ? meta.oldText.split(/\r?\n/).slice(0, 6)
-      : [];
-    const newLines = meta.newText
-      ? meta.newText.split(/\r?\n/).slice(0, 6)
-      : [];
+    const oldLines = meta.oldText ? meta.oldText.split(/\r?\n/) : [];
+    const newLines = meta.newText ? meta.newText.split(/\r?\n/) : [];
     return [
       ...oldLines.map((text, idx) => ({
         type: "remove",
@@ -157,14 +153,13 @@ function buildPreviewLines(meta) {
         number: meta.changedLine ? meta.changedLine + idx : "",
         text,
       })),
-    ].slice(0, 10);
+    ];
   }
   const preview =
     meta.diffPreview || meta.summary.split("\n").slice(1).join("\n");
   return String(preview || "")
     .split(/\r?\n/)
     .filter(Boolean)
-    .slice(0, 8)
     .map((line) => {
       const match = line.match(/^(\d+)\|\s?(.*)$/);
       return {

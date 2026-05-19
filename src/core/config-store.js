@@ -47,12 +47,8 @@ const DEFAULT_CONFIG = {
       'grep',
       'glob',
       'list',
-      'edit',
-      'write',
-      'run',
       'list_background_tasks',
-      'get_background_task',
-      'stop_background_task'
+      'get_background_task'
     ],
     max_steps: 16
   },
@@ -164,14 +160,11 @@ function normalizePolicyLists(config) {
       'grep',
       'glob',
       'list',
-      'edit',
-      'write',
-      'run',
       'list_background_tasks',
       'get_background_task',
-      'stop_background_task',
       ...rawTools
     ].filter((name) => String(name) !== 'list_files')
+      .filter((name) => !['edit', 'write', 'delete', 'run', 'stop_background_task'].includes(String(name)))
   );
   next.ui = next.ui || {};
   next.ui.language = normalizeUiLanguage(next.ui.language);
