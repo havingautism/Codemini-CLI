@@ -814,7 +814,7 @@ async function main() {
         await bridge.switchRuntime(runtime);
         currentProjectDir = process.cwd();
       }
-      const result = bridge.handleSubmit(`/project-requirements --${normalizedDepth}`);
+      const result = bridge.handleCodeWikiGenerate(`/project-requirements --${normalizedDepth}`);
       jsonResponse(res, result);
       return;
     }

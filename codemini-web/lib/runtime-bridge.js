@@ -163,6 +163,60 @@ function mergeUiUsage(left, right) {
   return out;
 }
 
+function toCodeWikiGenerateProgress(event) {
+  if (!event?.type) return null;
+  const now = new Date().toISOString();
+  if (event.type === 'plan:steps') {
+    return {
+      type: 'codewiki:generate_progress',
+      phase: 'steps',
+      timestamp: now,
+      steps: (Array.isArray(event.steps) ? event.steps : []).map((step, index) => ({
+        index: Number(step.index || index + 1),
+        title: step.title || '',
+        role: step.role || 'general',
+        status: step.status || 'pending'
+      }))
+    };
+  }
+  if (event.type === 'plan:step_start') {
+    return {
+      type: 'codewiki:generate_progress',
+      phase: 'step_start',
+      timestamp: now,
+      step: Number(event.step || 0),
+      total: Number(event.total || 0),
+      role: event.role || 'general',
+      title: event.title || '',
+      status: 'running'
+    };
+  }
+  if (event.type === 'plan:step_done' || event.type === 'plan:progress') {
+    return {
+      type: 'codewiki:generate_progress',
+      phase: event.type === 'plan:step_done' ? 'step_done' : 'step_progress',
+      timestamp: now,
+      step: Number(event.step || 0),
+      total: Number(event.total || 0),
+      role: event.role || 'general',
+      title: event.title || '',
+      status: event.status || (event.type === 'plan:step_done' ? 'done' : 'running'),
+      summary: event.summary || ''
+    };
+  }
+  if (event.type === 'skill:start' || event.type === 'skill:end' || event.type === 'skill:error') {
+    return {
+      type: 'codewiki:generate_progress',
+      phase: event.type.replace('skill:', 'skill_'),
+      timestamp: now,
+      name: event.name || 'project-requirements',
+      status: event.type === 'skill:error' ? 'failed' : event.type === 'skill:end' ? 'done' : 'running',
+      summary: event.summary || ''
+    };
+  }
+  return null;
+}
+
 function createPlanStepUiMessage(event) {
   return {
     id: `plan-step-${event.step}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -529,6 +583,35 @@ export class RuntimeBridge {
         timestamp: new Date().toISOString()
       });
       this.#broadcast({ type: 'submit:done', result: { type: 'error', text: err.message } });
+    }).finally(() => {
+      this.#busy = false;
+      this.#broadcastRuntimeState();
+    });
+    return { accepted: true };
+  }
+
+  handleCodeWikiGenerate(line) {
+    if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    this.#busy = true;
+    this.#broadcastRuntimeState();
+    const emitProgress = (event) => {
+      const progress = toCodeWikiGenerateProgress(event);
+      if (progress) this.#broadcast(progress);
+    };
+    this.#runtime.submit(line, emitProgress, { codeWikiGenerate: true }).then((result) => {
+      this.#broadcast({
+        type: 'codewiki:generate_done',
+        result: {
+          type: result?.type || 'assistant',
+          aborted: !!result?.aborted,
+          text: result?.text || ''
+        }
+      });
+    }).catch((err) => {
+      this.#broadcast({
+        type: 'codewiki:generate_error',
+        message: err?.message || 'CodeWiki generation failed'
+      });
     }).finally(() => {
       this.#busy = false;
       this.#broadcastRuntimeState();

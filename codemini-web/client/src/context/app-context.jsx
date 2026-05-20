@@ -45,6 +45,7 @@ const initialState = {
   config: null, configStatus: null, configOpen: false, projectOpen: false, skillsOpen: false, soulsOpen: false, aboutOpen: false, gitDiffOpen: false,
   sessions: [], projectCwd: null, isGeneral: false, history: [], skills: [], gitInfo: null, gitBatch: {},
   codewikiProjectPath: '',
+  codewikiGeneration: { status: 'idle', updatedAt: null, error: '' },
   versionInfo: null, updateStatus: null,
   initialLoading: true, sessionsLoading: false, messagesLoading: false,
 };
@@ -408,6 +409,48 @@ function createPlanTranscriptMessage(block, suffix) {
       summary: block.summary || '',
     },
   };
+}
+
+function normalizeCodeWikiStep(step, index = 0) {
+  return {
+    index: Number(step?.index || step?.step || index + 1),
+    title: step?.title || '',
+    role: step?.role || 'general',
+    status: step?.status || 'pending',
+  };
+}
+
+function applyCodeWikiProgressToSteps(steps, event) {
+  const current = Array.isArray(steps) ? steps : [];
+  if (event.phase === 'steps') {
+    return (Array.isArray(event.steps) ? event.steps : []).map(normalizeCodeWikiStep);
+  }
+  const stepNumber = Number(event.step || 0);
+  if (!stepNumber) return current;
+  const status = event.status || (event.phase === 'step_done' ? 'done' : 'running');
+  let found = false;
+  const next = current.map((step, index) => {
+    const normalized = normalizeCodeWikiStep(step, index);
+    if (Number(normalized.index) !== stepNumber) return normalized;
+    found = true;
+    return {
+      ...normalized,
+      title: event.title || normalized.title,
+      role: event.role || normalized.role,
+      status,
+      summary: event.summary || normalized.summary || '',
+    };
+  });
+  if (!found) {
+    next.push({
+      index: stepNumber,
+      title: event.title || '',
+      role: event.role || 'general',
+      status,
+      summary: event.summary || '',
+    });
+  }
+  return next.sort((a, b) => Number(a.index || 0) - Number(b.index || 0));
 }
 
 export function AppProvider({ children }) {
@@ -1089,8 +1132,49 @@ export function AppProvider({ children }) {
         break;
       }
 
+      case 'codewiki:generate_progress': {
+        const label = event.title || event.summary || event.name || stateRef.current.stageLabel || t('generatingCodeWiki');
+        setState(prev => ({
+          ...prev,
+          stage: 'tooling',
+          live: true,
+          busy: true,
+          stageLabel: label,
+          planSteps: applyCodeWikiProgressToSteps(prev.planSteps, event),
+          codewikiGeneration: { status: 'running', updatedAt: event.timestamp || new Date().toISOString(), error: '' }
+        }));
+        break;
+      }
+
+      case 'codewiki:generate_done': {
+        setState(prev => ({
+          ...prev,
+          stage: 'idle',
+          live: false,
+          busy: false,
+          stageLabel: '',
+          planSteps: [],
+          codewikiGeneration: { status: 'done', updatedAt: new Date().toISOString(), error: '' }
+        }));
+        loadSessions();
+        break;
+      }
+
+      case 'codewiki:generate_error': {
+        setState(prev => ({
+          ...prev,
+          stage: 'idle',
+          live: false,
+          busy: false,
+          stageLabel: event.message || '',
+          planSteps: [],
+          codewikiGeneration: { status: 'error', updatedAt: new Date().toISOString(), error: event.message || '' }
+        }));
+        break;
+      }
+
       case 'runtime:switched': {
-        setState(prev => ({ ...prev, messages: [], planSteps: [], pendingPlanApproval: null, pendingReflectApproval: null, runtimeActivities: [] }));
+        setState(prev => ({ ...prev, messages: [], planSteps: [], pendingPlanApproval: null, pendingReflectApproval: null, runtimeActivities: [], codewikiGeneration: { status: 'idle', updatedAt: null, error: '' } }));
         activeMsgRef.current = null;
         pendingChangesRef.current = [];
         loadState();

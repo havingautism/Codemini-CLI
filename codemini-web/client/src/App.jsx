@@ -165,6 +165,7 @@ function Shell() {
               busy={state.busy}
               planSteps={state.planSteps}
               stageLabel={state.stageLabel}
+              generationStatus={state.codewikiGeneration}
             />
           </Suspense>
         ) : (

@@ -374,6 +374,17 @@ function normalizeUiLocale(value) {
   return String(value || '').toLowerCase().startsWith('en') ? 'en' : 'zh';
 }
 
+function formatLocalDateTimeSlug(date = new Date()) {
+  const value = date instanceof Date ? date : new Date(date);
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  const hour = String(value.getHours()).padStart(2, '0');
+  const minute = String(value.getMinutes()).padStart(2, '0');
+  const second = String(value.getSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day}-${hour}-${minute}-${second}`;
+}
+
 function getCompletionCopy(language = 'zh') {
   const lang = normalizeUiLocale(language);
   return {
@@ -4002,14 +4013,13 @@ function renderProjectRequirementsSectionContract(ignoredSections = []) {
   return lines.join('\n');
 }
 
-function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = {}) {
+function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = {}, reportSlug = formatLocalDateTimeSlug()) {
   const options = parseProjectRequirementsOptions(args);
   const userArgs = options.raw;
   const requestedFocus = userArgs ? `User request/focus: ${userArgs}` : 'User request/focus: full workspace requirements report.';
   const replyLanguageName = getReplyLanguageName(config);
-  const reportDate = formatLocalDate();
-  const reportPath = `docs/requirements/${reportDate}-project-requirements.html`;
-  const companionPath = `docs/requirements/${reportDate}-project-requirements.md`;
+  const reportPath = `docs/requirements/${reportSlug}-project-requirements.html`;
+  const companionPath = `docs/requirements/${reportSlug}-project-requirements.md`;
   const reportContract = [
     requestedFocus,
     `Reply language: write generated report prose, UI labels inserted into the report, review notes, and final user-facing status in ${replyLanguageName} unless the user explicitly requested a different language. Do not translate REQUIREMENTS_* marker names or source code identifiers.`,
@@ -4331,11 +4341,11 @@ async function runProjectRequirementsPipeline({
   const options = parseProjectRequirementsOptions(parsedInput.args);
   const userFocus = options.raw;
   const goal = userFocus ? `project requirements report: ${userFocus}` : 'project requirements report';
-  const reportDate = formatLocalDate();
-  const reportPath = `docs/requirements/${reportDate}-project-requirements.html`;
-  const companionPath = `docs/requirements/${reportDate}-project-requirements.md`;
-  const manifestPath = `docs/requirements/${reportDate}-project-requirements.manifest.json`;
-  const steps = buildProjectRequirementsSteps(renderedSkillPrompt, parsedInput.args, config);
+  const reportSlug = formatLocalDateTimeSlug();
+  const reportPath = `docs/requirements/${reportSlug}-project-requirements.html`;
+  const companionPath = `docs/requirements/${reportSlug}-project-requirements.md`;
+  const manifestPath = `docs/requirements/${reportSlug}-project-requirements.manifest.json`;
+  const steps = buildProjectRequirementsSteps(renderedSkillPrompt, parsedInput.args, config, reportSlug);
   const planFile = await writeMarkdownInProjectDir(
     'plans',
     'project-requirements-pipeline',
@@ -5377,6 +5387,7 @@ export async function createChatRuntime({
     const activeReplySystemPrompt = await buildActiveSystemPrompt();
     const parsedInput = parseInput(line);
     const readOnlyCodeWiki = options?.readOnlyCodeWiki === true;
+    const codeWikiGenerate = options?.codeWikiGenerate === true;
     const maybeAutoDreamFromRuntime = async () => {
       const threshold = Number(config?.memory?.auto_dream_threshold ?? 10);
       if (!(threshold > 0)) return null;
@@ -5410,7 +5421,7 @@ export async function createChatRuntime({
       }
     };
     try {
-      if (!readOnlyCodeWiki && shouldPersistInputHistory(parsedInput)) {
+      if (!readOnlyCodeWiki && !codeWikiGenerate && shouldPersistInputHistory(parsedInput)) {
         await appendInputHistory(line);
       }
     } catch {
