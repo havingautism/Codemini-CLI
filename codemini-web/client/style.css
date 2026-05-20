@@ -1144,7 +1144,54 @@
   content: none !important;
 }
 
-/* ── Home printing press animation ── */
+/* ── Home empty-state banner animations ── */
+.codemini-home-visual,
+.codemini-home-visual * {
+  box-sizing: border-box;
+}
+
+.codemini-home-visual {
+  --press-bg: #86a6f9;
+  --press-paper: #e3e4e8;
+  --press-paper-muted: #c7cad1;
+  --press-ink: #17181c;
+  --press-roll: #2e3138;
+  --press-roll-core: #17181c;
+  --banner-accent: #8bd5ff;
+  --banner-warm: #ffd166;
+
+  position: relative;
+  width: 100%;
+  height: clamp(150px, 28vw, 230px);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border-default) 72%, transparent);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 22% 18%, rgba(255, 255, 255, 0.34), transparent 32%),
+    linear-gradient(135deg, color-mix(in srgb, var(--press-bg) 88%, white), var(--press-bg));
+  color: var(--press-ink);
+  font-family: var(--font-mono);
+  font-size: clamp(6px, 1.25vw, 10px);
+  line-height: 1.5;
+  box-shadow: var(--shadow-default);
+}
+
+[data-theme="dark"] .codemini-home-visual {
+  --press-bg: #17203a;
+  --press-paper: #d7dce8;
+  --press-paper-muted: #9da8bc;
+  --press-ink: #111827;
+  --press-roll: #0f172a;
+  --press-roll-core: #020617;
+  --banner-accent: #38bdf8;
+  --banner-warm: #fbbf24;
+
+  background:
+    radial-gradient(circle at 18% 16%, rgba(134, 166, 249, 0.2), transparent 34%),
+    linear-gradient(135deg, #202b4a, var(--press-bg));
+  box-shadow: none;
+}
+
 .codemini-press,
 .codemini-press * {
   box-sizing: border-box;
@@ -1444,7 +1491,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .codemini-press .sheet::before {
+  .codemini-press .sheet::before,
+  .codemini-home-visual * {
     animation: none;
   }
 }

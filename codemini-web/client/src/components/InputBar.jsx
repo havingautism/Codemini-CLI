@@ -425,7 +425,6 @@ export function InputBar({
   disabledReason = "",
   runtimeState,
   history: externalHistory,
-  onCompletionRequest,
   onOpenProject,
   projectCwd,
 }) {
@@ -525,11 +524,8 @@ export function InputBar({
         setSlashOpen(false);
       }
 
-      if (val.startsWith("/") && onCompletionRequest) {
-        onCompletionRequest(val);
-      }
     },
-    [onCompletionRequest],
+    [],
   );
 
   const handleCommandSelect = useCallback((insert) => {

@@ -76,18 +76,18 @@ const COLLAPSE_ICON_CLASS =
   "flex size-[18px] shrink-0 items-center justify-center";
 
 function formatThoughtDuration(ms) {
-  if (!Number.isFinite(Number(ms))) return "";
-  const total = Math.max(0, Math.round(Number(ms) / 1000));
-  if (total < 60) return `${total}s`;
-  const minutes = Math.floor(total / 60);
-  const seconds = total % 60;
+  const value = Number(ms);
+  if (!Number.isFinite(value)) return "";
+  const totalSeconds = value > 0 ? Math.max(0.1, value / 1000) : 0;
+  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.floor(totalSeconds % 60);
   return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
 function formatProcessDuration(ms) {
   const value = Number(ms);
   if (!Number.isFinite(value) || value <= 0) return "";
-  if (value < 1000) return `${Math.max(1, Math.round(value))}ms`;
   return formatThoughtDuration(value);
 }
 
@@ -453,10 +453,21 @@ function ProcessGroup({ group }) {
 function mergeFileChanges(fileChanges = []) {
   const byPath = new Map();
   const order = [];
+  const seen = new Set();
   const actionRank = { delete: 3, create: 2, edit: 1 };
   for (const change of fileChanges) {
     const path = String(change?.path || "");
     if (!path) continue;
+    const fingerprint = JSON.stringify({
+      path,
+      action: change.action || "",
+      linesAdded: Number(change.linesAdded || 0),
+      linesRemoved: Number(change.linesRemoved || 0),
+      changedLine: Number(change.changedLine || 0),
+      diffPreview: change.diffPreview || "",
+    });
+    if (seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
     if (!byPath.has(path)) {
       byPath.set(path, { ...change, linesAdded: 0, linesRemoved: 0 });
       order.push(path);
@@ -475,64 +486,6 @@ function mergeFileChanges(fileChanges = []) {
   return order.map((path) => byPath.get(path));
 }
 
-function parseMaybeJson(value) {
-  if (!value) return null;
-  if (typeof value === "object") return value;
-  if (typeof value !== "string") return null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
-}
-
-function extractToolName(name) {
-  return String(name || "").split(".")[0].toLowerCase();
-}
-
-function extractFileChangeFromToolCard(card) {
-  const toolName = extractToolName(card?.name);
-  if (!["edit", "write", "delete"].includes(toolName)) return null;
-  if (card?.fileChange?.path) return card.fileChange;
-  const result = parseMaybeJson(card?.result);
-  if (!result || typeof result !== "object") return null;
-  if (result.deleted) {
-    const path = String(result.path || "");
-    return path
-      ? { path, action: "delete", linesAdded: 0, linesRemoved: 0 }
-      : null;
-  }
-  if (!("path" in result) || !("action" in result)) return null;
-  const path = String(result.path || "");
-  if (!path) return null;
-  return {
-    path,
-    action: String(result.action || "") === "create" ? "create" : "edit",
-    linesAdded: Number(result.lines_added ?? result.linesAdded ?? 0),
-    linesRemoved: Number(result.lines_removed ?? result.linesRemoved ?? 0),
-    changedLine: Number(result.changed_line ?? result.changedLine ?? 0),
-    diffPreview: String(result.diff_preview ?? result.diffPreview ?? ""),
-  };
-}
-
-function collectFileChangesFromSegments(segments = []) {
-  const changes = [];
-  for (const segment of Array.isArray(segments) ? segments : []) {
-    if (segment?.type === "tools") {
-      for (const card of Array.isArray(segment.cards) ? segment.cards : []) {
-        const change = extractFileChangeFromToolCard(card);
-        if (change?.path) changes.push(change);
-      }
-    }
-    if (segment?.type === "process") {
-      for (const group of Array.isArray(segment.groups) ? segment.groups : []) {
-        changes.push(...collectFileChangesFromSegments([group]));
-      }
-    }
-  }
-  return changes;
-}
-
 function basename(pathText) {
   const value = String(pathText || "").replace(/\\/g, "/");
   return value.split("/").filter(Boolean).pop() || value || "file";
@@ -543,6 +496,14 @@ function buildFileChangePreviewLines(change) {
     .split(/\r?\n/)
     .filter(Boolean)
     .map((line) => {
+      const signedMatch = line.match(/^([+-])(\d+)?\|\s?(.*)$/);
+      if (signedMatch) {
+        return {
+          number: signedMatch[2] || "",
+          text: signedMatch[3] || "",
+          type: signedMatch[1] === "-" ? "remove" : "add",
+        };
+      }
       const match = line.match(/^(\d+)\|\s?(.*)$/);
       return {
         number: match ? match[1] : "",
@@ -993,12 +954,8 @@ export function MessageBubble({ message, skills = [] }) {
     });
   }, [message?.isComplete, message?.planStep, segments]);
   const mergedFileChanges = useMemo(
-    () =>
-      mergeFileChanges([
-        ...(fileChanges || []),
-        ...collectFileChangesFromSegments(segments || []),
-      ]),
-    [fileChanges, segments],
+    () => mergeFileChanges(fileChanges || []),
+    [fileChanges],
   );
 
   if (role === "divider") {

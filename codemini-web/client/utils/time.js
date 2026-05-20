@@ -1,7 +1,7 @@
 export function formatDuration(ms) {
-  if (ms == null || ms < 0) return '';
-  if (ms < 1000) return `${ms}ms`;
-  const sec = ms / 1000;
+  const value = Number(ms);
+  if (!Number.isFinite(value) || value < 0) return '';
+  const sec = value > 0 ? Math.max(0.1, value / 1000) : 0;
   if (sec < 60) return `${sec.toFixed(1)}s`;
   const min = Math.floor(sec / 60);
   const remain = Math.floor(sec % 60);

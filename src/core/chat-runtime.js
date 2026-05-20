@@ -3136,6 +3136,37 @@ async function askModel({
 
   let activeAssistantIndex = -1;
   const pendingToolMeta = new Map();
+  const normalizeFileChange = (change) => {
+    if (!change || typeof change !== 'object') return null;
+    const path = String(change.path || '').trim();
+    if (!path) return null;
+    const action = String(change.action || '').trim();
+    return {
+      path,
+      action: action === 'create' || action === 'delete' ? action : 'edit',
+      linesAdded: Number(change.linesAdded || 0),
+      linesRemoved: Number(change.linesRemoved || 0),
+      changedLine: Number(change.changedLine || 0),
+      diffPreview: String(change.diffPreview || '')
+    };
+  };
+  const fileChangeFingerprint = (change) => JSON.stringify({
+    path: change.path,
+    action: change.action,
+    linesAdded: Number(change.linesAdded || 0),
+    linesRemoved: Number(change.linesRemoved || 0),
+    changedLine: Number(change.changedLine || 0),
+    diffPreview: String(change.diffPreview || '')
+  });
+  const appendUniqueFileChange = (message, fileChange) => {
+    const existing = Array.isArray(message.file_changes) ? message.file_changes : [];
+    const nextKey = fileChangeFingerprint(fileChange);
+    if (existing.some((change) => fileChangeFingerprint(normalizeFileChange(change) || {}) === nextKey)) {
+      message.file_changes = existing;
+      return;
+    }
+    message.file_changes = [...existing, fileChange];
+  };
   const attachToolMetaToSessionCall = (toolId, meta = {}) => {
     if (!toolId) return false;
     for (let i = session.messages.length - 1; i >= 0; i -= 1) {
@@ -3146,6 +3177,11 @@ async function askModel({
       if (Number.isFinite(Number(meta.durationMs))) call.durationMs = Number(meta.durationMs);
       if (typeof meta.summary === 'string' && meta.summary.trim()) call.summary = meta.summary.trim();
       if (typeof meta.status === 'string' && meta.status.trim()) call.status = meta.status.trim();
+      const fileChange = normalizeFileChange(meta.fileChange);
+      if (fileChange) {
+        call.fileChange = fileChange;
+        appendUniqueFileChange(msg, fileChange);
+      }
       msg.at = new Date().toISOString();
       return true;
     }
@@ -3252,6 +3288,7 @@ async function askModel({
         const meta = {
           durationMs: Number.isFinite(Number(event.durationMs)) ? Number(event.durationMs) : undefined,
           summary: typeof event.summary === 'string' ? event.summary : '',
+          fileChange: normalizeFileChange(event.fileChange),
           status:
             event.type === 'tool:error'
               ? 'error'
@@ -3270,7 +3307,8 @@ async function askModel({
           tool_call_id: toolId,
           ...(Number.isFinite(Number(meta.durationMs)) ? { tool_duration_ms: Number(meta.durationMs) } : {}),
           ...(meta.summary ? { tool_summary: meta.summary } : {}),
-          ...(meta.status ? { tool_status: meta.status } : {})
+          ...(meta.status ? { tool_status: meta.status } : {}),
+          ...(meta.fileChange ? { tool_file_change: meta.fileChange } : {})
         })
       );
       pendingToolMeta.delete(toolId);

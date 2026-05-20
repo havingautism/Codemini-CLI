@@ -20,12 +20,6 @@ function parseArgs(args) {
   } catch { return { _raw: String(args) }; }
 }
 
-function clip(value, max = 520) {
-  const text = String(value ?? '');
-  if (text.length <= max) return text;
-  return `${text.slice(0, max)}...`;
-}
-
 function DetailRow({ label, value }) {
   return (
     <div className="flex gap-3 py-1.5 min-w-0">
@@ -41,7 +35,7 @@ function PreviewRow({ label, value }) {
     <div className="py-1.5 min-w-0">
       <div className="mb-1 text-[13px] font-medium text-(--text-muted)">{label}</div>
       <pre className="max-h-40 overflow-auto rounded-md border border-(--border-default) bg-(--bg-secondary) px-2.5 py-2 text-[12px] leading-5 text-(--text-primary) whitespace-pre-wrap break-words">
-        {clip(value)}
+        {String(value)}
       </pre>
     </div>
   );
@@ -74,8 +68,8 @@ function ApprovalBody({ variant, args, details }) {
         <DetailRow label="Tool" value="edit" />
         <DetailRow label="File" value={parsed.file || parsed.path || '-'} />
         <DetailRow label="Action" value={kind} />
-        <PreviewRow label="Old" value={parsed.old_text || edit.old_text} />
-        <PreviewRow label="New" value={parsed.new_text || edit.new_text || edit.new_content || parsed.content} />
+        <PreviewRow label="Old" value={parsed.old_text || parsed.old_string || edit.old_text || edit.old_string} />
+        <PreviewRow label="New" value={parsed.new_text || parsed.new_string || edit.new_text || edit.new_string || edit.new_content || parsed.content} />
       </>
     );
   }

@@ -1,9 +1,14 @@
-import { useRef, useEffect, useState, useMemo, useCallback } from "react";
+import { Suspense, lazy, useRef, useEffect, useState, useMemo, useCallback } from "react";
 import { ArrowDown, GitBranch } from "lucide-react";
-import { MessageBubble } from "./MessageBubble";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
+
+const MessageBubble = lazy(() =>
+  import("./MessageBubble").then((module) => ({
+    default: module.MessageBubble,
+  })),
+);
 
 function truncate(text, max = 36) {
   const s = String(text || "")
@@ -14,7 +19,7 @@ function truncate(text, max = 36) {
 
 function PrintingPress() {
   return (
-    <div className="codemini-press" aria-hidden="true">
+    <div className="codemini-home-visual codemini-press" aria-hidden="true">
       <div className="sheet" />
       <div className="roll" />
       <div className="sheet" />
@@ -248,9 +253,11 @@ export function ChatPanel({
       >
         <div className="relative">
           <div className="w-[min(960px,calc(100%-96px))] mx-auto">
-            {messages.map((msg) => (
-              <MessageBubble key={msg.id} message={msg} skills={skills} />
-            ))}
+            <Suspense fallback={null}>
+              {messages.map((msg) => (
+                <MessageBubble key={msg.id} message={msg} skills={skills} />
+              ))}
+            </Suspense>
           </div>
         </div>
       </div>

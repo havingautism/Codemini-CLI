@@ -616,10 +616,12 @@ export class RuntimeBridge {
         reasoningEndedAt: m.reasoning_ended_at || null,
         reasoningDurationMs: Number.isFinite(Number(m.reasoning_duration_ms)) ? Number(m.reasoning_duration_ms) : null,
         toolCalls: m.tool_calls || [],
+        fileChanges: Array.isArray(m.file_changes) ? m.file_changes : [],
         toolCallId: m.tool_call_id || null,
         toolSummary: m.role === 'tool' ? summarizeHistoricalToolMessage(m) : null,
         toolDurationMs: Number.isFinite(Number(m.tool_duration_ms)) ? Number(m.tool_duration_ms) : null,
         toolStatus: m.tool_status || null,
+        toolFileChange: m.tool_file_change || null,
         planTranscript: Array.isArray(m.plan_transcript) ? m.plan_transcript : null,
         usage: normalizeUiUsage(m.usage),
         at: m.at || null

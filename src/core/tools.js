@@ -154,6 +154,39 @@ function splitLines(text) {
   return String(text || '').split('\n');
 }
 
+function buildDiffPreview(beforeContent, afterContent) {
+  const beforeLines = splitLines(beforeContent);
+  const afterLines = splitLines(afterContent);
+  let prefix = 0;
+  while (
+    prefix < beforeLines.length &&
+    prefix < afterLines.length &&
+    beforeLines[prefix] === afterLines[prefix]
+  ) {
+    prefix += 1;
+  }
+
+  let beforeEnd = beforeLines.length - 1;
+  let afterEnd = afterLines.length - 1;
+  while (
+    beforeEnd >= prefix &&
+    afterEnd >= prefix &&
+    beforeLines[beforeEnd] === afterLines[afterEnd]
+  ) {
+    beforeEnd -= 1;
+    afterEnd -= 1;
+  }
+
+  const lines = [];
+  for (let i = prefix; i <= beforeEnd; i += 1) {
+    lines.push(`-${i + 1}| ${beforeLines[i]}`);
+  }
+  for (let i = prefix; i <= afterEnd; i += 1) {
+    lines.push(`+${i + 1}| ${afterLines[i]}`);
+  }
+  return lines.join('\n');
+}
+
 function clampNumber(value, min, max, fallback) {
   const num = Number(value);
   if (!Number.isFinite(num)) return fallback;
@@ -974,9 +1007,9 @@ async function writeFile(root, args, config = {}) {
   } catch {
     existed = false;
   }
-  if (existed && !normalizedArgs?.append && !normalizedArgs?.full_file_rewrite && isCodeLikePath(rawPath)) {
+  if (existed && !normalizedArgs?.append && !normalizedArgs?.full_file_rewrite) {
     throw new Error(
-      'write blocks full overwrite for existing code files by default. Use grep/read -> edit for minimal edits, or pass full_file_rewrite=true when a whole-file rewrite is truly intended.'
+      'write blocks full overwrite for existing files by default. Use read -> edit for existing file changes, or pass full_file_rewrite=true when a whole-file rewrite is truly intended.'
     );
   }
   await fs.mkdir(path.dirname(target), { recursive: true });
@@ -1002,7 +1035,7 @@ async function writeFile(root, args, config = {}) {
     path: rawPath,
     action: normalizedArgs?.append ? 'append' : existed ? 'overwrite' : 'create',
     changed_line: changeLine || Math.max(1, afterLines.length),
-    diff_preview: afterLines.map((line, idx) => `${idx + 1}| ${line}`).join('\n'),
+    diff_preview: buildDiffPreview(before, after),
     lines_added: changed.added,
     lines_removed: changed.removed
   };
@@ -1602,8 +1635,7 @@ function countChangedLines(beforeContent, afterContent) {
 }
 
 function editResult(pathText, action, beforeContent, afterContent, changedLine = 1) {
-  const afterLines = splitLines(afterContent);
-  const diffPreview = afterLines.map((line, idx) => `${idx + 1}| ${line}`).join('\n');
+  const diffPreview = buildDiffPreview(beforeContent, afterContent);
   const changed = countChangedLines(beforeContent, afterContent);
   return {
     ok: true,
@@ -2102,7 +2134,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'write',
         description:
-          'Create a new file or overwrite a file. Always include path and content; file_path/file are accepted aliases. Use this for new files or explicit full rewrites only. Prefer edit for existing code changes.',
+          'Create a new file, append to a file, or perform an explicit whole-file rewrite. Always include path and content; file_path/file are accepted aliases. For existing files, prefer edit after reading the relevant range. Overwriting an existing file requires full_file_rewrite=true.',
         parameters: {
           type: 'object',
           properties: {

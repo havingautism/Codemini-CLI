@@ -233,7 +233,7 @@ export const zh = {
   
   // InputBar
   executionMode: '执行模式',
-  normalExecutionMode: '普通会话',
+  normalExecutionMode: '审阅',
   normalModeDesc: '编辑和命令工具需审阅',
   autoMode: '自动',
   autoModeDesc: '自动执行，复杂任务自动规划',

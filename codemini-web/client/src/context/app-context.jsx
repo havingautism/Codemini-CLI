@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { t } from '../../i18n/index.js';
 import * as api from '../hooks/use-api.js';
 
@@ -182,47 +182,28 @@ function stripPlanProgressText(text) {
   return String(text || '').replace(/(?:^|\n)\[plan\]\s+Step\s+\d+\/\d+\s+->[^\n]*\n?/g, '');
 }
 
-function parseToolResult(value) {
-  if (!value) return null;
-  if (typeof value === 'object') return value;
-  if (typeof value !== 'string') return null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
+function fileChangeKey(change) {
+  if (!change?.path) return '';
+  return JSON.stringify({
+    path: String(change.path || ''),
+    action: String(change.action || ''),
+    linesAdded: Number(change.linesAdded || 0),
+    linesRemoved: Number(change.linesRemoved || 0),
+    changedLine: Number(change.changedLine || 0),
+    diffPreview: String(change.diffPreview || ''),
+  });
 }
 
-function extractFileChangeFromToolResult(toolName, result) {
-  const name = String(toolName || '').split('.')[0].toLowerCase();
-  if (!['edit', 'write', 'delete'].includes(name) || !result || typeof result !== 'object') return null;
-  if (result.deleted) {
-    const path = String(result.path || '');
-    return path ? { path, action: 'delete', linesAdded: 0, linesRemoved: 0 } : null;
+function appendUniqueFileChanges(existing = [], changes = []) {
+  const next = Array.isArray(existing) ? [...existing] : [];
+  const seen = new Set(next.map(fileChangeKey).filter(Boolean));
+  for (const change of Array.isArray(changes) ? changes : [changes]) {
+    const key = fileChangeKey(change);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    next.push(change);
   }
-  if (!('path' in result) || !('action' in result)) return null;
-  const path = String(result.path || '');
-  if (!path) return null;
-  return {
-    path,
-    action: String(result.action || '') === 'create' ? 'create' : 'edit',
-    linesAdded: Number(result.lines_added ?? result.linesAdded ?? 0),
-    linesRemoved: Number(result.lines_removed ?? result.linesRemoved ?? 0),
-    changedLine: Number(result.changed_line ?? result.changedLine ?? 0),
-    diffPreview: String(result.diff_preview ?? result.diffPreview ?? ''),
-  };
-}
-
-function collectFileChangesFromSegments(segments = []) {
-  const changes = [];
-  for (const segment of Array.isArray(segments) ? segments : []) {
-    if (segment?.type !== 'tools') continue;
-    for (const card of Array.isArray(segment.cards) ? segment.cards : []) {
-      const change = card.fileChange || extractFileChangeFromToolResult(card.name, parseToolResult(card.result));
-      if (change?.path) changes.push(change);
-    }
-  }
-  return changes;
+  return next;
 }
 
 // Helper to update messages immutably while preserving all other state
@@ -416,7 +397,7 @@ function createPlanTranscriptMessage(block, suffix) {
     role: block.role || 'general',
     segments,
     skillBadges: [],
-    fileChanges: Array.isArray(block.fileChanges) ? block.fileChanges : collectFileChangesFromSegments(segments),
+    fileChanges: Array.isArray(block.fileChanges) ? block.fileChanges : [],
     usage: normalizeUsage(block.usage),
     planStep: {
       step: block.step,
@@ -669,6 +650,9 @@ export function AppProvider({ children }) {
             };
             processed.push(assistantGroup);
           }
+          if (Array.isArray(msg.fileChanges) && msg.fileChanges.length) {
+            assistantGroup.fileChanges = [...(assistantGroup.fileChanges || []), ...msg.fileChanges];
+          }
           assistantGroup.usage = mergeUsage(assistantGroup.usage, msg.usage);
           const reasoningText = getMessageReasoningText(msg);
           if (reasoningText) {
@@ -689,10 +673,6 @@ export function AppProvider({ children }) {
               status: tc.status || 'done', durationMs: tc.durationMs, summary: tc.summary || '', result: '',
               ...(tc.fileChange ? { fileChange: tc.fileChange } : {}),
             }));
-            const toolChanges = collectFileChangesFromSegments([{ type: 'tools', cards }]);
-            if (toolChanges.length) {
-              assistantGroup.fileChanges = [...(assistantGroup.fileChanges || []), ...toolChanges];
-            }
             assistantGroup.segments.push({
               type: 'tools',
               cards,
@@ -710,10 +690,9 @@ export function AppProvider({ children }) {
             if (msg.toolStatus === 'error') card.status = 'error';
             if (msg.toolStatus === 'blocked') card.status = 'blocked';
             if (msg.content) card.result = msg.content;
-            const change = extractFileChangeFromToolResult(card.name, parseToolResult(msg.content));
+            const change = msg.toolFileChange?.path ? msg.toolFileChange : null;
             if (change?.path) {
               card.fileChange = change;
-              assistantGroup.fileChanges = [...(assistantGroup.fileChanges || []), change];
             }
             break;
           }
@@ -817,9 +796,11 @@ export function AppProvider({ children }) {
             if (m.id !== activeId) return m;
             if (event.fileChange) pendingChangesRef.current = [...pendingChangesRef.current, event.fileChange];
             return {
-              ...m, segments: updateToolInSegments(m.segments, event.id, tc => {
+              ...m,
+              segments: updateToolInSegments(m.segments, event.id, tc => {
                 const u = { ...tc, status: 'done', durationMs: event.durationMs };
                 if (event.summary) u.summary = event.summary;
+                if (event.fileChange) u.fileChange = event.fileChange;
                 return u;
               })
             };
@@ -1040,7 +1021,7 @@ export function AppProvider({ children }) {
       case 'submit:done': {
         const result = event.result || {};
         if (activeId && pendingChangesRef.current.length) {
-          setState(prev => ({ ...prev, messages: prev.messages.map(m => m.id === activeId ? { ...m, fileChanges: [...m.fileChanges, ...pendingChangesRef.current] } : m) }));
+          setState(prev => ({ ...prev, messages: prev.messages.map(m => m.id === activeId ? { ...m, fileChanges: appendUniqueFileChanges(m.fileChanges, pendingChangesRef.current) } : m) }));
           pendingChangesRef.current = [];
         }
         if (activeId) {
@@ -1152,6 +1133,8 @@ export function AppProvider({ children }) {
   useEffect(() => {
     (async () => {
       const route = parseRoute();
+      const configStatusPromise = loadConfigStatus({ openIfRequired: true });
+      const startupEventsPromise = api.fetchStartupEvents().catch(() => []);
       update({
         currentView: route.view,
         codewikiProjectPath: route.view === 'codewiki' ? route.projectPath || '' : stateRef.current.codewikiProjectPath,
@@ -1167,10 +1150,10 @@ export function AppProvider({ children }) {
         await openCodeWikiProjectFromRoute(route.projectPath);
       }
 
-      await loadConfigStatus({ openIfRequired: true });
+      await configStatusPromise;
 
       try {
-        const startupEvents = await api.fetchStartupEvents();
+        const startupEvents = await startupEventsPromise;
         for (const ev of startupEvents) {
           if (!ev || isProjectIndexEvent(ev)) continue;
           if (ev.type === 'system_tool' || ev.type === 'tool') {
@@ -1190,15 +1173,16 @@ export function AppProvider({ children }) {
         update({ currentView: 'codewiki', codewikiProjectPath: projectPath });
         if (projectPath) updateRoute('codewiki', null, { replace: true, projectPath });
       }
-      await loadSessionMessages();
-      loadHistory();
-      loadSessions();
-      loadSkills();
-      loadGitInfo();
-      try {
-        const vInfo = await api.fetchVersion();
-        update({ versionInfo: vInfo });
-      } catch {}
+      await Promise.all([
+        loadSessionMessages(),
+        loadHistory(),
+        loadSessions(),
+        loadSkills(),
+        loadGitInfo(),
+        api.fetchVersion()
+          .then((versionInfo) => update({ versionInfo }))
+          .catch(() => {})
+      ]);
       update({ initialLoading: false });
       connectSSE();
     })();
@@ -1244,7 +1228,14 @@ export function AppProvider({ children }) {
     };
   }, [addMessage, connectSSE, loadConfigStatus, loadGitInfo, loadHistory, loadSessionMessages, loadSessions, loadSkills, loadState, openCodeWikiProjectFromRoute, update]);
 
-  const actions = {
+  const applyTheme = useCallback((mode) => {
+    localStorage.setItem('codemini-theme', mode);
+    const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+    const resolved = mode === 'auto' ? (mq && mq.matches ? 'dark' : 'light') : mode;
+    document.documentElement.dataset.theme = resolved;
+  }, []);
+
+  const actions = useMemo(() => ({
     submit: async (line, options = {}) => {
       if (!line.trim()) return;
       if (stateRef.current.currentView !== 'chat' && !options.stayInView) update({ currentView: 'chat' });
@@ -1466,15 +1457,10 @@ export function AppProvider({ children }) {
       const stored = localStorage.getItem('codemini-theme') || 'auto';
       const cycle = { light: 'dark', dark: 'auto', auto: 'light' };
       const next = cycle[stored] || 'auto';
-      appActions.setTheme(next);
+      applyTheme(next);
     },
 
-    setTheme: (mode) => {
-      localStorage.setItem('codemini-theme', mode);
-      const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
-      const resolved = mode === 'auto' ? (mq && mq.matches ? 'dark' : 'light') : mode;
-      document.documentElement.dataset.theme = resolved;
-    },
+    setTheme: applyTheme,
 
     setConfigOpen: (open) => update({ configOpen: open }),
     refreshConfigStatus: () => loadConfigStatus(),
@@ -1504,9 +1490,20 @@ export function AppProvider({ children }) {
         update({ updateStatus: 'error' });
       }
     },
-  };
+  }), [
+    addMessage,
+    applyTheme,
+    loadConfigStatus,
+    loadGitInfo,
+    loadHistory,
+    loadSessionMessages,
+    loadSessions,
+    loadState,
+    update,
+    upsertRuntimeActivity,
+  ]);
 
-  const value = { state, actions };
+  const value = useMemo(() => ({ state, actions }), [state, actions]);
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 

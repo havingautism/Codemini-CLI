@@ -96,41 +96,63 @@ function getNestedEdit(args) {
   return args.edit && typeof args.edit === "object" ? args.edit : args;
 }
 
-function getFileToolMeta(toolName, args, result, summary) {
+function getFileToolMeta(toolName, args, result, summary, fileChange) {
   if (!["edit", "write", "delete"].includes(toolName)) return null;
   const parsedArgs = parseMaybeJson(args) || {};
   const parsedResult = parseMaybeJson(result) || {};
+  const structuredChange =
+    fileChange && typeof fileChange === "object" ? fileChange : {};
   const edit = getNestedEdit(parsedArgs);
   const pathText =
     parsedResult.path ||
+    structuredChange.path ||
     parsedArgs.path ||
     parsedArgs.file ||
     parsedArgs.file_path ||
     "";
   const added = Number(
-    parsedResult.lines_added ?? parsedResult.linesAdded ?? 0,
+    parsedResult.lines_added ??
+      parsedResult.linesAdded ??
+      structuredChange.linesAdded ??
+      0,
   );
   const removed = Number(
-    parsedResult.lines_removed ?? parsedResult.linesRemoved ?? 0,
+    parsedResult.lines_removed ??
+      parsedResult.linesRemoved ??
+      structuredChange.linesRemoved ??
+      0,
   );
-  const oldText = edit.old_text ?? edit.old_string ?? parsedArgs.old_text;
+  const oldText =
+    toolName === "edit"
+      ? (edit.old_text ?? edit.old_string ?? parsedArgs.old_text)
+      : "";
   const newText =
-    edit.new_text ??
-    edit.new_string ??
-    edit.new_content ??
-    edit.content ??
-    parsedArgs.new_text ??
-    parsedArgs.content;
-  const changedLine = Number(parsedResult.changed_line || parsedArgs.line || 0);
+    toolName === "edit"
+      ? (edit.new_text ??
+        edit.new_string ??
+        edit.new_content ??
+        edit.content ??
+        parsedArgs.new_text)
+      : "";
+  const changedLine = Number(
+    parsedResult.changed_line ||
+      structuredChange.changedLine ||
+      parsedArgs.line ||
+      0,
+  );
   return {
     path: String(pathText || extractKeyArg(args, toolName) || ""),
     action: String(
-      parsedResult.action || (toolName === "write" ? "write" : toolName),
+      parsedResult.action ||
+        structuredChange.action ||
+        (toolName === "write" ? "write" : toolName),
     ),
     added,
     removed,
     changedLine,
-    diffPreview: String(parsedResult.diff_preview || ""),
+    diffPreview: String(
+      parsedResult.diff_preview || structuredChange.diffPreview || "",
+    ),
     oldText: typeof oldText === "string" ? oldText : "",
     newText: typeof newText === "string" ? newText : "",
     summary: String(summary || ""),
@@ -139,6 +161,29 @@ function getFileToolMeta(toolName, args, result, summary) {
 
 function buildPreviewLines(meta) {
   if (!meta) return [];
+  const preview =
+    meta.diffPreview || meta.summary.split("\n").slice(1).join("\n");
+  if (preview) {
+    return String(preview)
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        const signedMatch = line.match(/^([+-])(\d+)?\|\s?(.*)$/);
+        if (signedMatch) {
+          return {
+            type: signedMatch[1] === "-" ? "remove" : "add",
+            number: signedMatch[2] || "",
+            text: signedMatch[3] || "",
+          };
+        }
+        const match = line.match(/^(\d+)\|\s?(.*)$/);
+        return {
+          type: "add",
+          number: match ? match[1] : "",
+          text: match ? match[2] : line,
+        };
+      });
+  }
   if (meta.oldText || meta.newText) {
     const oldLines = meta.oldText ? meta.oldText.split(/\r?\n/) : [];
     const newLines = meta.newText ? meta.newText.split(/\r?\n/) : [];
@@ -155,19 +200,7 @@ function buildPreviewLines(meta) {
       })),
     ];
   }
-  const preview =
-    meta.diffPreview || meta.summary.split("\n").slice(1).join("\n");
-  return String(preview || "")
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => {
-      const match = line.match(/^(\d+)\|\s?(.*)$/);
-      return {
-        type: "add",
-        number: match ? match[1] : "",
-        text: match ? match[2] : line,
-      };
-    });
+  return [];
 }
 
 function FilePreview({ meta }) {
@@ -232,6 +265,7 @@ export function ToolCard({ card }) {
     card.arguments,
     card.result,
     card.summary,
+    card.fileChange,
   );
   const nameText = fileMeta?.path || keyArg || card.name;
 
@@ -253,10 +287,7 @@ export function ToolCard({ card }) {
           "rounded-md ring-1 ring-[var(--accent-orange)]/25",
       )}
     >
-      <div
-        className={TOOL_ROW_CLASS}
-        onClick={() => setOpen(!open)}
-      >
+      <div className={TOOL_ROW_CLASS} onClick={() => setOpen(!open)}>
         {open ? (
           <ChevronDown size={14} className={TOOL_CHEVRON_CLASS} />
         ) : (
@@ -299,7 +330,7 @@ export function ToolCard({ card }) {
           {fileMeta ? (
             <>
               {fileMeta.summary && (
-                <div className="text-xs text-(--text-muted) pt-1">
+                <div className="text-xs text-(--text-muted) pt-1 pl-1">
                   {fileMeta.summary.split("\n")[0]}
                 </div>
               )}
