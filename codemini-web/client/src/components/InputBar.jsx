@@ -8,13 +8,13 @@ import React, {
 import { Separator } from "@/components/ui/separator";
 import {
   Paperclip,
-  ShieldCheck,
   ChevronDown,
   ArrowUp,
   Minus,
   Folder,
   MessageCircle,
   Sparkles,
+  ListChecks,
   Hammer,
   Moon,
   Archive,
@@ -22,6 +22,8 @@ import {
   Inbox,
   Camera,
   RotateCcw,
+  MessageSquareText,
+  Drama,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
@@ -36,8 +38,24 @@ const IMPLICIT_SKILLS = new Set(["superpowers-lite"]);
 
 function getModeOptions() {
   return [
-    { value: "auto", label: t("autoMode"), desc: t("autoModeDesc") },
-    { value: "plan", label: t("planMode"), desc: t("planModeDesc") },
+    {
+      value: "normal",
+      label: t("normalExecutionMode"),
+      desc: t("normalModeDesc"),
+      icon: MessageCircle,
+    },
+    {
+      value: "auto",
+      label: t("autoMode"),
+      desc: t("autoModeDesc"),
+      icon: Sparkles,
+    },
+    {
+      value: "plan",
+      label: t("planMode"),
+      desc: t("planModeDesc"),
+      icon: ListChecks,
+    },
   ];
 }
 
@@ -102,6 +120,7 @@ function ModeSelector({ current, disabled = false }) {
   const MODE_OPTIONS = getModeOptions();
   const active =
     MODE_OPTIONS.find((m) => m.value === current) || MODE_OPTIONS[0];
+  const ActiveIcon = active.icon;
 
   const handleSelect = async (mode) => {
     if (mode === current || switching || disabled) return;
@@ -130,7 +149,7 @@ function ModeSelector({ current, disabled = false }) {
           disabled={disabled}
           title={disabled ? t("switchModeDisabled") : t("switchMode")}
         >
-          <ShieldCheck size={14} />
+          <ActiveIcon size={13} />
           <span className="truncate">{active.label}</span>
           <ChevronDown size={11} />
         </button>
@@ -139,31 +158,35 @@ function ModeSelector({ current, disabled = false }) {
         side="top"
         align="start"
         sideOffset={6}
-        className="w-56 p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-lg"
+        className="w-70 p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-lg"
       >
         <div className="text-[11px] text-(--text-muted) px-2 py-1.5 font-medium">
           {t("executionMode")}
         </div>
         <div className="flex flex-col gap-0.5">
-          {MODE_OPTIONS.map((opt) => (
-            <button
-              key={opt.value}
-              disabled={disabled || switching}
-              className={cn(
-                "w-full border-0 rounded-md px-2 py-1.5 text-left text-[12px] cursor-pointer flex items-center gap-2",
-                (disabled || switching) && "opacity-50 cursor-not-allowed",
-                current === opt.value
-                  ? "bg-(--bg-active) text-(--text-primary) font-medium"
-                  : "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
-              )}
-              onClick={() => handleSelect(opt.value)}
-            >
-              <span className="shrink-0">{opt.label}</span>
-              <span className="text-[10px] text-(--text-muted) min-w-0 text-right leading-4">
-                {opt.desc}
-              </span>
-            </button>
-          ))}
+          {MODE_OPTIONS.map((opt) => {
+            const Icon = opt.icon;
+            return (
+              <button
+                key={opt.value}
+                disabled={disabled || switching}
+                className={cn(
+                  "w-full border-0 rounded-md px-2 py-1.5 text-left text-[12px] cursor-pointer flex items-center gap-2",
+                  (disabled || switching) && "opacity-50 cursor-not-allowed",
+                  current === opt.value
+                    ? "bg-(--bg-active) text-(--text-primary) font-medium"
+                    : "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+                )}
+                onClick={() => handleSelect(opt.value)}
+              >
+                <Icon size={13} className="shrink-0 text-(--text-muted)" />
+                <span className="shrink-0">{opt.label}</span>
+                <span className="text-[10px] text-(--text-muted) min-w-0 text-right leading-4">
+                  {opt.desc}
+                </span>
+              </button>
+            );
+          })}
         </div>
       </PopoverContent>
     </Popover>
@@ -204,6 +227,7 @@ function SoulQuickSwitch() {
           className={cn(INPUT_PILL_CLASS, "px-3")}
           title={t("soulSwitch")}
         >
+          <Drama size={13} />
           <span className="truncate max-w-[60px]">{active || "default"}</span>
           <ChevronDown size={11} />
         </button>
@@ -401,7 +425,6 @@ export function InputBar({
   disabledReason = "",
   runtimeState,
   history: externalHistory,
-  onCompletionRequest,
   onOpenProject,
   projectCwd,
 }) {
@@ -501,11 +524,8 @@ export function InputBar({
         setSlashOpen(false);
       }
 
-      if (val.startsWith("/") && onCompletionRequest) {
-        onCompletionRequest(val);
-      }
     },
-    [onCompletionRequest],
+    [],
   );
 
   const handleCommandSelect = useCallback((insert) => {
@@ -557,7 +577,7 @@ export function InputBar({
               onClick={onOpenProject}
             >
               {isGeneralChat ? (
-                <MessageCircle size={13} className="shrink-0" />
+                <MessageSquareText size={13} className="shrink-0" />
               ) : (
                 <Folder size={13} className="shrink-0" />
               )}

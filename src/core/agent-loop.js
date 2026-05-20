@@ -256,11 +256,49 @@ function extractFileChange(toolName, result) {
       path: String(result.path || ''),
       action: isCreate ? 'create' : 'edit',
       linesAdded: added,
-      linesRemoved: removed
+      linesRemoved: removed,
+      changedLine: Number(result.changed_line || 0),
+      diffPreview: String(result.diff_preview || '')
     };
   }
 
   return null;
+}
+
+function normalizeFileChange(change) {
+  if (!change || typeof change !== 'object') return null;
+  const path = String(change.path || '').trim();
+  if (!path) return null;
+  const action = String(change.action || '').trim();
+  return {
+    path,
+    action: action === 'create' || action === 'delete' ? action : 'edit',
+    linesAdded: Number(change.linesAdded || 0),
+    linesRemoved: Number(change.linesRemoved || 0),
+    changedLine: Number(change.changedLine || 0),
+    diffPreview: String(change.diffPreview || '')
+  };
+}
+
+function fileChangeFingerprint(change) {
+  return JSON.stringify({
+    path: change.path,
+    action: change.action,
+    linesAdded: Number(change.linesAdded || 0),
+    linesRemoved: Number(change.linesRemoved || 0),
+    changedLine: Number(change.changedLine || 0),
+    diffPreview: String(change.diffPreview || '')
+  });
+}
+
+function appendUniqueFileChange(message, fileChange) {
+  const existing = Array.isArray(message.file_changes) ? message.file_changes : [];
+  const nextKey = fileChangeFingerprint(fileChange);
+  if (existing.some((change) => fileChangeFingerprint(normalizeFileChange(change) || {}) === nextKey)) {
+    message.file_changes = existing;
+    return;
+  }
+  message.file_changes = [...existing, fileChange];
 }
 
 export const trimInline = _trimInline;
@@ -711,7 +749,7 @@ export async function runAgentLoop({
             });
             approvalArgs = { ...args, _risk: evaluation.risk, _evaluation: evaluation };
             /* LLM says low-risk + allow → auto-approve, skip confirmation panel */
-            if (evaluation.risk === 'low' && evaluation.recommendation === 'allow') {
+            if (executionMode !== 'normal' && evaluation.risk === 'low' && evaluation.recommendation === 'allow') {
               approvalResults.set(call.id, { approved: true, args: approvalArgs });
               continue;
             }
@@ -890,7 +928,7 @@ export async function runAgentLoop({
       // P0: Persist to disk if still large
       formatted = await storeResultIfNeeded(call.id, formatted, toolResult);
 
-      return { callId: call.id, content: formatted, durationMs, summary, status: 'done' };
+      return { callId: call.id, content: formatted, durationMs, summary, status: 'done', fileChange };
     }
 
     // Separate read-only and write calls, preserving order
@@ -934,8 +972,16 @@ export async function runAgentLoop({
         continue;
       }
 
-      attachToolCallSessionMeta(assistantMessage, call.id, { durationMs: entry.durationMs, summary: entry.summary || '', status: entry.status || 'done' });
-      messages.push({ role: 'tool', tool_call_id: call.id, content: entry.content, tool_duration_ms: entry.durationMs, tool_summary: entry.summary || '', tool_status: entry.status || 'done' });
+      attachToolCallSessionMeta(assistantMessage, call.id, { durationMs: entry.durationMs, summary: entry.summary || '', status: entry.status || 'done', fileChange: entry.fileChange });
+      messages.push({
+        role: 'tool',
+        tool_call_id: call.id,
+        content: entry.content,
+        tool_duration_ms: entry.durationMs,
+        tool_summary: entry.summary || '',
+        tool_status: entry.status || 'done',
+        ...(entry.fileChange ? { tool_file_change: entry.fileChange } : {})
+      });
       if (onEvent) {
         onEvent({ type: 'tool:result', name: displayName, id: call.id, arguments: args, content: entry.content });
       }
@@ -978,4 +1024,9 @@ function attachToolCallSessionMeta(assistantMessage, callId, meta = {}) {
   if (Number.isFinite(Number(meta.durationMs))) call.durationMs = Number(meta.durationMs);
   if (typeof meta.summary === 'string' && meta.summary.trim()) call.summary = meta.summary.trim();
   if (typeof meta.status === 'string' && meta.status.trim()) call.status = meta.status.trim();
+  const fileChange = normalizeFileChange(meta.fileChange);
+  if (fileChange) {
+    call.fileChange = fileChange;
+    appendUniqueFileChange(assistantMessage, fileChange);
+  }
 }

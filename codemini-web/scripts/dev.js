@@ -2,7 +2,8 @@ import { spawn } from 'node:child_process';
 import net from 'node:net';
 
 const isWindows = process.platform === 'win32';
-const bin = isWindows ? 'bun.exe' : 'bun';
+const bunBin = isWindows ? 'bun.exe' : 'bun';
+const nodeBin = isWindows ? 'node.exe' : 'node';
 
 let shuttingDown = false;
 const children = new Set();
@@ -35,10 +36,14 @@ function stopAll(code = 0) {
 }
 
 function startProcess(proc, env = {}) {
-  const child = spawn(bin, proc.args, {
+  const child = spawn(proc.command || bunBin, proc.args, {
     cwd: process.cwd(),
     env: { ...process.env, ...env, FORCE_COLOR: '1' },
     stdio: ['inherit', 'pipe', 'pipe']
+  });
+  child.once('error', (error) => {
+    console.error(`[${proc.name}] failed to start: ${error.message}`);
+    stopAll(1);
   });
   children.add(child);
 
@@ -55,6 +60,34 @@ function startProcess(proc, env = {}) {
       stopAll(code || 1);
     }
   });
+  return child;
+}
+
+function canConnect(port) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port });
+    socket.once('connect', () => {
+      socket.end();
+      resolve(true);
+    });
+    socket.once('error', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.setTimeout(250, () => {
+      socket.destroy();
+      resolve(false);
+    });
+  });
+}
+
+async function waitForPort(port, { timeoutMs = 10000, intervalMs = 100 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await canConnect(port)) return true;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return false;
 }
 
 const apiPort = await findFreePort(Number(process.env.CODEMINI_API_PORT || 5000));
@@ -66,8 +99,14 @@ console.log(`  API: http://127.0.0.1:${apiPort}`);
 
 startProcess({
   name: 'api',
+  command: nodeBin,
   args: ['server.js', '--port', String(apiPort), '--no-open']
 });
+
+if (!await waitForPort(apiPort)) {
+  console.error(`[api] did not start on http://127.0.0.1:${apiPort}`);
+  stopAll(1);
+}
 
 startProcess({
   name: 'vite',

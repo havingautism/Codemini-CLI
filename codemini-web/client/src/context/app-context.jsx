@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { t } from '../../i18n/index.js';
 import * as api from '../hooks/use-api.js';
 
@@ -45,6 +45,7 @@ const initialState = {
   config: null, configStatus: null, configOpen: false, projectOpen: false, skillsOpen: false, soulsOpen: false, aboutOpen: false, gitDiffOpen: false,
   sessions: [], projectCwd: null, isGeneral: false, history: [], skills: [], gitInfo: null, gitBatch: {},
   codewikiProjectPath: '',
+  codewikiGeneration: { status: 'idle', updatedAt: null, error: '' },
   versionInfo: null, updateStatus: null,
   initialLoading: true, sessionsLoading: false, messagesLoading: false,
 };
@@ -180,6 +181,30 @@ function getMessageReasoningText(msg) {
 
 function stripPlanProgressText(text) {
   return String(text || '').replace(/(?:^|\n)\[plan\]\s+Step\s+\d+\/\d+\s+->[^\n]*\n?/g, '');
+}
+
+function fileChangeKey(change) {
+  if (!change?.path) return '';
+  return JSON.stringify({
+    path: String(change.path || ''),
+    action: String(change.action || ''),
+    linesAdded: Number(change.linesAdded || 0),
+    linesRemoved: Number(change.linesRemoved || 0),
+    changedLine: Number(change.changedLine || 0),
+    diffPreview: String(change.diffPreview || ''),
+  });
+}
+
+function appendUniqueFileChanges(existing = [], changes = []) {
+  const next = Array.isArray(existing) ? [...existing] : [];
+  const seen = new Set(next.map(fileChangeKey).filter(Boolean));
+  for (const change of Array.isArray(changes) ? changes : [changes]) {
+    const key = fileChangeKey(change);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    next.push(change);
+  }
+  return next;
 }
 
 // Helper to update messages immutably while preserving all other state
@@ -367,12 +392,13 @@ function createHistoricalPlanStepMessage(block, suffix) {
 }
 
 function createPlanTranscriptMessage(block, suffix) {
+  const segments = Array.isArray(block.segments) ? block.segments : [];
   return {
     id: `plan-transcript-${Date.now()}-${suffix}-${block.step || 0}`,
     role: block.role || 'general',
-    segments: Array.isArray(block.segments) ? block.segments : [],
+    segments,
     skillBadges: [],
-    fileChanges: [],
+    fileChanges: Array.isArray(block.fileChanges) ? block.fileChanges : [],
     usage: normalizeUsage(block.usage),
     planStep: {
       step: block.step,
@@ -383,6 +409,48 @@ function createPlanTranscriptMessage(block, suffix) {
       summary: block.summary || '',
     },
   };
+}
+
+function normalizeCodeWikiStep(step, index = 0) {
+  return {
+    index: Number(step?.index || step?.step || index + 1),
+    title: step?.title || '',
+    role: step?.role || 'general',
+    status: step?.status || 'pending',
+  };
+}
+
+function applyCodeWikiProgressToSteps(steps, event) {
+  const current = Array.isArray(steps) ? steps : [];
+  if (event.phase === 'steps') {
+    return (Array.isArray(event.steps) ? event.steps : []).map(normalizeCodeWikiStep);
+  }
+  const stepNumber = Number(event.step || 0);
+  if (!stepNumber) return current;
+  const status = event.status || (event.phase === 'step_done' ? 'done' : 'running');
+  let found = false;
+  const next = current.map((step, index) => {
+    const normalized = normalizeCodeWikiStep(step, index);
+    if (Number(normalized.index) !== stepNumber) return normalized;
+    found = true;
+    return {
+      ...normalized,
+      title: event.title || normalized.title,
+      role: event.role || normalized.role,
+      status,
+      summary: event.summary || normalized.summary || '',
+    };
+  });
+  if (!found) {
+    next.push({
+      index: stepNumber,
+      title: event.title || '',
+      role: event.role || 'general',
+      status,
+      summary: event.summary || '',
+    });
+  }
+  return next.sort((a, b) => Number(a.index || 0) - Number(b.index || 0));
 }
 
 export function AppProvider({ children }) {
@@ -625,6 +693,9 @@ export function AppProvider({ children }) {
             };
             processed.push(assistantGroup);
           }
+          if (Array.isArray(msg.fileChanges) && msg.fileChanges.length) {
+            assistantGroup.fileChanges = [...(assistantGroup.fileChanges || []), ...msg.fileChanges];
+          }
           assistantGroup.usage = mergeUsage(assistantGroup.usage, msg.usage);
           const reasoningText = getMessageReasoningText(msg);
           if (reasoningText) {
@@ -639,13 +710,15 @@ export function AppProvider({ children }) {
           }
           if (msg.content) assistantGroup.segments.push({ type: 'text', text: msg.content, isStreaming: false });
           if (msg.toolCalls && msg.toolCalls.length) {
+            const cards = msg.toolCalls.map(tc => ({
+              id: tc.id, name: tc.function?.name || tc.name || 'tool',
+              arguments: tc.function?.arguments || tc.arguments || {},
+              status: tc.status || 'done', durationMs: tc.durationMs, summary: tc.summary || '', result: '',
+              ...(tc.fileChange ? { fileChange: tc.fileChange } : {}),
+            }));
             assistantGroup.segments.push({
               type: 'tools',
-              cards: msg.toolCalls.map(tc => ({
-                id: tc.id, name: tc.function?.name || tc.name || 'tool',
-                arguments: tc.function?.arguments || tc.arguments || {},
-                status: tc.status || 'done', durationMs: tc.durationMs, summary: tc.summary || '', result: '',
-              })),
+              cards,
             });
           }
         } else if (msg.role === 'tool' && assistantGroup) {
@@ -660,6 +733,10 @@ export function AppProvider({ children }) {
             if (msg.toolStatus === 'error') card.status = 'error';
             if (msg.toolStatus === 'blocked') card.status = 'blocked';
             if (msg.content) card.result = msg.content;
+            const change = msg.toolFileChange?.path ? msg.toolFileChange : null;
+            if (change?.path) {
+              card.fileChange = change;
+            }
             break;
           }
         }
@@ -700,7 +777,7 @@ export function AppProvider({ children }) {
         const delta = stripPlanProgressText(event.text);
         if (activeId && delta) {
           setState(prev => ({ ...prev, messages: prev.messages.map(m =>
-            m.id === activeId ? { ...m, segments: appendDeltaToSegments(m.segments, delta) } : m
+            m.id === activeId ? { ...m, segments: appendDeltaToSegments(finishThinkingSegments(m.segments), delta) } : m
           ) }));
         }
         update({ stage: 'streaming', live: true, stageLabel: t('streaming') });
@@ -751,7 +828,7 @@ export function AppProvider({ children }) {
         update({ stage: 'tooling', live: true, stageLabel: t('tooling') });
         if (activeId) {
           const toolCard = { id: event.id, name: event.name, arguments: event.arguments, status: 'running', durationMs: null, summary: '', result: '' };
-          setState(prev => ({ ...prev, messages: prev.messages.map(m => m.id === activeId ? { ...m, segments: addToolToSegments(m.segments, toolCard) } : m) }));
+          setState(prev => ({ ...prev, messages: prev.messages.map(m => m.id === activeId ? { ...m, segments: addToolToSegments(finishThinkingSegments(m.segments), toolCard) } : m) }));
         }
         break;
       }
@@ -762,9 +839,11 @@ export function AppProvider({ children }) {
             if (m.id !== activeId) return m;
             if (event.fileChange) pendingChangesRef.current = [...pendingChangesRef.current, event.fileChange];
             return {
-              ...m, segments: updateToolInSegments(m.segments, event.id, tc => {
+              ...m,
+              segments: updateToolInSegments(m.segments, event.id, tc => {
                 const u = { ...tc, status: 'done', durationMs: event.durationMs };
                 if (event.summary) u.summary = event.summary;
+                if (event.fileChange) u.fileChange = event.fileChange;
                 return u;
               })
             };
@@ -985,7 +1064,7 @@ export function AppProvider({ children }) {
       case 'submit:done': {
         const result = event.result || {};
         if (activeId && pendingChangesRef.current.length) {
-          setState(prev => ({ ...prev, messages: prev.messages.map(m => m.id === activeId ? { ...m, fileChanges: [...m.fileChanges, ...pendingChangesRef.current] } : m) }));
+          setState(prev => ({ ...prev, messages: prev.messages.map(m => m.id === activeId ? { ...m, fileChanges: appendUniqueFileChanges(m.fileChanges, pendingChangesRef.current) } : m) }));
           pendingChangesRef.current = [];
         }
         if (activeId) {
@@ -1053,8 +1132,49 @@ export function AppProvider({ children }) {
         break;
       }
 
+      case 'codewiki:generate_progress': {
+        const label = event.title || event.summary || event.name || stateRef.current.stageLabel || t('generatingCodeWiki');
+        setState(prev => ({
+          ...prev,
+          stage: 'tooling',
+          live: true,
+          busy: true,
+          stageLabel: label,
+          planSteps: applyCodeWikiProgressToSteps(prev.planSteps, event),
+          codewikiGeneration: { status: 'running', updatedAt: event.timestamp || new Date().toISOString(), error: '' }
+        }));
+        break;
+      }
+
+      case 'codewiki:generate_done': {
+        setState(prev => ({
+          ...prev,
+          stage: 'idle',
+          live: false,
+          busy: false,
+          stageLabel: '',
+          planSteps: [],
+          codewikiGeneration: { status: 'done', updatedAt: new Date().toISOString(), error: '' }
+        }));
+        loadSessions();
+        break;
+      }
+
+      case 'codewiki:generate_error': {
+        setState(prev => ({
+          ...prev,
+          stage: 'idle',
+          live: false,
+          busy: false,
+          stageLabel: event.message || '',
+          planSteps: [],
+          codewikiGeneration: { status: 'error', updatedAt: new Date().toISOString(), error: event.message || '' }
+        }));
+        break;
+      }
+
       case 'runtime:switched': {
-        setState(prev => ({ ...prev, messages: [], planSteps: [], pendingPlanApproval: null, pendingReflectApproval: null, runtimeActivities: [] }));
+        setState(prev => ({ ...prev, messages: [], planSteps: [], pendingPlanApproval: null, pendingReflectApproval: null, runtimeActivities: [], codewikiGeneration: { status: 'idle', updatedAt: null, error: '' } }));
         activeMsgRef.current = null;
         pendingChangesRef.current = [];
         loadState();
@@ -1097,6 +1217,8 @@ export function AppProvider({ children }) {
   useEffect(() => {
     (async () => {
       const route = parseRoute();
+      const configStatusPromise = loadConfigStatus({ openIfRequired: true });
+      const startupEventsPromise = api.fetchStartupEvents().catch(() => []);
       update({
         currentView: route.view,
         codewikiProjectPath: route.view === 'codewiki' ? route.projectPath || '' : stateRef.current.codewikiProjectPath,
@@ -1112,10 +1234,10 @@ export function AppProvider({ children }) {
         await openCodeWikiProjectFromRoute(route.projectPath);
       }
 
-      await loadConfigStatus({ openIfRequired: true });
+      await configStatusPromise;
 
       try {
-        const startupEvents = await api.fetchStartupEvents();
+        const startupEvents = await startupEventsPromise;
         for (const ev of startupEvents) {
           if (!ev || isProjectIndexEvent(ev)) continue;
           if (ev.type === 'system_tool' || ev.type === 'tool') {
@@ -1135,15 +1257,16 @@ export function AppProvider({ children }) {
         update({ currentView: 'codewiki', codewikiProjectPath: projectPath });
         if (projectPath) updateRoute('codewiki', null, { replace: true, projectPath });
       }
-      await loadSessionMessages();
-      loadHistory();
-      loadSessions();
-      loadSkills();
-      loadGitInfo();
-      try {
-        const vInfo = await api.fetchVersion();
-        update({ versionInfo: vInfo });
-      } catch {}
+      await Promise.all([
+        loadSessionMessages(),
+        loadHistory(),
+        loadSessions(),
+        loadSkills(),
+        loadGitInfo(),
+        api.fetchVersion()
+          .then((versionInfo) => update({ versionInfo }))
+          .catch(() => {})
+      ]);
       update({ initialLoading: false });
       connectSSE();
     })();
@@ -1189,7 +1312,14 @@ export function AppProvider({ children }) {
     };
   }, [addMessage, connectSSE, loadConfigStatus, loadGitInfo, loadHistory, loadSessionMessages, loadSessions, loadSkills, loadState, openCodeWikiProjectFromRoute, update]);
 
-  const actions = {
+  const applyTheme = useCallback((mode) => {
+    localStorage.setItem('codemini-theme', mode);
+    const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+    const resolved = mode === 'auto' ? (mq && mq.matches ? 'dark' : 'light') : mode;
+    document.documentElement.dataset.theme = resolved;
+  }, []);
+
+  const actions = useMemo(() => ({
     submit: async (line, options = {}) => {
       if (!line.trim()) return;
       if (stateRef.current.currentView !== 'chat' && !options.stayInView) update({ currentView: 'chat' });
@@ -1411,15 +1541,10 @@ export function AppProvider({ children }) {
       const stored = localStorage.getItem('codemini-theme') || 'auto';
       const cycle = { light: 'dark', dark: 'auto', auto: 'light' };
       const next = cycle[stored] || 'auto';
-      appActions.setTheme(next);
+      applyTheme(next);
     },
 
-    setTheme: (mode) => {
-      localStorage.setItem('codemini-theme', mode);
-      const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
-      const resolved = mode === 'auto' ? (mq && mq.matches ? 'dark' : 'light') : mode;
-      document.documentElement.dataset.theme = resolved;
-    },
+    setTheme: applyTheme,
 
     setConfigOpen: (open) => update({ configOpen: open }),
     refreshConfigStatus: () => loadConfigStatus(),
@@ -1449,9 +1574,20 @@ export function AppProvider({ children }) {
         update({ updateStatus: 'error' });
       }
     },
-  };
+  }), [
+    addMessage,
+    applyTheme,
+    loadConfigStatus,
+    loadGitInfo,
+    loadHistory,
+    loadSessionMessages,
+    loadSessions,
+    loadState,
+    update,
+    upsertRuntimeActivity,
+  ]);
 
-  const value = { state, actions };
+  const value = useMemo(() => ({ state, actions }), [state, actions]);
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 

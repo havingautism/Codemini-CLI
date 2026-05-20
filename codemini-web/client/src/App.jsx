@@ -1,4 +1,4 @@
-import React, { Component } from "react";
+import React, { Component, Suspense, lazy, memo, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppProvider, useApp } from "@/context/app-context.jsx";
@@ -7,20 +7,53 @@ import { Sidebar } from "@/components/Sidebar.jsx";
 import { ChatPanel } from "@/components/ChatPanel.jsx";
 import { InputBar } from "@/components/InputBar.jsx";
 import { StatusBar } from "@/components/StatusBar.jsx";
-import { CodeWikiPanel } from "@/components/CodeWikiPanel.jsx";
 import { ApprovalDialog } from "@/components/ApprovalDialog.jsx";
 import { PlanApprovalCard } from "@/components/PlanApprovalDialog.jsx";
 import { ReflectApprovalCard } from "@/components/ReflectApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
-import { ConfigDialog } from "@/components/ConfigDialog.jsx";
-import { ProjectSelector } from "@/components/ProjectSelector.jsx";
-import { SkillDialog } from "@/components/SkillDialog.jsx";
-import { SoulDialog } from "@/components/SoulDialog.jsx";
-import { AboutDialog } from "@/components/AboutDialog.jsx";
-import { GitDiffDialog } from "@/components/GitDiffDialog.jsx";
 import { PlanProgress } from "@/components/PlanProgress.jsx";
 import { MoreHorizontal, Terminal, GitCompare } from "lucide-react";
 import "../style.css";
+
+const CodeWikiPanel = lazy(() =>
+  import("@/components/CodeWikiPanel.jsx").then((module) => ({
+    default: module.CodeWikiPanel,
+  })),
+);
+const ConfigDialog = lazy(() =>
+  import("@/components/ConfigDialog.jsx").then((module) => ({
+    default: module.ConfigDialog,
+  })),
+);
+const ProjectSelector = lazy(() =>
+  import("@/components/ProjectSelector.jsx").then((module) => ({
+    default: module.ProjectSelector,
+  })),
+);
+const SkillDialog = lazy(() =>
+  import("@/components/SkillDialog.jsx").then((module) => ({
+    default: module.SkillDialog,
+  })),
+);
+const SoulDialog = lazy(() =>
+  import("@/components/SoulDialog.jsx").then((module) => ({
+    default: module.SoulDialog,
+  })),
+);
+const AboutDialog = lazy(() =>
+  import("@/components/AboutDialog.jsx").then((module) => ({
+    default: module.AboutDialog,
+  })),
+);
+const GitDiffDialog = lazy(() =>
+  import("@/components/GitDiffDialog.jsx").then((module) => ({
+    default: module.GitDiffDialog,
+  })),
+);
+
+const MemoSidebar = memo(Sidebar);
+const MemoInputBar = memo(InputBar);
+const MemoStatusBar = memo(StatusBar);
 
 function GitHubIcon({ size = 14, className, ...props }) {
   return (
@@ -85,10 +118,15 @@ function Shell() {
   const { state, actions } = useApp();
   const rs = state.runtimeState || {};
   const currentId = rs.sessionId;
+  const openSettings = useCallback(() => actions.setConfigOpen(true), [actions]);
+  const openSkills = useCallback(() => actions.setSkillsOpen(true), [actions]);
+  const openSouls = useCallback(() => actions.setSoulsOpen(true), [actions]);
+  const openAbout = useCallback(() => actions.setAboutOpen(true), [actions]);
+  const openProjectSelector = useCallback(() => actions.setProjectOpen(true), [actions]);
 
   return (
     <div className="flex h-screen bg-(--bg-primary) text-(--text-primary)">
-      <Sidebar
+      <MemoSidebar
         sessions={state.sessions}
         sessionsLoading={state.sessionsLoading}
         currentSessionId={currentId}
@@ -96,10 +134,10 @@ function Shell() {
         onSwitchSession={actions.switchSession}
         onToggleTheme={actions.toggleTheme}
         onSetTheme={actions.setTheme}
-        onOpenSettings={() => actions.setConfigOpen(true)}
-        onOpenSkills={() => actions.setSkillsOpen(true)}
-        onOpenSouls={() => actions.setSoulsOpen(true)}
-        onOpenAbout={() => actions.setAboutOpen(true)}
+        onOpenSettings={openSettings}
+        onOpenSkills={openSkills}
+        onOpenSouls={openSouls}
+        onOpenAbout={openAbout}
         gitBatch={state.gitBatch}
         versionInfo={state.versionInfo}
         onUpdate={actions.runUpdate}
@@ -112,28 +150,33 @@ function Shell() {
 
       <div className="flex-1 flex flex-col min-w-0 bg-(--bg-secondary)">
         {state.currentView === "codewiki" ? (
-          <CodeWikiPanel
-            projectCwd={
-              state.codewikiProjectPath?.split(/[/\\]/).pop() ||
-              state.projectCwd
-            }
-            projectKey={
-              state.codewikiProjectPath ||
-              state.runtimeState?.cwd ||
-              state.projectCwd ||
-              ""
-            }
-            busy={state.busy}
-            planSteps={state.planSteps}
-            stageLabel={state.stageLabel}
-          />
+          <Suspense fallback={null}>
+            <CodeWikiPanel
+              projectCwd={
+                state.codewikiProjectPath?.split(/[/\\]/).pop() ||
+                state.projectCwd
+              }
+              projectKey={
+                state.codewikiProjectPath ||
+                state.runtimeState?.cwd ||
+                state.projectCwd ||
+                ""
+              }
+              busy={state.busy}
+              planSteps={state.planSteps}
+              stageLabel={state.stageLabel}
+              generationStatus={state.codewikiGeneration}
+            />
+          </Suspense>
         ) : (
           <div className="flex-1 flex flex-col min-h-0 bg-(--bg-primary) rounded-[18px] border border-(--border-default) border-b-0 relative overflow-hidden my-1 mx-1">
             {/* Titlebar */}
             <div className="flex items-center justify-between h-[52px] px-5 shrink-0 border-b border-(--border-default)">
               <div className="flex items-center gap-2.5 min-w-0">
                 <span className="font-medium text-[14px] text-(--text-primary) truncate">
-                  {state.isGeneral ? t('generalChat') : (state.projectCwd || "qurio-coder")}
+                  {state.isGeneral
+                    ? t("generalChat")
+                    : state.projectCwd || "qurio-coder"}
                 </span>
                 {state.gitInfo?.isGit && (
                   <span className="inline-flex items-center gap-1 text-[12px] text-(--text-muted) shrink-0">
@@ -193,11 +236,13 @@ function Shell() {
                   />
                 </div>
               )}
-              <InputBar
+              <MemoInputBar
                 onSubmit={actions.submit}
                 onAbort={actions.abort}
                 busy={state.busy}
-                disabled={!!state.pendingPlanApproval || !!state.pendingReflectApproval}
+                disabled={
+                  !!state.pendingPlanApproval || !!state.pendingReflectApproval
+                }
                 disabledReason={
                   state.pendingReflectApproval
                     ? t("reflectReviewFirst")
@@ -205,16 +250,7 @@ function Shell() {
                 }
                 runtimeState={state.runtimeState}
                 history={state.history}
-                onCompletionRequest={async (input) => {
-                  try {
-                    const opts = await (
-                      await fetch(
-                        `/api/completions?q=${encodeURIComponent(input)}`,
-                      )
-                    ).json();
-                  } catch {}
-                }}
-                onOpenProject={() => actions.setProjectOpen(true)}
+                onOpenProject={openProjectSelector}
                 projectCwd={state.projectCwd}
               />
 
@@ -222,11 +258,13 @@ function Shell() {
               <div className="flex items-center gap-3 pt-2 px-3 min-h-[28px] overflow-hidden">
                 {state.versionInfo?.current && (
                   <span className="inline-flex items-center gap-1 text-[11px] text-(--text-muted) shrink-0">
-                    <Terminal size={11} />
+                    <span className="inline-flex h-3 w-3.5 items-center justify-center rounded-[3px] bg-black text-white dark:bg-white dark:text-black">
+                      <Terminal size={12} strokeWidth={2.5} />
+                    </span>
                     Codemini CLI@{state.versionInfo.current}
                   </span>
                 )}
-                <StatusBar
+                <MemoStatusBar
                   runtimeState={state.runtimeState}
                   live={state.live}
                   stageLabel={state.stageLabel}
@@ -243,36 +281,50 @@ function Shell() {
         onDecision={actions.approve}
       />
 
-      <ConfigDialog
-        open={state.configOpen}
-        onOpenChange={actions.setConfigOpen}
-        status={state.configStatus}
-        onSaved={actions.refreshConfigStatus}
-      />
+      <Suspense fallback={null}>
+        {state.configOpen && (
+          <ConfigDialog
+            open={state.configOpen}
+            onOpenChange={actions.setConfigOpen}
+            status={state.configStatus}
+            onSaved={actions.refreshConfigStatus}
+          />
+        )}
 
-      <SkillDialog
-        open={state.skillsOpen}
-        onOpenChange={actions.setSkillsOpen}
-      />
+        {state.skillsOpen && (
+          <SkillDialog
+            open={state.skillsOpen}
+            onOpenChange={actions.setSkillsOpen}
+          />
+        )}
 
-      <SoulDialog open={state.soulsOpen} onOpenChange={actions.setSoulsOpen} />
+        {state.soulsOpen && (
+          <SoulDialog open={state.soulsOpen} onOpenChange={actions.setSoulsOpen} />
+        )}
 
-      <AboutDialog
-        open={state.aboutOpen}
-        onOpenChange={actions.setAboutOpen}
-        version={state.versionInfo?.current}
-      />
+        {state.aboutOpen && (
+          <AboutDialog
+            open={state.aboutOpen}
+            onOpenChange={actions.setAboutOpen}
+            version={state.versionInfo?.current}
+          />
+        )}
 
-      <GitDiffDialog
-        open={state.gitDiffOpen}
-        onOpenChange={actions.setGitDiffOpen}
-      />
+        {state.gitDiffOpen && (
+          <GitDiffDialog
+            open={state.gitDiffOpen}
+            onOpenChange={actions.setGitDiffOpen}
+          />
+        )}
 
-      <ProjectSelector
-        open={state.projectOpen}
-        onOpenChange={actions.setProjectOpen}
-        onOpenProject={actions.openProject}
-      />
+        {state.projectOpen && (
+          <ProjectSelector
+            open={state.projectOpen}
+            onOpenChange={actions.setProjectOpen}
+            onOpenProject={actions.openProject}
+          />
+        )}
+      </Suspense>
     </div>
   );
 }

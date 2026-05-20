@@ -16,6 +16,7 @@ import {
   Check,
   Palette,
   PencilLine,
+  Drama,
 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -153,13 +154,17 @@ export function Sidebar({
     return localStorage.getItem("codemini-theme") || "auto";
   });
   useEffect(() => {
-    const mq = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
+    const mq =
+      window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
     const sync = () => {
       setResolvedTheme(document.documentElement.dataset.theme || "light");
       setThemeMode(localStorage.getItem("codemini-theme") || "auto");
     };
     const observer = new MutationObserver(sync);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
     if (mq) mq.addEventListener("change", sync);
     return () => {
       observer.disconnect();
@@ -304,7 +309,7 @@ export function Sidebar({
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onOpenSouls}
         >
-          <User
+          <Drama
             size={15}
             strokeWidth={2}
             className="text-(--text-secondary) shrink-0"
@@ -665,7 +670,7 @@ export function Sidebar({
             <PopoverContent
               align="center"
               side="top"
-              className="w-28 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+              className="w-30 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
             >
               {["zh", "en"].map((locale) => (
                 <button
@@ -706,29 +711,29 @@ export function Sidebar({
             <PopoverContent
               align="center"
               side="top"
-              className="w-28 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+              className="w-30 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
             >
               {[
                 { mode: "light", icon: Sun, label: t("lightMode") },
                 { mode: "dark", icon: Moon, label: t("darkMode") },
                 { mode: "auto", icon: Monitor, label: t("autoModeTheme") },
               ].map(({ mode, icon: Icon, label }) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    className={cn(
-                      "w-full rounded-md px-2.5 py-1.5 text-left text-[13px] flex items-center justify-between hover:bg-(--bg-hover)",
-                      themeMode === mode && "text-(--text-primary) font-medium",
-                    )}
-                    onClick={() => onSetTheme(mode)}
-                  >
-                    <span className="flex items-center gap-1.5">
-                      <Icon size={13} strokeWidth={1.8} />
-                      <span>{label}</span>
-                    </span>
-                    {themeMode === mode && <Check size={13} />}
-                  </button>
-                ))}
+                <button
+                  key={mode}
+                  type="button"
+                  className={cn(
+                    "w-full rounded-md px-2.5 py-1.5 text-left text-[13px] flex items-center justify-between hover:bg-(--bg-hover)",
+                    themeMode === mode && "text-(--text-primary) font-medium",
+                  )}
+                  onClick={() => onSetTheme(mode)}
+                >
+                  <span className="flex items-center gap-1.5">
+                    <Icon size={13} strokeWidth={1.8} />
+                    <span>{label}</span>
+                  </span>
+                  {themeMode === mode && <Check size={13} />}
+                </button>
+              ))}
             </PopoverContent>
           </Popover>
           <button

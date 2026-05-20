@@ -61,6 +61,16 @@ function appendTextSegment(segments, delta, isStreaming = true) {
   return [...current, { type: 'text', text: value, isStreaming }];
 }
 
+function replaceTextSegment(segments, text, isStreaming = false) {
+  const value = String(text || '');
+  const current = Array.isArray(segments) ? segments : [];
+  const index = current.findLastIndex((seg) => seg?.type === 'text');
+  if (index === -1) return value ? [...current, { type: 'text', text: value, isStreaming }] : current;
+  return current.map((seg, i) => (
+    i === index ? { ...seg, text: value, isStreaming } : seg
+  ));
+}
+
 function appendThinkingSegment(segments, delta, isStreaming = true) {
   const value = String(delta || '');
   if (!value) return segments || [];
@@ -151,6 +161,60 @@ function mergeUiUsage(left, right) {
     out[key] = Math.max(0, Math.round(Number(a[key] || 0) + Number(b[key] || 0)));
   }
   return out;
+}
+
+function toCodeWikiGenerateProgress(event) {
+  if (!event?.type) return null;
+  const now = new Date().toISOString();
+  if (event.type === 'plan:steps') {
+    return {
+      type: 'codewiki:generate_progress',
+      phase: 'steps',
+      timestamp: now,
+      steps: (Array.isArray(event.steps) ? event.steps : []).map((step, index) => ({
+        index: Number(step.index || index + 1),
+        title: step.title || '',
+        role: step.role || 'general',
+        status: step.status || 'pending'
+      }))
+    };
+  }
+  if (event.type === 'plan:step_start') {
+    return {
+      type: 'codewiki:generate_progress',
+      phase: 'step_start',
+      timestamp: now,
+      step: Number(event.step || 0),
+      total: Number(event.total || 0),
+      role: event.role || 'general',
+      title: event.title || '',
+      status: 'running'
+    };
+  }
+  if (event.type === 'plan:step_done' || event.type === 'plan:progress') {
+    return {
+      type: 'codewiki:generate_progress',
+      phase: event.type === 'plan:step_done' ? 'step_done' : 'step_progress',
+      timestamp: now,
+      step: Number(event.step || 0),
+      total: Number(event.total || 0),
+      role: event.role || 'general',
+      title: event.title || '',
+      status: event.status || (event.type === 'plan:step_done' ? 'done' : 'running'),
+      summary: event.summary || ''
+    };
+  }
+  if (event.type === 'skill:start' || event.type === 'skill:end' || event.type === 'skill:error') {
+    return {
+      type: 'codewiki:generate_progress',
+      phase: event.type.replace('skill:', 'skill_'),
+      timestamp: now,
+      name: event.name || 'project-requirements',
+      status: event.type === 'skill:error' ? 'failed' : event.type === 'skill:end' ? 'done' : 'running',
+      summary: event.summary || ''
+    };
+  }
+  return null;
 }
 
 function createPlanStepUiMessage(event) {
@@ -301,7 +365,7 @@ export class RuntimeBridge {
         if (this.#uiActiveMsgId && delta) {
           this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
             ...message,
-            segments: appendTextSegment(message.segments, delta, true)
+            segments: appendTextSegment(finishThinkingSegments(message.segments), delta, true)
           }));
         }
         break;
@@ -329,7 +393,9 @@ export class RuntimeBridge {
           const text = stripPlanProgressText(event.text);
           this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
             ...message,
-            segments: text ? [{ type: 'text', text, isStreaming: false }] : message.segments
+            segments: text
+              ? replaceTextSegment(finishThinkingSegments(message.segments), text, false)
+              : message.segments
           }));
         }
         if (this.#uiActiveMsgId) {
@@ -346,7 +412,7 @@ export class RuntimeBridge {
           const toolCard = { id: event.id, name: event.name, arguments: event.arguments, status: 'running', durationMs: null, summary: '', result: '' };
           this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
             ...message,
-            segments: addToolToSegments(message.segments, toolCard)
+            segments: addToolToSegments(finishThinkingSegments(message.segments), toolCard)
           }));
         }
         break;
@@ -355,11 +421,15 @@ export class RuntimeBridge {
         if (this.#uiActiveMsgId) {
           this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
             ...message,
+            fileChanges: event.fileChange?.path
+              ? [...(Array.isArray(message.fileChanges) ? message.fileChanges : []), event.fileChange]
+              : (Array.isArray(message.fileChanges) ? message.fileChanges : []),
             segments: updateToolInSegments(message.segments, event.id, (card) => ({
               ...card,
               status: 'done',
               durationMs: event.durationMs,
-              summary: event.summary || card.summary
+              summary: event.summary || card.summary,
+              ...(event.fileChange ? { fileChange: event.fileChange } : {})
             }))
           }));
         }
@@ -520,6 +590,35 @@ export class RuntimeBridge {
     return { accepted: true };
   }
 
+  handleCodeWikiGenerate(line) {
+    if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    this.#busy = true;
+    this.#broadcastRuntimeState();
+    const emitProgress = (event) => {
+      const progress = toCodeWikiGenerateProgress(event);
+      if (progress) this.#broadcast(progress);
+    };
+    this.#runtime.submit(line, emitProgress, { codeWikiGenerate: true }).then((result) => {
+      this.#broadcast({
+        type: 'codewiki:generate_done',
+        result: {
+          type: result?.type || 'assistant',
+          aborted: !!result?.aborted,
+          text: result?.text || ''
+        }
+      });
+    }).catch((err) => {
+      this.#broadcast({
+        type: 'codewiki:generate_error',
+        message: err?.message || 'CodeWiki generation failed'
+      });
+    }).finally(() => {
+      this.#busy = false;
+      this.#broadcastRuntimeState();
+    });
+    return { accepted: true };
+  }
+
   async handleCodeWikiAsk(line, onEvent = null) {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
     this.#busy = true;
@@ -600,10 +699,12 @@ export class RuntimeBridge {
         reasoningEndedAt: m.reasoning_ended_at || null,
         reasoningDurationMs: Number.isFinite(Number(m.reasoning_duration_ms)) ? Number(m.reasoning_duration_ms) : null,
         toolCalls: m.tool_calls || [],
+        fileChanges: Array.isArray(m.file_changes) ? m.file_changes : [],
         toolCallId: m.tool_call_id || null,
         toolSummary: m.role === 'tool' ? summarizeHistoricalToolMessage(m) : null,
         toolDurationMs: Number.isFinite(Number(m.tool_duration_ms)) ? Number(m.tool_duration_ms) : null,
         toolStatus: m.tool_status || null,
+        toolFileChange: m.tool_file_change || null,
         planTranscript: Array.isArray(m.plan_transcript) ? m.plan_transcript : null,
         usage: normalizeUiUsage(m.usage),
         at: m.at || null

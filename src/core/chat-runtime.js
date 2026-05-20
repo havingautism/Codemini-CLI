@@ -128,7 +128,7 @@ function collectRawUsage(usage) {
   return [{ ...usage }];
 }
 
-function normalizeModelUsage(usage) {
+export function normalizeModelUsage(usage) {
   if (!usage || typeof usage !== 'object') return null;
   const promptCacheHitTokens = firstFiniteNumber(usage, [
     ['prompt_cache_hit_tokens'],
@@ -170,11 +170,12 @@ function normalizeModelUsage(usage) {
     ['billed_units', 'input_tokens'],
     ['billedUnits', 'inputTokens']
   ]);
-  const inputTokens = explicitInputTokens ?? (
-    promptCacheHitTokens != null || promptCacheMissTokens != null
-      ? Number(promptCacheHitTokens || 0) + Number(promptCacheMissTokens || 0)
-      : null
-  );
+  const cacheReadInputTokens = firstFiniteNumber(usage, [
+    ['cache_read_input_tokens'],
+    ['cacheReadInputTokens'],
+    ['cache_read_tokens'],
+    ['cacheReadTokens']
+  ]);
   const outputTokens = firstFiniteNumber(usage, [
     ['completion_tokens'],
     ['output_tokens'],
@@ -244,7 +245,7 @@ function normalizeModelUsage(usage) {
     ['cache_hit_tokens'],
     ['cacheHitTokens']
   ]);
-  const cacheMissInputTokens = firstFiniteNumber(usage, [
+  const explicitCacheMissInputTokens = firstFiniteNumber(usage, [
     ['prompt_cache_miss_tokens'],
     ['promptCacheMissTokens'],
     ['cache_miss_tokens'],
@@ -269,6 +270,22 @@ function normalizeModelUsage(usage) {
     ['usage', 'cache_creation', 'ephemeral_5m_input_tokens'],
     ['usage', 'cache_creation', 'ephemeral_1h_input_tokens']
   ]);
+  const hasAnthropicSplitCacheInput = explicitInputTokens != null
+    && (cacheReadInputTokens != null || cacheWriteInputTokens != null)
+    && promptCacheHitTokens == null;
+  const cacheMissInputTokens = explicitCacheMissInputTokens ?? (
+    hasAnthropicSplitCacheInput
+      ? Number(explicitInputTokens || 0) + Number(cacheWriteInputTokens || 0)
+      : null
+  );
+  const inputTokens = explicitInputTokens != null
+    ? Number(explicitInputTokens || 0)
+      + (hasAnthropicSplitCacheInput ? Number(cacheReadInputTokens || 0) + Number(cacheWriteInputTokens || 0) : 0)
+    : (
+      promptCacheHitTokens != null || promptCacheMissTokens != null
+        ? Number(promptCacheHitTokens || 0) + Number(promptCacheMissTokens || 0)
+        : null
+    );
   const reasoningOutputTokens = firstFiniteNumber(usage, [
     ['completion_tokens_details', 'reasoning_tokens'],
     ['output_tokens_details', 'reasoning_tokens'],
@@ -355,6 +372,17 @@ function prioritizeByPreferredOrder(items, preferredOrder) {
 
 function normalizeUiLocale(value) {
   return String(value || '').toLowerCase().startsWith('en') ? 'en' : 'zh';
+}
+
+function formatLocalDateTimeSlug(date = new Date()) {
+  const value = date instanceof Date ? date : new Date(date);
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  const hour = String(value.getHours()).padStart(2, '0');
+  const minute = String(value.getMinutes()).padStart(2, '0');
+  const second = String(value.getSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day}-${hour}-${minute}-${second}`;
 }
 
 function getCompletionCopy(language = 'zh') {
@@ -3119,6 +3147,37 @@ async function askModel({
 
   let activeAssistantIndex = -1;
   const pendingToolMeta = new Map();
+  const normalizeFileChange = (change) => {
+    if (!change || typeof change !== 'object') return null;
+    const path = String(change.path || '').trim();
+    if (!path) return null;
+    const action = String(change.action || '').trim();
+    return {
+      path,
+      action: action === 'create' || action === 'delete' ? action : 'edit',
+      linesAdded: Number(change.linesAdded || 0),
+      linesRemoved: Number(change.linesRemoved || 0),
+      changedLine: Number(change.changedLine || 0),
+      diffPreview: String(change.diffPreview || '')
+    };
+  };
+  const fileChangeFingerprint = (change) => JSON.stringify({
+    path: change.path,
+    action: change.action,
+    linesAdded: Number(change.linesAdded || 0),
+    linesRemoved: Number(change.linesRemoved || 0),
+    changedLine: Number(change.changedLine || 0),
+    diffPreview: String(change.diffPreview || '')
+  });
+  const appendUniqueFileChange = (message, fileChange) => {
+    const existing = Array.isArray(message.file_changes) ? message.file_changes : [];
+    const nextKey = fileChangeFingerprint(fileChange);
+    if (existing.some((change) => fileChangeFingerprint(normalizeFileChange(change) || {}) === nextKey)) {
+      message.file_changes = existing;
+      return;
+    }
+    message.file_changes = [...existing, fileChange];
+  };
   const attachToolMetaToSessionCall = (toolId, meta = {}) => {
     if (!toolId) return false;
     for (let i = session.messages.length - 1; i >= 0; i -= 1) {
@@ -3129,6 +3188,11 @@ async function askModel({
       if (Number.isFinite(Number(meta.durationMs))) call.durationMs = Number(meta.durationMs);
       if (typeof meta.summary === 'string' && meta.summary.trim()) call.summary = meta.summary.trim();
       if (typeof meta.status === 'string' && meta.status.trim()) call.status = meta.status.trim();
+      const fileChange = normalizeFileChange(meta.fileChange);
+      if (fileChange) {
+        call.fileChange = fileChange;
+        appendUniqueFileChange(msg, fileChange);
+      }
       msg.at = new Date().toISOString();
       return true;
     }
@@ -3143,8 +3207,16 @@ async function askModel({
     } else if (event?.type === 'assistant:delta') {
       if (activeAssistantIndex >= 0 && session.messages[activeAssistantIndex]) {
         const current = session.messages[activeAssistantIndex];
+        const now = new Date();
+        if (current.reasoning_started_at && !current.reasoning_ended_at) {
+          current.reasoning_ended_at = now.toISOString();
+          current.reasoning_duration_ms = Math.max(
+            Number(current.reasoning_duration_ms || 0),
+            Date.parse(current.reasoning_ended_at) - Date.parse(current.reasoning_started_at)
+          );
+        }
         current.content = `${current.content || ''}${event.text || ''}`;
-        current.at = new Date().toISOString();
+        current.at = now.toISOString();
         if (persistSession) scheduleSessionSave();
       }
     } else if (event?.type === 'assistant:reasoning_delta') {
@@ -3207,12 +3279,27 @@ async function askModel({
         if (persistSession) scheduleSessionSave();
       }
       activeAssistantIndex = -1;
+    } else if (event?.type === 'tool:start') {
+      if (activeAssistantIndex >= 0 && session.messages[activeAssistantIndex]) {
+        const current = session.messages[activeAssistantIndex];
+        const now = new Date();
+        if (current.reasoning_started_at && !current.reasoning_ended_at) {
+          current.reasoning_ended_at = now.toISOString();
+          current.reasoning_duration_ms = Math.max(
+            Number(current.reasoning_duration_ms || 0),
+            Date.parse(current.reasoning_ended_at) - Date.parse(current.reasoning_started_at)
+          );
+          current.at = now.toISOString();
+          if (persistSession) scheduleSessionSave();
+        }
+      }
     } else if (event?.type === 'tool:end' || event?.type === 'tool:error' || event?.type === 'tool:blocked') {
       const toolId = String(event.id || '');
       if (toolId) {
         const meta = {
           durationMs: Number.isFinite(Number(event.durationMs)) ? Number(event.durationMs) : undefined,
           summary: typeof event.summary === 'string' ? event.summary : '',
+          fileChange: normalizeFileChange(event.fileChange),
           status:
             event.type === 'tool:error'
               ? 'error'
@@ -3231,7 +3318,8 @@ async function askModel({
           tool_call_id: toolId,
           ...(Number.isFinite(Number(meta.durationMs)) ? { tool_duration_ms: Number(meta.durationMs) } : {}),
           ...(meta.summary ? { tool_summary: meta.summary } : {}),
-          ...(meta.status ? { tool_status: meta.status } : {})
+          ...(meta.status ? { tool_status: meta.status } : {}),
+          ...(meta.fileChange ? { tool_file_change: meta.fileChange } : {})
         })
       );
       pendingToolMeta.delete(toolId);
@@ -3925,14 +4013,13 @@ function renderProjectRequirementsSectionContract(ignoredSections = []) {
   return lines.join('\n');
 }
 
-function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = {}) {
+function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = {}, reportSlug = formatLocalDateTimeSlug()) {
   const options = parseProjectRequirementsOptions(args);
   const userArgs = options.raw;
   const requestedFocus = userArgs ? `User request/focus: ${userArgs}` : 'User request/focus: full workspace requirements report.';
   const replyLanguageName = getReplyLanguageName(config);
-  const reportDate = formatLocalDate();
-  const reportPath = `docs/requirements/${reportDate}-project-requirements.html`;
-  const companionPath = `docs/requirements/${reportDate}-project-requirements.md`;
+  const reportPath = `docs/requirements/${reportSlug}-project-requirements.html`;
+  const companionPath = `docs/requirements/${reportSlug}-project-requirements.md`;
   const reportContract = [
     requestedFocus,
     `Reply language: write generated report prose, UI labels inserted into the report, review notes, and final user-facing status in ${replyLanguageName} unless the user explicitly requested a different language. Do not translate REQUIREMENTS_* marker names or source code identifiers.`,
@@ -4254,11 +4341,11 @@ async function runProjectRequirementsPipeline({
   const options = parseProjectRequirementsOptions(parsedInput.args);
   const userFocus = options.raw;
   const goal = userFocus ? `project requirements report: ${userFocus}` : 'project requirements report';
-  const reportDate = formatLocalDate();
-  const reportPath = `docs/requirements/${reportDate}-project-requirements.html`;
-  const companionPath = `docs/requirements/${reportDate}-project-requirements.md`;
-  const manifestPath = `docs/requirements/${reportDate}-project-requirements.manifest.json`;
-  const steps = buildProjectRequirementsSteps(renderedSkillPrompt, parsedInput.args, config);
+  const reportSlug = formatLocalDateTimeSlug();
+  const reportPath = `docs/requirements/${reportSlug}-project-requirements.html`;
+  const companionPath = `docs/requirements/${reportSlug}-project-requirements.md`;
+  const manifestPath = `docs/requirements/${reportSlug}-project-requirements.manifest.json`;
+  const steps = buildProjectRequirementsSteps(renderedSkillPrompt, parsedInput.args, config, reportSlug);
   const planFile = await writeMarkdownInProjectDir(
     'plans',
     'project-requirements-pipeline',
@@ -5300,6 +5387,7 @@ export async function createChatRuntime({
     const activeReplySystemPrompt = await buildActiveSystemPrompt();
     const parsedInput = parseInput(line);
     const readOnlyCodeWiki = options?.readOnlyCodeWiki === true;
+    const codeWikiGenerate = options?.codeWikiGenerate === true;
     const maybeAutoDreamFromRuntime = async () => {
       const threshold = Number(config?.memory?.auto_dream_threshold ?? 10);
       if (!(threshold > 0)) return null;
@@ -5333,7 +5421,7 @@ export async function createChatRuntime({
       }
     };
     try {
-      if (!readOnlyCodeWiki && shouldPersistInputHistory(parsedInput)) {
+      if (!readOnlyCodeWiki && !codeWikiGenerate && shouldPersistInputHistory(parsedInput)) {
         await appendInputHistory(line);
       }
     } catch {

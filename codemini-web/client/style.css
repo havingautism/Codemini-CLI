@@ -1143,6 +1143,360 @@
   display: none !important;
   content: none !important;
 }
+
+/* ── Home empty-state banner animations ── */
+.codemini-home-visual,
+.codemini-home-visual * {
+  box-sizing: border-box;
+}
+
+.codemini-home-visual {
+  --press-bg: #86a6f9;
+  --press-paper: #e3e4e8;
+  --press-paper-muted: #c7cad1;
+  --press-ink: #17181c;
+  --press-roll: #2e3138;
+  --press-roll-core: #17181c;
+  --banner-accent: #8bd5ff;
+  --banner-warm: #ffd166;
+
+  position: relative;
+  width: 100%;
+  height: clamp(150px, 28vw, 230px);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border-default) 72%, transparent);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 22% 18%, rgba(255, 255, 255, 0.34), transparent 32%),
+    linear-gradient(135deg, color-mix(in srgb, var(--press-bg) 88%, white), var(--press-bg));
+  color: var(--press-ink);
+  font-family: var(--font-mono);
+  font-size: clamp(6px, 1.25vw, 10px);
+  line-height: 1.5;
+  box-shadow: var(--shadow-default);
+}
+
+[data-theme="dark"] .codemini-home-visual {
+  --press-bg: #17203a;
+  --press-paper: #d7dce8;
+  --press-paper-muted: #9da8bc;
+  --press-ink: #111827;
+  --press-roll: #0f172a;
+  --press-roll-core: #020617;
+  --banner-accent: #38bdf8;
+  --banner-warm: #fbbf24;
+
+  background:
+    radial-gradient(circle at 18% 16%, rgba(134, 166, 249, 0.2), transparent 34%),
+    linear-gradient(135deg, #202b4a, var(--press-bg));
+  box-shadow: none;
+}
+
+.codemini-press,
+.codemini-press * {
+  box-sizing: border-box;
+}
+
+.codemini-press {
+  --press-bg: #86a6f9;
+  --press-paper: #e3e4e8;
+  --press-paper-muted: #c7cad1;
+  --press-ink: #17181c;
+  --press-roll: #2e3138;
+  --press-roll-core: #17181c;
+
+  position: relative;
+  width: 100%;
+  height: clamp(150px, 28vw, 230px);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border-default) 72%, transparent);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 22% 18%, rgba(255, 255, 255, 0.34), transparent 32%),
+    linear-gradient(135deg, color-mix(in srgb, var(--press-bg) 88%, white), var(--press-bg));
+  color: var(--press-ink);
+  font-family: var(--font-mono);
+  font-size: clamp(6px, 1.25vw, 10px);
+  line-height: 1.5;
+  box-shadow: var(--shadow-default);
+}
+
+[data-theme="dark"] .codemini-press {
+  --press-bg: #17203a;
+  --press-paper: #d7dce8;
+  --press-paper-muted: #9da8bc;
+  --press-ink: #111827;
+  --press-roll: #0f172a;
+  --press-roll-core: #020617;
+
+  background:
+    radial-gradient(circle at 18% 16%, rgba(134, 166, 249, 0.2), transparent 34%),
+    linear-gradient(135deg, #202b4a, var(--press-bg));
+  box-shadow: none;
+}
+
+:root[data-palette="catppuccin"] .codemini-press {
+  --press-bg: #cba6f7;
+  --press-paper: #eff1f5;
+  --press-paper-muted: #bcc0cc;
+  --press-ink: #4c4f69;
+  --press-roll: #5c5f77;
+  --press-roll-core: #4c4f69;
+}
+
+:root[data-theme="dark"][data-palette="catppuccin"] .codemini-press {
+  --press-bg: #3b2d4f;
+  --press-paper: #cdd6f4;
+  --press-paper-muted: #7f849c;
+  --press-ink: #11111b;
+  --press-roll: #181825;
+  --press-roll-core: #11111b;
+}
+
+:root[data-palette="tokyonight"] .codemini-press {
+  --press-bg: #a9b1d6;
+  --press-paper: #eef0f6;
+  --press-paper-muted: #bfc6d9;
+  --press-ink: #343b58;
+  --press-roll: #414868;
+  --press-roll-core: #343b58;
+}
+
+:root[data-theme="dark"][data-palette="tokyonight"] .codemini-press {
+  --press-bg: #1f2a44;
+  --press-paper: #c0caf5;
+  --press-paper-muted: #565f89;
+  --press-ink: #15161e;
+  --press-roll: #16161e;
+  --press-roll-core: #0f1117;
+}
+
+:root[data-palette="one"] .codemini-press {
+  --press-bg: #98c379;
+  --press-paper: #fafafa;
+  --press-paper-muted: #d7d7d8;
+  --press-ink: #383a42;
+  --press-roll: #4b5263;
+  --press-roll-core: #282c34;
+}
+
+:root[data-theme="dark"][data-palette="one"] .codemini-press {
+  --press-bg: #1d3449;
+  --press-paper: #abb2bf;
+  --press-paper-muted: #5c6370;
+  --press-ink: #1e222a;
+  --press-roll: #21252b;
+  --press-roll-core: #151820;
+}
+
+:root[data-palette="github"] .codemini-press {
+  --press-bg: #ddf4ff;
+  --press-paper: #ffffff;
+  --press-paper-muted: #afb8c1;
+  --press-ink: #24292f;
+  --press-roll: #57606a;
+  --press-roll-core: #24292f;
+}
+
+:root[data-theme="dark"][data-palette="github"] .codemini-press {
+  --press-bg: #0d274d;
+  --press-paper: #e6edf3;
+  --press-paper-muted: #7d8590;
+  --press-ink: #0d1117;
+  --press-roll: #161b22;
+  --press-roll-core: #010409;
+}
+
+:root[data-palette="vscode"] .codemini-press {
+  --press-bg: #e5f3ff;
+  --press-paper: #ffffff;
+  --press-paper-muted: #c8c8c8;
+  --press-ink: #1f1f1f;
+  --press-roll: #3c3c3c;
+  --press-roll-core: #1f1f1f;
+}
+
+:root[data-theme="dark"][data-palette="vscode"] .codemini-press {
+  --press-bg: #17304a;
+  --press-paper: #d4d4d4;
+  --press-paper-muted: #858585;
+  --press-ink: #1e1e1e;
+  --press-roll: #252526;
+  --press-roll-core: #111111;
+}
+
+.codemini-press .sheet {
+  overflow: hidden;
+}
+
+.codemini-press .sheet,
+.codemini-press .sheet::before,
+.codemini-press .roll {
+  position: absolute;
+}
+
+.codemini-press .sheet,
+.codemini-press .roll {
+  top: 50%;
+  left: 50%;
+}
+
+.codemini-press .sheet {
+  width: 4em;
+  height: 6em;
+  transform: translate(-50%, -50%) rotateX(-45deg) rotateZ(-45deg);
+}
+
+.codemini-press .sheet::before {
+  animation: codemini-print 0.5s ease-in-out infinite;
+  background:
+    linear-gradient(#0000 5.2em, currentColor 5.2em 5.3em, #0000 5.3em 5.5em)
+      0.4em 0 / 3.2em 6em,
+    linear-gradient(#0000 5.5em, currentColor 5.5em 5.7em, #0000 5.7em) 0.6em 0 /
+      2.8em 6em,
+    linear-gradient(
+        90deg,
+        var(--press-paper) 0.4em,
+        #0000 0.4em 1.9em,
+        var(--press-paper) 1.9em 2.1em,
+        #0000 2.1em 3.6em,
+        var(--press-paper) 3.6em
+      )
+      0 0 / 4em 6em,
+    repeating-linear-gradient(
+        var(--press-paper) 0 0.4em,
+        #0000 0.4em 5em,
+        var(--press-paper) 5em 6em,
+        #0000 6em
+      )
+      0 0 / 4em 6em,
+    linear-gradient(#0000 3.4em, currentColor 3.4em) 100% 0 / 50% 6em,
+    repeating-linear-gradient(currentColor 0 0.2em, var(--press-paper) 0.2em 0.4em) 0 0 /
+      4em 6em;
+  background-repeat: repeat-y;
+  color: var(--press-ink);
+  content: "";
+  display: block;
+  top: -6em;
+  left: 0;
+  width: 100%;
+  height: calc(100% + 6em);
+}
+
+.codemini-press .sheet:nth-child(1)::before,
+.codemini-press .sheet:nth-child(5)::before {
+  color: var(--press-paper-muted);
+}
+
+.codemini-press .sheet:nth-child(n + 7):nth-child(-n + 9) {
+  height: 0.4em;
+}
+
+.codemini-press .sheet:nth-child(1) {
+  height: 42em;
+  transform: translate(-50%, -50%) rotateX(-45deg) rotateZ(-45deg) translate(-17.4em, 9.4em)
+    rotateX(-90deg);
+}
+
+.codemini-press .sheet:nth-child(3) {
+  transform: translate(-50%, -50%) rotateX(-45deg) rotateZ(-45deg) translate(-2.5em, -2.5em);
+}
+
+.codemini-press .sheet:nth-child(5) {
+  transform: translate(-50%, -50%) rotateX(-45deg) rotateZ(-45deg) translate(-0.5em, -0.7em)
+    rotateX(-75deg);
+}
+
+.codemini-press .sheet:nth-child(7) {
+  transform: translate(-50%, -50%) rotateX(-45deg) rotateZ(-45deg) translate(1.7em, -1.85em)
+    rotateX(-15deg);
+}
+
+.codemini-press .sheet:nth-child(7)::before {
+  background-position-y: 5.2em;
+}
+
+.codemini-press .sheet:nth-child(8) {
+  transform: translate(-50%, -50%) rotateX(-45deg) rotateZ(-45deg) translate(1.7em, -1.5em)
+    rotateX(15deg);
+}
+
+.codemini-press .sheet:nth-child(8)::before {
+  background-position-y: 4.8em;
+}
+
+.codemini-press .sheet:nth-child(9) {
+  transform: translate(-50%, -50%) rotateX(-45deg) rotateZ(-45deg) translate(1.6em, -1.05em)
+    rotateX(45deg);
+}
+
+.codemini-press .sheet:nth-child(9)::before {
+  background-position-y: 4.4em;
+}
+
+.codemini-press .sheet:nth-child(10)::before,
+.codemini-press .sheet:nth-child(11)::before {
+  background-position-y: 4em;
+}
+
+.codemini-press .sheet:nth-child(10) {
+  transform: translate(-50%, -50%) rotateX(-45deg) rotateZ(-45deg) translate(-0.5em, 1.95em)
+    rotateX(75deg);
+}
+
+.codemini-press .sheet:nth-child(11) {
+  height: 29em;
+  transform: translate(-50%, -50%) rotateX(-45deg) rotateZ(-45deg) translate(-2.5em, 19.25em);
+}
+
+.codemini-press .roll {
+  width: 8em;
+  height: 2em;
+  border-radius: 0.5em / 1em;
+  background-color: var(--press-roll);
+  background-image: radial-gradient(
+    1em 2em at 0.5em 50%,
+    var(--press-roll-core) 49%,
+    transparent 50%
+  );
+}
+
+.codemini-press .roll:nth-child(2) {
+  transform: translate(-50%, -50%) rotateX(-45deg) rotateZ(-45deg) translate(-3em, -4.5em)
+    skewX(-22.5deg);
+}
+
+.codemini-press .roll:nth-child(4) {
+  transform: translate(-50%, -50%) rotateX(-45deg) rotateZ(-45deg) translate(-2em, -0.5em)
+    skewX(-22.5deg);
+}
+
+.codemini-press .roll:nth-child(6) {
+  transform: translate(-50%, -50%) rotateX(-45deg) rotateZ(-45deg) translate(1em, -1em)
+    skewX(-22.5deg);
+}
+
+.codemini-press .roll:nth-child(12) {
+  transform: translate(-50%, -50%) rotateX(-45deg) rotateZ(-45deg) translate(-2em, 4.45em)
+    skewX(-22.5deg);
+}
+
+@keyframes codemini-print {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(6em);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .codemini-press .sheet::before,
+  .codemini-home-visual * {
+    animation: none;
+  }
+}
+
 /* Shiki dual-theme syntax highlighting */
 [data-theme="light"] .msg-body [data-streamdown="code-block-body"] span[style*="--shiki-light"] {
   color: var(--shiki-light) !important;

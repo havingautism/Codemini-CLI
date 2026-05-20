@@ -1,15 +1,39 @@
-import { useRef, useEffect, useState, useMemo, useCallback } from "react";
+import { Suspense, lazy, useRef, useEffect, useState, useMemo, useCallback } from "react";
 import { ArrowDown, GitBranch } from "lucide-react";
-import { MessageBubble } from "./MessageBubble";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
+
+const MessageBubble = lazy(() =>
+  import("./MessageBubble").then((module) => ({
+    default: module.MessageBubble,
+  })),
+);
 
 function truncate(text, max = 36) {
   const s = String(text || "")
     .replace(/\n/g, " ")
     .trim();
   return s.length > max ? s.slice(0, max) + "..." : s;
+}
+
+function PrintingPress() {
+  return (
+    <div className="codemini-home-visual codemini-press" aria-hidden="true">
+      <div className="sheet" />
+      <div className="roll" />
+      <div className="sheet" />
+      <div className="roll" />
+      <div className="sheet" />
+      <div className="roll" />
+      <div className="sheet" />
+      <div className="sheet" />
+      <div className="sheet" />
+      <div className="sheet" />
+      <div className="sheet" />
+      <div className="roll" />
+    </div>
+  );
 }
 
 function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
@@ -167,9 +191,14 @@ export function ChatPanel({
       {!messagesLoading && messages.length === 0 && (
         <div className="absolute left-1/2 top-[38%] -translate-x-1/2 -translate-y-1/2 w-[min(760px,calc(100%-48px))] text-center pointer-events-none">
           {isGeneral ? (
-            <h1 className="text-[clamp(24px,2.4vw,36px)] font-medium leading-tight tracking-normal">
-              {t("askAnythingGeneral")}
-            </h1>
+            <div className="flex flex-col items-center">
+              <div className="mb-7 w-[min(560px,100%)]">
+                <PrintingPress />
+              </div>
+              <h1 className="text-[clamp(24px,2.4vw,36px)] font-medium leading-tight tracking-normal">
+                {t("askAnythingGeneral")}
+              </h1>
+            </div>
           ) : (
             <>
               <h1 className="text-[clamp(24px,2.4vw,36px)] font-medium leading-tight tracking-normal">
@@ -224,9 +253,11 @@ export function ChatPanel({
       >
         <div className="relative">
           <div className="w-[min(960px,calc(100%-96px))] mx-auto">
-            {messages.map((msg) => (
-              <MessageBubble key={msg.id} message={msg} skills={skills} />
-            ))}
+            <Suspense fallback={null}>
+              {messages.map((msg) => (
+                <MessageBubble key={msg.id} message={msg} skills={skills} />
+              ))}
+            </Suspense>
           </div>
         </div>
       </div>

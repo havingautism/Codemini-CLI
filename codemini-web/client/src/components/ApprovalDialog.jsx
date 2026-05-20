@@ -5,6 +5,8 @@ import { t } from '../../i18n/index.js';
 function detectVariant(toolName, details) {
   if (toolName === 'delete') return 'delete';
   if (toolName === 'run') return 'run';
+  if (toolName === 'edit') return 'edit';
+  if (toolName === 'write') return 'write';
   if (details?.planApproval) return 'plan';
   if (details?.reflectApproval) return 'reflect';
   return 'generic';
@@ -14,22 +16,34 @@ function parseArgs(args) {
   if (!args) return {};
   try {
     const obj = typeof args === 'string' ? JSON.parse(args) : args;
-    return { ...obj, _raw: JSON.stringify(obj) };
+    return { ...obj, _raw: JSON.stringify(obj, null, 2) };
   } catch { return { _raw: String(args) }; }
 }
 
 function DetailRow({ label, value }) {
   return (
-    <div className="flex gap-3 py-1.5">
+    <div className="flex gap-3 py-1.5 min-w-0">
       <span className="text-[13px] font-medium text-(--text-muted) w-20 shrink-0">{label}</span>
-      <span className="text-[13px] font-mono break-all text-(--text-primary)">{String(value)}</span>
+      <span className="text-[13px] font-mono min-w-0 break-words text-(--text-primary)">{String(value)}</span>
+    </div>
+  );
+}
+
+function PreviewRow({ label, value }) {
+  if (value == null || value === '') return null;
+  return (
+    <div className="py-1.5 min-w-0">
+      <div className="mb-1 text-[13px] font-medium text-(--text-muted)">{label}</div>
+      <pre className="max-h-40 overflow-auto rounded-md border border-(--border-default) bg-(--bg-secondary) px-2.5 py-2 text-[12px] leading-5 text-(--text-primary) whitespace-pre-wrap break-words">
+        {String(value)}
+      </pre>
     </div>
   );
 }
 
 function ApprovalBody({ variant, args, details }) {
+  const parsed = parseArgs(args);
   if (variant === 'delete') {
-    const parsed = parseArgs(args);
     return (
       <>
         <DetailRow label="File" value={parsed.path || parsed.name || '-'} />
@@ -38,12 +52,33 @@ function ApprovalBody({ variant, args, details }) {
     );
   }
   if (variant === 'run') {
-    const parsed = parseArgs(args);
     return (
       <>
         <DetailRow label="Command" value={parsed.command || '-'} />
         {details?.risk && <DetailRow label="Risk" value={details.risk} />}
         {details?.description && <DetailRow label="Info" value={details.description} />}
+      </>
+    );
+  }
+  if (variant === 'edit') {
+    const edit = parsed.edit && typeof parsed.edit === 'object' ? parsed.edit : {};
+    const kind = parsed.kind || edit.kind || parsed.mode || 'edit';
+    return (
+      <>
+        <DetailRow label="Tool" value="edit" />
+        <DetailRow label="File" value={parsed.file || parsed.path || '-'} />
+        <DetailRow label="Action" value={kind} />
+        <PreviewRow label="Old" value={parsed.old_text || parsed.old_string || edit.old_text || edit.old_string} />
+        <PreviewRow label="New" value={parsed.new_text || parsed.new_string || edit.new_text || edit.new_string || edit.new_content || parsed.content} />
+      </>
+    );
+  }
+  if (variant === 'write') {
+    return (
+      <>
+        <DetailRow label="Tool" value="write" />
+        <DetailRow label="File" value={parsed.file || parsed.path || '-'} />
+        <PreviewRow label="Content" value={parsed.content || parsed.text || parsed.body} />
       </>
     );
   }
@@ -70,8 +105,7 @@ function ApprovalBody({ variant, args, details }) {
       </>
     );
   }
-  const parsed = parseArgs(args);
-  return <DetailRow label="Tool" value={parsed._raw || '-'} />;
+  return <PreviewRow label="Arguments" value={parsed._raw || '-'} />;
 }
 
 export function ApprovalDialog({ request, open, onDecision }) {
@@ -89,11 +123,11 @@ export function ApprovalDialog({ request, open, onDecision }) {
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onDecision(id, false); }}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-xl max-h-[82vh] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
         <DialogHeader>
           <DialogTitle>{titles[variant] || t('approveTitle')}</DialogTitle>
         </DialogHeader>
-        <div className="py-2">
+        <div className="min-h-0 overflow-y-auto py-1 pr-1">
           <ApprovalBody variant={variant} args={args} details={details} />
         </div>
         <DialogFooter className="gap-2">

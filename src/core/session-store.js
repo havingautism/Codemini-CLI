@@ -34,7 +34,24 @@ function sanitizeToolCall(tc, index) {
   if (Number.isFinite(Number(tc?.durationMs))) out.durationMs = Number(tc.durationMs);
   if (typeof tc?.summary === 'string' && tc.summary.trim()) out.summary = tc.summary.trim();
   if (typeof tc?.status === 'string' && tc.status.trim()) out.status = tc.status.trim();
+  const fileChange = sanitizeFileChange(tc?.fileChange);
+  if (fileChange) out.fileChange = fileChange;
   return out;
+}
+
+function sanitizeFileChange(change) {
+  if (!change || typeof change !== 'object') return null;
+  const filePath = String(change.path || '').trim();
+  if (!filePath) return null;
+  const action = String(change.action || '').trim();
+  return {
+    path: filePath,
+    action: action === 'create' || action === 'delete' ? action : 'edit',
+    linesAdded: Math.max(0, Math.round(Number(change.linesAdded || 0))),
+    linesRemoved: Math.max(0, Math.round(Number(change.linesRemoved || 0))),
+    changedLine: Math.max(0, Math.round(Number(change.changedLine || 0))),
+    diffPreview: String(change.diffPreview || '')
+  };
 }
 
 function normalizeWhitespace(value) {
@@ -98,6 +115,8 @@ function sanitizeMessage(msg) {
   if (Number.isFinite(Number(msg?.tool_duration_ms))) out.tool_duration_ms = Number(msg.tool_duration_ms);
   if (typeof msg?.tool_summary === 'string' && msg.tool_summary.trim()) out.tool_summary = msg.tool_summary.trim();
   if (typeof msg?.tool_status === 'string' && msg.tool_status.trim()) out.tool_status = msg.tool_status.trim();
+  const toolFileChange = sanitizeFileChange(msg?.tool_file_change);
+  if (toolFileChange) out.tool_file_change = toolFileChange;
   if (typeof msg?.name === 'string' && msg.name.trim()) out.name = msg.name.trim();
   if (typeof msg?.at === 'string' && msg.at.trim()) out.at = msg.at;
   if (typeof msg?.reasoning_content === 'string' && msg.reasoning_content) {
@@ -121,6 +140,10 @@ function sanitizeMessage(msg) {
   if (Array.isArray(msg?.tool_calls)) {
     const toolCalls = msg.tool_calls.map(sanitizeToolCall).filter(Boolean);
     if (toolCalls.length > 0) out.tool_calls = toolCalls;
+  }
+  if (Array.isArray(msg?.file_changes)) {
+    const fileChanges = msg.file_changes.map(sanitizeFileChange).filter(Boolean);
+    if (fileChanges.length > 0) out.file_changes = fileChanges;
   }
   const usage = sanitizeUsage(msg?.usage);
   if (usage) out.usage = usage;

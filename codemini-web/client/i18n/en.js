@@ -224,6 +224,8 @@ export const en = {
   
   // InputBar
   executionMode: 'Execution Mode',
+  normalExecutionMode: 'Manual',
+  normalModeDesc: 'Review edits and commands',
   autoMode: 'Auto',
   autoModeDesc: 'Auto-execute, complex tasks auto-plan',
   planMode: 'Plan',
