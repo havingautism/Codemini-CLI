@@ -124,10 +124,7 @@ function ThoughtBlock({ segment }) {
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className={cn(
-          COLLAPSE_ROW_CLASS,
-          "font-medium",
-        )}
+        className={cn(COLLAPSE_ROW_CLASS, "font-medium")}
         aria-expanded={open}
       >
         <ChevronRight
@@ -146,9 +143,7 @@ function ThoughtBlock({ segment }) {
           )}
         </span>
         <span>{label}</span>
-        {segment.isStreaming && elapsed && (
-          <span>{elapsed}</span>
-        )}
+        {segment.isStreaming && elapsed && <span>{elapsed}</span>}
       </button>
       {open && (
         <div className="relative ml-4.5 mt-1.5 pl-8 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
@@ -551,13 +546,16 @@ function FileChangesSummary({ changes }) {
   };
 
   return (
-    <div className="mt-2 overflow-hidden rounded-lg border border-(--border-default) bg-(--bg-secondary)">
+    <div className="mt-6 overflow-hidden rounded-lg border border-(--border-default) bg-(--bg-secondary)">
       {changes.map((c, i) => {
         const key = `${c.path}-${i}`;
         const fileOpen = openFiles.has(key);
         const hasPreview = Boolean(c.diffPreview);
         return (
-          <div key={key} className="border-t border-(--border-default) first:border-t-0">
+          <div
+            key={key}
+            className="border-t border-(--border-default) first:border-t-0"
+          >
             <button
               type="button"
               onClick={() => {
@@ -578,9 +576,15 @@ function FileChangesSummary({ changes }) {
             >
               {hasPreview ? (
                 fileOpen ? (
-                  <ChevronDown size={13} className="shrink-0 text-(--text-muted)" />
+                  <ChevronDown
+                    size={13}
+                    className="shrink-0 text-(--text-muted)"
+                  />
                 ) : (
-                  <ChevronRight size={13} className="shrink-0 text-(--text-muted)" />
+                  <ChevronRight
+                    size={13}
+                    className="shrink-0 text-(--text-muted)"
+                  />
                 )
               ) : (
                 <span className="w-[13px] shrink-0" />
@@ -800,9 +804,7 @@ function getUsageSummary(usage) {
   )
     return null;
   const cacheBase =
-    cacheMiss > 0 || cacheWrite > 0
-      ? cached + cacheMiss + cacheWrite
-      : input;
+    cacheMiss > 0 || cacheWrite > 0 ? cached + cacheMiss + cacheWrite : input;
   const cachePct = cacheBase > 0 ? (cached / cacheBase) * 100 : 0;
   const labelParts = [
     `${formatUsageNumber(total || input + output)} ${t("usageTokens")}`,
