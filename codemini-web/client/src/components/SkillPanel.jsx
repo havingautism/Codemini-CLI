@@ -515,8 +515,31 @@ export function SkillPanel({ projectDirs = [] }) {
   }, [loadSkills]);
 
   const handleToggle = async (skill, enabled) => {
-    await api.toggleSkill(skill.name, enabled, skill.projectDir);
-    loadSkills();
+    // 乐观更新：立即翻转本地状态，用户秒切无闪烁
+    setSkills((prev) =>
+      prev.map((s) =>
+        s.name === skill.name && s.projectDir === skill.projectDir
+          ? { ...s, enabled }
+          : s,
+      ),
+    );
+    try {
+      await api.toggleSkill(skill.name, enabled, skill.projectDir);
+    } catch {
+      // 请求失败时回滚
+      setSkills((prev) =>
+        prev.map((s) =>
+          s.name === skill.name && s.projectDir === skill.projectDir
+            ? { ...s, enabled: !enabled }
+            : s,
+        ),
+      );
+    }
+    // 静默后台刷新，不触发 loading
+    try {
+      const list = await api.fetchSkills(requestProjectDirs);
+      setSkills(Array.isArray(list) ? list : []);
+    } catch {}
   };
 
   const handleDelete = async (skill) => {

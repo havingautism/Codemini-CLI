@@ -991,6 +991,9 @@ async function writeFile(root, args, config = {}) {
   if (rawPath === '.' || rawPath === './') {
     throw new Error('write requires a file path, not the workspace root');
   }
+  if (normalizedArgs?.content == null) {
+    throw new Error('write requires content. For existing files, use edit with old_text/new_text or pass content with full_file_rewrite=true.');
+  }
   const target = await resolveInWorkspace(root, rawPath, config);
   try {
     const stat = await fs.stat(target);
@@ -1007,18 +1010,30 @@ async function writeFile(root, args, config = {}) {
   } catch {
     existed = false;
   }
+  const nextContent = String(normalizedArgs.content ?? '');
+  if (existed && before === nextContent && !normalizedArgs?.append) {
+    return {
+      ok: true,
+      path: rawPath,
+      action: 'unchanged',
+      changed_line: 1,
+      diff_preview: '',
+      lines_added: 0,
+      lines_removed: 0
+    };
+  }
   if (existed && !normalizedArgs?.append && !normalizedArgs?.full_file_rewrite) {
     throw new Error(
-      'write blocks full overwrite for existing files by default. Use read -> edit for existing file changes, or pass full_file_rewrite=true when a whole-file rewrite is truly intended.'
+      `write target exists: ${rawPath}. Use edit for source changes, append=true to append, or full_file_rewrite=true to replace the whole file.`
     );
   }
   await fs.mkdir(path.dirname(target), { recursive: true });
   if (normalizedArgs?.append) {
-    await fs.appendFile(target, normalizedArgs?.content || '', 'utf8');
+    await fs.appendFile(target, nextContent, 'utf8');
   } else {
-    await fs.writeFile(target, normalizedArgs?.content || '', 'utf8');
+    await fs.writeFile(target, nextContent, 'utf8');
   }
-  const after = normalizedArgs?.append ? `${before}${normalizedArgs?.content || ''}` : normalizedArgs?.content || '';
+  const after = normalizedArgs?.append ? `${before}${nextContent}` : nextContent;
   const beforeLines = splitLines(before);
   const afterLines = splitLines(after);
   let changeLine = 0;
@@ -1714,10 +1729,26 @@ async function replaceText(root, args, config = {}) {
         : splitLines(state.content.slice(0, state.content.indexOf(oldText))).length;
       return editResult(relativePath, 'replace_text', state.content, afterContent, changedLine);
     }
+    const baseLine = hasRange ? range.startLine : 1;
+    const baseOffset = hasRange ? range.startOffset : 0;
+    const lineDetails = [];
+    let searchPos = 0;
+    while (true) {
+      const pos = searchContent.indexOf(oldText, searchPos);
+      if (pos === -1) break;
+      const lineNum = baseLine + splitLines(searchContent.slice(0, pos)).length - 1;
+      const globalPos = baseOffset + pos;
+      const lStart = state.content.lastIndexOf('\n', globalPos) + 1;
+      const lEnd = state.content.indexOf('\n', globalPos);
+      const lineText = state.content.slice(lStart, lEnd >= 0 ? lEnd : void 0).trim();
+      lineDetails.push(`  Line ${lineNum}: ${lineText}`);
+      searchPos = pos + oldText.length;
+    }
+    const lineHint = lineDetails.length > 0 ? `\n${lineDetails.join('\n')}\n` : ' ';
     throw new Error(
       occurrences === 0
         ? 'replace_text old_text not found'
-        : 'replace_text old_text not unique; add a line range like path:"file.js:10-30" or set replace_all=true'
+        : `replace_text old_text not unique; found ${occurrences} occurrences:${lineHint}Use path:"${relativePath}:N-M" to narrow the range, set replace_all=true, or provide more unique old_text`
     );
   }
   const replaced = searchContent.replace(oldText, newText);
@@ -1842,6 +1873,7 @@ async function editTarget(root, args, config = {}) {
     edit.new_text = edit.new_string;
   }
   const hasContent = edit.new_content != null || edit.content != null;
+  const hasExplicitRewrite = edit.kind === 'rewrite_file' || args?.kind === 'rewrite_file';
   const hasTargetHint = Boolean(edit.symbol || args?.symbol || edit.line || args?.line || edit.target);
   if (!kind) {
     if (hasContent && hasTargetHint) {
@@ -1850,7 +1882,7 @@ async function editTarget(root, args, config = {}) {
       kind = 'replace_text';
     } else if ((edit.anchor_text != null || edit.target_text != null) && (edit.content != null || edit.new_content != null)) {
       kind = String(edit.position || edit.mode || args?.position || '').trim() === 'after' ? 'insert_after' : 'insert_before';
-    } else if (hasContent) {
+    } else if (hasContent && hasExplicitRewrite) {
       kind = 'rewrite_file';
     }
   }
@@ -1863,8 +1895,8 @@ async function editTarget(root, args, config = {}) {
         ? 'new_text'
         : 'edit operation';
     const hint = recentFile
-      ? ` If you meant the recently read file ${recentFile}, use edit with {file:"${recentFile}", old_text:"...", new_text:"..."} for a text replacement, or {file:"${recentFile}", edit:{kind:"rewrite_file", new_content:"..."}} for a full rewrite.`
-      : ' Use edit with {file:"path", old_text:"...", new_text:"..."} for a text replacement, or {file:"path", edit:{kind:"rewrite_file", new_content:"..."}} for a full rewrite.';
+      ? ` If you meant the recently read file ${recentFile}, use edit with {file:"${recentFile}", old_text:"...", new_text:"..."} for a text replacement, or {file:"${recentFile}", kind:"rewrite_file", new_content:"..."} for a full rewrite.`
+      : ' Use edit with {file:"path", old_text:"...", new_text:"..."} for a text replacement, or {file:"path", kind:"rewrite_file", new_content:"..."} for a full rewrite.';
     throw new Error(`edit requires ${missing}.${rawArgs}${hint}`);
   }
   if (astTarget) {
@@ -2125,7 +2157,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
             line: { type: 'number', description: 'Line to target' },
             edit: { type: 'object', description: 'Structured edit input' }
           },
-          required: ['path']
+          required: ['path', 'content']
         }
       }
     },
@@ -2681,7 +2713,10 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     edit: async (args) => {
       await ensureProjectIndex();
       const normalizedKind = String(args?.edit?.kind || args?.kind || '').trim();
-      const astTarget = resolveCachedAstTarget(args, { requireAstScope: normalizedKind === 'replace_block' });
+      const hasReplaceTextArgs = args?.edit?.old_text != null || args?.old_text != null || args?.old_string != null;
+      const astTarget = hasReplaceTextArgs || (normalizedKind && normalizedKind !== 'replace_block')
+        ? null
+        : resolveCachedAstTarget(args, { requireAstScope: normalizedKind === 'replace_block' });
       const editPath = normalizeFilePathValue(args?.path || args?.file || args?.file_path || '', { stripInlineRange: true }).trim();
       const shouldUseRecentReadRange =
         editPath &&

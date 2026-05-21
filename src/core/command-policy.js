@@ -214,6 +214,57 @@ function isWithinAnyRoot(candidatePath, roots = []) {
   });
 }
 
+function normalizeWindowsPathForCompare(value) {
+  return String(value || '').trim().replace(/\//g, '\\').replace(/\\+$/g, '').toLowerCase();
+}
+
+function isWindowsPathWithinAnyRoot(candidatePath, roots = []) {
+  const candidate = normalizeWindowsPathForCompare(candidatePath);
+  if (!/^[a-z]:\\/i.test(candidate)) return false;
+  return roots.some((root) => {
+    const normalizedRoot = normalizeWindowsPathForCompare(root);
+    return candidate === normalizedRoot || candidate.startsWith(`${normalizedRoot}\\`);
+  });
+}
+
+function collectWindowsAbsolutePathCandidates(command) {
+  const text = String(command || '');
+  const candidates = [];
+  let current = '';
+  let quote = '';
+
+  const flush = () => {
+    const token = current.trim();
+    current = '';
+    if (/^[A-Za-z]:[\\/]/.test(token)) candidates.push(token);
+  };
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) {
+        flush();
+        quote = '';
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === '\'') {
+      flush();
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      flush();
+      continue;
+    }
+    current += ch;
+  }
+  flush();
+  return candidates;
+}
+
 function validateCdSegment(command, workspaceRoot, config = {}) {
   const tokens = tokenizeTopLevel(command);
   if (tokens.length === 1) {
@@ -279,18 +330,17 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
     }
   }
 
-  const allowedLower = allowedPathRoots(workspaceRoot, config).map((item) => item.toLowerCase().replace(/\//g, '\\'));
-  const windowsAbsPath = lower.match(/[a-z]:\\[^\s'"]+/g) || [];
+  const allowedRoots = allowedPathRoots(workspaceRoot, config);
+  const windowsAbsPath = collectWindowsAbsolutePathCandidates(cmd);
   for (const p of windowsAbsPath) {
-    if (!allowedLower.some((root) => p === root || p.startsWith(`${root}\\`))) {
+    if (!isWindowsPathWithinAnyRoot(p, allowedRoots)) {
       return { allowed: false, reason: `absolute path outside workspace or allowed paths: ${p}`, suggestion: suggestionForToken(token, config) };
     }
   }
 
   const posixAbsPath = cmd.match(/(?<![:/\w])\/(?!\/)[^\s'"]+/g) || [];
-  const allowedResolved = allowedPathRoots(workspaceRoot, config);
   for (const p of posixAbsPath) {
-    if (!isWithinAnyRoot(p, allowedResolved)) {
+    if (!isWithinAnyRoot(p, allowedRoots)) {
       return { allowed: false, reason: `absolute path outside workspace or allowed paths: ${p}`, suggestion: suggestionForToken(token, config) };
     }
   }
