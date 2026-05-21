@@ -1,4 +1,4 @@
-import React, { Component, Suspense, lazy, memo, useCallback } from "react";
+import React, { Component, Suspense, lazy, memo, useCallback, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppProvider, useApp } from "@/context/app-context.jsx";
@@ -35,6 +35,11 @@ const SkillDialog = lazy(() =>
     default: module.SkillDialog,
   })),
 );
+const MemoryDialog = lazy(() =>
+  import("@/components/MemoryDialog.jsx").then((module) => ({
+    default: module.MemoryDialog,
+  })),
+);
 const SoulDialog = lazy(() =>
   import("@/components/SoulDialog.jsx").then((module) => ({
     default: module.SoulDialog,
@@ -54,6 +59,20 @@ const GitDiffDialog = lazy(() =>
 const MemoSidebar = memo(Sidebar);
 const MemoInputBar = memo(InputBar);
 const MemoStatusBar = memo(StatusBar);
+
+function collectSidebarProjectDirs(sessions = [], currentDir = "", runtimeDir = "") {
+  const dirs = new Set();
+  for (const session of sessions || []) {
+    const dir = String(session?.projectDir || "").trim();
+    if (!dir || dir === "unknown") continue;
+    dirs.add(dir);
+  }
+  for (const dir of [currentDir, runtimeDir]) {
+    const value = String(dir || "").trim();
+    if (value && value !== "unknown") dirs.add(value);
+  }
+  return Array.from(dirs);
+}
 
 function GitHubIcon({ size = 14, className, ...props }) {
   return (
@@ -120,9 +139,14 @@ function Shell() {
   const currentId = rs.sessionId;
   const openSettings = useCallback(() => actions.setConfigOpen(true), [actions]);
   const openSkills = useCallback(() => actions.setSkillsOpen(true), [actions]);
+  const openMemory = useCallback(() => actions.setMemoryOpen(true), [actions]);
   const openSouls = useCallback(() => actions.setSoulsOpen(true), [actions]);
   const openAbout = useCallback(() => actions.setAboutOpen(true), [actions]);
   const openProjectSelector = useCallback(() => actions.setProjectOpen(true), [actions]);
+  const sidebarProjectDirs = useMemo(
+    () => collectSidebarProjectDirs(state.sessions, "", state.runtimeState?.cwd),
+    [state.sessions, state.runtimeState?.cwd],
+  );
 
   return (
     <div className="flex h-screen bg-(--bg-primary) text-(--text-primary)">
@@ -136,6 +160,7 @@ function Shell() {
         onSetTheme={actions.setTheme}
         onOpenSettings={openSettings}
         onOpenSkills={openSkills}
+        onOpenMemory={openMemory}
         onOpenSouls={openSouls}
         onOpenAbout={openAbout}
         gitBatch={state.gitBatch}
@@ -295,6 +320,15 @@ function Shell() {
           <SkillDialog
             open={state.skillsOpen}
             onOpenChange={actions.setSkillsOpen}
+            projectDirs={sidebarProjectDirs}
+          />
+        )}
+
+        {state.memoryOpen && (
+          <MemoryDialog
+            open={state.memoryOpen}
+            onOpenChange={actions.setMemoryOpen}
+            projectDirs={sidebarProjectDirs}
           />
         )}
 

@@ -307,7 +307,7 @@ export function SoulPanel() {
             className="h-8 pl-8 text-[13px]"
           />
         </div>
-        <div className="flex shrink-0 rounded-md border border-(--border-default) p-0.5">
+        <div className="flex shrink-0 rounded-md border border-(--border-default) p-0.5 gap-0.5">
           {FILTERS.map((item) => (
             <Button
               key={item}

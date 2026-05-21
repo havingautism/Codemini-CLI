@@ -17,6 +17,7 @@ import {
   Palette,
   PencilLine,
   Drama,
+  Brain,
 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -127,6 +128,7 @@ export function Sidebar({
   onSetTheme,
   onOpenSettings,
   onOpenSkills,
+  onOpenMemory,
   onOpenSouls,
   onOpenAbout,
   gitBatch,
@@ -316,7 +318,17 @@ export function Sidebar({
           />
           <span className="truncate">{t("souls")}</span>
         </button>
-
+        <button
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          onClick={onOpenMemory}
+        >
+          <Brain
+            size={15}
+            strokeWidth={2}
+            className="text-(--text-secondary) shrink-0"
+          />
+          <span className="truncate">{t("memory")}</span>
+        </button>
         <Separator className="my-2 bg-(--border-default)" />
       </div>
 

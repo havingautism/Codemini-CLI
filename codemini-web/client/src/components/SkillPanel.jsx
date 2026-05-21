@@ -1,5 +1,17 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { Download, Eye, FileCode2, Pencil, Plus, Search, SlidersHorizontal, Trash2 } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Download,
+  Eye,
+  FileCode2,
+  Folder,
+  Pencil,
+  Plus,
+  Search,
+  SlidersHorizontal,
+  Trash2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -57,6 +69,23 @@ function scopeLabel(scope) {
   return t("projectScope");
 }
 
+function skillKey(skill) {
+  return `${skill?.scope || "unknown"}:${skill?.projectDir || ""}:${skill?.name || ""}`;
+}
+
+function projectDisplayName(value) {
+  return value === "__codemini_general__" ? t("generalChat") : value;
+}
+
+function projectDirsKey(projectDirs = []) {
+  return Array.isArray(projectDirs)
+    ? projectDirs
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+        .join("\n")
+    : "";
+}
+
 function isBuiltin(skill) {
   return skill?.scope === "builtin";
 }
@@ -92,7 +121,7 @@ function SkillEditor({ skill, onSave, onCancel }) {
     }
     setLoading(true);
     api
-      .fetchSkillContent(skill.name)
+      .fetchSkillContent(skill.name, skill.projectDir)
       .then((data) => setContent(data.content || ""))
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -114,9 +143,9 @@ function SkillEditor({ skill, onSave, onCancel }) {
       await api.createSkill({ name, description, content, scope });
       await api.updateSkillMetadata(name, metadata);
     } else {
-      await api.updateSkillMetadata(skill.name, metadata);
+      await api.updateSkillMetadata(skill.name, metadata, skill.projectDir);
       if (!contentReadOnly) {
-        await api.updateSkillContent(skill.name, content);
+        await api.updateSkillContent(skill.name, content, skill.projectDir);
       }
     }
     onSave();
@@ -134,7 +163,10 @@ function SkillEditor({ skill, onSave, onCancel }) {
               {t("skillEditorHint")}
             </div>
           </div>
-          <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px]">
+          <Badge
+            variant="outline"
+            className="rounded-md px-1.5 py-0 text-[10px]"
+          >
             {scopeLabel(scope)}
           </Badge>
         </div>
@@ -142,11 +174,10 @@ function SkillEditor({ skill, onSave, onCancel }) {
         <div className="grid gap-3">
           {(isNew || !isBuiltin(skill)) && (
             <div className="grid gap-1.5">
-              <label className="text-[12px] text-(--text-muted)">{t("skillScope")}</label>
-              <Select
-                value={scope}
-                onValueChange={setScope}
-              >
+              <label className="text-[12px] text-(--text-muted)">
+                {t("skillScope")}
+              </label>
+              <Select value={scope} onValueChange={setScope}>
                 <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px]">
                   <SelectValue />
                 </SelectTrigger>
@@ -158,7 +189,9 @@ function SkillEditor({ skill, onSave, onCancel }) {
             </div>
           )}
           <div className="grid gap-1.5">
-            <label className="text-[12px] text-(--text-muted)">{t("name")}</label>
+            <label className="text-[12px] text-(--text-muted)">
+              {t("name")}
+            </label>
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -189,10 +222,7 @@ function SkillEditor({ skill, onSave, onCancel }) {
                 <label className="text-[12px] text-(--text-muted)">
                   {t("skillMode")}
                 </label>
-                <Select
-                  value={mode}
-                  onValueChange={setMode}
-                >
+                <Select value={mode} onValueChange={setMode}>
                   <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px]">
                     <SelectValue />
                   </SelectTrigger>
@@ -271,7 +301,11 @@ function SkillEditor({ skill, onSave, onCancel }) {
         </Button>
         <Button
           onClick={handleSave}
-          disabled={loading || (!contentReadOnly && !content.trim()) || (isNew && !name.trim())}
+          disabled={
+            loading ||
+            (!contentReadOnly && !content.trim()) ||
+            (isNew && !name.trim())
+          }
           size="sm"
         >
           {isNew ? t("create") : t("save")}
@@ -306,7 +340,7 @@ function ViewDialog({ skill, open, onOpenChange }) {
     if (!open || !skill) return;
     setLoading(true);
     api
-      .fetchSkillContent(skill.name)
+      .fetchSkillContent(skill.name, skill.projectDir)
       .then((data) => setContent(data.content || ""))
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -345,38 +379,148 @@ function ViewDialog({ skill, open, onOpenChange }) {
   );
 }
 
-export function SkillPanel() {
+function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
+  const enabled = isEnabled(skill);
+  return (
+    <div
+      className={cn(
+        "rounded-lg border p-3 transition-colors",
+        enabled
+          ? "border-(--border-default) bg-(--bg-primary) hover:bg-(--bg-hover)"
+          : "border-(--border-default) bg-(--bg-secondary) opacity-75",
+      )}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="truncate text-[13px] font-medium text-(--text-primary)">
+              {skill.name}
+            </span>
+            <Badge
+              variant={isBuiltin(skill) ? "secondary" : "outline"}
+              className="h-4 rounded-md px-1.5 py-0 text-[10px]"
+            >
+              {scopeLabel(skill.scope)}
+            </Badge>
+            <Badge
+              variant={enabled ? "outline" : "secondary"}
+              className="h-4 rounded-md px-1.5 py-0 text-[10px]"
+            >
+              {enabled ? t("enabled") : t("disabled")}
+            </Badge>
+            {skill.version && skill.version !== "0.0.0" && (
+              <span className="text-[10px] text-(--text-muted)">
+                v{skill.version}
+              </span>
+            )}
+            {skill.mode && (
+              <Badge
+                variant="outline"
+                className="h-4 rounded-md px-1.5 py-0 text-[10px]"
+              >
+                {t(`skillMode_${skill.mode}`)}
+              </Badge>
+            )}
+          </div>
+          <div className="mt-1 line-clamp-2 text-[11px] leading-4 text-(--text-muted)">
+            {skill.description || t("noDescription")}
+          </div>
+          {skill.triggers?.length > 0 && (
+            <div className="mt-1 truncate text-[10px] text-(--text-muted)">
+              {t("skillTriggers")}: {skill.triggers.join(", ")}
+            </div>
+          )}
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => onView(skill)}
+            title={t("view")}
+          >
+            <Eye size={13} />
+          </Button>
+          <SwitchControl
+            checked={enabled}
+            onClick={() => onToggle(skill, !enabled)}
+            title={enabled ? t("disable") : t("enable")}
+          />
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => onEdit(skill)}
+            title={isBuiltin(skill) ? t("skillRoutingSettings") : t("edit")}
+          >
+            {isBuiltin(skill) ? (
+              <SlidersHorizontal size={13} />
+            ) : (
+              <Pencil size={13} />
+            )}
+          </Button>
+          {!isBuiltin(skill) && (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => {
+                if (
+                  confirm(
+                    t("confirmDeleteSkill").replace("{{name}}", skill.name),
+                  )
+                ) {
+                  onDelete(skill);
+                }
+              }}
+              title={t("delete")}
+              className="text-(--accent-red) hover:text-(--accent-red)"
+            >
+              <Trash2 size={13} />
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function SkillPanel({ projectDirs = [] }) {
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
   const [viewSkill, setViewSkill] = useState(null);
+  const [collapsedProjects, setCollapsedProjects] = useState(() => new Set());
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [installSource, setInstallSource] = useState("");
   const [installScope, setInstallScope] = useState("project");
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState("");
+  const projectKey = projectDirsKey(projectDirs);
+  const requestProjectDirs = useMemo(
+    () => (projectKey ? projectKey.split("\n") : []),
+    [projectKey],
+  );
 
   const loadSkills = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await api.fetchSkills();
+      const list = await api.fetchSkills(requestProjectDirs);
       setSkills(Array.isArray(list) ? list : []);
     } catch {}
     setLoading(false);
-  }, []);
+  }, [requestProjectDirs]);
 
   useEffect(() => {
     loadSkills();
   }, [loadSkills]);
 
-  const handleToggle = async (name, enabled) => {
-    await api.toggleSkill(name, enabled);
+  const handleToggle = async (skill, enabled) => {
+    await api.toggleSkill(skill.name, enabled, skill.projectDir);
     loadSkills();
   };
 
-  const handleDelete = async (name) => {
-    await api.deleteSkill(name);
+  const handleDelete = async (skill) => {
+    await api.deleteSkill(skill.name, skill.projectDir);
     loadSkills();
   };
 
@@ -411,9 +555,46 @@ export function SkillPanel() {
       if (filter === "builtin" && skill.scope !== "builtin") return false;
       if (filter === "custom" && skill.scope === "builtin") return false;
       if (!needle) return true;
-      return skill.name.toLowerCase().includes(needle);
+      return (
+        skill.name.toLowerCase().includes(needle) ||
+        String(projectDisplayName(skill.projectName || ""))
+          .toLowerCase()
+          .includes(needle)
+      );
     });
   }, [skills, query, filter]);
+  const groupedSkills = useMemo(() => {
+    const regular = [];
+    const projectGroups = [];
+    const groupIndex = new Map();
+    for (const skill of filteredSkills) {
+      if (skill.scope !== "project") {
+        regular.push(skill);
+        continue;
+      }
+      const key = skill.projectDir || "__current_project__";
+      if (!groupIndex.has(key)) {
+        const group = {
+          key,
+          name: projectDisplayName(skill.projectName || t("projectScope")),
+          items: [],
+        };
+        groupIndex.set(key, group);
+        projectGroups.push(group);
+      }
+      groupIndex.get(key).items.push(skill);
+    }
+    return { regular, projectGroups };
+  }, [filteredSkills]);
+
+  const toggleProjectGroup = useCallback((key) => {
+    setCollapsedProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
 
   if (loading) {
     return (
@@ -453,37 +634,36 @@ export function SkillPanel() {
         </div>
       </div>
 
-      <div className="rounded-lg border border-(--border-default) bg-(--bg-secondary) p-3">
-        <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto] sm:items-center">
-          <Input
-            value={installSource}
-            onChange={(e) => setInstallSource(e.target.value)}
-            placeholder={t("skillInstallPlaceholder")}
-            className="h-8 text-[13px]"
-          />
-          <Select
-            value={installScope}
-            onValueChange={setInstallScope}
-          >
-            <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px] sm:w-[104px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent align="start">
-              <SelectItem value="project">{t("projectScope")}</SelectItem>
-              <SelectItem value="global">{t("globalScope")}</SelectItem>
-            </SelectContent>
-          </Select>
-          <Button onClick={handleInstall} disabled={installing || !installSource.trim()} size="sm">
-            <Download size={13} />
-            {installing ? t("installing") : t("installSkill")}
-          </Button>
-        </div>
-        {installError && (
-          <div className="mt-2 text-[11px] text-(--accent-red)">
-            {installError}
-          </div>
-        )}
+      <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto] sm:items-center">
+        <Input
+          value={installSource}
+          onChange={(e) => setInstallSource(e.target.value)}
+          placeholder={t("skillInstallPlaceholder")}
+          className="h-8 text-[13px]"
+        />
+        <Select value={installScope} onValueChange={setInstallScope}>
+          <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px] sm:w-[104px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="start">
+            <SelectItem value="project">{t("projectScope")}</SelectItem>
+            <SelectItem value="global">{t("globalScope")}</SelectItem>
+          </SelectContent>
+        </Select>
+        <Button
+          onClick={handleInstall}
+          disabled={installing || !installSource.trim()}
+          size="sm"
+        >
+          <Download size={13} />
+          {installing ? t("installing") : t("installSkill")}
+        </Button>
       </div>
+      {installError && (
+        <div className="mt-2 text-[11px] text-(--accent-red)">
+          {installError}
+        </div>
+      )}
 
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <div className="relative flex-1">
@@ -498,7 +678,7 @@ export function SkillPanel() {
             className="h-8 pl-8 text-[13px]"
           />
         </div>
-        <div className="flex shrink-0 rounded-md border border-(--border-default) p-0.5">
+        <div className="flex shrink-0 rounded-md border border-(--border-default) p-0.5 gap-0.5">
           {FILTERS.map((item) => (
             <Button
               key={item}
@@ -533,111 +713,58 @@ export function SkillPanel() {
         </div>
       )}
 
-      <div
-        className="grid max-h-[420px] gap-2 overflow-y-auto pr-1"
-      >
-        {filteredSkills.map((skill) => {
-          const enabled = isEnabled(skill);
+      <div className="grid max-h-[420px] gap-2 overflow-y-auto pr-1">
+        {groupedSkills.regular.map((skill) => (
+          <SkillCard
+            key={skillKey(skill)}
+            skill={skill}
+            onView={setViewSkill}
+            onToggle={handleToggle}
+            onEdit={setEditing}
+            onDelete={handleDelete}
+          />
+        ))}
+        {groupedSkills.projectGroups.map((group) => {
+          const collapsed = collapsedProjects.has(group.key);
           return (
-            <div
-              key={skill.name}
-              className={cn(
-                "rounded-lg border p-3 transition-colors",
-                enabled
-                  ? "border-(--border-default) bg-(--bg-primary) hover:bg-(--bg-hover)"
-                  : "border-(--border-default) bg-(--bg-secondary) opacity-75",
-              )}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="truncate text-[13px] font-medium text-(--text-primary)">
-                      {skill.name}
-                    </span>
-                    <Badge
-                      variant={isBuiltin(skill) ? "secondary" : "outline"}
-                      className="h-4 rounded-md px-1.5 py-0 text-[10px]"
-                    >
-                      {scopeLabel(skill.scope)}
-                    </Badge>
-                    <Badge
-                      variant={enabled ? "outline" : "secondary"}
-                      className="h-4 rounded-md px-1.5 py-0 text-[10px]"
-                    >
-                      {enabled ? t("enabled") : t("disabled")}
-                    </Badge>
-                    {skill.version && skill.version !== "0.0.0" && (
-                      <span className="text-[10px] text-(--text-muted)">
-                        v{skill.version}
-                      </span>
-                    )}
-                    {skill.mode && (
-                      <Badge
-                        variant="outline"
-                        className="h-4 rounded-md px-1.5 py-0 text-[10px]"
-                      >
-                        {t(`skillMode_${skill.mode}`)}
-                      </Badge>
-                    )}
-                  </div>
-                  <div className="mt-1 line-clamp-2 text-[11px] leading-4 text-(--text-muted)">
-                    {skill.description || t("noDescription")}
-                  </div>
-                  {skill.triggers?.length > 0 && (
-                    <div className="mt-1 truncate text-[10px] text-(--text-muted)">
-                      {t("skillTriggers")}: {skill.triggers.join(", ")}
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex shrink-0 items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    onClick={() => setViewSkill(skill)}
-                    title={t("view")}
-                  >
-                    <Eye size={13} />
-                  </Button>
-                  <SwitchControl
-                    checked={enabled}
-                    onClick={() => handleToggle(skill.name, !enabled)}
-                    title={enabled ? t("disable") : t("enable")}
+            <div key={group.key} className="grid gap-1">
+              <button
+                type="button"
+                onClick={() => toggleProjectGroup(group.key)}
+                className="flex h-8 w-full items-center gap-2 rounded-md border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-primary) hover:bg-(--bg-hover)"
+                title={group.key}
+              >
+                <Folder size={14} className="shrink-0 text-(--text-muted)" />
+                <span className="min-w-0 flex-1 truncate">{group.name}</span>
+                <span className="shrink-0 text-[12px] font-medium text-(--text-accent)">
+                  {group.items.length}
+                </span>
+                {collapsed ? (
+                  <ChevronRight
+                    size={13}
+                    className="shrink-0 text-(--text-muted)"
                   />
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    onClick={() => setEditing(skill)}
-                    title={isBuiltin(skill) ? t("skillRoutingSettings") : t("edit")}
-                  >
-                    {isBuiltin(skill) ? <SlidersHorizontal size={13} /> : <Pencil size={13} />}
-                  </Button>
-                  {!isBuiltin(skill) && (
-                    <>
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        onClick={() => {
-                          if (
-                            confirm(
-                              t("confirmDeleteSkill").replace(
-                                "{{name}}",
-                                skill.name,
-                              ),
-                            )
-                          ) {
-                            handleDelete(skill.name);
-                          }
-                        }}
-                        title={t("delete")}
-                        className="text-(--accent-red) hover:text-(--accent-red)"
-                      >
-                        <Trash2 size={13} />
-                      </Button>
-                    </>
-                  )}
+                ) : (
+                  <ChevronDown
+                    size={13}
+                    className="shrink-0 text-(--text-muted)"
+                  />
+                )}
+              </button>
+              {!collapsed && (
+                <div className="grid gap-2 pl-6">
+                  {group.items.map((skill) => (
+                    <SkillCard
+                      key={skillKey(skill)}
+                      skill={skill}
+                      onView={setViewSkill}
+                      onToggle={handleToggle}
+                      onEdit={setEditing}
+                      onDelete={handleDelete}
+                    />
+                  ))}
                 </div>
-              </div>
+              )}
             </div>
           );
         })}
