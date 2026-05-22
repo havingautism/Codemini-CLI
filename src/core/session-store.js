@@ -319,6 +319,25 @@ async function writeSessionIndex(index) {
   await fs.rename(tempPath, filePath);
 }
 
+async function removeSessionIndexEntry(sessionId, removedFileNames = []) {
+  try {
+    const id = String(sessionId || '').trim();
+    const removed = new Set(removedFileNames.map((name) => String(name || '').trim()).filter(Boolean));
+    const index = await readSessionIndex();
+    if (!index) return false;
+    const files = Array.isArray(index.files)
+      ? index.files.filter((entry) => !removed.has(String(entry?.name || '')))
+      : [];
+    const sessions = Array.isArray(index.sessions)
+      ? index.sessions.filter((entry) => String(entry?.id || '').trim() !== id)
+      : [];
+    await writeSessionIndex({ files, sessions });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function rebuildSessionIndex(fileMeta = null) {
   const files = await listSessionFiles();
   const sessionsById = new Map();
@@ -460,37 +479,51 @@ export async function deleteSession(sessionId) {
     throw new Error('Invalid session id');
   }
 
-  const files = await listSessionFiles();
   const targets = new Set();
-  for (const file of files) {
-    const fileId = sessionIdFromFileName(path.basename(file));
-    if (fileId === id) {
-      targets.add(file);
-      continue;
-    }
-    try {
-      const parsed = file.endsWith(SESSION_JSONL_EXT) ? await loadLatestJsonlObject(file) : await tryReadJson(file);
-      if (String(parsed?.id || '').trim() === id) targets.add(file);
-    } catch {}
-  }
-
-  let removed = 0;
   const fallbackTargets = [
     sessionPathById(id, SESSION_JSONL_EXT),
     sessionPathById(id, SESSION_LEGACY_EXT)
   ];
-  for (const file of [...targets, ...fallbackTargets]) {
+  for (const file of fallbackTargets) targets.add(file);
+
+  let removed = 0;
+  const removedFileNames = [];
+  for (const file of targets) {
     try {
       await fs.unlink(file);
       removed += 1;
+      removedFileNames.push(path.basename(file));
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
     }
   }
+
+  if (removed === 0) {
+    const files = await listSessionFiles();
+    for (const file of files) {
+      try {
+        const parsed = file.endsWith(SESSION_JSONL_EXT) ? await loadLatestJsonlObject(file) : await tryReadJson(file);
+        if (String(parsed?.id || '').trim() === id) targets.add(file);
+      } catch {}
+    }
+    for (const file of targets) {
+      try {
+        await fs.unlink(file);
+        removed += 1;
+        removedFileNames.push(path.basename(file));
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+    }
+  }
+
   if (removed > 0) {
-    try {
-      await rebuildSessionIndex();
-    } catch {}
+    const updated = await removeSessionIndexEntry(id, removedFileNames);
+    if (!updated) {
+      try {
+        await rebuildSessionIndex();
+      } catch {}
+    }
   }
   return { removed };
 }

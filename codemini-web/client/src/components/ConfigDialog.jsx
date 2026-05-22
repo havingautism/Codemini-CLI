@@ -232,7 +232,7 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
         <DialogHeader className="shrink-0">
           <DialogTitle>{t("settingsTitle")}</DialogTitle>
         </DialogHeader>
-        <div className="space-y-5 px-2.5 py-1 overflow-y-auto flex-1 min-h-0">
+        <div className="space-y-5 px-3.5 py-1 overflow-y-auto flex-1 min-h-0">
           {status?.setupRequired && (
             <div className="rounded-md border border-(--border-default) bg-(--bg-secondary) px-3 py-2 text-[13px] text-(--text-primary)">
               <div className="font-medium">{t("configRequiredTitle")}</div>
@@ -267,7 +267,10 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
                                 <CircleHelp size={13} strokeWidth={1.8} />
                               </button>
                             </TooltipTrigger>
-                            <TooltipContent side="right" className="max-w-[300px] leading-relaxed">
+                            <TooltipContent
+                              side="right"
+                              className="max-w-[300px] leading-relaxed"
+                            >
                               {key.help}
                             </TooltipContent>
                           </Tooltip>
@@ -294,7 +297,8 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
                                       className="shrink-0 rounded-sm object-contain"
                                     />
                                   )}
-                                  {key.optionLabels?.[opt] || (key.optionLogos ? opt.toUpperCase() : opt)}
+                                  {key.optionLabels?.[opt] ||
+                                    (key.optionLogos ? opt.toUpperCase() : opt)}
                                 </span>
                               </SelectItem>
                             ))}

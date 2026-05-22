@@ -105,6 +105,7 @@ export const en = {
   openCodeWiki: 'Open CodeWiki',
   collapseProject: 'Collapse Project',
   expandProject: 'Expand Project',
+  showMoreSessions: 'Show more',
   sessionActions: 'Session Actions',
   deleteSession: 'Delete',
   noSessions: 'No conversations yet',

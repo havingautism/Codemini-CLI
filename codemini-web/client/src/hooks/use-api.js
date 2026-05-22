@@ -32,8 +32,11 @@ export async function fetchHistory() {
   return res.json();
 }
 
-export async function fetchSessions() {
-  const res = await api('/api/sessions');
+export async function fetchSessions(limit = 200) {
+  const params = new URLSearchParams();
+  const numericLimit = Number(limit);
+  if (Number.isFinite(numericLimit) && numericLimit > 0) params.set('limit', String(Math.round(numericLimit)));
+  const res = await api(params.size ? `/api/sessions?${params.toString()}` : '/api/sessions');
   return res.json();
 }
 

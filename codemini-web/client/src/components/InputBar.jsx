@@ -112,7 +112,7 @@ const ACTION_COMMAND_NAMES = new Set(
 );
 
 const INPUT_PILL_CLASS =
-  "border border-(--border-default) bg-(--bg-primary)/30 text-(--text-secondary) h-8 rounded-full inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[13px] whitespace-nowrap transition-colors hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)";
+  "border border-transparent bg-(--bg-primary)/35 text-(--text-secondary) h-8 rounded-full inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[13px] whitespace-nowrap transition-colors hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)";
 
 function ModeSelector({ current, disabled = false }) {
   const [open, setOpen] = useState(false);
@@ -507,26 +507,22 @@ export function InputBar({
     ],
   );
 
-  const handleInput = useCallback(
-    (e) => {
-      const val = e.target.value;
-      setValue(val);
-      e.target.style.height = "auto";
-      e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
+  const handleInput = useCallback((e) => {
+    const val = e.target.value;
+    setValue(val);
+    e.target.style.height = "auto";
+    e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
 
-      if (val === "/") {
-        setSlashOpen(true);
-        setSlashQuery("");
-      } else if (val.startsWith("/") && !val.includes(" ")) {
-        setSlashOpen(true);
-        setSlashQuery(val.slice(1));
-      } else {
-        setSlashOpen(false);
-      }
-
-    },
-    [],
-  );
+    if (val === "/") {
+      setSlashOpen(true);
+      setSlashQuery("");
+    } else if (val.startsWith("/") && !val.includes(" ")) {
+      setSlashOpen(true);
+      setSlashQuery(val.slice(1));
+    } else {
+      setSlashOpen(false);
+    }
+  }, []);
 
   const handleCommandSelect = useCallback((insert) => {
     setValue(insert);
@@ -542,7 +538,7 @@ export function InputBar({
         visible={slashOpen}
       />
       <div
-        className="flex flex-col gap-4 rounded-[28px] px-3 py-2 transition-colors bg-(--bg-primary/50) dark:bg-(--bg-secondary) shadow-(--shadow-default) dark:shadow-none"
+        className="flex flex-col gap-4 border border-border dark:border-none rounded-[28px] px-3 py-2 transition-colors bg-(--bg-primary/50) shadow-(--shadow-default) dark:bg-(--bg-secondary) dark:shadow-[0_14px_44px_color-mix(in_srgb,var(--background)_70%,transparent)]"
         // style={{
         //   background:
         //     "color-mix(in srgb, var(--bg-tertiary) 72%, var(--bg-input))",

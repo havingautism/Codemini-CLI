@@ -114,6 +114,7 @@ export const zh = {
   openCodeWiki: '打开 CodeWiki',
   collapseProject: '折叠项目',
   expandProject: '展开项目',
+  showMoreSessions: '展开显示',
   sessionActions: '会话操作',
   deleteSession: '删除',
   noSessions: '暂无对话',

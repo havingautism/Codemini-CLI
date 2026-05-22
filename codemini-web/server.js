@@ -968,7 +968,11 @@ async function main() {
 
     // ── Session management ──
     if (req.method === 'GET' && url.pathname === '/api/sessions') {
-      const sessions = await listSessions(1000);
+      const requestedLimit = Number(url.searchParams.get('limit') || 200);
+      const limit = Number.isFinite(requestedLimit)
+        ? Math.max(1, Math.min(1000, Math.round(requestedLimit)))
+        : 200;
+      const sessions = await listSessions(limit);
       const enriched = sessions.map(s => ({ ...s, isGeneral: isGeneralProjectDir(s.projectDir) }));
       jsonResponse(res, enriched);
       return;
@@ -1008,7 +1012,17 @@ async function main() {
         });
         await bridge.switchRuntime(newRuntime);
         currentProjectDir = process.cwd();
-        jsonResponse(res, { ok: true, sessionId, cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) });
+        jsonResponse(res, {
+          ok: true,
+          sessionId,
+          cwd: currentProjectDir,
+          isGeneral: isGeneralProjectDir(currentProjectDir),
+          state: { ...bridge.getState(), cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) },
+          sessionData: {
+            messages: bridge.getSessionMessages(),
+            compact: bridge.getSessionCompactMeta()
+          }
+        });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
@@ -1028,7 +1042,7 @@ async function main() {
         let nextSessionId = bridge.getSessionId();
         let cwd = currentProjectDir;
         if (deletingCurrent) {
-          const remaining = await listSessions(1000);
+          const remaining = await listSessions(1);
           const next = remaining.find((session) => session.id !== sessionId);
           const built = next
             ? await buildRuntimeForSession({ sessionId: next.id, model: bridge.getState().model })
@@ -1038,7 +1052,20 @@ async function main() {
           nextSessionId = built.session.id;
           cwd = currentProjectDir;
         }
-        jsonResponse(res, { ok: true, removed: result.removed, sessionId: nextSessionId, cwd, isGeneral: isGeneralProjectDir(currentProjectDir) });
+        jsonResponse(res, {
+          ok: true,
+          removed: result.removed,
+          sessionId: nextSessionId,
+          cwd,
+          isGeneral: isGeneralProjectDir(currentProjectDir),
+          ...(deletingCurrent ? {
+            state: { ...bridge.getState(), cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) },
+            sessionData: {
+              messages: bridge.getSessionMessages(),
+              compact: bridge.getSessionCompactMeta()
+            }
+          } : {})
+        });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }

@@ -777,6 +777,22 @@
   --md-link: #3794ff;
 }
 
+/* Keep structural edges quiet across every light/dark palette. */
+:root,
+:root[data-theme],
+:root[data-palette],
+:root[data-theme][data-palette] {
+  --border: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  --input: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  --border-default: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  --border-strong: color-mix(in srgb, var(--text-primary) 14%, transparent);
+  --md-code-border: color-mix(in srgb, var(--text-primary) 7%, transparent);
+  --separator: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  --panel-edge: color-mix(in srgb, var(--text-primary) 3%, transparent);
+  --shadow-default: color-mix(in srgb, var(--text-primary) 6%, transparent) 0 18px 46px;
+  --shadow-lg: color-mix(in srgb, var(--text-primary) 8%, transparent) 0 22px 64px;
+}
+
 /* ── Thin themed scrollbars ── */
 * {
   scrollbar-width: thin;

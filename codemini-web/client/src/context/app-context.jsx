@@ -591,7 +591,7 @@ export function AppProvider({ children }) {
   const loadSessions = useCallback(async () => {
     update({ sessionsLoading: true });
     try {
-      const sessions = await api.fetchSessions();
+      const sessions = await api.fetchSessions(200);
       const list = Array.isArray(sessions) ? sessions : [];
       update({ sessions: list });
       loadGitBatch(list);
@@ -619,17 +619,21 @@ export function AppProvider({ children }) {
     } catch {}
   }, [update]);
 
-  const loadSessionMessages = useCallback(async () => {
+  const loadSessionMessages = useCallback(async (sessionData = null) => {
     update({ messagesLoading: true });
     try {
-      const data = await api.fetchSessionMessages();
+      const data = sessionData || await api.fetchSessionMessages();
       const messages = Array.isArray(data) ? data : (data.messages || []);
       const compactMeta = data?.compact || null;
       const restoredActivities = restoreRuntimeActivitiesFromMessages(messages);
       if (!messages.length) {
-        const uiMessages = await api.fetchSessionUiMessages();
+        const uiMessages = Array.isArray(data?.uiMessages) ? data.uiMessages : (
+          sessionData ? [] : await api.fetchSessionUiMessages()
+        );
         if (Array.isArray(uiMessages) && uiMessages.length) {
           update({ messages: uiMessages });
+        } else {
+          update({ messages: [], runtimeActivities: [] });
         }
         return;
       }
@@ -1436,8 +1440,9 @@ export function AppProvider({ children }) {
         const result = await api.switchSession(sessionId);
         if (result.ok) {
           updateRoute('chat', sessionId);
-          await loadState();
-          await loadSessionMessages();
+          if (result.state) update({ runtimeState: result.state, projectCwd: result.state.cwd, isGeneral: !!result.state.isGeneral });
+          else await loadState();
+          await loadSessionMessages(result.sessionData);
           loadSessions();
           loadGitInfo();
         } else {
@@ -1460,12 +1465,13 @@ export function AppProvider({ children }) {
         if (deletingCurrent) {
           update({ currentView: 'chat', messagesLoading: true });
           if (result.sessionId) updateRoute('chat', result.sessionId, { replace: true });
-          await loadState();
+          if (result.state) update({ runtimeState: result.state, projectCwd: result.state.cwd, isGeneral: !!result.state.isGeneral });
+          else await loadState();
           setState(prev => ({ ...prev, messages: [] }));
-          await loadSessionMessages();
+          await loadSessionMessages(result.sessionData);
           loadGitInfo();
         }
-        await loadSessions();
+        loadSessions();
         return result;
       } catch (err) {
         return { error: true, message: err.message };
