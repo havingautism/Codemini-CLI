@@ -42,6 +42,7 @@ const DEFAULT_CONFIG = {
   },
   execution: {
     mode: 'normal',
+    approval_mode: 'review',
     always_allow_tools: [
       'read',
       'grep',
@@ -148,9 +149,16 @@ function normalizePolicyLists(config) {
   }
   next.model.name = String(next.model.name || DEFAULT_CONFIG.model.name).trim() || DEFAULT_CONFIG.model.name;
   next.model.fast_name = String(next.model.fast_name || '').trim();
-  next.execution.mode = ['auto', 'normal', 'plan'].includes(String(next.execution.mode || '').toLowerCase())
-    ? String(next.execution.mode).toLowerCase()
+  const rawExecutionMode = String(next.execution.mode || '').toLowerCase();
+  const rawApprovalMode = String(next.execution.approval_mode || next.execution.approvalMode || '').toLowerCase().replace(/-/g, '_');
+  next.execution.mode = ['normal', 'plan'].includes(rawExecutionMode)
+    ? rawExecutionMode
     : 'normal';
+  next.execution.approval_mode = ['review', 'auto', 'full_access'].includes(rawApprovalMode)
+    ? rawApprovalMode
+    : rawExecutionMode === 'auto'
+      ? 'auto'
+      : 'review';
   const rawTools = Array.isArray(next.execution.always_allow_tools)
     ? next.execution.always_allow_tools
     : [];

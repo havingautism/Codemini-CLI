@@ -16,6 +16,8 @@ import {
   Sparkles,
   ListChecks,
   Hammer,
+  ShieldAlert,
+  Unlock,
   Moon,
   Archive,
   Database,
@@ -45,16 +47,33 @@ function getModeOptions() {
       icon: MessageCircle,
     },
     {
+      value: "plan",
+      label: t("planMode"),
+      desc: t("planModeDesc"),
+      icon: ListChecks,
+    },
+  ];
+}
+
+function getApprovalModeOptions() {
+  return [
+    {
+      value: "review",
+      label: t("reviewMode"),
+      desc: t("reviewModeDesc"),
+      icon: ShieldAlert,
+    },
+    {
       value: "auto",
       label: t("autoMode"),
       desc: t("autoModeDesc"),
       icon: Sparkles,
     },
     {
-      value: "plan",
-      label: t("planMode"),
-      desc: t("planModeDesc"),
-      icon: ListChecks,
+      value: "full_access",
+      label: t("fullAccessMode"),
+      desc: t("fullAccessModeDesc"),
+      icon: Unlock,
     },
   ];
 }
@@ -183,6 +202,87 @@ function ModeSelector({ current, disabled = false }) {
                 <span className="shrink-0">{opt.label}</span>
                 <span className="text-[10px] text-(--text-muted) min-w-0 text-right leading-4">
                   {opt.desc}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function ApprovalModeSelector({ current, disabled = false }) {
+  const [open, setOpen] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const MODE_OPTIONS = getApprovalModeOptions();
+  const active =
+    MODE_OPTIONS.find((m) => m.value === current) || MODE_OPTIONS[0];
+  const ActiveIcon = active.icon;
+
+  const handleSelect = async (mode) => {
+    if (mode === current || switching || disabled) return;
+    setSwitching(true);
+    try {
+      const result = await api.setApprovalMode(mode);
+      if (result?.error)
+        throw new Error(result.message || "Failed to switch approval mode");
+    } catch {
+    } finally {
+      setSwitching(false);
+    }
+    setOpen(false);
+  };
+
+  return (
+    <Popover open={open} onOpenChange={(next) => !disabled && setOpen(next)}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            INPUT_PILL_CLASS,
+            "px-3 hover:border-(--accent-green)/55 hover:bg-(--accent-green-bg) hover:text-(--accent-green)",
+            (switching || disabled) && "opacity-50 pointer-events-none",
+          )}
+          disabled={disabled}
+          title={disabled ? t("switchModeDisabled") : t("switchApprovalMode")}
+        >
+          <ActiveIcon size={13} />
+          <span className="truncate">{active.label}</span>
+          <ChevronDown size={11} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        side="top"
+        align="start"
+        sideOffset={6}
+        className="w-76 p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-lg"
+      >
+        <div className="text-[11px] text-(--text-muted) px-2 py-1.5 font-medium">
+          {t("approvalMode")}
+        </div>
+        <div className="flex flex-col gap-0.5">
+          {MODE_OPTIONS.map((opt) => {
+            const Icon = opt.icon;
+            return (
+              <button
+                key={opt.value}
+                disabled={disabled || switching}
+                className={cn(
+                  "w-full border-0 rounded-md px-2 py-1.5 text-left text-[12px] cursor-pointer flex items-center gap-2",
+                  (disabled || switching) && "opacity-50 cursor-not-allowed",
+                  current === opt.value
+                    ? "bg-(--bg-active) text-(--text-primary) font-medium"
+                    : "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+                )}
+                onClick={() => handleSelect(opt.value)}
+              >
+                <Icon size={14} className="shrink-0 mt-0.5" />
+                <span className="min-w-0 flex-1">
+                  <span className="block">{opt.label}</span>
+                  <span className="block text-(--text-muted) text-[11px] font-normal leading-snug">
+                    {opt.desc}
+                  </span>
                 </span>
               </button>
             );
@@ -438,6 +538,7 @@ export function InputBar({
 
   const rs = runtimeState || {};
   const mode = rs.mode || "normal";
+  const approvalMode = rs.approvalMode || "review";
   const inputLocked = busy || disabled;
   const isGeneralChat = projectCwd === "__codemini_general__";
 
@@ -583,6 +684,7 @@ export function InputBar({
               <ChevronDown size={11} />
             </button>
             <ModeSelector current={mode} disabled={inputLocked} />
+            <ApprovalModeSelector current={approvalMode} disabled={inputLocked} />
             <SoulQuickSwitch />
           </div>
           <div className="flex items-center gap-2 ml-auto">

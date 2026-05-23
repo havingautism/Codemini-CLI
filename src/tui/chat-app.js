@@ -314,6 +314,17 @@ const TUI_COPY = {
       answerLabel: '审批输入（yes/no）',
       answerPlaceholder: 'yes 或 no'
     },
+    fileApproval: {
+      title: '确认文件变更？',
+      toolLabel: '工具',
+      pathLabel: '路径',
+      actionLabel: '操作',
+      prompt: '输入 yes 执行，输入 no 取消。',
+      invalidAnswer: '请输入 yes 或 no。',
+      inputLocked: '文件变更确认中；输入 yes 或 no',
+      answerLabel: '确认输入 (yes/no)',
+      answerPlaceholder: 'yes 或 no'
+    },
     fileChangeSummary: {
       title: '文件改动',
       fileLabel: '文件',
@@ -539,6 +550,17 @@ const TUI_COPY = {
       prompt: 'Type yes to execute, or no to cancel.',
       invalidAnswer: 'Please enter yes or no.',
       inputLocked: 'Command approval is active; type yes or no',
+      answerLabel: 'Approval input (yes/no)',
+      answerPlaceholder: 'yes or no'
+    },
+    fileApproval: {
+      title: 'Confirm file change?',
+      toolLabel: 'Tool',
+      pathLabel: 'Path',
+      actionLabel: 'Action',
+      prompt: 'Type yes to apply, or no to cancel.',
+      invalidAnswer: 'Please enter yes or no.',
+      inputLocked: 'File change approval is active; type yes or no',
       answerLabel: 'Approval input (yes/no)',
       answerPlaceholder: 'yes or no'
     },
@@ -1146,6 +1168,23 @@ export function normalizeRunApprovalRequest(request) {
     description: details.evaluation?.description || '',
     sideEffects: details.evaluation?.sideEffects || '',
     recommendation: details.evaluation?.recommendation || 'deny'
+  };
+}
+
+export function normalizeFileApprovalRequest(request) {
+  const toolName = String(request?.name || '').trim();
+  if (!['edit', 'write'].includes(toolName)) return null;
+  const args = request?.arguments && typeof request.arguments === 'object' && !Array.isArray(request.arguments)
+    ? request.arguments
+    : {};
+  const edit = args.edit && typeof args.edit === 'object' && !Array.isArray(args.edit) ? args.edit : {};
+  const pathValue = String(args.path || args.file || args.file_path || edit.path || edit.file || edit.file_path || '').trim();
+  if (!pathValue) return null;
+  return {
+    id: String(request?.id || '').trim(),
+    toolName,
+    path: pathValue,
+    action: String(args.kind || args.mode || edit.kind || toolName).trim() || toolName
   };
 }
 
@@ -3222,6 +3261,44 @@ function RunApprovalPanel({ request, inputValue, errorText, copy, cursorVisible 
   );
 }
 
+function FileApprovalPanel({ request, inputValue, errorText, copy, cursorVisible }) {
+  if (!request) return null;
+  const details = request?.toolName === 'edit' || request?.toolName === 'write'
+    ? request
+    : normalizeFileApprovalRequest(request);
+  if (!details) return null;
+  const c = copy.fileApproval || {};
+  const placeholder = String(c.answerPlaceholder || '').trim();
+  return h(
+    Box,
+    {
+      marginTop: 1,
+      flexDirection: 'column',
+      borderStyle: 'round',
+      borderColor: 'yellowBright',
+      paddingX: 1,
+      paddingY: 0
+    },
+    h(Text, { color: 'yellowBright' }, c.title),
+    h(Text, { color: 'white' }, `${c.toolLabel}: ${details.toolName}`),
+    h(Text, { color: 'white' }, `${c.pathLabel}: ${details.path}`),
+    h(Text, { color: 'white' }, `${c.actionLabel}: ${details.action}`),
+    h(Text, { color: 'gray' }, c.prompt),
+    h(
+      Box,
+      { marginTop: 1 },
+      h(Text, { color: 'yellowBright' }, `${c.answerLabel}: `),
+      h(ApprovalCursorLine, {
+        inputValue,
+        placeholder: placeholder || ' ',
+        cursorVisible,
+        accent: 'yellowBright'
+      })
+    ),
+    errorText ? h(Text, { color: 'yellowBright' }, errorText) : null
+  );
+}
+
 function FileChangeSummary({ segments, copy }) {
   if (!Array.isArray(segments) || segments.length === 0) return null;
   const c = copy.fileChangeSummary || {};
@@ -3426,13 +3503,16 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   const [pendingRunApproval, setPendingRunApproval] = useState(null);
   const [runApprovalInput, setRunApprovalInput] = useState('');
   const [runApprovalError, setRunApprovalError] = useState('');
+  const [pendingFileApproval, setPendingFileApproval] = useState(null);
+  const [fileApprovalInput, setFileApprovalInput] = useState('');
+  const [fileApprovalError, setFileApprovalError] = useState('');
   const [pendingPlanApproval, setPendingPlanApproval] = useState(null);
   const [planApprovalInput, setPlanApprovalInput] = useState('');
   const [planApprovalError, setPlanApprovalError] = useState('');
   const [pendingReflectApproval, setPendingReflectApproval] = useState(null);
   const [reflectApprovalInput, setReflectApprovalInput] = useState('');
   const [reflectApprovalError, setReflectApprovalError] = useState('');
-  const approvalLockActive = Boolean(pendingDeleteApproval || pendingRunApproval || pendingPlanApproval || pendingReflectApproval);
+  const approvalLockActive = Boolean(pendingDeleteApproval || pendingRunApproval || pendingFileApproval || pendingPlanApproval || pendingReflectApproval);
   const activeAssistantIdRef = useRef(null);
   const activeAssistantAutoSkillNamesRef = useRef([]);
   const streamedAssistantHandledRef = useRef(false);
@@ -3448,6 +3528,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   const activePlanStepTitleRef = useRef('');
   const deleteApprovalResolverRef = useRef(null);
   const runApprovalResolverRef = useRef(null);
+  const fileApprovalResolverRef = useRef(null);
 
   useEffect(() => {
     const rawStartupActivities = runtime.consumeStartupEvents?.();
@@ -3491,12 +3572,22 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
           runApprovalResolverRef.current = resolve;
         });
       }
+      const fileNorm = normalizeFileApprovalRequest(request);
+      if (fileNorm) {
+        setFileApprovalInput('');
+        setFileApprovalError('');
+        setPendingFileApproval(fileNorm);
+        return new Promise((resolve) => {
+          fileApprovalResolverRef.current = resolve;
+        });
+      }
       return Promise.resolve({ approved: false });
     });
     return () => {
       runtime.setRequestToolApproval(null);
       deleteApprovalResolverRef.current = null;
       runApprovalResolverRef.current = null;
+      fileApprovalResolverRef.current = null;
     };
   }, [runtime]);
 
@@ -4680,6 +4771,46 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       return;
     }
 
+    if (pendingFileApproval) {
+      if (key.return) {
+        const answer = parseDeleteApprovalAnswer(fileApprovalInput);
+        if (answer === 'approve' || answer === 'deny') {
+          const resolver = fileApprovalResolverRef.current;
+          fileApprovalResolverRef.current = null;
+          setPendingFileApproval(null);
+          setFileApprovalInput('');
+          setFileApprovalError('');
+          if (resolver) resolver({ approved: answer === 'approve' });
+        } else {
+          setFileApprovalError(copy.fileApproval.invalidAnswer);
+        }
+        return;
+      }
+
+      if (isBackspaceKey(value, key) || isDeleteKey(value, key)) {
+        setFileApprovalInput((prev) => prev.slice(0, -1));
+        setFileApprovalError('');
+        return;
+      }
+
+      if (isPrintableInput(value, key)) {
+        setFileApprovalInput((prev) => `${prev}${value}`);
+        setFileApprovalError('');
+        return;
+      }
+
+      if (key.ctrl && value === 'c') {
+        if (busy && typeof runtime.abort === 'function') {
+          runtime.abort();
+          return;
+        }
+        exit();
+        return;
+      }
+
+      return;
+    }
+
     if (pendingPlanApproval) {
       if (key.return) {
         const parsed = parsePlanApprovalAnswer(planApprovalInput);
@@ -5084,11 +5215,13 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     ? { text: copy.deleteApproval.inputLocked }
     : pendingRunApproval
       ? { text: copy.runApproval.inputLocked }
-      : pendingPlanApproval
-        ? { text: copy.planApproval.inputLocked }
-        : pendingReflectApproval
-          ? { text: copy.reflectApproval.inputLocked }
-          : null;
+      : pendingFileApproval
+        ? { text: copy.fileApproval.inputLocked }
+        : pendingPlanApproval
+          ? { text: copy.planApproval.inputLocked }
+          : pendingReflectApproval
+            ? { text: copy.reflectApproval.inputLocked }
+            : null;
 
   return h(
     Box,
@@ -5128,6 +5261,13 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       request: pendingRunApproval,
       inputValue: runApprovalInput,
       errorText: runApprovalError,
+      copy,
+      cursorVisible
+    }),
+    h(FileApprovalPanel, {
+      request: pendingFileApproval,
+      inputValue: fileApprovalInput,
+      errorText: fileApprovalError,
       copy,
       cursorVisible
     }),

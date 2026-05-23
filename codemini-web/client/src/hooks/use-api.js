@@ -75,6 +75,15 @@ export async function setExecutionMode(mode) {
   return res.json();
 }
 
+export async function setApprovalMode(mode) {
+  const res = await api('/api/approval-mode', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ mode })
+  });
+  return res.json();
+}
+
 export async function submitApproval(id, approved) {
   await api('/api/approval', {
     method: 'POST',

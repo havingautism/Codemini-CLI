@@ -664,6 +664,13 @@ export class RuntimeBridge {
     return ok;
   }
 
+  async setApprovalMode(mode) {
+    if (this.#busy) return false;
+    const ok = await this.#runtime.setApprovalMode?.(mode);
+    if (ok) this.#broadcast({ type: 'approval-mode:changed', approvalMode: mode, ...this.getState() });
+    return ok;
+  }
+
   async reloadConfig(options = {}) {
     return this.#runtime.reloadConfig?.(options);
   }

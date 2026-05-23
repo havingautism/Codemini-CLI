@@ -92,11 +92,20 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
         {
           path: "execution.mode",
           label: t("mode"),
-          options: ["normal", "auto", "plan"],
+          options: ["normal", "plan"],
           optionLabels: {
             normal: t("normalExecutionMode"),
-            auto: t("autoMode"),
             plan: t("planMode"),
+          },
+        },
+        {
+          path: "execution.approval_mode",
+          label: t("approvalMode"),
+          options: ["review", "auto", "full_access"],
+          optionLabels: {
+            review: t("reviewMode"),
+            auto: t("autoMode"),
+            full_access: t("fullAccessMode"),
           },
         },
         { path: "execution.max_steps", label: t("maxSteps"), type: "number" },

@@ -740,7 +740,7 @@ async function main() {
     }
     if (req.method === 'POST' && url.pathname === '/api/execution-mode') {
       const { mode } = await readBody(req);
-      if (!mode || !['normal', 'auto', 'plan'].includes(mode)) {
+      if (!mode || !['normal', 'plan'].includes(mode)) {
         jsonResponse(res, { error: true, message: 'Invalid mode' }, 400);
         return;
       }
@@ -749,6 +749,20 @@ async function main() {
         return;
       }
       const ok = await bridge.setExecutionMode(mode);
+      jsonResponse(res, { ok });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/approval-mode') {
+      const { mode } = await readBody(req);
+      if (!mode || !['review', 'auto', 'full_access'].includes(mode)) {
+        jsonResponse(res, { error: true, message: 'Invalid approval mode' }, 400);
+        return;
+      }
+      if (bridge.isBusy()) {
+        jsonResponse(res, { error: true, message: 'Cannot switch approval mode while a request is running' }, 409);
+        return;
+      }
+      const ok = await bridge.setApprovalMode(mode);
       jsonResponse(res, { ok });
       return;
     }

@@ -581,7 +581,9 @@ export async function runAgentLoop({
   maxSteps = 8,
   initialMessages = [],
   onEvent,
-  executionMode = 'auto',
+  executionMode = 'normal',
+  approvalMode = 'review',
+  projectIsGit = false,
   alwaysAllowTools = [],
   requestToolApproval,
   toolResultMaxChars = 12000,
@@ -614,7 +616,7 @@ export async function runAgentLoop({
   const activeTools = [...toolDefinitions];
 
   async function maybeRunAutoDream(stepNumber = 0, { force = false } = {}) {
-    if (executionMode === 'plan') return;
+    if ((executionMode === 'auto' ? 'normal' : executionMode) === 'plan') return;
     const interval = Math.max(1, Number(config?.memory?.auto_dream_check_interval_steps || 20));
     const normalizedStep = Math.max(1, Number(stepNumber || 1));
     if (!force && lastAutoDreamCheckStep > 0 && normalizedStep - lastAutoDreamCheckStep < interval) return;
@@ -722,7 +724,14 @@ export async function runAgentLoop({
 
     pendingSummaryNudges = 0;
 
-    if (executionMode === 'plan') {
+    const workMode = executionMode === 'auto' ? 'normal' : executionMode;
+    const normalizedApprovalMode = ['review', 'auto', 'full_access'].includes(String(approvalMode || '').toLowerCase())
+      ? String(approvalMode || '').toLowerCase()
+      : executionMode === 'auto'
+        ? 'auto'
+        : 'review';
+
+    if (workMode === 'plan') {
       const plannedLines = callsToPlanSummary(toolCalls);
       finalText = [
         assistantText || '',
@@ -756,8 +765,12 @@ export async function runAgentLoop({
       const isSafeModeRun = toolName === 'run'
         && config?.policy?.safe_mode !== false
         && requiresApprovalEvaluation(args?.command || '', config?.shell?.default);
-      const needsApproval = toolName === 'delete' || isSafeModeRun
-        || (executionMode === 'normal' && !alwaysAllowSet.has(toolName));
+      const isFileWriteTool = toolName === 'edit' || toolName === 'write' || toolName === 'delete';
+      const needsApproval = normalizedApprovalMode === 'full_access'
+        ? false
+        : normalizedApprovalMode === 'auto'
+          ? ((!projectIsGit && isFileWriteTool) || isSafeModeRun)
+          : (toolName === 'delete' || isSafeModeRun || !alwaysAllowSet.has(toolName));
       if (needsApproval) {
         approved = false;
         const handler = toolHandlers[toolName];
@@ -784,7 +797,7 @@ export async function runAgentLoop({
             });
             approvalArgs = { ...args, _risk: evaluation.risk, _evaluation: evaluation };
             /* LLM says low-risk + allow → auto-approve, skip confirmation panel */
-            if (executionMode !== 'normal' && evaluation.risk === 'low' && evaluation.recommendation === 'allow') {
+            if (normalizedApprovalMode !== 'review' && evaluation.risk === 'low' && evaluation.recommendation === 'allow') {
               approvalResults.set(call.id, { approved: true, args: approvalArgs });
               continue;
             }

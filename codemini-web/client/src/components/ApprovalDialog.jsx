@@ -116,6 +116,8 @@ export function ApprovalDialog({ request, open, onDecision }) {
   const titles = {
     delete: t('deleteApproval'),
     run: t('runApproval'),
+    edit: t('editApproval'),
+    write: t('writeApproval'),
     plan: t('planApproval'),
     reflect: t('reflectApproval'),
     generic: t('approveTitle')

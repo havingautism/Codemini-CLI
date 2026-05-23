@@ -1140,6 +1140,12 @@ export function AppProvider({ children }) {
         break;
       }
 
+      case 'approval-mode:changed': {
+        const rs = event;
+        update({ runtimeState: { ...stateRef.current.runtimeState, approvalMode: rs.approvalMode, ...rs } });
+        break;
+      }
+
       case 'runtime:state': {
         const rs = event.state || {};
         update({

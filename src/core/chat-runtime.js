@@ -437,7 +437,8 @@ function getCompletionCopy(language = 'zh') {
         'sdk.provider': '可选：openai-compatible | anthropic',
         'ui.language': '可选：zh | en',
         'ui.reply_language': '可选：zh | en',
-        'execution.mode': '可选：auto | normal | plan',
+        'execution.mode': '可选：normal | plan',
+        'execution.approval_mode': '可选：review | auto | full_access',
         'shell.default': '常用：bash | powershell',
         'policy.safe_mode': '可选：true | false',
         'policy.allowed_paths': 'JSON 数组，例如 ["D:\\\\shared"]',
@@ -469,7 +470,8 @@ function getCompletionCopy(language = 'zh') {
         commands: '列出 slash/自定义命令',
         status: '查看运行状态（mode/model/session）',
         model: '查看或切换模型',
-        mode: '设置执行模式：normal|auto|plan',
+        mode: '设置工作模式：normal|plan',
+        approval: '设置审阅权限：review|auto|full_access',
         compact: '压缩消息上下文',
         checkpoint: '创建/查看/加载检查点',
         spec: '在 .codemini/specs 中创建 spec',
@@ -492,7 +494,8 @@ function getCompletionCopy(language = 'zh') {
       generic: {
         configCommand: '配置命令',
         historyCommand: '历史会话命令',
-        modeCommand: '切换执行模式',
+        modeCommand: '切换工作模式',
+        approvalCommand: '切换审阅权限',
         checkpointCommand: '检查点命令',
         specCommand: '创建 spec 文件',
         planCommand: '规划命令',
@@ -550,7 +553,8 @@ function getCompletionCopy(language = 'zh') {
         'sdk.provider': 'options: openai-compatible | anthropic',
         'ui.language': 'options: zh | en',
         'ui.reply_language': 'options: zh | en',
-        'execution.mode': 'options: auto | normal | plan',
+        'execution.mode': 'options: normal | plan',
+        'execution.approval_mode': 'options: review | auto | full_access',
         'shell.default': 'common: bash | powershell',
         'policy.safe_mode': 'options: true | false',
         'policy.allowed_paths': 'JSON array, for example ["D:\\\\shared"]',
@@ -582,7 +586,8 @@ function getCompletionCopy(language = 'zh') {
         commands: 'list slash/custom commands',
         status: 'show runtime status (mode/model/session)',
         model: 'show or switch model',
-        mode: 'set execution mode: normal|auto|plan',
+        mode: 'set work mode: normal|plan',
+        approval: 'set approval mode: review|auto|full_access',
         compact: 'compress message context',
         checkpoint: 'create/list/load conversation checkpoints',
         spec: 'create a spec markdown file in .codemini/specs',
@@ -605,7 +610,8 @@ function getCompletionCopy(language = 'zh') {
       generic: {
         configCommand: 'config command',
         historyCommand: 'history command',
-        modeCommand: 'switch execution mode',
+        modeCommand: 'switch work mode',
+        approvalCommand: 'switch approval mode',
         checkpointCommand: 'checkpoint command',
         specCommand: 'create a spec file',
         planCommand: 'planning command',
@@ -2600,7 +2606,8 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     sessionId: currentSession?.id || '',
     sessionTitle: currentSession?.title || '',
     messageCount: Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0,
-    mode: executionMode || config.execution?.mode || 'normal',
+    mode: executionMode === 'auto' ? 'normal' : (executionMode || config.execution?.mode || 'normal'),
+    approvalMode: config.execution?.approval_mode || (executionMode === 'auto' ? 'auto' : 'review'),
     sdkProvider: config.sdk?.provider || 'openai-compatible',
     agentRole: 'general',
     model: model || config.model?.name || '',
@@ -2952,7 +2959,8 @@ async function askModel({
   compactedForModel: compactedInput = null,
   onCompactedUpdate = null,
   changeTracker = null,
-  backupManager = null
+  backupManager = null,
+  projectIsGit = Boolean(config?.runtime?.project_is_git)
 }) {
   let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
@@ -3368,6 +3376,8 @@ async function askModel({
     initialMessages: toOpenAIMessages(compacted ?? session.messages),
     onEvent: wrappedAgentEvent,
     executionMode: executionMode || config.execution?.mode || 'normal',
+    approvalMode: config.execution?.approval_mode || 'review',
+    projectIsGit: Boolean(projectIsGit || changeTracker?.enabled),
     alwaysAllowTools:
       alwaysAllowTools || config.execution?.always_allow_tools || ['run', 'read', 'write'],
     toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
@@ -3560,7 +3570,7 @@ async function runSubAgentTask({
     systemPrompt: subSystemPrompt,
     onAgentEvent: wrappedOnAgentEvent,
     persistSession: false,
-    executionMode: 'auto',
+    executionMode: 'normal',
     allowedTools: roleAllowedTools,
     skipAnalysisNudge: true,
     signal
@@ -4687,7 +4697,7 @@ export async function createChatRuntime({
     currentSession.model = model;
   }
   const baseSystemPrompt = systemPrompt;
-  let executionMode = config.execution?.mode || 'normal';
+  let executionMode = config.execution?.mode === 'auto' ? 'normal' : (config.execution?.mode || 'normal');
   if (hasPendingPlanApproval(currentSession)) {
     executionMode = 'plan';
   }
@@ -4705,7 +4715,7 @@ export async function createChatRuntime({
     const configuredMode = String(config.execution?.mode || 'normal');
     executionMode = hasPendingPlanApproval(currentSession)
       ? 'plan'
-      : (['normal', 'auto', 'plan'].includes(configuredMode) ? configuredMode : 'normal');
+      : (['normal', 'plan'].includes(configuredMode) ? configuredMode : 'normal');
     syncCompactStateFromConfig();
 
     const resolvedModel = String(nextModel || '').trim();
@@ -4735,6 +4745,10 @@ export async function createChatRuntime({
         workspaceRoot: process.cwd(),
         sessionId: currentSession.id
       }).catch(() => null);
+  config.runtime = {
+    ...(config.runtime || {}),
+    project_is_git: Boolean(changeTracker?.enabled)
+  };
 
   // Set up tool result store under session directory
   const sessionResultsDir = path.join(getSessionsDir(), String(currentSession.id));
@@ -4805,6 +4819,7 @@ export async function createChatRuntime({
     'ui.language',
     'ui.reply_language',
     'execution.mode',
+    'execution.approval_mode',
     'shell.default',
     'sdk.provider',
     'gateway.timeout_ms',
@@ -4842,6 +4857,7 @@ export async function createChatRuntime({
     '/inbox',
     '/dream',
     '/mode',
+    '/approval',
     '/plan',
     '/history',
     '/checkpoint',
@@ -4862,6 +4878,7 @@ export async function createChatRuntime({
       { name: 'status', description: completionCopy.commands.status },
       { name: 'model', description: completionCopy.commands.model },
       { name: 'mode', description: completionCopy.commands.mode },
+      { name: 'approval', description: completionCopy.commands.approval },
       { name: 'compact', description: completionCopy.commands.compact },
       { name: 'checkpoint', description: completionCopy.commands.checkpoint },
       { name: 'spec', description: completionCopy.commands.spec },
@@ -4911,7 +4928,8 @@ export async function createChatRuntime({
 
   const historyTemplates = ['/history list', '/history current', '/history resume <session_id>'];
   const memoryTemplates = ['/memory list <scope>', '/memory search <scope> <query>', '/memory forget <scope> <id>'];
-  const modeTemplates = ['/mode normal', '/mode auto', '/mode plan'];
+  const modeTemplates = ['/mode normal', '/mode plan'];
+  const approvalTemplates = ['/approval review', '/approval auto', '/approval full_access'];
   const modelTemplates = ['/model current', '/model main', '/model fast', '/model set <name>'];
   const checkpointTemplates = [
     '/checkpoint create <name>',
@@ -4931,6 +4949,7 @@ export async function createChatRuntime({
     ...memoryTemplates,
     ...historyTemplates,
     ...modeTemplates,
+    ...approvalTemplates,
     ...modelTemplates,
     ...checkpointTemplates,
     ...specTemplates,
@@ -4979,6 +4998,7 @@ export async function createChatRuntime({
       'memory',
       'compact',
       'mode',
+      'approval',
       'model',
       'checkpoint',
       'plan',
@@ -4999,6 +5019,7 @@ export async function createChatRuntime({
     for (const template of memoryTemplates) registerSuggestion(template, completionCopy.generic.memoryCommand);
     for (const template of historyTemplates) registerSuggestion(template, completionCopy.generic.historyCommand);
     for (const template of modeTemplates) registerSuggestion(template, completionCopy.generic.modeCommand);
+    for (const template of approvalTemplates) registerSuggestion(template, completionCopy.generic.approvalCommand);
     for (const template of modelTemplates) registerSuggestion(template, completionCopy.generic.modelCommand || completionCopy.commands.model);
     for (const template of checkpointTemplates) registerSuggestion(template, completionCopy.generic.checkpointCommand);
     for (const template of specTemplates) registerSuggestion(template, completionCopy.generic.specCommand);
@@ -5106,11 +5127,20 @@ export async function createChatRuntime({
     if (commandPart === 'mode') {
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         const sub = tokens[1] || '';
-        return ['normal', 'auto', 'plan']
+        return ['normal', 'plan']
           .filter((m) => m.startsWith(sub))
           .map((m) => registerSuggestion(`/mode ${m}`, completionCopy.generic.modeCommand));
       }
       return materializeSuggestions(modeTemplates);
+    }
+    if (commandPart === 'approval') {
+      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
+        const sub = tokens[1] || '';
+        return ['review', 'auto', 'full_access']
+          .filter((m) => m.startsWith(sub))
+          .map((m) => registerSuggestion(`/approval ${m}`, completionCopy.generic.approvalCommand));
+      }
+      return materializeSuggestions(approvalTemplates);
     }
     if (commandPart === 'checkpoint') {
       if (tokens.length <= 2 && !hasTrailingSpace) {
@@ -5491,7 +5521,7 @@ export async function createChatRuntime({
         systemPrompt: readOnlySystemPrompt,
         onAgentEvent,
         requestToolApproval: activeRequestToolApproval,
-        executionMode: 'auto',
+        executionMode: 'normal',
         alwaysAllowTools: CODEWIKI_READ_ONLY_TOOLS,
         allowedTools: CODEWIKI_READ_ONLY_TOOLS,
         persistSession: false,
@@ -5534,7 +5564,7 @@ export async function createChatRuntime({
         const todoCount = countActiveTodos(currentSession.todos);
         return {
           type: 'system',
-          text: `mode=${executionMode} | role=general | model=${model || config.model.name} | max_ctx=${effectiveMaxContextTokens(config)} | session=${currentSession.id} | todos=${todoCount}`
+          text: `mode=${executionMode} | approval=${config.execution?.approval_mode || 'review'} | role=general | model=${model || config.model.name} | max_ctx=${effectiveMaxContextTokens(config)} | session=${currentSession.id} | todos=${todoCount}`
         };
       }
       if (parsedInput.command === 'model') {
@@ -5565,15 +5595,30 @@ export async function createChatRuntime({
       if (parsedInput.command === 'mode') {
         const next = (parsedInput.args[0] || '').trim().toLowerCase();
         if (!next) {
-          return { type: 'system', text: `Current mode: ${executionMode} (available: normal|auto|plan)` };
+          return { type: 'system', text: `Current work mode: ${executionMode} (available: normal|plan)` };
         }
-        if (!['normal', 'auto', 'plan'].includes(next)) {
-          return { type: 'system', text: 'Usage: /mode <normal|auto|plan>' };
+        if (!['normal', 'plan'].includes(next)) {
+          return { type: 'system', text: 'Usage: /mode <normal|plan>' };
         }
         executionMode = next;
         await setConfigValue('execution.mode', next);
         config = await loadConfig();
-        const text = `Execution mode set to: ${next}`;
+        const text = `Work mode set to: ${next}`;
+        await persistLocalExchange(line, text);
+        return { type: 'system', text };
+      }
+      if (parsedInput.command === 'approval') {
+        const raw = (parsedInput.args[0] || '').trim().toLowerCase().replace(/-/g, '_');
+        const next = raw === 'full' ? 'full_access' : raw;
+        if (!next) {
+          return { type: 'system', text: `Current approval mode: ${config.execution?.approval_mode || 'review'} (available: review|auto|full_access)` };
+        }
+        if (!['review', 'auto', 'full_access'].includes(next)) {
+          return { type: 'system', text: 'Usage: /approval <review|auto|full_access>' };
+        }
+        await setConfigValue('execution.approval_mode', next);
+        config = await loadConfig();
+        const text = `Approval mode set to: ${next}`;
         await persistLocalExchange(line, text);
         return { type: 'system', text };
       }
@@ -5593,7 +5638,7 @@ export async function createChatRuntime({
             workspaceRoot: process.cwd()
           });
           currentSession.planState = null;
-          executionMode = 'auto';
+          executionMode = 'normal';
           if (onAgentEvent) onAgentEvent({ type: 'reflect:approval_cleared' });
           await reloadCommandsAndSkills();
           const text = `Reflect skill written and loaded: /${written.draft.name}\nPath: ${written.filePath}`;
@@ -5619,7 +5664,7 @@ export async function createChatRuntime({
         currentSession.planState = null;
         if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
         await removePlanFileIfPresent(planState);
-        executionMode = 'auto';
+        executionMode = 'normal';
         await persistAssistantExchange(line, result.sessionText || result.text || '', {
           includeUser: false,
           extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
@@ -5694,7 +5739,7 @@ export async function createChatRuntime({
       if (parsedInput.command === 'no') {
         if (hasPendingReflectSkill(currentSession)) {
           currentSession.planState = null;
-          executionMode = 'auto';
+          executionMode = 'normal';
           if (onAgentEvent) onAgentEvent({ type: 'reflect:approval_cleared' });
           const text = 'Reflect skill draft discarded.';
           await persistLocalExchange(line, text, { includeUser: false });
@@ -5703,7 +5748,7 @@ export async function createChatRuntime({
         if (hasPendingPlanApproval(currentSession)) {
           currentSession.planState = null;
           if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
-          executionMode = 'auto';
+          executionMode = 'normal';
           const text = 'Pending plan rejected and cleared.';
           await persistLocalExchange(line, text, { includeUser: false });
           return { type: 'system', text };
@@ -5718,7 +5763,7 @@ export async function createChatRuntime({
         currentSession.planState = null;
         if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
         await removePlanFileIfPresent(planState);
-        executionMode = 'auto';
+        executionMode = 'normal';
         const text = 'Pending plan rejected and cleared.';
         await persistLocalExchange(line, text);
         return { type: 'system', text };
@@ -5868,7 +5913,7 @@ export async function createChatRuntime({
           currentSession.planState = null;
           if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
           await removePlanFileIfPresent(planState);
-          executionMode = 'auto';
+          executionMode = 'normal';
           await persistAssistantExchange(line, result.sessionText || result.text || '', {
             includeUser: false,
             extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
@@ -6415,7 +6460,7 @@ export async function createChatRuntime({
         activeSubSession = null;
         currentSession.planState = null;
         if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
-        executionMode = 'auto';
+        executionMode = 'normal';
         await persistAssistantExchange(line, result.sessionText || result.text || '', {
           includeUser: false,
           extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
@@ -6430,7 +6475,7 @@ export async function createChatRuntime({
       if (isRejectPlanText(parsedInput.text)) {
         currentSession.planState = null;
         if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
-        executionMode = 'auto';
+        executionMode = 'normal';
         const text = 'Pending plan rejected and cleared.';
         await persistLocalExchange(line, text);
         return { type: 'system', text };
@@ -6658,6 +6703,10 @@ export async function createChatRuntime({
     undoChangeSet: (id) => undoGitOplogChange(changeTracker, id),
     reloadConfig: async (options = {}) => {
       config = await loadConfig();
+      config.runtime = {
+        ...(config.runtime || {}),
+        project_is_git: Boolean(changeTracker?.enabled)
+      };
       await syncRuntimeFromConfig(options);
       return config;
     },
@@ -6666,9 +6715,16 @@ export async function createChatRuntime({
       return true;
     },
     setExecutionMode: async (next) => {
-      if (!['normal', 'auto', 'plan'].includes(next)) return false;
+      if (!['normal', 'plan'].includes(next)) return false;
       executionMode = next;
       await setConfigValue('execution.mode', next);
+      config = await loadConfig();
+      return true;
+    },
+    setApprovalMode: async (next) => {
+      const normalized = String(next || '').toLowerCase().replace(/-/g, '_');
+      if (!['review', 'auto', 'full_access'].includes(normalized)) return false;
+      await setConfigValue('execution.approval_mode', normalized);
       config = await loadConfig();
       return true;
     },
