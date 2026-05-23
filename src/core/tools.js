@@ -1968,7 +1968,7 @@ async function editTarget(root, args, config = {}) {
   throw new Error(`edit does not support kind: ${kind}`);
 }
 
-export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSystemEvent, getTodos, onTodosUpdate, getPlanState, onPlanStateUpdate, fffAdapter }) {
+export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSystemEvent, getTodos, onTodosUpdate, getPlanState, onPlanStateUpdate, fffAdapter, backupManager }) {
   const emitSystemTool = (event) => {
     if (typeof onSystemEvent === 'function' && event) onSystemEvent(event);
   };
@@ -2563,6 +2563,35 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
 
   const definitions = [...primaryDefinitions];
   const activeFffAdapter = fffAdapter || createFffAdapter({ workspaceRoot, config });
+  async function backupNonGitPathOnce(rawPath) {
+    if (!backupManager || typeof backupManager.backupOnce !== 'function') return null;
+    const normalized = normalizeFilePathValue(rawPath || '', { stripInlineRange: true }).trim();
+    if (!normalized) return null;
+    try {
+      const backup = await backupManager.backupOnce(normalized);
+      return backup?.ok ? backup : null;
+    } catch (error) {
+      return {
+        ok: false,
+        path: normalized,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+  function attachBackup(result, backup) {
+    if (!backup || !result || typeof result !== 'object') return result;
+    return {
+      ...result,
+      non_git_backup: true,
+      backupPath: backup.backupPath || '',
+      backupRelativePath: backup.backupRelativePath || '',
+      backupCreated: backup.created === true,
+      backupReused: backup.reused === true,
+      backupSkipped: backup.skipped === true || (!backup.backupPath && backup.existed === true),
+      backupError: backup.error || '',
+      backupReason: backup.reason || ''
+    };
+  }
   let fffConnected = false;
 
   async function ensureFffConnected() {
@@ -2717,7 +2746,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       const astTarget = hasReplaceTextArgs || (normalizedKind && normalizedKind !== 'replace_block')
         ? null
         : resolveCachedAstTarget(args, { requireAstScope: normalizedKind === 'replace_block' });
-      const editPath = normalizeFilePathValue(args?.path || args?.file || args?.file_path || '', { stripInlineRange: true }).trim();
+      const editPath = normalizeFilePathValue(args?.path || args?.file || args?.file_path || args?.ast_target?.path || args?.edit?.target?.path || '', { stripInlineRange: true }).trim();
       const shouldUseRecentReadRange =
         editPath &&
         lastReadRange?.path === editPath &&
@@ -2726,6 +2755,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       const rangeArgs = shouldUseRecentReadRange
         ? { start_line: lastReadRange.start_line, end_line: lastReadRange.end_line }
         : {};
+      const backup = await backupNonGitPathOnce(editPath || astTarget?.path);
       const result = await editTarget(
         workspaceRoot,
         astTarget
@@ -2734,19 +2764,23 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         config
       );
       if (result?.path) await refreshProjectFile(result.path);
-      return result;
+      return attachBackup(result, backup);
     },
     write: async (args) => {
       await ensureProjectIndex();
+      const writePath = normalizeFilePathValue(args?.path || args?.file || args?.file_path || '', { stripInlineRange: true }).trim();
+      const backup = await backupNonGitPathOnce(writePath);
       const result = await writeFile(workspaceRoot, args, config);
       if (result?.path) await refreshProjectFile(result.path);
-      return result;
+      return attachBackup(result, backup);
     },
     delete: Object.assign(async (args) => {
       await ensureProjectIndex();
+      const deletePathValue = normalizeFilePathValue(args?.path || args?.file || args?.file_path || args?.target || '', { stripInlineRange: true }).trim();
+      const backup = await backupNonGitPathOnce(deletePathValue);
       const result = await deletePath(workspaceRoot, args, config);
       if (result?.path) await refreshProjectFile(result.path);
-      return result;
+      return attachBackup(result, backup);
     }, {
       prepareApproval: async (args) => {
         const target = await prepareDeleteTarget(workspaceRoot, args, config);
@@ -3034,7 +3068,10 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       const p = result.path || '';
       const action = result.action || '';
       const line = result.changed_line || 0;
-      const summary = `${action} ${p}${line > 0 ? ` @L${line}` : ''}`;
+      const backup = result.backupPath
+        ? `\nbackup: ${result.backupPath}${result.backupReused ? ' (reused)' : ''}`
+        : '';
+      const summary = `${action} ${p}${line > 0 ? ` @L${line}` : ''}${backup}`;
       const diffPreview = result.diff_preview || '';
       if (diffPreview) {
         const trimmed = diffPreview.length > 600 ? `${diffPreview.slice(0, 597)}...` : diffPreview;
@@ -3048,7 +3085,10 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       const p = result.path || '';
       const action = result.action || 'write';
       const line = result.changed_line || 0;
-      const summary = `${action} ${p}${line > 0 ? ` @L${line}` : ''}`;
+      const backup = result.backupPath
+        ? `\nbackup: ${result.backupPath}${result.backupReused ? ' (reused)' : ''}`
+        : '';
+      const summary = `${action} ${p}${line > 0 ? ` @L${line}` : ''}${backup}`;
       const diffPreview = result.diff_preview || '';
       if (diffPreview) {
         const trimmed = diffPreview.length > 600 ? `${diffPreview.slice(0, 597)}...` : diffPreview;
@@ -3062,7 +3102,10 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       if (result.ok === false) return JSON.stringify(result);
       const kind = result.type || 'item';
       const target = result.path || '';
-      return `[delete: ${kind}] deleted ${target}`;
+      const backup = result.backupPath
+        ? `\nbackup: ${result.backupPath}${result.backupReused ? ' (reused)' : ''}`
+        : '';
+      return `[delete: ${kind}] deleted ${target}${backup}`;
     },
 
     run(result) {

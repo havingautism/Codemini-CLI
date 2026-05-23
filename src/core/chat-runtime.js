@@ -39,6 +39,15 @@ import {
   parseReflectScope,
   writeReflectSkillDraft
 } from './reflect-skill.js';
+import {
+  beginGitOplogCapture,
+  captureGitOplogChanges,
+  createGitOplogChangeTracker,
+  listGitOplogChanges,
+  readGitOplogPatch,
+  undoGitOplogChange
+} from './git-oplog-change-tracker.js';
+import { createNonGitBackupManager } from './non-git-backup.js';
 
 const STREAM_SAVE_DEBOUNCE_MS = 120;
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -2941,7 +2950,9 @@ async function askModel({
   maxSteps: maxStepsOverride,
   skipAnalysisNudge = false,
   compactedForModel: compactedInput = null,
-  onCompactedUpdate = null
+  onCompactedUpdate = null,
+  changeTracker = null,
+  backupManager = null
 }) {
   let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
@@ -3107,7 +3118,8 @@ async function askModel({
     onPlanStateUpdate: (planState) => {
       session.planState = normalizePlanState(planState);
       scheduleSessionSave();
-    }
+    },
+    backupManager
   });
 
   const filteredDefinitions = Array.isArray(allowedTools)
@@ -3158,7 +3170,9 @@ async function askModel({
       linesAdded: Number(change.linesAdded || 0),
       linesRemoved: Number(change.linesRemoved || 0),
       changedLine: Number(change.changedLine || 0),
-      diffPreview: String(change.diffPreview || '')
+      diffPreview: String(change.diffPreview || ''),
+      changeSetId: String(change.changeSetId || ''),
+      patchRef: String(change.patchRef || '')
     };
   };
   const fileChangeFingerprint = (change) => JSON.stringify({
@@ -3167,8 +3181,13 @@ async function askModel({
     linesAdded: Number(change.linesAdded || 0),
     linesRemoved: Number(change.linesRemoved || 0),
     changedLine: Number(change.changedLine || 0),
-    diffPreview: String(change.diffPreview || '')
+    diffPreview: String(change.diffPreview || ''),
+    changeSetId: String(change.changeSetId || ''),
+    patchRef: String(change.patchRef || '')
   });
+  const normalizeFileChanges = (changes) => (Array.isArray(changes) ? changes : [changes])
+    .map(normalizeFileChange)
+    .filter(Boolean);
   const appendUniqueFileChange = (message, fileChange) => {
     const existing = Array.isArray(message.file_changes) ? message.file_changes : [];
     const nextKey = fileChangeFingerprint(fileChange);
@@ -3188,11 +3207,14 @@ async function askModel({
       if (Number.isFinite(Number(meta.durationMs))) call.durationMs = Number(meta.durationMs);
       if (typeof meta.summary === 'string' && meta.summary.trim()) call.summary = meta.summary.trim();
       if (typeof meta.status === 'string' && meta.status.trim()) call.status = meta.status.trim();
+      if (meta.resultMeta && typeof meta.resultMeta === 'object') call.resultMeta = meta.resultMeta;
       const fileChange = normalizeFileChange(meta.fileChange);
       if (fileChange) {
         call.fileChange = fileChange;
-        appendUniqueFileChange(msg, fileChange);
       }
+      const fileChanges = normalizeFileChanges(meta.fileChanges && meta.fileChanges.length ? meta.fileChanges : fileChange);
+      if (fileChanges.length) call.fileChanges = fileChanges;
+      for (const change of fileChanges) appendUniqueFileChange(msg, change);
       msg.at = new Date().toISOString();
       return true;
     }
@@ -3299,7 +3321,9 @@ async function askModel({
         const meta = {
           durationMs: Number.isFinite(Number(event.durationMs)) ? Number(event.durationMs) : undefined,
           summary: typeof event.summary === 'string' ? event.summary : '',
+          resultMeta: event.resultMeta && typeof event.resultMeta === 'object' ? event.resultMeta : null,
           fileChange: normalizeFileChange(event.fileChange),
+          fileChanges: normalizeFileChanges(event.fileChanges),
           status:
             event.type === 'tool:error'
               ? 'error'
@@ -3319,7 +3343,9 @@ async function askModel({
           ...(Number.isFinite(Number(meta.durationMs)) ? { tool_duration_ms: Number(meta.durationMs) } : {}),
           ...(meta.summary ? { tool_summary: meta.summary } : {}),
           ...(meta.status ? { tool_status: meta.status } : {}),
-          ...(meta.fileChange ? { tool_file_change: meta.fileChange } : {})
+          ...(meta.resultMeta ? { tool_result_meta: meta.resultMeta } : {}),
+          ...(meta.fileChange ? { tool_file_change: meta.fileChange } : {}),
+          ...(Array.isArray(meta.fileChanges) && meta.fileChanges.length ? { tool_file_changes: meta.fileChanges } : {})
         })
       );
       pendingToolMeta.delete(toolId);
@@ -3351,6 +3377,12 @@ async function askModel({
     signal,
     skipAnalysisNudge,
     config,
+    changeTracker: changeTracker?.enabled
+      ? {
+          begin: (meta) => beginGitOplogCapture(changeTracker, meta),
+          capture: (scope, meta) => captureGitOplogChanges(changeTracker, scope, meta)
+        }
+      : null,
     requestCompletion: async ({ messages, tools, model: selectedModel }) => {
       let started = false;
       const startAssistantStream = () => {
@@ -4693,6 +4725,16 @@ export async function createChatRuntime({
       commands.set(name, command);
     }
   };
+  let changeTracker = await createGitOplogChangeTracker({
+    workspaceRoot: process.cwd(),
+    sessionId: currentSession.id
+  });
+  let backupManager = changeTracker?.enabled
+    ? null
+    : await createNonGitBackupManager({
+        workspaceRoot: process.cwd(),
+        sessionId: currentSession.id
+      }).catch(() => null);
 
   // Set up tool result store under session directory
   const sessionResultsDir = path.join(getSessionsDir(), String(currentSession.id));
@@ -6585,7 +6627,9 @@ export async function createChatRuntime({
       executionMode,
       signal,
       compactedForModel,
-      onCompactedUpdate: setCompactedView
+      onCompactedUpdate: setCompactedView,
+      changeTracker,
+      backupManager
     });
     await saveDirectMemoryPrompt(expandedText);
     await captureUserPromptForDream(expandedText);
@@ -6609,6 +6653,9 @@ export async function createChatRuntime({
     getCurrentSessionId: () => currentSession.id,
     getSessionMessages: () => currentSession.messages || [],
     getSessionCompact: () => currentSession.compact || null,
+    getChangeSets: () => listGitOplogChanges(changeTracker),
+    getChangeSetPatch: (id) => readGitOplogPatch(changeTracker, id),
+    undoChangeSet: (id) => undoGitOplogChange(changeTracker, id),
     reloadConfig: async (options = {}) => {
       config = await loadConfig();
       await syncRuntimeFromConfig(options);

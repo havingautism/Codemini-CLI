@@ -34,8 +34,15 @@ function sanitizeToolCall(tc, index) {
   if (Number.isFinite(Number(tc?.durationMs))) out.durationMs = Number(tc.durationMs);
   if (typeof tc?.summary === 'string' && tc.summary.trim()) out.summary = tc.summary.trim();
   if (typeof tc?.status === 'string' && tc.status.trim()) out.status = tc.status.trim();
+  if (tc?.resultMeta && typeof tc.resultMeta === 'object' && !Array.isArray(tc.resultMeta)) {
+    out.resultMeta = { ...tc.resultMeta };
+  }
   const fileChange = sanitizeFileChange(tc?.fileChange);
   if (fileChange) out.fileChange = fileChange;
+  if (Array.isArray(tc?.fileChanges)) {
+    const fileChanges = tc.fileChanges.map(sanitizeFileChange).filter(Boolean);
+    if (fileChanges.length > 0) out.fileChanges = fileChanges;
+  }
   return out;
 }
 
@@ -50,7 +57,9 @@ function sanitizeFileChange(change) {
     linesAdded: Math.max(0, Math.round(Number(change.linesAdded || 0))),
     linesRemoved: Math.max(0, Math.round(Number(change.linesRemoved || 0))),
     changedLine: Math.max(0, Math.round(Number(change.changedLine || 0))),
-    diffPreview: String(change.diffPreview || '')
+    diffPreview: String(change.diffPreview || ''),
+    changeSetId: String(change.changeSetId || ''),
+    patchRef: String(change.patchRef || '')
   };
 }
 
@@ -115,8 +124,15 @@ function sanitizeMessage(msg) {
   if (Number.isFinite(Number(msg?.tool_duration_ms))) out.tool_duration_ms = Number(msg.tool_duration_ms);
   if (typeof msg?.tool_summary === 'string' && msg.tool_summary.trim()) out.tool_summary = msg.tool_summary.trim();
   if (typeof msg?.tool_status === 'string' && msg.tool_status.trim()) out.tool_status = msg.tool_status.trim();
+  if (msg?.tool_result_meta && typeof msg.tool_result_meta === 'object' && !Array.isArray(msg.tool_result_meta)) {
+    out.tool_result_meta = { ...msg.tool_result_meta };
+  }
   const toolFileChange = sanitizeFileChange(msg?.tool_file_change);
   if (toolFileChange) out.tool_file_change = toolFileChange;
+  if (Array.isArray(msg?.tool_file_changes)) {
+    const toolFileChanges = msg.tool_file_changes.map(sanitizeFileChange).filter(Boolean);
+    if (toolFileChanges.length > 0) out.tool_file_changes = toolFileChanges;
+  }
   if (typeof msg?.name === 'string' && msg.name.trim()) out.name = msg.name.trim();
   if (typeof msg?.at === 'string' && msg.at.trim()) out.at = msg.at;
   if (typeof msg?.reasoning_content === 'string' && msg.reasoning_content) {

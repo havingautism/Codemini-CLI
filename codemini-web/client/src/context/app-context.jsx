@@ -192,6 +192,7 @@ function fileChangeKey(change) {
     linesRemoved: Number(change.linesRemoved || 0),
     changedLine: Number(change.changedLine || 0),
     diffPreview: String(change.diffPreview || ''),
+    changeSetId: String(change.changeSetId || ''),
   });
 }
 
@@ -718,7 +719,9 @@ export function AppProvider({ children }) {
               id: tc.id, name: tc.function?.name || tc.name || 'tool',
               arguments: tc.function?.arguments || tc.arguments || {},
               status: tc.status || 'done', durationMs: tc.durationMs, summary: tc.summary || '', result: '',
+              ...(tc.resultMeta ? { resultMeta: tc.resultMeta } : {}),
               ...(tc.fileChange ? { fileChange: tc.fileChange } : {}),
+              ...(Array.isArray(tc.fileChanges) && tc.fileChanges.length ? { fileChanges: tc.fileChanges } : {}),
             }));
             assistantGroup.segments.push({
               type: 'tools',
@@ -736,10 +739,17 @@ export function AppProvider({ children }) {
             if (msg.toolDurationMs != null) card.durationMs = msg.toolDurationMs;
             if (msg.toolStatus === 'error') card.status = 'error';
             if (msg.toolStatus === 'blocked') card.status = 'blocked';
+            if (msg.toolResultMeta) card.resultMeta = msg.toolResultMeta;
             if (msg.content) card.result = msg.content;
             const change = msg.toolFileChange?.path ? msg.toolFileChange : null;
             if (change?.path) {
               card.fileChange = change;
+            }
+            if (Array.isArray(msg.toolFileChanges) && msg.toolFileChanges.length) {
+              card.fileChanges = msg.toolFileChanges;
+              assistantGroup.fileChanges = appendUniqueFileChanges(assistantGroup.fileChanges, msg.toolFileChanges);
+            } else if (change?.path) {
+              assistantGroup.fileChanges = appendUniqueFileChanges(assistantGroup.fileChanges, [change]);
             }
             break;
           }
@@ -841,13 +851,21 @@ export function AppProvider({ children }) {
         if (activeId) {
           setState(prev => ({ ...prev, messages: prev.messages.map(m => {
             if (m.id !== activeId) return m;
-            if (event.fileChange) pendingChangesRef.current = [...pendingChangesRef.current, event.fileChange];
+            const eventChanges = Array.isArray(event.fileChanges) && event.fileChanges.length
+              ? event.fileChanges
+              : (event.fileChange ? [event.fileChange] : []);
+            if (eventChanges.length) pendingChangesRef.current = [...pendingChangesRef.current, ...eventChanges];
             return {
               ...m,
+              fileChanges: eventChanges.length
+                ? appendUniqueFileChanges(m.fileChanges, eventChanges)
+                : m.fileChanges,
               segments: updateToolInSegments(m.segments, event.id, tc => {
                 const u = { ...tc, status: 'done', durationMs: event.durationMs };
                 if (event.summary) u.summary = event.summary;
+                if (event.resultMeta) u.resultMeta = event.resultMeta;
                 if (event.fileChange) u.fileChange = event.fileChange;
+                if (eventChanges.length) u.fileChanges = eventChanges;
                 return u;
               })
             };

@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
+  Archive,
   ChevronDown,
   ChevronRight,
   FilePenLine,
@@ -13,6 +14,8 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatDuration } from "../../utils/time.js";
+import { t } from "../../i18n/index.js";
+import { PatchDiff } from "@pierre/diffs/react";
 
 const TOOL_ICONS = {
   read: FileText,
@@ -96,12 +99,41 @@ function getNestedEdit(args) {
   return args.edit && typeof args.edit === "object" ? args.edit : args;
 }
 
-function getFileToolMeta(toolName, args, result, summary, fileChange) {
+function isUnifiedPatch(text) {
+  const value = String(text || "");
+  return value.startsWith("diff --git ") || value.includes("\ndiff --git ") || value.includes("\n@@ ");
+}
+
+function usePatchThemeType() {
+  const getIsDark = () =>
+    document.documentElement.classList.contains("dark") ||
+    document.documentElement.dataset.theme === "dark";
+  const [isDark, setIsDark] = useState(() => (typeof document === "undefined" ? true : getIsDark()));
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const observer = new MutationObserver(() => setIsDark(getIsDark()));
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme"] });
+    return () => observer.disconnect();
+  }, []);
+  return isDark ? "dark" : "light";
+}
+
+function getFileToolMeta(toolName, args, result, summary, fileChange, resultMeta, fileChanges) {
   if (!["edit", "write", "delete"].includes(toolName)) return null;
   const parsedArgs = parseMaybeJson(args) || {};
-  const parsedResult = parseMaybeJson(result) || {};
+  const parsedResult = {
+    ...(parseMaybeJson(result) || {}),
+    ...(resultMeta && typeof resultMeta === "object" ? resultMeta : {}),
+  };
+  const structuredChanges = Array.isArray(fileChanges) && fileChanges.length
+    ? fileChanges
+    : (fileChange ? [fileChange] : []);
   const structuredChange =
-    fileChange && typeof fileChange === "object" ? fileChange : {};
+    structuredChanges.find((change) => change && typeof change === "object") || {};
+  const capturedPatch = structuredChanges
+    .map((change) => String(change?.diffPreview || ""))
+    .filter(Boolean)
+    .join("\n");
   const edit = getNestedEdit(parsedArgs);
   const pathText =
     parsedResult.path ||
@@ -151,11 +183,18 @@ function getFileToolMeta(toolName, args, result, summary, fileChange) {
     removed,
     changedLine,
     diffPreview: String(
-      parsedResult.diff_preview || structuredChange.diffPreview || "",
+      capturedPatch || structuredChange.diffPreview || parsedResult.diff_preview || "",
     ),
     oldText: typeof oldText === "string" ? oldText : "",
     newText: typeof newText === "string" ? newText : "",
     summary: String(summary || ""),
+    backupPath: String(parsedResult.backupPath || ""),
+    backupRelativePath: String(parsedResult.backupRelativePath || ""),
+    backupCreated: parsedResult.backupCreated === true,
+    backupReused: parsedResult.backupReused === true,
+    backupSkipped: parsedResult.backupSkipped === true,
+    backupError: String(parsedResult.backupError || ""),
+    backupReason: String(parsedResult.backupReason || ""),
   };
 }
 
@@ -204,6 +243,21 @@ function buildPreviewLines(meta) {
 }
 
 function FilePreview({ meta }) {
+  const themeType = usePatchThemeType();
+  if (isUnifiedPatch(meta?.diffPreview)) {
+    return (
+      <div className="mt-2 max-h-[420px] overflow-auto rounded-md border border-(--border-default) bg-(--bg-secondary) text-xs">
+        <PatchDiff
+          patch={meta.diffPreview}
+          options={{
+            theme: { dark: "pierre-dark", light: "pierre-light" },
+            themeType,
+            diffStyle: "unified",
+          }}
+        />
+      </div>
+    );
+  }
   const lines = buildPreviewLines(meta);
   if (!lines.length) return null;
   return (
@@ -243,6 +297,34 @@ function FilePreview({ meta }) {
   );
 }
 
+function BackupNotice({ meta }) {
+  if (!meta?.backupPath && !meta?.backupSkipped && !meta?.backupError) return null;
+  const pathText = meta.backupRelativePath || meta.backupPath;
+  const label = meta.backupReused
+    ? t("backupReused")
+    : meta.backupCreated
+      ? t("backupCreated")
+      : meta.backupSkipped
+        ? t("backupSkipped")
+        : t("backupReady");
+  const detail = meta.backupError
+    ? meta.backupError
+    : pathText || meta.backupReason || "";
+  return (
+    <div className="mt-2 flex min-w-0 items-start gap-2 rounded-md border border-(--border-default) bg-(--bg-secondary) px-3 py-2 text-xs">
+      <Archive size={14} className="mt-0.5 shrink-0 text-(--accent-blue)" />
+      <div className="min-w-0 flex-1">
+        <div className="font-medium text-(--text-primary)">{label}</div>
+        {detail && (
+          <div className="mt-0.5 truncate font-mono text-[11px] text-(--text-muted)">
+            {detail}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const STATUS_STYLES = {
   running: "bg-[var(--accent-blue)] animate-pulse",
   done: "bg-[var(--accent-green)]",
@@ -266,6 +348,8 @@ export function ToolCard({ card }) {
     card.result,
     card.summary,
     card.fileChange,
+    card.resultMeta,
+    card.fileChanges,
   );
   const nameText = fileMeta?.path || keyArg || card.name;
 
@@ -312,6 +396,12 @@ export function ToolCard({ card }) {
             -{fileMeta.removed}
           </span>
         )}
+        {fileMeta?.backupPath && (
+          <span className="inline-flex items-center gap-1 rounded bg-(--accent-blue-bg) px-1.5 py-0.5 text-[10px] font-medium text-(--accent-blue)">
+            <Archive size={11} />
+            {fileMeta.backupReused ? t("backupReusedShort") : t("backupShort")}
+          </span>
+        )}
         {card.durationMs != null && (
           <span className="text-[11px] text-[var(--text-muted)] font-mono ml-auto shrink-0">
             {formatDuration(card.durationMs)}
@@ -334,6 +424,7 @@ export function ToolCard({ card }) {
                   {fileMeta.summary.split("\n")[0]}
                 </div>
               )}
+              <BackupNotice meta={fileMeta} />
               <FilePreview meta={fileMeta} />
             </>
           ) : sections.length === 0 ? (

@@ -1134,6 +1134,32 @@ async function main() {
       }
       return;
     }
+    if (req.method === 'GET' && url.pathname === '/api/session-changes') {
+      try {
+        jsonResponse(res, { changes: await bridge.getChangeSets() });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err?.message || 'Failed to read session changes' }, 500);
+      }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/api/session-changes/') && url.pathname.endsWith('/patch')) {
+      const id = decodeURIComponent(url.pathname.slice('/api/session-changes/'.length, -'/patch'.length));
+      try {
+        jsonResponse(res, { id, patch: await bridge.getChangeSetPatch(id) });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err?.message || 'Failed to read change patch' }, 404);
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname.startsWith('/api/session-changes/') && url.pathname.endsWith('/undo')) {
+      const id = decodeURIComponent(url.pathname.slice('/api/session-changes/'.length, -'/undo'.length));
+      try {
+        jsonResponse(res, await bridge.undoChangeSet(id));
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err?.message || 'Failed to undo change' }, 409);
+      }
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/api/git-batch') {
       const { dirs } = await readBody(req);
       const result = {};

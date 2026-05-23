@@ -15,6 +15,7 @@ export function ConfirmDialog({
   description,
   confirmLabel,
   cancelLabel,
+  loadingLabel,
   loading = false,
   onOpenChange,
   onConfirm,
@@ -43,7 +44,7 @@ export function ConfirmDialog({
             disabled={loading}
             onClick={onConfirm}
           >
-            {loading ? t('deleting') : (confirmLabel || t('delete'))}
+            {loading ? (loadingLabel || t('deleting')) : (confirmLabel || t('delete'))}
           </Button>
         </DialogFooter>
       </DialogContent>

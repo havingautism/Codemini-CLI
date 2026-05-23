@@ -141,6 +141,11 @@ export async function fetchGitDiff() {
   return res.json();
 }
 
+export async function undoSessionChange(id) {
+  const res = await api(`/api/session-changes/${encodeURIComponent(id)}/undo`, { method: 'POST' });
+  return res.json();
+}
+
 export async function fetchGitBatch(dirs) {
   const res = await api('/api/git-batch', {
     method: 'POST',

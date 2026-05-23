@@ -276,7 +276,9 @@ function normalizeFileChange(change) {
     linesAdded: Number(change.linesAdded || 0),
     linesRemoved: Number(change.linesRemoved || 0),
     changedLine: Number(change.changedLine || 0),
-    diffPreview: String(change.diffPreview || '')
+    diffPreview: String(change.diffPreview || ''),
+    changeSetId: String(change.changeSetId || ''),
+    patchRef: String(change.patchRef || '')
   };
 }
 
@@ -287,7 +289,9 @@ function fileChangeFingerprint(change) {
     linesAdded: Number(change.linesAdded || 0),
     linesRemoved: Number(change.linesRemoved || 0),
     changedLine: Number(change.changedLine || 0),
-    diffPreview: String(change.diffPreview || '')
+    diffPreview: String(change.diffPreview || ''),
+    changeSetId: String(change.changeSetId || ''),
+    patchRef: String(change.patchRef || '')
   });
 }
 
@@ -299,6 +303,36 @@ function appendUniqueFileChange(message, fileChange) {
     return;
   }
   message.file_changes = [...existing, fileChange];
+}
+
+function normalizeFileChanges(changes) {
+  return (Array.isArray(changes) ? changes : [changes])
+    .map(normalizeFileChange)
+    .filter(Boolean);
+}
+
+function extractToolResultMeta(toolName, result) {
+  if (!result || typeof result !== 'object') return null;
+  if (!['edit', 'write', 'delete'].includes(String(toolName || ''))) return null;
+  const meta = {};
+  for (const key of [
+    'path',
+    'action',
+    'changed_line',
+    'lines_added',
+    'lines_removed',
+    'backupPath',
+    'backupRelativePath',
+    'backupCreated',
+    'backupReused',
+    'backupSkipped',
+    'backupError',
+    'backupReason',
+    'non_git_backup'
+  ]) {
+    if (result[key] !== undefined && result[key] !== null && result[key] !== '') meta[key] = result[key];
+  }
+  return Object.keys(meta).length ? meta : null;
 }
 
 export const trimInline = _trimInline;
@@ -555,7 +589,8 @@ export async function runAgentLoop({
   deferredDefinitions = {},
   signal,
   skipAnalysisNudge = false,
-  config = {}
+  config = {},
+  changeTracker = null
 }) {
   const messages = [];
   if (systemPrompt) {
@@ -862,6 +897,13 @@ export async function runAgentLoop({
         };
       }
 
+      let captureScope = null;
+      if (!isReadOnly && changeTracker && typeof changeTracker.begin === 'function') {
+        try {
+          captureScope = await changeTracker.begin({ toolName, args: effectiveArgs });
+        } catch {}
+      }
+
       let toolResult;
       try {
         toolResult = await handler(effectiveArgs);
@@ -887,10 +929,39 @@ export async function runAgentLoop({
 
       const durationMs = Date.now() - startedAt;
       const summary = summarizeToolResult(toolResult);
+      const resultMeta = extractToolResultMeta(toolName, toolResult);
       /* 提取文件改动统计 */
-      const fileChange = extractFileChange(toolName, toolResult);
+      const declaredFileChange = extractFileChange(toolName, toolResult);
+      let fileChanges = [];
+      let fileChange = null;
+      if (!isReadOnly && changeTracker && typeof changeTracker.capture === 'function' && captureScope) {
+        try {
+          const captured = await changeTracker.capture(captureScope, {
+            toolName,
+            toolCallId: call.id,
+            summary,
+            args: effectiveArgs,
+            declaredFileChanges: normalizeFileChanges(declaredFileChange)
+          });
+          const capturedChanges = normalizeFileChanges(captured);
+          if (capturedChanges.length) {
+            fileChanges = capturedChanges;
+            fileChange = fileChanges[0] || null;
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (onEvent) {
+            onEvent({
+              type: 'system_tool:error',
+              id: `change-oplog-${call.id}`,
+              name: 'change_oplog',
+              summary: message
+            });
+          }
+        }
+      }
       if (onEvent) {
-        onEvent({ type: 'tool:end', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary, fileChange });
+        onEvent({ type: 'tool:end', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary, fileChange, fileChanges, resultMeta });
       }
 
       // Auto-capture non-throwing tool failures (e.g. shell non-zero exit)
@@ -928,7 +999,7 @@ export async function runAgentLoop({
       // P0: Persist to disk if still large
       formatted = await storeResultIfNeeded(call.id, formatted, toolResult);
 
-      return { callId: call.id, content: formatted, durationMs, summary, status: 'done', fileChange };
+      return { callId: call.id, content: formatted, durationMs, summary, status: 'done', fileChange, fileChanges, resultMeta };
     }
 
     // Separate read-only and write calls, preserving order
@@ -972,7 +1043,7 @@ export async function runAgentLoop({
         continue;
       }
 
-      attachToolCallSessionMeta(assistantMessage, call.id, { durationMs: entry.durationMs, summary: entry.summary || '', status: entry.status || 'done', fileChange: entry.fileChange });
+      attachToolCallSessionMeta(assistantMessage, call.id, { durationMs: entry.durationMs, summary: entry.summary || '', status: entry.status || 'done', fileChange: entry.fileChange, fileChanges: entry.fileChanges, resultMeta: entry.resultMeta });
       messages.push({
         role: 'tool',
         tool_call_id: call.id,
@@ -980,7 +1051,9 @@ export async function runAgentLoop({
         tool_duration_ms: entry.durationMs,
         tool_summary: entry.summary || '',
         tool_status: entry.status || 'done',
-        ...(entry.fileChange ? { tool_file_change: entry.fileChange } : {})
+        ...(entry.resultMeta ? { tool_result_meta: entry.resultMeta } : {}),
+        ...(entry.fileChange ? { tool_file_change: entry.fileChange } : {}),
+        ...(Array.isArray(entry.fileChanges) && entry.fileChanges.length > 0 ? { tool_file_changes: entry.fileChanges } : {})
       });
       if (onEvent) {
         onEvent({ type: 'tool:result', name: displayName, id: call.id, arguments: args, content: entry.content });
@@ -1024,9 +1097,14 @@ function attachToolCallSessionMeta(assistantMessage, callId, meta = {}) {
   if (Number.isFinite(Number(meta.durationMs))) call.durationMs = Number(meta.durationMs);
   if (typeof meta.summary === 'string' && meta.summary.trim()) call.summary = meta.summary.trim();
   if (typeof meta.status === 'string' && meta.status.trim()) call.status = meta.status.trim();
+  if (meta.resultMeta && typeof meta.resultMeta === 'object') call.resultMeta = meta.resultMeta;
   const fileChange = normalizeFileChange(meta.fileChange);
   if (fileChange) {
     call.fileChange = fileChange;
-    appendUniqueFileChange(assistantMessage, fileChange);
+  }
+  const fileChanges = normalizeFileChanges(meta.fileChanges && meta.fileChanges.length ? meta.fileChanges : fileChange);
+  if (fileChanges.length) {
+    call.fileChanges = fileChanges;
+    for (const change of fileChanges) appendUniqueFileChange(assistantMessage, change);
   }
 }

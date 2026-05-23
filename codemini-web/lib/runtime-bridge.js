@@ -419,17 +419,22 @@ export class RuntimeBridge {
       }
       case 'tool:end': {
         if (this.#uiActiveMsgId) {
+          const eventChanges = Array.isArray(event.fileChanges) && event.fileChanges.length
+            ? event.fileChanges
+            : (event.fileChange?.path ? [event.fileChange] : []);
           this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
             ...message,
-            fileChanges: event.fileChange?.path
-              ? [...(Array.isArray(message.fileChanges) ? message.fileChanges : []), event.fileChange]
+            fileChanges: eventChanges.length
+              ? [...(Array.isArray(message.fileChanges) ? message.fileChanges : []), ...eventChanges]
               : (Array.isArray(message.fileChanges) ? message.fileChanges : []),
             segments: updateToolInSegments(message.segments, event.id, (card) => ({
               ...card,
               status: 'done',
               durationMs: event.durationMs,
               summary: event.summary || card.summary,
-              ...(event.fileChange ? { fileChange: event.fileChange } : {})
+              ...(event.resultMeta ? { resultMeta: event.resultMeta } : {}),
+              ...(event.fileChange ? { fileChange: event.fileChange } : {}),
+              ...(eventChanges.length ? { fileChanges: eventChanges } : {})
             }))
           }));
         }
@@ -704,7 +709,9 @@ export class RuntimeBridge {
         toolSummary: m.role === 'tool' ? summarizeHistoricalToolMessage(m) : null,
         toolDurationMs: Number.isFinite(Number(m.tool_duration_ms)) ? Number(m.tool_duration_ms) : null,
         toolStatus: m.tool_status || null,
+        toolResultMeta: m.tool_result_meta || null,
         toolFileChange: m.tool_file_change || null,
+        toolFileChanges: Array.isArray(m.tool_file_changes) ? m.tool_file_changes : [],
         planTranscript: Array.isArray(m.plan_transcript) ? m.plan_transcript : null,
         usage: normalizeUiUsage(m.usage),
         at: m.at || null
@@ -715,6 +722,21 @@ export class RuntimeBridge {
     const compact = this.#runtime.getSessionCompact();
     if (!compact) return null;
     return { boundaryIndex: compact.boundaryIndex, mode: compact.mode, timestamp: compact.timestamp };
+  }
+
+  getChangeSets() {
+    return this.#runtime.getChangeSets?.() || [];
+  }
+
+  getChangeSetPatch(id) {
+    return this.#runtime.getChangeSetPatch?.(id) || '';
+  }
+
+  async undoChangeSet(id) {
+    if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    const result = await this.#runtime.undoChangeSet?.(id);
+    this.#broadcast({ type: 'change:undone', result });
+    return result || { error: true, message: 'Git change oplog is not available' };
   }
 
   async getUiMessages() {
