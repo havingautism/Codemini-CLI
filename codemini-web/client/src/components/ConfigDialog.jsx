@@ -22,12 +22,43 @@ import {
 } from "@/components/ui/tooltip";
 import { Separator } from "@/components/ui/separator";
 import { CircleHelp } from "lucide-react";
+import { cn } from "@/lib/utils";
 import * as api from "@/hooks/use-api";
 import { Spinner } from "@/components/ui/spinner";
 import { t } from "../../i18n/index.js";
 
 function getNestedValue(obj, path) {
   return path.split(".").reduce((o, k) => o?.[k], obj);
+}
+
+function isBooleanOption(key) {
+  const options = Array.isArray(key?.options) ? key.options.map(String) : [];
+  return options.length === 2 && options.includes("true") && options.includes("false");
+}
+
+function SwitchControl({ checked, onClick, title }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      aria-pressed={checked}
+      className={cn(
+        "relative h-5 w-9 rounded-full border shadow-inner transition-colors",
+        checked
+          ? "border-(--text-primary) bg-(--text-primary)"
+          : "border-(--border-strong) bg-(--bg-hover)",
+      )}
+    >
+      <span
+        className={cn(
+          "absolute left-0.5 top-0.5 size-3.5 rounded-full transition-transform",
+          checked ? "bg-(--bg-primary)" : "bg-(--text-muted)",
+          checked ? "translate-x-4" : "translate-x-0",
+        )}
+      />
+    </button>
+  );
 }
 
 export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
@@ -222,9 +253,14 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
         const key = CONFIG_GROUPS.flatMap((g) => g.keys).find(
           (k) => k.path === path,
         );
+        const normalizedValue = isBooleanOption(key)
+          ? value === true || value === "true"
+          : key?.type === "number"
+            ? Number(value)
+            : value;
         await api.setConfig(
           path,
-          key?.type === "number" ? Number(value) : value,
+          normalizedValue,
         );
       }
       await onSaved?.();
@@ -285,7 +321,20 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
                           </Tooltip>
                         )}
                       </label>
-                      {key.options ? (
+                      {isBooleanOption(key) ? (
+                        <div className="flex-1 flex items-center justify-end min-h-8">
+                          <SwitchControl
+                            checked={getValue(key.path) === "true"}
+                            title={key.label}
+                            onClick={() =>
+                              handleChange(
+                                key.path,
+                                getValue(key.path) === "true" ? false : true,
+                              )
+                            }
+                          />
+                        </div>
+                      ) : key.options ? (
                         <Select
                           value={getValue(key.path)}
                           onValueChange={(v) => handleChange(key.path, v)}
