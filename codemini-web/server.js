@@ -799,7 +799,7 @@ async function main() {
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/session/messages') {
-      jsonResponse(res, { messages: bridge.getSessionMessages(), compact: bridge.getSessionCompactMeta() });
+      jsonResponse(res, { messages: await bridge.getSessionMessages(), compact: bridge.getSessionCompactMeta() });
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/session/ui-messages') {
@@ -979,7 +979,7 @@ async function main() {
     }
     if (req.method === 'POST' && url.pathname === '/api/sessions/new') {
       try {
-        const currentMessages = bridge.getSessionMessages();
+        const currentMessages = await bridge.getSessionMessages();
         if (!Array.isArray(currentMessages) || currentMessages.length === 0) {
           jsonResponse(res, {
             ok: true,
@@ -1019,7 +1019,7 @@ async function main() {
           isGeneral: isGeneralProjectDir(currentProjectDir),
           state: { ...bridge.getState(), cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) },
           sessionData: {
-            messages: bridge.getSessionMessages(),
+            messages: await bridge.getSessionMessages(),
             compact: bridge.getSessionCompactMeta()
           }
         });
@@ -1061,7 +1061,7 @@ async function main() {
           ...(deletingCurrent ? {
             state: { ...bridge.getState(), cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) },
             sessionData: {
-              messages: bridge.getSessionMessages(),
+              messages: await bridge.getSessionMessages(),
               compact: bridge.getSessionCompactMeta()
             }
           } : {})
@@ -1131,6 +1131,34 @@ async function main() {
         jsonResponse(res, { patch, files });
       } catch {
         jsonResponse(res, { patch: '', files: [] });
+      }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/session-changes') {
+      try {
+        jsonResponse(res, { changes: await bridge.getChangeSets() });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err?.message || 'Failed to read project changes' }, 500);
+      }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/api/session-changes/') && url.pathname.endsWith('/patch')) {
+      const id = decodeURIComponent(url.pathname.slice('/api/session-changes/'.length, -'/patch'.length));
+      try {
+        const patch = await bridge.getChangeSetPatch(id);
+        jsonResponse(res, { id, patch });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err?.message || 'Failed to read patch' }, 404);
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname.startsWith('/api/session-changes/') && url.pathname.endsWith('/undo')) {
+      const id = decodeURIComponent(url.pathname.slice('/api/session-changes/'.length, -'/undo'.length));
+      try {
+        const result = await bridge.undoChangeSet(id);
+        jsonResponse(res, result);
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err?.message || 'Failed to undo change' }, 409);
       }
       return;
     }

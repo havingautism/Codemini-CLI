@@ -150,6 +150,21 @@ export async function fetchGitBatch(dirs) {
   return res.json();
 }
 
+export async function fetchSessionChanges() {
+  const res = await api('/api/session-changes');
+  return res.json();
+}
+
+export async function fetchSessionChangePatch(id) {
+  const res = await api(`/api/session-changes/${encodeURIComponent(id)}/patch`);
+  return res.json();
+}
+
+export async function undoSessionChange(id) {
+  const res = await api(`/api/session-changes/${encodeURIComponent(id)}/undo`, { method: 'POST' });
+  return res.json();
+}
+
 export async function openProject(path) {
   const res = await api('/api/project/open', {
     method: 'POST',

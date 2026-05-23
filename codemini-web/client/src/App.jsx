@@ -255,6 +255,7 @@ function Shell() {
               skills={state.skills}
               gitInfo={state.gitInfo}
               messagesLoading={state.messagesLoading}
+              loadingLabel={state.projectInitLabel}
               isGeneral={state.isGeneral}
             />
 

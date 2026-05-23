@@ -1,4 +1,12 @@
-import { Suspense, lazy, useRef, useEffect, useState, useMemo, useCallback } from "react";
+import {
+  Suspense,
+  lazy,
+  useRef,
+  useEffect,
+  useState,
+  useMemo,
+  useCallback,
+} from "react";
 import { ArrowDown, GitBranch } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
@@ -67,7 +75,7 @@ function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
     >
       {/* Expanded card */}
       {expanded && (
-        <div className="flex flex-col gap-px rounded-lg bg-(--bg-primary) border border-(--border-default) p-1.5 max-w-[180px] max-h-[60vh] overflow-y-auto shadow-lg">
+        <div className="flex flex-col gap-px rounded-lg bg-(--bg-primary) border border-(--border-default) px-1.5 py-2 max-w-[180px] max-h-[60vh] overflow-y-auto shadow-lg">
           {userMessages.map((um, i) => (
             <button
               key={um.id}
@@ -87,7 +95,7 @@ function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
       )}
 
       {/* Tick-mark indicators */}
-      <div className="flex flex-col items-end gap-6 py-1">
+      <div className="flex flex-col items-end gap-5 py-1">
         {userMessages.map((um, i) => (
           <button
             key={um.id}
@@ -113,6 +121,7 @@ export function ChatPanel({
   skills = [],
   gitInfo,
   messagesLoading,
+  loadingLabel = "",
   isGeneral = false,
 }) {
   const scrollRef = useRef(null);
@@ -184,8 +193,11 @@ export function ChatPanel({
   return (
     <div className="flex-1 relative overflow-hidden">
       {messagesLoading && messages.length === 0 && (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 pointer-events-none">
           <Spinner />
+          {loadingLabel && (
+            <div className="text-xs text-(--text-muted)">{loadingLabel}</div>
+          )}
         </div>
       )}
       {!messagesLoading && messages.length === 0 && (
@@ -252,7 +264,7 @@ export function ChatPanel({
         style={{ scrollbarWidth: "thin" }}
       >
         <div className="relative">
-          <div className="w-[min(960px,calc(100%-96px))] mx-auto">
+          <div className="w-[min(945px,calc(100%-130px))] mx-auto">
             <Suspense fallback={null}>
               {messages.map((msg) => (
                 <MessageBubble key={msg.id} message={msg} skills={skills} />

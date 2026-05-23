@@ -2,10 +2,12 @@ import { useEffect, useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
 import { StreamdownRenderer } from "./StreamdownRenderer";
 import { TodoList } from "./TodoList";
+import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { formatTimestamp } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
+import * as api from "@/hooks/use-api.js";
 import {
   Tooltip,
   TooltipContent,
@@ -13,14 +15,13 @@ import {
 } from "@/components/ui/tooltip";
 import {
   Check,
-  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Copy,
   Brain,
   Loader2,
   Moon,
-  XCircle,
+  RotateCcw,
 } from "lucide-react";
 
 const ROLE_STYLES = {
@@ -245,84 +246,6 @@ function collapseProcessGroups(groups, { disabled = false } = {}) {
   return collapsed;
 }
 
-function getDreamNotice(text) {
-  const value = String(text || "");
-  if (value === "Dream triggered...") {
-    return {
-      status: "running",
-      title: "Dream started",
-      description: "Auto memory consolidation is running in the background.",
-    };
-  }
-  if (value === "Dream complete") {
-    return {
-      status: "done",
-      title: "Dream complete",
-      description: "Memory consolidation finished.",
-    };
-  }
-  if (value.startsWith("Dream done")) {
-    return {
-      status: "done",
-      title: value,
-      description: "Memory inbox and stale buckets were consolidated.",
-    };
-  }
-  if (value.startsWith("Dream failed:")) {
-    return {
-      status: "error",
-      title: "Dream failed",
-      description:
-        value.slice("Dream failed:".length).trim() || "Unknown error.",
-    };
-  }
-  return null;
-}
-
-function DreamNotice({ notice }) {
-  const Icon =
-    notice.status === "running"
-      ? Loader2
-      : notice.status === "error"
-        ? XCircle
-        : CheckCircle2;
-
-  return (
-    <div className="py-2 px-6">
-      <div className="max-w-[860px] mx-auto flex justify-center">
-        <div
-          className={cn(
-            "inline-flex max-w-full items-center gap-2 rounded-lg border px-3 py-2 text-left text-xs shadow-sm",
-            notice.status === "error"
-              ? "border-(--accent-red)/30 bg-(--accent-red-bg) text-(--accent-red)"
-              : "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
-          )}
-        >
-          <Icon
-            size={14}
-            className={cn(
-              "shrink-0",
-              notice.status === "running" &&
-                "animate-spin text-(--accent-cyan)",
-              notice.status === "done" && "text-(--accent-green)",
-            )}
-          />
-          <div className="min-w-0">
-            <div className="font-medium text-(--text-primary) truncate">
-              {notice.title}
-            </div>
-            {notice.description && (
-              <div className="mt-0.5 text-(--text-muted) truncate">
-                {notice.description}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function ToolGroup({ cards }) {
   const [expanded, setExpanded] = useState(false);
   const total = cards.length;
@@ -451,7 +374,7 @@ function mergeFileChanges(fileChanges = []) {
   const seen = new Set();
   const actionRank = { delete: 3, create: 2, edit: 1 };
   for (const change of fileChanges) {
-    const path = String(change?.path || "");
+    const path = decodeDisplayPath(change?.path || "");
     if (!path) continue;
     const fingerprint = JSON.stringify({
       path,
@@ -460,37 +383,105 @@ function mergeFileChanges(fileChanges = []) {
       linesRemoved: Number(change.linesRemoved || 0),
       changedLine: Number(change.changedLine || 0),
       diffPreview: change.diffPreview || "",
+      changeSetId: change.changeSetId || "",
     });
     if (seen.has(fingerprint)) continue;
     seen.add(fingerprint);
-    if (!byPath.has(path)) {
-      byPath.set(path, { ...change, linesAdded: 0, linesRemoved: 0 });
-      order.push(path);
+    const key = path;
+    if (!byPath.has(key)) {
+      byPath.set(key, {
+        ...change,
+        path,
+        linesAdded: 0,
+        linesRemoved: 0,
+        diffPreview: "",
+        changes: [],
+        changeSetIds: [],
+      });
+      order.push(key);
     }
-    const existing = byPath.get(path);
+    const existing = byPath.get(key);
     existing.linesAdded += Number(change.linesAdded || 0);
     existing.linesRemoved += Number(change.linesRemoved || 0);
     const currentRank = actionRank[existing.action] || 0;
     const nextRank = actionRank[change.action] || 0;
     if (nextRank > currentRank) existing.action = change.action;
+    if (change.diffPreview) {
+      existing.changes.push({ ...change, path });
+    }
+    if (change.changeSetId && !existing.changeSetIds.includes(change.changeSetId)) {
+      existing.changeSetIds.push(change.changeSetId);
+    }
     if (!existing.diffPreview && change.diffPreview) {
       existing.diffPreview = change.diffPreview;
       existing.changedLine = change.changedLine;
     }
   }
-  return order.map((path) => byPath.get(path));
+  return order.map((key) => {
+    const change = byPath.get(key);
+    return {
+      ...change,
+      changeSetId: change.changeSetIds.length === 1 ? change.changeSetIds[0] : "",
+    };
+  });
+}
+
+function getFileChangeSetIds(change) {
+  return Array.isArray(change?.changeSetIds) && change.changeSetIds.length
+    ? change.changeSetIds
+    : (change?.changeSetId ? [change.changeSetId] : []);
+}
+
+function getFileChangeUndoKey(change) {
+  return getFileChangeSetIds(change).join("|");
+}
+
+function formatUndoError(error) {
+  const message = error?.message || "";
+  if (message.includes("Cannot undo this change cleanly")) {
+    return t("undoChangeConflict");
+  }
+  return message || t("undoChangeFailed");
+}
+
+function decodeDisplayPath(pathText) {
+  const value = String(pathText || "");
+  if (!/(?:\/[0-7]{3}){2,}/.test(value)) return value;
+  return value.replace(/((?:\/[0-7]{3}){2,})/g, (match) => {
+    const bytes = match
+      .split("/")
+      .filter(Boolean)
+      .map((part) => parseInt(part, 8));
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(bytes));
+    } catch {
+      return match;
+    }
+  });
 }
 
 function basename(pathText) {
-  const value = String(pathText || "").replace(/\\/g, "/");
+  const value = decodeDisplayPath(pathText).replace(/\\/g, "/");
   return value.split("/").filter(Boolean).pop() || value || "file";
 }
 
 function buildFileChangePreviewLines(change) {
-  return String(change?.diffPreview || "")
+  const raw = String(change?.diffPreview || "");
+  const unified = raw.includes("\ndiff --git ") || raw.startsWith("diff --git ") || raw.includes("\n@@ ");
+  return raw
     .split(/\r?\n/)
-    .filter(Boolean)
+    .filter((line) => line.length > 0)
     .map((line) => {
+      if (unified) {
+        const type = line.startsWith("+") && !line.startsWith("+++")
+          ? "add"
+          : line.startsWith("-") && !line.startsWith("---")
+            ? "remove"
+            : line.startsWith("@@") || line.startsWith("diff --git") || line.startsWith("index ") || line.startsWith("---") || line.startsWith("+++")
+              ? "meta"
+              : "context";
+        return { number: "", text: line, type };
+      }
       const signedMatch = line.match(/^([+-])(\d+)?\|\s?(.*)$/);
       if (signedMatch) {
         return {
@@ -508,28 +499,66 @@ function buildFileChangePreviewLines(change) {
     });
 }
 
-function FileChangePreview({ change }) {
+function FileChangePreviewChunk({ change }) {
   const lines = buildFileChangePreviewLines(change);
   if (!lines.length) return null;
   return (
-    <div className="overflow-hidden bg-(--bg-primary)">
-      <div className="max-h-[420px] overflow-auto font-mono text-xs leading-6">
-        {lines.map((line, idx) => (
-          <div
-            key={idx}
+    <>
+      {lines.map((line, idx) => (
+        <div
+          key={idx}
+          className={cn(
+            "grid min-w-full grid-cols-[52px_max-content] border-l-3",
+            line.type === "remove" &&
+              "border-(--accent-red) bg-(--accent-red-bg)",
+            line.type === "add" &&
+              "border-(--accent-green) bg-(--accent-green-bg)",
+            (line.type === "meta" || line.type === "context") &&
+              "border-transparent bg-transparent",
+          )}
+        >
+          <span className="select-none pr-3 text-right text-(--text-muted)">
+            {line.number}
+          </span>
+          <span
             className={cn(
-              "grid min-w-full grid-cols-[52px_max-content] border-l-3",
-              line.type === "remove"
-                ? "border-(--accent-red) bg-(--accent-red-bg)"
-                : "border-(--accent-green) bg-(--accent-green-bg)",
+              "whitespace-pre pr-4",
+              line.type === "meta"
+                ? "text-(--text-muted)"
+                : "text-(--text-primary)",
             )}
           >
-            <span className="select-none pr-3 text-right text-(--text-muted)">
-              {line.number}
-            </span>
-            <span className="whitespace-pre pr-4 text-(--text-primary)">
-              {line.text || " "}
-            </span>
+            {line.text || " "}
+          </span>
+        </div>
+      ))}
+    </>
+  );
+}
+
+function FileChangePreview({ change }) {
+  const chunks = Array.isArray(change?.changes) && change.changes.length
+    ? change.changes
+    : [change];
+  const visibleChunks = chunks.filter((chunk) => buildFileChangePreviewLines(chunk).length > 0);
+  if (!visibleChunks.length) return null;
+  return (
+    <div className="overflow-hidden bg-(--bg-primary)">
+      <div className="max-h-[420px] overflow-auto font-mono text-xs leading-6">
+        {visibleChunks.map((chunk, idx) => (
+          <div key={`${chunk.changeSetId || idx}-${idx}`} className="border-t border-(--border-default) first:border-t-0">
+            {visibleChunks.length > 1 && (
+              <div className="px-3 py-1 text-[10px] uppercase tracking-[0.3px] text-(--text-muted)">
+                Change {idx + 1}
+                {chunk.linesAdded != null && (
+                  <span className="ml-2 text-(--accent-green)">+{chunk.linesAdded}</span>
+                )}
+                {chunk.linesRemoved != null && (
+                  <span className="ml-1 text-(--accent-red)">-{chunk.linesRemoved}</span>
+                )}
+              </div>
+            )}
+            <FileChangePreviewChunk change={chunk} />
           </div>
         ))}
       </div>
@@ -539,25 +568,73 @@ function FileChangePreview({ change }) {
 
 function FileChangesSummary({ changes }) {
   const [openFiles, setOpenFiles] = useState(() => new Set());
+  const [undoing, setUndoing] = useState(() => new Set());
+  const [hiddenUndoKeys, setHiddenUndoKeys] = useState(() => new Set());
+  const [undoErrors, setUndoErrors] = useState(() => new Map());
+  const [pendingUndo, setPendingUndo] = useState(null);
   const actionColors = {
     edit: "bg-(--accent-blue-bg) text-(--accent-blue)",
     create: "bg-(--accent-green-bg) text-(--accent-green)",
     delete: "bg-(--accent-red-bg) text-(--accent-red)",
   };
+  const visibleChanges = changes.filter((change) => {
+    const undoKey = getFileChangeUndoKey(change);
+    return !undoKey || !hiddenUndoKeys.has(undoKey);
+  });
+
+  const confirmUndoChange = async () => {
+    if (!pendingUndo || undoing.has(pendingUndo.undoKey)) return;
+    const { undoKey, changeSetIds } = pendingUndo;
+    setUndoErrors((prev) => {
+      const next = new Map(prev);
+      next.delete(undoKey);
+      return next;
+    });
+    setUndoing((prev) => new Set(prev).add(undoKey));
+    try {
+      for (const id of [...changeSetIds].reverse()) {
+        const result = await api.undoSessionChange(id);
+        if (result?.error || result?.ok === false) {
+          throw new Error(result.message || t("undoChangeFailed"));
+        }
+      }
+      setHiddenUndoKeys((prev) => new Set(prev).add(undoKey));
+      setOpenFiles((prev) => {
+        const next = new Set(prev);
+        next.delete(pendingUndo.rowKey);
+        return next;
+      });
+      setPendingUndo(null);
+    } catch (error) {
+      setUndoErrors((prev) => new Map(prev).set(undoKey, formatUndoError(error)));
+    } finally {
+      setUndoing((prev) => {
+        const next = new Set(prev);
+        next.delete(undoKey);
+        return next;
+      });
+    }
+  };
+
+  if (!visibleChanges.length && !pendingUndo) return null;
 
   return (
+    <>
     <div className="mt-6 overflow-hidden rounded-lg border border-(--border-default) bg-(--bg-secondary)">
-      {changes.map((c, i) => {
+      {visibleChanges.map((c, i) => {
         const key = `${c.path}-${i}`;
         const fileOpen = openFiles.has(key);
-        const hasPreview = Boolean(c.diffPreview);
+        const hasPreview = Boolean(c.diffPreview || (Array.isArray(c.changes) && c.changes.length));
+        const changeSetIds = getFileChangeSetIds(c);
+        const undoKey = changeSetIds.join("|");
         return (
           <div
             key={key}
             className="border-t border-(--border-default) first:border-t-0"
           >
-            <button
-              type="button"
+            <div
+              role="button"
+              tabIndex={hasPreview ? 0 : -1}
               onClick={() => {
                 if (!hasPreview) return;
                 setOpenFiles((prev) => {
@@ -599,6 +676,11 @@ function FileChangesSummary({ changes }) {
               </span>
               <span className="min-w-0 flex-1 truncate text-(--text-primary)">
                 {c.path}
+                {Array.isArray(c.changes) && c.changes.length > 1 && (
+                  <span className="ml-2 text-[10px] text-(--text-muted)">
+                    {c.changes.length} changes
+                  </span>
+                )}
               </span>
               {c.linesAdded != null && (
                 <span className="text-[11px] text-(--accent-green)">
@@ -610,7 +692,46 @@ function FileChangesSummary({ changes }) {
                   -{c.linesRemoved}
                 </span>
               )}
-            </button>
+              {changeSetIds.length > 0 && (
+                <span
+                  role="button"
+                  tabIndex={0}
+                  title={t("undoChange")}
+                  aria-label={t("undoChange")}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (undoing.has(undoKey)) return;
+                    setUndoErrors((prev) => {
+                      const next = new Map(prev);
+                      next.delete(undoKey);
+                      return next;
+                    });
+                    setPendingUndo({
+                      path: c.path,
+                      rowKey: key,
+                      undoKey,
+                      changeSetIds,
+                      count: Math.max(1, Array.isArray(c.changes) ? c.changes.length : 1),
+                    });
+                  }}
+                  className={cn(
+                    "ml-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+                    undoing.has(undoKey) && "pointer-events-none opacity-60",
+                  )}
+                >
+                  {undoing.has(undoKey) ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : (
+                    <RotateCcw size={13} />
+                  )}
+                </span>
+              )}
+            </div>
+            {undoKey && undoErrors.has(undoKey) && (
+              <div className="border-t border-(--border-default) px-3 py-2 text-xs text-(--accent-red)">
+                {undoErrors.get(undoKey)}
+              </div>
+            )}
             {fileOpen && (
               <div className="border-t border-(--border-default)">
                 <FileChangePreview change={c} />
@@ -620,6 +741,23 @@ function FileChangesSummary({ changes }) {
         );
       })}
     </div>
+    <ConfirmDialog
+      open={Boolean(pendingUndo)}
+      title={t("undoChangeConfirm")}
+      description={(pendingUndo?.count || 0) > 1
+        ? t("undoChangesDescription")
+            .replace("{{path}}", pendingUndo?.path || "")
+            .replace("{{count}}", pendingUndo?.count || 1)
+        : t("undoChangeDescription").replace("{{path}}", pendingUndo?.path || "")}
+      confirmLabel={t("undoChange")}
+      loadingLabel={t("undoingChange")}
+      loading={Boolean(pendingUndo && undoing.has(pendingUndo.undoKey))}
+      onOpenChange={(open) => {
+        if (!open) setPendingUndo(null);
+      }}
+      onConfirm={confirmUndoChange}
+    />
+    </>
   );
 }
 
@@ -974,9 +1112,6 @@ export function MessageBubble({ message, skills = [] }) {
   }
 
   if (role === "system") {
-    const dreamNotice = getDreamNotice(legacyText);
-    if (dreamNotice) return <DreamNotice notice={dreamNotice} />;
-
     const isWaitingReview =
       legacyText?.includes("等待计划审阅") ||
       legacyText?.includes("Waiting for plan review");

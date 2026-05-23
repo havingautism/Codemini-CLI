@@ -369,6 +369,14 @@ export const en = {
 
   // ChatPanel
   buildInProject: 'What do you want to build in {{project}}?',
+  initializingProject: 'Initializing project checkpoints...',
+  undoChange: 'Undo change',
+  undoChangeFailed: 'Failed to undo change',
+  undoChangeConfirm: 'Undo this change?',
+  undoChangeDescription: 'Undo changes to "{{path}}"? This will modify files in the workspace.',
+  undoChangesDescription: 'Undo {{count}} changes to "{{path}}"? This will modify files in the workspace.',
+  undoChangeConflict: 'Cannot undo cleanly because newer edits conflict with this change. Undo newer changes first, or handle this file manually.',
+  undoingChange: 'Undoing...',
   gitStaged: 'Staged',
   gitModified: 'Modified',
   gitUntracked: 'Untracked',

@@ -151,6 +151,64 @@ function normalizeUiUsage(usage) {
   return Object.keys(out).length ? out : null;
 }
 
+function changeSetIdOf(change) {
+  const id = change?.changeSetId || change?.id || '';
+  return id ? String(id) : '';
+}
+
+function filterFileChanges(changes, revertedIds) {
+  if (!Array.isArray(changes) || revertedIds.size === 0) return Array.isArray(changes) ? changes : [];
+  return changes.filter((change) => {
+    const id = changeSetIdOf(change);
+    return !id || !revertedIds.has(id);
+  });
+}
+
+function filterToolCalls(toolCalls, revertedIds) {
+  if (!Array.isArray(toolCalls) || revertedIds.size === 0) return Array.isArray(toolCalls) ? toolCalls : [];
+  return toolCalls.map((call) => {
+    const fileChanges = filterFileChanges(call?.fileChanges, revertedIds);
+    const snakeFileChanges = filterFileChanges(call?.file_changes, revertedIds);
+    const fileChange = call?.fileChange && revertedIds.has(changeSetIdOf(call.fileChange)) ? null : call?.fileChange;
+    const snakeFileChange = call?.file_change && revertedIds.has(changeSetIdOf(call.file_change)) ? null : call?.file_change;
+    return {
+      ...call,
+      ...(Array.isArray(call?.fileChanges) ? { fileChanges } : {}),
+      ...(Array.isArray(call?.file_changes) ? { file_changes: snakeFileChanges } : {}),
+      ...(call?.fileChange ? { fileChange } : {}),
+      ...(call?.file_change ? { file_change: snakeFileChange } : {})
+    };
+  });
+}
+
+function filterUiSegments(segments, revertedIds) {
+  if (!Array.isArray(segments) || revertedIds.size === 0) return Array.isArray(segments) ? segments : [];
+  return segments.map((segment) => {
+    if (segment?.type !== 'tools' || !Array.isArray(segment.cards)) return segment;
+    return {
+      ...segment,
+      cards: segment.cards.map((card) => {
+        const fileChanges = filterFileChanges(card?.fileChanges, revertedIds);
+        const fileChange = card?.fileChange && revertedIds.has(changeSetIdOf(card.fileChange)) ? null : card?.fileChange;
+        return {
+          ...card,
+          ...(Array.isArray(card?.fileChanges) ? { fileChanges } : {}),
+          ...(card?.fileChange ? { fileChange } : {})
+        };
+      })
+    };
+  });
+}
+
+function filterUiMessages(messages, revertedIds) {
+  if (!Array.isArray(messages) || revertedIds.size === 0) return Array.isArray(messages) ? messages : [];
+  return messages.map((message) => ({
+    ...message,
+    fileChanges: filterFileChanges(message?.fileChanges, revertedIds),
+    segments: filterUiSegments(message?.segments, revertedIds)
+  }));
+}
+
 function mergeUiUsage(left, right) {
   const a = normalizeUiUsage(left);
   const b = normalizeUiUsage(right);
@@ -419,17 +477,21 @@ export class RuntimeBridge {
       }
       case 'tool:end': {
         if (this.#uiActiveMsgId) {
+          const eventChanges = Array.isArray(event.fileChanges) && event.fileChanges.length
+            ? event.fileChanges
+            : (event.fileChange?.path ? [event.fileChange] : []);
           this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
             ...message,
-            fileChanges: event.fileChange?.path
-              ? [...(Array.isArray(message.fileChanges) ? message.fileChanges : []), event.fileChange]
+            fileChanges: eventChanges.length
+              ? [...(Array.isArray(message.fileChanges) ? message.fileChanges : []), ...eventChanges]
               : (Array.isArray(message.fileChanges) ? message.fileChanges : []),
             segments: updateToolInSegments(message.segments, event.id, (card) => ({
               ...card,
               status: 'done',
               durationMs: event.durationMs,
               summary: event.summary || card.summary,
-              ...(event.fileChange ? { fileChange: event.fileChange } : {})
+              ...(event.fileChange ? { fileChange: event.fileChange } : {}),
+              ...(eventChanges.length ? { fileChanges: eventChanges } : {})
             }))
           }));
         }
@@ -685,9 +747,20 @@ export class RuntimeBridge {
     };
   }
 
-  getSessionMessages() {
+  async #getRevertedChangeSetIds() {
+    try {
+      const changes = await this.getChangeSets();
+      if (!Array.isArray(changes)) return new Set();
+      return new Set(changes.filter((change) => change?.revertedAt).map((change) => String(change.id || '')).filter(Boolean));
+    } catch {
+      return new Set();
+    }
+  }
+
+  async getSessionMessages() {
     const messages = this.#runtime.getSessionMessages();
     if (!Array.isArray(messages)) return [];
+    const revertedIds = await this.#getRevertedChangeSetIds();
     return messages
       .filter(m => m.role !== 'system')
       .map(m => ({
@@ -698,13 +771,14 @@ export class RuntimeBridge {
         reasoningStartedAt: m.reasoning_started_at || null,
         reasoningEndedAt: m.reasoning_ended_at || null,
         reasoningDurationMs: Number.isFinite(Number(m.reasoning_duration_ms)) ? Number(m.reasoning_duration_ms) : null,
-        toolCalls: m.tool_calls || [],
-        fileChanges: Array.isArray(m.file_changes) ? m.file_changes : [],
+        toolCalls: filterToolCalls(m.tool_calls || [], revertedIds),
+        fileChanges: filterFileChanges(m.file_changes, revertedIds),
         toolCallId: m.tool_call_id || null,
         toolSummary: m.role === 'tool' ? summarizeHistoricalToolMessage(m) : null,
         toolDurationMs: Number.isFinite(Number(m.tool_duration_ms)) ? Number(m.tool_duration_ms) : null,
         toolStatus: m.tool_status || null,
-        toolFileChange: m.tool_file_change || null,
+        toolFileChange: m.tool_file_change && revertedIds.has(changeSetIdOf(m.tool_file_change)) ? null : (m.tool_file_change || null),
+        toolFileChanges: filterFileChanges(m.tool_file_changes, revertedIds),
         planTranscript: Array.isArray(m.plan_transcript) ? m.plan_transcript : null,
         usage: normalizeUiUsage(m.usage),
         at: m.at || null
@@ -717,15 +791,31 @@ export class RuntimeBridge {
     return { boundaryIndex: compact.boundaryIndex, mode: compact.mode, timestamp: compact.timestamp };
   }
 
+  getChangeSets() {
+    return this.#runtime.getChangeSets?.() || [];
+  }
+
+  getChangeSetPatch(id) {
+    return this.#runtime.getChangeSetPatch?.(id) || '';
+  }
+
+  async undoChangeSet(id) {
+    if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    const result = await this.#runtime.undoChangeSet?.(id);
+    this.#broadcast({ type: 'change:undone', result });
+    return result || { error: true, message: 'Project checkpoints are not available' };
+  }
+
   async getUiMessages() {
     this.#resetUiTranscriptIfSessionChanged();
-    if (this.#uiMessages.length > 0) return this.#uiMessages;
+    const revertedIds = await this.#getRevertedChangeSetIds();
+    if (this.#uiMessages.length > 0) return filterUiMessages(this.#uiMessages, revertedIds);
     const sessionId = this.getSessionId();
     if (!sessionId) return [];
     try {
       const raw = await fs.readFile(webTranscriptPath(sessionId), 'utf8');
       const parsed = JSON.parse(raw);
-      return Array.isArray(parsed?.messages) ? parsed.messages : [];
+      return filterUiMessages(parsed?.messages, revertedIds);
     } catch {
       return [];
     }

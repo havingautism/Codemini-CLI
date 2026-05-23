@@ -276,7 +276,12 @@ function normalizeFileChange(change) {
     linesAdded: Number(change.linesAdded || 0),
     linesRemoved: Number(change.linesRemoved || 0),
     changedLine: Number(change.changedLine || 0),
-    diffPreview: String(change.diffPreview || '')
+    diffPreview: String(change.diffPreview || ''),
+    changeSetId: String(change.changeSetId || ''),
+    beforeCommit: String(change.beforeCommit || ''),
+    afterCommit: String(change.afterCommit || ''),
+    patchRef: String(change.patchRef || ''),
+    files: Array.isArray(change.files) ? change.files : undefined
   };
 }
 
@@ -287,7 +292,11 @@ function fileChangeFingerprint(change) {
     linesAdded: Number(change.linesAdded || 0),
     linesRemoved: Number(change.linesRemoved || 0),
     changedLine: Number(change.changedLine || 0),
-    diffPreview: String(change.diffPreview || '')
+    diffPreview: String(change.diffPreview || ''),
+    changeSetId: String(change.changeSetId || ''),
+    beforeCommit: String(change.beforeCommit || ''),
+    afterCommit: String(change.afterCommit || ''),
+    patchRef: String(change.patchRef || '')
   });
 }
 
@@ -299,6 +308,24 @@ function appendUniqueFileChange(message, fileChange) {
     return;
   }
   message.file_changes = [...existing, fileChange];
+}
+
+function normalizeFileChanges(changes) {
+  return (Array.isArray(changes) ? changes : [changes])
+    .map(normalizeFileChange)
+    .filter(Boolean);
+}
+
+function capturePathCandidates(args, fileChanges) {
+  const candidates = [];
+  for (const change of Array.isArray(fileChanges) ? fileChanges : []) {
+    if (change?.path) candidates.push(change.path);
+  }
+  const direct = args?.path || args?.file || args?.file_path || args?.target;
+  if (direct) candidates.push(direct);
+  const nested = args?.edit?.path || args?.edit?.file || args?.edit?.file_path || args?.edit?.target?.path;
+  if (nested) candidates.push(nested);
+  return candidates;
 }
 
 export const trimInline = _trimInline;
@@ -555,7 +582,8 @@ export async function runAgentLoop({
   deferredDefinitions = {},
   signal,
   skipAnalysisNudge = false,
-  config = {}
+  config = {},
+  changeLedger = null
 }) {
   const messages = [];
   if (systemPrompt) {
@@ -888,9 +916,37 @@ export async function runAgentLoop({
       const durationMs = Date.now() - startedAt;
       const summary = summarizeToolResult(toolResult);
       /* 提取文件改动统计 */
-      const fileChange = extractFileChange(toolName, toolResult);
+      const declaredFileChange = extractFileChange(toolName, toolResult);
+      let fileChange = declaredFileChange;
+      let fileChanges = normalizeFileChanges(declaredFileChange);
+      if (!isReadOnly && changeLedger && typeof changeLedger.capture === 'function') {
+        try {
+          const capturedChanges = await changeLedger.capture({
+            toolName,
+            toolCallId: call.id,
+            summary,
+            paths: capturePathCandidates(effectiveArgs, fileChanges)
+          });
+          fileChanges = normalizeFileChanges(capturedChanges);
+          fileChange = fileChanges[0] || null;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (onEvent) {
+            onEvent({
+              type: 'system_tool:error',
+              id: `change-ledger-${call.id}`,
+              name: 'change_checkpoint',
+              summary: message
+            });
+          }
+        }
+      }
+      if (!fileChange) {
+        fileChange = declaredFileChange;
+        fileChanges = normalizeFileChanges(fileChange);
+      }
       if (onEvent) {
-        onEvent({ type: 'tool:end', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary, fileChange });
+        onEvent({ type: 'tool:end', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary, fileChange, fileChanges });
       }
 
       // Auto-capture non-throwing tool failures (e.g. shell non-zero exit)
@@ -928,7 +984,7 @@ export async function runAgentLoop({
       // P0: Persist to disk if still large
       formatted = await storeResultIfNeeded(call.id, formatted, toolResult);
 
-      return { callId: call.id, content: formatted, durationMs, summary, status: 'done', fileChange };
+      return { callId: call.id, content: formatted, durationMs, summary, status: 'done', fileChange, fileChanges };
     }
 
     // Separate read-only and write calls, preserving order
@@ -972,7 +1028,7 @@ export async function runAgentLoop({
         continue;
       }
 
-      attachToolCallSessionMeta(assistantMessage, call.id, { durationMs: entry.durationMs, summary: entry.summary || '', status: entry.status || 'done', fileChange: entry.fileChange });
+      attachToolCallSessionMeta(assistantMessage, call.id, { durationMs: entry.durationMs, summary: entry.summary || '', status: entry.status || 'done', fileChange: entry.fileChange, fileChanges: entry.fileChanges });
       messages.push({
         role: 'tool',
         tool_call_id: call.id,
@@ -980,7 +1036,8 @@ export async function runAgentLoop({
         tool_duration_ms: entry.durationMs,
         tool_summary: entry.summary || '',
         tool_status: entry.status || 'done',
-        ...(entry.fileChange ? { tool_file_change: entry.fileChange } : {})
+        ...(entry.fileChange ? { tool_file_change: entry.fileChange } : {}),
+        ...(Array.isArray(entry.fileChanges) && entry.fileChanges.length > 0 ? { tool_file_changes: entry.fileChanges } : {})
       });
       if (onEvent) {
         onEvent({ type: 'tool:result', name: displayName, id: call.id, arguments: args, content: entry.content });
@@ -1027,6 +1084,10 @@ function attachToolCallSessionMeta(assistantMessage, callId, meta = {}) {
   const fileChange = normalizeFileChange(meta.fileChange);
   if (fileChange) {
     call.fileChange = fileChange;
-    appendUniqueFileChange(assistantMessage, fileChange);
+  }
+  const fileChanges = normalizeFileChanges(meta.fileChanges && meta.fileChanges.length ? meta.fileChanges : fileChange);
+  if (fileChanges.length > 0) call.fileChanges = fileChanges;
+  for (const change of fileChanges) {
+    appendUniqueFileChange(assistantMessage, change);
   }
 }

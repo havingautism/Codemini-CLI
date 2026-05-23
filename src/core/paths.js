@@ -86,6 +86,12 @@ export function getProjectCheckpointsDir(cwd = process.cwd()) {
   return path.join(getProjectWorkspaceDir(cwd), 'checkpoints');
 }
 
+export function getProjectChangeLedgerDir(cwd = process.cwd(), sessionId = '') {
+  return sessionId
+    ? path.join(getProjectWorkspaceDir(cwd), 'change-ledger', String(sessionId))
+    : path.join(getProjectWorkspaceDir(cwd), 'change-ledger');
+}
+
 export function getProjectTasksDir(cwd = process.cwd()) {
   return path.join(getProjectWorkspaceDir(cwd), 'tasks');
 }

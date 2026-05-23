@@ -91,25 +91,53 @@ function basename(pathText) {
   return value.split("/").filter(Boolean).pop() || value;
 }
 
+function normalizePathText(pathText) {
+  return String(pathText || "").replace(/\\/g, "/");
+}
+
+function isInternalRuntimePath(pathText) {
+  const value = normalizePathText(pathText);
+  return (
+    value === ".codemini/file-index.json" ||
+    value.endsWith("/.codemini/file-index.json") ||
+    value === ".codemini/project-map.json" ||
+    value.endsWith("/.codemini/project-map.json") ||
+    value.startsWith(".codemini/change-ledger/") ||
+    value.includes("/.codemini/change-ledger/")
+  );
+}
+
+function pathsLikelyMatch(left, right) {
+  const a = normalizePathText(left);
+  const b = normalizePathText(right);
+  return Boolean(a && b && (a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`)));
+}
+
 function getNestedEdit(args) {
   if (!args || typeof args !== "object") return {};
   return args.edit && typeof args.edit === "object" ? args.edit : args;
 }
 
-function getFileToolMeta(toolName, args, result, summary, fileChange) {
+function getFileToolMeta(toolName, args, result, summary, fileChange, fileChanges) {
   if (!["edit", "write", "delete"].includes(toolName)) return null;
   const parsedArgs = parseMaybeJson(args) || {};
   const parsedResult = parseMaybeJson(result) || {};
-  const structuredChange =
-    fileChange && typeof fileChange === "object" ? fileChange : {};
+  const candidateChanges = [
+    ...(Array.isArray(fileChanges) ? fileChanges : []),
+    ...(fileChange && typeof fileChange === "object" ? [fileChange] : []),
+  ].filter((change) => change?.path && !isInternalRuntimePath(change.path));
   const edit = getNestedEdit(parsedArgs);
-  const pathText =
+  const toolPath =
     parsedResult.path ||
-    structuredChange.path ||
     parsedArgs.path ||
     parsedArgs.file ||
     parsedArgs.file_path ||
     "";
+  const structuredChange =
+    candidateChanges.find((change) => pathsLikelyMatch(change.path, toolPath)) ||
+    candidateChanges[0] ||
+    {};
+  const pathText = toolPath || structuredChange.path || "";
   const added = Number(
     parsedResult.lines_added ??
       parsedResult.linesAdded ??
@@ -151,7 +179,11 @@ function getFileToolMeta(toolName, args, result, summary, fileChange) {
     removed,
     changedLine,
     diffPreview: String(
-      parsedResult.diff_preview || structuredChange.diffPreview || "",
+      parsedResult.diff_preview ||
+        (isInternalRuntimePath(structuredChange.path)
+          ? ""
+          : structuredChange.diffPreview) ||
+        "",
     ),
     oldText: typeof oldText === "string" ? oldText : "",
     newText: typeof newText === "string" ? newText : "",
@@ -164,10 +196,22 @@ function buildPreviewLines(meta) {
   const preview =
     meta.diffPreview || meta.summary.split("\n").slice(1).join("\n");
   if (preview) {
-    return String(preview)
+    const raw = String(preview);
+    const unified = raw.includes("\ndiff --git ") || raw.startsWith("diff --git ") || raw.includes("\n@@ ");
+    const lines = String(preview)
       .split(/\r?\n/)
       .filter(Boolean)
       .map((line) => {
+        if (unified) {
+          const type = line.startsWith("+") && !line.startsWith("+++")
+            ? "add"
+            : line.startsWith("-") && !line.startsWith("---")
+              ? "remove"
+              : line.startsWith("@@") || line.startsWith("diff --git") || line.startsWith("index ") || line.startsWith("---") || line.startsWith("+++")
+                ? "meta"
+                : "context";
+          return { type, number: "", text: line };
+        }
         const signedMatch = line.match(/^([+-])(\d+)?\|\s?(.*)$/);
         if (signedMatch) {
           return {
@@ -178,11 +222,27 @@ function buildPreviewLines(meta) {
         }
         const match = line.match(/^(\d+)\|\s?(.*)$/);
         return {
-          type: "add",
+          type: match ? "add" : "context",
           number: match ? match[1] : "",
           text: match ? match[2] : line,
         };
       });
+    if (!unified) return lines;
+    const changedIndexes = [];
+    lines.forEach((line, idx) => {
+      if (line.type === "add" || line.type === "remove") changedIndexes.push(idx);
+    });
+    if (!changedIndexes.length) return [];
+    const keep = new Set();
+    for (const idx of changedIndexes) {
+      for (let offset = -2; offset <= 2; offset += 1) {
+        const next = idx + offset;
+        if (next >= 0 && next < lines.length && lines[next].type !== "meta") {
+          keep.add(next);
+        }
+      }
+    }
+    return lines.filter((line, idx) => keep.has(idx) && line.type !== "meta");
   }
   if (meta.oldText || meta.newText) {
     const oldLines = meta.oldText ? meta.oldText.split(/\r?\n/) : [];
@@ -225,15 +285,25 @@ function FilePreview({ meta }) {
             key={idx}
             className={cn(
               "grid grid-cols-[42px_1fr] border-l-3 px-0",
-              line.type === "remove"
-                ? "border-(--accent-red) bg-(--accent-red-bg)"
-                : "border-(--accent-green) bg-(--accent-green-bg)",
+              line.type === "remove" &&
+                "border-(--accent-red) bg-(--accent-red-bg)",
+              line.type === "add" &&
+                "border-(--accent-green) bg-(--accent-green-bg)",
+              (line.type === "meta" || line.type === "context") &&
+                "border-transparent bg-transparent",
             )}
           >
             <span className="select-none pr-3 text-right text-(--text-muted)">
               {line.number}
             </span>
-            <span className="min-w-0 overflow-hidden text-ellipsis whitespace-pre text-(--text-primary)">
+            <span
+              className={cn(
+                "min-w-0 overflow-hidden text-ellipsis whitespace-pre",
+                line.type === "meta"
+                  ? "text-(--text-muted)"
+                  : "text-(--text-primary)",
+              )}
+            >
               {line.text || " "}
             </span>
           </div>
@@ -266,6 +336,7 @@ export function ToolCard({ card }) {
     card.result,
     card.summary,
     card.fileChange,
+    card.fileChanges,
   );
   const nameText = fileMeta?.path || keyArg || card.name;
 

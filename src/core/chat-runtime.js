@@ -18,6 +18,15 @@ import { evaluateCommandPolicy } from './command-policy.js';
 import { appendInputHistory, loadInputHistory } from './input-history-store.js';
 import { createCheckpoint, listCheckpoints, loadCheckpoint } from './checkpoint-store.js';
 import {
+  captureWorkspaceChanges,
+  createProjectChangeLedger,
+  getLatestChangeSet,
+  isProjectChangeLedgerAvailable,
+  listChangeSets,
+  readChangeSetPatch,
+  undoChangeSet
+} from './session-change-ledger.js';
+import {
   compactMessagesLocally,
   estimateMessagesTokens,
   microCompactMessages,
@@ -2941,7 +2950,8 @@ async function askModel({
   maxSteps: maxStepsOverride,
   skipAnalysisNudge = false,
   compactedForModel: compactedInput = null,
-  onCompactedUpdate = null
+  onCompactedUpdate = null,
+  changeLedger = null
 }) {
   let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
@@ -3158,7 +3168,12 @@ async function askModel({
       linesAdded: Number(change.linesAdded || 0),
       linesRemoved: Number(change.linesRemoved || 0),
       changedLine: Number(change.changedLine || 0),
-      diffPreview: String(change.diffPreview || '')
+      diffPreview: String(change.diffPreview || ''),
+      changeSetId: String(change.changeSetId || ''),
+      beforeCommit: String(change.beforeCommit || ''),
+      afterCommit: String(change.afterCommit || ''),
+      patchRef: String(change.patchRef || ''),
+      files: Array.isArray(change.files) ? change.files : undefined
     };
   };
   const fileChangeFingerprint = (change) => JSON.stringify({
@@ -3167,7 +3182,11 @@ async function askModel({
     linesAdded: Number(change.linesAdded || 0),
     linesRemoved: Number(change.linesRemoved || 0),
     changedLine: Number(change.changedLine || 0),
-    diffPreview: String(change.diffPreview || '')
+    diffPreview: String(change.diffPreview || ''),
+    changeSetId: String(change.changeSetId || ''),
+    beforeCommit: String(change.beforeCommit || ''),
+    afterCommit: String(change.afterCommit || ''),
+    patchRef: String(change.patchRef || '')
   });
   const appendUniqueFileChange = (message, fileChange) => {
     const existing = Array.isArray(message.file_changes) ? message.file_changes : [];
@@ -3178,6 +3197,9 @@ async function askModel({
     }
     message.file_changes = [...existing, fileChange];
   };
+  const normalizeFileChanges = (changes) => (Array.isArray(changes) ? changes : [changes])
+    .map(normalizeFileChange)
+    .filter(Boolean);
   const attachToolMetaToSessionCall = (toolId, meta = {}) => {
     if (!toolId) return false;
     for (let i = session.messages.length - 1; i >= 0; i -= 1) {
@@ -3191,7 +3213,11 @@ async function askModel({
       const fileChange = normalizeFileChange(meta.fileChange);
       if (fileChange) {
         call.fileChange = fileChange;
-        appendUniqueFileChange(msg, fileChange);
+      }
+      const fileChanges = normalizeFileChanges(meta.fileChanges && meta.fileChanges.length ? meta.fileChanges : fileChange);
+      if (fileChanges.length > 0) call.fileChanges = fileChanges;
+      for (const change of fileChanges) {
+        appendUniqueFileChange(msg, change);
       }
       msg.at = new Date().toISOString();
       return true;
@@ -3300,6 +3326,7 @@ async function askModel({
           durationMs: Number.isFinite(Number(event.durationMs)) ? Number(event.durationMs) : undefined,
           summary: typeof event.summary === 'string' ? event.summary : '',
           fileChange: normalizeFileChange(event.fileChange),
+          fileChanges: normalizeFileChanges(event.fileChanges && event.fileChanges.length ? event.fileChanges : event.fileChange),
           status:
             event.type === 'tool:error'
               ? 'error'
@@ -3319,7 +3346,8 @@ async function askModel({
           ...(Number.isFinite(Number(meta.durationMs)) ? { tool_duration_ms: Number(meta.durationMs) } : {}),
           ...(meta.summary ? { tool_summary: meta.summary } : {}),
           ...(meta.status ? { tool_status: meta.status } : {}),
-          ...(meta.fileChange ? { tool_file_change: meta.fileChange } : {})
+          ...(meta.fileChange ? { tool_file_change: meta.fileChange } : {}),
+          ...(Array.isArray(meta.fileChanges) && meta.fileChanges.length > 0 ? { tool_file_changes: meta.fileChanges } : {})
         })
       );
       pendingToolMeta.delete(toolId);
@@ -3351,6 +3379,11 @@ async function askModel({
     signal,
     skipAnalysisNudge,
     config,
+    changeLedger: isProjectChangeLedgerAvailable(changeLedger)
+      ? {
+          capture: (meta) => captureWorkspaceChanges(changeLedger, meta)
+        }
+      : null,
     requestCompletion: async ({ messages, tools, model: selectedModel }) => {
       let started = false;
       const startAssistantStream = () => {
@@ -4648,6 +4681,20 @@ export async function createChatRuntime({
       summary: `plan status=${initialPlanState.status || 'draft'}`
     });
   }
+  const recordChangeLedgerStartupEvent = (event) => {
+      if (event?.type) startupEvents.push({
+        type: event.type === 'system_tool:start' ? 'system_tool' : event.type,
+        name: event.name || 'change_checkpoint',
+        status: event.type === 'system_tool:error' ? 'error' : event.type === 'system_tool:start' ? 'running' : 'done',
+        summary: event.summary || ''
+      });
+  };
+  let changeLedger = await createProjectChangeLedger({
+    workspaceRoot: process.cwd(),
+    sessionId: session?.id,
+    enabled: true,
+    onEvent: recordChangeLedgerStartupEvent
+  });
   let currentSession = session;
   let config = initialConfig;
   model = model || currentSession?.model || resolveDefaultModel(config);
@@ -4803,6 +4850,7 @@ export async function createChatRuntime({
     '/plan',
     '/history',
     '/checkpoint',
+    '/undo',
     '/agents',
     '/compact',
     '/debug',
@@ -4822,6 +4870,7 @@ export async function createChatRuntime({
       { name: 'mode', description: completionCopy.commands.mode },
       { name: 'compact', description: completionCopy.commands.compact },
       { name: 'checkpoint', description: completionCopy.commands.checkpoint },
+      { name: 'undo', description: 'undo project file changes from checkpoints' },
       { name: 'spec', description: completionCopy.commands.spec },
       { name: 'plan', description: completionCopy.commands.plan },
       { name: 'agents', description: completionCopy.commands.agents },
@@ -4877,6 +4926,11 @@ export async function createChatRuntime({
     '/checkpoint list --all',
     '/checkpoint load <id>'
   ];
+  const undoTemplates = [
+    '/undo',
+    '/undo list',
+    '/undo <change_set_id>'
+  ];
   const specTemplates = ['/spec <topic>'];
   const planTemplates = ['/plan <goal>', '/plan auto <goal>', '/plan approve', '/plan from-spec <spec-path?>'];
   const agentTemplates = ['/agents list', '/agents run planner <task>', '/agents run advisor <task>', '/agents run coder <task>', '/agents run reviewer <task>', '/agents run tester <task>', '/agents run summarizer <task>'];
@@ -4891,6 +4945,7 @@ export async function createChatRuntime({
     ...modeTemplates,
     ...modelTemplates,
     ...checkpointTemplates,
+    ...undoTemplates,
     ...specTemplates,
     ...planTemplates,
     ...agentTemplates,
@@ -4939,6 +4994,7 @@ export async function createChatRuntime({
       'mode',
       'model',
       'checkpoint',
+      'undo',
       'plan',
       'agents',
       'history',
@@ -4959,6 +5015,7 @@ export async function createChatRuntime({
     for (const template of modeTemplates) registerSuggestion(template, completionCopy.generic.modeCommand);
     for (const template of modelTemplates) registerSuggestion(template, completionCopy.generic.modelCommand || completionCopy.commands.model);
     for (const template of checkpointTemplates) registerSuggestion(template, completionCopy.generic.checkpointCommand);
+    for (const template of undoTemplates) registerSuggestion(template, 'undo project file changes');
     for (const template of specTemplates) registerSuggestion(template, completionCopy.generic.specCommand);
     for (const template of planTemplates) {
       registerSuggestion(template, planSubcommandDescriptions[template] || completionCopy.generic.planCommand);
@@ -5096,6 +5153,9 @@ export async function createChatRuntime({
         }
       }
       return materializeSuggestions(checkpointTemplates);
+    }
+    if (commandPart === 'undo') {
+      return materializeSuggestions(undoTemplates);
     }
     if (commandPart === 'spec') {
       return materializeSuggestions(specTemplates);
@@ -5468,6 +5528,12 @@ export async function createChatRuntime({
       if (parsedInput.command === 'new') {
         const fresh = await createSession();
         currentSession = fresh;
+        changeLedger = await createProjectChangeLedger({
+          workspaceRoot: process.cwd(),
+          sessionId: fresh.id,
+          enabled: true,
+          onEvent: recordChangeLedgerStartupEvent
+        });
         executionMode = config.execution?.mode || 'normal';
         compactState.backupMessages = null;
         setResultDir(path.join(getSessionsDir(), String(fresh.id)));
@@ -5485,7 +5551,7 @@ export async function createChatRuntime({
       if (parsedInput.command === 'help') {
         return {
           type: 'system',
-          text: 'Commands: /help /exit /new /stop /commands /status /model /mode /compact /checkpoint /spec /plan /yes /no /edit /reject /agents /config /memory /capture /inbox /dream /reflect /history /debug /retry /<custom> !<shell>'
+          text: 'Commands: /help /exit /new /stop /commands /status /model /mode /compact /checkpoint /undo /spec /plan /yes /no /edit /reject /agents /config /memory /capture /inbox /dream /reflect /history /debug /retry /<custom> !<shell>'
         };
       }
       if (parsedInput.command === 'status') {
@@ -5678,6 +5744,33 @@ export async function createChatRuntime({
         await removePlanFileIfPresent(planState);
         executionMode = 'auto';
         const text = 'Pending plan rejected and cleared.';
+        await persistLocalExchange(line, text);
+        return { type: 'system', text };
+      }
+      if (parsedInput.command === 'undo') {
+        if (!isProjectChangeLedgerAvailable(changeLedger)) {
+          return { type: 'system', text: 'Project checkpoints are not available for this session.' };
+        }
+        const requested = String(parsedInput.args[0] || 'last').trim();
+        if (requested === 'list') {
+          const changes = await listChangeSets(changeLedger);
+          if (changes.length === 0) return { type: 'system', text: 'No project changes found.' };
+          const rows = changes.slice(0, 20).map((change, index) => {
+            const files = Array.isArray(change.files) ? change.files.map((f) => f.path).slice(0, 3).join(', ') : '';
+            const reverted = change.revertedAt ? ' reverted' : '';
+            return `${index + 1}. ${change.id}${reverted} | ${change.createdAt || '-'} | ${change.toolName || '-'} | ${files || '-'}`;
+          });
+          return { type: 'system', text: rows.join('\n') };
+        }
+        const target = requested && requested !== 'last'
+          ? { id: requested }
+          : await getLatestChangeSet(changeLedger);
+        const id = target?.id || requested;
+        if (!id || id === 'last') return { type: 'system', text: 'No project changes found.' };
+        const result = await undoChangeSet(changeLedger, id);
+        const text = result.ok
+          ? `Undone change set: ${id}${result.undoChangeSetId ? ` (undo checkpoint: ${result.undoChangeSetId})` : ''}`
+          : result.message || `Could not undo change set: ${id}`;
         await persistLocalExchange(line, text);
         return { type: 'system', text };
       }
@@ -6139,7 +6232,8 @@ export async function createChatRuntime({
           executionMode,
           signal,
           compactedForModel,
-          onCompactedUpdate: setCompactedView
+          onCompactedUpdate: setCompactedView,
+          changeLedger
         });
         return { type: 'assistant', text: result.text, aborted: !!result.aborted };
       }
@@ -6334,7 +6428,8 @@ export async function createChatRuntime({
           executionMode,
           signal,
           compactedForModel,
-          onCompactedUpdate: setCompactedView
+          onCompactedUpdate: setCompactedView,
+          changeLedger
         });
       } catch (error) {
         if (custom.metadata.type === 'skill' && onAgentEvent) {
@@ -6585,7 +6680,8 @@ export async function createChatRuntime({
       executionMode,
       signal,
       compactedForModel,
-      onCompactedUpdate: setCompactedView
+      onCompactedUpdate: setCompactedView,
+      changeLedger
     });
     await saveDirectMemoryPrompt(expandedText);
     await captureUserPromptForDream(expandedText);
@@ -6609,6 +6705,9 @@ export async function createChatRuntime({
     getCurrentSessionId: () => currentSession.id,
     getSessionMessages: () => currentSession.messages || [],
     getSessionCompact: () => currentSession.compact || null,
+    getChangeSets: () => listChangeSets(changeLedger),
+    getChangeSetPatch: (id) => readChangeSetPatch(changeLedger, id),
+    undoChangeSet: (id) => undoChangeSet(changeLedger, id),
     reloadConfig: async (options = {}) => {
       config = await loadConfig();
       await syncRuntimeFromConfig(options);

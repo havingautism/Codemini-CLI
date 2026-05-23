@@ -378,6 +378,14 @@ export const zh = {
 
   // ChatPanel
   buildInProject: '要在 {{project}} 中构建什么?',
+  initializingProject: '正在初始化项目检查点...',
+  undoChange: '撤回变更',
+  undoChangeFailed: '撤回变更失败',
+  undoChangeConfirm: '确认撤回变更？',
+  undoChangeDescription: '你确认撤回「{{path}}」的变更吗？此操作会修改工作区文件。',
+  undoChangesDescription: '你确认撤回「{{path}}」的 {{count}} 个变更吗？此操作会修改工作区文件。',
+  undoChangeConflict: '无法干净撤回：后续变更和这次变更冲突。请先撤回更新的变更，或手动处理这个文件。',
+  undoingChange: '撤回中...',
   gitStaged: '已暂存',
   gitModified: '已修改',
   gitUntracked: '未跟踪',

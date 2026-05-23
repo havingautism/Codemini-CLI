@@ -8,6 +8,7 @@ function isProjectIndexEvent(event) {
   const name = String(event?.name || '').toLowerCase();
   const summary = String(event?.summary || '').toLowerCase();
   return name.includes('project_index')
+    || name.includes('change_checkpoint')
     || name.includes('initializeprojectindex')
     || summary.includes('project_index(')
     || summary.includes('initialized ') && summary.includes('/.codemini');
@@ -44,6 +45,7 @@ const initialState = {
   pendingToolChanges: [], planSteps: [], pendingPlanApproval: null, pendingReflectApproval: null, runtimeActivities: [], approvalRequest: null,
   config: null, configStatus: null, configOpen: false, projectOpen: false, skillsOpen: false, memoryOpen: false, soulsOpen: false, aboutOpen: false, gitDiffOpen: false,
   sessions: [], projectCwd: null, isGeneral: false, history: [], skills: [], gitInfo: null, gitBatch: {},
+  projectInitLabel: '',
   codewikiProjectPath: '',
   codewikiGeneration: { status: 'idle', updatedAt: null, error: '' },
   versionInfo: null, updateStatus: null,
@@ -192,6 +194,10 @@ function fileChangeKey(change) {
     linesRemoved: Number(change.linesRemoved || 0),
     changedLine: Number(change.changedLine || 0),
     diffPreview: String(change.diffPreview || ''),
+    changeSetId: String(change.changeSetId || ''),
+    beforeCommit: String(change.beforeCommit || ''),
+    afterCommit: String(change.afterCommit || ''),
+    patchRef: String(change.patchRef || ''),
   });
 }
 
@@ -719,6 +725,7 @@ export function AppProvider({ children }) {
               arguments: tc.function?.arguments || tc.arguments || {},
               status: tc.status || 'done', durationMs: tc.durationMs, summary: tc.summary || '', result: '',
               ...(tc.fileChange ? { fileChange: tc.fileChange } : {}),
+              ...(Array.isArray(tc.fileChanges) && tc.fileChanges.length ? { fileChanges: tc.fileChanges } : {}),
             }));
             assistantGroup.segments.push({
               type: 'tools',
@@ -737,9 +744,12 @@ export function AppProvider({ children }) {
             if (msg.toolStatus === 'error') card.status = 'error';
             if (msg.toolStatus === 'blocked') card.status = 'blocked';
             if (msg.content) card.result = msg.content;
-            const change = msg.toolFileChange?.path ? msg.toolFileChange : null;
-            if (change?.path) {
-              card.fileChange = change;
+            const changes = Array.isArray(msg.toolFileChanges) && msg.toolFileChanges.length
+              ? msg.toolFileChanges
+              : (msg.toolFileChange?.path ? [msg.toolFileChange] : []);
+            if (changes.length) {
+              card.fileChange = changes[0];
+              card.fileChanges = changes;
             }
             break;
           }
@@ -841,13 +851,19 @@ export function AppProvider({ children }) {
         if (activeId) {
           setState(prev => ({ ...prev, messages: prev.messages.map(m => {
             if (m.id !== activeId) return m;
-            if (event.fileChange) pendingChangesRef.current = [...pendingChangesRef.current, event.fileChange];
+            const eventChanges = Array.isArray(event.fileChanges) && event.fileChanges.length
+              ? event.fileChanges
+              : (event.fileChange?.path ? [event.fileChange] : []);
+            if (eventChanges.length) pendingChangesRef.current = [...pendingChangesRef.current, ...eventChanges];
             return {
               ...m,
               segments: updateToolInSegments(m.segments, event.id, tc => {
                 const u = { ...tc, status: 'done', durationMs: event.durationMs };
                 if (event.summary) u.summary = event.summary;
-                if (event.fileChange) u.fileChange = event.fileChange;
+                if (eventChanges.length) {
+                  u.fileChange = eventChanges[0];
+                  u.fileChanges = eventChanges;
+                }
                 return u;
               })
             };
@@ -1044,10 +1060,8 @@ export function AppProvider({ children }) {
           key: 'dream',
           status: 'running',
           emoji: '💤',
-          label: t('runtimeActivityDreamRunning'),
-          clearAfterMs: 30 * 60 * 1000
+          label: t('runtimeActivityDreamRunning')
         });
-        addMessage({ role: 'system', text: 'Dream triggered...', timestamp: new Date().toISOString() });
         break;
       case 'dream:complete':
         upsertRuntimeActivity({
@@ -1058,7 +1072,6 @@ export function AppProvider({ children }) {
           detail: event.report?.error || '',
           clearAfterMs: 2500
         });
-        addMessage({ role: 'system', text: 'Dream complete', timestamp: new Date().toISOString() });
         break;
 
       case 'approval:request':
@@ -1132,6 +1145,16 @@ export function AppProvider({ children }) {
           live: !!rs.busy,
           stage: rs.busy ? stateRef.current.stage : 'idle',
           stageLabel: rs.busy ? stateRef.current.stageLabel : ''
+        });
+        break;
+      }
+
+      case 'change:undone': {
+        loadGitInfo();
+        addMessage({
+          role: event.result?.ok ? 'system' : 'error',
+          text: event.result?.ok ? t('undoChange') : (event.result?.message || t('undoChangeFailed')),
+          timestamp: new Date().toISOString()
         });
         break;
       }
@@ -1505,6 +1528,7 @@ export function AppProvider({ children }) {
         currentView: nextView,
         projectOpen: false,
         messagesLoading: nextView === 'chat',
+        projectInitLabel: nextView === 'chat' ? t('initializingProject') : '',
         codewikiProjectPath: pendingCodeWikiProjectPath,
       });
       if (nextView === 'chat') setState(prev => ({ ...prev, messages: [] }));
@@ -1520,12 +1544,12 @@ export function AppProvider({ children }) {
           await loadState();
           loadSessions();
           loadGitInfo();
-          if (nextView === 'chat') update({ messagesLoading: false });
+          if (nextView === 'chat') update({ messagesLoading: false, projectInitLabel: '' });
         } else if (nextView === 'chat') {
-          update({ messagesLoading: false });
+          update({ messagesLoading: false, projectInitLabel: '' });
         }
       } catch {
-        if (nextView === 'chat') update({ messagesLoading: false });
+        if (nextView === 'chat') update({ messagesLoading: false, projectInitLabel: '' });
       }
     },
 
