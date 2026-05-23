@@ -538,7 +538,7 @@ export function InputBar({
         visible={slashOpen}
       />
       <div
-        className="flex flex-col gap-4 border border-border dark:border-none rounded-[28px] px-3 py-2 transition-colors bg-(--bg-primary/50) shadow-(--shadow-default) dark:bg-(--bg-secondary) dark:shadow-[0_14px_44px_color-mix(in_srgb,var(--background)_70%,transparent)]"
+        className="flex flex-col gap-4 border border-border rounded-[28px] px-3 py-2 transition-colors bg-(--bg-primary) shadow-(--shadow-lg) dark:bg-(--bg-secondary) dark:shadow-[0_14px_44px_color-mix(in_srgb,var(--background)_70%,transparent)]"
         // style={{
         //   background:
         //     "color-mix(in srgb, var(--bg-tertiary) 72%, var(--bg-input))",
