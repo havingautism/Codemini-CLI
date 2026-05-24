@@ -489,11 +489,21 @@ function mergeFileChanges(fileChanges = []) {
   }
   return order.map((path) => {
     const change = byPath.get(path);
+    const firstChange = change.changes[0];
+    const lastChange = change.changes[change.changes.length - 1];
+    if (firstChange?.action === "create" && lastChange?.action === "delete") {
+      return null;
+    }
+    const trackedChanges = change.changes.filter((item) => item.changeSetId);
+    const revertedAt = trackedChanges.length > 0 && trackedChanges.every((item) => item.revertedAt)
+      ? trackedChanges[trackedChanges.length - 1].revertedAt
+      : "";
     return {
       ...change,
       changeSetId: change.changeSetIds.length === 1 ? change.changeSetIds[0] : "",
+      revertedAt,
     };
-  });
+  }).filter(Boolean);
 }
 
 function getFileChangeSetIds(change) {
@@ -642,10 +652,10 @@ function FileChangesSummary({ changes }) {
     });
     setUndoing((prev) => new Set(prev).add(undoKey));
     try {
-      for (const id of [...changeSetIds].reverse()) {
-        const result = await api.undoSessionChange(id);
-        if (result?.error || result?.ok === false) throw new Error(result.message || t("undoChangeFailed"));
-      }
+      const result = changeSetIds.length > 1
+        ? await api.undoSessionChanges(changeSetIds)
+        : await api.undoSessionChange(changeSetIds[0]);
+      if (result?.error || result?.ok === false) throw new Error(result.message || t("undoChangeFailed"));
       setRevertedUndoKeys((prev) => new Set(prev).add(undoKey));
       setPendingUndo(null);
     } catch (error) {
@@ -670,7 +680,7 @@ function FileChangesSummary({ changes }) {
         const hasPreview = Boolean(c.diffPreview || (Array.isArray(c.changes) && c.changes.length));
         const changeSetIds = getFileChangeSetIds(c);
         const undoKey = changeSetIds.join("|");
-        const isReverted = undoKey && revertedUndoKeys.has(undoKey);
+        const isReverted = undoKey && (revertedUndoKeys.has(undoKey) || Boolean(c.revertedAt));
         return (
           <div
             key={key}
@@ -744,7 +754,7 @@ function FileChangesSummary({ changes }) {
                       path: c.path,
                       undoKey,
                       changeSetIds,
-                      count: Math.max(1, Array.isArray(c.changes) ? c.changes.length : 1),
+                      count: Math.max(1, changeSetIds.length),
                     });
                   }}
                   className={cn(

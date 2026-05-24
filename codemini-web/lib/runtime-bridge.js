@@ -746,6 +746,13 @@ export class RuntimeBridge {
     return result || { error: true, message: 'Git change oplog is not available' };
   }
 
+  async undoChangeSets(ids) {
+    if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    const result = await this.#runtime.undoChangeSets?.(ids);
+    this.#broadcast({ type: 'change:undone', result });
+    return result || { error: true, message: 'Git change oplog is not available' };
+  }
+
   async getUiMessages() {
     this.#resetUiTranscriptIfSessionChanged();
     if (this.#uiMessages.length > 0) return this.#uiMessages;

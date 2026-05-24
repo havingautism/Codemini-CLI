@@ -616,7 +616,7 @@ export async function runAgentLoop({
   const activeTools = [...toolDefinitions];
 
   async function maybeRunAutoDream(stepNumber = 0, { force = false } = {}) {
-    if ((executionMode === 'auto' ? 'normal' : executionMode) === 'plan') return;
+    if (executionMode === 'plan') return;
     const interval = Math.max(1, Number(config?.memory?.auto_dream_check_interval_steps || 20));
     const normalizedStep = Math.max(1, Number(stepNumber || 1));
     if (!force && lastAutoDreamCheckStep > 0 && normalizedStep - lastAutoDreamCheckStep < interval) return;
@@ -724,14 +724,11 @@ export async function runAgentLoop({
 
     pendingSummaryNudges = 0;
 
-    const workMode = executionMode === 'auto' ? 'normal' : executionMode;
     const normalizedApprovalMode = ['review', 'auto', 'full_access'].includes(String(approvalMode || '').toLowerCase())
       ? String(approvalMode || '').toLowerCase()
-      : executionMode === 'auto'
-        ? 'auto'
-        : 'review';
+      : 'review';
 
-    if (workMode === 'plan') {
+    if (executionMode === 'plan') {
       const plannedLines = callsToPlanSummary(toolCalls);
       finalText = [
         assistantText || '',

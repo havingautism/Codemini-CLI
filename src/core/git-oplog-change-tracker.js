@@ -192,10 +192,23 @@ async function buildPatchForFile(root, relativePath, before, after) {
     ], { cwd: tmp, allowFailure: true, timeoutMs: 120_000 });
     if (result.code !== 1) return '';
     const escaped = relativePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return result.stdout
+    let patch = result.stdout
       .replace(new RegExp(`diff --git a/old/${escaped} b/new/${escaped}`), `diff --git a/${relativePath} b/${relativePath}`)
       .replace(new RegExp(`--- a/old/${escaped}`), before.exists ? `--- a/${relativePath}` : '--- /dev/null')
       .replace(new RegExp(`\\+\\+\\+ b/new/${escaped}`), after.exists ? `+++ b/${relativePath}` : '+++ /dev/null');
+    if (!before.exists && after.exists && !/^new file mode /m.test(patch)) {
+      patch = patch.replace(
+        new RegExp(`^(diff --git a/${escaped} b/${escaped})$`, 'm'),
+        `$1\nnew file mode 100644`
+      );
+    }
+    if (before.exists && !after.exists && !/^deleted file mode /m.test(patch)) {
+      patch = patch.replace(
+        new RegExp(`^(diff --git a/${escaped} b/${escaped})$`, 'm'),
+        `$1\ndeleted file mode 100644`
+      );
+    }
+    return patch;
   } finally {
     await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
   }
@@ -384,4 +397,72 @@ export async function undoGitOplogChange(tracker, opId) {
   op.revertedAt = new Date().toISOString();
   await writeJson(path.join(tracker.opsDir, `${op.id}.json`), op);
   return { ok: true, changeSetId: op.id };
+}
+
+export async function undoGitOplogChanges(tracker, opIds = []) {
+  if (!isGitOplogChangeTrackerAvailable(tracker)) throw new Error('Git change oplog is not available for this session');
+  const ids = [];
+  const seen = new Set();
+  for (const rawId of Array.isArray(opIds) ? opIds : [opIds]) {
+    const id = String(rawId || '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  if (!ids.length) throw new Error('Missing change ids');
+  if (ids.length === 1) return undoGitOplogChange(tracker, ids[0]);
+
+  const ops = await Promise.all(ids.map((id) => readGitOplogChange(tracker, id)));
+  const reverted = ops.find((op) => op.revertedAt);
+  if (reverted) {
+    return { ok: false, alreadyReverted: true, changeSetId: reverted.id, message: 'Change already reverted' };
+  }
+
+  const order = new Map(ids.map((id, index) => [id, index]));
+  ops.sort((a, b) => {
+    const byTime = String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
+    if (byTime) return byTime;
+    return (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0);
+  });
+
+  const patches = await Promise.all(ops.map(async (op) => ({
+    op,
+    patch: await fs.readFile(op.patchPath, 'utf8')
+  })));
+  if (!patches.some((item) => String(item.patch || '').trim())) throw new Error('Missing change patch');
+
+  const applied = [];
+  try {
+    for (const item of patches) {
+      if (!String(item.patch || '').trim()) continue;
+      await runGit(['apply', '-R', '--check', '--whitespace=nowarn'], {
+        cwd: tracker.workspaceRoot,
+        input: item.patch,
+        timeoutMs: 120_000
+      });
+      await runGit(['apply', '-R', '--whitespace=nowarn'], {
+        cwd: tracker.workspaceRoot,
+        input: item.patch,
+        timeoutMs: 120_000
+      });
+      applied.push(item);
+    }
+  } catch (error) {
+    for (const item of applied.reverse()) {
+      await runGit(['apply', '--whitespace=nowarn'], {
+        cwd: tracker.workspaceRoot,
+        input: item.patch,
+        allowFailure: true,
+        timeoutMs: 120_000
+      });
+    }
+    throw new Error(`Cannot undo this change cleanly because newer edits conflict with it. Undo newer changes first, or revert it manually. ${error?.message || ''}`.trim());
+  }
+
+  const revertedAt = new Date().toISOString();
+  for (const op of ops) {
+    op.revertedAt = revertedAt;
+    await writeJson(path.join(tracker.opsDir, `${op.id}.json`), op);
+  }
+  return { ok: true, changeSetIds: ops.map((op) => op.id) };
 }

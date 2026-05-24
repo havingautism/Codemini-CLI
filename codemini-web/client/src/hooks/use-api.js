@@ -155,6 +155,20 @@ export async function undoSessionChange(id) {
   return res.json();
 }
 
+export async function fetchSessionChanges() {
+  const res = await api('/api/session-changes');
+  return res.json();
+}
+
+export async function undoSessionChanges(ids) {
+  const res = await api('/api/session-changes/undo', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ ids })
+  });
+  return res.json();
+}
+
 export async function fetchGitBatch(dirs) {
   const res = await api('/api/git-batch', {
     method: 'POST',

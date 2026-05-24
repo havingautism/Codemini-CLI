@@ -45,7 +45,8 @@ import {
   createGitOplogChangeTracker,
   listGitOplogChanges,
   readGitOplogPatch,
-  undoGitOplogChange
+  undoGitOplogChange,
+  undoGitOplogChanges
 } from './git-oplog-change-tracker.js';
 import { createNonGitBackupManager } from './non-git-backup.js';
 
@@ -2606,8 +2607,8 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     sessionId: currentSession?.id || '',
     sessionTitle: currentSession?.title || '',
     messageCount: Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0,
-    mode: executionMode === 'auto' ? 'normal' : (executionMode || config.execution?.mode || 'normal'),
-    approvalMode: config.execution?.approval_mode || (executionMode === 'auto' ? 'auto' : 'review'),
+    mode: executionMode || config.execution?.mode || 'normal',
+    approvalMode: config.execution?.approval_mode || 'review',
     sdkProvider: config.sdk?.provider || 'openai-compatible',
     agentRole: 'general',
     model: model || config.model?.name || '',
@@ -4697,7 +4698,7 @@ export async function createChatRuntime({
     currentSession.model = model;
   }
   const baseSystemPrompt = systemPrompt;
-  let executionMode = config.execution?.mode === 'auto' ? 'normal' : (config.execution?.mode || 'normal');
+  let executionMode = config.execution?.mode || 'normal';
   if (hasPendingPlanApproval(currentSession)) {
     executionMode = 'plan';
   }
@@ -6701,6 +6702,7 @@ export async function createChatRuntime({
     getChangeSets: () => listGitOplogChanges(changeTracker),
     getChangeSetPatch: (id) => readGitOplogPatch(changeTracker, id),
     undoChangeSet: (id) => undoGitOplogChange(changeTracker, id),
+    undoChangeSets: (ids) => undoGitOplogChanges(changeTracker, ids),
     reloadConfig: async (options = {}) => {
       config = await loadConfig();
       config.runtime = {

@@ -1681,6 +1681,58 @@ function lineRangeToOffsets(content, startLineRaw, endLineRaw) {
   return { startLine, endLine, startOffset, endOffset };
 }
 
+function normalizeNewlinesWithMap(text) {
+  const source = String(text || '');
+  const chars = [];
+  const indexMap = [];
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === '\r') {
+      chars.push('\n');
+      indexMap.push(i);
+      if (source[i + 1] === '\n') i += 1;
+      continue;
+    }
+    chars.push(ch);
+    indexMap.push(i);
+  }
+  return { text: chars.join(''), indexMap };
+}
+
+function detectEol(text) {
+  const sample = String(text || '');
+  const crlf = (sample.match(/\r\n/g) || []).length;
+  const loneLf = (sample.match(/(?<!\r)\n/g) || []).length;
+  const loneCr = (sample.match(/\r(?!\n)/g) || []).length;
+  if (crlf >= loneLf && crlf >= loneCr && crlf > 0) return '\r\n';
+  if (loneCr > loneLf && loneCr > 0) return '\r';
+  return '\n';
+}
+
+function applyEol(text, eol) {
+  return String(text || '').replace(/\r\n|\r|\n/g, eol || '\n');
+}
+
+function findLineEndingEquivalentMatches(content, oldText) {
+  const normalizedOld = normalizeNewlinesWithMap(oldText).text;
+  if (!normalizedOld) return [];
+  const normalizedContent = normalizeNewlinesWithMap(content);
+  const matches = [];
+  let pos = 0;
+  while (true) {
+    const found = normalizedContent.text.indexOf(normalizedOld, pos);
+    if (found === -1) break;
+    const start = normalizedContent.indexMap[found] ?? 0;
+    const endNorm = found + normalizedOld.length;
+    const end = endNorm >= normalizedContent.text.length
+      ? String(content || '').length
+      : normalizedContent.indexMap[endNorm];
+    matches.push({ start, end });
+    pos = found + Math.max(1, normalizedOld.length);
+  }
+  return matches;
+}
+
 async function replaceBlock(root, args, config = {}) {
   const relativePath = String(args?.path || '').trim();
   const newContent = String(args?.new_content || args?.content || '');
@@ -1717,6 +1769,31 @@ async function replaceText(root, args, config = {}) {
     : null;
   const searchContent = range ? state.content.slice(range.startOffset, range.endOffset) : state.content;
   const occurrences = searchContent.split(oldText).length - 1;
+  let newlineMatches = null;
+  if (occurrences === 0 && /[\r\n]/.test(oldText)) {
+    newlineMatches = findLineEndingEquivalentMatches(searchContent, oldText);
+    if ((replaceAll && newlineMatches.length > 0) || newlineMatches.length === 1) {
+      let cursor = 0;
+      let replaced = '';
+      for (const match of newlineMatches) {
+        const originalMatch = searchContent.slice(match.start, match.end);
+        replaced += searchContent.slice(cursor, match.start);
+        replaced += applyEol(newText, detectEol(originalMatch));
+        cursor = match.end;
+        if (!replaceAll) break;
+      }
+      replaced += searchContent.slice(cursor);
+      const afterContent = range
+        ? `${state.content.slice(0, range.startOffset)}${replaced}${state.content.slice(range.endOffset)}`
+        : replaced;
+      await fs.writeFile(state.target, afterContent, 'utf8');
+      const first = newlineMatches[0];
+      const changedLine = range
+        ? range.startLine + splitLines(searchContent.slice(0, first.start)).length - 1
+        : splitLines(state.content.slice(0, first.start)).length;
+      return editResult(relativePath, 'replace_text', state.content, afterContent, changedLine);
+    }
+  }
   if (occurrences !== 1) {
     if (replaceAll && occurrences > 0) {
       const replaced = searchContent.replaceAll(oldText, newText);
@@ -1745,10 +1822,11 @@ async function replaceText(root, args, config = {}) {
       searchPos = pos + oldText.length;
     }
     const lineHint = lineDetails.length > 0 ? `\n${lineDetails.join('\n')}\n` : ' ';
+    const effectiveOccurrences = newlineMatches?.length || occurrences;
     throw new Error(
-      occurrences === 0
+      effectiveOccurrences === 0
         ? 'replace_text old_text not found'
-        : `replace_text old_text not unique; found ${occurrences} occurrences:${lineHint}Use path:"${relativePath}:N-M" to narrow the range, set replace_all=true, or provide more unique old_text`
+        : `replace_text old_text not unique; found ${effectiveOccurrences} occurrences:${lineHint}Use path:"${relativePath}:N-M" to narrow the range, set replace_all=true, or provide more unique old_text`
     );
   }
   const replaced = searchContent.replace(oldText, newText);

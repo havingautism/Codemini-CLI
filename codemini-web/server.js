@@ -1165,12 +1165,21 @@ async function main() {
       }
       return;
     }
-    if (req.method === 'POST' && url.pathname.startsWith('/api/session-changes/') && url.pathname.endsWith('/undo')) {
+    if (req.method === 'POST' && url.pathname !== '/api/session-changes/undo' && url.pathname.startsWith('/api/session-changes/') && url.pathname.endsWith('/undo')) {
       const id = decodeURIComponent(url.pathname.slice('/api/session-changes/'.length, -'/undo'.length));
       try {
         jsonResponse(res, await bridge.undoChangeSet(id));
       } catch (err) {
         jsonResponse(res, { error: true, message: err?.message || 'Failed to undo change' }, 409);
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/session-changes/undo') {
+      const { ids } = await readBody(req);
+      try {
+        jsonResponse(res, await bridge.undoChangeSets(ids));
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err?.message || 'Failed to undo changes' }, 409);
       }
       return;
     }

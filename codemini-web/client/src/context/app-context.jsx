@@ -208,6 +208,80 @@ function appendUniqueFileChanges(existing = [], changes = []) {
   return next;
 }
 
+function buildChangeStateMap(changeSets = []) {
+  const map = new Map();
+  for (const changeSet of Array.isArray(changeSets) ? changeSets : []) {
+    const id = String(changeSet?.id || '').trim();
+    if (!id) continue;
+    map.set(id, {
+      revertedAt: changeSet.revertedAt || null
+    });
+  }
+  return map;
+}
+
+function enrichFileChange(change, changeStateMap) {
+  if (!change || typeof change !== 'object') return change;
+  const id = String(change.changeSetId || '').trim();
+  if (!id) return change;
+  const state = changeStateMap.get(id);
+  if (!state?.revertedAt) return change;
+  return { ...change, revertedAt: state.revertedAt };
+}
+
+function enrichFileChanges(changes, changeStateMap) {
+  if (!Array.isArray(changes) || !changes.length) return changes;
+  return changes.map((change) => enrichFileChange(change, changeStateMap));
+}
+
+function enrichMessageChangeStates(messages, changeSets = []) {
+  const changeStateMap = buildChangeStateMap(changeSets);
+  if (!changeStateMap.size) return messages;
+  return (Array.isArray(messages) ? messages : []).map((message) => ({
+    ...message,
+    fileChanges: enrichFileChanges(message.fileChanges, changeStateMap),
+    segments: Array.isArray(message.segments)
+      ? message.segments.map((segment) => {
+          if (segment?.type !== 'tools' || !Array.isArray(segment.cards)) return segment;
+          return {
+            ...segment,
+            cards: segment.cards.map((card) => ({
+              ...card,
+              fileChange: enrichFileChange(card.fileChange, changeStateMap),
+              fileChanges: enrichFileChanges(card.fileChanges, changeStateMap)
+            }))
+          };
+        })
+      : message.segments
+  }));
+}
+
+function markMessagesChangesReverted(messages, ids = [], revertedAt = new Date().toISOString()) {
+  const set = new Set((Array.isArray(ids) ? ids : [ids]).map((id) => String(id || '').trim()).filter(Boolean));
+  if (!set.size) return messages;
+  const markChange = (change) => {
+    if (!change || typeof change !== 'object') return change;
+    return set.has(String(change.changeSetId || '').trim()) ? { ...change, revertedAt } : change;
+  };
+  return (Array.isArray(messages) ? messages : []).map((message) => ({
+    ...message,
+    fileChanges: Array.isArray(message.fileChanges) ? message.fileChanges.map(markChange) : message.fileChanges,
+    segments: Array.isArray(message.segments)
+      ? message.segments.map((segment) => {
+          if (segment?.type !== 'tools' || !Array.isArray(segment.cards)) return segment;
+          return {
+            ...segment,
+            cards: segment.cards.map((card) => ({
+              ...card,
+              fileChange: markChange(card.fileChange),
+              fileChanges: Array.isArray(card.fileChanges) ? card.fileChanges.map(markChange) : card.fileChanges
+            }))
+          };
+        })
+      : message.segments
+  }));
+}
+
 // Helper to update messages immutably while preserving all other state
 function mapMessages(prev, activeId, mapper) {
   return { ...prev, messages: prev.messages.map(m => m.id === activeId ? mapper(m) : m) };
@@ -632,7 +706,8 @@ export function AppProvider({ children }) {
           sessionData ? [] : await api.fetchSessionUiMessages()
         );
         if (Array.isArray(uiMessages) && uiMessages.length) {
-          update({ messages: uiMessages });
+          const changeSets = sessionData ? [] : (await api.fetchSessionChanges().catch(() => ({})))?.changes || [];
+          update({ messages: enrichMessageChangeStates(uiMessages, changeSets) });
         } else {
           update({ messages: [], runtimeActivities: [] });
         }
@@ -755,7 +830,8 @@ export function AppProvider({ children }) {
           }
         }
       }
-      update({ messages: processed, runtimeActivities: restoredActivities });
+      const changeSets = sessionData ? [] : (await api.fetchSessionChanges().catch(() => ({})))?.changes || [];
+      update({ messages: enrichMessageChangeStates(processed, changeSets), runtimeActivities: restoredActivities });
     } catch {}
     finally { update({ messagesLoading: false }); }
   }, [update]);
@@ -1082,6 +1158,20 @@ export function AppProvider({ children }) {
       case 'approval:request':
         update({ approvalRequest: event });
         break;
+
+      case 'change:undone': {
+        const result = event.result || {};
+        const ids = Array.isArray(result.changeSetIds) && result.changeSetIds.length
+          ? result.changeSetIds
+          : (result.changeSetId ? [result.changeSetId] : []);
+        if (ids.length) {
+          setState(prev => ({
+            ...prev,
+            messages: markMessagesChangesReverted(prev.messages, ids)
+          }));
+        }
+        break;
+      }
 
       case 'submit:done': {
         const result = event.result || {};
