@@ -2,9 +2,11 @@ import path from 'node:path';
 import { trimInline as _trimInline, normalizePath } from './string-utils.js';
 import { captureToInbox, listInbox } from './memory-store.js';
 import { requiresApprovalEvaluation } from './command-risk.js';
+import { evaluateCommandPolicy } from './command-policy.js';
 import { getToolOutputSanitizeOptions, sanitizeTextForModel } from './tool-output.js';
 import { normalizeToolArguments } from './tool-args.js';
 import { storeResultIfNeeded, summarizeToolResult } from './tool-result-store.js';
+import { markRunCommandSafeModeApproved } from './tools.js';
 
 /**
  * 安全解析 JSON 字符串。
@@ -336,6 +338,10 @@ function extractToolResultMeta(toolName, result) {
 }
 
 export const trimInline = _trimInline;
+
+export function shouldDenyHighRiskRunEvaluation(config = {}, evaluation = {}) {
+  return config?.policy?.allow_dangerous_commands !== true && String(evaluation?.risk || '').toLowerCase() === 'high';
+}
 
 function normalizeAssistantText(value) {
   return String(value || '').trim();
@@ -759,9 +765,16 @@ export async function runAgentLoop({
       let approved = true;
       let approvalArgs = args;
       let preflightErrorContent = '';
+      const runPolicyCheck = toolName === 'run'
+        ? evaluateCommandPolicy(args?.command || '', config, config?.workspaceRoot || process.cwd())
+        : { allowed: true };
+      const isSafeModePolicyBlocked = toolName === 'run'
+        && config?.policy?.safe_mode !== false
+        && !runPolicyCheck.allowed
+        && runPolicyCheck.reason !== 'blocked by dangerous command pattern';
       const isSafeModeRun = toolName === 'run'
         && config?.policy?.safe_mode !== false
-        && requiresApprovalEvaluation(args?.command || '', config?.shell?.default);
+        && (isSafeModePolicyBlocked || requiresApprovalEvaluation(args?.command || '', config?.shell?.default));
       const isFileWriteTool = toolName === 'edit' || toolName === 'write' || toolName === 'delete';
       const needsApproval = normalizedApprovalMode === 'full_access'
         ? false
@@ -792,14 +805,40 @@ export async function runAgentLoop({
               config,
               workspaceRoot: config?.workspaceRoot || process.cwd()
             });
-            approvalArgs = { ...args, _risk: evaluation.risk, _evaluation: evaluation };
+            approvalArgs = {
+              ...args,
+              _risk: isSafeModePolicyBlocked && evaluation.risk === 'low' ? 'medium' : evaluation.risk,
+              _evaluation: evaluation,
+              _policyBlock: isSafeModePolicyBlocked
+                ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
+                : null
+            };
+            if (shouldDenyHighRiskRunEvaluation(config, evaluation)) {
+              preflightErrorContent = clipToolResult({
+                error: 'Command blocked by safe mode: high-risk command denied because dangerous commands are disabled',
+                evaluation
+              }, toolResultMaxChars);
+              approvalResults.set(call.id, {
+                approved: false,
+                args: approvalArgs,
+                errorContent: preflightErrorContent
+              });
+              continue;
+            }
             /* LLM says low-risk + allow → auto-approve, skip confirmation panel */
-            if (normalizedApprovalMode !== 'review' && evaluation.risk === 'low' && evaluation.recommendation === 'allow') {
+            if (!isSafeModePolicyBlocked && normalizedApprovalMode !== 'review' && evaluation.risk === 'low' && evaluation.recommendation === 'allow') {
               approvalResults.set(call.id, { approved: true, args: approvalArgs });
               continue;
             }
           } catch (_) {
-            approvalArgs = { ...args, _risk: 'high', _evaluation: null };
+            approvalArgs = {
+              ...args,
+              _risk: isSafeModePolicyBlocked ? 'medium' : 'high',
+              _evaluation: null,
+              _policyBlock: isSafeModePolicyBlocked
+                ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
+                : null
+            };
           }
           if (typeof handler?.prepareApproval === 'function') {
             try {
@@ -826,6 +865,9 @@ export async function runAgentLoop({
               : (toolName === 'run' ? approvalArgs.approval : undefined)
           });
           approved = Boolean(decision?.approved);
+          if (approved && toolName === 'run' && isSafeModePolicyBlocked) {
+            approvalArgs = markRunCommandSafeModeApproved(approvalArgs);
+          }
         }
       }
       approvalResults.set(call.id, { approved, args: approvalArgs });

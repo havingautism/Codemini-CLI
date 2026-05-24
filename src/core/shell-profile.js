@@ -18,6 +18,7 @@ const SHELL_PROFILES = {
     label: 'PowerShell',
     command_allowlist: [
       'rg',
+      'cd',
       'git',
       'node',
       'npm',

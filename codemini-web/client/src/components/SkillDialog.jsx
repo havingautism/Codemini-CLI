@@ -2,7 +2,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { SkillPanel } from '@/components/SkillPanel.jsx';
 import { t } from '../../i18n/index.js';
 
-export function SkillDialog({ open, onOpenChange, projectDirs = [] }) {
+export function SkillDialog({ open, onOpenChange, projectDirs = [], projectTargets = [] }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[800px] max-h-[86vh] overflow-hidden flex flex-col">
@@ -10,7 +10,7 @@ export function SkillDialog({ open, onOpenChange, projectDirs = [] }) {
           <DialogTitle>{t('skills')}</DialogTitle>
         </DialogHeader>
         <div className="flex-1 overflow-y-auto min-h-0 pr-1">
-          <SkillPanel projectDirs={projectDirs} />
+          <SkillPanel projectDirs={projectDirs} projectTargets={projectTargets} />
         </div>
       </DialogContent>
     </Dialog>

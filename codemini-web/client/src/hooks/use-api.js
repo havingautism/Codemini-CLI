@@ -224,20 +224,20 @@ export async function fetchSkillContent(name, projectDir) {
   return res.json();
 }
 
-export async function createSkill({ name, description, content, scope }) {
+export async function createSkill({ name, description, content, scope, projectDir }) {
   const res = await api('/api/skills/create', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ name, description, content, scope })
+    body: JSON.stringify({ name, description, content, scope, projectDir })
   });
   return res.json();
 }
 
-export async function installSkill({ source, scope }) {
+export async function installSkill({ source, scope, projectDir }) {
   const res = await api('/api/skills/install', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ source, scope })
+    body: JSON.stringify({ source, scope, projectDir })
   });
   return res.json();
 }

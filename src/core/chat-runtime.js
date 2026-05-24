@@ -3104,18 +3104,21 @@ async function askModel({
     projectContextGuidance
   });
 
+  const toolConfig = {
+    ...config,
+    workspaceRoot: process.cwd(),
+    policy: {
+      ...(config.policy || {}),
+      allowed_paths: [
+        ...(Array.isArray(config.policy?.allowed_paths) ? config.policy.allowed_paths : []),
+        path.join(getSessionsDir(), String(session.id))
+      ]
+    }
+  };
+
   const { definitions, handlers, formatters, deferredDefinitions, dispose: disposeTools } = getBuiltinTools({
     workspaceRoot: process.cwd(),
-    config: {
-      ...config,
-      policy: {
-        ...(config.policy || {}),
-        allowed_paths: [
-          ...(Array.isArray(config.policy?.allowed_paths) ? config.policy.allowed_paths : []),
-          path.join(getSessionsDir(), String(session.id))
-        ]
-      }
-    },
+    config: toolConfig,
     sessionId: session.id,
     onSystemEvent: onAgentEvent,
     getTodos: () => normalizeTodos(session.todos),
@@ -3387,7 +3390,7 @@ async function askModel({
     requestToolApproval,
     signal,
     skipAnalysisNudge,
-    config,
+    config: toolConfig,
     changeTracker: changeTracker?.enabled
       ? {
           begin: (meta) => beginGitOplogCapture(changeTracker, meta),

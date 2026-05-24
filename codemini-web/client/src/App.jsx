@@ -67,22 +67,35 @@ const MemoSidebar = memo(Sidebar);
 const MemoInputBar = memo(InputBar);
 const MemoStatusBar = memo(StatusBar);
 
-function collectSidebarProjectDirs(
+function projectLabelFromDir(dir, isGeneral = false) {
+  if (isGeneral) return t("generalChat");
+  const value = String(dir || "").trim();
+  if (!value || value === "unknown") return t("unknownProject");
+  return value.split(/[/\\]/).filter(Boolean).pop() || value;
+}
+
+function collectSidebarProjectTargets(
   sessions = [],
   currentDir = "",
   runtimeDir = "",
+  runtimeIsGeneral = false,
 ) {
-  const dirs = new Set();
-  for (const session of sessions || []) {
-    const dir = String(session?.projectDir || "").trim();
-    if (!dir || dir === "unknown") continue;
-    dirs.add(dir);
-  }
-  for (const dir of [currentDir, runtimeDir]) {
+  const targets = new Map();
+  const addTarget = (dir, isGeneral = false) => {
     const value = String(dir || "").trim();
-    if (value && value !== "unknown") dirs.add(value);
+    if (!value || value === "unknown" || targets.has(value)) return;
+    targets.set(value, {
+      dir: value,
+      label: projectLabelFromDir(value, isGeneral),
+      isGeneral: !!isGeneral,
+    });
+  };
+  for (const session of sessions || []) {
+    addTarget(session?.projectDir, session?.isGeneral);
   }
-  return Array.from(dirs);
+  addTarget(currentDir, false);
+  addTarget(runtimeDir, runtimeIsGeneral);
+  return Array.from(targets.values());
 }
 
 function GitHubIcon({ size = 14, className, ...props }) {
@@ -160,10 +173,19 @@ function Shell() {
     () => actions.setProjectOpen(true),
     [actions],
   );
-  const sidebarProjectDirs = useMemo(
+  const sidebarProjectTargets = useMemo(
     () =>
-      collectSidebarProjectDirs(state.sessions, "", state.runtimeState?.cwd),
-    [state.sessions, state.runtimeState?.cwd],
+      collectSidebarProjectTargets(
+        state.sessions,
+        "",
+        state.runtimeState?.cwd,
+        state.isGeneral,
+      ),
+    [state.sessions, state.runtimeState?.cwd, state.isGeneral],
+  );
+  const sidebarProjectDirs = useMemo(
+    () => sidebarProjectTargets.map((item) => item.dir),
+    [sidebarProjectTargets],
   );
 
   return (
@@ -339,6 +361,7 @@ function Shell() {
             open={state.skillsOpen}
             onOpenChange={actions.setSkillsOpen}
             projectDirs={sidebarProjectDirs}
+            projectTargets={sidebarProjectTargets}
           />
         )}
 

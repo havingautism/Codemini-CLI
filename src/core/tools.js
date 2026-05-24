@@ -44,9 +44,23 @@ const BACKGROUND_TASK_RECENT_OUTPUT_LIMIT = 80;
 const BACKGROUND_TASK_POLL_MS = 150;
 const MAX_AST_ENCLOSING_BYTES = 300_000;
 const MAX_AST_ENCLOSING_LINES = 5_000;
+const RUN_COMMAND_SAFE_MODE_APPROVED = Symbol('runCommandSafeModeApproved');
 const backgroundTaskRegistry = new Map();
 let backgroundTaskCounter = 0;
 let backgroundTaskLogCursorCounter = 0;
+
+export function markRunCommandSafeModeApproved(args = {}) {
+  const next = { ...(args && typeof args === 'object' ? args : {}) };
+  Object.defineProperty(next, RUN_COMMAND_SAFE_MODE_APPROVED, {
+    value: true,
+    enumerable: false
+  });
+  return next;
+}
+
+export function hasRunCommandSafeModeApproval(args = {}) {
+  return Boolean(args?.[RUN_COMMAND_SAFE_MODE_APPROVED]);
+}
 
 async function realpathIfExists(targetPath) {
   try {
@@ -1126,7 +1140,7 @@ async function runCommand(root, config, args) {
   }
 
   const check = evaluateCommandPolicy(command, config, root);
-  if (!check.allowed) {
+  if (!check.allowed && !hasRunCommandSafeModeApproval(args)) {
     throw new Error(
       `Command blocked by safe mode: ${check.reason}${check.suggestion ? ` | ${check.suggestion}` : ''}`
     );
@@ -1297,7 +1311,7 @@ async function startBackgroundTask(root, config, args) {
     throw new Error('Command blocked by policy');
   }
   const check = evaluateCommandPolicy(command, config, root);
-  if (!check.allowed) {
+  if (!check.allowed && !hasRunCommandSafeModeApproval(args)) {
     throw new Error(
       `Command blocked by safe mode: ${check.reason}${check.suggestion ? ` | ${check.suggestion}` : ''}`
     );
@@ -2923,7 +2937,8 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         prepareApproval: async (args) => ({
           command: args?.command || '',
           risk: args?._risk || 'high',
-          evaluation: args?._evaluation || null
+          evaluation: args?._evaluation || null,
+          policyBlock: args?._policyBlock || null
         })
       }
     ),

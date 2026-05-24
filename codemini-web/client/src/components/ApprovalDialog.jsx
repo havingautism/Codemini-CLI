@@ -56,7 +56,12 @@ function ApprovalBody({ variant, args, details }) {
       <>
         <DetailRow label="Command" value={parsed.command || '-'} />
         {details?.risk && <DetailRow label="Risk" value={details.risk} />}
-        {details?.description && <DetailRow label="Info" value={details.description} />}
+        {details?.evaluation?.recommendation && <DetailRow label="Recommend" value={details.evaluation.recommendation} />}
+        {details?.policyBlock?.reason && <DetailRow label="Policy" value={details.policyBlock.reason} />}
+        {(details?.description || details?.evaluation?.description) && (
+          <DetailRow label="Info" value={details.description || details.evaluation.description} />
+        )}
+        {details?.evaluation?.sideEffects && <DetailRow label="Effects" value={details.evaluation.sideEffects} />}
       </>
     );
   }

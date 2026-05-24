@@ -86,6 +86,45 @@ function projectDirsKey(projectDirs = []) {
     : "";
 }
 
+function normalizeProjectTargets(projectTargets = [], projectDirs = []) {
+  const byDir = new Map();
+  for (const item of Array.isArray(projectTargets) ? projectTargets : []) {
+    const dir = String(item?.dir || item?.path || item || "").trim();
+    if (!dir || byDir.has(dir)) continue;
+    byDir.set(dir, {
+      dir,
+      label: item?.label || projectDisplayName(dir.split(/[/\\]/).filter(Boolean).pop() || dir),
+    });
+  }
+  for (const dir of Array.isArray(projectDirs) ? projectDirs : []) {
+    const value = String(dir || "").trim();
+    if (!value || byDir.has(value)) continue;
+    byDir.set(value, {
+      dir: value,
+      label: projectDisplayName(value.split(/[/\\]/).filter(Boolean).pop() || value),
+    });
+  }
+  return Array.from(byDir.values());
+}
+
+function projectTargetValue(projectDir) {
+  const dir = String(projectDir || "").trim();
+  return dir ? `project:${dir}` : "";
+}
+
+function parseSkillTarget(value) {
+  const text = String(value || "");
+  if (text === "global") return { scope: "global", projectDir: "" };
+  if (text.startsWith("project:")) {
+    return { scope: "project", projectDir: text.slice("project:".length) };
+  }
+  return { scope: "project", projectDir: "" };
+}
+
+function defaultSkillTarget(projectTargets = []) {
+  return projectTargets[0]?.dir ? projectTargetValue(projectTargets[0].dir) : "global";
+}
+
 function isBuiltin(skill) {
   return skill?.scope === "builtin";
 }
@@ -94,10 +133,14 @@ function isEnabled(skill) {
   return skill?.enabled !== false;
 }
 
-function SkillEditor({ skill, onSave, onCancel }) {
+function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
   const [name, setName] = useState(skill?.name || "");
   const [description, setDescription] = useState(skill?.description || "");
-  const [scope, setScope] = useState(skill?.scope || "project");
+  const [target, setTarget] = useState(
+    skill?.scope === "global"
+      ? "global"
+      : projectTargetValue(skill?.projectDir) || defaultSkillTarget(projectTargets),
+  );
   const [mode, setMode] = useState(skill?.mode || "agent_requested");
   const [triggers, setTriggers] = useState((skill?.triggers || []).join(", "));
   const [priority, setPriority] = useState(skill?.priority ?? 50);
@@ -110,7 +153,11 @@ function SkillEditor({ skill, onSave, onCancel }) {
   useEffect(() => {
     setName(skill?.name || "");
     setDescription(skill?.description || "");
-    setScope(skill?.scope || "project");
+    setTarget(
+      skill?.scope === "global"
+        ? "global"
+        : projectTargetValue(skill?.projectDir) || defaultSkillTarget(projectTargets),
+    );
     setMode(skill?.mode || "agent_requested");
     setTriggers((skill?.triggers || []).join(", "));
     setPriority(skill?.priority ?? 50);
@@ -125,12 +172,13 @@ function SkillEditor({ skill, onSave, onCancel }) {
       .then((data) => setContent(data.content || ""))
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [skill]);
+  }, [skill, projectTargets]);
 
   const handleSave = async () => {
+    const selectedTarget = parseSkillTarget(target);
     const metadata = {
       description,
-      scope,
+      scope: selectedTarget.scope,
       mode,
       triggers: triggers
         .split(",")
@@ -140,13 +188,30 @@ function SkillEditor({ skill, onSave, onCancel }) {
       priority: Number(priority) || 0,
     };
     if (isNew) {
-      await api.createSkill({ name, description, content, scope });
-      await api.updateSkillMetadata(name, metadata);
+      await api.createSkill({
+        name,
+        description,
+        content,
+        scope: selectedTarget.scope,
+        projectDir: selectedTarget.projectDir,
+      });
+      await api.updateSkillMetadata(
+        name,
+        metadata,
+        selectedTarget.scope === "project" ? selectedTarget.projectDir : undefined,
+      );
     } else {
-      await api.updateSkillMetadata(skill.name, metadata, skill.projectDir);
       if (!contentReadOnly) {
         await api.updateSkillContent(skill.name, content, skill.projectDir);
       }
+      await api.updateSkillMetadata(
+        skill.name,
+        {
+          ...metadata,
+          targetProjectDir: selectedTarget.scope === "project" ? selectedTarget.projectDir : undefined,
+        },
+        skill.projectDir,
+      );
     }
     onSave();
   };
@@ -167,7 +232,7 @@ function SkillEditor({ skill, onSave, onCancel }) {
             variant="outline"
             className="rounded-md px-1.5 py-0 text-[10px]"
           >
-            {scopeLabel(scope)}
+            {scopeLabel(parseSkillTarget(target).scope)}
           </Badge>
         </div>
 
@@ -177,13 +242,17 @@ function SkillEditor({ skill, onSave, onCancel }) {
               <label className="text-[12px] text-(--text-muted)">
                 {t("skillScope")}
               </label>
-              <Select value={scope} onValueChange={setScope}>
+              <Select value={target} onValueChange={setTarget}>
                 <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent align="start">
-                  <SelectItem value="project">{t("projectScope")}</SelectItem>
                   <SelectItem value="global">{t("globalScope")}</SelectItem>
+                  {projectTargets.map((item) => (
+                    <SelectItem key={item.dir} value={projectTargetValue(item.dir)}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -315,7 +384,7 @@ function SkillEditor({ skill, onSave, onCancel }) {
   );
 }
 
-function SkillEditorDialog({ skill, open, onSave, onOpenChange }) {
+function SkillEditorDialog({ skill, projectTargets = [], open, onSave, onOpenChange }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[760px] h-[86vh] max-h-[86vh] flex flex-col overflow-hidden">
@@ -324,6 +393,7 @@ function SkillEditorDialog({ skill, open, onSave, onOpenChange }) {
         </DialogHeader>
         <SkillEditor
           skill={skill}
+          projectTargets={projectTargets}
           onSave={onSave}
           onCancel={() => onOpenChange(false)}
         />
@@ -483,7 +553,7 @@ function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
   );
 }
 
-export function SkillPanel({ projectDirs = [] }) {
+export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
@@ -492,7 +562,11 @@ export function SkillPanel({ projectDirs = [] }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [installSource, setInstallSource] = useState("");
-  const [installScope, setInstallScope] = useState("project");
+  const normalizedProjectTargets = useMemo(
+    () => normalizeProjectTargets(projectTargets, projectDirs),
+    [projectTargets, projectDirs],
+  );
+  const [installTarget, setInstallTarget] = useState("");
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState("");
   const projectKey = projectDirsKey(projectDirs);
@@ -500,6 +574,16 @@ export function SkillPanel({ projectDirs = [] }) {
     () => (projectKey ? projectKey.split("\n") : []),
     [projectKey],
   );
+
+  useEffect(() => {
+    const allowed = new Set([
+      "global",
+      ...normalizedProjectTargets.map((item) => projectTargetValue(item.dir)),
+    ]);
+    if (installTarget && !allowed.has(installTarget)) {
+      setInstallTarget("");
+    }
+  }, [installTarget, normalizedProjectTargets]);
 
   const loadSkills = useCallback(async () => {
     setLoading(true);
@@ -558,7 +642,14 @@ export function SkillPanel({ projectDirs = [] }) {
     setInstalling(true);
     setInstallError("");
     try {
-      const result = await api.installSkill({ source, scope: installScope });
+      const selectedTarget = parseSkillTarget(
+        installTarget || defaultSkillTarget(normalizedProjectTargets),
+      );
+      const result = await api.installSkill({
+        source,
+        scope: selectedTarget.scope,
+        projectDir: selectedTarget.projectDir,
+      });
       if (result?.error) throw new Error(result.message || "Install failed");
       setInstallSource("");
       await loadSkills();
@@ -664,13 +755,20 @@ export function SkillPanel({ projectDirs = [] }) {
           placeholder={t("skillInstallPlaceholder")}
           className="h-8 text-[13px]"
         />
-        <Select value={installScope} onValueChange={setInstallScope}>
-          <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px] sm:w-[104px]">
+        <Select
+          value={installTarget || defaultSkillTarget(normalizedProjectTargets)}
+          onValueChange={setInstallTarget}
+        >
+          <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px] sm:w-[150px]">
             <SelectValue />
           </SelectTrigger>
           <SelectContent align="start">
-            <SelectItem value="project">{t("projectScope")}</SelectItem>
             <SelectItem value="global">{t("globalScope")}</SelectItem>
+            {normalizedProjectTargets.map((item) => (
+              <SelectItem key={item.dir} value={projectTargetValue(item.dir)}>
+                {item.label}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
         <Button
@@ -802,6 +900,7 @@ export function SkillPanel({ projectDirs = [] }) {
       />
       <SkillEditorDialog
         skill={editing === "new" ? null : editing}
+        projectTargets={normalizedProjectTargets}
         open={!!editing}
         onSave={handleSave}
         onOpenChange={(open) => {

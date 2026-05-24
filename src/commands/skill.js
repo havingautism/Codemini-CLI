@@ -13,6 +13,8 @@ import {
   writeSkillRegistry
 } from '../core/skill-registry.js';
 
+const SKILL_CATALOG_FILE = 'codemini.skills.json';
+
 function parseScopeArgs(args = [], { defaultScope = 'project', allowAll = false } = {}) {
   let scope = defaultScope;
   const rest = [];
@@ -205,6 +207,122 @@ async function readManifestSafe(skillRoot) {
   }
 }
 
+function parseArrayText(value) {
+  const inner = value.slice(1, -1).trim();
+  if (!inner) return [];
+  return inner.split(',').map((item) => item.trim().replace(/^["']|["']$/g, ''));
+}
+
+function parseSkillFrontmatter(raw) {
+  const normalized = String(raw || '').replace(/\r\n/g, '\n');
+  if (!normalized.startsWith('---\n')) {
+    return { metadata: {}, content: normalized };
+  }
+  const end = normalized.indexOf('\n---\n', 4);
+  if (end === -1) {
+    return { metadata: {}, content: normalized };
+  }
+
+  const metadata = {};
+  const metaRaw = normalized.slice(4, end).trim();
+  for (const line of metaRaw.split('\n')) {
+    const idx = line.indexOf(':');
+    if (idx <= 0) continue;
+    const key = line.slice(0, idx).trim();
+    const value = line.slice(idx + 1).trim();
+    metadata[key] = value.startsWith('[') && value.endsWith(']')
+      ? parseArrayText(value)
+      : value.replace(/^["']|["']$/g, '');
+  }
+
+  return {
+    metadata,
+    content: normalized.slice(end + 5).trim()
+  };
+}
+
+function cleanDescriptionText(value) {
+  return String(value || '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/[`*_~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 240);
+}
+
+function inferDescriptionFromSkillMarkdown(content) {
+  const lines = String(content || '').replace(/\r\n/g, '\n').split('\n');
+  let inFence = false;
+  const paragraph = [];
+
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+    if (trimmed.startsWith('```') || trimmed.startsWith('~~~')) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+
+    if (!trimmed) {
+      if (paragraph.length > 0) break;
+      continue;
+    }
+    if (/^#{1,6}\s+/.test(trimmed)) continue;
+    if (/^<!--/.test(trimmed)) continue;
+    if (/^[-*_]{3,}$/.test(trimmed)) continue;
+
+    const withoutListMarker = trimmed.replace(/^([-*+]|\d+[.)])\s+/, '');
+    if (/^(name|version|author|license|entry)\s*:/i.test(withoutListMarker)) continue;
+    paragraph.push(withoutListMarker);
+  }
+
+  return cleanDescriptionText(paragraph.join(' '));
+}
+
+async function readSkillDocumentMeta(skillRoot, entryFile = 'SKILL.md') {
+  const entryPath = path.join(skillRoot, entryFile || 'SKILL.md');
+  try {
+    const raw = await fs.readFile(entryPath, 'utf8');
+    const parsed = parseSkillFrontmatter(raw);
+    return {
+      version: parsed.metadata.version ? String(parsed.metadata.version) : '',
+      description: parsed.metadata.description
+        ? cleanDescriptionText(parsed.metadata.description)
+        : inferDescriptionFromSkillMarkdown(parsed.content)
+    };
+  } catch {
+    return { version: '', description: '' };
+  }
+}
+
+async function readSkillCatalogSafe(baseDir) {
+  const catalogPath = path.join(baseDir, SKILL_CATALOG_FILE);
+  try {
+    const parsed = JSON.parse(await fs.readFile(catalogPath, 'utf8'));
+    return parsed && typeof parsed === 'object' && parsed.skills && typeof parsed.skills === 'object'
+      ? parsed
+      : { version: 1, skills: {} };
+  } catch {
+    return { version: 1, skills: {} };
+  }
+}
+
+async function writeSkillCatalog(baseDir, catalog) {
+  await fs.mkdir(baseDir, { recursive: true });
+  await fs.writeFile(path.join(baseDir, SKILL_CATALOG_FILE), `${JSON.stringify(catalog, null, 2)}\n`, 'utf8');
+}
+
+async function upsertSkillCatalogEntry(baseDir, name, entry) {
+  const catalog = await readSkillCatalogSafe(baseDir);
+  catalog.version = catalog.version || 1;
+  catalog.skills = catalog.skills || {};
+  catalog.skills[name] = {
+    ...(catalog.skills[name] || {}),
+    ...entry
+  };
+  await writeSkillCatalog(baseDir, catalog);
+}
+
 async function resolveSkillSourceDir(sourcePath) {
   const absSrc = path.resolve(sourcePath);
   const srcStat = await fs.stat(absSrc);
@@ -280,16 +398,24 @@ export async function installSkill(sourcePath, { scope = 'project', cwd = proces
   await fs.access(entryPath);
 
   const hash = await computeFileSha256(entryPath);
+  const documentMeta = await readSkillDocumentMeta(targetDir, entryFile);
+  const description = manifest?.description || documentMeta.description || '';
+  const version = manifest?.version || documentMeta.version || '0.0.0';
   if (scope === 'global') {
     await upsertSkillRegistryEntry(undefined, {
       name: folderName,
-      version: manifest?.version || '0.0.0',
-      description: manifest?.description || '',
+      version,
+      description,
       enabled: true,
       source: sourceLabel,
       entryFile,
       sha256: hash,
       installedAt: new Date().toISOString()
+    });
+  } else {
+    await upsertSkillCatalogEntry(baseDirForScope(scope, cwd), folderName, {
+      description,
+      enabled: true
     });
   }
   await setSkillEnabledConfig(folderName, true);
@@ -397,10 +523,11 @@ async function reindexSkills({ scope = 'global', cwd = process.cwd() } = {}) {
     }
     const hash = await computeFileSha256(entryPath);
     const prior = byName.get(name);
+    const documentMeta = await readSkillDocumentMeta(dir, entryFile);
     rebuilt.push({
       name: manifest?.name || name,
-      version: manifest?.version || prior?.version || '0.0.0',
-      description: manifest?.description || prior?.description || '',
+      version: manifest?.version || documentMeta.version || prior?.version || '0.0.0',
+      description: manifest?.description || documentMeta.description || prior?.description || '',
       enabled: prior?.enabled !== false,
       source: prior?.source || 'reindex',
       entryFile,
@@ -414,6 +541,19 @@ async function reindexSkills({ scope = 'global', cwd = process.cwd() } = {}) {
       version: 1,
       skills: rebuilt
     });
+  } else if (scope === 'project') {
+    const catalog = await readSkillCatalogSafe(baseDir);
+    catalog.version = catalog.version || 1;
+    catalog.skills = catalog.skills || {};
+    for (const item of rebuilt) {
+      catalog.skills[item.name] = {
+        ...(catalog.skills[item.name] || {}),
+        description: item.description,
+        enabled: item.enabled !== false,
+        triggers: Array.isArray(catalog.skills[item.name]?.triggers) ? catalog.skills[item.name].triggers : []
+      };
+    }
+    await writeSkillCatalog(baseDir, catalog);
   }
 
   return rebuilt.length;
