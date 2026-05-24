@@ -23,7 +23,6 @@ import {
   Database,
   Inbox,
   Camera,
-  RotateCcw,
   MessageSquareText,
   Drama,
 } from "lucide-react";
@@ -117,12 +116,6 @@ const ACTION_COMMANDS = [
     insert: "/reflect ",
     icon: Sparkles,
     description: "Draft or update a reusable skill from the current workflow.",
-  },
-  {
-    name: "retry",
-    insert: "/retry ",
-    icon: RotateCcw,
-    description: "Retry the last assistant turn.",
   },
 ];
 

@@ -54,9 +54,40 @@ const STREAM_SAVE_DEBOUNCE_MS = 120;
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_REQUIREMENTS_TEMPLATE = path.resolve(MODULE_DIR, '..', '..', 'templates', 'project-requirements', 'report-shell.html');
 
-function toOpenAIMessages(sessionMessages) {
+export function isModelVisibleMessage(message) {
+  return message?.model_visible !== false && message?.local_only !== true;
+}
+
+function modelContentForMessage(message, index, { currentTurnUserIndex = -1 } = {}) {
+  const modelContent = typeof message?.model_content === 'string' && message.model_content
+    ? message.model_content
+    : '';
+  if (!modelContent) return message?.content;
+  if (message?.model_content_scope === 'current_turn' && index !== currentTurnUserIndex) {
+    return message?.content;
+  }
+  return modelContent;
+}
+
+export function modelVisibleMessages(messages = []) {
+  return (Array.isArray(messages) ? messages : []).filter(isModelVisibleMessage);
+}
+
+function findCurrentTurnUserIndex(messages = [], text = '', modelText = '') {
+  if (!modelText || modelText === text) return -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== 'user') continue;
+    if (message.content === text && message.model_content === modelText) return index;
+  }
+  return -1;
+}
+
+export function toOpenAIMessages(sessionMessages, options = {}) {
   const mapped = [];
-  for (const msg of sessionMessages) {
+  for (let index = 0; index < (sessionMessages || []).length; index += 1) {
+    const msg = sessionMessages[index];
+    if (!isModelVisibleMessage(msg)) continue;
     if (msg.role === 'tool') {
       mapped.push({
         role: 'tool',
@@ -67,7 +98,7 @@ function toOpenAIMessages(sessionMessages) {
     }
     mapped.push({
       role: msg.role,
-      content: typeof msg.model_content === 'string' && msg.model_content ? msg.model_content : msg.content,
+      content: modelContentForMessage(msg, index, options),
       ...(typeof msg.reasoning_content === 'string' && msg.reasoning_content ? { reasoning_content: msg.reasoning_content } : {}),
       ...(Array.isArray(msg.reasoning_details) && msg.reasoning_details.length > 0 ? { reasoning_details: msg.reasoning_details } : {}),
       ...(msg.tool_calls ? { tool_calls: msg.tool_calls } : {})
@@ -484,7 +515,6 @@ function getCompletionCopy(language = 'zh') {
         reflect: '复盘成功链路并生成可审阅 skill 草稿',
         history: '查看/恢复会话',
         debug: '运行时调试开关',
-        retry: '重试上一条用户请求',
         stop: '中止当前回答',
         new: '开始新会话',
         yes: '确认当前待审批计划并开始执行',
@@ -507,7 +537,6 @@ function getCompletionCopy(language = 'zh') {
         debugCommand: '调试命令',
         keyboardDebugCommand: '键盘调试命令',
         compactCommand: '上下文压缩命令',
-        retryCommand: '重试上一条用户请求',
         stopCommand: '中止当前回答',
         statusCommand: '查看运行状态',
         modelCommand: '查看或切换模型',
@@ -600,7 +629,6 @@ function getCompletionCopy(language = 'zh') {
         reflect: 'reflect on a successful workflow and draft a reusable skill',
         history: 'list/resume sessions',
         debug: 'runtime debug switches',
-        retry: 'retry the last user request',
         stop: 'stop the current response',
         new: 'start a new session',
         yes: 'approve the pending plan and start execution',
@@ -623,7 +651,6 @@ function getCompletionCopy(language = 'zh') {
         debugCommand: 'debug command',
         keyboardDebugCommand: 'keyboard debug command',
         compactCommand: 'context compaction command',
-        retryCommand: 'retry the last user request',
         stopCommand: 'stop the current response',
         statusCommand: 'show runtime status',
         modelCommand: 'show or switch model',
@@ -2544,8 +2571,7 @@ function makePromptBudgetComponent(name, role, content) {
 
 function buildPromptBudgetAudit({
   systemPrompt = '',
-  projectContextSnippet = '',
-  projectContextGuidance = '',
+  projectContextPrompt = '',
   messages = [],
   toolDefinitions = [],
   config = {}
@@ -2557,8 +2583,7 @@ function buildPromptBudgetAudit({
   }));
   const components = [
     makePromptBudgetComponent('system_prompt', 'system', systemPrompt),
-    makePromptBudgetComponent('project_context', 'system', projectContextSnippet),
-    makePromptBudgetComponent('project_context_guidance', 'system', projectContextGuidance),
+    makePromptBudgetComponent('project_context', 'user', projectContextPrompt),
     {
       name: 'message_history',
       chars: messageTexts.reduce((total, message) => total + String(message.content || '').length, 0),
@@ -2582,6 +2607,37 @@ function buildPromptBudgetAudit({
   };
 }
 
+export function buildProjectContextUserPrompt({
+  projectContextSnippet = '',
+  projectContextGuidance = '',
+  userText = ''
+} = {}) {
+  const snippet = String(projectContextSnippet || '').trim();
+  const request = String(userText || '').trim();
+  if (!snippet) return request;
+  return [
+    snippet,
+    String(projectContextGuidance || '').trim(),
+    request ? `User request:\n${request}` : ''
+  ].filter(Boolean).join('\n\n');
+}
+
+export function injectProjectContextIntoLastUserMessage(messages = [], projectContextPrompt = '') {
+  const contextPrompt = String(projectContextPrompt || '').trim();
+  const source = Array.isArray(messages) ? messages : [];
+  if (!contextPrompt) return source;
+  const next = source.map((message) => ({ ...message }));
+  for (let index = next.length - 1; index >= 0; index -= 1) {
+    if (next[index]?.role !== 'user') continue;
+    next[index] = {
+      ...next[index],
+      content: contextPrompt
+    };
+    return next;
+  }
+  return [...next, { role: 'user', content: contextPrompt }];
+}
+
 function summarizePromptBudgetAudit(audit) {
   const totalTokens = audit?.total?.estimated_tokens || 0;
   const maxContextTokens = audit?.max_context_tokens || 0;
@@ -2597,8 +2653,8 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
   const activeParentMessages = Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
     ? currentSession.compact.view
     : currentSession?.messages || [];
-  const parentTokens = estimateMessagesTokens(activeParentMessages);
-  const subTokens = extraSession ? estimateMessagesTokens(extraSession.messages || []) : 0;
+  const parentTokens = estimateMessagesTokens(modelVisibleMessages(activeParentMessages));
+  const subTokens = extraSession ? estimateMessagesTokens(modelVisibleMessages(extraSession.messages || [])) : 0;
   const currentContextTokens = parentTokens + subTokens;
   const maxContextTokens = effectiveMaxContextTokens(config);
   const contextUsagePct = maxContextTokens > 0 ? Math.min(100, Math.max(0, (currentContextTokens / maxContextTokens) * 100)) : 0;
@@ -2697,10 +2753,13 @@ async function generateSessionTitle({ userText, assistantText = '', config, sign
           content: [
             'Generate a concise chat session title.',
             'Base it on the completed user-assistant exchange, not only the user prompt.',
+            'Make it a short noun phrase, not a sentence or summary.',
             'Return only the title text.',
             'Use the same language as the user when possible.',
-            'No quotes, no markdown, no punctuation at the ends.',
-            'Maximum 18 Chinese characters or 8 English words.'
+            'No prefixes like "Title:", no quotes, no markdown, no punctuation at the ends.',
+            'Maximum 18 Chinese characters or 8 English words.',
+            'Bad: "This conversation summarizes how to fix the Web UI title generation."',
+            'Good: "Web UI title generation fix".'
           ].join(' ')
         },
         { role: 'user', content: titleInput }
@@ -2745,7 +2804,7 @@ function createCompactSummaryGenerator(config, signal) {
 
 function estimatePromptTokensForRequest(sessionMessages, userText = '') {
   const tokenMsgs = [
-    ...(Array.isArray(sessionMessages) ? sessionMessages : []),
+    ...modelVisibleMessages(sessionMessages),
     { role: 'user', content: String(userText || '') }
   ];
   return estimateMessagesTokens(tokenMsgs);
@@ -2791,6 +2850,53 @@ function shouldPersistInputHistory(parsedInput) {
   const command = String(parsedInput.command || '').trim().toLowerCase();
   // Keep approval-only commands out of input history (↑/↓ should focus on real task prompts).
   return !['yes', 'no', 'edit', 'reject'].includes(command);
+}
+
+const NO_ARG_SLASH_COMMANDS = new Set(['exit', 'new', 'help', 'status', 'commands']);
+const APPROVAL_NO_ARG_SLASH_COMMANDS = new Set(['yes', 'no', 'reject']);
+const COMPACT_FLAGS_WITH_VALUE = new Set(['--threshold']);
+const COMPACT_FLAGS = new Set([
+  '--preview',
+  '--restore',
+  '--micro',
+  '--aggressive',
+  '--conservative',
+  '--default',
+  '--auto-on',
+  '--auto-off',
+  ...COMPACT_FLAGS_WITH_VALUE
+]);
+
+function validateBuiltinSlashArgs(parsedInput) {
+  if (!parsedInput || parsedInput.type !== 'slash') return '';
+  const command = String(parsedInput.command || '').trim().toLowerCase();
+  const args = Array.isArray(parsedInput.args) ? parsedInput.args : [];
+  if ((NO_ARG_SLASH_COMMANDS.has(command) || APPROVAL_NO_ARG_SLASH_COMMANDS.has(command)) && args.length > 0) {
+    return `/${command} does not accept extra text. Use /${command} by itself.`;
+  }
+  if (command === 'compact') {
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = String(args[index] || '');
+      if (!COMPACT_FLAGS.has(arg)) {
+        return `Unknown /compact option: ${arg}\nUsage: /compact [--preview|--restore|--micro|--aggressive|--conservative|--default|--auto-on|--auto-off|--threshold N]`;
+      }
+      if (COMPACT_FLAGS_WITH_VALUE.has(arg)) {
+        const value = args[index + 1];
+        if (value === undefined || Number.isNaN(Number(value))) {
+          return 'Usage: /compact --threshold <50-95>';
+        }
+        index += 1;
+      }
+    }
+  }
+  if (command === 'dream') {
+    for (const arg of args) {
+      if (arg === '--dry-run') continue;
+      if (String(arg || '').startsWith('--scope=')) continue;
+      return `Unknown /dream option: ${arg}\nUsage: /dream [--dry-run] [--scope=user|global|project]`;
+    }
+  }
+  return '';
 }
 
 function buildPendingPlanApprovalMessage(planState) {
@@ -2965,15 +3071,16 @@ async function askModel({
 }) {
   let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
+  const expectedModelText = typeof modelText === 'string' && modelText && modelText !== text ? modelText : '';
   const maxContextTokens = effectiveMaxContextTokens(config);
   const triggerPct = Number(config.context?.preflight_trigger_pct || 60);
   const hardPct = Number(config.context?.hard_limit_pct || 98);
-  const messagesForEstimate = compacted ?? session.messages;
+  const messagesForEstimate = modelVisibleMessages(compacted ?? session.messages);
   const preflightTokens = estimatePromptTokensForRequest(messagesForEstimate, modelInputText);
   const preflightPct = (preflightTokens / maxContextTokens) * 100;
 
   if (persistSession && preflightPct >= triggerPct) {
-    const compactSource = compacted ?? session.messages;
+    const compactSource = modelVisibleMessages(compacted ?? session.messages);
     // Phase 0: try micro-compact first (in-place tool result clearing)
     const microEnabled = config.context?.microcompact_enabled !== false;
     const microKeep = Number(config.context?.microcompact_keep_recent || 5);
@@ -3000,7 +3107,7 @@ async function askModel({
     }
     if (needsMacro) {
       const sourceIsCompacted = Boolean(compacted);
-      const macroSource = compacted ?? session.messages;
+      const macroSource = modelVisibleMessages(compacted ?? session.messages);
       const auto = await compactMessagesLocally(macroSource, {
         mode: preflightPct >= hardPct ? 'aggressive' : 'conservative',
         force: true,
@@ -3076,7 +3183,9 @@ async function askModel({
     : false;
   if (text) {
     const modelExtra =
-      typeof modelText === 'string' && modelText && modelText !== text ? { model_content: modelText } : {};
+      typeof modelText === 'string' && modelText && modelText !== text
+        ? { model_content: modelText, model_content_scope: 'current_turn' }
+        : {};
     const userMessage = stampedMessage('user', text, modelExtra);
     session.messages.push(userMessage);
     if (compacted) {
@@ -3099,9 +3208,12 @@ async function askModel({
     config,
     workspaceRoot: process.cwd(),
     includeSoul: false,
-    includeMemory: false,
+    includeMemory: false
+  });
+  const projectContextPrompt = buildProjectContextUserPrompt({
     projectContextSnippet,
-    projectContextGuidance
+    projectContextGuidance,
+    userText: modelInputText
   });
 
   const toolConfig = {
@@ -3144,13 +3256,25 @@ async function askModel({
     ? Object.fromEntries(Object.entries(deferredDefinitions).filter(([name]) => allowedTools.includes(name)))
     : deferredDefinitions;
 
+  const modelSourceMessages = compacted ?? session.messages;
+  const currentTurnUserIndex = findCurrentTurnUserIndex(modelSourceMessages, text, expectedModelText);
+  const baseInitialMessages = toOpenAIMessages(modelSourceMessages, { currentTurnUserIndex });
+  const initialMessagesForModel = persistSession && projectContextSnippet
+    ? injectProjectContextIntoLastUserMessage(baseInitialMessages, projectContextPrompt)
+    : baseInitialMessages;
+  const loopUserPrompt = persistSession
+    ? ''
+    : (projectContextSnippet ? projectContextPrompt : modelInputText);
+
   if (config.context?.prompt_budget_audit === true && onAgentEvent) {
     const auditId = `prompt-budget-${Date.now()}`;
     const audit = buildPromptBudgetAudit({
-      systemPrompt,
-      projectContextSnippet,
-      projectContextGuidance: projectContextSnippet ? projectContextGuidance : '',
-      messages: session.messages.filter((m) => m.role !== 'system'),
+      systemPrompt: effectiveSystemPrompt,
+      projectContextPrompt: projectContextSnippet ? projectContextPrompt : '',
+      messages: [
+        ...initialMessagesForModel.filter((m) => m.role !== 'system'),
+        ...(loopUserPrompt ? [{ role: 'user', content: loopUserPrompt }] : [])
+      ],
       toolDefinitions: filteredDefinitions,
       config
     });
@@ -3368,8 +3492,6 @@ async function askModel({
   };
 
   const sessionLenBeforeLoop = session.messages.length;
-  const loopUserPrompt = persistSession ? '' : modelInputText;
-  const expectedModelText = typeof modelText === 'string' && modelText && modelText !== text ? modelText : '';
   const loopResult = await runAgentLoop({
     systemPrompt: effectiveSystemPrompt,
     userPrompt: loopUserPrompt,
@@ -3377,7 +3499,7 @@ async function askModel({
     maxSteps: maxStepsOverride ?? Number(config.execution?.max_steps || 16),
     toolDefinitions: filteredDefinitions,
     toolHandlers: filteredHandlers,
-    initialMessages: toOpenAIMessages(compacted ?? session.messages),
+    initialMessages: initialMessagesForModel,
     onEvent: wrappedAgentEvent,
     executionMode: executionMode || config.execution?.mode || 'normal',
     approvalMode: config.execution?.approval_mode || 'review',
@@ -3446,17 +3568,6 @@ async function askModel({
         compacted.push({ ...msg });
       }
       if (onCompactedUpdate) onCompactedUpdate(compacted);
-    }
-    // Handle model_content rewrite on the new user message
-    if (expectedModelText) {
-      for (let i = session.messages.length - 1; i >= 0; i -= 1) {
-        const message = session.messages[i];
-        if (message?.role === 'user' && message.content === expectedModelText) {
-          message.content = text;
-          message.model_content = expectedModelText;
-          break;
-        }
-      }
     }
     session.model = model || config.model.name;
     session.mode = executionMode || config.execution?.mode || 'normal';
@@ -4868,7 +4979,6 @@ export async function createChatRuntime({
     '/agents',
     '/compact',
     '/debug',
-    '/retry',
     '/new'
   ];
   const configSubcommandPriority = ['/config set', '/config get', '/config list', '/config reset'];
@@ -4894,7 +5004,6 @@ export async function createChatRuntime({
       { name: 'reflect', description: completionCopy.commands.reflect },
       { name: 'history', description: completionCopy.commands.history },
       { name: 'debug', description: completionCopy.commands.debug },
-      { name: 'retry', description: completionCopy.commands.retry },
       { name: 'stop', description: completionCopy.commands.stop },
       { name: 'new', description: completionCopy.commands.new }
     ];
@@ -4963,7 +5072,6 @@ export async function createChatRuntime({
     ...dreamTemplates,
     ...reflectTemplates,
     ...compactTemplates,
-    '/retry',
     '/status'
   ];
   const compactKey = (value) => String(value || '').toLowerCase().replace(/[\/\s<>?]/g, '');
@@ -5035,7 +5143,6 @@ export async function createChatRuntime({
     for (const template of dreamTemplates) registerSuggestion(template, completionCopy.generic.dreamCommand);
     for (const template of reflectTemplates) registerSuggestion(template, completionCopy.generic.reflectCommand);
     for (const template of compactTemplates) registerSuggestion(template, completionCopy.generic.compactCommand);
-    registerSuggestion('/retry', completionCopy.generic.retryCommand);
     registerSuggestion('/status', completionCopy.generic.statusCommand);
 
     if (!commandPart) {
@@ -5113,9 +5220,6 @@ export async function createChatRuntime({
         .map((opt) => registerSuggestion(`/compact ${opt}`, completionCopy.generic.compactCommand));
     }
 
-    if (commandPart === 'retry') {
-      return [registerSuggestion('/retry', completionCopy.generic.retryCommand)];
-    }
     if (commandPart === 'status') {
       return [registerSuggestion('/status', completionCopy.generic.statusCommand)];
     }
@@ -5268,12 +5372,13 @@ export async function createChatRuntime({
     return [];
   };
 
-  const persistLocalExchange = async (userText, systemText, { includeUser = true } = {}) => {
+  const persistLocalExchange = async (userText, systemText, { includeUser = true, modelVisible = false } = {}) => {
+    const localMeta = modelVisible ? {} : { model_visible: false, local_only: true };
     if (includeUser && userText) {
-      appendSessionMessage(stampedMessage('user', userText));
+      appendSessionMessage(stampedMessage('user', userText, localMeta));
     }
     if (systemText) {
-      appendSessionMessage(stampedMessage('system', systemText));
+      appendSessionMessage(stampedMessage('system', systemText, localMeta));
     }
     if (shouldReplaceSessionTitle(currentSession.title)) {
       currentSession.title = deriveSessionTitle(currentSession.messages);
@@ -5540,6 +5645,8 @@ export async function createChatRuntime({
       return { type: 'shell', text: shell.text };
     }
     if (parsedInput.type === 'slash') {
+      const argError = validateBuiltinSlashArgs(parsedInput);
+      if (argError) return { type: 'system', text: argError };
       if (parsedInput.command === 'exit') return { type: 'exit' };
       if (parsedInput.command === 'new') {
         const fresh = await createSession();
@@ -5561,7 +5668,7 @@ export async function createChatRuntime({
       if (parsedInput.command === 'help') {
         return {
           type: 'system',
-          text: 'Commands: /help /exit /new /stop /commands /status /model /mode /compact /checkpoint /spec /plan /yes /no /edit /reject /agents /config /memory /capture /inbox /dream /reflect /history /debug /retry /<custom> !<shell>'
+          text: 'Commands: /help /exit /new /stop /commands /status /model /mode /compact /checkpoint /spec /plan /yes /no /edit /reject /agents /config /memory /capture /inbox /dream /reflect /history /debug /<custom> !<shell>'
         };
       }
       if (parsedInput.command === 'status') {
@@ -6214,26 +6321,6 @@ export async function createChatRuntime({
         await persistLocalExchange(line, text);
         return { type: 'system', text };
       }
-      if (parsedInput.command === 'retry') {
-        const lastUser = [...currentSession.messages].reverse().find((m) => m.role === 'user');
-        if (!lastUser?.content) {
-          return { type: 'system', text: 'No previous user message to retry' };
-        }
-        const result = await askModel({
-          text: String(lastUser.content),
-          session: currentSession,
-          config,
-          model,
-          systemPrompt: activeReplySystemPrompt,
-          onAgentEvent,
-          requestToolApproval: activeRequestToolApproval,
-          executionMode,
-          signal,
-          compactedForModel,
-          onCompactedUpdate: setCompactedView
-        });
-        return { type: 'assistant', text: result.text, aborted: !!result.aborted };
-      }
       if (parsedInput.command === 'config') {
         const sub = parsedInput.args[0];
         if (!sub || sub === 'help') {
@@ -6304,7 +6391,7 @@ export async function createChatRuntime({
           return { type: 'system', text };
         }
 
-        const compactSource = compactedForModel ?? currentSession.messages;
+        const compactSource = modelVisibleMessages(compactedForModel ?? currentSession.messages);
         const beforeTokens = estimateMessagesTokens(compactSource);
 
         // --micro: only do micro-compact (in-place tool result clearing)
@@ -6327,7 +6414,7 @@ export async function createChatRuntime({
         }
 
         const sourceIsCompacted = Boolean(compactedForModel);
-        const macroSource = compactedForModel ?? currentSession.messages;
+        const macroSource = modelVisibleMessages(compactedForModel ?? currentSession.messages);
         const result = await compactMessagesLocally(macroSource, { mode: compactState.mode, force: true, generateSummary: createCompactSummaryGenerator(config, null) });
         if (!result.changed) {
           return { type: 'system', text: 'Nothing to compact yet' };
@@ -6528,7 +6615,7 @@ export async function createChatRuntime({
     }
 
     if (compactState.autoEnabled) {
-      const compactSource = compactedForModel ?? currentSession.messages;
+      const compactSource = modelVisibleMessages(compactedForModel ?? currentSession.messages);
       const currentTokens = estimateMessagesTokens(compactSource);
       const maxTokens = effectiveMaxContextTokens(config);
       const usagePct = (currentTokens / maxTokens) * 100;
@@ -6568,7 +6655,7 @@ export async function createChatRuntime({
         // Phase 1: macro compact if still over threshold
         if (needsMacro) {
           const sourceIsCompacted = Boolean(compactedForModel);
-          const macroSource = compactedForModel ?? currentSession.messages;
+          const macroSource = modelVisibleMessages(compactedForModel ?? currentSession.messages);
           const autoResult = await compactMessagesLocally(macroSource, {
             mode: compactState.mode,
             force: true,

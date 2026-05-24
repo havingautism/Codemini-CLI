@@ -120,6 +120,9 @@ function sanitizeMessage(msg) {
   };
 
   if (typeof msg?.model_content === 'string' && msg.model_content) out.model_content = msg.model_content;
+  if (msg?.model_content_scope === 'current_turn') out.model_content_scope = 'current_turn';
+  if (msg?.model_visible === false) out.model_visible = false;
+  if (msg?.local_only === true) out.local_only = true;
   if (msg?.tool_call_id) out.tool_call_id = String(msg.tool_call_id);
   if (Number.isFinite(Number(msg?.tool_duration_ms))) out.tool_duration_ms = Number(msg.tool_duration_ms);
   if (typeof msg?.tool_summary === 'string' && msg.tool_summary.trim()) out.tool_summary = msg.tool_summary.trim();

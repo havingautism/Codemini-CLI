@@ -282,7 +282,7 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
             </div>
           </div>
 
-          {Object.keys(counts).length > 0 && (
+          {/* {Object.keys(counts).length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {Object.entries(counts).map(([kind, count]) => (
                 <Badge
@@ -294,7 +294,7 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
                 </Badge>
               ))}
             </div>
-          )}
+          )} */}
 
           <Separator className="bg-(--border-default)" />
 

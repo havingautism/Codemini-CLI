@@ -33,11 +33,24 @@ function parseFrontmatter(raw) {
   const content = raw.slice(end + 5).trim();
   const metadata = {};
 
-  for (const line of metaRaw.split('\n')) {
+  const lines = metaRaw.split('\n');
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     const idx = line.indexOf(':');
     if (idx <= 0) continue;
     const key = line.slice(0, idx).trim();
     const value = line.slice(idx + 1).trim();
+    if (value === '|' || value === '>') {
+      const block = [];
+      for (let next = index + 1; next < lines.length; next += 1) {
+        const nextLine = lines[next];
+        if (!/^\s+/.test(nextLine)) break;
+        block.push(nextLine.trim());
+        index = next;
+      }
+      metadata[key] = block.join(value === '>' ? ' ' : '\n').trim();
+      continue;
+    }
     if (value.startsWith('[') && value.endsWith(']')) {
       metadata[key] = parseArrayText(value);
     } else {
@@ -54,7 +67,7 @@ function readFrontmatterMetadata(filePath) {
     fd = fs.openSync(filePath, 'r');
     const buffer = Buffer.alloc(FRONTMATTER_READ_BYTES);
     const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, 0);
-    const raw = buffer.subarray(0, bytesRead).toString('utf8');
+    const raw = buffer.subarray(0, bytesRead).toString('utf8').replace(/\r\n/g, '\n');
     if (!raw.startsWith('---\n')) return {};
     const end = raw.indexOf('\n---\n', 4);
     if (end === -1) return {};

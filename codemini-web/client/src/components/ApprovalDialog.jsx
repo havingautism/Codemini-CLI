@@ -46,22 +46,22 @@ function ApprovalBody({ variant, args, details }) {
   if (variant === 'delete') {
     return (
       <>
-        <DetailRow label="File" value={parsed.path || parsed.name || '-'} />
-        <DetailRow label="Type" value={parsed.type || 'file'} />
+        <DetailRow label={t('approvalFieldFile')} value={parsed.path || parsed.name || '-'} />
+        <DetailRow label={t('approvalFieldType')} value={parsed.type || 'file'} />
       </>
     );
   }
   if (variant === 'run') {
     return (
       <>
-        <DetailRow label="Command" value={parsed.command || '-'} />
-        {details?.risk && <DetailRow label="Risk" value={details.risk} />}
-        {details?.evaluation?.recommendation && <DetailRow label="Recommend" value={details.evaluation.recommendation} />}
-        {details?.policyBlock?.reason && <DetailRow label="Policy" value={details.policyBlock.reason} />}
+        <DetailRow label={t('approvalFieldCommand')} value={parsed.command || '-'} />
+        {details?.risk && <DetailRow label={t('approvalFieldRisk')} value={details.risk} />}
+        {details?.evaluation?.recommendation && <DetailRow label={t('approvalFieldRecommend')} value={details.evaluation.recommendation} />}
+        {details?.policyBlock?.reason && <DetailRow label={t('approvalFieldPolicy')} value={details.policyBlock.reason} />}
         {(details?.description || details?.evaluation?.description) && (
-          <DetailRow label="Info" value={details.description || details.evaluation.description} />
+          <DetailRow label={t('approvalFieldInfo')} value={details.description || details.evaluation.description} />
         )}
-        {details?.evaluation?.sideEffects && <DetailRow label="Effects" value={details.evaluation.sideEffects} />}
+        {details?.evaluation?.sideEffects && <DetailRow label={t('approvalFieldEffects')} value={details.evaluation.sideEffects} />}
       </>
     );
   }
@@ -70,20 +70,20 @@ function ApprovalBody({ variant, args, details }) {
     const kind = parsed.kind || edit.kind || parsed.mode || 'edit';
     return (
       <>
-        <DetailRow label="Tool" value="edit" />
-        <DetailRow label="File" value={parsed.file || parsed.path || '-'} />
-        <DetailRow label="Action" value={kind} />
-        <PreviewRow label="Old" value={parsed.old_text || parsed.old_string || edit.old_text || edit.old_string} />
-        <PreviewRow label="New" value={parsed.new_text || parsed.new_string || edit.new_text || edit.new_string || edit.new_content || parsed.content} />
+        <DetailRow label={t('approvalFieldTool')} value="edit" />
+        <DetailRow label={t('approvalFieldFile')} value={parsed.file || parsed.path || '-'} />
+        <DetailRow label={t('approvalFieldAction')} value={kind} />
+        <PreviewRow label={t('approvalFieldOld')} value={parsed.old_text || parsed.old_string || edit.old_text || edit.old_string} />
+        <PreviewRow label={t('approvalFieldNew')} value={parsed.new_text || parsed.new_string || edit.new_text || edit.new_string || edit.new_content || parsed.content} />
       </>
     );
   }
   if (variant === 'write') {
     return (
       <>
-        <DetailRow label="Tool" value="write" />
-        <DetailRow label="File" value={parsed.file || parsed.path || '-'} />
-        <PreviewRow label="Content" value={parsed.content || parsed.text || parsed.body} />
+        <DetailRow label={t('approvalFieldTool')} value="write" />
+        <DetailRow label={t('approvalFieldFile')} value={parsed.file || parsed.path || '-'} />
+        <PreviewRow label={t('approvalFieldContent')} value={parsed.content || parsed.text || parsed.body} />
       </>
     );
   }
@@ -104,13 +104,13 @@ function ApprovalBody({ variant, args, details }) {
   if (variant === 'reflect') {
     return (
       <>
-        {details?.scope && <DetailRow label="Scope" value={details.scope} />}
-        {details?.skillName && <DetailRow label="Skill" value={details.skillName} />}
-        {details?.targetPath && <DetailRow label="Path" value={details.targetPath} />}
+        {details?.scope && <DetailRow label={t('approvalFieldScope')} value={details.scope} />}
+        {details?.skillName && <DetailRow label={t('approvalFieldSkill')} value={details.skillName} />}
+        {details?.targetPath && <DetailRow label={t('approvalFieldPath')} value={details.targetPath} />}
       </>
     );
   }
-  return <PreviewRow label="Arguments" value={parsed._raw || '-'} />;
+  return <PreviewRow label={t('approvalFieldArguments')} value={parsed._raw || '-'} />;
 }
 
 export function ApprovalDialog({ request, open, onDecision }) {

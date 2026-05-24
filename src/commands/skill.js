@@ -55,7 +55,7 @@ function baseDirForScope(scope, cwd = process.cwd()) {
 function isGitLikeSource(value = '') {
   const text = String(value || '').trim();
   return (
-    /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+(?:\/tree\/[^/\s]+)?\/?$/i.test(text) ||
+    /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+(?:\.git|(?:\/tree\/[^/\s]+)|\/)?$/i.test(text) ||
     /^git@github\.com:[^/\s]+\/[^/\s]+(?:\.git)?$/i.test(text) ||
     /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(text)
   );
@@ -67,12 +67,15 @@ function normalizeNpxSkillSource(value = '') {
   return match ? match[1].trim().split(/\s+/)[0] : text;
 }
 
-function normalizeGitSource(source = '') {
+export function normalizeGitSource(source = '') {
   const raw = normalizeNpxSkillSource(source);
   const githubTree = raw.match(/^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/tree\/([^/\s]+)(?:\/)?$/i);
   if (githubTree) {
     const [, owner, repo, branch] = githubTree;
     return { url: `https://github.com/${owner}/${repo}.git`, branch };
+  }
+  if (/^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\.git\/?$/i.test(raw)) {
+    return { url: raw.replace(/\/$/, ''), branch: null };
   }
   if (/^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/?$/i.test(raw)) {
     return { url: raw.replace(/\/$/, '') + '.git', branch: null };
@@ -213,6 +216,14 @@ function parseArrayText(value) {
   return inner.split(',').map((item) => item.trim().replace(/^["']|["']$/g, ''));
 }
 
+function normalizeSkillName(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
 function parseSkillFrontmatter(raw) {
   const normalized = String(raw || '').replace(/\r\n/g, '\n');
   if (!normalized.startsWith('---\n')) {
@@ -224,12 +235,24 @@ function parseSkillFrontmatter(raw) {
   }
 
   const metadata = {};
-  const metaRaw = normalized.slice(4, end).trim();
-  for (const line of metaRaw.split('\n')) {
+  const lines = normalized.slice(4, end).trim().split('\n');
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     const idx = line.indexOf(':');
     if (idx <= 0) continue;
     const key = line.slice(0, idx).trim();
     const value = line.slice(idx + 1).trim();
+    if (value === '|' || value === '>') {
+      const block = [];
+      for (let next = index + 1; next < lines.length; next += 1) {
+        const nextLine = lines[next];
+        if (!/^\s+/.test(nextLine)) break;
+        block.push(nextLine.trim());
+        index = next;
+      }
+      metadata[key] = block.join(value === '>' ? ' ' : '\n').trim();
+      continue;
+    }
     metadata[key] = value.startsWith('[') && value.endsWith(']')
       ? parseArrayText(value)
       : value.replace(/^["']|["']$/g, '');
@@ -285,13 +308,14 @@ async function readSkillDocumentMeta(skillRoot, entryFile = 'SKILL.md') {
     const raw = await fs.readFile(entryPath, 'utf8');
     const parsed = parseSkillFrontmatter(raw);
     return {
+      name: normalizeSkillName(parsed.metadata.name),
       version: parsed.metadata.version ? String(parsed.metadata.version) : '',
       description: parsed.metadata.description
         ? cleanDescriptionText(parsed.metadata.description)
         : inferDescriptionFromSkillMarkdown(parsed.content)
     };
   } catch {
-    return { version: '', description: '' };
+    return { name: '', version: '', description: '' };
   }
 }
 
@@ -384,7 +408,9 @@ async function findSkillDirs(rootDir) {
 export async function installSkill(sourcePath, { scope = 'project', cwd = process.cwd(), sourceLabel = sourcePath } = {}) {
   const resolved = await resolveSkillSourceDir(sourcePath);
   const manifest = await readManifestSafe(resolved.dir);
-  const folderName = manifest?.name || path.basename(resolved.dir);
+  const manifestEntry = manifest?.entry || 'SKILL.md';
+  const documentMeta = await readSkillDocumentMeta(resolved.dir, manifestEntry);
+  const folderName = normalizeSkillName(manifest?.name) || documentMeta.name || normalizeSkillName(path.basename(resolved.dir));
   const bundled = (await listSkillEntries({ scope: 'builtin', cwd })).find((item) => item.name === folderName);
   if (bundled) {
     throw new Error(`cannot install over builtin skill: ${folderName}`);
@@ -393,12 +419,11 @@ export async function installSkill(sourcePath, { scope = 'project', cwd = proces
   await fs.rm(targetDir, { recursive: true, force: true });
   await copyRecursive(resolved.dir, targetDir);
 
-  const entryFile = manifest?.entry || 'SKILL.md';
+  const entryFile = manifestEntry;
   const entryPath = path.join(targetDir, entryFile);
   await fs.access(entryPath);
 
   const hash = await computeFileSha256(entryPath);
-  const documentMeta = await readSkillDocumentMeta(targetDir, entryFile);
   const description = manifest?.description || documentMeta.description || '';
   const version = manifest?.version || documentMeta.version || '0.0.0';
   if (scope === 'global') {

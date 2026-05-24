@@ -494,12 +494,26 @@ function mergeFileChanges(fileChanges = []) {
     if (firstChange?.action === "create" && lastChange?.action === "delete") {
       return null;
     }
+    const createIndex = change.changes.findIndex((item) => item.action === "create");
+    const createdThenEdited =
+      createIndex >= 0 &&
+      !change.changes.slice(createIndex + 1).some((item) => item.action === "delete") &&
+      change.changes.slice(createIndex + 1).some((item) => item.action === "edit");
     const trackedChanges = change.changes.filter((item) => item.changeSetId);
     const revertedAt = trackedChanges.length > 0 && trackedChanges.every((item) => item.revertedAt)
       ? trackedChanges[trackedChanges.length - 1].revertedAt
       : "";
     return {
       ...change,
+      ...(createdThenEdited
+        ? {
+            action: "create",
+            linesAdded: Math.max(0, Number(change.linesAdded || 0) - Number(change.linesRemoved || 0)),
+            linesRemoved: 0,
+            diffPreview: "",
+            changes: [],
+          }
+        : {}),
       changeSetId: change.changeSetIds.length === 1 ? change.changeSetIds[0] : "",
       revertedAt,
     };

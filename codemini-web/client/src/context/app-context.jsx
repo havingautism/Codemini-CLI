@@ -1141,7 +1141,6 @@ export function AppProvider({ children }) {
           label: t('runtimeActivityDreamRunning'),
           clearAfterMs: 30 * 60 * 1000
         });
-        addMessage({ role: 'system', text: 'Dream triggered...', timestamp: new Date().toISOString() });
         break;
       case 'dream:complete':
         upsertRuntimeActivity({
@@ -1152,7 +1151,6 @@ export function AppProvider({ children }) {
           detail: event.report?.error || '',
           clearAfterMs: 2500
         });
-        addMessage({ role: 'system', text: 'Dream complete', timestamp: new Date().toISOString() });
         break;
 
       case 'approval:request':
