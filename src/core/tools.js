@@ -1884,6 +1884,9 @@ function commentSyntaxForFile(file = '') {
   if (['.sql'].includes(ext)) {
     return { prefix: '-- ', suffix: '' };
   }
+  if (['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.java', '.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.cs', '.go', '.rs', '.swift', '.kt', '.kts', '.scala', '.m', '.mm', '.dart', '.php'].includes(ext)) {
+    return { prefix: '/* ', suffix: ' */' };
+  }
   return { prefix: '// ', suffix: '' };
 }
 

@@ -9,11 +9,17 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 const ROLE_TOOL_POLICY = {
-  planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node', 'read_plan', 'update_plan'],
+  planner: ['read', 'read_plan', 'update_plan', 'update_todos'],
+  explorer: ['read', 'grep', 'list', 'glob', 'ast_query', 'read_ast_node', 'query_project_index', 'tool_search', 'web_fetch', 'web_search', 'read_plan'],
+  architect: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
   advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'read_plan'],
-  coder: ['read', 'grep', 'list', 'edit', 'write', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'update_todos', 'read_plan', 'update_plan'],
+  coder: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
+  refactorer: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'read_plan'],
   reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'read_plan'],
-  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'read_plan']
+  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'read_plan'],
+  debugger: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
+  writer: ['read', 'grep', 'list', 'glob', 'tool_search', 'web_search', 'web_fetch', 'read_plan'],
+  summarizer: ['read', 'read_plan']
 };
 const HARNESS_ROLES = Object.keys(ROLE_TOOL_POLICY);
 
@@ -154,13 +160,20 @@ function normalizePlan(parsed, goal) {
 }
 
 async function planPipeline({ goal, config, systemPrompt, model }) {
+  const roleList = HARNESS_ROLES.filter(r => r !== 'planner').join(', ');
   const plannerPrompt = [
     'Create an execution plan and assign the best sub-agent role for each step.',
-    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|advisor|coder|reviewer|tester","task":"..."}]}. No markdown.',
-    `Available roles: ${HARNESS_ROLES.join(', ')}.`,
-    'Prefer 3-5 steps total. The first step should usually inspect the target area.',
+    `Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"${HARNESS_ROLES.join('|')}","task":"..."}]}. No markdown.`,
+    `Available roles: ${roleList}. The planner role generates the plan but does not execute steps. Start with explorer for codebase inspection.`,
+    'Prefer 3-5 steps total. Always include a summarizer as the final step.',
+    'For debugging: explorer -> debugger -> coder -> tester -> summarizer.',
+    'For architecture/design: explorer -> architect -> summarizer.',
+    'For refactoring: explorer -> refactorer -> tester -> summarizer.',
+    'For implementation: explorer -> coder -> reviewer -> tester -> summarizer.',
+    'For documentation: explorer -> writer -> summarizer.',
+    'For advisory: explorer -> advisor -> summarizer.',
     'For implementation goals, include a reviewer or tester step near the end.',
-    'For advisory/analysis goals, keep it lean with planner/advisor only; do not use coder unless code or files will be modified.'
+    'For advisory/analysis goals, keep it lean with explorer/advisor only; do not use coder unless code or files will be modified.'
   ].join('\n');
   const plannerSystemPrompt = await composeSystemPrompt({
     shellRulesPrompt: systemPrompt,

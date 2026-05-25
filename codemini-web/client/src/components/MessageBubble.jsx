@@ -39,6 +39,22 @@ const ROLE_STYLES = {
     badge: "bg-(--accent-green-bg) text-(--accent-green)",
     label: "Coder",
   },
+  explorer: {
+    badge: "bg-(--accent-amber-bg) text-(--accent-amber)",
+    label: "Explorer",
+  },
+  architect: {
+    badge: "bg-(--accent-purple-bg) text-(--accent-purple)",
+    label: "Architect",
+  },
+  refactorer: {
+    badge: "bg-(--accent-teal-bg) text-(--accent-teal)",
+    label: "Refactorer",
+  },
+  writer: {
+    badge: "bg-(--accent-cyan-bg) text-(--accent-cyan)",
+    label: "Writer",
+  },
   advisor: {
     badge: "bg-(--accent-blue-bg) text-(--accent-blue)",
     label: "Advisor",
@@ -54,6 +70,10 @@ const ROLE_STYLES = {
   tester: {
     badge: "bg-(--accent-blue-bg) text-(--accent-blue)",
     label: "Tester",
+  },
+  debugger: {
+    badge: "bg-(--accent-red-bg) text-(--accent-red)",
+    label: "Debugger",
   },
   summarizer: {
     badge: "bg-(--accent-cyan-bg) text-(--accent-cyan)",

@@ -678,14 +678,19 @@ function describeConfigKey(key, mode = 'set', language = 'zh') {
   return mode === 'get' ? copy.describeGet(label, hint) : copy.describeSet(label, hint);
 }
 
-const SUB_AGENT_ROLES = ['planner', 'advisor', 'coder', 'reviewer', 'tester', 'summarizer', 'codewiki'];
+const SUB_AGENT_ROLES = ['planner', 'explorer', 'architect', 'advisor', 'coder', 'refactorer', 'reviewer', 'tester', 'debugger', 'writer', 'summarizer', 'codewiki'];
 const CODEWIKI_ROLE_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'add_code_comment', 'update_code_comment'];
 export const ROLE_TOOL_POLICY = {
-  planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node', 'web_fetch', 'web_search', 'read_plan', 'update_plan'],
+  planner: ['read', 'read_plan', 'update_plan', 'update_todos'],
+  explorer: ['read', 'grep', 'list', 'glob', 'ast_query', 'read_ast_node', 'query_project_index', 'tool_search', 'web_fetch', 'web_search', 'read_plan'],
+  architect: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
   advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'read_plan'],
   coder: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
+  refactorer: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'read_plan'],
   reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'read_plan'],
   tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'read_plan'],
+  debugger: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
+  writer: ['read', 'grep', 'list', 'glob', 'tool_search', 'web_search', 'web_fetch', 'read_plan'],
   summarizer: ['read', 'read_plan'],
   codewiki: CODEWIKI_ROLE_TOOLS
 };
@@ -812,19 +817,90 @@ export function getSubAgentRolePrompt(role) {
   if (role === 'planner') {
     return [
       'You are the planner in a multi-step agent pipeline.',
-      'Your job: inspect the codebase and produce a concrete, actionable plan.',
-      'Do not write implementation code.',
+      'Your job: coordinate task allocation and delegate work to other roles. You do NOT inspect code or implement changes yourself.',
+      'Read the plan file to understand the current state, then decide which role should execute the next task and what specific instruction to give them.',
+      'Do not write implementation code, inspect code, or produce findings. Delegate those to the appropriate executor role.',
+      'Output format — keep it short and direct:',
+      'Delegation:',
+      '- <delegate to which role with what instruction>',
+      'Blockers:',
+      '- <dependencies or issues preventing progress or "none">',
+      'Status:',
+      '- <current pipeline state summary>',
+      'Do not summarize your own work or add closing remarks — just deliver the structured delegation and stop.'
+    ].join('\n');
+  }
+  if (role === 'explorer') {
+    return [
+      'You are the explorer in a multi-step agent pipeline.',
+      'Your job: inspect the codebase to gather context, map the target area, and identify constraints and dependencies for downstream steps.',
+      'The high-level plan is already defined — your role is to ground it with real codebase evidence.',
+      'Do not write implementation code, make architectural decisions, or offer recommendations beyond what you directly observe.',
       'Output format — keep it short and direct:',
       'Findings:',
-      '- <important constraint, dependency, risk, or "none">',
+      '- <important constraint, dependency, file layout, or "none">',
       'Actions Taken:',
-      '- <what you inspected>',
+      '- <what you inspected, files read, searches performed>',
+      'Map:',
+      '- <key files, entry points, dependency graph or "none">',
       'Open Issues:',
       '- <blocking uncertainty or "none">',
-      'Next Action:',
-      '- <the concrete next step for the following role>',
       'Do not summarize your own work or add closing remarks — just deliver the structured handoff and stop.',
-      'IMPORTANT: Stop as soon as you have enough context to produce the plan. Do NOT keep exploring once the plan is clear — deliver it immediately.'
+      'IMPORTANT: Stop as soon as you have enough context. Do NOT keep exploring — deliver it immediately.'
+    ].join('\n');
+  }
+  if (role === 'architect') {
+    return [
+      'You are the architect in a multi-step agent pipeline.',
+      'Your job: make high-level design decisions about system structure, component boundaries, patterns, and tradeoffs.',
+      'Decide on architecture, not implementation details. Do not write code, edit files, or inspect implementation beyond what is necessary to understand structure.',
+      'Output format — keep it short and direct:',
+      'Design Decision:',
+      '- <chosen architecture, pattern, or approach>',
+      'Alternatives Considered:',
+      '- <rejected approaches and why>',
+      'Component Map:',
+      '- <new or changed components, their responsibilities>',
+      'Risks:',
+      '- <architectural risks, migration path concerns or "none">',
+      'Constraints:',
+      '- <non-negotiable limits or "none">',
+      'Do not summarize your own work or add closing remarks — just deliver the design decision and stop.'
+    ].join('\n');
+  }
+  if (role === 'refactorer') {
+    return [
+      'You are the refactorer in a multi-step agent pipeline.',
+      'Your job: restructure existing code to improve clarity, maintainability, or performance WITHOUT changing external behavior.',
+      'You may touch many files, but every change must preserve existing behavior. Do not add features or fix bugs unless explicitly asked.',
+      'Before starting, verify you understand the current behavior so you can prove nothing changed.',
+      'Output format — keep it short and direct:',
+      'Actions Taken:',
+      '- <files restructured, patterns applied>',
+      'Findings:',
+      '- <important structural issue addressed or "none">',
+      'Verified:',
+      '- <how you confirmed behavior is preserved>',
+      'Open Issues:',
+      '- <remaining structural debt or "none">',
+      'Artifacts:',
+      '- <changed file paths>',
+      'Do not summarize your own work or add closing remarks — just deliver the structured handoff and stop.'
+    ].join('\n');
+  }
+  if (role === 'writer') {
+    return [
+      'You are the writer in a multi-step agent pipeline.',
+      'Your job: generate documentation, README files, API docs, changelogs, or code comments.',
+      'Do not modify implementation code. Only write documentation files and comments.',
+      'Output format — keep it short and direct:',
+      'Actions Taken:',
+      '- <what documentation was written or updated>',
+      'Artifacts:',
+      '- <created or changed file paths>',
+      'Coverage:',
+      '- <what is documented and what gaps remain>',
+      'Do not add a closing summary — the pipeline handles what comes next.'
     ].join('\n');
   }
   if (role === 'reviewer') {
@@ -876,6 +952,26 @@ export function getSubAgentRolePrompt(role) {
       'Do not add a closing summary or "Next Action" — the pipeline handles what comes next.'
     ].join('\n');
   }
+  if (role === 'debugger') {
+    return [
+      'You are the debugger in a multi-step agent pipeline.',
+      'Your job: investigate reported bugs, errors, or unexpected behavior. Reproduce the issue, trace root causes, and narrow down the culprit code.',
+      'Do not implement fixes. You may suggest a fix approach as a recommendation, but leave the implementation to the coder.',
+      'Prefer concrete evidence over speculation. Run reproduction commands where possible.',
+      'Output format — keep it short and direct:',
+      'Findings:',
+      '- <root cause hypothesis or confirmed cause>',
+      'Evidence:',
+      '- <logs, stack traces, reproduction steps, file evidence>',
+      'Narrowed Scope:',
+      '- <likely culprit files, functions, or code sections>',
+      'Recommendations:',
+      '- <suggested fix approach, risk level, or "none">',
+      'Open Questions:',
+      '- <remaining uncertainty or "none">',
+      'Do not add a closing summary or "Next Action" — the pipeline handles what comes next.'
+    ].join('\n');
+  }
   if (role === 'summarizer') {
     return [
       'You are the summarizer in a multi-step agent pipeline.',
@@ -917,19 +1013,36 @@ export function getSubAgentRolePrompt(role) {
   ].join('\n');
 }
 
-function buildPipelineStepGuidance({ role, stepIndex, totalSteps, isFirst, isLast, priorSteps }) {
+function buildPipelineStepGuidance({ role, stepIndex, totalSteps, isFirst, isLast, priorSteps, isRetry = false, previousError = '' }) {
   const lines = [];
   lines.push(`Pipeline position: step ${stepIndex + 1} of ${totalSteps}.`);
-  if (isFirst) {
-    lines.push('You are the first step. Your output sets direction for the rest of the pipeline.');
+  if (isRetry) {
+    lines.push('RETRY ATTEMPT: The previous attempt at this step failed. Review the failure reason below and adjust your approach.');
+    if (previousError) {
+      lines.push(`Previous failure: ${previousError}`);
+    }
+    lines.push('Focus narrowly on fixing the specific issue that caused the failure. Do not start over from scratch.');
+  }
+  if (isFirst && !isRetry) {
+    if (role === 'explorer') {
+      lines.push('You are the first step. Map the codebase area quickly and report findings so downstream steps have solid context.');
+    } else if (role === 'architect') {
+      lines.push('You are the first step. Make concrete design decisions to shape the rest of the pipeline.');
+    } else {
+      lines.push('You are the first step. Your output sets direction for the rest of the pipeline.');
+    }
   } else if (isLast) {
     lines.push('You are the final step. After you, the pipeline will present a combined result to the user.');
-  } else {
+  } else if (!isRetry) {
     lines.push('You are in the middle of the pipeline. Your output feeds into the next step.');
   }
   if (priorSteps.length > 0) {
     const prev = priorSteps[priorSteps.length - 1];
-    lines.push(`Previous step was [${prev.role}]: ${prev.title}. Use its output as your starting point.`);
+    if (prev.failed) {
+      lines.push(`Previous step [${prev.role}]: ${prev.title} FAILED with: ${prev.failureReason || 'unknown error'}. Continue with best-effort context.`);
+    } else {
+      lines.push(`Previous step was [${prev.role}]: ${prev.title}. Use its output as your starting point.`);
+    }
   }
   lines.push('Style rules:');
   lines.push('- Be direct and action-oriented. No greetings, no summaries, no "In conclusion" or "To summarize".');
@@ -1234,17 +1347,24 @@ function classifyPlanTaskClass(goal = '') {
   const text = String(goal || '').trim();
   const lowerGoal = text.toLowerCase();
   const advisory =
-    /\b(analyze|analysis|review|audit|inspect|assess|recommend|recommendation|optimization|optimize|improve|suggest|brainstorm|plan|feedback)\b/i.test(lowerGoal) ||
-    /(分析|审查|审计|检查|评估|建议|优化|优化点|优化建议|改进|改进点|规划|方案|看一下|看看|有哪些问题|有什么问题)/.test(text);
+    /\b(analyze|analysis|review|audit|inspect|assess|recommend|recommendation|optimization|optimize|improve|suggest|brainstorm|plan|feedback|understand|explain)\b/i.test(lowerGoal) ||
+    /(分析|审查|审计|检查|评估|建议|优化|改进|规划|方案|看一下|看看|有哪些问题|有什么问题|了解下|解释)/.test(text);
   const implementation =
     /\b(add|build|create|implement|support|introduce|refactor|rewrite|rework|migrate|change|update|fix)\b/i.test(lowerGoal) ||
     /(新增|增加|实现|支持|重构|重写|改造|迁移|修改|更新|修复)/.test(text);
   const verificationHeavy =
     /\b(test|verify|validation|validate|prove|confirm|reproduce|check coverage)\b/i.test(lowerGoal) ||
     /(测试|验证|校验|确认|复现|覆盖率)/.test(text);
+  const debugging =
+    /\b(debug|diagnose|troubleshoot|investigate|trace|bisect|find.*cause|root.*cause|why.*error|why.*bug|why.*fail|crash|exception|stack trace|logs?.*error)\b/i.test(lowerGoal) ||
+    /(调试|排查|诊断|追踪|调查|找.*原因|怎么.*错|怎么.*崩|报错|异常|日志)/.test(text);
 
+  if (debugging && verificationHeavy) return 'verification-heavy';
+  if (debugging) return 'debugging';
   if (verificationHeavy) return 'verification-heavy';
-  if (advisory && !implementation) return 'advisory';
+  if (advisory && implementation) return 'implementation-advisory';
+  if (advisory) return 'advisory';
+  if (implementation && verificationHeavy) return 'implementation-verification';
   return 'implementation';
 }
 
@@ -1278,20 +1398,34 @@ function buildGoalRequirementPacket(goal, role) {
 
 function buildAutoPlanPlannerGuidance() {
   return [
-    'Design a short implementation plan for a small model.',
+    'Design a short execution plan for a small model.',
     'Auto-plan planning rules:',
-    '- Start with a discovery or clarification step when the current implementation is not yet verified.',
+    '- Start with an explorer (codebase inspection) or architect (design) step when the target area is not yet clear.',
     '- If the goal still leaves room for multiple approaches, choose one practical direction before planning execution.',
     '- Prefer the smallest local approach that satisfies the goal.',
     '- Do not output multiple alternative branches in the final plan.',
     '- Do not assume implementation should begin before the plan is coherent.',
-    '- Available sub-agent roles are planner, advisor, coder, reviewer, tester, and summarizer. Use only the non-summary roles the task actually needs.',
-    '- Always include a summarizer as the final step. The summarizer reads accumulated step results from the plan file and synthesizes the final summary. It does NOT re-analyze the codebase.',
-    '- Do not ask planner, advisor, coder, reviewer, or tester steps to produce the final summary. They should write detailed step results for the summarizer.',
-    '- For implementation-heavy or risky changes, prefer adding review and/or verification steps.',
-    '- For analysis, recommendation, optimization, architecture feedback, or planning-only goals, prefer advisor over coder and omit reviewer/tester if they do not add value.',
-    '- Prefer 3-5 steps total unless the task is clearly larger.',
-    '- Keep the plan ordered, implementation-oriented, and easy for small sub-agents to follow.'
+    '- Available sub-agent roles: explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer, and summarizer. Use only the roles the task actually needs.',
+    '- Always include a summarizer as the final step. The summarizer reads accumulated step results and synthesizes the final summary. It does NOT re-analyze or run tools.',
+    '- Do not ask executor steps (explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer) to produce the final summary. They write detailed step results for the summarizer.',
+    '- Role quick-guide:',
+    '  • explorer = inspect codebase, map files, gather context before implementation.',
+    '  • architect = make design decisions, choose patterns, define component boundaries.',
+    '  • advisor = analyze and recommend (read-only).',
+    '  • coder = implement scoped code changes.',
+    '  • refactorer = restructure code without changing behavior (broader scope than coder).',
+    '  • reviewer = check for bugs, regressions, edge cases.',
+    '  • tester = run verification commands.',
+    '  • debugger = investigate bugs, trace root causes, recommend fixes.',
+    '  • writer = generate documentation, README, comments.',
+    '- For debugging tasks: explorer -> debugger -> coder -> tester -> summarizer.',
+    '- For architecture/design tasks: explorer -> architect -> summarizer.',
+    '- For refactoring tasks: explorer -> refactorer -> tester -> summarizer.',
+    '- For implementation: explorer -> coder -> reviewer -> tester -> summarizer.',
+    '- For documentation: explorer -> writer -> summarizer.',
+    '- For advisory: explorer -> advisor -> summarizer.',
+    '- Prefer 3-5 steps total unless the task needs more.',
+    '- Keep the plan ordered, task-oriented, and easy for small sub-agents to follow.'
   ].join('\n');
 }
 
@@ -1304,9 +1438,19 @@ function buildAutoPlanExecutionGuidance(role) {
     '- Prefer narrow verification with concrete evidence before claiming success.'
   ];
 
-  if (role === 'coder') {
+  if (role === 'explorer') {
+    common.push('- Map the target area quickly and stop. Do not go down rabbit holes.');
+    common.push('- Report what IS there, not what SHOULD be there. Let the architect or advisor interpret.');
+  } else if (role === 'architect') {
+    common.push('- Make decisive, concrete design choices. Do not present options without choosing.');
+    common.push('- Ground decisions in the explorer findings. If the explorer map is insufficient, say so.');
+  } else if (role === 'coder') {
     common.push('- Keep edits tightly scoped to the chosen plan direction.');
     common.push('- Avoid speculative cleanup or unrelated improvements.');
+  } else if (role === 'refactorer') {
+    common.push('- Preserve external behavior exactly. If in doubt, run tests before and after.');
+    common.push('- Prefer safe transformations: extract function, rename, move, simplify conditionals.');
+    common.push('- Do not add features or fix bugs unless the goal explicitly asks for it.');
   } else if (role === 'advisor') {
     common.push('- Produce advisory findings and recommendations only; do not modify files or run commands.');
     common.push('- Ground every recommendation in inspected evidence or mark it as an assumption.');
@@ -1316,6 +1460,13 @@ function buildAutoPlanExecutionGuidance(role) {
   } else if (role === 'tester') {
     common.push('- Prefer running the narrowest real verification command that matches the changed area.');
     common.push('- Distinguish clearly between verified behavior and assumptions.');
+  } else if (role === 'debugger') {
+    common.push('- Prioritize reproduction over speculation. Run the failing command or test first.');
+    common.push('- Narrow down to specific files, functions, and conditions before suggesting a fix.');
+    common.push('- Do not implement fixes. Leave implementation to the coder step that follows.');
+  } else if (role === 'writer') {
+    common.push('- Write clear, useful documentation. Prefer concrete examples over abstract descriptions.');
+    common.push('- Do not modify code. Only write documentation files (.md, comments, docstrings).');
   }
 
   return common.join('\n');
@@ -1799,9 +1950,9 @@ function normalizeAutoPlan(parsed, goal) {
           summary: `Auto plan for: ${goal}`,
           steps: [
             {
-              title: 'Initial analysis',
-              role: 'planner',
-              task: `Break down and propose implementation steps for: ${goal}`
+              title: 'Initial exploration',
+              role: 'explorer',
+              task: `Inspect the codebase and map the target area for: ${goal}`
             }
           ]
         }
@@ -1838,13 +1989,66 @@ function buildFallbackAutoPlan(goal) {
       steps: [
         {
           title: 'Inspect the target area',
-          role: 'planner',
+          role: 'explorer',
           task: `Inspect the relevant project context for: ${goal}. Identify constraints, evidence, and likely high-value advisory areas.`
         },
         {
           title: `Advise on ${focus}`,
           role: 'advisor',
           task: `Analyze the findings for: ${goal}. Produce prioritized recommendations, tradeoffs, evidence, and open questions without implementing changes.`
+        },
+        buildDefaultSummarizerStep(goal)
+      ]
+    };
+  }
+
+  if (taskClass === 'debugging') {
+    return {
+      summary,
+      steps: [
+        {
+          title: 'Inspect the failing area',
+          role: 'explorer',
+          task: `Inspect the relevant code paths, error logs, test failures, and affected files for: ${goal}. Identify likely culprit areas and gather reproduction context.`
+        },
+        {
+          title: `Investigate root cause of ${focus}`,
+          role: 'debugger',
+          task: `Investigate: ${goal}. Reproduce the issue, trace the root cause through code and logs, narrow down to specific files and functions, and recommend a fix approach without implementing it.`
+        },
+        {
+          title: `Fix ${focus}`,
+          role: 'coder',
+          task: `Fix the root cause identified by the debugger for: ${goal}. Keep the fix narrowly scoped and preserve existing behavior except where the goal requires changes.`
+        },
+        {
+          title: 'Verify the fix',
+          role: 'tester',
+          task: `Verify the fix for: ${goal}. Run the previously failing command or test, confirm the issue is resolved, and check for regressions.`
+        },
+        buildDefaultSummarizerStep(goal)
+      ]
+    };
+  }
+
+  if (taskClass === 'implementation-advisory') {
+    return {
+      summary,
+      steps: [
+        {
+          title: 'Inspect and analyze',
+          role: 'explorer',
+          task: `Inspect the relevant project context for: ${goal}. Identify constraints, dependencies, existing behavior, and high-value intervention points.`
+        },
+        {
+          title: `Advise on approach for ${focus}`,
+          role: 'advisor',
+          task: `Analyze findings for: ${goal}. Recommend the best implementation approach with tradeoffs, risks, and concrete steps. Do not implement.`
+        },
+        {
+          title: `Implement ${focus}`,
+          role: 'coder',
+          task: `Implement the recommended approach for: ${goal}. Follow the acceptance checklist and keep changes tightly scoped.`
         },
         buildDefaultSummarizerStep(goal)
       ]
@@ -1876,7 +2080,7 @@ function buildFallbackAutoPlan(goal) {
     steps: [
       {
         title: 'Inspect the target area',
-        role: 'planner',
+        role: 'explorer',
         task: `Inspect the existing code paths, affected files, and current behavior for: ${goal}. Identify constraints, dependencies, and any compatibility risks before implementation.`
       },
       {
@@ -1911,11 +2115,19 @@ function buildFallbackAutoPlan(goal) {
 function buildDefaultSummarizerStep(goal, source = []) {
   const existing = (Array.isArray(source) ? source : []).find((step) => step.role === 'summarizer');
   if (existing?.title && existing?.task) return existing;
-  if (classifyPlanTaskClass(goal) === 'advisory') {
+  const taskClass = classifyPlanTaskClass(goal);
+  if (taskClass === 'advisory') {
     return {
       title: 'Synthesize final findings',
       role: 'summarizer',
       task: `Synthesize the advisory findings for: ${goal}. Read the accumulated observations, recommendations, tradeoffs, evidence, and open questions from earlier steps, then produce a concise final summary with the single best next action.`
+    };
+  }
+  if (taskClass === 'debugging') {
+    return {
+      title: 'Synthesize investigation results',
+      role: 'summarizer',
+      task: `Synthesize the debugging results for: ${goal}. Read the accumulated findings, root cause evidence, fix implementation, and verification from earlier steps, then produce a concise final summary with the root cause, fix status, and any remaining risks.`
     };
   }
   return {
@@ -1930,7 +2142,7 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
   const requirements = deriveGoalRequirements(goal);
   const lightweightGoal = isLightweightAutoPlanGoal(goal, requirements);
   const taskClass = classifyPlanTaskClass(goal);
-  const implementationSteps = source.filter((step) => step.role !== 'advisor' && step.role !== 'reviewer' && step.role !== 'tester' && step.role !== 'summarizer');
+  const implementationSteps = source.filter((step) => step.role !== 'advisor' && step.role !== 'reviewer' && step.role !== 'tester' && step.role !== 'debugger' && step.role !== 'summarizer');
   const primaryImplementationStep =
     implementationSteps.find((step) => step.role === 'coder') ||
     implementationSteps[0] || {
@@ -1948,13 +2160,19 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
     role: 'tester',
     task: `Test and verify the completed work for: ${goal}. Start with the artifacts produced by earlier implementation steps, run the most relevant checks available, report concrete evidence, and call out anything still unverified.`
   };
+  const debuggerStep = source.find((step) => step.role === 'debugger') || {
+    title: 'Investigate the issue',
+    role: 'debugger',
+    task: `Investigate the reported issue: ${goal}. Reproduce the problem, trace root causes, narrow down culprit code, and recommend a fix approach without implementing it.`
+  };
   const summarizerStep = buildDefaultSummarizerStep(goal, source);
   const hasReviewer = source.some((step) => step.role === 'reviewer');
   const hasTester = source.some((step) => step.role === 'tester');
+  const hasDebugger = source.some((step) => step.role === 'debugger');
 
   if (taskClass === 'advisory') {
     const advisorySteps = source
-      .filter((step) => step.role === 'planner' || step.role === 'advisor' || step.role === 'coder')
+      .filter((step) => step.role === 'explorer' || step.role === 'advisor' || step.role === 'architect')
       .map((step) =>
         step.role === 'coder'
           ? {
@@ -1988,6 +2206,48 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
     return {
       summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
       steps: [...finalSteps, summarizerStep]
+    };
+  }
+
+  if (taskClass === 'debugging') {
+    const nonDebugRoles = implementationSteps.filter((step) => step.role !== 'debugger');
+    const coderStep = nonDebugRoles.find((step) => step.role === 'coder') || {
+      title: 'Fix the identified cause',
+      role: 'coder',
+      task: `Fix the root cause identified by the debugger for: ${goal}. Keep the fix narrowly scoped and preserve existing behavior except where intentionally changed.`
+    };
+    const steps = hasDebugger
+      ? [...nonDebugRoles.slice(0, 3), debuggerStep, coderStep]
+      : [...nonDebugRoles.slice(0, 3), debuggerStep, coderStep];
+    const finalSteps = hasTester ? [...steps, testerStep] : steps;
+    return {
+      summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
+      steps: [...finalSteps, summarizerStep]
+    };
+  }
+
+  if (taskClass === 'implementation-advisory') {
+    const advisoryStep = source.find((step) => step.role === 'advisor') || {
+      title: 'Analyze requirements and constraints',
+      role: 'advisor',
+      task: `Analyze: ${goal}. Identify constraints, dependencies, risks, tradeoffs, and recommend the best implementation approach. Do not implement changes.`
+    };
+    const baseSteps = [primaryImplementationStep, advisoryStep];
+    return {
+      summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
+      steps: [...baseSteps, summarizerStep]
+    };
+  }
+
+  if (taskClass === 'implementation-verification') {
+    const executionSteps = [
+      ...implementationSteps.slice(0, 5),
+      ...(hasReviewer ? [reviewerStep] : []),
+      testerStep
+    ];
+    return {
+      summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
+      steps: [...executionSteps, summarizerStep]
     };
   }
 
@@ -2035,16 +2295,71 @@ function stepOutputHasFailureSignals(role, text = '') {
   const remainingIssuesBullet = extractSectionFirstBullet(value, 'Remaining Issues');
   const actionsTakenBullet = extractSectionFirstBullet(value, 'Actions Taken');
   const artifactsBullet = extractSectionFirstBullet(value, 'Artifacts');
+  const mapBullet = extractSectionFirstBullet(value, 'Map');
+  const designBullet = extractSectionFirstBullet(value, 'Design Decision');
+  const narrowedScopeBullet = extractSectionFirstBullet(value, 'Narrowed Scope');
+  const evidenceBullet = extractSectionFirstBullet(value, 'Evidence');
   const acceptanceFailures = extractAcceptanceStatusItems(value).filter((item) => item.status !== 'met');
   if (errorBullet && !/^none\b/i.test(errorBullet)) return true;
   if (failureBullet && !/^none\b/i.test(failureBullet)) return true;
   if (acceptanceFailures.length > 0) return true;
+  if (role === 'explorer') {
+    const hasFindings = sectionHasValue(value, 'Findings');
+    const hasMap = sectionHasValue(value, 'Map');
+    const hasActions = sectionHasValue(value, 'Actions Taken');
+    if (explorerOutputLacksContext(
+      hasFindings ? 'ok' : '',
+      hasMap ? 'ok' : '',
+      hasActions ? 'ok' : ''
+    ) && !explorerOutputHasContent(value)) {
+      return true;
+    }
+  }
+  if (role === 'architect' && architectOutputLacksDecision(designBullet)) return true;
   if (role === 'coder' && coderOutputLacksImplementationEvidence(actionsTakenBullet, artifactsBullet)) return true;
+  if (role === 'refactorer' && refactorerOutputLacksEvidence(actionsTakenBullet, artifactsBullet)) return true;
   if (role === 'reviewer' && reviewerFindingNeedsAction(findingsBullet)) return true;
+  if (role === 'writer' && writerOutputLacksEvidence(actionsTakenBullet, artifactsBullet)) return true;
   if ((role === 'tester' || role === 'summarizer') && notVerifiedBullet && !/^none\b/i.test(notVerifiedBullet)) return true;
   if (role === 'summarizer' && remainingIssuesBullet && !/^none\b/i.test(remainingIssuesBullet)) return true;
+  if (role === 'debugger' && debuggerOutputLacksTracedCause(findingsBullet, narrowedScopeBullet, evidenceBullet)) return true;
   if (nextActionBullet && /^(fix|retry|correct|repair)\b/i.test(nextActionBullet)) return true;
   return false;
+}
+
+function explorerOutputLacksContext(findings = '', map = '', actions = '') {
+  const noFindings = !String(findings || '').trim() || /^none\b/i.test(String(findings || '').trim());
+  const noMap = !String(map || '').trim() || /^none\b/i.test(String(map || '').trim());
+  const noActions = !String(actions || '').trim() || /^none\b/i.test(String(actions || '').trim());
+  return noFindings && noMap && noActions;
+}
+
+function explorerOutputHasContent(outputText = '') {
+  const raw = String(outputText || '').trim();
+  if (!raw) return false;
+  if (/^(error|no\s|i\s*cannot|i\s*don't|unable)/i.test(raw)) return false;
+  if (raw.length < 80) return false;
+  return true;
+}
+
+function architectOutputLacksDecision(design = '') {
+  const value = String(design || '').trim();
+  return !value || /^none\b/i.test(value);
+}
+
+function refactorerOutputLacksEvidence(actionsTaken = '', artifacts = '') {
+  return coderOutputLacksImplementationEvidence(actionsTaken, artifacts);
+}
+
+function writerOutputLacksEvidence(actionsTaken = '', artifacts = '') {
+  return coderOutputLacksImplementationEvidence(actionsTaken, artifacts);
+}
+
+function debuggerOutputLacksTracedCause(findings = '', narrowedScope = '', evidence = '') {
+  const noFindings = !String(findings || '').trim() || /^none\b/i.test(String(findings || '').trim());
+  const noScope = !String(narrowedScope || '').trim() || /^none\b/i.test(String(narrowedScope || '').trim());
+  const noEvidence = !String(evidence || '').trim() || /^none\b/i.test(String(evidence || '').trim());
+  return noFindings && noScope && noEvidence;
 }
 
 function coderOutputLacksImplementationEvidence(actionsTaken = '', artifacts = '') {
@@ -2080,10 +2395,40 @@ function buildExitCriteriaFailureReason(role, text = '') {
   const findingsBullet = extractSectionFirstBullet(value, 'Findings');
   const actionsTakenBullet = extractSectionFirstBullet(value, 'Actions Taken');
   const artifactsBullet = extractSectionFirstBullet(value, 'Artifacts');
+  const mapBullet = extractSectionFirstBullet(value, 'Map');
+  const designBullet = extractSectionFirstBullet(value, 'Design Decision');
+  if (role === 'explorer') {
+    const hasFindings = sectionHasValue(value, 'Findings');
+    const hasMap = sectionHasValue(value, 'Map');
+    const hasActions = sectionHasValue(value, 'Actions Taken');
+    if (explorerOutputLacksContext(
+      hasFindings ? 'ok' : '',
+      hasMap ? 'ok' : '',
+      hasActions ? 'ok' : ''
+    ) && !explorerOutputHasContent(value)) {
+      return 'explorer output did not include findings, map, or actions';
+    }
+  }
+  if (role === 'architect' && architectOutputLacksDecision(designBullet)) {
+    return 'architect output did not include a design decision';
+  }
   if (role === 'coder' && coderOutputLacksImplementationEvidence(actionsTakenBullet, artifactsBullet)) {
     return 'coder output did not include implementation evidence';
   }
+  if (role === 'refactorer' && coderOutputLacksImplementationEvidence(actionsTakenBullet, artifactsBullet)) {
+    return 'refactorer output did not include refactoring evidence';
+  }
+  if (role === 'writer' && coderOutputLacksImplementationEvidence(actionsTakenBullet, artifactsBullet)) {
+    return 'writer output did not include documentation evidence';
+  }
   if (role === 'reviewer' && reviewerFindingNeedsAction(findingsBullet)) return `review findings: ${findingsBullet}`;
+  if (role === 'debugger') {
+    const narrowedScopeBullet = extractSectionFirstBullet(value, 'Narrowed Scope');
+    const evidenceBullet = extractSectionFirstBullet(value, 'Evidence');
+    if (debuggerOutputLacksTracedCause(findingsBullet, narrowedScopeBullet, evidenceBullet)) {
+      return 'debugger output did not include traced cause, narrowed scope, or evidence';
+    }
+  }
   const nextActionBullet = extractSectionFirstBullet(value, 'Next Action');
   if (nextActionBullet && /^(fix|retry|correct|repair)\b/i.test(nextActionBullet)) return `next action requires rework: ${nextActionBullet}`;
   const acceptanceFailure = extractAcceptanceStatusItems(value).find((item) => item.status !== 'met');
@@ -2099,10 +2444,25 @@ function buildExitCriteriaFailureReason(role, text = '') {
   return 'step output did not satisfy exit criteria';
 }
 
+function stripMarkdownHeadingChars(text = '') {
+  return String(text || '').replace(/(^|\n)(\s*)(?:\*{1,3}|#{1,4})\s*/g, '$1$2');
+}
+
 function extractSectionFirstBullet(text = '', heading = '') {
+  const clean = stripMarkdownHeadingChars(String(text || ''));
   const escaped = String(heading || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = String(text || '').match(new RegExp(String.raw`(^|\n)\s*${escaped}\s*:\s*(?:\n|\r\n?)+\s*-\s*([^\n\r]+)`, 'i'));
+  const match = String(clean || '').match(new RegExp(String.raw`(^|\n)\s*${escaped}\s*:\s*(?:\n|\r\n?)+\s*-\s*([^\n\r]+)`, 'i'));
   return String(match?.[2] || '').trim();
+}
+
+function sectionHasValue(text = '', heading = '') {
+  const bullet = extractSectionFirstBullet(text, heading);
+  if (bullet && !/^none\b/i.test(bullet)) return true;
+  const clean = stripMarkdownHeadingChars(String(text || ''));
+  const escaped = String(heading || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const inline = String(clean || '').match(new RegExp(String.raw`(^|\n)\s*${escaped}\s*:\s*([^\n\r]+)`, 'i'));
+  const inlineText = String(inline?.[2] || '').trim();
+  return inlineText && !/^none\b/i.test(inlineText);
 }
 
 function extractSectionBullets(text = '', heading = '') {
@@ -3952,8 +4312,10 @@ async function executePlanWithSubAgents({
       planFileContext = await readPlanFileAsContext(planFilePath);
     }
 
+    const MAX_STEP_RETRIES = 1;
+
     const stepGuidance = buildPipelineStepGuidance({ role: step.role, stepIndex: i, totalSteps: steps.length, isFirst: i === 0, isLast: i === steps.length - 1, priorSteps });
-    const output = await runSubAgentTask({
+    let output = await runSubAgentTask({
       role: step.role,
       task: step.task,
       goal,
@@ -3973,6 +4335,52 @@ async function executePlanWithSubAgents({
       projectIsGit
     });
 
+    let stepFailed = stepOutputHasFailureSignals(step.role, output.text || '');
+    let failureReason = stepFailed ? buildExitCriteriaFailureReason(step.role, output.text || '') : '';
+    let retryCount = 0;
+
+    while (stepFailed && retryCount < MAX_STEP_RETRIES && step.role !== 'summarizer' && !signal?.aborted) {
+      retryCount += 1;
+      emitPlanEvent({
+        type: 'assistant:delta',
+        text: `\n[plan] Step ${i + 1}/${steps.length} retry ${retryCount}/${MAX_STEP_RETRIES} (previous: ${failureReason})\n`
+      });
+
+      const retryGuidance = buildPipelineStepGuidance({
+        role: step.role,
+        stepIndex: i,
+        totalSteps: steps.length,
+        isFirst: i === 0,
+        isLast: i === steps.length - 1,
+        priorSteps,
+        isRetry: true,
+        previousError: failureReason
+      });
+
+      output = await runSubAgentTask({
+        role: step.role,
+        task: step.task,
+        goal,
+        priorSteps,
+        parentSession,
+        config,
+        model,
+        systemPrompt,
+        onAgentEvent: emitPlanEvent,
+        requestToolApproval,
+        extraRolePrompt: retryGuidance,
+        signal,
+        onSessionActive: onSubSessionActive,
+        planFileContext,
+        changeTracker,
+        backupManager,
+        projectIsGit
+      });
+
+      stepFailed = stepOutputHasFailureSignals(step.role, output.text || '');
+      failureReason = stepFailed ? buildExitCriteriaFailureReason(step.role, output.text || '') : '';
+    }
+
     const stepUsage = collectAssistantUsage(output.messages || []);
     totalUsage = mergeModelUsage(totalUsage, stepUsage);
     const displayUsage = step.role === 'summarizer'
@@ -3990,12 +4398,10 @@ async function executePlanWithSubAgents({
       artifactPaths: output.artifactPaths || [],
       messages: output.messages || [],
       usage: displayUsage,
-      failed: stepOutputHasFailureSignals(step.role, output.text || ''),
-      failureReason: ''
+      retryCount,
+      failed: stepFailed,
+      failureReason
     };
-    if (stepRecord.failed) {
-      stepRecord.failureReason = buildExitCriteriaFailureReason(step.role, output.text || '');
-    }
     priorSteps.push(stepRecord);
     results.push(stepRecord);
     transcript.push(buildPlanStepTranscript({
@@ -4025,7 +4431,10 @@ async function executePlanWithSubAgents({
       role: step.role,
       title: step.title,
       status: stepRecord.failed ? 'failed' : 'done',
-      summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output, 160),
+      summary: stepRecord.failed
+        ? `[${stepRecord.retryCount > 0 ? `retried ${stepRecord.retryCount}x] ` : ''}${stepRecord.failureReason}`
+        : trimInline(stepRecord.output, 160),
+      ...(stepRecord.retryCount > 0 ? { retryCount: stepRecord.retryCount } : {}),
       ...(displayUsage ? { usage: displayUsage } : {})
     });
 
@@ -4037,7 +4446,10 @@ async function executePlanWithSubAgents({
       role: step.role,
       title: step.title,
       status: stepRecord.failed ? 'failed' : 'done',
-      summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output, 160),
+      summary: stepRecord.failed
+        ? `[${stepRecord.retryCount > 0 ? `retried ${stepRecord.retryCount}x] ` : ''}${stepRecord.failureReason}`
+        : trimInline(stepRecord.output, 160),
+      ...(stepRecord.retryCount > 0 ? { retryCount: stepRecord.retryCount } : {}),
       ...(displayUsage ? { usage: displayUsage } : {})
     });
 
@@ -4098,31 +4510,36 @@ async function buildAutoPlanAndRun({
   taskClass
 }) {
   const normalizedTaskClass = taskClass || classifyPlanTaskClass(goal);
-  const requirementPacket = buildGoalRequirementPacket(goal, 'planner');
+  const requirementPacket = buildGoalRequirementPacket(goal, 'explorer');
   const plannerPrompt = [
     buildAutoPlanPlannerGuidance(),
     'Planning policy:',
-    '- First classify the user goal as one of: advisory, implementation, or verification-heavy.',
+    '- First classify the user goal as one of: advisory, implementation, verification-heavy, debugging, or a hybrid.',
     '- advisory = analysis, review, audit, optimization suggestions, architecture feedback, brainstorming, planning, or recommendation requests.',
     '- implementation = add/build/create/implement/refactor/fix/update/change behavior in code or files.',
     '- verification-heavy = the user explicitly asks to run tests, verify findings, reproduce a bug, prove a claim, or validate a result.',
-    '- For advisory goals, prefer planner and advisor roles. Do not use coder unless the plan will actually modify code or files.',
-    '- For advisory goals, do not use reviewer or tester unless the user explicitly asks for verification or review as a separate deliverable.',
+    '- debugging = investigate bugs, crashes, errors, diagnose root causes, or trace unexpected behavior.',
+    '- implementation-advisory = analyze AND implement (e.g. "analyze this and fix it").',
+    '- For debugging goals, prefer: explorer -> debugger -> coder -> tester -> summarizer.',
+    '- For implementation-advisory hybrid goals, prefer: explorer -> advisor -> coder -> summarizer.',
+    '- For advisory goals, prefer explorer and advisor roles. Do not use coder unless the plan will actually modify code or files.',
+    '- For advisory goals, do not use reviewer, tester, or debugger unless the user explicitly asks for verification, review, or debugging as a separate deliverable.',
     '- For advisory goals, do not emit generic filler steps such as "Test and verify", "Review recommendations", or other template-only steps.',
     '- For implementation goals, reviewer and tester are optional support roles, not defaults. Only include them when they clearly add value.',
     '- Every step title must be concrete and tied to the goal. Avoid vague titles like "Initial analysis", "Review recommendations", or "Test and verify" unless the user explicitly requested those activities.',
     '- If the task is purely to inspect the current project and suggest improvements, a lean 2-step or 3-step plan is preferred.',
-    '- Example advisory roles: planner -> inspect project shape, advisor -> synthesize findings and prioritized recommendations.',
-    '- Example implementation roles: planner -> inspect target area, coder -> implement change, tester -> verify changed behavior.',
-    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|advisor|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.'
+    '- Example advisory roles: explorer -> inspect project shape, advisor -> synthesize findings and prioritized recommendations.',
+    '- Example implementation roles: explorer -> inspect target area, coder -> implement change, tester -> verify changed behavior.',
+    '- Example debugging roles: explorer -> inspect failing area, debugger -> trace root cause, coder -> fix, tester -> verify fix.',
+    `Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|')}","task":"..."}]}. No markdown.`
   ].join('\n');
   let autoPlan = {
     summary: `Auto plan for: ${goal}`,
     steps: [
       {
-        title: 'Initial analysis',
-        role: 'planner',
-        task: `Break down and propose implementation steps for: ${goal}`
+        title: 'Initial exploration',
+        role: 'explorer',
+        task: `Inspect the codebase and map the target area for: ${goal}`
       }
     ]
   };
@@ -4146,15 +4563,19 @@ async function buildAutoPlanAndRun({
           role: 'user',
           content: [
             'Create an execution plan and assign best sub-agent role for each step.',
-            'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|advisor|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.',
-            'The available roles are planner, advisor, coder, reviewer, tester, and summarizer. Use only the non-summary roles the task actually needs.',
+            `Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|')}","task":"..."}]}. No markdown.`,
+            `The available roles are ${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join(', ')}. Use only the roles the task actually needs.`,
             'Always include a summarizer as the final step. The summarizer synthesizes prior step results without re-analyzing.',
-            'Planner, advisor, coder, reviewer, and tester steps should write detailed step results, not final summaries.',
+            'All executor steps (explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer) should write detailed step results, not final summaries.',
             `Task class: ${normalizedTaskClass}`,
-            'Before choosing roles, decide whether the request is advisory, implementation, or verification-heavy.',
+            'Before choosing roles, decide whether the request is advisory, implementation, verification-heavy, debugging, or a hybrid.',
             requirementPacket,
-            'The first step should usually inspect or clarify the target area before implementation.',
-            'For analysis, recommendation, optimization, audit, or project-review goals, keep the plan lean and usually limit it to planner/advisor.',
+            'The first step should usually be an explorer to inspect the target area before implementation.',
+            'For debugging goals: explorer -> debugger (trace cause) -> coder (fix) -> tester (verify).',
+            'For implementation-advisory goals: explorer -> advisor -> coder.',
+            'For refactoring goals: explorer -> refactorer -> tester.',
+            'For documentation goals: explorer -> writer.',
+            'For analysis, recommendation, optimization, audit, or project-review goals, keep the plan lean and usually limit it to explorer/advisor.',
             'Do not include reviewer/tester for advisory goals unless the user explicitly asks to validate, verify, or independently review the findings.',
             'Avoid template-only titles like "Initial analysis", "Review recommendations", or "Test and verify" for advisory goals.',
             'For implementation-heavy changes, prefer review and/or testing steps near the end only when they materially improve confidence.',
@@ -4375,7 +4796,7 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
     return [
       {
         title: '⚡ Map evidence and interfaces',
-        role: 'planner',
+        role: 'explorer',
         task: [
           'Quickly map project evidence and build a practical API/interface inventory before report writing.',
           reportContract,
@@ -4412,7 +4833,7 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
     return [
       {
         title: '🧭 Map entry points and evidence sources',
-        role: 'planner',
+        role: 'explorer',
         task: [
           'Map project entry points and evidence sources before any report writing.',
           reportContract,
@@ -4423,7 +4844,7 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
       },
       {
         title: '📚 Build API and interface inventory',
-        role: 'planner',
+        role: 'explorer',
         task: [
           'Build the canonical API/interface inventory using the evidence map.',
           reportContract,
@@ -4451,7 +4872,7 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
   return [
     {
       title: '🧭 Map entry points and evidence sources',
-      role: 'planner',
+      role: 'explorer',
       task: [
         'Map project entry points and evidence sources before any report writing.',
         reportContract,
@@ -4462,7 +4883,7 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
     },
     {
       title: '📚 Build API and interface inventory',
-      role: 'planner',
+      role: 'explorer',
       task: [
         'Build the canonical API/interface inventory using the evidence map.',
         reportContract,
@@ -4935,7 +5356,7 @@ async function revisePendingPlanWithModel({
   const prompt = [
     buildAutoPlanPlannerGuidance(),
     'You are revising an existing plan based on explicit user feedback.',
-    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|advisor|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.',
+    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"' + SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|') + '","task":"..."}]}. No markdown.',
     'Keep roles minimal and only include steps that materially help the goal.',
     'Always keep a summarizer as the final step.'
   ].join('\n');
@@ -5349,7 +5770,7 @@ export async function createChatRuntime({
   ];
   const specTemplates = ['/spec <topic>'];
   const planTemplates = ['/plan <goal>', '/plan auto <goal>', '/plan approve', '/plan from-spec <spec-path?>'];
-  const agentTemplates = ['/agents list', '/agents run planner <task>', '/agents run advisor <task>', '/agents run coder <task>', '/agents run reviewer <task>', '/agents run tester <task>', '/agents run summarizer <task>'];
+  const agentTemplates = ['/agents list', '/agents run explorer <task>', '/agents run architect <task>', '/agents run advisor <task>', '/agents run coder <task>', '/agents run refactorer <task>', '/agents run reviewer <task>', '/agents run tester <task>', '/agents run debugger <task>', '/agents run writer <task>', '/agents run summarizer <task>'];
   const debugTemplates = ['/debug keys on', '/debug keys off', '/debug keys status'];
   const dreamTemplates = ['/dream', '/dream --dry-run', '/dream --scope=project', '/dream --scope=global'];
   const reflectTemplates = ['/reflect', '/reflect --scope=global <request>', '/reflect <request>'];
@@ -6540,7 +6961,7 @@ export async function createChatRuntime({
         if (sub === 'list') {
           return {
             type: 'system',
-            text: 'Sub-agent roles: planner, advisor, coder, reviewer, tester, summarizer\nUse: /agents run <role> <task>'
+            text: 'Sub-agent roles: ' + SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join(', ') + '\nUse: /agents run <role> <task>'
           };
         }
         if (sub === 'run') {
@@ -6548,7 +6969,7 @@ export async function createChatRuntime({
           const task = parsedInput.args.slice(2).join(' ').trim();
           if (!role || !task) return { type: 'system', text: 'Usage: /agents run <role> <task>' };
           if (!SUB_AGENT_ROLES.includes(role)) {
-            return { type: 'system', text: 'Unknown role. Allowed: planner|advisor|coder|reviewer|tester|summarizer' };
+            return { type: 'system', text: 'Unknown role. Allowed: ' + SUB_AGENT_ROLES.join('|') };
           }
           const output = await runSubAgentTask({
             role,

@@ -409,11 +409,11 @@ export async function generateCodeWikiReport(depth = 'standard', project = '') {
   return res.json();
 }
 
-export async function streamCodeWikiAsk({ question, reportFile = '', project = '', onEvent } = {}) {
+export async function streamCodeWikiAsk({ question, reportFile = '', project = '', history = [], onEvent } = {}) {
   const res = await api(`/api/codewiki/ask${codeWikiProjectQuery(project)}`, {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ question, reportFile })
+    body: JSON.stringify({ question, reportFile, history: Array.isArray(history) ? history : [] })
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));

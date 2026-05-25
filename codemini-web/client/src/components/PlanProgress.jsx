@@ -6,10 +6,15 @@ import { X } from "lucide-react";
 
 export const ROLE_PILLS = {
   planner: "bg-(--accent-purple-bg) text-(--accent-purple)",
+  explorer: "bg-(--accent-amber-bg) text-(--accent-amber)",
+  architect: "bg-(--accent-purple-bg) text-(--accent-purple)",
   coder: "bg-(--accent-green-bg) text-(--accent-green)",
+  refactorer: "bg-(--accent-teal-bg) text-(--accent-teal)",
   reviewer: "bg-(--accent-orange-bg) text-(--accent-orange)",
   tester: "bg-(--accent-blue-bg) text-(--accent-blue)",
   advisor: "bg-(--accent-blue-bg) text-(--accent-blue)",
+  debugger: "bg-(--accent-red-bg) text-(--accent-red)",
+  writer: "bg-(--accent-cyan-bg) text-(--accent-cyan)",
   summarizer: "bg-(--accent-cyan-bg) text-(--accent-cyan)",
 };
 

@@ -285,13 +285,14 @@ function jsonResponse(res, data, status = 200) {
   res.end(body);
 }
 
-function buildCodeWikiAskPrompt({ question, reportPath, projectDir, replyLanguage }) {
+function buildCodeWikiAskPrompt({ question, reportPath, projectDir, replyLanguage, history = [] }) {
+  const historyText = buildCodeWikiHistoryContext(history, replyLanguage);
   if (getReplyLanguage(replyLanguage) === 'en') {
     return [
       'Answer the following question based on the current project and the CodeWiki / project-requirements HTML report.',
       `Project path: ${projectDir}`,
       `Report path: ${reportPath}`,
-      '',
+      historyText,
       'Requirements:',
       '- Prefer reading and citing the HTML report above.',
       '- If the report is insufficient, use read-only project inspection to gather supporting evidence.',
@@ -300,13 +301,13 @@ function buildCodeWikiAskPrompt({ question, reportPath, projectDir, replyLanguag
       '- Respond in English unless the user explicitly asks for another language.',
       '',
       `Question: ${question.trim()}`
-    ].join('\n');
+    ].filter(Boolean).join('\n');
   }
   return [
     '请基于当前项目和 CodeWiki / project-requirements HTML 报告回答下面的问题。',
     `项目路径：${projectDir}`,
     `报告路径：${reportPath}`,
-    '',
+    historyText,
     '要求：',
     '- 优先读取并参考上述 HTML 报告。',
     '- 如果报告信息不足，可以只读检索项目文件补充证据。',
@@ -315,7 +316,21 @@ function buildCodeWikiAskPrompt({ question, reportPath, projectDir, replyLanguag
     '- 除非用户明确要求其他语言，否则使用简体中文回答。',
     '',
     `问题：${question.trim()}`
-  ].join('\n');
+  ].filter(Boolean).join('\n');
+}
+
+function buildCodeWikiHistoryContext(history = [], replyLanguage) {
+  if (!Array.isArray(history) || history.length === 0) return '';
+  const en = getReplyLanguage(replyLanguage) === 'en';
+  const header = en ? 'Conversation history:' : '对话历史：';
+  const lines = [header];
+  for (const entry of history) {
+    if (!entry || !entry.role) continue;
+    const label = entry.role === 'you' ? (en ? 'User' : '用户') : (en ? 'Assistant' : '助手');
+    const text = String(entry.text || '').slice(0, 800);
+    if (text) lines.push(`${label}: ${text}`);
+  }
+  return lines.length > 1 ? lines.join('\n') : '';
 }
 
 async function serveStatic(res, filePath) {
@@ -1079,7 +1094,7 @@ async function main() {
     }
 
     if (req.method === 'POST' && url.pathname === '/api/codewiki/ask') {
-      const { question, reportFile } = await readBody(req);
+      const { question, reportFile, history } = await readBody(req);
       if (!question || typeof question !== 'string') {
         jsonResponse(res, { error: true, message: 'Missing "question" field' }, 400);
         return;
@@ -1108,7 +1123,8 @@ async function main() {
         question,
         reportPath,
         projectDir: codeWikiProjectDir,
-        replyLanguage: bridge.getState()?.replyLanguage
+        replyLanguage: bridge.getState()?.replyLanguage,
+        history: Array.isArray(history) ? history : []
       });
 
       res.writeHead(200, {

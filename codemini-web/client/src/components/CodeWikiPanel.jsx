@@ -708,11 +708,16 @@ export function CodeWikiPanel({
       },
     ]);
     setAsking(true);
+    const recentHistory = chatMessages
+      .filter((m) => (m.role === "you" || m.role === "codewiki") && !m.loading)
+      .slice(-6)
+      .map((m) => ({ role: m.role, text: m.text || "" }));
     try {
       await streamCodeWikiAsk({
         question: trimmed,
         reportFile: selected?.file || "",
         project: projectKey,
+        history: recentHistory,
         onEvent: (streamEvent) => {
           setChatMessages((current) =>
             current.map((message) =>
@@ -1027,7 +1032,7 @@ export function CodeWikiPanel({
                     </button>
                   ))}
                 </div>
-                {generating && (
+                {/* {generating && (
                   <div className="mt-5 flex items-center justify-center gap-2 rounded-lg border border-(--border-default) bg-(--bg-primary) px-4 py-4 w-full max-w-md">
                     <Loader2
                       size={16}
@@ -1037,7 +1042,7 @@ export function CodeWikiPanel({
                       {t("generatingCodeWiki")}
                     </span>
                   </div>
-                )}
+                )} */}
               </div>
             ) : (
               <div className="h-full min-h-[420px] overflow-hidden rounded-xl border border-(--border-default) bg-(--bg-secondary)">
