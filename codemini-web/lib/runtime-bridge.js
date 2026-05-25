@@ -834,10 +834,8 @@ export class RuntimeBridge {
   get runtime() { return this.#runtime; }
 
   async switchRuntime(newRuntime) {
-    // Abort anything in-flight
     if (this.#busy) {
-      try { this.#runtime.abort(); } catch {}
-      this.#busy = false;
+      throw new Error('Runtime is busy');
     }
     // Dispose old runtime
     try { await this.#runtime.dispose?.(); } catch {}

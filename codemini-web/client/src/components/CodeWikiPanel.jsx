@@ -20,16 +20,14 @@ import {
   generateCodeWikiReport,
   streamCodeWikiAsk,
 } from "@/hooks/use-api.js";
-import { Progress } from "@/components/ui/progress";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { MessageBubble } from "@/components/MessageBubble.jsx";
-import { cn } from "@/lib/utils";
-
 const CODEWIKI_QA_WIDTH_KEY = "codemini:codewiki:qa-width";
 const CODEWIKI_QA_MIN_WIDTH = 320;
 const CODEWIKI_QA_MAX_WIDTH = 760;
@@ -74,77 +72,22 @@ function formatFileSize(bytes) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function getGenerationProgress(steps, stageLabel) {
-  const planSteps = Array.isArray(steps) ? steps : [];
-  if (!planSteps.length) {
-    return {
-      done: 0,
-      total: 0,
-      pct: 8,
-      label: stageLabel || t("startingAnalysis"),
-      detail: t("preparingScan"),
-    };
-  }
-
-  const done = planSteps.filter((step) => step.status === "done").length;
-  const failed = planSteps.find((step) => step.status === "failed");
-  const active =
-    planSteps.find((step) => step.status === "running") ||
-    planSteps.find((step) => step.status === "in_progress") ||
-    planSteps.find((step) => step.status === "pending") ||
-    planSteps[planSteps.length - 1];
-
-  return {
-    done,
-    total: planSteps.length,
-    pct: Math.max(8, Math.round((done / planSteps.length) * 100)),
-    label: failed
-      ? t("generationFailed")
-      : active?.title || stageLabel || t("generatingCodeWiki"),
-    detail: failed
-      ? failed.title
-      : `${done}/${planSteps.length} ${t("stepsCompleted")}${active?.role ? ` · ${active.role.toUpperCase()}` : ""}`,
-  };
-}
-
-function GenerationProgress({ steps, stageLabel, compact = false }) {
-  const progress = getGenerationProgress(steps, stageLabel);
-
-  return (
-    <div
-      className={cn(
-        "rounded-lg border border-(--border-default) bg-(--bg-primary) p-3 text-left",
-        compact ? "mt-3" : "mt-5 w-full max-w-md",
-      )}
-    >
-      <div className="flex items-center justify-between gap-3">
-        <span className="truncate text-[12px] font-medium text-(--text-primary)">
-          {progress.label}
-        </span>
-        {progress.total > 0 && (
-          <span className="shrink-0 text-[11px] text-(--text-muted)">
-            {progress.done}/{progress.total}
-          </span>
-        )}
-      </div>
-      <Progress value={progress.pct} className="mt-2 h-1.5" />
-      <p className="mt-2 truncate text-[11px] text-(--text-muted)">
-        {progress.detail}
-      </p>
-    </div>
-  );
-}
-
 function buildGraphLayout(graph) {
   const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
   const edges = Array.isArray(graph?.edges) ? graph.edges : [];
-  const columns = Math.max(1, Math.min(nodes.length <= 6 ? 3 : 5, nodes.length));
+  const columns = Math.max(
+    1,
+    Math.min(nodes.length <= 6 ? 3 : 5, nodes.length),
+  );
   const nodeWidth = 188;
   const nodeHeight = 64;
   const colWidth = 250;
   const rowHeight = 132;
   const width = Math.max(520, columns * colWidth + 80);
-  const height = Math.max(380, Math.ceil(nodes.length / columns) * rowHeight + 120);
+  const height = Math.max(
+    380,
+    Math.ceil(nodes.length / columns) * rowHeight + 120,
+  );
   const positioned = nodes.map((node, index) => {
     const col = index % columns;
     const row = Math.floor(index / columns);
@@ -158,7 +101,11 @@ function buildGraphLayout(graph) {
   });
   const byId = new Map(positioned.map((node) => [node.id, node]));
   const visibleEdges = edges
-    .map((edge) => ({ ...edge, sourceNode: byId.get(edge.source), targetNode: byId.get(edge.target) }))
+    .map((edge) => ({
+      ...edge,
+      sourceNode: byId.get(edge.source),
+      targetNode: byId.get(edge.target),
+    }))
     .filter((edge) => edge.sourceNode && edge.targetNode);
   return { width, height, nodes: positioned, edges: visibleEdges };
 }
@@ -167,7 +114,9 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
   const [selectedId, setSelectedId] = useState("");
   const layout = useMemo(() => buildGraphLayout(graph), [graph]);
   const selected =
-    layout.nodes.find((node) => node.id === selectedId) || layout.nodes[0] || null;
+    layout.nodes.find((node) => node.id === selectedId) ||
+    layout.nodes[0] ||
+    null;
 
   useEffect(() => {
     if (!layout.nodes.length) {
@@ -232,7 +181,14 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
           aria-label="Code symbol graph"
         >
           <defs>
-            <marker id="codewiki-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+            <marker
+              id="codewiki-arrow"
+              markerWidth="8"
+              markerHeight="8"
+              refX="7"
+              refY="4"
+              orient="auto"
+            >
               <path d="M0,0 L8,4 L0,8 Z" fill="var(--text-muted)" />
             </marker>
           </defs>
@@ -247,7 +203,11 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
                 key={`${edge.source}-${edge.target}-${edge.kind}-${index}`}
                 d={`M ${sx} ${sy + 24} C ${sx} ${midY}, ${tx} ${midY}, ${tx} ${ty - 24}`}
                 fill="none"
-                stroke={edge.kind === "calls" ? "var(--accent-blue)" : "var(--text-muted)"}
+                stroke={
+                  edge.kind === "calls"
+                    ? "var(--accent-blue)"
+                    : "var(--text-muted)"
+                }
                 strokeOpacity="0.42"
                 strokeWidth="1.4"
                 markerEnd="url(#codewiki-arrow)"
@@ -274,14 +234,26 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
                   height={node.nodeHeight}
                   rx="8"
                   fill={fill}
-                  stroke={active ? "var(--text-primary)" : "var(--border-default)"}
+                  stroke={
+                    active ? "var(--text-primary)" : "var(--border-default)"
+                  }
                   strokeWidth={active ? 2 : 1}
                 />
-                <text x="12" y="23" fill="var(--text-primary)" fontSize="12" fontWeight="600">
+                <text
+                  x="12"
+                  y="23"
+                  fill="var(--text-primary)"
+                  fontSize="12"
+                  fontWeight="600"
+                >
                   {String(node.label || "").slice(0, 20)}
                 </text>
                 <text x="12" y="42" fill="var(--text-muted)" fontSize="10">
-                  {String(`${node.type} · ${String(node.file || "").split("/").pop()}`).slice(0, 28)}
+                  {String(
+                    `${node.type} · ${String(node.file || "")
+                      .split("/")
+                      .pop()}`,
+                  ).slice(0, 28)}
                 </text>
               </g>
             );
@@ -291,9 +263,12 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
       <aside className="min-h-0 border-l border-(--border-default) bg-(--bg-primary) p-4 overflow-y-auto">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-[12px] font-medium text-(--text-muted)">Code Graph</p>
+            <p className="text-[12px] font-medium text-(--text-muted)">
+              Code Graph
+            </p>
             <p className="mt-1 text-[11px] text-(--text-muted)">
-              {graph?.stats?.displayed_nodes || 0} nodes · {graph?.stats?.displayed_edges || 0} edges
+              {graph?.stats?.displayed_nodes || 0} nodes ·{" "}
+              {graph?.stats?.displayed_edges || 0} edges
             </p>
           </div>
           <button
@@ -311,7 +286,8 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
               {selected.label}
             </h2>
             <p className="mt-1 break-words text-[12px] text-(--text-muted)">
-              {selected.file}:{selected.range?.start_line || "?"}-{selected.range?.end_line || "?"}
+              {selected.file}:{selected.range?.start_line || "?"}-
+              {selected.range?.end_line || "?"}
             </p>
             {selected.signature && (
               <pre className="mt-3 whitespace-pre-wrap rounded-lg border border-(--border-default) bg-(--bg-secondary) p-3 text-[11px] leading-5 text-(--text-secondary)">
@@ -330,7 +306,10 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
                   {label}
                 </p>
                 <div className="mt-2 flex flex-col gap-1.5">
-                  {(Array.isArray(values) && values.length ? values : ["None"]).map((value) => (
+                  {(Array.isArray(values) && values.length
+                    ? values
+                    : ["None"]
+                  ).map((value) => (
                     <span
                       key={`${label}-${value}`}
                       className="rounded-md border border-(--border-default) bg-(--bg-secondary) px-2 py-1 text-[11px] text-(--text-secondary)"
@@ -504,6 +483,7 @@ export function CodeWikiPanel({
   busy,
   planSteps = [],
   stageLabel = "",
+  generationStatus = { status: "idle", updatedAt: null, error: "" },
 }) {
   const [reports, setReports] = useState([]);
   const [selectedFile, setSelectedFile] = useState("");
@@ -512,7 +492,7 @@ export function CodeWikiPanel({
   const [graphLoading, setGraphLoading] = useState(false);
   const [graphError, setGraphError] = useState("");
   const [symbolGraph, setSymbolGraph] = useState(null);
-  const [generating, setGenerating] = useState(false);
+  const [localGenerating, setLocalGenerating] = useState(false);
   const [error, setError] = useState("");
   const [frameError, setFrameError] = useState(false);
   const [question, setQuestion] = useState("");
@@ -535,6 +515,11 @@ export function CodeWikiPanel({
     () => reports.find((report) => report.file === selectedFile) || null,
     [reports, selectedFile],
   );
+  const generationState = generationStatus?.status || "idle";
+  const generationRunning = generationState === "running";
+  const generationDone = generationState === "done";
+  const generationError = generationState === "error";
+  const generating = localGenerating || generationRunning;
 
   const reportUrl = selected
     ? `/api/codewiki/report/${encodeURIComponent(selected.file)}${projectKey ? `?project=${encodeURIComponent(projectKey)}` : ""}`
@@ -554,28 +539,31 @@ export function CodeWikiPanel({
     }
   }, [projectKey]);
 
-  const loadReports = useCallback(async ({ preferNewest = false } = {}) => {
-    setLoading(true);
-    setError("");
-    try {
-      const data = await fetchCodeWikiReports(projectKey);
-      const rawReports = Array.isArray(data?.reports) ? data.reports : [];
-      const nextReports = [...rawReports].sort(
-        (a, b) => new Date(b.mtime || 0) - new Date(a.mtime || 0),
-      );
-      setReports(nextReports);
-      setSelectedFile((current) => {
-        if (preferNewest && nextReports[0]) return nextReports[0].file;
-        if (nextReports.some((report) => report.file === current))
-          return current;
-        return nextReports[0]?.file || "";
-      });
-    } catch (err) {
-      setError(err?.message || t("failedToLoad"));
-    } finally {
-      setLoading(false);
-    }
-  }, [projectKey]);
+  const loadReports = useCallback(
+    async ({ preferNewest = false } = {}) => {
+      setLoading(true);
+      setError("");
+      try {
+        const data = await fetchCodeWikiReports(projectKey);
+        const rawReports = Array.isArray(data?.reports) ? data.reports : [];
+        const nextReports = [...rawReports].sort(
+          (a, b) => new Date(b.mtime || 0) - new Date(a.mtime || 0),
+        );
+        setReports(nextReports);
+        setSelectedFile((current) => {
+          if (preferNewest && nextReports[0]) return nextReports[0].file;
+          if (nextReports.some((report) => report.file === current))
+            return current;
+          return nextReports[0]?.file || "";
+        });
+      } catch (err) {
+        setError(err?.message || t("failedToLoad"));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [projectKey],
+  );
 
   useEffect(() => {
     setReports([]);
@@ -601,71 +589,93 @@ export function CodeWikiPanel({
   }, [chatMessages, asking]);
 
   useEffect(() => {
-    if (generating && busy) setSawRuntimeBusy(true);
-  }, [busy, generating]);
+    if (generationRunning) {
+      setLocalGenerating(true);
+      setSawRuntimeBusy(true);
+      setError("");
+    }
+  }, [generationRunning]);
 
   useEffect(() => {
-    if (!generating || busy || !sawRuntimeBusy) return;
+    if (!generationDone) return;
     loadReports({ preferNewest: true });
-    setGenerating(false);
+    setLocalGenerating(false);
     setSawRuntimeBusy(false);
-  }, [busy, generating, loadReports, sawRuntimeBusy]);
+  }, [generationDone, loadReports]);
+
+  useEffect(() => {
+    if (!generationError) return;
+    setLocalGenerating(false);
+    setSawRuntimeBusy(false);
+    if (generationStatus?.error) setError(generationStatus.error);
+  }, [generationError, generationStatus?.error]);
+
+  useEffect(() => {
+    if (!localGenerating || busy || generationRunning || !sawRuntimeBusy)
+      return;
+    loadReports({ preferNewest: true });
+    setLocalGenerating(false);
+    setSawRuntimeBusy(false);
+  }, [busy, generationRunning, loadReports, localGenerating, sawRuntimeBusy]);
 
   useEffect(() => {
     window.localStorage.setItem(CODEWIKI_QA_WIDTH_KEY, String(qaWidth));
   }, [qaWidth]);
 
-  const handleQaResizeStart = useCallback((event) => {
-    event.preventDefault();
-    setQaResizing(true);
-    qaResizeRef.current = {
-      startX: event.clientX,
-      startWidth: qaWidth,
-    };
+  const handleQaResizeStart = useCallback(
+    (event) => {
+      event.preventDefault();
+      setQaResizing(true);
+      qaResizeRef.current = {
+        startX: event.clientX,
+        startWidth: qaWidth,
+      };
 
-    const handleMove = (moveEvent) => {
-      const delta = qaResizeRef.current.startX - moveEvent.clientX;
-      const viewportMax = Math.max(
-        CODEWIKI_QA_MIN_WIDTH,
-        Math.min(CODEWIKI_QA_MAX_WIDTH, window.innerWidth - 720),
-      );
-      const nextWidth = Math.min(
-        viewportMax,
-        Math.max(
+      const handleMove = (moveEvent) => {
+        const delta = qaResizeRef.current.startX - moveEvent.clientX;
+        const viewportMax = Math.max(
           CODEWIKI_QA_MIN_WIDTH,
-          qaResizeRef.current.startWidth + delta,
-        ),
-      );
-      setQaWidth(nextWidth);
-    };
+          Math.min(CODEWIKI_QA_MAX_WIDTH, window.innerWidth - 720),
+        );
+        const nextWidth = Math.min(
+          viewportMax,
+          Math.max(
+            CODEWIKI_QA_MIN_WIDTH,
+            qaResizeRef.current.startWidth + delta,
+          ),
+        );
+        setQaWidth(nextWidth);
+      };
 
-    const handleEnd = () => {
-      setQaResizing(false);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      window.removeEventListener("mousemove", handleMove);
-      window.removeEventListener("mouseup", handleEnd);
-    };
+      const handleEnd = () => {
+        setQaResizing(false);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        window.removeEventListener("mousemove", handleMove);
+        window.removeEventListener("mouseup", handleEnd);
+      };
 
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    window.addEventListener("mousemove", handleMove);
-    window.addEventListener("mouseup", handleEnd);
-  }, [qaWidth]);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      window.addEventListener("mousemove", handleMove);
+      window.addEventListener("mouseup", handleEnd);
+    },
+    [qaWidth],
+  );
 
   const handleGenerate = async () => {
     if (busy || generating) return;
     setError("");
-    setGenerating(true);
+    setLocalGenerating(true);
     setSawRuntimeBusy(false);
     try {
       const result = await generateCodeWikiReport(generationDepth, projectKey);
       if (result?.error) {
-        setGenerating(false);
+        setLocalGenerating(false);
         setError(result.message || t("failedToStart"));
       }
     } catch (err) {
-      setGenerating(false);
+      setLocalGenerating(false);
       setError(err?.message || t("failedToStart"));
     }
   };
@@ -807,13 +817,14 @@ export function CodeWikiPanel({
               )}
               {generating ? t("generating") : t("generateNew")}
             </button>
-            {generating && (
-              <GenerationProgress
-                steps={planSteps}
-                stageLabel={stageLabel}
-                compact
-              />
-            )}
+            {/* {generating && (
+              <div className="mt-3 flex items-center gap-2 rounded-lg border border-(--border-default) bg-(--bg-primary) px-3 py-2.5">
+                <Loader2 size={14} className="animate-spin shrink-0 text-(--text-muted)" />
+                <span className="text-[12px] text-(--text-secondary) truncate">
+                  {t("generatingCodeWiki")}
+                </span>
+              </div>
+            )} */}
           </div>
 
           <div className="flex items-center justify-between px-4 py-3">
@@ -852,7 +863,10 @@ export function CodeWikiPanel({
                   />
                   <span className="min-w-0 flex-1">代码关系</span>
                   {graphLoading && (
-                    <Loader2 size={13} className="mt-0.5 shrink-0 animate-spin text-(--text-muted)" />
+                    <Loader2
+                      size={13}
+                      className="mt-0.5 shrink-0 animate-spin text-(--text-muted)"
+                    />
                   )}
                 </span>
                 <span className="mt-1 block truncate pl-6 text-[11px] text-(--text-muted)">
@@ -979,10 +993,10 @@ export function CodeWikiPanel({
               <div className="h-full min-h-[420px] rounded-xl border border-dashed border-(--border-default) bg-(--bg-secondary) flex flex-col items-center justify-center text-center px-8">
                 <BookOpenText size={34} className="text-(--text-muted)" />
                 <h2 className="mt-4 text-[18px] font-semibold text-(--text-primary)">
-                  {t('noCodeWiki')}
+                  {t("noCodeWiki")}
                 </h2>
                 <p className="mt-2 max-w-md text-[13px] leading-6 text-(--text-muted)">
-                  {t('reportWillShow')}
+                  {t("reportWillShow")}
                 </p>
                 <button
                   className="mt-5 h-10 rounded-lg bg-(--text-primary) px-4 text-[13px] font-medium text-(--bg-primary) inline-flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
@@ -1014,10 +1028,15 @@ export function CodeWikiPanel({
                   ))}
                 </div>
                 {generating && (
-                  <GenerationProgress
-                    steps={planSteps}
-                    stageLabel={stageLabel}
-                  />
+                  <div className="mt-5 flex items-center justify-center gap-2 rounded-lg border border-(--border-default) bg-(--bg-primary) px-4 py-4 w-full max-w-md">
+                    <Loader2
+                      size={16}
+                      className="animate-spin shrink-0 text-(--text-muted)"
+                    />
+                    <span className="text-[13px] text-(--text-secondary)">
+                      {t("generatingCodeWiki")}
+                    </span>
+                  </div>
                 )}
               </div>
             ) : (
@@ -1101,8 +1120,7 @@ export function CodeWikiPanel({
                 <p className="mt-2 text-[12px] leading-5 text-(--text-muted)">
                   {generating
                     ? t("askAfterGeneration")
-                    : lastQuestion ||
-                      t("exampleQuestions")}
+                    : lastQuestion || t("exampleQuestions")}
                 </p>
               </div>
             ) : (
@@ -1161,7 +1179,10 @@ export function CodeWikiPanel({
       <ConfirmDialog
         open={!!pendingDelete}
         title={t("deleteReportConfirm")}
-        description={t("deleteReportDescription").replace("{{report}}", pendingDelete?.title || pendingDelete?.file || "")}
+        description={t("deleteReportDescription").replace(
+          "{{report}}",
+          pendingDelete?.title || pendingDelete?.file || "",
+        )}
         loading={deletingReport}
         onOpenChange={(open) => !open && setPendingDelete(null)}
         onConfirm={confirmDeleteReport}

@@ -401,6 +401,16 @@ function mergeModelUsage(left, right) {
   };
 }
 
+function collectAssistantUsage(messages = []) {
+  let usage = null;
+  for (const msg of Array.isArray(messages) ? messages : []) {
+    if (msg?.role === 'assistant' && msg.usage) {
+      usage = mergeModelUsage(usage, msg.usage);
+    }
+  }
+  return usage;
+}
+
 function prioritizeByPreferredOrder(items, preferredOrder) {
   const source = Array.isArray(items) ? items : [];
   const priorities = new Map((Array.isArray(preferredOrder) ? preferredOrder : []).map((value, index) => [value, index]));
@@ -3686,11 +3696,9 @@ async function askModel({
         }
       }).catch(() => {});
     }
-    try {
-      await pruneSessions(config.sessions || {});
-    } catch {
+    void pruneSessions(config.sessions || {}).catch(() => {
       // keep chat usable even if pruning fails
-    }
+    });
   }
   return { text: loopResult.text, aborted: !!loopResult.aborted };
 }
@@ -3705,10 +3713,14 @@ async function runSubAgentTask({
   model,
   systemPrompt,
   onAgentEvent,
+  requestToolApproval,
   extraRolePrompt = '',
   signal,
   onSessionActive,
-  planFileContext = ''
+  planFileContext = '',
+  changeTracker = null,
+  backupManager = null,
+  projectIsGit = Boolean(config?.runtime?.project_is_git)
 }) {
   const subSession = { id: `sub-${Date.now()}`, messages: [] };
   const rolePrompt = getSubAgentRolePrompt(role);
@@ -3781,11 +3793,15 @@ async function runSubAgentTask({
     model,
     systemPrompt: subSystemPrompt,
     onAgentEvent: wrappedOnAgentEvent,
+    requestToolApproval,
     persistSession: false,
     executionMode: 'normal',
     allowedTools: roleAllowedTools,
     skipAnalysisNudge: true,
-    signal
+    signal,
+    changeTracker,
+    backupManager,
+    projectIsGit
   });
   const text = subResult.text || '';
   const hasErrorLine = /(^|\n)\s*error\s*:/i.test(text);
@@ -3803,12 +3819,8 @@ function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }
   const toolCardsById = new Map();
   const toolCards = [];
   const source = Array.isArray(messages) ? messages : [];
-  let usage = null;
 
   for (const msg of source) {
-    if (msg?.role === 'assistant' && msg.usage) {
-      usage = mergeModelUsage(usage, msg.usage);
-    }
     if (msg?.role === 'assistant' && Array.isArray(msg.tool_calls)) {
       for (const tc of msg.tool_calls) {
         const id = String(tc?.id || `tool-${toolCards.length + 1}`);
@@ -3852,7 +3864,7 @@ function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }
     status: stepRecord.failed ? 'failed' : 'done',
     summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output || '', 160),
     segments,
-    ...(usage ? { usage } : {})
+    ...(stepRecord.usage ? { usage: stepRecord.usage } : {})
   };
 }
 
@@ -3863,8 +3875,12 @@ async function executePlanWithSubAgents({
   model,
   systemPrompt,
   onAgentEvent,
+  requestToolApproval,
   signal,
-  onSubSessionActive
+  onSubSessionActive,
+  changeTracker = null,
+  backupManager = null,
+  projectIsGit = Boolean(config?.runtime?.project_is_git)
 }) {
   const steps = Array.isArray(planState.steps) ? planState.steps : [];
   const goal = planState.goal || '';
@@ -3885,6 +3901,7 @@ async function executePlanWithSubAgents({
   const priorSteps = [];
   const results = [];
   const transcript = [];
+  let totalUsage = null;
 
   // Emit structured plan steps so TUI can show all steps with real role/title
   emitPlanEvent({
@@ -3937,11 +3954,21 @@ async function executePlanWithSubAgents({
       model,
       systemPrompt,
       onAgentEvent: emitPlanEvent,
+      requestToolApproval,
       extraRolePrompt: stepGuidance,
       signal,
       onSessionActive: onSubSessionActive,
-      planFileContext
+      planFileContext,
+      changeTracker,
+      backupManager,
+      projectIsGit
     });
+
+    const stepUsage = collectAssistantUsage(output.messages || []);
+    totalUsage = mergeModelUsage(totalUsage, stepUsage);
+    const displayUsage = step.role === 'summarizer'
+      ? totalUsage
+      : stepUsage;
 
     const stepRecord = {
       role: step.role,
@@ -3953,16 +3980,12 @@ async function executePlanWithSubAgents({
       hasErrorLine: output.hasErrorLine || false,
       artifactPaths: output.artifactPaths || [],
       messages: output.messages || [],
-      failed:
-        output.hasErrorLine ||
-        stepOutputHasFailureSignals(step.role, output.text || ''),
+      usage: displayUsage,
+      failed: stepOutputHasFailureSignals(step.role, output.text || ''),
       failureReason: ''
     };
     if (stepRecord.failed) {
-      stepRecord.failureReason =
-        output.hasErrorLine
-          ? 'tool or model execution error'
-          : buildExitCriteriaFailureReason(step.role, output.text || '');
+      stepRecord.failureReason = buildExitCriteriaFailureReason(step.role, output.text || '');
     }
     priorSteps.push(stepRecord);
     results.push(stepRecord);
@@ -3993,7 +4016,8 @@ async function executePlanWithSubAgents({
       role: step.role,
       title: step.title,
       status: stepRecord.failed ? 'failed' : 'done',
-      summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output, 160)
+      summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output, 160),
+      ...(displayUsage ? { usage: displayUsage } : {})
     });
 
     emitPlanEvent({
@@ -4004,7 +4028,8 @@ async function executePlanWithSubAgents({
       role: step.role,
       title: step.title,
       status: stepRecord.failed ? 'failed' : 'done',
-      summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output, 160)
+      summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output, 160),
+      ...(displayUsage ? { usage: displayUsage } : {})
     });
 
     if (stepRecord.failed && i < steps.length - 1) {
@@ -4217,6 +4242,7 @@ function renderAutoPlanMarkdown({
 
 function parseProjectRequirementsOptions(args = []) {
   let depth = 'standard';
+  let runner = 'agent';
   const focusArgs = [];
   for (const arg of Array.isArray(args) ? args : []) {
     const value = String(arg || '').trim();
@@ -4233,12 +4259,22 @@ function parseProjectRequirementsOptions(args = []) {
       depth = 'deep';
       continue;
     }
+    if (['--agent', '--single-agent', '--single', '--普通', '--单agent', '--单-agent'].includes(normalized)) {
+      runner = 'agent';
+      continue;
+    }
+    if (['--pipeline', '--plan', '--subagents', '--sub-agents', '--流水线', '--计划'].includes(normalized)) {
+      // Pipeline generation is intentionally disabled by default for CodeWiki quality/stability.
+      // Keep the old pipeline implementation in place for future controlled experiments, but do
+      // not expose this flag as an active runner switch.
+      continue;
+    }
     focusArgs.push(arg);
   }
   const raw = focusArgs.join(' ').trim();
   const normalized = raw.toLowerCase();
   const hasIgnoreIntent = /(忽略|跳过|不生成|不要|无需|排除|exclude|skip|omit|without|no\s+)/i.test(raw);
-  if (!hasIgnoreIntent) return { raw, focusArgs, depth, ignoredSections: [] };
+  if (!hasIgnoreIntent) return { raw, focusArgs, depth, runner, ignoredSections: [] };
 
   const ignored = [];
   for (const section of PROJECT_REQUIREMENTS_SECTION_MARKERS) {
@@ -4251,7 +4287,7 @@ function parseProjectRequirementsOptions(args = []) {
     });
     if (matched) ignored.push(section);
   }
-  return { raw, focusArgs, depth, ignoredSections: ignored };
+  return { raw, focusArgs, depth, runner, ignoredSections: ignored };
 }
 
 function renderProjectRequirementsSectionContract(ignoredSections = []) {
@@ -4591,8 +4627,8 @@ async function runProjectRequirementsPipeline({
   signal,
   onSubSessionActive
 }) {
-  const renderedSkillPrompt = await expandFileMentions(renderCommandPrompt(custom, parsedInput.args), process.cwd());
   const options = parseProjectRequirementsOptions(parsedInput.args);
+  const renderedSkillPrompt = await expandFileMentions(renderCommandPrompt(custom, options.focusArgs), process.cwd());
   const userFocus = options.raw;
   const goal = userFocus ? `project requirements report: ${userFocus}` : 'project requirements report';
   const reportSlug = formatLocalDateTimeSlug();
@@ -4717,6 +4753,157 @@ async function runProjectRequirementsPipeline({
     manifestPath,
     aborted: !!execution.aborted
   };
+}
+
+async function runProjectRequirementsSingleAgent({
+  custom,
+  parsedInput,
+  currentSession,
+  config,
+  model,
+  systemPrompt,
+  onAgentEvent,
+  requestToolApproval,
+  signal,
+  compactedForModel,
+  onCompactedUpdate
+}) {
+  const options = parseProjectRequirementsOptions(parsedInput.args);
+  const renderedSkillPrompt = await expandFileMentions(renderCommandPrompt(custom, options.focusArgs), process.cwd());
+  const userFocus = options.raw;
+  const goal = userFocus ? `project requirements report: ${userFocus}` : 'project requirements report';
+  const reportSlug = formatLocalDateTimeSlug();
+  const reportPath = `docs/requirements/${reportSlug}-project-requirements.html`;
+  const companionPath = `docs/requirements/${reportSlug}-project-requirements.md`;
+  const manifestPath = `docs/requirements/${reportSlug}-project-requirements.manifest.json`;
+  const planFile = await writeMarkdownInProjectDir(
+    'plans',
+    'project-requirements-agent',
+    [
+      `# Project Requirements Agent: ${goal}`,
+      '',
+      `Primary Report: ${reportPath}`,
+      `Optional Companion: ${companionPath}`,
+      '',
+      'Runner: single agent',
+      `Depth: ${options.depth}`
+    ].join('\n'),
+    'project-requirements',
+    currentSession.id
+  );
+  const steps = [{ title: 'Generate project requirements report', role: 'coder', task: goal }];
+  await createProjectRequirementsShell({
+    reportPath,
+    companionPath,
+    manifestPath,
+    planFile,
+    goal,
+    steps,
+    depth: options.depth,
+    config
+  });
+  const reportContract = [
+    userFocus ? `User request/focus: ${userFocus}` : 'User request/focus: full workspace requirements report.',
+    `Reply language: write generated report prose, UI labels inserted into the report, review notes, and final user-facing status in ${getReplyLanguageName(config)} unless the user explicitly requested a different language.`,
+    `Primary report path: ${reportPath}`,
+    `Optional companion Markdown path: ${companionPath}`,
+    'A pre-created HTML shell already exists at the primary report path.',
+    'Fill or replace only the named REQUIREMENTS_* marker sections in that shell instead of rewriting unrelated shell CSS, JavaScript, navigation, or metadata.',
+    renderProjectRequirementsSectionContract(options.ignoredSections),
+    'Use one coherent agent pass: inspect the project, build the evidence map, decompose major APIs/interfaces, write the report, and do a final self-check before answering.',
+    'Prefer a complete, evidence-backed report over a rigid sub-agent handoff. If the project is too large, cover the most important entry points first and clearly list gaps.',
+    'Do not invent dates; use the report paths above.'
+  ].join('\n');
+
+  if (onAgentEvent) {
+    onAgentEvent({ type: 'skill:start', name: custom.name });
+    onAgentEvent({
+      type: 'plan:steps',
+      steps: [{
+        index: 1,
+        role: 'coder',
+        title: 'Generate project requirements report',
+        status: 'running'
+      }]
+    });
+    onAgentEvent({
+      type: 'plan:progress',
+      planFile,
+      reportPath,
+      manifestPath,
+      step: 1,
+      total: 1,
+      role: 'coder',
+      title: 'Generate project requirements report',
+      status: 'running',
+      summary: 'Project requirements single-agent generation started'
+    });
+  }
+
+  try {
+    const result = await askModel({
+      text: parsedInput.full ? `/${parsedInput.full}` : `/${custom.name}`,
+      modelText: [reportContract, 'Skill instructions:', renderedSkillPrompt].join('\n\n'),
+      session: currentSession,
+      config,
+      model,
+      systemPrompt,
+      onAgentEvent,
+      requestToolApproval,
+      executionMode: 'normal',
+      signal,
+      compactedForModel,
+      onCompactedUpdate
+    });
+    await updateProjectRequirementsManifest(manifestPath, {
+      status: result?.aborted ? 'aborted' : 'completed',
+      failedCount: 0
+    });
+    if (onAgentEvent) {
+      onAgentEvent({
+        type: 'plan:progress',
+        planFile,
+        reportPath,
+        manifestPath,
+        step: 1,
+        total: 1,
+        role: 'coder',
+        title: 'Generate project requirements report',
+        status: result?.aborted ? 'aborted' : 'done',
+        summary: 'Project requirements single-agent generation finished'
+      });
+      onAgentEvent({ type: 'skill:end', name: custom.name });
+    }
+    const text = [
+      result?.text || '',
+      '',
+      'Project requirements generation completed.',
+      `Plan File: ${planFile}`,
+      `Report Path: ${reportPath}`,
+      `Manifest: ${manifestPath}`,
+      'Runner: single agent'
+    ].filter(Boolean).join('\n');
+    return { type: 'assistant', text, planFile, reportPath, manifestPath, aborted: !!result?.aborted };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await updateProjectRequirementsManifest(manifestPath, {
+      status: 'failed',
+      failedCount: 1,
+      error: message
+    }).catch(() => {});
+    if (onAgentEvent) {
+      onAgentEvent({ type: 'skill:error', name: custom.name, summary: message });
+      onAgentEvent({ type: 'skill:end', name: custom.name });
+    }
+    return {
+      type: 'assistant',
+      text: `Project requirements generation failed: ${message}`,
+      planFile,
+      reportPath,
+      manifestPath,
+      aborted: true
+    };
+  }
 }
 
 async function revisePendingPlanWithModel({
@@ -5784,7 +5971,11 @@ export async function createChatRuntime({
         systemPrompt: baseSystemPrompt,
         onAgentEvent,
         signal,
-        onSubSessionActive: (sub) => { activeSubSession = sub; }
+        onSubSessionActive: (sub) => { activeSubSession = sub; },
+        requestToolApproval: activeRequestToolApproval,
+        changeTracker,
+        backupManager,
+        projectIsGit: Boolean(changeTracker?.enabled)
       });
       activeSubSession = null;
       currentSession.planState = null;
@@ -5967,7 +6158,11 @@ export async function createChatRuntime({
           systemPrompt: baseSystemPrompt,
           onAgentEvent,
           signal,
-          onSubSessionActive: (sub) => { activeSubSession = sub; }
+          onSubSessionActive: (sub) => { activeSubSession = sub; },
+          requestToolApproval: activeRequestToolApproval,
+          changeTracker,
+          backupManager,
+          projectIsGit: Boolean(changeTracker?.enabled)
         });
         activeSubSession = null;
         currentSession.planState = null;
@@ -6237,7 +6432,11 @@ export async function createChatRuntime({
             systemPrompt: baseSystemPrompt,
             onAgentEvent,
             signal,
-            onSubSessionActive: (sub) => { activeSubSession = sub; }
+            onSubSessionActive: (sub) => { activeSubSession = sub; },
+            requestToolApproval: activeRequestToolApproval,
+            changeTracker,
+            backupManager,
+            projectIsGit: Boolean(changeTracker?.enabled)
           });
           activeSubSession = null;
           currentSession.planState = null;
@@ -6328,7 +6527,11 @@ export async function createChatRuntime({
             config,
             model,
             systemPrompt: activeReplySystemPrompt,
-            onAgentEvent
+            onAgentEvent,
+            requestToolApproval: activeRequestToolApproval,
+            changeTracker,
+            backupManager,
+            projectIsGit: Boolean(changeTracker?.enabled)
           });
           const text = `[sub-agent:${role}]\n${output.text || output}`;
           await persistLocalExchange(line, text);
@@ -6682,6 +6885,23 @@ export async function createChatRuntime({
         return { type: 'system', text: `Skill is disabled: ${custom.name}` };
       }
       if (custom.metadata.type === 'skill' && custom.name === 'project-requirements') {
+        const projectRequirementsOptions = parseProjectRequirementsOptions(parsedInput.args);
+        if (codeWikiGenerate || projectRequirementsOptions.runner === 'agent') {
+          return await runProjectRequirementsSingleAgent({
+            custom,
+            parsedInput,
+            currentSession,
+            config,
+            model,
+            systemPrompt: activeReplySystemPrompt,
+            onAgentEvent,
+            // CodeWiki single-agent 使用完全访问模式，不弹审阅框
+            requestToolApproval: codeWikiGenerate ? null : activeRequestToolApproval,
+            signal,
+            compactedForModel,
+            onCompactedUpdate: setCompactedView
+          });
+        }
         try {
           return await runProjectRequirementsPipeline({
             custom,
@@ -6764,7 +6984,11 @@ export async function createChatRuntime({
           systemPrompt: baseSystemPrompt,
           onAgentEvent,
           signal,
-          onSubSessionActive: (sub) => { activeSubSession = sub; }
+          onSubSessionActive: (sub) => { activeSubSession = sub; },
+          requestToolApproval: activeRequestToolApproval,
+          changeTracker,
+          backupManager,
+          projectIsGit: Boolean(changeTracker?.enabled)
         });
         activeSubSession = null;
         currentSession.planState = null;
@@ -7026,8 +7250,10 @@ export async function createChatRuntime({
       changeTracker,
       backupManager
     });
-    await saveDirectMemoryPrompt(expandedText);
-    await captureUserPromptForDream(expandedText);
+    void Promise.allSettled([
+      saveDirectMemoryPrompt(expandedText),
+      captureUserPromptForDream(expandedText)
+    ]);
     return { type: 'assistant', text: result.text, aborted: !!result.aborted };
   };
 

@@ -1136,6 +1136,10 @@ async function main() {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/sessions/new') {
+      if (bridge.isBusy()) {
+        jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
+        return;
+      }
       try {
         const currentMessages = bridge.getSessionMessages();
         if (!Array.isArray(currentMessages) || currentMessages.length === 0) {
@@ -1163,6 +1167,10 @@ async function main() {
     if (req.method === 'POST' && url.pathname === '/api/sessions/switch') {
       const { sessionId } = await readBody(req);
       if (!sessionId) { jsonResponse(res, { error: true, message: 'Missing sessionId' }, 400); return; }
+      if (bridge.isBusy()) {
+        jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
+        return;
+      }
       try {
         const { runtime: newRuntime, session: switchedSession } = await buildRuntimeForSession({
           sessionId,
@@ -1334,6 +1342,10 @@ async function main() {
     if (req.method === 'POST' && url.pathname === '/api/project/open') {
       const { path: projectPath } = await readBody(req);
       if (!projectPath) { jsonResponse(res, { error: true, message: 'Missing path' }, 400); return; }
+      if (bridge.isBusy()) {
+        jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
+        return;
+      }
       try {
         // Client marker for general workspace
         const openingGeneral = projectPath === '__codemini_general__';

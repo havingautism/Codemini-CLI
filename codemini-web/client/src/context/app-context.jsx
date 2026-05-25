@@ -1060,6 +1060,7 @@ export function AppProvider({ children }) {
             if (m.id !== msgId) return m;
             return {
               ...m,
+              usage: mergeUsage(m.usage, event.usage),
               segments: finishThinkingSegments(m.segments).map(seg => seg.type === 'text' ? { ...seg, isStreaming: false } : seg),
               isComplete: true,
               planStep: {
