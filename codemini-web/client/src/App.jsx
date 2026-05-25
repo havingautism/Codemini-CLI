@@ -19,7 +19,6 @@ import { PlanApprovalCard } from "@/components/PlanApprovalDialog.jsx";
 import { ReflectApprovalCard } from "@/components/ReflectApprovalDialog.jsx";
 import { SpecApprovalCard } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
-import { PlanProgress } from "@/components/PlanProgress.jsx";
 import { MoreHorizontal, Terminal, GitCompare } from "lucide-react";
 import "../style.css";
 
@@ -264,15 +263,7 @@ function Shell() {
               </button> */}
             </div>
 
-            {/* Plan Progress (during execution) */}
-            {state.planSteps?.length > 0 && !state.pendingPlanApproval && (
-              <div className="px-4">
-                <PlanProgress
-                  steps={state.planSteps}
-                  onDismiss={actions.dismissPlanProgress}
-                />
-              </div>
-            )}
+            {/* Plan Progress (during execution) — now rendered as a chat message via plan-overview */}
 
             {/* Chat Panel */}
             <ChatPanel
@@ -322,7 +313,9 @@ function Shell() {
                 onAbort={actions.abort}
                 busy={state.busy}
                 disabled={
-                  !!state.pendingPlanApproval || !!state.pendingSpecApproval || !!state.pendingReflectApproval
+                  !!state.pendingPlanApproval ||
+                  !!state.pendingSpecApproval ||
+                  !!state.pendingReflectApproval
                 }
                 disabledReason={
                   state.pendingReflectApproval

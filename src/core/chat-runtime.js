@@ -3914,6 +3914,7 @@ async function executePlanWithSubAgents({
   // Emit structured plan steps so TUI can show all steps with real role/title
   emitPlanEvent({
     type: 'plan:steps',
+    goal,
     steps: steps.map((s, idx) => ({ index: idx + 1, role: s.role, title: s.title, status: 'pending' }))
   });
 
@@ -4828,6 +4829,7 @@ async function runProjectRequirementsSingleAgent({
     onAgentEvent({ type: 'skill:start', name: custom.name });
     onAgentEvent({
       type: 'plan:steps',
+      goal,
       steps: [{
         index: 1,
         role: 'coder',

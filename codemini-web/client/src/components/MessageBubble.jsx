@@ -4,10 +4,12 @@ import { StreamdownRenderer } from "./StreamdownRenderer";
 import { TodoList } from "./TodoList";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { Spinner } from "@/components/ui/spinner";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { formatTimestamp } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
 import * as api from "@/hooks/use-api.js";
+import { ROLE_PILLS } from "./PlanProgress.jsx";
 import { PatchDiff } from "@pierre/diffs/react";
 import {
   Tooltip,
@@ -56,6 +58,10 @@ const ROLE_STYLES = {
   summarizer: {
     badge: "bg-(--accent-cyan-bg) text-(--accent-cyan)",
     label: "Summarizer",
+  },
+  "plan-overview": {
+    badge: "bg-(--accent-purple-bg) text-(--accent-purple)",
+    label: "Plan",
   },
   codewiki: {
     badge: "bg-(--accent-green-bg) text-(--accent-green)",
@@ -473,7 +479,13 @@ function mergeFileChanges(fileChanges = []) {
     if (seen.has(fingerprint)) continue;
     seen.add(fingerprint);
     if (!byPath.has(path)) {
-      byPath.set(path, { ...change, linesAdded: 0, linesRemoved: 0, changes: [], changeSetIds: [] });
+      byPath.set(path, {
+        ...change,
+        linesAdded: 0,
+        linesRemoved: 0,
+        changes: [],
+        changeSetIds: [],
+      });
       order.push(path);
     }
     const existing = byPath.get(path);
@@ -487,47 +499,67 @@ function mergeFileChanges(fileChanges = []) {
       existing.changedLine = change.changedLine;
     }
     if (change.diffPreview) existing.changes.push(change);
-    if (change.changeSetId && !existing.changeSetIds.includes(change.changeSetId)) {
+    if (
+      change.changeSetId &&
+      !existing.changeSetIds.includes(change.changeSetId)
+    ) {
       existing.changeSetIds.push(change.changeSetId);
     }
   }
-  return order.map((path) => {
-    const change = byPath.get(path);
-    const firstChange = change.changes[0];
-    const lastChange = change.changes[change.changes.length - 1];
-    if (firstChange?.action === "create" && lastChange?.action === "delete") {
-      return null;
-    }
-    const createIndex = change.changes.findIndex((item) => item.action === "create");
-    const createdThenEdited =
-      createIndex >= 0 &&
-      !change.changes.slice(createIndex + 1).some((item) => item.action === "delete") &&
-      change.changes.slice(createIndex + 1).some((item) => item.action === "edit");
-    const trackedChanges = change.changes.filter((item) => item.changeSetId);
-    const revertedAt = trackedChanges.length > 0 && trackedChanges.every((item) => item.revertedAt)
-      ? trackedChanges[trackedChanges.length - 1].revertedAt
-      : "";
-    return {
-      ...change,
-      ...(createdThenEdited
-        ? {
-            action: "create",
-            linesAdded: Math.max(0, Number(change.linesAdded || 0) - Number(change.linesRemoved || 0)),
-            linesRemoved: 0,
-            diffPreview: "",
-            changes: [],
-          }
-        : {}),
-      changeSetId: change.changeSetIds.length === 1 ? change.changeSetIds[0] : "",
-      revertedAt,
-    };
-  }).filter(Boolean);
+  return order
+    .map((path) => {
+      const change = byPath.get(path);
+      const firstChange = change.changes[0];
+      const lastChange = change.changes[change.changes.length - 1];
+      if (firstChange?.action === "create" && lastChange?.action === "delete") {
+        return null;
+      }
+      const createIndex = change.changes.findIndex(
+        (item) => item.action === "create",
+      );
+      const createdThenEdited =
+        createIndex >= 0 &&
+        !change.changes
+          .slice(createIndex + 1)
+          .some((item) => item.action === "delete") &&
+        change.changes
+          .slice(createIndex + 1)
+          .some((item) => item.action === "edit");
+      const trackedChanges = change.changes.filter((item) => item.changeSetId);
+      const revertedAt =
+        trackedChanges.length > 0 &&
+        trackedChanges.every((item) => item.revertedAt)
+          ? trackedChanges[trackedChanges.length - 1].revertedAt
+          : "";
+      return {
+        ...change,
+        ...(createdThenEdited
+          ? {
+              action: "create",
+              linesAdded: Math.max(
+                0,
+                Number(change.linesAdded || 0) -
+                  Number(change.linesRemoved || 0),
+              ),
+              linesRemoved: 0,
+              diffPreview: "",
+              changes: [],
+            }
+          : {}),
+        changeSetId:
+          change.changeSetIds.length === 1 ? change.changeSetIds[0] : "",
+        revertedAt,
+      };
+    })
+    .filter(Boolean);
 }
 
 function getFileChangeSetIds(change) {
   return Array.isArray(change?.changeSetIds) && change.changeSetIds.length
     ? change.changeSetIds
-    : (change?.changeSetId ? [change.changeSetId] : []);
+    : change?.changeSetId
+      ? [change.changeSetId]
+      : [];
 }
 
 function getFileChangeUndoKey(change) {
@@ -536,7 +568,8 @@ function getFileChangeUndoKey(change) {
 
 function formatUndoError(error) {
   const message = error?.message || "";
-  if (message.includes("Cannot undo this change cleanly")) return t("undoChangeConflict");
+  if (message.includes("Cannot undo this change cleanly"))
+    return t("undoChangeConflict");
   return message || t("undoChangeFailed");
 }
 
@@ -547,7 +580,11 @@ function basename(pathText) {
 
 function isUnifiedPatch(text) {
   const value = String(text || "");
-  return value.startsWith("diff --git ") || value.includes("\ndiff --git ") || value.includes("\n@@ ");
+  return (
+    value.startsWith("diff --git ") ||
+    value.includes("\ndiff --git ") ||
+    value.includes("\n@@ ")
+  );
 }
 
 function splitUnifiedPatches(patch) {
@@ -555,22 +592,30 @@ function splitUnifiedPatches(patch) {
   if (!text) return [];
   const matches = [...text.matchAll(/^diff --git /gm)];
   if (matches.length <= 1) return [text];
-  return matches.map((match, index) => {
-    const start = match.index || 0;
-    const end = index + 1 < matches.length ? matches[index + 1].index : text.length;
-    return text.slice(start, end).trim();
-  }).filter(Boolean);
+  return matches
+    .map((match, index) => {
+      const start = match.index || 0;
+      const end =
+        index + 1 < matches.length ? matches[index + 1].index : text.length;
+      return text.slice(start, end).trim();
+    })
+    .filter(Boolean);
 }
 
 function usePatchThemeType() {
   const getIsDark = () =>
     document.documentElement.classList.contains("dark") ||
     document.documentElement.dataset.theme === "dark";
-  const [isDark, setIsDark] = useState(() => (typeof document === "undefined" ? true : getIsDark()));
+  const [isDark, setIsDark] = useState(() =>
+    typeof document === "undefined" ? true : getIsDark(),
+  );
   useEffect(() => {
     if (typeof document === "undefined") return undefined;
     const ob = new MutationObserver(() => setIsDark(getIsDark()));
-    ob.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme"] });
+    ob.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class", "data-theme"],
+    });
     return () => ob.disconnect();
   }, []);
   return isDark ? "dark" : "light";
@@ -599,9 +644,13 @@ function buildFileChangePreviewLines(change) {
 }
 
 function FileChangePreview({ change }) {
-  const patch = Array.isArray(change?.changes) && change.changes.length
-    ? change.changes.map((item) => item.diffPreview || "").filter(Boolean).join("\n")
-    : String(change?.diffPreview || "");
+  const patch =
+    Array.isArray(change?.changes) && change.changes.length
+      ? change.changes
+          .map((item) => item.diffPreview || "")
+          .filter(Boolean)
+          .join("\n")
+      : String(change?.diffPreview || "");
   const themeType = usePatchThemeType();
   if (isUnifiedPatch(patch)) {
     const patches = splitUnifiedPatches(patch);
@@ -670,14 +719,18 @@ function FileChangesSummary({ changes }) {
     });
     setUndoing((prev) => new Set(prev).add(undoKey));
     try {
-      const result = changeSetIds.length > 1
-        ? await api.undoSessionChanges(changeSetIds)
-        : await api.undoSessionChange(changeSetIds[0]);
-      if (result?.error || result?.ok === false) throw new Error(result.message || t("undoChangeFailed"));
+      const result =
+        changeSetIds.length > 1
+          ? await api.undoSessionChanges(changeSetIds)
+          : await api.undoSessionChange(changeSetIds[0]);
+      if (result?.error || result?.ok === false)
+        throw new Error(result.message || t("undoChangeFailed"));
       setRevertedUndoKeys((prev) => new Set(prev).add(undoKey));
       setPendingUndo(null);
     } catch (error) {
-      setUndoErrors((prev) => new Map(prev).set(undoKey, formatUndoError(error)));
+      setUndoErrors((prev) =>
+        new Map(prev).set(undoKey, formatUndoError(error)),
+      );
     } finally {
       setUndoing((prev) => {
         const next = new Set(prev);
@@ -691,139 +744,154 @@ function FileChangesSummary({ changes }) {
 
   return (
     <>
-    <div className="mt-6 overflow-hidden rounded-lg border border-(--border-default) bg-(--bg-secondary)">
-      {changes.map((c, i) => {
-        const key = `${c.path}-${i}`;
-        const fileOpen = openFiles.has(key);
-        const hasPreview = Boolean(c.diffPreview || (Array.isArray(c.changes) && c.changes.length));
-        const changeSetIds = getFileChangeSetIds(c);
-        const undoKey = changeSetIds.join("|");
-        const isReverted = undoKey && (revertedUndoKeys.has(undoKey) || Boolean(c.revertedAt));
-        return (
-          <div
-            key={key}
-            className="border-t border-(--border-default) first:border-t-0"
-          >
+      <div className="mt-6 overflow-hidden rounded-lg border border-(--border-default) bg-(--bg-secondary)">
+        {changes.map((c, i) => {
+          const key = `${c.path}-${i}`;
+          const fileOpen = openFiles.has(key);
+          const hasPreview = Boolean(
+            c.diffPreview || (Array.isArray(c.changes) && c.changes.length),
+          );
+          const changeSetIds = getFileChangeSetIds(c);
+          const undoKey = changeSetIds.join("|");
+          const isReverted =
+            undoKey && (revertedUndoKeys.has(undoKey) || Boolean(c.revertedAt));
+          return (
             <div
-              role="button"
-              tabIndex={hasPreview ? 0 : -1}
-              onClick={() => {
-                if (!hasPreview) return;
-                setOpenFiles((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(key)) next.delete(key);
-                  else next.add(key);
-                  return next;
-                });
-              }}
-              className={cn(
-                "flex w-full items-center gap-2 border-0 bg-transparent px-3 py-2.5 text-left font-mono text-xs",
-                hasPreview
-                  ? "cursor-pointer hover:bg-(--bg-hover)"
-                  : "cursor-default",
-              )}
+              key={key}
+              className="border-t border-(--border-default) first:border-t-0"
             >
-              {hasPreview ? (
-                fileOpen ? (
-                  <ChevronDown
-                    size={13}
-                    className="shrink-0 text-(--text-muted)"
-                  />
-                ) : (
-                  <ChevronRight
-                    size={13}
-                    className="shrink-0 text-(--text-muted)"
-                  />
-                )
-              ) : (
-                <span className="w-[13px] shrink-0" />
-              )}
-              <span
+              <div
+                role="button"
+                tabIndex={hasPreview ? 0 : -1}
+                onClick={() => {
+                  if (!hasPreview) return;
+                  setOpenFiles((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(key)) next.delete(key);
+                    else next.add(key);
+                    return next;
+                  });
+                }}
                 className={cn(
-                  "rounded px-[5px] py-px text-[10px] font-semibold",
-                  actionColors[c.action] || "bg-(--muted) text-(--text-muted)",
+                  "flex w-full items-center gap-2 border-0 bg-transparent px-3 py-2.5 text-left font-mono text-xs",
+                  hasPreview
+                    ? "cursor-pointer hover:bg-(--bg-hover)"
+                    : "cursor-default",
                 )}
               >
-                {c.action?.toUpperCase()}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-(--text-primary)">
-                {c.path}
-              </span>
-              {c.linesAdded != null && (
-                <span className="text-[11px] text-(--accent-green)">
-                  +{c.linesAdded}
-                </span>
-              )}
-              {c.linesRemoved != null && (
-                <span className="text-[11px] text-(--accent-red)">
-                  -{c.linesRemoved}
-                </span>
-              )}
-              {changeSetIds.length > 0 && (
+                {hasPreview ? (
+                  fileOpen ? (
+                    <ChevronDown
+                      size={13}
+                      className="shrink-0 text-(--text-muted)"
+                    />
+                  ) : (
+                    <ChevronRight
+                      size={13}
+                      className="shrink-0 text-(--text-muted)"
+                    />
+                  )
+                ) : (
+                  <span className="w-[13px] shrink-0" />
+                )}
                 <span
-                  role="button"
-                  tabIndex={0}
-                  title={isReverted ? t("undoChangeReverted") : t("undoChange")}
-                  aria-label={isReverted ? t("undoChangeReverted") : t("undoChange")}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    if (undoing.has(undoKey) || isReverted) return;
-                    setPendingUndo({
-                      path: c.path,
-                      undoKey,
-                      changeSetIds,
-                      count: Math.max(1, changeSetIds.length),
-                    });
-                  }}
                   className={cn(
-                    "ml-1 inline-flex h-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)",
-                    isReverted ? "pointer-events-none gap-1 px-2 text-[11px] text-(--accent-green)" : "w-6",
-                    undoing.has(undoKey) && "pointer-events-none opacity-60",
+                    "rounded px-[5px] py-px text-[10px] font-semibold",
+                    actionColors[c.action] ||
+                      "bg-(--muted) text-(--text-muted)",
                   )}
                 >
-                  {undoing.has(undoKey) ? (
-                    <Loader2 size={13} className="animate-spin" />
-                  ) : isReverted ? (
-                    <>
-                      <Check size={13} />
-                      <span>{t("undoChangeReverted")}</span>
-                    </>
-                  ) : (
-                    <RotateCcw size={13} />
-                  )}
+                  {c.action?.toUpperCase()}
                 </span>
+                <span className="min-w-0 flex-1 truncate text-(--text-primary)">
+                  {c.path}
+                </span>
+                {c.linesAdded != null && (
+                  <span className="text-[11px] text-(--accent-green)">
+                    +{c.linesAdded}
+                  </span>
+                )}
+                {c.linesRemoved != null && (
+                  <span className="text-[11px] text-(--accent-red)">
+                    -{c.linesRemoved}
+                  </span>
+                )}
+                {changeSetIds.length > 0 && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    title={
+                      isReverted ? t("undoChangeReverted") : t("undoChange")
+                    }
+                    aria-label={
+                      isReverted ? t("undoChangeReverted") : t("undoChange")
+                    }
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (undoing.has(undoKey) || isReverted) return;
+                      setPendingUndo({
+                        path: c.path,
+                        undoKey,
+                        changeSetIds,
+                        count: Math.max(1, changeSetIds.length),
+                      });
+                    }}
+                    className={cn(
+                      "ml-1 inline-flex h-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+                      isReverted
+                        ? "pointer-events-none gap-1 px-2 text-[11px] text-(--accent-green)"
+                        : "w-6",
+                      undoing.has(undoKey) && "pointer-events-none opacity-60",
+                    )}
+                  >
+                    {undoing.has(undoKey) ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : isReverted ? (
+                      <>
+                        <Check size={13} />
+                        <span>{t("undoChangeReverted")}</span>
+                      </>
+                    ) : (
+                      <RotateCcw size={13} />
+                    )}
+                  </span>
+                )}
+              </div>
+              {undoKey && undoErrors.has(undoKey) && (
+                <div className="border-t border-(--border-default) px-3 py-2 text-xs text-(--accent-red)">
+                  {undoErrors.get(undoKey)}
+                </div>
+              )}
+              {fileOpen && (
+                <div className="border-t border-(--border-default)">
+                  <FileChangePreview change={c} />
+                </div>
               )}
             </div>
-            {undoKey && undoErrors.has(undoKey) && (
-              <div className="border-t border-(--border-default) px-3 py-2 text-xs text-(--accent-red)">
-                {undoErrors.get(undoKey)}
-              </div>
-            )}
-            {fileOpen && (
-              <div className="border-t border-(--border-default)">
-                <FileChangePreview change={c} />
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </div>
-    <ConfirmDialog
-      open={Boolean(pendingUndo)}
-      title={t("undoChangeConfirm")}
-      description={(pendingUndo?.count || 0) > 1
-        ? t("undoChangesDescription")
-            .replace("{{path}}", pendingUndo?.path || "")
-            .replace("{{count}}", pendingUndo?.count || 1)
-        : t("undoChangeDescription").replace("{{path}}", pendingUndo?.path || "")}
-      confirmLabel={t("undoChange")}
-      loadingLabel={t("undoingChange")}
-      loading={Boolean(pendingUndo && undoing.has(pendingUndo.undoKey))}
-      onOpenChange={(open) => {
-        if (!open) setPendingUndo(null);
-      }}
-      onConfirm={confirmUndoChange}
-    />
+          );
+        })}
+      </div>
+      <ConfirmDialog
+        open={Boolean(pendingUndo)}
+        title={t("undoChangeConfirm")}
+        description={
+          (pendingUndo?.count || 0) > 1
+            ? t("undoChangesDescription")
+                .replace("{{path}}", pendingUndo?.path || "")
+                .replace("{{count}}", pendingUndo?.count || 1)
+            : t("undoChangeDescription").replace(
+                "{{path}}",
+                pendingUndo?.path || "",
+              )
+        }
+        confirmLabel={t("undoChange")}
+        loadingLabel={t("undoingChange")}
+        loading={Boolean(pendingUndo && undoing.has(pendingUndo.undoKey))}
+        onOpenChange={(open) => {
+          if (!open) setPendingUndo(null);
+        }}
+        onConfirm={confirmUndoChange}
+      />
     </>
   );
 }
@@ -1198,6 +1266,75 @@ export function MessageBubble({ message, skills = [] }) {
         <div className="max-w-[860px] mx-auto px-3 py-1">
           {legacyText}
           {startupTodos && <TodoList todos={startupTodos} />}
+        </div>
+      </div>
+    );
+  }
+
+  if (role === "plan-overview") {
+    const { planOverview } = message;
+    const overview = planOverview || {};
+    const steps = Array.isArray(overview.steps) ? overview.steps : [];
+
+    return (
+      <div data-message-id={message.id} className="py-2 my-[22px]">
+        <div className="flex items-center gap-2 mb-1.5">
+          <span
+            className={cn(
+              "inline-flex items-center px-2 py-px rounded-full text-[11px] font-semibold uppercase tracking-[0.3px]",
+              ROLE_STYLES["plan-overview"].badge,
+            )}
+          >
+            {t("planTitle")}
+          </span>
+          {ts && <span className="text-[11px] text-(--text-muted)">{ts}</span>}
+        </div>
+        <div className="border border-(--border-default) rounded-lg p-3 max-w-3xl bg-(--bg-secondary) space-y-2.5">
+          {overview.goal && (
+            <p className="text-[13px] text-(--text-primary) leading-relaxed font-medium">
+              {overview.goal}
+            </p>
+          )}
+          <div className="space-y-1.5">
+            {steps.map((step, i) => (
+              <div key={i} className="flex items-center gap-2 text-[13px]">
+                <span
+                  className={cn(
+                    "w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-medium shrink-0",
+                    step.status === "done" &&
+                      "bg-(--accent-green-bg) text-(--accent-green)",
+                    step.status === "failed" &&
+                      "bg-(--accent-red-bg) text-(--accent-red)",
+                    step.status === "running" &&
+                      "bg-(--accent-blue-bg) text-(--accent-blue)",
+                    step.status === "pending" &&
+                      "bg-(--muted) text-(--muted-foreground)",
+                  )}
+                >
+                  {step.status === "done"
+                    ? "\u2713"
+                    : step.status === "failed"
+                      ? "\u2717"
+                      : step.status === "running"
+                        ? "\u25B6"
+                        : i + 1}
+                </span>
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "text-[11px] px-1.5 py-0",
+                    ROLE_PILLS[step.role] ||
+                      "bg-(--muted) text-(--muted-foreground)",
+                  )}
+                >
+                  {String(step.role || "step").toUpperCase()}
+                </Badge>
+                <span className="truncate text-(--text-secondary)">
+                  {step.title}
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     );

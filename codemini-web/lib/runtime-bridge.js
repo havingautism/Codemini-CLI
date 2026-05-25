@@ -249,6 +249,28 @@ function createPlanStepUiMessage(event) {
   };
 }
 
+function createPlanOverviewUiMessage(event) {
+  const steps = (event.steps || []).map((s, i) => ({
+    index: s.index ?? (i + 1),
+    title: s.title || '',
+    role: s.role || 'general',
+    status: s.status || 'pending'
+  }));
+  return {
+    id: `plan-overview-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    role: 'plan-overview',
+    text: event.goal || '',
+    segments: [],
+    skillBadges: [],
+    fileChanges: [],
+    timestamp: new Date().toISOString(),
+    planOverview: {
+      goal: event.goal || '',
+      steps
+    }
+  };
+}
+
 export class RuntimeBridge {
   #runtime = null;
   #clients = new Set();
@@ -258,6 +280,7 @@ export class RuntimeBridge {
   #uiMessages = [];
   #uiActiveMsgId = null;
   #uiPlanStepIds = new Map();
+  #uiPlanOverviewId = null;
   #uiTranscriptSessionId = '';
   #uiPersisting = false;
   #uiPersistQueued = false;
@@ -328,6 +351,7 @@ export class RuntimeBridge {
     this.#uiMessages = [];
     this.#uiActiveMsgId = null;
     this.#uiPlanStepIds = new Map();
+    this.#uiPlanOverviewId = null;
   }
 
   #addUiMessage(message) {
@@ -498,6 +522,10 @@ export class RuntimeBridge {
           this.#persistUiTranscriptSoon();
         }
         this.#uiPlanStepIds = new Map();
+        const overviewMsg = createPlanOverviewUiMessage(event);
+        this.#uiPlanOverviewId = overviewMsg.id;
+        this.#uiMessages = [...this.#uiMessages.filter((message) => message.transientKey !== 'waiting-response'), overviewMsg];
+        this.#persistUiTranscriptSoon();
         break;
       }
       case 'plan:step_start': {
@@ -516,6 +544,37 @@ export class RuntimeBridge {
           }));
         }
         this.#uiActiveMsgId = msgId;
+        if (this.#uiPlanOverviewId) {
+          this.#updateUiMessage(this.#uiPlanOverviewId, (message) => {
+            if (!message.planOverview) return message;
+            return {
+              ...message,
+              planOverview: {
+                ...message.planOverview,
+                steps: message.planOverview.steps.map((s, i) =>
+                  i === event.step - 1 ? { ...s, status: 'running' } : s
+                )
+              }
+            };
+          });
+        }
+        break;
+      }
+      case 'plan:progress': {
+        if (this.#uiPlanOverviewId) {
+          this.#updateUiMessage(this.#uiPlanOverviewId, (message) => {
+            if (!message.planOverview) return message;
+            return {
+              ...message,
+              planOverview: {
+                ...message.planOverview,
+                steps: message.planOverview.steps.map((s, i) =>
+                  i === event.step - 1 ? { ...s, status: event.status || s.status } : s
+                )
+              }
+            };
+          });
+        }
         break;
       }
       case 'plan:step_done': {
@@ -530,6 +589,20 @@ export class RuntimeBridge {
               summary: event.summary || ''
             }
           }));
+        }
+        if (this.#uiPlanOverviewId) {
+          this.#updateUiMessage(this.#uiPlanOverviewId, (message) => {
+            if (!message.planOverview) return message;
+            return {
+              ...message,
+              planOverview: {
+                ...message.planOverview,
+                steps: message.planOverview.steps.map((s, i) =>
+                  i === event.step - 1 ? { ...s, status: event.status || 'done' } : s
+                )
+              }
+            };
+          });
         }
         break;
       }
