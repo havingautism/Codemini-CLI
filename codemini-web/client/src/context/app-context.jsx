@@ -1042,12 +1042,16 @@ export function AppProvider({ children }) {
         const compactMeta = data?.compact || null;
         const restoredActivities =
           restoreRuntimeActivitiesFromMessages(messages);
+
+        const uiData = sessionData
+          ? { messages: [] }
+          : await api.fetchSessionUiMessages().catch(() => []);
+        const uiMessages = Array.isArray(uiData)
+          ? uiData
+          : Array.isArray(uiData?.messages)
+            ? uiData.messages
+            : [];
         if (!messages.length) {
-          const uiMessages = Array.isArray(data?.uiMessages)
-            ? data.uiMessages
-            : sessionData
-              ? []
-              : await api.fetchSessionUiMessages();
           if (Array.isArray(uiMessages) && uiMessages.length) {
             const changeSets = sessionData
               ? []
@@ -1265,6 +1269,37 @@ export function AppProvider({ children }) {
         const changeSets = sessionData
           ? []
           : (await api.fetchSessionChanges().catch(() => ({})))?.changes || [];
+
+        const uiPlanOverview = uiMessages.find(
+          (m) => m.role === "plan-overview" && m.planOverview?.goal,
+        );
+        if (uiPlanOverview) {
+          for (let i = 0; i < processed.length; i++) {
+            const m = processed[i];
+            if (m.role === "plan-overview" && m.planOverview) {
+              processed[i] = {
+                ...m,
+                planOverview: {
+                  ...m.planOverview,
+                  goal: uiPlanOverview.planOverview.goal || m.planOverview.goal,
+                  steps: m.planOverview.steps.map((s, j) => {
+                    const uiStep = uiPlanOverview.planOverview.steps?.[j];
+                    if (
+                      uiStep &&
+                      uiStep.status &&
+                      uiStep.status !== "pending"
+                    ) {
+                      return { ...s, status: uiStep.status };
+                    }
+                    return s;
+                  }),
+                },
+              };
+              break;
+            }
+          }
+        }
+
         update({
           messages: enrichMessageChangeStates(processed, changeSets),
           runtimeActivities: restoredActivities,

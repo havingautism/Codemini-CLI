@@ -129,9 +129,9 @@ export function PlanApprovalCard({ plan, onAction, onUpdate, disabled = false })
           disabled={disabled}
           onClick={() => (editMode ? saveEdit() : startEdit())}
         >
-          {editMode ? t("specSave") : t("planEdit")}
+          {editMode ? t("planSave") : t("planEdit")}
         </Button>
-        <Button size="xs" disabled={disabled} onClick={() => onAction("approve")}>
+        <Button size="xs" disabled={disabled || editMode} onClick={() => onAction("approve")}>
           {t("planApprove")}
         </Button>
       </div>

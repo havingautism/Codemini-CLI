@@ -109,9 +109,9 @@ export function ReflectApprovalCard({ draft, onAction, onUpdate, disabled = fals
           disabled={disabled}
           onClick={() => (editMode ? submitEdit() : startEdit())}
         >
-          {editMode ? t("specSave") : t("reflectEdit")}
+          {editMode ? t("reflectSave") : t("reflectEdit")}
         </Button>
-        <Button size="xs" disabled={disabled} onClick={() => onAction("approve")}>
+        <Button size="xs" disabled={disabled || editMode} onClick={() => onAction("approve")}>
           {t("reflectApprove")}
         </Button>
       </div>
