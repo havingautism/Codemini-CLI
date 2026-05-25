@@ -57,6 +57,10 @@ const ROLE_STYLES = {
     badge: "bg-(--accent-cyan-bg) text-(--accent-cyan)",
     label: "Summarizer",
   },
+  codewiki: {
+    badge: "bg-(--accent-green-bg) text-(--accent-green)",
+    label: "CodeWiki",
+  },
   system: { badge: "bg-(--muted) text-(--muted-foreground)", label: "System" },
   error: { badge: "bg-(--accent-red-bg) text-(--accent-red)", label: "Error" },
   pending: {
@@ -1058,6 +1062,7 @@ function UsageBadge({ usage }) {
 }
 
 function isMessageComplete(message, renderGroups = []) {
+  if (message?.loading) return false;
   if (message?.isComplete === false) return false;
   if (
     message?.planStep &&

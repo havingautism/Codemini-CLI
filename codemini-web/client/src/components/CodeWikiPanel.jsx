@@ -700,7 +700,7 @@ export function CodeWikiPanel({
       },
       {
         id: assistantId,
-        role: "general",
+        role: "codewiki",
         text: "",
         segments: [],
         timestamp: new Date().toISOString(),

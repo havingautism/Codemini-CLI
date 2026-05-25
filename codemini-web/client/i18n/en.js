@@ -232,7 +232,7 @@ export const en = {
   reportWillShow: 'After generating the report, architecture diagrams, interface requirements, processes, and risk descriptions will be displayed here.',
   reportLoadFailed: 'Report failed to load.',
   noQuestionsDuringGeneration: 'Questions not accepted until CodeWiki generation is complete.',
-  tempReadOnlyQa: 'Temporary read-only Q&A, will not modify the project or save to session history.',
+  tempReadOnlyQa: 'Temporary CodeWiki Q&A. It only reads files unless you explicitly ask it to add or edit code comments, and it will not save to session history.',
   processingQuestion: 'Processing current question',
   canAskAboutProject: 'You can ask about the current project',
   askAfterGeneration: 'Ask questions based on the report after generation is complete.',

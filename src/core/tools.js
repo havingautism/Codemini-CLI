@@ -1870,6 +1870,142 @@ async function insertRelative(root, args, mode, config = {}) {
   return editResult(relativePath, mode, state.content, afterContent, changedLine);
 }
 
+function commentSyntaxForFile(file = '') {
+  const ext = path.extname(String(file || '').toLowerCase());
+  if (['.py', '.rb', '.sh', '.bash', '.zsh', '.ps1', '.psm1', '.yaml', '.yml', '.toml'].includes(ext)) {
+    return { prefix: '# ', suffix: '' };
+  }
+  if (['.html', '.htm', '.xml', '.svg', '.vue', '.svelte'].includes(ext)) {
+    return { prefix: '<!-- ', suffix: ' -->' };
+  }
+  if (['.css', '.scss', '.sass', '.less'].includes(ext)) {
+    return { prefix: '/* ', suffix: ' */' };
+  }
+  if (['.sql'].includes(ext)) {
+    return { prefix: '-- ', suffix: '' };
+  }
+  return { prefix: '// ', suffix: '' };
+}
+
+function formatCodeCommentLines(comment, file, indent = '') {
+  const rawLines = String(comment || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (rawLines.length === 0) throw new Error('add_code_comment requires comment text');
+  const { prefix, suffix } = commentSyntaxForFile(file);
+  return rawLines.map((line) => `${indent}${prefix}${line}${suffix}`);
+}
+
+function isCodeCommentLine(line, file) {
+  const trimmed = String(line || '').trim();
+  if (!trimmed) return true;
+  const { prefix, suffix } = commentSyntaxForFile(file);
+  const normalizedPrefix = prefix.trim();
+  const normalizedSuffix = suffix.trim();
+  if (normalizedPrefix && trimmed.startsWith(normalizedPrefix)) {
+    return !normalizedSuffix || trimmed.endsWith(normalizedSuffix);
+  }
+  return (
+    trimmed.startsWith('//') ||
+    trimmed.startsWith('#') ||
+    trimmed.startsWith('--') ||
+    (trimmed.startsWith('/*') && trimmed.endsWith('*/')) ||
+    (trimmed.startsWith('<!--') && trimmed.endsWith('-->'))
+  );
+}
+
+async function addCodeComment(root, args, config = {}) {
+  const relativePath = normalizeFilePathValue(args?.path || args?.file || args?.file_path || '', { stripInlineRange: true }).trim();
+  if (!relativePath) throw new Error('add_code_comment requires path');
+  const state = await getFileState(root, relativePath, config);
+  const eol = state.content.includes('\r\n') ? '\r\n' : '\n';
+  const hadFinalNewline = /\r?\n$/.test(state.content);
+  const lines = state.content.split(/\r?\n/);
+  if (hadFinalNewline) lines.pop();
+
+  const position = String(args?.position || 'before').trim().toLowerCase() === 'after' ? 'after' : 'before';
+  const requestedLine = Number(args?.line);
+  const anchorText = String(args?.anchor_text || '').trim();
+  let targetIndex = -1;
+
+  if (Number.isFinite(requestedLine) && requestedLine >= 1) {
+    targetIndex = Math.min(lines.length, Math.max(0, Math.floor(requestedLine) - 1));
+  } else if (anchorText) {
+    const matches = [];
+    for (let index = 0; index < lines.length; index += 1) {
+      if (lines[index].includes(anchorText)) matches.push(index);
+    }
+    if (matches.length !== 1) {
+      throw new Error(matches.length === 0 ? 'add_code_comment anchor not found' : 'add_code_comment anchor not unique');
+    }
+    targetIndex = matches[0];
+  } else {
+    throw new Error('add_code_comment requires line or anchor_text');
+  }
+
+  const referenceLine = lines[Math.min(targetIndex, Math.max(0, lines.length - 1))] || '';
+  const indent = referenceLine.match(/^\s*/)?.[0] || '';
+  const insertAt = position === 'after' ? Math.min(lines.length, targetIndex + 1) : targetIndex;
+  const commentLines = formatCodeCommentLines(args?.comment ?? args?.content, relativePath, indent);
+  const nextLines = [...lines.slice(0, insertAt), ...commentLines, ...lines.slice(insertAt)];
+  const afterContent = `${nextLines.join(eol)}${hadFinalNewline ? eol : ''}`;
+  await fs.writeFile(state.target, afterContent, 'utf8');
+  return editResult(relativePath, 'add_code_comment', state.content, afterContent, insertAt + 1);
+}
+
+async function updateCodeComment(root, args, config = {}) {
+  const relativePath = normalizeFilePathValue(args?.path || args?.file || args?.file_path || '', { stripInlineRange: true }).trim();
+  if (!relativePath) throw new Error('update_code_comment requires path');
+  const state = await getFileState(root, relativePath, config);
+  const eol = state.content.includes('\r\n') ? '\r\n' : '\n';
+  const hadFinalNewline = /\r?\n$/.test(state.content);
+  const lines = state.content.split(/\r?\n/);
+  if (hadFinalNewline) lines.pop();
+
+  const anchorText = String(args?.anchor_text || '').trim();
+  const startLine = Number(args?.start_line ?? args?.line);
+  const endLine = Number(args?.end_line ?? args?.line);
+  let startIndex = -1;
+  let endIndex = -1;
+
+  if (Number.isFinite(startLine) && startLine >= 1) {
+    startIndex = Math.min(lines.length - 1, Math.max(0, Math.floor(startLine) - 1));
+    endIndex = Number.isFinite(endLine) && endLine >= startLine
+      ? Math.min(lines.length - 1, Math.floor(endLine) - 1)
+      : startIndex;
+  } else if (anchorText) {
+    const matches = [];
+    for (let index = 0; index < lines.length; index += 1) {
+      if (lines[index].includes(anchorText)) matches.push(index);
+    }
+    if (matches.length !== 1) {
+      throw new Error(matches.length === 0 ? 'update_code_comment anchor not found' : 'update_code_comment anchor not unique');
+    }
+    startIndex = matches[0];
+    endIndex = matches[0];
+  } else {
+    throw new Error('update_code_comment requires line, start_line/end_line, or anchor_text');
+  }
+
+  const targetLines = lines.slice(startIndex, endIndex + 1);
+  if (targetLines.length === 0 || targetLines.some((line) => !isCodeCommentLine(line, relativePath))) {
+    throw new Error('update_code_comment can only replace existing comment lines');
+  }
+
+  const referenceLine = targetLines.find((line) => line.trim()) || lines[startIndex] || '';
+  const indent = referenceLine.match(/^\s*/)?.[0] || '';
+  const commentLines = formatCodeCommentLines(args?.comment ?? args?.content ?? args?.new_comment, relativePath, indent);
+  const nextLines = [
+    ...lines.slice(0, startIndex),
+    ...commentLines,
+    ...lines.slice(endIndex + 1)
+  ];
+  const afterContent = `${nextLines.join(eol)}${hadFinalNewline ? eol : ''}`;
+  await fs.writeFile(state.target, afterContent, 'utf8');
+  return editResult(relativePath, 'update_code_comment', state.content, afterContent, startIndex + 1);
+}
+
 async function openTarget(root, args, config = {}) {
   const file = String(args?.file || args?.path || '').trim();
   if (!file) throw new Error('open_target requires file');
@@ -2141,6 +2277,54 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       return null;
     }
   };
+  const codeWikiCommentToolDefinitions = [
+    {
+      type: 'function',
+      function: {
+        name: 'add_code_comment',
+        description:
+          'Add comment-only documentation to an existing code file. This tool may only insert comment lines; it cannot change executable code. Provide path plus either line or anchor_text, and comment text. Use position before/after to choose insertion side.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'File path to annotate.' },
+            file_path: { type: 'string', description: 'Alias for path' },
+            file: { type: 'string', description: 'Alias for path' },
+            line: { type: 'number', description: '1-based line to annotate.' },
+            anchor_text: { type: 'string', description: 'Unique text on the line to annotate when line is not provided.' },
+            comment: { type: 'string', description: 'Plain comment text. The tool will apply the correct code comment syntax.' },
+            content: { type: 'string', description: 'Alias for comment' },
+            position: { type: 'string', enum: ['before', 'after'], description: 'Insert before or after the target line. Defaults to before.' }
+          },
+          required: ['path']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'update_code_comment',
+        description:
+          'Replace existing code comments only. The target line or range must already be comment-only lines; the tool formats the replacement as comments and refuses executable-code targets.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'File path containing the comment to update.' },
+            file_path: { type: 'string', description: 'Alias for path' },
+            file: { type: 'string', description: 'Alias for path' },
+            line: { type: 'number', description: '1-based comment line to replace.' },
+            start_line: { type: 'number', description: '1-based start line for a comment-only range.' },
+            end_line: { type: 'number', description: '1-based end line for a comment-only range.' },
+            anchor_text: { type: 'string', description: 'Unique text on the comment line to replace when line is not provided.' },
+            comment: { type: 'string', description: 'Replacement plain comment text.' },
+            new_comment: { type: 'string', description: 'Alias for comment' },
+            content: { type: 'string', description: 'Alias for comment' }
+          },
+          required: ['path']
+        }
+      }
+    }
+  ];
   const primaryDefinitions = [
     {
       type: 'function',
@@ -2653,7 +2837,10 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     }
   };
 
-  const definitions = [...primaryDefinitions];
+  const enableCodeWikiCommentTools = config?.runtime?.codewiki_comment_tools === true;
+  const definitions = enableCodeWikiCommentTools
+    ? [...primaryDefinitions, ...codeWikiCommentToolDefinitions]
+    : [...primaryDefinitions];
   const activeFffAdapter = fffAdapter || createFffAdapter({ workspaceRoot, config });
   async function backupNonGitPathOnce(rawPath) {
     if (!backupManager || typeof backupManager.backupOnce !== 'function') return null;
@@ -2831,6 +3018,22 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     },
     web_fetch: (args) => webFetchPage(args),
     web_search: (args) => webSearchQuery(config, args),
+    add_code_comment: async (args) => {
+      await ensureProjectIndex();
+      const commentPath = normalizeFilePathValue(args?.path || args?.file || args?.file_path || '', { stripInlineRange: true }).trim();
+      const backup = await backupNonGitPathOnce(commentPath);
+      const result = await addCodeComment(workspaceRoot, args, config);
+      if (result?.path) await refreshProjectFile(result.path);
+      return attachBackup(result, backup);
+    },
+    update_code_comment: async (args) => {
+      await ensureProjectIndex();
+      const commentPath = normalizeFilePathValue(args?.path || args?.file || args?.file_path || '', { stripInlineRange: true }).trim();
+      const backup = await backupNonGitPathOnce(commentPath);
+      const result = await updateCodeComment(workspaceRoot, args, config);
+      if (result?.path) await refreshProjectFile(result.path);
+      return attachBackup(result, backup);
+    },
     edit: async (args) => {
       await ensureProjectIndex();
       const normalizedKind = String(args?.edit?.kind || args?.kind || '').trim();

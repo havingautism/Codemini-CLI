@@ -295,7 +295,8 @@ function buildCodeWikiAskPrompt({ question, reportPath, projectDir, replyLanguag
       'Requirements:',
       '- Prefer reading and citing the HTML report above.',
       '- If the report is insufficient, use read-only project inspection to gather supporting evidence.',
-      '- Do not modify files, generate a new report, or write memory.',
+      '- Do not modify files unless the user explicitly asks you to add or edit code comments. If they do, only add or replace comment lines and do not change executable code.',
+      '- Do not generate a new report or write memory.',
       '- Respond in English unless the user explicitly asks for another language.',
       '',
       `Question: ${question.trim()}`
@@ -309,7 +310,8 @@ function buildCodeWikiAskPrompt({ question, reportPath, projectDir, replyLanguag
     '要求：',
     '- 优先读取并参考上述 HTML 报告。',
     '- 如果报告信息不足，可以只读检索项目文件补充证据。',
-    '- 不要修改文件，不要生成新报告，不要写入记忆。',
+    '- 除非用户明确要求添加或编辑代码注释，否则不要修改文件；如果需要处理注释，只能添加或替换注释行，不能改变可执行代码。',
+    '- 不要生成新报告，不要写入记忆。',
     '- 除非用户明确要求其他语言，否则使用简体中文回答。',
     '',
     `问题：${question.trim()}`

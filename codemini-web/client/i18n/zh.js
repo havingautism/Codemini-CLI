@@ -241,7 +241,7 @@ export const zh = {
   reportWillShow: '报告后，这里会展示架构图、接口需求、流程和风险说明。',
   reportLoadFailed: '报告加载失败。',
   noQuestionsDuringGeneration: 'CodeWiki 生成完成前暂不接受提问。',
-  tempReadOnlyQa: '临时只读问答，不会修改项目，也不会保存到会话历史。',
+  tempReadOnlyQa: '临时 CodeWiki 问答；默认只读，除非你明确要求添加或编辑代码注释，并且不会保存到会话历史。',
   processingQuestion: '当前问题处理中',
   canAskAboutProject: '可以问当前项目',
   askAfterGeneration: '生成完成后再基于报告提问。',

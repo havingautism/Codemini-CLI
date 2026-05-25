@@ -678,15 +678,16 @@ function describeConfigKey(key, mode = 'set', language = 'zh') {
   return mode === 'get' ? copy.describeGet(label, hint) : copy.describeSet(label, hint);
 }
 
-const SUB_AGENT_ROLES = ['planner', 'advisor', 'coder', 'reviewer', 'tester', 'summarizer'];
-const CODEWIKI_READ_ONLY_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan'];
+const SUB_AGENT_ROLES = ['planner', 'advisor', 'coder', 'reviewer', 'tester', 'summarizer', 'codewiki'];
+const CODEWIKI_ROLE_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'add_code_comment', 'update_code_comment'];
 export const ROLE_TOOL_POLICY = {
   planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node', 'web_fetch', 'web_search', 'read_plan', 'update_plan'],
   advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'read_plan'],
   coder: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
   reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'read_plan'],
   tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'read_plan'],
-  summarizer: ['read', 'read_plan']
+  summarizer: ['read', 'read_plan'],
+  codewiki: CODEWIKI_ROLE_TOOLS
 };
 const SUB_AGENT_CONTEXT_MAX_MESSAGES = 4;
 const SUB_AGENT_CONTEXT_MAX_CHARS = 1200;
@@ -3325,6 +3326,13 @@ async function askModel({
 
   const toolConfig = {
     ...config,
+    runtime: {
+      ...(config.runtime || {}),
+      codewiki_comment_tools: Array.isArray(allowedTools) && (
+        allowedTools.includes('add_code_comment') ||
+        allowedTools.includes('update_code_comment')
+      )
+    },
     workspaceRoot: process.cwd(),
     policy: {
       ...(config.policy || {}),
@@ -4766,7 +4774,8 @@ async function runProjectRequirementsSingleAgent({
   requestToolApproval,
   signal,
   compactedForModel,
-  onCompactedUpdate
+  onCompactedUpdate,
+  codeWikiGenerate = false
 }) {
   const options = parseProjectRequirementsOptions(parsedInput.args);
   const renderedSkillPrompt = await expandFileMentions(renderCommandPrompt(custom, options.focusArgs), process.cwd());
@@ -4841,10 +4850,11 @@ async function runProjectRequirementsSingleAgent({
   }
 
   try {
+    const transientSession = codeWikiGenerate ? structuredClone(currentSession) : currentSession;
     const result = await askModel({
       text: parsedInput.full ? `/${parsedInput.full}` : `/${custom.name}`,
       modelText: [reportContract, 'Skill instructions:', renderedSkillPrompt].join('\n\n'),
-      session: currentSession,
+      session: transientSession,
       config,
       model,
       systemPrompt,
@@ -4852,8 +4862,9 @@ async function runProjectRequirementsSingleAgent({
       requestToolApproval,
       executionMode: 'normal',
       signal,
-      compactedForModel,
-      onCompactedUpdate
+      compactedForModel: codeWikiGenerate ? structuredClone(compactedForModel) : compactedForModel,
+      onCompactedUpdate: codeWikiGenerate ? null : onCompactedUpdate,
+      persistSession: !codeWikiGenerate
     });
     await updateProjectRequirementsManifest(manifestPath, {
       status: result?.aborted ? 'aborted' : 'completed',
@@ -6000,12 +6011,29 @@ export async function createChatRuntime({
     }
     if (readOnlyCodeWiki) {
       const expandedText = await expandFileMentions(line, process.cwd());
+      const codeWikiConfig = {
+        ...config,
+        soul: {
+          preset: 'default',
+          custom_path: ''
+        }
+      };
+      const codeWikiBasePrompt = await composeSystemPrompt({
+        shellRulesPrompt: baseSystemPrompt,
+        config: codeWikiConfig,
+        workspaceRoot: process.cwd(),
+        includeMemory: false,
+        includeProjectInstructions: true,
+        includeSoul: true
+      });
       const readOnlySystemPrompt = [
-        activeReplySystemPrompt,
-        'CodeWiki repository Q&A mode:',
+        codeWikiBasePrompt,
+        '[Role: codewiki]',
         '- Answer questions about the current repository and generated CodeWiki/project-requirements report.',
-        '- This is read-only. Do not modify files, update plans, run shell commands, delete anything, write memories, or ask to perform side effects.',
-        '- Use only read-only project inspection tools when evidence is needed.',
+        '- Use the CodeWiki role regardless of the user-selected global soul. Tone is the default Codemini tone: clear, concise, and technical.',
+        '- Use read-only project inspection tools when evidence is needed.',
+        '- You may modify files only when the user explicitly asks you to add or edit code comments. In that case, use add_code_comment or update_code_comment only, and never change executable code.',
+        '- Do not use shell commands, edit/write/delete tools, update plans, generate reports, or write memories.',
         '- Be concise and cite relevant files or report sections when useful.'
       ].join('\n\n');
       const transientSession = structuredClone(currentSession);
@@ -6018,8 +6046,8 @@ export async function createChatRuntime({
         onAgentEvent,
         requestToolApproval: activeRequestToolApproval,
         executionMode: 'normal',
-        alwaysAllowTools: CODEWIKI_READ_ONLY_TOOLS,
-        allowedTools: CODEWIKI_READ_ONLY_TOOLS,
+        alwaysAllowTools: CODEWIKI_ROLE_TOOLS,
+        allowedTools: CODEWIKI_ROLE_TOOLS,
         persistSession: false,
         maxSteps: 32,
         skipAnalysisNudge: true,
@@ -6899,7 +6927,8 @@ export async function createChatRuntime({
             requestToolApproval: codeWikiGenerate ? null : activeRequestToolApproval,
             signal,
             compactedForModel,
-            onCompactedUpdate: setCompactedView
+            onCompactedUpdate: setCompactedView,
+            codeWikiGenerate
           });
         }
         try {
