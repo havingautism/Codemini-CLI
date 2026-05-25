@@ -1,4 +1,4 @@
-const PLAN_STATUS_SET = new Set(['pending_approval', 'approved', 'completed', 'failed', 'draft']);
+const PLAN_STATUS_SET = new Set(['pending_approval', 'pending_spec_approval', 'approved', 'completed', 'failed', 'draft']);
 
 function normalizePlanStatus(value) {
   const status = String(value || '').trim().toLowerCase();
@@ -25,8 +25,14 @@ export function normalizePlanState(value) {
     summary: String(value.summary || '').trim(),
     finalSummary: String(value.finalSummary || '').trim()
   };
+  if (typeof value.specText === 'string') out.specText = value.specText;
+  if (typeof value.specPath === 'string') out.specPath = value.specPath.trim();
+  if (typeof value.approvedSpecPath === 'string') out.approvedSpecPath = value.approvedSpecPath.trim();
   if (Array.isArray(value.steps)) {
     out.steps = value.steps.map(normalizePlanStep).filter(Boolean);
+  }
+  if (Array.isArray(value.candidates)) {
+    out.candidates = value.candidates.filter((item) => item && typeof item === 'object').map((item) => ({ ...item }));
   }
   return out;
 }

@@ -38,10 +38,15 @@ function updateRoute(view, sessionId, { replace = false, projectPath = '' } = {}
   else window.history.pushState(st, '', next);
 }
 
+function projectNameFromRuntimeState(rs = {}) {
+  if (rs.isGeneral) return '__codemini_general__';
+  return rs.cwd?.split(/[/\\]/).pop() || rs.cwd || '...';
+}
+
 const initialState = {
   stage: 'idle', busy: false, currentView: 'chat', runtimeState: null,
   live: false, stageLabel: '', messages: [], activeMsgId: null,
-  pendingToolChanges: [], planSteps: [], pendingPlanApproval: null, pendingReflectApproval: null, runtimeActivities: [], approvalRequest: null,
+  pendingToolChanges: [], planSteps: [], pendingPlanApproval: null, pendingSpecApproval: null, pendingReflectApproval: null, runtimeActivities: [], approvalRequest: null,
   config: null, configStatus: null, configOpen: false, projectOpen: false, skillsOpen: false, memoryOpen: false, soulsOpen: false, aboutOpen: false, gitDiffOpen: false,
   sessions: [], projectCwd: null, isGeneral: false, history: [], skills: [], gitInfo: null, gitBatch: {},
   codewikiProjectPath: '',
@@ -49,6 +54,17 @@ const initialState = {
   versionInfo: null, updateStatus: null,
   initialLoading: true, sessionsLoading: false, messagesLoading: false,
 };
+
+const DEFAULT_RUNTIME_ACTIVITY_CLEAR_MS = 6500;
+
+function runtimeActivityStatus(activity) {
+  return activity?.status || 'done';
+}
+
+function isStickyRuntimeActivity(activity) {
+  const key = activity?.key || activity?.id || 'runtime';
+  return activity?.sticky === true || (key === 'reflect' && runtimeActivityStatus(activity) === 'running');
+}
 
 function collapseRenderedSkillPrompt(content) {
   const text = String(content || '');
@@ -371,11 +387,12 @@ function restoreRuntimeActivitiesFromMessages(messages) {
     if (msg?.role !== 'assistant') continue;
     const activity = getRuntimeActivityFromSystemText(msg.content);
     if (!activity) continue;
+    if (!isStickyRuntimeActivity(activity)) continue;
     const key = activity.key || 'runtime';
     byKey.set(key, {
       id: `runtime-${key}`,
       key,
-      status: activity.status || 'done',
+      status: runtimeActivityStatus(activity),
       emoji: activity.emoji || '•',
       label: activity.label || '',
       detail: activity.detail || '',
@@ -397,6 +414,23 @@ function isPlanApprovalCommandLine(line) {
   const value = String(line || '').trim().toLowerCase();
   return ['/yes', '/plan approve', '/no', '/reject'].includes(value)
     || value.startsWith('/edit ');
+}
+
+function isWorkflowCommandLine(line) {
+  const value = String(line || '').trim();
+  return isPlanApprovalCommandLine(value)
+    || /^\/(?:plan|spec|reflect)(?:\s|$)/i.test(value);
+}
+
+function isWorkflowControlLine(line, state = {}) {
+  const trimmed = String(line || '').trim();
+  const value = trimmed.toLowerCase();
+  if (!trimmed) return false;
+  if (isPlanApprovalLine(trimmed)) return true;
+  if (/^\/(?:plan|spec|reflect)(?:\s|$)/i.test(trimmed)) return true;
+  const mode = String(state.runtimeState?.mode || '').toLowerCase();
+  if ((mode === 'plan' || mode === 'spec') && !trimmed.startsWith('/')) return true;
+  return false;
 }
 
 function createPlanStepMessage(event) {
@@ -554,7 +588,7 @@ export function AppProvider({ children }) {
     return id;
   }, []);
 
-  const clearRuntimeActivityLater = useCallback((id, delay = 6500) => {
+  const clearRuntimeActivityLater = useCallback((id, delay = DEFAULT_RUNTIME_ACTIVITY_CLEAR_MS) => {
     clearTimeout(activityTimersRef.current.get(id));
     const timer = setTimeout(() => {
       activityTimersRef.current.delete(id);
@@ -573,11 +607,11 @@ export function AppProvider({ children }) {
     const next = {
       id,
       key,
-      status: activity.status || 'done',
+      status: runtimeActivityStatus(activity),
       emoji: activity.emoji || '•',
       label: activity.label || '',
       detail: activity.detail || '',
-      sticky: activity.sticky === true || key === 'reflect',
+      sticky: isStickyRuntimeActivity({ ...activity, key }),
       timestamp: new Date().toISOString(),
     };
     clearTimeout(activityTimersRef.current.get(id));
@@ -590,7 +624,7 @@ export function AppProvider({ children }) {
       ].slice(0, 4)
     }));
     if (next.status !== 'running' && !next.sticky) {
-      clearRuntimeActivityLater(id, Number.isFinite(clearAfterMs) ? clearAfterMs : 6500);
+      clearRuntimeActivityLater(id, Number.isFinite(clearAfterMs) ? clearAfterMs : DEFAULT_RUNTIME_ACTIVITY_CLEAR_MS);
     } else if (next.status === 'running' && Number.isFinite(clearAfterMs)) {
       clearRuntimeActivityLater(id, clearAfterMs);
     }
@@ -604,16 +638,14 @@ export function AppProvider({ children }) {
   const loadState = useCallback(async () => {
     try {
       const rs = await api.fetchState();
-      const projectName = rs.isGeneral
-        ? '__codemini_general__'
-        : (rs.cwd?.split(/[/\\]/).pop() || rs.cwd || '...');
       const busy = !!rs.busy;
       setState(prev => ({
         ...prev,
         runtimeState: rs,
-        projectCwd: projectName,
+        projectCwd: projectNameFromRuntimeState(rs),
         isGeneral: !!rs.isGeneral,
         pendingPlanApproval: rs?.pendingPlanApproval || null,
+        pendingSpecApproval: rs?.pendingSpecApproval || null,
         pendingReflectApproval: rs?.pendingReflectSkill || null,
         busy,
         live: busy || prev.live,
@@ -730,7 +762,7 @@ export function AppProvider({ children }) {
           dividerInserted = true;
         }
         if (msg.role === 'user') {
-          if (isPlanApprovalCommandLine(msg.content)) continue;
+          if (isWorkflowCommandLine(msg.content)) continue;
           assistantGroup = null;
           const visibleContent = collapseRenderedSkillPrompt(msg.content || '');
           processed.push({
@@ -1076,6 +1108,16 @@ export function AppProvider({ children }) {
         break;
       }
 
+      case 'spec:pending_approval': {
+        update({ pendingSpecApproval: event.spec || null });
+        break;
+      }
+
+      case 'spec:approval_cleared': {
+        update({ pendingSpecApproval: null });
+        break;
+      }
+
       case 'reflect:pending_approval': {
         upsertRuntimeActivity({
           key: 'reflect',
@@ -1189,6 +1231,7 @@ export function AppProvider({ children }) {
           if (activity) upsertRuntimeActivity(activity);
           if (
             !stateRef.current.pendingPlanApproval &&
+            !stateRef.current.pendingSpecApproval &&
             !stateRef.current.pendingReflectApproval &&
             !isPlanSystemSummaryText(result.text) &&
             !isReflectSystemSummaryText(result.text)
@@ -1210,11 +1253,12 @@ export function AppProvider({ children }) {
           stageLabel: '',
           messages: removeTransientMessages(
             prev.messages,
-            stateRef.current.pendingPlanApproval ? 'waiting-response' : ['waiting-response', 'plan-waiting-review']
+            stateRef.current.pendingPlanApproval || stateRef.current.pendingSpecApproval ? 'waiting-response' : ['waiting-response', 'plan-waiting-review']
           )
         }));
         loadHistory();
         loadSessions();
+        loadGitInfo();
         const rs = stateRef.current.runtimeState;
         if (rs?.sessionId && stateRef.current.currentView === 'chat') {
           updateRoute('chat', rs.sessionId, { replace: true });
@@ -1239,6 +1283,7 @@ export function AppProvider({ children }) {
         update({
           runtimeState: { ...stateRef.current.runtimeState, ...rs },
           pendingPlanApproval: rs?.pendingPlanApproval || null,
+          pendingSpecApproval: rs?.pendingSpecApproval || null,
           pendingReflectApproval: rs?.pendingReflectSkill || null,
           busy: !!rs.busy,
           live: !!rs.busy,
@@ -1290,7 +1335,7 @@ export function AppProvider({ children }) {
       }
 
       case 'runtime:switched': {
-        setState(prev => ({ ...prev, messages: [], planSteps: [], pendingPlanApproval: null, pendingReflectApproval: null, runtimeActivities: [], codewikiGeneration: { status: 'idle', updatedAt: null, error: '' } }));
+        setState(prev => ({ ...prev, messages: [], planSteps: [], pendingPlanApproval: null, pendingSpecApproval: null, pendingReflectApproval: null, runtimeActivities: [], codewikiGeneration: { status: 'idle', updatedAt: null, error: '' } }));
         activeMsgRef.current = null;
         pendingChangesRef.current = [];
         loadState();
@@ -1314,7 +1359,7 @@ export function AppProvider({ children }) {
         break;
       }
     }
-  }, [addMessage, update, upsertRuntimeActivity, loadHistory, loadSessions, loadState, loadSessionMessages]);
+  }, [addMessage, update, upsertRuntimeActivity, loadGitInfo, loadHistory, loadSessions, loadState, loadSessionMessages]);
 
   const connectSSE = useCallback(() => {
     if (sseRef.current) sseRef.current.close();
@@ -1440,9 +1485,10 @@ export function AppProvider({ children }) {
       if (!line.trim()) return;
       if (stateRef.current.currentView !== 'chat' && !options.stayInView) update({ currentView: 'chat' });
       const approvingPlan = !!stateRef.current.pendingPlanApproval && isPlanApprovalLine(line);
+      const workflowControl = isWorkflowControlLine(line, stateRef.current);
       if (approvingPlan) planRunPendingRef.current = true;
-      if (!approvingPlan) addMessage({ role: 'you', text: line, timestamp: new Date().toISOString() });
-      const waitingId = approvingPlan ? null : addMessage({
+      if (!workflowControl) addMessage({ role: 'you', text: line, timestamp: new Date().toISOString() });
+      const waitingId = workflowControl ? null : addMessage({
           role: 'system',
           text: t('waitingResponse'),
           timestamp: new Date().toISOString(),
@@ -1504,6 +1550,18 @@ export function AppProvider({ children }) {
       }
     },
 
+    updatePendingPlan: async (plan) => {
+      try {
+        const result = await api.updatePendingPlan(plan);
+        if (result?.error) throw new Error(result.message || 'Failed to update plan');
+        if (result?.plan) update({ pendingPlanApproval: result.plan });
+        return result?.plan || null;
+      } catch (err) {
+        addMessage({ role: 'error', text: `Failed: ${err.message}`, timestamp: new Date().toISOString() });
+        return null;
+      }
+    },
+
     approveReflect: async (action, feedback) => {
       const draft = stateRef.current.pendingReflectApproval;
       if (!draft) return;
@@ -1543,6 +1601,75 @@ export function AppProvider({ children }) {
       }
     },
 
+    updatePendingReflect: async (draft) => {
+      try {
+        const result = await api.updatePendingReflect(draft);
+        if (result?.error) throw new Error(result.message || 'Failed to update reflect draft');
+        if (result?.draft) update({ pendingReflectApproval: result.draft });
+        return result?.draft || null;
+      } catch (err) {
+        addMessage({ role: 'error', text: `Failed: ${err.message}`, timestamp: new Date().toISOString() });
+        return null;
+      }
+    },
+
+    approveSpec: async (action) => {
+      const spec = stateRef.current.pendingSpecApproval;
+      if (!spec) return;
+      if (action === 'reject' || action === 'save' || action === 'delete') {
+        update({ pendingSpecApproval: null });
+      }
+      update({ busy: true, live: true, stage: 'thinking', stageLabel: t('waitingResponse') });
+      try {
+        if (action === 'delete') {
+          const result = await api.deletePendingSpec();
+          if (result?.error) throw new Error(result.message || 'Failed to delete spec');
+          update({ busy: false, live: false, stage: 'idle', stageLabel: '' });
+          return;
+        }
+        const command = action === 'save'
+          ? '/spec save'
+          : action === 'execute'
+            ? '/spec execute'
+            : action === 'approve'
+              ? '/spec plan'
+              : '/reject';
+        const res = await api.submitLine(command);
+        const result = await res.json().catch(() => ({}));
+        if (result?.error) throw new Error(result.message || 'Request failed');
+      } catch (err) {
+        addMessage({ role: 'error', text: `Failed: ${err.message}`, timestamp: new Date().toISOString() });
+        update({ busy: false, live: false, stage: 'idle', stageLabel: '' });
+      }
+    },
+
+    updatePendingSpec: async (spec) => {
+      try {
+        const result = await api.updatePendingSpec(spec);
+        if (result?.error) throw new Error(result.message || 'Failed to update spec');
+        if (result?.spec) update({ pendingSpecApproval: result.spec });
+        return result?.spec || null;
+      } catch (err) {
+        addMessage({ role: 'error', text: `Failed: ${err.message}`, timestamp: new Date().toISOString() });
+        return null;
+      }
+    },
+
+    openSpecReview: async (spec) => {
+      if (!spec?.path) return null;
+      try {
+        const result = await api.openSpecReview(spec.path);
+        if (result?.error) throw new Error(result.message || 'Failed to open spec');
+        if (result?.spec) update({ pendingSpecApproval: result.spec });
+        return result?.spec || null;
+      } catch (err) {
+        addMessage({ role: 'error', text: `Failed: ${err.message}`, timestamp: new Date().toISOString() });
+        return null;
+      }
+    },
+
+    dismissPlanProgress: () => update({ planSteps: [] }),
+
     switchSession: async (sessionId) => {
       const currentSessionId = stateRef.current.runtimeState?.sessionId;
       if (!sessionId || sessionId === currentSessionId) return;
@@ -1552,7 +1679,7 @@ export function AppProvider({ children }) {
         const result = await api.switchSession(sessionId);
         if (result.ok) {
           updateRoute('chat', sessionId);
-          if (result.state) update({ runtimeState: result.state, projectCwd: result.state.cwd, isGeneral: !!result.state.isGeneral });
+          if (result.state) update({ runtimeState: result.state, projectCwd: projectNameFromRuntimeState(result.state), isGeneral: !!result.state.isGeneral });
           else await loadState();
           await loadSessionMessages(result.sessionData);
           loadSessions();
@@ -1577,7 +1704,7 @@ export function AppProvider({ children }) {
         if (deletingCurrent) {
           update({ currentView: 'chat', messagesLoading: true });
           if (result.sessionId) updateRoute('chat', result.sessionId, { replace: true });
-          if (result.state) update({ runtimeState: result.state, projectCwd: result.state.cwd, isGeneral: !!result.state.isGeneral });
+          if (result.state) update({ runtimeState: result.state, projectCwd: projectNameFromRuntimeState(result.state), isGeneral: !!result.state.isGeneral });
           else await loadState();
           setState(prev => ({ ...prev, messages: [] }));
           await loadSessionMessages(result.sessionData);

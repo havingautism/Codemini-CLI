@@ -50,6 +50,20 @@ export async function fetchSessionUiMessages() {
   return res.json();
 }
 
+export async function fetchSpecs() {
+  const res = await api('/api/specs');
+  return res.json();
+}
+
+export async function openSpecReview(path) {
+  const res = await api('/api/specs/open', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ path })
+  });
+  return res.json();
+}
+
 export async function submitLine(line, options = {}) {
   const res = await api('/api/submit', {
     method: 'POST',
@@ -81,6 +95,38 @@ export async function setApprovalMode(mode) {
     headers: JSON_HEADERS,
     body: JSON.stringify({ mode })
   });
+  return res.json();
+}
+
+export async function updatePendingPlan(plan) {
+  const res = await api('/api/pending-plan', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(plan || {})
+  });
+  return res.json();
+}
+
+export async function updatePendingReflect(draft) {
+  const res = await api('/api/pending-reflect', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(draft || {})
+  });
+  return res.json();
+}
+
+export async function updatePendingSpec(spec) {
+  const res = await api('/api/pending-spec', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(spec || {})
+  });
+  return res.json();
+}
+
+export async function deletePendingSpec() {
+  const res = await api('/api/pending-spec', { method: 'DELETE' });
   return res.json();
 }
 

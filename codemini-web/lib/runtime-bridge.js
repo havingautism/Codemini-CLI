@@ -29,6 +29,18 @@ function stripPlanProgressText(text) {
   return String(text || '').replace(/(?:^|\n)\[plan\]\s+Step\s+\d+\/\d+\s+->[^\n]*\n?/g, '');
 }
 
+function isWorkflowControlLine(line = '', state = {}) {
+  const trimmed = String(line || '').trim();
+  const lower = trimmed.toLowerCase();
+  if (!trimmed) return false;
+  if (['/yes', '/plan approve', '/no', '/reject', 'yes', 'y', 'approve', 'approved', 'no', 'n'].includes(lower)) return true;
+  if (lower.startsWith('/edit ')) return true;
+  if (/^\/(?:plan|spec|reflect)(?:\s|$)/i.test(trimmed)) return true;
+  const mode = String(state?.mode || '').toLowerCase();
+  if ((mode === 'plan' || mode === 'spec') && !trimmed.startsWith('/')) return true;
+  return false;
+}
+
 function addToolToSegments(segments, toolCard) {
   if (!Array.isArray(segments) || segments.length === 0) return [{ type: 'tools', cards: [toolCard] }];
   const last = segments[segments.length - 1];
@@ -557,9 +569,7 @@ export class RuntimeBridge {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
     this.#resetUiTranscriptIfSessionChanged();
     const trimmed = String(line || '').trim();
-    const lower = trimmed.toLowerCase();
-    const planControl = ['/yes', '/plan approve', '/no', '/reject'].includes(lower) || lower.startsWith('/edit ');
-    if (!options?.readOnlyCodeWiki && trimmed && !planControl) {
+    if (!options?.readOnlyCodeWiki && trimmed && !isWorkflowControlLine(trimmed, this.getState())) {
       this.#addUiMessage({
         role: 'you',
         text: line,
@@ -681,6 +691,41 @@ export class RuntimeBridge {
     return ok;
   }
 
+  async updatePendingPlan(patch = {}) {
+    const plan = await this.#runtime.updatePendingPlan?.(patch);
+    if (plan) this.#broadcast({ type: 'plan:pending_approval', plan });
+    this.#broadcastRuntimeState();
+    return plan || null;
+  }
+
+  async updatePendingReflect(patch = {}) {
+    const draft = await this.#runtime.updatePendingReflect?.(patch);
+    if (draft) this.#broadcast({ type: 'reflect:pending_approval', draft });
+    this.#broadcastRuntimeState();
+    return draft || null;
+  }
+
+  async updatePendingSpec(patch = {}) {
+    const spec = await this.#runtime.updatePendingSpec?.(patch);
+    if (spec) this.#broadcast({ type: 'spec:pending_approval', spec });
+    this.#broadcastRuntimeState();
+    return spec || null;
+  }
+
+  async setPendingSpecFromFile(payload = {}) {
+    const spec = await this.#runtime.setPendingSpecFromFile?.(payload);
+    if (spec) this.#broadcast({ type: 'spec:pending_approval', spec });
+    this.#broadcastRuntimeState();
+    return spec || null;
+  }
+
+  async deletePendingSpec() {
+    const result = await this.#runtime.deletePendingSpec?.();
+    if (result) this.#broadcast({ type: 'spec:approval_cleared' });
+    this.#broadcastRuntimeState();
+    return result || null;
+  }
+
   handleApproval(id, approved) {
     return this.#approval.resolve(id, approved);
   }
@@ -693,7 +738,8 @@ export class RuntimeBridge {
       busy: this.#busy,
       requestInFlight: this.#busy,
       pendingPlanApproval: this.#busy ? null : serializableState.pendingPlanApproval,
-      pendingReflectSkill: this.#busy ? null : serializableState.pendingReflectSkill
+      pendingReflectSkill: this.#busy ? null : serializableState.pendingReflectSkill,
+      pendingSpecApproval: this.#busy ? null : serializableState.pendingSpecApproval
     };
   }
 

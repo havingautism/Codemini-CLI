@@ -674,7 +674,7 @@ export function Sidebar({
         <Separator className="my-2 bg-transparent" />
         {versionInfo?.latest && versionInfo.latest !== versionInfo.current && (
           <button
-            className="w-full border-0 bg-(--bg-tertiary) rounded-md px-2.5 py-1.5 cursor-pointer text-[11px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) flex items-center justify-center gap-1.5"
+            className="w-full border-0 bg-(--bg-tertiary) rounded-md mb-2 px-2.5 py-1.5 cursor-pointer text-[11px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) flex items-center justify-center gap-1.5"
             onClick={updateStatus === "updating" ? undefined : onUpdate}
             disabled={updateStatus === "updating"}
           >

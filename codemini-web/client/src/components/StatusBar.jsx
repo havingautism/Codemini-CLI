@@ -1,4 +1,4 @@
-import { Brain, Plug, ChartNoAxesCombined, ListChecks, ShieldAlert, Sparkles, Unlock } from "lucide-react";
+import { Brain, Plug, ChartNoAxesCombined, FileText, ListChecks, ShieldAlert, Sparkles, Unlock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
 
@@ -72,7 +72,8 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
 
   const modelLogo = getModelLogo(rs.model);
   const sdkLogo = SDK_LOGO_MAP[rs.sdkProvider];
-  const WorkIcon = mode === "plan" ? ListChecks : Brain;
+  const WorkIcon = mode === "spec" ? FileText : mode === "plan" ? ListChecks : Brain;
+  const workLabel = mode === "spec" ? t("specMode") : mode === "plan" ? t("planMode") : t("normalExecutionMode");
   const ApprovalIcon =
     approvalMode === "full_access" ? Unlock : approvalMode === "auto" ? Sparkles : ShieldAlert;
   const approvalLabel =
@@ -82,7 +83,7 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
     <div className="flex items-center gap-3 flex-1 min-w-0 text-[12px] text-(--text-muted) overflow-hidden">
       <span className="inline-flex items-center gap-1 whitespace-nowrap">
         <WorkIcon size={13} className="shrink-0 opacity-70" />
-        <span>{mode === "plan" ? t("planMode") : t("normalExecutionMode")}</span>
+        <span>{workLabel}</span>
       </span>
       <span className="inline-flex items-center gap-1 whitespace-nowrap">
         <ApprovalIcon size={13} className="shrink-0 opacity-70" />

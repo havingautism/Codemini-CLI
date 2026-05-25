@@ -123,10 +123,11 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
         {
           path: "execution.mode",
           label: t("mode"),
-          options: ["normal", "plan"],
+          options: ["normal", "plan", "spec"],
           optionLabels: {
             normal: t("normalExecutionMode"),
             plan: t("planMode"),
+            spec: t("specMode"),
           },
         },
         {

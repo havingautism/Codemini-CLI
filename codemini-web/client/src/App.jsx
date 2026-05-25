@@ -17,9 +17,10 @@ import { StatusBar } from "@/components/StatusBar.jsx";
 import { ApprovalDialog } from "@/components/ApprovalDialog.jsx";
 import { PlanApprovalCard } from "@/components/PlanApprovalDialog.jsx";
 import { ReflectApprovalCard } from "@/components/ReflectApprovalDialog.jsx";
+import { SpecApprovalCard } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
 import { PlanProgress } from "@/components/PlanProgress.jsx";
-import { MoreHorizontal, Terminal, GitCompare } from "lucide-react";
+import { MoreHorizontal, Terminal, GitCompare, X } from "lucide-react";
 import "../style.css";
 
 const CodeWikiPanel = lazy(() =>
@@ -265,7 +266,15 @@ function Shell() {
 
             {/* Plan Progress (during execution) */}
             {state.planSteps?.length > 0 && !state.pendingPlanApproval && (
-              <div className="px-4">
+              <div className="px-4 relative">
+                <button
+                  type="button"
+                  onClick={actions.dismissPlanProgress}
+                  className="absolute right-6 top-2 z-10 inline-flex h-6 w-6 items-center justify-center rounded-md border border-(--border-default) bg-(--bg-secondary) text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                  title={t("closePlanProgress")}
+                >
+                  <X size={13} />
+                </button>
                 <PlanProgress steps={state.planSteps} />
               </div>
             )}
@@ -288,6 +297,17 @@ function Shell() {
                   <PlanApprovalCard
                     plan={state.pendingPlanApproval}
                     onAction={actions.approvePlan}
+                    onUpdate={actions.updatePendingPlan}
+                    disabled={state.busy}
+                  />
+                </div>
+              )}
+              {state.pendingSpecApproval && (
+                <div className="mb-3">
+                  <SpecApprovalCard
+                    spec={state.pendingSpecApproval}
+                    onAction={actions.approveSpec}
+                    onUpdate={actions.updatePendingSpec}
                     disabled={state.busy}
                   />
                 </div>
@@ -297,6 +317,7 @@ function Shell() {
                   <ReflectApprovalCard
                     draft={state.pendingReflectApproval}
                     onAction={actions.approveReflect}
+                    onUpdate={actions.updatePendingReflect}
                     disabled={state.busy}
                   />
                 </div>
@@ -306,16 +327,19 @@ function Shell() {
                 onAbort={actions.abort}
                 busy={state.busy}
                 disabled={
-                  !!state.pendingPlanApproval || !!state.pendingReflectApproval
+                  !!state.pendingPlanApproval || !!state.pendingSpecApproval || !!state.pendingReflectApproval
                 }
                 disabledReason={
                   state.pendingReflectApproval
                     ? t("reflectReviewFirst")
-                    : t("planReviewFirst")
+                    : state.pendingSpecApproval
+                      ? t("specReviewFirst")
+                      : t("planReviewFirst")
                 }
                 runtimeState={state.runtimeState}
                 history={state.history}
                 onOpenProject={openProjectSelector}
+                onOpenSpec={actions.openSpecReview}
                 projectCwd={state.projectCwd}
               />
 

@@ -36,6 +36,7 @@ import { countActiveTodos, normalizeTodos } from './todo-state.js';
 import {
   attachReflectTargets,
   buildReflectSkillDraft,
+  normalizeReflectDraft,
   parseReflectScope,
   writeReflectSkillDraft
 } from './reflect-skill.js';
@@ -2341,6 +2342,29 @@ function buildSpecTemplate(topic) {
 `;
 }
 
+const SPEC_REQUIRED_HEADINGS = [
+  'Summary',
+  'Goals',
+  'Non-Goals',
+  'User Experience / Command Behavior',
+  'Architecture',
+  'Data / State Model',
+  'Safety Rules',
+  'Requirements',
+  'Risks and Mitigations',
+  'Testing / Validation'
+];
+
+function specHeadingPattern(heading) {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\ \/ /g, '\\s*\\/\\s*');
+  return new RegExp(`^##\\s+${escaped}\\s*$`, 'im');
+}
+
+function missingSpecHeadings(specText = '') {
+  const text = String(specText || '');
+  return SPEC_REQUIRED_HEADINGS.filter((heading) => !specHeadingPattern(heading).test(text));
+}
+
 function extractSpecTitle(specText, fallback = 'spec') {
   const raw = String(specText || '');
   const heading = raw.match(/^#\s+Spec:\s+(.+)$/m) || raw.match(/^#\s+(.+)$/m);
@@ -2355,6 +2379,8 @@ async function buildSpecWithModel({
 }) {
   const prompt = [
     'Write a practical engineering spec in markdown, like an implementation-ready design document.',
+    'Return the full spec only. Do not greet, chat, ask clarifying questions, or offer a menu of possible directions.',
+    'If the request is broad or underspecified, choose reasonable assumptions, write them into the spec, and put unresolved items under Requirements or Risks.',
     'Use these sections exactly:',
     '# <Feature> Design',
     '## Summary',
@@ -2367,7 +2393,8 @@ async function buildSpecWithModel({
     '## Requirements',
     '## Risks and Mitigations',
     '## Testing / Validation',
-    'Make it concrete, scoped, and suitable for turning into a sub-agent implementation plan.'
+    'Make it concrete, scoped, and suitable for turning into a sub-agent implementation plan.',
+    'Every listed section must be present as a level-2 heading.'
   ].join('\n');
   const specSystemPrompt = await composeSystemPrompt({
     shellRulesPrompt: systemPrompt,
@@ -2674,6 +2701,9 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     pendingPlanApproval: planState?.status === 'pending_approval'
       ? { goal: planState.goal, summary: planState.finalSummary || planState.summary, filePath: planState.filePath, steps: planState.steps || [] }
       : null,
+    pendingSpecApproval: planState?.status === 'pending_spec_approval'
+      ? buildPendingSpecSnapshot(planState)
+      : null,
     pendingReflectSkill: planState?.status === 'pending_reflect_skill'
       ? buildPendingReflectSkillSnapshot(planState)
       : null
@@ -2823,6 +2853,10 @@ function hasPendingPlanApproval(session) {
   return session?.planState?.status === 'pending_approval';
 }
 
+function hasPendingSpecApproval(session) {
+  return session?.planState?.status === 'pending_spec_approval';
+}
+
 function hasPendingReflectSkill(session) {
   return session?.planState?.status === 'pending_reflect_skill';
 }
@@ -2848,8 +2882,8 @@ function isRejectPlanText(text = '') {
 function shouldPersistInputHistory(parsedInput) {
   if (!parsedInput || parsedInput.type !== 'slash') return true;
   const command = String(parsedInput.command || '').trim().toLowerCase();
-  // Keep approval-only commands out of input history (↑/↓ should focus on real task prompts).
-  return !['yes', 'no', 'edit', 'reject'].includes(command);
+  // Keep workflow/control commands out of input history (↑/↓ should focus on real task prompts).
+  return !['yes', 'no', 'edit', 'reject', 'plan', 'spec', 'reflect'].includes(command);
 }
 
 const NO_ARG_SLASH_COMMANDS = new Set(['exit', 'new', 'help', 'status', 'commands']);
@@ -2945,6 +2979,69 @@ function buildPendingReflectSkillSnapshot(reflectState) {
     targetPath: candidate.targetPath || '',
     content: candidate.content || ''
   };
+}
+
+function buildPendingSpecSnapshot(specState) {
+  if (!specState || specState.status !== 'pending_spec_approval') return null;
+  const missingHeadings = missingSpecHeadings(specState.specText || '');
+  return {
+    goal: specState.goal || '',
+    summary: specState.summary || '',
+    specText: specState.specText || '',
+    filePath: specState.specPath || specState.filePath || '',
+    complete: missingHeadings.length === 0,
+    missingHeadings
+  };
+}
+
+function updatePendingPlanState(session, patch = {}) {
+  if (!hasPendingPlanApproval(session)) return null;
+  const steps = Array.isArray(patch.steps)
+    ? patch.steps.map((step) => ({
+        title: String(step?.title || '').trim(),
+        role: String(step?.role || '').trim(),
+        task: String(step?.task || '').trim()
+      })).filter((step) => step.title || step.role || step.task)
+    : session.planState.steps || [];
+  session.planState = {
+    ...session.planState,
+    goal: String(patch.goal ?? session.planState.goal ?? '').trim(),
+    summary: String(patch.summary ?? session.planState.summary ?? '').trim(),
+    finalSummary: String(patch.finalSummary ?? patch.summary ?? session.planState.finalSummary ?? session.planState.summary ?? '').trim(),
+    steps
+  };
+  return {
+    goal: session.planState.goal,
+    summary: session.planState.finalSummary || session.planState.summary,
+    filePath: session.planState.filePath,
+    steps: session.planState.steps
+  };
+}
+
+function updatePendingReflectState(session, patch = {}, workspaceRoot = process.cwd()) {
+  if (!hasPendingReflectSkill(session)) return null;
+  const scope = session.planState.targetScope || patch.scope || 'project';
+  const draft = normalizeReflectDraft({
+    ...(Array.isArray(session.planState.candidates) ? session.planState.candidates[0] : {}),
+    ...patch
+  });
+  const candidates = attachReflectTargets({ candidates: [draft], scope, workspaceRoot });
+  session.planState = {
+    ...session.planState,
+    candidates
+  };
+  return buildPendingReflectSkillSnapshot(session.planState);
+}
+
+function updatePendingSpecState(session, patch = {}) {
+  if (!hasPendingSpecApproval(session)) return null;
+  session.planState = {
+    ...session.planState,
+    goal: String(patch.goal ?? session.planState.goal ?? '').trim(),
+    summary: String(patch.summary ?? session.planState.summary ?? '').trim(),
+    specText: String(patch.specText ?? session.planState.specText ?? '').trim()
+  };
+  return buildPendingSpecSnapshot(session.planState);
 }
 
 function buildApprovedPlanExecutionPrompt(planState, approvalText = '') {
@@ -4830,7 +4927,7 @@ export async function createChatRuntime({
     const configuredMode = String(config.execution?.mode || 'normal');
     executionMode = hasPendingPlanApproval(currentSession)
       ? 'plan'
-      : (['normal', 'plan'].includes(configuredMode) ? configuredMode : 'normal');
+      : (['normal', 'plan', 'spec'].includes(configuredMode) ? configuredMode : 'normal');
     syncCompactStateFromConfig();
 
     const resolvedModel = String(nextModel || '').trim();
@@ -5235,7 +5332,7 @@ export async function createChatRuntime({
     if (commandPart === 'mode') {
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         const sub = tokens[1] || '';
-        return ['normal', 'plan']
+        return ['normal', 'plan', 'spec']
           .filter((m) => m.startsWith(sub))
           .map((m) => registerSuggestion(`/mode ${m}`, completionCopy.generic.modeCommand));
       }
@@ -5601,6 +5698,105 @@ export async function createChatRuntime({
         return null;
       }
     };
+    const approvePendingSpec = async ({ executeImmediately = false, saveOnly = false } = {}) => {
+      if (!hasPendingSpecApproval(currentSession)) {
+        return { type: 'system', text: 'No pending spec approval.' };
+      }
+      const specState = { ...currentSession.planState };
+      const specText = String(specState.specText || '').trim() || buildSpecTemplate(specState.goal || 'spec');
+      const missingHeadings = missingSpecHeadings(specText);
+      if (!saveOnly && missingHeadings.length > 0) {
+        const text = `Spec is incomplete. Missing required sections: ${missingHeadings.join(', ')}. Edit the spec before approving.`;
+        await persistLocalExchange('', text, { includeUser: false });
+        if (onAgentEvent) {
+          onAgentEvent({
+            type: 'spec:pending_approval',
+            spec: buildPendingSpecSnapshot(currentSession.planState)
+          });
+        }
+        return { type: 'system', text };
+      }
+      const specTitle = extractSpecTitle(specText, specState.goal || 'spec');
+      const specPath = String(specState.specPath || '').trim() || await writeMarkdownInProjectDir(
+        'specs',
+        specTitle,
+        specText,
+        'spec',
+        currentSession.id
+      );
+      await fs.writeFile(specPath, `${specText.trim()}\n`, 'utf8');
+      if (saveOnly) {
+        currentSession.planState = null;
+        executionMode = 'normal';
+        if (onAgentEvent) onAgentEvent({ type: 'spec:approval_cleared' });
+        const text = `Spec saved: ${specPath}`;
+        await persistLocalExchange('', text, { includeUser: false });
+        return { type: 'system', text };
+      }
+      if (onAgentEvent) onAgentEvent({ type: 'spec:approval_cleared' });
+      const planGoal = [
+        `Implement the approved spec: ${specTitle}`,
+        `Spec path: ${specPath}`,
+        '',
+        specText
+      ].join('\n');
+      const auto = await buildAutoPlanAndRun({
+        goal: planGoal,
+        session: currentSession,
+        config,
+        model,
+        systemPrompt: activeReplySystemPrompt,
+        onAgentEvent,
+        sessionId: currentSession.id,
+        taskClass: classifyPlanTaskClass(planGoal)
+      });
+      currentSession.planState = {
+        status: 'pending_approval',
+        source: 'spec',
+        goal: specTitle,
+        specPath,
+        filePath: auto.filePath,
+        summary: auto.summary || '',
+        finalSummary: auto.finalSummary || auto.summary || '',
+        steps: Array.isArray(auto.steps) ? auto.steps : []
+      };
+      executionMode = 'plan';
+      if (!executeImmediately) {
+        if (onAgentEvent) {
+          onAgentEvent({
+            type: 'plan:pending_approval',
+            goal: currentSession.planState.goal,
+            summary: currentSession.planState.finalSummary || currentSession.planState.summary,
+            filePath: currentSession.planState.filePath,
+            steps: currentSession.planState.steps
+          });
+        }
+        const text = `Spec approved: ${specPath}\n\n${buildAutoPlanSystemSummary(auto)}`;
+        await persistLocalExchange('', text, { includeUser: false });
+        return { type: 'system', text };
+      }
+      const planState = { ...currentSession.planState };
+      const result = await executePlanWithSubAgents({
+        planState,
+        parentSession: currentSession,
+        config,
+        model,
+        systemPrompt: baseSystemPrompt,
+        onAgentEvent,
+        signal,
+        onSubSessionActive: (sub) => { activeSubSession = sub; }
+      });
+      activeSubSession = null;
+      currentSession.planState = null;
+      if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
+      await removePlanFileIfPresent(planState);
+      executionMode = 'normal';
+      await persistAssistantExchange('', result.sessionText || result.text || '', {
+        includeUser: false,
+        extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
+      });
+      return { type: 'assistant', text: result.text, aborted: !!result.aborted };
+    };
     try {
       if (!readOnlyCodeWiki && !codeWikiGenerate && shouldPersistInputHistory(parsedInput)) {
         await appendInputHistory(line);
@@ -5706,10 +5902,10 @@ export async function createChatRuntime({
       if (parsedInput.command === 'mode') {
         const next = (parsedInput.args[0] || '').trim().toLowerCase();
         if (!next) {
-          return { type: 'system', text: `Current work mode: ${executionMode} (available: normal|plan)` };
+          return { type: 'system', text: `Current work mode: ${executionMode} (available: normal|plan|spec)` };
         }
-        if (!['normal', 'plan'].includes(next)) {
-          return { type: 'system', text: 'Usage: /mode <normal|plan>' };
+        if (!['normal', 'plan', 'spec'].includes(next)) {
+          return { type: 'system', text: 'Usage: /mode <normal|plan|spec>' };
         }
         executionMode = next;
         await setConfigValue('execution.mode', next);
@@ -5734,6 +5930,9 @@ export async function createChatRuntime({
         return { type: 'system', text };
       }
       if (parsedInput.command === 'yes') {
+        if (hasPendingSpecApproval(currentSession)) {
+          return approvePendingSpec();
+        }
         if (hasPendingReflectSkill(currentSession)) {
           const state = { ...currentSession.planState };
           const candidate = Array.isArray(state.candidates) ? state.candidates[0] : null;
@@ -5759,7 +5958,6 @@ export async function createChatRuntime({
         if (!hasPendingPlanApproval(currentSession)) {
           return { type: 'system', text: 'No pending plan approval. Use /plan auto <goal> first.' };
         }
-        await persistUserExchange(line);
         const planState = { ...currentSession.planState };
         const result = await executePlanWithSubAgents({
           planState,
@@ -5815,7 +6013,7 @@ export async function createChatRuntime({
             });
           }
           const text = `Reflect skill draft revised.\n${buildPendingReflectSkillMessage(currentSession.planState)}`;
-          await persistLocalExchange(line, text);
+          await persistLocalExchange('', text, { includeUser: false });
           return { type: 'system', text };
         }
         if (!hasPendingPlanApproval(currentSession)) {
@@ -5844,10 +6042,18 @@ export async function createChatRuntime({
           });
         }
         const text = `Plan revised.\n${buildPendingPlanApprovalMessage(currentSession.planState)}`;
-        await persistLocalExchange(line, text);
+        await persistLocalExchange('', text, { includeUser: false });
         return { type: 'system', text };
       }
       if (parsedInput.command === 'no') {
+        if (hasPendingSpecApproval(currentSession)) {
+          currentSession.planState = null;
+          executionMode = 'normal';
+          if (onAgentEvent) onAgentEvent({ type: 'spec:approval_cleared' });
+          const text = 'Spec draft discarded.';
+          await persistLocalExchange(line, text, { includeUser: false });
+          return { type: 'system', text };
+        }
         if (hasPendingReflectSkill(currentSession)) {
           currentSession.planState = null;
           executionMode = 'normal';
@@ -5867,6 +6073,14 @@ export async function createChatRuntime({
         return { type: 'system', text: 'No pending reflect skill draft.' };
       }
       if (parsedInput.command === 'reject') {
+        if (hasPendingSpecApproval(currentSession)) {
+          currentSession.planState = null;
+          executionMode = 'normal';
+          if (onAgentEvent) onAgentEvent({ type: 'spec:approval_cleared' });
+          const text = 'Pending spec rejected and cleared.';
+          await persistLocalExchange('', text, { includeUser: false });
+          return { type: 'system', text };
+        }
         if (!hasPendingPlanApproval(currentSession)) {
           return { type: 'system', text: 'No pending plan approval.' };
         }
@@ -5876,7 +6090,7 @@ export async function createChatRuntime({
         await removePlanFileIfPresent(planState);
         executionMode = 'normal';
         const text = 'Pending plan rejected and cleared.';
-        await persistLocalExchange(line, text);
+        await persistLocalExchange('', text, { includeUser: false });
         return { type: 'system', text };
       }
       if (parsedInput.command === 'checkpoint') {
@@ -5929,8 +6143,14 @@ export async function createChatRuntime({
         return { type: 'system', text: 'Usage: /checkpoint create <name> | /checkpoint list | /checkpoint load <id>' };
       }
       if (parsedInput.command === 'spec') {
+        const specSub = String(parsedInput.args[0] || '').trim().toLowerCase();
+        if (hasPendingSpecApproval(currentSession) && ['save', 'plan', 'execute', 'run'].includes(specSub)) {
+          if (specSub === 'save') return approvePendingSpec({ saveOnly: true });
+          if (specSub === 'execute' || specSub === 'run') return approvePendingSpec({ executeImmediately: true });
+          return approvePendingSpec();
+        }
         const topic = parsedInput.args.join(' ').trim();
-        if (!topic) return { type: 'system', text: 'Usage: /spec <topic>' };
+        if (!topic) return { type: 'system', text: 'Usage: /spec <topic> | /spec save | /spec plan | /spec execute' };
         let content = '';
         let buildNote = '';
         try {
@@ -5952,7 +6172,7 @@ export async function createChatRuntime({
           currentSession.id
         );
         const text = `Spec created: ${filePath}${buildNote}`;
-        await persistLocalExchange(line, text);
+        await persistLocalExchange('', text, { includeUser: false });
         return { type: 'system', text };
       }
       if (parsedInput.command === 'plan') {
@@ -5998,7 +6218,7 @@ export async function createChatRuntime({
             });
           }
           const text = buildAutoPlanSystemSummary(auto);
-          await persistLocalExchange(line, text);
+          await persistLocalExchange('', text, { includeUser: false });
           return {
             type: 'system',
             text
@@ -6008,7 +6228,6 @@ export async function createChatRuntime({
           if (!hasPendingPlanApproval(currentSession)) {
             return { type: 'system', text: 'No pending plan approval. Use /plan auto <goal> first.' };
           }
-          await persistUserExchange(line);
           const planState = { ...currentSession.planState };
           const result = await executePlanWithSubAgents({
             planState,
@@ -6036,7 +6255,7 @@ export async function createChatRuntime({
             return { type: 'system', text: 'No pending plan approval.' };
           }
           const text = buildPendingPlanApprovalMessage(currentSession.planState);
-          await persistLocalExchange(line, text);
+          await persistLocalExchange('', text, { includeUser: false });
           return { type: 'system', text };
         }
         if (sub === 'from-spec') {
@@ -6069,7 +6288,7 @@ export async function createChatRuntime({
             currentSession.id
           );
           const text = `Plan created from spec: ${filePath}\nSpec: ${specPath}${buildNote}`;
-          await persistLocalExchange(line, text);
+          await persistLocalExchange('', text, { includeUser: false });
           return { type: 'system', text };
         }
 
@@ -6084,7 +6303,7 @@ export async function createChatRuntime({
           currentSession.id
         );
         const text = `Plan created: ${filePath}`;
-        await persistLocalExchange(line, text);
+        await persistLocalExchange('', text, { includeUser: false });
         return { type: 'system', text };
       }
       if (parsedInput.command === 'agents') {
@@ -6301,7 +6520,7 @@ export async function createChatRuntime({
         });
         if (candidates.length === 0) {
           const text = 'Reflect found no reusable skill candidate.';
-          await persistLocalExchange(line, text);
+          await persistLocalExchange('', text, { includeUser: false });
           return { type: 'system', text };
         }
         currentSession.planState = {
@@ -6318,7 +6537,7 @@ export async function createChatRuntime({
           });
         }
         const text = buildPendingReflectSkillMessage(currentSession.planState);
-        await persistLocalExchange(line, text);
+        await persistLocalExchange('', text, { includeUser: false });
         return { type: 'system', text };
       }
       if (parsedInput.command === 'config') {
@@ -6536,7 +6755,6 @@ export async function createChatRuntime({
 
     if (hasPendingPlanApproval(currentSession)) {
       if (isApprovalText(parsedInput.text)) {
-        await persistUserExchange(line);
         const planState = { ...currentSession.planState };
         const result = await executePlanWithSubAgents({
           planState,
@@ -6560,7 +6778,7 @@ export async function createChatRuntime({
       }
       if (isStayInPlanText(parsedInput.text)) {
         const text = buildPendingPlanApprovalMessage(currentSession.planState);
-        await persistLocalExchange(line, text);
+        await persistLocalExchange('', text, { includeUser: false });
         return { type: 'system', text };
       }
       if (isRejectPlanText(parsedInput.text)) {
@@ -6568,13 +6786,54 @@ export async function createChatRuntime({
         if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
         executionMode = 'normal';
         const text = 'Pending plan rejected and cleared.';
-        await persistLocalExchange(line, text);
+        await persistLocalExchange('', text, { includeUser: false });
         return { type: 'system', text };
       }
       return {
         type: 'system',
         text: buildPendingPlanApprovalMessage(currentSession.planState)
       };
+    }
+
+    // Spec mode with no pending spec -> create a file-backed editable spec draft.
+    if (executionMode === 'spec') {
+      const expandedSpecText = await expandFileMentions(parsedInput.text, process.cwd());
+      let content = '';
+      try {
+        content = await buildSpecWithModel({
+          topic: expandedSpecText,
+          config,
+          model,
+          systemPrompt: activeReplySystemPrompt
+        });
+      } catch {
+        content = buildSpecTemplate(expandedSpecText);
+      }
+      const specTitle = extractSpecTitle(content, expandedSpecText);
+      const specPath = await writeMarkdownInProjectDir(
+        'specs',
+        specTitle,
+        content,
+        'spec',
+        currentSession.id
+      );
+      currentSession.planState = {
+        status: 'pending_spec_approval',
+        source: 'spec',
+        goal: expandedSpecText,
+        summary: specTitle,
+        specPath,
+        specText: content
+      };
+      if (onAgentEvent) {
+        onAgentEvent({
+          type: 'spec:pending_approval',
+          spec: buildPendingSpecSnapshot(currentSession.planState)
+        });
+      }
+      const text = `Spec draft created: ${specPath}\nReview and approve it to generate an implementation plan.`;
+      await persistLocalExchange('', text, { includeUser: false });
+      return { type: 'system', text };
     }
 
     // Plan mode with no pending plan → auto-generate structured plan
@@ -6610,7 +6869,7 @@ export async function createChatRuntime({
         });
       }
       const text = buildAutoPlanSystemSummary(auto);
-      await persistLocalExchange(line, text);
+      await persistLocalExchange('', text, { includeUser: false });
       return { type: 'system', text };
     }
 
@@ -6719,7 +6978,7 @@ export async function createChatRuntime({
       };
       executionMode = 'plan';
       const text = buildAutoPlanSystemSummary(auto);
-      await persistLocalExchange(line, text);
+      await persistLocalExchange('', text, { includeUser: false });
       return { type: 'system', text };
     }
 
@@ -6807,7 +7066,7 @@ export async function createChatRuntime({
       return true;
     },
     setExecutionMode: async (next) => {
-      if (!['normal', 'plan'].includes(next)) return false;
+      if (!['normal', 'plan', 'spec'].includes(next)) return false;
       executionMode = next;
       await setConfigValue('execution.mode', next);
       config = await loadConfig();
@@ -6826,6 +7085,69 @@ export async function createChatRuntime({
     },
     setOnTitleUpdate: (cb) => {
       onTitleUpdateCallback = typeof cb === 'function' ? cb : null;
+    },
+    updatePendingPlan: async (patch = {}) => {
+      const next = updatePendingPlanState(currentSession, patch);
+      if (!next) return null;
+      if (currentSession.planState.filePath) {
+        await fs.writeFile(
+          currentSession.planState.filePath,
+          `${renderAutoPlanMarkdown({
+            goal: currentSession.planState.goal,
+            autoPlan: { summary: currentSession.planState.summary, steps: currentSession.planState.steps || [] },
+            finalSummary: currentSession.planState.finalSummary || currentSession.planState.summary,
+            approvalText: 'Pending user approval before implementation.',
+            progressLine: '- Plan edited in Web UI and waiting for execution.'
+          })}\n`,
+          'utf8'
+        ).catch(() => {});
+      }
+      await saveSession(currentSession);
+      return next;
+    },
+    updatePendingReflect: async (patch = {}) => {
+      const next = updatePendingReflectState(currentSession, patch, process.cwd());
+      if (!next) return null;
+      await saveSession(currentSession);
+      return next;
+    },
+    updatePendingSpec: async (patch = {}) => {
+      const next = updatePendingSpecState(currentSession, patch);
+      if (!next) return null;
+      const filePath = String(currentSession.planState.specPath || currentSession.planState.filePath || '').trim();
+      if (filePath) {
+        await fs.writeFile(filePath, `${String(currentSession.planState.specText || '').trim()}\n`, 'utf8').catch(() => {});
+      }
+      await saveSession(currentSession);
+      return buildPendingSpecSnapshot(currentSession.planState);
+    },
+    setPendingSpecFromFile: async ({ filePath = '', specText = '', goal = '', summary = '' } = {}) => {
+      const resolvedPath = String(filePath || '').trim();
+      const text = String(specText || '').trim();
+      if (!resolvedPath || !text) return null;
+      const title = summary || extractSpecTitle(text, path.basename(resolvedPath, '.md'));
+      currentSession.planState = {
+        status: 'pending_spec_approval',
+        source: 'spec-file',
+        goal: goal || title,
+        summary: title,
+        specPath: resolvedPath,
+        specText: text
+      };
+      executionMode = 'spec';
+      await saveSession(currentSession);
+      return buildPendingSpecSnapshot(currentSession.planState);
+    },
+    deletePendingSpec: async () => {
+      if (!hasPendingSpecApproval(currentSession)) return null;
+      const filePath = String(currentSession.planState.specPath || currentSession.planState.filePath || '').trim();
+      if (filePath) {
+        await fs.unlink(filePath).catch(() => {});
+      }
+      currentSession.planState = null;
+      executionMode = 'normal';
+      await saveSession(currentSession);
+      return { filePath };
     },
     dispose: async () => {
       if (typeof disposeTools === 'function') {

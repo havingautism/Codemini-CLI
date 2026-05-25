@@ -13,7 +13,7 @@ import { installSkillSource, listSkillEntries } from '../src/commands/skill.js';
 import { computeFileSha256, readSkillRegistry, upsertSkillRegistryEntry, writeSkillRegistry } from '../src/core/skill-registry.js';
 import { forgetMemory, listMemories, searchMemories } from '../src/core/memory-store.js';
 import { getReplyLanguage } from '../src/core/reply-language.js';
-import { getBaseConfigDir, getFileIndexPath, getProjectSkillsDir, getSkillsDir } from '../src/core/paths.js';
+import { getBaseConfigDir, getFileIndexPath, getProjectSkillsDir, getProjectSpecsDir, getSkillsDir } from '../src/core/paths.js';
 import { initializeProjectIndex } from '../src/core/project-index.js';
 import { INDEX_SKIP_DIRS } from '../src/core/constants.js';
 import { VERSION } from '../src/core/version.js';
@@ -148,6 +148,63 @@ async function listProjectRoots() {
 function isGeneralProjectDir(value) {
   if (!value) return false;
   return path.resolve(value) === path.resolve(GENERAL_PROJECT_DIR);
+}
+
+function isPathInside(parentDir, candidatePath) {
+  const parent = path.resolve(parentDir);
+  const candidate = path.resolve(candidatePath);
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function listProjectSpecFiles(projectDir) {
+  if (!projectDir || isGeneralProjectDir(projectDir)) return [];
+  const specsDir = getProjectSpecsDir(projectDir);
+  const specs = [];
+  async function walk(dir) {
+    let entries = [];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.md')) continue;
+      let stat = null;
+      try {
+        stat = await fs.stat(fullPath);
+      } catch {}
+      const relativePath = path.relative(specsDir, fullPath);
+      specs.push({
+        name: entry.name.replace(/\.md$/i, ''),
+        file: entry.name,
+        path: fullPath,
+        relativePath,
+        updatedAt: stat?.mtime?.toISOString?.() || ''
+      });
+    }
+  }
+  await walk(specsDir);
+  return specs.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+}
+
+async function resolveProjectSpecFile(projectDir, rawPath = '') {
+  if (!projectDir || isGeneralProjectDir(projectDir)) return '';
+  const specsDir = getProjectSpecsDir(projectDir);
+  const candidate = path.resolve(projectDir, String(rawPath || '').trim());
+  if (!isPathInside(specsDir, candidate)) return '';
+  try {
+    const stat = await fs.stat(candidate);
+    if (!stat.isFile() || !candidate.toLowerCase().endsWith('.md')) return '';
+    return candidate;
+  } catch {
+    return '';
+  }
 }
 
 function getGeneralChatSystemPromptBlock() {
@@ -285,6 +342,32 @@ function normalizeProjectPath(value) {
 function projectNameForDir(projectDir) {
   if (isGeneralProjectDir(projectDir)) return '__codemini_general__';
   return path.basename(path.resolve(projectDir || '')) || projectDir || '';
+}
+
+function getGitBranch(cwd) {
+  try {
+    return execSync('git symbolic-ref --quiet --short HEAD', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  } catch {
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    return branch === 'HEAD' ? null : branch;
+  }
+}
+
+function readGitInfo(cwd, { includeCounts = true } = {}) {
+  execSync('git rev-parse --is-inside-work-tree', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+  const branch = getGitBranch(cwd);
+  if (!includeCounts) return { isGit: true, branch };
+
+  const porcelain = execSync('git status --porcelain', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  const lines = porcelain ? porcelain.split('\n') : [];
+  let staged = 0, modified = 0, untracked = 0;
+  for (const line of lines) {
+    const x = line[0], y = line[1];
+    if (x === '?' && y === '?') { untracked++; continue; }
+    if (x !== ' ' && x !== '?') staged++;
+    if (y === 'M' || y === 'D') modified++;
+  }
+  return { isGit: true, branch, dirty: lines.length > 0, staged, modified, untracked };
 }
 
 async function validProjectDir(value) {
@@ -740,7 +823,7 @@ async function main() {
     }
     if (req.method === 'POST' && url.pathname === '/api/execution-mode') {
       const { mode } = await readBody(req);
-      if (!mode || !['normal', 'plan'].includes(mode)) {
+      if (!mode || !['normal', 'plan', 'spec'].includes(mode)) {
         jsonResponse(res, { error: true, message: 'Invalid mode' }, 400);
         return;
       }
@@ -750,6 +833,33 @@ async function main() {
       }
       const ok = await bridge.setExecutionMode(mode);
       jsonResponse(res, { ok });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/pending-plan') {
+      const body = await readBody(req);
+      try {
+        const plan = await bridge.updatePendingPlan(body || {});
+        if (!plan) { jsonResponse(res, { error: true, message: 'No pending plan approval' }, 409); return; }
+        jsonResponse(res, { ok: true, plan });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/pending-reflect') {
+      const body = await readBody(req);
+      try {
+        const draft = await bridge.updatePendingReflect(body || {});
+        if (!draft) { jsonResponse(res, { error: true, message: 'No pending reflect approval' }, 409); return; }
+        jsonResponse(res, { ok: true, draft });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/pending-spec') {
+      const body = await readBody(req);
+      try {
+        const spec = await bridge.updatePendingSpec(body || {});
+        if (!spec) { jsonResponse(res, { error: true, message: 'No pending spec approval' }, 409); return; }
+        jsonResponse(res, { ok: true, spec });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/approval-mode') {
@@ -818,6 +928,40 @@ async function main() {
     }
     if (req.method === 'GET' && url.pathname === '/api/session/ui-messages') {
       jsonResponse(res, await bridge.getUiMessages());
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/specs') {
+      jsonResponse(res, { specs: await listProjectSpecFiles(currentProjectDir) });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/specs/open') {
+      const body = await readBody(req);
+      const specPath = await resolveProjectSpecFile(currentProjectDir, body?.path);
+      if (!specPath) {
+        jsonResponse(res, { error: true, message: 'Spec file not found' }, 404);
+        return;
+      }
+      const specText = await fs.readFile(specPath, 'utf8');
+      const spec = await bridge.setPendingSpecFromFile({
+        filePath: specPath,
+        specText,
+        goal: path.basename(specPath, '.md'),
+        summary: path.basename(specPath, '.md')
+      });
+      if (!spec) {
+        jsonResponse(res, { error: true, message: 'Failed to open spec' }, 500);
+        return;
+      }
+      jsonResponse(res, { ok: true, spec });
+      return;
+    }
+    if (req.method === 'DELETE' && url.pathname === '/api/pending-spec') {
+      const result = await bridge.deletePendingSpec();
+      if (!result) {
+        jsonResponse(res, { error: true, message: 'No pending spec approval' }, 409);
+        return;
+      }
+      jsonResponse(res, { ok: true, ...result });
       return;
     }
 
@@ -1093,17 +1237,7 @@ async function main() {
     }
     if (req.method === 'GET' && url.pathname === '/api/git') {
       try {
-        const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-        const porcelain = execSync('git status --porcelain', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-        const lines = porcelain ? porcelain.split('\n') : [];
-        let staged = 0, modified = 0, untracked = 0;
-        for (const line of lines) {
-          const x = line[0], y = line[1];
-          if (x === '?' && y === '?') { untracked++; continue; }
-          if (x !== ' ' && x !== '?') staged++;
-          if (y === 'M' || y === 'D') modified++;
-        }
-        jsonResponse(res, { isGit: true, branch, dirty: lines.length > 0, staged, modified, untracked });
+        jsonResponse(res, readGitInfo(currentProjectDir));
       } catch {
         jsonResponse(res, { isGit: false, branch: null, dirty: false, staged: 0, modified: 0, untracked: 0 });
       }
@@ -1189,8 +1323,7 @@ async function main() {
       for (const dir of (Array.isArray(dirs) ? dirs : [])) {
         try {
           const resolved = path.resolve(dir);
-          const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: resolved, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-          result[dir] = { isGit: true, branch };
+          result[dir] = readGitInfo(resolved, { includeCounts: false });
         } catch {
           result[dir] = { isGit: false, branch: null };
         }
