@@ -28,7 +28,6 @@ function parseRunArgs(args) {
     task: '',
     model: undefined,
     fast: false,
-    maxSteps: 8,
     harness: null,
     pipeline: false
   };
@@ -41,11 +40,6 @@ function parseRunArgs(args) {
     }
     if (arg === '--fast' || arg === '--lite') {
       parsed.fast = true;
-      continue;
-    }
-    if (arg === '--max-steps') {
-      parsed.maxSteps = Number(args[i + 1] || 8);
-      i += 1;
       continue;
     }
     if (arg === '--harness') {
@@ -94,7 +88,7 @@ async function buildSystemPrompt(config) {
   });
 }
 
-async function runHarness({ role, task, config, systemPrompt, model, maxSteps }) {
+async function runHarness({ role, task, config, systemPrompt, model }) {
   if (!HARNESS_ROLES.includes(role)) {
     throw new Error(`Unknown harness role: ${role}. Available: ${HARNESS_ROLES.join(', ')}`);
   }
@@ -121,7 +115,6 @@ async function runHarness({ role, task, config, systemPrompt, model, maxSteps })
       toolHandlers: filtered.handlers,
       toolFormatters: formatters,
       deferredDefinitions: filtered.deferredDefinitions,
-      maxSteps,
       requestCompletion: makeCompletionFn(config)
     });
     return result;
@@ -238,7 +231,8 @@ async function runPipeline({ task, config, systemPrompt, model }) {
       config,
       systemPrompt,
       model,
-      maxSteps: Number(config.execution?.max_steps || 12)
+
+
     });
 
     const stepResult = {
@@ -296,7 +290,8 @@ export async function handleRun(args) {
       config,
       systemPrompt,
       model: selectedModel,
-      maxSteps: parsed.maxSteps
+
+
     });
     console.log(result.text);
     return;
@@ -315,7 +310,7 @@ export async function handleRun(args) {
       toolHandlers: handlers,
       toolFormatters: formatters,
       deferredDefinitions,
-      maxSteps: parsed.maxSteps,
+
       requestCompletion: makeCompletionFn(config)
     });
 

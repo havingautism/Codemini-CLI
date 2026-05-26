@@ -589,7 +589,6 @@ export async function runAgentLoop({
   requestCompletion,
   toolHandlers = {},
   toolDefinitions = [],
-  maxSteps = 8,
   initialMessages = [],
   onEvent,
   executionMode = 'normal',
@@ -654,14 +653,16 @@ export async function runAgentLoop({
     }
   }
 
-  for (let step = 0; step < maxSteps; step += 1) {
+  let step = 0;
+  while (true) {
+    step += 1;
     // 检查是否已被用户中止
     if (signal?.aborted) {
-      if (onEvent) onEvent({ type: 'aborted', step: step + 1 });
+      if (onEvent) onEvent({ type: 'aborted', step });
       break;
     }
-    if (onEvent) onEvent({ type: 'step:start', step: step + 1 });
-    await maybeRunAutoDream(step + 1);
+    if (onEvent) onEvent({ type: 'step:start', step });
+    await maybeRunAutoDream(step);
     const completion = await requestCompletion({
       model,
       messages,
@@ -671,7 +672,7 @@ export async function runAgentLoop({
 
     // 流式请求完成后再次检查中止状态
     if (signal?.aborted) {
-      if (onEvent) onEvent({ type: 'aborted', step: step + 1 });
+      if (onEvent) onEvent({ type: 'aborted', step });
       break;
     }
 
@@ -701,7 +702,7 @@ export async function runAgentLoop({
     if (onEvent) {
       onEvent({
         type: 'assistant:response',
-        step: step + 1,
+        step: step,
         text: assistantText,
         toolCalls: toolCalls.map((tc) => tc.name),
         usage: completion.usage || null,
@@ -729,8 +730,8 @@ export async function runAgentLoop({
         continue;
       }
       finalText = assistantText;
-      await maybeRunAutoDream(step + 1, { force: true });
-      return { text: finalText, messages, steps: step + 1 };
+      await maybeRunAutoDream(step, { force: true });
+      return { text: finalText, messages, steps: step };
     }
 
     pendingSummaryNudges = 0;
@@ -750,8 +751,8 @@ export async function runAgentLoop({
       ]
         .filter(Boolean)
         .join('\n');
-      await maybeRunAutoDream(step + 1, { force: true });
-      return { text: finalText.trim(), messages, steps: step + 1 };
+      await maybeRunAutoDream(step, { force: true });
+      return { text: finalText.trim(), messages, steps: step };
     }
 
     // ─── P1a: Partition into read-only (parallel) and write (serial) ──
@@ -1124,17 +1125,17 @@ export async function runAgentLoop({
     return {
       text: fallback,
       messages,
-      steps: maxSteps,
+      steps: step,
       aborted: true
     };
   }
 
   const fallback = lastAssistantText || 'Stopped before final response.';
-  await maybeRunAutoDream(maxSteps, { force: true });
+  await maybeRunAutoDream(step, { force: true });
   return {
-    text: `${fallback}\n\n[stopped] Reached max tool steps (${maxSteps}). Try a narrower prompt or increase execution.max_steps.`,
+    text: fallback,
     messages,
-    steps: maxSteps
+    steps: step
   };
 }
 

@@ -140,7 +140,6 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
             full_access: t("fullAccessMode"),
           },
         },
-        { path: "execution.max_steps", label: t("maxSteps"), type: "number" },
         {
           path: "ui.reply_language",
           label: t("replyLanguage"),

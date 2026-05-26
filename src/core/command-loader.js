@@ -421,5 +421,10 @@ export async function loadIndexedSkills(cwd = process.cwd()) {
 }
 
 export function renderCommandPrompt(command, args) {
-  return `[Executing ${command.metadata.type === 'skill' ? 'skill' : 'command'}: /${command.name}]\n\n${substituteVariables(command.content, args)}`;
+  const hasArgPlaceholders = /\{\{args\}\}/.test(command.content) || /\{\{\d+\}\}/.test(command.content);
+  let content = substituteVariables(command.content, args);
+  if (!hasArgPlaceholders && Array.isArray(args) && args.length > 0) {
+    content = `${content}\n\n[User task]\n${args.join(' ')}`;
+  }
+  return `[Executing ${command.metadata.type === 'skill' ? 'skill' : 'command'}: /${command.name}]\n\n${content}`;
 }

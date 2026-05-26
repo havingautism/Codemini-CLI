@@ -1787,6 +1787,39 @@ function findLineEndingEquivalentMatches(content, oldText) {
   return matches;
 }
 
+function findTrailingWhitespaceTolerantMatches(content, oldText) {
+  if (!oldText) return [];
+  const escapedLines = oldText.split('\n').map((line) => {
+    const trimmed = line.replace(/[ \t]+$/, '');
+    return `${escapeRegex(trimmed)}[ \t]*`;
+  });
+  const pattern = escapedLines.join('\n');
+  if (!pattern) return [];
+  try {
+    const regex = new RegExp(pattern, 'g');
+    const matches = [];
+    let match;
+    while ((match = regex.exec(content)) !== null) {
+      matches.push({ start: match.index, end: match.index + match[0].length });
+    }
+    return matches;
+  } catch {
+    return [];
+  }
+}
+
+function buildOldTextNotFoundHint(content, oldText, relativePath) {
+  const firstLine = String(oldText || '').split('\n')[0].substring(0, 100);
+  const snippetLines = splitLines(String(content || '')).slice(0, 15);
+  const snippet = snippetLines.map((l, i) => `${i + 1}| ${l}`).join('\n');
+  return [
+    `old_text not found in ${relativePath || 'file'}.`,
+    `Searched for: "${firstLine}${firstLine.length < (oldText || '').length ? '...' : ''}"`,
+    `File starts with:\n${snippet}${snippetLines.length < splitLines(content).length ? '\n...' : ''}`,
+    `Hint: Check for trailing spaces, tab/space indentation, or CRLF vs LF line endings.`
+  ].join('\n');
+}
+
 async function replaceBlock(root, args, config = {}) {
   const relativePath = String(args?.path || '').trim();
   const newContent = String(args?.new_content || args?.content || '');
@@ -1848,6 +1881,31 @@ async function replaceText(root, args, config = {}) {
       return editResult(relativePath, 'replace_text', state.content, afterContent, changedLine);
     }
   }
+  let trailingWsMatches = null;
+  if (occurrences === 0 && !newlineMatches) {
+    trailingWsMatches = findTrailingWhitespaceTolerantMatches(searchContent, oldText);
+    if ((replaceAll && trailingWsMatches.length > 0) || trailingWsMatches.length === 1) {
+      let cursor = 0;
+      let replaced = '';
+      for (const match of trailingWsMatches) {
+        const originalMatch = searchContent.slice(match.start, match.end);
+        replaced += searchContent.slice(cursor, match.start);
+        replaced += applyEol(newText, detectEol(originalMatch));
+        cursor = match.end;
+        if (!replaceAll) break;
+      }
+      replaced += searchContent.slice(cursor);
+      const afterContent = range
+        ? `${state.content.slice(0, range.startOffset)}${replaced}${state.content.slice(range.endOffset)}`
+        : replaced;
+      await fs.writeFile(state.target, afterContent, 'utf8');
+      const first = trailingWsMatches[0];
+      const changedLine = range
+        ? range.startLine + splitLines(searchContent.slice(0, first.start)).length - 1
+        : splitLines(state.content.slice(0, first.start)).length;
+      return editResult(relativePath, 'replace_text', state.content, afterContent, changedLine);
+    }
+  }
   if (occurrences !== 1) {
     if (replaceAll && occurrences > 0) {
       const replaced = searchContent.replaceAll(oldText, newText);
@@ -1876,10 +1934,10 @@ async function replaceText(root, args, config = {}) {
       searchPos = pos + oldText.length;
     }
     const lineHint = lineDetails.length > 0 ? `\n${lineDetails.join('\n')}\n` : ' ';
-    const effectiveOccurrences = newlineMatches?.length || occurrences;
+    const effectiveOccurrences = newlineMatches?.length || trailingWsMatches?.length || occurrences;
     throw new Error(
       effectiveOccurrences === 0
-        ? 'replace_text old_text not found'
+        ? buildOldTextNotFoundHint(searchContent, oldText, relativePath)
         : `replace_text old_text not unique; found ${effectiveOccurrences} occurrences:${lineHint}Use path:"${relativePath}:N-M" to narrow the range, set replace_all=true, or provide more unique old_text`
     );
   }

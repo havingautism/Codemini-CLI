@@ -27,7 +27,7 @@ import {
 } from './context-compact.js';
 import { getReplyLanguage, getReplyLanguageName } from './reply-language.js';
 import { composeSystemPrompt } from './system-prompt-composer.js';
-import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir } from './paths.js';
+import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { forgetMemory, listMemories, rememberMemory, searchMemories, captureToInbox, listInbox } from './memory-store.js';
 import { runDreamConsolidation } from './dream-consolidate.js';
@@ -454,7 +454,7 @@ function getCompletionCopy(language = 'zh') {
         'ui.reply_language': '回复语言',
         'execution.mode': '执行模式',
         'execution.always_allow_tools': '始终允许的工具列表',
-        'execution.max_steps': '最大工具步骤数',
+
         'context.preflight_trigger_pct': '预压缩阈值',
         'context.hard_limit_pct': '硬压缩阈值',
         'context.tool_result_max_chars': '工具结果字符上限',
@@ -568,7 +568,7 @@ function getCompletionCopy(language = 'zh') {
         'ui.reply_language': 'reply language',
         'execution.mode': 'execution mode',
         'execution.always_allow_tools': 'always-allowed tools',
-        'execution.max_steps': 'maximum tool steps',
+
         'context.preflight_trigger_pct': 'preflight compact threshold',
         'context.hard_limit_pct': 'hard compact threshold',
         'context.tool_result_max_chars': 'tool result character limit',
@@ -3536,7 +3536,6 @@ async function askModel({
   alwaysAllowTools,
   signal,
   allowedTools,
-  maxSteps: maxStepsOverride,
   skipAnalysisNudge = false,
   compactedForModel: compactedInput = null,
   onCompactedUpdate = null,
@@ -3705,7 +3704,8 @@ async function askModel({
       ...(config.policy || {}),
       allowed_paths: [
         ...(Array.isArray(config.policy?.allowed_paths) ? config.policy.allowed_paths : []),
-        path.join(getSessionsDir(), String(session.id))
+        path.join(getSessionsDir(), String(session.id)),
+        getSkillsDir()
       ]
     }
   };
@@ -3978,7 +3978,8 @@ async function askModel({
     systemPrompt: effectiveSystemPrompt,
     userPrompt: loopUserPrompt,
     model: model || config.model.name,
-    maxSteps: maxStepsOverride ?? Number(config.execution?.max_steps || 16),
+
+
     toolDefinitions: filteredDefinitions,
     toolHandlers: filteredHandlers,
     initialMessages: initialMessagesForModel,
@@ -5666,8 +5667,7 @@ export async function createChatRuntime({
     'gateway.max_retries',
     'model.max_context_tokens',
     'execution.always_allow_tools',
-    'execution.max_steps',
-    'context.preflight_trigger_pct',
+        'context.preflight_trigger_pct',
     'context.hard_limit_pct',
     'context.tool_result_max_chars',
     'context.read_file_default_lines',
@@ -6479,8 +6479,7 @@ export async function createChatRuntime({
         alwaysAllowTools: CODEWIKI_ROLE_TOOLS,
         allowedTools: CODEWIKI_ROLE_TOOLS,
         persistSession: false,
-        maxSteps: 32,
-        skipAnalysisNudge: true,
+                skipAnalysisNudge: true,
         signal
       });
       return { type: 'assistant', text: result.text, aborted: !!result.aborted };

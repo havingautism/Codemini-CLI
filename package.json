@@ -1,6 +1,6 @@
 {
   "name": "codemini-cli",
-  "version": "0.6.7",
+  "version": "0.6.8",
   "description": "An extremely restrained coding + tasks CLI. Every platform. Every terminal. Minimal by design.",
   "keywords": [
     "cli",

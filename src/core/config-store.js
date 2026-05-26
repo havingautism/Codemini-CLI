@@ -50,8 +50,7 @@ const DEFAULT_CONFIG = {
       'list',
       'list_background_tasks',
       'get_background_task'
-    ],
-    max_steps: 16
+    ]
   },
   sessions: {
     max_sessions: 100,
