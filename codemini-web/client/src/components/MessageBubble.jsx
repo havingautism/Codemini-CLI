@@ -26,6 +26,7 @@ import {
   Loader2,
   Moon,
   RotateCcw,
+  Wrench,
   XCircle,
 } from "lucide-react";
 
@@ -95,11 +96,11 @@ const ROLE_STYLES = {
   },
 };
 
-const SKILL_BADGE_STYLES = {
-  running: "bg-(--accent-blue-bg) text-(--accent-blue)",
-  done: "bg-(--accent-green-bg) text-(--accent-green)",
-  error: "bg-(--accent-red-bg) text-(--accent-red)",
-  auto: "bg-(--accent-purple-bg) text-(--accent-purple)",
+const SKILL_DOT_STYLES = {
+  running: "animate-pulse bg-(--accent-blue)",
+  done: "bg-(--accent-green)",
+  error: "bg-(--accent-red)",
+  always: "bg-(--accent-purple)",
 };
 
 const TOOL_COLLAPSE_THRESHOLD = 1;
@@ -420,6 +421,80 @@ function ToolGroup({ cards }) {
           <span>{t("tooling")}</span>
         </div>
       )}
+    </div>
+  );
+}
+
+function formatSkillNames(name = "") {
+  return String(name || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => (item.startsWith("/") ? item : `/${item}`))
+    .join(", ");
+}
+
+function skillActivityLabel(badge) {
+  const names = formatSkillNames(badge?.name);
+  if (badge?.status === "running") {
+    return t("skillUsing").replace("{{name}}", names);
+  }
+  if (badge?.status === "error") {
+    return t("skillFailed").replace("{{name}}", names);
+  }
+  if (badge?.status === "always") {
+    return t("skillAlwaysLoaded").replace("{{names}}", names);
+  }
+  return t("skillUsed").replace("{{name}}", names);
+}
+
+function SkillActivityList({ badges = [] }) {
+  if (!badges.length) return null;
+  return (
+    <div className="my-2 space-y-1">
+      {badges.map((badge, index) => (
+        <div
+          key={`${badge.name || "skill"}-${badge.status || "done"}-${index}`}
+          className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-(--text-secondary) hover:bg-(--bg-hover)"
+        >
+          <span className={COLLAPSE_ICON_CLASS}>
+            <Wrench size={14} className="text-(--text-muted)" />
+          </span>
+          <span className="font-medium">{t("skillActivity")}</span>
+          <span className="min-w-0 flex-1 truncate font-mono text-xs text-(--text-muted)">
+            {skillActivityLabel(badge)}
+          </span>
+          <span
+            className={cn(
+              "size-1.5 shrink-0 rounded-full",
+              SKILL_DOT_STYLES[badge.status] || SKILL_DOT_STYLES.done,
+            )}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SkillActivityRow({ badge }) {
+  if (!badge?.name) return null;
+  return (
+    <div className="my-2">
+      <div className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-(--text-secondary) hover:bg-(--bg-hover)">
+        <span className={COLLAPSE_ICON_CLASS}>
+          <Wrench size={14} className="text-(--text-muted)" />
+        </span>
+        <span className="font-medium">{t("skillActivity")}</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-(--text-muted)">
+          {skillActivityLabel(badge)}
+        </span>
+        <span
+          className={cn(
+            "size-1.5 shrink-0 rounded-full",
+            SKILL_DOT_STYLES[badge.status] || SKILL_DOT_STYLES.done,
+          )}
+        />
+      </div>
     </div>
   );
 }
@@ -947,6 +1022,9 @@ function buildRenderGroups(segments) {
         flushTools();
         groups.push({ type: "thinking", ...seg });
       }
+    } else if (seg.type === "skill") {
+      flushTools();
+      groups.push({ type: "skill", ...seg });
     }
   }
   flushTools();
@@ -1415,6 +1493,8 @@ export function MessageBubble({ message, skills = [] }) {
             )}
           </div>
 
+          <SkillActivityList badges={skillBadges || []} />
+
           {renderGroups.map((group, i) => {
             if (group.type === "text") {
               return (
@@ -1431,6 +1511,9 @@ export function MessageBubble({ message, skills = [] }) {
             if (group.type === "thinking") {
               return <ThoughtBlock key={`th-${i}`} segment={group} />;
             }
+            if (group.type === "skill") {
+              return <SkillActivityRow key={`sk-${i}-${group.name || "skill"}`} badge={group} />;
+            }
             if (group.type === "process") {
               return <ProcessGroup key={`pg-${i}`} group={group} />;
             }
@@ -1446,24 +1529,6 @@ export function MessageBubble({ message, skills = [] }) {
                 <span>等待工具调用或模型输出…</span>
               </div>
             )}
-
-          {skillBadges?.length > 0 && (
-            <div className="flex flex-wrap gap-1 mt-2">
-              {skillBadges.map((b, i) => (
-                <span
-                  key={i}
-                  className={cn(
-                    "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium",
-                    SKILL_BADGE_STYLES[b.status],
-                  )}
-                >
-                  {b.status === "auto"
-                    ? `${t("skillAuto")}: ${b.name}`
-                    : `${b.name} - ${t("skill" + b.status.charAt(0).toUpperCase() + b.status.slice(1))}`}
-                </span>
-              ))}
-            </div>
-          )}
 
           {messageComplete && mergedFileChanges.length > 0 && (
             <FileChangesSummary changes={mergedFileChanges} />

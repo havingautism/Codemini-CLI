@@ -101,21 +101,71 @@ function normalizeStringArray(value) {
   return single ? [single] : [];
 }
 
+function normalizeSkillMode(value) {
+  const mode = String(value || '').trim();
+  if (mode === 'auto_attach') return 'agent_requested';
+  return mode;
+}
+
 function catalogMetadata(catalog, name) {
   const entry = catalog?.[name];
   if (!entry || typeof entry !== 'object') return {};
   return {
     ...(entry.description ? { description: String(entry.description) } : {}),
-    ...(entry.mode ? { mode: String(entry.mode) } : {}),
+    ...(entry.mode ? { mode: normalizeSkillMode(entry.mode) } : {}),
     ...(entry.enabled !== undefined ? { enabled: entry.enabled !== false } : {}),
     ...(entry.priority !== undefined ? { priority: Number(entry.priority) } : {}),
+    ...(entry.source ? { source: String(entry.source) } : {}),
+    ...(entry.packageSource ? { packageSource: String(entry.packageSource) } : {}),
+    ...(entry.packageName ? { packageName: String(entry.packageName) } : {}),
+    ...(entry.installedAt ? { installedAt: String(entry.installedAt) } : {}),
     triggers: normalizeStringArray(entry.triggers)
   };
 }
 
+function listExistingSkillDirs(skillRoot) {
+  const dirs = [];
+  for (const name of ['references', 'scripts', 'assets']) {
+    const full = path.join(skillRoot, name);
+    try {
+      if (fs.statSync(full).isDirectory()) dirs.push({ name, path: full });
+    } catch {
+      continue;
+    }
+  }
+  return dirs;
+}
+
+function renderSkillPackageContext(command) {
+  if (command.metadata?.type !== 'skill') return '';
+  const root = command.metadata?.rootPath || path.dirname(command.path);
+  const dirs = listExistingSkillDirs(root);
+  const lines = [
+    '<codemini-skill-package>',
+    `Skill root: ${root}`,
+    `Entry file: ${command.path}`
+  ];
+  if (dirs.length > 0) {
+    lines.push('Auxiliary directories:');
+    for (const dir of dirs) {
+      lines.push(`- ${dir.name}: ${dir.path}`);
+    }
+    lines.push('Load reference files or run scripts from these paths only when the skill instructions call for them.');
+  } else {
+    lines.push('Auxiliary directories: none detected.');
+  }
+  lines.push('</codemini-skill-package>');
+  return lines.join('\n');
+}
+
 function commandWithContent(command, parsedContent) {
+  const withPackageContext = (content) => {
+    if (command.metadata?.type !== 'skill') return content;
+    return `${content}\n\n${renderSkillPackageContext(command)}`;
+  };
+
   if (parsedContent !== undefined) {
-    return { ...command, content: parsedContent };
+    return { ...command, content: withPackageContext(parsedContent) };
   }
 
   let cached;
@@ -126,7 +176,7 @@ function commandWithContent(command, parsedContent) {
     get() {
       if (!loaded) {
         const raw = fs.readFileSync(command.path, 'utf8');
-        cached = parseFrontmatter(raw).content;
+        cached = withPackageContext(parseFrontmatter(raw).content);
         loaded = true;
       }
       return cached;
@@ -209,6 +259,8 @@ function loadLegacySkillsFromDir(baseDir, source, out) {
       metadata: {
         ...frontmatter,
         ...catalogMeta,
+        rootPath: full,
+        entryFile: 'SKILL.md',
         description: catalogMeta.description || frontmatter.description || 'Legacy skill',
         type: 'skill'
       }
@@ -236,8 +288,37 @@ function loadBundledSkillsFromDir(baseDir, out) {
         ...frontmatter,
         ...catalogMeta,
         type: 'skill',
+        rootPath: full,
+        entryFile: 'SKILL.md',
         version: frontmatter.version || '0.1.0',
         description: catalogMeta.description || frontmatter.description || 'Bundled skill'
+      }
+    }));
+  }
+}
+
+function loadIndexedSkillsFromCatalog(baseDir, source, out) {
+  if (!fs.existsSync(baseDir)) return;
+  const catalog = readSkillCatalog(baseDir);
+  for (const entry of Object.keys(catalog)) {
+    if (!isSafeEntry(entry)) continue;
+    const full = path.join(baseDir, entry);
+    const skillFile = path.join(full, 'SKILL.md');
+    if (!fs.existsSync(skillFile)) continue;
+    const catalogMeta = catalogMetadata(catalog, entry);
+    const frontmatter = readFrontmatterMetadata(skillFile);
+    setCommand(out, entry, commandWithContent({
+      name: entry,
+      source,
+      path: skillFile,
+      metadata: {
+        ...frontmatter,
+        ...catalogMeta,
+        type: 'skill',
+        rootPath: full,
+        entryFile: 'SKILL.md',
+        version: frontmatter.version || '0.0.0',
+        description: catalogMeta.description || frontmatter.description || 'Indexed skill'
       }
     }));
   }
@@ -269,6 +350,7 @@ function loadInstalledSkillsFromRegistry(baseDir, registry, out) {
     const full = path.join(baseDir, name, entry);
     if (!fs.existsSync(full)) continue;
     const frontmatter = readFrontmatterMetadata(full);
+    const root = path.join(baseDir, name);
     setCommand(out, name, commandWithContent({
       name,
       source: 'registry-skill',
@@ -277,6 +359,12 @@ function loadInstalledSkillsFromRegistry(baseDir, registry, out) {
         ...frontmatter,
         ...catalogMeta,
         type: 'skill',
+        rootPath: root,
+        entryFile: entry,
+        source: catalogMeta.source || skill.source || '',
+        packageSource: catalogMeta.packageSource || skill.packageSource || skill.source || '',
+        packageName: catalogMeta.packageName || skill.packageName || '',
+        installedAt: catalogMeta.installedAt || skill.installedAt || '',
         version: skill.version || frontmatter.version || '0.0.0',
         description: catalogMeta.description || skill.description || frontmatter.description || 'Installed skill'
       }
@@ -313,6 +401,19 @@ export async function loadCommandsAndSkills(cwd = process.cwd()) {
   loadLegacySkillsFromDir(getSkillsDir(), 'global', commands);
   loadLegacySkillsFromDir(getProjectSkillsDir(cwd), 'project', commands);
   applySkillCatalogPatches(getProjectSkillsDir(cwd), commands);
+  const registry = await readSkillRegistry();
+  loadInstalledSkillsFromRegistry(getSkillsDir(), registry, commands);
+
+  return commands;
+}
+
+export async function loadIndexedSkills(cwd = process.cwd()) {
+  const commands = new Map();
+
+  loadIndexedSkillsFromCatalog(BUNDLED_SKILLS_DIR, 'bundled-skill', commands);
+  loadIndexedSkillsFromCatalog(getProjectSkillsDir(cwd), 'project-skill', commands);
+  loadIndexedSkillsFromCatalog(getSkillsDir(), 'global-skill', commands);
+
   const registry = await readSkillRegistry();
   loadInstalledSkillsFromRegistry(getSkillsDir(), registry, commands);
 

@@ -681,17 +681,17 @@ function describeConfigKey(key, mode = 'set', language = 'zh') {
 const SUB_AGENT_ROLES = ['planner', 'explorer', 'architect', 'advisor', 'coder', 'refactorer', 'reviewer', 'tester', 'debugger', 'writer', 'summarizer', 'codewiki'];
 const CODEWIKI_ROLE_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'add_code_comment', 'update_code_comment'];
 export const ROLE_TOOL_POLICY = {
-  planner: ['read', 'read_plan', 'update_plan', 'update_todos'],
-  explorer: ['read', 'grep', 'list', 'glob', 'ast_query', 'read_ast_node', 'query_project_index', 'tool_search', 'web_fetch', 'web_search', 'read_plan'],
-  architect: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
-  advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'read_plan'],
-  coder: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
-  refactorer: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'read_plan'],
-  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'read_plan'],
-  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'read_plan'],
-  debugger: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
-  writer: ['read', 'grep', 'list', 'glob', 'tool_search', 'web_search', 'web_fetch', 'read_plan'],
-  summarizer: ['read', 'read_plan'],
+  planner: ['read', 'read_plan', 'tool_search', 'skill', 'update_plan', 'update_todos'],
+  explorer: ['read', 'grep', 'list', 'glob', 'ast_query', 'read_ast_node', 'query_project_index', 'tool_search', 'skill', 'web_fetch', 'web_search', 'read_plan'],
+  architect: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
+  advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'skill', 'read_plan'],
+  coder: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
+  refactorer: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'skill', 'read_plan'],
+  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'read_plan'],
+  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'skill', 'read_plan'],
+  debugger: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
+  writer: ['read', 'grep', 'list', 'glob', 'tool_search', 'skill', 'web_search', 'web_fetch', 'read_plan'],
+  summarizer: ['read', 'read_plan', 'tool_search', 'skill'],
   codewiki: CODEWIKI_ROLE_TOOLS
 };
 const SUB_AGENT_CONTEXT_MAX_MESSAGES = 4;
@@ -1773,7 +1773,7 @@ function isSkillEnabled(config, name, command = null) {
 
 function selectAutoSkillNames(text = '') {
   const input = String(text || '').toLowerCase();
-  const selected = ['superpowers-lite'];
+  const selected = ['using-superpowers'];
 
   const explicitGrillMe =
     /\bgr+ill\s+me\b|\bpressure[- ]?test\b|\bstress[- ]?test\b|\bchallenge\s+(?:this|my|me)\b|\btear\s+(?:this|my)\s+.*apart\b/i.test(
@@ -1795,10 +1795,10 @@ function selectAutoSkillNames(text = '') {
     );
 
   if (explicitBrainstorm || (ambiguitySignals && featureRequest) || greenfieldBuildRequest) {
-    selected.push('brainstorm');
+    selected.push('brainstorming');
   }
   if (explicitGrillMe) {
-    selected.push('grill-me');
+    selected.push('requesting-code-review');
   }
   return selected;
 }
@@ -1857,7 +1857,7 @@ function classifyTaskComplexity(text = '') {
 
 function classifyAutoRoute(text = '') {
   const selectedSkills = selectAutoSkillNames(text);
-  const hasBrainstorm = selectedSkills.includes('brainstorm');
+  const hasBrainstorm = selectedSkills.includes('brainstorming');
   if (hasBrainstorm) {
     return {
       mode: 'brainstorm',
@@ -1872,7 +1872,7 @@ function classifyAutoRoute(text = '') {
     return {
       mode: 'auto_plan',
       autoPlan: true,
-      selectedSkills: ['superpowers-lite'],
+      selectedSkills: ['using-superpowers', 'writing-plans'],
       complexity
     };
   }
@@ -1897,17 +1897,24 @@ function buildMediumTaskPromptBlock() {
   ].join('\n');
 }
 
-function buildAutoSkillPromptBlock(commands, config, text) {
-  const selected = classifyAutoRoute(text).selectedSkills.filter((name) => isSkillEnabled(config, name, commands.get(name)));
-  if (selected.length === 0) return '';
+function getAlwaysSkillCommands(commands, config) {
+  return Array.from(commands.values())
+    .filter((command) =>
+      command?.metadata?.type === 'skill' &&
+      command.metadata?.mode === 'always' &&
+      isSkillEnabled(config, command.name, command)
+    )
+    .sort((a, b) => {
+      const left = Number(a.metadata?.priority || 0);
+      const right = Number(b.metadata?.priority || 0);
+      return right - left || a.name.localeCompare(b.name);
+    });
+}
 
-  const blocks = [];
-  for (const name of selected) {
-    const skill = commands.get(name);
-    if (!skill || skill.metadata?.type !== 'skill') continue;
-    blocks.push(`[Auto skill: ${name}]\n${skill.content}`);
-  }
-  return blocks.join('\n\n');
+function buildAlwaysSkillPromptBlock(commands, config) {
+  const selected = getAlwaysSkillCommands(commands, config);
+  if (selected.length === 0) return '';
+  return selected.map((skill) => `[Always skill: ${skill.name}]\n${skill.content}`).join('\n\n');
 }
 
 function extractJsonBlock(text) {
@@ -7372,7 +7379,7 @@ export async function createChatRuntime({
       }
 
       const customPrompt =
-        custom.name === 'brainstorm'
+        custom.name === 'brainstorming'
           ? [
               renderCommandPrompt(custom, []),
               'Explicit brainstorm mode:',
@@ -7658,20 +7665,20 @@ export async function createChatRuntime({
       return { type: 'system', text };
     }
 
-    const selectedAutoSkills = autoRoute.selectedSkills.filter((name) => isSkillEnabled(config, name, commands.get(name)));
-    if (selectedAutoSkills.length > 0 && onAgentEvent) {
+    const alwaysSkills = getAlwaysSkillCommands(commands, config);
+    if (alwaysSkills.length > 0 && onAgentEvent) {
       onAgentEvent({
-        type: 'skill:auto',
-        names: selectedAutoSkills
+        type: 'skill:always',
+        names: alwaysSkills.map((skill) => skill.name)
       });
     }
-    const autoSkillPrompt = buildAutoSkillPromptBlock(commands, config, expandedText);
-    const skillPrompt = autoSkillPrompt
+    const alwaysSkillPrompt = buildAlwaysSkillPromptBlock(commands, config);
+    const skillPrompt = alwaysSkillPrompt
       ? await composeSystemPrompt({
           shellRulesPrompt: activeReplySystemPrompt,
           config,
           workspaceRoot: process.cwd(),
-          skillsPrompt: autoSkillPrompt,
+          skillsPrompt: alwaysSkillPrompt,
           includeSoul: false,
           includeMemory: false
           })

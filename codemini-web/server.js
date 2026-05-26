@@ -24,7 +24,7 @@ const GENERAL_PROJECT_DIR = (() => {
 })();
 
 const SKILL_CATALOG_FILE = 'codemini.skills.json';
-const SKILL_MODES = new Set(['always', 'auto_attach', 'agent_requested', 'manual']);
+const SKILL_MODES = new Set(['always', 'agent_requested', 'manual']);
 const SKILL_SCOPES = new Set(['project', 'global']);
 const MEMORY_SCOPES = new Set(['user', 'global', 'project']);
 
@@ -48,7 +48,10 @@ function skillBaseDirForScope(scope, projectDir) {
 function normalizeSkillMetadataPatch(input = {}) {
   const out = {};
   if (typeof input.description === 'string') out.description = input.description.trim();
-  if (typeof input.mode === 'string' && SKILL_MODES.has(input.mode)) out.mode = input.mode;
+  if (typeof input.mode === 'string') {
+    const mode = input.mode === 'auto_attach' ? 'agent_requested' : input.mode;
+    if (SKILL_MODES.has(mode)) out.mode = mode;
+  }
   if (input.enabled !== undefined) out.enabled = input.enabled !== false;
   if (input.priority !== undefined) {
     const priority = Number(input.priority);

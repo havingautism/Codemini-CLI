@@ -269,7 +269,8 @@ const TUI_COPY = {
       skillRunning: '技能执行中',
       skillCompleted: '技能已完成',
       skillFailed: '技能执行失败',
-      autoSkillInjected: (names) => `自动启用技能: ${names.map((name) => `/${name}`).join(', ')}`,
+      alwaysSkillLoaded: (names) => `始终加载技能: ${names.map((name) => `/${name}`).join(', ')}`,
+      autoSkillInjected: (names) => `始终加载技能: ${names.map((name) => `/${name}`).join(', ')}`,
       contextLabel: '上下文',
       compactingContext: '正在压缩上下文',
       autoCompactTriggered: (mode, threshold) => `自动压缩已触发（${mode}，阈值 ${threshold}%）`,
@@ -508,7 +509,8 @@ const TUI_COPY = {
       skillRunning: 'skill running',
       skillCompleted: 'skill completed',
       skillFailed: 'skill failed',
-      autoSkillInjected: (names) => `auto-enabled skills: ${names.map((name) => `/${name}`).join(', ')}`,
+      alwaysSkillLoaded: (names) => `always-loaded skills: ${names.map((name) => `/${name}`).join(', ')}`,
+      autoSkillInjected: (names) => `always-loaded skills: ${names.map((name) => `/${name}`).join(', ')}`,
       contextLabel: 'Context',
       compactingContext: 'compacting context',
       autoCompactTriggered: (mode, threshold) => `auto-compact triggered (${mode}, threshold ${threshold}%)`,
@@ -4456,7 +4458,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
             summary: event.summary
           });
         }
-        if (event?.type === 'skill:auto') {
+        if (event?.type === 'skill:auto' || event?.type === 'skill:always') {
           const detail = describeAutoSkillActivity(event.names, copy);
           if (Array.isArray(event.names) && event.names.length > 0) {
             activeAssistantAutoSkillNamesRef.current = event.names.filter(Boolean);

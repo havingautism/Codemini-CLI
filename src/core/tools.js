@@ -24,6 +24,7 @@ import { runDreamConsolidation } from './dream-consolidate.js';
 import { normalizePlanState } from './plan-state.js';
 import { normalizeTodos } from './todo-state.js';
 import { createFffAdapter } from './fff-adapter.js';
+import { loadIndexedSkills, renderCommandPrompt } from './command-loader.js';
 import {
   getToolOutputSanitizeOptions,
   sanitizePreviewLines,
@@ -44,6 +45,11 @@ const BACKGROUND_TASK_RECENT_OUTPUT_LIMIT = 80;
 const BACKGROUND_TASK_POLL_MS = 150;
 const MAX_AST_ENCLOSING_BYTES = 300_000;
 const MAX_AST_ENCLOSING_LINES = 5_000;
+const SKILL_ALIASES = new Map([
+  ['superpowers-lite', 'using-superpowers'],
+  ['superpowers', 'using-superpowers'],
+  ['brainstorm', 'brainstorming']
+]);
 const RUN_COMMAND_SAFE_MODE_APPROVED = Symbol('runCommandSafeModeApproved');
 const backgroundTaskRegistry = new Map();
 let backgroundTaskCounter = 0;
@@ -227,6 +233,40 @@ function trimPreview(value, maxLen = 300) {
   const text = normalizeWhitespace(value);
   if (text.length <= maxLen) return text;
   return `${text.slice(0, Math.max(0, maxLen - 3))}...`;
+}
+
+function normalizeSkillToolName(value) {
+  const raw = String(value || '').trim().replace(/^\/+/, '');
+  if (!raw) return '';
+  const lower = raw.toLowerCase();
+  return SKILL_ALIASES.get(lower) || raw;
+}
+
+function skillScopeFromSource(source = '') {
+  if (source === 'bundled-skill') return 'builtin';
+  if (source === 'project-skill') return 'project';
+  if (source === 'global-skill' || source === 'registry-skill') return 'global';
+  return source || 'unknown';
+}
+
+function isIndexedSkillEnabled(command, config = {}) {
+  if (command?.metadata?.enabled === false) return false;
+  const scope = skillScopeFromSource(command?.source);
+  if (scope === 'builtin') return true;
+  return config?.skills?.enabled?.[command?.name] !== false;
+}
+
+function summarizeIndexedSkill(command) {
+  return {
+    name: command.name,
+    description: command.metadata?.description || '',
+    mode: command.metadata?.mode || '',
+    scope: skillScopeFromSource(command.source),
+    path: command.path,
+    packageName: command.metadata?.packageName || '',
+    packageSource: command.metadata?.packageSource || command.metadata?.source || '',
+    enabled: command.metadata?.enabled !== false
+  };
 }
 
 function normalizeWebUrl(value) {
@@ -2625,6 +2665,26 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
   ];
 
   const deferredDefinitions = {
+    skill: {
+      type: 'function',
+      function: {
+        name: 'skill',
+        description:
+          'Load an enabled Codemini skill by name from the indexed skill registry/catalog. Use this when task instructions or an always-loaded skill tell you to activate a skill such as using-superpowers, brainstorming, writing-plans, or systematic-debugging.',
+        parameters: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Skill name, with or without a leading slash' },
+            args: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional positional arguments to substitute into the skill prompt'
+            }
+          },
+          required: ['name']
+        }
+      }
+    },
     glob: {
       type: 'function',
       function: {
@@ -3187,6 +3247,62 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         writeAudit: true
       });
     },
+    skill: async (args = {}) => {
+      const requested = normalizeSkillToolName(args?.name || args?.skill || args?.query);
+      const indexedSkills = await loadIndexedSkills(workspaceRoot);
+      const allSkills = Array.from(indexedSkills.values())
+        .map((command) => ({
+          command,
+          summary: {
+            ...summarizeIndexedSkill(command),
+            enabled: isIndexedSkillEnabled(command, config)
+          }
+        }))
+        .sort((a, b) => `${a.summary.scope}:${a.summary.name}`.localeCompare(`${b.summary.scope}:${b.summary.name}`));
+
+      if (!requested || requested === 'list' || requested === 'all') {
+        return {
+          skills: allSkills.map((item) => item.summary),
+          message: 'Indexed skills loaded from catalogs and registry.'
+        };
+      }
+
+      const command = indexedSkills.get(requested) ||
+        allSkills.find((item) => item.command.name.toLowerCase() === requested.toLowerCase())?.command;
+      if (!command) {
+        return {
+          error: `Unknown indexed skill: "${requested}".`,
+          available: allSkills.filter((item) => item.summary.enabled).map((item) => item.summary.name)
+        };
+      }
+      if (!isIndexedSkillEnabled(command, config)) {
+        return { error: `Skill "${command.name}" is disabled in the skill index.` };
+      }
+
+      const skillArgs = Array.isArray(args?.args)
+        ? args.args.map((item) => String(item))
+        : args?.arguments
+          ? [String(args.arguments)]
+          : [];
+      emitSystemTool({ type: 'skill:start', name: command.name });
+      try {
+        const content = renderCommandPrompt(command, skillArgs);
+        emitSystemTool({ type: 'skill:end', name: command.name });
+        return {
+          name: command.name,
+          path: command.path,
+          scope: skillScopeFromSource(command.source),
+          packageName: command.metadata?.packageName || '',
+          packageSource: command.metadata?.packageSource || command.metadata?.source || '',
+          content
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        emitSystemTool({ type: 'skill:error', name: command.name, summary: message });
+        emitSystemTool({ type: 'skill:end', name: command.name });
+        return { error: message };
+      }
+    },
     list_background_tasks: () => listBackgroundTasks(workspaceRoot),
     get_background_task: (args) => getBackgroundTask(workspaceRoot, args),
     stop_background_task: (args) => stopBackgroundTask(workspaceRoot, args),
@@ -3487,6 +3603,27 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       const content = result.content || result.source || '';
       const header = `${kind} ${name}`;
       return `${header}\n${content}`;
+    },
+
+    skill(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      if (result.error) {
+        const available = Array.isArray(result.available) && result.available.length > 0
+          ? `\nAvailable indexed skills: ${result.available.join(', ')}`
+          : '';
+        return `${result.error}${available}`;
+      }
+      if (typeof result.content === 'string') return result.content;
+      if (Array.isArray(result.skills)) {
+        if (result.skills.length === 0) return 'No indexed skills found.';
+        const lines = result.skills.map((item) => {
+          const disabled = item.enabled === false ? ' disabled' : '';
+          const desc = item.description ? ` - ${item.description}` : '';
+          return `/${item.name} [${item.scope}${disabled}]${desc}`;
+        });
+        return ['Indexed skills:', ...lines].join('\n');
+      }
+      return JSON.stringify(result);
     },
 
     web_fetch(result) {

@@ -36,7 +36,7 @@ import * as api from "@/hooks/use-api";
 import { t } from "../../i18n/index.js";
 
 const FILTERS = ["all", "enabled", "builtin", "custom"];
-const SKILL_MODES = ["always", "auto_attach", "agent_requested", "manual"];
+const SKILL_MODES = ["always", "agent_requested", "manual"];
 
 function SwitchControl({ checked, onClick, title }) {
   return (
@@ -71,6 +71,41 @@ function scopeLabel(scope) {
 
 function skillKey(skill) {
   return `${skill?.scope || "unknown"}:${skill?.projectDir || ""}:${skill?.name || ""}`;
+}
+
+function compactSourceLabel(value) {
+  const text = String(value || "").trim();
+  const github = text.match(/github\.com[/:]([^/\s]+)\/([^/\s]+?)(?:\.git)?(?:\/|$)/i);
+  if (github) return `${github[1]}/${github[2]}`;
+  const ownerRepo = text.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:\s|$)/);
+  if (ownerRepo) return ownerRepo[1];
+  return text.replace(/\\/g, "/").split("/").filter(Boolean).pop() || text;
+}
+
+function isPackagedSkill(skill) {
+  if (isBuiltin(skill)) return false;
+  const source = String(skill?.source || "").trim();
+  const packageSource = String(skill?.packageSource || "").trim();
+  const packageName = String(skill?.packageName || "").trim();
+  if (!packageSource && !packageName) return false;
+  return !["web-create", "web-move", "reindex"].includes(source);
+}
+
+function skillPackageKey(skill) {
+  if (!isPackagedSkill(skill)) return "";
+  return [
+    skill?.scope || "unknown",
+    skill?.projectDir || "",
+    skill?.packageSource || skill?.source || skill?.packageName || "",
+  ].join(":");
+}
+
+function skillPackageName(skill) {
+  return (
+    String(skill?.packageName || "").trim() ||
+    compactSourceLabel(skill?.packageSource || skill?.source) ||
+    t("skillPackage")
+  );
 }
 
 function projectDisplayName(value) {
@@ -133,6 +168,33 @@ function isEnabled(skill) {
   return skill?.enabled !== false;
 }
 
+function normalizeSkillMode(value) {
+  return value === "auto_attach" ? "agent_requested" : value || "agent_requested";
+}
+
+function skillSortValue(skill) {
+  const modeRank = normalizeSkillMode(skill?.mode) === "always" ? 0 : 1;
+  const enabledRank = isEnabled(skill) ? 0 : 1;
+  const priority = Number(skill?.priority);
+  return {
+    modeRank,
+    enabledRank,
+    priority: Number.isFinite(priority) ? priority : 0,
+    name: String(skill?.name || "").toLowerCase(),
+  };
+}
+
+function compareSkills(a, b) {
+  const left = skillSortValue(a);
+  const right = skillSortValue(b);
+  return (
+    left.modeRank - right.modeRank ||
+    left.enabledRank - right.enabledRank ||
+    right.priority - left.priority ||
+    left.name.localeCompare(right.name)
+  );
+}
+
 function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
   const [name, setName] = useState(skill?.name || "");
   const [description, setDescription] = useState(skill?.description || "");
@@ -141,7 +203,7 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
       ? "global"
       : projectTargetValue(skill?.projectDir) || defaultSkillTarget(projectTargets),
   );
-  const [mode, setMode] = useState(skill?.mode || "agent_requested");
+  const [mode, setMode] = useState(normalizeSkillMode(skill?.mode));
   const [triggers, setTriggers] = useState((skill?.triggers || []).join(", "));
   const [priority, setPriority] = useState(skill?.priority ?? 50);
   const [enabled, setEnabled] = useState(isEnabled(skill));
@@ -158,7 +220,7 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
         ? "global"
         : projectTargetValue(skill?.projectDir) || defaultSkillTarget(projectTargets),
     );
-    setMode(skill?.mode || "agent_requested");
+    setMode(normalizeSkillMode(skill?.mode));
     setTriggers((skill?.triggers || []).join(", "));
     setPriority(skill?.priority ?? 50);
     setEnabled(isEnabled(skill));
@@ -488,7 +550,7 @@ function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
                 variant="outline"
                 className="h-4 rounded-md px-1.5 py-0 text-[10px]"
               >
-                {t(`skillMode_${skill.mode}`)}
+                {t(`skillMode_${normalizeSkillMode(skill.mode)}`)}
               </Badge>
             )}
           </div>
@@ -553,12 +615,49 @@ function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
   );
 }
 
+function SkillGroupHeader({ icon = "folder", name, count, collapsed, title, onClick }) {
+  const Icon = icon === "package" ? FileCode2 : Folder;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex h-8 w-full items-center gap-2 rounded-md border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-primary) hover:bg-(--bg-hover)"
+      title={title}
+    >
+      <Icon size={14} className="shrink-0 text-(--text-muted)" />
+      <span className="min-w-0 flex-1 truncate">{name}</span>
+      <span className="shrink-0 text-[12px] font-medium text-(--text-accent)">
+        {count}
+      </span>
+      {collapsed ? (
+        <ChevronRight size={13} className="shrink-0 text-(--text-muted)" />
+      ) : (
+        <ChevronDown size={13} className="shrink-0 text-(--text-muted)" />
+      )}
+    </button>
+  );
+}
+
+function SkillCards({ items, onView, onToggle, onEdit, onDelete }) {
+  return items.map((skill) => (
+    <SkillCard
+      key={skillKey(skill)}
+      skill={skill}
+      onView={onView}
+      onToggle={onToggle}
+      onEdit={onEdit}
+      onDelete={onDelete}
+    />
+  ));
+}
+
 export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
   const [viewSkill, setViewSkill] = useState(null);
   const [collapsedProjects, setCollapsedProjects] = useState(() => new Set());
+  const [collapsedPackages, setCollapsedPackages] = useState(() => new Set());
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [installSource, setInstallSource] = useState("");
@@ -671,6 +770,10 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
       if (!needle) return true;
       return (
         skill.name.toLowerCase().includes(needle) ||
+        String(skill.packageName || "").toLowerCase().includes(needle) ||
+        String(compactSourceLabel(skill.packageSource || skill.source))
+          .toLowerCase()
+          .includes(needle) ||
         String(projectDisplayName(skill.projectName || ""))
           .toLowerCase()
           .includes(needle)
@@ -679,27 +782,80 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
   }, [skills, query, filter]);
   const groupedSkills = useMemo(() => {
     const regular = [];
+    const packageGroups = [];
     const projectGroups = [];
-    const groupIndex = new Map();
+    const packageIndex = new Map();
+    const projectIndex = new Map();
+    const addToPackage = (groups, index, skill) => {
+      const key = skillPackageKey(skill);
+      if (!key) return false;
+      if (!index.has(key)) {
+        const group = {
+          key,
+          name: skillPackageName(skill),
+          source: skill.packageSource || skill.source || "",
+          items: [],
+        };
+        index.set(key, group);
+        groups.push(group);
+      }
+      index.get(key).items.push(skill);
+      return true;
+    };
+
     for (const skill of filteredSkills) {
       if (skill.scope !== "project") {
-        regular.push(skill);
+        if (!addToPackage(packageGroups, packageIndex, skill)) {
+          regular.push(skill);
+        }
         continue;
       }
       const key = skill.projectDir || "__current_project__";
-      if (!groupIndex.has(key)) {
+      if (!projectIndex.has(key)) {
         const group = {
           key,
           name: projectDisplayName(skill.projectName || t("projectScope")),
           items: [],
+          packageGroups: [],
+          packageIndex: new Map(),
+          total: 0,
         };
-        groupIndex.set(key, group);
+        projectIndex.set(key, group);
         projectGroups.push(group);
       }
-      groupIndex.get(key).items.push(skill);
+      const group = projectIndex.get(key);
+      group.total += 1;
+      if (!addToPackage(group.packageGroups, group.packageIndex, skill)) {
+        group.items.push(skill);
+      }
     }
-    return { regular, projectGroups };
+    for (const group of projectGroups) {
+      delete group.packageIndex;
+    }
+    regular.sort(compareSkills);
+    packageGroups.sort((a, b) => a.name.localeCompare(b.name));
+    for (const group of packageGroups) {
+      group.items.sort(compareSkills);
+    }
+    projectGroups.sort((a, b) => a.name.localeCompare(b.name));
+    for (const group of projectGroups) {
+      group.items.sort(compareSkills);
+      group.packageGroups.sort((a, b) => a.name.localeCompare(b.name));
+      for (const packageGroup of group.packageGroups) {
+        packageGroup.items.sort(compareSkills);
+      }
+    }
+    return { regular, packageGroups, projectGroups };
   }, [filteredSkills]);
+
+  const togglePackageGroup = useCallback((key) => {
+    setCollapsedPackages((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
 
   const toggleProjectGroup = useCallback((key) => {
     setCollapsedProjects((prev) => {
@@ -709,6 +865,33 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
       return next;
     });
   }, []);
+
+  const renderPackageGroup = (group, indentClass = "pl-6") => {
+    const collapsed = collapsedPackages.has(group.key);
+    return (
+      <div key={group.key} className="grid gap-1">
+        <SkillGroupHeader
+          icon="package"
+          name={group.name}
+          count={group.items.length}
+          collapsed={collapsed}
+          title={group.source || group.key}
+          onClick={() => togglePackageGroup(group.key)}
+        />
+        {!collapsed && (
+          <div className={cn("grid gap-2", indentClass)}>
+            <SkillCards
+              items={group.items}
+              onView={setViewSkill}
+              onToggle={handleToggle}
+              onEdit={setEditing}
+              onDelete={handleDelete}
+            />
+          </div>
+        )}
+      </div>
+    );
+  };
 
   if (loading) {
     return (
@@ -835,55 +1018,35 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
       )}
 
       <div className="grid max-h-[420px] gap-2 overflow-y-auto pr-1">
-        {groupedSkills.regular.map((skill) => (
-          <SkillCard
-            key={skillKey(skill)}
-            skill={skill}
-            onView={setViewSkill}
-            onToggle={handleToggle}
-            onEdit={setEditing}
-            onDelete={handleDelete}
-          />
-        ))}
+        <SkillCards
+          items={groupedSkills.regular}
+          onView={setViewSkill}
+          onToggle={handleToggle}
+          onEdit={setEditing}
+          onDelete={handleDelete}
+        />
+        {groupedSkills.packageGroups.map((group) => renderPackageGroup(group))}
         {groupedSkills.projectGroups.map((group) => {
           const collapsed = collapsedProjects.has(group.key);
           return (
             <div key={group.key} className="grid gap-1">
-              <button
-                type="button"
-                onClick={() => toggleProjectGroup(group.key)}
-                className="flex h-8 w-full items-center gap-2 rounded-md border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-primary) hover:bg-(--bg-hover)"
+              <SkillGroupHeader
+                name={group.name}
+                count={group.total}
+                collapsed={collapsed}
                 title={group.key}
-              >
-                <Folder size={14} className="shrink-0 text-(--text-muted)" />
-                <span className="min-w-0 flex-1 truncate">{group.name}</span>
-                <span className="shrink-0 text-[12px] font-medium text-(--text-accent)">
-                  {group.items.length}
-                </span>
-                {collapsed ? (
-                  <ChevronRight
-                    size={13}
-                    className="shrink-0 text-(--text-muted)"
-                  />
-                ) : (
-                  <ChevronDown
-                    size={13}
-                    className="shrink-0 text-(--text-muted)"
-                  />
-                )}
-              </button>
+                onClick={() => toggleProjectGroup(group.key)}
+              />
               {!collapsed && (
                 <div className="grid gap-2 pl-6">
-                  {group.items.map((skill) => (
-                    <SkillCard
-                      key={skillKey(skill)}
-                      skill={skill}
-                      onView={setViewSkill}
-                      onToggle={handleToggle}
-                      onEdit={setEditing}
-                      onDelete={handleDelete}
-                    />
-                  ))}
+                  <SkillCards
+                    items={group.items}
+                    onView={setViewSkill}
+                    onToggle={handleToggle}
+                    onEdit={setEditing}
+                    onDelete={handleDelete}
+                  />
+                  {group.packageGroups.map((pkg) => renderPackageGroup(pkg))}
                 </div>
               )}
             </div>

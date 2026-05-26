@@ -179,6 +179,7 @@ Use update_todos with these rules:
 - Before giving a completion-style final answer for a complex task, update_todos so the checklist is either fully completed or clearly shows the remaining blocker
 
 Some tools are loaded on demand through tool_search. Common examples:
+- skill for activating an indexed skill by name
 - glob for pattern-based file lookup
 - ast_query and read_ast_node for advanced AST-scoped reads and edits
 - list_background_tasks, get_background_task, and stop_background_task for managing long-running background commands
@@ -194,7 +195,8 @@ For background commands: use run to launch. If you need management tools that ar
 
 Common tool call patterns:
 - Query the project index first: {query:"login auth flow", path:"src", max_results:5}
-- Load a deferred tool when needed: {query:"glob"} or {query:"all"}
+- Load a deferred tool when needed: {query:"skill"}, {query:"glob"}, or {query:"all"}
+- Activate an indexed skill after loading skill: {name:"brainstorming"}
 - Read a file: {path:"src/app.ts"} or {path:"src/app.ts", start_line:20, end_line:60}
 - Read a specific range inline: {path:"src/app.ts:20-60"}
 - Search text: {pattern:"loginUser", path:"src"} or {query:"loginUser", directory:"src"}

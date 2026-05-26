@@ -1,33 +1,103 @@
 {
   "version": 1,
   "skills": {
-    "superpowers-lite": {
-      "description": "Default concise workflow for coding tasks; keep context tight, choose the right route, and verify before claiming success.",
+    "using-superpowers": {
+      "description": "Use when starting any conversation - establishes how to find and use skills, requiring Skill tool invocation before ANY response including clarifying questions",
       "mode": "always",
       "triggers": [],
       "enabled": true,
       "priority": 100
     },
-    "brainstorm": {
-      "description": "Use when a feature or behavior request has multiple reasonable approaches and the missing piece is user preference, tradeoff choice, or key constraint.",
+    "brainstorming": {
+      "description": "You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation.",
       "mode": "agent_requested",
       "triggers": [],
       "enabled": true,
-      "priority": 70
+      "priority": 80
     },
     "writing-plans": {
-      "description": "Use when you have a clear goal or approved design for a non-trivial task, before touching code.",
+      "description": "Use when you have a spec or requirements for a multi-step task, before touching code",
       "mode": "agent_requested",
       "triggers": [],
       "enabled": true,
       "priority": 75
     },
-    "grill-me": {
-      "description": "Use when the user explicitly asks to pressure-test a plan, architecture choice, PR, launch, or product idea.",
+    "executing-plans": {
+      "description": "Use when you have a written implementation plan to execute in a separate session with review checkpoints",
       "mode": "agent_requested",
       "triggers": [],
       "enabled": true,
-      "priority": 65
+      "priority": 60
+    },
+    "subagent-driven-development": {
+      "description": "Use when executing implementation plans with independent tasks in the current session",
+      "mode": "agent_requested",
+      "triggers": [],
+      "enabled": true,
+      "priority": 60
+    },
+    "dispatching-parallel-agents": {
+      "description": "Use when facing 2+ independent tasks that can be worked on without shared state or sequential dependencies",
+      "mode": "agent_requested",
+      "triggers": [],
+      "enabled": true,
+      "priority": 60
+    },
+    "test-driven-development": {
+      "description": "Use when implementing any feature or bugfix, before writing implementation code",
+      "mode": "agent_requested",
+      "triggers": [],
+      "enabled": true,
+      "priority": 73
+    },
+    "systematic-debugging": {
+      "description": "Use when encountering any bug, test failure, or unexpected behavior, before proposing fixes",
+      "mode": "agent_requested",
+      "triggers": [],
+      "enabled": true,
+      "priority": 74
+    },
+    "verification-before-completion": {
+      "description": "Use when about to claim work is complete, fixed, or passing, before committing or creating PRs - requires running verification commands and confirming output before making any success claims; evidence before assertions always",
+      "mode": "agent_requested",
+      "triggers": [],
+      "enabled": true,
+      "priority": 72
+    },
+    "requesting-code-review": {
+      "description": "Use when completing tasks, implementing major features, or before merging to verify work meets requirements",
+      "mode": "agent_requested",
+      "triggers": [],
+      "enabled": true,
+      "priority": 60
+    },
+    "receiving-code-review": {
+      "description": "Use when receiving code review feedback, before implementing suggestions, especially if feedback seems unclear or technically questionable - requires technical rigor and verification, not performative agreement or blind implementation",
+      "mode": "agent_requested",
+      "triggers": [],
+      "enabled": true,
+      "priority": 60
+    },
+    "using-git-worktrees": {
+      "description": "Use when starting feature work that needs isolation from current workspace or before executing implementation plans - ensures an isolated workspace exists via native tools or git worktree fallback",
+      "mode": "agent_requested",
+      "triggers": [],
+      "enabled": true,
+      "priority": 60
+    },
+    "finishing-a-development-branch": {
+      "description": "Use when implementation is complete, all tests pass, and you need to decide how to integrate the work - guides completion of development work by presenting structured options for merge, PR, or cleanup",
+      "mode": "agent_requested",
+      "triggers": [],
+      "enabled": true,
+      "priority": 60
+    },
+    "writing-skills": {
+      "description": "Use when creating new skills, editing existing skills, or verifying skills work before deployment",
+      "mode": "agent_requested",
+      "triggers": [],
+      "enabled": true,
+      "priority": 60
     },
     "project-requirements": {
       "description": "Create a project requirements report with repository inspection and structured output artifacts.",

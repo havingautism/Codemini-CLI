@@ -155,6 +155,33 @@ function addToolToSegments(segments, toolCard) {
   return [...segments, { type: "tools", cards: [toolCard] }];
 }
 
+function addSkillToSegments(segments, event) {
+  const now = new Date().toISOString();
+  return [
+    ...(Array.isArray(segments) ? segments : []),
+    {
+      type: "skill",
+      name: event.name,
+      status: "running",
+      startedAt: event.startedAt || now,
+    },
+  ];
+}
+
+function updateSkillInSegments(segments, name, updater) {
+  const source = Array.isArray(segments) ? segments : [];
+  let targetIndex = -1;
+  for (let i = source.length - 1; i >= 0; i -= 1) {
+    const segment = source[i];
+    if (segment?.type === "skill" && segment.name === name && segment.status === "running") {
+      targetIndex = i;
+      break;
+    }
+  }
+  if (targetIndex === -1) return source;
+  return source.map((segment, index) => (index === targetIndex ? updater(segment) : segment));
+}
+
 function ensureTextSegment(segments) {
   if (segments.length === 0)
     return [{ type: "text", text: "", isStreaming: false }];
@@ -838,6 +865,7 @@ export function AppProvider({ children }) {
 
   const activeMsgRef = useRef(null);
   const pendingChangesRef = useRef([]);
+  const pendingSkillBadgesRef = useRef([]);
   const planRunPendingRef = useRef(false);
   const planStepMessagesRef = useRef(new Map());
   const planOverviewMsgRef = useRef(null);
@@ -859,7 +887,13 @@ export function AppProvider({ children }) {
         text: msg.text,
         isStreaming: msg.isStreaming || false,
       });
-    const newMsg = { ...msg, id, segments, skillBadges: [], fileChanges: [] };
+    const newMsg = {
+      ...msg,
+      id,
+      segments,
+      skillBadges: Array.isArray(msg.skillBadges) ? msg.skillBadges : [],
+      fileChanges: [],
+    };
     setState((prev) => ({ ...prev, messages: [...prev.messages, newMsg] }));
     return id;
   }, []);
@@ -1344,21 +1378,34 @@ export function AppProvider({ children }) {
           }
           let msgId = activeId;
           if (!msgId) {
+            const pendingSkillBadges = pendingSkillBadgesRef.current;
+            pendingSkillBadgesRef.current = [];
             msgId = addMessage({
               role: "general",
               timestamp: new Date().toISOString(),
               text: "",
               isStreaming: false,
               isComplete: false,
+              skillBadges: pendingSkillBadges,
             });
             setActiveMsg(msgId);
           } else {
             setState((prev) => ({
               ...prev,
               messages: prev.messages.map((m) =>
-                m.id === msgId ? { ...m, isComplete: false } : m,
+                m.id === msgId
+                  ? {
+                      ...m,
+                      isComplete: false,
+                      skillBadges: [
+                        ...(m.skillBadges || []),
+                        ...pendingSkillBadgesRef.current,
+                      ],
+                    }
+                  : m,
               ),
             }));
+            pendingSkillBadgesRef.current = [];
           }
           update({
             stage: "thinking",
@@ -1869,10 +1916,10 @@ export function AppProvider({ children }) {
                 m.id === activeId
                   ? {
                       ...m,
-                      skillBadges: [
-                        ...m.skillBadges,
-                        { name: event.name, status: "running" },
-                      ],
+                      segments: addSkillToSegments(
+                        finishThinkingSegments(m.segments),
+                        event,
+                      ),
                     }
                   : m,
               ),
@@ -1887,9 +1934,11 @@ export function AppProvider({ children }) {
                 m.id === activeId
                   ? {
                       ...m,
-                      skillBadges: m.skillBadges.map((b) =>
-                        b.name === event.name ? { ...b, status: "done" } : b,
-                      ),
+                      segments: updateSkillInSegments(m.segments, event.name, (segment) => ({
+                        ...segment,
+                        status: "done",
+                        endedAt: event.endedAt || new Date().toISOString(),
+                      })),
                     }
                   : m,
               ),
@@ -1904,28 +1953,41 @@ export function AppProvider({ children }) {
                 m.id === activeId
                   ? {
                       ...m,
-                      skillBadges: m.skillBadges.map((b) =>
-                        b.name === event.name ? { ...b, status: "error" } : b,
-                      ),
+                      segments: updateSkillInSegments(m.segments, event.name, (segment) => ({
+                        ...segment,
+                        status: "error",
+                        summary: event.summary,
+                        endedAt: event.endedAt || new Date().toISOString(),
+                      })),
                     }
                   : m,
               ),
             }));
           break;
         }
-        case "skill:auto": {
+        case "skill:always": {
+          const names = (event.names || []).join(", ");
+          const badge = {
+            name: names,
+            status: "always",
+            startedAt: event.startedAt || new Date().toISOString(),
+          };
+          if (!names) break;
+          if (!activeId) {
+            pendingSkillBadgesRef.current = [
+              ...pendingSkillBadgesRef.current,
+              badge,
+            ];
+            break;
+          }
           if (activeId) {
-            const names = (event.names || []).join(", ");
             setState((prev) => ({
               ...prev,
               messages: prev.messages.map((m) =>
                 m.id === activeId
                   ? {
                       ...m,
-                      skillBadges: [
-                        ...m.skillBadges,
-                        { name: names, status: "auto" },
-                      ],
+                      skillBadges: [...m.skillBadges, badge],
                     }
                   : m,
               ),

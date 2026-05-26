@@ -169,7 +169,8 @@ const READ_ONLY_TOOLS = new Set([
   'ast_query', 'read_ast_node',
   'web_fetch', 'web_search',
   'list_background_tasks', 'get_background_task',
-  'read_plan'
+  'read_plan',
+  'skill'
 ]);
 
 // ─── Auto-capture tool errors to dream loop inbox ────────────────────
@@ -534,6 +535,10 @@ function formatToolDisplayName(name, args) {
   if (name === 'web_search') {
     const query = trimInline(args?.query || args?.q || '', 96);
     return query ? `web_search(${query})` : name;
+  }
+  if (name === 'skill') {
+    const target = trimInline(args?.name || args?.skill || args?.query || '', 96);
+    return target ? `skill(${target.replace(/^\/+/, '')})` : name;
   }
   if (name === 'edit') {
     const target = trimInline(args?.path || args?.file || '.', 96) || '.';

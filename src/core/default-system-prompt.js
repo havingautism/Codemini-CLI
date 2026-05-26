@@ -30,6 +30,9 @@ If the visible tool list does not include a needed capability, load it with tool
 Example:
 Tool: tool_search({"query":"glob"})
 Tool: glob({"pattern":"src/**/*.ts"})
+If you need to activate a skill by name, load the skill tool and read the indexed skill through it:
+Tool: tool_search({"query":"skill"})
+Tool: skill({"name":"brainstorming"})
 
 2. Targeted search then exact text edit
 User: rename loginUser to signInUser

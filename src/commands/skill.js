@@ -55,7 +55,7 @@ function baseDirForScope(scope, cwd = process.cwd()) {
 function isGitLikeSource(value = '') {
   const text = String(value || '').trim();
   return (
-    /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+(?:\.git|(?:\/tree\/[^/\s]+)|\/)?$/i.test(text) ||
+    /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+(?:\.git|(?:\/tree\/.+)|\/)?$/i.test(text) ||
     /^git@github\.com:[^/\s]+\/[^/\s]+(?:\.git)?$/i.test(text) ||
     /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(text)
   );
@@ -69,22 +69,23 @@ function normalizeNpxSkillSource(value = '') {
 
 export function normalizeGitSource(source = '') {
   const raw = normalizeNpxSkillSource(source);
-  const githubTree = raw.match(/^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/tree\/([^/\s]+)(?:\/)?$/i);
+  const githubTree = raw.match(/^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/tree\/(.+?)\/?$/i);
   if (githubTree) {
-    const [, owner, repo, branch] = githubTree;
-    return { url: `https://github.com/${owner}/${repo}.git`, branch };
+    const [, owner, repo, treeRef] = githubTree;
+    const [branch, ...pathParts] = treeRef.split('/').filter(Boolean);
+    return { url: `https://github.com/${owner}/${repo}.git`, branch, subPath: pathParts.join('/') };
   }
   if (/^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\.git\/?$/i.test(raw)) {
-    return { url: raw.replace(/\/$/, ''), branch: null };
+    return { url: raw.replace(/\/$/, ''), branch: null, subPath: '' };
   }
   if (/^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/?$/i.test(raw)) {
-    return { url: raw.replace(/\/$/, '') + '.git', branch: null };
+    return { url: raw.replace(/\/$/, '') + '.git', branch: null, subPath: '' };
   }
   if (/^git@github\.com:/i.test(raw)) {
-    return { url: raw.endsWith('.git') ? raw : `${raw}.git`, branch: null };
+    return { url: raw.endsWith('.git') ? raw : `${raw}.git`, branch: null, subPath: '' };
   }
   if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(raw)) {
-    return { url: `https://github.com/${raw}.git`, branch: null };
+    return { url: `https://github.com/${raw}.git`, branch: null, subPath: '' };
   }
   return null;
 }
@@ -116,6 +117,31 @@ function scopeFromSource(source = '') {
   return source || 'unknown';
 }
 
+function derivePackageName(source = '') {
+  const text = String(source || '').trim();
+  const github = text.match(/github\.com[/:]([^/\s]+)\/([^/\s]+?)(?:\.git)?(?:\/|$)/i);
+  if (github) return `${github[1]}/${github[2]}`;
+  const ownerRepo = text.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:\s|$)/);
+  if (ownerRepo) return ownerRepo[1];
+  const base = path.basename(text.replace(/[\\/]+$/, ''));
+  return base || text || 'local skill package';
+}
+
+async function readSkillPackageInfo(packageRoot, sourceLabel) {
+  const plugin = await readPluginManifestSafe(packageRoot);
+  const displayName =
+    plugin?.interface?.displayName ||
+    plugin?.name ||
+    derivePackageName(plugin?.repository || plugin?.homepage || sourceLabel);
+  const packageSource = String(plugin?.repository || plugin?.homepage || sourceLabel || '').trim();
+  return {
+    source: String(sourceLabel || '').trim(),
+    packageSource: packageSource || String(sourceLabel || '').trim(),
+    packageName: String(displayName || '').trim() || derivePackageName(sourceLabel),
+    installedAt: new Date().toISOString()
+  };
+}
+
 async function setSkillEnabledConfig(name, enabled) {
   const config = await loadConfig();
   config.skills = config.skills || {};
@@ -138,6 +164,10 @@ export async function listSkillEntries({ scope = 'all', cwd = process.cwd() } = 
       description: command.metadata?.description || '',
       mode: command.metadata?.mode || '',
       triggers: Array.isArray(command.metadata?.triggers) ? command.metadata.triggers : [],
+      source: command.metadata?.source || '',
+      packageSource: command.metadata?.packageSource || command.metadata?.source || '',
+      packageName: command.metadata?.packageName || '',
+      installedAt: command.metadata?.installedAt || '',
       scope: itemScope,
       path: command.path,
       enabled: command.metadata?.enabled === false
@@ -171,12 +201,22 @@ async function readSkillMeta(name, { scope = 'all', cwd = process.cwd() } = {}) 
     }
   }
   const skillPath = found.path || path.join(dir, 'SKILL.md');
+  const auxiliaryDirs = [];
+  for (const child of ['references', 'scripts', 'assets']) {
+    try {
+      const full = path.join(dir, child);
+      const stat = await fs.stat(full);
+      if (stat.isDirectory()) auxiliaryDirs.push({ name: child, path: full });
+    } catch {
+      continue;
+    }
+  }
   try {
     const content = await fs.readFile(skillPath, 'utf8');
     const firstLines = content.split('\n').slice(0, 20).join('\n');
-    return { exists: true, path: skillPath, preview: firstLines, manifest, scope: found.scope };
+    return { exists: true, path: skillPath, preview: firstLines, manifest, scope: found.scope, auxiliaryDirs };
   } catch {
-    return { exists: false, path: skillPath, preview: '', manifest, scope: found.scope };
+    return { exists: false, path: skillPath, preview: '', manifest, scope: found.scope, auxiliaryDirs };
   }
 }
 
@@ -208,6 +248,22 @@ async function readManifestSafe(skillRoot) {
   } catch {
     return null;
   }
+}
+
+async function readPluginManifestSafe(rootDir) {
+  const p = path.join(rootDir, '.codex-plugin', 'plugin.json');
+  try {
+    const raw = await fs.readFile(p, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRelativePath(value = '') {
+  const cleaned = String(value || '').replace(/\\/g, '/').replace(/^\.?\//, '').trim();
+  if (!cleaned || path.isAbsolute(cleaned) || cleaned.split('/').includes('..')) return '';
+  return cleaned;
 }
 
 function parseArrayText(value) {
@@ -405,7 +461,29 @@ async function findSkillDirs(rootDir) {
   return found;
 }
 
-export async function installSkill(sourcePath, { scope = 'project', cwd = process.cwd(), sourceLabel = sourcePath } = {}) {
+async function findSkillDirsForPackage(rootDir) {
+  const plugin = await readPluginManifestSafe(rootDir);
+  const skillsPath = normalizeRelativePath(plugin?.skills);
+  if (skillsPath) {
+    const skillDirs = await findSkillDirs(path.join(rootDir, skillsPath));
+    if (skillDirs.length > 0) return skillDirs;
+  }
+
+  const conventionalSkillsDir = path.join(rootDir, 'skills');
+  try {
+    const stat = await fs.stat(conventionalSkillsDir);
+    if (stat.isDirectory()) {
+      const skillDirs = await findSkillDirs(conventionalSkillsDir);
+      if (skillDirs.length > 0) return skillDirs;
+    }
+  } catch {
+    // Fall back to scanning the requested root below.
+  }
+
+  return await findSkillDirs(rootDir);
+}
+
+export async function installSkill(sourcePath, { scope = 'project', cwd = process.cwd(), sourceLabel = sourcePath, packageInfo = null } = {}) {
   const resolved = await resolveSkillSourceDir(sourcePath);
   const manifest = await readManifestSafe(resolved.dir);
   const manifestEntry = manifest?.entry || 'SKILL.md';
@@ -426,6 +504,12 @@ export async function installSkill(sourcePath, { scope = 'project', cwd = proces
   const hash = await computeFileSha256(entryPath);
   const description = manifest?.description || documentMeta.description || '';
   const version = manifest?.version || documentMeta.version || '0.0.0';
+  const packageMetadata = packageInfo || {
+    source: sourceLabel,
+    packageSource: sourceLabel,
+    packageName: '',
+    installedAt: new Date().toISOString()
+  };
   if (scope === 'global') {
     await upsertSkillRegistryEntry(undefined, {
       name: folderName,
@@ -433,14 +517,20 @@ export async function installSkill(sourcePath, { scope = 'project', cwd = proces
       description,
       enabled: true,
       source: sourceLabel,
+      packageSource: packageMetadata.packageSource || sourceLabel,
+      packageName: packageMetadata.packageName || '',
       entryFile,
       sha256: hash,
-      installedAt: new Date().toISOString()
+      installedAt: packageMetadata.installedAt || new Date().toISOString()
     });
   } else {
     await upsertSkillCatalogEntry(baseDirForScope(scope, cwd), folderName, {
       description,
-      enabled: true
+      enabled: true,
+      source: sourceLabel,
+      packageSource: packageMetadata.packageSource || sourceLabel,
+      packageName: packageMetadata.packageName || '',
+      installedAt: packageMetadata.installedAt || new Date().toISOString()
     });
   }
   await setSkillEnabledConfig(folderName, true);
@@ -452,12 +542,12 @@ export async function installSkill(sourcePath, { scope = 'project', cwd = proces
   return folderName;
 }
 
-async function installSkillDirs(skillDirs, { scope, cwd, sourceLabel }) {
+async function installSkillDirs(skillDirs, { scope, cwd, sourceLabel, packageInfo }) {
   const installed = [];
   const skipped = [];
   for (const dir of skillDirs) {
     try {
-      installed.push(await installSkill(dir, { scope, cwd, sourceLabel }));
+      installed.push(await installSkill(dir, { scope, cwd, sourceLabel, packageInfo }));
     } catch (err) {
       if (/cannot install over builtin skill:/i.test(err.message || '')) {
         skipped.push({ dir, reason: err.message });
@@ -480,11 +570,14 @@ export async function installSkillSource(source, { scope = 'project', cwd = proc
   try {
     if (tmp) {
       await runGitClone(normalizedSource, tmp);
-      const skillDirs = await findSkillDirs(tmp);
+      const normalized = normalizeGitSource(normalizedSource);
+      const packageRoot = normalized?.subPath ? path.join(tmp, normalizeRelativePath(normalized.subPath)) : tmp;
+      const skillDirs = await findSkillDirsForPackage(packageRoot);
       if (skillDirs.length === 0) {
         throw new Error('No SKILL.md found in git repository');
       }
-      return await installSkillDirs(skillDirs, { scope, cwd, sourceLabel: normalizedSource });
+      const packageInfo = await readSkillPackageInfo(packageRoot, normalizedSource);
+      return await installSkillDirs(skillDirs, { scope, cwd, sourceLabel: normalizedSource, packageInfo });
     }
 
     try {
@@ -497,9 +590,10 @@ export async function installSkillSource(source, { scope = 'project', cwd = proc
       const absSrc = path.resolve(normalizedSource);
       const stat = await fs.stat(absSrc);
       if (!stat.isDirectory()) throw err;
-      const skillDirs = await findSkillDirs(absSrc);
+      const skillDirs = await findSkillDirsForPackage(absSrc);
       if (skillDirs.length === 0) throw err;
-      return await installSkillDirs(skillDirs, { scope, cwd, sourceLabel: normalizedSource });
+      const packageInfo = await readSkillPackageInfo(absSrc, normalizedSource);
+      return await installSkillDirs(skillDirs, { scope, cwd, sourceLabel: normalizedSource, packageInfo });
     }
   } finally {
     if (tmp) {
@@ -555,6 +649,8 @@ async function reindexSkills({ scope = 'global', cwd = process.cwd() } = {}) {
       description: manifest?.description || documentMeta.description || prior?.description || '',
       enabled: prior?.enabled !== false,
       source: prior?.source || 'reindex',
+      packageSource: prior?.packageSource || prior?.source || '',
+      packageName: prior?.packageName || '',
       entryFile,
       sha256: hash,
       installedAt: prior?.installedAt || new Date().toISOString()
@@ -575,6 +671,9 @@ async function reindexSkills({ scope = 'global', cwd = process.cwd() } = {}) {
         ...(catalog.skills[item.name] || {}),
         description: item.description,
         enabled: item.enabled !== false,
+        ...(item.source ? { source: item.source } : {}),
+        ...(item.packageSource ? { packageSource: item.packageSource } : {}),
+        ...(item.packageName ? { packageName: item.packageName } : {}),
         triggers: Array.isArray(catalog.skills[item.name]?.triggers) ? catalog.skills[item.name].triggers : []
       };
     }
@@ -651,6 +750,13 @@ export async function handleSkill(args) {
     }
     console.log(`Scope: ${meta.scope}\n`);
     console.log(`Path: ${meta.path}\n`);
+    if (meta.auxiliaryDirs?.length > 0) {
+      console.log('Auxiliary directories:');
+      for (const dir of meta.auxiliaryDirs) {
+        console.log(`- ${dir.name}: ${dir.path}`);
+      }
+      console.log('');
+    }
     console.log(meta.preview);
     return;
   }

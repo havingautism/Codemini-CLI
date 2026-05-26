@@ -9,17 +9,17 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 const ROLE_TOOL_POLICY = {
-  planner: ['read', 'read_plan', 'update_plan', 'update_todos'],
-  explorer: ['read', 'grep', 'list', 'glob', 'ast_query', 'read_ast_node', 'query_project_index', 'tool_search', 'web_fetch', 'web_search', 'read_plan'],
-  architect: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
-  advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'read_plan'],
-  coder: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
-  refactorer: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'read_plan'],
-  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'read_plan'],
-  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'read_plan'],
-  debugger: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
-  writer: ['read', 'grep', 'list', 'glob', 'tool_search', 'web_search', 'web_fetch', 'read_plan'],
-  summarizer: ['read', 'read_plan']
+  planner: ['read', 'read_plan', 'tool_search', 'skill', 'update_plan', 'update_todos'],
+  explorer: ['read', 'grep', 'list', 'glob', 'ast_query', 'read_ast_node', 'query_project_index', 'tool_search', 'skill', 'web_fetch', 'web_search', 'read_plan'],
+  architect: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
+  advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'skill', 'read_plan'],
+  coder: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
+  refactorer: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'skill', 'read_plan'],
+  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'read_plan'],
+  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'skill', 'read_plan'],
+  debugger: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
+  writer: ['read', 'grep', 'list', 'glob', 'tool_search', 'skill', 'web_search', 'web_fetch', 'read_plan'],
+  summarizer: ['read', 'read_plan', 'tool_search', 'skill']
 };
 const HARNESS_ROLES = Object.keys(ROLE_TOOL_POLICY);
 

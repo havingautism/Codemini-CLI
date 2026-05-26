@@ -7,7 +7,8 @@ export function describeSkillActivity(copy, name, { done = false, failed = false
 export function describeAutoSkillActivity(copy, names) {
   const safeNames = Array.isArray(names) ? names.filter(Boolean) : [];
   if (safeNames.length === 0) return '';
-  return copy.runtime.autoSkillInjected(safeNames);
+  const formatter = copy.runtime.alwaysSkillLoaded || copy.runtime.autoSkillInjected;
+  return formatter(safeNames);
 }
 
 export function formatAutoSkillBadge(copy, names) {
@@ -15,6 +16,6 @@ export function formatAutoSkillBadge(copy, names) {
   if (safeNames.length === 0) return '';
   const [first, ...rest] = safeNames;
   const suffix = rest.length > 0 ? ` +${rest.length}` : '';
-  const prefix = copy?.roleLabels?.system === 'SYSTEM' ? 'AUTO' : '自动';
+  const prefix = copy?.roleLabels?.system === 'SYSTEM' ? 'ALWAYS' : '始终';
   return `${prefix} /${first}${suffix}`;
 }
