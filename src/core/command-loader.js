@@ -271,10 +271,16 @@ function loadLegacySkillsFromDir(baseDir, source, out) {
 function loadBundledSkillsFromDir(baseDir, out) {
   if (!fs.existsSync(baseDir)) return;
   const catalog = readSkillCatalog(baseDir);
-  for (const entry of safeEntries(baseDir)) {
+  const entries = Object.keys(catalog).length > 0 ? Object.keys(catalog) : safeEntries(baseDir);
+  for (const entry of entries) {
     if (!isSafeEntry(entry)) continue;
     const full = path.join(baseDir, entry);
-    const stat = fs.statSync(full);
+    let stat;
+    try {
+      stat = fs.statSync(full);
+    } catch {
+      continue;
+    }
     if (!stat.isDirectory()) continue;
     const catalogMeta = catalogMetadata(catalog, entry);
     const skillFile = path.join(full, 'SKILL.md');

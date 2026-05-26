@@ -1401,10 +1401,19 @@ function buildAutoPlanPlannerGuidance() {
     'Design a short execution plan for a small model.',
     'Auto-plan planning rules:',
     '- Start with an explorer (codebase inspection) or architect (design) step when the target area is not yet clear.',
+    '- Before defining execution steps, map the files/modules likely to be touched and what each step is responsible for.',
     '- If the goal still leaves room for multiple approaches, choose one practical direction before planning execution.',
     '- Prefer the smallest local approach that satisfies the goal.',
     '- Do not output multiple alternative branches in the final plan.',
     '- Do not assume implementation should begin before the plan is coherent.',
+    '- Make steps concrete enough to execute without guessing: include target files, expected behavior, and verification intent when known.',
+    '- Do not create placeholder steps such as "add validation", "handle edge cases", "write tests", or "finish implementation" unless they name the exact behavior or command.',
+    '- Decompose work into independently understandable tasks; each task should have a clear responsibility and produce testable progress.',
+    '- Prefer small, focused file boundaries when the plan creates or reorganizes code, while respecting existing project patterns.',
+    '- If a step changes behavior, include how that behavior should be tested or manually verified.',
+    '- Keep type names, function names, command names, and file paths consistent across all steps.',
+    '- Before returning the plan, self-review it for requirement coverage, placeholders, contradictions, and inconsistent API/type names.',
+    '- If the plan has critical gaps or unclear requirements, create an explorer/advisor step to resolve them before implementation.',
     '- Available sub-agent roles: explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer, and summarizer. Use only the roles the task actually needs.',
     '- Always include a summarizer as the final step. The summarizer reads accumulated step results and synthesizes the final summary. It does NOT re-analyze or run tools.',
     '- Do not ask executor steps (explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer) to produce the final summary. They write detailed step results for the summarizer.',
@@ -1432,10 +1441,13 @@ function buildAutoPlanPlannerGuidance() {
 function buildAutoPlanExecutionGuidance(role) {
   const common = [
     'Auto-plan execution rules:',
+    '- Review the approved step before acting. If it is contradictory, impossible, or missing critical context, stop and report the blocker instead of guessing.',
     '- Work in the smallest useful step.',
     '- Read the target code before editing.',
     '- Prefer local changes over broad refactors.',
-    '- Prefer narrow verification with concrete evidence before claiming success.'
+    '- Follow the approved direction unless concrete evidence shows it is wrong.',
+    '- Prefer narrow verification with concrete evidence before claiming success.',
+    '- If verification fails repeatedly, stop with the failing command and observed output instead of forcing through more changes.'
   ];
 
   if (role === 'explorer') {
@@ -1872,7 +1884,7 @@ function classifyAutoRoute(text = '') {
     return {
       mode: 'auto_plan',
       autoPlan: true,
-      selectedSkills: ['using-superpowers', 'writing-plans'],
+      selectedSkills: ['using-superpowers'],
       complexity
     };
   }
@@ -2839,7 +2851,14 @@ async function buildPlanFromSpecWithModel({
     '## Phase 2: Implementation',
     '## Phase 3: Verification',
     '## Task Breakdown',
-    'Make the plan concrete and ordered for a coding agent.'
+    'Make the plan concrete and ordered for a coding agent.',
+    'Before defining tasks, map the files/modules likely to be touched and what each is responsible for.',
+    'Each task should name exact files where known, expected behavior, and verification commands or evidence.',
+    'Do not use placeholders such as TBD, TODO, "handle edge cases", "write tests", or "implement later" without concrete details.',
+    'Break work into independently understandable tasks with clear responsibility and testable progress.',
+    'Prefer small, focused file boundaries where the plan creates or reorganizes code, while respecting existing project patterns.',
+    'Keep type names, function names, command names, and file paths consistent across all phases.',
+    'Include a self-review checklist for spec coverage, placeholder scan, contradictions, and type/API consistency.'
   ].join('\n');
   const planSystemPrompt = await composeSystemPrompt({
     shellRulesPrompt: systemPrompt,
@@ -3438,11 +3457,15 @@ function buildApprovedPlanExecutionPrompt(planState, approvalText = '') {
       : []),
     'Proceed with implementation now.',
     'Follow the approved direction unless a blocking contradiction appears.',
+    'Before changing files, critically review the approved plan. If it has critical gaps, impossible steps, or unclear requirements, stop and ask for clarification.',
+    'During execution, complete steps in order, keep scope tight, and do not skip planned verification.',
+    'If a step is blocked by missing dependencies, unclear instructions, or repeated verification failures, stop and report the blocker rather than guessing.',
     'Output rules for this implementation phase:',
     '- Be concise and practical.',
     '- Do not celebrate, praise, or use emojis.',
     '- Do not restate the full plan back to the user.',
     '- If the work is already done, say so briefly and cite the verification evidence.',
+    '- Do not claim success without concrete verification evidence. If verification could not run, say exactly why.',
     '- After implementation or verification, prefer a short result summary in 3-6 lines.',
     '- If the work is complete, use this exact structure:',
     'Status: <done|partial|blocked>',

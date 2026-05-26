@@ -1,6 +1,6 @@
 ---
 name: using-superpowers
-description: Use when starting any conversation - establishes how to find and use skills, requiring Skill tool invocation before ANY response including clarifying questions
+description: Use when starting any conversation - establishes how to find and use Codemini skills before acting
 ---
 
 <SUBAGENT-STOP>
@@ -8,42 +8,41 @@ If you were dispatched as a subagent to execute a specific task, skip this skill
 </SUBAGENT-STOP>
 
 <EXTREMELY-IMPORTANT>
-If you think there is even a 1% chance a skill might apply to what you are doing, you ABSOLUTELY MUST invoke the skill.
-
-IF A SKILL APPLIES TO YOUR TASK, YOU DO NOT HAVE A CHOICE. YOU MUST USE IT.
-
-This is not negotiable. This is not optional. You cannot rationalize your way out of this.
+If a skill clearly applies to the task, invoke it before acting. Skills are current workflow instructions, not background reading.
 </EXTREMELY-IMPORTANT>
 
 ## Instruction Priority
 
-Superpowers skills override default system prompt behavior, but **user instructions always take precedence**:
+Codemini skills guide workflow, but **user instructions always take precedence**:
 
-1. **User's explicit instructions** (CLAUDE.md, GEMINI.md, AGENTS.md, direct requests) — highest priority
-2. **Superpowers skills** — override default system behavior where they conflict
-3. **Default system prompt** — lowest priority
+1. **User's explicit instructions** (`AGENTS.md`, direct requests, project docs) - highest priority
+2. **Codemini skills** - workflow guidance for the current task
+3. **Default system prompt** - baseline behavior
 
-If CLAUDE.md, GEMINI.md, or AGENTS.md says "don't use TDD" and a skill says "always use TDD," follow the user's instructions. The user is in control.
+If `AGENTS.md` says "do not use TDD" and a skill says to use TDD, follow `AGENTS.md`. The user is in control.
 
 ## How to Access Skills
 
-**In Claude Code:** Use the `Skill` tool. When you invoke a skill, its content is loaded and presented to you—follow it directly. Never use the Read tool on skill files.
-
-**In Copilot CLI:** Use the `skill` tool. Skills are auto-discovered from installed plugins. The `skill` tool works the same as Claude Code's `Skill` tool.
-
-**In Gemini CLI:** Skills activate via the `activate_skill` tool. Gemini loads skill metadata at session start and activates the full content on demand.
-
-**In other environments:** Check your platform's documentation for how skills are loaded.
-
-## Platform Adaptation
-
-Skills use Claude Code tool names. Non-CC platforms: see `references/copilot-tools.md` (Copilot CLI), `references/codex-tools.md` (Codex) for tool equivalents. Gemini CLI users get the tool mapping loaded automatically via GEMINI.md.
+Use Codemini's `skill` tool for indexed skills, or invoke a skill as a slash command such as `/systematic-debugging`. The full `SKILL.md` is loaded on demand; do not read skill files manually unless you are editing the skill itself.
 
 # Using Skills
 
+Codemini ships a compact built-in skill set focused on day-to-day development:
+
+| Skill | Use when |
+| --- | --- |
+| `brainstorming` | Requirements or approach are still ambiguous. |
+| `test-driven-development` | Implementing a feature or bugfix with meaningful behavior. |
+| `systematic-debugging` | Investigating a bug, failing test, or unexpected behavior. |
+| `verification-before-completion` | Before claiming work is complete or fixed. |
+| `requesting-code-review` | Before merging or when a plan/change needs pressure testing. |
+| `receiving-code-review` | When acting on review feedback. |
+| `using-git-worktrees` | When isolated feature work would reduce risk. |
+| `project-requirements` | When explicitly generating a project requirements / CodeWiki report. |
+
 ## The Rule
 
-**Invoke relevant or requested skills BEFORE any response or action.** Even a 1% chance a skill might apply means that you should invoke the skill to check. If an invoked skill turns out to be wrong for the situation, you don't need to use it.
+**Invoke relevant or requested skills before taking action.** If a skill may apply, load it with Codemini's `skill` tool or invoke it as a slash command, then follow the current instructions from that skill. If it turns out not to fit, say so briefly and continue with the better workflow.
 
 ```dot
 digraph skill_flow {
@@ -52,7 +51,7 @@ digraph skill_flow {
     "Already brainstormed?" [shape=diamond];
     "Invoke brainstorming skill" [shape=box];
     "Might any skill apply?" [shape=diamond];
-    "Invoke Skill tool" [shape=box];
+    "Invoke skill" [shape=box];
     "Announce: 'Using [skill] to [purpose]'" [shape=box];
     "Has checklist?" [shape=diamond];
     "Create TodoWrite todo per item" [shape=box];
@@ -65,9 +64,9 @@ digraph skill_flow {
     "Invoke brainstorming skill" -> "Might any skill apply?";
 
     "User message received" -> "Might any skill apply?";
-    "Might any skill apply?" -> "Invoke Skill tool" [label="yes, even 1%"];
+    "Might any skill apply?" -> "Invoke skill" [label="yes"];
     "Might any skill apply?" -> "Respond (including clarifications)" [label="definitely not"];
-    "Invoke Skill tool" -> "Announce: 'Using [skill] to [purpose]'";
+    "Invoke skill" -> "Announce: 'Using [skill] to [purpose]'";
     "Announce: 'Using [skill] to [purpose]'" -> "Has checklist?";
     "Has checklist?" -> "Create TodoWrite todo per item" [label="yes"];
     "Has checklist?" -> "Follow skill exactly" [label="no"];

@@ -15,34 +15,6 @@
       "enabled": true,
       "priority": 80
     },
-    "writing-plans": {
-      "description": "Use when you have a spec or requirements for a multi-step task, before touching code",
-      "mode": "agent_requested",
-      "triggers": [],
-      "enabled": true,
-      "priority": 75
-    },
-    "executing-plans": {
-      "description": "Use when you have a written implementation plan to execute in a separate session with review checkpoints",
-      "mode": "agent_requested",
-      "triggers": [],
-      "enabled": true,
-      "priority": 60
-    },
-    "subagent-driven-development": {
-      "description": "Use when executing implementation plans with independent tasks in the current session",
-      "mode": "agent_requested",
-      "triggers": [],
-      "enabled": true,
-      "priority": 60
-    },
-    "dispatching-parallel-agents": {
-      "description": "Use when facing 2+ independent tasks that can be worked on without shared state or sequential dependencies",
-      "mode": "agent_requested",
-      "triggers": [],
-      "enabled": true,
-      "priority": 60
-    },
     "test-driven-development": {
       "description": "Use when implementing any feature or bugfix, before writing implementation code",
       "mode": "agent_requested",
@@ -80,20 +52,6 @@
     },
     "using-git-worktrees": {
       "description": "Use when starting feature work that needs isolation from current workspace or before executing implementation plans - ensures an isolated workspace exists via native tools or git worktree fallback",
-      "mode": "agent_requested",
-      "triggers": [],
-      "enabled": true,
-      "priority": 60
-    },
-    "finishing-a-development-branch": {
-      "description": "Use when implementation is complete, all tests pass, and you need to decide how to integrate the work - guides completion of development work by presenting structured options for merge, PR, or cleanup",
-      "mode": "agent_requested",
-      "triggers": [],
-      "enabled": true,
-      "priority": 60
-    },
-    "writing-skills": {
-      "description": "Use when creating new skills, editing existing skills, or verifying skills work before deployment",
       "mode": "agent_requested",
       "triggers": [],
       "enabled": true,

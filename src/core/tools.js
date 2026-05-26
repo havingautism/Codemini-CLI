@@ -2728,7 +2728,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'skill',
         description:
-          'Load an enabled Codemini skill by name from the indexed skill registry/catalog. Use this when task instructions or an always-loaded skill tell you to activate a skill such as using-superpowers, brainstorming, writing-plans, or systematic-debugging.',
+          'Load an enabled Codemini skill by name from the indexed skill registry/catalog. Use this when task instructions or an always-loaded skill tell you to activate a skill such as using-superpowers, brainstorming, systematic-debugging, or verification-before-completion.',
         parameters: {
           type: 'object',
           properties: {
