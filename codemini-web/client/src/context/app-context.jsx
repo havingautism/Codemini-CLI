@@ -865,6 +865,8 @@ export function AppProvider({ children }) {
 
   const activeMsgRef = useRef(null);
   const pendingChangesRef = useRef([]);
+  const skipSwitchedReloadRef = useRef(false);
+  const sessionsLoadPromiseRef = useRef(null);
   const pendingSkillBadgesRef = useRef([]);
   const planRunPendingRef = useRef(false);
   const planStepMessagesRef = useRef(new Map());
@@ -1039,16 +1041,22 @@ export function AppProvider({ children }) {
   }, [update]);
 
   const loadSessions = useCallback(async () => {
+    if (sessionsLoadPromiseRef.current) return sessionsLoadPromiseRef.current;
     update({ sessionsLoading: true });
-    try {
-      const sessions = await api.fetchSessions(200);
-      const list = Array.isArray(sessions) ? sessions : [];
-      update({ sessions: list });
-      loadGitBatch(list);
-    } catch {
-    } finally {
-      update({ sessionsLoading: false });
-    }
+    const promise = (async () => {
+      try {
+        const sessions = await api.fetchSessions(200);
+        const list = Array.isArray(sessions) ? sessions : [];
+        update({ sessions: list });
+        loadGitBatch(list);
+      } catch {
+      } finally {
+        update({ sessionsLoading: false });
+        sessionsLoadPromiseRef.current = null;
+      }
+    })();
+    sessionsLoadPromiseRef.current = promise;
+    return promise;
   }, [update, loadGitBatch]);
 
   const openCodeWikiProjectFromRoute = useCallback(async (projectPath) => {
@@ -2265,6 +2273,10 @@ export function AppProvider({ children }) {
         }
 
         case "runtime:switched": {
+          if (skipSwitchedReloadRef.current) {
+            skipSwitchedReloadRef.current = false;
+            break;
+          }
           setState((prev) => ({
             ...prev,
             messages: [],
@@ -2749,6 +2761,7 @@ export function AppProvider({ children }) {
         if (!sessionId || sessionId === currentSessionId) return;
         update({ currentView: "chat", messagesLoading: true });
         setState((prev) => ({ ...prev, messages: [] }));
+        skipSwitchedReloadRef.current = true;
         try {
           const result = await api.switchSession(sessionId);
           if (result.ok) {
@@ -2767,6 +2780,7 @@ export function AppProvider({ children }) {
             update({ messagesLoading: false });
           }
         } catch {
+          skipSwitchedReloadRef.current = false;
           update({ messagesLoading: false });
         }
       },
@@ -2775,6 +2789,7 @@ export function AppProvider({ children }) {
         try {
           const deletingCurrent =
             sessionId === stateRef.current.runtimeState?.sessionId;
+          if (deletingCurrent) skipSwitchedReloadRef.current = true;
           const result = await api.deleteSession(sessionId);
           if (result?.error) return result;
           setState((prev) => ({
@@ -2801,6 +2816,7 @@ export function AppProvider({ children }) {
           loadSessions();
           return result;
         } catch (err) {
+          if (deletingCurrent) skipSwitchedReloadRef.current = false;
           return { error: true, message: err.message };
         }
       },

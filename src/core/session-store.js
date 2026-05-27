@@ -413,16 +413,42 @@ async function upsertSessionIndexEntry(session, filePath) {
 }
 
 async function loadLatestJsonlObject(filePath) {
-  const raw = await fs.readFile(filePath, 'utf8');
-  const lines = String(raw || '')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
+  return await readLastJsonlLine(filePath);
+}
+
+async function readLastJsonlLine(filePath) {
+  const CHUNK = 2 * 1024 * 1024; // 2 MB
+  const stat = await fs.stat(filePath);
+  if (stat.size === 0) throw new Error(`Empty JSONL file: ${filePath}`);
+
+  let tail = '';
+  let offset = stat.size;
+
+  while (offset > 0) {
+    const readSize = Math.min(CHUNK, offset);
+    offset -= readSize;
+    const handle = await fs.open(filePath, 'r');
+    let chunk;
     try {
-      return JSON.parse(lines[i]);
-    } catch {
-      continue;
+      const buf = Buffer.alloc(readSize);
+      await handle.read(buf, 0, readSize, offset);
+      chunk = buf.toString('utf8');
+    } finally {
+      await handle.close();
+    }
+    tail = chunk + tail;
+    const lines = tail.split('\n');
+    // Search from the end for a valid JSON line (skip the first line if we
+    // haven't read from the beginning — it may be a partial line fragment).
+    const startIdx = offset > 0 ? 1 : 0;
+    for (let i = lines.length - 1; i >= startIdx; i -= 1) {
+      const trimmed = lines[i].trim();
+      if (!trimmed) continue;
+      try {
+        return JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
     }
   }
   throw new Error(`No valid JSONL record found: ${filePath}`);
@@ -468,6 +494,8 @@ export async function loadSession(sessionId) {
   return sanitizeSession(parsed, sessionId);
 }
 
+const JSONL_COMPACT_THRESHOLD = 5 * 1024 * 1024; // 5 MB
+
 export async function saveSession(session) {
   const dir = getSessionsDir();
   await fs.mkdir(dir, { recursive: true });
@@ -476,6 +504,16 @@ export async function saveSession(session) {
   const filePath = sessionPathById(normalized.id, SESSION_JSONL_EXT);
   await fs.appendFile(filePath, `${JSON.stringify(normalized)}\n`, 'utf8');
   await upsertSessionIndexEntry(normalized, filePath);
+
+  // Compact JSONL file when it grows too large — rewrite with only the latest record
+  try {
+    const st = await fs.stat(filePath);
+    if (st.size > JSONL_COMPACT_THRESHOLD) {
+      await fs.writeFile(filePath, `${JSON.stringify(normalized)}\n`, 'utf8');
+    }
+  } catch {
+    // Best-effort compaction; session data is already saved
+  }
 }
 
 export async function resolveSession(sessionId) {
