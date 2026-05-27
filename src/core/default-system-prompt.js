@@ -54,7 +54,7 @@ Assistant: keep the checklist updated as each phase finishes, and do not give a 
 5. Create a new file
 User: add a notes file
 Assistant: create the file directly
-Tool: write({"path":${notesPath},"content":"todo\\n"})
+Tool: create({"path":${notesPath},"content":"todo\\n"})
 
 6. Save a high-signal observation to memory
 When you notice a reusable pattern, a user correction, a repeated failure, or a stable preference — save it to persistent memory. Choose scope carefully:

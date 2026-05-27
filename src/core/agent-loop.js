@@ -176,7 +176,7 @@ const READ_ONLY_TOOLS = new Set([
 // ─── Auto-capture tool errors to dream loop inbox ────────────────────
 
 const DREAM_AUTO_CAPTURE_TOOLS = new Set([
-  'edit', 'write', 'run', 'delete'
+  'edit', 'create', 'run', 'delete'
 ]);
 
 const DREAM_AUTO_CAPTURE_COOLDOWN_MS = 60_000;
@@ -241,7 +241,7 @@ async function checkAutoDreamThreshold(config) {
 
 function extractFileChange(toolName, result) {
   if (!result || typeof result !== 'object') return null;
-  const FILE_TOOLS = new Set(['edit', 'write', 'delete']);
+  const FILE_TOOLS = new Set(['edit', 'create', 'delete']);
   if (!FILE_TOOLS.has(toolName)) return null;
 
   /* delete */
@@ -316,7 +316,7 @@ function normalizeFileChanges(changes) {
 
 function extractToolResultMeta(toolName, result) {
   if (!result || typeof result !== 'object') return null;
-  if (!['edit', 'write', 'delete'].includes(String(toolName || ''))) return null;
+  if (!['edit', 'create', 'delete'].includes(String(toolName || ''))) return null;
   const meta = {};
   for (const key of [
     'path',
@@ -513,7 +513,7 @@ function formatToolDisplayName(name, args) {
     const target = trimInline(args?.path || '.', 96) || '.';
     return `list(${target})`;
   }
-  if (name === 'read' || name === 'write') {
+  if (name === 'read' || name === 'create') {
     const target = trimInline(args?.path || '.', 96) || '.';
     if (name === 'read') {
       const start = Number(args?.start_line);
@@ -522,7 +522,7 @@ function formatToolDisplayName(name, args) {
       const suffix = hasRange ? `:${start}-${Number.isFinite(end) && end >= start ? end : start}` : '';
       return `read(${target}${suffix})`;
     }
-    return `write(${target})`;
+    return `create(${target})`;
   }
   if (name === 'run') {
     const command = trimInline(args?.command || '', 96);
@@ -781,7 +781,7 @@ export async function runAgentLoop({
       const isSafeModeRun = toolName === 'run'
         && config?.policy?.safe_mode !== false
         && (isSafeModePolicyBlocked || requiresApprovalEvaluation(args?.command || '', config?.shell?.default));
-      const isFileWriteTool = toolName === 'edit' || toolName === 'write' || toolName === 'delete';
+      const isFileWriteTool = toolName === 'edit' || toolName === 'create' || toolName === 'delete';
       const needsApproval = normalizedApprovalMode === 'full_access'
         ? false
         : normalizedApprovalMode === 'auto'

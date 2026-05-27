@@ -53,6 +53,22 @@
   cursor: col-resize;
 }
 
+.codewiki-md-report {
+  min-height: 100%;
+}
+
+.codewiki-md-report-body {
+  max-width: none;
+}
+
+.codewiki-md-report-body > :first-child {
+  margin-top: 0;
+}
+
+.codewiki-md-report-body > :last-child {
+  margin-bottom: 0;
+}
+
 @media (max-width: 1279px) {
   .codewiki-layout {
     grid-template-columns: 220px minmax(0, 1fr);

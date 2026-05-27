@@ -169,7 +169,7 @@ function normalizePolicyLists(config) {
       'get_background_task',
       ...rawTools
     ].filter((name) => String(name) !== 'list_files')
-      .filter((name) => !['edit', 'write', 'delete', 'run', 'stop_background_task'].includes(String(name)))
+      .filter((name) => !['edit', 'create', 'delete', 'run', 'stop_background_task'].includes(String(name)))
   );
   next.ui = next.ui || {};
   next.ui.language = normalizeUiLanguage(next.ui.language);

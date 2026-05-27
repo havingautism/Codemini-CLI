@@ -1175,7 +1175,7 @@ export function normalizeRunApprovalRequest(request) {
 
 export function normalizeFileApprovalRequest(request) {
   const toolName = String(request?.name || '').trim();
-  if (!['edit', 'write'].includes(toolName)) return null;
+  if (!['edit', 'create'].includes(toolName)) return null;
   const args = request?.arguments && typeof request.arguments === 'object' && !Array.isArray(request.arguments)
     ? request.arguments
     : {};
@@ -1916,7 +1916,7 @@ function extractPreviewLinesFromTool(tool, maxLines = 3) {
 }
 
 function getLatestToolPreviewLines(msg, maxLines = 3) {
-  const codeTools = new Set(['edit', 'write']);
+  const codeTools = new Set(['edit', 'create']);
   const extractFromCalls = (calls) => {
     for (let index = calls.length - 1; index >= 0; index -= 1) {
       const tool = calls[index];
@@ -1954,7 +1954,7 @@ export function getGeneratingCodePlaceholderRows(msg, copy, contentWidth = 72) {
   const previewWindow = getLatestToolPreviewLines(msg, 3);
   if (previewWindow.lines.length === 0) return [];
   const hasRunningCodeTool = (Array.isArray(msg?.toolCalls) ? msg.toolCalls : []).some(
-    (tool) => tool?.status === 'running' && new Set(['edit', 'write']).has(parseToolDisplayName(tool?.name).base)
+    (tool) => tool?.status === 'running' && new Set(['edit', 'create']).has(parseToolDisplayName(tool?.name).base)
   );
   const isCodeGenerationStatus = liveStatus === String(copy?.runtime?.generatingCode || '').trim();
   if (!isCodeGenerationStatus && !(msg?.phase === 'tooling' && hasRunningCodeTool)) return [];
@@ -2275,7 +2275,7 @@ function isCodeActivityName(name) {
   const parsed = parseToolDisplayName(name);
   return new Set([
     'edit',
-    'write',
+    'create',
     'write_file',
     'replace_text',
     'replace_block',
@@ -3265,7 +3265,7 @@ function RunApprovalPanel({ request, inputValue, errorText, copy, cursorVisible 
 
 function FileApprovalPanel({ request, inputValue, errorText, copy, cursorVisible }) {
   if (!request) return null;
-  const details = request?.toolName === 'edit' || request?.toolName === 'write'
+  const details = request?.toolName === 'edit' || request?.toolName === 'create'
     ? request
     : normalizeFileApprovalRequest(request);
   if (!details) return null;
@@ -4152,7 +4152,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
         if (event?.type === 'assistant:tool_call_delta') {
           ensureActiveAssistant();
           const parsed = parseToolDisplayName(event.toolCall?.name);
-          const isCodeTool = new Set(['write', 'edit']).has(parsed.base);
+          const isCodeTool = new Set(['create', 'edit']).has(parsed.base);
           if (isCodeTool) {
             setRuntimeStatus(makeStatus(copy.runtime.generatingCode, copy.runtime.streamingReply, 'greenBright'));
             setInputStage('streaming');

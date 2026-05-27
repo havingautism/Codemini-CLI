@@ -13,7 +13,7 @@ export function describeFileToolActivity(copy, parsed, options = {}) {
   if (parsed.base === 'edit') {
     return describePathTool(copy, parsed, { done: copy.toolActivity.doneEdit, doing: copy.toolActivity.doingEdit }, options);
   }
-  if (parsed.base === 'write') {
+  if (parsed.base === 'create') {
     return describePathTool(copy, parsed, { done: copy.toolActivity.doneWrite, doing: copy.toolActivity.doingWrite }, options);
   }
   if (parsed.base === 'delete') {

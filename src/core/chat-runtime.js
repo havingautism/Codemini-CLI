@@ -54,6 +54,21 @@ import { createNonGitBackupManager } from './non-git-backup.js';
 const STREAM_SAVE_DEBOUNCE_MS = 120;
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_REQUIREMENTS_TEMPLATE = path.resolve(MODULE_DIR, '..', '..', 'templates', 'project-requirements', 'report-shell.html');
+const PROJECT_REQUIREMENTS_MD_TEMPLATE = path.resolve(MODULE_DIR, '..', '..', 'templates', 'project-requirements', 'report-template.md');
+const PROJECT_REQUIREMENTS_MD_SKILL = path.resolve(MODULE_DIR, '..', '..', 'skills', 'project-requirements-md', 'SKILL.md');
+const PROJECT_REQUIREMENTS_SECTION_NAMES = [
+  'summary',
+  'architecture',
+  'interfaces',
+  'requirements',
+  'flows',
+  'domain',
+  'security',
+  'errors',
+  'nonfunctional',
+  'questions',
+  'evidence'
+];
 
 export function isModelVisibleMessage(message) {
   return message?.model_visible !== false && message?.local_only !== true;
@@ -680,13 +695,14 @@ function describeConfigKey(key, mode = 'set', language = 'zh') {
 
 const SUB_AGENT_ROLES = ['planner', 'explorer', 'architect', 'advisor', 'coder', 'refactorer', 'reviewer', 'tester', 'debugger', 'writer', 'summarizer', 'codewiki'];
 const CODEWIKI_ROLE_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'add_code_comment', 'update_code_comment'];
+const CODEWIKI_GENERATE_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'skill', 'edit', 'create'];
 export const ROLE_TOOL_POLICY = {
   planner: ['read', 'read_plan', 'tool_search', 'skill', 'update_plan', 'update_todos'],
   explorer: ['read', 'grep', 'list', 'glob', 'ast_query', 'read_ast_node', 'query_project_index', 'tool_search', 'skill', 'web_fetch', 'web_search', 'read_plan'],
   architect: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
   advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'skill', 'read_plan'],
-  coder: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
-  refactorer: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'skill', 'read_plan'],
+  coder: ['read', 'grep', 'list', 'edit', 'create', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
+  refactorer: ['read', 'grep', 'list', 'edit', 'create', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'skill', 'read_plan'],
   reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'read_plan'],
   tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'skill', 'read_plan'],
   debugger: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
@@ -2732,29 +2748,6 @@ function buildSpecTemplate(topic) {
 `;
 }
 
-const SPEC_REQUIRED_HEADINGS = [
-  'Summary',
-  'Goals',
-  'Non-Goals',
-  'User Experience / Command Behavior',
-  'Architecture',
-  'Data / State Model',
-  'Safety Rules',
-  'Requirements',
-  'Risks and Mitigations',
-  'Testing / Validation'
-];
-
-function specHeadingPattern(heading) {
-  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\ \/ /g, '\\s*\\/\\s*');
-  return new RegExp(`^##\\s+${escaped}\\s*$`, 'im');
-}
-
-function missingSpecHeadings(specText = '') {
-  const text = String(specText || '');
-  return SPEC_REQUIRED_HEADINGS.filter((heading) => !specHeadingPattern(heading).test(text));
-}
-
 function extractSpecTitle(specText, fallback = 'spec') {
   const raw = String(specText || '');
   const heading = raw.match(/^#\s+Spec:\s+(.+)$/m) || raw.match(/^#\s+(.+)$/m);
@@ -3380,14 +3373,13 @@ function buildPendingReflectSkillSnapshot(reflectState) {
 
 function buildPendingSpecSnapshot(specState) {
   if (!specState || specState.status !== 'pending_spec_approval') return null;
-  const missingHeadings = missingSpecHeadings(specState.specText || '');
   return {
     goal: specState.goal || '',
     summary: specState.summary || '',
     specText: specState.specText || '',
     filePath: specState.specPath || specState.filePath || '',
-    complete: missingHeadings.length === 0,
-    missingHeadings
+    complete: true,
+    missingHeadings: []
   };
 }
 
@@ -4011,7 +4003,7 @@ async function askModel({
     approvalMode: config.execution?.approval_mode || 'review',
     projectIsGit: Boolean(projectIsGit || changeTracker?.enabled),
     alwaysAllowTools:
-      alwaysAllowTools || config.execution?.always_allow_tools || ['run', 'read', 'write'],
+      alwaysAllowTools || config.execution?.always_allow_tools || ['run', 'read', 'create'],
     toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
     toolFormatters: formatters,
     deferredDefinitions: filteredDeferred,
@@ -4701,11 +4693,14 @@ function renderAutoPlanMarkdown({
   return lines.join('\n');
 }
 
-function parseProjectRequirementsOptions(args = []) {
+function parseProjectRequirementsOptions(args = [], { defaultOutputFormat = 'html' } = {}) {
   let depth = 'standard';
   let runner = 'agent';
+  let outputFormat = defaultOutputFormat === 'md' ? 'md' : 'html';
   const focusArgs = [];
-  for (const arg of Array.isArray(args) ? args : []) {
+  const inputArgs = Array.isArray(args) ? args : [];
+  for (let index = 0; index < inputArgs.length; index += 1) {
+    const arg = inputArgs[index];
     const value = String(arg || '').trim();
     const normalized = value.toLowerCase();
     if (['--fast', '--quick', '--lite', '--light', '--快速'].includes(normalized)) {
@@ -4719,6 +4714,27 @@ function parseProjectRequirementsOptions(args = []) {
     if (['--deep', '--full', '--thorough', '--深度'].includes(normalized)) {
       depth = 'deep';
       continue;
+    }
+    if (['--html', '--format=html', '--output=html', '--html版', '--网页版'].includes(normalized)) {
+      outputFormat = 'html';
+      continue;
+    }
+    if (['--md', '--markdown', '--format=md', '--format=markdown', '--output=md', '--output=markdown', '--md版', '--markdown版'].includes(normalized)) {
+      outputFormat = 'md';
+      continue;
+    }
+    if (['--format', '--output', '--格式'].includes(normalized)) {
+      const next = String(inputArgs[index + 1] || '').trim().toLowerCase();
+      if (['html', '网页', 'html版'].includes(next)) {
+        outputFormat = 'html';
+        index += 1;
+        continue;
+      }
+      if (['md', 'markdown', 'markdown版'].includes(next)) {
+        outputFormat = 'md';
+        index += 1;
+        continue;
+      }
     }
     if (['--agent', '--single-agent', '--single', '--普通', '--单agent', '--单-agent'].includes(normalized)) {
       runner = 'agent';
@@ -4735,7 +4751,7 @@ function parseProjectRequirementsOptions(args = []) {
   const raw = focusArgs.join(' ').trim();
   const normalized = raw.toLowerCase();
   const hasIgnoreIntent = /(忽略|跳过|不生成|不要|无需|排除|exclude|skip|omit|without|no\s+)/i.test(raw);
-  if (!hasIgnoreIntent) return { raw, focusArgs, depth, runner, ignoredSections: [] };
+  if (!hasIgnoreIntent) return { raw, focusArgs, depth, runner, outputFormat, ignoredSections: [] };
 
   const ignored = [];
   for (const section of PROJECT_REQUIREMENTS_SECTION_MARKERS) {
@@ -4748,7 +4764,44 @@ function parseProjectRequirementsOptions(args = []) {
     });
     if (matched) ignored.push(section);
   }
-  return { raw, focusArgs, depth, runner, ignoredSections: ignored };
+  return { raw, focusArgs, depth, runner, outputFormat, ignoredSections: ignored };
+}
+
+function getProjectRequirementsOutputPaths(reportSlug, outputFormat = 'html') {
+  const normalizedFormat = outputFormat === 'md' ? 'md' : 'html';
+  const base = `docs/requirements/${reportSlug}-project-requirements`;
+  return {
+    outputFormat: normalizedFormat,
+    reportPath: `${base}.${normalizedFormat}`,
+    companionPath: normalizedFormat === 'html' ? `${base}.md` : `${base}.html`,
+    htmlPath: `${base}.html`,
+    markdownPath: `${base}.md`
+  };
+}
+
+function stripFrontmatter(raw = '') {
+  const text = String(raw || '').replace(/\r\n/g, '\n');
+  if (!text.startsWith('---\n')) return text.trim();
+  const end = text.indexOf('\n---\n', 4);
+  if (end === -1) return text.trim();
+  return text.slice(end + 5).trim();
+}
+
+async function renderProjectRequirementsSkillPrompt(custom, options) {
+  if (options?.outputFormat !== 'md') {
+    return expandFileMentions(renderCommandPrompt(custom, options.focusArgs), process.cwd());
+  }
+  const raw = await fs.readFile(PROJECT_REQUIREMENTS_MD_SKILL, 'utf8');
+  const mdSkill = {
+    name: 'project-requirements-md',
+    metadata: { type: 'skill' },
+    content: stripFrontmatter(raw)
+  };
+  return expandFileMentions(renderCommandPrompt(mdSkill, options.focusArgs), process.cwd());
+}
+
+function getProjectRequirementsDefaultOutputFormat(custom) {
+  return custom?.name === 'project-requirements-md' ? 'md' : 'html';
 }
 
 function renderProjectRequirementsSectionContract(ignoredSections = []) {
@@ -4764,22 +4817,29 @@ function renderProjectRequirementsSectionContract(ignoredSections = []) {
   return lines.join('\n');
 }
 
-function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = {}, reportSlug = formatLocalDateTimeSlug()) {
-  const options = parseProjectRequirementsOptions(args);
+function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = {}, reportSlug = formatLocalDateTimeSlug(), defaultOutputFormat = 'html') {
+  const options = parseProjectRequirementsOptions(args, { defaultOutputFormat });
   const userArgs = options.raw;
   const requestedFocus = userArgs ? `User request/focus: ${userArgs}` : 'User request/focus: full workspace requirements report.';
   const replyLanguageName = getReplyLanguageName(config);
-  const reportPath = `docs/requirements/${reportSlug}-project-requirements.html`;
-  const companionPath = `docs/requirements/${reportSlug}-project-requirements.md`;
+  const { reportPath, companionPath, outputFormat } = getProjectRequirementsOutputPaths(reportSlug, options.outputFormat);
+  const htmlOutput = outputFormat === 'html';
   const reportContract = [
     requestedFocus,
     `Reply language: write generated report prose, UI labels inserted into the report, review notes, and final user-facing status in ${replyLanguageName} unless the user explicitly requested a different language. Do not translate REQUIREMENTS_* marker names or source code identifiers.`,
+    `Requested output format: ${outputFormat}.`,
     `Primary report path: ${reportPath}`,
-    `Optional companion Markdown path: ${companionPath}`,
-    'A pre-created HTML shell already exists at the primary report path.',
-    'Fill or replace only the named marker sections in that shell instead of rewriting the whole document.',
+    outputFormat === 'html' ? `Optional companion Markdown path: ${companionPath}` : `Optional companion HTML path: ${companionPath}`,
+    htmlOutput
+      ? 'A pre-created HTML shell already exists at the primary report path.'
+      : 'A pre-created Markdown template already exists at the primary report path.',
+    htmlOutput
+      ? 'Fill or replace only the named marker sections in that shell instead of rewriting the whole document.'
+      : 'Write a complete Markdown requirements document at the primary report path. Use headings, tables, lists, fenced diagrams only when requested, and preserve evidence paths.',
     renderProjectRequirementsSectionContract(options.ignoredSections),
-    'For diagrams, write polished inline HTML/CSS or SVG directly in the report. Do not use Mermaid unless the user explicitly asks for Mermaid source.',
+    htmlOutput
+      ? 'For diagrams, write polished inline HTML/CSS or SVG directly in the report. Do not use Mermaid unless the user explicitly asks for Mermaid source.'
+      : 'For diagrams in Markdown, prefer concise ASCII tables/lists or Mermaid source only when the user explicitly asks for Mermaid.',
     'Use a light blue, white, and cool gray banking/financial visual style: conservative, dense, readable, and enterprise-grade.',
     'Prioritize API/interface-level business requirements. Every major interface should map to business capability, actor, trigger, inputs, outputs, rules, permissions, data reads/writes, errors, acceptance criteria, and evidence.',
     'Use EXTRACTED, INFERRED, and UNKNOWN labels. Preserve source evidence paths.',
@@ -4792,11 +4852,19 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
     task: [
       'Create the final project requirements report from the accumulated plan context.',
       reportContract,
-      'Follow the project-requirements skill instructions below exactly, including chunked HTML writing for medium/large reports.',
-      'Use the blue/white/gray banking-style shell and produce polished inline HTML/CSS/SVG diagrams. Keep the report professional, light, and conservative.',
+      htmlOutput
+        ? 'Follow the project-requirements skill instructions below exactly, including chunked HTML writing for medium/large reports.'
+        : 'Follow the project-requirements-md skill instructions below exactly, filling the Markdown template at the primary path.',
+      htmlOutput
+        ? 'Use the blue/white/gray banking-style shell and produce polished inline HTML/CSS/SVG diagrams. Keep the report professional, light, and conservative.'
+        : 'Keep the Markdown document professional, scannable, PR-friendly, and evidence-backed.',
       'Organize the main requirements section primarily by API/interface business requirement cards.',
-      'The final HTML must be self-contained and directly openable from disk.',
-      'Write the primary report to the exact primary report path above. Create the companion Markdown only if useful.',
+      htmlOutput
+        ? 'The final HTML must be self-contained and directly openable from disk.'
+        : 'The final Markdown must be readable in plain text and Markdown previewers.',
+      outputFormat === 'html'
+        ? 'Write the primary report to the exact primary report path above. Create the companion Markdown only if useful.'
+        : 'Write the primary Markdown report to the exact primary report path above. Create the companion HTML only if explicitly useful.',
       'Skill instructions:',
       renderedSkillPrompt
     ].join('\n\n')
@@ -4807,8 +4875,12 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
     task: [
       'Review the generated requirements report against the project-requirements contract and accumulated evidence.',
       reportContract,
-      'Check that major APIs/interfaces are represented, business requirements are decomposed per API, evidence paths are present, inferred/unknown content is labeled, diagrams are visible as inline HTML/CSS/SVG without external rendering libraries, and the report path matches the required local date.',
-      'Check that the visual style is light blue/white/gray and suitable for banking/financial review.',
+      htmlOutput
+        ? 'Check that major APIs/interfaces are represented, business requirements are decomposed per API, evidence paths are present, inferred/unknown content is labeled, diagrams are visible as inline HTML/CSS/SVG without external rendering libraries, and the report path matches the required local date.'
+        : 'Check that major APIs/interfaces are represented, business requirements are decomposed per API, evidence paths are present, inferred/unknown content is labeled, Markdown tables/lists are readable, and the report path matches the required local date.',
+      htmlOutput
+        ? 'Check that the visual style is light blue/white/gray and suitable for banking/financial review.'
+        : 'Check that the Markdown is suitable for review in Git diffs and Markdown previewers.',
       'Report concrete gaps and risks only. Do not rewrite the whole report.'
     ].join('\n')
   };
@@ -4971,7 +5043,7 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
 
 function renderProjectRequirementsPlanMarkdown({ goal, steps, reportPath, companionPath }) {
   const autoPlan = {
-    summary: 'Dedicated sub-agent pipeline for project requirements discovery and HTML report generation.',
+    summary: 'Dedicated sub-agent pipeline for project requirements discovery and report generation.',
     steps
   };
   const progressLines = steps
@@ -5009,47 +5081,49 @@ async function createProjectRequirementsShell({
   goal,
   steps,
   depth = 'standard',
+  outputFormat = 'html',
   config = {}
 }) {
   const workspaceRoot = process.cwd();
   const absoluteReportPath = path.resolve(workspaceRoot, reportPath);
   const absoluteManifestPath = path.resolve(workspaceRoot, manifestPath);
   await fs.mkdir(path.dirname(absoluteReportPath), { recursive: true });
-  const template = await fs.readFile(PROJECT_REQUIREMENTS_TEMPLATE, 'utf8');
   const now = new Date().toISOString();
-  const shellCopy = PROJECT_REQUIREMENTS_SHELL_COPY[getReplyLanguage(config)] || PROJECT_REQUIREMENTS_SHELL_COPY.zh;
-  const html = replaceTemplateVariables(template, {
-    ...shellCopy,
-    workspace_name: path.basename(workspaceRoot) || workspaceRoot,
-    date: formatLocalDate(),
-    generated_at: now
-  });
-  await fs.writeFile(absoluteReportPath, html, 'utf8');
+  if (outputFormat === 'md') {
+    const template = await fs.readFile(PROJECT_REQUIREMENTS_MD_TEMPLATE, 'utf8');
+    const markdown = replaceTemplateVariables(template, {
+      title: goal,
+      workspace_name: path.basename(workspaceRoot) || workspaceRoot,
+      date: formatLocalDate(),
+      generated_at: now,
+      reply_language: getReplyLanguageName(config)
+    });
+    await fs.writeFile(absoluteReportPath, markdown.endsWith('\n') ? markdown : `${markdown}\n`, 'utf8');
+  } else {
+    const template = await fs.readFile(PROJECT_REQUIREMENTS_TEMPLATE, 'utf8');
+    const shellCopy = PROJECT_REQUIREMENTS_SHELL_COPY[getReplyLanguage(config)] || PROJECT_REQUIREMENTS_SHELL_COPY.zh;
+    const html = replaceTemplateVariables(template, {
+      ...shellCopy,
+      workspace_name: path.basename(workspaceRoot) || workspaceRoot,
+      date: formatLocalDate(),
+      generated_at: now
+    });
+    await fs.writeFile(absoluteReportPath, html, 'utf8');
+  }
 
-  const sectionNames = [
-    'summary',
-    'architecture',
-    'interfaces',
-    'requirements',
-    'flows',
-    'domain',
-    'security',
-    'errors',
-    'nonfunctional',
-    'questions',
-    'evidence'
-  ];
   const manifest = {
     status: 'running',
     depth,
+    outputFormat,
     goal,
-    html: reportPath,
-    markdown: companionPath,
+    html: outputFormat === 'html' ? reportPath : companionPath,
+    markdown: outputFormat === 'md' ? reportPath : companionPath,
+    primary: reportPath,
     manifest: manifestPath,
     plan: planFile,
     createdAt: now,
     updatedAt: now,
-    sections: Object.fromEntries(sectionNames.map((name) => [name, 'pending'])),
+    sections: Object.fromEntries(PROJECT_REQUIREMENTS_SECTION_NAMES.map((name) => [name, 'pending'])),
     steps: steps.map((step, index) => ({
       step: index + 1,
       role: step.role,
@@ -5077,6 +5151,57 @@ async function updateProjectRequirementsManifest(manifestPath, updates = {}) {
   }
 }
 
+function buildProjectRequirementsTerminalManifestPatch(status = 'completed', extra = {}) {
+  const normalizedStatus = ['completed', 'failed', 'aborted'].includes(String(status || '').toLowerCase())
+    ? String(status).toLowerCase()
+    : 'completed';
+  return {
+    status: normalizedStatus,
+    failedCount: normalizedStatus === 'completed' ? 0 : Number(extra.failedCount || 1),
+    sections: Object.fromEntries(PROJECT_REQUIREMENTS_SECTION_NAMES.map((name) => [
+      name,
+      normalizedStatus === 'completed' ? 'completed' : normalizedStatus
+    ])),
+    steps: [{
+      step: 1,
+      role: 'coder',
+      title: 'Generate project requirements report',
+      status: normalizedStatus === 'completed' ? 'done' : normalizedStatus
+    }],
+    ...extra
+  };
+}
+
+async function readProjectRequirementsReportState(reportPath, outputFormat = 'html') {
+  const absoluteReportPath = path.resolve(process.cwd(), reportPath);
+  const text = await fs.readFile(absoluteReportPath, 'utf8');
+  const stat = await fs.stat(absoluteReportPath);
+  const normalizedFormat = outputFormat === 'md' ? 'md' : 'html';
+  let looksComplete = false;
+
+  if (normalizedFormat === 'md') {
+    looksComplete = text.length > 5000
+      && !/PROJECT_REQUIREMENTS_MD_TEMPLATE/.test(text)
+      && !/<!--\s*Fill with /i.test(text)
+      && !/\|\s*TBD\s*\|\s*TBD\s*\|\s*TBD\s*\|/i.test(text);
+  } else {
+    const filledMarkers = ['REQUIREMENTS_SUMMARY', 'REQUIREMENTS_INTERFACE_INVENTORY', 'REQUIREMENTS_API_CARDS']
+      .filter((marker) => {
+        const match = text.match(new RegExp(`<!--\\s*${marker}\\s*-->([\\s\\S]*?)<!--\\s*/${marker}\\s*-->`, 'i'));
+        const body = String(match?.[1] || '').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
+        return body.length > 80 && !/待生成|TODO|TBD/i.test(body);
+      }).length;
+    looksComplete = filledMarkers >= 2;
+  }
+
+  return {
+    exists: true,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    looksComplete
+  };
+}
+
 async function runProjectRequirementsPipeline({
   custom,
   parsedInput,
@@ -5088,15 +5213,15 @@ async function runProjectRequirementsPipeline({
   signal,
   onSubSessionActive
 }) {
-  const options = parseProjectRequirementsOptions(parsedInput.args);
-  const renderedSkillPrompt = await expandFileMentions(renderCommandPrompt(custom, options.focusArgs), process.cwd());
+  const defaultOutputFormat = getProjectRequirementsDefaultOutputFormat(custom);
+  const options = parseProjectRequirementsOptions(parsedInput.args, { defaultOutputFormat });
+  const renderedSkillPrompt = await renderProjectRequirementsSkillPrompt(custom, options);
   const userFocus = options.raw;
   const goal = userFocus ? `project requirements report: ${userFocus}` : 'project requirements report';
   const reportSlug = formatLocalDateTimeSlug();
-  const reportPath = `docs/requirements/${reportSlug}-project-requirements.html`;
-  const companionPath = `docs/requirements/${reportSlug}-project-requirements.md`;
+  const { reportPath, companionPath, outputFormat } = getProjectRequirementsOutputPaths(reportSlug, options.outputFormat);
   const manifestPath = `docs/requirements/${reportSlug}-project-requirements.manifest.json`;
-  const steps = buildProjectRequirementsSteps(renderedSkillPrompt, parsedInput.args, config, reportSlug);
+  const steps = buildProjectRequirementsSteps(renderedSkillPrompt, parsedInput.args, config, reportSlug, defaultOutputFormat);
   const planFile = await writeMarkdownInProjectDir(
     'plans',
     'project-requirements-pipeline',
@@ -5112,12 +5237,14 @@ async function runProjectRequirementsPipeline({
     goal,
     steps,
     depth: options.depth,
+    outputFormat,
     config
   });
   const planState = {
     status: 'approved',
     source: 'project-requirements',
     depth: options.depth,
+    outputFormat,
     goal,
     filePath: planFile,
     summary: `Dedicated ${options.depth} sub-agent pipeline for project requirements report generation.`,
@@ -5191,8 +5318,11 @@ async function runProjectRequirementsPipeline({
     ? execution.results.filter((item) => item.failed).length
     : 0;
   await updateProjectRequirementsManifest(manifestPath, {
-    status: execution.aborted ? 'aborted' : failedCount > 0 ? 'failed' : 'completed',
-    failedCount
+    ...(execution.aborted
+      ? buildProjectRequirementsTerminalManifestPatch('aborted', { failedCount })
+      : failedCount > 0
+        ? buildProjectRequirementsTerminalManifestPatch('failed', { failedCount })
+        : buildProjectRequirementsTerminalManifestPatch('completed'))
   });
   const text = [
     execution.text || '',
@@ -5202,7 +5332,8 @@ async function runProjectRequirementsPipeline({
     `Report Path: ${reportPath}`,
     `Manifest: ${manifestPath}`,
     `Steps: ${steps.length} total`,
-    `Failed: ${failedCount}`
+    `Failed: ${failedCount}`,
+    `Output Format: ${outputFormat}`
   ]
     .filter(Boolean)
     .join('\n');
@@ -5230,13 +5361,13 @@ async function runProjectRequirementsSingleAgent({
   onCompactedUpdate,
   codeWikiGenerate = false
 }) {
-  const options = parseProjectRequirementsOptions(parsedInput.args);
-  const renderedSkillPrompt = await expandFileMentions(renderCommandPrompt(custom, options.focusArgs), process.cwd());
+  const defaultOutputFormat = getProjectRequirementsDefaultOutputFormat(custom);
+  const options = parseProjectRequirementsOptions(parsedInput.args, { defaultOutputFormat });
+  const renderedSkillPrompt = await renderProjectRequirementsSkillPrompt(custom, options);
   const userFocus = options.raw;
   const goal = userFocus ? `project requirements report: ${userFocus}` : 'project requirements report';
   const reportSlug = formatLocalDateTimeSlug();
-  const reportPath = `docs/requirements/${reportSlug}-project-requirements.html`;
-  const companionPath = `docs/requirements/${reportSlug}-project-requirements.md`;
+  const { reportPath, companionPath, outputFormat } = getProjectRequirementsOutputPaths(reportSlug, options.outputFormat);
   const manifestPath = `docs/requirements/${reportSlug}-project-requirements.manifest.json`;
   const planFile = await writeMarkdownInProjectDir(
     'plans',
@@ -5248,7 +5379,8 @@ async function runProjectRequirementsSingleAgent({
       `Optional Companion: ${companionPath}`,
       '',
       'Runner: single agent',
-      `Depth: ${options.depth}`
+      `Depth: ${options.depth}`,
+      `Output Format: ${outputFormat}`
     ].join('\n'),
     'project-requirements',
     currentSession.id
@@ -5262,15 +5394,22 @@ async function runProjectRequirementsSingleAgent({
     goal,
     steps,
     depth: options.depth,
+    outputFormat,
     config
   });
+  const htmlOutput = outputFormat === 'html';
   const reportContract = [
     userFocus ? `User request/focus: ${userFocus}` : 'User request/focus: full workspace requirements report.',
     `Reply language: write generated report prose, UI labels inserted into the report, review notes, and final user-facing status in ${getReplyLanguageName(config)} unless the user explicitly requested a different language.`,
+    `Requested output format: ${outputFormat}.`,
     `Primary report path: ${reportPath}`,
-    `Optional companion Markdown path: ${companionPath}`,
-    'A pre-created HTML shell already exists at the primary report path.',
-    'Fill or replace only the named REQUIREMENTS_* marker sections in that shell instead of rewriting unrelated shell CSS, JavaScript, navigation, or metadata.',
+    outputFormat === 'html' ? `Optional companion Markdown path: ${companionPath}` : `Optional companion HTML path: ${companionPath}`,
+    htmlOutput
+      ? 'A pre-created HTML shell already exists at the primary report path.'
+      : 'A pre-created Markdown template already exists at the primary report path.',
+    htmlOutput
+      ? 'Fill or replace only the named REQUIREMENTS_* marker sections in that shell instead of rewriting unrelated shell CSS, JavaScript, navigation, or metadata.'
+      : 'Fill every named REQUIREMENTS_* marker section in the Markdown template at the primary report path. Use headings, tables, lists, and evidence paths. Remove template-only comments before final delivery.',
     renderProjectRequirementsSectionContract(options.ignoredSections),
     'Use one coherent agent pass: inspect the project, build the evidence map, decompose major APIs/interfaces, write the report, and do a final self-check before answering.',
     'Prefer a complete, evidence-backed report over a rigid sub-agent handoff. If the project is too large, cover the most important entry points first and clearly list gaps.',
@@ -5305,24 +5444,36 @@ async function runProjectRequirementsSingleAgent({
 
   try {
     const transientSession = codeWikiGenerate ? structuredClone(currentSession) : currentSession;
+    const agentConfig = codeWikiGenerate
+      ? {
+          ...config,
+          execution: {
+            ...(config.execution || {}),
+            approval_mode: 'full_access'
+          }
+        }
+      : config;
     const result = await askModel({
       text: parsedInput.full ? `/${parsedInput.full}` : `/${custom.name}`,
       modelText: [reportContract, 'Skill instructions:', renderedSkillPrompt].join('\n\n'),
       session: transientSession,
-      config,
+      config: agentConfig,
       model,
       systemPrompt,
       onAgentEvent,
       requestToolApproval,
       executionMode: 'normal',
+      allowedTools: codeWikiGenerate ? CODEWIKI_GENERATE_TOOLS : undefined,
+      alwaysAllowTools: codeWikiGenerate ? CODEWIKI_GENERATE_TOOLS : undefined,
       signal,
       compactedForModel: codeWikiGenerate ? structuredClone(compactedForModel) : compactedForModel,
       onCompactedUpdate: codeWikiGenerate ? null : onCompactedUpdate,
       persistSession: !codeWikiGenerate
     });
     await updateProjectRequirementsManifest(manifestPath, {
-      status: result?.aborted ? 'aborted' : 'completed',
-      failedCount: 0
+      ...(result?.aborted
+        ? buildProjectRequirementsTerminalManifestPatch('aborted', { failedCount: 1 })
+        : buildProjectRequirementsTerminalManifestPatch('completed'))
     });
     if (onAgentEvent) {
       onAgentEvent({
@@ -5346,15 +5497,17 @@ async function runProjectRequirementsSingleAgent({
       `Plan File: ${planFile}`,
       `Report Path: ${reportPath}`,
       `Manifest: ${manifestPath}`,
-      'Runner: single agent'
+      'Runner: single agent',
+      `Output Format: ${outputFormat}`
     ].filter(Boolean).join('\n');
     return { type: 'assistant', text, planFile, reportPath, manifestPath, aborted: !!result?.aborted };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await updateProjectRequirementsManifest(manifestPath, {
-      status: 'failed',
-      failedCount: 1,
-      error: message
+      ...buildProjectRequirementsTerminalManifestPatch('failed', {
+        failedCount: 1,
+        error: message
+      })
     }).catch(() => {});
     if (onAgentEvent) {
       onAgentEvent({ type: 'skill:error', name: custom.name, summary: message });
@@ -6355,18 +6508,6 @@ export async function createChatRuntime({
       }
       const specState = { ...currentSession.planState };
       const specText = String(specState.specText || '').trim() || buildSpecTemplate(specState.goal || 'spec');
-      const missingHeadings = missingSpecHeadings(specText);
-      if (!saveOnly && missingHeadings.length > 0) {
-        const text = `Spec is incomplete. Missing required sections: ${missingHeadings.join(', ')}. Edit the spec before approving.`;
-        await persistLocalExchange('', text, { includeUser: false });
-        if (onAgentEvent) {
-          onAgentEvent({
-            type: 'spec:pending_approval',
-            spec: buildPendingSpecSnapshot(currentSession.planState)
-          });
-        }
-        return { type: 'system', text };
-      }
       const specTitle = extractSpecTitle(specText, specState.goal || 'spec');
       const specPath = String(specState.specPath || '').trim() || await writeMarkdownInProjectDir(
         'specs',
@@ -6486,7 +6627,7 @@ export async function createChatRuntime({
         '- Use the CodeWiki role regardless of the user-selected global soul. Tone is the default Codemini tone: clear, concise, and technical.',
         '- Use read-only project inspection tools when evidence is needed.',
         '- You may modify files only when the user explicitly asks you to add or edit code comments. In that case, use add_code_comment or update_code_comment only, and never change executable code.',
-        '- Do not use shell commands, edit/write/delete tools, update plans, generate reports, or write memories.',
+        '- Do not use shell commands, edit/create/delete tools, update plans, generate reports, or write memories.',
         '- Be concise and cite relevant files or report sections when useful.'
       ].join('\n\n');
       const transientSession = structuredClone(currentSession);
@@ -7364,8 +7505,9 @@ export async function createChatRuntime({
       if (custom.metadata.type === 'skill' && !isSkillEnabled(config, custom.name, custom)) {
         return { type: 'system', text: `Skill is disabled: ${custom.name}` };
       }
-      if (custom.metadata.type === 'skill' && custom.name === 'project-requirements') {
-        const projectRequirementsOptions = parseProjectRequirementsOptions(parsedInput.args);
+      if (custom.metadata.type === 'skill' && (custom.name === 'project-requirements' || custom.name === 'project-requirements-md')) {
+        const defaultOutputFormat = getProjectRequirementsDefaultOutputFormat(custom);
+        const projectRequirementsOptions = parseProjectRequirementsOptions(parsedInput.args, { defaultOutputFormat });
         if (codeWikiGenerate || projectRequirementsOptions.runner === 'agent') {
           return await runProjectRequirementsSingleAgent({
             custom,
@@ -7375,7 +7517,7 @@ export async function createChatRuntime({
             model,
             systemPrompt: activeReplySystemPrompt,
             onAgentEvent,
-            // CodeWiki single-agent 使用完全访问模式，不弹审阅框
+            // CodeWiki generation uses scoped full-access inside runProjectRequirementsSingleAgent.
             requestToolApproval: codeWikiGenerate ? null : activeRequestToolApproval,
             signal,
             compactedForModel,

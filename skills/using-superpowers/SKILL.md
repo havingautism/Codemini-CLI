@@ -38,7 +38,8 @@ Codemini ships a compact built-in skill set focused on day-to-day development:
 | `requesting-code-review` | Before merging or when a plan/change needs pressure testing. |
 | `receiving-code-review` | When acting on review feedback. |
 | `using-git-worktrees` | When isolated feature work would reduce risk. |
-| `project-requirements` | When explicitly generating a project requirements / CodeWiki report. |
+| `project-requirements` | When explicitly generating an HTML project requirements / CodeWiki report. |
+| `project-requirements-md` | When explicitly generating a Markdown project requirements / CodeWiki report. |
 
 ## The Rule
 

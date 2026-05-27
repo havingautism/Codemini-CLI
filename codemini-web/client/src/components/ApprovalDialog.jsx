@@ -6,7 +6,7 @@ function detectVariant(toolName, details) {
   if (toolName === 'delete') return 'delete';
   if (toolName === 'run') return 'run';
   if (toolName === 'edit') return 'edit';
-  if (toolName === 'write') return 'write';
+  if (toolName === 'create') return 'create';
   if (details?.planApproval) return 'plan';
   if (details?.reflectApproval) return 'reflect';
   return 'generic';
@@ -78,10 +78,10 @@ function ApprovalBody({ variant, args, details }) {
       </>
     );
   }
-  if (variant === 'write') {
+  if (variant === 'create') {
     return (
       <>
-        <DetailRow label={t('approvalFieldTool')} value="write" />
+        <DetailRow label={t('approvalFieldTool')} value="create" />
         <DetailRow label={t('approvalFieldFile')} value={parsed.file || parsed.path || '-'} />
         <PreviewRow label={t('approvalFieldContent')} value={parsed.content || parsed.text || parsed.body} />
       </>

@@ -63,6 +63,13 @@
       "triggers": [],
       "enabled": true,
       "priority": 50
+    },
+    "project-requirements-md": {
+      "description": "Create a Markdown project requirements report with repository inspection and structured output artifacts.",
+      "mode": "manual",
+      "triggers": [],
+      "enabled": true,
+      "priority": 50
     }
   }
 }

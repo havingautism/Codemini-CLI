@@ -965,6 +965,7 @@ export function AppProvider({ children }) {
     try {
       const rs = await api.fetchState();
       const busy = !!rs.busy;
+      const codeWikiGenerating = !!rs.codeWikiGenerating;
       setState((prev) => ({
         ...prev,
         runtimeState: rs,
@@ -977,6 +978,9 @@ export function AppProvider({ children }) {
         live: busy || prev.live,
         stage: busy ? "thinking" : prev.stage,
         stageLabel: busy ? t("waitingResponse") : prev.stageLabel,
+        codewikiGeneration: codeWikiGenerating
+          ? { status: "running", updatedAt: new Date().toISOString(), error: "" }
+          : prev.codewikiGeneration,
         messages: rs?.pendingPlanApproval
           ? prev.messages
           : removeTransientMessages(prev.messages, "plan-waiting-review"),
@@ -2202,17 +2206,24 @@ export function AppProvider({ children }) {
             event.name ||
             stateRef.current.stageLabel ||
             t("generatingCodeWiki");
+          const terminalStatus = ["done", "failed", "aborted"].includes(
+            String(event.status || "").toLowerCase(),
+          );
           setState((prev) => ({
             ...prev,
-            stage: "tooling",
-            live: true,
-            busy: true,
-            stageLabel: label,
+            stage: terminalStatus ? "idle" : "tooling",
+            live: terminalStatus ? false : true,
+            busy: terminalStatus ? false : true,
+            stageLabel: terminalStatus ? "" : label,
             planSteps: applyCodeWikiProgressToSteps(prev.planSteps, event),
             codewikiGeneration: {
-              status: "running",
+              status: terminalStatus
+                ? (String(event.status).toLowerCase() === "failed" ? "error" : "done")
+                : "running",
               updatedAt: event.timestamp || new Date().toISOString(),
-              error: "",
+              error: terminalStatus && String(event.status).toLowerCase() === "failed"
+                ? label
+                : "",
             },
           }));
           break;

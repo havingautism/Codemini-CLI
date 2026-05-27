@@ -119,7 +119,7 @@ function usePatchThemeType() {
 }
 
 function getFileToolMeta(toolName, args, result, summary, fileChange, resultMeta, fileChanges) {
-  if (!["edit", "write", "delete"].includes(toolName)) return null;
+  if (!["edit", "create", "delete"].includes(toolName)) return null;
   const parsedArgs = parseMaybeJson(args) || {};
   const parsedResult = {
     ...(parseMaybeJson(result) || {}),
@@ -177,7 +177,7 @@ function getFileToolMeta(toolName, args, result, summary, fileChange, resultMeta
     action: String(
       parsedResult.action ||
         structuredChange.action ||
-        (toolName === "write" ? "write" : toolName),
+        (toolName === "create" ? "create" : toolName),
     ),
     added,
     removed,

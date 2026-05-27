@@ -7,14 +7,14 @@ import { grepPresenter } from './tool-narration/presenters/grep.js';
 import { listPresenter } from './tool-narration/presenters/list.js';
 import { readPresenter } from './tool-narration/presenters/read.js';
 import { runPresenter } from './tool-narration/presenters/run.js';
-import { writePresenter } from './tool-narration/presenters/write.js';
+import { createPresenter } from './tool-narration/presenters/create.js';
 
 const BASE_PRESENTERS = {
   read: readPresenter,
   list: listPresenter,
   glob: globPresenter,
   grep: grepPresenter,
-  write: writePresenter,
+  create: createPresenter,
   edit: editPresenter,
   run: runPresenter
 };

@@ -234,6 +234,7 @@ const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.json': 'application/json',
+  '.md': 'text/markdown; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ico': 'image/x-icon'
@@ -292,12 +293,12 @@ function buildCodeWikiAskPrompt({ question, reportPath, projectDir, replyLanguag
   const historyText = buildCodeWikiHistoryContext(history, replyLanguage);
   if (getReplyLanguage(replyLanguage) === 'en') {
     return [
-      'Answer the following question based on the current project and the CodeWiki / project-requirements HTML report.',
+      'Answer the following question based on the current project and the CodeWiki / project-requirements report.',
       `Project path: ${projectDir}`,
       `Report path: ${reportPath}`,
       historyText,
       'Requirements:',
-      '- Prefer reading and citing the HTML report above.',
+      '- Prefer reading and citing the report above.',
       '- If the report is insufficient, use read-only project inspection to gather supporting evidence.',
       '- Do not modify files unless the user explicitly asks you to add or edit code comments. If they do, only add or replace comment lines and do not change executable code.',
       '- Do not generate a new report or write memory.',
@@ -307,12 +308,12 @@ function buildCodeWikiAskPrompt({ question, reportPath, projectDir, replyLanguag
     ].filter(Boolean).join('\n');
   }
   return [
-    '请基于当前项目和 CodeWiki / project-requirements HTML 报告回答下面的问题。',
+    '请基于当前项目和 CodeWiki / project-requirements 报告回答下面的问题。',
     `项目路径：${projectDir}`,
     `报告路径：${reportPath}`,
     historyText,
     '要求：',
-    '- 优先读取并参考上述 HTML 报告。',
+    '- 优先读取并参考上述报告。',
     '- 如果报告信息不足，可以只读检索项目文件补充证据。',
     '- 除非用户明确要求添加或编辑代码注释，否则不要修改文件；如果需要处理注释，只能添加或替换注释行，不能改变可执行代码。',
     '- 不要生成新报告，不要写入记忆。',
@@ -529,7 +530,7 @@ async function existingDirectoryForHint(rawHint) {
   return '';
 }
 
-const CODEWIKI_REPORT_RE = /^[^/\\]+-project-requirements\.html$/;
+const CODEWIKI_REPORT_RE = /^[^/\\]+-project-requirements\.(?:html|md)$/;
 
 function getRequirementsDir(projectDir) {
   return path.join(projectDir, 'docs', 'requirements');
@@ -541,8 +542,12 @@ function isCodeWikiReportFile(fileName) {
 
 function codeWikiReportTitle(fileName) {
   return String(fileName || '')
-    .replace(/-project-requirements\.html$/, '')
+    .replace(/-project-requirements\.(?:html|md)$/, '')
     .replace(/-/g, ' ');
+}
+
+function codeWikiReportFormat(fileName) {
+  return String(fileName || '').toLowerCase().endsWith('.md') ? 'md' : 'html';
 }
 
 function clipGraphList(values, max = 12) {
@@ -996,11 +1001,26 @@ async function main() {
           if (!entry.isFile() || !isCodeWikiReportFile(entry.name)) continue;
           const reportPath = path.join(requirementsDir, entry.name);
           const stat = await fs.stat(reportPath);
+          let manifestStatus = '';
+          let manifestUpdatedAt = '';
+          try {
+            const baseName = entry.name.replace(/\.(?:html|md)$/i, '');
+            const manifestPath = path.join(requirementsDir, `${baseName}.manifest.json`);
+            const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+            manifestStatus = typeof manifest?.status === 'string' ? manifest.status : '';
+            manifestUpdatedAt = typeof manifest?.updatedAt === 'string' ? manifest.updatedAt : '';
+          } catch {
+            manifestStatus = '';
+            manifestUpdatedAt = '';
+          }
           reports.push({
             file: entry.name,
             title: codeWikiReportTitle(entry.name),
+            format: codeWikiReportFormat(entry.name),
             size: stat.size,
-            mtime: stat.mtime.toISOString()
+            mtime: stat.mtime.toISOString(),
+            manifestStatus,
+            manifestUpdatedAt
           });
         }
         reports.sort((a, b) => new Date(b.mtime) - new Date(a.mtime));
@@ -1078,10 +1098,13 @@ async function main() {
         jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
         return;
       }
-      const { depth } = await readBody(req);
+      const { depth, format } = await readBody(req);
       const normalizedDepth = ['fast', 'standard', 'deep'].includes(String(depth || '').toLowerCase())
         ? String(depth).toLowerCase()
         : 'standard';
+      const normalizedFormat = ['html', 'md'].includes(String(format || '').toLowerCase())
+        ? String(format).toLowerCase()
+        : 'html';
       const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
       if (codeWikiProjectDir !== currentProjectDir) {
         const { runtime } = await buildRuntimeForSession({
@@ -1091,7 +1114,7 @@ async function main() {
         await bridge.switchRuntime(runtime);
         currentProjectDir = process.cwd();
       }
-      const result = bridge.handleCodeWikiGenerate(`/project-requirements --${normalizedDepth}`);
+      const result = bridge.handleCodeWikiGenerate(`/project-requirements --${normalizedDepth} --${normalizedFormat}`);
       jsonResponse(res, result);
       return;
     }

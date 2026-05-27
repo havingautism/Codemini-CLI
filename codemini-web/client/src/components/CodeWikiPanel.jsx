@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import {
   deleteCodeWikiReport,
+  fetchCodeWikiReportText,
   fetchCodeWikiSymbolGraph,
   fetchCodeWikiReports,
   generateCodeWikiReport,
@@ -28,10 +29,12 @@ import {
 import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { MessageBubble } from "@/components/MessageBubble.jsx";
+import { StreamdownRenderer } from "@/components/StreamdownRenderer.jsx";
 const CODEWIKI_QA_WIDTH_KEY = "codemini:codewiki:qa-width";
 const CODEWIKI_QA_MIN_WIDTH = 320;
 const CODEWIKI_QA_MAX_WIDTH = 760;
 const CODEWIKI_QA_DEFAULT_WIDTH = 420;
+const CODEWIKI_GENERATION_POLL_MS = 4000;
 const CODEWIKI_SYMBOL_GRAPH_ENABLED = false;
 
 function getInitialQaWidth() {
@@ -47,6 +50,13 @@ function getGenerationDepths() {
     { value: "fast", label: t("generationDepthFast") },
     { value: "standard", label: t("generationDepthStandard") },
     { value: "deep", label: t("generationDepthDeep") },
+  ];
+}
+
+function getGenerationFormats() {
+  return [
+    { value: "html", label: t("reportFormatHtml") },
+    { value: "md", label: t("reportFormatMd") },
   ];
 }
 
@@ -493,6 +503,7 @@ export function CodeWikiPanel({
   const [graphError, setGraphError] = useState("");
   const [symbolGraph, setSymbolGraph] = useState(null);
   const [localGenerating, setLocalGenerating] = useState(false);
+  const [manifestSettledGeneration, setManifestSettledGeneration] = useState(false);
   const [error, setError] = useState("");
   const [frameError, setFrameError] = useState(false);
   const [question, setQuestion] = useState("");
@@ -501,11 +512,19 @@ export function CodeWikiPanel({
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deletingReport, setDeletingReport] = useState(false);
   const [generationDepth, setGenerationDepth] = useState("standard");
+  const [generationFormat, setGenerationFormat] = useState("html");
+  const [markdownReport, setMarkdownReport] = useState({
+    file: "",
+    text: "",
+    loading: false,
+    error: "",
+  });
   const [chatMessages, setChatMessages] = useState([]);
   const [asking, setAsking] = useState(false);
   const [qaWidth, setQaWidth] = useState(getInitialQaWidth);
   const [qaResizing, setQaResizing] = useState(false);
   const chatScrollRef = useRef(null);
+  const generationStartedAtRef = useRef(0);
   const qaResizeRef = useRef({
     startX: 0,
     startWidth: CODEWIKI_QA_DEFAULT_WIDTH,
@@ -515,11 +534,15 @@ export function CodeWikiPanel({
     () => reports.find((report) => report.file === selectedFile) || null,
     [reports, selectedFile],
   );
+  const selectedFormat = String(
+    selected?.format || (selected?.file?.toLowerCase().endsWith(".md") ? "md" : "html"),
+  ).toLowerCase();
+  const selectedIsMarkdown = selectedFormat === "md";
   const generationState = generationStatus?.status || "idle";
   const generationRunning = generationState === "running";
   const generationDone = generationState === "done";
   const generationError = generationState === "error";
-  const generating = localGenerating || generationRunning;
+  const generating = (localGenerating || generationRunning) && !manifestSettledGeneration;
 
   const reportUrl = selected
     ? `/api/codewiki/report/${encodeURIComponent(selected.file)}${projectKey ? `?project=${encodeURIComponent(projectKey)}` : ""}`
@@ -540,8 +563,8 @@ export function CodeWikiPanel({
   }, [projectKey]);
 
   const loadReports = useCallback(
-    async ({ preferNewest = false } = {}) => {
-      setLoading(true);
+    async ({ preferNewest = false, silent = false } = {}) => {
+      if (!silent) setLoading(true);
       setError("");
       try {
         const data = await fetchCodeWikiReports(projectKey);
@@ -556,10 +579,12 @@ export function CodeWikiPanel({
             return current;
           return nextReports[0]?.file || "";
         });
+        return nextReports;
       } catch (err) {
         setError(err?.message || t("failedToLoad"));
+        return [];
       } finally {
-        setLoading(false);
+        if (!silent) setLoading(false);
       }
     },
     [projectKey],
@@ -572,6 +597,11 @@ export function CodeWikiPanel({
     setFrameError(false);
     setQuestion("");
     setLastQuestion("");
+    generationStartedAtRef.current = 0;
+    setLocalGenerating(false);
+    setSawRuntimeBusy(false);
+    setManifestSettledGeneration(false);
+    setMarkdownReport({ file: "", text: "", loading: false, error: "" });
     setChatMessages([]);
     setAsking(false);
     setSymbolGraph(null);
@@ -599,14 +629,18 @@ export function CodeWikiPanel({
   useEffect(() => {
     if (!generationDone) return;
     loadReports({ preferNewest: true });
+    generationStartedAtRef.current = 0;
     setLocalGenerating(false);
     setSawRuntimeBusy(false);
+    setManifestSettledGeneration(false);
   }, [generationDone, loadReports]);
 
   useEffect(() => {
     if (!generationError) return;
+    generationStartedAtRef.current = 0;
     setLocalGenerating(false);
     setSawRuntimeBusy(false);
+    setManifestSettledGeneration(false);
     if (generationStatus?.error) setError(generationStatus.error);
   }, [generationError, generationStatus?.error]);
 
@@ -614,9 +648,86 @@ export function CodeWikiPanel({
     if (!localGenerating || busy || generationRunning || !sawRuntimeBusy)
       return;
     loadReports({ preferNewest: true });
+    generationStartedAtRef.current = 0;
     setLocalGenerating(false);
     setSawRuntimeBusy(false);
+    setManifestSettledGeneration(true);
   }, [busy, generationRunning, loadReports, localGenerating, sawRuntimeBusy]);
+
+  useEffect(() => {
+    if (!localGenerating) return undefined;
+
+    let cancelled = false;
+    const isReportFromCurrentRun = (report) => {
+      const startedAt = generationStartedAtRef.current;
+      if (!startedAt || !report) return true;
+      const reportTime = new Date(report.manifestUpdatedAt || report.mtime || 0).getTime();
+      return Number.isFinite(reportTime) && reportTime >= startedAt - 2000;
+    };
+    const isTerminalStatus = (status) =>
+      ["completed", "failed", "aborted"].includes(String(status || "").toLowerCase());
+
+    const poll = async () => {
+      const nextReports = await loadReports({ preferNewest: true, silent: true });
+      if (cancelled) return;
+      const newest = Array.isArray(nextReports) ? nextReports[0] : null;
+      if (newest && isReportFromCurrentRun(newest) && isTerminalStatus(newest.manifestStatus)) {
+        generationStartedAtRef.current = 0;
+        setLocalGenerating(false);
+        setSawRuntimeBusy(false);
+        setManifestSettledGeneration(true);
+        if (String(newest.manifestStatus).toLowerCase() === "failed") {
+          setError(t("reportLoadFailed"));
+        }
+      }
+    };
+
+    const timer = window.setInterval(poll, CODEWIKI_GENERATION_POLL_MS);
+    poll();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [loadReports, localGenerating]);
+
+  useEffect(() => {
+    if (!selected || !selectedIsMarkdown) {
+      setMarkdownReport({ file: "", text: "", loading: false, error: "" });
+      return;
+    }
+
+    let cancelled = false;
+    setMarkdownReport({
+      file: selected.file,
+      text: "",
+      loading: true,
+      error: "",
+    });
+
+    fetchCodeWikiReportText(selected.file, projectKey)
+      .then((text) => {
+        if (cancelled) return;
+        setMarkdownReport({
+          file: selected.file,
+          text,
+          loading: false,
+          error: "",
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setMarkdownReport({
+          file: selected.file,
+          text: "",
+          loading: false,
+          error: err?.message || t("reportLoadFailed"),
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projectKey, selected?.file, selectedIsMarkdown]);
 
   useEffect(() => {
     window.localStorage.setItem(CODEWIKI_QA_WIDTH_KEY, String(qaWidth));
@@ -668,14 +779,26 @@ export function CodeWikiPanel({
     setError("");
     setLocalGenerating(true);
     setSawRuntimeBusy(false);
+    setManifestSettledGeneration(false);
+    generationStartedAtRef.current = Date.now();
     try {
-      const result = await generateCodeWikiReport(generationDepth, projectKey);
+      const result = await generateCodeWikiReport(
+        generationDepth,
+        projectKey,
+        generationFormat,
+      );
       if (result?.error) {
+        generationStartedAtRef.current = 0;
         setLocalGenerating(false);
+        setSawRuntimeBusy(false);
+        setManifestSettledGeneration(false);
         setError(result.message || t("failedToStart"));
       }
     } catch (err) {
+      generationStartedAtRef.current = 0;
       setLocalGenerating(false);
+      setSawRuntimeBusy(false);
+      setManifestSettledGeneration(false);
       setError(err?.message || t("failedToStart"));
     }
   };
@@ -772,7 +895,7 @@ export function CodeWikiPanel({
     }
   };
 
-  const isWorking = busy || generating;
+  const isWorking = generating || (busy && !manifestSettledGeneration && !generationDone);
   const askInputLocked = isWorking || asking;
 
   return (
@@ -793,7 +916,7 @@ export function CodeWikiPanel({
             >
               {projectCwd || t("currentProject")}
             </p>
-            <div className="mt-4 grid grid-cols-3 gap-1 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1">
+            {false && (<div className="mt-4 grid grid-cols-3 gap-1 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1">
               {getGenerationDepths().map((item) => (
                 <button
                   key={item.value}
@@ -805,6 +928,23 @@ export function CodeWikiPanel({
                   )}
                   disabled={isWorking}
                   onClick={() => setGenerationDepth(item.value)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>)}
+            <div className="mt-2 grid grid-cols-2 gap-1 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1">
+              {getGenerationFormats().map((item) => (
+                <button
+                  key={item.value}
+                  type="button"
+                  className={cn(
+                    "h-7 rounded-md text-[12px] text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-60",
+                    generationFormat === item.value &&
+                      "bg-(--bg-active) text-(--text-primary)",
+                  )}
+                  disabled={isWorking}
+                  onClick={() => setGenerationFormat(item.value)}
                 >
                   {item.label}
                 </button>
@@ -919,6 +1059,10 @@ export function CodeWikiPanel({
                     <span className="min-w-0 flex-1 break-words">
                       {report.file}
                     </span>
+                    <span className="mt-0.5 shrink-0 rounded-md border border-(--border-default) px-1.5 py-0.5 text-[10px] uppercase text-(--text-muted)">
+                      {report.format ||
+                        (report.file?.endsWith(".md") ? "md" : "html")}
+                    </span>
                     <Popover>
                       <PopoverTrigger asChild>
                         <button
@@ -1015,7 +1159,7 @@ export function CodeWikiPanel({
                   )}
                   {generating ? t("generating") : t("generateNew")}
                 </button>
-                <div className="mt-3 grid w-full max-w-xs grid-cols-3 gap-1 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1">
+                {false && (<div className="mt-3 grid w-full max-w-xs grid-cols-3 gap-1 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1">
                   {getGenerationDepths().map((item) => (
                     <button
                       key={item.value}
@@ -1027,6 +1171,23 @@ export function CodeWikiPanel({
                       )}
                       disabled={isWorking}
                       onClick={() => setGenerationDepth(item.value)}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>)}
+                <div className="mt-2 grid w-full max-w-xs grid-cols-2 gap-1 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1">
+                  {getGenerationFormats().map((item) => (
+                    <button
+                      key={item.value}
+                      type="button"
+                      className={cn(
+                        "h-7 rounded-md text-[12px] text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-60",
+                        generationFormat === item.value &&
+                          "bg-(--bg-active) text-(--text-primary)",
+                      )}
+                      disabled={isWorking}
+                      onClick={() => setGenerationFormat(item.value)}
                     >
                       {item.label}
                     </button>
@@ -1060,6 +1221,35 @@ export function CodeWikiPanel({
                     </button>
                   </div>
                 ) : selected ? (
+                  selectedIsMarkdown ? (
+                    <div className="h-full overflow-auto bg-(--bg-primary) text-(--text-primary)">
+                      {markdownReport.loading ||
+                      markdownReport.file !== selected.file ? (
+                        <div className="flex h-full items-center justify-center text-[13px] text-(--text-muted)">
+                          <Loader2 size={16} className="mr-2 animate-spin" />
+                          {t("loadingReport")}
+                        </div>
+                      ) : markdownReport.error ? (
+                        <div className="flex h-full flex-col items-center justify-center px-8 text-center">
+                          <AlertCircle
+                            size={28}
+                            className="text-(--text-muted)"
+                          />
+                          <p className="mt-3 text-[13px] text-(--text-secondary)">
+                            {markdownReport.error}
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="codewiki-md-report mx-auto max-w-[1120px] px-8 py-8 max-sm:px-4">
+                          <StreamdownRenderer
+                            text={markdownReport.text || t("reportLoadFailed")}
+                            streaming={false}
+                            className="codewiki-md-report-body text-[14px] leading-7 text-(--text-primary)"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  ) : (
                   <iframe
                     key={selected.file}
                     title={`CodeWiki ${selected.file}`}
@@ -1069,6 +1259,7 @@ export function CodeWikiPanel({
                     onLoad={() => setFrameError(false)}
                     onError={() => setFrameError(true)}
                   />
+                  )
                 ) : (
                   <div className="h-full flex items-center justify-center text-[13px] text-(--text-muted)">
                     <Loader2 size={16} className="mr-2 animate-spin" />
@@ -1106,6 +1297,17 @@ export function CodeWikiPanel({
                 ? t("noQuestionsDuringGeneration")
                 : t("tempReadOnlyQa")}
             </p>
+            {selected && (
+              <p
+                className="mt-2 truncate rounded-md border border-(--border-default) bg-(--bg-primary) px-2 py-1.5 text-[11px] text-(--text-secondary)"
+                title={selected.file}
+              >
+                {t("referenceReport")}{" "}
+                <span className="font-medium text-(--text-primary)">
+                  {selected.file}
+                </span>
+              </p>
+            )}
           </div>
 
           <div
@@ -1120,12 +1322,17 @@ export function CodeWikiPanel({
                     ? t("generatingCodeWiki")
                     : asking || busy
                       ? t("processingQuestion")
-                      : t("canAskAboutProject")}
+                      : selected
+                        ? t("canAskAboutSelectedReport")
+                        : t("canAskAboutProject")}
                 </p>
                 <p className="mt-2 text-[12px] leading-5 text-(--text-muted)">
                   {generating
                     ? t("askAfterGeneration")
-                    : lastQuestion || t("exampleQuestions")}
+                    : lastQuestion ||
+                      (selected
+                        ? `${t("askUsingSelectedReport")} ${selected.file}`
+                        : t("exampleQuestions"))}
                 </p>
               </div>
             ) : (
@@ -1159,7 +1366,9 @@ export function CodeWikiPanel({
                     ? t("generatingCodeWiki")
                     : asking || busy
                       ? t("answering")
-                      : "Ask about this repository"
+                      : selected
+                        ? t("askAboutSelectedReport")
+                        : t("askAboutRepository")
                 }
                 disabled={askInputLocked}
                 className="min-w-0 flex-1 border-0 bg-transparent text-[13px] text-(--text-primary) outline-none placeholder:text-(--text-muted) disabled:opacity-60"

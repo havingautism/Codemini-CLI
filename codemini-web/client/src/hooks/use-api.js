@@ -400,11 +400,20 @@ export async function fetchCodeWikiSymbolGraph(project = '') {
   return res.json();
 }
 
-export async function generateCodeWikiReport(depth = 'standard', project = '') {
+export async function fetchCodeWikiReportText(file, project = '') {
+  const res = await api(`/api/codewiki/report/${encodeURIComponent(file)}${codeWikiProjectQuery(project)}`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.message || 'CodeWiki 文档加载失败');
+  }
+  return res.text();
+}
+
+export async function generateCodeWikiReport(depth = 'standard', project = '', format = 'html') {
   const res = await api(`/api/codewiki/generate${codeWikiProjectQuery(project)}`, {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ depth })
+    body: JSON.stringify({ depth, format })
   });
   return res.json();
 }

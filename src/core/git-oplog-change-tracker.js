@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { normalizePath } from './string-utils.js';
 
 const CHANGE_OPLOG_VERSION = 1;
-const FILE_TOOLS = new Set(['edit', 'write', 'delete']);
+const FILE_TOOLS = new Set(['edit', 'create', 'delete']);
 
 function runGit(args, { cwd, input = null, allowFailure = false, timeoutMs = 120_000 } = {}) {
   return new Promise((resolve, reject) => {

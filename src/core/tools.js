@@ -1040,76 +1040,50 @@ async function writeFile(root, args, config = {}) {
   const normalizedArgs = normalizeWriteArgs(args);
   const rawPath = String(normalizedArgs?.path || '').trim();
   if (!rawPath) {
-    throw new Error('write requires a file path like weather/WeatherForecast.js');
+    throw new Error('create requires a file path like src/app.js');
   }
   if (rawPath === '.' || rawPath === './') {
-    throw new Error('write requires a file path, not the workspace root');
+    throw new Error('create requires a file path, not the workspace root');
   }
   if (normalizedArgs?.content == null) {
-    throw new Error('write requires content. For existing files, use edit with old_text/new_text or pass content with full_file_rewrite=true.');
+    throw new Error('create requires content');
   }
   const target = await resolveInWorkspace(root, rawPath, config);
   try {
     const stat = await fs.stat(target);
     if (stat.isDirectory()) {
-      throw new Error(`write target is a directory: ${rawPath}`);
+      throw new Error(`create target is a directory: ${rawPath}`);
     }
   } catch (error) {
     if (error?.code && error.code !== 'ENOENT') throw error;
   }
-  let before = '';
-  let existed = true;
+  let existed = false;
   try {
-    before = await fs.readFile(target, 'utf8');
+    await fs.readFile(target, 'utf8');
+    existed = true;
   } catch {
-    existed = false;
+    /* file does not exist — expected path */
   }
-  const nextContent = String(normalizedArgs.content ?? '');
-  if (existed && before === nextContent && !normalizedArgs?.append) {
-    return {
-      ok: true,
-      path: rawPath,
-      action: 'unchanged',
-      changed_line: 1,
-      diff_preview: '',
-      lines_added: 0,
-      lines_removed: 0
-    };
-  }
-  if (existed && !normalizedArgs?.append && !normalizedArgs?.full_file_rewrite) {
+  if (existed) {
     throw new Error(
-      `write target exists: ${rawPath}. Use edit for source changes, append=true to append, or full_file_rewrite=true to replace the whole file.`
+      `create target already exists: ${rawPath}. Use edit to modify existing files.`
     );
   }
+  const nextContent = String(normalizedArgs.content ?? '');
   await fs.mkdir(path.dirname(target), { recursive: true });
-  if (normalizedArgs?.append) {
-    await fs.appendFile(target, nextContent, 'utf8');
-  } else {
-    await fs.writeFile(target, nextContent, 'utf8');
-  }
-  const after = normalizedArgs?.append ? `${before}${nextContent}` : nextContent;
-  const beforeLines = splitLines(before);
-  const afterLines = splitLines(after);
-  let changeLine = 0;
-  const scanMax = Math.max(beforeLines.length, afterLines.length);
-  for (let i = 0; i < scanMax; i += 1) {
-    if ((beforeLines[i] || '') !== (afterLines[i] || '')) {
-      changeLine = i + 1;
-      break;
-    }
-  }
-  const changed = countChangedLines(before, after);
+  await fs.writeFile(target, nextContent, 'utf8');
+  const afterLines = splitLines(nextContent);
+  const changed = { added: afterLines.length, removed: 0 };
   return {
     ok: true,
     path: rawPath,
-    action: normalizedArgs?.append ? 'append' : existed ? 'overwrite' : 'create',
-    changed_line: changeLine || Math.max(1, afterLines.length),
-    diff_preview: buildDiffPreview(before, after),
+    action: 'create',
+    changed_line: 1,
+    diff_preview: buildDiffPreview('', nextContent),
     lines_added: changed.added,
     lines_removed: changed.removed
   };
 }
-
 async function prepareDeleteTarget(root, args, config = {}) {
   const normalizedArgs = normalizePathArgs(args, ['file', 'file_path', 'target', 'directory', 'dir']);
   const rawPath = String(normalizedArgs?.path || '').trim();
@@ -2288,11 +2262,10 @@ async function editTarget(root, args, config = {}) {
     return insertRelative(root, { path: file, anchor_text: edit.anchor_text, content: edit.content }, 'insert_after', config);
   }
   if (kind === 'rewrite_file') {
-    return writeFile(root, {
-      path: file,
-      content: edit.new_content ?? edit.content ?? '',
-      full_file_rewrite: true
-    }, config);
+    const state = await getFileState(root, file, config);
+    const afterContent = String(edit.new_content ?? edit.content ?? '');
+    await fs.writeFile(state.target, afterContent, 'utf8');
+    return editResult(file, 'rewrite_file', state.content, afterContent, 1);
   }
   throw new Error(`edit does not support kind: ${kind}`);
 }
@@ -2541,18 +2514,16 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     {
       type: 'function',
       function: {
-        name: 'write',
+        name: 'create',
         description:
-          'Create a new file, append to a file, or perform an explicit whole-file rewrite. Always include path and content; file_path/file are accepted aliases. For existing files, prefer edit after reading the relevant range. Overwriting an existing file requires full_file_rewrite=true.',
+          'Create a new file. Always include path and content; file_path/file are accepted aliases. For modifying existing files, use edit instead. Target must not already exist.',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string', description: 'Required file path like src/app.js or pages/index.html. Never omit this.' },
             file_path: { type: 'string', description: 'Alias for path' },
             file: { type: 'string', description: 'Alias for path' },
-            content: { type: 'string', description: 'Content to write' },
-            append: { type: 'boolean', description: 'Append instead of overwrite' },
-            full_file_rewrite: { type: 'boolean', description: 'Set true for whole-file rewrites' }
+            content: { type: 'string', description: 'File content' }
           },
           required: ['path', 'content']
         }
@@ -3182,10 +3153,10 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       if (result?.path) await refreshProjectFile(result.path);
       return attachBackup(result, backup);
     },
-    write: async (args) => {
+    create: async (args) => {
       await ensureProjectIndex();
-      const writePath = normalizeFilePathValue(args?.path || args?.file || args?.file_path || '', { stripInlineRange: true }).trim();
-      const backup = await backupNonGitPathOnce(writePath);
+      const createPath = normalizeFilePathValue(args?.path || args?.file || args?.file_path || '', { stripInlineRange: true }).trim();
+      const backup = await backupNonGitPathOnce(createPath);
       const result = await writeFile(workspaceRoot, args, config);
       if (result?.path) await refreshProjectFile(result.path);
       return attachBackup(result, backup);
@@ -3553,10 +3524,10 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       return summary + (result.ok !== false ? '' : ` [FAILED: ${result.error || 'unknown'}]`);
     },
 
-    write(result) {
+    create(result) {
       if (!result || typeof result !== 'object') return String(result);
       const p = result.path || '';
-      const action = result.action || 'write';
+      const action = result.action || 'create';
       const line = result.changed_line || 0;
       const backup = result.backupPath
         ? `\nbackup: ${result.backupPath}${result.backupReused ? ' (reused)' : ''}`

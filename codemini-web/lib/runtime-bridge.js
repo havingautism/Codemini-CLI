@@ -276,6 +276,7 @@ export class RuntimeBridge {
   #clients = new Set();
   #approval = new ApprovalManager();
   #busy = false;
+  #codeWikiGenerating = false;
   #startupConsumed = false;
   #uiMessages = [];
   #uiActiveMsgId = null;
@@ -681,12 +682,26 @@ export class RuntimeBridge {
   handleCodeWikiGenerate(line) {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
     this.#busy = true;
+    this.#codeWikiGenerating = true;
     this.#broadcastRuntimeState();
     const emitProgress = (event) => {
-      const progress = toCodeWikiGenerateProgress(event);
-      if (progress) this.#broadcast(progress);
+      try {
+        const progress = toCodeWikiGenerateProgress(event);
+        if (progress) this.#broadcast(progress);
+      } catch {}
     };
+    // Safety timeout: force-reset busy after 10 minutes in case the promise chain stalls
+    const safetyTimer = setTimeout(() => {
+      if (this.#busy) {
+        this.#busy = false;
+        this.#codeWikiGenerating = false;
+        this.#broadcast({ type: 'codewiki:generate_error', message: 'CodeWiki generation timed out' });
+        this.#broadcastRuntimeState();
+      }
+    }, 10 * 60 * 1000);
+    const clearSafetyTimer = () => clearTimeout(safetyTimer);
     this.#runtime.submit(line, emitProgress, { codeWikiGenerate: true }).then((result) => {
+      clearSafetyTimer();
       this.#broadcast({
         type: 'codewiki:generate_done',
         result: {
@@ -696,12 +711,15 @@ export class RuntimeBridge {
         }
       });
     }).catch((err) => {
+      clearSafetyTimer();
       this.#broadcast({
         type: 'codewiki:generate_error',
         message: err?.message || 'CodeWiki generation failed'
       });
     }).finally(() => {
+      clearSafetyTimer();
       this.#busy = false;
+      this.#codeWikiGenerating = false;
       this.#broadcastRuntimeState();
     });
     return { accepted: true };
@@ -810,6 +828,7 @@ export class RuntimeBridge {
       ...serializableState,
       busy: this.#busy,
       requestInFlight: this.#busy,
+      codeWikiGenerating: this.#codeWikiGenerating,
       pendingPlanApproval: this.#busy ? null : serializableState.pendingPlanApproval,
       pendingReflectSkill: this.#busy ? null : serializableState.pendingReflectSkill,
       pendingSpecApproval: this.#busy ? null : serializableState.pendingSpecApproval
