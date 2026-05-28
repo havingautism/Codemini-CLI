@@ -503,7 +503,8 @@ export function CodeWikiPanel({
   const [graphError, setGraphError] = useState("");
   const [symbolGraph, setSymbolGraph] = useState(null);
   const [localGenerating, setLocalGenerating] = useState(false);
-  const [manifestSettledGeneration, setManifestSettledGeneration] = useState(false);
+  const [manifestSettledGeneration, setManifestSettledGeneration] =
+    useState(false);
   const [error, setError] = useState("");
   const [frameError, setFrameError] = useState(false);
   const [question, setQuestion] = useState("");
@@ -535,14 +536,16 @@ export function CodeWikiPanel({
     [reports, selectedFile],
   );
   const selectedFormat = String(
-    selected?.format || (selected?.file?.toLowerCase().endsWith(".md") ? "md" : "html"),
+    selected?.format ||
+      (selected?.file?.toLowerCase().endsWith(".md") ? "md" : "html"),
   ).toLowerCase();
   const selectedIsMarkdown = selectedFormat === "md";
   const generationState = generationStatus?.status || "idle";
   const generationRunning = generationState === "running";
   const generationDone = generationState === "done";
   const generationError = generationState === "error";
-  const generating = (localGenerating || generationRunning) && !manifestSettledGeneration;
+  const generating =
+    (localGenerating || generationRunning) && !manifestSettledGeneration;
 
   const reportUrl = selected
     ? `/api/codewiki/report/${encodeURIComponent(selected.file)}${projectKey ? `?project=${encodeURIComponent(projectKey)}` : ""}`
@@ -661,17 +664,28 @@ export function CodeWikiPanel({
     const isReportFromCurrentRun = (report) => {
       const startedAt = generationStartedAtRef.current;
       if (!startedAt || !report) return true;
-      const reportTime = new Date(report.manifestUpdatedAt || report.mtime || 0).getTime();
+      const reportTime = new Date(
+        report.manifestUpdatedAt || report.mtime || 0,
+      ).getTime();
       return Number.isFinite(reportTime) && reportTime >= startedAt - 2000;
     };
     const isTerminalStatus = (status) =>
-      ["completed", "failed", "aborted"].includes(String(status || "").toLowerCase());
+      ["completed", "failed", "aborted"].includes(
+        String(status || "").toLowerCase(),
+      );
 
     const poll = async () => {
-      const nextReports = await loadReports({ preferNewest: true, silent: true });
+      const nextReports = await loadReports({
+        preferNewest: true,
+        silent: true,
+      });
       if (cancelled) return;
       const newest = Array.isArray(nextReports) ? nextReports[0] : null;
-      if (newest && isReportFromCurrentRun(newest) && isTerminalStatus(newest.manifestStatus)) {
+      if (
+        newest &&
+        isReportFromCurrentRun(newest) &&
+        isTerminalStatus(newest.manifestStatus)
+      ) {
         generationStartedAtRef.current = 0;
         setLocalGenerating(false);
         setSawRuntimeBusy(false);
@@ -895,7 +909,8 @@ export function CodeWikiPanel({
     }
   };
 
-  const isWorking = generating || (busy && !manifestSettledGeneration && !generationDone);
+  const isWorking =
+    generating || (busy && !manifestSettledGeneration && !generationDone);
   const askInputLocked = isWorking || asking;
 
   return (
@@ -916,23 +931,25 @@ export function CodeWikiPanel({
             >
               {projectCwd || t("currentProject")}
             </p>
-            {false && (<div className="mt-4 grid grid-cols-3 gap-1 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1">
-              {getGenerationDepths().map((item) => (
-                <button
-                  key={item.value}
-                  type="button"
-                  className={cn(
-                    "h-7 rounded-md text-[12px] text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-60",
-                    generationDepth === item.value &&
-                      "bg-(--bg-active) text-(--text-primary)",
-                  )}
-                  disabled={isWorking}
-                  onClick={() => setGenerationDepth(item.value)}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>)}
+            {false && (
+              <div className="mt-4 grid grid-cols-3 gap-1 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1">
+                {getGenerationDepths().map((item) => (
+                  <button
+                    key={item.value}
+                    type="button"
+                    className={cn(
+                      "h-7 rounded-md text-[12px] text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-60",
+                      generationDepth === item.value &&
+                        "bg-(--bg-active) text-(--text-primary)",
+                    )}
+                    disabled={isWorking}
+                    onClick={() => setGenerationDepth(item.value)}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="mt-2 grid grid-cols-2 gap-1 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1">
               {getGenerationFormats().map((item) => (
                 <button
@@ -1052,10 +1069,6 @@ export function CodeWikiPanel({
                   }}
                 >
                   <span className="flex items-start gap-2 text-[13px] text-(--text-primary)">
-                    <FileText
-                      size={14}
-                      className="shrink-0 mt-0.5 text-(--text-muted)"
-                    />
                     <span className="min-w-0 flex-1 break-words">
                       {report.file}
                     </span>
@@ -1159,23 +1172,25 @@ export function CodeWikiPanel({
                   )}
                   {generating ? t("generating") : t("generateNew")}
                 </button>
-                {false && (<div className="mt-3 grid w-full max-w-xs grid-cols-3 gap-1 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1">
-                  {getGenerationDepths().map((item) => (
-                    <button
-                      key={item.value}
-                      type="button"
-                      className={cn(
-                        "h-7 rounded-md text-[12px] text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-60",
-                        generationDepth === item.value &&
-                          "bg-(--bg-active) text-(--text-primary)",
-                      )}
-                      disabled={isWorking}
-                      onClick={() => setGenerationDepth(item.value)}
-                    >
-                      {item.label}
-                    </button>
-                  ))}
-                </div>)}
+                {false && (
+                  <div className="mt-3 grid w-full max-w-xs grid-cols-3 gap-1 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1">
+                    {getGenerationDepths().map((item) => (
+                      <button
+                        key={item.value}
+                        type="button"
+                        className={cn(
+                          "h-7 rounded-md text-[12px] text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:cursor-not-allowed disabled:opacity-60",
+                          generationDepth === item.value &&
+                            "bg-(--bg-active) text-(--text-primary)",
+                        )}
+                        disabled={isWorking}
+                        onClick={() => setGenerationDepth(item.value)}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <div className="mt-2 grid w-full max-w-xs grid-cols-2 gap-1 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1">
                   {getGenerationFormats().map((item) => (
                     <button
@@ -1250,15 +1265,15 @@ export function CodeWikiPanel({
                       )}
                     </div>
                   ) : (
-                  <iframe
-                    key={selected.file}
-                    title={`CodeWiki ${selected.file}`}
-                    src={reportUrl}
-                    sandbox="allow-scripts"
-                    className="h-full w-full border-0 bg-white"
-                    onLoad={() => setFrameError(false)}
-                    onError={() => setFrameError(true)}
-                  />
+                    <iframe
+                      key={selected.file}
+                      title={`CodeWiki ${selected.file}`}
+                      src={reportUrl}
+                      sandbox="allow-scripts"
+                      className="h-full w-full border-0 bg-white"
+                      onLoad={() => setFrameError(false)}
+                      onError={() => setFrameError(true)}
+                    />
                   )
                 ) : (
                   <div className="h-full flex items-center justify-center text-[13px] text-(--text-muted)">

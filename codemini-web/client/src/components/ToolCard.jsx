@@ -20,6 +20,7 @@ import { PatchDiff } from "@pierre/diffs/react";
 const TOOL_ICONS = {
   read: FileText,
   edit: FilePenLine,
+  create: FilePenLine,
   write: FilePenLine,
   delete: Trash2,
   run: Terminal,
@@ -50,6 +51,7 @@ function extractKeyArg(args, toolName) {
   const keyMap = {
     read: "path",
     edit: "path",
+    create: "path",
     write: "path",
     delete: "path",
     run: "command",

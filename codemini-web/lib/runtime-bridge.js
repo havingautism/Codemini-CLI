@@ -4,6 +4,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getSessionsDir } from '../../src/core/paths.js';
 
+const CODEWIKI_GENERATE_TIMEOUT_MS = 35 * 60 * 1000;
+
 function webTranscriptPath(sessionId) {
   return path.join(getSessionsDir(), 'web-ui-transcripts', `${String(sessionId || 'unknown')}.json`);
 }
@@ -690,7 +692,8 @@ export class RuntimeBridge {
         if (progress) this.#broadcast(progress);
       } catch {}
     };
-    // Safety timeout: force-reset busy after 10 minutes in case the promise chain stalls
+    // Keep this above the model gateway timeout used by the runtime. Large CodeWiki
+    // generations can legitimately exceed ten minutes.
     const safetyTimer = setTimeout(() => {
       if (this.#busy) {
         this.#busy = false;
@@ -698,10 +701,17 @@ export class RuntimeBridge {
         this.#broadcast({ type: 'codewiki:generate_error', message: 'CodeWiki generation timed out' });
         this.#broadcastRuntimeState();
       }
-    }, 10 * 60 * 1000);
+    }, CODEWIKI_GENERATE_TIMEOUT_MS);
     const clearSafetyTimer = () => clearTimeout(safetyTimer);
     this.#runtime.submit(line, emitProgress, { codeWikiGenerate: true }).then((result) => {
       clearSafetyTimer();
+      if (result?.aborted) {
+        this.#broadcast({
+          type: 'codewiki:generate_error',
+          message: result?.text || 'CodeWiki generation failed'
+        });
+        return;
+      }
       this.#broadcast({
         type: 'codewiki:generate_done',
         result: {

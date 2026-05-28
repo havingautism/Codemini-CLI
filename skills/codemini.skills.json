@@ -58,14 +58,14 @@
       "priority": 60
     },
     "project-requirements": {
-      "description": "Create a project requirements report with repository inspection and structured output artifacts.",
+      "description": "Generate a CodeWiki requirements report in HTML (browser-openable, search/filter, inline diagrams). Same report as Markdown CodeWiki. Use /project-requirements --md for the Markdown format.",
       "mode": "manual",
       "triggers": [],
       "enabled": true,
       "priority": 50
     },
     "project-requirements-md": {
-      "description": "Create a Markdown project requirements report with repository inspection and structured output artifacts.",
+      "description": "Generate a CodeWiki requirements report in Markdown. Same report as HTML CodeWiki. Fixed Markdown output; use /project-requirements --html for HTML.",
       "mode": "manual",
       "triggers": [],
       "enabled": true,

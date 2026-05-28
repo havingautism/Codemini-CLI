@@ -293,6 +293,7 @@ export const en = {
   switchMode: 'Switch Work Mode',
   switchApprovalMode: 'Switch Approval Mode',
   editApproval: 'Confirm file edit?',
+  createApproval: 'Confirm file create?',
   writeApproval: 'Confirm file write?',
   switchModeDisabled: 'Can switch modes after current request completes',
   soulSwitch: 'Soul Switch',

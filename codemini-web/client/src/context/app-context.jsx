@@ -2773,9 +2773,10 @@ export function AppProvider({ children }) {
                 isGeneral: !!result.state.isGeneral,
               });
             else await loadState();
-            await loadSessionMessages(result.sessionData);
+            const msgPromise = loadSessionMessages(result.sessionData);
             loadSessions();
             loadGitInfo();
+            await msgPromise;
           } else {
             update({ messagesLoading: false });
           }
@@ -2810,8 +2811,9 @@ export function AppProvider({ children }) {
               });
             else await loadState();
             setState((prev) => ({ ...prev, messages: [] }));
-            await loadSessionMessages(result.sessionData);
+            const msgPromise = loadSessionMessages(result.sessionData);
             loadGitInfo();
+            await msgPromise;
           }
           loadSessions();
           return result;

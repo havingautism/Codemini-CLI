@@ -302,6 +302,7 @@ export const zh = {
   switchMode: '切换工作模式',
   switchApprovalMode: '切换审阅权限',
   editApproval: '确认编辑文件？',
+  createApproval: '确认创建文件？',
   writeApproval: '确认写入文件？',
   switchModeDisabled: '当前请求完成后可切换模式',
   soulSwitch: '灵魂切换',

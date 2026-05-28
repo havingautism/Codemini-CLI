@@ -122,6 +122,7 @@ export function ApprovalDialog({ request, open, onDecision }) {
     delete: t('deleteApproval'),
     run: t('runApproval'),
     edit: t('editApproval'),
+    create: t('createApproval'),
     write: t('writeApproval'),
     plan: t('planApproval'),
     reflect: t('reflectApproval'),

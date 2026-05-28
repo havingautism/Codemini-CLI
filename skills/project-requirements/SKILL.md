@@ -1,12 +1,12 @@
 ---
 name: project-requirements
-description: Generate an interactive project requirements report from an existing codebase. Use when the user asks for a PRD, requirements document, API-by-API breakdown, business flow, architecture map, dependency graph, flowchart, product requirements reverse-engineering, or detailed project demand analysis.
+description: Generate a CodeWiki project requirements report in interactive HTML format from an existing codebase. Same report scope as the Markdown CodeWiki—browser-openable with search, filters, collapsible API cards, and inline SVG/CSS diagrams.
 version: 0.1.0
 ---
 
-Use this skill to reverse-engineer a project into a requirements document that product, engineering, and QA can navigate.
+Use this skill to reverse-engineer a project into a CodeWiki requirements report that product, engineering, and QA can navigate in the browser.
 
-This is the HTML report skill. Use it only for the normal interactive HTML requirements report. If the user selects Markdown or asks for an `.md` requirements document, use the separate `project-requirements-md` skill instead.
+This is the HTML CodeWiki report skill. It produces the same structured project analysis as `project-requirements-md`, but in interactive HTML. If the user selects Markdown, use the separate `project-requirements-md` skill instead—the same CodeWiki report in `.md` format.
 
 User request:
 

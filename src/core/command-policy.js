@@ -191,9 +191,9 @@ function suggestionForToken(token, config) {
       : 'Prefer structured tools like grep, glob, list, read, and edit first. If you need shell fallback, use allowed search and context commands such as rg, find, grep, sed, cat, or ls.';
   }
   if (shell === 'powershell') {
-    return 'Prefer structured tools like read, edit, write, grep, and list first. If you need shell fallback, use allowed shell commands for search and local context such as Get-ChildItem, Get-Content, Select-String, or rg when available.';
+    return 'Prefer structured tools like read, edit, create, grep, and list first. If you need shell fallback, use allowed shell commands for search and local context such as Get-ChildItem, Get-Content, Select-String, or rg when available.';
   }
-  return 'Prefer structured tools like read, edit, write, grep, glob, and list first. If you need shell fallback, use allowed shell commands for search and local context such as rg, find, grep, sed, cat, or ls.';
+  return 'Prefer structured tools like read, edit, create, grep, glob, and list first. If you need shell fallback, use allowed shell commands for search and local context such as rg, find, grep, sed, cat, or ls.';
 }
 
 function allowedPathRoots(workspaceRoot, config = {}) {

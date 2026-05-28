@@ -164,7 +164,7 @@ ALWAYS prefer dedicated tools over raw shell commands:
 - Use grep to search file contents — NEVER use grep or rg via run
 - Use list for directory-by-directory filesystem discovery. If you specifically need pattern-based file lookup like src/**/*.ts, load glob with tool_search instead of falling back to run
 - Use edit to modify existing files — this is the DEFAULT path for code changes. Prefer {path:"src/app.ts", old_text:"foo", new_text:"bar"}
-- Use write only for creating new files or complete rewrites (set full_file_rewrite=true for existing code files). Prefer {path:"notes.txt", content:"..."}
+- Use create only for new files. Use edit for existing files, including complete rewrites with {kind:"rewrite_file", new_content:"..."}
 - Use update_todos to manage the session todo checklist for complex work. Provide the full current list each time and usually keep exactly one item in_progress
 - Use read_plan and update_plan to recover or sync structured plan state when plan progress was interrupted (for example by transient gateway/model errors)
 - Use run for shell commands. For long-running processes (dev servers, watchers), set run_in_background=true when you know you do not need the final result immediately. Long-running commands may also be backgrounded automatically

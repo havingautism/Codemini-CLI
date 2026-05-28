@@ -695,7 +695,7 @@ function describeConfigKey(key, mode = 'set', language = 'zh') {
 
 const SUB_AGENT_ROLES = ['planner', 'explorer', 'architect', 'advisor', 'coder', 'refactorer', 'reviewer', 'tester', 'debugger', 'writer', 'summarizer', 'codewiki'];
 const CODEWIKI_ROLE_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'add_code_comment', 'update_code_comment'];
-const CODEWIKI_GENERATE_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'skill', 'edit', 'create'];
+export const CODEWIKI_GENERATE_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'skill', 'edit', 'create'];
 export const ROLE_TOOL_POLICY = {
   planner: ['read', 'read_plan', 'tool_search', 'skill', 'update_plan', 'update_todos'],
   explorer: ['read', 'grep', 'list', 'glob', 'ast_query', 'read_ast_node', 'query_project_index', 'tool_search', 'skill', 'web_fetch', 'web_search', 'read_plan'],
@@ -4804,6 +4804,16 @@ function getProjectRequirementsDefaultOutputFormat(custom) {
   return custom?.name === 'project-requirements-md' ? 'md' : 'html';
 }
 
+function validateProjectRequirementsFormat(skillName, outputFormat) {
+  if (skillName === 'project-requirements-md' && outputFormat !== 'md') {
+    return [
+      'project-requirements-md always outputs Markdown CodeWiki.',
+      'Use /project-requirements --html for the same CodeWiki report in HTML format instead of passing --html here.'
+    ].join(' ');
+  }
+  return null;
+}
+
 function renderProjectRequirementsSectionContract(ignoredSections = []) {
   const ignored = new Set(ignoredSections.map((section) => section.marker));
   const required = PROJECT_REQUIREMENTS_SECTION_MARKERS
@@ -4840,7 +4850,9 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
     htmlOutput
       ? 'For diagrams, write polished inline HTML/CSS or SVG directly in the report. Do not use Mermaid unless the user explicitly asks for Mermaid source.'
       : 'For diagrams in Markdown, prefer concise ASCII tables/lists or Mermaid source only when the user explicitly asks for Mermaid.',
-    'Use a light blue, white, and cool gray banking/financial visual style: conservative, dense, readable, and enterprise-grade.',
+    htmlOutput
+      ? 'Follow the pre-created HTML shell Notion/Linear visual style: white background, warm neutral text (#37352f), subtle borders (#e9e9e7), and blue accents (#2383e2).'
+      : 'Keep the Markdown document professional, scannable, PR-friendly, and evidence-backed.',
     'Prioritize API/interface-level business requirements. Every major interface should map to business capability, actor, trigger, inputs, outputs, rules, permissions, data reads/writes, errors, acceptance criteria, and evidence.',
     'Use EXTRACTED, INFERRED, and UNKNOWN labels. Preserve source evidence paths.',
     'Do not invent dates; use the report paths above.'
@@ -4856,7 +4868,7 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
         ? 'Follow the project-requirements skill instructions below exactly, including chunked HTML writing for medium/large reports.'
         : 'Follow the project-requirements-md skill instructions below exactly, filling the Markdown template at the primary path.',
       htmlOutput
-        ? 'Use the blue/white/gray banking-style shell and produce polished inline HTML/CSS/SVG diagrams. Keep the report professional, light, and conservative.'
+        ? 'Use the pre-created Notion/Linear-style shell and produce polished inline HTML/CSS/SVG diagrams. Keep the report clean, readable, and professional.'
         : 'Keep the Markdown document professional, scannable, PR-friendly, and evidence-backed.',
       'Organize the main requirements section primarily by API/interface business requirement cards.',
       htmlOutput
@@ -4879,7 +4891,7 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
         ? 'Check that major APIs/interfaces are represented, business requirements are decomposed per API, evidence paths are present, inferred/unknown content is labeled, diagrams are visible as inline HTML/CSS/SVG without external rendering libraries, and the report path matches the required local date.'
         : 'Check that major APIs/interfaces are represented, business requirements are decomposed per API, evidence paths are present, inferred/unknown content is labeled, Markdown tables/lists are readable, and the report path matches the required local date.',
       htmlOutput
-        ? 'Check that the visual style is light blue/white/gray and suitable for banking/financial review.'
+        ? 'Check that the visual style matches the Notion/Linear shell (warm neutrals, blue accents) and remains readable when opened from disk.'
         : 'Check that the Markdown is suitable for review in Git diffs and Markdown previewers.',
       'Report concrete gaps and risks only. Do not rewrite the whole report.'
     ].join('\n')
@@ -7508,6 +7520,10 @@ export async function createChatRuntime({
       if (custom.metadata.type === 'skill' && (custom.name === 'project-requirements' || custom.name === 'project-requirements-md')) {
         const defaultOutputFormat = getProjectRequirementsDefaultOutputFormat(custom);
         const projectRequirementsOptions = parseProjectRequirementsOptions(parsedInput.args, { defaultOutputFormat });
+        const formatError = validateProjectRequirementsFormat(custom.name, projectRequirementsOptions.outputFormat);
+        if (formatError) {
+          return { type: 'system', text: formatError };
+        }
         if (codeWikiGenerate || projectRequirementsOptions.runner === 'agent') {
           return await runProjectRequirementsSingleAgent({
             custom,

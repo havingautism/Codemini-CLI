@@ -1,12 +1,14 @@
 ---
 name: project-requirements-md
-description: Generate a Markdown project requirements report from an existing codebase. Use when the user asks for a text-first PRD, requirements document, PR-friendly source document, Markdown CodeWiki report, or `.md` project demand analysis.
+description: Generate a CodeWiki project requirements report in Markdown format from an existing codebase. Same report scope as the HTML CodeWiki—presented as `.md` for plain-text reading, Git diffs, and Markdown previewers.
 version: 0.1.0
 ---
 
-Use this skill to reverse-engineer a project into a Markdown requirements document that product, engineering, and QA can review in plain text, Git diffs, and Markdown previewers.
+Use this skill to reverse-engineer a project into a CodeWiki requirements report in Markdown format—the same structured analysis as the HTML CodeWiki, presented as `.md` for plain-text review.
 
-This is the Markdown report skill. Do not produce the interactive HTML report here; the HTML version uses the separate `project-requirements` skill.
+This is the Markdown CodeWiki report skill. It produces the same report scope as `project-requirements`, but in Markdown. Do not produce the interactive HTML report here; the HTML version uses the separate `project-requirements` skill.
+
+This command always outputs Markdown. Do not pass `--html` or other HTML format flags here; use `/project-requirements --html` for the same CodeWiki report in HTML format.
 
 User request:
 
@@ -126,3 +128,29 @@ Observability:
 Acceptance criteria:
 Open questions:
 ```
+
+## Quality Bar
+
+The report is complete when:
+
+- A reader can find every major API or user-facing interface from the table of contents or section headings.
+- Each interface has at least one source evidence path.
+- Main flows and dependencies are represented in text, tables, or concise diagram summaries.
+- Inferred requirements are labeled instead of stated as facts.
+- Open questions are grouped so the user can resolve them later.
+- The Markdown is readable as plain text and in Markdown previewers.
+
+## Content Guidelines
+
+Avoid duplication between sections:
+
+- The Executive Summary risk list should contain only the **top 2-3 most critical risks** with one-sentence descriptions. The full risk matrix belongs in the Security section only.
+- Key capabilities in the summary should be a concise table (name + one-liner + evidence). Detailed descriptions belong in the per-interface requirement sections.
+- Non-functional findings should appear only in the Non-functional section, not duplicated in the summary.
+
+Open questions should be **actionable and specific**:
+
+- Do NOT list questions that can be answered by reading the source code (e.g. "What is the test coverage?", "Is there CI/CD?"). Instead, investigate and report the answer directly.
+- Do NOT list questions about whether a feature exists — check the code first and report what you find.
+- Only list questions that require **human decision-making**, **business context**, or **stakeholder input** that cannot be derived from the codebase.
+- Each open question should clearly state what decision or confirmation is needed and why it matters.
