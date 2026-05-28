@@ -2,10 +2,15 @@ import { useEffect, useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
 import { StreamdownRenderer } from "./StreamdownRenderer";
 import { TodoList } from "./TodoList";
+import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { Spinner } from "@/components/ui/spinner";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { formatTimestamp } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
+import * as api from "@/hooks/use-api.js";
+import { ROLE_PILLS } from "./PlanProgress.jsx";
+import { PatchDiff } from "@pierre/diffs/react";
 import {
   Tooltip,
   TooltipContent,
@@ -20,6 +25,8 @@ import {
   Brain,
   Loader2,
   Moon,
+  RotateCcw,
+  Wrench,
   XCircle,
 } from "lucide-react";
 
@@ -32,6 +39,22 @@ const ROLE_STYLES = {
   coder: {
     badge: "bg-(--accent-green-bg) text-(--accent-green)",
     label: "Coder",
+  },
+  explorer: {
+    badge: "bg-(--accent-amber-bg) text-(--accent-amber)",
+    label: "Explorer",
+  },
+  architect: {
+    badge: "bg-(--accent-purple-bg) text-(--accent-purple)",
+    label: "Architect",
+  },
+  refactorer: {
+    badge: "bg-(--accent-teal-bg) text-(--accent-teal)",
+    label: "Refactorer",
+  },
+  writer: {
+    badge: "bg-(--accent-cyan-bg) text-(--accent-cyan)",
+    label: "Writer",
   },
   advisor: {
     badge: "bg-(--accent-blue-bg) text-(--accent-blue)",
@@ -49,9 +72,21 @@ const ROLE_STYLES = {
     badge: "bg-(--accent-blue-bg) text-(--accent-blue)",
     label: "Tester",
   },
+  debugger: {
+    badge: "bg-(--accent-red-bg) text-(--accent-red)",
+    label: "Debugger",
+  },
   summarizer: {
     badge: "bg-(--accent-cyan-bg) text-(--accent-cyan)",
     label: "Summarizer",
+  },
+  "plan-overview": {
+    badge: "bg-(--accent-purple-bg) text-(--accent-purple)",
+    label: "Plan",
+  },
+  codewiki: {
+    badge: "bg-(--accent-green-bg) text-(--accent-green)",
+    label: "CodeWiki",
   },
   system: { badge: "bg-(--muted) text-(--muted-foreground)", label: "System" },
   error: { badge: "bg-(--accent-red-bg) text-(--accent-red)", label: "Error" },
@@ -61,11 +96,11 @@ const ROLE_STYLES = {
   },
 };
 
-const SKILL_BADGE_STYLES = {
-  running: "bg-(--accent-blue-bg) text-(--accent-blue)",
-  done: "bg-(--accent-green-bg) text-(--accent-green)",
-  error: "bg-(--accent-red-bg) text-(--accent-red)",
-  auto: "bg-(--accent-purple-bg) text-(--accent-purple)",
+const SKILL_DOT_STYLES = {
+  running: "animate-pulse bg-(--accent-blue)",
+  done: "bg-(--accent-green)",
+  error: "bg-(--accent-red)",
+  always: "bg-(--accent-purple)",
 };
 
 const TOOL_COLLAPSE_THRESHOLD = 1;
@@ -124,10 +159,7 @@ function ThoughtBlock({ segment }) {
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className={cn(
-          COLLAPSE_ROW_CLASS,
-          "font-medium",
-        )}
+        className={cn(COLLAPSE_ROW_CLASS, "font-medium")}
         aria-expanded={open}
       >
         <ChevronRight
@@ -146,9 +178,7 @@ function ThoughtBlock({ segment }) {
           )}
         </span>
         <span>{label}</span>
-        {segment.isStreaming && elapsed && (
-          <span>{elapsed}</span>
-        )}
+        {segment.isStreaming && elapsed && <span>{elapsed}</span>}
       </button>
       {open && (
         <div className="relative ml-4.5 mt-1.5 pl-8 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
@@ -395,6 +425,80 @@ function ToolGroup({ cards }) {
   );
 }
 
+function formatSkillNames(name = "") {
+  return String(name || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => (item.startsWith("/") ? item : `/${item}`))
+    .join(", ");
+}
+
+function skillActivityLabel(badge) {
+  const names = formatSkillNames(badge?.name);
+  if (badge?.status === "running") {
+    return t("skillUsing").replace("{{name}}", names);
+  }
+  if (badge?.status === "error") {
+    return t("skillFailed").replace("{{name}}", names);
+  }
+  if (badge?.status === "always") {
+    return t("skillAlwaysLoaded").replace("{{names}}", names);
+  }
+  return t("skillUsed").replace("{{name}}", names);
+}
+
+function SkillActivityList({ badges = [] }) {
+  if (!badges.length) return null;
+  return (
+    <div className="my-2 space-y-1">
+      {badges.map((badge, index) => (
+        <div
+          key={`${badge.name || "skill"}-${badge.status || "done"}-${index}`}
+          className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-(--text-secondary) hover:bg-(--bg-hover)"
+        >
+          <span className={COLLAPSE_ICON_CLASS}>
+            <Wrench size={14} className="text-(--text-muted)" />
+          </span>
+          <span className="font-medium">{t("skillActivity")}</span>
+          <span className="min-w-0 flex-1 truncate font-mono text-xs text-(--text-muted)">
+            {skillActivityLabel(badge)}
+          </span>
+          <span
+            className={cn(
+              "size-1.5 shrink-0 rounded-full",
+              SKILL_DOT_STYLES[badge.status] || SKILL_DOT_STYLES.done,
+            )}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SkillActivityRow({ badge }) {
+  if (!badge?.name) return null;
+  return (
+    <div className="my-2">
+      <div className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-(--text-secondary) hover:bg-(--bg-hover)">
+        <span className={COLLAPSE_ICON_CLASS}>
+          <Wrench size={14} className="text-(--text-muted)" />
+        </span>
+        <span className="font-medium">{t("skillActivity")}</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-(--text-muted)">
+          {skillActivityLabel(badge)}
+        </span>
+        <span
+          className={cn(
+            "size-1.5 shrink-0 rounded-full",
+            SKILL_DOT_STYLES[badge.status] || SKILL_DOT_STYLES.done,
+          )}
+        />
+      </div>
+    </div>
+  );
+}
+
 function ProcessGroup({ group }) {
   const [expanded, setExpanded] = useState(false);
   const duration = formatProcessDuration(group.durationMs);
@@ -465,11 +569,18 @@ function mergeFileChanges(fileChanges = []) {
       linesRemoved: Number(change.linesRemoved || 0),
       changedLine: Number(change.changedLine || 0),
       diffPreview: change.diffPreview || "",
+      changeSetId: change.changeSetId || "",
     });
     if (seen.has(fingerprint)) continue;
     seen.add(fingerprint);
     if (!byPath.has(path)) {
-      byPath.set(path, { ...change, linesAdded: 0, linesRemoved: 0 });
+      byPath.set(path, {
+        ...change,
+        linesAdded: 0,
+        linesRemoved: 0,
+        changes: [],
+        changeSetIds: [],
+      });
       order.push(path);
     }
     const existing = byPath.get(path);
@@ -482,13 +593,127 @@ function mergeFileChanges(fileChanges = []) {
       existing.diffPreview = change.diffPreview;
       existing.changedLine = change.changedLine;
     }
+    if (change.diffPreview) existing.changes.push(change);
+    if (
+      change.changeSetId &&
+      !existing.changeSetIds.includes(change.changeSetId)
+    ) {
+      existing.changeSetIds.push(change.changeSetId);
+    }
   }
-  return order.map((path) => byPath.get(path));
+  return order
+    .map((path) => {
+      const change = byPath.get(path);
+      const firstChange = change.changes[0];
+      const lastChange = change.changes[change.changes.length - 1];
+      if (firstChange?.action === "create" && lastChange?.action === "delete") {
+        return null;
+      }
+      const createIndex = change.changes.findIndex(
+        (item) => item.action === "create",
+      );
+      const createdThenEdited =
+        createIndex >= 0 &&
+        !change.changes
+          .slice(createIndex + 1)
+          .some((item) => item.action === "delete") &&
+        change.changes
+          .slice(createIndex + 1)
+          .some((item) => item.action === "edit");
+      const trackedChanges = change.changes.filter((item) => item.changeSetId);
+      const revertedAt =
+        trackedChanges.length > 0 &&
+        trackedChanges.every((item) => item.revertedAt)
+          ? trackedChanges[trackedChanges.length - 1].revertedAt
+          : "";
+      return {
+        ...change,
+        ...(createdThenEdited
+          ? {
+              action: "create",
+              linesAdded: Math.max(
+                0,
+                Number(change.linesAdded || 0) -
+                  Number(change.linesRemoved || 0),
+              ),
+              linesRemoved: 0,
+              diffPreview: "",
+              changes: [],
+            }
+          : {}),
+        changeSetId:
+          change.changeSetIds.length === 1 ? change.changeSetIds[0] : "",
+        revertedAt,
+      };
+    })
+    .filter(Boolean);
+}
+
+function getFileChangeSetIds(change) {
+  return Array.isArray(change?.changeSetIds) && change.changeSetIds.length
+    ? change.changeSetIds
+    : change?.changeSetId
+      ? [change.changeSetId]
+      : [];
+}
+
+function getFileChangeUndoKey(change) {
+  return getFileChangeSetIds(change).join("|");
+}
+
+function formatUndoError(error) {
+  const message = error?.message || "";
+  if (message.includes("Cannot undo this change cleanly"))
+    return t("undoChangeConflict");
+  return message || t("undoChangeFailed");
 }
 
 function basename(pathText) {
   const value = String(pathText || "").replace(/\\/g, "/");
   return value.split("/").filter(Boolean).pop() || value || "file";
+}
+
+function isUnifiedPatch(text) {
+  const value = String(text || "");
+  return (
+    value.startsWith("diff --git ") ||
+    value.includes("\ndiff --git ") ||
+    value.includes("\n@@ ")
+  );
+}
+
+function splitUnifiedPatches(patch) {
+  const text = String(patch || "").trim();
+  if (!text) return [];
+  const matches = [...text.matchAll(/^diff --git /gm)];
+  if (matches.length <= 1) return [text];
+  return matches
+    .map((match, index) => {
+      const start = match.index || 0;
+      const end =
+        index + 1 < matches.length ? matches[index + 1].index : text.length;
+      return text.slice(start, end).trim();
+    })
+    .filter(Boolean);
+}
+
+function usePatchThemeType() {
+  const getIsDark = () =>
+    document.documentElement.classList.contains("dark") ||
+    document.documentElement.dataset.theme === "dark";
+  const [isDark, setIsDark] = useState(() =>
+    typeof document === "undefined" ? true : getIsDark(),
+  );
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const ob = new MutationObserver(() => setIsDark(getIsDark()));
+    ob.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class", "data-theme"],
+    });
+    return () => ob.disconnect();
+  }, []);
+  return isDark ? "dark" : "light";
 }
 
 function buildFileChangePreviewLines(change) {
@@ -514,6 +739,32 @@ function buildFileChangePreviewLines(change) {
 }
 
 function FileChangePreview({ change }) {
+  const patch =
+    Array.isArray(change?.changes) && change.changes.length
+      ? change.changes
+          .map((item) => item.diffPreview || "")
+          .filter(Boolean)
+          .join("\n")
+      : String(change?.diffPreview || "");
+  const themeType = usePatchThemeType();
+  if (isUnifiedPatch(patch)) {
+    const patches = splitUnifiedPatches(patch);
+    return (
+      <div className="max-h-[520px] overflow-auto bg-(--bg-primary) text-xs">
+        {patches.map((singlePatch, index) => (
+          <PatchDiff
+            key={index}
+            patch={singlePatch}
+            options={{
+              theme: { dark: "pierre-dark", light: "pierre-light" },
+              themeType,
+              diffStyle: "unified",
+            }}
+          />
+        ))}
+      </div>
+    );
+  }
   const lines = buildFileChangePreviewLines(change);
   if (!lines.length) return null;
   return (
@@ -544,78 +795,199 @@ function FileChangePreview({ change }) {
 
 function FileChangesSummary({ changes }) {
   const [openFiles, setOpenFiles] = useState(() => new Set());
+  const [undoing, setUndoing] = useState(() => new Set());
+  const [revertedUndoKeys, setRevertedUndoKeys] = useState(() => new Set());
+  const [undoErrors, setUndoErrors] = useState(() => new Map());
+  const [pendingUndo, setPendingUndo] = useState(null);
   const actionColors = {
     edit: "bg-(--accent-blue-bg) text-(--accent-blue)",
     create: "bg-(--accent-green-bg) text-(--accent-green)",
     delete: "bg-(--accent-red-bg) text-(--accent-red)",
   };
+  const confirmUndoChange = async () => {
+    if (!pendingUndo || undoing.has(pendingUndo.undoKey)) return;
+    const { undoKey, changeSetIds } = pendingUndo;
+    setUndoErrors((prev) => {
+      const next = new Map(prev);
+      next.delete(undoKey);
+      return next;
+    });
+    setUndoing((prev) => new Set(prev).add(undoKey));
+    try {
+      const result =
+        changeSetIds.length > 1
+          ? await api.undoSessionChanges(changeSetIds)
+          : await api.undoSessionChange(changeSetIds[0]);
+      if (result?.error || result?.ok === false)
+        throw new Error(result.message || t("undoChangeFailed"));
+      setRevertedUndoKeys((prev) => new Set(prev).add(undoKey));
+      setPendingUndo(null);
+    } catch (error) {
+      setUndoErrors((prev) =>
+        new Map(prev).set(undoKey, formatUndoError(error)),
+      );
+    } finally {
+      setUndoing((prev) => {
+        const next = new Set(prev);
+        next.delete(undoKey);
+        return next;
+      });
+    }
+  };
+
+  if (!changes.length && !pendingUndo) return null;
 
   return (
-    <div className="mt-2 overflow-hidden rounded-lg border border-(--border-default) bg-(--bg-secondary)">
-      {changes.map((c, i) => {
-        const key = `${c.path}-${i}`;
-        const fileOpen = openFiles.has(key);
-        const hasPreview = Boolean(c.diffPreview);
-        return (
-          <div key={key} className="border-t border-(--border-default) first:border-t-0">
-            <button
-              type="button"
-              onClick={() => {
-                if (!hasPreview) return;
-                setOpenFiles((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(key)) next.delete(key);
-                  else next.add(key);
-                  return next;
-                });
-              }}
-              className={cn(
-                "flex w-full items-center gap-2 border-0 bg-transparent px-3 py-2.5 text-left font-mono text-xs",
-                hasPreview
-                  ? "cursor-pointer hover:bg-(--bg-hover)"
-                  : "cursor-default",
-              )}
+    <>
+      <div className="mt-6 overflow-hidden rounded-lg border border-(--border-default) bg-(--bg-secondary)">
+        {changes.map((c, i) => {
+          const key = `${c.path}-${i}`;
+          const fileOpen = openFiles.has(key);
+          const hasPreview = Boolean(
+            c.diffPreview || (Array.isArray(c.changes) && c.changes.length),
+          );
+          const changeSetIds = getFileChangeSetIds(c);
+          const undoKey = changeSetIds.join("|");
+          const isReverted =
+            undoKey && (revertedUndoKeys.has(undoKey) || Boolean(c.revertedAt));
+          return (
+            <div
+              key={key}
+              className="border-t border-(--border-default) first:border-t-0"
             >
-              {hasPreview ? (
-                fileOpen ? (
-                  <ChevronDown size={13} className="shrink-0 text-(--text-muted)" />
-                ) : (
-                  <ChevronRight size={13} className="shrink-0 text-(--text-muted)" />
-                )
-              ) : (
-                <span className="w-[13px] shrink-0" />
-              )}
-              <span
+              <div
+                role="button"
+                tabIndex={hasPreview ? 0 : -1}
+                onClick={() => {
+                  if (!hasPreview) return;
+                  setOpenFiles((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(key)) next.delete(key);
+                    else next.add(key);
+                    return next;
+                  });
+                }}
                 className={cn(
-                  "rounded px-[5px] py-px text-[10px] font-semibold",
-                  actionColors[c.action] || "bg-(--muted) text-(--text-muted)",
+                  "flex w-full items-center gap-2 border-0 bg-transparent px-3 py-2.5 text-left font-mono text-xs",
+                  hasPreview
+                    ? "cursor-pointer hover:bg-(--bg-hover)"
+                    : "cursor-default",
                 )}
               >
-                {c.action?.toUpperCase()}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-(--text-primary)">
-                {c.path}
-              </span>
-              {c.linesAdded != null && (
-                <span className="text-[11px] text-(--accent-green)">
-                  +{c.linesAdded}
+                {hasPreview ? (
+                  fileOpen ? (
+                    <ChevronDown
+                      size={13}
+                      className="shrink-0 text-(--text-muted)"
+                    />
+                  ) : (
+                    <ChevronRight
+                      size={13}
+                      className="shrink-0 text-(--text-muted)"
+                    />
+                  )
+                ) : (
+                  <span className="w-[13px] shrink-0" />
+                )}
+                <span
+                  className={cn(
+                    "rounded px-[5px] py-px text-[10px] font-semibold",
+                    actionColors[c.action] ||
+                      "bg-(--muted) text-(--text-muted)",
+                  )}
+                >
+                  {c.action?.toUpperCase()}
                 </span>
-              )}
-              {c.linesRemoved != null && (
-                <span className="text-[11px] text-(--accent-red)">
-                  -{c.linesRemoved}
+                <span className="min-w-0 flex-1 truncate text-(--text-primary)">
+                  {c.path}
                 </span>
-              )}
-            </button>
-            {fileOpen && (
-              <div className="border-t border-(--border-default)">
-                <FileChangePreview change={c} />
+                {c.linesAdded != null && (
+                  <span className="text-[11px] text-(--accent-green)">
+                    +{c.linesAdded}
+                  </span>
+                )}
+                {c.linesRemoved != null && (
+                  <span className="text-[11px] text-(--accent-red)">
+                    -{c.linesRemoved}
+                  </span>
+                )}
+                {changeSetIds.length > 0 && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    title={
+                      isReverted ? t("undoChangeReverted") : t("undoChange")
+                    }
+                    aria-label={
+                      isReverted ? t("undoChangeReverted") : t("undoChange")
+                    }
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (undoing.has(undoKey) || isReverted) return;
+                      setPendingUndo({
+                        path: c.path,
+                        undoKey,
+                        changeSetIds,
+                        count: Math.max(1, changeSetIds.length),
+                      });
+                    }}
+                    className={cn(
+                      "ml-1 inline-flex h-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+                      isReverted
+                        ? "pointer-events-none gap-1 px-2 text-[11px] text-(--accent-green)"
+                        : "w-6",
+                      undoing.has(undoKey) && "pointer-events-none opacity-60",
+                    )}
+                  >
+                    {undoing.has(undoKey) ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : isReverted ? (
+                      <>
+                        <Check size={13} />
+                        <span>{t("undoChangeReverted")}</span>
+                      </>
+                    ) : (
+                      <RotateCcw size={13} />
+                    )}
+                  </span>
+                )}
               </div>
-            )}
-          </div>
-        );
-      })}
-    </div>
+              {undoKey && undoErrors.has(undoKey) && (
+                <div className="border-t border-(--border-default) px-3 py-2 text-xs text-(--accent-red)">
+                  {undoErrors.get(undoKey)}
+                </div>
+              )}
+              {fileOpen && (
+                <div className="border-t border-(--border-default)">
+                  <FileChangePreview change={c} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <ConfirmDialog
+        open={Boolean(pendingUndo)}
+        title={t("undoChangeConfirm")}
+        description={
+          (pendingUndo?.count || 0) > 1
+            ? t("undoChangesDescription")
+                .replace("{{path}}", pendingUndo?.path || "")
+                .replace("{{count}}", pendingUndo?.count || 1)
+            : t("undoChangeDescription").replace(
+                "{{path}}",
+                pendingUndo?.path || "",
+              )
+        }
+        confirmLabel={t("undoChange")}
+        loadingLabel={t("undoingChange")}
+        loading={Boolean(pendingUndo && undoing.has(pendingUndo.undoKey))}
+        onOpenChange={(open) => {
+          if (!open) setPendingUndo(null);
+        }}
+        onConfirm={confirmUndoChange}
+      />
+    </>
   );
 }
 
@@ -650,6 +1022,9 @@ function buildRenderGroups(segments) {
         flushTools();
         groups.push({ type: "thinking", ...seg });
       }
+    } else if (seg.type === "skill") {
+      flushTools();
+      groups.push({ type: "skill", ...seg });
     }
   }
   flushTools();
@@ -800,9 +1175,7 @@ function getUsageSummary(usage) {
   )
     return null;
   const cacheBase =
-    cacheMiss > 0 || cacheWrite > 0
-      ? cached + cacheMiss + cacheWrite
-      : input;
+    cacheMiss > 0 || cacheWrite > 0 ? cached + cacheMiss + cacheWrite : input;
   const cachePct = cacheBase > 0 ? (cached / cacheBase) * 100 : 0;
   const labelParts = [
     `${formatUsageNumber(total || input + output)} ${t("usageTokens")}`,
@@ -855,6 +1228,7 @@ function UsageBadge({ usage }) {
 }
 
 function isMessageComplete(message, renderGroups = []) {
+  if (message?.loading) return false;
   if (message?.isComplete === false) return false;
   if (
     message?.planStep &&
@@ -995,6 +1369,75 @@ export function MessageBubble({ message, skills = [] }) {
     );
   }
 
+  if (role === "plan-overview") {
+    const { planOverview } = message;
+    const overview = planOverview || {};
+    const steps = Array.isArray(overview.steps) ? overview.steps : [];
+
+    return (
+      <div data-message-id={message.id} className="py-2 my-[22px]">
+        <div className="flex items-center gap-2 mb-1.5">
+          <span
+            className={cn(
+              "inline-flex items-center px-2 py-px rounded-full text-[11px] font-semibold uppercase tracking-[0.3px]",
+              ROLE_STYLES["plan-overview"].badge,
+            )}
+          >
+            {t("planTitle")}
+          </span>
+          {ts && <span className="text-[11px] text-(--text-muted)">{ts}</span>}
+        </div>
+        <div className="border border-(--border-default) rounded-lg p-3 max-w-3xl bg-(--bg-secondary) space-y-2.5">
+          {overview.goal && (
+            <p className="text-[13px] text-(--text-primary) leading-relaxed font-medium">
+              {overview.goal}
+            </p>
+          )}
+          <div className="space-y-1.5">
+            {steps.map((step, i) => (
+              <div key={i} className="flex items-center gap-2 text-[13px]">
+                <span
+                  className={cn(
+                    "w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-medium shrink-0",
+                    step.status === "done" &&
+                      "bg-(--accent-green-bg) text-(--accent-green)",
+                    step.status === "failed" &&
+                      "bg-(--accent-red-bg) text-(--accent-red)",
+                    step.status === "running" &&
+                      "bg-(--accent-blue-bg) text-(--accent-blue)",
+                    step.status === "pending" &&
+                      "bg-(--muted) text-(--muted-foreground)",
+                  )}
+                >
+                  {step.status === "done"
+                    ? "\u2713"
+                    : step.status === "failed"
+                      ? "\u2717"
+                      : step.status === "running"
+                        ? "\u25B6"
+                        : i + 1}
+                </span>
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    "text-[11px] px-1.5 py-0",
+                    ROLE_PILLS[step.role] ||
+                      "bg-(--muted) text-(--muted-foreground)",
+                  )}
+                >
+                  {String(step.role || "step").toUpperCase()}
+                </Badge>
+                <span className="truncate text-(--text-secondary)">
+                  {step.title}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const youText =
     role === "you"
       ? legacyText ||
@@ -1050,6 +1493,8 @@ export function MessageBubble({ message, skills = [] }) {
             )}
           </div>
 
+          <SkillActivityList badges={skillBadges || []} />
+
           {renderGroups.map((group, i) => {
             if (group.type === "text") {
               return (
@@ -1065,6 +1510,9 @@ export function MessageBubble({ message, skills = [] }) {
             }
             if (group.type === "thinking") {
               return <ThoughtBlock key={`th-${i}`} segment={group} />;
+            }
+            if (group.type === "skill") {
+              return <SkillActivityRow key={`sk-${i}-${group.name || "skill"}`} badge={group} />;
             }
             if (group.type === "process") {
               return <ProcessGroup key={`pg-${i}`} group={group} />;
@@ -1082,25 +1530,7 @@ export function MessageBubble({ message, skills = [] }) {
               </div>
             )}
 
-          {skillBadges?.length > 0 && (
-            <div className="flex flex-wrap gap-1 mt-2">
-              {skillBadges.map((b, i) => (
-                <span
-                  key={i}
-                  className={cn(
-                    "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium",
-                    SKILL_BADGE_STYLES[b.status],
-                  )}
-                >
-                  {b.status === "auto"
-                    ? `${t("skillAuto")}: ${b.name}`
-                    : `${b.name} - ${t("skill" + b.status.charAt(0).toUpperCase() + b.status.slice(1))}`}
-                </span>
-              ))}
-            </div>
-          )}
-
-          {mergedFileChanges.length > 0 && (
+          {messageComplete && mergedFileChanges.length > 0 && (
             <FileChangesSummary changes={mergedFileChanges} />
           )}
           <MessageActions

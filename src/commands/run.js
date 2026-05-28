@@ -9,11 +9,17 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 const ROLE_TOOL_POLICY = {
-  planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node', 'read_plan', 'update_plan'],
-  advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'read_plan'],
-  coder: ['read', 'grep', 'list', 'edit', 'write', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'update_todos', 'read_plan', 'update_plan'],
-  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'read_plan'],
-  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'read_plan']
+  planner: ['read', 'read_plan', 'tool_search', 'skill', 'update_plan', 'update_todos'],
+  explorer: ['read', 'grep', 'list', 'glob', 'ast_query', 'read_ast_node', 'query_project_index', 'tool_search', 'skill', 'web_fetch', 'web_search', 'read_plan'],
+  architect: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
+  advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'skill', 'read_plan'],
+  coder: ['read', 'grep', 'list', 'edit', 'create', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
+  refactorer: ['read', 'grep', 'list', 'edit', 'create', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'skill', 'read_plan'],
+  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'read_plan'],
+  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'skill', 'read_plan'],
+  debugger: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
+  writer: ['read', 'grep', 'list', 'glob', 'tool_search', 'skill', 'web_search', 'web_fetch', 'read_plan'],
+  summarizer: ['read', 'read_plan', 'tool_search', 'skill']
 };
 const HARNESS_ROLES = Object.keys(ROLE_TOOL_POLICY);
 
@@ -22,7 +28,6 @@ function parseRunArgs(args) {
     task: '',
     model: undefined,
     fast: false,
-    maxSteps: 8,
     harness: null,
     pipeline: false
   };
@@ -35,11 +40,6 @@ function parseRunArgs(args) {
     }
     if (arg === '--fast' || arg === '--lite') {
       parsed.fast = true;
-      continue;
-    }
-    if (arg === '--max-steps') {
-      parsed.maxSteps = Number(args[i + 1] || 8);
-      i += 1;
       continue;
     }
     if (arg === '--harness') {
@@ -88,7 +88,7 @@ async function buildSystemPrompt(config) {
   });
 }
 
-async function runHarness({ role, task, config, systemPrompt, model, maxSteps }) {
+async function runHarness({ role, task, config, systemPrompt, model }) {
   if (!HARNESS_ROLES.includes(role)) {
     throw new Error(`Unknown harness role: ${role}. Available: ${HARNESS_ROLES.join(', ')}`);
   }
@@ -115,7 +115,6 @@ async function runHarness({ role, task, config, systemPrompt, model, maxSteps })
       toolHandlers: filtered.handlers,
       toolFormatters: formatters,
       deferredDefinitions: filtered.deferredDefinitions,
-      maxSteps,
       requestCompletion: makeCompletionFn(config)
     });
     return result;
@@ -154,13 +153,20 @@ function normalizePlan(parsed, goal) {
 }
 
 async function planPipeline({ goal, config, systemPrompt, model }) {
+  const roleList = HARNESS_ROLES.filter(r => r !== 'planner').join(', ');
   const plannerPrompt = [
     'Create an execution plan and assign the best sub-agent role for each step.',
-    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|advisor|coder|reviewer|tester","task":"..."}]}. No markdown.',
-    `Available roles: ${HARNESS_ROLES.join(', ')}.`,
-    'Prefer 3-5 steps total. The first step should usually inspect the target area.',
+    `Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"${HARNESS_ROLES.join('|')}","task":"..."}]}. No markdown.`,
+    `Available roles: ${roleList}. The planner role generates the plan but does not execute steps. Start with explorer for codebase inspection.`,
+    'Prefer 3-5 steps total. Always include a summarizer as the final step.',
+    'For debugging: explorer -> debugger -> coder -> tester -> summarizer.',
+    'For architecture/design: explorer -> architect -> summarizer.',
+    'For refactoring: explorer -> refactorer -> tester -> summarizer.',
+    'For implementation: explorer -> coder -> reviewer -> tester -> summarizer.',
+    'For documentation: explorer -> writer -> summarizer.',
+    'For advisory: explorer -> advisor -> summarizer.',
     'For implementation goals, include a reviewer or tester step near the end.',
-    'For advisory/analysis goals, keep it lean with planner/advisor only; do not use coder unless code or files will be modified.'
+    'For advisory/analysis goals, keep it lean with explorer/advisor only; do not use coder unless code or files will be modified.'
   ].join('\n');
   const plannerSystemPrompt = await composeSystemPrompt({
     shellRulesPrompt: systemPrompt,
@@ -225,7 +231,8 @@ async function runPipeline({ task, config, systemPrompt, model }) {
       config,
       systemPrompt,
       model,
-      maxSteps: Number(config.execution?.max_steps || 12)
+
+
     });
 
     const stepResult = {
@@ -283,7 +290,8 @@ export async function handleRun(args) {
       config,
       systemPrompt,
       model: selectedModel,
-      maxSteps: parsed.maxSteps
+
+
     });
     console.log(result.text);
     return;
@@ -302,7 +310,7 @@ export async function handleRun(args) {
       toolHandlers: handlers,
       toolFormatters: formatters,
       deferredDefinitions,
-      maxSteps: parsed.maxSteps,
+
       requestCompletion: makeCompletionFn(config)
     });
 

@@ -125,47 +125,6 @@
       border-bottom: 1px solid var(--line);
     }
     section:last-child { border-bottom: none; }
-    /* ── Controls ── */
-    .controls { margin: 8px 0 24px; }
-    .controls-bar {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      flex-wrap: wrap;
-    }
-    input[type="search"] {
-      width: min(400px, 100%);
-      padding: 7px 12px 7px 32px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' fill='none' stroke='%239b9a97' stroke-width='2'%3E%3Ccircle cx='6' cy='6' r='4.5'/%3E%3Cpath d='M10 10l3 3'/%3E%3C/svg%3E") 10px center no-repeat;
-      color: var(--text);
-      font-size: 13.5px;
-      transition: border-color var(--transition), box-shadow var(--transition);
-    }
-    input[type="search"]:focus {
-      outline: none;
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px var(--accent-bg);
-    }
-    input[type="search"]::placeholder { color: var(--gray); }
-    .controls-bar button {
-      padding: 6px 14px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: var(--bg);
-      color: var(--text-secondary);
-      cursor: pointer;
-      font-size: 12.5px;
-      font-weight: 500;
-      transition: all var(--transition);
-    }
-    .controls-bar button:hover {
-      background: var(--bg-hover);
-      color: var(--text);
-      border-color: var(--line-strong);
-    }
-    .no-results { color: var(--gray); padding: 32px 0; font-size: 14px; display: none; }
     /* ── Cards ── */
     .card {
       border: 1px solid var(--line);
@@ -389,7 +348,7 @@
     }
     /* ── Print ── */
     @media print {
-      nav, .controls-bar, #back-to-top, .no-results { display: none !important; }
+      nav, #back-to-top { display: none !important; }
       .layout { grid-template-columns: 1fr; padding: 0; }
       .card { box-shadow: none; break-inside: avoid; border: 1px solid #ddd; }
       .diagram-card { box-shadow: none; }
@@ -426,14 +385,6 @@
       <a href="#evidence"><span class="nav-dot"></span>{{nav_evidence}}</a>
     </nav>
     <main>
-      <div class="controls">
-        <div class="controls-bar">
-          <input id="report-search" type="search" placeholder="{{search_placeholder}}">
-          <button id="toggle-details" type="button">{{expand_all}}</button>
-          <button id="show-questions" type="button">{{questions_only}}</button>
-        </div>
-        <p class="no-results" id="no-results">{{no_results}}</p>
-      </div>
       <section id="summary">
         <h2>{{heading_summary}}</h2>
         <!-- REQUIREMENTS_SUMMARY -->
@@ -505,11 +456,7 @@
   <a href="#" id="back-to-top">{{back_to_top}}</a>
   <script>
     (() => {
-      const search = document.querySelector('#report-search');
-      const noResults = document.querySelector('#no-results');
       const sections = document.querySelectorAll('section[id]');
-      const cards = document.querySelectorAll('.card, details');
-      const tables = document.querySelectorAll('table');
       const navLinks = document.querySelectorAll('nav a');
 
       /* ── Scroll spy ── */
@@ -521,55 +468,6 @@
         });
       }, { rootMargin: '-80px 0px -70% 0px', threshold: 0 });
       sections.forEach(s => observer.observe(s));
-
-      /* ── Search ── */
-      search?.addEventListener('input', () => {
-        const query = search.value.trim().toLowerCase();
-        let anyVisible = false;
-        if (!query) {
-          cards.forEach(c => c.style.display = '');
-          tables.forEach(t => t.style.display = '');
-          sections.forEach(s => s.style.display = '');
-          noResults.style.display = 'none';
-          return;
-        }
-        sections.forEach(s => {
-          const inner = s.querySelectorAll('.card, details, table');
-          let sectionVisible = false;
-          inner.forEach(el => {
-            const matched = el.textContent.toLowerCase().includes(query);
-            el.style.display = matched ? '' : 'none';
-            if (matched) sectionVisible = true;
-          });
-          s.style.display = sectionVisible ? '' : 'none';
-          if (sectionVisible) anyVisible = true;
-        });
-        noResults.style.display = anyVisible ? 'none' : 'block';
-      });
-
-      /* ── Expand / Collapse all ── */
-      const toggleBtn = document.querySelector('#toggle-details');
-      let allOpen = false;
-      toggleBtn?.addEventListener('click', () => {
-        allOpen = !allOpen;
-        document.querySelectorAll('details.card').forEach(d => d.open = allOpen);
-        toggleBtn.textContent = allOpen ? '{{collapse_all}}' : '{{expand_all}}';
-      });
-
-      /* ── Show questions only ── */
-      const questionsBtn = document.querySelector('#show-questions');
-      let questionsOnly = false;
-      questionsBtn?.addEventListener('click', () => {
-        questionsOnly = !questionsOnly;
-        const target = document.querySelector('#questions');
-        if (questionsOnly) {
-          sections.forEach(s => s.style.display = s === target ? '' : 'none');
-          questionsBtn.textContent = '{{show_all_sections}}';
-        } else {
-          sections.forEach(s => s.style.display = '');
-          questionsBtn.textContent = '{{questions_only}}';
-        }
-      });
 
       /* ── Back to top ── */
       const backToTop = document.querySelector('#back-to-top');

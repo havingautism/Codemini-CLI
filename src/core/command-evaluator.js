@@ -1,10 +1,12 @@
 import { createChatCompletion } from './provider/index.js';
 import { getReadOnlyCommandTokens } from './command-risk.js';
+import { getReplyLanguageName } from './reply-language.js';
 
 const EVAL_TIMEOUT_MS = 15000;
 
-function buildSystemPrompt() {
+function buildSystemPrompt(config = {}) {
   const readOnlyTokens = getReadOnlyCommandTokens().join(', ');
+  const replyLanguage = getReplyLanguageName(config);
   return `You are a command safety evaluator for a coding assistant. Analyze the shell command and respond with valid JSON only, no markdown fences:
 {"risk":"low|medium|high","description":"what this command does in one sentence","sideEffects":"potential side effects in one sentence, or none","recommendation":"allow|deny"}
 
@@ -15,6 +17,7 @@ Rules:
 - Commands that install/uninstall packages, modify files, push code, start servers, or have network side effects are medium or high.
 - Destructive commands (rm -rf, format, sudo, dd) are high risk and deny.
 - Consider the workspace context: the command runs in the project directory.
+- Write description and sideEffects in ${replyLanguage}. Keep risk and recommendation enum values in English exactly as specified.
 - Be concise. Maximum 1 sentence per field.`;
 }
 
@@ -55,9 +58,9 @@ export async function evaluateCommandWithLLM({ command, config, workspaceRoot })
       sdkProvider: config?.sdk?.provider,
       baseUrl: config?.gateway?.base_url,
       apiKey: config?.gateway?.api_key,
-      model: config?.model?.name,
+      model: config?.model?.fast_name || config?.model?.name,
       messages: [
-        { role: 'system', content: buildSystemPrompt() },
+        { role: 'system', content: buildSystemPrompt(config) },
         { role: 'user', content: `Command: ${cmd}\nWorkspace: ${workspaceRoot || process.cwd()}` }
       ],
       temperature: 0,

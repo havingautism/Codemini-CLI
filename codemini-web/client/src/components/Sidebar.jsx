@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   Plus,
   Sun,
@@ -17,6 +17,7 @@ import {
   Palette,
   PencilLine,
   Drama,
+  Brain,
 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -30,6 +31,8 @@ import { cn } from "@/lib/utils";
 import { t, setLocale, getLocale } from "../../i18n/index.js";
 
 const GENERAL_PROJECT_MARKER = "__codemini_general__";
+const PROJECT_SESSION_PREVIEW_LIMIT = 5;
+const GENERAL_SESSION_PREVIEW_LIMIT = 10;
 
 function getProjectKey(session) {
   return session?.projectDir || "unknown";
@@ -127,6 +130,7 @@ export function Sidebar({
   onSetTheme,
   onOpenSettings,
   onOpenSkills,
+  onOpenMemory,
   onOpenSouls,
   onOpenAbout,
   gitBatch,
@@ -139,6 +143,10 @@ export function Sidebar({
   onDeleteSession,
 }) {
   const [expandedProjects, setExpandedProjects] = useState(new Set());
+  const [projectSessionLimits, setProjectSessionLimits] = useState({});
+  const [generalSessionLimit, setGeneralSessionLimit] = useState(
+    GENERAL_SESSION_PREVIEW_LIMIT,
+  );
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [themePalette, setThemePaletteState] = useState(() => {
@@ -173,23 +181,42 @@ export function Sidebar({
   }, []);
   const isDark = resolvedTheme === "dark";
 
-  const allSessions = Array.isArray(sessions) ? sessions : [];
-  const currentSession = allSessions.find((s) => s.id === currentSessionId);
-  const activeIsGeneral = !!currentSession?.isGeneral;
-  const activeProjectKey = currentSession
-    ? getProjectKey(currentSession)
-    : null;
-  const generalSessions = allSessions.filter((session) => session.isGeneral);
-  const projectSessionsOnly = allSessions.filter(
-    (session) => !session.isGeneral,
-  );
-
-  const projectGroups = new Map();
-  for (const session of projectSessionsOnly) {
-    const key = getProjectKey(session);
-    if (!projectGroups.has(key)) projectGroups.set(key, []);
-    projectGroups.get(key).push(session);
-  }
+  const {
+    allSessions,
+    currentSession,
+    activeIsGeneral,
+    activeProjectKey,
+    generalSessions,
+    projectSessionsOnly,
+    projectGroups,
+    projectGroupEntries,
+  } = useMemo(() => {
+    const all = Array.isArray(sessions) ? sessions : [];
+    const current = all.find((s) => s.id === currentSessionId);
+    const general = [];
+    const projectOnly = [];
+    const groups = new Map();
+    for (const session of all) {
+      if (session.isGeneral) {
+        general.push(session);
+        continue;
+      }
+      projectOnly.push(session);
+      const key = getProjectKey(session);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(session);
+    }
+    return {
+      allSessions: all,
+      currentSession: current,
+      activeIsGeneral: !!current?.isGeneral,
+      activeProjectKey: current ? getProjectKey(current) : null,
+      generalSessions: general,
+      projectSessionsOnly: projectOnly,
+      projectGroups: groups,
+      projectGroupEntries: Array.from(groups.entries()),
+    };
+  }, [sessions, currentSessionId]);
 
   const toggleProject = (key) => {
     setExpandedProjects((prev) => {
@@ -198,6 +225,22 @@ export function Sidebar({
       else next.add(key);
       return next;
     });
+  };
+
+  const loadMoreProjectSessions = (projectKey, total) => {
+    setProjectSessionLimits((prev) => {
+      const current = prev[projectKey] || PROJECT_SESSION_PREVIEW_LIMIT;
+      return {
+        ...prev,
+        [projectKey]: Math.min(current + PROJECT_SESSION_PREVIEW_LIMIT, total),
+      };
+    });
+  };
+
+  const loadMoreGeneralSessions = () => {
+    setGeneralSessionLimit((current) =>
+      Math.min(current + GENERAL_SESSION_PREVIEW_LIMIT, generalSessions.length),
+    );
   };
 
   const setThemePalette = (palette) => {
@@ -316,19 +359,40 @@ export function Sidebar({
           />
           <span className="truncate">{t("souls")}</span>
         </button>
-
-        <Separator className="my-2 bg-(--border-default)" />
+        <button
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          onClick={onOpenMemory}
+        >
+          <Brain
+            size={15}
+            strokeWidth={2}
+            className="text-(--text-secondary) shrink-0"
+          />
+          <span className="truncate">{t("memory")}</span>
+        </button>
+        <Separator className="my-2 bg-transparent" />
       </div>
 
-      {/* Scrollable project history */}
-      <nav
-        className="shrink-0 max-h-[52vh] flex flex-col px-2.5 pb-1 gap-0.5 overflow-y-auto"
-        style={{ scrollbarWidth: "thin" }}
+      <div
+        className="flex-1 min-h-0 overflow-y-auto scroll-smooth"
+        // style={{ scrollbarWidth: "thin" }}
       >
-        {Array.from(projectGroups.entries()).map(
-          ([projectKey, projectSessions]) => {
+        {/* Scrollable project history */}
+        <div className="flex items-center gap-2 px-4 pb-2.5">
+          <span className="min-w-0 flex-1 text-[12px] font-medium text-(--text-muted)">
+            {t("projects")}
+          </span>
+        </div>
+        <nav className="flex flex-col px-2.5 pb-1 gap-0.5">
+          {projectGroupEntries.map(([projectKey, projectSessions]) => {
             const isExpanded =
               expandedProjects.has(projectKey) || projectGroups.size === 1;
+            const projectSessionLimit =
+              projectSessionLimits[projectKey] || PROJECT_SESSION_PREVIEW_LIMIT;
+            const visibleProjectSessions = projectSessions.slice(
+              0,
+              projectSessionLimit,
+            );
             const git = gitBatch?.[projectKey];
             const isActive = projectKey === activeProjectKey;
             const canOpenCodeWiki = projectKey !== "unknown";
@@ -411,7 +475,7 @@ export function Sidebar({
                 </div>
                 {isExpanded && (
                   <div className="flex flex-col gap-1.5 py-1 pl-2">
-                    {projectSessions.slice(0, 30).map((session) => (
+                    {visibleProjectSessions.map((session) => (
                       <div
                         key={session.id}
                         onClick={() => {
@@ -466,123 +530,151 @@ export function Sidebar({
                         </Popover>
                       </div>
                     ))}
+                    {projectSessionLimit < projectSessions.length && (
+                      <button
+                        type="button"
+                        className="h-[26px] rounded-md border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                        onClick={() =>
+                          loadMoreProjectSessions(
+                            projectKey,
+                            projectSessions.length,
+                          )
+                        }
+                      >
+                        {t("showMoreSessions")}
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
             );
-          },
-        )}
+          })}
 
-        {sessionsLoading && allSessions.length === 0 && (
-          <div className="px-3 py-4 text-center">
-            <Spinner className="justify-center" />
-          </div>
-        )}
-        {!sessionsLoading &&
-          projectSessionsOnly.length === 0 &&
-          generalSessions.length === 0 && (
-            <div className="px-3 py-4 text-[12px] text-(--text-muted) text-center">
-              {t("noSessions")}
+          {sessionsLoading && allSessions.length === 0 && (
+            <div className="px-3 py-4 text-center">
+              <Spinner className="justify-center" />
             </div>
           )}
-      </nav>
-
-      <section className="shrink-0 px-2.5 pb-2">
-        <Separator className="my-2 bg-(--border-default)" />
-        <div className="flex items-center gap-2 px-1.5 pb-1.5">
-          <span className="min-w-0 flex-1 text-[12px] font-medium text-(--text-muted)">
-            {t("conversations")}
-          </span>
-          <button
-            type="button"
-            className="inline-flex size-7 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)"
-            title={t("newChat")}
-            aria-label={t("newChat")}
-            onClick={openGeneralNewSession}
-          >
-            <Plus size={14} strokeWidth={1.9} />
-          </button>
-        </div>
-
-        <div className="flex flex-col gap-1">
-          {generalSessions.slice(0, 6).map((session) => {
-            const active =
-              session.id === currentSessionId && currentView === "chat";
-            return (
-              <div
-                key={session.id}
-                onClick={() => {
-                  if (session.id !== currentSessionId) {
-                    onSwitchSession(session.id);
-                  } else if (currentView !== "chat") {
-                    onSwitchView?.("chat");
-                  }
-                }}
-                className={cn(
-                  "group flex h-[34px] w-full cursor-pointer items-center gap-2 rounded-lg border-0 px-2 text-left text-[13px]",
-                  active
-                    ? "bg-(--bg-active) text-(--text-primary)"
-                    : "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
-                )}
-              >
-                <span
-                  className="min-w-0 flex-1 truncate font-medium"
-                  title={getSessionLabel(session)}
-                >
-                  {getSessionLabel(session)}
-                </span>
-                {session.updatedAt && (
-                  <span className="shrink-0 text-[11px] tabular-nums text-(--text-muted)">
-                    {formatRelativeTime(session.updatedAt)}
-                  </span>
-                )}
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <button
-                      type="button"
-                      className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) opacity-0 hover:bg-(--bg-active) hover:text-(--text-primary) group-hover:opacity-100 focus:opacity-100"
-                      onClick={(event) => event.stopPropagation()}
-                      aria-label={t("sessionActions")}
-                    >
-                      <MoreHorizontal size={14} />
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent
-                    align="end"
-                    className="w-36 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
-                    onClick={(event) => event.stopPropagation()}
-                  >
-                    <button
-                      type="button"
-                      className="w-full rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
-                      onClick={() => setPendingDelete(session)}
-                    >
-                      {t("deleteSession")}
-                    </button>
-                  </PopoverContent>
-                </Popover>
+          {!sessionsLoading &&
+            projectSessionsOnly.length === 0 &&
+            generalSessions.length === 0 && (
+              <div className="px-3 py-4 text-[12px] text-(--text-muted) text-center">
+                {t("noSessions")}
               </div>
-            );
-          })}
-          {!sessionsLoading && generalSessions.length === 0 && (
+            )}
+        </nav>
+
+        <section className="px-2.5 pb-2">
+          <Separator className="my-2 bg-transparent" />
+          <div className="flex items-center gap-2 px-1.5 pb-1.5">
+            <span className="min-w-0 flex-1 text-[12px] font-medium text-(--text-muted)">
+              {t("conversations")}
+            </span>
             <button
               type="button"
+              className="inline-flex size-7 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)"
+              title={t("newChat")}
+              aria-label={t("newChat")}
               onClick={openGeneralNewSession}
-              className="h-[34px] rounded-lg border-0 bg-transparent px-2 text-left text-[13px] text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
             >
-              {t("noConversations")}
+              <Plus size={14} strokeWidth={1.9} />
             </button>
-          )}
-        </div>
-      </section>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            {sessionsLoading && generalSessions.length === 0 && (
+              <div className="flex h-[34px] items-center justify-center px-3 text-(--text-muted)">
+                <Spinner />
+              </div>
+            )}
+            {generalSessions.slice(0, generalSessionLimit).map((session) => {
+              const active =
+                session.id === currentSessionId && currentView === "chat";
+              return (
+                <div
+                  key={session.id}
+                  onClick={() => {
+                    if (session.id !== currentSessionId) {
+                      onSwitchSession(session.id);
+                    } else if (currentView !== "chat") {
+                      onSwitchView?.("chat");
+                    }
+                  }}
+                  className={cn(
+                    "group flex h-[34px] w-full cursor-pointer items-center gap-2 rounded-lg border-0 px-2 text-left text-[13px]",
+                    active
+                      ? "bg-(--bg-active) text-(--text-primary)"
+                      : "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+                  )}
+                >
+                  <span
+                    className="min-w-0 flex-1 truncate font-medium"
+                    title={getSessionLabel(session)}
+                  >
+                    {getSessionLabel(session)}
+                  </span>
+                  {session.updatedAt && (
+                    <span className="shrink-0 text-[11px] tabular-nums text-(--text-muted)">
+                      {formatRelativeTime(session.updatedAt)}
+                    </span>
+                  )}
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) opacity-0 hover:bg-(--bg-active) hover:text-(--text-primary) group-hover:opacity-100 focus:opacity-100"
+                        onClick={(event) => event.stopPropagation()}
+                        aria-label={t("sessionActions")}
+                      >
+                        <MoreHorizontal size={14} />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent
+                      align="end"
+                      className="w-36 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        className="w-full rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
+                        onClick={() => setPendingDelete(session)}
+                      >
+                        {t("deleteSession")}
+                      </button>
+                    </PopoverContent>
+                  </Popover>
+                </div>
+              );
+            })}
+            {generalSessionLimit < generalSessions.length && (
+              <button
+                type="button"
+                className="h-[28px] rounded-md border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                onClick={loadMoreGeneralSessions}
+              >
+                {t("showMoreSessions")}
+              </button>
+            )}
+            {!sessionsLoading && generalSessions.length === 0 && (
+              <button
+                type="button"
+                onClick={openGeneralNewSession}
+                className="h-[34px] rounded-lg border-0 bg-transparent px-2 text-left text-[13px] text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+              >
+                {t("noConversations")}
+              </button>
+            )}
+          </div>
+        </section>
+      </div>
 
       {/* Footer */}
 
       <div className="mt-auto px-2.5 py-2 flex flex-col gap-0">
-        <Separator className="my-2 bg-(--border-default)" />
+        <Separator className="my-2 bg-transparent" />
         {versionInfo?.latest && versionInfo.latest !== versionInfo.current && (
           <button
-            className="w-full border-0 bg-(--bg-tertiary) rounded-md px-2.5 py-1.5 cursor-pointer text-[11px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) flex items-center justify-center gap-1.5"
+            className="w-full border-0 bg-(--bg-tertiary) rounded-md mb-2 px-2.5 py-1.5 cursor-pointer text-[11px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) flex items-center justify-center gap-1.5"
             onClick={updateStatus === "updating" ? undefined : onUpdate}
             disabled={updateStatus === "updating"}
           >

@@ -11,8 +11,9 @@ import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
 import { RuntimeBridge } from './lib/runtime-bridge.js';
 import { installSkillSource, listSkillEntries } from '../src/commands/skill.js';
 import { computeFileSha256, readSkillRegistry, upsertSkillRegistryEntry, writeSkillRegistry } from '../src/core/skill-registry.js';
+import { forgetMemory, listMemories, searchMemories } from '../src/core/memory-store.js';
 import { getReplyLanguage } from '../src/core/reply-language.js';
-import { getBaseConfigDir, getFileIndexPath, getProjectSkillsDir, getSkillsDir } from '../src/core/paths.js';
+import { getBaseConfigDir, getFileIndexPath, getProjectSkillsDir, getProjectSpecsDir, getSkillsDir } from '../src/core/paths.js';
 import { initializeProjectIndex } from '../src/core/project-index.js';
 import { INDEX_SKIP_DIRS } from '../src/core/constants.js';
 import { VERSION } from '../src/core/version.js';
@@ -23,11 +24,17 @@ const GENERAL_PROJECT_DIR = (() => {
 })();
 
 const SKILL_CATALOG_FILE = 'codemini.skills.json';
-const SKILL_MODES = new Set(['always', 'auto_attach', 'agent_requested', 'manual']);
+const SKILL_MODES = new Set(['always', 'agent_requested', 'manual']);
 const SKILL_SCOPES = new Set(['project', 'global']);
+const MEMORY_SCOPES = new Set(['user', 'global', 'project']);
 
 function normalizeSkillScope(scope) {
   return SKILL_SCOPES.has(scope) ? scope : 'project';
+}
+
+function normalizeMemoryScope(scope) {
+  const value = String(scope || '').trim().toLowerCase();
+  return MEMORY_SCOPES.has(value) ? value : 'user';
 }
 
 function isSafeSkillName(name = '') {
@@ -41,7 +48,10 @@ function skillBaseDirForScope(scope, projectDir) {
 function normalizeSkillMetadataPatch(input = {}) {
   const out = {};
   if (typeof input.description === 'string') out.description = input.description.trim();
-  if (typeof input.mode === 'string' && SKILL_MODES.has(input.mode)) out.mode = input.mode;
+  if (typeof input.mode === 'string') {
+    const mode = input.mode === 'auto_attach' ? 'agent_requested' : input.mode;
+    if (SKILL_MODES.has(mode)) out.mode = mode;
+  }
   if (input.enabled !== undefined) out.enabled = input.enabled !== false;
   if (input.priority !== undefined) {
     const priority = Number(input.priority);
@@ -143,6 +153,63 @@ function isGeneralProjectDir(value) {
   return path.resolve(value) === path.resolve(GENERAL_PROJECT_DIR);
 }
 
+function isPathInside(parentDir, candidatePath) {
+  const parent = path.resolve(parentDir);
+  const candidate = path.resolve(candidatePath);
+  const relative = path.relative(parent, candidate);
+  return relative === '' || (!!relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function listProjectSpecFiles(projectDir) {
+  if (!projectDir || isGeneralProjectDir(projectDir)) return [];
+  const specsDir = getProjectSpecsDir(projectDir);
+  const specs = [];
+  async function walk(dir) {
+    let entries = [];
+    try {
+      entries = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith('.md')) continue;
+      let stat = null;
+      try {
+        stat = await fs.stat(fullPath);
+      } catch {}
+      const relativePath = path.relative(specsDir, fullPath);
+      specs.push({
+        name: entry.name.replace(/\.md$/i, ''),
+        file: entry.name,
+        path: fullPath,
+        relativePath,
+        updatedAt: stat?.mtime?.toISOString?.() || ''
+      });
+    }
+  }
+  await walk(specsDir);
+  return specs.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+}
+
+async function resolveProjectSpecFile(projectDir, rawPath = '') {
+  if (!projectDir || isGeneralProjectDir(projectDir)) return '';
+  const specsDir = getProjectSpecsDir(projectDir);
+  const candidate = path.resolve(projectDir, String(rawPath || '').trim());
+  if (!isPathInside(specsDir, candidate)) return '';
+  try {
+    const stat = await fs.stat(candidate);
+    if (!stat.isFile() || !candidate.toLowerCase().endsWith('.md')) return '';
+    return candidate;
+  } catch {
+    return '';
+  }
+}
+
 function getGeneralChatSystemPromptBlock() {
   return `# General Chat Mode
 
@@ -167,6 +234,7 @@ const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.json': 'application/json',
+  '.md': 'text/markdown; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ico': 'image/x-icon'
@@ -221,35 +289,52 @@ function jsonResponse(res, data, status = 200) {
   res.end(body);
 }
 
-function buildCodeWikiAskPrompt({ question, reportPath, projectDir, replyLanguage }) {
+function buildCodeWikiAskPrompt({ question, reportPath, projectDir, replyLanguage, history = [] }) {
+  const historyText = buildCodeWikiHistoryContext(history, replyLanguage);
   if (getReplyLanguage(replyLanguage) === 'en') {
     return [
-      'Answer the following question based on the current project and the CodeWiki / project-requirements HTML report.',
+      'Answer the following question based on the current project and the CodeWiki / project-requirements report.',
       `Project path: ${projectDir}`,
       `Report path: ${reportPath}`,
-      '',
+      historyText,
       'Requirements:',
-      '- Prefer reading and citing the HTML report above.',
+      '- Prefer reading and citing the report above.',
       '- If the report is insufficient, use read-only project inspection to gather supporting evidence.',
-      '- Do not modify files, generate a new report, or write memory.',
+      '- Do not modify files unless the user explicitly asks you to add or edit code comments. If they do, only add or replace comment lines and do not change executable code.',
+      '- Do not generate a new report or write memory.',
       '- Respond in English unless the user explicitly asks for another language.',
       '',
       `Question: ${question.trim()}`
-    ].join('\n');
+    ].filter(Boolean).join('\n');
   }
   return [
-    '请基于当前项目和 CodeWiki / project-requirements HTML 报告回答下面的问题。',
+    '请基于当前项目和 CodeWiki / project-requirements 报告回答下面的问题。',
     `项目路径：${projectDir}`,
     `报告路径：${reportPath}`,
-    '',
+    historyText,
     '要求：',
-    '- 优先读取并参考上述 HTML 报告。',
+    '- 优先读取并参考上述报告。',
     '- 如果报告信息不足，可以只读检索项目文件补充证据。',
-    '- 不要修改文件，不要生成新报告，不要写入记忆。',
+    '- 除非用户明确要求添加或编辑代码注释，否则不要修改文件；如果需要处理注释，只能添加或替换注释行，不能改变可执行代码。',
+    '- 不要生成新报告，不要写入记忆。',
     '- 除非用户明确要求其他语言，否则使用简体中文回答。',
     '',
     `问题：${question.trim()}`
-  ].join('\n');
+  ].filter(Boolean).join('\n');
+}
+
+function buildCodeWikiHistoryContext(history = [], replyLanguage) {
+  if (!Array.isArray(history) || history.length === 0) return '';
+  const en = getReplyLanguage(replyLanguage) === 'en';
+  const header = en ? 'Conversation history:' : '对话历史：';
+  const lines = [header];
+  for (const entry of history) {
+    if (!entry || !entry.role) continue;
+    const label = entry.role === 'you' ? (en ? 'User' : '用户') : (en ? 'Assistant' : '助手');
+    const text = String(entry.text || '').slice(0, 800);
+    if (text) lines.push(`${label}: ${text}`);
+  }
+  return lines.length > 1 ? lines.join('\n') : '';
 }
 
 async function serveStatic(res, filePath) {
@@ -273,6 +358,124 @@ function normalizeProjectPath(value) {
     return path.join('/mnt', win[1].toLowerCase(), win[2].replace(/[\\/]+/g, '/'));
   }
   return path.resolve(raw);
+}
+
+function projectNameForDir(projectDir) {
+  if (isGeneralProjectDir(projectDir)) return '__codemini_general__';
+  return path.basename(path.resolve(projectDir || '')) || projectDir || '';
+}
+
+function getGitBranch(cwd) {
+  try {
+    return execSync('git symbolic-ref --quiet --short HEAD', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  } catch {
+    const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+    return branch === 'HEAD' ? null : branch;
+  }
+}
+
+function readGitInfo(cwd, { includeCounts = true } = {}) {
+  execSync('git rev-parse --is-inside-work-tree', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+  const branch = getGitBranch(cwd);
+  if (!includeCounts) return { isGit: true, branch };
+
+  const porcelain = execSync('git status --porcelain', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  const lines = porcelain ? porcelain.split('\n') : [];
+  let staged = 0, modified = 0, untracked = 0;
+  for (const line of lines) {
+    const x = line[0], y = line[1];
+    if (x === '?' && y === '?') { untracked++; continue; }
+    if (x !== ' ' && x !== '?') staged++;
+    if (y === 'M' || y === 'D') modified++;
+  }
+  return { isGit: true, branch, dirty: lines.length > 0, staged, modified, untracked };
+}
+
+async function validProjectDir(value) {
+  const normalized = normalizeProjectPath(value);
+  if (!normalized) return '';
+  try {
+    const stat = await fs.stat(normalized);
+    return stat.isDirectory() ? normalized : '';
+  } catch {
+    return '';
+  }
+}
+
+async function resolveRequestProjectDir(value, fallbackDir) {
+  const resolved = await validProjectDir(value);
+  return resolved || fallbackDir;
+}
+
+async function parseProjectDirsParam(url, fallbackDir) {
+  const raw = url.searchParams.get('projects');
+  const parsed = raw ? tryParseJson(raw) : [];
+  const values = Array.isArray(parsed) ? parsed : [];
+  const seen = new Set();
+  const dirs = [];
+  for (const candidate of [fallbackDir, ...values]) {
+    const resolved = await validProjectDir(candidate);
+    if (!resolved || seen.has(resolved)) continue;
+    seen.add(resolved);
+    dirs.push(resolved);
+  }
+  if (dirs.length === 0 && fallbackDir) {
+    dirs.push(fallbackDir);
+  }
+  return dirs;
+}
+
+async function listSkillsForProjectDirs(projectDirs, fallbackDir) {
+  const dirs = projectDirs.length > 0 ? projectDirs : [fallbackDir];
+  const seen = new Set();
+  const results = [];
+  for (let index = 0; index < dirs.length; index += 1) {
+    const projectDir = dirs[index];
+    const entries = await listSkillEntries({ scope: 'all', cwd: projectDir });
+    for (const entry of entries) {
+      if (entry.scope !== 'project') {
+        const globalKey = `${entry.scope}:${entry.name}:${entry.path || ''}`;
+        if (seen.has(globalKey)) continue;
+        seen.add(globalKey);
+        results.push(entry);
+        continue;
+      }
+      const projectKey = `project:${projectDir}:${entry.name}:${entry.path || ''}`;
+      if (seen.has(projectKey)) continue;
+      seen.add(projectKey);
+      results.push({
+        ...entry,
+        projectDir,
+        projectName: projectNameForDir(projectDir)
+      });
+    }
+  }
+  return results.sort((a, b) => {
+    const left = `${a.scope}:${a.projectName || ''}:${a.name}`;
+    const right = `${b.scope}:${b.projectName || ''}:${b.name}`;
+    return left.localeCompare(right);
+  });
+}
+
+async function listMemoriesForProjectDirs({ scope, query, projectDirs, fallbackDir }) {
+  if (scope !== 'project') {
+    const items = query
+      ? await searchMemories({ scope, query, workspaceRoot: fallbackDir })
+      : await listMemories({ scope, workspaceRoot: fallbackDir });
+    return items;
+  }
+  const dirs = projectDirs.length > 0 ? projectDirs : [fallbackDir];
+  const chunks = await Promise.all(dirs.map(async (projectDir) => {
+    const items = query
+      ? await searchMemories({ scope, query, workspaceRoot: projectDir })
+      : await listMemories({ scope, workspaceRoot: projectDir });
+    return (items || []).map((item) => ({
+      ...item,
+      projectDir,
+      projectName: projectNameForDir(projectDir)
+    }));
+  }));
+  return chunks.flat();
 }
 
 async function resolveCodeWikiProjectDir(url, fallbackDir) {
@@ -327,7 +530,7 @@ async function existingDirectoryForHint(rawHint) {
   return '';
 }
 
-const CODEWIKI_REPORT_RE = /^[^/\\]+-project-requirements\.html$/;
+const CODEWIKI_REPORT_RE = /^[^/\\]+-project-requirements\.(?:html|md)$/;
 
 function getRequirementsDir(projectDir) {
   return path.join(projectDir, 'docs', 'requirements');
@@ -339,8 +542,12 @@ function isCodeWikiReportFile(fileName) {
 
 function codeWikiReportTitle(fileName) {
   return String(fileName || '')
-    .replace(/-project-requirements\.html$/, '')
+    .replace(/-project-requirements\.(?:html|md)$/, '')
     .replace(/-/g, ' ');
+}
+
+function codeWikiReportFormat(fileName) {
+  return String(fileName || '').toLowerCase().endsWith('.md') ? 'md' : 'html';
 }
 
 function clipGraphList(values, max = 12) {
@@ -641,7 +848,7 @@ async function main() {
     }
     if (req.method === 'POST' && url.pathname === '/api/execution-mode') {
       const { mode } = await readBody(req);
-      if (!mode || !['normal', 'auto', 'plan'].includes(mode)) {
+      if (!mode || !['normal', 'plan', 'spec'].includes(mode)) {
         jsonResponse(res, { error: true, message: 'Invalid mode' }, 400);
         return;
       }
@@ -650,6 +857,47 @@ async function main() {
         return;
       }
       const ok = await bridge.setExecutionMode(mode);
+      jsonResponse(res, { ok });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/pending-plan') {
+      const body = await readBody(req);
+      try {
+        const plan = await bridge.updatePendingPlan(body || {});
+        if (!plan) { jsonResponse(res, { error: true, message: 'No pending plan approval' }, 409); return; }
+        jsonResponse(res, { ok: true, plan });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/pending-reflect') {
+      const body = await readBody(req);
+      try {
+        const draft = await bridge.updatePendingReflect(body || {});
+        if (!draft) { jsonResponse(res, { error: true, message: 'No pending reflect approval' }, 409); return; }
+        jsonResponse(res, { ok: true, draft });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/pending-spec') {
+      const body = await readBody(req);
+      try {
+        const spec = await bridge.updatePendingSpec(body || {});
+        if (!spec) { jsonResponse(res, { error: true, message: 'No pending spec approval' }, 409); return; }
+        jsonResponse(res, { ok: true, spec });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/approval-mode') {
+      const { mode } = await readBody(req);
+      if (!mode || !['review', 'auto', 'full_access'].includes(mode)) {
+        jsonResponse(res, { error: true, message: 'Invalid approval mode' }, 400);
+        return;
+      }
+      if (bridge.isBusy()) {
+        jsonResponse(res, { error: true, message: 'Cannot switch approval mode while a request is running' }, 409);
+        return;
+      }
+      const ok = await bridge.setApprovalMode(mode);
       jsonResponse(res, { ok });
       return;
     }
@@ -707,6 +955,40 @@ async function main() {
       jsonResponse(res, await bridge.getUiMessages());
       return;
     }
+    if (req.method === 'GET' && url.pathname === '/api/specs') {
+      jsonResponse(res, { specs: await listProjectSpecFiles(currentProjectDir) });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/specs/open') {
+      const body = await readBody(req);
+      const specPath = await resolveProjectSpecFile(currentProjectDir, body?.path);
+      if (!specPath) {
+        jsonResponse(res, { error: true, message: 'Spec file not found' }, 404);
+        return;
+      }
+      const specText = await fs.readFile(specPath, 'utf8');
+      const spec = await bridge.setPendingSpecFromFile({
+        filePath: specPath,
+        specText,
+        goal: path.basename(specPath, '.md'),
+        summary: path.basename(specPath, '.md')
+      });
+      if (!spec) {
+        jsonResponse(res, { error: true, message: 'Failed to open spec' }, 500);
+        return;
+      }
+      jsonResponse(res, { ok: true, spec });
+      return;
+    }
+    if (req.method === 'DELETE' && url.pathname === '/api/pending-spec') {
+      const result = await bridge.deletePendingSpec();
+      if (!result) {
+        jsonResponse(res, { error: true, message: 'No pending spec approval' }, 409);
+        return;
+      }
+      jsonResponse(res, { ok: true, ...result });
+      return;
+    }
 
     // ── CodeWiki / project requirements reports ──
     if (req.method === 'GET' && url.pathname === '/api/codewiki/reports') {
@@ -719,11 +1001,26 @@ async function main() {
           if (!entry.isFile() || !isCodeWikiReportFile(entry.name)) continue;
           const reportPath = path.join(requirementsDir, entry.name);
           const stat = await fs.stat(reportPath);
+          let manifestStatus = '';
+          let manifestUpdatedAt = '';
+          try {
+            const baseName = entry.name.replace(/\.(?:html|md)$/i, '');
+            const manifestPath = path.join(requirementsDir, `${baseName}.manifest.json`);
+            const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+            manifestStatus = typeof manifest?.status === 'string' ? manifest.status : '';
+            manifestUpdatedAt = typeof manifest?.updatedAt === 'string' ? manifest.updatedAt : '';
+          } catch {
+            manifestStatus = '';
+            manifestUpdatedAt = '';
+          }
           reports.push({
             file: entry.name,
             title: codeWikiReportTitle(entry.name),
+            format: codeWikiReportFormat(entry.name),
             size: stat.size,
-            mtime: stat.mtime.toISOString()
+            mtime: stat.mtime.toISOString(),
+            manifestStatus,
+            manifestUpdatedAt
           });
         }
         reports.sort((a, b) => new Date(b.mtime) - new Date(a.mtime));
@@ -801,10 +1098,13 @@ async function main() {
         jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
         return;
       }
-      const { depth } = await readBody(req);
+      const { depth, format } = await readBody(req);
       const normalizedDepth = ['fast', 'standard', 'deep'].includes(String(depth || '').toLowerCase())
         ? String(depth).toLowerCase()
         : 'standard';
+      const normalizedFormat = ['html', 'md'].includes(String(format || '').toLowerCase())
+        ? String(format).toLowerCase()
+        : 'html';
       const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
       if (codeWikiProjectDir !== currentProjectDir) {
         const { runtime } = await buildRuntimeForSession({
@@ -814,13 +1114,13 @@ async function main() {
         await bridge.switchRuntime(runtime);
         currentProjectDir = process.cwd();
       }
-      const result = bridge.handleCodeWikiGenerate(`/project-requirements --${normalizedDepth}`);
+      const result = bridge.handleCodeWikiGenerate(`/project-requirements --${normalizedDepth} --${normalizedFormat}`);
       jsonResponse(res, result);
       return;
     }
 
     if (req.method === 'POST' && url.pathname === '/api/codewiki/ask') {
-      const { question, reportFile } = await readBody(req);
+      const { question, reportFile, history } = await readBody(req);
       if (!question || typeof question !== 'string') {
         jsonResponse(res, { error: true, message: 'Missing "question" field' }, 400);
         return;
@@ -849,7 +1149,8 @@ async function main() {
         question,
         reportPath,
         projectDir: codeWikiProjectDir,
-        replyLanguage: bridge.getState()?.replyLanguage
+        replyLanguage: bridge.getState()?.replyLanguage,
+        history: Array.isArray(history) ? history : []
       });
 
       res.writeHead(200, {
@@ -869,12 +1170,20 @@ async function main() {
 
     // ── Session management ──
     if (req.method === 'GET' && url.pathname === '/api/sessions') {
-      const sessions = await listSessions(1000);
+      const requestedLimit = Number(url.searchParams.get('limit') || 200);
+      const limit = Number.isFinite(requestedLimit)
+        ? Math.max(1, Math.min(1000, Math.round(requestedLimit)))
+        : 200;
+      const sessions = await listSessions(limit);
       const enriched = sessions.map(s => ({ ...s, isGeneral: isGeneralProjectDir(s.projectDir) }));
       jsonResponse(res, enriched);
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/sessions/new') {
+      if (bridge.isBusy()) {
+        jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
+        return;
+      }
       try {
         const currentMessages = bridge.getSessionMessages();
         if (!Array.isArray(currentMessages) || currentMessages.length === 0) {
@@ -902,6 +1211,10 @@ async function main() {
     if (req.method === 'POST' && url.pathname === '/api/sessions/switch') {
       const { sessionId } = await readBody(req);
       if (!sessionId) { jsonResponse(res, { error: true, message: 'Missing sessionId' }, 400); return; }
+      if (bridge.isBusy()) {
+        jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
+        return;
+      }
       try {
         const { runtime: newRuntime, session: switchedSession } = await buildRuntimeForSession({
           sessionId,
@@ -909,7 +1222,17 @@ async function main() {
         });
         await bridge.switchRuntime(newRuntime);
         currentProjectDir = process.cwd();
-        jsonResponse(res, { ok: true, sessionId, cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) });
+        jsonResponse(res, {
+          ok: true,
+          sessionId,
+          cwd: currentProjectDir,
+          isGeneral: isGeneralProjectDir(currentProjectDir),
+          state: { ...bridge.getState(), cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) },
+          sessionData: {
+            messages: bridge.getSessionMessages(),
+            compact: bridge.getSessionCompactMeta()
+          }
+        });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
@@ -929,7 +1252,7 @@ async function main() {
         let nextSessionId = bridge.getSessionId();
         let cwd = currentProjectDir;
         if (deletingCurrent) {
-          const remaining = await listSessions(1000);
+          const remaining = await listSessions(1);
           const next = remaining.find((session) => session.id !== sessionId);
           const built = next
             ? await buildRuntimeForSession({ sessionId: next.id, model: bridge.getState().model })
@@ -939,7 +1262,20 @@ async function main() {
           nextSessionId = built.session.id;
           cwd = currentProjectDir;
         }
-        jsonResponse(res, { ok: true, removed: result.removed, sessionId: nextSessionId, cwd, isGeneral: isGeneralProjectDir(currentProjectDir) });
+        jsonResponse(res, {
+          ok: true,
+          removed: result.removed,
+          sessionId: nextSessionId,
+          cwd,
+          isGeneral: isGeneralProjectDir(currentProjectDir),
+          ...(deletingCurrent ? {
+            state: { ...bridge.getState(), cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) },
+            sessionData: {
+              messages: bridge.getSessionMessages(),
+              compact: bridge.getSessionCompactMeta()
+            }
+          } : {})
+        });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
@@ -953,17 +1289,7 @@ async function main() {
     }
     if (req.method === 'GET' && url.pathname === '/api/git') {
       try {
-        const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-        const porcelain = execSync('git status --porcelain', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-        const lines = porcelain ? porcelain.split('\n') : [];
-        let staged = 0, modified = 0, untracked = 0;
-        for (const line of lines) {
-          const x = line[0], y = line[1];
-          if (x === '?' && y === '?') { untracked++; continue; }
-          if (x !== ' ' && x !== '?') staged++;
-          if (y === 'M' || y === 'D') modified++;
-        }
-        jsonResponse(res, { isGit: true, branch, dirty: lines.length > 0, staged, modified, untracked });
+        jsonResponse(res, readGitInfo(currentProjectDir));
       } catch {
         jsonResponse(res, { isGit: false, branch: null, dirty: false, staged: 0, modified: 0, untracked: 0 });
       }
@@ -1008,14 +1334,48 @@ async function main() {
       }
       return;
     }
+    if (req.method === 'GET' && url.pathname === '/api/session-changes') {
+      try {
+        jsonResponse(res, { changes: await bridge.getChangeSets() });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err?.message || 'Failed to read session changes' }, 500);
+      }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/api/session-changes/') && url.pathname.endsWith('/patch')) {
+      const id = decodeURIComponent(url.pathname.slice('/api/session-changes/'.length, -'/patch'.length));
+      try {
+        jsonResponse(res, { id, patch: await bridge.getChangeSetPatch(id) });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err?.message || 'Failed to read change patch' }, 404);
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname !== '/api/session-changes/undo' && url.pathname.startsWith('/api/session-changes/') && url.pathname.endsWith('/undo')) {
+      const id = decodeURIComponent(url.pathname.slice('/api/session-changes/'.length, -'/undo'.length));
+      try {
+        jsonResponse(res, await bridge.undoChangeSet(id));
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err?.message || 'Failed to undo change' }, 409);
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/session-changes/undo') {
+      const { ids } = await readBody(req);
+      try {
+        jsonResponse(res, await bridge.undoChangeSets(ids));
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err?.message || 'Failed to undo changes' }, 409);
+      }
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/api/git-batch') {
       const { dirs } = await readBody(req);
       const result = {};
       for (const dir of (Array.isArray(dirs) ? dirs : [])) {
         try {
           const resolved = path.resolve(dir);
-          const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd: resolved, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-          result[dir] = { isGit: true, branch };
+          result[dir] = readGitInfo(resolved, { includeCounts: false });
         } catch {
           result[dir] = { isGit: false, branch: null };
         }
@@ -1026,6 +1386,10 @@ async function main() {
     if (req.method === 'POST' && url.pathname === '/api/project/open') {
       const { path: projectPath } = await readBody(req);
       if (!projectPath) { jsonResponse(res, { error: true, message: 'Missing path' }, 400); return; }
+      if (bridge.isBusy()) {
+        jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
+        return;
+      }
       try {
         // Client marker for general workspace
         const openingGeneral = projectPath === '__codemini_general__';
@@ -1121,10 +1485,45 @@ async function main() {
       return;
     }
 
+    // ── Memory management ──
+    if (req.method === 'GET' && url.pathname === '/api/memory') {
+      const scope = normalizeMemoryScope(url.searchParams.get('scope'));
+      const query = String(url.searchParams.get('q') || '').trim();
+      try {
+        const projectDirs = await parseProjectDirsParam(url, currentProjectDir);
+        const items = await listMemoriesForProjectDirs({
+          scope,
+          query,
+          projectDirs,
+          fallbackDir: currentProjectDir
+        });
+        jsonResponse(res, { scope, query, items });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+    }
+    if (req.method === 'DELETE' && url.pathname.startsWith('/api/memory/')) {
+      const id = decodeURIComponent(url.pathname.slice('/api/memory/'.length));
+      const scope = normalizeMemoryScope(url.searchParams.get('scope'));
+      if (!id) { jsonResponse(res, { error: true, message: 'Missing memory id' }, 400); return; }
+      try {
+        const workspaceRoot = scope === 'project'
+          ? await resolveRequestProjectDir(url.searchParams.get('projectDir'), currentProjectDir)
+          : currentProjectDir;
+        const result = await forgetMemory({ scope, id, workspaceRoot });
+        jsonResponse(res, { ok: true, scope, ...result });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+    }
+
     // ── Skills management ──
     if (req.method === 'GET' && url.pathname === '/api/skills') {
       try {
-        const skills = await listSkillEntries({ scope: 'all', cwd: currentProjectDir });
+        const projectDirs = await parseProjectDirsParam(url, currentProjectDir);
+        const skills = await listSkillsForProjectDirs(projectDirs, currentProjectDir);
         jsonResponse(res, skills);
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
@@ -1132,7 +1531,8 @@ async function main() {
     if (req.method === 'GET' && url.pathname.startsWith('/api/skills/') && url.pathname.endsWith('/content')) {
       const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length, -'/content'.length));
       try {
-        const entries = await listSkillEntries({ scope: 'all', cwd: currentProjectDir });
+        const targetProjectDir = await resolveRequestProjectDir(url.searchParams.get('projectDir'), currentProjectDir);
+        const entries = await listSkillEntries({ scope: 'all', cwd: targetProjectDir });
         const skill = entries.find(s => s.name === name);
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
         const content = await fs.readFile(skill.path, 'utf8');
@@ -1141,12 +1541,15 @@ async function main() {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/skills/create') {
-      const { name, description, content, scope: rawScope } = await readBody(req);
+      const { name, description, content, scope: rawScope, projectDir } = await readBody(req);
       if (!name || !content) { jsonResponse(res, { error: true, message: 'Missing name or content' }, 400); return; }
       if (!isSafeSkillName(name)) { jsonResponse(res, { error: true, message: 'Invalid skill name' }, 400); return; }
       try {
         const scope = normalizeSkillScope(rawScope);
-        const skillBaseDir = skillBaseDirForScope(scope, currentProjectDir);
+        const targetProjectDir = scope === 'project'
+          ? await resolveRequestProjectDir(projectDir, currentProjectDir)
+          : currentProjectDir;
+        const skillBaseDir = skillBaseDirForScope(scope, targetProjectDir);
         const skillDir = path.join(skillBaseDir, name);
         await fs.mkdir(skillDir, { recursive: true });
         const skillFile = path.join(skillDir, 'SKILL.md');
@@ -1163,7 +1566,7 @@ async function main() {
             installedAt: new Date().toISOString()
           });
         } else {
-          await upsertProjectSkillMetadata(currentProjectDir, name, {
+          await upsertProjectSkillMetadata(targetProjectDir, name, {
             description: description || '',
             mode: 'agent_requested',
             triggers: [],
@@ -1177,27 +1580,31 @@ async function main() {
         config.skills.enabled[name] = true;
         await saveConfig(config);
         await bridge.reloadCommandsAndSkills();
-        jsonResponse(res, { ok: true, name, scope });
+        jsonResponse(res, { ok: true, name, scope, projectDir: scope === 'project' ? targetProjectDir : '' });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/skills/install') {
-      const { source, scope: rawScope } = await readBody(req);
+      const { source, scope: rawScope, projectDir } = await readBody(req);
       if (!source) { jsonResponse(res, { error: true, message: 'Missing source' }, 400); return; }
       try {
         const scope = normalizeSkillScope(rawScope);
-        const installed = await installSkillSource(source, { scope, cwd: currentProjectDir });
+        const targetProjectDir = scope === 'project'
+          ? await resolveRequestProjectDir(projectDir, currentProjectDir)
+          : currentProjectDir;
+        const installed = await installSkillSource(source, { scope, cwd: targetProjectDir });
         await bridge.reloadCommandsAndSkills();
-        jsonResponse(res, { ok: true, installed, scope });
+        jsonResponse(res, { ok: true, installed, scope, projectDir: scope === 'project' ? targetProjectDir : '' });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
     }
     if (req.method === 'PUT' && url.pathname.startsWith('/api/skills/') && url.pathname.endsWith('/content')) {
       const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length, -'/content'.length));
-      const { content } = await readBody(req);
+      const { content, projectDir } = await readBody(req);
       if (!content) { jsonResponse(res, { error: true, message: 'Missing content' }, 400); return; }
       try {
-        const entries = await listSkillEntries({ scope: 'all', cwd: currentProjectDir });
+        const targetProjectDir = await resolveRequestProjectDir(projectDir, currentProjectDir);
+        const entries = await listSkillEntries({ scope: 'all', cwd: targetProjectDir });
         const skill = entries.find(s => s.name === name);
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
         if (skill.scope === 'builtin') { jsonResponse(res, { error: true, message: 'Cannot edit builtin skill' }, 403); return; }
@@ -1210,7 +1617,8 @@ async function main() {
     if (req.method === 'DELETE' && url.pathname.startsWith('/api/skills/')) {
       const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length));
       try {
-        const entries = await listSkillEntries({ scope: 'all', cwd: currentProjectDir });
+        const targetProjectDir = await resolveRequestProjectDir(url.searchParams.get('projectDir'), currentProjectDir);
+        const entries = await listSkillEntries({ scope: 'all', cwd: targetProjectDir });
         const skill = entries.find(s => s.name === name);
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
         if (skill.scope === 'builtin') { jsonResponse(res, { error: true, message: 'Cannot delete builtin skill' }, 403); return; }
@@ -1219,10 +1627,10 @@ async function main() {
         const registry = await readSkillRegistry();
         registry.skills = (registry.skills || []).filter(s => s.name !== name);
         await writeSkillRegistry(undefined, registry);
-        const catalog = await readProjectSkillCatalog(currentProjectDir);
+        const catalog = await readProjectSkillCatalog(targetProjectDir);
         if (catalog.skills?.[name]) {
           delete catalog.skills[name];
-          await writeProjectSkillCatalog(currentProjectDir, catalog);
+          await writeProjectSkillCatalog(targetProjectDir, catalog);
         }
         await deleteSkillCatalogMetadata(getSkillsDir(), name);
         const config = await loadConfig();
@@ -1237,7 +1645,11 @@ async function main() {
       const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length, -'/metadata'.length));
       const body = await readBody(req);
       try {
-        const entries = await listSkillEntries({ scope: 'all', cwd: currentProjectDir });
+        const targetProjectDir = await resolveRequestProjectDir(body?.projectDir, currentProjectDir);
+        const requestedProjectDir = body?.targetProjectDir
+          ? await resolveRequestProjectDir(body.targetProjectDir, currentProjectDir)
+          : targetProjectDir;
+        const entries = await listSkillEntries({ scope: 'all', cwd: targetProjectDir });
         const skill = entries.find(s => s.name === name);
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
         if (skill.scope === 'builtin' && body?.scope && body.scope !== 'builtin') {
@@ -1248,17 +1660,21 @@ async function main() {
         let metadata = metadataPatch;
         const requestedScope = body?.scope ? normalizeSkillScope(body.scope) : skill.scope;
         let nextScope = skill.scope;
+        let nextProjectDir = targetProjectDir;
 
-        if (skill.scope !== 'builtin' && requestedScope !== skill.scope) {
+        if (
+          skill.scope !== 'builtin' &&
+          (requestedScope !== skill.scope || (requestedScope === 'project' && requestedProjectDir !== targetProjectDir))
+        ) {
           const sourceDir = path.dirname(skill.path);
-          const targetBaseDir = skillBaseDirForScope(requestedScope, currentProjectDir);
+          const targetBaseDir = skillBaseDirForScope(requestedScope, requestedProjectDir);
           const targetDir = path.join(targetBaseDir, name);
           await fs.rm(targetDir, { recursive: true, force: true });
           await fs.mkdir(path.dirname(targetDir), { recursive: true });
           await fs.cp(sourceDir, targetDir, { recursive: true, force: true });
           await fs.rm(sourceDir, { recursive: true, force: true });
           if (requestedScope === 'global') {
-            await deleteSkillCatalogMetadata(getProjectSkillsDir(currentProjectDir), name);
+            await deleteSkillCatalogMetadata(getProjectSkillsDir(targetProjectDir), name);
             await upsertSkillRegistryEntry(undefined, {
               name,
               version: skill.version || '0.0.0',
@@ -1274,8 +1690,12 @@ async function main() {
             registry.skills = (registry.skills || []).filter(s => s.name !== name);
             await writeSkillRegistry(undefined, registry);
             await deleteSkillCatalogMetadata(getSkillsDir(), name);
+            if (requestedProjectDir !== targetProjectDir) {
+              await deleteSkillCatalogMetadata(getProjectSkillsDir(targetProjectDir), name);
+            }
           }
           nextScope = requestedScope;
+          nextProjectDir = requestedScope === 'project' ? requestedProjectDir : targetProjectDir;
         }
 
         if (nextScope === 'global') {
@@ -1286,11 +1706,11 @@ async function main() {
           });
           metadata = await upsertSkillCatalogMetadata(getSkillsDir(), name, body || {});
         } else if (nextScope === 'project') {
-          metadata = await upsertProjectSkillMetadata(currentProjectDir, name, body || {});
+          metadata = await upsertProjectSkillMetadata(nextProjectDir, name, body || {});
         } else if (skill.scope !== 'builtin') {
-          metadata = await upsertProjectSkillMetadata(currentProjectDir, name, body || {});
+          metadata = await upsertProjectSkillMetadata(targetProjectDir, name, body || {});
         } else {
-          metadata = await upsertProjectSkillMetadata(currentProjectDir, name, body || {});
+          metadata = await upsertProjectSkillMetadata(targetProjectDir, name, body || {});
         }
         if (skill.scope !== 'builtin' && body?.enabled !== undefined) {
           const config = await loadConfig();
@@ -1309,13 +1729,14 @@ async function main() {
     }
     if (req.method === 'POST' && url.pathname.startsWith('/api/skills/') && url.pathname.endsWith('/toggle')) {
       const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length, -'/toggle'.length));
-      const { enabled } = await readBody(req);
+      const { enabled, projectDir } = await readBody(req);
       try {
-        const entries = await listSkillEntries({ scope: 'all', cwd: currentProjectDir });
+        const targetProjectDir = await resolveRequestProjectDir(projectDir, currentProjectDir);
+        const entries = await listSkillEntries({ scope: 'all', cwd: targetProjectDir });
         const skill = entries.find(s => s.name === name);
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
         if (skill.scope === 'builtin') {
-          const metadata = await upsertProjectSkillMetadata(currentProjectDir, name, { enabled });
+          const metadata = await upsertProjectSkillMetadata(targetProjectDir, name, { enabled });
           await bridge.reloadCommandsAndSkills();
           jsonResponse(res, { ok: true, name, metadata });
           return;

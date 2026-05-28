@@ -27,7 +27,7 @@ import {
 } from './context-compact.js';
 import { getReplyLanguage, getReplyLanguageName } from './reply-language.js';
 import { composeSystemPrompt } from './system-prompt-composer.js';
-import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir } from './paths.js';
+import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { forgetMemory, listMemories, rememberMemory, searchMemories, captureToInbox, listInbox } from './memory-store.js';
 import { runDreamConsolidation } from './dream-consolidate.js';
@@ -36,17 +36,74 @@ import { countActiveTodos, normalizeTodos } from './todo-state.js';
 import {
   attachReflectTargets,
   buildReflectSkillDraft,
+  normalizeReflectDraft,
   parseReflectScope,
   writeReflectSkillDraft
 } from './reflect-skill.js';
+import {
+  beginGitOplogCapture,
+  captureGitOplogChanges,
+  createGitOplogChangeTracker,
+  listGitOplogChanges,
+  readGitOplogPatch,
+  undoGitOplogChange,
+  undoGitOplogChanges
+} from './git-oplog-change-tracker.js';
+import { createNonGitBackupManager } from './non-git-backup.js';
 
 const STREAM_SAVE_DEBOUNCE_MS = 120;
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_REQUIREMENTS_TEMPLATE = path.resolve(MODULE_DIR, '..', '..', 'templates', 'project-requirements', 'report-shell.html');
+const PROJECT_REQUIREMENTS_MD_TEMPLATE = path.resolve(MODULE_DIR, '..', '..', 'templates', 'project-requirements', 'report-template.md');
+const PROJECT_REQUIREMENTS_MD_SKILL = path.resolve(MODULE_DIR, '..', '..', 'skills', 'project-requirements-md', 'SKILL.md');
+const PROJECT_REQUIREMENTS_SECTION_NAMES = [
+  'summary',
+  'architecture',
+  'interfaces',
+  'requirements',
+  'flows',
+  'domain',
+  'security',
+  'errors',
+  'nonfunctional',
+  'questions',
+  'evidence'
+];
 
-function toOpenAIMessages(sessionMessages) {
+export function isModelVisibleMessage(message) {
+  return message?.model_visible !== false && message?.local_only !== true;
+}
+
+function modelContentForMessage(message, index, { currentTurnUserIndex = -1 } = {}) {
+  const modelContent = typeof message?.model_content === 'string' && message.model_content
+    ? message.model_content
+    : '';
+  if (!modelContent) return message?.content;
+  if (message?.model_content_scope === 'current_turn' && index !== currentTurnUserIndex) {
+    return message?.content;
+  }
+  return modelContent;
+}
+
+export function modelVisibleMessages(messages = []) {
+  return (Array.isArray(messages) ? messages : []).filter(isModelVisibleMessage);
+}
+
+function findCurrentTurnUserIndex(messages = [], text = '', modelText = '') {
+  if (!modelText || modelText === text) return -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== 'user') continue;
+    if (message.content === text && message.model_content === modelText) return index;
+  }
+  return -1;
+}
+
+export function toOpenAIMessages(sessionMessages, options = {}) {
   const mapped = [];
-  for (const msg of sessionMessages) {
+  for (let index = 0; index < (sessionMessages || []).length; index += 1) {
+    const msg = sessionMessages[index];
+    if (!isModelVisibleMessage(msg)) continue;
     if (msg.role === 'tool') {
       mapped.push({
         role: 'tool',
@@ -57,7 +114,7 @@ function toOpenAIMessages(sessionMessages) {
     }
     mapped.push({
       role: msg.role,
-      content: typeof msg.model_content === 'string' && msg.model_content ? msg.model_content : msg.content,
+      content: modelContentForMessage(msg, index, options),
       ...(typeof msg.reasoning_content === 'string' && msg.reasoning_content ? { reasoning_content: msg.reasoning_content } : {}),
       ...(Array.isArray(msg.reasoning_details) && msg.reasoning_details.length > 0 ? { reasoning_details: msg.reasoning_details } : {}),
       ...(msg.tool_calls ? { tool_calls: msg.tool_calls } : {})
@@ -359,6 +416,16 @@ function mergeModelUsage(left, right) {
   };
 }
 
+function collectAssistantUsage(messages = []) {
+  let usage = null;
+  for (const msg of Array.isArray(messages) ? messages : []) {
+    if (msg?.role === 'assistant' && msg.usage) {
+      usage = mergeModelUsage(usage, msg.usage);
+    }
+  }
+  return usage;
+}
+
 function prioritizeByPreferredOrder(items, preferredOrder) {
   const source = Array.isArray(items) ? items : [];
   const priorities = new Map((Array.isArray(preferredOrder) ? preferredOrder : []).map((value, index) => [value, index]));
@@ -402,7 +469,7 @@ function getCompletionCopy(language = 'zh') {
         'ui.reply_language': '回复语言',
         'execution.mode': '执行模式',
         'execution.always_allow_tools': '始终允许的工具列表',
-        'execution.max_steps': '最大工具步骤数',
+
         'context.preflight_trigger_pct': '预压缩阈值',
         'context.hard_limit_pct': '硬压缩阈值',
         'context.tool_result_max_chars': '工具结果字符上限',
@@ -428,7 +495,8 @@ function getCompletionCopy(language = 'zh') {
         'sdk.provider': '可选：openai-compatible | anthropic',
         'ui.language': '可选：zh | en',
         'ui.reply_language': '可选：zh | en',
-        'execution.mode': '可选：auto | normal | plan',
+        'execution.mode': '可选：normal | plan',
+        'execution.approval_mode': '可选：review | auto | full_access',
         'shell.default': '常用：bash | powershell',
         'policy.safe_mode': '可选：true | false',
         'policy.allowed_paths': 'JSON 数组，例如 ["D:\\\\shared"]',
@@ -460,7 +528,8 @@ function getCompletionCopy(language = 'zh') {
         commands: '列出 slash/自定义命令',
         status: '查看运行状态（mode/model/session）',
         model: '查看或切换模型',
-        mode: '设置执行模式：normal|auto|plan',
+        mode: '设置工作模式：normal|plan',
+        approval: '设置审阅权限：review|auto|full_access',
         compact: '压缩消息上下文',
         checkpoint: '创建/查看/加载检查点',
         spec: '在 .codemini/specs 中创建 spec',
@@ -472,7 +541,6 @@ function getCompletionCopy(language = 'zh') {
         reflect: '复盘成功链路并生成可审阅 skill 草稿',
         history: '查看/恢复会话',
         debug: '运行时调试开关',
-        retry: '重试上一条用户请求',
         stop: '中止当前回答',
         new: '开始新会话',
         yes: '确认当前待审批计划并开始执行',
@@ -483,7 +551,8 @@ function getCompletionCopy(language = 'zh') {
       generic: {
         configCommand: '配置命令',
         historyCommand: '历史会话命令',
-        modeCommand: '切换执行模式',
+        modeCommand: '切换工作模式',
+        approvalCommand: '切换审阅权限',
         checkpointCommand: '检查点命令',
         specCommand: '创建 spec 文件',
         planCommand: '规划命令',
@@ -494,7 +563,6 @@ function getCompletionCopy(language = 'zh') {
         debugCommand: '调试命令',
         keyboardDebugCommand: '键盘调试命令',
         compactCommand: '上下文压缩命令',
-        retryCommand: '重试上一条用户请求',
         stopCommand: '中止当前回答',
         statusCommand: '查看运行状态',
         modelCommand: '查看或切换模型',
@@ -515,7 +583,7 @@ function getCompletionCopy(language = 'zh') {
         'ui.reply_language': 'reply language',
         'execution.mode': 'execution mode',
         'execution.always_allow_tools': 'always-allowed tools',
-        'execution.max_steps': 'maximum tool steps',
+
         'context.preflight_trigger_pct': 'preflight compact threshold',
         'context.hard_limit_pct': 'hard compact threshold',
         'context.tool_result_max_chars': 'tool result character limit',
@@ -541,7 +609,8 @@ function getCompletionCopy(language = 'zh') {
         'sdk.provider': 'options: openai-compatible | anthropic',
         'ui.language': 'options: zh | en',
         'ui.reply_language': 'options: zh | en',
-        'execution.mode': 'options: auto | normal | plan',
+        'execution.mode': 'options: normal | plan',
+        'execution.approval_mode': 'options: review | auto | full_access',
         'shell.default': 'common: bash | powershell',
         'policy.safe_mode': 'options: true | false',
         'policy.allowed_paths': 'JSON array, for example ["D:\\\\shared"]',
@@ -573,7 +642,8 @@ function getCompletionCopy(language = 'zh') {
         commands: 'list slash/custom commands',
         status: 'show runtime status (mode/model/session)',
         model: 'show or switch model',
-        mode: 'set execution mode: normal|auto|plan',
+        mode: 'set work mode: normal|plan',
+        approval: 'set approval mode: review|auto|full_access',
         compact: 'compress message context',
         checkpoint: 'create/list/load conversation checkpoints',
         spec: 'create a spec markdown file in .codemini/specs',
@@ -585,7 +655,6 @@ function getCompletionCopy(language = 'zh') {
         reflect: 'reflect on a successful workflow and draft a reusable skill',
         history: 'list/resume sessions',
         debug: 'runtime debug switches',
-        retry: 'retry the last user request',
         stop: 'stop the current response',
         new: 'start a new session',
         yes: 'approve the pending plan and start execution',
@@ -596,7 +665,8 @@ function getCompletionCopy(language = 'zh') {
       generic: {
         configCommand: 'config command',
         historyCommand: 'history command',
-        modeCommand: 'switch execution mode',
+        modeCommand: 'switch work mode',
+        approvalCommand: 'switch approval mode',
         checkpointCommand: 'checkpoint command',
         specCommand: 'create a spec file',
         planCommand: 'planning command',
@@ -607,7 +677,6 @@ function getCompletionCopy(language = 'zh') {
         debugCommand: 'debug command',
         keyboardDebugCommand: 'keyboard debug command',
         compactCommand: 'context compaction command',
-        retryCommand: 'retry the last user request',
         stopCommand: 'stop the current response',
         statusCommand: 'show runtime status',
         modelCommand: 'show or switch model',
@@ -624,15 +693,22 @@ function describeConfigKey(key, mode = 'set', language = 'zh') {
   return mode === 'get' ? copy.describeGet(label, hint) : copy.describeSet(label, hint);
 }
 
-const SUB_AGENT_ROLES = ['planner', 'advisor', 'coder', 'reviewer', 'tester', 'summarizer'];
-const CODEWIKI_READ_ONLY_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan'];
+const SUB_AGENT_ROLES = ['planner', 'explorer', 'architect', 'advisor', 'coder', 'refactorer', 'reviewer', 'tester', 'debugger', 'writer', 'summarizer', 'codewiki'];
+const CODEWIKI_ROLE_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'add_code_comment', 'update_code_comment'];
+export const CODEWIKI_GENERATE_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'skill', 'edit', 'create'];
 export const ROLE_TOOL_POLICY = {
-  planner: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'glob', 'ast_query', 'read_ast_node', 'web_fetch', 'web_search', 'read_plan', 'update_plan'],
-  advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'read_plan'],
-  coder: ['read', 'grep', 'list', 'edit', 'write', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
-  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'ast_query', 'read_ast_node', 'read_plan'],
-  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'read_plan'],
-  summarizer: ['read', 'read_plan']
+  planner: ['read', 'read_plan', 'tool_search', 'skill', 'update_plan', 'update_todos'],
+  explorer: ['read', 'grep', 'list', 'glob', 'ast_query', 'read_ast_node', 'query_project_index', 'tool_search', 'skill', 'web_fetch', 'web_search', 'read_plan'],
+  architect: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
+  advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'skill', 'read_plan'],
+  coder: ['read', 'grep', 'list', 'edit', 'create', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
+  refactorer: ['read', 'grep', 'list', 'edit', 'create', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'skill', 'read_plan'],
+  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'read_plan'],
+  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'skill', 'read_plan'],
+  debugger: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
+  writer: ['read', 'grep', 'list', 'glob', 'tool_search', 'skill', 'web_search', 'web_fetch', 'read_plan'],
+  summarizer: ['read', 'read_plan', 'tool_search', 'skill'],
+  codewiki: CODEWIKI_ROLE_TOOLS
 };
 const SUB_AGENT_CONTEXT_MAX_MESSAGES = 4;
 const SUB_AGENT_CONTEXT_MAX_CHARS = 1200;
@@ -757,19 +833,90 @@ export function getSubAgentRolePrompt(role) {
   if (role === 'planner') {
     return [
       'You are the planner in a multi-step agent pipeline.',
-      'Your job: inspect the codebase and produce a concrete, actionable plan.',
-      'Do not write implementation code.',
+      'Your job: coordinate task allocation and delegate work to other roles. You do NOT inspect code or implement changes yourself.',
+      'Read the plan file to understand the current state, then decide which role should execute the next task and what specific instruction to give them.',
+      'Do not write implementation code, inspect code, or produce findings. Delegate those to the appropriate executor role.',
+      'Output format — keep it short and direct:',
+      'Delegation:',
+      '- <delegate to which role with what instruction>',
+      'Blockers:',
+      '- <dependencies or issues preventing progress or "none">',
+      'Status:',
+      '- <current pipeline state summary>',
+      'Do not summarize your own work or add closing remarks — just deliver the structured delegation and stop.'
+    ].join('\n');
+  }
+  if (role === 'explorer') {
+    return [
+      'You are the explorer in a multi-step agent pipeline.',
+      'Your job: inspect the codebase to gather context, map the target area, and identify constraints and dependencies for downstream steps.',
+      'The high-level plan is already defined — your role is to ground it with real codebase evidence.',
+      'Do not write implementation code, make architectural decisions, or offer recommendations beyond what you directly observe.',
       'Output format — keep it short and direct:',
       'Findings:',
-      '- <important constraint, dependency, risk, or "none">',
+      '- <important constraint, dependency, file layout, or "none">',
       'Actions Taken:',
-      '- <what you inspected>',
+      '- <what you inspected, files read, searches performed>',
+      'Map:',
+      '- <key files, entry points, dependency graph or "none">',
       'Open Issues:',
       '- <blocking uncertainty or "none">',
-      'Next Action:',
-      '- <the concrete next step for the following role>',
       'Do not summarize your own work or add closing remarks — just deliver the structured handoff and stop.',
-      'IMPORTANT: Stop as soon as you have enough context to produce the plan. Do NOT keep exploring once the plan is clear — deliver it immediately.'
+      'IMPORTANT: Stop as soon as you have enough context. Do NOT keep exploring — deliver it immediately.'
+    ].join('\n');
+  }
+  if (role === 'architect') {
+    return [
+      'You are the architect in a multi-step agent pipeline.',
+      'Your job: make high-level design decisions about system structure, component boundaries, patterns, and tradeoffs.',
+      'Decide on architecture, not implementation details. Do not write code, edit files, or inspect implementation beyond what is necessary to understand structure.',
+      'Output format — keep it short and direct:',
+      'Design Decision:',
+      '- <chosen architecture, pattern, or approach>',
+      'Alternatives Considered:',
+      '- <rejected approaches and why>',
+      'Component Map:',
+      '- <new or changed components, their responsibilities>',
+      'Risks:',
+      '- <architectural risks, migration path concerns or "none">',
+      'Constraints:',
+      '- <non-negotiable limits or "none">',
+      'Do not summarize your own work or add closing remarks — just deliver the design decision and stop.'
+    ].join('\n');
+  }
+  if (role === 'refactorer') {
+    return [
+      'You are the refactorer in a multi-step agent pipeline.',
+      'Your job: restructure existing code to improve clarity, maintainability, or performance WITHOUT changing external behavior.',
+      'You may touch many files, but every change must preserve existing behavior. Do not add features or fix bugs unless explicitly asked.',
+      'Before starting, verify you understand the current behavior so you can prove nothing changed.',
+      'Output format — keep it short and direct:',
+      'Actions Taken:',
+      '- <files restructured, patterns applied>',
+      'Findings:',
+      '- <important structural issue addressed or "none">',
+      'Verified:',
+      '- <how you confirmed behavior is preserved>',
+      'Open Issues:',
+      '- <remaining structural debt or "none">',
+      'Artifacts:',
+      '- <changed file paths>',
+      'Do not summarize your own work or add closing remarks — just deliver the structured handoff and stop.'
+    ].join('\n');
+  }
+  if (role === 'writer') {
+    return [
+      'You are the writer in a multi-step agent pipeline.',
+      'Your job: generate documentation, README files, API docs, changelogs, or code comments.',
+      'Do not modify implementation code. Only write documentation files and comments.',
+      'Output format — keep it short and direct:',
+      'Actions Taken:',
+      '- <what documentation was written or updated>',
+      'Artifacts:',
+      '- <created or changed file paths>',
+      'Coverage:',
+      '- <what is documented and what gaps remain>',
+      'Do not add a closing summary — the pipeline handles what comes next.'
     ].join('\n');
   }
   if (role === 'reviewer') {
@@ -821,6 +968,26 @@ export function getSubAgentRolePrompt(role) {
       'Do not add a closing summary or "Next Action" — the pipeline handles what comes next.'
     ].join('\n');
   }
+  if (role === 'debugger') {
+    return [
+      'You are the debugger in a multi-step agent pipeline.',
+      'Your job: investigate reported bugs, errors, or unexpected behavior. Reproduce the issue, trace root causes, and narrow down the culprit code.',
+      'Do not implement fixes. You may suggest a fix approach as a recommendation, but leave the implementation to the coder.',
+      'Prefer concrete evidence over speculation. Run reproduction commands where possible.',
+      'Output format — keep it short and direct:',
+      'Findings:',
+      '- <root cause hypothesis or confirmed cause>',
+      'Evidence:',
+      '- <logs, stack traces, reproduction steps, file evidence>',
+      'Narrowed Scope:',
+      '- <likely culprit files, functions, or code sections>',
+      'Recommendations:',
+      '- <suggested fix approach, risk level, or "none">',
+      'Open Questions:',
+      '- <remaining uncertainty or "none">',
+      'Do not add a closing summary or "Next Action" — the pipeline handles what comes next.'
+    ].join('\n');
+  }
   if (role === 'summarizer') {
     return [
       'You are the summarizer in a multi-step agent pipeline.',
@@ -862,19 +1029,36 @@ export function getSubAgentRolePrompt(role) {
   ].join('\n');
 }
 
-function buildPipelineStepGuidance({ role, stepIndex, totalSteps, isFirst, isLast, priorSteps }) {
+function buildPipelineStepGuidance({ role, stepIndex, totalSteps, isFirst, isLast, priorSteps, isRetry = false, previousError = '' }) {
   const lines = [];
   lines.push(`Pipeline position: step ${stepIndex + 1} of ${totalSteps}.`);
-  if (isFirst) {
-    lines.push('You are the first step. Your output sets direction for the rest of the pipeline.');
+  if (isRetry) {
+    lines.push('RETRY ATTEMPT: The previous attempt at this step failed. Review the failure reason below and adjust your approach.');
+    if (previousError) {
+      lines.push(`Previous failure: ${previousError}`);
+    }
+    lines.push('Focus narrowly on fixing the specific issue that caused the failure. Do not start over from scratch.');
+  }
+  if (isFirst && !isRetry) {
+    if (role === 'explorer') {
+      lines.push('You are the first step. Map the codebase area quickly and report findings so downstream steps have solid context.');
+    } else if (role === 'architect') {
+      lines.push('You are the first step. Make concrete design decisions to shape the rest of the pipeline.');
+    } else {
+      lines.push('You are the first step. Your output sets direction for the rest of the pipeline.');
+    }
   } else if (isLast) {
     lines.push('You are the final step. After you, the pipeline will present a combined result to the user.');
-  } else {
+  } else if (!isRetry) {
     lines.push('You are in the middle of the pipeline. Your output feeds into the next step.');
   }
   if (priorSteps.length > 0) {
     const prev = priorSteps[priorSteps.length - 1];
-    lines.push(`Previous step was [${prev.role}]: ${prev.title}. Use its output as your starting point.`);
+    if (prev.failed) {
+      lines.push(`Previous step [${prev.role}]: ${prev.title} FAILED with: ${prev.failureReason || 'unknown error'}. Continue with best-effort context.`);
+    } else {
+      lines.push(`Previous step was [${prev.role}]: ${prev.title}. Use its output as your starting point.`);
+    }
   }
   lines.push('Style rules:');
   lines.push('- Be direct and action-oriented. No greetings, no summaries, no "In conclusion" or "To summarize".');
@@ -1179,17 +1363,24 @@ function classifyPlanTaskClass(goal = '') {
   const text = String(goal || '').trim();
   const lowerGoal = text.toLowerCase();
   const advisory =
-    /\b(analyze|analysis|review|audit|inspect|assess|recommend|recommendation|optimization|optimize|improve|suggest|brainstorm|plan|feedback)\b/i.test(lowerGoal) ||
-    /(分析|审查|审计|检查|评估|建议|优化|优化点|优化建议|改进|改进点|规划|方案|看一下|看看|有哪些问题|有什么问题)/.test(text);
+    /\b(analyze|analysis|review|audit|inspect|assess|recommend|recommendation|optimization|optimize|improve|suggest|brainstorm|plan|feedback|understand|explain)\b/i.test(lowerGoal) ||
+    /(分析|审查|审计|检查|评估|建议|优化|改进|规划|方案|看一下|看看|有哪些问题|有什么问题|了解下|解释)/.test(text);
   const implementation =
     /\b(add|build|create|implement|support|introduce|refactor|rewrite|rework|migrate|change|update|fix)\b/i.test(lowerGoal) ||
     /(新增|增加|实现|支持|重构|重写|改造|迁移|修改|更新|修复)/.test(text);
   const verificationHeavy =
     /\b(test|verify|validation|validate|prove|confirm|reproduce|check coverage)\b/i.test(lowerGoal) ||
     /(测试|验证|校验|确认|复现|覆盖率)/.test(text);
+  const debugging =
+    /\b(debug|diagnose|troubleshoot|investigate|trace|bisect|find.*cause|root.*cause|why.*error|why.*bug|why.*fail|crash|exception|stack trace|logs?.*error)\b/i.test(lowerGoal) ||
+    /(调试|排查|诊断|追踪|调查|找.*原因|怎么.*错|怎么.*崩|报错|异常|日志)/.test(text);
 
+  if (debugging && verificationHeavy) return 'verification-heavy';
+  if (debugging) return 'debugging';
   if (verificationHeavy) return 'verification-heavy';
-  if (advisory && !implementation) return 'advisory';
+  if (advisory && implementation) return 'implementation-advisory';
+  if (advisory) return 'advisory';
+  if (implementation && verificationHeavy) return 'implementation-verification';
   return 'implementation';
 }
 
@@ -1223,35 +1414,71 @@ function buildGoalRequirementPacket(goal, role) {
 
 function buildAutoPlanPlannerGuidance() {
   return [
-    'Design a short implementation plan for a small model.',
+    'Design a short execution plan for a small model.',
     'Auto-plan planning rules:',
-    '- Start with a discovery or clarification step when the current implementation is not yet verified.',
+    '- Start with an explorer (codebase inspection) or architect (design) step when the target area is not yet clear.',
+    '- Before defining execution steps, map the files/modules likely to be touched and what each step is responsible for.',
     '- If the goal still leaves room for multiple approaches, choose one practical direction before planning execution.',
     '- Prefer the smallest local approach that satisfies the goal.',
     '- Do not output multiple alternative branches in the final plan.',
     '- Do not assume implementation should begin before the plan is coherent.',
-    '- Available sub-agent roles are planner, advisor, coder, reviewer, tester, and summarizer. Use only the non-summary roles the task actually needs.',
-    '- Always include a summarizer as the final step. The summarizer reads accumulated step results from the plan file and synthesizes the final summary. It does NOT re-analyze the codebase.',
-    '- Do not ask planner, advisor, coder, reviewer, or tester steps to produce the final summary. They should write detailed step results for the summarizer.',
-    '- For implementation-heavy or risky changes, prefer adding review and/or verification steps.',
-    '- For analysis, recommendation, optimization, architecture feedback, or planning-only goals, prefer advisor over coder and omit reviewer/tester if they do not add value.',
-    '- Prefer 3-5 steps total unless the task is clearly larger.',
-    '- Keep the plan ordered, implementation-oriented, and easy for small sub-agents to follow.'
+    '- Make steps concrete enough to execute without guessing: include target files, expected behavior, and verification intent when known.',
+    '- Do not create placeholder steps such as "add validation", "handle edge cases", "write tests", or "finish implementation" unless they name the exact behavior or command.',
+    '- Decompose work into independently understandable tasks; each task should have a clear responsibility and produce testable progress.',
+    '- Prefer small, focused file boundaries when the plan creates or reorganizes code, while respecting existing project patterns.',
+    '- If a step changes behavior, include how that behavior should be tested or manually verified.',
+    '- Keep type names, function names, command names, and file paths consistent across all steps.',
+    '- Before returning the plan, self-review it for requirement coverage, placeholders, contradictions, and inconsistent API/type names.',
+    '- If the plan has critical gaps or unclear requirements, create an explorer/advisor step to resolve them before implementation.',
+    '- Available sub-agent roles: explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer, and summarizer. Use only the roles the task actually needs.',
+    '- Always include a summarizer as the final step. The summarizer reads accumulated step results and synthesizes the final summary. It does NOT re-analyze or run tools.',
+    '- Do not ask executor steps (explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer) to produce the final summary. They write detailed step results for the summarizer.',
+    '- Role quick-guide:',
+    '  • explorer = inspect codebase, map files, gather context before implementation.',
+    '  • architect = make design decisions, choose patterns, define component boundaries.',
+    '  • advisor = analyze and recommend (read-only).',
+    '  • coder = implement scoped code changes.',
+    '  • refactorer = restructure code without changing behavior (broader scope than coder).',
+    '  • reviewer = check for bugs, regressions, edge cases.',
+    '  • tester = run verification commands.',
+    '  • debugger = investigate bugs, trace root causes, recommend fixes.',
+    '  • writer = generate documentation, README, comments.',
+    '- For debugging tasks: explorer -> debugger -> coder -> tester -> summarizer.',
+    '- For architecture/design tasks: explorer -> architect -> summarizer.',
+    '- For refactoring tasks: explorer -> refactorer -> tester -> summarizer.',
+    '- For implementation: explorer -> coder -> reviewer -> tester -> summarizer.',
+    '- For documentation: explorer -> writer -> summarizer.',
+    '- For advisory: explorer -> advisor -> summarizer.',
+    '- Prefer 3-5 steps total unless the task needs more.',
+    '- Keep the plan ordered, task-oriented, and easy for small sub-agents to follow.'
   ].join('\n');
 }
 
 function buildAutoPlanExecutionGuidance(role) {
   const common = [
     'Auto-plan execution rules:',
+    '- Review the approved step before acting. If it is contradictory, impossible, or missing critical context, stop and report the blocker instead of guessing.',
     '- Work in the smallest useful step.',
     '- Read the target code before editing.',
     '- Prefer local changes over broad refactors.',
-    '- Prefer narrow verification with concrete evidence before claiming success.'
+    '- Follow the approved direction unless concrete evidence shows it is wrong.',
+    '- Prefer narrow verification with concrete evidence before claiming success.',
+    '- If verification fails repeatedly, stop with the failing command and observed output instead of forcing through more changes.'
   ];
 
-  if (role === 'coder') {
+  if (role === 'explorer') {
+    common.push('- Map the target area quickly and stop. Do not go down rabbit holes.');
+    common.push('- Report what IS there, not what SHOULD be there. Let the architect or advisor interpret.');
+  } else if (role === 'architect') {
+    common.push('- Make decisive, concrete design choices. Do not present options without choosing.');
+    common.push('- Ground decisions in the explorer findings. If the explorer map is insufficient, say so.');
+  } else if (role === 'coder') {
     common.push('- Keep edits tightly scoped to the chosen plan direction.');
     common.push('- Avoid speculative cleanup or unrelated improvements.');
+  } else if (role === 'refactorer') {
+    common.push('- Preserve external behavior exactly. If in doubt, run tests before and after.');
+    common.push('- Prefer safe transformations: extract function, rename, move, simplify conditionals.');
+    common.push('- Do not add features or fix bugs unless the goal explicitly asks for it.');
   } else if (role === 'advisor') {
     common.push('- Produce advisory findings and recommendations only; do not modify files or run commands.');
     common.push('- Ground every recommendation in inspected evidence or mark it as an assumption.');
@@ -1261,6 +1488,13 @@ function buildAutoPlanExecutionGuidance(role) {
   } else if (role === 'tester') {
     common.push('- Prefer running the narrowest real verification command that matches the changed area.');
     common.push('- Distinguish clearly between verified behavior and assumptions.');
+  } else if (role === 'debugger') {
+    common.push('- Prioritize reproduction over speculation. Run the failing command or test first.');
+    common.push('- Narrow down to specific files, functions, and conditions before suggesting a fix.');
+    common.push('- Do not implement fixes. Leave implementation to the coder step that follows.');
+  } else if (role === 'writer') {
+    common.push('- Write clear, useful documentation. Prefer concrete examples over abstract descriptions.');
+    common.push('- Do not modify code. Only write documentation files (.md, comments, docstrings).');
   }
 
   return common.join('\n');
@@ -1567,7 +1801,7 @@ function isSkillEnabled(config, name, command = null) {
 
 function selectAutoSkillNames(text = '') {
   const input = String(text || '').toLowerCase();
-  const selected = ['superpowers-lite'];
+  const selected = ['using-superpowers'];
 
   const explicitGrillMe =
     /\bgr+ill\s+me\b|\bpressure[- ]?test\b|\bstress[- ]?test\b|\bchallenge\s+(?:this|my|me)\b|\btear\s+(?:this|my)\s+.*apart\b/i.test(
@@ -1589,10 +1823,10 @@ function selectAutoSkillNames(text = '') {
     );
 
   if (explicitBrainstorm || (ambiguitySignals && featureRequest) || greenfieldBuildRequest) {
-    selected.push('brainstorm');
+    selected.push('brainstorming');
   }
   if (explicitGrillMe) {
-    selected.push('grill-me');
+    selected.push('requesting-code-review');
   }
   return selected;
 }
@@ -1651,7 +1885,7 @@ function classifyTaskComplexity(text = '') {
 
 function classifyAutoRoute(text = '') {
   const selectedSkills = selectAutoSkillNames(text);
-  const hasBrainstorm = selectedSkills.includes('brainstorm');
+  const hasBrainstorm = selectedSkills.includes('brainstorming');
   if (hasBrainstorm) {
     return {
       mode: 'brainstorm',
@@ -1666,7 +1900,7 @@ function classifyAutoRoute(text = '') {
     return {
       mode: 'auto_plan',
       autoPlan: true,
-      selectedSkills: ['superpowers-lite'],
+      selectedSkills: ['using-superpowers'],
       complexity
     };
   }
@@ -1691,17 +1925,24 @@ function buildMediumTaskPromptBlock() {
   ].join('\n');
 }
 
-function buildAutoSkillPromptBlock(commands, config, text) {
-  const selected = classifyAutoRoute(text).selectedSkills.filter((name) => isSkillEnabled(config, name, commands.get(name)));
-  if (selected.length === 0) return '';
+function getAlwaysSkillCommands(commands, config) {
+  return Array.from(commands.values())
+    .filter((command) =>
+      command?.metadata?.type === 'skill' &&
+      command.metadata?.mode === 'always' &&
+      isSkillEnabled(config, command.name, command)
+    )
+    .sort((a, b) => {
+      const left = Number(a.metadata?.priority || 0);
+      const right = Number(b.metadata?.priority || 0);
+      return right - left || a.name.localeCompare(b.name);
+    });
+}
 
-  const blocks = [];
-  for (const name of selected) {
-    const skill = commands.get(name);
-    if (!skill || skill.metadata?.type !== 'skill') continue;
-    blocks.push(`[Auto skill: ${name}]\n${skill.content}`);
-  }
-  return blocks.join('\n\n');
+function buildAlwaysSkillPromptBlock(commands, config) {
+  const selected = getAlwaysSkillCommands(commands, config);
+  if (selected.length === 0) return '';
+  return selected.map((skill) => `[Always skill: ${skill.name}]\n${skill.content}`).join('\n\n');
 }
 
 function extractJsonBlock(text) {
@@ -1744,9 +1985,9 @@ function normalizeAutoPlan(parsed, goal) {
           summary: `Auto plan for: ${goal}`,
           steps: [
             {
-              title: 'Initial analysis',
-              role: 'planner',
-              task: `Break down and propose implementation steps for: ${goal}`
+              title: 'Initial exploration',
+              role: 'explorer',
+              task: `Inspect the codebase and map the target area for: ${goal}`
             }
           ]
         }
@@ -1783,13 +2024,66 @@ function buildFallbackAutoPlan(goal) {
       steps: [
         {
           title: 'Inspect the target area',
-          role: 'planner',
+          role: 'explorer',
           task: `Inspect the relevant project context for: ${goal}. Identify constraints, evidence, and likely high-value advisory areas.`
         },
         {
           title: `Advise on ${focus}`,
           role: 'advisor',
           task: `Analyze the findings for: ${goal}. Produce prioritized recommendations, tradeoffs, evidence, and open questions without implementing changes.`
+        },
+        buildDefaultSummarizerStep(goal)
+      ]
+    };
+  }
+
+  if (taskClass === 'debugging') {
+    return {
+      summary,
+      steps: [
+        {
+          title: 'Inspect the failing area',
+          role: 'explorer',
+          task: `Inspect the relevant code paths, error logs, test failures, and affected files for: ${goal}. Identify likely culprit areas and gather reproduction context.`
+        },
+        {
+          title: `Investigate root cause of ${focus}`,
+          role: 'debugger',
+          task: `Investigate: ${goal}. Reproduce the issue, trace the root cause through code and logs, narrow down to specific files and functions, and recommend a fix approach without implementing it.`
+        },
+        {
+          title: `Fix ${focus}`,
+          role: 'coder',
+          task: `Fix the root cause identified by the debugger for: ${goal}. Keep the fix narrowly scoped and preserve existing behavior except where the goal requires changes.`
+        },
+        {
+          title: 'Verify the fix',
+          role: 'tester',
+          task: `Verify the fix for: ${goal}. Run the previously failing command or test, confirm the issue is resolved, and check for regressions.`
+        },
+        buildDefaultSummarizerStep(goal)
+      ]
+    };
+  }
+
+  if (taskClass === 'implementation-advisory') {
+    return {
+      summary,
+      steps: [
+        {
+          title: 'Inspect and analyze',
+          role: 'explorer',
+          task: `Inspect the relevant project context for: ${goal}. Identify constraints, dependencies, existing behavior, and high-value intervention points.`
+        },
+        {
+          title: `Advise on approach for ${focus}`,
+          role: 'advisor',
+          task: `Analyze findings for: ${goal}. Recommend the best implementation approach with tradeoffs, risks, and concrete steps. Do not implement.`
+        },
+        {
+          title: `Implement ${focus}`,
+          role: 'coder',
+          task: `Implement the recommended approach for: ${goal}. Follow the acceptance checklist and keep changes tightly scoped.`
         },
         buildDefaultSummarizerStep(goal)
       ]
@@ -1821,7 +2115,7 @@ function buildFallbackAutoPlan(goal) {
     steps: [
       {
         title: 'Inspect the target area',
-        role: 'planner',
+        role: 'explorer',
         task: `Inspect the existing code paths, affected files, and current behavior for: ${goal}. Identify constraints, dependencies, and any compatibility risks before implementation.`
       },
       {
@@ -1856,11 +2150,19 @@ function buildFallbackAutoPlan(goal) {
 function buildDefaultSummarizerStep(goal, source = []) {
   const existing = (Array.isArray(source) ? source : []).find((step) => step.role === 'summarizer');
   if (existing?.title && existing?.task) return existing;
-  if (classifyPlanTaskClass(goal) === 'advisory') {
+  const taskClass = classifyPlanTaskClass(goal);
+  if (taskClass === 'advisory') {
     return {
       title: 'Synthesize final findings',
       role: 'summarizer',
       task: `Synthesize the advisory findings for: ${goal}. Read the accumulated observations, recommendations, tradeoffs, evidence, and open questions from earlier steps, then produce a concise final summary with the single best next action.`
+    };
+  }
+  if (taskClass === 'debugging') {
+    return {
+      title: 'Synthesize investigation results',
+      role: 'summarizer',
+      task: `Synthesize the debugging results for: ${goal}. Read the accumulated findings, root cause evidence, fix implementation, and verification from earlier steps, then produce a concise final summary with the root cause, fix status, and any remaining risks.`
     };
   }
   return {
@@ -1875,7 +2177,7 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
   const requirements = deriveGoalRequirements(goal);
   const lightweightGoal = isLightweightAutoPlanGoal(goal, requirements);
   const taskClass = classifyPlanTaskClass(goal);
-  const implementationSteps = source.filter((step) => step.role !== 'advisor' && step.role !== 'reviewer' && step.role !== 'tester' && step.role !== 'summarizer');
+  const implementationSteps = source.filter((step) => step.role !== 'advisor' && step.role !== 'reviewer' && step.role !== 'tester' && step.role !== 'debugger' && step.role !== 'summarizer');
   const primaryImplementationStep =
     implementationSteps.find((step) => step.role === 'coder') ||
     implementationSteps[0] || {
@@ -1893,13 +2195,19 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
     role: 'tester',
     task: `Test and verify the completed work for: ${goal}. Start with the artifacts produced by earlier implementation steps, run the most relevant checks available, report concrete evidence, and call out anything still unverified.`
   };
+  const debuggerStep = source.find((step) => step.role === 'debugger') || {
+    title: 'Investigate the issue',
+    role: 'debugger',
+    task: `Investigate the reported issue: ${goal}. Reproduce the problem, trace root causes, narrow down culprit code, and recommend a fix approach without implementing it.`
+  };
   const summarizerStep = buildDefaultSummarizerStep(goal, source);
   const hasReviewer = source.some((step) => step.role === 'reviewer');
   const hasTester = source.some((step) => step.role === 'tester');
+  const hasDebugger = source.some((step) => step.role === 'debugger');
 
   if (taskClass === 'advisory') {
     const advisorySteps = source
-      .filter((step) => step.role === 'planner' || step.role === 'advisor' || step.role === 'coder')
+      .filter((step) => step.role === 'explorer' || step.role === 'advisor' || step.role === 'architect')
       .map((step) =>
         step.role === 'coder'
           ? {
@@ -1933,6 +2241,48 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
     return {
       summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
       steps: [...finalSteps, summarizerStep]
+    };
+  }
+
+  if (taskClass === 'debugging') {
+    const nonDebugRoles = implementationSteps.filter((step) => step.role !== 'debugger');
+    const coderStep = nonDebugRoles.find((step) => step.role === 'coder') || {
+      title: 'Fix the identified cause',
+      role: 'coder',
+      task: `Fix the root cause identified by the debugger for: ${goal}. Keep the fix narrowly scoped and preserve existing behavior except where intentionally changed.`
+    };
+    const steps = hasDebugger
+      ? [...nonDebugRoles.slice(0, 3), debuggerStep, coderStep]
+      : [...nonDebugRoles.slice(0, 3), debuggerStep, coderStep];
+    const finalSteps = hasTester ? [...steps, testerStep] : steps;
+    return {
+      summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
+      steps: [...finalSteps, summarizerStep]
+    };
+  }
+
+  if (taskClass === 'implementation-advisory') {
+    const advisoryStep = source.find((step) => step.role === 'advisor') || {
+      title: 'Analyze requirements and constraints',
+      role: 'advisor',
+      task: `Analyze: ${goal}. Identify constraints, dependencies, risks, tradeoffs, and recommend the best implementation approach. Do not implement changes.`
+    };
+    const baseSteps = [primaryImplementationStep, advisoryStep];
+    return {
+      summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
+      steps: [...baseSteps, summarizerStep]
+    };
+  }
+
+  if (taskClass === 'implementation-verification') {
+    const executionSteps = [
+      ...implementationSteps.slice(0, 5),
+      ...(hasReviewer ? [reviewerStep] : []),
+      testerStep
+    ];
+    return {
+      summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
+      steps: [...executionSteps, summarizerStep]
     };
   }
 
@@ -1980,16 +2330,71 @@ function stepOutputHasFailureSignals(role, text = '') {
   const remainingIssuesBullet = extractSectionFirstBullet(value, 'Remaining Issues');
   const actionsTakenBullet = extractSectionFirstBullet(value, 'Actions Taken');
   const artifactsBullet = extractSectionFirstBullet(value, 'Artifacts');
+  const mapBullet = extractSectionFirstBullet(value, 'Map');
+  const designBullet = extractSectionFirstBullet(value, 'Design Decision');
+  const narrowedScopeBullet = extractSectionFirstBullet(value, 'Narrowed Scope');
+  const evidenceBullet = extractSectionFirstBullet(value, 'Evidence');
   const acceptanceFailures = extractAcceptanceStatusItems(value).filter((item) => item.status !== 'met');
   if (errorBullet && !/^none\b/i.test(errorBullet)) return true;
   if (failureBullet && !/^none\b/i.test(failureBullet)) return true;
   if (acceptanceFailures.length > 0) return true;
+  if (role === 'explorer') {
+    const hasFindings = sectionHasValue(value, 'Findings');
+    const hasMap = sectionHasValue(value, 'Map');
+    const hasActions = sectionHasValue(value, 'Actions Taken');
+    if (explorerOutputLacksContext(
+      hasFindings ? 'ok' : '',
+      hasMap ? 'ok' : '',
+      hasActions ? 'ok' : ''
+    ) && !explorerOutputHasContent(value)) {
+      return true;
+    }
+  }
+  if (role === 'architect' && architectOutputLacksDecision(designBullet)) return true;
   if (role === 'coder' && coderOutputLacksImplementationEvidence(actionsTakenBullet, artifactsBullet)) return true;
+  if (role === 'refactorer' && refactorerOutputLacksEvidence(actionsTakenBullet, artifactsBullet)) return true;
   if (role === 'reviewer' && reviewerFindingNeedsAction(findingsBullet)) return true;
+  if (role === 'writer' && writerOutputLacksEvidence(actionsTakenBullet, artifactsBullet)) return true;
   if ((role === 'tester' || role === 'summarizer') && notVerifiedBullet && !/^none\b/i.test(notVerifiedBullet)) return true;
   if (role === 'summarizer' && remainingIssuesBullet && !/^none\b/i.test(remainingIssuesBullet)) return true;
+  if (role === 'debugger' && debuggerOutputLacksTracedCause(findingsBullet, narrowedScopeBullet, evidenceBullet)) return true;
   if (nextActionBullet && /^(fix|retry|correct|repair)\b/i.test(nextActionBullet)) return true;
   return false;
+}
+
+function explorerOutputLacksContext(findings = '', map = '', actions = '') {
+  const noFindings = !String(findings || '').trim() || /^none\b/i.test(String(findings || '').trim());
+  const noMap = !String(map || '').trim() || /^none\b/i.test(String(map || '').trim());
+  const noActions = !String(actions || '').trim() || /^none\b/i.test(String(actions || '').trim());
+  return noFindings && noMap && noActions;
+}
+
+function explorerOutputHasContent(outputText = '') {
+  const raw = String(outputText || '').trim();
+  if (!raw) return false;
+  if (/^(error|no\s|i\s*cannot|i\s*don't|unable)/i.test(raw)) return false;
+  if (raw.length < 80) return false;
+  return true;
+}
+
+function architectOutputLacksDecision(design = '') {
+  const value = String(design || '').trim();
+  return !value || /^none\b/i.test(value);
+}
+
+function refactorerOutputLacksEvidence(actionsTaken = '', artifacts = '') {
+  return coderOutputLacksImplementationEvidence(actionsTaken, artifacts);
+}
+
+function writerOutputLacksEvidence(actionsTaken = '', artifacts = '') {
+  return coderOutputLacksImplementationEvidence(actionsTaken, artifacts);
+}
+
+function debuggerOutputLacksTracedCause(findings = '', narrowedScope = '', evidence = '') {
+  const noFindings = !String(findings || '').trim() || /^none\b/i.test(String(findings || '').trim());
+  const noScope = !String(narrowedScope || '').trim() || /^none\b/i.test(String(narrowedScope || '').trim());
+  const noEvidence = !String(evidence || '').trim() || /^none\b/i.test(String(evidence || '').trim());
+  return noFindings && noScope && noEvidence;
 }
 
 function coderOutputLacksImplementationEvidence(actionsTaken = '', artifacts = '') {
@@ -2025,10 +2430,40 @@ function buildExitCriteriaFailureReason(role, text = '') {
   const findingsBullet = extractSectionFirstBullet(value, 'Findings');
   const actionsTakenBullet = extractSectionFirstBullet(value, 'Actions Taken');
   const artifactsBullet = extractSectionFirstBullet(value, 'Artifacts');
+  const mapBullet = extractSectionFirstBullet(value, 'Map');
+  const designBullet = extractSectionFirstBullet(value, 'Design Decision');
+  if (role === 'explorer') {
+    const hasFindings = sectionHasValue(value, 'Findings');
+    const hasMap = sectionHasValue(value, 'Map');
+    const hasActions = sectionHasValue(value, 'Actions Taken');
+    if (explorerOutputLacksContext(
+      hasFindings ? 'ok' : '',
+      hasMap ? 'ok' : '',
+      hasActions ? 'ok' : ''
+    ) && !explorerOutputHasContent(value)) {
+      return 'explorer output did not include findings, map, or actions';
+    }
+  }
+  if (role === 'architect' && architectOutputLacksDecision(designBullet)) {
+    return 'architect output did not include a design decision';
+  }
   if (role === 'coder' && coderOutputLacksImplementationEvidence(actionsTakenBullet, artifactsBullet)) {
     return 'coder output did not include implementation evidence';
   }
+  if (role === 'refactorer' && coderOutputLacksImplementationEvidence(actionsTakenBullet, artifactsBullet)) {
+    return 'refactorer output did not include refactoring evidence';
+  }
+  if (role === 'writer' && coderOutputLacksImplementationEvidence(actionsTakenBullet, artifactsBullet)) {
+    return 'writer output did not include documentation evidence';
+  }
   if (role === 'reviewer' && reviewerFindingNeedsAction(findingsBullet)) return `review findings: ${findingsBullet}`;
+  if (role === 'debugger') {
+    const narrowedScopeBullet = extractSectionFirstBullet(value, 'Narrowed Scope');
+    const evidenceBullet = extractSectionFirstBullet(value, 'Evidence');
+    if (debuggerOutputLacksTracedCause(findingsBullet, narrowedScopeBullet, evidenceBullet)) {
+      return 'debugger output did not include traced cause, narrowed scope, or evidence';
+    }
+  }
   const nextActionBullet = extractSectionFirstBullet(value, 'Next Action');
   if (nextActionBullet && /^(fix|retry|correct|repair)\b/i.test(nextActionBullet)) return `next action requires rework: ${nextActionBullet}`;
   const acceptanceFailure = extractAcceptanceStatusItems(value).find((item) => item.status !== 'met');
@@ -2044,10 +2479,25 @@ function buildExitCriteriaFailureReason(role, text = '') {
   return 'step output did not satisfy exit criteria';
 }
 
+function stripMarkdownHeadingChars(text = '') {
+  return String(text || '').replace(/(^|\n)(\s*)(?:\*{1,3}|#{1,4})\s*/g, '$1$2');
+}
+
 function extractSectionFirstBullet(text = '', heading = '') {
+  const clean = stripMarkdownHeadingChars(String(text || ''));
   const escaped = String(heading || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const match = String(text || '').match(new RegExp(String.raw`(^|\n)\s*${escaped}\s*:\s*(?:\n|\r\n?)+\s*-\s*([^\n\r]+)`, 'i'));
+  const match = String(clean || '').match(new RegExp(String.raw`(^|\n)\s*${escaped}\s*:\s*(?:\n|\r\n?)+\s*-\s*([^\n\r]+)`, 'i'));
   return String(match?.[2] || '').trim();
+}
+
+function sectionHasValue(text = '', heading = '') {
+  const bullet = extractSectionFirstBullet(text, heading);
+  if (bullet && !/^none\b/i.test(bullet)) return true;
+  const clean = stripMarkdownHeadingChars(String(text || ''));
+  const escaped = String(heading || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const inline = String(clean || '').match(new RegExp(String.raw`(^|\n)\s*${escaped}\s*:\s*([^\n\r]+)`, 'i'));
+  const inlineText = String(inline?.[2] || '').trim();
+  return inlineText && !/^none\b/i.test(inlineText);
 }
 
 function extractSectionBullets(text = '', heading = '') {
@@ -2312,6 +2762,8 @@ async function buildSpecWithModel({
 }) {
   const prompt = [
     'Write a practical engineering spec in markdown, like an implementation-ready design document.',
+    'Return the full spec only. Do not greet, chat, ask clarifying questions, or offer a menu of possible directions.',
+    'If the request is broad or underspecified, choose reasonable assumptions, write them into the spec, and put unresolved items under Requirements or Risks.',
     'Use these sections exactly:',
     '# <Feature> Design',
     '## Summary',
@@ -2324,7 +2776,8 @@ async function buildSpecWithModel({
     '## Requirements',
     '## Risks and Mitigations',
     '## Testing / Validation',
-    'Make it concrete, scoped, and suitable for turning into a sub-agent implementation plan.'
+    'Make it concrete, scoped, and suitable for turning into a sub-agent implementation plan.',
+    'Every listed section must be present as a level-2 heading.'
   ].join('\n');
   const specSystemPrompt = await composeSystemPrompt({
     shellRulesPrompt: systemPrompt,
@@ -2391,7 +2844,14 @@ async function buildPlanFromSpecWithModel({
     '## Phase 2: Implementation',
     '## Phase 3: Verification',
     '## Task Breakdown',
-    'Make the plan concrete and ordered for a coding agent.'
+    'Make the plan concrete and ordered for a coding agent.',
+    'Before defining tasks, map the files/modules likely to be touched and what each is responsible for.',
+    'Each task should name exact files where known, expected behavior, and verification commands or evidence.',
+    'Do not use placeholders such as TBD, TODO, "handle edge cases", "write tests", or "implement later" without concrete details.',
+    'Break work into independently understandable tasks with clear responsibility and testable progress.',
+    'Prefer small, focused file boundaries where the plan creates or reorganizes code, while respecting existing project patterns.',
+    'Keep type names, function names, command names, and file paths consistent across all phases.',
+    'Include a self-review checklist for spec coverage, placeholder scan, contradictions, and type/API consistency.'
   ].join('\n');
   const planSystemPrompt = await composeSystemPrompt({
     shellRulesPrompt: systemPrompt,
@@ -2528,8 +2988,7 @@ function makePromptBudgetComponent(name, role, content) {
 
 function buildPromptBudgetAudit({
   systemPrompt = '',
-  projectContextSnippet = '',
-  projectContextGuidance = '',
+  projectContextPrompt = '',
   messages = [],
   toolDefinitions = [],
   config = {}
@@ -2541,8 +3000,7 @@ function buildPromptBudgetAudit({
   }));
   const components = [
     makePromptBudgetComponent('system_prompt', 'system', systemPrompt),
-    makePromptBudgetComponent('project_context', 'system', projectContextSnippet),
-    makePromptBudgetComponent('project_context_guidance', 'system', projectContextGuidance),
+    makePromptBudgetComponent('project_context', 'user', projectContextPrompt),
     {
       name: 'message_history',
       chars: messageTexts.reduce((total, message) => total + String(message.content || '').length, 0),
@@ -2566,6 +3024,37 @@ function buildPromptBudgetAudit({
   };
 }
 
+export function buildProjectContextUserPrompt({
+  projectContextSnippet = '',
+  projectContextGuidance = '',
+  userText = ''
+} = {}) {
+  const snippet = String(projectContextSnippet || '').trim();
+  const request = String(userText || '').trim();
+  if (!snippet) return request;
+  return [
+    snippet,
+    String(projectContextGuidance || '').trim(),
+    request ? `User request:\n${request}` : ''
+  ].filter(Boolean).join('\n\n');
+}
+
+export function injectProjectContextIntoLastUserMessage(messages = [], projectContextPrompt = '') {
+  const contextPrompt = String(projectContextPrompt || '').trim();
+  const source = Array.isArray(messages) ? messages : [];
+  if (!contextPrompt) return source;
+  const next = source.map((message) => ({ ...message }));
+  for (let index = next.length - 1; index >= 0; index -= 1) {
+    if (next[index]?.role !== 'user') continue;
+    next[index] = {
+      ...next[index],
+      content: contextPrompt
+    };
+    return next;
+  }
+  return [...next, { role: 'user', content: contextPrompt }];
+}
+
 function summarizePromptBudgetAudit(audit) {
   const totalTokens = audit?.total?.estimated_tokens || 0;
   const maxContextTokens = audit?.max_context_tokens || 0;
@@ -2581,8 +3070,8 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
   const activeParentMessages = Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
     ? currentSession.compact.view
     : currentSession?.messages || [];
-  const parentTokens = estimateMessagesTokens(activeParentMessages);
-  const subTokens = extraSession ? estimateMessagesTokens(extraSession.messages || []) : 0;
+  const parentTokens = estimateMessagesTokens(modelVisibleMessages(activeParentMessages));
+  const subTokens = extraSession ? estimateMessagesTokens(modelVisibleMessages(extraSession.messages || [])) : 0;
   const currentContextTokens = parentTokens + subTokens;
   const maxContextTokens = effectiveMaxContextTokens(config);
   const contextUsagePct = maxContextTokens > 0 ? Math.min(100, Math.max(0, (currentContextTokens / maxContextTokens) * 100)) : 0;
@@ -2592,6 +3081,7 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     sessionTitle: currentSession?.title || '',
     messageCount: Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0,
     mode: executionMode || config.execution?.mode || 'normal',
+    approvalMode: config.execution?.approval_mode || 'review',
     sdkProvider: config.sdk?.provider || 'openai-compatible',
     agentRole: 'general',
     model: model || config.model?.name || '',
@@ -2600,6 +3090,9 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     maxContextTokens,
     pendingPlanApproval: planState?.status === 'pending_approval'
       ? { goal: planState.goal, summary: planState.finalSummary || planState.summary, filePath: planState.filePath, steps: planState.steps || [] }
+      : null,
+    pendingSpecApproval: planState?.status === 'pending_spec_approval'
+      ? buildPendingSpecSnapshot(planState)
       : null,
     pendingReflectSkill: planState?.status === 'pending_reflect_skill'
       ? buildPendingReflectSkillSnapshot(planState)
@@ -2680,10 +3173,13 @@ async function generateSessionTitle({ userText, assistantText = '', config, sign
           content: [
             'Generate a concise chat session title.',
             'Base it on the completed user-assistant exchange, not only the user prompt.',
+            'Make it a short noun phrase, not a sentence or summary.',
             'Return only the title text.',
             'Use the same language as the user when possible.',
-            'No quotes, no markdown, no punctuation at the ends.',
-            'Maximum 18 Chinese characters or 8 English words.'
+            'No prefixes like "Title:", no quotes, no markdown, no punctuation at the ends.',
+            'Maximum 18 Chinese characters or 8 English words.',
+            'Bad: "This conversation summarizes how to fix the Web UI title generation."',
+            'Good: "Web UI title generation fix".'
           ].join(' ')
         },
         { role: 'user', content: titleInput }
@@ -2728,7 +3224,7 @@ function createCompactSummaryGenerator(config, signal) {
 
 function estimatePromptTokensForRequest(sessionMessages, userText = '') {
   const tokenMsgs = [
-    ...(Array.isArray(sessionMessages) ? sessionMessages : []),
+    ...modelVisibleMessages(sessionMessages),
     { role: 'user', content: String(userText || '') }
   ];
   return estimateMessagesTokens(tokenMsgs);
@@ -2745,6 +3241,10 @@ function stampedMessage(role, content, extra = {}) {
 
 function hasPendingPlanApproval(session) {
   return session?.planState?.status === 'pending_approval';
+}
+
+function hasPendingSpecApproval(session) {
+  return session?.planState?.status === 'pending_spec_approval';
 }
 
 function hasPendingReflectSkill(session) {
@@ -2772,8 +3272,55 @@ function isRejectPlanText(text = '') {
 function shouldPersistInputHistory(parsedInput) {
   if (!parsedInput || parsedInput.type !== 'slash') return true;
   const command = String(parsedInput.command || '').trim().toLowerCase();
-  // Keep approval-only commands out of input history (↑/↓ should focus on real task prompts).
-  return !['yes', 'no', 'edit', 'reject'].includes(command);
+  // Keep workflow/control commands out of input history (↑/↓ should focus on real task prompts).
+  return !['yes', 'no', 'edit', 'reject', 'plan', 'spec', 'reflect'].includes(command);
+}
+
+const NO_ARG_SLASH_COMMANDS = new Set(['exit', 'new', 'help', 'status', 'commands']);
+const APPROVAL_NO_ARG_SLASH_COMMANDS = new Set(['yes', 'no', 'reject']);
+const COMPACT_FLAGS_WITH_VALUE = new Set(['--threshold']);
+const COMPACT_FLAGS = new Set([
+  '--preview',
+  '--restore',
+  '--micro',
+  '--aggressive',
+  '--conservative',
+  '--default',
+  '--auto-on',
+  '--auto-off',
+  ...COMPACT_FLAGS_WITH_VALUE
+]);
+
+function validateBuiltinSlashArgs(parsedInput) {
+  if (!parsedInput || parsedInput.type !== 'slash') return '';
+  const command = String(parsedInput.command || '').trim().toLowerCase();
+  const args = Array.isArray(parsedInput.args) ? parsedInput.args : [];
+  if ((NO_ARG_SLASH_COMMANDS.has(command) || APPROVAL_NO_ARG_SLASH_COMMANDS.has(command)) && args.length > 0) {
+    return `/${command} does not accept extra text. Use /${command} by itself.`;
+  }
+  if (command === 'compact') {
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = String(args[index] || '');
+      if (!COMPACT_FLAGS.has(arg)) {
+        return `Unknown /compact option: ${arg}\nUsage: /compact [--preview|--restore|--micro|--aggressive|--conservative|--default|--auto-on|--auto-off|--threshold N]`;
+      }
+      if (COMPACT_FLAGS_WITH_VALUE.has(arg)) {
+        const value = args[index + 1];
+        if (value === undefined || Number.isNaN(Number(value))) {
+          return 'Usage: /compact --threshold <50-95>';
+        }
+        index += 1;
+      }
+    }
+  }
+  if (command === 'dream') {
+    for (const arg of args) {
+      if (arg === '--dry-run') continue;
+      if (String(arg || '').startsWith('--scope=')) continue;
+      return `Unknown /dream option: ${arg}\nUsage: /dream [--dry-run] [--scope=user|global|project]`;
+    }
+  }
+  return '';
 }
 
 function buildPendingPlanApprovalMessage(planState) {
@@ -2824,6 +3371,68 @@ function buildPendingReflectSkillSnapshot(reflectState) {
   };
 }
 
+function buildPendingSpecSnapshot(specState) {
+  if (!specState || specState.status !== 'pending_spec_approval') return null;
+  return {
+    goal: specState.goal || '',
+    summary: specState.summary || '',
+    specText: specState.specText || '',
+    filePath: specState.specPath || specState.filePath || '',
+    complete: true,
+    missingHeadings: []
+  };
+}
+
+function updatePendingPlanState(session, patch = {}) {
+  if (!hasPendingPlanApproval(session)) return null;
+  const steps = Array.isArray(patch.steps)
+    ? patch.steps.map((step) => ({
+        title: String(step?.title || '').trim(),
+        role: String(step?.role || '').trim(),
+        task: String(step?.task || '').trim()
+      })).filter((step) => step.title || step.role || step.task)
+    : session.planState.steps || [];
+  session.planState = {
+    ...session.planState,
+    goal: String(patch.goal ?? session.planState.goal ?? '').trim(),
+    summary: String(patch.summary ?? session.planState.summary ?? '').trim(),
+    finalSummary: String(patch.finalSummary ?? patch.summary ?? session.planState.finalSummary ?? session.planState.summary ?? '').trim(),
+    steps
+  };
+  return {
+    goal: session.planState.goal,
+    summary: session.planState.finalSummary || session.planState.summary,
+    filePath: session.planState.filePath,
+    steps: session.planState.steps
+  };
+}
+
+function updatePendingReflectState(session, patch = {}, workspaceRoot = process.cwd()) {
+  if (!hasPendingReflectSkill(session)) return null;
+  const scope = session.planState.targetScope || patch.scope || 'project';
+  const draft = normalizeReflectDraft({
+    ...(Array.isArray(session.planState.candidates) ? session.planState.candidates[0] : {}),
+    ...patch
+  });
+  const candidates = attachReflectTargets({ candidates: [draft], scope, workspaceRoot });
+  session.planState = {
+    ...session.planState,
+    candidates
+  };
+  return buildPendingReflectSkillSnapshot(session.planState);
+}
+
+function updatePendingSpecState(session, patch = {}) {
+  if (!hasPendingSpecApproval(session)) return null;
+  session.planState = {
+    ...session.planState,
+    goal: String(patch.goal ?? session.planState.goal ?? '').trim(),
+    summary: String(patch.summary ?? session.planState.summary ?? '').trim(),
+    specText: String(patch.specText ?? session.planState.specText ?? '').trim()
+  };
+  return buildPendingSpecSnapshot(session.planState);
+}
+
 function buildApprovedPlanExecutionPrompt(planState, approvalText = '') {
   const requirementPacket = buildGoalRequirementPacket(planState?.goal || '', 'coder');
   const lines = [
@@ -2840,11 +3449,15 @@ function buildApprovedPlanExecutionPrompt(planState, approvalText = '') {
       : []),
     'Proceed with implementation now.',
     'Follow the approved direction unless a blocking contradiction appears.',
+    'Before changing files, critically review the approved plan. If it has critical gaps, impossible steps, or unclear requirements, stop and ask for clarification.',
+    'During execution, complete steps in order, keep scope tight, and do not skip planned verification.',
+    'If a step is blocked by missing dependencies, unclear instructions, or repeated verification failures, stop and report the blocker rather than guessing.',
     'Output rules for this implementation phase:',
     '- Be concise and practical.',
     '- Do not celebrate, praise, or use emojis.',
     '- Do not restate the full plan back to the user.',
     '- If the work is already done, say so briefly and cite the verification evidence.',
+    '- Do not claim success without concrete verification evidence. If verification could not run, say exactly why.',
     '- After implementation or verification, prefer a short result summary in 3-6 lines.',
     '- If the work is complete, use this exact structure:',
     'Status: <done|partial|blocked>',
@@ -2938,22 +3551,25 @@ async function askModel({
   alwaysAllowTools,
   signal,
   allowedTools,
-  maxSteps: maxStepsOverride,
   skipAnalysisNudge = false,
   compactedForModel: compactedInput = null,
-  onCompactedUpdate = null
+  onCompactedUpdate = null,
+  changeTracker = null,
+  backupManager = null,
+  projectIsGit = Boolean(config?.runtime?.project_is_git)
 }) {
   let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
+  const expectedModelText = typeof modelText === 'string' && modelText && modelText !== text ? modelText : '';
   const maxContextTokens = effectiveMaxContextTokens(config);
   const triggerPct = Number(config.context?.preflight_trigger_pct || 60);
   const hardPct = Number(config.context?.hard_limit_pct || 98);
-  const messagesForEstimate = compacted ?? session.messages;
+  const messagesForEstimate = modelVisibleMessages(compacted ?? session.messages);
   const preflightTokens = estimatePromptTokensForRequest(messagesForEstimate, modelInputText);
   const preflightPct = (preflightTokens / maxContextTokens) * 100;
 
   if (persistSession && preflightPct >= triggerPct) {
-    const compactSource = compacted ?? session.messages;
+    const compactSource = modelVisibleMessages(compacted ?? session.messages);
     // Phase 0: try micro-compact first (in-place tool result clearing)
     const microEnabled = config.context?.microcompact_enabled !== false;
     const microKeep = Number(config.context?.microcompact_keep_recent || 5);
@@ -2980,7 +3596,7 @@ async function askModel({
     }
     if (needsMacro) {
       const sourceIsCompacted = Boolean(compacted);
-      const macroSource = compacted ?? session.messages;
+      const macroSource = modelVisibleMessages(compacted ?? session.messages);
       const auto = await compactMessagesLocally(macroSource, {
         mode: preflightPct >= hardPct ? 'aggressive' : 'conservative',
         force: true,
@@ -3056,7 +3672,9 @@ async function askModel({
     : false;
   if (text) {
     const modelExtra =
-      typeof modelText === 'string' && modelText && modelText !== text ? { model_content: modelText } : {};
+      typeof modelText === 'string' && modelText && modelText !== text
+        ? { model_content: modelText, model_content_scope: 'current_turn' }
+        : {};
     const userMessage = stampedMessage('user', text, modelExtra);
     session.messages.push(userMessage);
     if (compacted) {
@@ -3079,23 +3697,37 @@ async function askModel({
     config,
     workspaceRoot: process.cwd(),
     includeSoul: false,
-    includeMemory: false,
-    projectContextSnippet,
-    projectContextGuidance
+    includeMemory: false
   });
+  const projectContextPrompt = buildProjectContextUserPrompt({
+    projectContextSnippet,
+    projectContextGuidance,
+    userText: modelInputText
+  });
+
+  const toolConfig = {
+    ...config,
+    runtime: {
+      ...(config.runtime || {}),
+      codewiki_comment_tools: Array.isArray(allowedTools) && (
+        allowedTools.includes('add_code_comment') ||
+        allowedTools.includes('update_code_comment')
+      )
+    },
+    workspaceRoot: process.cwd(),
+    policy: {
+      ...(config.policy || {}),
+      allowed_paths: [
+        ...(Array.isArray(config.policy?.allowed_paths) ? config.policy.allowed_paths : []),
+        path.join(getSessionsDir(), String(session.id)),
+        getSkillsDir()
+      ]
+    }
+  };
 
   const { definitions, handlers, formatters, deferredDefinitions, dispose: disposeTools } = getBuiltinTools({
     workspaceRoot: process.cwd(),
-    config: {
-      ...config,
-      policy: {
-        ...(config.policy || {}),
-        allowed_paths: [
-          ...(Array.isArray(config.policy?.allowed_paths) ? config.policy.allowed_paths : []),
-          path.join(getSessionsDir(), String(session.id))
-        ]
-      }
-    },
+    config: toolConfig,
     sessionId: session.id,
     onSystemEvent: onAgentEvent,
     getTodos: () => normalizeTodos(session.todos),
@@ -3107,7 +3739,8 @@ async function askModel({
     onPlanStateUpdate: (planState) => {
       session.planState = normalizePlanState(planState);
       scheduleSessionSave();
-    }
+    },
+    backupManager
   });
 
   const filteredDefinitions = Array.isArray(allowedTools)
@@ -3120,13 +3753,25 @@ async function askModel({
     ? Object.fromEntries(Object.entries(deferredDefinitions).filter(([name]) => allowedTools.includes(name)))
     : deferredDefinitions;
 
+  const modelSourceMessages = compacted ?? session.messages;
+  const currentTurnUserIndex = findCurrentTurnUserIndex(modelSourceMessages, text, expectedModelText);
+  const baseInitialMessages = toOpenAIMessages(modelSourceMessages, { currentTurnUserIndex });
+  const initialMessagesForModel = persistSession && projectContextSnippet
+    ? injectProjectContextIntoLastUserMessage(baseInitialMessages, projectContextPrompt)
+    : baseInitialMessages;
+  const loopUserPrompt = persistSession
+    ? ''
+    : (projectContextSnippet ? projectContextPrompt : modelInputText);
+
   if (config.context?.prompt_budget_audit === true && onAgentEvent) {
     const auditId = `prompt-budget-${Date.now()}`;
     const audit = buildPromptBudgetAudit({
-      systemPrompt,
-      projectContextSnippet,
-      projectContextGuidance: projectContextSnippet ? projectContextGuidance : '',
-      messages: session.messages.filter((m) => m.role !== 'system'),
+      systemPrompt: effectiveSystemPrompt,
+      projectContextPrompt: projectContextSnippet ? projectContextPrompt : '',
+      messages: [
+        ...initialMessagesForModel.filter((m) => m.role !== 'system'),
+        ...(loopUserPrompt ? [{ role: 'user', content: loopUserPrompt }] : [])
+      ],
       toolDefinitions: filteredDefinitions,
       config
     });
@@ -3158,7 +3803,9 @@ async function askModel({
       linesAdded: Number(change.linesAdded || 0),
       linesRemoved: Number(change.linesRemoved || 0),
       changedLine: Number(change.changedLine || 0),
-      diffPreview: String(change.diffPreview || '')
+      diffPreview: String(change.diffPreview || ''),
+      changeSetId: String(change.changeSetId || ''),
+      patchRef: String(change.patchRef || '')
     };
   };
   const fileChangeFingerprint = (change) => JSON.stringify({
@@ -3167,8 +3814,13 @@ async function askModel({
     linesAdded: Number(change.linesAdded || 0),
     linesRemoved: Number(change.linesRemoved || 0),
     changedLine: Number(change.changedLine || 0),
-    diffPreview: String(change.diffPreview || '')
+    diffPreview: String(change.diffPreview || ''),
+    changeSetId: String(change.changeSetId || ''),
+    patchRef: String(change.patchRef || '')
   });
+  const normalizeFileChanges = (changes) => (Array.isArray(changes) ? changes : [changes])
+    .map(normalizeFileChange)
+    .filter(Boolean);
   const appendUniqueFileChange = (message, fileChange) => {
     const existing = Array.isArray(message.file_changes) ? message.file_changes : [];
     const nextKey = fileChangeFingerprint(fileChange);
@@ -3188,11 +3840,14 @@ async function askModel({
       if (Number.isFinite(Number(meta.durationMs))) call.durationMs = Number(meta.durationMs);
       if (typeof meta.summary === 'string' && meta.summary.trim()) call.summary = meta.summary.trim();
       if (typeof meta.status === 'string' && meta.status.trim()) call.status = meta.status.trim();
+      if (meta.resultMeta && typeof meta.resultMeta === 'object') call.resultMeta = meta.resultMeta;
       const fileChange = normalizeFileChange(meta.fileChange);
       if (fileChange) {
         call.fileChange = fileChange;
-        appendUniqueFileChange(msg, fileChange);
       }
+      const fileChanges = normalizeFileChanges(meta.fileChanges && meta.fileChanges.length ? meta.fileChanges : fileChange);
+      if (fileChanges.length) call.fileChanges = fileChanges;
+      for (const change of fileChanges) appendUniqueFileChange(msg, change);
       msg.at = new Date().toISOString();
       return true;
     }
@@ -3299,7 +3954,9 @@ async function askModel({
         const meta = {
           durationMs: Number.isFinite(Number(event.durationMs)) ? Number(event.durationMs) : undefined,
           summary: typeof event.summary === 'string' ? event.summary : '',
+          resultMeta: event.resultMeta && typeof event.resultMeta === 'object' ? event.resultMeta : null,
           fileChange: normalizeFileChange(event.fileChange),
+          fileChanges: normalizeFileChanges(event.fileChanges),
           status:
             event.type === 'tool:error'
               ? 'error'
@@ -3319,7 +3976,9 @@ async function askModel({
           ...(Number.isFinite(Number(meta.durationMs)) ? { tool_duration_ms: Number(meta.durationMs) } : {}),
           ...(meta.summary ? { tool_summary: meta.summary } : {}),
           ...(meta.status ? { tool_status: meta.status } : {}),
-          ...(meta.fileChange ? { tool_file_change: meta.fileChange } : {})
+          ...(meta.resultMeta ? { tool_result_meta: meta.resultMeta } : {}),
+          ...(meta.fileChange ? { tool_file_change: meta.fileChange } : {}),
+          ...(Array.isArray(meta.fileChanges) && meta.fileChanges.length ? { tool_file_changes: meta.fileChanges } : {})
         })
       );
       pendingToolMeta.delete(toolId);
@@ -3330,27 +3989,34 @@ async function askModel({
   };
 
   const sessionLenBeforeLoop = session.messages.length;
-  const loopUserPrompt = persistSession ? '' : modelInputText;
-  const expectedModelText = typeof modelText === 'string' && modelText && modelText !== text ? modelText : '';
   const loopResult = await runAgentLoop({
     systemPrompt: effectiveSystemPrompt,
     userPrompt: loopUserPrompt,
     model: model || config.model.name,
-    maxSteps: maxStepsOverride ?? Number(config.execution?.max_steps || 16),
+
+
     toolDefinitions: filteredDefinitions,
     toolHandlers: filteredHandlers,
-    initialMessages: toOpenAIMessages(compacted ?? session.messages),
+    initialMessages: initialMessagesForModel,
     onEvent: wrappedAgentEvent,
     executionMode: executionMode || config.execution?.mode || 'normal',
+    approvalMode: config.execution?.approval_mode || 'review',
+    projectIsGit: Boolean(projectIsGit || changeTracker?.enabled),
     alwaysAllowTools:
-      alwaysAllowTools || config.execution?.always_allow_tools || ['run', 'read', 'write'],
+      alwaysAllowTools || config.execution?.always_allow_tools || ['run', 'read', 'create'],
     toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
     toolFormatters: formatters,
     deferredDefinitions: filteredDeferred,
     requestToolApproval,
     signal,
     skipAnalysisNudge,
-    config,
+    config: toolConfig,
+    changeTracker: changeTracker?.enabled
+      ? {
+          begin: (meta) => beginGitOplogCapture(changeTracker, meta),
+          capture: (scope, meta) => captureGitOplogChanges(changeTracker, scope, meta)
+        }
+      : null,
     requestCompletion: async ({ messages, tools, model: selectedModel }) => {
       let started = false;
       const startAssistantStream = () => {
@@ -3401,17 +4067,6 @@ async function askModel({
       }
       if (onCompactedUpdate) onCompactedUpdate(compacted);
     }
-    // Handle model_content rewrite on the new user message
-    if (expectedModelText) {
-      for (let i = session.messages.length - 1; i >= 0; i -= 1) {
-        const message = session.messages[i];
-        if (message?.role === 'user' && message.content === expectedModelText) {
-          message.content = text;
-          message.model_content = expectedModelText;
-          break;
-        }
-      }
-    }
     session.model = model || config.model.name;
     session.mode = executionMode || config.execution?.mode || 'normal';
     await flushScheduledSave();
@@ -3432,11 +4087,9 @@ async function askModel({
         }
       }).catch(() => {});
     }
-    try {
-      await pruneSessions(config.sessions || {});
-    } catch {
+    void pruneSessions(config.sessions || {}).catch(() => {
       // keep chat usable even if pruning fails
-    }
+    });
   }
   return { text: loopResult.text, aborted: !!loopResult.aborted };
 }
@@ -3451,10 +4104,14 @@ async function runSubAgentTask({
   model,
   systemPrompt,
   onAgentEvent,
+  requestToolApproval,
   extraRolePrompt = '',
   signal,
   onSessionActive,
-  planFileContext = ''
+  planFileContext = '',
+  changeTracker = null,
+  backupManager = null,
+  projectIsGit = Boolean(config?.runtime?.project_is_git)
 }) {
   const subSession = { id: `sub-${Date.now()}`, messages: [] };
   const rolePrompt = getSubAgentRolePrompt(role);
@@ -3527,11 +4184,15 @@ async function runSubAgentTask({
     model,
     systemPrompt: subSystemPrompt,
     onAgentEvent: wrappedOnAgentEvent,
+    requestToolApproval,
     persistSession: false,
-    executionMode: 'auto',
+    executionMode: 'normal',
     allowedTools: roleAllowedTools,
     skipAnalysisNudge: true,
-    signal
+    signal,
+    changeTracker,
+    backupManager,
+    projectIsGit
   });
   const text = subResult.text || '';
   const hasErrorLine = /(^|\n)\s*error\s*:/i.test(text);
@@ -3549,12 +4210,8 @@ function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }
   const toolCardsById = new Map();
   const toolCards = [];
   const source = Array.isArray(messages) ? messages : [];
-  let usage = null;
 
   for (const msg of source) {
-    if (msg?.role === 'assistant' && msg.usage) {
-      usage = mergeModelUsage(usage, msg.usage);
-    }
     if (msg?.role === 'assistant' && Array.isArray(msg.tool_calls)) {
       for (const tc of msg.tool_calls) {
         const id = String(tc?.id || `tool-${toolCards.length + 1}`);
@@ -3598,7 +4255,7 @@ function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }
     status: stepRecord.failed ? 'failed' : 'done',
     summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output || '', 160),
     segments,
-    ...(usage ? { usage } : {})
+    ...(stepRecord.usage ? { usage: stepRecord.usage } : {})
   };
 }
 
@@ -3609,8 +4266,12 @@ async function executePlanWithSubAgents({
   model,
   systemPrompt,
   onAgentEvent,
+  requestToolApproval,
   signal,
-  onSubSessionActive
+  onSubSessionActive,
+  changeTracker = null,
+  backupManager = null,
+  projectIsGit = Boolean(config?.runtime?.project_is_git)
 }) {
   const steps = Array.isArray(planState.steps) ? planState.steps : [];
   const goal = planState.goal || '';
@@ -3631,10 +4292,12 @@ async function executePlanWithSubAgents({
   const priorSteps = [];
   const results = [];
   const transcript = [];
+  let totalUsage = null;
 
   // Emit structured plan steps so TUI can show all steps with real role/title
   emitPlanEvent({
     type: 'plan:steps',
+    goal,
     steps: steps.map((s, idx) => ({ index: idx + 1, role: s.role, title: s.title, status: 'pending' }))
   });
 
@@ -3672,8 +4335,10 @@ async function executePlanWithSubAgents({
       planFileContext = await readPlanFileAsContext(planFilePath);
     }
 
+    const MAX_STEP_RETRIES = 1;
+
     const stepGuidance = buildPipelineStepGuidance({ role: step.role, stepIndex: i, totalSteps: steps.length, isFirst: i === 0, isLast: i === steps.length - 1, priorSteps });
-    const output = await runSubAgentTask({
+    let output = await runSubAgentTask({
       role: step.role,
       task: step.task,
       goal,
@@ -3683,11 +4348,67 @@ async function executePlanWithSubAgents({
       model,
       systemPrompt,
       onAgentEvent: emitPlanEvent,
+      requestToolApproval,
       extraRolePrompt: stepGuidance,
       signal,
       onSessionActive: onSubSessionActive,
-      planFileContext
+      planFileContext,
+      changeTracker,
+      backupManager,
+      projectIsGit
     });
+
+    let stepFailed = stepOutputHasFailureSignals(step.role, output.text || '');
+    let failureReason = stepFailed ? buildExitCriteriaFailureReason(step.role, output.text || '') : '';
+    let retryCount = 0;
+
+    while (stepFailed && retryCount < MAX_STEP_RETRIES && step.role !== 'summarizer' && !signal?.aborted) {
+      retryCount += 1;
+      emitPlanEvent({
+        type: 'assistant:delta',
+        text: `\n[plan] Step ${i + 1}/${steps.length} retry ${retryCount}/${MAX_STEP_RETRIES} (previous: ${failureReason})\n`
+      });
+
+      const retryGuidance = buildPipelineStepGuidance({
+        role: step.role,
+        stepIndex: i,
+        totalSteps: steps.length,
+        isFirst: i === 0,
+        isLast: i === steps.length - 1,
+        priorSteps,
+        isRetry: true,
+        previousError: failureReason
+      });
+
+      output = await runSubAgentTask({
+        role: step.role,
+        task: step.task,
+        goal,
+        priorSteps,
+        parentSession,
+        config,
+        model,
+        systemPrompt,
+        onAgentEvent: emitPlanEvent,
+        requestToolApproval,
+        extraRolePrompt: retryGuidance,
+        signal,
+        onSessionActive: onSubSessionActive,
+        planFileContext,
+        changeTracker,
+        backupManager,
+        projectIsGit
+      });
+
+      stepFailed = stepOutputHasFailureSignals(step.role, output.text || '');
+      failureReason = stepFailed ? buildExitCriteriaFailureReason(step.role, output.text || '') : '';
+    }
+
+    const stepUsage = collectAssistantUsage(output.messages || []);
+    totalUsage = mergeModelUsage(totalUsage, stepUsage);
+    const displayUsage = step.role === 'summarizer'
+      ? totalUsage
+      : stepUsage;
 
     const stepRecord = {
       role: step.role,
@@ -3699,17 +4420,11 @@ async function executePlanWithSubAgents({
       hasErrorLine: output.hasErrorLine || false,
       artifactPaths: output.artifactPaths || [],
       messages: output.messages || [],
-      failed:
-        output.hasErrorLine ||
-        stepOutputHasFailureSignals(step.role, output.text || ''),
-      failureReason: ''
+      usage: displayUsage,
+      retryCount,
+      failed: stepFailed,
+      failureReason
     };
-    if (stepRecord.failed) {
-      stepRecord.failureReason =
-        output.hasErrorLine
-          ? 'tool or model execution error'
-          : buildExitCriteriaFailureReason(step.role, output.text || '');
-    }
     priorSteps.push(stepRecord);
     results.push(stepRecord);
     transcript.push(buildPlanStepTranscript({
@@ -3739,7 +4454,11 @@ async function executePlanWithSubAgents({
       role: step.role,
       title: step.title,
       status: stepRecord.failed ? 'failed' : 'done',
-      summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output, 160)
+      summary: stepRecord.failed
+        ? `[${stepRecord.retryCount > 0 ? `retried ${stepRecord.retryCount}x] ` : ''}${stepRecord.failureReason}`
+        : trimInline(stepRecord.output, 160),
+      ...(stepRecord.retryCount > 0 ? { retryCount: stepRecord.retryCount } : {}),
+      ...(displayUsage ? { usage: displayUsage } : {})
     });
 
     emitPlanEvent({
@@ -3750,7 +4469,11 @@ async function executePlanWithSubAgents({
       role: step.role,
       title: step.title,
       status: stepRecord.failed ? 'failed' : 'done',
-      summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output, 160)
+      summary: stepRecord.failed
+        ? `[${stepRecord.retryCount > 0 ? `retried ${stepRecord.retryCount}x] ` : ''}${stepRecord.failureReason}`
+        : trimInline(stepRecord.output, 160),
+      ...(stepRecord.retryCount > 0 ? { retryCount: stepRecord.retryCount } : {}),
+      ...(displayUsage ? { usage: displayUsage } : {})
     });
 
     if (stepRecord.failed && i < steps.length - 1) {
@@ -3810,31 +4533,36 @@ async function buildAutoPlanAndRun({
   taskClass
 }) {
   const normalizedTaskClass = taskClass || classifyPlanTaskClass(goal);
-  const requirementPacket = buildGoalRequirementPacket(goal, 'planner');
+  const requirementPacket = buildGoalRequirementPacket(goal, 'explorer');
   const plannerPrompt = [
     buildAutoPlanPlannerGuidance(),
     'Planning policy:',
-    '- First classify the user goal as one of: advisory, implementation, or verification-heavy.',
+    '- First classify the user goal as one of: advisory, implementation, verification-heavy, debugging, or a hybrid.',
     '- advisory = analysis, review, audit, optimization suggestions, architecture feedback, brainstorming, planning, or recommendation requests.',
     '- implementation = add/build/create/implement/refactor/fix/update/change behavior in code or files.',
     '- verification-heavy = the user explicitly asks to run tests, verify findings, reproduce a bug, prove a claim, or validate a result.',
-    '- For advisory goals, prefer planner and advisor roles. Do not use coder unless the plan will actually modify code or files.',
-    '- For advisory goals, do not use reviewer or tester unless the user explicitly asks for verification or review as a separate deliverable.',
+    '- debugging = investigate bugs, crashes, errors, diagnose root causes, or trace unexpected behavior.',
+    '- implementation-advisory = analyze AND implement (e.g. "analyze this and fix it").',
+    '- For debugging goals, prefer: explorer -> debugger -> coder -> tester -> summarizer.',
+    '- For implementation-advisory hybrid goals, prefer: explorer -> advisor -> coder -> summarizer.',
+    '- For advisory goals, prefer explorer and advisor roles. Do not use coder unless the plan will actually modify code or files.',
+    '- For advisory goals, do not use reviewer, tester, or debugger unless the user explicitly asks for verification, review, or debugging as a separate deliverable.',
     '- For advisory goals, do not emit generic filler steps such as "Test and verify", "Review recommendations", or other template-only steps.',
     '- For implementation goals, reviewer and tester are optional support roles, not defaults. Only include them when they clearly add value.',
     '- Every step title must be concrete and tied to the goal. Avoid vague titles like "Initial analysis", "Review recommendations", or "Test and verify" unless the user explicitly requested those activities.',
     '- If the task is purely to inspect the current project and suggest improvements, a lean 2-step or 3-step plan is preferred.',
-    '- Example advisory roles: planner -> inspect project shape, advisor -> synthesize findings and prioritized recommendations.',
-    '- Example implementation roles: planner -> inspect target area, coder -> implement change, tester -> verify changed behavior.',
-    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|advisor|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.'
+    '- Example advisory roles: explorer -> inspect project shape, advisor -> synthesize findings and prioritized recommendations.',
+    '- Example implementation roles: explorer -> inspect target area, coder -> implement change, tester -> verify changed behavior.',
+    '- Example debugging roles: explorer -> inspect failing area, debugger -> trace root cause, coder -> fix, tester -> verify fix.',
+    `Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|')}","task":"..."}]}. No markdown.`
   ].join('\n');
   let autoPlan = {
     summary: `Auto plan for: ${goal}`,
     steps: [
       {
-        title: 'Initial analysis',
-        role: 'planner',
-        task: `Break down and propose implementation steps for: ${goal}`
+        title: 'Initial exploration',
+        role: 'explorer',
+        task: `Inspect the codebase and map the target area for: ${goal}`
       }
     ]
   };
@@ -3858,15 +4586,19 @@ async function buildAutoPlanAndRun({
           role: 'user',
           content: [
             'Create an execution plan and assign best sub-agent role for each step.',
-            'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|advisor|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.',
-            'The available roles are planner, advisor, coder, reviewer, tester, and summarizer. Use only the non-summary roles the task actually needs.',
+            `Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|')}","task":"..."}]}. No markdown.`,
+            `The available roles are ${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join(', ')}. Use only the roles the task actually needs.`,
             'Always include a summarizer as the final step. The summarizer synthesizes prior step results without re-analyzing.',
-            'Planner, advisor, coder, reviewer, and tester steps should write detailed step results, not final summaries.',
+            'All executor steps (explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer) should write detailed step results, not final summaries.',
             `Task class: ${normalizedTaskClass}`,
-            'Before choosing roles, decide whether the request is advisory, implementation, or verification-heavy.',
+            'Before choosing roles, decide whether the request is advisory, implementation, verification-heavy, debugging, or a hybrid.',
             requirementPacket,
-            'The first step should usually inspect or clarify the target area before implementation.',
-            'For analysis, recommendation, optimization, audit, or project-review goals, keep the plan lean and usually limit it to planner/advisor.',
+            'The first step should usually be an explorer to inspect the target area before implementation.',
+            'For debugging goals: explorer -> debugger (trace cause) -> coder (fix) -> tester (verify).',
+            'For implementation-advisory goals: explorer -> advisor -> coder.',
+            'For refactoring goals: explorer -> refactorer -> tester.',
+            'For documentation goals: explorer -> writer.',
+            'For analysis, recommendation, optimization, audit, or project-review goals, keep the plan lean and usually limit it to explorer/advisor.',
             'Do not include reviewer/tester for advisory goals unless the user explicitly asks to validate, verify, or independently review the findings.',
             'Avoid template-only titles like "Initial analysis", "Review recommendations", or "Test and verify" for advisory goals.',
             'For implementation-heavy changes, prefer review and/or testing steps near the end only when they materially improve confidence.',
@@ -3961,10 +4693,14 @@ function renderAutoPlanMarkdown({
   return lines.join('\n');
 }
 
-function parseProjectRequirementsOptions(args = []) {
+function parseProjectRequirementsOptions(args = [], { defaultOutputFormat = 'html' } = {}) {
   let depth = 'standard';
+  let runner = 'agent';
+  let outputFormat = defaultOutputFormat === 'md' ? 'md' : 'html';
   const focusArgs = [];
-  for (const arg of Array.isArray(args) ? args : []) {
+  const inputArgs = Array.isArray(args) ? args : [];
+  for (let index = 0; index < inputArgs.length; index += 1) {
+    const arg = inputArgs[index];
     const value = String(arg || '').trim();
     const normalized = value.toLowerCase();
     if (['--fast', '--quick', '--lite', '--light', '--快速'].includes(normalized)) {
@@ -3979,12 +4715,43 @@ function parseProjectRequirementsOptions(args = []) {
       depth = 'deep';
       continue;
     }
+    if (['--html', '--format=html', '--output=html', '--html版', '--网页版'].includes(normalized)) {
+      outputFormat = 'html';
+      continue;
+    }
+    if (['--md', '--markdown', '--format=md', '--format=markdown', '--output=md', '--output=markdown', '--md版', '--markdown版'].includes(normalized)) {
+      outputFormat = 'md';
+      continue;
+    }
+    if (['--format', '--output', '--格式'].includes(normalized)) {
+      const next = String(inputArgs[index + 1] || '').trim().toLowerCase();
+      if (['html', '网页', 'html版'].includes(next)) {
+        outputFormat = 'html';
+        index += 1;
+        continue;
+      }
+      if (['md', 'markdown', 'markdown版'].includes(next)) {
+        outputFormat = 'md';
+        index += 1;
+        continue;
+      }
+    }
+    if (['--agent', '--single-agent', '--single', '--普通', '--单agent', '--单-agent'].includes(normalized)) {
+      runner = 'agent';
+      continue;
+    }
+    if (['--pipeline', '--plan', '--subagents', '--sub-agents', '--流水线', '--计划'].includes(normalized)) {
+      // Pipeline generation is intentionally disabled by default for CodeWiki quality/stability.
+      // Keep the old pipeline implementation in place for future controlled experiments, but do
+      // not expose this flag as an active runner switch.
+      continue;
+    }
     focusArgs.push(arg);
   }
   const raw = focusArgs.join(' ').trim();
   const normalized = raw.toLowerCase();
   const hasIgnoreIntent = /(忽略|跳过|不生成|不要|无需|排除|exclude|skip|omit|without|no\s+)/i.test(raw);
-  if (!hasIgnoreIntent) return { raw, focusArgs, depth, ignoredSections: [] };
+  if (!hasIgnoreIntent) return { raw, focusArgs, depth, runner, outputFormat, ignoredSections: [] };
 
   const ignored = [];
   for (const section of PROJECT_REQUIREMENTS_SECTION_MARKERS) {
@@ -3997,7 +4764,54 @@ function parseProjectRequirementsOptions(args = []) {
     });
     if (matched) ignored.push(section);
   }
-  return { raw, focusArgs, depth, ignoredSections: ignored };
+  return { raw, focusArgs, depth, runner, outputFormat, ignoredSections: ignored };
+}
+
+function getProjectRequirementsOutputPaths(reportSlug, outputFormat = 'html') {
+  const normalizedFormat = outputFormat === 'md' ? 'md' : 'html';
+  const base = `docs/requirements/${reportSlug}-project-requirements`;
+  return {
+    outputFormat: normalizedFormat,
+    reportPath: `${base}.${normalizedFormat}`,
+    companionPath: normalizedFormat === 'html' ? `${base}.md` : `${base}.html`,
+    htmlPath: `${base}.html`,
+    markdownPath: `${base}.md`
+  };
+}
+
+function stripFrontmatter(raw = '') {
+  const text = String(raw || '').replace(/\r\n/g, '\n');
+  if (!text.startsWith('---\n')) return text.trim();
+  const end = text.indexOf('\n---\n', 4);
+  if (end === -1) return text.trim();
+  return text.slice(end + 5).trim();
+}
+
+async function renderProjectRequirementsSkillPrompt(custom, options) {
+  if (options?.outputFormat !== 'md') {
+    return expandFileMentions(renderCommandPrompt(custom, options.focusArgs), process.cwd());
+  }
+  const raw = await fs.readFile(PROJECT_REQUIREMENTS_MD_SKILL, 'utf8');
+  const mdSkill = {
+    name: 'project-requirements-md',
+    metadata: { type: 'skill' },
+    content: stripFrontmatter(raw)
+  };
+  return expandFileMentions(renderCommandPrompt(mdSkill, options.focusArgs), process.cwd());
+}
+
+function getProjectRequirementsDefaultOutputFormat(custom) {
+  return custom?.name === 'project-requirements-md' ? 'md' : 'html';
+}
+
+function validateProjectRequirementsFormat(skillName, outputFormat) {
+  if (skillName === 'project-requirements-md' && outputFormat !== 'md') {
+    return [
+      'project-requirements-md always outputs Markdown CodeWiki.',
+      'Use /project-requirements --html for the same CodeWiki report in HTML format instead of passing --html here.'
+    ].join(' ');
+  }
+  return null;
 }
 
 function renderProjectRequirementsSectionContract(ignoredSections = []) {
@@ -4013,23 +4827,32 @@ function renderProjectRequirementsSectionContract(ignoredSections = []) {
   return lines.join('\n');
 }
 
-function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = {}, reportSlug = formatLocalDateTimeSlug()) {
-  const options = parseProjectRequirementsOptions(args);
+function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = {}, reportSlug = formatLocalDateTimeSlug(), defaultOutputFormat = 'html') {
+  const options = parseProjectRequirementsOptions(args, { defaultOutputFormat });
   const userArgs = options.raw;
   const requestedFocus = userArgs ? `User request/focus: ${userArgs}` : 'User request/focus: full workspace requirements report.';
   const replyLanguageName = getReplyLanguageName(config);
-  const reportPath = `docs/requirements/${reportSlug}-project-requirements.html`;
-  const companionPath = `docs/requirements/${reportSlug}-project-requirements.md`;
+  const { reportPath, companionPath, outputFormat } = getProjectRequirementsOutputPaths(reportSlug, options.outputFormat);
+  const htmlOutput = outputFormat === 'html';
   const reportContract = [
     requestedFocus,
     `Reply language: write generated report prose, UI labels inserted into the report, review notes, and final user-facing status in ${replyLanguageName} unless the user explicitly requested a different language. Do not translate REQUIREMENTS_* marker names or source code identifiers.`,
+    `Requested output format: ${outputFormat}.`,
     `Primary report path: ${reportPath}`,
-    `Optional companion Markdown path: ${companionPath}`,
-    'A pre-created HTML shell already exists at the primary report path.',
-    'Fill or replace only the named marker sections in that shell instead of rewriting the whole document.',
+    outputFormat === 'html' ? `Optional companion Markdown path: ${companionPath}` : `Optional companion HTML path: ${companionPath}`,
+    htmlOutput
+      ? 'A pre-created HTML shell already exists at the primary report path.'
+      : 'A pre-created Markdown template already exists at the primary report path.',
+    htmlOutput
+      ? 'Fill or replace only the named marker sections in that shell instead of rewriting the whole document.'
+      : 'Write a complete Markdown requirements document at the primary report path. Use headings, tables, lists, fenced diagrams only when requested, and preserve evidence paths.',
     renderProjectRequirementsSectionContract(options.ignoredSections),
-    'For diagrams, write polished inline HTML/CSS or SVG directly in the report. Do not use Mermaid unless the user explicitly asks for Mermaid source.',
-    'Use a light blue, white, and cool gray banking/financial visual style: conservative, dense, readable, and enterprise-grade.',
+    htmlOutput
+      ? 'For diagrams, write polished inline HTML/CSS or SVG directly in the report. Do not use Mermaid unless the user explicitly asks for Mermaid source.'
+      : 'For diagrams in Markdown, prefer concise ASCII tables/lists or Mermaid source only when the user explicitly asks for Mermaid.',
+    htmlOutput
+      ? 'Follow the pre-created HTML shell Notion/Linear visual style: white background, warm neutral text (#37352f), subtle borders (#e9e9e7), and blue accents (#2383e2).'
+      : 'Keep the Markdown document professional, scannable, PR-friendly, and evidence-backed.',
     'Prioritize API/interface-level business requirements. Every major interface should map to business capability, actor, trigger, inputs, outputs, rules, permissions, data reads/writes, errors, acceptance criteria, and evidence.',
     'Use EXTRACTED, INFERRED, and UNKNOWN labels. Preserve source evidence paths.',
     'Do not invent dates; use the report paths above.'
@@ -4041,11 +4864,19 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
     task: [
       'Create the final project requirements report from the accumulated plan context.',
       reportContract,
-      'Follow the project-requirements skill instructions below exactly, including chunked HTML writing for medium/large reports.',
-      'Use the blue/white/gray banking-style shell and produce polished inline HTML/CSS/SVG diagrams. Keep the report professional, light, and conservative.',
+      htmlOutput
+        ? 'Follow the project-requirements skill instructions below exactly, including chunked HTML writing for medium/large reports.'
+        : 'Follow the project-requirements-md skill instructions below exactly, filling the Markdown template at the primary path.',
+      htmlOutput
+        ? 'Use the pre-created Notion/Linear-style shell and produce polished inline HTML/CSS/SVG diagrams. Keep the report clean, readable, and professional.'
+        : 'Keep the Markdown document professional, scannable, PR-friendly, and evidence-backed.',
       'Organize the main requirements section primarily by API/interface business requirement cards.',
-      'The final HTML must be self-contained and directly openable from disk.',
-      'Write the primary report to the exact primary report path above. Create the companion Markdown only if useful.',
+      htmlOutput
+        ? 'The final HTML must be self-contained and directly openable from disk.'
+        : 'The final Markdown must be readable in plain text and Markdown previewers.',
+      outputFormat === 'html'
+        ? 'Write the primary report to the exact primary report path above. Create the companion Markdown only if useful.'
+        : 'Write the primary Markdown report to the exact primary report path above. Create the companion HTML only if explicitly useful.',
       'Skill instructions:',
       renderedSkillPrompt
     ].join('\n\n')
@@ -4056,8 +4887,12 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
     task: [
       'Review the generated requirements report against the project-requirements contract and accumulated evidence.',
       reportContract,
-      'Check that major APIs/interfaces are represented, business requirements are decomposed per API, evidence paths are present, inferred/unknown content is labeled, diagrams are visible as inline HTML/CSS/SVG without external rendering libraries, and the report path matches the required local date.',
-      'Check that the visual style is light blue/white/gray and suitable for banking/financial review.',
+      htmlOutput
+        ? 'Check that major APIs/interfaces are represented, business requirements are decomposed per API, evidence paths are present, inferred/unknown content is labeled, diagrams are visible as inline HTML/CSS/SVG without external rendering libraries, and the report path matches the required local date.'
+        : 'Check that major APIs/interfaces are represented, business requirements are decomposed per API, evidence paths are present, inferred/unknown content is labeled, Markdown tables/lists are readable, and the report path matches the required local date.',
+      htmlOutput
+        ? 'Check that the visual style matches the Notion/Linear shell (warm neutrals, blue accents) and remains readable when opened from disk.'
+        : 'Check that the Markdown is suitable for review in Git diffs and Markdown previewers.',
       'Report concrete gaps and risks only. Do not rewrite the whole report.'
     ].join('\n')
   };
@@ -4076,7 +4911,7 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
     return [
       {
         title: '⚡ Map evidence and interfaces',
-        role: 'planner',
+        role: 'explorer',
         task: [
           'Quickly map project evidence and build a practical API/interface inventory before report writing.',
           reportContract,
@@ -4113,7 +4948,7 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
     return [
       {
         title: '🧭 Map entry points and evidence sources',
-        role: 'planner',
+        role: 'explorer',
         task: [
           'Map project entry points and evidence sources before any report writing.',
           reportContract,
@@ -4124,7 +4959,7 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
       },
       {
         title: '📚 Build API and interface inventory',
-        role: 'planner',
+        role: 'explorer',
         task: [
           'Build the canonical API/interface inventory using the evidence map.',
           reportContract,
@@ -4152,7 +4987,7 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
   return [
     {
       title: '🧭 Map entry points and evidence sources',
-      role: 'planner',
+      role: 'explorer',
       task: [
         'Map project entry points and evidence sources before any report writing.',
         reportContract,
@@ -4163,7 +4998,7 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
     },
     {
       title: '📚 Build API and interface inventory',
-      role: 'planner',
+      role: 'explorer',
       task: [
         'Build the canonical API/interface inventory using the evidence map.',
         reportContract,
@@ -4220,7 +5055,7 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
 
 function renderProjectRequirementsPlanMarkdown({ goal, steps, reportPath, companionPath }) {
   const autoPlan = {
-    summary: 'Dedicated sub-agent pipeline for project requirements discovery and HTML report generation.',
+    summary: 'Dedicated sub-agent pipeline for project requirements discovery and report generation.',
     steps
   };
   const progressLines = steps
@@ -4258,47 +5093,49 @@ async function createProjectRequirementsShell({
   goal,
   steps,
   depth = 'standard',
+  outputFormat = 'html',
   config = {}
 }) {
   const workspaceRoot = process.cwd();
   const absoluteReportPath = path.resolve(workspaceRoot, reportPath);
   const absoluteManifestPath = path.resolve(workspaceRoot, manifestPath);
   await fs.mkdir(path.dirname(absoluteReportPath), { recursive: true });
-  const template = await fs.readFile(PROJECT_REQUIREMENTS_TEMPLATE, 'utf8');
   const now = new Date().toISOString();
-  const shellCopy = PROJECT_REQUIREMENTS_SHELL_COPY[getReplyLanguage(config)] || PROJECT_REQUIREMENTS_SHELL_COPY.zh;
-  const html = replaceTemplateVariables(template, {
-    ...shellCopy,
-    workspace_name: path.basename(workspaceRoot) || workspaceRoot,
-    date: formatLocalDate(),
-    generated_at: now
-  });
-  await fs.writeFile(absoluteReportPath, html, 'utf8');
+  if (outputFormat === 'md') {
+    const template = await fs.readFile(PROJECT_REQUIREMENTS_MD_TEMPLATE, 'utf8');
+    const markdown = replaceTemplateVariables(template, {
+      title: goal,
+      workspace_name: path.basename(workspaceRoot) || workspaceRoot,
+      date: formatLocalDate(),
+      generated_at: now,
+      reply_language: getReplyLanguageName(config)
+    });
+    await fs.writeFile(absoluteReportPath, markdown.endsWith('\n') ? markdown : `${markdown}\n`, 'utf8');
+  } else {
+    const template = await fs.readFile(PROJECT_REQUIREMENTS_TEMPLATE, 'utf8');
+    const shellCopy = PROJECT_REQUIREMENTS_SHELL_COPY[getReplyLanguage(config)] || PROJECT_REQUIREMENTS_SHELL_COPY.zh;
+    const html = replaceTemplateVariables(template, {
+      ...shellCopy,
+      workspace_name: path.basename(workspaceRoot) || workspaceRoot,
+      date: formatLocalDate(),
+      generated_at: now
+    });
+    await fs.writeFile(absoluteReportPath, html, 'utf8');
+  }
 
-  const sectionNames = [
-    'summary',
-    'architecture',
-    'interfaces',
-    'requirements',
-    'flows',
-    'domain',
-    'security',
-    'errors',
-    'nonfunctional',
-    'questions',
-    'evidence'
-  ];
   const manifest = {
     status: 'running',
     depth,
+    outputFormat,
     goal,
-    html: reportPath,
-    markdown: companionPath,
+    html: outputFormat === 'html' ? reportPath : companionPath,
+    markdown: outputFormat === 'md' ? reportPath : companionPath,
+    primary: reportPath,
     manifest: manifestPath,
     plan: planFile,
     createdAt: now,
     updatedAt: now,
-    sections: Object.fromEntries(sectionNames.map((name) => [name, 'pending'])),
+    sections: Object.fromEntries(PROJECT_REQUIREMENTS_SECTION_NAMES.map((name) => [name, 'pending'])),
     steps: steps.map((step, index) => ({
       step: index + 1,
       role: step.role,
@@ -4326,6 +5163,57 @@ async function updateProjectRequirementsManifest(manifestPath, updates = {}) {
   }
 }
 
+function buildProjectRequirementsTerminalManifestPatch(status = 'completed', extra = {}) {
+  const normalizedStatus = ['completed', 'failed', 'aborted'].includes(String(status || '').toLowerCase())
+    ? String(status).toLowerCase()
+    : 'completed';
+  return {
+    status: normalizedStatus,
+    failedCount: normalizedStatus === 'completed' ? 0 : Number(extra.failedCount || 1),
+    sections: Object.fromEntries(PROJECT_REQUIREMENTS_SECTION_NAMES.map((name) => [
+      name,
+      normalizedStatus === 'completed' ? 'completed' : normalizedStatus
+    ])),
+    steps: [{
+      step: 1,
+      role: 'coder',
+      title: 'Generate project requirements report',
+      status: normalizedStatus === 'completed' ? 'done' : normalizedStatus
+    }],
+    ...extra
+  };
+}
+
+async function readProjectRequirementsReportState(reportPath, outputFormat = 'html') {
+  const absoluteReportPath = path.resolve(process.cwd(), reportPath);
+  const text = await fs.readFile(absoluteReportPath, 'utf8');
+  const stat = await fs.stat(absoluteReportPath);
+  const normalizedFormat = outputFormat === 'md' ? 'md' : 'html';
+  let looksComplete = false;
+
+  if (normalizedFormat === 'md') {
+    looksComplete = text.length > 5000
+      && !/PROJECT_REQUIREMENTS_MD_TEMPLATE/.test(text)
+      && !/<!--\s*Fill with /i.test(text)
+      && !/\|\s*TBD\s*\|\s*TBD\s*\|\s*TBD\s*\|/i.test(text);
+  } else {
+    const filledMarkers = ['REQUIREMENTS_SUMMARY', 'REQUIREMENTS_INTERFACE_INVENTORY', 'REQUIREMENTS_API_CARDS']
+      .filter((marker) => {
+        const match = text.match(new RegExp(`<!--\\s*${marker}\\s*-->([\\s\\S]*?)<!--\\s*/${marker}\\s*-->`, 'i'));
+        const body = String(match?.[1] || '').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
+        return body.length > 80 && !/待生成|TODO|TBD/i.test(body);
+      }).length;
+    looksComplete = filledMarkers >= 2;
+  }
+
+  return {
+    exists: true,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    looksComplete
+  };
+}
+
 async function runProjectRequirementsPipeline({
   custom,
   parsedInput,
@@ -4337,15 +5225,15 @@ async function runProjectRequirementsPipeline({
   signal,
   onSubSessionActive
 }) {
-  const renderedSkillPrompt = await expandFileMentions(renderCommandPrompt(custom, parsedInput.args), process.cwd());
-  const options = parseProjectRequirementsOptions(parsedInput.args);
+  const defaultOutputFormat = getProjectRequirementsDefaultOutputFormat(custom);
+  const options = parseProjectRequirementsOptions(parsedInput.args, { defaultOutputFormat });
+  const renderedSkillPrompt = await renderProjectRequirementsSkillPrompt(custom, options);
   const userFocus = options.raw;
   const goal = userFocus ? `project requirements report: ${userFocus}` : 'project requirements report';
   const reportSlug = formatLocalDateTimeSlug();
-  const reportPath = `docs/requirements/${reportSlug}-project-requirements.html`;
-  const companionPath = `docs/requirements/${reportSlug}-project-requirements.md`;
+  const { reportPath, companionPath, outputFormat } = getProjectRequirementsOutputPaths(reportSlug, options.outputFormat);
   const manifestPath = `docs/requirements/${reportSlug}-project-requirements.manifest.json`;
-  const steps = buildProjectRequirementsSteps(renderedSkillPrompt, parsedInput.args, config, reportSlug);
+  const steps = buildProjectRequirementsSteps(renderedSkillPrompt, parsedInput.args, config, reportSlug, defaultOutputFormat);
   const planFile = await writeMarkdownInProjectDir(
     'plans',
     'project-requirements-pipeline',
@@ -4361,12 +5249,14 @@ async function runProjectRequirementsPipeline({
     goal,
     steps,
     depth: options.depth,
+    outputFormat,
     config
   });
   const planState = {
     status: 'approved',
     source: 'project-requirements',
     depth: options.depth,
+    outputFormat,
     goal,
     filePath: planFile,
     summary: `Dedicated ${options.depth} sub-agent pipeline for project requirements report generation.`,
@@ -4440,8 +5330,11 @@ async function runProjectRequirementsPipeline({
     ? execution.results.filter((item) => item.failed).length
     : 0;
   await updateProjectRequirementsManifest(manifestPath, {
-    status: execution.aborted ? 'aborted' : failedCount > 0 ? 'failed' : 'completed',
-    failedCount
+    ...(execution.aborted
+      ? buildProjectRequirementsTerminalManifestPatch('aborted', { failedCount })
+      : failedCount > 0
+        ? buildProjectRequirementsTerminalManifestPatch('failed', { failedCount })
+        : buildProjectRequirementsTerminalManifestPatch('completed'))
   });
   const text = [
     execution.text || '',
@@ -4451,7 +5344,8 @@ async function runProjectRequirementsPipeline({
     `Report Path: ${reportPath}`,
     `Manifest: ${manifestPath}`,
     `Steps: ${steps.length} total`,
-    `Failed: ${failedCount}`
+    `Failed: ${failedCount}`,
+    `Output Format: ${outputFormat}`
   ]
     .filter(Boolean)
     .join('\n');
@@ -4463,6 +5357,183 @@ async function runProjectRequirementsPipeline({
     manifestPath,
     aborted: !!execution.aborted
   };
+}
+
+async function runProjectRequirementsSingleAgent({
+  custom,
+  parsedInput,
+  currentSession,
+  config,
+  model,
+  systemPrompt,
+  onAgentEvent,
+  requestToolApproval,
+  signal,
+  compactedForModel,
+  onCompactedUpdate,
+  codeWikiGenerate = false
+}) {
+  const defaultOutputFormat = getProjectRequirementsDefaultOutputFormat(custom);
+  const options = parseProjectRequirementsOptions(parsedInput.args, { defaultOutputFormat });
+  const renderedSkillPrompt = await renderProjectRequirementsSkillPrompt(custom, options);
+  const userFocus = options.raw;
+  const goal = userFocus ? `project requirements report: ${userFocus}` : 'project requirements report';
+  const reportSlug = formatLocalDateTimeSlug();
+  const { reportPath, companionPath, outputFormat } = getProjectRequirementsOutputPaths(reportSlug, options.outputFormat);
+  const manifestPath = `docs/requirements/${reportSlug}-project-requirements.manifest.json`;
+  const planFile = await writeMarkdownInProjectDir(
+    'plans',
+    'project-requirements-agent',
+    [
+      `# Project Requirements Agent: ${goal}`,
+      '',
+      `Primary Report: ${reportPath}`,
+      `Optional Companion: ${companionPath}`,
+      '',
+      'Runner: single agent',
+      `Depth: ${options.depth}`,
+      `Output Format: ${outputFormat}`
+    ].join('\n'),
+    'project-requirements',
+    currentSession.id
+  );
+  const steps = [{ title: 'Generate project requirements report', role: 'coder', task: goal }];
+  await createProjectRequirementsShell({
+    reportPath,
+    companionPath,
+    manifestPath,
+    planFile,
+    goal,
+    steps,
+    depth: options.depth,
+    outputFormat,
+    config
+  });
+  const htmlOutput = outputFormat === 'html';
+  const reportContract = [
+    userFocus ? `User request/focus: ${userFocus}` : 'User request/focus: full workspace requirements report.',
+    `Reply language: write generated report prose, UI labels inserted into the report, review notes, and final user-facing status in ${getReplyLanguageName(config)} unless the user explicitly requested a different language.`,
+    `Requested output format: ${outputFormat}.`,
+    `Primary report path: ${reportPath}`,
+    outputFormat === 'html' ? `Optional companion Markdown path: ${companionPath}` : `Optional companion HTML path: ${companionPath}`,
+    htmlOutput
+      ? 'A pre-created HTML shell already exists at the primary report path.'
+      : 'A pre-created Markdown template already exists at the primary report path.',
+    htmlOutput
+      ? 'Fill or replace only the named REQUIREMENTS_* marker sections in that shell instead of rewriting unrelated shell CSS, JavaScript, navigation, or metadata.'
+      : 'Fill every named REQUIREMENTS_* marker section in the Markdown template at the primary report path. Use headings, tables, lists, and evidence paths. Remove template-only comments before final delivery.',
+    renderProjectRequirementsSectionContract(options.ignoredSections),
+    'Use one coherent agent pass: inspect the project, build the evidence map, decompose major APIs/interfaces, write the report, and do a final self-check before answering.',
+    'Prefer a complete, evidence-backed report over a rigid sub-agent handoff. If the project is too large, cover the most important entry points first and clearly list gaps.',
+    'Do not invent dates; use the report paths above.'
+  ].join('\n');
+
+  if (onAgentEvent) {
+    onAgentEvent({ type: 'skill:start', name: custom.name });
+    onAgentEvent({
+      type: 'plan:steps',
+      goal,
+      steps: [{
+        index: 1,
+        role: 'coder',
+        title: 'Generate project requirements report',
+        status: 'running'
+      }]
+    });
+    onAgentEvent({
+      type: 'plan:progress',
+      planFile,
+      reportPath,
+      manifestPath,
+      step: 1,
+      total: 1,
+      role: 'coder',
+      title: 'Generate project requirements report',
+      status: 'running',
+      summary: 'Project requirements single-agent generation started'
+    });
+  }
+
+  try {
+    const transientSession = codeWikiGenerate ? structuredClone(currentSession) : currentSession;
+    const agentConfig = codeWikiGenerate
+      ? {
+          ...config,
+          execution: {
+            ...(config.execution || {}),
+            approval_mode: 'full_access'
+          }
+        }
+      : config;
+    const result = await askModel({
+      text: parsedInput.full ? `/${parsedInput.full}` : `/${custom.name}`,
+      modelText: [reportContract, 'Skill instructions:', renderedSkillPrompt].join('\n\n'),
+      session: transientSession,
+      config: agentConfig,
+      model,
+      systemPrompt,
+      onAgentEvent,
+      requestToolApproval,
+      executionMode: 'normal',
+      allowedTools: codeWikiGenerate ? CODEWIKI_GENERATE_TOOLS : undefined,
+      alwaysAllowTools: codeWikiGenerate ? CODEWIKI_GENERATE_TOOLS : undefined,
+      signal,
+      compactedForModel: codeWikiGenerate ? structuredClone(compactedForModel) : compactedForModel,
+      onCompactedUpdate: codeWikiGenerate ? null : onCompactedUpdate,
+      persistSession: !codeWikiGenerate
+    });
+    await updateProjectRequirementsManifest(manifestPath, {
+      ...(result?.aborted
+        ? buildProjectRequirementsTerminalManifestPatch('aborted', { failedCount: 1 })
+        : buildProjectRequirementsTerminalManifestPatch('completed'))
+    });
+    if (onAgentEvent) {
+      onAgentEvent({
+        type: 'plan:progress',
+        planFile,
+        reportPath,
+        manifestPath,
+        step: 1,
+        total: 1,
+        role: 'coder',
+        title: 'Generate project requirements report',
+        status: result?.aborted ? 'aborted' : 'done',
+        summary: 'Project requirements single-agent generation finished'
+      });
+      onAgentEvent({ type: 'skill:end', name: custom.name });
+    }
+    const text = [
+      result?.text || '',
+      '',
+      'Project requirements generation completed.',
+      `Plan File: ${planFile}`,
+      `Report Path: ${reportPath}`,
+      `Manifest: ${manifestPath}`,
+      'Runner: single agent',
+      `Output Format: ${outputFormat}`
+    ].filter(Boolean).join('\n');
+    return { type: 'assistant', text, planFile, reportPath, manifestPath, aborted: !!result?.aborted };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await updateProjectRequirementsManifest(manifestPath, {
+      ...buildProjectRequirementsTerminalManifestPatch('failed', {
+        failedCount: 1,
+        error: message
+      })
+    }).catch(() => {});
+    if (onAgentEvent) {
+      onAgentEvent({ type: 'skill:error', name: custom.name, summary: message });
+      onAgentEvent({ type: 'skill:end', name: custom.name });
+    }
+    return {
+      type: 'assistant',
+      text: `Project requirements generation failed: ${message}`,
+      planFile,
+      reportPath,
+      manifestPath,
+      aborted: true
+    };
+  }
 }
 
 async function revisePendingPlanWithModel({
@@ -4481,7 +5552,7 @@ async function revisePendingPlanWithModel({
   const prompt = [
     buildAutoPlanPlannerGuidance(),
     'You are revising an existing plan based on explicit user feedback.',
-    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"planner|advisor|coder|reviewer|tester|summarizer","task":"..."}]}. No markdown.',
+    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"' + SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|') + '","task":"..."}]}. No markdown.',
     'Keep roles minimal and only include steps that materially help the goal.',
     'Always keep a summarizer as the final step.'
   ].join('\n');
@@ -4673,7 +5744,7 @@ export async function createChatRuntime({
     const configuredMode = String(config.execution?.mode || 'normal');
     executionMode = hasPendingPlanApproval(currentSession)
       ? 'plan'
-      : (['normal', 'auto', 'plan'].includes(configuredMode) ? configuredMode : 'normal');
+      : (['normal', 'plan', 'spec'].includes(configuredMode) ? configuredMode : 'normal');
     syncCompactStateFromConfig();
 
     const resolvedModel = String(nextModel || '').trim();
@@ -4692,6 +5763,20 @@ export async function createChatRuntime({
     for (const [name, command] of next.entries()) {
       commands.set(name, command);
     }
+  };
+  let changeTracker = await createGitOplogChangeTracker({
+    workspaceRoot: process.cwd(),
+    sessionId: currentSession.id
+  });
+  let backupManager = changeTracker?.enabled
+    ? null
+    : await createNonGitBackupManager({
+        workspaceRoot: process.cwd(),
+        sessionId: currentSession.id
+      }).catch(() => null);
+  config.runtime = {
+    ...(config.runtime || {}),
+    project_is_git: Boolean(changeTracker?.enabled)
   };
 
   // Set up tool result store under session directory
@@ -4763,14 +5848,14 @@ export async function createChatRuntime({
     'ui.language',
     'ui.reply_language',
     'execution.mode',
+    'execution.approval_mode',
     'shell.default',
     'sdk.provider',
     'gateway.timeout_ms',
     'gateway.max_retries',
     'model.max_context_tokens',
     'execution.always_allow_tools',
-    'execution.max_steps',
-    'context.preflight_trigger_pct',
+        'context.preflight_trigger_pct',
     'context.hard_limit_pct',
     'context.tool_result_max_chars',
     'context.read_file_default_lines',
@@ -4800,13 +5885,13 @@ export async function createChatRuntime({
     '/inbox',
     '/dream',
     '/mode',
+    '/approval',
     '/plan',
     '/history',
     '/checkpoint',
     '/agents',
     '/compact',
     '/debug',
-    '/retry',
     '/new'
   ];
   const configSubcommandPriority = ['/config set', '/config get', '/config list', '/config reset'];
@@ -4820,6 +5905,7 @@ export async function createChatRuntime({
       { name: 'status', description: completionCopy.commands.status },
       { name: 'model', description: completionCopy.commands.model },
       { name: 'mode', description: completionCopy.commands.mode },
+      { name: 'approval', description: completionCopy.commands.approval },
       { name: 'compact', description: completionCopy.commands.compact },
       { name: 'checkpoint', description: completionCopy.commands.checkpoint },
       { name: 'spec', description: completionCopy.commands.spec },
@@ -4831,7 +5917,6 @@ export async function createChatRuntime({
       { name: 'reflect', description: completionCopy.commands.reflect },
       { name: 'history', description: completionCopy.commands.history },
       { name: 'debug', description: completionCopy.commands.debug },
-      { name: 'retry', description: completionCopy.commands.retry },
       { name: 'stop', description: completionCopy.commands.stop },
       { name: 'new', description: completionCopy.commands.new }
     ];
@@ -4869,7 +5954,8 @@ export async function createChatRuntime({
 
   const historyTemplates = ['/history list', '/history current', '/history resume <session_id>'];
   const memoryTemplates = ['/memory list <scope>', '/memory search <scope> <query>', '/memory forget <scope> <id>'];
-  const modeTemplates = ['/mode normal', '/mode auto', '/mode plan'];
+  const modeTemplates = ['/mode normal', '/mode plan'];
+  const approvalTemplates = ['/approval review', '/approval auto', '/approval full_access'];
   const modelTemplates = ['/model current', '/model main', '/model fast', '/model set <name>'];
   const checkpointTemplates = [
     '/checkpoint create <name>',
@@ -4879,7 +5965,7 @@ export async function createChatRuntime({
   ];
   const specTemplates = ['/spec <topic>'];
   const planTemplates = ['/plan <goal>', '/plan auto <goal>', '/plan approve', '/plan from-spec <spec-path?>'];
-  const agentTemplates = ['/agents list', '/agents run planner <task>', '/agents run advisor <task>', '/agents run coder <task>', '/agents run reviewer <task>', '/agents run tester <task>', '/agents run summarizer <task>'];
+  const agentTemplates = ['/agents list', '/agents run explorer <task>', '/agents run architect <task>', '/agents run advisor <task>', '/agents run coder <task>', '/agents run refactorer <task>', '/agents run reviewer <task>', '/agents run tester <task>', '/agents run debugger <task>', '/agents run writer <task>', '/agents run summarizer <task>'];
   const debugTemplates = ['/debug keys on', '/debug keys off', '/debug keys status'];
   const dreamTemplates = ['/dream', '/dream --dry-run', '/dream --scope=project', '/dream --scope=global'];
   const reflectTemplates = ['/reflect', '/reflect --scope=global <request>', '/reflect <request>'];
@@ -4889,6 +5975,7 @@ export async function createChatRuntime({
     ...memoryTemplates,
     ...historyTemplates,
     ...modeTemplates,
+    ...approvalTemplates,
     ...modelTemplates,
     ...checkpointTemplates,
     ...specTemplates,
@@ -4898,7 +5985,6 @@ export async function createChatRuntime({
     ...dreamTemplates,
     ...reflectTemplates,
     ...compactTemplates,
-    '/retry',
     '/status'
   ];
   const compactKey = (value) => String(value || '').toLowerCase().replace(/[\/\s<>?]/g, '');
@@ -4937,6 +6023,7 @@ export async function createChatRuntime({
       'memory',
       'compact',
       'mode',
+      'approval',
       'model',
       'checkpoint',
       'plan',
@@ -4957,6 +6044,7 @@ export async function createChatRuntime({
     for (const template of memoryTemplates) registerSuggestion(template, completionCopy.generic.memoryCommand);
     for (const template of historyTemplates) registerSuggestion(template, completionCopy.generic.historyCommand);
     for (const template of modeTemplates) registerSuggestion(template, completionCopy.generic.modeCommand);
+    for (const template of approvalTemplates) registerSuggestion(template, completionCopy.generic.approvalCommand);
     for (const template of modelTemplates) registerSuggestion(template, completionCopy.generic.modelCommand || completionCopy.commands.model);
     for (const template of checkpointTemplates) registerSuggestion(template, completionCopy.generic.checkpointCommand);
     for (const template of specTemplates) registerSuggestion(template, completionCopy.generic.specCommand);
@@ -4968,7 +6056,6 @@ export async function createChatRuntime({
     for (const template of dreamTemplates) registerSuggestion(template, completionCopy.generic.dreamCommand);
     for (const template of reflectTemplates) registerSuggestion(template, completionCopy.generic.reflectCommand);
     for (const template of compactTemplates) registerSuggestion(template, completionCopy.generic.compactCommand);
-    registerSuggestion('/retry', completionCopy.generic.retryCommand);
     registerSuggestion('/status', completionCopy.generic.statusCommand);
 
     if (!commandPart) {
@@ -5046,9 +6133,6 @@ export async function createChatRuntime({
         .map((opt) => registerSuggestion(`/compact ${opt}`, completionCopy.generic.compactCommand));
     }
 
-    if (commandPart === 'retry') {
-      return [registerSuggestion('/retry', completionCopy.generic.retryCommand)];
-    }
     if (commandPart === 'status') {
       return [registerSuggestion('/status', completionCopy.generic.statusCommand)];
     }
@@ -5064,11 +6148,20 @@ export async function createChatRuntime({
     if (commandPart === 'mode') {
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         const sub = tokens[1] || '';
-        return ['normal', 'auto', 'plan']
+        return ['normal', 'plan', 'spec']
           .filter((m) => m.startsWith(sub))
           .map((m) => registerSuggestion(`/mode ${m}`, completionCopy.generic.modeCommand));
       }
       return materializeSuggestions(modeTemplates);
+    }
+    if (commandPart === 'approval') {
+      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
+        const sub = tokens[1] || '';
+        return ['review', 'auto', 'full_access']
+          .filter((m) => m.startsWith(sub))
+          .map((m) => registerSuggestion(`/approval ${m}`, completionCopy.generic.approvalCommand));
+      }
+      return materializeSuggestions(approvalTemplates);
     }
     if (commandPart === 'checkpoint') {
       if (tokens.length <= 2 && !hasTrailingSpace) {
@@ -5192,12 +6285,13 @@ export async function createChatRuntime({
     return [];
   };
 
-  const persistLocalExchange = async (userText, systemText, { includeUser = true } = {}) => {
+  const persistLocalExchange = async (userText, systemText, { includeUser = true, modelVisible = false } = {}) => {
+    const localMeta = modelVisible ? {} : { model_visible: false, local_only: true };
     if (includeUser && userText) {
-      appendSessionMessage(stampedMessage('user', userText));
+      appendSessionMessage(stampedMessage('user', userText, localMeta));
     }
     if (systemText) {
-      appendSessionMessage(stampedMessage('system', systemText));
+      appendSessionMessage(stampedMessage('system', systemText, localMeta));
     }
     if (shouldReplaceSessionTitle(currentSession.title)) {
       currentSession.title = deriveSessionTitle(currentSession.messages);
@@ -5420,6 +6514,97 @@ export async function createChatRuntime({
         return null;
       }
     };
+    const approvePendingSpec = async ({ executeImmediately = false, saveOnly = false } = {}) => {
+      if (!hasPendingSpecApproval(currentSession)) {
+        return { type: 'system', text: 'No pending spec approval.' };
+      }
+      const specState = { ...currentSession.planState };
+      const specText = String(specState.specText || '').trim() || buildSpecTemplate(specState.goal || 'spec');
+      const specTitle = extractSpecTitle(specText, specState.goal || 'spec');
+      const specPath = String(specState.specPath || '').trim() || await writeMarkdownInProjectDir(
+        'specs',
+        specTitle,
+        specText,
+        'spec',
+        currentSession.id
+      );
+      await fs.writeFile(specPath, `${specText.trim()}\n`, 'utf8');
+      if (saveOnly) {
+        currentSession.planState = null;
+        executionMode = 'normal';
+        if (onAgentEvent) onAgentEvent({ type: 'spec:approval_cleared' });
+        const text = `Spec saved: ${specPath}`;
+        await persistLocalExchange('', text, { includeUser: false });
+        return { type: 'system', text };
+      }
+      if (onAgentEvent) onAgentEvent({ type: 'spec:approval_cleared' });
+      const planGoal = [
+        `Implement the approved spec: ${specTitle}`,
+        `Spec path: ${specPath}`,
+        '',
+        specText
+      ].join('\n');
+      const auto = await buildAutoPlanAndRun({
+        goal: planGoal,
+        session: currentSession,
+        config,
+        model,
+        systemPrompt: activeReplySystemPrompt,
+        onAgentEvent,
+        sessionId: currentSession.id,
+        taskClass: classifyPlanTaskClass(planGoal)
+      });
+      currentSession.planState = {
+        status: 'pending_approval',
+        source: 'spec',
+        goal: specTitle,
+        specPath,
+        filePath: auto.filePath,
+        summary: auto.summary || '',
+        finalSummary: auto.finalSummary || auto.summary || '',
+        steps: Array.isArray(auto.steps) ? auto.steps : []
+      };
+      executionMode = 'plan';
+      if (!executeImmediately) {
+        if (onAgentEvent) {
+          onAgentEvent({
+            type: 'plan:pending_approval',
+            goal: currentSession.planState.goal,
+            summary: currentSession.planState.finalSummary || currentSession.planState.summary,
+            filePath: currentSession.planState.filePath,
+            steps: currentSession.planState.steps
+          });
+        }
+        const text = `Spec approved: ${specPath}\n\n${buildAutoPlanSystemSummary(auto)}`;
+        await persistLocalExchange('', text, { includeUser: false });
+        return { type: 'system', text };
+      }
+      const planState = { ...currentSession.planState };
+      const result = await executePlanWithSubAgents({
+        planState,
+        parentSession: currentSession,
+        config,
+        model,
+        systemPrompt: baseSystemPrompt,
+        onAgentEvent,
+        signal,
+        onSubSessionActive: (sub) => { activeSubSession = sub; },
+        requestToolApproval: activeRequestToolApproval,
+        changeTracker,
+        backupManager,
+        projectIsGit: Boolean(changeTracker?.enabled)
+      });
+      activeSubSession = null;
+      currentSession.planState = null;
+      if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
+      await removePlanFileIfPresent(planState);
+      executionMode = 'normal';
+      await persistAssistantExchange('', result.sessionText || result.text || '', {
+        includeUser: false,
+        extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
+      });
+      return { type: 'assistant', text: result.text, aborted: !!result.aborted };
+    };
     try {
       if (!readOnlyCodeWiki && !codeWikiGenerate && shouldPersistInputHistory(parsedInput)) {
         await appendInputHistory(line);
@@ -5432,12 +6617,29 @@ export async function createChatRuntime({
     }
     if (readOnlyCodeWiki) {
       const expandedText = await expandFileMentions(line, process.cwd());
+      const codeWikiConfig = {
+        ...config,
+        soul: {
+          preset: 'default',
+          custom_path: ''
+        }
+      };
+      const codeWikiBasePrompt = await composeSystemPrompt({
+        shellRulesPrompt: baseSystemPrompt,
+        config: codeWikiConfig,
+        workspaceRoot: process.cwd(),
+        includeMemory: false,
+        includeProjectInstructions: true,
+        includeSoul: true
+      });
       const readOnlySystemPrompt = [
-        activeReplySystemPrompt,
-        'CodeWiki repository Q&A mode:',
+        codeWikiBasePrompt,
+        '[Role: codewiki]',
         '- Answer questions about the current repository and generated CodeWiki/project-requirements report.',
-        '- This is read-only. Do not modify files, update plans, run shell commands, delete anything, write memories, or ask to perform side effects.',
-        '- Use only read-only project inspection tools when evidence is needed.',
+        '- Use the CodeWiki role regardless of the user-selected global soul. Tone is the default Codemini tone: clear, concise, and technical.',
+        '- Use read-only project inspection tools when evidence is needed.',
+        '- You may modify files only when the user explicitly asks you to add or edit code comments. In that case, use add_code_comment or update_code_comment only, and never change executable code.',
+        '- Do not use shell commands, edit/create/delete tools, update plans, generate reports, or write memories.',
         '- Be concise and cite relevant files or report sections when useful.'
       ].join('\n\n');
       const transientSession = structuredClone(currentSession);
@@ -5449,12 +6651,11 @@ export async function createChatRuntime({
         systemPrompt: readOnlySystemPrompt,
         onAgentEvent,
         requestToolApproval: activeRequestToolApproval,
-        executionMode: 'auto',
-        alwaysAllowTools: CODEWIKI_READ_ONLY_TOOLS,
-        allowedTools: CODEWIKI_READ_ONLY_TOOLS,
+        executionMode: 'normal',
+        alwaysAllowTools: CODEWIKI_ROLE_TOOLS,
+        allowedTools: CODEWIKI_ROLE_TOOLS,
         persistSession: false,
-        maxSteps: 32,
-        skipAnalysisNudge: true,
+                skipAnalysisNudge: true,
         signal
       });
       return { type: 'assistant', text: result.text, aborted: !!result.aborted };
@@ -5464,6 +6665,8 @@ export async function createChatRuntime({
       return { type: 'shell', text: shell.text };
     }
     if (parsedInput.type === 'slash') {
+      const argError = validateBuiltinSlashArgs(parsedInput);
+      if (argError) return { type: 'system', text: argError };
       if (parsedInput.command === 'exit') return { type: 'exit' };
       if (parsedInput.command === 'new') {
         const fresh = await createSession();
@@ -5485,14 +6688,14 @@ export async function createChatRuntime({
       if (parsedInput.command === 'help') {
         return {
           type: 'system',
-          text: 'Commands: /help /exit /new /stop /commands /status /model /mode /compact /checkpoint /spec /plan /yes /no /edit /reject /agents /config /memory /capture /inbox /dream /reflect /history /debug /retry /<custom> !<shell>'
+          text: 'Commands: /help /exit /new /stop /commands /status /model /mode /compact /checkpoint /spec /plan /yes /no /edit /reject /agents /config /memory /capture /inbox /dream /reflect /history /debug /<custom> !<shell>'
         };
       }
       if (parsedInput.command === 'status') {
         const todoCount = countActiveTodos(currentSession.todos);
         return {
           type: 'system',
-          text: `mode=${executionMode} | role=general | model=${model || config.model.name} | max_ctx=${effectiveMaxContextTokens(config)} | session=${currentSession.id} | todos=${todoCount}`
+          text: `mode=${executionMode} | approval=${config.execution?.approval_mode || 'review'} | role=general | model=${model || config.model.name} | max_ctx=${effectiveMaxContextTokens(config)} | session=${currentSession.id} | todos=${todoCount}`
         };
       }
       if (parsedInput.command === 'model') {
@@ -5523,19 +6726,37 @@ export async function createChatRuntime({
       if (parsedInput.command === 'mode') {
         const next = (parsedInput.args[0] || '').trim().toLowerCase();
         if (!next) {
-          return { type: 'system', text: `Current mode: ${executionMode} (available: normal|auto|plan)` };
+          return { type: 'system', text: `Current work mode: ${executionMode} (available: normal|plan|spec)` };
         }
-        if (!['normal', 'auto', 'plan'].includes(next)) {
-          return { type: 'system', text: 'Usage: /mode <normal|auto|plan>' };
+        if (!['normal', 'plan', 'spec'].includes(next)) {
+          return { type: 'system', text: 'Usage: /mode <normal|plan|spec>' };
         }
         executionMode = next;
         await setConfigValue('execution.mode', next);
         config = await loadConfig();
-        const text = `Execution mode set to: ${next}`;
+        const text = `Work mode set to: ${next}`;
+        await persistLocalExchange(line, text);
+        return { type: 'system', text };
+      }
+      if (parsedInput.command === 'approval') {
+        const raw = (parsedInput.args[0] || '').trim().toLowerCase().replace(/-/g, '_');
+        const next = raw === 'full' ? 'full_access' : raw;
+        if (!next) {
+          return { type: 'system', text: `Current approval mode: ${config.execution?.approval_mode || 'review'} (available: review|auto|full_access)` };
+        }
+        if (!['review', 'auto', 'full_access'].includes(next)) {
+          return { type: 'system', text: 'Usage: /approval <review|auto|full_access>' };
+        }
+        await setConfigValue('execution.approval_mode', next);
+        config = await loadConfig();
+        const text = `Approval mode set to: ${next}`;
         await persistLocalExchange(line, text);
         return { type: 'system', text };
       }
       if (parsedInput.command === 'yes') {
+        if (hasPendingSpecApproval(currentSession)) {
+          return approvePendingSpec();
+        }
         if (hasPendingReflectSkill(currentSession)) {
           const state = { ...currentSession.planState };
           const candidate = Array.isArray(state.candidates) ? state.candidates[0] : null;
@@ -5551,7 +6772,7 @@ export async function createChatRuntime({
             workspaceRoot: process.cwd()
           });
           currentSession.planState = null;
-          executionMode = 'auto';
+          executionMode = 'normal';
           if (onAgentEvent) onAgentEvent({ type: 'reflect:approval_cleared' });
           await reloadCommandsAndSkills();
           const text = `Reflect skill written and loaded: /${written.draft.name}\nPath: ${written.filePath}`;
@@ -5561,7 +6782,6 @@ export async function createChatRuntime({
         if (!hasPendingPlanApproval(currentSession)) {
           return { type: 'system', text: 'No pending plan approval. Use /plan auto <goal> first.' };
         }
-        await persistUserExchange(line);
         const planState = { ...currentSession.planState };
         const result = await executePlanWithSubAgents({
           planState,
@@ -5571,13 +6791,17 @@ export async function createChatRuntime({
           systemPrompt: baseSystemPrompt,
           onAgentEvent,
           signal,
-          onSubSessionActive: (sub) => { activeSubSession = sub; }
+          onSubSessionActive: (sub) => { activeSubSession = sub; },
+          requestToolApproval: activeRequestToolApproval,
+          changeTracker,
+          backupManager,
+          projectIsGit: Boolean(changeTracker?.enabled)
         });
         activeSubSession = null;
         currentSession.planState = null;
         if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
         await removePlanFileIfPresent(planState);
-        executionMode = 'auto';
+        executionMode = 'normal';
         await persistAssistantExchange(line, result.sessionText || result.text || '', {
           includeUser: false,
           extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
@@ -5617,7 +6841,7 @@ export async function createChatRuntime({
             });
           }
           const text = `Reflect skill draft revised.\n${buildPendingReflectSkillMessage(currentSession.planState)}`;
-          await persistLocalExchange(line, text);
+          await persistLocalExchange('', text, { includeUser: false });
           return { type: 'system', text };
         }
         if (!hasPendingPlanApproval(currentSession)) {
@@ -5646,13 +6870,21 @@ export async function createChatRuntime({
           });
         }
         const text = `Plan revised.\n${buildPendingPlanApprovalMessage(currentSession.planState)}`;
-        await persistLocalExchange(line, text);
+        await persistLocalExchange('', text, { includeUser: false });
         return { type: 'system', text };
       }
       if (parsedInput.command === 'no') {
+        if (hasPendingSpecApproval(currentSession)) {
+          currentSession.planState = null;
+          executionMode = 'normal';
+          if (onAgentEvent) onAgentEvent({ type: 'spec:approval_cleared' });
+          const text = 'Spec draft discarded.';
+          await persistLocalExchange(line, text, { includeUser: false });
+          return { type: 'system', text };
+        }
         if (hasPendingReflectSkill(currentSession)) {
           currentSession.planState = null;
-          executionMode = 'auto';
+          executionMode = 'normal';
           if (onAgentEvent) onAgentEvent({ type: 'reflect:approval_cleared' });
           const text = 'Reflect skill draft discarded.';
           await persistLocalExchange(line, text, { includeUser: false });
@@ -5661,7 +6893,7 @@ export async function createChatRuntime({
         if (hasPendingPlanApproval(currentSession)) {
           currentSession.planState = null;
           if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
-          executionMode = 'auto';
+          executionMode = 'normal';
           const text = 'Pending plan rejected and cleared.';
           await persistLocalExchange(line, text, { includeUser: false });
           return { type: 'system', text };
@@ -5669,6 +6901,14 @@ export async function createChatRuntime({
         return { type: 'system', text: 'No pending reflect skill draft.' };
       }
       if (parsedInput.command === 'reject') {
+        if (hasPendingSpecApproval(currentSession)) {
+          currentSession.planState = null;
+          executionMode = 'normal';
+          if (onAgentEvent) onAgentEvent({ type: 'spec:approval_cleared' });
+          const text = 'Pending spec rejected and cleared.';
+          await persistLocalExchange('', text, { includeUser: false });
+          return { type: 'system', text };
+        }
         if (!hasPendingPlanApproval(currentSession)) {
           return { type: 'system', text: 'No pending plan approval.' };
         }
@@ -5676,9 +6916,9 @@ export async function createChatRuntime({
         currentSession.planState = null;
         if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
         await removePlanFileIfPresent(planState);
-        executionMode = 'auto';
+        executionMode = 'normal';
         const text = 'Pending plan rejected and cleared.';
-        await persistLocalExchange(line, text);
+        await persistLocalExchange('', text, { includeUser: false });
         return { type: 'system', text };
       }
       if (parsedInput.command === 'checkpoint') {
@@ -5731,8 +6971,14 @@ export async function createChatRuntime({
         return { type: 'system', text: 'Usage: /checkpoint create <name> | /checkpoint list | /checkpoint load <id>' };
       }
       if (parsedInput.command === 'spec') {
+        const specSub = String(parsedInput.args[0] || '').trim().toLowerCase();
+        if (hasPendingSpecApproval(currentSession) && ['save', 'plan', 'execute', 'run'].includes(specSub)) {
+          if (specSub === 'save') return approvePendingSpec({ saveOnly: true });
+          if (specSub === 'execute' || specSub === 'run') return approvePendingSpec({ executeImmediately: true });
+          return approvePendingSpec();
+        }
         const topic = parsedInput.args.join(' ').trim();
-        if (!topic) return { type: 'system', text: 'Usage: /spec <topic>' };
+        if (!topic) return { type: 'system', text: 'Usage: /spec <topic> | /spec save | /spec plan | /spec execute' };
         let content = '';
         let buildNote = '';
         try {
@@ -5754,7 +7000,7 @@ export async function createChatRuntime({
           currentSession.id
         );
         const text = `Spec created: ${filePath}${buildNote}`;
-        await persistLocalExchange(line, text);
+        await persistLocalExchange('', text, { includeUser: false });
         return { type: 'system', text };
       }
       if (parsedInput.command === 'plan') {
@@ -5800,7 +7046,7 @@ export async function createChatRuntime({
             });
           }
           const text = buildAutoPlanSystemSummary(auto);
-          await persistLocalExchange(line, text);
+          await persistLocalExchange('', text, { includeUser: false });
           return {
             type: 'system',
             text
@@ -5810,7 +7056,6 @@ export async function createChatRuntime({
           if (!hasPendingPlanApproval(currentSession)) {
             return { type: 'system', text: 'No pending plan approval. Use /plan auto <goal> first.' };
           }
-          await persistUserExchange(line);
           const planState = { ...currentSession.planState };
           const result = await executePlanWithSubAgents({
             planState,
@@ -5820,13 +7065,17 @@ export async function createChatRuntime({
             systemPrompt: baseSystemPrompt,
             onAgentEvent,
             signal,
-            onSubSessionActive: (sub) => { activeSubSession = sub; }
+            onSubSessionActive: (sub) => { activeSubSession = sub; },
+            requestToolApproval: activeRequestToolApproval,
+            changeTracker,
+            backupManager,
+            projectIsGit: Boolean(changeTracker?.enabled)
           });
           activeSubSession = null;
           currentSession.planState = null;
           if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
           await removePlanFileIfPresent(planState);
-          executionMode = 'auto';
+          executionMode = 'normal';
           await persistAssistantExchange(line, result.sessionText || result.text || '', {
             includeUser: false,
             extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
@@ -5838,7 +7087,7 @@ export async function createChatRuntime({
             return { type: 'system', text: 'No pending plan approval.' };
           }
           const text = buildPendingPlanApprovalMessage(currentSession.planState);
-          await persistLocalExchange(line, text);
+          await persistLocalExchange('', text, { includeUser: false });
           return { type: 'system', text };
         }
         if (sub === 'from-spec') {
@@ -5871,7 +7120,7 @@ export async function createChatRuntime({
             currentSession.id
           );
           const text = `Plan created from spec: ${filePath}\nSpec: ${specPath}${buildNote}`;
-          await persistLocalExchange(line, text);
+          await persistLocalExchange('', text, { includeUser: false });
           return { type: 'system', text };
         }
 
@@ -5886,7 +7135,7 @@ export async function createChatRuntime({
           currentSession.id
         );
         const text = `Plan created: ${filePath}`;
-        await persistLocalExchange(line, text);
+        await persistLocalExchange('', text, { includeUser: false });
         return { type: 'system', text };
       }
       if (parsedInput.command === 'agents') {
@@ -5894,7 +7143,7 @@ export async function createChatRuntime({
         if (sub === 'list') {
           return {
             type: 'system',
-            text: 'Sub-agent roles: planner, advisor, coder, reviewer, tester, summarizer\nUse: /agents run <role> <task>'
+            text: 'Sub-agent roles: ' + SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join(', ') + '\nUse: /agents run <role> <task>'
           };
         }
         if (sub === 'run') {
@@ -5902,7 +7151,7 @@ export async function createChatRuntime({
           const task = parsedInput.args.slice(2).join(' ').trim();
           if (!role || !task) return { type: 'system', text: 'Usage: /agents run <role> <task>' };
           if (!SUB_AGENT_ROLES.includes(role)) {
-            return { type: 'system', text: 'Unknown role. Allowed: planner|advisor|coder|reviewer|tester|summarizer' };
+            return { type: 'system', text: 'Unknown role. Allowed: ' + SUB_AGENT_ROLES.join('|') };
           }
           const output = await runSubAgentTask({
             role,
@@ -5911,7 +7160,11 @@ export async function createChatRuntime({
             config,
             model,
             systemPrompt: activeReplySystemPrompt,
-            onAgentEvent
+            onAgentEvent,
+            requestToolApproval: activeRequestToolApproval,
+            changeTracker,
+            backupManager,
+            projectIsGit: Boolean(changeTracker?.enabled)
           });
           const text = `[sub-agent:${role}]\n${output.text || output}`;
           await persistLocalExchange(line, text);
@@ -6103,7 +7356,7 @@ export async function createChatRuntime({
         });
         if (candidates.length === 0) {
           const text = 'Reflect found no reusable skill candidate.';
-          await persistLocalExchange(line, text);
+          await persistLocalExchange('', text, { includeUser: false });
           return { type: 'system', text };
         }
         currentSession.planState = {
@@ -6120,28 +7373,8 @@ export async function createChatRuntime({
           });
         }
         const text = buildPendingReflectSkillMessage(currentSession.planState);
-        await persistLocalExchange(line, text);
+        await persistLocalExchange('', text, { includeUser: false });
         return { type: 'system', text };
-      }
-      if (parsedInput.command === 'retry') {
-        const lastUser = [...currentSession.messages].reverse().find((m) => m.role === 'user');
-        if (!lastUser?.content) {
-          return { type: 'system', text: 'No previous user message to retry' };
-        }
-        const result = await askModel({
-          text: String(lastUser.content),
-          session: currentSession,
-          config,
-          model,
-          systemPrompt: activeReplySystemPrompt,
-          onAgentEvent,
-          requestToolApproval: activeRequestToolApproval,
-          executionMode,
-          signal,
-          compactedForModel,
-          onCompactedUpdate: setCompactedView
-        });
-        return { type: 'assistant', text: result.text, aborted: !!result.aborted };
       }
       if (parsedInput.command === 'config') {
         const sub = parsedInput.args[0];
@@ -6213,7 +7446,7 @@ export async function createChatRuntime({
           return { type: 'system', text };
         }
 
-        const compactSource = compactedForModel ?? currentSession.messages;
+        const compactSource = modelVisibleMessages(compactedForModel ?? currentSession.messages);
         const beforeTokens = estimateMessagesTokens(compactSource);
 
         // --micro: only do micro-compact (in-place tool result clearing)
@@ -6236,7 +7469,7 @@ export async function createChatRuntime({
         }
 
         const sourceIsCompacted = Boolean(compactedForModel);
-        const macroSource = compactedForModel ?? currentSession.messages;
+        const macroSource = modelVisibleMessages(compactedForModel ?? currentSession.messages);
         const result = await compactMessagesLocally(macroSource, { mode: compactState.mode, force: true, generateSummary: createCompactSummaryGenerator(config, null) });
         if (!result.changed) {
           return { type: 'system', text: 'Nothing to compact yet' };
@@ -6284,7 +7517,30 @@ export async function createChatRuntime({
       if (custom.metadata.type === 'skill' && !isSkillEnabled(config, custom.name, custom)) {
         return { type: 'system', text: `Skill is disabled: ${custom.name}` };
       }
-      if (custom.metadata.type === 'skill' && custom.name === 'project-requirements') {
+      if (custom.metadata.type === 'skill' && (custom.name === 'project-requirements' || custom.name === 'project-requirements-md')) {
+        const defaultOutputFormat = getProjectRequirementsDefaultOutputFormat(custom);
+        const projectRequirementsOptions = parseProjectRequirementsOptions(parsedInput.args, { defaultOutputFormat });
+        const formatError = validateProjectRequirementsFormat(custom.name, projectRequirementsOptions.outputFormat);
+        if (formatError) {
+          return { type: 'system', text: formatError };
+        }
+        if (codeWikiGenerate || projectRequirementsOptions.runner === 'agent') {
+          return await runProjectRequirementsSingleAgent({
+            custom,
+            parsedInput,
+            currentSession,
+            config,
+            model,
+            systemPrompt: activeReplySystemPrompt,
+            onAgentEvent,
+            // CodeWiki generation uses scoped full-access inside runProjectRequirementsSingleAgent.
+            requestToolApproval: codeWikiGenerate ? null : activeRequestToolApproval,
+            signal,
+            compactedForModel,
+            onCompactedUpdate: setCompactedView,
+            codeWikiGenerate
+          });
+        }
         try {
           return await runProjectRequirementsPipeline({
             custom,
@@ -6303,7 +7559,7 @@ export async function createChatRuntime({
       }
 
       const customPrompt =
-        custom.name === 'brainstorm'
+        custom.name === 'brainstorming'
           ? [
               renderCommandPrompt(custom, []),
               'Explicit brainstorm mode:',
@@ -6358,7 +7614,6 @@ export async function createChatRuntime({
 
     if (hasPendingPlanApproval(currentSession)) {
       if (isApprovalText(parsedInput.text)) {
-        await persistUserExchange(line);
         const planState = { ...currentSession.planState };
         const result = await executePlanWithSubAgents({
           planState,
@@ -6368,12 +7623,16 @@ export async function createChatRuntime({
           systemPrompt: baseSystemPrompt,
           onAgentEvent,
           signal,
-          onSubSessionActive: (sub) => { activeSubSession = sub; }
+          onSubSessionActive: (sub) => { activeSubSession = sub; },
+          requestToolApproval: activeRequestToolApproval,
+          changeTracker,
+          backupManager,
+          projectIsGit: Boolean(changeTracker?.enabled)
         });
         activeSubSession = null;
         currentSession.planState = null;
         if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
-        executionMode = 'auto';
+        executionMode = 'normal';
         await persistAssistantExchange(line, result.sessionText || result.text || '', {
           includeUser: false,
           extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
@@ -6382,21 +7641,62 @@ export async function createChatRuntime({
       }
       if (isStayInPlanText(parsedInput.text)) {
         const text = buildPendingPlanApprovalMessage(currentSession.planState);
-        await persistLocalExchange(line, text);
+        await persistLocalExchange('', text, { includeUser: false });
         return { type: 'system', text };
       }
       if (isRejectPlanText(parsedInput.text)) {
         currentSession.planState = null;
         if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
-        executionMode = 'auto';
+        executionMode = 'normal';
         const text = 'Pending plan rejected and cleared.';
-        await persistLocalExchange(line, text);
+        await persistLocalExchange('', text, { includeUser: false });
         return { type: 'system', text };
       }
       return {
         type: 'system',
         text: buildPendingPlanApprovalMessage(currentSession.planState)
       };
+    }
+
+    // Spec mode with no pending spec -> create a file-backed editable spec draft.
+    if (executionMode === 'spec') {
+      const expandedSpecText = await expandFileMentions(parsedInput.text, process.cwd());
+      let content = '';
+      try {
+        content = await buildSpecWithModel({
+          topic: expandedSpecText,
+          config,
+          model,
+          systemPrompt: activeReplySystemPrompt
+        });
+      } catch {
+        content = buildSpecTemplate(expandedSpecText);
+      }
+      const specTitle = extractSpecTitle(content, expandedSpecText);
+      const specPath = await writeMarkdownInProjectDir(
+        'specs',
+        specTitle,
+        content,
+        'spec',
+        currentSession.id
+      );
+      currentSession.planState = {
+        status: 'pending_spec_approval',
+        source: 'spec',
+        goal: expandedSpecText,
+        summary: specTitle,
+        specPath,
+        specText: content
+      };
+      if (onAgentEvent) {
+        onAgentEvent({
+          type: 'spec:pending_approval',
+          spec: buildPendingSpecSnapshot(currentSession.planState)
+        });
+      }
+      const text = `Spec draft created: ${specPath}\nReview and approve it to generate an implementation plan.`;
+      await persistLocalExchange('', text, { includeUser: false });
+      return { type: 'system', text };
     }
 
     // Plan mode with no pending plan → auto-generate structured plan
@@ -6432,12 +7732,12 @@ export async function createChatRuntime({
         });
       }
       const text = buildAutoPlanSystemSummary(auto);
-      await persistLocalExchange(line, text);
+      await persistLocalExchange('', text, { includeUser: false });
       return { type: 'system', text };
     }
 
     if (compactState.autoEnabled) {
-      const compactSource = compactedForModel ?? currentSession.messages;
+      const compactSource = modelVisibleMessages(compactedForModel ?? currentSession.messages);
       const currentTokens = estimateMessagesTokens(compactSource);
       const maxTokens = effectiveMaxContextTokens(config);
       const usagePct = (currentTokens / maxTokens) * 100;
@@ -6477,7 +7777,7 @@ export async function createChatRuntime({
         // Phase 1: macro compact if still over threshold
         if (needsMacro) {
           const sourceIsCompacted = Boolean(compactedForModel);
-          const macroSource = compactedForModel ?? currentSession.messages;
+          const macroSource = modelVisibleMessages(compactedForModel ?? currentSession.messages);
           const autoResult = await compactMessagesLocally(macroSource, {
             mode: compactState.mode,
             force: true,
@@ -6541,24 +7841,24 @@ export async function createChatRuntime({
       };
       executionMode = 'plan';
       const text = buildAutoPlanSystemSummary(auto);
-      await persistLocalExchange(line, text);
+      await persistLocalExchange('', text, { includeUser: false });
       return { type: 'system', text };
     }
 
-    const selectedAutoSkills = autoRoute.selectedSkills.filter((name) => isSkillEnabled(config, name, commands.get(name)));
-    if (selectedAutoSkills.length > 0 && onAgentEvent) {
+    const alwaysSkills = getAlwaysSkillCommands(commands, config);
+    if (alwaysSkills.length > 0 && onAgentEvent) {
       onAgentEvent({
-        type: 'skill:auto',
-        names: selectedAutoSkills
+        type: 'skill:always',
+        names: alwaysSkills.map((skill) => skill.name)
       });
     }
-    const autoSkillPrompt = buildAutoSkillPromptBlock(commands, config, expandedText);
-    const skillPrompt = autoSkillPrompt
+    const alwaysSkillPrompt = buildAlwaysSkillPromptBlock(commands, config);
+    const skillPrompt = alwaysSkillPrompt
       ? await composeSystemPrompt({
           shellRulesPrompt: activeReplySystemPrompt,
           config,
           workspaceRoot: process.cwd(),
-          skillsPrompt: autoSkillPrompt,
+          skillsPrompt: alwaysSkillPrompt,
           includeSoul: false,
           includeMemory: false
           })
@@ -6585,10 +7885,14 @@ export async function createChatRuntime({
       executionMode,
       signal,
       compactedForModel,
-      onCompactedUpdate: setCompactedView
+      onCompactedUpdate: setCompactedView,
+      changeTracker,
+      backupManager
     });
-    await saveDirectMemoryPrompt(expandedText);
-    await captureUserPromptForDream(expandedText);
+    void Promise.allSettled([
+      saveDirectMemoryPrompt(expandedText),
+      captureUserPromptForDream(expandedText)
+    ]);
     return { type: 'assistant', text: result.text, aborted: !!result.aborted };
   };
 
@@ -6609,8 +7913,16 @@ export async function createChatRuntime({
     getCurrentSessionId: () => currentSession.id,
     getSessionMessages: () => currentSession.messages || [],
     getSessionCompact: () => currentSession.compact || null,
+    getChangeSets: () => listGitOplogChanges(changeTracker),
+    getChangeSetPatch: (id) => readGitOplogPatch(changeTracker, id),
+    undoChangeSet: (id) => undoGitOplogChange(changeTracker, id),
+    undoChangeSets: (ids) => undoGitOplogChanges(changeTracker, ids),
     reloadConfig: async (options = {}) => {
       config = await loadConfig();
+      config.runtime = {
+        ...(config.runtime || {}),
+        project_is_git: Boolean(changeTracker?.enabled)
+      };
       await syncRuntimeFromConfig(options);
       return config;
     },
@@ -6619,9 +7931,16 @@ export async function createChatRuntime({
       return true;
     },
     setExecutionMode: async (next) => {
-      if (!['normal', 'auto', 'plan'].includes(next)) return false;
+      if (!['normal', 'plan', 'spec'].includes(next)) return false;
       executionMode = next;
       await setConfigValue('execution.mode', next);
+      config = await loadConfig();
+      return true;
+    },
+    setApprovalMode: async (next) => {
+      const normalized = String(next || '').toLowerCase().replace(/-/g, '_');
+      if (!['review', 'auto', 'full_access'].includes(normalized)) return false;
+      await setConfigValue('execution.approval_mode', normalized);
       config = await loadConfig();
       return true;
     },
@@ -6631,6 +7950,69 @@ export async function createChatRuntime({
     },
     setOnTitleUpdate: (cb) => {
       onTitleUpdateCallback = typeof cb === 'function' ? cb : null;
+    },
+    updatePendingPlan: async (patch = {}) => {
+      const next = updatePendingPlanState(currentSession, patch);
+      if (!next) return null;
+      if (currentSession.planState.filePath) {
+        await fs.writeFile(
+          currentSession.planState.filePath,
+          `${renderAutoPlanMarkdown({
+            goal: currentSession.planState.goal,
+            autoPlan: { summary: currentSession.planState.summary, steps: currentSession.planState.steps || [] },
+            finalSummary: currentSession.planState.finalSummary || currentSession.planState.summary,
+            approvalText: 'Pending user approval before implementation.',
+            progressLine: '- Plan edited in Web UI and waiting for execution.'
+          })}\n`,
+          'utf8'
+        ).catch(() => {});
+      }
+      await saveSession(currentSession);
+      return next;
+    },
+    updatePendingReflect: async (patch = {}) => {
+      const next = updatePendingReflectState(currentSession, patch, process.cwd());
+      if (!next) return null;
+      await saveSession(currentSession);
+      return next;
+    },
+    updatePendingSpec: async (patch = {}) => {
+      const next = updatePendingSpecState(currentSession, patch);
+      if (!next) return null;
+      const filePath = String(currentSession.planState.specPath || currentSession.planState.filePath || '').trim();
+      if (filePath) {
+        await fs.writeFile(filePath, `${String(currentSession.planState.specText || '').trim()}\n`, 'utf8').catch(() => {});
+      }
+      await saveSession(currentSession);
+      return buildPendingSpecSnapshot(currentSession.planState);
+    },
+    setPendingSpecFromFile: async ({ filePath = '', specText = '', goal = '', summary = '' } = {}) => {
+      const resolvedPath = String(filePath || '').trim();
+      const text = String(specText || '').trim();
+      if (!resolvedPath || !text) return null;
+      const title = summary || extractSpecTitle(text, path.basename(resolvedPath, '.md'));
+      currentSession.planState = {
+        status: 'pending_spec_approval',
+        source: 'spec-file',
+        goal: goal || title,
+        summary: title,
+        specPath: resolvedPath,
+        specText: text
+      };
+      executionMode = 'spec';
+      await saveSession(currentSession);
+      return buildPendingSpecSnapshot(currentSession.planState);
+    },
+    deletePendingSpec: async () => {
+      if (!hasPendingSpecApproval(currentSession)) return null;
+      const filePath = String(currentSession.planState.specPath || currentSession.planState.filePath || '').trim();
+      if (filePath) {
+        await fs.unlink(filePath).catch(() => {});
+      }
+      currentSession.planState = null;
+      executionMode = 'normal';
+      await saveSession(currentSession);
+      return { filePath };
     },
     dispose: async () => {
       if (typeof disposeTools === 'function') {

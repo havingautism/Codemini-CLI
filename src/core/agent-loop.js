@@ -2,9 +2,11 @@ import path from 'node:path';
 import { trimInline as _trimInline, normalizePath } from './string-utils.js';
 import { captureToInbox, listInbox } from './memory-store.js';
 import { requiresApprovalEvaluation } from './command-risk.js';
+import { evaluateCommandPolicy } from './command-policy.js';
 import { getToolOutputSanitizeOptions, sanitizeTextForModel } from './tool-output.js';
 import { normalizeToolArguments } from './tool-args.js';
 import { storeResultIfNeeded, summarizeToolResult } from './tool-result-store.js';
+import { markRunCommandSafeModeApproved } from './tools.js';
 
 /**
  * 安全解析 JSON 字符串。
@@ -167,13 +169,14 @@ const READ_ONLY_TOOLS = new Set([
   'ast_query', 'read_ast_node',
   'web_fetch', 'web_search',
   'list_background_tasks', 'get_background_task',
-  'read_plan'
+  'read_plan',
+  'skill'
 ]);
 
 // ─── Auto-capture tool errors to dream loop inbox ────────────────────
 
 const DREAM_AUTO_CAPTURE_TOOLS = new Set([
-  'edit', 'write', 'run', 'delete'
+  'edit', 'create', 'run', 'delete'
 ]);
 
 const DREAM_AUTO_CAPTURE_COOLDOWN_MS = 60_000;
@@ -238,7 +241,7 @@ async function checkAutoDreamThreshold(config) {
 
 function extractFileChange(toolName, result) {
   if (!result || typeof result !== 'object') return null;
-  const FILE_TOOLS = new Set(['edit', 'write', 'delete']);
+  const FILE_TOOLS = new Set(['edit', 'create', 'delete']);
   if (!FILE_TOOLS.has(toolName)) return null;
 
   /* delete */
@@ -276,7 +279,9 @@ function normalizeFileChange(change) {
     linesAdded: Number(change.linesAdded || 0),
     linesRemoved: Number(change.linesRemoved || 0),
     changedLine: Number(change.changedLine || 0),
-    diffPreview: String(change.diffPreview || '')
+    diffPreview: String(change.diffPreview || ''),
+    changeSetId: String(change.changeSetId || ''),
+    patchRef: String(change.patchRef || '')
   };
 }
 
@@ -287,7 +292,9 @@ function fileChangeFingerprint(change) {
     linesAdded: Number(change.linesAdded || 0),
     linesRemoved: Number(change.linesRemoved || 0),
     changedLine: Number(change.changedLine || 0),
-    diffPreview: String(change.diffPreview || '')
+    diffPreview: String(change.diffPreview || ''),
+    changeSetId: String(change.changeSetId || ''),
+    patchRef: String(change.patchRef || '')
   });
 }
 
@@ -301,7 +308,41 @@ function appendUniqueFileChange(message, fileChange) {
   message.file_changes = [...existing, fileChange];
 }
 
+function normalizeFileChanges(changes) {
+  return (Array.isArray(changes) ? changes : [changes])
+    .map(normalizeFileChange)
+    .filter(Boolean);
+}
+
+function extractToolResultMeta(toolName, result) {
+  if (!result || typeof result !== 'object') return null;
+  if (!['edit', 'create', 'delete'].includes(String(toolName || ''))) return null;
+  const meta = {};
+  for (const key of [
+    'path',
+    'action',
+    'changed_line',
+    'lines_added',
+    'lines_removed',
+    'backupPath',
+    'backupRelativePath',
+    'backupCreated',
+    'backupReused',
+    'backupSkipped',
+    'backupError',
+    'backupReason',
+    'non_git_backup'
+  ]) {
+    if (result[key] !== undefined && result[key] !== null && result[key] !== '') meta[key] = result[key];
+  }
+  return Object.keys(meta).length ? meta : null;
+}
+
 export const trimInline = _trimInline;
+
+export function shouldDenyHighRiskRunEvaluation(config = {}, evaluation = {}) {
+  return config?.policy?.allow_dangerous_commands !== true && String(evaluation?.risk || '').toLowerCase() === 'high';
+}
 
 function normalizeAssistantText(value) {
   return String(value || '').trim();
@@ -472,7 +513,7 @@ function formatToolDisplayName(name, args) {
     const target = trimInline(args?.path || '.', 96) || '.';
     return `list(${target})`;
   }
-  if (name === 'read' || name === 'write') {
+  if (name === 'read' || name === 'create') {
     const target = trimInline(args?.path || '.', 96) || '.';
     if (name === 'read') {
       const start = Number(args?.start_line);
@@ -481,7 +522,7 @@ function formatToolDisplayName(name, args) {
       const suffix = hasRange ? `:${start}-${Number.isFinite(end) && end >= start ? end : start}` : '';
       return `read(${target}${suffix})`;
     }
-    return `write(${target})`;
+    return `create(${target})`;
   }
   if (name === 'run') {
     const command = trimInline(args?.command || '', 96);
@@ -494,6 +535,10 @@ function formatToolDisplayName(name, args) {
   if (name === 'web_search') {
     const query = trimInline(args?.query || args?.q || '', 96);
     return query ? `web_search(${query})` : name;
+  }
+  if (name === 'skill') {
+    const target = trimInline(args?.name || args?.skill || args?.query || '', 96);
+    return target ? `skill(${target.replace(/^\/+/, '')})` : name;
   }
   if (name === 'edit') {
     const target = trimInline(args?.path || args?.file || '.', 96) || '.';
@@ -544,10 +589,11 @@ export async function runAgentLoop({
   requestCompletion,
   toolHandlers = {},
   toolDefinitions = [],
-  maxSteps = 8,
   initialMessages = [],
   onEvent,
-  executionMode = 'auto',
+  executionMode = 'normal',
+  approvalMode = 'review',
+  projectIsGit = false,
   alwaysAllowTools = [],
   requestToolApproval,
   toolResultMaxChars = 12000,
@@ -555,7 +601,8 @@ export async function runAgentLoop({
   deferredDefinitions = {},
   signal,
   skipAnalysisNudge = false,
-  config = {}
+  config = {},
+  changeTracker = null
 }) {
   const messages = [];
   if (systemPrompt) {
@@ -606,14 +653,16 @@ export async function runAgentLoop({
     }
   }
 
-  for (let step = 0; step < maxSteps; step += 1) {
+  let step = 0;
+  while (true) {
+    step += 1;
     // 检查是否已被用户中止
     if (signal?.aborted) {
-      if (onEvent) onEvent({ type: 'aborted', step: step + 1 });
+      if (onEvent) onEvent({ type: 'aborted', step });
       break;
     }
-    if (onEvent) onEvent({ type: 'step:start', step: step + 1 });
-    await maybeRunAutoDream(step + 1);
+    if (onEvent) onEvent({ type: 'step:start', step });
+    await maybeRunAutoDream(step);
     const completion = await requestCompletion({
       model,
       messages,
@@ -623,7 +672,7 @@ export async function runAgentLoop({
 
     // 流式请求完成后再次检查中止状态
     if (signal?.aborted) {
-      if (onEvent) onEvent({ type: 'aborted', step: step + 1 });
+      if (onEvent) onEvent({ type: 'aborted', step });
       break;
     }
 
@@ -653,7 +702,7 @@ export async function runAgentLoop({
     if (onEvent) {
       onEvent({
         type: 'assistant:response',
-        step: step + 1,
+        step: step,
         text: assistantText,
         toolCalls: toolCalls.map((tc) => tc.name),
         usage: completion.usage || null,
@@ -681,11 +730,15 @@ export async function runAgentLoop({
         continue;
       }
       finalText = assistantText;
-      await maybeRunAutoDream(step + 1, { force: true });
-      return { text: finalText, messages, steps: step + 1 };
+      await maybeRunAutoDream(step, { force: true });
+      return { text: finalText, messages, steps: step };
     }
 
     pendingSummaryNudges = 0;
+
+    const normalizedApprovalMode = ['review', 'auto', 'full_access'].includes(String(approvalMode || '').toLowerCase())
+      ? String(approvalMode || '').toLowerCase()
+      : 'review';
 
     if (executionMode === 'plan') {
       const plannedLines = callsToPlanSummary(toolCalls);
@@ -698,8 +751,8 @@ export async function runAgentLoop({
       ]
         .filter(Boolean)
         .join('\n');
-      await maybeRunAutoDream(step + 1, { force: true });
-      return { text: finalText.trim(), messages, steps: step + 1 };
+      await maybeRunAutoDream(step, { force: true });
+      return { text: finalText.trim(), messages, steps: step };
     }
 
     // ─── P1a: Partition into read-only (parallel) and write (serial) ──
@@ -718,11 +771,22 @@ export async function runAgentLoop({
       let approved = true;
       let approvalArgs = args;
       let preflightErrorContent = '';
+      const runPolicyCheck = toolName === 'run'
+        ? evaluateCommandPolicy(args?.command || '', config, config?.workspaceRoot || process.cwd())
+        : { allowed: true };
+      const isSafeModePolicyBlocked = toolName === 'run'
+        && config?.policy?.safe_mode !== false
+        && !runPolicyCheck.allowed
+        && runPolicyCheck.reason !== 'blocked by dangerous command pattern';
       const isSafeModeRun = toolName === 'run'
         && config?.policy?.safe_mode !== false
-        && requiresApprovalEvaluation(args?.command || '', config?.shell?.default);
-      const needsApproval = toolName === 'delete' || isSafeModeRun
-        || (executionMode === 'normal' && !alwaysAllowSet.has(toolName));
+        && (isSafeModePolicyBlocked || requiresApprovalEvaluation(args?.command || '', config?.shell?.default));
+      const isFileWriteTool = toolName === 'edit' || toolName === 'create' || toolName === 'delete';
+      const needsApproval = normalizedApprovalMode === 'full_access'
+        ? false
+        : normalizedApprovalMode === 'auto'
+          ? ((!projectIsGit && isFileWriteTool) || isSafeModeRun)
+          : (toolName === 'delete' || isSafeModeRun || !alwaysAllowSet.has(toolName));
       if (needsApproval) {
         approved = false;
         const handler = toolHandlers[toolName];
@@ -747,14 +811,40 @@ export async function runAgentLoop({
               config,
               workspaceRoot: config?.workspaceRoot || process.cwd()
             });
-            approvalArgs = { ...args, _risk: evaluation.risk, _evaluation: evaluation };
+            approvalArgs = {
+              ...args,
+              _risk: isSafeModePolicyBlocked && evaluation.risk === 'low' ? 'medium' : evaluation.risk,
+              _evaluation: evaluation,
+              _policyBlock: isSafeModePolicyBlocked
+                ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
+                : null
+            };
+            if (shouldDenyHighRiskRunEvaluation(config, evaluation)) {
+              preflightErrorContent = clipToolResult({
+                error: 'Command blocked by safe mode: high-risk command denied because dangerous commands are disabled',
+                evaluation
+              }, toolResultMaxChars);
+              approvalResults.set(call.id, {
+                approved: false,
+                args: approvalArgs,
+                errorContent: preflightErrorContent
+              });
+              continue;
+            }
             /* LLM says low-risk + allow → auto-approve, skip confirmation panel */
-            if (executionMode !== 'normal' && evaluation.risk === 'low' && evaluation.recommendation === 'allow') {
+            if (!isSafeModePolicyBlocked && normalizedApprovalMode !== 'review' && evaluation.risk === 'low' && evaluation.recommendation === 'allow') {
               approvalResults.set(call.id, { approved: true, args: approvalArgs });
               continue;
             }
           } catch (_) {
-            approvalArgs = { ...args, _risk: 'high', _evaluation: null };
+            approvalArgs = {
+              ...args,
+              _risk: isSafeModePolicyBlocked ? 'medium' : 'high',
+              _evaluation: null,
+              _policyBlock: isSafeModePolicyBlocked
+                ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
+                : null
+            };
           }
           if (typeof handler?.prepareApproval === 'function') {
             try {
@@ -781,6 +871,9 @@ export async function runAgentLoop({
               : (toolName === 'run' ? approvalArgs.approval : undefined)
           });
           approved = Boolean(decision?.approved);
+          if (approved && toolName === 'run' && isSafeModePolicyBlocked) {
+            approvalArgs = markRunCommandSafeModeApproved(approvalArgs);
+          }
         }
       }
       approvalResults.set(call.id, { approved, args: approvalArgs });
@@ -862,6 +955,13 @@ export async function runAgentLoop({
         };
       }
 
+      let captureScope = null;
+      if (!isReadOnly && changeTracker && typeof changeTracker.begin === 'function') {
+        try {
+          captureScope = await changeTracker.begin({ toolName, args: effectiveArgs });
+        } catch {}
+      }
+
       let toolResult;
       try {
         toolResult = await handler(effectiveArgs);
@@ -887,10 +987,39 @@ export async function runAgentLoop({
 
       const durationMs = Date.now() - startedAt;
       const summary = summarizeToolResult(toolResult);
+      const resultMeta = extractToolResultMeta(toolName, toolResult);
       /* 提取文件改动统计 */
-      const fileChange = extractFileChange(toolName, toolResult);
+      const declaredFileChange = extractFileChange(toolName, toolResult);
+      let fileChanges = [];
+      let fileChange = null;
+      if (!isReadOnly && changeTracker && typeof changeTracker.capture === 'function' && captureScope) {
+        try {
+          const captured = await changeTracker.capture(captureScope, {
+            toolName,
+            toolCallId: call.id,
+            summary,
+            args: effectiveArgs,
+            declaredFileChanges: normalizeFileChanges(declaredFileChange)
+          });
+          const capturedChanges = normalizeFileChanges(captured);
+          if (capturedChanges.length) {
+            fileChanges = capturedChanges;
+            fileChange = fileChanges[0] || null;
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (onEvent) {
+            onEvent({
+              type: 'system_tool:error',
+              id: `change-oplog-${call.id}`,
+              name: 'change_oplog',
+              summary: message
+            });
+          }
+        }
+      }
       if (onEvent) {
-        onEvent({ type: 'tool:end', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary, fileChange });
+        onEvent({ type: 'tool:end', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary, fileChange, fileChanges, resultMeta });
       }
 
       // Auto-capture non-throwing tool failures (e.g. shell non-zero exit)
@@ -928,7 +1057,7 @@ export async function runAgentLoop({
       // P0: Persist to disk if still large
       formatted = await storeResultIfNeeded(call.id, formatted, toolResult);
 
-      return { callId: call.id, content: formatted, durationMs, summary, status: 'done', fileChange };
+      return { callId: call.id, content: formatted, durationMs, summary, status: 'done', fileChange, fileChanges, resultMeta };
     }
 
     // Separate read-only and write calls, preserving order
@@ -972,7 +1101,7 @@ export async function runAgentLoop({
         continue;
       }
 
-      attachToolCallSessionMeta(assistantMessage, call.id, { durationMs: entry.durationMs, summary: entry.summary || '', status: entry.status || 'done', fileChange: entry.fileChange });
+      attachToolCallSessionMeta(assistantMessage, call.id, { durationMs: entry.durationMs, summary: entry.summary || '', status: entry.status || 'done', fileChange: entry.fileChange, fileChanges: entry.fileChanges, resultMeta: entry.resultMeta });
       messages.push({
         role: 'tool',
         tool_call_id: call.id,
@@ -980,7 +1109,9 @@ export async function runAgentLoop({
         tool_duration_ms: entry.durationMs,
         tool_summary: entry.summary || '',
         tool_status: entry.status || 'done',
-        ...(entry.fileChange ? { tool_file_change: entry.fileChange } : {})
+        ...(entry.resultMeta ? { tool_result_meta: entry.resultMeta } : {}),
+        ...(entry.fileChange ? { tool_file_change: entry.fileChange } : {}),
+        ...(Array.isArray(entry.fileChanges) && entry.fileChanges.length > 0 ? { tool_file_changes: entry.fileChanges } : {})
       });
       if (onEvent) {
         onEvent({ type: 'tool:result', name: displayName, id: call.id, arguments: args, content: entry.content });
@@ -994,17 +1125,17 @@ export async function runAgentLoop({
     return {
       text: fallback,
       messages,
-      steps: maxSteps,
+      steps: step,
       aborted: true
     };
   }
 
   const fallback = lastAssistantText || 'Stopped before final response.';
-  await maybeRunAutoDream(maxSteps, { force: true });
+  await maybeRunAutoDream(step, { force: true });
   return {
-    text: `${fallback}\n\n[stopped] Reached max tool steps (${maxSteps}). Try a narrower prompt or increase execution.max_steps.`,
+    text: fallback,
     messages,
-    steps: maxSteps
+    steps: step
   };
 }
 
@@ -1024,9 +1155,14 @@ function attachToolCallSessionMeta(assistantMessage, callId, meta = {}) {
   if (Number.isFinite(Number(meta.durationMs))) call.durationMs = Number(meta.durationMs);
   if (typeof meta.summary === 'string' && meta.summary.trim()) call.summary = meta.summary.trim();
   if (typeof meta.status === 'string' && meta.status.trim()) call.status = meta.status.trim();
+  if (meta.resultMeta && typeof meta.resultMeta === 'object') call.resultMeta = meta.resultMeta;
   const fileChange = normalizeFileChange(meta.fileChange);
   if (fileChange) {
     call.fileChange = fileChange;
-    appendUniqueFileChange(assistantMessage, fileChange);
+  }
+  const fileChanges = normalizeFileChanges(meta.fileChanges && meta.fileChanges.length ? meta.fileChanges : fileChange);
+  if (fileChanges.length) {
+    call.fileChanges = fileChanges;
+    for (const change of fileChanges) appendUniqueFileChange(assistantMessage, change);
   }
 }

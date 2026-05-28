@@ -191,9 +191,9 @@ function suggestionForToken(token, config) {
       : 'Prefer structured tools like grep, glob, list, read, and edit first. If you need shell fallback, use allowed search and context commands such as rg, find, grep, sed, cat, or ls.';
   }
   if (shell === 'powershell') {
-    return 'Prefer structured tools like read, edit, write, grep, and list first. If you need shell fallback, use allowed shell commands for search and local context such as Get-ChildItem, Get-Content, Select-String, or rg when available.';
+    return 'Prefer structured tools like read, edit, create, grep, and list first. If you need shell fallback, use allowed shell commands for search and local context such as Get-ChildItem, Get-Content, Select-String, or rg when available.';
   }
-  return 'Prefer structured tools like read, edit, write, grep, glob, and list first. If you need shell fallback, use allowed shell commands for search and local context such as rg, find, grep, sed, cat, or ls.';
+  return 'Prefer structured tools like read, edit, create, grep, glob, and list first. If you need shell fallback, use allowed shell commands for search and local context such as rg, find, grep, sed, cat, or ls.';
 }
 
 function allowedPathRoots(workspaceRoot, config = {}) {
@@ -212,6 +212,57 @@ function isWithinAnyRoot(candidatePath, roots = []) {
     const relative = path.relative(root, resolvedCandidate);
     return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
   });
+}
+
+function normalizeWindowsPathForCompare(value) {
+  return String(value || '').trim().replace(/\//g, '\\').replace(/\\+$/g, '').toLowerCase();
+}
+
+function isWindowsPathWithinAnyRoot(candidatePath, roots = []) {
+  const candidate = normalizeWindowsPathForCompare(candidatePath);
+  if (!/^[a-z]:\\/i.test(candidate)) return false;
+  return roots.some((root) => {
+    const normalizedRoot = normalizeWindowsPathForCompare(root);
+    return candidate === normalizedRoot || candidate.startsWith(`${normalizedRoot}\\`);
+  });
+}
+
+function collectWindowsAbsolutePathCandidates(command) {
+  const text = String(command || '');
+  const candidates = [];
+  let current = '';
+  let quote = '';
+
+  const flush = () => {
+    const token = current.trim();
+    current = '';
+    if (/^[A-Za-z]:[\\/]/.test(token)) candidates.push(token);
+  };
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === quote) {
+        flush();
+        quote = '';
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+    if (ch === '"' || ch === '\'') {
+      flush();
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      flush();
+      continue;
+    }
+    current += ch;
+  }
+  flush();
+  return candidates;
 }
 
 function validateCdSegment(command, workspaceRoot, config = {}) {
@@ -279,18 +330,17 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
     }
   }
 
-  const allowedLower = allowedPathRoots(workspaceRoot, config).map((item) => item.toLowerCase().replace(/\//g, '\\'));
-  const windowsAbsPath = lower.match(/[a-z]:\\[^\s'"]+/g) || [];
+  const allowedRoots = allowedPathRoots(workspaceRoot, config);
+  const windowsAbsPath = collectWindowsAbsolutePathCandidates(cmd);
   for (const p of windowsAbsPath) {
-    if (!allowedLower.some((root) => p === root || p.startsWith(`${root}\\`))) {
+    if (!isWindowsPathWithinAnyRoot(p, allowedRoots)) {
       return { allowed: false, reason: `absolute path outside workspace or allowed paths: ${p}`, suggestion: suggestionForToken(token, config) };
     }
   }
 
   const posixAbsPath = cmd.match(/(?<![:/\w])\/(?!\/)[^\s'"]+/g) || [];
-  const allowedResolved = allowedPathRoots(workspaceRoot, config);
   for (const p of posixAbsPath) {
-    if (!isWithinAnyRoot(p, allowedResolved)) {
+    if (!isWithinAnyRoot(p, allowedRoots)) {
       return { allowed: false, reason: `absolute path outside workspace or allowed paths: ${p}`, suggestion: suggestionForToken(token, config) };
     }
   }

@@ -11,8 +11,8 @@ function printHelp() {
 Usage:
   codemini [prompt] [--plain] [--model <name>] [--fast]
   codemini chat [prompt] [--plain] [--model <name>] [--fast]
-  codemini run <task> [--max-steps N] [--model <name>] [--fast]
-  codemini run --harness <role> <task> [--max-steps N] [--model <name>] [--fast]
+  codemini run <task> [--model <name>] [--fast]
+  codemini run --harness <role> <task> [--model <name>] [--fast]
   codemini run --pipeline <task> [--model <name>] [--fast]
   codemini web [--port <port>] [--project <path>] [--session <id>] [--model <name>] [--no-open]
   codemini --web [--port <port>] [--project <path>] [--session <id>] [--model <name>] [--no-open]

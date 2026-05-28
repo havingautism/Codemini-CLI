@@ -30,6 +30,9 @@ If the visible tool list does not include a needed capability, load it with tool
 Example:
 Tool: tool_search({"query":"glob"})
 Tool: glob({"pattern":"src/**/*.ts"})
+If you need to activate a skill by name, load the skill tool and read the indexed skill through it:
+Tool: tool_search({"query":"skill"})
+Tool: skill({"name":"brainstorming"})
 
 2. Targeted search then exact text edit
 User: rename loginUser to signInUser
@@ -51,7 +54,7 @@ Assistant: keep the checklist updated as each phase finishes, and do not give a 
 5. Create a new file
 User: add a notes file
 Assistant: create the file directly
-Tool: write({"path":${notesPath},"content":"todo\\n"})
+Tool: create({"path":${notesPath},"content":"todo\\n"})
 
 6. Save a high-signal observation to memory
 When you notice a reusable pattern, a user correction, a repeated failure, or a stable preference — save it to persistent memory. Choose scope carefully:

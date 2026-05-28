@@ -153,16 +153,14 @@ export function AboutDialog({ open, onOpenChange, version }) {
               codemini config set gateway.api_key &lt;token&gt;{"\n"}
               codemini config set model.name &lt;model-id&gt;
             </pre>
-            <p className="mt-1.5 text-[12px] text-(--text-muted)">
+            {/* <p className="mt-1.5 text-[12px] text-(--text-muted)">
               {t("configureModelDesc")}
-            </p>
+            </p> */}
           </div>
         </div>
 
         <div className="text-center text-[11px] text-(--text-muted) pt-1">
-          Codemini CLI{version ? `@${version}` : ""} - Coding assistant An
-          extremely restrained coding + tasks CLI. Every platform. Every
-          terminal. Minimal by design.
+          Codemini CLI{version ? `@${version}` : ""} — {t("aboutFooter")}
         </div>
       </DialogContent>
     </Dialog>

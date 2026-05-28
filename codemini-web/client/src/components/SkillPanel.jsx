@@ -1,5 +1,17 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { Download, Eye, FileCode2, Pencil, Plus, Search, SlidersHorizontal, Trash2 } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Download,
+  Eye,
+  FileCode2,
+  Folder,
+  Pencil,
+  Plus,
+  Search,
+  SlidersHorizontal,
+  Trash2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -24,7 +36,7 @@ import * as api from "@/hooks/use-api";
 import { t } from "../../i18n/index.js";
 
 const FILTERS = ["all", "enabled", "builtin", "custom"];
-const SKILL_MODES = ["always", "auto_attach", "agent_requested", "manual"];
+const SKILL_MODES = ["always", "agent_requested", "manual"];
 
 function SwitchControl({ checked, onClick, title }) {
   return (
@@ -57,6 +69,97 @@ function scopeLabel(scope) {
   return t("projectScope");
 }
 
+function skillKey(skill) {
+  return `${skill?.scope || "unknown"}:${skill?.projectDir || ""}:${skill?.name || ""}`;
+}
+
+function compactSourceLabel(value) {
+  const text = String(value || "").trim();
+  const github = text.match(/github\.com[/:]([^/\s]+)\/([^/\s]+?)(?:\.git)?(?:\/|$)/i);
+  if (github) return `${github[1]}/${github[2]}`;
+  const ownerRepo = text.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:\s|$)/);
+  if (ownerRepo) return ownerRepo[1];
+  return text.replace(/\\/g, "/").split("/").filter(Boolean).pop() || text;
+}
+
+function isPackagedSkill(skill) {
+  if (isBuiltin(skill)) return false;
+  const source = String(skill?.source || "").trim();
+  const packageSource = String(skill?.packageSource || "").trim();
+  const packageName = String(skill?.packageName || "").trim();
+  if (!packageSource && !packageName) return false;
+  return !["web-create", "web-move", "reindex"].includes(source);
+}
+
+function skillPackageKey(skill) {
+  if (!isPackagedSkill(skill)) return "";
+  return [
+    skill?.scope || "unknown",
+    skill?.projectDir || "",
+    skill?.packageSource || skill?.source || skill?.packageName || "",
+  ].join(":");
+}
+
+function skillPackageName(skill) {
+  return (
+    String(skill?.packageName || "").trim() ||
+    compactSourceLabel(skill?.packageSource || skill?.source) ||
+    t("skillPackage")
+  );
+}
+
+function projectDisplayName(value) {
+  return value === "__codemini_general__" ? t("generalChat") : value;
+}
+
+function projectDirsKey(projectDirs = []) {
+  return Array.isArray(projectDirs)
+    ? projectDirs
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+        .join("\n")
+    : "";
+}
+
+function normalizeProjectTargets(projectTargets = [], projectDirs = []) {
+  const byDir = new Map();
+  for (const item of Array.isArray(projectTargets) ? projectTargets : []) {
+    const dir = String(item?.dir || item?.path || item || "").trim();
+    if (!dir || byDir.has(dir)) continue;
+    byDir.set(dir, {
+      dir,
+      label: item?.label || projectDisplayName(dir.split(/[/\\]/).filter(Boolean).pop() || dir),
+    });
+  }
+  for (const dir of Array.isArray(projectDirs) ? projectDirs : []) {
+    const value = String(dir || "").trim();
+    if (!value || byDir.has(value)) continue;
+    byDir.set(value, {
+      dir: value,
+      label: projectDisplayName(value.split(/[/\\]/).filter(Boolean).pop() || value),
+    });
+  }
+  return Array.from(byDir.values());
+}
+
+function projectTargetValue(projectDir) {
+  const dir = String(projectDir || "").trim();
+  return dir ? `project:${dir}` : "";
+}
+
+function parseSkillTarget(value) {
+  const text = String(value || "");
+  if (text === "global") return { scope: "global", projectDir: "" };
+  if (text.startsWith("project:")) {
+    return { scope: "project", projectDir: text.slice("project:".length) };
+  }
+  return { scope: "project", projectDir: "" };
+}
+
+function defaultSkillTarget(projectTargets = []) {
+  return projectTargets[0]?.dir ? projectTargetValue(projectTargets[0].dir) : "global";
+}
+
 function isBuiltin(skill) {
   return skill?.scope === "builtin";
 }
@@ -65,11 +168,42 @@ function isEnabled(skill) {
   return skill?.enabled !== false;
 }
 
-function SkillEditor({ skill, onSave, onCancel }) {
+function normalizeSkillMode(value) {
+  return value === "auto_attach" ? "agent_requested" : value || "agent_requested";
+}
+
+function skillSortValue(skill) {
+  const modeRank = normalizeSkillMode(skill?.mode) === "always" ? 0 : 1;
+  const enabledRank = isEnabled(skill) ? 0 : 1;
+  const priority = Number(skill?.priority);
+  return {
+    modeRank,
+    enabledRank,
+    priority: Number.isFinite(priority) ? priority : 0,
+    name: String(skill?.name || "").toLowerCase(),
+  };
+}
+
+function compareSkills(a, b) {
+  const left = skillSortValue(a);
+  const right = skillSortValue(b);
+  return (
+    left.modeRank - right.modeRank ||
+    left.enabledRank - right.enabledRank ||
+    right.priority - left.priority ||
+    left.name.localeCompare(right.name)
+  );
+}
+
+function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
   const [name, setName] = useState(skill?.name || "");
   const [description, setDescription] = useState(skill?.description || "");
-  const [scope, setScope] = useState(skill?.scope || "project");
-  const [mode, setMode] = useState(skill?.mode || "agent_requested");
+  const [target, setTarget] = useState(
+    skill?.scope === "global"
+      ? "global"
+      : projectTargetValue(skill?.projectDir) || defaultSkillTarget(projectTargets),
+  );
+  const [mode, setMode] = useState(normalizeSkillMode(skill?.mode));
   const [triggers, setTriggers] = useState((skill?.triggers || []).join(", "));
   const [priority, setPriority] = useState(skill?.priority ?? 50);
   const [enabled, setEnabled] = useState(isEnabled(skill));
@@ -81,8 +215,12 @@ function SkillEditor({ skill, onSave, onCancel }) {
   useEffect(() => {
     setName(skill?.name || "");
     setDescription(skill?.description || "");
-    setScope(skill?.scope || "project");
-    setMode(skill?.mode || "agent_requested");
+    setTarget(
+      skill?.scope === "global"
+        ? "global"
+        : projectTargetValue(skill?.projectDir) || defaultSkillTarget(projectTargets),
+    );
+    setMode(normalizeSkillMode(skill?.mode));
     setTriggers((skill?.triggers || []).join(", "));
     setPriority(skill?.priority ?? 50);
     setEnabled(isEnabled(skill));
@@ -92,16 +230,17 @@ function SkillEditor({ skill, onSave, onCancel }) {
     }
     setLoading(true);
     api
-      .fetchSkillContent(skill.name)
+      .fetchSkillContent(skill.name, skill.projectDir)
       .then((data) => setContent(data.content || ""))
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [skill]);
+  }, [skill, projectTargets]);
 
   const handleSave = async () => {
+    const selectedTarget = parseSkillTarget(target);
     const metadata = {
       description,
-      scope,
+      scope: selectedTarget.scope,
       mode,
       triggers: triggers
         .split(",")
@@ -111,13 +250,30 @@ function SkillEditor({ skill, onSave, onCancel }) {
       priority: Number(priority) || 0,
     };
     if (isNew) {
-      await api.createSkill({ name, description, content, scope });
-      await api.updateSkillMetadata(name, metadata);
+      await api.createSkill({
+        name,
+        description,
+        content,
+        scope: selectedTarget.scope,
+        projectDir: selectedTarget.projectDir,
+      });
+      await api.updateSkillMetadata(
+        name,
+        metadata,
+        selectedTarget.scope === "project" ? selectedTarget.projectDir : undefined,
+      );
     } else {
-      await api.updateSkillMetadata(skill.name, metadata);
       if (!contentReadOnly) {
-        await api.updateSkillContent(skill.name, content);
+        await api.updateSkillContent(skill.name, content, skill.projectDir);
       }
+      await api.updateSkillMetadata(
+        skill.name,
+        {
+          ...metadata,
+          targetProjectDir: selectedTarget.scope === "project" ? selectedTarget.projectDir : undefined,
+        },
+        skill.projectDir,
+      );
     }
     onSave();
   };
@@ -134,31 +290,39 @@ function SkillEditor({ skill, onSave, onCancel }) {
               {t("skillEditorHint")}
             </div>
           </div>
-          <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px]">
-            {scopeLabel(scope)}
+          <Badge
+            variant="outline"
+            className="rounded-md px-1.5 py-0 text-[10px]"
+          >
+            {scopeLabel(parseSkillTarget(target).scope)}
           </Badge>
         </div>
 
         <div className="grid gap-3">
           {(isNew || !isBuiltin(skill)) && (
             <div className="grid gap-1.5">
-              <label className="text-[12px] text-(--text-muted)">{t("skillScope")}</label>
-              <Select
-                value={scope}
-                onValueChange={setScope}
-              >
+              <label className="text-[12px] text-(--text-muted)">
+                {t("skillScope")}
+              </label>
+              <Select value={target} onValueChange={setTarget}>
                 <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent align="start">
-                  <SelectItem value="project">{t("projectScope")}</SelectItem>
                   <SelectItem value="global">{t("globalScope")}</SelectItem>
+                  {projectTargets.map((item) => (
+                    <SelectItem key={item.dir} value={projectTargetValue(item.dir)}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
           )}
           <div className="grid gap-1.5">
-            <label className="text-[12px] text-(--text-muted)">{t("name")}</label>
+            <label className="text-[12px] text-(--text-muted)">
+              {t("name")}
+            </label>
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -189,10 +353,7 @@ function SkillEditor({ skill, onSave, onCancel }) {
                 <label className="text-[12px] text-(--text-muted)">
                   {t("skillMode")}
                 </label>
-                <Select
-                  value={mode}
-                  onValueChange={setMode}
-                >
+                <Select value={mode} onValueChange={setMode}>
                   <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px]">
                     <SelectValue />
                   </SelectTrigger>
@@ -271,7 +432,11 @@ function SkillEditor({ skill, onSave, onCancel }) {
         </Button>
         <Button
           onClick={handleSave}
-          disabled={loading || (!contentReadOnly && !content.trim()) || (isNew && !name.trim())}
+          disabled={
+            loading ||
+            (!contentReadOnly && !content.trim()) ||
+            (isNew && !name.trim())
+          }
           size="sm"
         >
           {isNew ? t("create") : t("save")}
@@ -281,7 +446,7 @@ function SkillEditor({ skill, onSave, onCancel }) {
   );
 }
 
-function SkillEditorDialog({ skill, open, onSave, onOpenChange }) {
+function SkillEditorDialog({ skill, projectTargets = [], open, onSave, onOpenChange }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[760px] h-[86vh] max-h-[86vh] flex flex-col overflow-hidden">
@@ -290,6 +455,7 @@ function SkillEditorDialog({ skill, open, onSave, onOpenChange }) {
         </DialogHeader>
         <SkillEditor
           skill={skill}
+          projectTargets={projectTargets}
           onSave={onSave}
           onCancel={() => onOpenChange(false)}
         />
@@ -306,7 +472,7 @@ function ViewDialog({ skill, open, onOpenChange }) {
     if (!open || !skill) return;
     setLoading(true);
     api
-      .fetchSkillContent(skill.name)
+      .fetchSkillContent(skill.name, skill.projectDir)
       .then((data) => setContent(data.content || ""))
       .catch(() => {})
       .finally(() => setLoading(false));
@@ -345,38 +511,222 @@ function ViewDialog({ skill, open, onOpenChange }) {
   );
 }
 
-export function SkillPanel() {
+function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
+  const enabled = isEnabled(skill);
+  return (
+    <div
+      className={cn(
+        "rounded-lg border p-3 transition-colors",
+        enabled
+          ? "border-(--border-default) bg-(--bg-primary) hover:bg-(--bg-hover)"
+          : "border-(--border-default) bg-(--bg-secondary) opacity-75",
+      )}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="truncate text-[13px] font-medium text-(--text-primary)">
+              {skill.name}
+            </span>
+            <Badge
+              variant={isBuiltin(skill) ? "secondary" : "outline"}
+              className="h-4 rounded-md px-1.5 py-0 text-[10px]"
+            >
+              {scopeLabel(skill.scope)}
+            </Badge>
+            <Badge
+              variant={enabled ? "outline" : "secondary"}
+              className="h-4 rounded-md px-1.5 py-0 text-[10px]"
+            >
+              {enabled ? t("enabled") : t("disabled")}
+            </Badge>
+            {skill.version && skill.version !== "0.0.0" && (
+              <span className="text-[10px] text-(--text-muted)">
+                v{skill.version}
+              </span>
+            )}
+            {skill.mode && (
+              <Badge
+                variant="outline"
+                className="h-4 rounded-md px-1.5 py-0 text-[10px]"
+              >
+                {t(`skillMode_${normalizeSkillMode(skill.mode)}`)}
+              </Badge>
+            )}
+          </div>
+          <div className="mt-1 line-clamp-2 text-[11px] leading-4 text-(--text-muted)">
+            {skill.description || t("noDescription")}
+          </div>
+          {skill.triggers?.length > 0 && (
+            <div className="mt-1 truncate text-[10px] text-(--text-muted)">
+              {t("skillTriggers")}: {skill.triggers.join(", ")}
+            </div>
+          )}
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => onView(skill)}
+            title={t("view")}
+          >
+            <Eye size={13} />
+          </Button>
+          <SwitchControl
+            checked={enabled}
+            onClick={() => onToggle(skill, !enabled)}
+            title={enabled ? t("disable") : t("enable")}
+          />
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => onEdit(skill)}
+            title={isBuiltin(skill) ? t("skillRoutingSettings") : t("edit")}
+          >
+            {isBuiltin(skill) ? (
+              <SlidersHorizontal size={13} />
+            ) : (
+              <Pencil size={13} />
+            )}
+          </Button>
+          {!isBuiltin(skill) && (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => {
+                if (
+                  confirm(
+                    t("confirmDeleteSkill").replace("{{name}}", skill.name),
+                  )
+                ) {
+                  onDelete(skill);
+                }
+              }}
+              title={t("delete")}
+              className="text-(--accent-red) hover:text-(--accent-red)"
+            >
+              <Trash2 size={13} />
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SkillGroupHeader({ icon = "folder", name, count, collapsed, title, onClick }) {
+  const Icon = icon === "package" ? FileCode2 : Folder;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex h-8 w-full items-center gap-2 rounded-md border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-primary) hover:bg-(--bg-hover)"
+      title={title}
+    >
+      <Icon size={14} className="shrink-0 text-(--text-muted)" />
+      <span className="min-w-0 flex-1 truncate">{name}</span>
+      <span className="shrink-0 text-[12px] font-medium text-(--text-accent)">
+        {count}
+      </span>
+      {collapsed ? (
+        <ChevronRight size={13} className="shrink-0 text-(--text-muted)" />
+      ) : (
+        <ChevronDown size={13} className="shrink-0 text-(--text-muted)" />
+      )}
+    </button>
+  );
+}
+
+function SkillCards({ items, onView, onToggle, onEdit, onDelete }) {
+  return items.map((skill) => (
+    <SkillCard
+      key={skillKey(skill)}
+      skill={skill}
+      onView={onView}
+      onToggle={onToggle}
+      onEdit={onEdit}
+      onDelete={onDelete}
+    />
+  ));
+}
+
+export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
   const [viewSkill, setViewSkill] = useState(null);
+  const [collapsedProjects, setCollapsedProjects] = useState(() => new Set());
+  const [collapsedPackages, setCollapsedPackages] = useState(() => new Set());
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [installSource, setInstallSource] = useState("");
-  const [installScope, setInstallScope] = useState("project");
+  const normalizedProjectTargets = useMemo(
+    () => normalizeProjectTargets(projectTargets, projectDirs),
+    [projectTargets, projectDirs],
+  );
+  const [installTarget, setInstallTarget] = useState("");
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState("");
+  const projectKey = projectDirsKey(projectDirs);
+  const requestProjectDirs = useMemo(
+    () => (projectKey ? projectKey.split("\n") : []),
+    [projectKey],
+  );
+
+  useEffect(() => {
+    const allowed = new Set([
+      "global",
+      ...normalizedProjectTargets.map((item) => projectTargetValue(item.dir)),
+    ]);
+    if (installTarget && !allowed.has(installTarget)) {
+      setInstallTarget("");
+    }
+  }, [installTarget, normalizedProjectTargets]);
 
   const loadSkills = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await api.fetchSkills();
+      const list = await api.fetchSkills(requestProjectDirs);
       setSkills(Array.isArray(list) ? list : []);
     } catch {}
     setLoading(false);
-  }, []);
+  }, [requestProjectDirs]);
 
   useEffect(() => {
     loadSkills();
   }, [loadSkills]);
 
-  const handleToggle = async (name, enabled) => {
-    await api.toggleSkill(name, enabled);
-    loadSkills();
+  const handleToggle = async (skill, enabled) => {
+    // 乐观更新：立即翻转本地状态，用户秒切无闪烁
+    setSkills((prev) =>
+      prev.map((s) =>
+        s.name === skill.name && s.projectDir === skill.projectDir
+          ? { ...s, enabled }
+          : s,
+      ),
+    );
+    try {
+      await api.toggleSkill(skill.name, enabled, skill.projectDir);
+    } catch {
+      // 请求失败时回滚
+      setSkills((prev) =>
+        prev.map((s) =>
+          s.name === skill.name && s.projectDir === skill.projectDir
+            ? { ...s, enabled: !enabled }
+            : s,
+        ),
+      );
+    }
+    // 静默后台刷新，不触发 loading
+    try {
+      const list = await api.fetchSkills(requestProjectDirs);
+      setSkills(Array.isArray(list) ? list : []);
+    } catch {}
   };
 
-  const handleDelete = async (name) => {
-    await api.deleteSkill(name);
+  const handleDelete = async (skill) => {
+    await api.deleteSkill(skill.name, skill.projectDir);
     loadSkills();
   };
 
@@ -391,7 +741,14 @@ export function SkillPanel() {
     setInstalling(true);
     setInstallError("");
     try {
-      const result = await api.installSkill({ source, scope: installScope });
+      const selectedTarget = parseSkillTarget(
+        installTarget || defaultSkillTarget(normalizedProjectTargets),
+      );
+      const result = await api.installSkill({
+        source,
+        scope: selectedTarget.scope,
+        projectDir: selectedTarget.projectDir,
+      });
       if (result?.error) throw new Error(result.message || "Install failed");
       setInstallSource("");
       await loadSkills();
@@ -411,9 +768,130 @@ export function SkillPanel() {
       if (filter === "builtin" && skill.scope !== "builtin") return false;
       if (filter === "custom" && skill.scope === "builtin") return false;
       if (!needle) return true;
-      return skill.name.toLowerCase().includes(needle);
+      return (
+        skill.name.toLowerCase().includes(needle) ||
+        String(skill.packageName || "").toLowerCase().includes(needle) ||
+        String(compactSourceLabel(skill.packageSource || skill.source))
+          .toLowerCase()
+          .includes(needle) ||
+        String(projectDisplayName(skill.projectName || ""))
+          .toLowerCase()
+          .includes(needle)
+      );
     });
   }, [skills, query, filter]);
+  const groupedSkills = useMemo(() => {
+    const regular = [];
+    const packageGroups = [];
+    const projectGroups = [];
+    const packageIndex = new Map();
+    const projectIndex = new Map();
+    const addToPackage = (groups, index, skill) => {
+      const key = skillPackageKey(skill);
+      if (!key) return false;
+      if (!index.has(key)) {
+        const group = {
+          key,
+          name: skillPackageName(skill),
+          source: skill.packageSource || skill.source || "",
+          items: [],
+        };
+        index.set(key, group);
+        groups.push(group);
+      }
+      index.get(key).items.push(skill);
+      return true;
+    };
+
+    for (const skill of filteredSkills) {
+      if (skill.scope !== "project") {
+        if (!addToPackage(packageGroups, packageIndex, skill)) {
+          regular.push(skill);
+        }
+        continue;
+      }
+      const key = skill.projectDir || "__current_project__";
+      if (!projectIndex.has(key)) {
+        const group = {
+          key,
+          name: projectDisplayName(skill.projectName || t("projectScope")),
+          items: [],
+          packageGroups: [],
+          packageIndex: new Map(),
+          total: 0,
+        };
+        projectIndex.set(key, group);
+        projectGroups.push(group);
+      }
+      const group = projectIndex.get(key);
+      group.total += 1;
+      if (!addToPackage(group.packageGroups, group.packageIndex, skill)) {
+        group.items.push(skill);
+      }
+    }
+    for (const group of projectGroups) {
+      delete group.packageIndex;
+    }
+    regular.sort(compareSkills);
+    packageGroups.sort((a, b) => a.name.localeCompare(b.name));
+    for (const group of packageGroups) {
+      group.items.sort(compareSkills);
+    }
+    projectGroups.sort((a, b) => a.name.localeCompare(b.name));
+    for (const group of projectGroups) {
+      group.items.sort(compareSkills);
+      group.packageGroups.sort((a, b) => a.name.localeCompare(b.name));
+      for (const packageGroup of group.packageGroups) {
+        packageGroup.items.sort(compareSkills);
+      }
+    }
+    return { regular, packageGroups, projectGroups };
+  }, [filteredSkills]);
+
+  const togglePackageGroup = useCallback((key) => {
+    setCollapsedPackages((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const toggleProjectGroup = useCallback((key) => {
+    setCollapsedProjects((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const renderPackageGroup = (group, indentClass = "pl-6") => {
+    const collapsed = collapsedPackages.has(group.key);
+    return (
+      <div key={group.key} className="grid gap-1">
+        <SkillGroupHeader
+          icon="package"
+          name={group.name}
+          count={group.items.length}
+          collapsed={collapsed}
+          title={group.source || group.key}
+          onClick={() => togglePackageGroup(group.key)}
+        />
+        {!collapsed && (
+          <div className={cn("grid gap-2", indentClass)}>
+            <SkillCards
+              items={group.items}
+              onView={setViewSkill}
+              onToggle={handleToggle}
+              onEdit={setEditing}
+              onDelete={handleDelete}
+            />
+          </div>
+        )}
+      </div>
+    );
+  };
 
   if (loading) {
     return (
@@ -453,37 +931,43 @@ export function SkillPanel() {
         </div>
       </div>
 
-      <div className="rounded-lg border border-(--border-default) bg-(--bg-secondary) p-3">
-        <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto] sm:items-center">
-          <Input
-            value={installSource}
-            onChange={(e) => setInstallSource(e.target.value)}
-            placeholder={t("skillInstallPlaceholder")}
-            className="h-8 text-[13px]"
-          />
-          <Select
-            value={installScope}
-            onValueChange={setInstallScope}
-          >
-            <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px] sm:w-[104px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent align="start">
-              <SelectItem value="project">{t("projectScope")}</SelectItem>
-              <SelectItem value="global">{t("globalScope")}</SelectItem>
-            </SelectContent>
-          </Select>
-          <Button onClick={handleInstall} disabled={installing || !installSource.trim()} size="sm">
-            <Download size={13} />
-            {installing ? t("installing") : t("installSkill")}
-          </Button>
-        </div>
-        {installError && (
-          <div className="mt-2 text-[11px] text-(--accent-red)">
-            {installError}
-          </div>
-        )}
+      <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto] sm:items-center">
+        <Input
+          value={installSource}
+          onChange={(e) => setInstallSource(e.target.value)}
+          placeholder={t("skillInstallPlaceholder")}
+          className="h-8 text-[13px]"
+        />
+        <Select
+          value={installTarget || defaultSkillTarget(normalizedProjectTargets)}
+          onValueChange={setInstallTarget}
+        >
+          <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px] sm:w-[150px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="start">
+            <SelectItem value="global">{t("globalScope")}</SelectItem>
+            {normalizedProjectTargets.map((item) => (
+              <SelectItem key={item.dir} value={projectTargetValue(item.dir)}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          onClick={handleInstall}
+          disabled={installing || !installSource.trim()}
+          size="sm"
+        >
+          <Download size={13} />
+          {installing ? t("installing") : t("installSkill")}
+        </Button>
       </div>
+      {installError && (
+        <div className="mt-2 text-[11px] text-(--accent-red)">
+          {installError}
+        </div>
+      )}
 
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <div className="relative flex-1">
@@ -498,7 +982,7 @@ export function SkillPanel() {
             className="h-8 pl-8 text-[13px]"
           />
         </div>
-        <div className="flex shrink-0 rounded-md border border-(--border-default) p-0.5">
+        <div className="flex shrink-0 rounded-md border border-(--border-default) p-0.5 gap-0.5">
           {FILTERS.map((item) => (
             <Button
               key={item}
@@ -533,111 +1017,38 @@ export function SkillPanel() {
         </div>
       )}
 
-      <div
-        className="grid max-h-[420px] gap-2 overflow-y-auto pr-1"
-      >
-        {filteredSkills.map((skill) => {
-          const enabled = isEnabled(skill);
+      <div className="grid max-h-[420px] gap-2 overflow-y-auto pr-1">
+        <SkillCards
+          items={groupedSkills.regular}
+          onView={setViewSkill}
+          onToggle={handleToggle}
+          onEdit={setEditing}
+          onDelete={handleDelete}
+        />
+        {groupedSkills.packageGroups.map((group) => renderPackageGroup(group))}
+        {groupedSkills.projectGroups.map((group) => {
+          const collapsed = collapsedProjects.has(group.key);
           return (
-            <div
-              key={skill.name}
-              className={cn(
-                "rounded-lg border p-3 transition-colors",
-                enabled
-                  ? "border-(--border-default) bg-(--bg-primary) hover:bg-(--bg-hover)"
-                  : "border-(--border-default) bg-(--bg-secondary) opacity-75",
-              )}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="truncate text-[13px] font-medium text-(--text-primary)">
-                      {skill.name}
-                    </span>
-                    <Badge
-                      variant={isBuiltin(skill) ? "secondary" : "outline"}
-                      className="h-4 rounded-md px-1.5 py-0 text-[10px]"
-                    >
-                      {scopeLabel(skill.scope)}
-                    </Badge>
-                    <Badge
-                      variant={enabled ? "outline" : "secondary"}
-                      className="h-4 rounded-md px-1.5 py-0 text-[10px]"
-                    >
-                      {enabled ? t("enabled") : t("disabled")}
-                    </Badge>
-                    {skill.version && skill.version !== "0.0.0" && (
-                      <span className="text-[10px] text-(--text-muted)">
-                        v{skill.version}
-                      </span>
-                    )}
-                    {skill.mode && (
-                      <Badge
-                        variant="outline"
-                        className="h-4 rounded-md px-1.5 py-0 text-[10px]"
-                      >
-                        {t(`skillMode_${skill.mode}`)}
-                      </Badge>
-                    )}
-                  </div>
-                  <div className="mt-1 line-clamp-2 text-[11px] leading-4 text-(--text-muted)">
-                    {skill.description || t("noDescription")}
-                  </div>
-                  {skill.triggers?.length > 0 && (
-                    <div className="mt-1 truncate text-[10px] text-(--text-muted)">
-                      {t("skillTriggers")}: {skill.triggers.join(", ")}
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex shrink-0 items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    onClick={() => setViewSkill(skill)}
-                    title={t("view")}
-                  >
-                    <Eye size={13} />
-                  </Button>
-                  <SwitchControl
-                    checked={enabled}
-                    onClick={() => handleToggle(skill.name, !enabled)}
-                    title={enabled ? t("disable") : t("enable")}
+            <div key={group.key} className="grid gap-1">
+              <SkillGroupHeader
+                name={group.name}
+                count={group.total}
+                collapsed={collapsed}
+                title={group.key}
+                onClick={() => toggleProjectGroup(group.key)}
+              />
+              {!collapsed && (
+                <div className="grid gap-2 pl-6">
+                  <SkillCards
+                    items={group.items}
+                    onView={setViewSkill}
+                    onToggle={handleToggle}
+                    onEdit={setEditing}
+                    onDelete={handleDelete}
                   />
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    onClick={() => setEditing(skill)}
-                    title={isBuiltin(skill) ? t("skillRoutingSettings") : t("edit")}
-                  >
-                    {isBuiltin(skill) ? <SlidersHorizontal size={13} /> : <Pencil size={13} />}
-                  </Button>
-                  {!isBuiltin(skill) && (
-                    <>
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        onClick={() => {
-                          if (
-                            confirm(
-                              t("confirmDeleteSkill").replace(
-                                "{{name}}",
-                                skill.name,
-                              ),
-                            )
-                          ) {
-                            handleDelete(skill.name);
-                          }
-                        }}
-                        title={t("delete")}
-                        className="text-(--accent-red) hover:text-(--accent-red)"
-                      >
-                        <Trash2 size={13} />
-                      </Button>
-                    </>
-                  )}
+                  {group.packageGroups.map((pkg) => renderPackageGroup(pkg))}
                 </div>
-              </div>
+              )}
             </div>
           );
         })}
@@ -652,6 +1063,7 @@ export function SkillPanel() {
       />
       <SkillEditorDialog
         skill={editing === "new" ? null : editing}
+        projectTargets={normalizedProjectTargets}
         open={!!editing}
         onSave={handleSave}
         onOpenChange={(open) => {

@@ -24,6 +24,7 @@ import { runDreamConsolidation } from './dream-consolidate.js';
 import { normalizePlanState } from './plan-state.js';
 import { normalizeTodos } from './todo-state.js';
 import { createFffAdapter } from './fff-adapter.js';
+import { loadIndexedSkills, renderCommandPrompt } from './command-loader.js';
 import {
   getToolOutputSanitizeOptions,
   sanitizePreviewLines,
@@ -44,9 +45,28 @@ const BACKGROUND_TASK_RECENT_OUTPUT_LIMIT = 80;
 const BACKGROUND_TASK_POLL_MS = 150;
 const MAX_AST_ENCLOSING_BYTES = 300_000;
 const MAX_AST_ENCLOSING_LINES = 5_000;
+const SKILL_ALIASES = new Map([
+  ['superpowers-lite', 'using-superpowers'],
+  ['superpowers', 'using-superpowers'],
+  ['brainstorm', 'brainstorming']
+]);
+const RUN_COMMAND_SAFE_MODE_APPROVED = Symbol('runCommandSafeModeApproved');
 const backgroundTaskRegistry = new Map();
 let backgroundTaskCounter = 0;
 let backgroundTaskLogCursorCounter = 0;
+
+export function markRunCommandSafeModeApproved(args = {}) {
+  const next = { ...(args && typeof args === 'object' ? args : {}) };
+  Object.defineProperty(next, RUN_COMMAND_SAFE_MODE_APPROVED, {
+    value: true,
+    enumerable: false
+  });
+  return next;
+}
+
+export function hasRunCommandSafeModeApproval(args = {}) {
+  return Boolean(args?.[RUN_COMMAND_SAFE_MODE_APPROVED]);
+}
 
 async function realpathIfExists(targetPath) {
   try {
@@ -213,6 +233,40 @@ function trimPreview(value, maxLen = 300) {
   const text = normalizeWhitespace(value);
   if (text.length <= maxLen) return text;
   return `${text.slice(0, Math.max(0, maxLen - 3))}...`;
+}
+
+function normalizeSkillToolName(value) {
+  const raw = String(value || '').trim().replace(/^\/+/, '');
+  if (!raw) return '';
+  const lower = raw.toLowerCase();
+  return SKILL_ALIASES.get(lower) || raw;
+}
+
+function skillScopeFromSource(source = '') {
+  if (source === 'bundled-skill') return 'builtin';
+  if (source === 'project-skill') return 'project';
+  if (source === 'global-skill' || source === 'registry-skill') return 'global';
+  return source || 'unknown';
+}
+
+function isIndexedSkillEnabled(command, config = {}) {
+  if (command?.metadata?.enabled === false) return false;
+  const scope = skillScopeFromSource(command?.source);
+  if (scope === 'builtin') return true;
+  return config?.skills?.enabled?.[command?.name] !== false;
+}
+
+function summarizeIndexedSkill(command) {
+  return {
+    name: command.name,
+    description: command.metadata?.description || '',
+    mode: command.metadata?.mode || '',
+    scope: skillScopeFromSource(command.source),
+    path: command.path,
+    packageName: command.metadata?.packageName || '',
+    packageSource: command.metadata?.packageSource || command.metadata?.source || '',
+    enabled: command.metadata?.enabled !== false
+  };
 }
 
 function normalizeWebUrl(value) {
@@ -986,61 +1040,50 @@ async function writeFile(root, args, config = {}) {
   const normalizedArgs = normalizeWriteArgs(args);
   const rawPath = String(normalizedArgs?.path || '').trim();
   if (!rawPath) {
-    throw new Error('write requires a file path like weather/WeatherForecast.js');
+    throw new Error('create requires a file path like src/app.js');
   }
   if (rawPath === '.' || rawPath === './') {
-    throw new Error('write requires a file path, not the workspace root');
+    throw new Error('create requires a file path, not the workspace root');
+  }
+  if (normalizedArgs?.content == null) {
+    throw new Error('create requires content');
   }
   const target = await resolveInWorkspace(root, rawPath, config);
   try {
     const stat = await fs.stat(target);
     if (stat.isDirectory()) {
-      throw new Error(`write target is a directory: ${rawPath}`);
+      throw new Error(`create target is a directory: ${rawPath}`);
     }
   } catch (error) {
     if (error?.code && error.code !== 'ENOENT') throw error;
   }
-  let before = '';
-  let existed = true;
+  let existed = false;
   try {
-    before = await fs.readFile(target, 'utf8');
+    await fs.readFile(target, 'utf8');
+    existed = true;
   } catch {
-    existed = false;
+    /* file does not exist — expected path */
   }
-  if (existed && !normalizedArgs?.append && !normalizedArgs?.full_file_rewrite) {
+  if (existed) {
     throw new Error(
-      'write blocks full overwrite for existing files by default. Use read -> edit for existing file changes, or pass full_file_rewrite=true when a whole-file rewrite is truly intended.'
+      `create target already exists: ${rawPath}. Use edit to modify existing files.`
     );
   }
+  const nextContent = String(normalizedArgs.content ?? '');
   await fs.mkdir(path.dirname(target), { recursive: true });
-  if (normalizedArgs?.append) {
-    await fs.appendFile(target, normalizedArgs?.content || '', 'utf8');
-  } else {
-    await fs.writeFile(target, normalizedArgs?.content || '', 'utf8');
-  }
-  const after = normalizedArgs?.append ? `${before}${normalizedArgs?.content || ''}` : normalizedArgs?.content || '';
-  const beforeLines = splitLines(before);
-  const afterLines = splitLines(after);
-  let changeLine = 0;
-  const scanMax = Math.max(beforeLines.length, afterLines.length);
-  for (let i = 0; i < scanMax; i += 1) {
-    if ((beforeLines[i] || '') !== (afterLines[i] || '')) {
-      changeLine = i + 1;
-      break;
-    }
-  }
-  const changed = countChangedLines(before, after);
+  await fs.writeFile(target, nextContent, 'utf8');
+  const afterLines = splitLines(nextContent);
+  const changed = { added: afterLines.length, removed: 0 };
   return {
     ok: true,
     path: rawPath,
-    action: normalizedArgs?.append ? 'append' : existed ? 'overwrite' : 'create',
-    changed_line: changeLine || Math.max(1, afterLines.length),
-    diff_preview: buildDiffPreview(before, after),
+    action: 'create',
+    changed_line: 1,
+    diff_preview: buildDiffPreview('', nextContent),
     lines_added: changed.added,
     lines_removed: changed.removed
   };
 }
-
 async function prepareDeleteTarget(root, args, config = {}) {
   const normalizedArgs = normalizePathArgs(args, ['file', 'file_path', 'target', 'directory', 'dir']);
   const rawPath = String(normalizedArgs?.path || '').trim();
@@ -1111,7 +1154,7 @@ async function runCommand(root, config, args) {
   }
 
   const check = evaluateCommandPolicy(command, config, root);
-  if (!check.allowed) {
+  if (!check.allowed && !hasRunCommandSafeModeApproval(args)) {
     throw new Error(
       `Command blocked by safe mode: ${check.reason}${check.suggestion ? ` | ${check.suggestion}` : ''}`
     );
@@ -1282,7 +1325,7 @@ async function startBackgroundTask(root, config, args) {
     throw new Error('Command blocked by policy');
   }
   const check = evaluateCommandPolicy(command, config, root);
-  if (!check.allowed) {
+  if (!check.allowed && !hasRunCommandSafeModeApproval(args)) {
     throw new Error(
       `Command blocked by safe mode: ${check.reason}${check.suggestion ? ` | ${check.suggestion}` : ''}`
     );
@@ -1666,6 +1709,91 @@ function lineRangeToOffsets(content, startLineRaw, endLineRaw) {
   return { startLine, endLine, startOffset, endOffset };
 }
 
+function normalizeNewlinesWithMap(text) {
+  const source = String(text || '');
+  const chars = [];
+  const indexMap = [];
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === '\r') {
+      chars.push('\n');
+      indexMap.push(i);
+      if (source[i + 1] === '\n') i += 1;
+      continue;
+    }
+    chars.push(ch);
+    indexMap.push(i);
+  }
+  return { text: chars.join(''), indexMap };
+}
+
+function detectEol(text) {
+  const sample = String(text || '');
+  const crlf = (sample.match(/\r\n/g) || []).length;
+  const loneLf = (sample.match(/(?<!\r)\n/g) || []).length;
+  const loneCr = (sample.match(/\r(?!\n)/g) || []).length;
+  if (crlf >= loneLf && crlf >= loneCr && crlf > 0) return '\r\n';
+  if (loneCr > loneLf && loneCr > 0) return '\r';
+  return '\n';
+}
+
+function applyEol(text, eol) {
+  return String(text || '').replace(/\r\n|\r|\n/g, eol || '\n');
+}
+
+function findLineEndingEquivalentMatches(content, oldText) {
+  const normalizedOld = normalizeNewlinesWithMap(oldText).text;
+  if (!normalizedOld) return [];
+  const normalizedContent = normalizeNewlinesWithMap(content);
+  const matches = [];
+  let pos = 0;
+  while (true) {
+    const found = normalizedContent.text.indexOf(normalizedOld, pos);
+    if (found === -1) break;
+    const start = normalizedContent.indexMap[found] ?? 0;
+    const endNorm = found + normalizedOld.length;
+    const end = endNorm >= normalizedContent.text.length
+      ? String(content || '').length
+      : normalizedContent.indexMap[endNorm];
+    matches.push({ start, end });
+    pos = found + Math.max(1, normalizedOld.length);
+  }
+  return matches;
+}
+
+function findTrailingWhitespaceTolerantMatches(content, oldText) {
+  if (!oldText) return [];
+  const escapedLines = oldText.split('\n').map((line) => {
+    const trimmed = line.replace(/[ \t]+$/, '');
+    return `${escapeRegex(trimmed)}[ \t]*`;
+  });
+  const pattern = escapedLines.join('\n');
+  if (!pattern) return [];
+  try {
+    const regex = new RegExp(pattern, 'g');
+    const matches = [];
+    let match;
+    while ((match = regex.exec(content)) !== null) {
+      matches.push({ start: match.index, end: match.index + match[0].length });
+    }
+    return matches;
+  } catch {
+    return [];
+  }
+}
+
+function buildOldTextNotFoundHint(content, oldText, relativePath) {
+  const firstLine = String(oldText || '').split('\n')[0].substring(0, 100);
+  const snippetLines = splitLines(String(content || '')).slice(0, 15);
+  const snippet = snippetLines.map((l, i) => `${i + 1}| ${l}`).join('\n');
+  return [
+    `old_text not found in ${relativePath || 'file'}.`,
+    `Searched for: "${firstLine}${firstLine.length < (oldText || '').length ? '...' : ''}"`,
+    `File starts with:\n${snippet}${snippetLines.length < splitLines(content).length ? '\n...' : ''}`,
+    `Hint: Check for trailing spaces, tab/space indentation, or CRLF vs LF line endings.`
+  ].join('\n');
+}
+
 async function replaceBlock(root, args, config = {}) {
   const relativePath = String(args?.path || '').trim();
   const newContent = String(args?.new_content || args?.content || '');
@@ -1702,6 +1830,56 @@ async function replaceText(root, args, config = {}) {
     : null;
   const searchContent = range ? state.content.slice(range.startOffset, range.endOffset) : state.content;
   const occurrences = searchContent.split(oldText).length - 1;
+  let newlineMatches = null;
+  if (occurrences === 0 && /[\r\n]/.test(oldText)) {
+    newlineMatches = findLineEndingEquivalentMatches(searchContent, oldText);
+    if ((replaceAll && newlineMatches.length > 0) || newlineMatches.length === 1) {
+      let cursor = 0;
+      let replaced = '';
+      for (const match of newlineMatches) {
+        const originalMatch = searchContent.slice(match.start, match.end);
+        replaced += searchContent.slice(cursor, match.start);
+        replaced += applyEol(newText, detectEol(originalMatch));
+        cursor = match.end;
+        if (!replaceAll) break;
+      }
+      replaced += searchContent.slice(cursor);
+      const afterContent = range
+        ? `${state.content.slice(0, range.startOffset)}${replaced}${state.content.slice(range.endOffset)}`
+        : replaced;
+      await fs.writeFile(state.target, afterContent, 'utf8');
+      const first = newlineMatches[0];
+      const changedLine = range
+        ? range.startLine + splitLines(searchContent.slice(0, first.start)).length - 1
+        : splitLines(state.content.slice(0, first.start)).length;
+      return editResult(relativePath, 'replace_text', state.content, afterContent, changedLine);
+    }
+  }
+  let trailingWsMatches = null;
+  if (occurrences === 0 && !newlineMatches) {
+    trailingWsMatches = findTrailingWhitespaceTolerantMatches(searchContent, oldText);
+    if ((replaceAll && trailingWsMatches.length > 0) || trailingWsMatches.length === 1) {
+      let cursor = 0;
+      let replaced = '';
+      for (const match of trailingWsMatches) {
+        const originalMatch = searchContent.slice(match.start, match.end);
+        replaced += searchContent.slice(cursor, match.start);
+        replaced += applyEol(newText, detectEol(originalMatch));
+        cursor = match.end;
+        if (!replaceAll) break;
+      }
+      replaced += searchContent.slice(cursor);
+      const afterContent = range
+        ? `${state.content.slice(0, range.startOffset)}${replaced}${state.content.slice(range.endOffset)}`
+        : replaced;
+      await fs.writeFile(state.target, afterContent, 'utf8');
+      const first = trailingWsMatches[0];
+      const changedLine = range
+        ? range.startLine + splitLines(searchContent.slice(0, first.start)).length - 1
+        : splitLines(state.content.slice(0, first.start)).length;
+      return editResult(relativePath, 'replace_text', state.content, afterContent, changedLine);
+    }
+  }
   if (occurrences !== 1) {
     if (replaceAll && occurrences > 0) {
       const replaced = searchContent.replaceAll(oldText, newText);
@@ -1714,10 +1892,27 @@ async function replaceText(root, args, config = {}) {
         : splitLines(state.content.slice(0, state.content.indexOf(oldText))).length;
       return editResult(relativePath, 'replace_text', state.content, afterContent, changedLine);
     }
+    const baseLine = hasRange ? range.startLine : 1;
+    const baseOffset = hasRange ? range.startOffset : 0;
+    const lineDetails = [];
+    let searchPos = 0;
+    while (true) {
+      const pos = searchContent.indexOf(oldText, searchPos);
+      if (pos === -1) break;
+      const lineNum = baseLine + splitLines(searchContent.slice(0, pos)).length - 1;
+      const globalPos = baseOffset + pos;
+      const lStart = state.content.lastIndexOf('\n', globalPos) + 1;
+      const lEnd = state.content.indexOf('\n', globalPos);
+      const lineText = state.content.slice(lStart, lEnd >= 0 ? lEnd : void 0).trim();
+      lineDetails.push(`  Line ${lineNum}: ${lineText}`);
+      searchPos = pos + oldText.length;
+    }
+    const lineHint = lineDetails.length > 0 ? `\n${lineDetails.join('\n')}\n` : ' ';
+    const effectiveOccurrences = newlineMatches?.length || trailingWsMatches?.length || occurrences;
     throw new Error(
-      occurrences === 0
-        ? 'replace_text old_text not found'
-        : 'replace_text old_text not unique; add a line range like path:"file.js:10-30" or set replace_all=true'
+      effectiveOccurrences === 0
+        ? buildOldTextNotFoundHint(searchContent, oldText, relativePath)
+        : `replace_text old_text not unique; found ${effectiveOccurrences} occurrences:${lineHint}Use path:"${relativePath}:N-M" to narrow the range, set replace_all=true, or provide more unique old_text`
     );
   }
   const replaced = searchContent.replace(oldText, newText);
@@ -1745,6 +1940,145 @@ async function insertRelative(root, args, mode, config = {}) {
   await fs.writeFile(state.target, afterContent, 'utf8');
   const changedLine = splitLines(state.content.slice(0, state.content.indexOf(anchorText))).length;
   return editResult(relativePath, mode, state.content, afterContent, changedLine);
+}
+
+function commentSyntaxForFile(file = '') {
+  const ext = path.extname(String(file || '').toLowerCase());
+  if (['.py', '.rb', '.sh', '.bash', '.zsh', '.ps1', '.psm1', '.yaml', '.yml', '.toml'].includes(ext)) {
+    return { prefix: '# ', suffix: '' };
+  }
+  if (['.html', '.htm', '.xml', '.svg', '.vue', '.svelte'].includes(ext)) {
+    return { prefix: '<!-- ', suffix: ' -->' };
+  }
+  if (['.css', '.scss', '.sass', '.less'].includes(ext)) {
+    return { prefix: '/* ', suffix: ' */' };
+  }
+  if (['.sql'].includes(ext)) {
+    return { prefix: '-- ', suffix: '' };
+  }
+  if (['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.java', '.c', '.cpp', '.cc', '.cxx', '.h', '.hpp', '.cs', '.go', '.rs', '.swift', '.kt', '.kts', '.scala', '.m', '.mm', '.dart', '.php'].includes(ext)) {
+    return { prefix: '/* ', suffix: ' */' };
+  }
+  return { prefix: '// ', suffix: '' };
+}
+
+function formatCodeCommentLines(comment, file, indent = '') {
+  const rawLines = String(comment || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (rawLines.length === 0) throw new Error('add_code_comment requires comment text');
+  const { prefix, suffix } = commentSyntaxForFile(file);
+  return rawLines.map((line) => `${indent}${prefix}${line}${suffix}`);
+}
+
+function isCodeCommentLine(line, file) {
+  const trimmed = String(line || '').trim();
+  if (!trimmed) return true;
+  const { prefix, suffix } = commentSyntaxForFile(file);
+  const normalizedPrefix = prefix.trim();
+  const normalizedSuffix = suffix.trim();
+  if (normalizedPrefix && trimmed.startsWith(normalizedPrefix)) {
+    return !normalizedSuffix || trimmed.endsWith(normalizedSuffix);
+  }
+  return (
+    trimmed.startsWith('//') ||
+    trimmed.startsWith('#') ||
+    trimmed.startsWith('--') ||
+    (trimmed.startsWith('/*') && trimmed.endsWith('*/')) ||
+    (trimmed.startsWith('<!--') && trimmed.endsWith('-->'))
+  );
+}
+
+async function addCodeComment(root, args, config = {}) {
+  const relativePath = normalizeFilePathValue(args?.path || args?.file || args?.file_path || '', { stripInlineRange: true }).trim();
+  if (!relativePath) throw new Error('add_code_comment requires path');
+  const state = await getFileState(root, relativePath, config);
+  const eol = state.content.includes('\r\n') ? '\r\n' : '\n';
+  const hadFinalNewline = /\r?\n$/.test(state.content);
+  const lines = state.content.split(/\r?\n/);
+  if (hadFinalNewline) lines.pop();
+
+  const position = String(args?.position || 'before').trim().toLowerCase() === 'after' ? 'after' : 'before';
+  const requestedLine = Number(args?.line);
+  const anchorText = String(args?.anchor_text || '').trim();
+  let targetIndex = -1;
+
+  if (Number.isFinite(requestedLine) && requestedLine >= 1) {
+    targetIndex = Math.min(lines.length, Math.max(0, Math.floor(requestedLine) - 1));
+  } else if (anchorText) {
+    const matches = [];
+    for (let index = 0; index < lines.length; index += 1) {
+      if (lines[index].includes(anchorText)) matches.push(index);
+    }
+    if (matches.length !== 1) {
+      throw new Error(matches.length === 0 ? 'add_code_comment anchor not found' : 'add_code_comment anchor not unique');
+    }
+    targetIndex = matches[0];
+  } else {
+    throw new Error('add_code_comment requires line or anchor_text');
+  }
+
+  const referenceLine = lines[Math.min(targetIndex, Math.max(0, lines.length - 1))] || '';
+  const indent = referenceLine.match(/^\s*/)?.[0] || '';
+  const insertAt = position === 'after' ? Math.min(lines.length, targetIndex + 1) : targetIndex;
+  const commentLines = formatCodeCommentLines(args?.comment ?? args?.content, relativePath, indent);
+  const nextLines = [...lines.slice(0, insertAt), ...commentLines, ...lines.slice(insertAt)];
+  const afterContent = `${nextLines.join(eol)}${hadFinalNewline ? eol : ''}`;
+  await fs.writeFile(state.target, afterContent, 'utf8');
+  return editResult(relativePath, 'add_code_comment', state.content, afterContent, insertAt + 1);
+}
+
+async function updateCodeComment(root, args, config = {}) {
+  const relativePath = normalizeFilePathValue(args?.path || args?.file || args?.file_path || '', { stripInlineRange: true }).trim();
+  if (!relativePath) throw new Error('update_code_comment requires path');
+  const state = await getFileState(root, relativePath, config);
+  const eol = state.content.includes('\r\n') ? '\r\n' : '\n';
+  const hadFinalNewline = /\r?\n$/.test(state.content);
+  const lines = state.content.split(/\r?\n/);
+  if (hadFinalNewline) lines.pop();
+
+  const anchorText = String(args?.anchor_text || '').trim();
+  const startLine = Number(args?.start_line ?? args?.line);
+  const endLine = Number(args?.end_line ?? args?.line);
+  let startIndex = -1;
+  let endIndex = -1;
+
+  if (Number.isFinite(startLine) && startLine >= 1) {
+    startIndex = Math.min(lines.length - 1, Math.max(0, Math.floor(startLine) - 1));
+    endIndex = Number.isFinite(endLine) && endLine >= startLine
+      ? Math.min(lines.length - 1, Math.floor(endLine) - 1)
+      : startIndex;
+  } else if (anchorText) {
+    const matches = [];
+    for (let index = 0; index < lines.length; index += 1) {
+      if (lines[index].includes(anchorText)) matches.push(index);
+    }
+    if (matches.length !== 1) {
+      throw new Error(matches.length === 0 ? 'update_code_comment anchor not found' : 'update_code_comment anchor not unique');
+    }
+    startIndex = matches[0];
+    endIndex = matches[0];
+  } else {
+    throw new Error('update_code_comment requires line, start_line/end_line, or anchor_text');
+  }
+
+  const targetLines = lines.slice(startIndex, endIndex + 1);
+  if (targetLines.length === 0 || targetLines.some((line) => !isCodeCommentLine(line, relativePath))) {
+    throw new Error('update_code_comment can only replace existing comment lines');
+  }
+
+  const referenceLine = targetLines.find((line) => line.trim()) || lines[startIndex] || '';
+  const indent = referenceLine.match(/^\s*/)?.[0] || '';
+  const commentLines = formatCodeCommentLines(args?.comment ?? args?.content ?? args?.new_comment, relativePath, indent);
+  const nextLines = [
+    ...lines.slice(0, startIndex),
+    ...commentLines,
+    ...lines.slice(endIndex + 1)
+  ];
+  const afterContent = `${nextLines.join(eol)}${hadFinalNewline ? eol : ''}`;
+  await fs.writeFile(state.target, afterContent, 'utf8');
+  return editResult(relativePath, 'update_code_comment', state.content, afterContent, startIndex + 1);
 }
 
 async function openTarget(root, args, config = {}) {
@@ -1842,6 +2176,7 @@ async function editTarget(root, args, config = {}) {
     edit.new_text = edit.new_string;
   }
   const hasContent = edit.new_content != null || edit.content != null;
+  const hasExplicitRewrite = edit.kind === 'rewrite_file' || args?.kind === 'rewrite_file';
   const hasTargetHint = Boolean(edit.symbol || args?.symbol || edit.line || args?.line || edit.target);
   if (!kind) {
     if (hasContent && hasTargetHint) {
@@ -1850,7 +2185,7 @@ async function editTarget(root, args, config = {}) {
       kind = 'replace_text';
     } else if ((edit.anchor_text != null || edit.target_text != null) && (edit.content != null || edit.new_content != null)) {
       kind = String(edit.position || edit.mode || args?.position || '').trim() === 'after' ? 'insert_after' : 'insert_before';
-    } else if (hasContent) {
+    } else if (hasContent && hasExplicitRewrite) {
       kind = 'rewrite_file';
     }
   }
@@ -1863,8 +2198,8 @@ async function editTarget(root, args, config = {}) {
         ? 'new_text'
         : 'edit operation';
     const hint = recentFile
-      ? ` If you meant the recently read file ${recentFile}, use edit with {file:"${recentFile}", old_text:"...", new_text:"..."} for a text replacement, or {file:"${recentFile}", edit:{kind:"rewrite_file", new_content:"..."}} for a full rewrite.`
-      : ' Use edit with {file:"path", old_text:"...", new_text:"..."} for a text replacement, or {file:"path", edit:{kind:"rewrite_file", new_content:"..."}} for a full rewrite.';
+      ? ` If you meant the recently read file ${recentFile}, use edit with {file:"${recentFile}", old_text:"...", new_text:"..."} for a text replacement, or {file:"${recentFile}", kind:"rewrite_file", new_content:"..."} for a full rewrite.`
+      : ' Use edit with {file:"path", old_text:"...", new_text:"..."} for a text replacement, or {file:"path", kind:"rewrite_file", new_content:"..."} for a full rewrite.';
     throw new Error(`edit requires ${missing}.${rawArgs}${hint}`);
   }
   if (astTarget) {
@@ -1927,16 +2262,15 @@ async function editTarget(root, args, config = {}) {
     return insertRelative(root, { path: file, anchor_text: edit.anchor_text, content: edit.content }, 'insert_after', config);
   }
   if (kind === 'rewrite_file') {
-    return writeFile(root, {
-      path: file,
-      content: edit.new_content ?? edit.content ?? '',
-      full_file_rewrite: true
-    }, config);
+    const state = await getFileState(root, file, config);
+    const afterContent = String(edit.new_content ?? edit.content ?? '');
+    await fs.writeFile(state.target, afterContent, 'utf8');
+    return editResult(file, 'rewrite_file', state.content, afterContent, 1);
   }
   throw new Error(`edit does not support kind: ${kind}`);
 }
 
-export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSystemEvent, getTodos, onTodosUpdate, getPlanState, onPlanStateUpdate, fffAdapter }) {
+export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSystemEvent, getTodos, onTodosUpdate, getPlanState, onPlanStateUpdate, fffAdapter, backupManager }) {
   const emitSystemTool = (event) => {
     if (typeof onSystemEvent === 'function' && event) onSystemEvent(event);
   };
@@ -2017,6 +2351,54 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       return null;
     }
   };
+  const codeWikiCommentToolDefinitions = [
+    {
+      type: 'function',
+      function: {
+        name: 'add_code_comment',
+        description:
+          'Add comment-only documentation to an existing code file. This tool may only insert comment lines; it cannot change executable code. Provide path plus either line or anchor_text, and comment text. Use position before/after to choose insertion side.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'File path to annotate.' },
+            file_path: { type: 'string', description: 'Alias for path' },
+            file: { type: 'string', description: 'Alias for path' },
+            line: { type: 'number', description: '1-based line to annotate.' },
+            anchor_text: { type: 'string', description: 'Unique text on the line to annotate when line is not provided.' },
+            comment: { type: 'string', description: 'Plain comment text. The tool will apply the correct code comment syntax.' },
+            content: { type: 'string', description: 'Alias for comment' },
+            position: { type: 'string', enum: ['before', 'after'], description: 'Insert before or after the target line. Defaults to before.' }
+          },
+          required: ['path']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'update_code_comment',
+        description:
+          'Replace existing code comments only. The target line or range must already be comment-only lines; the tool formats the replacement as comments and refuses executable-code targets.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'File path containing the comment to update.' },
+            file_path: { type: 'string', description: 'Alias for path' },
+            file: { type: 'string', description: 'Alias for path' },
+            line: { type: 'number', description: '1-based comment line to replace.' },
+            start_line: { type: 'number', description: '1-based start line for a comment-only range.' },
+            end_line: { type: 'number', description: '1-based end line for a comment-only range.' },
+            anchor_text: { type: 'string', description: 'Unique text on the comment line to replace when line is not provided.' },
+            comment: { type: 'string', description: 'Replacement plain comment text.' },
+            new_comment: { type: 'string', description: 'Alias for comment' },
+            content: { type: 'string', description: 'Alias for comment' }
+          },
+          required: ['path']
+        }
+      }
+    }
+  ];
   const primaryDefinitions = [
     {
       type: 'function',
@@ -2125,25 +2507,23 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
             line: { type: 'number', description: 'Line to target' },
             edit: { type: 'object', description: 'Structured edit input' }
           },
-          required: ['path']
+          required: ['path', 'content']
         }
       }
     },
     {
       type: 'function',
       function: {
-        name: 'write',
+        name: 'create',
         description:
-          'Create a new file, append to a file, or perform an explicit whole-file rewrite. Always include path and content; file_path/file are accepted aliases. For existing files, prefer edit after reading the relevant range. Overwriting an existing file requires full_file_rewrite=true.',
+          'Create a new file. Always include path and content; file_path/file are accepted aliases. For modifying existing files, use edit instead. Target must not already exist.',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string', description: 'Required file path like src/app.js or pages/index.html. Never omit this.' },
             file_path: { type: 'string', description: 'Alias for path' },
             file: { type: 'string', description: 'Alias for path' },
-            content: { type: 'string', description: 'Content to write' },
-            append: { type: 'boolean', description: 'Append instead of overwrite' },
-            full_file_rewrite: { type: 'boolean', description: 'Set true for whole-file rewrites' }
+            content: { type: 'string', description: 'File content' }
           },
           required: ['path', 'content']
         }
@@ -2314,6 +2694,26 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
   ];
 
   const deferredDefinitions = {
+    skill: {
+      type: 'function',
+      function: {
+        name: 'skill',
+        description:
+          'Load an enabled Codemini skill by name from the indexed skill registry/catalog. Use this when task instructions or an always-loaded skill tell you to activate a skill such as using-superpowers, brainstorming, systematic-debugging, or verification-before-completion.',
+        parameters: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Skill name, with or without a leading slash' },
+            args: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional positional arguments to substitute into the skill prompt'
+            }
+          },
+          required: ['name']
+        }
+      }
+    },
     glob: {
       type: 'function',
       function: {
@@ -2529,8 +2929,40 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     }
   };
 
-  const definitions = [...primaryDefinitions];
+  const enableCodeWikiCommentTools = config?.runtime?.codewiki_comment_tools === true;
+  const definitions = enableCodeWikiCommentTools
+    ? [...primaryDefinitions, ...codeWikiCommentToolDefinitions]
+    : [...primaryDefinitions];
   const activeFffAdapter = fffAdapter || createFffAdapter({ workspaceRoot, config });
+  async function backupNonGitPathOnce(rawPath) {
+    if (!backupManager || typeof backupManager.backupOnce !== 'function') return null;
+    const normalized = normalizeFilePathValue(rawPath || '', { stripInlineRange: true }).trim();
+    if (!normalized) return null;
+    try {
+      const backup = await backupManager.backupOnce(normalized);
+      return backup?.ok ? backup : null;
+    } catch (error) {
+      return {
+        ok: false,
+        path: normalized,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+  function attachBackup(result, backup) {
+    if (!backup || !result || typeof result !== 'object') return result;
+    return {
+      ...result,
+      non_git_backup: true,
+      backupPath: backup.backupPath || '',
+      backupRelativePath: backup.backupRelativePath || '',
+      backupCreated: backup.created === true,
+      backupReused: backup.reused === true,
+      backupSkipped: backup.skipped === true || (!backup.backupPath && backup.existed === true),
+      backupError: backup.error || '',
+      backupReason: backup.reason || ''
+    };
+  }
   let fffConnected = false;
 
   async function ensureFffConnected() {
@@ -2678,11 +3110,30 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     },
     web_fetch: (args) => webFetchPage(args),
     web_search: (args) => webSearchQuery(config, args),
+    add_code_comment: async (args) => {
+      await ensureProjectIndex();
+      const commentPath = normalizeFilePathValue(args?.path || args?.file || args?.file_path || '', { stripInlineRange: true }).trim();
+      const backup = await backupNonGitPathOnce(commentPath);
+      const result = await addCodeComment(workspaceRoot, args, config);
+      if (result?.path) await refreshProjectFile(result.path);
+      return attachBackup(result, backup);
+    },
+    update_code_comment: async (args) => {
+      await ensureProjectIndex();
+      const commentPath = normalizeFilePathValue(args?.path || args?.file || args?.file_path || '', { stripInlineRange: true }).trim();
+      const backup = await backupNonGitPathOnce(commentPath);
+      const result = await updateCodeComment(workspaceRoot, args, config);
+      if (result?.path) await refreshProjectFile(result.path);
+      return attachBackup(result, backup);
+    },
     edit: async (args) => {
       await ensureProjectIndex();
       const normalizedKind = String(args?.edit?.kind || args?.kind || '').trim();
-      const astTarget = resolveCachedAstTarget(args, { requireAstScope: normalizedKind === 'replace_block' });
-      const editPath = normalizeFilePathValue(args?.path || args?.file || args?.file_path || '', { stripInlineRange: true }).trim();
+      const hasReplaceTextArgs = args?.edit?.old_text != null || args?.old_text != null || args?.old_string != null;
+      const astTarget = hasReplaceTextArgs || (normalizedKind && normalizedKind !== 'replace_block')
+        ? null
+        : resolveCachedAstTarget(args, { requireAstScope: normalizedKind === 'replace_block' });
+      const editPath = normalizeFilePathValue(args?.path || args?.file || args?.file_path || args?.ast_target?.path || args?.edit?.target?.path || '', { stripInlineRange: true }).trim();
       const shouldUseRecentReadRange =
         editPath &&
         lastReadRange?.path === editPath &&
@@ -2691,6 +3142,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       const rangeArgs = shouldUseRecentReadRange
         ? { start_line: lastReadRange.start_line, end_line: lastReadRange.end_line }
         : {};
+      const backup = await backupNonGitPathOnce(editPath || astTarget?.path);
       const result = await editTarget(
         workspaceRoot,
         astTarget
@@ -2699,19 +3151,23 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         config
       );
       if (result?.path) await refreshProjectFile(result.path);
-      return result;
+      return attachBackup(result, backup);
     },
-    write: async (args) => {
+    create: async (args) => {
       await ensureProjectIndex();
+      const createPath = normalizeFilePathValue(args?.path || args?.file || args?.file_path || '', { stripInlineRange: true }).trim();
+      const backup = await backupNonGitPathOnce(createPath);
       const result = await writeFile(workspaceRoot, args, config);
       if (result?.path) await refreshProjectFile(result.path);
-      return result;
+      return attachBackup(result, backup);
     },
     delete: Object.assign(async (args) => {
       await ensureProjectIndex();
+      const deletePathValue = normalizeFilePathValue(args?.path || args?.file || args?.file_path || args?.target || '', { stripInlineRange: true }).trim();
+      const backup = await backupNonGitPathOnce(deletePathValue);
       const result = await deletePath(workspaceRoot, args, config);
       if (result?.path) await refreshProjectFile(result.path);
-      return result;
+      return attachBackup(result, backup);
     }, {
       prepareApproval: async (args) => {
         const target = await prepareDeleteTarget(workspaceRoot, args, config);
@@ -2776,7 +3232,8 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         prepareApproval: async (args) => ({
           command: args?.command || '',
           risk: args?._risk || 'high',
-          evaluation: args?._evaluation || null
+          evaluation: args?._evaluation || null,
+          policyBlock: args?._policyBlock || null
         })
       }
     ),
@@ -2818,6 +3275,62 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         config,
         writeAudit: true
       });
+    },
+    skill: async (args = {}) => {
+      const requested = normalizeSkillToolName(args?.name || args?.skill || args?.query);
+      const indexedSkills = await loadIndexedSkills(workspaceRoot);
+      const allSkills = Array.from(indexedSkills.values())
+        .map((command) => ({
+          command,
+          summary: {
+            ...summarizeIndexedSkill(command),
+            enabled: isIndexedSkillEnabled(command, config)
+          }
+        }))
+        .sort((a, b) => `${a.summary.scope}:${a.summary.name}`.localeCompare(`${b.summary.scope}:${b.summary.name}`));
+
+      if (!requested || requested === 'list' || requested === 'all') {
+        return {
+          skills: allSkills.map((item) => item.summary),
+          message: 'Indexed skills loaded from catalogs and registry.'
+        };
+      }
+
+      const command = indexedSkills.get(requested) ||
+        allSkills.find((item) => item.command.name.toLowerCase() === requested.toLowerCase())?.command;
+      if (!command) {
+        return {
+          error: `Unknown indexed skill: "${requested}".`,
+          available: allSkills.filter((item) => item.summary.enabled).map((item) => item.summary.name)
+        };
+      }
+      if (!isIndexedSkillEnabled(command, config)) {
+        return { error: `Skill "${command.name}" is disabled in the skill index.` };
+      }
+
+      const skillArgs = Array.isArray(args?.args)
+        ? args.args.map((item) => String(item))
+        : args?.arguments
+          ? [String(args.arguments)]
+          : [];
+      emitSystemTool({ type: 'skill:start', name: command.name });
+      try {
+        const content = renderCommandPrompt(command, skillArgs);
+        emitSystemTool({ type: 'skill:end', name: command.name });
+        return {
+          name: command.name,
+          path: command.path,
+          scope: skillScopeFromSource(command.source),
+          packageName: command.metadata?.packageName || '',
+          packageSource: command.metadata?.packageSource || command.metadata?.source || '',
+          content
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        emitSystemTool({ type: 'skill:error', name: command.name, summary: message });
+        emitSystemTool({ type: 'skill:end', name: command.name });
+        return { error: message };
+      }
     },
     list_background_tasks: () => listBackgroundTasks(workspaceRoot),
     get_background_task: (args) => getBackgroundTask(workspaceRoot, args),
@@ -2999,7 +3512,10 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       const p = result.path || '';
       const action = result.action || '';
       const line = result.changed_line || 0;
-      const summary = `${action} ${p}${line > 0 ? ` @L${line}` : ''}`;
+      const backup = result.backupPath
+        ? `\nbackup: ${result.backupPath}${result.backupReused ? ' (reused)' : ''}`
+        : '';
+      const summary = `${action} ${p}${line > 0 ? ` @L${line}` : ''}${backup}`;
       const diffPreview = result.diff_preview || '';
       if (diffPreview) {
         const trimmed = diffPreview.length > 600 ? `${diffPreview.slice(0, 597)}...` : diffPreview;
@@ -3008,12 +3524,15 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       return summary + (result.ok !== false ? '' : ` [FAILED: ${result.error || 'unknown'}]`);
     },
 
-    write(result) {
+    create(result) {
       if (!result || typeof result !== 'object') return String(result);
       const p = result.path || '';
-      const action = result.action || 'write';
+      const action = result.action || 'create';
       const line = result.changed_line || 0;
-      const summary = `${action} ${p}${line > 0 ? ` @L${line}` : ''}`;
+      const backup = result.backupPath
+        ? `\nbackup: ${result.backupPath}${result.backupReused ? ' (reused)' : ''}`
+        : '';
+      const summary = `${action} ${p}${line > 0 ? ` @L${line}` : ''}${backup}`;
       const diffPreview = result.diff_preview || '';
       if (diffPreview) {
         const trimmed = diffPreview.length > 600 ? `${diffPreview.slice(0, 597)}...` : diffPreview;
@@ -3027,7 +3546,10 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       if (result.ok === false) return JSON.stringify(result);
       const kind = result.type || 'item';
       const target = result.path || '';
-      return `[delete: ${kind}] deleted ${target}`;
+      const backup = result.backupPath
+        ? `\nbackup: ${result.backupPath}${result.backupReused ? ' (reused)' : ''}`
+        : '';
+      return `[delete: ${kind}] deleted ${target}${backup}`;
     },
 
     run(result) {
@@ -3110,6 +3632,27 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       const content = result.content || result.source || '';
       const header = `${kind} ${name}`;
       return `${header}\n${content}`;
+    },
+
+    skill(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      if (result.error) {
+        const available = Array.isArray(result.available) && result.available.length > 0
+          ? `\nAvailable indexed skills: ${result.available.join(', ')}`
+          : '';
+        return `${result.error}${available}`;
+      }
+      if (typeof result.content === 'string') return result.content;
+      if (Array.isArray(result.skills)) {
+        if (result.skills.length === 0) return 'No indexed skills found.';
+        const lines = result.skills.map((item) => {
+          const disabled = item.enabled === false ? ' disabled' : '';
+          const desc = item.description ? ` - ${item.description}` : '';
+          return `/${item.name} [${item.scope}${disabled}]${desc}`;
+        });
+        return ['Indexed skills:', ...lines].join('\n');
+      }
+      return JSON.stringify(result);
     },
 
     web_fetch(result) {

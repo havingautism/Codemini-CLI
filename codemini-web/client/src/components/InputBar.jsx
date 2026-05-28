@@ -13,15 +13,17 @@ import {
   Minus,
   Folder,
   MessageCircle,
+  FileText,
   Sparkles,
   ListChecks,
   Hammer,
+  ShieldAlert,
+  Unlock,
   Moon,
   Archive,
   Database,
   Inbox,
   Camera,
-  RotateCcw,
   MessageSquareText,
   Drama,
 } from "lucide-react";
@@ -45,16 +47,39 @@ function getModeOptions() {
       icon: MessageCircle,
     },
     {
+      value: "plan",
+      label: t("planMode"),
+      desc: t("planModeDesc"),
+      icon: ListChecks,
+    },
+    {
+      value: "spec",
+      label: t("specMode"),
+      desc: t("specModeDesc"),
+      icon: FileText,
+    },
+  ];
+}
+
+function getApprovalModeOptions() {
+  return [
+    {
+      value: "review",
+      label: t("reviewMode"),
+      desc: t("reviewModeDesc"),
+      icon: ShieldAlert,
+    },
+    {
       value: "auto",
       label: t("autoMode"),
       desc: t("autoModeDesc"),
       icon: Sparkles,
     },
     {
-      value: "plan",
-      label: t("planMode"),
-      desc: t("planModeDesc"),
-      icon: ListChecks,
+      value: "full_access",
+      label: t("fullAccessMode"),
+      desc: t("fullAccessModeDesc"),
+      icon: Unlock,
     },
   ];
 }
@@ -99,12 +124,6 @@ const ACTION_COMMANDS = [
     icon: Sparkles,
     description: "Draft or update a reusable skill from the current workflow.",
   },
-  {
-    name: "retry",
-    insert: "/retry ",
-    icon: RotateCcw,
-    description: "Retry the last assistant turn.",
-  },
 ];
 
 const ACTION_COMMAND_NAMES = new Set(
@@ -112,7 +131,7 @@ const ACTION_COMMAND_NAMES = new Set(
 );
 
 const INPUT_PILL_CLASS =
-  "border border-(--border-default) bg-(--bg-primary)/30 text-(--text-secondary) h-8 rounded-full inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[13px] whitespace-nowrap transition-colors hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)";
+  "border border-transparent bg-(--bg-primary)/35 text-(--text-secondary) h-8 rounded-full inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[13px] whitespace-nowrap transition-colors hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)";
 
 function ModeSelector({ current, disabled = false }) {
   const [open, setOpen] = useState(false);
@@ -193,6 +212,87 @@ function ModeSelector({ current, disabled = false }) {
   );
 }
 
+function ApprovalModeSelector({ current, disabled = false }) {
+  const [open, setOpen] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const MODE_OPTIONS = getApprovalModeOptions();
+  const active =
+    MODE_OPTIONS.find((m) => m.value === current) || MODE_OPTIONS[0];
+  const ActiveIcon = active.icon;
+
+  const handleSelect = async (mode) => {
+    if (mode === current || switching || disabled) return;
+    setSwitching(true);
+    try {
+      const result = await api.setApprovalMode(mode);
+      if (result?.error)
+        throw new Error(result.message || "Failed to switch approval mode");
+    } catch {
+    } finally {
+      setSwitching(false);
+    }
+    setOpen(false);
+  };
+
+  return (
+    <Popover open={open} onOpenChange={(next) => !disabled && setOpen(next)}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            INPUT_PILL_CLASS,
+            "px-3 hover:border-(--accent-green)/55 hover:bg-(--accent-green-bg) hover:text-(--accent-green)",
+            (switching || disabled) && "opacity-50 pointer-events-none",
+          )}
+          disabled={disabled}
+          title={disabled ? t("switchModeDisabled") : t("switchApprovalMode")}
+        >
+          <ActiveIcon size={13} />
+          <span className="truncate">{active.label}</span>
+          <ChevronDown size={11} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        side="top"
+        align="start"
+        sideOffset={6}
+        className="w-76 p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-lg"
+      >
+        <div className="text-[11px] text-(--text-muted) px-2 py-1.5 font-medium">
+          {t("approvalMode")}
+        </div>
+        <div className="flex flex-col gap-0.5">
+          {MODE_OPTIONS.map((opt) => {
+            const Icon = opt.icon;
+            return (
+              <button
+                key={opt.value}
+                disabled={disabled || switching}
+                className={cn(
+                  "w-full border-0 rounded-md px-2 py-1.5 text-left text-[12px] cursor-pointer flex items-center gap-2",
+                  (disabled || switching) && "opacity-50 cursor-not-allowed",
+                  current === opt.value
+                    ? "bg-(--bg-active) text-(--text-primary) font-medium"
+                    : "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+                )}
+                onClick={() => handleSelect(opt.value)}
+              >
+                <Icon size={14} className="shrink-0 mt-0.5" />
+                <span className="min-w-0 flex-1">
+                  <span className="block">{opt.label}</span>
+                  <span className="block text-(--text-muted) text-[11px] font-normal leading-snug">
+                    {opt.desc}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function SoulQuickSwitch() {
   const [souls, setSouls] = useState([]);
   const [active, setActive] = useState("");
@@ -256,6 +356,109 @@ function SoulQuickSwitch() {
               <span className="truncate flex-1">{soul.name}</span>
               <span className="text-[10px] text-(--text-muted) shrink-0">
                 {soul.scope === "builtin" ? t("builtin") : t("custom")}
+              </span>
+            </button>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function SpecQuickSelect({ visible, disabled = false, onSelect }) {
+  const [open, setOpen] = useState(false);
+  const [specs, setSpecs] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  const loadSpecs = useCallback(async () => {
+    if (!visible || disabled) return;
+    setLoading(true);
+    try {
+      const result = await api.fetchSpecs();
+      setSpecs(Array.isArray(result?.specs) ? result.specs : []);
+    } catch {
+      setSpecs([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [visible, disabled]);
+
+  useEffect(() => {
+    if (open) loadSpecs();
+  }, [open, loadSpecs]);
+
+  if (!visible) return null;
+
+  const handleSelect = (spec) => {
+    if (!spec?.path) return;
+    onSelect?.(spec);
+    setOpen(false);
+  };
+
+  return (
+    <Popover open={open} onOpenChange={(next) => !disabled && setOpen(next)}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            INPUT_PILL_CLASS,
+            "px-3 hover:border-(--accent-purple)/55 hover:bg-(--accent-purple-bg) hover:text-(--accent-purple)",
+            disabled && "opacity-50 pointer-events-none",
+          )}
+          disabled={disabled}
+          title={t("planFromSpec")}
+        >
+          <FileText size={13} />
+          <span className="truncate">{t("specFile")}</span>
+          <ChevronDown size={11} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        side="top"
+        align="start"
+        sideOffset={6}
+        className="w-[420px] max-w-[calc(100vw-32px)] p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-lg"
+      >
+        <div className="flex items-center justify-between gap-2 px-2 py-1.5">
+          <span className="text-[11px] text-(--text-muted) font-medium">
+            {t("planFromSpec")}
+          </span>
+          <button
+            type="button"
+            className="border-0 bg-transparent text-[11px] text-(--text-muted) hover:text-(--text-primary) cursor-pointer"
+            onClick={loadSpecs}
+          >
+            {t("refresh")}
+          </button>
+        </div>
+        <div className="max-h-72 overflow-y-auto flex flex-col gap-0.5">
+          {loading && (
+            <div className="px-2 py-4 text-center text-[12px] text-(--text-muted)">
+              {t("loading")}
+            </div>
+          )}
+          {!loading && specs.length === 0 && (
+            <div className="px-2 py-4 text-center text-[12px] text-(--text-muted)">
+              {t("noSpecFiles")}
+            </div>
+          )}
+          {!loading && specs.map((spec) => (
+            <button
+              key={spec.path}
+              type="button"
+              className="w-full border-0 rounded-md px-2 py-2 text-left cursor-pointer grid grid-cols-[22px_minmax(0,1fr)] gap-2 bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+              onClick={() => handleSelect(spec)}
+            >
+              <span className="mt-0.5 inline-flex size-5 items-center justify-center rounded-md bg-(--accent-purple-bg) text-(--accent-purple)">
+                <FileText size={12} />
+              </span>
+              <span className="min-w-0">
+                <span className="block truncate text-[12px] font-medium">
+                  {spec.name || spec.file}
+                </span>
+                <span className="block truncate text-[11px] text-(--text-muted) font-mono">
+                  {spec.relativePath || spec.file}
+                </span>
               </span>
             </button>
           ))}
@@ -417,6 +620,13 @@ function CommandPalette({ query, onSelect, visible }) {
   );
 }
 
+function projectDisplayName(projectCwd, isGeneralChat) {
+  if (isGeneralChat) return t("generalChat");
+  const value = String(projectCwd || "").trim();
+  if (!value) return "...";
+  return value.split(/[/\\]/).filter(Boolean).pop() || value;
+}
+
 export function InputBar({
   onSubmit,
   onAbort,
@@ -426,6 +636,7 @@ export function InputBar({
   runtimeState,
   history: externalHistory,
   onOpenProject,
+  onOpenSpec,
   projectCwd,
 }) {
   const [value, setValue] = useState("");
@@ -438,8 +649,10 @@ export function InputBar({
 
   const rs = runtimeState || {};
   const mode = rs.mode || "normal";
+  const approvalMode = rs.approvalMode || "review";
   const inputLocked = busy || disabled;
   const isGeneralChat = projectCwd === "__codemini_general__";
+  const projectLabel = projectDisplayName(projectCwd, isGeneralChat);
 
   useEffect(() => {
     if (externalHistory && externalHistory.length && history.length === 0) {
@@ -507,26 +720,22 @@ export function InputBar({
     ],
   );
 
-  const handleInput = useCallback(
-    (e) => {
-      const val = e.target.value;
-      setValue(val);
-      e.target.style.height = "auto";
-      e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
+  const handleInput = useCallback((e) => {
+    const val = e.target.value;
+    setValue(val);
+    e.target.style.height = "auto";
+    e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
 
-      if (val === "/") {
-        setSlashOpen(true);
-        setSlashQuery("");
-      } else if (val.startsWith("/") && !val.includes(" ")) {
-        setSlashOpen(true);
-        setSlashQuery(val.slice(1));
-      } else {
-        setSlashOpen(false);
-      }
-
-    },
-    [],
-  );
+    if (val === "/") {
+      setSlashOpen(true);
+      setSlashQuery("");
+    } else if (val.startsWith("/") && !val.includes(" ")) {
+      setSlashOpen(true);
+      setSlashQuery(val.slice(1));
+    } else {
+      setSlashOpen(false);
+    }
+  }, []);
 
   const handleCommandSelect = useCallback((insert) => {
     setValue(insert);
@@ -542,7 +751,7 @@ export function InputBar({
         visible={slashOpen}
       />
       <div
-        className="flex flex-col gap-4 rounded-[28px] px-3 py-2 transition-colors bg-(--bg-primary/50) dark:bg-(--bg-secondary) shadow-(--shadow-default) dark:shadow-none"
+        className="flex flex-col gap-4 border border-border rounded-[28px] px-3 py-2 transition-colors bg-(--bg-primary) shadow-(--shadow-lg) dark:bg-(--bg-secondary) dark:shadow-[0_14px_44px_color-mix(in_srgb,var(--background)_70%,transparent)]"
         // style={{
         //   background:
         //     "color-mix(in srgb, var(--bg-tertiary) 72%, var(--bg-input))",
@@ -582,11 +791,21 @@ export function InputBar({
                 <Folder size={13} className="shrink-0" />
               )}
               <span className="truncate max-w-[80px]">
-                {isGeneralChat ? t("generalChat") : projectCwd || "..."}
+                {projectLabel}
               </span>
               <ChevronDown size={11} />
             </button>
             <ModeSelector current={mode} disabled={inputLocked} />
+            <SpecQuickSelect
+              visible={!isGeneralChat}
+              disabled={inputLocked}
+              onSelect={(spec) => {
+                onOpenSpec?.(spec);
+                setSlashOpen(false);
+                textareaRef.current?.focus();
+              }}
+            />
+            <ApprovalModeSelector current={approvalMode} disabled={inputLocked} />
             <SoulQuickSwitch />
           </div>
           <div className="flex items-center gap-2 ml-auto">

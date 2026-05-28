@@ -1,12 +1,12 @@
 ---
 name: project-requirements
-description: Generate an interactive project requirements report from an existing codebase. Use when the user asks for a PRD, requirements document, API-by-API breakdown, business flow, architecture map, dependency graph, flowchart, product requirements reverse-engineering, or detailed project demand analysis.
+description: Generate a CodeWiki project requirements report in interactive HTML format from an existing codebase. Same report scope as the Markdown CodeWiki—browser-openable with search, filters, collapsible API cards, and inline SVG/CSS diagrams.
 version: 0.1.0
 ---
 
-Use this skill to reverse-engineer a project into a requirements document that product, engineering, and QA can navigate.
+Use this skill to reverse-engineer a project into a CodeWiki requirements report that product, engineering, and QA can navigate in the browser.
 
-Default to an HTML report with lightweight interactions. Produce Markdown only when the user asks for a text-first artifact, a PR-friendly source document, or an additional companion file.
+This is the HTML CodeWiki report skill. It produces the same structured project analysis as `project-requirements-md`, but in interactive HTML. If the user selects Markdown, use the separate `project-requirements-md` skill instead—the same CodeWiki report in `.md` format.
 
 User request:
 
@@ -16,7 +16,7 @@ User request:
 
 Honor any concrete user request above, such as output format, report path, focus area, API subset, diagram style, or language. If it is empty, generate the default HTML requirements report for the current workspace.
 
-Follow the active reply language from the system prompt for all generated report prose, user-facing labels, placeholder text, summaries, comments, and companion Markdown unless the user explicitly requests a different language. Do not translate source code identifiers, file paths, commands, API routes, or `REQUIREMENTS_*` marker names.
+Follow the active reply language from the system prompt for all generated report prose, user-facing labels, placeholder text, summaries, and comments unless the user explicitly requests a different language. Do not translate source code identifiers, file paths, commands, API routes, or `REQUIREMENTS_*` marker names.
 
 ## Output
 
@@ -24,12 +24,6 @@ Create the primary report at:
 
 ```text
 docs/requirements/{{date}}-project-requirements.html
-```
-
-If a companion Markdown file is useful, create:
-
-```text
-docs/requirements/{{date}}-project-requirements.md
 ```
 
 The HTML should be self-contained: inline CSS, inline JavaScript, no build step, no required external assets.
@@ -120,7 +114,7 @@ This chunked approach is required for HTML reports because inline CSS, JavaScrip
    - Include code file paths for evidence.
    - Mark inferred or unknown content visibly.
    - Avoid pretending uncertain requirements are confirmed.
-   - For HTML output, write the shell first, then append/insert sections incrementally instead of producing one large complete file in a single tool call.
+   - Write the shell first, then append/insert sections incrementally instead of producing one large complete file in a single tool call.
 
 ## HTML Structure
 

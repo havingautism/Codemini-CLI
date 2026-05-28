@@ -53,6 +53,22 @@
   cursor: col-resize;
 }
 
+.codewiki-md-report {
+  min-height: 100%;
+}
+
+.codewiki-md-report-body {
+  max-width: none;
+}
+
+.codewiki-md-report-body > :first-child {
+  margin-top: 0;
+}
+
+.codewiki-md-report-body > :last-child {
+  margin-bottom: 0;
+}
+
 @media (max-width: 1279px) {
   .codewiki-layout {
     grid-template-columns: 220px minmax(0, 1fr);
@@ -168,6 +184,10 @@
   --accent-purple-bg: #f5f3ff;
   --accent-cyan: #0891b2;
   --accent-cyan-bg: #ecfeff;
+  --accent-amber: #b45309;
+  --accent-amber-bg: #fffbeb;
+  --accent-teal: #0d9488;
+  --accent-teal-bg: #f0fdfa;
   --accent-hover: #1d4ed8;
   --md-code-bg: #f5f5f5;
   --md-code-border: #e5e5e5;
@@ -234,6 +254,10 @@
   --accent-purple-bg: #2e1065;
   --accent-cyan: #22d3ee;
   --accent-cyan-bg: #083344;
+  --accent-amber: #fbbf24;
+  --accent-amber-bg: #451a03;
+  --accent-teal: #2dd4bf;
+  --accent-teal-bg: #042f2e;
   --accent-hover: #93c5fd;
   --md-code-bg: #141414;
   --md-code-border: #262626;
@@ -775,6 +799,22 @@
   --md-table-header-bg: #252526;
   --md-table-row-alt-bg: #252526;
   --md-link: #3794ff;
+}
+
+/* Keep structural edges quiet across every light/dark palette. */
+:root,
+:root[data-theme],
+:root[data-palette],
+:root[data-theme][data-palette] {
+  --border: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  --input: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  --border-default: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  --border-strong: color-mix(in srgb, var(--text-primary) 14%, transparent);
+  --md-code-border: color-mix(in srgb, var(--text-primary) 7%, transparent);
+  --separator: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  --panel-edge: color-mix(in srgb, var(--text-primary) 3%, transparent);
+  --shadow-default: color-mix(in srgb, var(--text-primary) 6%, transparent) 0 18px 46px;
+  --shadow-lg: color-mix(in srgb, var(--text-primary) 8%, transparent) 0 22px 64px;
 }
 
 /* ── Thin themed scrollbars ── */

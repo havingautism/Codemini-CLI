@@ -4,6 +4,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getSessionsDir } from '../../src/core/paths.js';
 
+const CODEWIKI_GENERATE_TIMEOUT_MS = 35 * 60 * 1000;
+
 function webTranscriptPath(sessionId) {
   return path.join(getSessionsDir(), 'web-ui-transcripts', `${String(sessionId || 'unknown')}.json`);
 }
@@ -27,6 +29,18 @@ function summarizeHistoricalToolMessage(message) {
 
 function stripPlanProgressText(text) {
   return String(text || '').replace(/(?:^|\n)\[plan\]\s+Step\s+\d+\/\d+\s+->[^\n]*\n?/g, '');
+}
+
+function isWorkflowControlLine(line = '', state = {}) {
+  const trimmed = String(line || '').trim();
+  const lower = trimmed.toLowerCase();
+  if (!trimmed) return false;
+  if (['/yes', '/plan approve', '/no', '/reject', 'yes', 'y', 'approve', 'approved', 'no', 'n'].includes(lower)) return true;
+  if (lower.startsWith('/edit ')) return true;
+  if (/^\/(?:plan|spec|reflect)(?:\s|$)/i.test(trimmed)) return true;
+  const mode = String(state?.mode || '').toLowerCase();
+  if ((mode === 'plan' || mode === 'spec') && !trimmed.startsWith('/')) return true;
+  return false;
 }
 
 function addToolToSegments(segments, toolCard) {
@@ -237,15 +251,39 @@ function createPlanStepUiMessage(event) {
   };
 }
 
+function createPlanOverviewUiMessage(event) {
+  const steps = (event.steps || []).map((s, i) => ({
+    index: s.index ?? (i + 1),
+    title: s.title || '',
+    role: s.role || 'general',
+    status: s.status || 'pending'
+  }));
+  return {
+    id: `plan-overview-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    role: 'plan-overview',
+    text: event.goal || '',
+    segments: [],
+    skillBadges: [],
+    fileChanges: [],
+    timestamp: new Date().toISOString(),
+    planOverview: {
+      goal: event.goal || '',
+      steps
+    }
+  };
+}
+
 export class RuntimeBridge {
   #runtime = null;
   #clients = new Set();
   #approval = new ApprovalManager();
   #busy = false;
+  #codeWikiGenerating = false;
   #startupConsumed = false;
   #uiMessages = [];
   #uiActiveMsgId = null;
   #uiPlanStepIds = new Map();
+  #uiPlanOverviewId = null;
   #uiTranscriptSessionId = '';
   #uiPersisting = false;
   #uiPersistQueued = false;
@@ -316,6 +354,7 @@ export class RuntimeBridge {
     this.#uiMessages = [];
     this.#uiActiveMsgId = null;
     this.#uiPlanStepIds = new Map();
+    this.#uiPlanOverviewId = null;
   }
 
   #addUiMessage(message) {
@@ -419,17 +458,22 @@ export class RuntimeBridge {
       }
       case 'tool:end': {
         if (this.#uiActiveMsgId) {
+          const eventChanges = Array.isArray(event.fileChanges) && event.fileChanges.length
+            ? event.fileChanges
+            : (event.fileChange?.path ? [event.fileChange] : []);
           this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
             ...message,
-            fileChanges: event.fileChange?.path
-              ? [...(Array.isArray(message.fileChanges) ? message.fileChanges : []), event.fileChange]
+            fileChanges: eventChanges.length
+              ? [...(Array.isArray(message.fileChanges) ? message.fileChanges : []), ...eventChanges]
               : (Array.isArray(message.fileChanges) ? message.fileChanges : []),
             segments: updateToolInSegments(message.segments, event.id, (card) => ({
               ...card,
               status: 'done',
               durationMs: event.durationMs,
               summary: event.summary || card.summary,
-              ...(event.fileChange ? { fileChange: event.fileChange } : {})
+              ...(event.resultMeta ? { resultMeta: event.resultMeta } : {}),
+              ...(event.fileChange ? { fileChange: event.fileChange } : {}),
+              ...(eventChanges.length ? { fileChanges: eventChanges } : {})
             }))
           }));
         }
@@ -481,6 +525,10 @@ export class RuntimeBridge {
           this.#persistUiTranscriptSoon();
         }
         this.#uiPlanStepIds = new Map();
+        const overviewMsg = createPlanOverviewUiMessage(event);
+        this.#uiPlanOverviewId = overviewMsg.id;
+        this.#uiMessages = [...this.#uiMessages.filter((message) => message.transientKey !== 'waiting-response'), overviewMsg];
+        this.#persistUiTranscriptSoon();
         break;
       }
       case 'plan:step_start': {
@@ -499,6 +547,37 @@ export class RuntimeBridge {
           }));
         }
         this.#uiActiveMsgId = msgId;
+        if (this.#uiPlanOverviewId) {
+          this.#updateUiMessage(this.#uiPlanOverviewId, (message) => {
+            if (!message.planOverview) return message;
+            return {
+              ...message,
+              planOverview: {
+                ...message.planOverview,
+                steps: message.planOverview.steps.map((s, i) =>
+                  i === event.step - 1 ? { ...s, status: 'running' } : s
+                )
+              }
+            };
+          });
+        }
+        break;
+      }
+      case 'plan:progress': {
+        if (this.#uiPlanOverviewId) {
+          this.#updateUiMessage(this.#uiPlanOverviewId, (message) => {
+            if (!message.planOverview) return message;
+            return {
+              ...message,
+              planOverview: {
+                ...message.planOverview,
+                steps: message.planOverview.steps.map((s, i) =>
+                  i === event.step - 1 ? { ...s, status: event.status || s.status } : s
+                )
+              }
+            };
+          });
+        }
         break;
       }
       case 'plan:step_done': {
@@ -513,6 +592,20 @@ export class RuntimeBridge {
               summary: event.summary || ''
             }
           }));
+        }
+        if (this.#uiPlanOverviewId) {
+          this.#updateUiMessage(this.#uiPlanOverviewId, (message) => {
+            if (!message.planOverview) return message;
+            return {
+              ...message,
+              planOverview: {
+                ...message.planOverview,
+                steps: message.planOverview.steps.map((s, i) =>
+                  i === event.step - 1 ? { ...s, status: event.status || 'done' } : s
+                )
+              }
+            };
+          });
         }
         break;
       }
@@ -552,9 +645,7 @@ export class RuntimeBridge {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
     this.#resetUiTranscriptIfSessionChanged();
     const trimmed = String(line || '').trim();
-    const lower = trimmed.toLowerCase();
-    const planControl = ['/yes', '/plan approve', '/no', '/reject'].includes(lower) || lower.startsWith('/edit ');
-    if (!options?.readOnlyCodeWiki && trimmed && !planControl) {
+    if (!options?.readOnlyCodeWiki && trimmed && !isWorkflowControlLine(trimmed, this.getState())) {
       this.#addUiMessage({
         role: 'you',
         text: line,
@@ -593,12 +684,34 @@ export class RuntimeBridge {
   handleCodeWikiGenerate(line) {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
     this.#busy = true;
+    this.#codeWikiGenerating = true;
     this.#broadcastRuntimeState();
     const emitProgress = (event) => {
-      const progress = toCodeWikiGenerateProgress(event);
-      if (progress) this.#broadcast(progress);
+      try {
+        const progress = toCodeWikiGenerateProgress(event);
+        if (progress) this.#broadcast(progress);
+      } catch {}
     };
+    // Keep this above the model gateway timeout used by the runtime. Large CodeWiki
+    // generations can legitimately exceed ten minutes.
+    const safetyTimer = setTimeout(() => {
+      if (this.#busy) {
+        this.#busy = false;
+        this.#codeWikiGenerating = false;
+        this.#broadcast({ type: 'codewiki:generate_error', message: 'CodeWiki generation timed out' });
+        this.#broadcastRuntimeState();
+      }
+    }, CODEWIKI_GENERATE_TIMEOUT_MS);
+    const clearSafetyTimer = () => clearTimeout(safetyTimer);
     this.#runtime.submit(line, emitProgress, { codeWikiGenerate: true }).then((result) => {
+      clearSafetyTimer();
+      if (result?.aborted) {
+        this.#broadcast({
+          type: 'codewiki:generate_error',
+          message: result?.text || 'CodeWiki generation failed'
+        });
+        return;
+      }
       this.#broadcast({
         type: 'codewiki:generate_done',
         result: {
@@ -608,12 +721,15 @@ export class RuntimeBridge {
         }
       });
     }).catch((err) => {
+      clearSafetyTimer();
       this.#broadcast({
         type: 'codewiki:generate_error',
         message: err?.message || 'CodeWiki generation failed'
       });
     }).finally(() => {
+      clearSafetyTimer();
       this.#busy = false;
+      this.#codeWikiGenerating = false;
       this.#broadcastRuntimeState();
     });
     return { accepted: true };
@@ -659,6 +775,13 @@ export class RuntimeBridge {
     return ok;
   }
 
+  async setApprovalMode(mode) {
+    if (this.#busy) return false;
+    const ok = await this.#runtime.setApprovalMode?.(mode);
+    if (ok) this.#broadcast({ type: 'approval-mode:changed', approvalMode: mode, ...this.getState() });
+    return ok;
+  }
+
   async reloadConfig(options = {}) {
     return this.#runtime.reloadConfig?.(options);
   }
@@ -667,6 +790,41 @@ export class RuntimeBridge {
     const ok = await this.#runtime.reloadCommandsAndSkills?.();
     if (ok) this.#broadcastRuntimeState();
     return ok;
+  }
+
+  async updatePendingPlan(patch = {}) {
+    const plan = await this.#runtime.updatePendingPlan?.(patch);
+    if (plan) this.#broadcast({ type: 'plan:pending_approval', plan });
+    this.#broadcastRuntimeState();
+    return plan || null;
+  }
+
+  async updatePendingReflect(patch = {}) {
+    const draft = await this.#runtime.updatePendingReflect?.(patch);
+    if (draft) this.#broadcast({ type: 'reflect:pending_approval', draft });
+    this.#broadcastRuntimeState();
+    return draft || null;
+  }
+
+  async updatePendingSpec(patch = {}) {
+    const spec = await this.#runtime.updatePendingSpec?.(patch);
+    if (spec) this.#broadcast({ type: 'spec:pending_approval', spec });
+    this.#broadcastRuntimeState();
+    return spec || null;
+  }
+
+  async setPendingSpecFromFile(payload = {}) {
+    const spec = await this.#runtime.setPendingSpecFromFile?.(payload);
+    if (spec) this.#broadcast({ type: 'spec:pending_approval', spec });
+    this.#broadcastRuntimeState();
+    return spec || null;
+  }
+
+  async deletePendingSpec() {
+    const result = await this.#runtime.deletePendingSpec?.();
+    if (result) this.#broadcast({ type: 'spec:approval_cleared' });
+    this.#broadcastRuntimeState();
+    return result || null;
   }
 
   handleApproval(id, approved) {
@@ -680,8 +838,10 @@ export class RuntimeBridge {
       ...serializableState,
       busy: this.#busy,
       requestInFlight: this.#busy,
+      codeWikiGenerating: this.#codeWikiGenerating,
       pendingPlanApproval: this.#busy ? null : serializableState.pendingPlanApproval,
-      pendingReflectSkill: this.#busy ? null : serializableState.pendingReflectSkill
+      pendingReflectSkill: this.#busy ? null : serializableState.pendingReflectSkill,
+      pendingSpecApproval: this.#busy ? null : serializableState.pendingSpecApproval
     };
   }
 
@@ -704,7 +864,9 @@ export class RuntimeBridge {
         toolSummary: m.role === 'tool' ? summarizeHistoricalToolMessage(m) : null,
         toolDurationMs: Number.isFinite(Number(m.tool_duration_ms)) ? Number(m.tool_duration_ms) : null,
         toolStatus: m.tool_status || null,
+        toolResultMeta: m.tool_result_meta || null,
         toolFileChange: m.tool_file_change || null,
+        toolFileChanges: Array.isArray(m.tool_file_changes) ? m.tool_file_changes : [],
         planTranscript: Array.isArray(m.plan_transcript) ? m.plan_transcript : null,
         usage: normalizeUiUsage(m.usage),
         at: m.at || null
@@ -715,6 +877,28 @@ export class RuntimeBridge {
     const compact = this.#runtime.getSessionCompact();
     if (!compact) return null;
     return { boundaryIndex: compact.boundaryIndex, mode: compact.mode, timestamp: compact.timestamp };
+  }
+
+  getChangeSets() {
+    return this.#runtime.getChangeSets?.() || [];
+  }
+
+  getChangeSetPatch(id) {
+    return this.#runtime.getChangeSetPatch?.(id) || '';
+  }
+
+  async undoChangeSet(id) {
+    if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    const result = await this.#runtime.undoChangeSet?.(id);
+    this.#broadcast({ type: 'change:undone', result });
+    return result || { error: true, message: 'Git change oplog is not available' };
+  }
+
+  async undoChangeSets(ids) {
+    if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    const result = await this.#runtime.undoChangeSets?.(ids);
+    this.#broadcast({ type: 'change:undone', result });
+    return result || { error: true, message: 'Git change oplog is not available' };
   }
 
   async getUiMessages() {
@@ -752,10 +936,8 @@ export class RuntimeBridge {
   get runtime() { return this.#runtime; }
 
   async switchRuntime(newRuntime) {
-    // Abort anything in-flight
     if (this.#busy) {
-      try { this.#runtime.abort(); } catch {}
-      this.#busy = false;
+      throw new Error('Runtime is busy');
     }
     // Dispose old runtime
     try { await this.#runtime.dispose?.(); } catch {}

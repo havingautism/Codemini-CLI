@@ -1,4 +1,11 @@
-import React, { Component, Suspense, lazy, memo, useCallback } from "react";
+import React, {
+  Component,
+  Suspense,
+  lazy,
+  memo,
+  useCallback,
+  useMemo,
+} from "react";
 import { createRoot } from "react-dom/client";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppProvider, useApp } from "@/context/app-context.jsx";
@@ -10,8 +17,8 @@ import { StatusBar } from "@/components/StatusBar.jsx";
 import { ApprovalDialog } from "@/components/ApprovalDialog.jsx";
 import { PlanApprovalCard } from "@/components/PlanApprovalDialog.jsx";
 import { ReflectApprovalCard } from "@/components/ReflectApprovalDialog.jsx";
+import { SpecApprovalCard } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
-import { PlanProgress } from "@/components/PlanProgress.jsx";
 import { MoreHorizontal, Terminal, GitCompare } from "lucide-react";
 import "../style.css";
 
@@ -35,6 +42,11 @@ const SkillDialog = lazy(() =>
     default: module.SkillDialog,
   })),
 );
+const MemoryDialog = lazy(() =>
+  import("@/components/MemoryDialog.jsx").then((module) => ({
+    default: module.MemoryDialog,
+  })),
+);
 const SoulDialog = lazy(() =>
   import("@/components/SoulDialog.jsx").then((module) => ({
     default: module.SoulDialog,
@@ -54,6 +66,37 @@ const GitDiffDialog = lazy(() =>
 const MemoSidebar = memo(Sidebar);
 const MemoInputBar = memo(InputBar);
 const MemoStatusBar = memo(StatusBar);
+
+function projectLabelFromDir(dir, isGeneral = false) {
+  if (isGeneral) return t("generalChat");
+  const value = String(dir || "").trim();
+  if (!value || value === "unknown") return t("unknownProject");
+  return value.split(/[/\\]/).filter(Boolean).pop() || value;
+}
+
+function collectSidebarProjectTargets(
+  sessions = [],
+  currentDir = "",
+  runtimeDir = "",
+  runtimeIsGeneral = false,
+) {
+  const targets = new Map();
+  const addTarget = (dir, isGeneral = false) => {
+    const value = String(dir || "").trim();
+    if (!value || value === "unknown" || targets.has(value)) return;
+    targets.set(value, {
+      dir: value,
+      label: projectLabelFromDir(value, isGeneral),
+      isGeneral: !!isGeneral,
+    });
+  };
+  for (const session of sessions || []) {
+    addTarget(session?.projectDir, session?.isGeneral);
+  }
+  addTarget(currentDir, false);
+  addTarget(runtimeDir, runtimeIsGeneral);
+  return Array.from(targets.values());
+}
 
 function GitHubIcon({ size = 14, className, ...props }) {
   return (
@@ -118,11 +161,32 @@ function Shell() {
   const { state, actions } = useApp();
   const rs = state.runtimeState || {};
   const currentId = rs.sessionId;
-  const openSettings = useCallback(() => actions.setConfigOpen(true), [actions]);
+  const openSettings = useCallback(
+    () => actions.setConfigOpen(true),
+    [actions],
+  );
   const openSkills = useCallback(() => actions.setSkillsOpen(true), [actions]);
+  const openMemory = useCallback(() => actions.setMemoryOpen(true), [actions]);
   const openSouls = useCallback(() => actions.setSoulsOpen(true), [actions]);
   const openAbout = useCallback(() => actions.setAboutOpen(true), [actions]);
-  const openProjectSelector = useCallback(() => actions.setProjectOpen(true), [actions]);
+  const openProjectSelector = useCallback(
+    () => actions.setProjectOpen(true),
+    [actions],
+  );
+  const sidebarProjectTargets = useMemo(
+    () =>
+      collectSidebarProjectTargets(
+        state.sessions,
+        "",
+        state.runtimeState?.cwd,
+        state.isGeneral,
+      ),
+    [state.sessions, state.runtimeState?.cwd, state.isGeneral],
+  );
+  const sidebarProjectDirs = useMemo(
+    () => sidebarProjectTargets.map((item) => item.dir),
+    [sidebarProjectTargets],
+  );
 
   return (
     <div className="flex h-screen bg-(--bg-primary) text-(--text-primary)">
@@ -136,6 +200,7 @@ function Shell() {
         onSetTheme={actions.setTheme}
         onOpenSettings={openSettings}
         onOpenSkills={openSkills}
+        onOpenMemory={openMemory}
         onOpenSouls={openSouls}
         onOpenAbout={openAbout}
         gitBatch={state.gitBatch}
@@ -169,9 +234,9 @@ function Shell() {
             />
           </Suspense>
         ) : (
-          <div className="flex-1 flex flex-col min-h-0 bg-(--bg-primary) rounded-[18px] border border-(--border-default) border-b-0 relative overflow-hidden my-1 mx-1">
+          <div className="flex-1 flex flex-col min-h-0 bg-(--bg-primary) rounded-[18px] shadow-[inset_0_0_0_1px_var(--panel-edge)] relative overflow-hidden my-1 mx-1">
             {/* Titlebar */}
-            <div className="flex items-center justify-between h-[52px] px-5 shrink-0 border-b border-(--border-default)">
+            <div className="flex items-center justify-between h-[52px] px-5 shrink-0">
               <div className="flex items-center gap-2.5 min-w-0">
                 <span className="font-medium text-[14px] text-(--text-primary) truncate">
                   {state.isGeneral
@@ -193,17 +258,12 @@ function Shell() {
                   </button>
                 )}
               </div>
-              <button className="border-0 bg-transparent text-(--text-muted) rounded-md p-1.5 cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) shrink-0">
+              {/* <button className="border-0 bg-transparent text-(--text-muted) rounded-md p-1.5 cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) shrink-0">
                 <MoreHorizontal size={16} />
-              </button>
+              </button> */}
             </div>
 
-            {/* Plan Progress (during execution) */}
-            {state.planSteps?.length > 0 && !state.pendingPlanApproval && (
-              <div className="px-4">
-                <PlanProgress steps={state.planSteps} />
-              </div>
-            )}
+            {/* Plan Progress (during execution) — now rendered as a chat message via plan-overview */}
 
             {/* Chat Panel */}
             <ChatPanel
@@ -223,6 +283,17 @@ function Shell() {
                   <PlanApprovalCard
                     plan={state.pendingPlanApproval}
                     onAction={actions.approvePlan}
+                    onUpdate={actions.updatePendingPlan}
+                    disabled={state.busy}
+                  />
+                </div>
+              )}
+              {state.pendingSpecApproval && (
+                <div className="mb-3">
+                  <SpecApprovalCard
+                    spec={state.pendingSpecApproval}
+                    onAction={actions.approveSpec}
+                    onUpdate={actions.updatePendingSpec}
                     disabled={state.busy}
                   />
                 </div>
@@ -232,6 +303,7 @@ function Shell() {
                   <ReflectApprovalCard
                     draft={state.pendingReflectApproval}
                     onAction={actions.approveReflect}
+                    onUpdate={actions.updatePendingReflect}
                     disabled={state.busy}
                   />
                 </div>
@@ -241,16 +313,21 @@ function Shell() {
                 onAbort={actions.abort}
                 busy={state.busy}
                 disabled={
-                  !!state.pendingPlanApproval || !!state.pendingReflectApproval
+                  !!state.pendingPlanApproval ||
+                  !!state.pendingSpecApproval ||
+                  !!state.pendingReflectApproval
                 }
                 disabledReason={
                   state.pendingReflectApproval
                     ? t("reflectReviewFirst")
-                    : t("planReviewFirst")
+                    : state.pendingSpecApproval
+                      ? t("specReviewFirst")
+                      : t("planReviewFirst")
                 }
                 runtimeState={state.runtimeState}
                 history={state.history}
                 onOpenProject={openProjectSelector}
+                onOpenSpec={actions.openSpecReview}
                 projectCwd={state.projectCwd}
               />
 
@@ -295,11 +372,24 @@ function Shell() {
           <SkillDialog
             open={state.skillsOpen}
             onOpenChange={actions.setSkillsOpen}
+            projectDirs={sidebarProjectDirs}
+            projectTargets={sidebarProjectTargets}
+          />
+        )}
+
+        {state.memoryOpen && (
+          <MemoryDialog
+            open={state.memoryOpen}
+            onOpenChange={actions.setMemoryOpen}
+            projectDirs={sidebarProjectDirs}
           />
         )}
 
         {state.soulsOpen && (
-          <SoulDialog open={state.soulsOpen} onOpenChange={actions.setSoulsOpen} />
+          <SoulDialog
+            open={state.soulsOpen}
+            onOpenChange={actions.setSoulsOpen}
+          />
         )}
 
         {state.aboutOpen && (

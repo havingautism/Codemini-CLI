@@ -157,10 +157,11 @@ Skills are reusable, reviewable workflow recipes. Built-in:
 
 | Skill | When to use |
 | --- | --- |
-| `superpowers-lite` | Default coding flow: inspect, plan when needed, edit narrowly, verify. |
-| `grill-me` | Stress-test a plan, PR, release, or idea before committing. |
-| `brainstorm` | Compare options when multiple approaches are reasonable. |
-| `writing-plans` | Generate an implementation plan with file paths and verification steps. |
+| `using-superpowers` | Default skill router: decide which development workflow applies. |
+| `brainstorming` | Compare options when multiple approaches are reasonable. |
+| `systematic-debugging` | Investigate bugs, failing tests, and unexpected behavior. |
+| `test-driven-development` | Implement behavior changes with focused tests. |
+| `verification-before-completion` | Verify work before claiming it is done. |
 
 ```bash
 codemini skill list
@@ -177,11 +178,11 @@ Invoke any enabled skill as a slash command inside a session, or pass the slash 
 
 ```bash
 # Inside an interactive session
-/grill-me review this release plan before I tag it
-/writing-plans add OAuth refresh-token rotation
+/requesting-code-review review this release plan before I tag it
+/plan auto add OAuth refresh-token rotation
 
 # One-off invocation from your shell
-codemini '/brainstorm compare SQLite, Postgres, and DuckDB for local analytics'
+codemini '/brainstorming compare SQLite, Postgres, and DuckDB for local analytics'
 codemini '/project-requirements generate a CodeWiki report for this repository'
 ```
 
@@ -436,10 +437,11 @@ Skills 是可复用、可审阅的工作流配方。内置：
 
 | Skill | 适用场景 |
 | --- | --- |
-| `superpowers-lite` | 默认编码流程：先了解、必要时计划、小范围修改、验证后汇报。 |
-| `grill-me` | 对方案、PR、发布、想法做压力测试，发现潜在问题。 |
-| `brainstorm` | 多种方案难以抉择时，先比较选项再行动。 |
-| `writing-plans` | 生成包含文件路径和验证步骤的实施计划。 |
+| `using-superpowers` | 默认 skill 路由：判断当前任务应使用哪种开发流程。 |
+| `brainstorming` | 多种方案难以抉择时，先比较选项再行动。 |
+| `systematic-debugging` | 调查 bug、失败测试和异常行为。 |
+| `test-driven-development` | 用聚焦测试驱动行为改动。 |
+| `verification-before-completion` | 在声明完成前执行验证。 |
 
 ```bash
 codemini skill list
@@ -456,11 +458,11 @@ codemini skill reindex
 
 ```bash
 # 在交互式会话中
-/grill-me 帮我审一遍这个发布方案再打 tag
-/writing-plans 设计 OAuth refresh-token 轮换方案
+/requesting-code-review 帮我审一遍这个发布方案再打 tag
+/plan auto 设计 OAuth refresh-token 轮换方案
 
 # 从 shell 一次性调用
-codemini '/brainstorm 比较 SQLite、Postgres 和 DuckDB 做本地分析的取舍'
+codemini '/brainstorming 比较 SQLite、Postgres 和 DuckDB 做本地分析的取舍'
 codemini '/project-requirements 为当前仓库生成一份 CodeWiki 报告'
 ```
 

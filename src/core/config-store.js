@@ -42,6 +42,7 @@ const DEFAULT_CONFIG = {
   },
   execution: {
     mode: 'normal',
+    approval_mode: 'review',
     always_allow_tools: [
       'read',
       'grep',
@@ -49,8 +50,7 @@ const DEFAULT_CONFIG = {
       'list',
       'list_background_tasks',
       'get_background_task'
-    ],
-    max_steps: 16
+    ]
   },
   sessions: {
     max_sessions: 100,
@@ -148,9 +148,14 @@ function normalizePolicyLists(config) {
   }
   next.model.name = String(next.model.name || DEFAULT_CONFIG.model.name).trim() || DEFAULT_CONFIG.model.name;
   next.model.fast_name = String(next.model.fast_name || '').trim();
-  next.execution.mode = ['auto', 'normal', 'plan'].includes(String(next.execution.mode || '').toLowerCase())
-    ? String(next.execution.mode).toLowerCase()
+  const rawExecutionMode = String(next.execution.mode || '').toLowerCase();
+  const rawApprovalMode = String(next.execution.approval_mode || '').toLowerCase().replace(/-/g, '_');
+  next.execution.mode = ['normal', 'plan'].includes(rawExecutionMode)
+    ? rawExecutionMode
     : 'normal';
+  next.execution.approval_mode = ['review', 'auto', 'full_access'].includes(rawApprovalMode)
+    ? rawApprovalMode
+    : 'review';
   const rawTools = Array.isArray(next.execution.always_allow_tools)
     ? next.execution.always_allow_tools
     : [];
@@ -164,7 +169,7 @@ function normalizePolicyLists(config) {
       'get_background_task',
       ...rawTools
     ].filter((name) => String(name) !== 'list_files')
-      .filter((name) => !['edit', 'write', 'delete', 'run', 'stop_background_task'].includes(String(name)))
+      .filter((name) => !['edit', 'create', 'delete', 'run', 'stop_background_task'].includes(String(name)))
   );
   next.ui = next.ui || {};
   next.ui.language = normalizeUiLanguage(next.ui.language);

@@ -32,8 +32,11 @@ export async function fetchHistory() {
   return res.json();
 }
 
-export async function fetchSessions() {
-  const res = await api('/api/sessions');
+export async function fetchSessions(limit = 200) {
+  const params = new URLSearchParams();
+  const numericLimit = Number(limit);
+  if (Number.isFinite(numericLimit) && numericLimit > 0) params.set('limit', String(Math.round(numericLimit)));
+  const res = await api(params.size ? `/api/sessions?${params.toString()}` : '/api/sessions');
   return res.json();
 }
 
@@ -44,6 +47,20 @@ export async function fetchSessionMessages() {
 
 export async function fetchSessionUiMessages() {
   const res = await api('/api/session/ui-messages');
+  return res.json();
+}
+
+export async function fetchSpecs() {
+  const res = await api('/api/specs');
+  return res.json();
+}
+
+export async function openSpecReview(path) {
+  const res = await api('/api/specs/open', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ path })
+  });
   return res.json();
 }
 
@@ -69,6 +86,47 @@ export async function setExecutionMode(mode) {
     headers: JSON_HEADERS,
     body: JSON.stringify({ mode })
   });
+  return res.json();
+}
+
+export async function setApprovalMode(mode) {
+  const res = await api('/api/approval-mode', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ mode })
+  });
+  return res.json();
+}
+
+export async function updatePendingPlan(plan) {
+  const res = await api('/api/pending-plan', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(plan || {})
+  });
+  return res.json();
+}
+
+export async function updatePendingReflect(draft) {
+  const res = await api('/api/pending-reflect', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(draft || {})
+  });
+  return res.json();
+}
+
+export async function updatePendingSpec(spec) {
+  const res = await api('/api/pending-spec', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(spec || {})
+  });
+  return res.json();
+}
+
+export async function deletePendingSpec() {
+  const res = await api('/api/pending-spec', { method: 'DELETE' });
   return res.json();
 }
 
@@ -138,6 +196,25 @@ export async function fetchGitDiff() {
   return res.json();
 }
 
+export async function undoSessionChange(id) {
+  const res = await api(`/api/session-changes/${encodeURIComponent(id)}/undo`, { method: 'POST' });
+  return res.json();
+}
+
+export async function fetchSessionChanges() {
+  const res = await api('/api/session-changes');
+  return res.json();
+}
+
+export async function undoSessionChanges(ids) {
+  const res = await api('/api/session-changes/undo', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ ids })
+  });
+  return res.json();
+}
+
 export async function fetchGitBatch(dirs) {
   const res = await api('/api/git-batch', {
     method: 'POST',
@@ -166,64 +243,99 @@ export async function browseDir(dir) {
 }
 
 // ── Skills ──
-export async function fetchSkills() {
-  const res = await api('/api/skills');
+function appendProjectDirs(params, projectDirs = []) {
+  const dirs = Array.isArray(projectDirs)
+    ? projectDirs.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  if (dirs.length > 0) params.set('projects', JSON.stringify(dirs));
+}
+
+function withProjectDirQuery(path, projectDir) {
+  const dir = String(projectDir || '').trim();
+  if (!dir) return path;
+  const params = new URLSearchParams({ projectDir: dir });
+  return `${path}?${params.toString()}`;
+}
+
+export async function fetchSkills(projectDirs = []) {
+  const params = new URLSearchParams();
+  appendProjectDirs(params, projectDirs);
+  const query = params.toString();
+  const res = await api(query ? `/api/skills?${query}` : '/api/skills');
   return res.json();
 }
 
-export async function fetchSkillContent(name) {
-  const res = await api(`/api/skills/${encodeURIComponent(name)}/content`);
+export async function fetchSkillContent(name, projectDir) {
+  const res = await api(withProjectDirQuery(`/api/skills/${encodeURIComponent(name)}/content`, projectDir));
   return res.json();
 }
 
-export async function createSkill({ name, description, content, scope }) {
+export async function createSkill({ name, description, content, scope, projectDir }) {
   const res = await api('/api/skills/create', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ name, description, content, scope })
+    body: JSON.stringify({ name, description, content, scope, projectDir })
   });
   return res.json();
 }
 
-export async function installSkill({ source, scope }) {
+export async function installSkill({ source, scope, projectDir }) {
   const res = await api('/api/skills/install', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ source, scope })
+    body: JSON.stringify({ source, scope, projectDir })
   });
   return res.json();
 }
 
-export async function updateSkillContent(name, content) {
+export async function updateSkillContent(name, content, projectDir) {
   const res = await api(`/api/skills/${encodeURIComponent(name)}/content`, {
     method: 'PUT',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ content })
+    body: JSON.stringify({ content, projectDir })
   });
   return res.json();
 }
 
-export async function updateSkillMetadata(name, metadata) {
+export async function updateSkillMetadata(name, metadata, projectDir) {
   const res = await api(`/api/skills/${encodeURIComponent(name)}/metadata`, {
     method: 'PUT',
     headers: JSON_HEADERS,
-    body: JSON.stringify(metadata || {})
+    body: JSON.stringify({ ...(metadata || {}), projectDir })
   });
   return res.json();
 }
 
-export async function deleteSkill(name) {
-  const res = await api(`/api/skills/${encodeURIComponent(name)}`, {
+export async function deleteSkill(name, projectDir) {
+  const res = await api(withProjectDirQuery(`/api/skills/${encodeURIComponent(name)}`, projectDir), {
     method: 'DELETE'
   });
   return res.json();
 }
 
-export async function toggleSkill(name, enabled) {
+export async function toggleSkill(name, enabled, projectDir) {
   const res = await api(`/api/skills/${encodeURIComponent(name)}/toggle`, {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ enabled })
+    body: JSON.stringify({ enabled, projectDir })
+  });
+  return res.json();
+}
+
+// ── Memory ──
+export async function fetchMemories({ scope = 'user', query = '', projectDirs = [] } = {}) {
+  const params = new URLSearchParams({ scope });
+  if (query.trim()) params.set('q', query.trim());
+  appendProjectDirs(params, projectDirs);
+  const res = await api(`/api/memory?${params.toString()}`);
+  return res.json();
+}
+
+export async function forgetMemory(scope, id, projectDir) {
+  const params = new URLSearchParams({ scope });
+  if (projectDir) params.set('projectDir', projectDir);
+  const res = await api(`/api/memory/${encodeURIComponent(id)}?${params.toString()}`, {
+    method: 'DELETE'
   });
   return res.json();
 }
@@ -288,20 +400,29 @@ export async function fetchCodeWikiSymbolGraph(project = '') {
   return res.json();
 }
 
-export async function generateCodeWikiReport(depth = 'standard', project = '') {
+export async function fetchCodeWikiReportText(file, project = '') {
+  const res = await api(`/api/codewiki/report/${encodeURIComponent(file)}${codeWikiProjectQuery(project)}`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.message || 'CodeWiki 文档加载失败');
+  }
+  return res.text();
+}
+
+export async function generateCodeWikiReport(depth = 'standard', project = '', format = 'html') {
   const res = await api(`/api/codewiki/generate${codeWikiProjectQuery(project)}`, {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ depth })
+    body: JSON.stringify({ depth, format })
   });
   return res.json();
 }
 
-export async function streamCodeWikiAsk({ question, reportFile = '', project = '', onEvent } = {}) {
+export async function streamCodeWikiAsk({ question, reportFile = '', project = '', history = [], onEvent } = {}) {
   const res = await api(`/api/codewiki/ask${codeWikiProjectQuery(project)}`, {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ question, reportFile })
+    body: JSON.stringify({ question, reportFile, history: Array.isArray(history) ? history : [] })
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));

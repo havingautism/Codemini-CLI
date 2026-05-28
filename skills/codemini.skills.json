@@ -1,36 +1,71 @@
 {
   "version": 1,
   "skills": {
-    "superpowers-lite": {
-      "description": "Default concise workflow for coding tasks; keep context tight, choose the right route, and verify before claiming success.",
+    "using-superpowers": {
+      "description": "Use when starting any conversation - establishes how to find and use skills, requiring Skill tool invocation before ANY response including clarifying questions",
       "mode": "always",
       "triggers": [],
       "enabled": true,
       "priority": 100
     },
-    "brainstorm": {
-      "description": "Use when a feature or behavior request has multiple reasonable approaches and the missing piece is user preference, tradeoff choice, or key constraint.",
+    "brainstorming": {
+      "description": "You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation.",
       "mode": "agent_requested",
       "triggers": [],
       "enabled": true,
-      "priority": 70
+      "priority": 80
     },
-    "writing-plans": {
-      "description": "Use when you have a clear goal or approved design for a non-trivial task, before touching code.",
+    "test-driven-development": {
+      "description": "Use when implementing any feature or bugfix, before writing implementation code",
       "mode": "agent_requested",
       "triggers": [],
       "enabled": true,
-      "priority": 75
+      "priority": 73
     },
-    "grill-me": {
-      "description": "Use when the user explicitly asks to pressure-test a plan, architecture choice, PR, launch, or product idea.",
+    "systematic-debugging": {
+      "description": "Use when encountering any bug, test failure, or unexpected behavior, before proposing fixes",
       "mode": "agent_requested",
       "triggers": [],
       "enabled": true,
-      "priority": 65
+      "priority": 74
+    },
+    "verification-before-completion": {
+      "description": "Use when about to claim work is complete, fixed, or passing, before committing or creating PRs - requires running verification commands and confirming output before making any success claims; evidence before assertions always",
+      "mode": "agent_requested",
+      "triggers": [],
+      "enabled": true,
+      "priority": 72
+    },
+    "requesting-code-review": {
+      "description": "Use when completing tasks, implementing major features, or before merging to verify work meets requirements",
+      "mode": "agent_requested",
+      "triggers": [],
+      "enabled": true,
+      "priority": 60
+    },
+    "receiving-code-review": {
+      "description": "Use when receiving code review feedback, before implementing suggestions, especially if feedback seems unclear or technically questionable - requires technical rigor and verification, not performative agreement or blind implementation",
+      "mode": "agent_requested",
+      "triggers": [],
+      "enabled": true,
+      "priority": 60
+    },
+    "using-git-worktrees": {
+      "description": "Use when starting feature work that needs isolation from current workspace or before executing implementation plans - ensures an isolated workspace exists via native tools or git worktree fallback",
+      "mode": "agent_requested",
+      "triggers": [],
+      "enabled": true,
+      "priority": 60
     },
     "project-requirements": {
-      "description": "Create a project requirements report with repository inspection and structured output artifacts.",
+      "description": "Generate a CodeWiki requirements report in HTML (browser-openable, search/filter, inline diagrams). Same report as Markdown CodeWiki. Use /project-requirements --md for the Markdown format.",
+      "mode": "manual",
+      "triggers": [],
+      "enabled": true,
+      "priority": 50
+    },
+    "project-requirements-md": {
+      "description": "Generate a CodeWiki requirements report in Markdown. Same report as HTML CodeWiki. Fixed Markdown output; use /project-requirements --html for HTML.",
       "mode": "manual",
       "triggers": [],
       "enabled": true,

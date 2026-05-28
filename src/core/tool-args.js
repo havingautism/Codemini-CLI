@@ -192,7 +192,7 @@ export function normalizeToolArguments(toolName, args, rawArguments) {
   if (toolName === 'list') return normalizePathArgs({ ...source, ...(stringValue && !source.path ? { path: stringValue } : {}) }, ['dir', 'directory', 'file_path', 'file', 'target']);
   if (toolName === 'glob') return normalizePatternArgs({ ...source, ...(stringValue && !source.pattern ? { pattern: stringValue } : {}) }, ['glob', 'query'], ['directory', 'dir', 'cwd', 'file_path', 'file']);
   if (toolName === 'grep') return normalizePatternArgs({ ...source, ...(stringValue && !source.pattern ? { pattern: stringValue } : {}) }, ['query', 'symbol', 'q'], ['directory', 'dir', 'cwd', 'file_path', 'file']);
-  if (toolName === 'write') return normalizeWriteArgs({ ...source, ...(stringValue && !source.path ? { path: stringValue } : {}) });
+  if (toolName === 'create') return normalizeWriteArgs({ ...source, ...(stringValue && !source.path ? { path: stringValue } : {}) });
 
   if (toolName === 'edit') {
     const rawPathValue = source.path || source.file || source.file_path || stringValue || '';

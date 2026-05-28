@@ -34,8 +34,15 @@ function sanitizeToolCall(tc, index) {
   if (Number.isFinite(Number(tc?.durationMs))) out.durationMs = Number(tc.durationMs);
   if (typeof tc?.summary === 'string' && tc.summary.trim()) out.summary = tc.summary.trim();
   if (typeof tc?.status === 'string' && tc.status.trim()) out.status = tc.status.trim();
+  if (tc?.resultMeta && typeof tc.resultMeta === 'object' && !Array.isArray(tc.resultMeta)) {
+    out.resultMeta = { ...tc.resultMeta };
+  }
   const fileChange = sanitizeFileChange(tc?.fileChange);
   if (fileChange) out.fileChange = fileChange;
+  if (Array.isArray(tc?.fileChanges)) {
+    const fileChanges = tc.fileChanges.map(sanitizeFileChange).filter(Boolean);
+    if (fileChanges.length > 0) out.fileChanges = fileChanges;
+  }
   return out;
 }
 
@@ -50,7 +57,9 @@ function sanitizeFileChange(change) {
     linesAdded: Math.max(0, Math.round(Number(change.linesAdded || 0))),
     linesRemoved: Math.max(0, Math.round(Number(change.linesRemoved || 0))),
     changedLine: Math.max(0, Math.round(Number(change.changedLine || 0))),
-    diffPreview: String(change.diffPreview || '')
+    diffPreview: String(change.diffPreview || ''),
+    changeSetId: String(change.changeSetId || ''),
+    patchRef: String(change.patchRef || '')
   };
 }
 
@@ -111,12 +120,22 @@ function sanitizeMessage(msg) {
   };
 
   if (typeof msg?.model_content === 'string' && msg.model_content) out.model_content = msg.model_content;
+  if (msg?.model_content_scope === 'current_turn') out.model_content_scope = 'current_turn';
+  if (msg?.model_visible === false) out.model_visible = false;
+  if (msg?.local_only === true) out.local_only = true;
   if (msg?.tool_call_id) out.tool_call_id = String(msg.tool_call_id);
   if (Number.isFinite(Number(msg?.tool_duration_ms))) out.tool_duration_ms = Number(msg.tool_duration_ms);
   if (typeof msg?.tool_summary === 'string' && msg.tool_summary.trim()) out.tool_summary = msg.tool_summary.trim();
   if (typeof msg?.tool_status === 'string' && msg.tool_status.trim()) out.tool_status = msg.tool_status.trim();
+  if (msg?.tool_result_meta && typeof msg.tool_result_meta === 'object' && !Array.isArray(msg.tool_result_meta)) {
+    out.tool_result_meta = { ...msg.tool_result_meta };
+  }
   const toolFileChange = sanitizeFileChange(msg?.tool_file_change);
   if (toolFileChange) out.tool_file_change = toolFileChange;
+  if (Array.isArray(msg?.tool_file_changes)) {
+    const toolFileChanges = msg.tool_file_changes.map(sanitizeFileChange).filter(Boolean);
+    if (toolFileChanges.length > 0) out.tool_file_changes = toolFileChanges;
+  }
   if (typeof msg?.name === 'string' && msg.name.trim()) out.name = msg.name.trim();
   if (typeof msg?.at === 'string' && msg.at.trim()) out.at = msg.at;
   if (typeof msg?.reasoning_content === 'string' && msg.reasoning_content) {
@@ -319,6 +338,25 @@ async function writeSessionIndex(index) {
   await fs.rename(tempPath, filePath);
 }
 
+async function removeSessionIndexEntry(sessionId, removedFileNames = []) {
+  try {
+    const id = String(sessionId || '').trim();
+    const removed = new Set(removedFileNames.map((name) => String(name || '').trim()).filter(Boolean));
+    const index = await readSessionIndex();
+    if (!index) return false;
+    const files = Array.isArray(index.files)
+      ? index.files.filter((entry) => !removed.has(String(entry?.name || '')))
+      : [];
+    const sessions = Array.isArray(index.sessions)
+      ? index.sessions.filter((entry) => String(entry?.id || '').trim() !== id)
+      : [];
+    await writeSessionIndex({ files, sessions });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function rebuildSessionIndex(fileMeta = null) {
   const files = await listSessionFiles();
   const sessionsById = new Map();
@@ -375,16 +413,42 @@ async function upsertSessionIndexEntry(session, filePath) {
 }
 
 async function loadLatestJsonlObject(filePath) {
-  const raw = await fs.readFile(filePath, 'utf8');
-  const lines = String(raw || '')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
+  return await readLastJsonlLine(filePath);
+}
+
+async function readLastJsonlLine(filePath) {
+  const CHUNK = 2 * 1024 * 1024; // 2 MB
+  const stat = await fs.stat(filePath);
+  if (stat.size === 0) throw new Error(`Empty JSONL file: ${filePath}`);
+
+  let tail = '';
+  let offset = stat.size;
+
+  while (offset > 0) {
+    const readSize = Math.min(CHUNK, offset);
+    offset -= readSize;
+    const handle = await fs.open(filePath, 'r');
+    let chunk;
     try {
-      return JSON.parse(lines[i]);
-    } catch {
-      continue;
+      const buf = Buffer.alloc(readSize);
+      await handle.read(buf, 0, readSize, offset);
+      chunk = buf.toString('utf8');
+    } finally {
+      await handle.close();
+    }
+    tail = chunk + tail;
+    const lines = tail.split('\n');
+    // Search from the end for a valid JSON line (skip the first line if we
+    // haven't read from the beginning — it may be a partial line fragment).
+    const startIdx = offset > 0 ? 1 : 0;
+    for (let i = lines.length - 1; i >= startIdx; i -= 1) {
+      const trimmed = lines[i].trim();
+      if (!trimmed) continue;
+      try {
+        return JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
     }
   }
   throw new Error(`No valid JSONL record found: ${filePath}`);
@@ -430,6 +494,8 @@ export async function loadSession(sessionId) {
   return sanitizeSession(parsed, sessionId);
 }
 
+const JSONL_COMPACT_THRESHOLD = 5 * 1024 * 1024; // 5 MB
+
 export async function saveSession(session) {
   const dir = getSessionsDir();
   await fs.mkdir(dir, { recursive: true });
@@ -438,6 +504,16 @@ export async function saveSession(session) {
   const filePath = sessionPathById(normalized.id, SESSION_JSONL_EXT);
   await fs.appendFile(filePath, `${JSON.stringify(normalized)}\n`, 'utf8');
   await upsertSessionIndexEntry(normalized, filePath);
+
+  // Compact JSONL file when it grows too large — rewrite with only the latest record
+  try {
+    const st = await fs.stat(filePath);
+    if (st.size > JSONL_COMPACT_THRESHOLD) {
+      await fs.writeFile(filePath, `${JSON.stringify(normalized)}\n`, 'utf8');
+    }
+  } catch {
+    // Best-effort compaction; session data is already saved
+  }
 }
 
 export async function resolveSession(sessionId) {
@@ -460,37 +536,51 @@ export async function deleteSession(sessionId) {
     throw new Error('Invalid session id');
   }
 
-  const files = await listSessionFiles();
   const targets = new Set();
-  for (const file of files) {
-    const fileId = sessionIdFromFileName(path.basename(file));
-    if (fileId === id) {
-      targets.add(file);
-      continue;
-    }
-    try {
-      const parsed = file.endsWith(SESSION_JSONL_EXT) ? await loadLatestJsonlObject(file) : await tryReadJson(file);
-      if (String(parsed?.id || '').trim() === id) targets.add(file);
-    } catch {}
-  }
-
-  let removed = 0;
   const fallbackTargets = [
     sessionPathById(id, SESSION_JSONL_EXT),
     sessionPathById(id, SESSION_LEGACY_EXT)
   ];
-  for (const file of [...targets, ...fallbackTargets]) {
+  for (const file of fallbackTargets) targets.add(file);
+
+  let removed = 0;
+  const removedFileNames = [];
+  for (const file of targets) {
     try {
       await fs.unlink(file);
       removed += 1;
+      removedFileNames.push(path.basename(file));
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
     }
   }
+
+  if (removed === 0) {
+    const files = await listSessionFiles();
+    for (const file of files) {
+      try {
+        const parsed = file.endsWith(SESSION_JSONL_EXT) ? await loadLatestJsonlObject(file) : await tryReadJson(file);
+        if (String(parsed?.id || '').trim() === id) targets.add(file);
+      } catch {}
+    }
+    for (const file of targets) {
+      try {
+        await fs.unlink(file);
+        removed += 1;
+        removedFileNames.push(path.basename(file));
+      } catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+      }
+    }
+  }
+
   if (removed > 0) {
-    try {
-      await rebuildSessionIndex();
-    } catch {}
+    const updated = await removeSessionIndexEntry(id, removedFileNames);
+    if (!updated) {
+      try {
+        await rebuildSessionIndex();
+      } catch {}
+    }
   }
   return { removed };
 }
