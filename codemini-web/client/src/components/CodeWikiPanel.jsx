@@ -1102,7 +1102,7 @@ export function CodeWikiPanel({
                       </PopoverContent>
                     </Popover>
                   </span>
-                  <span className="mt-1 block truncate pl-6 text-[11px] text-(--text-muted)">
+                  <span className="mt-1 block truncate text-[11px] text-(--text-muted)">
                     {formatReportDate(report.mtime)}
                     {formatFileSize(report.size)
                       ? ` · ${formatFileSize(report.size)}`
