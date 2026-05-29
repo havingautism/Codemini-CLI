@@ -10,6 +10,17 @@ const SESSION_JSONL_EXT = '.jsonl';
 const SESSION_INDEX_FILE = 'index.json';
 const SESSION_INDEX_VERSION = 1;
 const DEFAULT_SESSION_TITLE = '新会话';
+const SESSION_INDEX_WRITE_RETRY_MS = [25, 75, 150];
+let sessionIndexWriteChain = Promise.resolve();
+
+function isRetryableWindowsRenameError(error) {
+  const code = String(error?.code || '').toUpperCase();
+  return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
+}
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function createSessionId() {
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
@@ -324,18 +335,40 @@ async function readSessionIndex() {
 }
 
 async function writeSessionIndex(index) {
-  const dir = getSessionsDir();
-  await fs.mkdir(dir, { recursive: true });
-  const filePath = sessionIndexPath();
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  const payload = {
-    version: SESSION_INDEX_VERSION,
-    updatedAt: new Date().toISOString(),
-    files: Array.isArray(index?.files) ? index.files : [],
-    sessions: Array.isArray(index?.sessions) ? index.sessions : []
-  };
-  await fs.writeFile(tempPath, `${JSON.stringify(payload)}\n`, 'utf8');
-  await fs.rename(tempPath, filePath);
+  sessionIndexWriteChain = sessionIndexWriteChain.then(async () => {
+    const dir = getSessionsDir();
+    await fs.mkdir(dir, { recursive: true });
+    const filePath = sessionIndexPath();
+    const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    const payload = {
+      version: SESSION_INDEX_VERSION,
+      updatedAt: new Date().toISOString(),
+      files: Array.isArray(index?.files) ? index.files : [],
+      sessions: Array.isArray(index?.sessions) ? index.sessions : []
+    };
+    const content = `${JSON.stringify(payload)}\n`;
+    await fs.writeFile(tempPath, content, 'utf8');
+    let lastError = null;
+    for (let i = 0; i <= SESSION_INDEX_WRITE_RETRY_MS.length; i += 1) {
+      try {
+        await fs.rename(tempPath, filePath);
+        return;
+      } catch (error) {
+        lastError = error;
+        if (!isRetryableWindowsRenameError(error)) break;
+        if (i >= SESSION_INDEX_WRITE_RETRY_MS.length) break;
+        await sleep(SESSION_INDEX_WRITE_RETRY_MS[i]);
+      }
+    }
+    if (isRetryableWindowsRenameError(lastError)) {
+      await fs.writeFile(filePath, content, 'utf8');
+      await fs.unlink(tempPath).catch(() => {});
+      return;
+    }
+    await fs.unlink(tempPath).catch(() => {});
+    throw lastError;
+  });
+  await sessionIndexWriteChain;
 }
 
 async function removeSessionIndexEntry(sessionId, removedFileNames = []) {

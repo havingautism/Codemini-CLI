@@ -1040,7 +1040,9 @@ export function AppProvider({ children }) {
     } catch {}
   }, [update]);
 
-  const loadSessions = useCallback(async () => {
+  const loadSessions = useCallback(async (options = {}) => {
+    const force = options?.force === true;
+    if (force) sessionsLoadPromiseRef.current = null;
     if (sessionsLoadPromiseRef.current) return sessionsLoadPromiseRef.current;
     update({ sessionsLoading: true });
     const promise = (async () => {
@@ -2843,6 +2845,9 @@ export function AppProvider({ children }) {
 
       openProject: async (projectPath, options = {}) => {
         const nextView = options.view || "chat";
+        const openingGeneral =
+          projectPath === "__codemini_general__" ||
+          String(projectPath || "").trim() === "";
         const pendingCodeWikiProjectPath =
           nextView === "codewiki"
             ? projectPath
@@ -2852,6 +2857,7 @@ export function AppProvider({ children }) {
           projectOpen: false,
           messagesLoading: nextView === "chat",
           codewikiProjectPath: pendingCodeWikiProjectPath,
+          isGeneral: openingGeneral,
         });
         if (nextView === "chat")
           setState((prev) => ({ ...prev, messages: [] }));
@@ -2872,9 +2878,24 @@ export function AppProvider({ children }) {
                 projectPath: nextCodeWikiProjectPath,
               });
             else if (result.sessionId) updateRoute("chat", result.sessionId);
-            await loadState();
-            loadSessions();
-            loadGitInfo();
+            if (result.state) {
+              update({
+                runtimeState: result.state,
+                projectCwd: projectNameFromRuntimeState(result.state),
+                isGeneral: !!result.state.isGeneral,
+              });
+            } else {
+              await loadState();
+            }
+            const msgPromise =
+              nextView === "chat" && result.sessionData
+                ? loadSessionMessages(result.sessionData)
+                : Promise.resolve();
+            await Promise.all([
+              loadSessions({ force: true }),
+              loadGitInfo(),
+              msgPromise,
+            ]);
             if (nextView === "chat") update({ messagesLoading: false });
           } else if (nextView === "chat") {
             update({ messagesLoading: false });

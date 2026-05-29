@@ -5,6 +5,12 @@ import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 
 import { loadConfig, saveConfig, setConfigValue, getConfigValue } from '../src/core/config-store.js';
+import {
+  loadWebuiActiveProjects,
+  normalizeProjectDirKey,
+  patchWebuiActiveProjects,
+  sessionMatchesActiveProjects
+} from '../src/core/webui-sidebar-config.js';
 import { createChatRuntime } from '../src/core/chat-runtime.js';
 import { createSession, loadSession, listSessions, resolveSession, deleteSession } from '../src/core/session-store.js';
 import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
@@ -743,6 +749,28 @@ async function inferSessionProjectDir(session) {
   return dirs[0];
 }
 
+async function findPreferredSessionForProject(projectDir) {
+  const targetKey = normalizeProjectDirKey(projectDir);
+  if (!targetKey) return null;
+  const sessions = await listSessions(500, { includeEmpty: true });
+  const matches = sessions.filter((session) => {
+    if (isGeneralProjectDir(session.projectDir)) return false;
+    return normalizeProjectDirKey(session.projectDir) === targetKey;
+  });
+  if (!matches.length) return null;
+
+  const sorted = [...matches].sort((a, b) =>
+    String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''))
+  );
+  const latestWithMessages = sorted.find((session) => Number(session.messageCount || 0) > 0);
+  if (latestWithMessages?.id) return latestWithMessages.id;
+
+  const empty = sorted.find((session) => Number(session.messageCount || 0) === 0);
+  if (empty?.id) return empty.id;
+
+  return sorted[0]?.id || null;
+}
+
 async function buildRuntimeForSession({ sessionId, model, projectDir }) {
   const config = await loadConfig();
   const resolvedDir = projectDir || process.cwd();
@@ -1174,9 +1202,26 @@ async function main() {
       const limit = Number.isFinite(requestedLimit)
         ? Math.max(1, Math.min(1000, Math.round(requestedLimit)))
         : 200;
-      const sessions = await listSessions(limit);
-      const enriched = sessions.map(s => ({ ...s, isGeneral: isGeneralProjectDir(s.projectDir) }));
-      jsonResponse(res, enriched);
+      try {
+        const sessions = await listSessions(limit);
+        const { active } = await loadWebuiActiveProjects();
+        const activeSet = new Set(active);
+        const enriched = sessions
+          .map((s) => {
+            const projectKey = normalizeProjectDirKey(s.projectDir) || 'unknown';
+            const isGeneral = isGeneralProjectDir(s.projectDir);
+            return {
+              ...s,
+              projectKey,
+              isGeneral
+            };
+          })
+          .filter((s) => sessionMatchesActiveProjects(s, activeSet));
+        jsonResponse(res, enriched);
+      } catch (err) {
+        console.error('[sessions] failed to list sessions:', err?.message || err);
+        jsonResponse(res, { error: true, message: err?.message || 'Failed to list sessions' }, 500);
+      }
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/sessions/new') {
@@ -1222,6 +1267,9 @@ async function main() {
         });
         await bridge.switchRuntime(newRuntime);
         currentProjectDir = process.cwd();
+        if (!isGeneralProjectDir(currentProjectDir)) {
+          await patchWebuiActiveProjects({ action: 'activate', projectDir: currentProjectDir });
+        }
         jsonResponse(res, {
           ok: true,
           sessionId,
@@ -1397,6 +1445,7 @@ async function main() {
         const stat = await fs.stat(resolved);
         if (!stat.isDirectory()) throw new Error('Not a directory');
         let built;
+        let reusedSessionId = null;
         if (openingGeneral) {
           const all = await listSessions(1000, { includeEmpty: true });
           const reusable = all.find((session) =>
@@ -1407,16 +1456,32 @@ async function main() {
             ? await buildRuntimeForSession({ sessionId: reusable.id, model: bridge.getState().model })
             : await buildRuntimeForSession({ model: bridge.getState().model, projectDir: GENERAL_PROJECT_DIR });
         } else {
+          await patchWebuiActiveProjects({ action: 'activate', projectDir: resolved });
           process.chdir(resolved);
           currentProjectDir = process.cwd();
+          reusedSessionId = await findPreferredSessionForProject(currentProjectDir);
           built = await buildRuntimeForSession({
-            model: bridge.getState().model
+            sessionId: reusedSessionId || undefined,
+            model: bridge.getState().model,
+            projectDir: currentProjectDir
           });
         }
         const { runtime: newRuntime, session } = built;
         await bridge.switchRuntime(newRuntime);
         currentProjectDir = process.cwd();
-        jsonResponse(res, { ok: true, cwd: currentProjectDir, sessionId: session.id, isGeneral: isGeneralProjectDir(currentProjectDir) });
+        const isGeneral = isGeneralProjectDir(currentProjectDir);
+        jsonResponse(res, {
+          ok: true,
+          cwd: currentProjectDir,
+          sessionId: session.id,
+          isGeneral,
+          reusedSession: Boolean(reusedSessionId),
+          state: { ...bridge.getState(), cwd: currentProjectDir, isGeneral },
+          sessionData: {
+            messages: bridge.getSessionMessages(),
+            compact: bridge.getSessionCompactMeta()
+          }
+        });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 400);
       }
@@ -1482,6 +1547,27 @@ async function main() {
       const key = url.pathname.slice('/api/config/get/'.length);
       const value = await getConfigValue(key);
       jsonResponse(res, { key, value });
+      return;
+    }
+
+    // ── Web UI active projects (stored in global config.json) ──
+    if (req.method === 'GET' && url.pathname === '/api/webui/active-projects') {
+      try {
+        const projects = await loadWebuiActiveProjects();
+        jsonResponse(res, projects);
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+    }
+    if (req.method === 'PATCH' && url.pathname === '/api/webui/active-projects') {
+      try {
+        const body = await readBody(req);
+        const projects = await patchWebuiActiveProjects(body || {});
+        jsonResponse(res, { ok: true, ...projects });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
       return;
     }
 

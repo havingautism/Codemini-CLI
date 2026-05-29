@@ -181,6 +181,29 @@ export async function setConfig(key, value) {
   return res.json().catch(() => ({}));
 }
 
+export async function fetchWebuiActiveProjects() {
+  const res = await api('/api/webui/active-projects');
+  return res.json();
+}
+
+export async function patchWebuiActiveProject(action, projectDir) {
+  const res = await api('/api/webui/active-projects', {
+    method: 'PATCH',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ action, projectDir })
+  });
+  return res.json();
+}
+
+export async function replaceWebuiActiveProjects(active) {
+  const res = await api('/api/webui/active-projects', {
+    method: 'PATCH',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ active })
+  });
+  return res.json();
+}
+
 export async function fetchProject() {
   const res = await api('/api/project');
   return res.json();

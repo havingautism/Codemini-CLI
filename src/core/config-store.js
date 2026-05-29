@@ -84,6 +84,11 @@ const DEFAULT_CONFIG = {
   web: {
     search_enabled: true
   },
+  webui: {
+    sidebar: {
+      active_project_dirs: []
+    }
+  },
   policy: {
     safe_mode: true,
     allow_dangerous_commands: false,
@@ -192,6 +197,11 @@ function normalizePolicyLists(config) {
   next.context.prompt_budget_audit = next.context.prompt_budget_audit === true;
   next.web = next.web || {};
   next.web.search_enabled = next.web.search_enabled !== false;
+  next.webui = next.webui || {};
+  next.webui.sidebar = next.webui.sidebar || {};
+  next.webui.sidebar.active_project_dirs = uniqueStrings(
+    Array.isArray(next.webui.sidebar.active_project_dirs) ? next.webui.sidebar.active_project_dirs : []
+  );
   next.policy = next.policy || {};
   next.policy.command_allowlist = uniqueStrings(
     Array.isArray(next.policy.command_allowlist) ? next.policy.command_allowlist : []

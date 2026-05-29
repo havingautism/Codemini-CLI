@@ -817,6 +817,27 @@
   --shadow-lg: color-mix(in srgb, var(--text-primary) 8%, transparent) 0 22px 64px;
 }
 
+/* Dashed empty placeholders — follow data-theme + data-palette tokens */
+.codemini-empty-dashed {
+  border-radius: var(--radius-lg, 0.5rem);
+  border: 1px dashed color-mix(in srgb, var(--text-muted) 52%, var(--border-default));
+  background: color-mix(in srgb, var(--muted) 72%, var(--bg-primary));
+  color: var(--text-muted);
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+[data-theme="dark"] .codemini-empty-dashed {
+  border-color: color-mix(in srgb, var(--text-muted) 62%, var(--border-strong));
+  background: color-mix(
+    in srgb,
+    var(--muted) 48%,
+    color-mix(in srgb, var(--bg-secondary) 70%, var(--bg-primary))
+  );
+  color: color-mix(in srgb, var(--text-muted) 92%, var(--text-secondary));
+}
+
 /* ── Thin themed scrollbars ── */
 * {
   scrollbar-width: thin;

@@ -174,6 +174,23 @@ function splitLines(text) {
   return String(text || '').split('\n');
 }
 
+function stripLineCr(line) {
+  return String(line || '').replace(/\r$/, '');
+}
+
+function splitLinesNormalized(text) {
+  return String(text || '').replace(/\r\n|\r/g, '\n').split('\n');
+}
+
+function linesEqualNormalized(a, b) {
+  return stripLineCr(a) === stripLineCr(b);
+}
+
+function joinFileLines(lines, eol = '\n') {
+  if (!lines.length) return '';
+  return lines.map((line) => stripLineCr(line)).join(eol);
+}
+
 function buildDiffPreview(beforeContent, afterContent) {
   const beforeLines = splitLines(beforeContent);
   const afterLines = splitLines(afterContent);
@@ -590,23 +607,24 @@ function hostnameFromUrl(value) {
 }
 
 function findUniqueLineBlock(lines, blockContent) {
-  const probeLines = splitLines(blockContent);
+  const probeLines = splitLinesNormalized(blockContent);
   if (probeLines.length === 0 || (probeLines.length === 1 && probeLines[0] === '')) return null;
   const matches = [];
   const lastStart = lines.length - probeLines.length;
   for (let start = 0; start <= lastStart; start += 1) {
     let ok = true;
     for (let offset = 0; offset < probeLines.length; offset += 1) {
-      if (lines[start + offset] !== probeLines[offset]) {
+      if (!linesEqualNormalized(lines[start + offset], probeLines[offset])) {
         ok = false;
         break;
       }
     }
     if (ok) {
+      const blockLines = lines.slice(start, start + probeLines.length);
       matches.push({
         start_line: start + 1,
         end_line: start + probeLines.length,
-        content: probeLines.join('\n')
+        content: blockLines.join('\n')
       });
       if (matches.length > 1) break;
     }
@@ -1636,7 +1654,7 @@ async function validateEdit(root, args, config = {}) {
   if (kind === 'replace_text' || kind === 'insert_before' || kind === 'insert_after') {
     const probe = String(args?.old_text || args?.anchor_text || '');
     if (!probe) throw new Error(`${kind} validation requires old_text or anchor_text`);
-    const occurrences = content.split(probe).length - 1;
+    const occurrences = countTextOccurrences(content, probe);
     return {
       ok: occurrences === 1,
       path: relativePath,
@@ -1761,6 +1779,16 @@ function findLineEndingEquivalentMatches(content, oldText) {
   return matches;
 }
 
+function countTextOccurrences(content, probe) {
+  if (!probe) return 0;
+  const exact = content.split(probe).length - 1;
+  if (exact > 0) return exact;
+  if (/[\r\n]/.test(probe)) {
+    return findLineEndingEquivalentMatches(content, probe).length;
+  }
+  return 0;
+}
+
 function findTrailingWhitespaceTolerantMatches(content, oldText) {
   if (!oldText) return [];
   const escapedLines = oldText.split('\n').map((line) => {
@@ -1803,12 +1831,13 @@ async function replaceBlock(root, args, config = {}) {
   if (!resolved) {
     throw new Error('replace_block old_hash mismatch; retry through edit with a symbol or line hint');
   }
+  const fileEol = detectEol(state.content);
   const nextLines = [
     ...state.lines.slice(0, resolved.start_line - 1),
-    ...splitLines(newContent),
+    ...splitLinesNormalized(newContent),
     ...state.lines.slice(resolved.end_line)
   ];
-  const afterContent = nextLines.join('\n');
+  const afterContent = joinFileLines(nextLines, fileEol);
   await fs.writeFile(state.target, afterContent, 'utf8');
   return editResult(relativePath, 'replace_block', state.content, afterContent, resolved.start_line);
 }
@@ -1931,14 +1960,31 @@ async function insertRelative(root, args, mode, config = {}) {
   const anchorText = String(args?.anchor_text || '');
   const content = String(args?.content || '');
   const state = await getFileState(root, relativePath, config);
-  const occurrences = state.content.split(anchorText).length - 1;
+  const exactOccurrences = state.content.split(anchorText).length - 1;
+  const newlineMatches =
+    exactOccurrences === 0 && /[\r\n]/.test(anchorText)
+      ? findLineEndingEquivalentMatches(state.content, anchorText)
+      : null;
+  const occurrences = exactOccurrences > 0 ? exactOccurrences : (newlineMatches?.length || 0);
   if (occurrences !== 1) {
     throw new Error(occurrences === 0 ? `${mode} anchor not found` : `${mode} anchor not unique`);
   }
-  const replacement = mode === 'insert_before' ? `${content}${anchorText}` : `${anchorText}${content}`;
-  const afterContent = state.content.replace(anchorText, replacement);
+  let afterContent;
+  let anchorStart = state.content.indexOf(anchorText);
+  if (newlineMatches?.length === 1) {
+    const match = newlineMatches[0];
+    const originalAnchor = state.content.slice(match.start, match.end);
+    const insertContent = applyEol(content, detectEol(originalAnchor));
+    const replacement =
+      mode === 'insert_before' ? `${insertContent}${originalAnchor}` : `${originalAnchor}${insertContent}`;
+    afterContent = `${state.content.slice(0, match.start)}${replacement}${state.content.slice(match.end)}`;
+    anchorStart = match.start;
+  } else {
+    const replacement = mode === 'insert_before' ? `${content}${anchorText}` : `${anchorText}${content}`;
+    afterContent = state.content.replace(anchorText, replacement);
+  }
   await fs.writeFile(state.target, afterContent, 'utf8');
-  const changedLine = splitLines(state.content.slice(0, state.content.indexOf(anchorText))).length;
+  const changedLine = splitLines(state.content.slice(0, anchorStart)).length;
   return editResult(relativePath, mode, state.content, afterContent, changedLine);
 }
 

@@ -534,6 +534,27 @@ async function scanProject(cwd) {
   };
 }
 
+async function loadExistingProjectIndex(targetRoot) {
+  try {
+    const [projectMap, fileIndex] = await Promise.all([
+      safeReadJson(getProjectMapPath(targetRoot), null),
+      safeReadJson(getFileIndexPath(targetRoot), null)
+    ]);
+    if (!projectMap || !fileIndex || !Array.isArray(fileIndex.files) || fileIndex.files.length === 0) {
+      return null;
+    }
+    return {
+      workspaceKind: 'project',
+      projectRoot: targetRoot,
+      projectMap,
+      fileIndex,
+      summary: `loaded ${path.basename(targetRoot) || '.'}/.codemini (${fileIndex.files.length} files)`
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function initializeProjectIndex(cwd = process.cwd()) {
   const targetRoot = (await findNearestProjectRoot(cwd, cwd)) || path.resolve(cwd);
   const cacheKey = targetRoot;
@@ -541,6 +562,8 @@ export async function initializeProjectIndex(cwd = process.cwd()) {
   const promise = (async () => {
     const workspaceDir = getProjectWorkspaceDir(cwd);
     await fs.mkdir(workspaceDir, { recursive: true });
+    const existing = await loadExistingProjectIndex(targetRoot);
+    if (existing) return existing;
     const { workspaceKind, projectMap, fileIndex } = await scanProject(targetRoot);
     if (workspaceKind !== 'project' || !projectMap || !fileIndex) {
       return {

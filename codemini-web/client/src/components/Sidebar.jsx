@@ -6,7 +6,6 @@ import {
   Monitor,
   Settings,
   Folder,
-  ChevronDown,
   Hammer,
   User,
   Info,
@@ -18,6 +17,7 @@ import {
   PencilLine,
   Drama,
   Brain,
+  X,
 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -29,13 +29,60 @@ import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { t, setLocale, getLocale } from "../../i18n/index.js";
+import {
+  fetchWebuiActiveProjects,
+  patchWebuiActiveProject,
+  replaceWebuiActiveProjects,
+} from "@/hooks/use-api.js";
 
 const GENERAL_PROJECT_MARKER = "__codemini_general__";
 const PROJECT_SESSION_PREVIEW_LIMIT = 5;
 const GENERAL_SESSION_PREVIEW_LIMIT = 10;
+const LEGACY_PINNED_PROJECTS_KEY = "codemini-sidebar-pinned-projects";
+const LEGACY_HIDDEN_PROJECTS_KEY = "codemini-sidebar-hidden-projects";
+
+function readLegacySidebarKeys() {
+  const pinned = readLegacyProjectKeys(LEGACY_PINNED_PROJECTS_KEY);
+  const hidden = readLegacyProjectKeys(LEGACY_HIDDEN_PROJECTS_KEY);
+  if (!pinned.length) return [];
+  const hiddenSet = new Set(hidden);
+  return pinned.filter((key) => !hiddenSet.has(key));
+}
+
+function readLegacyProjectKeys(key) {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((item) => typeof item === "string" && item)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function clearLegacyProjectKeys() {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(LEGACY_PINNED_PROJECTS_KEY);
+  localStorage.removeItem(LEGACY_HIDDEN_PROJECTS_KEY);
+}
 
 function getProjectKey(session) {
-  return session?.projectDir || "unknown";
+  return session?.projectKey || session?.projectDir || "unknown";
+}
+
+function SidebarEmptyPlaceholder({ children, className }) {
+  return (
+    <div
+      className={cn(
+        "rounded-lg border border-dashed border-(--border-default) px-3 py-5 text-center text-[12px] leading-relaxed text-(--text-muted)",
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
 }
 
 function getProjectName(projectDir, isGeneral) {
@@ -140,6 +187,8 @@ export function Sidebar({
   currentView,
   onSwitchView,
   onOpenProject,
+  onOpenProjectSelector,
+  onRefreshSessions,
   onDeleteSession,
 }) {
   const [expandedProjects, setExpandedProjects] = useState(new Set());
@@ -147,8 +196,15 @@ export function Sidebar({
   const [generalSessionLimit, setGeneralSessionLimit] = useState(
     GENERAL_SESSION_PREVIEW_LIMIT,
   );
+  const [activeProjectDirs, setActiveProjectDirs] = useState([]);
+  const [activeProjectsReady, setActiveProjectsReady] = useState(false);
+  const [sessionsSnapshotReady, setSessionsSnapshotReady] = useState(false);
+  const [showActiveProjectsEmpty, setShowActiveProjectsEmpty] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [openProjectMenuKey, setOpenProjectMenuKey] = useState(null);
+  const [pendingRemoveActive, setPendingRemoveActive] = useState(null);
+  const [removingFromActive, setRemovingFromActive] = useState(false);
   const [themePalette, setThemePaletteState] = useState(() => {
     if (typeof document === "undefined") return "default";
     return document.documentElement.dataset.palette || "default";
@@ -161,6 +217,39 @@ export function Sidebar({
     if (typeof window === "undefined") return "auto";
     return localStorage.getItem("codemini-theme") || "auto";
   });
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const remote = await fetchWebuiActiveProjects();
+        if (cancelled) return;
+        let active = Array.isArray(remote?.active) ? remote.active : [];
+        const legacyActive = readLegacySidebarKeys();
+        if (!active.length && legacyActive.length) {
+          const migrated = await replaceWebuiActiveProjects(legacyActive);
+          if (!cancelled && Array.isArray(migrated?.active)) {
+            active = migrated.active;
+          } else {
+            active = legacyActive;
+          }
+          clearLegacyProjectKeys();
+        }
+        if (!cancelled) setActiveProjectDirs(active);
+      } catch {
+        if (!cancelled) setActiveProjectDirs([]);
+      } finally {
+        if (!cancelled) setActiveProjectsReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!sessionsLoading) setSessionsSnapshotReady(true);
+  }, [sessionsLoading]);
+
   useEffect(() => {
     const mq =
       window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
@@ -189,7 +278,7 @@ export function Sidebar({
     generalSessions,
     projectSessionsOnly,
     projectGroups,
-    projectGroupEntries,
+    visibleProjectGroupEntries,
   } = useMemo(() => {
     const all = Array.isArray(sessions) ? sessions : [];
     const current = all.find((s) => s.id === currentSessionId);
@@ -206,6 +295,21 @@ export function Sidebar({
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(session);
     }
+    const entries = Array.from(groups.entries());
+    if (activeProjectsReady && activeProjectDirs.length) {
+      const order = new Map(
+        activeProjectDirs.map((projectKey, index) => [projectKey, index]),
+      );
+      entries.sort((a, b) => {
+        const aIndex = order.has(a[0])
+          ? order.get(a[0])
+          : Number.MAX_SAFE_INTEGER;
+        const bIndex = order.has(b[0])
+          ? order.get(b[0])
+          : Number.MAX_SAFE_INTEGER;
+        return aIndex - bIndex;
+      });
+    }
     return {
       allSessions: all,
       currentSession: current,
@@ -214,9 +318,22 @@ export function Sidebar({
       generalSessions: general,
       projectSessionsOnly: projectOnly,
       projectGroups: groups,
-      projectGroupEntries: Array.from(groups.entries()),
+      visibleProjectGroupEntries: entries,
     };
-  }, [sessions, currentSessionId]);
+  }, [sessions, currentSessionId, activeProjectDirs, activeProjectsReady]);
+
+  const projectsAreaEmpty = visibleProjectGroupEntries.length === 0;
+
+  useEffect(() => {
+    if (!activeProjectsReady || !sessionsSnapshotReady) return;
+    if (sessionsLoading) return;
+    setShowActiveProjectsEmpty(projectsAreaEmpty);
+  }, [
+    activeProjectsReady,
+    sessionsSnapshotReady,
+    sessionsLoading,
+    projectsAreaEmpty,
+  ]);
 
   const toggleProject = (key) => {
     setExpandedProjects((prev) => {
@@ -225,6 +342,52 @@ export function Sidebar({
       else next.add(key);
       return next;
     });
+  };
+
+  const applyActiveProjects = (next) => {
+    if (Array.isArray(next?.active)) setActiveProjectDirs(next.active);
+  };
+
+  const requestRemoveFromActive = (projectKey) => {
+    if (!projectKey || projectKey === "unknown") return;
+    setOpenProjectMenuKey(null);
+    setPendingRemoveActive({
+      projectKey,
+      label: getProjectName(projectKey),
+    });
+  };
+
+  const refreshAfterActiveChange = async () => {
+    const remote = await fetchWebuiActiveProjects().catch(() => null);
+    if (remote) applyActiveProjects(remote);
+    await onRefreshSessions?.({ force: true });
+  };
+
+  const removeFromActive = async (projectKey) => {
+    setActiveProjectDirs((prev) => prev.filter((key) => key !== projectKey));
+    setExpandedProjects((prev) => {
+      if (!prev.has(projectKey)) return prev;
+      const next = new Set(prev);
+      next.delete(projectKey);
+      return next;
+    });
+    try {
+      await patchWebuiActiveProject("deactivate", projectKey);
+      await refreshAfterActiveChange();
+    } catch {
+      await refreshAfterActiveChange();
+    }
+  };
+
+  const confirmRemoveFromActive = async () => {
+    if (!pendingRemoveActive || removingFromActive) return;
+    setRemovingFromActive(true);
+    try {
+      await removeFromActive(pendingRemoveActive.projectKey);
+      setPendingRemoveActive(null);
+    } finally {
+      setRemovingFromActive(false);
+    }
   };
 
   const loadMoreProjectSessions = (projectKey, total) => {
@@ -378,15 +541,30 @@ export function Sidebar({
         // style={{ scrollbarWidth: "thin" }}
       >
         {/* Scrollable project history */}
-        <div className="flex items-center gap-2 px-4 pb-2.5">
+        <div className="flex items-center gap-1 px-4 pb-2.5">
           <span className="min-w-0 flex-1 text-[12px] font-medium text-(--text-muted)">
             {t("projects")}
           </span>
+          <button
+            type="button"
+            className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)"
+            title={t("openProjectDialog")}
+            aria-label={t("openProjectDialog")}
+            onClick={() => onOpenProjectSelector?.()}
+          >
+            <Plus size={14} strokeWidth={2.1} />
+          </button>
         </div>
         <nav className="flex flex-col px-2.5 pb-1 gap-0.5">
-          {projectGroupEntries.map(([projectKey, projectSessions]) => {
+          {showActiveProjectsEmpty && (
+            <SidebarEmptyPlaceholder className="mb-1">
+              {t("activeProjectsEmpty")}
+            </SidebarEmptyPlaceholder>
+          )}
+          {visibleProjectGroupEntries.map(([projectKey, projectSessions]) => {
             const isExpanded =
-              expandedProjects.has(projectKey) || projectGroups.size === 1;
+              expandedProjects.has(projectKey) ||
+              visibleProjectGroupEntries.length === 1;
             const projectSessionLimit =
               projectSessionLimits[projectKey] || PROJECT_SESSION_PREVIEW_LIMIT;
             const visibleProjectSessions = projectSessions.slice(
@@ -456,22 +634,45 @@ export function Sidebar({
                   <span className="text-[11px] px-2">
                     {projectSessions.length}
                   </span>
-                  <button
-                    type="button"
-                    className="border-0 bg-transparent inline-flex size-5 shrink-0 items-center justify-center rounded-md text-inherit cursor-pointer hover:bg-(--bg-active)"
-                    onClick={() => toggleProject(projectKey)}
-                    aria-label={
-                      isExpanded ? t("collapseProject") : t("expandProject")
+                  <Popover
+                    open={openProjectMenuKey === projectKey}
+                    onOpenChange={(open) =>
+                      setOpenProjectMenuKey(open ? projectKey : null)
                     }
                   >
-                    <ChevronDown
-                      size={13}
-                      className={cn(
-                        "transition-transform",
-                        !isExpanded && "-rotate-90",
-                      )}
-                    />
-                  </button>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-active) hover:text-(--text-primary)"
+                        aria-label={t("projectActions")}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <MoreHorizontal size={14} />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent
+                      align="end"
+                      className="w-44 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--text-secondary) transition-colors hover:bg-(--accent-red-bg) hover:text-(--accent-red)"
+                        onPointerDown={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                        }}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          requestRemoveFromActive(projectKey);
+                        }}
+                      >
+                        <X size={14} className="shrink-0" />
+                        <span>{t("removeActiveProject")}</span>
+                      </button>
+                    </PopoverContent>
+                  </Popover>
                 </div>
                 {isExpanded && (
                   <div className="flex flex-col gap-1.5 py-1 pl-2">
@@ -557,10 +758,11 @@ export function Sidebar({
           )}
           {!sessionsLoading &&
             projectSessionsOnly.length === 0 &&
-            generalSessions.length === 0 && (
-              <div className="px-3 py-4 text-[12px] text-(--text-muted) text-center">
+            generalSessions.length === 0 &&
+            !showActiveProjectsEmpty && (
+              <SidebarEmptyPlaceholder className="mb-1">
                 {t("noSessions")}
-              </div>
+              </SidebarEmptyPlaceholder>
             )}
         </nav>
 
@@ -855,6 +1057,25 @@ export function Sidebar({
         loading={deleting}
         onOpenChange={(open) => !open && setPendingDelete(null)}
         onConfirm={confirmDeleteSession}
+      />
+      <ConfirmDialog
+        open={!!pendingRemoveActive}
+        title={t("removeActiveProjectConfirm")}
+        description={
+          pendingRemoveActive
+            ? t("removeActiveProjectDescription").replace(
+                "{{project}}",
+                pendingRemoveActive.label || pendingRemoveActive.projectKey,
+              )
+            : ""
+        }
+        confirmLabel={t("removeActiveProject")}
+        loadingLabel={t("removingFromActive")}
+        loading={removingFromActive}
+        onOpenChange={(open) =>
+          !open && !removingFromActive && setPendingRemoveActive(null)
+        }
+        onConfirm={confirmRemoveFromActive}
       />
     </aside>
   );

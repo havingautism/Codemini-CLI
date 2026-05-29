@@ -11,7 +11,6 @@ import {
   ChevronDown,
   ArrowUp,
   Minus,
-  Folder,
   MessageCircle,
   FileText,
   Sparkles,
@@ -24,7 +23,6 @@ import {
   Database,
   Inbox,
   Camera,
-  MessageSquareText,
   Drama,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -620,13 +618,6 @@ function CommandPalette({ query, onSelect, visible }) {
   );
 }
 
-function projectDisplayName(projectCwd, isGeneralChat) {
-  if (isGeneralChat) return t("generalChat");
-  const value = String(projectCwd || "").trim();
-  if (!value) return "...";
-  return value.split(/[/\\]/).filter(Boolean).pop() || value;
-}
-
 export function InputBar({
   onSubmit,
   onAbort,
@@ -635,7 +626,6 @@ export function InputBar({
   disabledReason = "",
   runtimeState,
   history: externalHistory,
-  onOpenProject,
   onOpenSpec,
   projectCwd,
 }) {
@@ -652,7 +642,6 @@ export function InputBar({
   const approvalMode = rs.approvalMode || "review";
   const inputLocked = busy || disabled;
   const isGeneralChat = projectCwd === "__codemini_general__";
-  const projectLabel = projectDisplayName(projectCwd, isGeneralChat);
 
   useEffect(() => {
     if (externalHistory && externalHistory.length && history.length === 0) {
@@ -779,22 +768,6 @@ export function InputBar({
         </div>
         <div className="flex items-center gap-2 min-h-9 flex-wrap">
           <div className="flex items-center gap-2 min-w-0">
-            <button
-              type="button"
-              className={cn(INPUT_PILL_CLASS, "px-3")}
-              title={t("switchWorkspace")}
-              onClick={onOpenProject}
-            >
-              {isGeneralChat ? (
-                <MessageSquareText size={13} className="shrink-0" />
-              ) : (
-                <Folder size={13} className="shrink-0" />
-              )}
-              <span className="truncate max-w-[80px]">
-                {projectLabel}
-              </span>
-              <ChevronDown size={11} />
-            </button>
             <ModeSelector current={mode} disabled={inputLocked} />
             <SpecQuickSelect
               visible={!isGeneralChat}

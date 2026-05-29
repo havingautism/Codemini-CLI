@@ -210,6 +210,8 @@ function Shell() {
         currentView={state.currentView}
         onSwitchView={actions.switchView}
         onOpenProject={actions.openProject}
+        onOpenProjectSelector={openProjectSelector}
+        onRefreshSessions={actions.loadSessions}
         onDeleteSession={actions.deleteSession}
       />
 
@@ -326,7 +328,6 @@ function Shell() {
                 }
                 runtimeState={state.runtimeState}
                 history={state.history}
-                onOpenProject={openProjectSelector}
                 onOpenSpec={actions.openSpecReview}
                 projectCwd={state.projectCwd}
               />
