@@ -18,6 +18,7 @@ import { findEnclosingSymbol, queryAst, readAstNode, resolveAstTarget } from './
 import { initializeProjectIndex, queryProjectIndex, refreshIndexedFile } from './project-index.js';
 import { checkReadDedup } from './tool-result-store.js';
 import { TOOL_SKIP_DIRS as SKIP_DIRS, TEXT_EXTENSIONS, CODE_WRITE_GUARD_EXTENSIONS, LANGUAGE_FILE_TYPES } from './constants.js';
+import { globFilesUnder, globWorkspaceEntriesUnder } from './workspace-glob.js';
 import { sha256Prefixed as sha256, sha256 as sha256Hash } from './crypto-utils.js';
 import { forgetMemory, listMemories, rememberMemory, searchMemories, captureToInbox } from './memory-store.js';
 import { runDreamConsolidation } from './dream-consolidate.js';
@@ -684,68 +685,32 @@ function normalizeFileTypes(args = {}) {
   return [...new Set(merged)];
 }
 
-async function mapLimit(items, limit, worker) {
-  const list = Array.isArray(items) ? items : [];
-  if (list.length === 0) return [];
-  const maxConcurrent = Math.max(1, Math.min(Number(limit) || 1, list.length));
-  const results = new Array(list.length);
-  let nextIndex = 0;
-
-  async function runNext() {
-    while (nextIndex < list.length) {
-      const currentIndex = nextIndex;
-      nextIndex += 1;
-      results[currentIndex] = await worker(list[currentIndex], currentIndex);
-    }
-  }
-
-  await Promise.all(Array.from({ length: maxConcurrent }, () => runNext()));
-  return results;
-}
-
-const WALKER_CONCURRENCY = 8;
-
 async function walkTextFiles(root, startPath = '.', fileTypes = [], config = {}) {
   const abs = await resolveInWorkspace(root, startPath, config);
   const allowedExts = new Set((Array.isArray(fileTypes) ? fileTypes : []).map((item) => `.${String(item || '').replace(/^\./, '')}`));
-
-  async function visit(current) {
-    const stat = await fs.stat(current);
-    if (stat.isDirectory()) {
-      const name = path.basename(current);
-      if (SKIP_DIRS.has(name)) return [];
-      const entries = await fs.readdir(current);
-      const nested = await mapLimit(entries, WALKER_CONCURRENCY, async (entry) => visit(path.join(current, entry)));
-      return nested.flat();
-    }
-    if (!detectTextFile(current)) return [];
-    if (allowedExts.size > 0 && !allowedExts.has(path.extname(current).toLowerCase())) return [];
-    return [current];
+  const stat = await fs.stat(abs);
+  if (!stat.isDirectory()) {
+    if (!detectTextFile(abs)) return [];
+    if (allowedExts.size > 0 && !allowedExts.has(path.extname(abs).toLowerCase())) return [];
+    return [abs];
   }
 
-  return visit(abs);
+  const files = await globFilesUnder(abs, { skipDirs: SKIP_DIRS });
+  return files.filter((filePath) => {
+    if (!detectTextFile(filePath)) return false;
+    if (allowedExts.size > 0 && !allowedExts.has(path.extname(filePath).toLowerCase())) return false;
+    return true;
+  });
 }
 
 async function walkWorkspaceEntries(root, startPath = '.', { includeHidden = false, config = {} } = {}) {
   const abs = await resolveInWorkspace(root, startPath, config);
-
-  async function visit(current) {
-    const stat = await fs.stat(current);
-    const relative = toWorkspaceRelative(root, current) || '.';
-    const name = path.basename(current);
-
-    if (!includeHidden && name.startsWith('.') && relative !== '.') return [];
-    if (stat.isDirectory()) {
-      if (SKIP_DIRS.has(name) && relative !== '.') return [];
-      const entries = await fs.readdir(current);
-      const nested = await mapLimit(entries, WALKER_CONCURRENCY, async (entry) => visit(path.join(current, entry)));
-      return [{ path: relative, name, type: 'dir' }, ...nested.flat()];
-    }
-
-    return [{ path: relative, name, type: 'file' }];
+  const stat = await fs.stat(abs);
+  if (!stat.isDirectory()) {
+    const relative = toWorkspaceRelative(root, abs) || path.basename(abs);
+    return [{ path: relative, name: path.basename(abs), type: 'file' }];
   }
-
-  return visit(abs);
+  return globWorkspaceEntriesUnder(abs, { includeHidden, skipDirs: SKIP_DIRS });
 }
 
 function globToRegex(pattern) {

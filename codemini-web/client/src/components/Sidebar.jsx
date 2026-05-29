@@ -441,7 +441,7 @@ export function Sidebar({
       await onNewSession?.();
       return;
     }
-    await onOpenProject?.(projectKey, { view: "chat" });
+    await onOpenProject?.(projectKey, { view: "chat", newSession: true });
   };
 
   const openGeneralNewSession = async () => {
@@ -449,7 +449,7 @@ export function Sidebar({
       await onNewSession?.();
       return;
     }
-    await onOpenProject?.(GENERAL_PROJECT_MARKER, { view: "chat" });
+    await onOpenProject?.(GENERAL_PROJECT_MARKER, { view: "chat", newSession: true });
   };
 
   const confirmDeleteSession = async () => {

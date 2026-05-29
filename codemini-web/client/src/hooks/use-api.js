@@ -247,11 +247,11 @@ export async function fetchGitBatch(dirs) {
   return res.json();
 }
 
-export async function openProject(path) {
+export async function openProject(path, { newSession = false } = {}) {
   const res = await api('/api/project/open', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ path })
+    body: JSON.stringify({ path, newSession: Boolean(newSession) })
   });
   return res.json();
 }

@@ -1432,7 +1432,7 @@ async function main() {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/project/open') {
-      const { path: projectPath } = await readBody(req);
+      const { path: projectPath, newSession: forceNewSession = false } = await readBody(req);
       if (!projectPath) { jsonResponse(res, { error: true, message: 'Missing path' }, 400); return; }
       if (bridge.isBusy()) {
         jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
@@ -1447,19 +1447,28 @@ async function main() {
         let built;
         let reusedSessionId = null;
         if (openingGeneral) {
-          const all = await listSessions(1000, { includeEmpty: true });
-          const reusable = all.find((session) =>
-            isGeneralProjectDir(session.projectDir) &&
-            Number(session.messageCount || 0) === 0
-          );
-          built = reusable
-            ? await buildRuntimeForSession({ sessionId: reusable.id, model: bridge.getState().model })
-            : await buildRuntimeForSession({ model: bridge.getState().model, projectDir: GENERAL_PROJECT_DIR });
+          if (forceNewSession) {
+            built = await buildRuntimeForSession({
+              model: bridge.getState().model,
+              projectDir: GENERAL_PROJECT_DIR
+            });
+          } else {
+            const all = await listSessions(1000, { includeEmpty: true });
+            const reusable = all.find((session) =>
+              isGeneralProjectDir(session.projectDir) &&
+              Number(session.messageCount || 0) === 0
+            );
+            built = reusable
+              ? await buildRuntimeForSession({ sessionId: reusable.id, model: bridge.getState().model })
+              : await buildRuntimeForSession({ model: bridge.getState().model, projectDir: GENERAL_PROJECT_DIR });
+          }
         } else {
           await patchWebuiActiveProjects({ action: 'activate', projectDir: resolved });
           process.chdir(resolved);
           currentProjectDir = process.cwd();
-          reusedSessionId = await findPreferredSessionForProject(currentProjectDir);
+          if (!forceNewSession) {
+            reusedSessionId = await findPreferredSessionForProject(currentProjectDir);
+          }
           built = await buildRuntimeForSession({
             sessionId: reusedSessionId || undefined,
             model: bridge.getState().model,

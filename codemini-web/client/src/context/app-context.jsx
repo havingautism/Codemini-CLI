@@ -2862,7 +2862,9 @@ export function AppProvider({ children }) {
         if (nextView === "chat")
           setState((prev) => ({ ...prev, messages: [] }));
         try {
-          const result = await api.openProject(projectPath);
+          const result = await api.openProject(projectPath, {
+            newSession: Boolean(options.newSession),
+          });
           if (result.ok) {
             const nextCodeWikiProjectPath =
               nextView === "codewiki"

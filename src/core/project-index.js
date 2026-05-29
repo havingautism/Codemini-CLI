@@ -5,6 +5,7 @@ import { INDEX_SKIP_DIRS as SKIP_DIRS, SOURCE_EXTENSIONS, EXTENSION_LANGUAGE_MAP
 import { sha256 } from './crypto-utils.js';
 import { BoundedCache } from './bounded-cache.js';
 import { trimInline, normalizeRelativePath, escapeRegex } from './string-utils.js';
+import { globFilesUnder } from './workspace-glob.js';
 
 const PROJECT_MARKER_FILES = new Set([
   'package.json',
@@ -220,20 +221,12 @@ async function findNearestIndexedProjectRoot(startDir, workspaceRoot) {
   return null;
 }
 
-async function walkFiles(cwd, start = cwd, out = [], ignoreRules = []) {
-  const entries = await fs.readdir(start, { withFileTypes: true });
-  for (const entry of entries) {
-    const absolutePath = path.join(start, entry.name);
+async function walkFiles(cwd, ignoreRules = []) {
+  const absolutePaths = await globFilesUnder(cwd, { skipDirs: SKIP_DIRS });
+  return absolutePaths.filter((absolutePath) => {
     const relativePath = rel(cwd, absolutePath);
-    if (entry.isDirectory()) {
-      if (shouldIgnorePath(relativePath, true, ignoreRules)) continue;
-      await walkFiles(cwd, absolutePath, out, ignoreRules);
-      continue;
-    }
-    if (shouldIgnorePath(relativePath, false, ignoreRules)) continue;
-    out.push(absolutePath);
-  }
-  return out;
+    return !shouldIgnorePath(relativePath, false, ignoreRules);
+  });
 }
 
 function categorizeDirectory(relativeDir) {
@@ -463,7 +456,7 @@ async function scanProject(cwd) {
   }
 
   const { gitignoreRules, llmignoreRules, combinedRules } = await readProjectIgnoreRules(cwd);
-  const allFiles = await walkFiles(cwd, cwd, [], combinedRules);
+  const allFiles = await walkFiles(cwd, combinedRules);
   const relativeFiles = allFiles.map((filePath) => rel(cwd, filePath));
   const sourceFiles = allFiles.filter((filePath) => SOURCE_EXTENSIONS.has(path.extname(filePath).toLowerCase()));
 

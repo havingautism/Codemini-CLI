@@ -60,10 +60,13 @@
     "@cursorless/tree-sitter-wasms": "^0.8.1",
     "cheerio": "^1.1.2",
     "cli-truncate": "^6.0.0",
+    "execa": "^9.6.1",
+    "fast-glob": "^3.3.3",
     "ink": "^7.0.0",
     "react": "^19.2.5",
     "strip-ansi": "^7.2.0",
-    "web-tree-sitter": "^0.26.8"
+    "web-tree-sitter": "^0.26.8",
+    "zod": "^4.4.3"
   },
   "license": "MIT"
 }

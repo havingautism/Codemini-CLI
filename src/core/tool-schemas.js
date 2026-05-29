@@ -1,0 +1,243 @@
+import { z } from 'zod';
+import { normalizePath } from './string-utils.js';
+import {
+  buildDeleteApprovalDetails,
+  coerceToolRecord,
+  firstAliasPath,
+  firstAliasString,
+  normalizeBooleanValue,
+  normalizeFilePathValue,
+  normalizePathValueWithInlineRange,
+  parseInlineRangePath
+} from './tool-args-helpers.js';
+
+const looseRecord = z.record(z.string(), z.unknown());
+
+function applyReadNormalization(source) {
+  const normalized = { ...source };
+  const aliasPath = source.path || source.file_path || source.file || source.target || '';
+  const normalizedPath = normalizePathValueWithInlineRange(aliasPath);
+  if (normalizedPath.path) normalized.path = normalizedPath.path;
+
+  if (!Number.isFinite(Number(normalized.start_line)) && Number.isFinite(Number(source.offset))) {
+    normalized.start_line = Number(source.offset);
+  }
+
+  if (!Number.isFinite(Number(normalized.end_line)) && Number.isFinite(Number(source.limit))) {
+    const startLine = Number(normalized.start_line);
+    const limit = Number(source.limit);
+    if (startLine > 0 && limit > 0) {
+      normalized.end_line = startLine + limit - 1;
+    }
+  }
+
+  const inlineRange = normalizedPath.inlineRange || parseInlineRangePath(normalized.path);
+  if (inlineRange) {
+    normalized.path = normalizePath(inlineRange.path);
+    if (!Number.isFinite(Number(normalized.start_line))) normalized.start_line = inlineRange.start_line;
+    if (!Number.isFinite(Number(normalized.end_line))) normalized.end_line = inlineRange.end_line;
+  }
+
+  return normalized;
+}
+
+function applyPathAliases(source, aliases = []) {
+  const normalized = { ...source };
+  const pathValue = firstAliasPath(source, aliases);
+  if (pathValue) normalized.path = pathValue;
+  return normalized;
+}
+
+function applyPatternAliases(source, patternAliases = [], pathAliases = []) {
+  const normalized = { ...source };
+  const pattern = firstAliasString(source, ['pattern', ...patternAliases]);
+  if (pattern) normalized.pattern = pattern;
+  const pathValue = firstAliasPath(source, pathAliases);
+  if (pathValue) normalized.path = pathValue;
+  return normalized;
+}
+
+function applyWriteNormalization(source) {
+  const normalized = { ...source };
+  const filePath = normalizeFilePathValue(source.path || source.file_path || source.file || '', {
+    stripInlineRange: true
+  });
+  if (filePath) normalized.path = filePath;
+  const append = normalizeBooleanValue(source.append);
+  const fullFileRewrite = normalizeBooleanValue(source.full_file_rewrite);
+  if (append !== undefined) normalized.append = append;
+  if (fullFileRewrite !== undefined) normalized.full_file_rewrite = fullFileRewrite;
+  if (normalized.content == null) {
+    if (source.text != null) normalized.content = source.text;
+    if (source.new_content != null) normalized.content = source.new_content;
+  }
+  return normalized;
+}
+
+function applyEditNormalization(source) {
+  const normalized = { ...source };
+  const rawPathValue = source.path || source.file || source.file_path || '';
+  const inlineRange = parseInlineRangePath(rawPathValue);
+  const value = normalizeFilePathValue(rawPathValue, { stripInlineRange: true });
+  if (value) normalized.path = value;
+  if (inlineRange) {
+    if (!Number.isFinite(Number(normalized.start_line))) normalized.start_line = inlineRange.start_line;
+    if (!Number.isFinite(Number(normalized.end_line))) normalized.end_line = inlineRange.end_line;
+  }
+  if (normalized.old_text == null && source.old_string != null) normalized.old_text = source.old_string;
+  if (normalized.new_text == null && source.new_string != null) normalized.new_text = source.new_string;
+  if (normalized.new_text == null && source.content != null && normalized.old_text != null) {
+    normalized.new_text = source.content;
+  }
+  const replaceAll = normalizeBooleanValue(source.replace_all ?? source.replaceAll);
+  if (replaceAll !== undefined) normalized.replace_all = replaceAll;
+  return normalized;
+}
+
+const readArgsSchema = looseRecord.transform(applyReadNormalization);
+const listArgsSchema = looseRecord.transform((source) => applyPathAliases(source, ['dir', 'directory', 'file_path', 'file', 'target']));
+const globArgsSchema = looseRecord.transform((source) =>
+  applyPatternAliases(source, ['glob', 'query'], ['directory', 'dir', 'cwd', 'file_path', 'file'])
+);
+const grepArgsSchema = looseRecord.transform((source) =>
+  applyPatternAliases(source, ['query', 'symbol', 'q'], ['directory', 'dir', 'cwd', 'file_path', 'file'])
+);
+const createArgsSchema = looseRecord.transform(applyWriteNormalization);
+const editArgsSchema = looseRecord.transform(applyEditNormalization);
+const deleteArgsSchema = looseRecord
+  .transform((source) => applyPathAliases(source, ['file_path', 'file', 'target', 'directory', 'dir']))
+  .transform((normalized) => {
+    const approval = buildDeleteApprovalDetails(normalized, normalized.path);
+    if (approval) normalized.approval = approval;
+    return normalized;
+  });
+const webFetchArgsSchema = looseRecord
+  .transform((source) => applyPathAliases(source, ['url', 'href', 'link', 'target']))
+  .transform((normalized) => {
+    const url = String(normalized.url || normalized.path || '').trim();
+    return { ...normalized, url };
+  });
+const webSearchArgsSchema = looseRecord
+  .transform((source) => applyPatternAliases(source, ['query', 'q', 'keyword']))
+  .transform((normalized) => {
+    const query = String(normalized.query || normalized.pattern || '').trim();
+    return { ...normalized, query };
+  });
+
+const TOOL_SCHEMAS = {
+  read: readArgsSchema,
+  list: listArgsSchema,
+  glob: globArgsSchema,
+  grep: grepArgsSchema,
+  create: createArgsSchema,
+  edit: editArgsSchema,
+  delete: deleteArgsSchema,
+  web_fetch: webFetchArgsSchema,
+  web_search: webSearchArgsSchema
+};
+
+function prepareToolSource(args, rawArguments) {
+  const rawText = typeof rawArguments === 'string' ? rawArguments.trim() : '';
+  const primitive =
+    args == null || Array.isArray(args) || typeof args !== 'object'
+      ? args
+      : null;
+  const source =
+    args && typeof args === 'object' && !Array.isArray(args)
+      ? { ...args }
+      : {};
+
+  if (primitive != null && typeof primitive !== 'object') {
+    source._raw = rawText || String(primitive);
+  } else if (!source._raw && rawText && source._invalid_json) {
+    source._raw = rawText;
+  }
+
+  const stringValue =
+    typeof primitive === 'string'
+      ? primitive.trim()
+      : String(source._raw || '').trim();
+
+  return { source, stringValue };
+}
+
+export function normalizeReadArgs(rawArgs) {
+  return readArgsSchema.parse(coerceToolRecord(rawArgs, 'path'));
+}
+
+export function normalizePathArgs(rawArgs, aliases = []) {
+  return looseRecord
+    .transform((source) => applyPathAliases(source, aliases))
+    .parse(coerceToolRecord(rawArgs, 'path'));
+}
+
+export function normalizePatternArgs(rawArgs, aliases = [], defaultPathAliases = []) {
+  return looseRecord
+    .transform((source) => applyPatternAliases(source, aliases, defaultPathAliases))
+    .parse(coerceToolRecord(rawArgs, 'pattern'));
+}
+
+export function normalizeWriteArgs(rawArgs) {
+  return createArgsSchema.parse(coerceToolRecord(rawArgs, 'path'));
+}
+
+export function normalizeWebFetchArgs(rawArgs) {
+  return webFetchArgsSchema.parse(coerceToolRecord(rawArgs, 'path'));
+}
+
+export function normalizeWebSearchArgs(rawArgs) {
+  return webSearchArgsSchema.parse(coerceToolRecord(rawArgs, 'pattern'));
+}
+
+export function normalizeToolArguments(toolName, args, rawArguments) {
+  const { source, stringValue } = prepareToolSource(args, rawArguments);
+  const schema = TOOL_SCHEMAS[toolName];
+
+  if (toolName === 'read') {
+    return schema.parse({
+      ...source,
+      ...(stringValue && !source.path ? { path: stringValue } : {})
+    });
+  }
+  if (toolName === 'list') {
+    return schema.parse({
+      ...source,
+      ...(stringValue && !source.path ? { path: stringValue } : {})
+    });
+  }
+  if (toolName === 'glob') {
+    return schema.parse({
+      ...source,
+      ...(stringValue && !source.pattern ? { pattern: stringValue } : {})
+    });
+  }
+  if (toolName === 'grep') {
+    return schema.parse({
+      ...source,
+      ...(stringValue && !source.pattern ? { pattern: stringValue } : {})
+    });
+  }
+  if (toolName === 'create') {
+    return schema.parse({
+      ...source,
+      ...(stringValue && !source.path ? { path: stringValue } : {})
+    });
+  }
+  if (toolName === 'edit') {
+    return schema.parse({
+      ...source,
+      ...(stringValue && !source.path && !source.file && !source.file_path ? { path: stringValue } : {})
+    });
+  }
+  if (toolName === 'delete') {
+    return schema.parse({
+      ...source,
+      ...(stringValue && !source.path ? { path: stringValue } : {})
+    });
+  }
+  if (toolName === 'web_fetch' || toolName === 'web_search') {
+    return schema.parse(source);
+  }
+
+  return source;
+}
