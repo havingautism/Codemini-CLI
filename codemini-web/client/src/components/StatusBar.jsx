@@ -1,4 +1,4 @@
-import { Brain, Plug, ChartNoAxesCombined, FileText, ListChecks, ShieldAlert, Sparkles, Unlock } from "lucide-react";
+import { Brain, Plug, ChartNoAxesCombined, ListChecks, ShieldAlert, Sparkles, Unlock } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
 
@@ -72,8 +72,8 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
 
   const modelLogo = getModelLogo(rs.model);
   const sdkLogo = SDK_LOGO_MAP[rs.sdkProvider];
-  const WorkIcon = mode === "spec" ? FileText : mode === "plan" ? ListChecks : Brain;
-  const workLabel = mode === "spec" ? t("specMode") : mode === "plan" ? t("planMode") : t("normalExecutionMode");
+  const WorkIcon = mode === "plan" ? ListChecks : Brain;
+  const workLabel = mode === "plan" ? t("planMode") : t("normalExecutionMode");
   const ApprovalIcon =
     approvalMode === "full_access" ? Unlock : approvalMode === "auto" ? Sparkles : ShieldAlert;
   const approvalLabel =

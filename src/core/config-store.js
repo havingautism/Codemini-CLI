@@ -155,9 +155,9 @@ function normalizePolicyLists(config) {
   next.model.fast_name = String(next.model.fast_name || '').trim();
   const rawExecutionMode = String(next.execution.mode || '').toLowerCase();
   const rawApprovalMode = String(next.execution.approval_mode || '').toLowerCase().replace(/-/g, '_');
-  next.execution.mode = ['normal', 'plan'].includes(rawExecutionMode)
-    ? rawExecutionMode
-    : 'normal';
+  next.execution.mode = rawExecutionMode === 'spec'
+    ? 'plan'
+    : (['normal', 'plan'].includes(rawExecutionMode) ? rawExecutionMode : 'normal');
   next.execution.approval_mode = ['review', 'auto', 'full_access'].includes(rawApprovalMode)
     ? rawApprovalMode
     : 'review';

@@ -178,6 +178,13 @@ function sanitizeMessage(msg) {
   const usage = sanitizeUsage(msg?.usage);
   if (usage) out.usage = usage;
 
+  if (typeof msg?.plan_goal === 'string' && msg.plan_goal.trim()) {
+    out.plan_goal = msg.plan_goal.trim();
+  }
+  if (typeof msg?.plan_file === 'string' && msg.plan_file.trim()) {
+    out.plan_file = msg.plan_file.trim();
+  }
+
   if (Array.isArray(msg?.plan_transcript)) {
     out.plan_transcript = msg.plan_transcript
       .filter((entry) => entry && typeof entry === 'object')

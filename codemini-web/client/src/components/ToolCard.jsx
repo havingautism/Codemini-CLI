@@ -7,12 +7,14 @@ import {
   FileText,
   Folder,
   Globe,
+  ListChecks,
   Search,
   Terminal,
   Trash2,
   Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatToolLabel } from "@core/tool-display.js";
 import { formatDuration } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
 import { PatchDiff } from "@pierre/diffs/react";
@@ -22,6 +24,8 @@ const TOOL_ICONS = {
   edit: FilePenLine,
   create: FilePenLine,
   write: FilePenLine,
+  create_plan: ListChecks,
+  create_spec: FileText,
   delete: Trash2,
   run: Terminal,
   grep: Search,
@@ -343,6 +347,7 @@ export function ToolCard({ card }) {
   const [open, setOpen] = useState(false);
   const toolName = extractToolName(card.name);
   const Icon = TOOL_ICONS[toolName] || TOOL_ICONS.default;
+  const displayLabel = card.displayName || formatToolLabel(toolName);
   const keyArg = extractKeyArg(card.arguments, toolName);
   const fileMeta = getFileToolMeta(
     toolName,
@@ -382,8 +387,8 @@ export function ToolCard({ card }) {
         <span className={TOOL_ICON_CLASS}>
           <Icon size={14} />
         </span>
-        <span className="font-medium capitalize text-(--text-secondary)">
-          {toolName}
+        <span className="font-medium text-(--text-secondary)">
+          {displayLabel}
         </span>
         <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xs font-normal text-(--text-muted)">
           {nameText}

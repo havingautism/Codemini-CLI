@@ -30,6 +30,7 @@ import {
   getToolOutputSanitizeOptions,
   sanitizePreviewLines,
   sanitizeTextForModel,
+  buildRunFailureMessage,
   summarizeRunOutput
 } from './tool-output.js';
 import {
@@ -1159,7 +1160,13 @@ async function runCommand(root, config, args) {
     shell: config.shell.default,
     timeoutMs: Number(args?.timeout || args?.timeout_ms || args?.timeoutMs || config.shell.timeout_ms)
   });
-  return { ...result, command };
+  const payload = { ...result, command };
+  const failureMessage = buildRunFailureMessage(payload);
+  if (failureMessage) {
+    payload.failed = true;
+    payload.error = failureMessage;
+  }
+  return payload;
 }
 
 function nextBackgroundTaskId() {
@@ -1744,26 +1751,113 @@ function findLineEndingEquivalentMatches(content, oldText) {
   return matches;
 }
 
+// Mirror read-tool sanitization (CRLF→LF, strip trailing ws) plus tab/indent tolerance for edit matching.
+function normalizeProbeLine(line) {
+  return String(line || '')
+    .replace(/\r$/, '')
+    .replace(/\t/g, '    ')
+    .replace(/[ \t]+$/, '');
+}
+
+function normalizeProbeLineTrimStart(line) {
+  return normalizeProbeLine(line).replace(/^\s+/, '');
+}
+
+function findLineBlockMatches(content, oldText, { compareTrimStart = false } = {}) {
+  const probeLines = splitLinesNormalized(oldText).map(normalizeProbeLine);
+  if (probeLines.length === 0 || probeLines.every((line) => !line.trim())) return [];
+  const contentLines = splitLinesNormalized(content);
+  const compareLine = compareTrimStart ? normalizeProbeLineTrimStart : normalizeProbeLine;
+  const normalizedProbe = probeLines.map(compareLine);
+  const matches = [];
+
+  for (let i = 0; i <= contentLines.length - probeLines.length; i += 1) {
+    let ok = true;
+    for (let j = 0; j < probeLines.length; j += 1) {
+      const probeLine = probeLines[j];
+      const contentLine = contentLines[i + j] ?? '';
+      if (!probeLine.trim()) {
+        if (contentLine.trim()) {
+          ok = false;
+          break;
+        }
+        continue;
+      }
+      if (compareLine(contentLine) !== normalizedProbe[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (!ok) continue;
+    const { startOffset, endOffset } = lineRangeToOffsets(content, i + 1, i + probeLines.length);
+    matches.push({ start: startOffset, end: endOffset });
+  }
+  return matches;
+}
+
+function findFlexibleTextMatches(content, oldText) {
+  if (!oldText) return [];
+
+  const exact = [];
+  let pos = 0;
+  while (true) {
+    const found = content.indexOf(oldText, pos);
+    if (found === -1) break;
+    exact.push({ start: found, end: found + oldText.length });
+    pos = found + Math.max(1, oldText.length);
+  }
+  if (exact.length > 0) return exact;
+
+  const newline = findLineEndingEquivalentMatches(content, oldText);
+  if (newline.length > 0) return newline;
+
+  const trailing = findTrailingWhitespaceTolerantMatches(content, oldText);
+  if (trailing.length > 0) return trailing;
+
+  const flexTrim = findLineBlockMatches(content, oldText, { compareTrimStart: true });
+  if (flexTrim.length > 0) return flexTrim;
+
+  return findLineBlockMatches(content, oldText, { compareTrimStart: false });
+}
+
+function applyMatchReplacements(searchContent, matches, newText, replaceAll) {
+  const selected = replaceAll ? matches : matches.slice(0, 1);
+  if (selected.length === 0) return null;
+  let cursor = 0;
+  let replaced = '';
+  for (const match of selected) {
+    const originalMatch = searchContent.slice(match.start, match.end);
+    replaced += searchContent.slice(cursor, match.start);
+    replaced += applyEol(newText, detectEol(originalMatch));
+    cursor = match.end;
+    if (!replaceAll) break;
+  }
+  replaced += searchContent.slice(cursor);
+  return { replaced, firstMatch: selected[0] };
+}
+
+function changedLineForMatch(fullContent, searchContent, match, range) {
+  if (range) {
+    return range.startLine + splitLines(searchContent.slice(0, match.start)).length - 1;
+  }
+  return splitLines(fullContent.slice(0, match.start)).length;
+}
+
 function countTextOccurrences(content, probe) {
   if (!probe) return 0;
-  const exact = content.split(probe).length - 1;
-  if (exact > 0) return exact;
-  if (/[\r\n]/.test(probe)) {
-    return findLineEndingEquivalentMatches(content, probe).length;
-  }
-  return 0;
+  return findFlexibleTextMatches(content, probe).length;
 }
 
 function findTrailingWhitespaceTolerantMatches(content, oldText) {
   if (!oldText) return [];
-  const escapedLines = oldText.split('\n').map((line) => {
-    const trimmed = line.replace(/[ \t]+$/, '');
-    return `${escapeRegex(trimmed)}[ \t]*`;
+  const escapedLines = splitLinesNormalized(oldText).map((line) => {
+    const trimmed = normalizeProbeLine(line);
+    return `${escapeRegex(trimmed)}[ \\t\\r]*`;
   });
-  const pattern = escapedLines.join('\n');
+  const pattern = escapedLines.join('\\r?\\n');
   if (!pattern) return [];
   try {
-    const regex = new RegExp(pattern, 'g');
+    const regex = new RegExp(pattern, 'gm');
     const matches = [];
     let match;
     while ((match = regex.exec(content)) !== null) {
@@ -1783,7 +1877,7 @@ function buildOldTextNotFoundHint(content, oldText, relativePath) {
     `old_text not found in ${relativePath || 'file'}.`,
     `Searched for: "${firstLine}${firstLine.length < (oldText || '').length ? '...' : ''}"`,
     `File starts with:\n${snippet}${snippetLines.length < splitLines(content).length ? '\n...' : ''}`,
-    `Hint: Check for trailing spaces, tab/space indentation, or CRLF vs LF line endings.`
+    `Hint: read output normalizes CRLF and trailing spaces; edit now tolerates those plus tabs/indent drift. If this still fails, read the file and copy old_text exactly from the read result.`
   ].join('\n');
 }
 
@@ -1823,101 +1917,41 @@ async function replaceText(root, args, config = {}) {
     ? lineRangeToOffsets(state.content, rangeStart, Number.isFinite(rangeEnd) && rangeEnd >= rangeStart ? rangeEnd : rangeStart)
     : null;
   const searchContent = range ? state.content.slice(range.startOffset, range.endOffset) : state.content;
-  const occurrences = searchContent.split(oldText).length - 1;
-  let newlineMatches = null;
-  if (occurrences === 0 && /[\r\n]/.test(oldText)) {
-    newlineMatches = findLineEndingEquivalentMatches(searchContent, oldText);
-    if ((replaceAll && newlineMatches.length > 0) || newlineMatches.length === 1) {
-      let cursor = 0;
-      let replaced = '';
-      for (const match of newlineMatches) {
-        const originalMatch = searchContent.slice(match.start, match.end);
-        replaced += searchContent.slice(cursor, match.start);
-        replaced += applyEol(newText, detectEol(originalMatch));
-        cursor = match.end;
-        if (!replaceAll) break;
-      }
-      replaced += searchContent.slice(cursor);
+  const matches = findFlexibleTextMatches(searchContent, oldText);
+  const matchCount = matches.length;
+
+  if (matchCount === 1 || (replaceAll && matchCount > 0)) {
+    const applied = applyMatchReplacements(searchContent, matches, newText, replaceAll);
+    if (applied) {
       const afterContent = range
-        ? `${state.content.slice(0, range.startOffset)}${replaced}${state.content.slice(range.endOffset)}`
-        : replaced;
+        ? `${state.content.slice(0, range.startOffset)}${applied.replaced}${state.content.slice(range.endOffset)}`
+        : applied.replaced;
       await fs.writeFile(state.target, afterContent, 'utf8');
-      const first = newlineMatches[0];
-      const changedLine = range
-        ? range.startLine + splitLines(searchContent.slice(0, first.start)).length - 1
-        : splitLines(state.content.slice(0, first.start)).length;
+      const changedLine = changedLineForMatch(state.content, searchContent, applied.firstMatch, range);
       return editResult(relativePath, 'replace_text', state.content, afterContent, changedLine);
     }
   }
-  let trailingWsMatches = null;
-  if (occurrences === 0 && !newlineMatches) {
-    trailingWsMatches = findTrailingWhitespaceTolerantMatches(searchContent, oldText);
-    if ((replaceAll && trailingWsMatches.length > 0) || trailingWsMatches.length === 1) {
-      let cursor = 0;
-      let replaced = '';
-      for (const match of trailingWsMatches) {
-        const originalMatch = searchContent.slice(match.start, match.end);
-        replaced += searchContent.slice(cursor, match.start);
-        replaced += applyEol(newText, detectEol(originalMatch));
-        cursor = match.end;
-        if (!replaceAll) break;
-      }
-      replaced += searchContent.slice(cursor);
-      const afterContent = range
-        ? `${state.content.slice(0, range.startOffset)}${replaced}${state.content.slice(range.endOffset)}`
-        : replaced;
-      await fs.writeFile(state.target, afterContent, 'utf8');
-      const first = trailingWsMatches[0];
-      const changedLine = range
-        ? range.startLine + splitLines(searchContent.slice(0, first.start)).length - 1
-        : splitLines(state.content.slice(0, first.start)).length;
-      return editResult(relativePath, 'replace_text', state.content, afterContent, changedLine);
-    }
+
+  if (matchCount === 0) {
+    throw new Error(buildOldTextNotFoundHint(searchContent, oldText, relativePath));
   }
-  if (occurrences !== 1) {
-    if (replaceAll && occurrences > 0) {
-      const replaced = searchContent.replaceAll(oldText, newText);
-      const afterContent = range
-        ? `${state.content.slice(0, range.startOffset)}${replaced}${state.content.slice(range.endOffset)}`
-        : state.content.replaceAll(oldText, newText);
-      await fs.writeFile(state.target, afterContent, 'utf8');
-      const changedLine = range
-        ? range.startLine + splitLines(searchContent.slice(0, searchContent.indexOf(oldText))).length - 1
-        : splitLines(state.content.slice(0, state.content.indexOf(oldText))).length;
-      return editResult(relativePath, 'replace_text', state.content, afterContent, changedLine);
-    }
-    const baseLine = hasRange ? range.startLine : 1;
-    const baseOffset = hasRange ? range.startOffset : 0;
-    const lineDetails = [];
-    let searchPos = 0;
-    while (true) {
-      const pos = searchContent.indexOf(oldText, searchPos);
-      if (pos === -1) break;
-      const lineNum = baseLine + splitLines(searchContent.slice(0, pos)).length - 1;
-      const globalPos = baseOffset + pos;
-      const lStart = state.content.lastIndexOf('\n', globalPos) + 1;
-      const lEnd = state.content.indexOf('\n', globalPos);
-      const lineText = state.content.slice(lStart, lEnd >= 0 ? lEnd : void 0).trim();
-      lineDetails.push(`  Line ${lineNum}: ${lineText}`);
-      searchPos = pos + oldText.length;
-    }
-    const lineHint = lineDetails.length > 0 ? `\n${lineDetails.join('\n')}\n` : ' ';
-    const effectiveOccurrences = newlineMatches?.length || trailingWsMatches?.length || occurrences;
-    throw new Error(
-      effectiveOccurrences === 0
-        ? buildOldTextNotFoundHint(searchContent, oldText, relativePath)
-        : `replace_text old_text not unique; found ${effectiveOccurrences} occurrences:${lineHint}Use path:"${relativePath}:N-M" to narrow the range, set replace_all=true, or provide more unique old_text`
-    );
+
+  const baseLine = hasRange ? range.startLine : 1;
+  const baseOffset = hasRange ? range.startOffset : 0;
+  const lineDetails = [];
+  for (const match of matches) {
+    const pos = match.start;
+    const lineNum = baseLine + splitLines(searchContent.slice(0, pos)).length - 1;
+    const globalPos = baseOffset + pos;
+    const lStart = state.content.lastIndexOf('\n', globalPos) + 1;
+    const lEnd = state.content.indexOf('\n', globalPos);
+    const lineText = state.content.slice(lStart, lEnd >= 0 ? lEnd : void 0).trim();
+    lineDetails.push(`  Line ${lineNum}: ${lineText}`);
   }
-  const replaced = searchContent.replace(oldText, newText);
-  const afterContent = range
-    ? `${state.content.slice(0, range.startOffset)}${replaced}${state.content.slice(range.endOffset)}`
-    : state.content.replace(oldText, newText);
-  await fs.writeFile(state.target, afterContent, 'utf8');
-  const changedLine = range
-    ? range.startLine + splitLines(searchContent.slice(0, searchContent.indexOf(oldText))).length - 1
-    : splitLines(state.content.slice(0, state.content.indexOf(oldText))).length;
-  return editResult(relativePath, 'replace_text', state.content, afterContent, changedLine);
+  const lineHint = lineDetails.length > 0 ? `\n${lineDetails.join('\n')}\n` : ' ';
+  throw new Error(
+    `replace_text old_text not unique; found ${matchCount} occurrences:${lineHint}Use path:"${relativePath}:N-M" to narrow the range, set replace_all=true, or provide more unique old_text`
+  );
 }
 
 async function insertRelative(root, args, mode, config = {}) {
@@ -1925,29 +1959,19 @@ async function insertRelative(root, args, mode, config = {}) {
   const anchorText = String(args?.anchor_text || '');
   const content = String(args?.content || '');
   const state = await getFileState(root, relativePath, config);
-  const exactOccurrences = state.content.split(anchorText).length - 1;
-  const newlineMatches =
-    exactOccurrences === 0 && /[\r\n]/.test(anchorText)
-      ? findLineEndingEquivalentMatches(state.content, anchorText)
-      : null;
-  const occurrences = exactOccurrences > 0 ? exactOccurrences : (newlineMatches?.length || 0);
+  const anchorMatches = findFlexibleTextMatches(state.content, anchorText);
+  const occurrences = anchorMatches.length;
   if (occurrences !== 1) {
     throw new Error(occurrences === 0 ? `${mode} anchor not found` : `${mode} anchor not unique`);
   }
+  const match = anchorMatches[0];
   let afterContent;
-  let anchorStart = state.content.indexOf(anchorText);
-  if (newlineMatches?.length === 1) {
-    const match = newlineMatches[0];
-    const originalAnchor = state.content.slice(match.start, match.end);
-    const insertContent = applyEol(content, detectEol(originalAnchor));
-    const replacement =
-      mode === 'insert_before' ? `${insertContent}${originalAnchor}` : `${originalAnchor}${insertContent}`;
-    afterContent = `${state.content.slice(0, match.start)}${replacement}${state.content.slice(match.end)}`;
-    anchorStart = match.start;
-  } else {
-    const replacement = mode === 'insert_before' ? `${content}${anchorText}` : `${anchorText}${content}`;
-    afterContent = state.content.replace(anchorText, replacement);
-  }
+  let anchorStart = match.start;
+  const originalAnchor = state.content.slice(match.start, match.end);
+  const insertContent = applyEol(content, detectEol(originalAnchor));
+  const replacement =
+    mode === 'insert_before' ? `${insertContent}${originalAnchor}` : `${originalAnchor}${insertContent}`;
+  afterContent = `${state.content.slice(0, match.start)}${replacement}${state.content.slice(match.end)}`;
   await fs.writeFile(state.target, afterContent, 'utf8');
   const changedLine = splitLines(state.content.slice(0, anchorStart)).length;
   return editResult(relativePath, mode, state.content, afterContent, changedLine);
@@ -2281,7 +2305,7 @@ async function editTarget(root, args, config = {}) {
   throw new Error(`edit does not support kind: ${kind}`);
 }
 
-export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSystemEvent, getTodos, onTodosUpdate, getPlanState, onPlanStateUpdate, fffAdapter, backupManager }) {
+export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSystemEvent, getTodos, onTodosUpdate, getPlanState, onPlanStateUpdate, onCreatePlan, onCreateSpec, fffAdapter, backupManager }) {
   const emitSystemTool = (event) => {
     if (typeof onSystemEvent === 'function' && event) onSystemEvent(event);
   };
@@ -2704,6 +2728,48 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     }
   ];
 
+  const workflowToolDefinitions = [];
+  if (typeof onCreatePlan === 'function') {
+    workflowToolDefinitions.push({
+      type: 'function',
+      function: {
+        name: 'create_plan',
+        description:
+          'Create a structured implementation plan for user approval. Use when the goal, scope, and constraints are already clear enough to break work into sub-agent execution steps. Do not call if important details are still unknown or if a design spec is still needed.',
+        parameters: {
+          type: 'object',
+          properties: {
+            goal: { type: 'string', description: 'Clear, scoped goal for the plan' },
+            readiness: { type: 'string', enum: ['ready'], description: 'Must be "ready" when requirements are sufficiently clear' },
+            assumptions: { type: 'array', items: { type: 'string' }, description: 'Explicit assumptions made because details were inferred' },
+            context_summary: { type: 'string', description: 'Brief summary of what was learned from exploration' }
+          },
+          required: ['goal', 'readiness']
+        }
+      }
+    });
+  }
+  if (typeof onCreateSpec === 'function') {
+    workflowToolDefinitions.push({
+      type: 'function',
+      function: {
+        name: 'create_spec',
+        description:
+          'Create an engineering spec document for user approval. Use when scope, architecture, UX, or constraints still need alignment before implementation. Prefer this over create_plan for large, novel, or cross-cutting work. Do not call if important details are still unknown.',
+        parameters: {
+          type: 'object',
+          properties: {
+            topic: { type: 'string', description: 'Clear, scoped feature or change to specify' },
+            readiness: { type: 'string', enum: ['ready'], description: 'Must be "ready" when requirements are sufficiently clear' },
+            assumptions: { type: 'array', items: { type: 'string' }, description: 'Explicit assumptions made because details were inferred' },
+            context_summary: { type: 'string', description: 'Brief summary of what was learned from exploration' }
+          },
+          required: ['topic', 'readiness']
+        }
+      }
+    });
+  }
+
   const deferredDefinitions = {
     skill: {
       type: 'function',
@@ -2942,8 +3008,8 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
 
   const enableCodeWikiCommentTools = config?.runtime?.codewiki_comment_tools === true;
   const definitions = enableCodeWikiCommentTools
-    ? [...primaryDefinitions, ...codeWikiCommentToolDefinitions]
-    : [...primaryDefinitions];
+    ? [...primaryDefinitions, ...workflowToolDefinitions, ...codeWikiCommentToolDefinitions]
+    : [...primaryDefinitions, ...workflowToolDefinitions];
   const activeFffAdapter = fffAdapter || createFffAdapter({ workspaceRoot, config });
   async function backupNonGitPathOnce(rawPath) {
     if (!backupManager || typeof backupManager.backupOnce !== 'function') return null;
@@ -3237,6 +3303,54 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         hasPendingApproval: nextPlan?.status === 'pending_approval'
       };
     },
+    create_plan: async (args = {}) => {
+      if (typeof onCreatePlan !== 'function') {
+        return { ok: false, error: 'create_plan is not available in the current mode.' };
+      }
+      const readiness = String(args?.readiness || '').toLowerCase();
+      if (readiness !== 'ready') {
+        return {
+          ok: false,
+          error: 'Set readiness to "ready" only when requirements are clear. Otherwise ask the user a clarifying question first.'
+        };
+      }
+      const goal = String(args?.goal || '').trim();
+      if (!goal) {
+        return { ok: false, error: 'goal is required' };
+      }
+      const assumptions = Array.isArray(args?.assumptions)
+        ? args.assumptions.map((item) => String(item || '').trim()).filter(Boolean)
+        : [];
+      return onCreatePlan({
+        goal,
+        assumptions,
+        contextSummary: String(args?.context_summary || '').trim()
+      });
+    },
+    create_spec: async (args = {}) => {
+      if (typeof onCreateSpec !== 'function') {
+        return { ok: false, error: 'create_spec is not available in the current mode.' };
+      }
+      const readiness = String(args?.readiness || '').toLowerCase();
+      if (readiness !== 'ready') {
+        return {
+          ok: false,
+          error: 'Set readiness to "ready" only when requirements are clear. Otherwise ask the user a clarifying question first.'
+        };
+      }
+      const topic = String(args?.topic || '').trim();
+      if (!topic) {
+        return { ok: false, error: 'topic is required' };
+      }
+      const assumptions = Array.isArray(args?.assumptions)
+        ? args.assumptions.map((item) => String(item || '').trim()).filter(Boolean)
+        : [];
+      return onCreateSpec({
+        topic,
+        assumptions,
+        contextSummary: String(args?.context_summary || '').trim()
+      });
+    },
     run: Object.assign(
       (args) => runCommand(workspaceRoot, config, args),
       {
@@ -3489,6 +3603,22 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         if (steps.length > 8) lines.push(`  ... and ${steps.length - 8} more step(s)`);
       }
       return lines.join('\n');
+    },
+
+    create_plan(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      if (result.error) return String(result.error);
+      if (result.message) return String(result.message);
+      if (result.filePath) return `Plan draft created: ${result.filePath}`;
+      return JSON.stringify(result);
+    },
+
+    create_spec(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      if (result.error) return String(result.error);
+      if (result.message) return String(result.message);
+      if (result.filePath) return `Spec draft created: ${result.filePath}`;
+      return JSON.stringify(result);
     },
 
     query_project_index(result) {

@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 const DEFAULT_SHELL = process.platform === 'win32' ? 'powershell' : 'bash';
 
 function uniqueStrings(items = []) {
@@ -217,21 +219,25 @@ Common tool call patterns:
 - For tasks with 3 or more meaningful steps, proactively create and maintain a todo checklist with update_todos
 - For complex tasks, create the todo checklist before the first major implementation or verification tool call
 - If a command or tool is blocked or fails, inspect the error and retry with allowed commands or tools
+- If the user rejects or declines a run command (especially tests, builds, installs, or dev servers), treat verification as intentionally skipped. Do not retry the same or similar command unless the user asks again. Summarize completed code changes and note that verification was deferred
 - For AST-scoped edits, if edit rejects due to missing or stale ast_target, fix arguments and retry
 - Do not claim filesystem access is impossible unless search/read tools also fail
 - Do not add comments, docstrings, or type annotations to code you did not change
 - Do not add features or refactor code beyond what was asked
 
-# Plan mode
+# Engineering mode (plan)
 
-- In plan mode, explore and propose the next steps first
-- In plan mode, do not start implementation until the user asks you to continue
-- If requirements are still unclear, ask one focused question and stop
+- In engineering mode, explore the codebase with read/grep/list tools before producing a spec or plan
+- Do not start implementation until the user approves a plan
+- If requirements are still unclear, ask one focused question and stop. Do not call create_spec or create_plan yet
 - If there are multiple reasonable approaches, give short options and a suggested direction, then stop for user confirmation
-- When proposing a plan, include concrete target files/modules, ordered steps, and the verification approach
+- Use create_spec when scope, architecture, UX, or constraints still need alignment
+- Use create_plan when the goal is clear enough to break into sub-agent execution steps
+- Prefer create_spec for large, novel, or cross-cutting work; prefer create_plan when a spec is already approved or the task is localized
+- When calling create_plan, include concrete target files/modules, ordered steps, and the verification approach in the goal/context summary
 - Avoid placeholder steps such as "handle edge cases" or "write tests" unless you name the exact behavior, file, or command
 - Decompose plans into independently understandable tasks with clear responsibilities and testable progress
-- Self-review plans for requirement coverage, contradictions, placeholders, and inconsistent type/API names before presenting them
+- Self-review specs and plans for requirement coverage, contradictions, placeholders, and inconsistent type/API names before calling create_spec or create_plan
 - Before executing an approved plan, review it for contradictions or missing critical context; if blocked, ask instead of guessing
 - During execution, follow approved steps in order, stop on repeated verification failure, and report concrete evidence before claiming completion
 
@@ -243,4 +249,70 @@ Common tool call patterns:
 - When referencing code, use path:line_number format
 - Keep technical wording, commands, paths, and error details exact
 - Only use emojis if the user explicitly requests it`;
+}
+
+const SUB_AGENT_TOOL_HINTS = {
+  read: '- read: inspect files. Example: {path:"src/app.ts"} or {path:"src/app.ts", start_line:10, end_line:40}',
+  read_plan: '- read_plan: recover structured plan state when plan progress was interrupted',
+  update_plan: '- update_plan: sync structured plan state during execution',
+  tool_search: '- tool_search: load a deferred tool that is in your allowed list. Example: {query:"skill"} or {query:"glob"}',
+  skill: '- skill: activate an indexed skill by name after loading it',
+  update_todos: '- update_todos: maintain the session todo checklist; send the full current list each time',
+  query_project_index: '- query_project_index: broad repository understanding before reading source files',
+  grep: '- grep: search file contents. Example: {pattern:"loginUser", path:"src"}',
+  list: '- list: directory-by-directory filesystem discovery. Example: {path:"src"}',
+  glob: '- glob: pattern-based file lookup (load with tool_search if not visible). Example: {pattern:"src/**/*.ts"}',
+  ast_query: '- ast_query: AST-scoped symbol lookup (load with tool_search if not visible)',
+  read_ast_node: '- read_ast_node: read AST node details for structural edits',
+  edit: '- edit: modify existing files. Example: {path:"src/app.ts", old_text:"foo", new_text:"bar"}',
+  create: '- create: create new files only',
+  delete: '- delete: remove files',
+  run: '- run: execute shell commands when no dedicated tool fits',
+  web_fetch: '- web_fetch: fetch remote URL content',
+  web_search: '- web_search: search the web for external information'
+};
+
+export function buildSubAgentShellRulesPrompt(allowedTools = [], { shell, workspaceRoot = process.cwd(), role = '' } = {}) {
+  const profile = getShellProfile(shell);
+  const allowed = uniqueStrings(Array.isArray(allowedTools) ? allowedTools : []);
+  const toolList = allowed.join(', ') || 'none';
+  const hintLines = allowed
+    .map((name) => {
+      if (name === 'run' && ['coder', 'refactorer', 'writer'].includes(role)) {
+        return '- run: only for commands required to complete the edit itself (for example code generation). Do not use run for tests, builds, installs, or dev servers unless the step task explicitly requires it';
+      }
+      return SUB_AGENT_TOOL_HINTS[name];
+    })
+    .filter(Boolean);
+  const deferredTools = allowed.filter((name) => !['read', 'read_plan', 'update_plan', 'update_todos', 'grep', 'list', 'edit', 'create', 'delete', 'run', 'tool_search', 'skill'].includes(name));
+  const lines = [
+    `You are Codemini CLI, an AI coding assistant running as a pipeline sub-agent in a ${profile.label} shell environment.`,
+    `Working directory: ${path.resolve(workspaceRoot || process.cwd())}`,
+    '',
+    '# Tool scope (strict)',
+    `You may ONLY call these tools: ${toolList}`,
+    'Calling any other tool fails immediately. Parent-agent tools such as list, grep, run, or edit are NOT available unless they appear in the list above.',
+    'Do not use raw shell commands via run unless run is in your allowed tool list.',
+    '',
+    '# Using your allowed tools',
+    ...(hintLines.length > 0 ? hintLines : ['- No dedicated tools beyond the list above.']),
+    ...(deferredTools.length > 0
+      ? ['', 'Some allowed tools load on demand through tool_search:', ...deferredTools.map((name) => `- ${name}`)]
+      : []),
+    '',
+    '# Doing tasks',
+    '- Prefer the handoff packets and plan file context already included in your task before making tool calls',
+    '- Send a brief progress note before substantial tool work when the task is actionable',
+    '- If a tool call fails because it is unavailable, stop retrying it and continue with allowed tools or the provided context',
+    '- Keep answers compact and easy to scan',
+    '- When referencing code, use path:line_number format'
+  ];
+  if (['coder', 'refactorer', 'writer'].includes(role)) {
+    lines.push('- Your step owns implementation changes, not runtime verification. Leave tests/builds/dev servers to the tester step or the user unless this step task explicitly requires a command to finish the edit');
+    lines.push('- When edits are done, finish with the structured handoff. Set Verified to none or deferred instead of trying to prove behavior with run');
+    lines.push('- If a run command is blocked or declined by the user, do not retry it. Treat implementation as complete and note verification was deferred');
+  } else if (role === 'tester') {
+    lines.push('- You own verification. Run the narrowest relevant checks when the environment supports them, and say clearly when checks could not run');
+  }
+  return lines.join('\n');
 }

@@ -1,4 +1,5 @@
 import { makeBlocked } from '../common.js';
+import { formatToolLabel } from '../../core/tool-display.js';
 
 export function isCodeGenerationActivityName(name) {
   return String(name || '').trim() === 'Code generation';
@@ -10,7 +11,15 @@ export function describeMiscToolActivity(copy, parsed, rawName, { done = false, 
     return done ? copy.toolActivity.doneCodeGeneration : copy.toolActivity.doingCodeGeneration;
   }
   if (parsed.base === 'update_todos') {
-    return blocked ? makeBlocked(copy, 'update_todos') : done ? copy.toolActivity.doneUpdateTodos : copy.toolActivity.doingUpdateTodos;
+    return blocked ? makeBlocked(copy, formatToolLabel('update_todos')) : done ? copy.toolActivity.doneUpdateTodos : copy.toolActivity.doingUpdateTodos;
+  }
+  if (parsed.base === 'create_plan') {
+    const label = formatToolLabel('create_plan');
+    return blocked ? makeBlocked(copy, label) : done ? `${copy.toolActivity.doneGeneric}: ${label}` : `${copy.toolActivity.doingGeneric}: ${label}`;
+  }
+  if (parsed.base === 'create_spec') {
+    const label = formatToolLabel('create_spec');
+    return blocked ? makeBlocked(copy, label) : done ? `${copy.toolActivity.doneGeneric}: ${label}` : `${copy.toolActivity.doingGeneric}: ${label}`;
   }
   if (parsed.base === 'web_fetch') {
     const target = parsed.target || parsed.raw;
@@ -26,5 +35,6 @@ export function describeMiscToolActivity(copy, parsed, rawName, { done = false, 
       : (copy.toolActivity.doingWebSearch || copy.toolActivity.doingGeneric);
     return blocked ? makeBlocked(copy, target) : `${label}: ${target}`;
   }
-  return blocked ? `${copy.toolActivity.blocked}: ${parsed.raw}` : done ? `${copy.toolActivity.doneGeneric}: ${parsed.raw}` : `${copy.toolActivity.doingGeneric}: ${parsed.raw}`;
+  const label = formatToolLabel(parsed.base || parsed.raw);
+  return blocked ? `${copy.toolActivity.blocked}: ${label}` : done ? `${copy.toolActivity.doneGeneric}: ${label}` : `${copy.toolActivity.doingGeneric}: ${label}`;
 }

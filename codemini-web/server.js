@@ -880,11 +880,12 @@ async function main() {
         jsonResponse(res, { error: true, message: 'Invalid mode' }, 400);
         return;
       }
+      const normalizedMode = mode === 'spec' ? 'plan' : mode;
       if (bridge.isBusy()) {
         jsonResponse(res, { error: true, message: 'Cannot switch execution mode while a request is running' }, 409);
         return;
       }
-      const ok = await bridge.setExecutionMode(mode);
+      const ok = await bridge.setExecutionMode(normalizedMode);
       jsonResponse(res, { ok });
       return;
     }

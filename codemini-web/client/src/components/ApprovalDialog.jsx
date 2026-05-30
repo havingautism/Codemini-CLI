@@ -1,6 +1,16 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
+import { ReviewCommandBlock, ReviewSection } from '@/components/WorkflowReviewDialog.jsx';
 import { t } from '../../i18n/index.js';
+
+function riskDotClass(risk) {
+  const level = String(risk || '').trim().toLowerCase();
+  if (level === 'low') return 'bg-(--accent-green)';
+  if (level === 'medium') return 'bg-yellow-500';
+  if (level === 'high') return 'bg-(--accent-red)';
+  return 'bg-(--text-muted)';
+}
 
 function detectVariant(toolName, details) {
   if (toolName === 'delete') return 'delete';
@@ -25,6 +35,22 @@ function DetailRow({ label, value }) {
     <div className="flex gap-3 py-1.5 min-w-0">
       <span className="text-[13px] font-medium text-(--text-muted) w-20 shrink-0">{label}</span>
       <span className="text-[13px] font-mono min-w-0 break-words text-(--text-primary)">{String(value)}</span>
+    </div>
+  );
+}
+
+function RiskDetailRow({ label, risk }) {
+  if (!risk) return null;
+  return (
+    <div className="flex gap-3 py-1.5 min-w-0">
+      <span className="text-[13px] font-medium text-(--text-muted) w-20 shrink-0">{label}</span>
+      <span className="text-[13px] min-w-0 break-words text-(--text-primary) inline-flex items-center gap-2">
+        <span
+          className={cn('inline-block size-2 rounded-full shrink-0', riskDotClass(risk))}
+          aria-hidden
+        />
+        <span className="font-mono capitalize">{String(risk)}</span>
+      </span>
     </div>
   );
 }
@@ -54,8 +80,10 @@ function ApprovalBody({ variant, args, details }) {
   if (variant === 'run') {
     return (
       <>
-        <DetailRow label={t('approvalFieldCommand')} value={parsed.command || '-'} />
-        {details?.risk && <DetailRow label={t('approvalFieldRisk')} value={details.risk} />}
+        <ReviewSection label={t('approvalFieldCommand')}>
+          <ReviewCommandBlock command={parsed.command || '-'} />
+        </ReviewSection>
+        {details?.risk && <RiskDetailRow label={t('approvalFieldRisk')} risk={details.risk} />}
         {details?.evaluation?.recommendation && <DetailRow label={t('approvalFieldRecommend')} value={details.evaluation.recommendation} />}
         {details?.policyBlock?.reason && <DetailRow label={t('approvalFieldPolicy')} value={details.policyBlock.reason} />}
         {(details?.description || details?.evaluation?.description) && (
@@ -131,7 +159,12 @@ export function ApprovalDialog({ request, open, onDecision }) {
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onDecision(id, false); }}>
-      <DialogContent className="sm:max-w-xl max-h-[82vh] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
+      <DialogContent
+        className={cn(
+          'max-h-[82vh] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden',
+          variant === 'run' ? 'sm:max-w-2xl' : 'sm:max-w-xl',
+        )}
+      >
         <DialogHeader>
           <DialogTitle>{titles[variant] || t('approveTitle')}</DialogTitle>
         </DialogHeader>

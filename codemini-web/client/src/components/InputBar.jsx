@@ -50,12 +50,6 @@ function getModeOptions() {
       desc: t("planModeDesc"),
       icon: ListChecks,
     },
-    {
-      value: "spec",
-      label: t("specMode"),
-      desc: t("specModeDesc"),
-      icon: FileText,
-    },
   ];
 }
 
@@ -175,7 +169,7 @@ function ModeSelector({ current, disabled = false }) {
         side="top"
         align="start"
         sideOffset={6}
-        className="w-70 p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-lg"
+        className="w-88 p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-lg"
       >
         <div className="text-[11px] text-(--text-muted) px-2 py-1.5 font-medium">
           {t("executionMode")}
@@ -196,10 +190,12 @@ function ModeSelector({ current, disabled = false }) {
                 )}
                 onClick={() => handleSelect(opt.value)}
               >
-                <Icon size={13} className="shrink-0 text-(--text-muted)" />
-                <span className="shrink-0">{opt.label}</span>
-                <span className="text-[10px] text-(--text-muted) min-w-0 text-right leading-4">
-                  {opt.desc}
+                <Icon size={14} className="shrink-0 mt-0.5" />
+                <span className="min-w-0 flex-1">
+                  <span className="block">{opt.label}</span>
+                  <span className="block text-(--text-muted) text-[11px] font-normal leading-snug">
+                    {opt.desc}
+                  </span>
                 </span>
               </button>
             );

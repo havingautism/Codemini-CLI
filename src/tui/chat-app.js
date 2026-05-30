@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import { shouldCaptureEscapeSequence } from './input-escape.js';
 import { classifyCommandIntent } from '../core/shell.js';
+import { formatToolLabel } from '../core/tool-display.js';
 import {
   buildInterToolNotice as buildRegisteredInterToolNotice,
   buildPreToolNotice as buildRegisteredPreToolNotice,
@@ -1293,8 +1294,8 @@ function getActivityDisplayParts(activity) {
       secondary: ' (generation)'
     };
   }
-  const parsed = parseToolDisplayName(activity?.name);
-  const base = String(parsed.base || '').toLowerCase();
+  const parsed = parseToolDisplayName(activity?.displayName || activity?.name);
+  const base = String(activity?.name || parsed.base || '').trim().toLowerCase();
   if (base === 'run') {
     const intent = classifyCommandIntent(parsed.target);
     return {
@@ -1338,7 +1339,11 @@ function getActivityDisplayParts(activity) {
     list_files: 'Glob',
     update_todos: 'Update Todos',
     read_plan: 'Read Plan',
-    update_plan: 'Update Plan'
+    update_plan: 'Update Plan',
+    create_plan: 'Create Plan',
+    create_spec: 'Create Spec',
+    query_project_index: 'Query Project Index',
+    tool_search: 'Tool Search'
   };
   const emojis = {
     read: '📖',
@@ -1358,10 +1363,14 @@ function getActivityDisplayParts(activity) {
     list_files: '🧭',
     update_todos: '✅',
     read_plan: '📋',
-    update_plan: '🗓️'
+    update_plan: '🗓️',
+    create_plan: '📋',
+    create_spec: '📝',
+    query_project_index: '🗂️',
+    tool_search: '🔎'
   };
   return {
-    primary: `${emojis[base] || '🔧'} ${labels[base] || parsed.base || 'Tool'}`,
+    primary: `${emojis[base] || '🔧'} ${labels[base] || formatToolLabel(base)}`,
     secondary: parsed.target ? `(${parsed.target})` : ''
   };
 }
@@ -2484,54 +2493,68 @@ export function collapseActivityChainRows(inputRows, showToolDetails, copy, maxV
   return collapsed;
 }
 
+export function buildMarkdownPreviewRows(text, contentWidth = 72, options = {}) {
+  const rows = [];
+  const isHistoryList = options.isHistoryList === true;
+  const defaultColor = options.color || 'white';
+  const skipPlanProgress = options.skipPlanProgress !== false;
+  const lines = String(text || '').split('\n');
+  let codeFence = false;
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
+    const trimmed = line.trim();
+    if (skipPlanProgress) {
+      const planProgress = parsePlanProgressLine(trimmed);
+      if (planProgress) continue;
+    }
+    if (trimmed.startsWith('```')) {
+      codeFence = !codeFence;
+      continue;
+    }
+    if (codeFence) {
+      pushWrappedRow(rows, { kind: 'code', text: line || ' ', color: 'gray' }, contentWidth);
+      continue;
+    }
+    if (isMarkdownTableHeader(line, lines[lineIndex + 1])) {
+      const tableLines = [line, lines[lineIndex + 1]];
+      lineIndex += 1;
+      while (lineIndex + 1 < lines.length && splitMarkdownTableCells(lines[lineIndex + 1]).length > 1) {
+        tableLines.push(lines[lineIndex + 1]);
+        lineIndex += 1;
+      }
+      rows.push(...formatMarkdownTableBlock(tableLines, contentWidth));
+      continue;
+    }
+    let color = defaultColor;
+    if (isHistoryList) color = historyListLineColor(line, color);
+    else if (line.startsWith('#')) color = 'cyanBright';
+    else if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) color = 'magentaBright';
+    else if (trimmed.startsWith('>')) color = 'yellow';
+    else if (/^[|└├│]/.test(trimmed)) color = 'gray';
+    pushWrappedRow(
+      rows,
+      {
+        kind: trimmed.startsWith('>') ? 'quote' : /^[|└├│]/.test(trimmed) ? 'tree' : 'text',
+        text: line || ' ',
+        color
+      },
+      trimmed.startsWith('>') ? Math.max(8, contentWidth - 3) : contentWidth
+    );
+  }
+  return rows;
+}
+
 export function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) {
   const rows = [];
   const isHistoryList = isHistoryListMessage(msg);
   const pushTextRows = (text) => {
-    const lines = String(text || '').split('\n');
-    let codeFence = false;
-    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-      const line = lines[lineIndex];
-      const trimmed = line.trim();
-      const planProgress = parsePlanProgressLine(trimmed);
-      if (planProgress) {
-        // Skip rendering plan progress lines inline — shown in header badge instead
-        continue;
-      }
-      if (trimmed.startsWith('```')) {
-        codeFence = !codeFence;
-        continue;
-      }
-      if (codeFence) {
-        pushWrappedRow(rows, { kind: 'code', text: line || ' ', color: 'gray' }, contentWidth);
-        continue;
-      }
-      if (isMarkdownTableHeader(line, lines[lineIndex + 1])) {
-        const tableLines = [line, lines[lineIndex + 1]];
-        lineIndex += 1; // separator included above
-        while (lineIndex + 1 < lines.length && splitMarkdownTableCells(lines[lineIndex + 1]).length > 1) {
-          tableLines.push(lines[lineIndex + 1]);
-          lineIndex += 1;
-        }
-        rows.push(...formatMarkdownTableBlock(tableLines, contentWidth));
-        continue;
-      }
-      let color = msg.color || roleStyle(msg.label).text || 'white';
-      if (isHistoryList) color = historyListLineColor(line, color);
-      else if (line.startsWith('#')) color = 'cyanBright';
-      else if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) color = 'magentaBright';
-      else if (trimmed.startsWith('>')) color = 'yellow';
-      else if (/^[|└├│]/.test(trimmed)) color = 'gray';
-      pushWrappedRow(
-        rows,
-        {
-          kind: trimmed.startsWith('>') ? 'quote' : /^[|└├│]/.test(trimmed) ? 'tree' : 'text',
-          text: line || ' ',
-          color
-        },
-        trimmed.startsWith('>') ? Math.max(8, contentWidth - 3) : contentWidth
-      );
-    }
+    rows.push(
+      ...buildMarkdownPreviewRows(text, contentWidth, {
+        color: msg.color || roleStyle(msg.label).text || 'white',
+        isHistoryList,
+        skipPlanProgress: true
+      })
+    );
   };
 
   const pushActivityRows = (tool, idx, total) => {
@@ -3183,6 +3206,39 @@ function ApprovalCursorLine({ inputValue, placeholder, cursorVisible, accent }) 
   );
 }
 
+function MarkdownPreviewBlock({ text, contentWidth = 72, msgId = 'approval-md' }) {
+  const value = String(text || '').trim();
+  if (!value) return null;
+  const pseudoMsg = { id: msgId, color: 'white' };
+  const rows = buildMarkdownPreviewRows(value, contentWidth, { color: 'gray', skipPlanProgress: true });
+  return h(
+    Box,
+    { flexDirection: 'column' },
+    ...rows.map((row, idx) => renderMessageRow(pseudoMsg, row, idx, 0))
+  );
+}
+
+function CommandPreviewBlock({ command, contentWidth = 72 }) {
+  const value = String(command || '').trim();
+  if (!value) return null;
+  const fenced = `\`\`\`bash\n${value}\n\`\`\``;
+  return h(
+    Box,
+    {
+      flexDirection: 'column',
+      marginTop: 0,
+      borderStyle: 'single',
+      borderColor: 'gray',
+      paddingX: 1
+    },
+    h(MarkdownPreviewBlock, {
+      text: fenced,
+      contentWidth: Math.max(8, contentWidth - 4),
+      msgId: 'approval-run-cmd'
+    })
+  );
+}
+
 function DeleteApprovalPanel({ request, inputValue, errorText, copy, cursorVisible }) {
   if (!request) return null;
   const details =
@@ -3223,7 +3279,7 @@ function DeleteApprovalPanel({ request, inputValue, errorText, copy, cursorVisib
   );
 }
 
-function RunApprovalPanel({ request, inputValue, errorText, copy, cursorVisible }) {
+function RunApprovalPanel({ request, inputValue, errorText, copy, cursorVisible, contentWidth = 72 }) {
   if (!request) return null;
   const details = request?.toolName === 'run' ? request : normalizeRunApprovalRequest(request);
   if (!details) return null;
@@ -3243,7 +3299,8 @@ function RunApprovalPanel({ request, inputValue, errorText, copy, cursorVisible 
       paddingY: 0
     },
     h(Text, { color: borderColor }, c.title),
-    h(Text, { color: 'white' }, `${c.commandLabel}: ${details.command}`),
+    h(Text, { color: 'gray' }, `${c.commandLabel}:`),
+    h(CommandPreviewBlock, { command: details.command, contentWidth }),
     h(Text, null, `${c.riskLabel}: `, h(Text, { color: riskColor, bold: true }, riskLabel || details.risk)),
     details.description ? h(Text, { color: 'gray' }, `${c.descriptionLabel}: ${details.description}`) : null,
     details.sideEffects ? h(Text, { color: 'gray' }, `${c.sideEffectsLabel}: ${details.sideEffects}`) : null,
@@ -3353,10 +3410,12 @@ function FileChangeSummary({ segments, copy }) {
   );
 }
 
-function PlanApprovalPanel({ request, inputValue, errorText, copy, cursorVisible }) {
+function PlanApprovalPanel({ request, inputValue, errorText, copy, cursorVisible, contentWidth = 72 }) {
   if (!request) return null;
   const placeholder = String(copy.planApproval.answerPlaceholder || '').trim();
-  const lines = formatPlanApprovalLines(copy, request);
+  const c = copy.planApproval || {};
+  const summary = request.finalSummary || request.summary || '';
+  const steps = Array.isArray(request.steps) ? request.steps : [];
   return h(
     Box,
     {
@@ -3367,9 +3426,52 @@ function PlanApprovalPanel({ request, inputValue, errorText, copy, cursorVisible
       paddingX: 1,
       paddingY: 0
     },
-    ...lines.map((line, index) =>
-      h(Text, { key: `plan-approval-line-${index}`, color: 'yellowBright' }, line)
-    ),
+    h(Text, { color: 'yellowBright' }, c.title),
+    request.filePath
+      ? h(Text, { color: 'gray' }, `${c.fileLabel}: ${request.filePath}`)
+      : null,
+    request.goal
+      ? h(Text, { color: 'gray', marginTop: 1 }, `${c.goalLabel}:`)
+      : null,
+    request.goal
+      ? h(MarkdownPreviewBlock, { text: request.goal, contentWidth, msgId: 'plan-approval-goal' })
+      : null,
+    summary
+      ? h(Text, { color: 'gray', marginTop: 1 }, `${c.summaryLabel}:`)
+      : null,
+    summary
+      ? h(MarkdownPreviewBlock, { text: summary, contentWidth, msgId: 'plan-approval-summary' })
+      : null,
+    steps.length > 0
+      ? h(
+          Box,
+          { flexDirection: 'column', marginTop: 1 },
+          ...steps.flatMap((step, index) => {
+            const title = String(step?.title || '').trim();
+            const task = String(step?.task || '').trim();
+            const role = String(step?.role || 'step').trim();
+            const items = [
+              h(
+                Text,
+                { key: `plan-step-title-${index}`, color: 'cyanBright' },
+                `${index + 1}. [${role}] ${title || '-'}`
+              )
+            ];
+            if (task) {
+              items.push(
+                h(MarkdownPreviewBlock, {
+                  key: `plan-step-task-${index}`,
+                  text: task,
+                  contentWidth,
+                  msgId: `plan-approval-step-${index}`
+                })
+              );
+            }
+            return items;
+          })
+        )
+      : null,
+    h(Text, { color: 'gray', marginTop: 1 }, c.prompt),
     h(
       Box,
       { marginTop: 1 },
@@ -3785,6 +3887,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
             type: activityType,
             id: toolEvent.id || '',
             name: toolEvent.name,
+            ...(toolEvent.displayName ? { displayName: toolEvent.displayName } : {}),
             status: toolEvent.status,
             ...(toolEvent.arguments !== undefined ? { arguments: toolEvent.arguments } : {}),
             ...(startedAt ? { startedAt } : {}),
@@ -3812,6 +3915,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
           type: activityType,
           id: toolEvent.id || '',
           name: toolEvent.name,
+          ...(toolEvent.displayName ? { displayName: toolEvent.displayName } : {}),
           status: toolEvent.status,
           ...(toolEvent.arguments !== undefined ? { arguments: toolEvent.arguments } : {}),
           ...(startedAt ? { startedAt } : {}),
@@ -4262,6 +4366,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
             type: 'tool',
             id: event.id,
             name: event.name,
+            displayName: event.displayName,
             status: 'running',
             arguments: event.arguments
           });
@@ -4275,6 +4380,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
             type: 'tool',
             id: event.id,
             name: event.name,
+            displayName: event.displayName,
             status: 'done',
             durationMs: event.durationMs,
             summary: event.summary,
@@ -4291,6 +4397,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
             type: 'tool',
             id: event.id,
             name: event.name,
+            displayName: event.displayName,
             status: 'blocked',
             arguments: event.arguments
           });
@@ -4304,6 +4411,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
             type: 'tool',
             id: event.id,
             name: event.name,
+            displayName: event.displayName,
             status: 'error',
             durationMs: event.durationMs,
             summary: event.summary,
@@ -5151,14 +5259,13 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   }, [busy]);
 
   useEffect(() => {
-    const pending = Boolean(runtimeState?.pendingPlanApproval);
+    const pending = runtimeState?.pendingPlanApproval;
     if (!pending) {
       setPendingPlanApproval(null);
       return;
     }
-    // Startup/recovery fallback only while idle; do not resurrect the panel mid-execution.
     if (!busy) {
-      setPendingPlanApproval((prev) => prev || { goal: '', summary: '', filePath: '' });
+      setPendingPlanApproval(pending);
     }
   }, [runtimeState?.pendingPlanApproval, busy]);
 
@@ -5264,7 +5371,8 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       inputValue: runApprovalInput,
       errorText: runApprovalError,
       copy,
-      cursorVisible
+      cursorVisible,
+      contentWidth: messageContentWidth
     }),
     h(FileApprovalPanel, {
       request: pendingFileApproval,
@@ -5278,7 +5386,8 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       inputValue: planApprovalInput,
       errorText: planApprovalError,
       copy,
-      cursorVisible
+      cursorVisible,
+      contentWidth: messageContentWidth
     }),
     h(ReflectApprovalPanel, {
       request: pendingReflectApproval,

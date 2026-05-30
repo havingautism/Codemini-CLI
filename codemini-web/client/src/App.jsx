@@ -15,9 +15,9 @@ import { ChatPanel } from "@/components/ChatPanel.jsx";
 import { InputBar } from "@/components/InputBar.jsx";
 import { StatusBar } from "@/components/StatusBar.jsx";
 import { ApprovalDialog } from "@/components/ApprovalDialog.jsx";
-import { PlanApprovalCard } from "@/components/PlanApprovalDialog.jsx";
+import { PlanApprovalDialog } from "@/components/PlanApprovalDialog.jsx";
 import { ReflectApprovalCard } from "@/components/ReflectApprovalDialog.jsx";
-import { SpecApprovalCard } from "@/components/SpecApprovalDialog.jsx";
+import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
 import { MoreHorizontal, Terminal, GitCompare } from "lucide-react";
 import "../style.css";
@@ -280,26 +280,6 @@ function Shell() {
             {/* Plan Review / Input Area */}
             <div className="w-[min(980px,calc(100%-64px))] mx-auto mb-4 shrink-0 z-30 bg-transparent relative">
               <RuntimeActivityStrip activities={state.runtimeActivities} />
-              {state.pendingPlanApproval && (
-                <div className="mb-3">
-                  <PlanApprovalCard
-                    plan={state.pendingPlanApproval}
-                    onAction={actions.approvePlan}
-                    onUpdate={actions.updatePendingPlan}
-                    disabled={state.busy}
-                  />
-                </div>
-              )}
-              {state.pendingSpecApproval && (
-                <div className="mb-3">
-                  <SpecApprovalCard
-                    spec={state.pendingSpecApproval}
-                    onAction={actions.approveSpec}
-                    onUpdate={actions.updatePendingSpec}
-                    disabled={state.busy}
-                  />
-                </div>
-              )}
               {state.pendingReflectApproval && (
                 <div className="mb-3">
                   <ReflectApprovalCard
@@ -324,7 +304,9 @@ function Shell() {
                     ? t("reflectReviewFirst")
                     : state.pendingSpecApproval
                       ? t("specReviewFirst")
-                      : t("planReviewFirst")
+                      : state.pendingPlanApproval
+                        ? t("planReviewFirst")
+                        : ""
                 }
                 runtimeState={state.runtimeState}
                 history={state.history}
@@ -357,6 +339,22 @@ function Shell() {
         request={state.approvalRequest}
         open={!!state.approvalRequest}
         onDecision={actions.approve}
+      />
+
+      <PlanApprovalDialog
+        plan={state.pendingPlanApproval}
+        open={!!state.pendingPlanApproval}
+        onAction={actions.approvePlan}
+        onUpdate={actions.updatePendingPlan}
+        disabled={state.busy}
+      />
+
+      <SpecApprovalDialog
+        spec={state.pendingSpecApproval}
+        open={!!state.pendingSpecApproval}
+        onAction={actions.approveSpec}
+        onUpdate={actions.updatePendingSpec}
+        disabled={state.busy}
       />
 
       <Suspense fallback={null}>

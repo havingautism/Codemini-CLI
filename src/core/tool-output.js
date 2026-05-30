@@ -160,6 +160,29 @@ function summarizeBuildOutput(command, code, stdout, stderr) {
   return [`[build failure: exit ${code ?? 1}]`, ...kept.slice(0, 8)].join('\n');
 }
 
+function summarizeGenericFailure(result) {
+  const code = Number(result?.code ?? result?.exitCode ?? 0);
+  if (!Number.isFinite(code) || code === 0) return '';
+  const stdout = String(result?.stdout || '');
+  const stderr = String(result?.stderr || '');
+  const lines = sanitizePreviewLines([stderr, stdout].filter(Boolean).join('\n'), { maxLineLength: 220 });
+  if (lines.length === 0) return `[command failed: exit ${code}]`;
+  return [`[command failed: exit ${code}]`, ...lines.slice(0, 12)].join('\n');
+}
+
+export function buildRunFailureMessage(result) {
+  const code = Number(result?.code ?? result?.exitCode ?? 0);
+  if (!Number.isFinite(code) || code === 0) return '';
+  const command = String(result?.command || '').trim();
+  const stderr = String(result?.stderr || '').trim();
+  const stdout = String(result?.stdout || '').trim();
+  const parts = [`Command failed with exit code ${code}`];
+  if (command) parts.push(`command: ${command.slice(0, 240)}`);
+  if (stderr) parts.push(`stderr:\n${stderr}`);
+  else if (stdout) parts.push(`stdout:\n${stdout}`);
+  return parts.join('\n');
+}
+
 export function summarizeRunOutput(result) {
   const command = String(result?.command || '').trim();
   const stdout = String(result?.stdout || '');
@@ -180,5 +203,5 @@ export function summarizeRunOutput(result) {
   const testSummary = summarizeTestFailure(command, code, stdout, stderr);
   if (testSummary) return testSummary;
 
-  return '';
+  return summarizeGenericFailure(result);
 }

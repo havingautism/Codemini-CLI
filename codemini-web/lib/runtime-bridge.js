@@ -1,5 +1,6 @@
 import { ApprovalManager } from './approval-manager.js';
 import { summarizeToolResult } from '../../src/core/tool-result-store.js';
+import { formatToolLabel } from '../../src/core/tool-display.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getSessionsDir } from '../../src/core/paths.js';
@@ -38,8 +39,6 @@ function isWorkflowControlLine(line = '', state = {}) {
   if (['/yes', '/plan approve', '/no', '/reject', 'yes', 'y', 'approve', 'approved', 'no', 'n'].includes(lower)) return true;
   if (lower.startsWith('/edit ')) return true;
   if (/^\/(?:plan|spec|reflect)(?:\s|$)/i.test(trimmed)) return true;
-  const mode = String(state?.mode || '').toLowerCase();
-  if ((mode === 'plan' || mode === 'spec') && !trimmed.startsWith('/')) return true;
   return false;
 }
 
@@ -448,7 +447,16 @@ export class RuntimeBridge {
       }
       case 'tool:start': {
         if (this.#uiActiveMsgId) {
-          const toolCard = { id: event.id, name: event.name, arguments: event.arguments, status: 'running', durationMs: null, summary: '', result: '' };
+          const toolCard = {
+            id: event.id,
+            name: event.name,
+            displayName: event.displayName || formatToolLabel(event.name),
+            arguments: event.arguments,
+            status: 'running',
+            durationMs: null,
+            summary: '',
+            result: ''
+          };
           this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
             ...message,
             segments: addToolToSegments(finishThinkingSegments(message.segments), toolCard)
@@ -868,6 +876,8 @@ export class RuntimeBridge {
         toolFileChange: m.tool_file_change || null,
         toolFileChanges: Array.isArray(m.tool_file_changes) ? m.tool_file_changes : [],
         planTranscript: Array.isArray(m.plan_transcript) ? m.plan_transcript : null,
+        planGoal: typeof m.plan_goal === 'string' ? m.plan_goal : '',
+        planFile: typeof m.plan_file === 'string' ? m.plan_file : '',
         usage: normalizeUiUsage(m.usage),
         at: m.at || null
       }));

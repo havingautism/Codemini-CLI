@@ -8,6 +8,7 @@ import React, {
   useState,
 } from "react";
 import { t } from "../../i18n/index.js";
+import { formatToolLabel } from "@core/tool-display.js";
 import * as api from "../hooks/use-api.js";
 
 const AppContext = createContext(null);
@@ -673,9 +674,6 @@ function isWorkflowControlLine(line, state = {}) {
   if (!trimmed) return false;
   if (isPlanApprovalLine(trimmed)) return true;
   if (/^\/(?:plan|spec|reflect)(?:\s|$)/i.test(trimmed)) return true;
-  const mode = String(state.runtimeState?.mode || "").toLowerCase();
-  if ((mode === "plan" || mode === "spec") && !trimmed.startsWith("/"))
-    return true;
   return false;
 }
 
@@ -1162,14 +1160,16 @@ export function AppProvider({ children }) {
               const lastUser = [...processed]
                 .reverse()
                 .find((m) => m.role === "you");
-              const goal = lastUser
-                ? (lastUser.segments || [])
-                    .filter((s) => s.type === "text")
-                    .map((s) => s.text)
-                    .join(" ") ||
-                  lastUser.text ||
-                  ""
-                : "";
+              const goal =
+                msg.planGoal ||
+                (lastUser
+                  ? (lastUser.segments || [])
+                      .filter((s) => s.type === "text")
+                      .map((s) => s.text)
+                      .join(" ") ||
+                    lastUser.text ||
+                    ""
+                  : "");
               const planSteps = msg.planTranscript.map((block, i) => ({
                 index: block.step || i + 1,
                 title: block.title || "",
@@ -1191,14 +1191,16 @@ export function AppProvider({ children }) {
               const lastUser = [...processed]
                 .reverse()
                 .find((m) => m.role === "you");
-              const goal = lastUser
-                ? (lastUser.segments || [])
-                    .filter((s) => s.type === "text")
-                    .map((s) => s.text)
-                    .join(" ") ||
-                  lastUser.text ||
-                  ""
-                : "";
+              const goal =
+                msg.planGoal ||
+                (lastUser
+                  ? (lastUser.segments || [])
+                      .filter((s) => s.type === "text")
+                      .map((s) => s.text)
+                      .join(" ") ||
+                    lastUser.text ||
+                    ""
+                  : "");
               processed.push(createPlanOverviewFromSteps(goal, planBlocks));
               const summaryBlock =
                 [...planBlocks]
@@ -1547,6 +1549,7 @@ export function AppProvider({ children }) {
             const toolCard = {
               id: event.id,
               name: event.name,
+              displayName: event.displayName || formatToolLabel(event.name),
               arguments: event.arguments,
               status: "running",
               durationMs: null,
@@ -2121,7 +2124,13 @@ export function AppProvider({ children }) {
           if (result.type === "system" && result.text) {
             const activity = getRuntimeActivityFromSystemText(result.text);
             if (activity) upsertRuntimeActivity(activity);
-            if (
+            if (/^Plan revised\./i.test(result.text)) {
+              addMessage({
+                role: "agent",
+                text: t("planReviewRevisedAssistant"),
+                timestamp: new Date().toISOString(),
+              });
+            } else if (
               !stateRef.current.pendingPlanApproval &&
               !stateRef.current.pendingSpecApproval &&
               !stateRef.current.pendingReflectApproval &&
@@ -2556,9 +2565,6 @@ export function AppProvider({ children }) {
         const plan = stateRef.current.pendingPlanApproval;
         if (!plan) return;
         planRunPendingRef.current = action === "approve";
-        if (action === "reject") {
-          update({ pendingPlanApproval: null });
-        }
         update({
           busy: true,
           live: true,
@@ -2571,7 +2577,7 @@ export function AppProvider({ children }) {
               ? "/yes"
               : action === "reject"
                 ? "/reject"
-                : feedback?.trim()
+                : action === "revise" && feedback?.trim()
                   ? `/edit ${feedback.trim()}`
                   : "";
           if (!command) {
@@ -2598,7 +2604,9 @@ export function AppProvider({ children }) {
           const result = await api.updatePendingPlan(plan);
           if (result?.error)
             throw new Error(result.message || "Failed to update plan");
-          if (result?.plan) update({ pendingPlanApproval: result.plan });
+          if (result?.plan) {
+            update({ pendingPlanApproval: result.plan });
+          }
           return result?.plan || null;
         } catch (err) {
           addMessage({
