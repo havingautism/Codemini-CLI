@@ -24,6 +24,7 @@ import { forgetMemory, listMemories, rememberMemory, searchMemories, captureToIn
 import { runDreamConsolidation } from './dream-consolidate.js';
 import { normalizePlanState } from './plan-state.js';
 import { normalizeTodos } from './todo-state.js';
+import { normalizeAssumptionItems } from './tool-args-helpers.js';
 import { createFffAdapter } from './fff-adapter.js';
 import { loadIndexedSkills, renderCommandPrompt } from './command-loader.js';
 import {
@@ -2735,7 +2736,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'create_plan',
         description:
-          'Create a structured implementation plan for user approval. Use when the goal, scope, and constraints are already clear enough to break work into sub-agent execution steps. Do not call if important details are still unknown or if a design spec is still needed.',
+          'Create a structured implementation plan for user approval. Use when the goal, scope, and constraints are already clear enough to break work into sub-agent execution steps. Do not call if important details are still unknown or if a design spec is still needed. Assign roles correctly: explorer/architect/advisor are read-only; coder/refactorer/writer implement changes; never assign explorer to implement or edit code.',
         parameters: {
           type: 'object',
           properties: {
@@ -3318,9 +3319,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       if (!goal) {
         return { ok: false, error: 'goal is required' };
       }
-      const assumptions = Array.isArray(args?.assumptions)
-        ? args.assumptions.map((item) => String(item || '').trim()).filter(Boolean)
-        : [];
+      const assumptions = normalizeAssumptionItems(args?.assumptions);
       return onCreatePlan({
         goal,
         assumptions,
@@ -3342,9 +3341,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       if (!topic) {
         return { ok: false, error: 'topic is required' };
       }
-      const assumptions = Array.isArray(args?.assumptions)
-        ? args.assumptions.map((item) => String(item || '').trim()).filter(Boolean)
-        : [];
+      const assumptions = normalizeAssumptionItems(args?.assumptions);
       return onCreateSpec({
         topic,
         assumptions,

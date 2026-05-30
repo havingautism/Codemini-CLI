@@ -14,7 +14,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { formatToolLabel } from "@core/tool-display.js";
+import { formatToolLabel, parseToolDisplayName } from "@core/tool-display.js";
 import { formatDuration } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
 import { PatchDiff } from "@pierre/diffs/react";
@@ -343,12 +343,31 @@ const TOOL_CHEVRON_CLASS = "size-[14px] shrink-0 text-(--text-muted)";
 const TOOL_ICON_CLASS =
   "flex size-[18px] shrink-0 items-center justify-center rounded text-(--text-muted)";
 
+function resolveToolHeaderParts(card, toolName, fileMeta) {
+  const fallbackLabel = formatToolLabel(toolName);
+  if (fileMeta?.path) {
+    const parsed = parseToolDisplayName(card.displayName || "");
+    return {
+      label: parsed.label || fallbackLabel,
+      arg: fileMeta.path,
+      wrapArg: false,
+    };
+  }
+  const parsed = parseToolDisplayName(card.displayName || "");
+  if (parsed.arg) {
+    return { label: parsed.label, arg: parsed.arg, wrapArg: true };
+  }
+  const keyArg = extractKeyArg(card.arguments, toolName);
+  if (keyArg) {
+    return { label: fallbackLabel, arg: keyArg, wrapArg: true };
+  }
+  return { label: parsed.label || fallbackLabel, arg: "", wrapArg: false };
+}
+
 export function ToolCard({ card }) {
   const [open, setOpen] = useState(false);
   const toolName = extractToolName(card.name);
   const Icon = TOOL_ICONS[toolName] || TOOL_ICONS.default;
-  const displayLabel = card.displayName || formatToolLabel(toolName);
-  const keyArg = extractKeyArg(card.arguments, toolName);
   const fileMeta = getFileToolMeta(
     toolName,
     card.arguments,
@@ -358,7 +377,11 @@ export function ToolCard({ card }) {
     card.resultMeta,
     card.fileChanges,
   );
-  const nameText = fileMeta?.path || keyArg || card.name;
+  const { label: toolLabel, arg: toolArg, wrapArg } = resolveToolHeaderParts(
+    card,
+    toolName,
+    fileMeta,
+  );
 
   const sections = [];
   if (card.arguments != null && card.arguments !== "")
@@ -387,11 +410,21 @@ export function ToolCard({ card }) {
         <span className={TOOL_ICON_CLASS}>
           <Icon size={14} />
         </span>
-        <span className="font-medium text-(--text-secondary)">
-          {displayLabel}
-        </span>
-        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xs font-normal text-(--text-muted)">
-          {nameText}
+        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
+          <span className="font-medium text-(--text-secondary)">{toolLabel}</span>
+          {toolArg ? (
+            wrapArg ? (
+              <span className="font-mono text-xs font-normal text-(--text-muted)">
+                {" "}
+                ({toolArg})
+              </span>
+            ) : (
+              <span className="font-mono text-xs font-normal text-(--text-muted)">
+                {" "}
+                {toolArg}
+              </span>
+            )
+          ) : null}
         </span>
         {fileMeta?.added > 0 && (
           <span className="font-mono text-xs text-(--accent-green)">

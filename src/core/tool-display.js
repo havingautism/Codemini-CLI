@@ -43,21 +43,37 @@ export function formatToolLabel(name) {
     .join(' ');
 }
 
+export function parseToolDisplayName(name) {
+  const raw = String(name || '').trim();
+  const match = raw.match(/^([^(]+?)\s*\((.*)\)$/s);
+  return {
+    raw,
+    label: (match ? match[1] : raw).trim(),
+    arg: match ? match[2] : ''
+  };
+}
+
+function formatToolWithArg(label, arg, { quoted = false } = {}) {
+  const payload = String(arg || '').trim();
+  if (!payload) return label;
+  return `${label} (${quoted ? `"${payload}"` : payload})`;
+}
+
 export function formatToolDisplayName(name, args = {}) {
   const toolName = normalizeToolId(name);
   const trimInline = (value, max) => trimInlineText(value, max);
 
   if (toolName === 'grep') {
     const query = trimInline(args?.pattern || args?.query || args?.symbol || '', 96);
-    return query ? `${formatToolLabel('grep')}("${query}")` : formatToolLabel('grep');
+    return query ? formatToolWithArg(formatToolLabel('grep'), query, { quoted: true }) : formatToolLabel('grep');
   }
   if (toolName === 'glob') {
     const pattern = trimInline(args?.pattern || '', 96);
-    return pattern ? `${formatToolLabel('glob')}(${pattern})` : formatToolLabel('glob');
+    return pattern ? formatToolWithArg(formatToolLabel('glob'), pattern) : formatToolLabel('glob');
   }
   if (toolName === 'list') {
     const target = trimInline(args?.path || '.', 96) || '.';
-    return `${formatToolLabel('list')}(${target})`;
+    return formatToolWithArg(formatToolLabel('list'), target);
   }
   if (toolName === 'read' || toolName === 'create') {
     const target = trimInline(args?.path || '.', 96) || '.';
@@ -66,41 +82,41 @@ export function formatToolDisplayName(name, args = {}) {
       const end = Number(args?.end_line);
       const hasRange = Number.isFinite(start) && start > 0;
       const suffix = hasRange ? `:${start}-${Number.isFinite(end) && end >= start ? end : start}` : '';
-      return `${formatToolLabel('read')}(${target}${suffix})`;
+      return formatToolWithArg(formatToolLabel('read'), `${target}${suffix}`);
     }
-    return `${formatToolLabel('create')}(${target})`;
+    return formatToolWithArg(formatToolLabel('create'), target);
   }
   if (toolName === 'run') {
     const command = trimInline(args?.command || '', 96);
-    return command ? `${formatToolLabel('run')}(${command})` : formatToolLabel('run');
+    return command ? formatToolWithArg(formatToolLabel('run'), command) : formatToolLabel('run');
   }
   if (toolName === 'web_fetch') {
     const url = trimInline(args?.url || args?.href || '', 96);
-    return url ? `${formatToolLabel('web_fetch')}(${url})` : formatToolLabel('web_fetch');
+    return url ? formatToolWithArg(formatToolLabel('web_fetch'), url) : formatToolLabel('web_fetch');
   }
   if (toolName === 'web_search') {
     const query = trimInline(args?.query || args?.q || '', 96);
-    return query ? `${formatToolLabel('web_search')}(${query})` : formatToolLabel('web_search');
+    return query ? formatToolWithArg(formatToolLabel('web_search'), query) : formatToolLabel('web_search');
   }
   if (toolName === 'skill') {
     const target = trimInline(args?.name || args?.skill || args?.query || '', 96);
-    return target ? `${formatToolLabel('skill')}(${target.replace(/^\/+/, '')})` : formatToolLabel('skill');
+    return target ? formatToolWithArg(formatToolLabel('skill'), target.replace(/^\/+/, '')) : formatToolLabel('skill');
   }
   if (toolName === 'edit') {
     const target = trimInline(args?.path || args?.file || '.', 96) || '.';
-    return `${formatToolLabel('edit')}(${target})`;
+    return formatToolWithArg(formatToolLabel('edit'), target);
   }
   if (toolName === 'delete') {
     const target = trimInline(args?.path || args?.target || '.', 96) || '.';
-    return `${formatToolLabel('delete')}(${target})`;
+    return formatToolWithArg(formatToolLabel('delete'), target);
   }
   if (toolName === 'create_plan') {
     const goal = trimInline(args?.goal || '', 96);
-    return goal ? `${formatToolLabel('create_plan')}(${goal})` : formatToolLabel('create_plan');
+    return goal ? formatToolWithArg(formatToolLabel('create_plan'), goal) : formatToolLabel('create_plan');
   }
   if (toolName === 'create_spec') {
     const topic = trimInline(args?.topic || '', 96);
-    return topic ? `${formatToolLabel('create_spec')}(${topic})` : formatToolLabel('create_spec');
+    return topic ? formatToolWithArg(formatToolLabel('create_spec'), topic) : formatToolLabel('create_spec');
   }
   if (toolName === 'update_todos' || toolName === 'read_plan' || toolName === 'update_plan') {
     return formatToolLabel(toolName);
@@ -111,15 +127,15 @@ export function formatToolDisplayName(name, args = {}) {
   if (toolName === 'get_background_task' || toolName === 'stop_background_task') {
     const taskId = trimInline(args?.task_id || args?.taskId || '', 96);
     const label = formatToolLabel(toolName);
-    return taskId ? `${label}(${taskId})` : label;
+    return taskId ? formatToolWithArg(label, taskId) : label;
   }
   if (toolName === 'query_project_index') {
     const query = trimInline(args?.query || '', 96);
-    return query ? `${formatToolLabel('query_project_index')}(${query})` : formatToolLabel('query_project_index');
+    return query ? formatToolWithArg(formatToolLabel('query_project_index'), query) : formatToolLabel('query_project_index');
   }
   if (toolName === 'tool_search') {
     const query = trimInline(args?.query || args?.name || '', 96);
-    return query ? `${formatToolLabel('tool_search')}(${query})` : formatToolLabel('tool_search');
+    return query ? formatToolWithArg(formatToolLabel('tool_search'), query) : formatToolLabel('tool_search');
   }
   return formatToolLabel(toolName);
 }

@@ -3,6 +3,7 @@ import { formatLocalDate, loadCommandsAndSkills, renderCommandPrompt } from './c
 import { runAgentLoop } from './agent-loop.js';
 import { setResultDir, clearResultStore } from './tool-result-store.js';
 import { trimInline, normalizePath } from './string-utils.js';
+import { normalizeAssumptionItems } from './tool-args-helpers.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -746,7 +747,14 @@ function buildExecutionModePromptBlock(executionMode) {
       'Hard constraints:',
       '- Do not use edit/create/delete/run tools in engineering mode.',
       '- Do not implement fixes, refactors, or tests before the user approves a plan.',
-      '- Do not switch back to implementation tone; stay in planning/architecture mode until approval.'
+      '- Do not switch back to implementation tone; stay in planning/architecture mode until approval.',
+      '',
+      'Plan step roles (when the plan will use sub-agents):',
+      '- explorer = read-only inspection and context mapping. Never assign explorer to implement, edit, or deliver code.',
+      '- architect / advisor = design or recommendations only (read-only). Never assign them to write production code.',
+      '- coder / refactorer / writer = scoped code or doc changes.',
+      '- tester = verification commands; reviewer = read-only review; summarizer = final synthesis only.',
+      '- Typical implementation flow: explorer -> coder -> tester -> summarizer.'
     ].join('\n');
   }
   return '';
@@ -907,7 +915,7 @@ export function getSubAgentRolePrompt(role) {
       'You are the explorer in a multi-step agent pipeline.',
       'Your job: inspect the codebase to gather context, map the target area, and identify constraints and dependencies for downstream steps.',
       'The high-level plan is already defined — your role is to ground it with real codebase evidence.',
-      'Do not write implementation code, make architectural decisions, or offer recommendations beyond what you directly observe.',
+      'You are read-only in this harness: use read/search tools only. Do not edit, create, delete, or run commands, and do not write implementation code even if the step title sounds like implementation.',
       'Output format — keep it short and direct:',
       'Findings:',
       '- <important constraint, dependency, file layout, or "none">',
@@ -1578,9 +1586,9 @@ function buildAutoPlanPlannerGuidance() {
     '- Always include a summarizer as the final step. The summarizer reads accumulated step results and synthesizes the final summary. It does NOT re-analyze or run tools.',
     '- Do not ask executor steps (explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer) to produce the final summary. They write detailed step results for the summarizer.',
     '- Role quick-guide:',
-    '  • explorer = inspect codebase, map files, gather context before implementation.',
-    '  • architect = make design decisions, choose patterns, define component boundaries.',
-    '  • advisor = analyze and recommend (read-only).',
+    '  • explorer = inspect codebase, map files, gather context before implementation. Never assign explorer to edit files, implement features, or write production code.',
+    '  • architect = make design decisions, choose patterns, define component boundaries. Never assign architect to implement code.',
+    '  • advisor = analyze and recommend (read-only). Never assign advisor to implement code.',
     '  • coder = implement scoped code changes.',
     '  • refactorer = restructure code without changing behavior (broader scope than coder).',
     '  • reviewer = check for bugs, regressions, edge cases.',
@@ -4120,7 +4128,7 @@ async function askModel({
             enrichedGoal += `\n\nExploration context:\n${contextSummary}`;
           }
           if (assumptions.length > 0) {
-            enrichedGoal += `\n\nAssumptions:\n${assumptions.map((item) => `- ${item}`).join('\n')}`;
+            enrichedGoal += `\n\nAssumptions:\n${normalizeAssumptionItems(assumptions).map((item) => `- ${item}`).join('\n')}`;
           }
           const auto = await buildAutoPlanAndRun({
             goal: enrichedGoal,
@@ -4168,7 +4176,7 @@ async function askModel({
             enrichedTopic += `\n\nExploration context:\n${contextSummary}`;
           }
           if (assumptions.length > 0) {
-            enrichedTopic += `\n\nAssumptions:\n${assumptions.map((item) => `- ${item}`).join('\n')}`;
+            enrichedTopic += `\n\nAssumptions:\n${normalizeAssumptionItems(assumptions).map((item) => `- ${item}`).join('\n')}`;
           }
           let content = '';
           try {
@@ -5075,6 +5083,7 @@ async function buildAutoPlanAndRun({
             'Avoid template-only titles like "Initial analysis", "Review recommendations", or "Test and verify" for advisory goals.',
             'For implementation-heavy changes, prefer review and/or testing steps near the end only when they materially improve confidence.',
             'Never assign every step to coder. Use explorer for inspection, coder for implementation, tester for verification, and summarizer as the final synthesis step.',
+            'Never assign explorer, architect, or advisor to implementation, coding, editing, or feature-delivery tasks. Those roles are read-only.',
             'Prefer 3-5 steps total.'
           ]
             .filter(Boolean)

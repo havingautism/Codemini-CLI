@@ -1,6 +1,48 @@
 import path from 'node:path';
 import { normalizePath } from './string-utils.js';
 
+const ASSUMPTION_TEXT_KEYS = [
+  'text',
+  'assumption',
+  'content',
+  'description',
+  'value',
+  'summary',
+  'note',
+  'body',
+  'detail'
+];
+
+export function normalizeAssumptionItem(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value).trim();
+  if (Array.isArray(value)) {
+    return normalizeAssumptionItems(value).join('; ');
+  }
+  if (typeof value === 'object') {
+    for (const key of ASSUMPTION_TEXT_KEYS) {
+      const text = String(value[key] || '').trim();
+      if (text) return text;
+    }
+    for (const nested of Object.values(value)) {
+      const normalized = normalizeAssumptionItem(nested);
+      if (normalized) return normalized;
+    }
+    return '';
+  }
+  return String(value).trim();
+}
+
+export function normalizeAssumptionItems(value) {
+  const items = Array.isArray(value)
+    ? value
+    : value != null && String(value).trim()
+      ? [value]
+      : [];
+  return items.map((item) => normalizeAssumptionItem(item)).filter(Boolean);
+}
+
 export function parseInlineRangePath(value) {
   const text = String(value || '').trim();
   if (!text) return null;
