@@ -664,6 +664,10 @@ export class RuntimeBridge {
     this.#runtime.submit(line, (event) => {
       this.#recordUiEvent(event);
       this.#broadcast(event);
+      if (['plan:pending_approval', 'spec:pending_approval', 'reflect:pending_approval'].includes(event?.type)) {
+        this.#busy = false;
+        this.#broadcastRuntimeState();
+      }
     }, options).then((result) => {
       if (this.#uiActiveMsgId) {
         this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
@@ -773,7 +777,20 @@ export class RuntimeBridge {
   }
 
   handleAbort() {
-    return this.#runtime.abort();
+    const aborted = this.#runtime.abort();
+    if (this.#busy && !aborted) {
+      this.#busy = false;
+      this.#broadcast({ type: 'submit:done', result: { type: 'aborted', aborted: true, text: 'Request released.' } });
+      this.#broadcastRuntimeState();
+    } else if (this.#busy && aborted) {
+      setTimeout(() => {
+        if (!this.#busy) return;
+        this.#busy = false;
+        this.#broadcast({ type: 'submit:done', result: { type: 'aborted', aborted: true, text: 'Request aborted.' } });
+        this.#broadcastRuntimeState();
+      }, 5000);
+    }
+    return aborted;
   }
 
   async setExecutionMode(mode) {
@@ -802,7 +819,7 @@ export class RuntimeBridge {
 
   async updatePendingPlan(patch = {}) {
     const plan = await this.#runtime.updatePendingPlan?.(patch);
-    if (plan) this.#broadcast({ type: 'plan:pending_approval', plan });
+    if (plan) this.#broadcast({ type: 'plan:pending_approval', ...plan });
     this.#broadcastRuntimeState();
     return plan || null;
   }
@@ -847,9 +864,9 @@ export class RuntimeBridge {
       busy: this.#busy,
       requestInFlight: this.#busy,
       codeWikiGenerating: this.#codeWikiGenerating,
-      pendingPlanApproval: this.#busy ? null : serializableState.pendingPlanApproval,
-      pendingReflectSkill: this.#busy ? null : serializableState.pendingReflectSkill,
-      pendingSpecApproval: this.#busy ? null : serializableState.pendingSpecApproval
+      pendingPlanApproval: serializableState.pendingPlanApproval,
+      pendingReflectSkill: serializableState.pendingReflectSkill,
+      pendingSpecApproval: serializableState.pendingSpecApproval
     };
   }
 

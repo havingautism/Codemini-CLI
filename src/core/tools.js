@@ -1976,17 +1976,27 @@ async function replaceText(root, args, config = {}) {
     ? lineRangeToOffsets(state.content, rangeStart, Number.isFinite(rangeEnd) && rangeEnd >= rangeStart ? rangeEnd : rangeStart)
     : null;
   const searchContent = range ? state.content.slice(range.startOffset, range.endOffset) : state.content;
-  const matches = findFlexibleTextMatches(searchContent, oldText);
+  let matches = findFlexibleTextMatches(searchContent, oldText);
+  let effectiveSearchContent = searchContent;
+  let effectiveRange = range;
+  if (matches.length === 0 && range && args?.auto_range_from_recent_read === true) {
+    const fullMatches = findFlexibleTextMatches(state.content, oldText);
+    if (fullMatches.length > 0) {
+      matches = fullMatches;
+      effectiveSearchContent = state.content;
+      effectiveRange = null;
+    }
+  }
   const matchCount = matches.length;
 
   if (matchCount === 1 || (replaceAll && matchCount > 0)) {
-    const applied = applyMatchReplacements(searchContent, matches, newText, replaceAll);
+    const applied = applyMatchReplacements(effectiveSearchContent, matches, newText, replaceAll);
     if (applied) {
-      const afterContent = range
-        ? `${state.content.slice(0, range.startOffset)}${applied.replaced}${state.content.slice(range.endOffset)}`
+      const afterContent = effectiveRange
+        ? `${state.content.slice(0, effectiveRange.startOffset)}${applied.replaced}${state.content.slice(effectiveRange.endOffset)}`
         : applied.replaced;
       await fs.writeFile(state.target, afterContent, 'utf8');
-      const changedLine = changedLineForMatch(state.content, searchContent, applied.firstMatch, range);
+      const changedLine = changedLineForMatch(state.content, effectiveSearchContent, applied.firstMatch, effectiveRange);
       return editResult(relativePath, 'replace_text', state.content, afterContent, changedLine);
     }
   }
@@ -1995,12 +2005,12 @@ async function replaceText(root, args, config = {}) {
     throw new Error(buildOldTextNotFoundHint(searchContent, oldText, relativePath));
   }
 
-  const baseLine = hasRange ? range.startLine : 1;
-  const baseOffset = hasRange ? range.startOffset : 0;
+  const baseLine = effectiveRange ? effectiveRange.startLine : 1;
+  const baseOffset = effectiveRange ? effectiveRange.startOffset : 0;
   const lineDetails = [];
   for (const match of matches) {
     const pos = match.start;
-    const lineNum = baseLine + splitLines(searchContent.slice(0, pos)).length - 1;
+    const lineNum = baseLine + splitLines(effectiveSearchContent.slice(0, pos)).length - 1;
     const globalPos = baseOffset + pos;
     const lStart = state.content.lastIndexOf('\n', globalPos) + 1;
     const lEnd = state.content.indexOf('\n', globalPos);
@@ -2346,7 +2356,8 @@ async function editTarget(root, args, config = {}) {
       new_text: edit.new_text,
       replace_all: edit.replace_all ?? args?.replace_all ?? args?.replaceAll,
       start_line: edit.start_line ?? normalized.start_line,
-      end_line: edit.end_line ?? normalized.end_line
+      end_line: edit.end_line ?? normalized.end_line,
+      auto_range_from_recent_read: args?.auto_range_from_recent_read === true
     }, config);
   }
   if (kind === 'insert_before') {
@@ -2512,6 +2523,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
             ast_target: { type: 'object', description: 'AST target from ast_query or a prior AST selection. When provided, read returns that node instead of a line window.' },
             query: { type: 'string', description: 'Optional Tree-sitter query to run inline before reading the first matched AST node. Use with path for one-shot function/class/method reads.' },
             capture_name: { type: 'string', description: 'Optional capture name to select when query is provided.' },
+            include_ast_context: { type: 'boolean', description: 'For AST reads, include compact parent/child summaries. Defaults to true.' },
             language: { type: 'string', description: 'Optional Tree-sitter language override for AST reads or inline queries.' }
           },
           required: []
@@ -2661,20 +2673,20 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'update_plan',
         description:
-          'Create, replace, or clear the structured plan state for the current session. Use clear=true to remove plan state.',
+          'Synchronize progress for an existing structured plan state after an interruption. This tool cannot create a plan, request approval, or mark a plan approved; use create_plan/create_spec in plan mode for new approval-gated plans. Use clear=true only to remove existing plan state.',
         parameters: {
           type: 'object',
           properties: {
-            clear: { type: 'boolean', description: 'Set true to clear current plan state' },
+            clear: { type: 'boolean', description: 'Set true to clear current existing plan state' },
             plan: {
               type: 'object',
               properties: {
-                status: { type: 'string', description: 'Plan lifecycle status (for example pending_approval, approved, completed, failed)' },
-                source: { type: 'string', description: 'Plan source such as auto/manual/tool' },
-                goal: { type: 'string', description: 'Original user goal for this plan' },
-                filePath: { type: 'string', description: 'Plan markdown file path' },
-                summary: { type: 'string', description: 'Short plan summary' },
-                finalSummary: { type: 'string', description: 'Final planning summary shown for approval' },
+                status: { type: 'string', description: 'Progress status for an existing plan. Do not set pending_approval, pending_spec_approval, or approved.' },
+                source: { type: 'string', description: 'Existing plan source such as auto/manual/tool' },
+                goal: { type: 'string', description: 'Original user goal for the existing plan' },
+                filePath: { type: 'string', description: 'Existing plan markdown file path' },
+                summary: { type: 'string', description: 'Short progress summary for the existing plan' },
+                finalSummary: { type: 'string', description: 'Final progress summary for the existing plan' },
                 steps: {
                   type: 'array',
                   items: {
@@ -2688,15 +2700,15 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
                 }
               }
             },
-            status: { type: 'string', description: 'Top-level alias for plan.status when plan is omitted' },
-            source: { type: 'string', description: 'Top-level alias for plan.source when plan is omitted' },
-            goal: { type: 'string', description: 'Top-level alias for plan.goal when plan is omitted' },
-            filePath: { type: 'string', description: 'Top-level alias for plan.filePath when plan is omitted' },
-            summary: { type: 'string', description: 'Top-level alias for plan.summary when plan is omitted' },
-            finalSummary: { type: 'string', description: 'Top-level alias for plan.finalSummary when plan is omitted' },
+            status: { type: 'string', description: 'Top-level alias for plan.status when plan is omitted. Do not set approval statuses.' },
+            source: { type: 'string', description: 'Top-level alias for existing plan.source when plan is omitted' },
+            goal: { type: 'string', description: 'Top-level alias for existing plan.goal when plan is omitted' },
+            filePath: { type: 'string', description: 'Top-level alias for existing plan.filePath when plan is omitted' },
+            summary: { type: 'string', description: 'Top-level alias for existing plan.summary when plan is omitted' },
+            finalSummary: { type: 'string', description: 'Top-level alias for existing plan.finalSummary when plan is omitted' },
             steps: {
               type: 'array',
-              description: 'Top-level alias for plan.steps when plan is omitted',
+              description: 'Top-level alias for existing plan.steps when plan is omitted',
               items: {
                 type: 'object',
                 properties: {
@@ -2802,7 +2814,24 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
             goal: { type: 'string', description: 'Clear, scoped goal for the plan' },
             readiness: { type: 'string', enum: ['ready'], description: 'Must be "ready" when requirements are sufficiently clear' },
             assumptions: { type: 'array', items: { type: 'string' }, description: 'Explicit assumptions made because details were inferred' },
-            context_summary: { type: 'string', description: 'Brief summary of what was learned from exploration' }
+            context_summary: { type: 'string', description: 'Brief summary of what was learned from exploration' },
+            steps: {
+              type: 'array',
+              description: 'Optional explicit sub-agent execution steps. Provide this when you can assign concrete roles and tasks directly.',
+              items: {
+                type: 'object',
+                properties: {
+                  title: { type: 'string', description: 'Concrete step title tied to the goal' },
+                  role: { type: 'string', description: 'explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer, or summarizer' },
+                  task: { type: 'string', description: 'Executable handoff task with target files/modules, expected result, and scope boundaries' },
+                  target_files: { type: 'array', items: { type: 'string' }, description: 'Known target files/modules for this step' },
+                  success_criteria: { type: 'string', description: 'Observable completion criteria for this step' },
+                  verification: { type: 'string', description: 'How this step or a later tester should verify the outcome' },
+                  handoff: { type: 'string', description: 'What this step must hand to the next step' }
+                },
+                required: ['title', 'role', 'task']
+              }
+            }
           },
           required: ['goal', 'readiness']
         }
@@ -3141,6 +3170,10 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
           lastReadPath = readPath;
           lastReadRange = null;
         }
+        if (args?.include_ast_context === false) {
+          const { parent_summary, child_summaries, ...rest } = result;
+          return { ...rest, ast_target: directAstTarget };
+        }
         return { ...result, ast_target: directAstTarget };
       }
 
@@ -3173,6 +3206,12 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
           language: result.language,
           node: result.node,
           content: result.content,
+          ...(args?.include_ast_context === false
+            ? {}
+            : {
+                parent_summary: result.parent_summary,
+                child_summaries: result.child_summaries
+              }),
           ast_target: firstTarget,
           symbol: {
             symbol_id: `${result.path}#${firstTarget.name || firstTarget.node_type || `${result.node.start_line}-${result.node.end_line}`}`,
@@ -3257,7 +3296,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         !Number.isFinite(Number(args?.start_line || args?.line || args?.edit?.start_line)) &&
         !Number.isFinite(Number(args?.end_line || args?.edit?.end_line));
       const rangeArgs = shouldUseRecentReadRange
-        ? { start_line: lastReadRange.start_line, end_line: lastReadRange.end_line }
+        ? { start_line: lastReadRange.start_line, end_line: lastReadRange.end_line, auto_range_from_recent_read: true }
         : {};
       const backup = await backupNonGitPathOnce(editPath || astTarget?.path);
       const result = await editTarget(
@@ -3327,12 +3366,42 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     update_plan: async (args = {}) => {
       const oldPlan = normalizePlanState(typeof getPlanState === 'function' ? getPlanState() : null);
       const shouldClear = args?.clear === true || args?.plan === null;
+      if (!oldPlan && !shouldClear) {
+        return {
+          ok: false,
+          error: 'update_plan cannot create plan state. Use create_plan/create_spec in plan mode, or provide a normal text plan without tool calls.',
+          oldPlan,
+          newPlan: oldPlan,
+          hasPendingApproval: false
+        };
+      }
+      const approvalStatuses = new Set(['pending_approval', 'pending_spec_approval', 'approved']);
       const nextRaw = shouldClear
         ? null
         : args?.plan && typeof args.plan === 'object'
           ? args.plan
           : args;
-      const nextPlan = normalizePlanState(nextRaw);
+      const mergedRaw = shouldClear
+        ? null
+        : {
+            ...oldPlan,
+            ...nextRaw,
+            steps: Array.isArray(nextRaw?.steps) ? nextRaw.steps : oldPlan?.steps
+          };
+      const nextPlan = normalizePlanState(mergedRaw);
+      if (
+        nextPlan &&
+        approvalStatuses.has(nextPlan.status) &&
+        nextPlan.status !== oldPlan?.status
+      ) {
+        return {
+          ok: false,
+          error: `update_plan cannot set approval lifecycle status "${nextPlan.status}". Use the approval-gated plan/spec flow instead.`,
+          oldPlan,
+          newPlan: oldPlan,
+          hasPendingApproval: oldPlan?.status === 'pending_approval'
+        };
+      }
       if (typeof onPlanStateUpdate === 'function') {
         onPlanStateUpdate(nextPlan);
       }
@@ -3362,7 +3431,8 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       return onCreatePlan({
         goal,
         assumptions,
-        contextSummary: String(args?.context_summary || '').trim()
+        contextSummary: String(args?.context_summary || '').trim(),
+        steps: Array.isArray(args?.steps) ? args.steps : []
       });
     },
     create_spec: async (args = {}) => {
@@ -3539,7 +3609,12 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       if (!result || typeof result !== 'object') return String(result);
       if (result.node && typeof result.content === 'string') {
         const header = `[AST: ${result.path || '?'} ${result.node.node_type || 'node'} ${result.node.start_line || '?'}-${result.node.end_line || '?'}${result.matches ? `, matches ${result.matches}` : ''}]`;
-        return `${header}\n${result.content}`;
+        const contextLines = [];
+        if (result.parent_summary) contextLines.push(`Parent: ${result.parent_summary}`);
+        if (Array.isArray(result.child_summaries) && result.child_summaries.length > 0) {
+          contextLines.push(`Children: ${result.child_summaries.join(' | ')}`);
+        }
+        return `${header}\n${contextLines.length > 0 ? `${contextLines.join('\n')}\n` : ''}${result.content}`;
       }
       // Phase 1 metadata: small, return as-is
       if (result.phase === 'metadata') {
@@ -3632,6 +3707,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
 
     update_plan(result) {
       if (!result || typeof result !== 'object') return String(result);
+      if (result.error) return String(result.error);
       const nextPlan = normalizePlanState(result.newPlan);
       if (!nextPlan) return 'Plan state cleared.';
       const lines = [

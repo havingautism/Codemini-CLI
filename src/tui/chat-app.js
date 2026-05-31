@@ -2616,6 +2616,9 @@ export function buildMessageRows(msg, showToolDetails, contentWidth = 72, copy) 
     const totalTools = segmentTools.length + pendingToolCalls.length;
     let toolIndex = 0;
     for (const segment of msg.segments) {
+      if (segment.type === 'handoff') {
+        continue;
+      }
       if (segment.type === 'tool' || segment.type === 'skill' || segment.type === 'system_tool') {
         if (segment.type === 'system_tool' && !showToolDetails && isIndexSystemToolName(segment.name)) {
           continue;

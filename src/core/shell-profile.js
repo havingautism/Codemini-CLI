@@ -304,6 +304,7 @@ export function buildSubAgentShellRulesPrompt(allowedTools = [], { shell, worksp
     '- Prefer the handoff packets and plan file context already included in your task before making tool calls',
     '- Send a brief progress note before substantial tool work when the task is actionable',
     '- If a tool call fails because it is unavailable, stop retrying it and continue with allowed tools or the provided context',
+    '- Finish with the structured headings requested by your role prompt. For every non-final role, include a Handoff section that states exactly what downstream steps should use',
     '- Keep answers compact and easy to scan',
     '- When referencing code, use path:line_number format'
   ];

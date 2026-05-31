@@ -754,7 +754,13 @@ function buildExecutionModePromptBlock(executionMode) {
       '- architect / advisor = design or recommendations only (read-only). Never assign them to write production code.',
       '- coder / refactorer / writer = scoped code or doc changes.',
       '- tester = verification commands; reviewer = read-only review; summarizer = final synthesis only.',
-      '- Typical implementation flow: explorer -> coder -> tester -> summarizer.'
+      '- Typical implementation flow: explorer -> coder -> tester -> summarizer.',
+      '',
+      'Step contract for create_plan steps:',
+      '- Each step must name target files/modules when known, expected outcome, out-of-scope boundaries, success criteria, and handoff artifact.',
+      '- Coder/refactorer/writer steps should produce implementation artifacts, not final summaries or broad verification.',
+      '- Tester steps should run or identify concrete verification commands and report evidence.',
+      '- Summarizer must be final and should synthesize prior handoffs without re-analyzing the repo.'
     ].join('\n');
   }
   return '';
@@ -925,6 +931,8 @@ export function getSubAgentRolePrompt(role) {
       '- <key files, entry points, dependency graph or "none">',
       'Open Issues:',
       '- <blocking uncertainty or "none">',
+      'Handoff:',
+      '- <evidence, paths, and constraints downstream steps should use>',
       'Do not summarize your own work or add closing remarks — just deliver the structured handoff and stop.',
       'IMPORTANT: Stop as soon as you have enough context. Do NOT keep exploring — deliver it immediately.'
     ].join('\n');
@@ -945,6 +953,8 @@ export function getSubAgentRolePrompt(role) {
       '- <architectural risks, migration path concerns or "none">',
       'Constraints:',
       '- <non-negotiable limits or "none">',
+      'Handoff:',
+      '- <design decision and constraints downstream steps should follow>',
       'Do not summarize your own work or add closing remarks — just deliver the design decision and stop.'
     ].join('\n');
   }
@@ -965,6 +975,8 @@ export function getSubAgentRolePrompt(role) {
       '- <remaining structural debt or "none">',
       'Artifacts:',
       '- <changed file paths>',
+      'Handoff:',
+      '- <what the next step should use from this work>',
       'Do not summarize your own work or add closing remarks — just deliver the structured handoff and stop.'
     ].join('\n');
   }
@@ -978,6 +990,8 @@ export function getSubAgentRolePrompt(role) {
       '- <what documentation was written or updated>',
       'Artifacts:',
       '- <created or changed file paths>',
+      'Handoff:',
+      '- <what downstream steps should use from this documentation work>',
       'Coverage:',
       '- <what is documented and what gaps remain>',
       'Do not add a closing summary — the pipeline handles what comes next.'
@@ -995,6 +1009,8 @@ export function getSubAgentRolePrompt(role) {
       '- <what you checked>',
       'Not Verified:',
       '- <what remains uncertain>',
+      'Handoff:',
+      '- <findings and files the next step should act on>',
       'Do not add a closing summary or "Next Action" — the pipeline handles what comes next.'
     ].join('\n');
   }
@@ -1014,6 +1030,8 @@ export function getSubAgentRolePrompt(role) {
       '- <files, docs, or observations checked>',
       'Open Questions:',
       '- <blocking uncertainty or "none">',
+      'Handoff:',
+      '- <recommendation, evidence, and constraints downstream steps should use>',
       'Do not summarize your own work or add closing remarks — just deliver the structured advisory handoff and stop.'
     ].join('\n');
   }
@@ -1029,6 +1047,8 @@ export function getSubAgentRolePrompt(role) {
       '- <what could not be validated>',
       'Failures:',
       '- <failed command or "none">',
+      'Handoff:',
+      '- <verification evidence, failures, and unverified items for the summarizer>',
       'Do not add a closing summary or "Next Action" — the pipeline handles what comes next.'
     ].join('\n');
   }
@@ -1049,6 +1069,8 @@ export function getSubAgentRolePrompt(role) {
       '- <suggested fix approach, risk level, or "none">',
       'Open Questions:',
       '- <remaining uncertainty or "none">',
+      'Handoff:',
+      '- <root cause evidence, narrowed scope, and recommended fix path>',
       'Do not add a closing summary or "Next Action" — the pipeline handles what comes next.'
     ].join('\n');
   }
@@ -1091,6 +1113,8 @@ export function getSubAgentRolePrompt(role) {
     '- <remaining gap or "none">',
     'Artifacts:',
     '- <changed file path or "none">',
+    'Handoff:',
+    '- <what the next step should use from this implementation>',
     'Next Action:',
     '- hand off to tester or user for verification',
     'Do not summarize the goal, recap the plan, or add closing remarks.'
@@ -1112,6 +1136,8 @@ function buildPipelineStepGuidance({ role, stepIndex, totalSteps, isFirst, isLas
       lines.push('- <concrete edits, commands, or file operations performed>');
       lines.push('Artifacts:');
       lines.push('- <each created or changed file path>');
+      lines.push('Handoff:');
+      lines.push('- <what the next step should use from this work>');
       lines.push('End with this structured handoff even if work is already done; do not finish with todos-only updates or a prose summary.');
     }
   }
@@ -1575,6 +1601,8 @@ function buildAutoPlanPlannerGuidance() {
     '- Do not output multiple alternative branches in the final plan.',
     '- Do not assume implementation should begin before the plan is coherent.',
     '- Make steps concrete enough to execute without guessing: include target files, expected behavior, and verification intent when known.',
+    '- Each step must satisfy this contract: target files/modules when known, expected outcome, out-of-scope boundaries, success criteria, verification intent, and handoff artifact.',
+    '- Prefer filling structured fields target_files, success_criteria, verification, and handoff when returning JSON.',
     '- Do not create placeholder steps such as "add validation", "handle edge cases", "write tests", or "finish implementation" unless they name the exact behavior or command.',
     '- Decompose work into independently understandable tasks; each task should have a clear responsibility and produce testable progress.',
     '- Prefer small, focused file boundaries when the plan creates or reorganizes code, while respecting existing project patterns.',
@@ -1602,7 +1630,8 @@ function buildAutoPlanPlannerGuidance() {
     '- For documentation: explorer -> writer -> summarizer.',
     '- For advisory: explorer -> advisor -> summarizer.',
     '- Prefer 3-5 steps total unless the task needs more.',
-    '- Keep the plan ordered, task-oriented, and easy for small sub-agents to follow.'
+    '- Keep the plan ordered, task-oriented, and easy for small sub-agents to follow.',
+    '- Step task text should be a complete handoff packet: Targets, Expected outcome, Out of scope, Success criteria, Verification intent, and Handoff artifact.'
   ].join('\n');
 }
 
@@ -2259,15 +2288,54 @@ function normalizePlanStepRoles(steps = []) {
   });
 }
 
+function normalizeStepStringArray(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean);
+  }
+  const single = String(value || '').trim();
+  return single ? [single] : [];
+}
+
+function normalizeStructuredPlanSteps(steps = []) {
+  return (Array.isArray(steps) ? steps : [])
+    .map((step) => ({
+      title: String(step?.title || '').trim(),
+      role: String(step?.role || '').trim().toLowerCase(),
+      task: String(step?.task || '').trim(),
+      target_files: normalizeStepStringArray(step?.target_files || step?.targets || step?.files),
+      success_criteria: String(step?.success_criteria || step?.success || '').trim(),
+      verification: String(step?.verification || step?.verify || '').trim(),
+      handoff: String(step?.handoff || step?.handoff_artifact || '').trim()
+    }))
+    .filter((step) => step.title && step.task && SUB_AGENT_ROLES.includes(step.role));
+}
+
+function buildStepContractTask(step) {
+  const lines = [String(step?.task || '').trim()];
+  if (Array.isArray(step?.target_files) && step.target_files.length > 0) {
+    lines.push(`Targets: ${step.target_files.join(', ')}`);
+  }
+  if (step?.success_criteria) lines.push(`Success criteria: ${step.success_criteria}`);
+  if (step?.verification) lines.push(`Verification intent: ${step.verification}`);
+  if (step?.handoff) lines.push(`Handoff artifact: ${step.handoff}`);
+  return lines.filter(Boolean).join('\n');
+}
+
+function withStepContractTasks(steps = []) {
+  return (Array.isArray(steps) ? steps : []).map((step) => ({
+    title: step.title,
+    role: step.role,
+    task: buildStepContractTask(step),
+    ...(Array.isArray(step.target_files) && step.target_files.length > 0 ? { target_files: step.target_files } : {}),
+    ...(step.success_criteria ? { success_criteria: step.success_criteria } : {}),
+    ...(step.verification ? { verification: step.verification } : {}),
+    ...(step.handoff ? { handoff: step.handoff } : {})
+  }));
+}
+
 function normalizeAutoPlan(parsed, goal) {
   const steps = Array.isArray(parsed?.steps) ? parsed.steps : [];
-  const cleaned = normalizePlanStepRoles(steps)
-    .map((s) => ({
-      title: String(s?.title || '').trim(),
-      role: String(s?.role || '').trim().toLowerCase(),
-      task: String(s?.task || '').trim()
-    }))
-    .filter((s) => s.title && s.task && SUB_AGENT_ROLES.includes(s.role));
+  const cleaned = withStepContractTasks(normalizePlanStepRoles(normalizeStructuredPlanSteps(steps)));
 
   const basePlan =
     cleaned.length === 0
@@ -2414,9 +2482,9 @@ function buildFallbackAutoPlan(goal) {
         task: `Implement the requested changes for: ${goal}. Keep the behavior aligned with the acceptance checklist and preserve existing external behavior unless the goal explicitly changes it.`
       },
       {
-        title: 'Update or add focused verification',
+        title: 'Add focused test coverage',
         role: 'coder',
-        task: `Add or update the most relevant tests and focused verification coverage for: ${goal}. Prefer narrow checks tied to the changed files and flows.`
+        task: `Add or update focused tests or test fixtures for: ${goal}. Do not run broad verification here; hand the relevant commands to the tester step.`
       },
       {
         title: 'Review for regressions and gaps',
@@ -3812,6 +3880,15 @@ function updatePendingSpecState(session, patch = {}) {
 
 function buildApprovedPlanExecutionPrompt(planState, approvalText = '') {
   const requirementPacket = buildGoalRequirementPacket(planState?.goal || '', 'coder');
+  const planSteps = Array.isArray(planState?.steps) ? planState.steps : [];
+  const renderedSteps = planSteps.map((step, index) => `${index + 1}. [${step.role}] ${step.title} :: ${step.task}`);
+  const stepLines = renderedSteps.length <= 16
+    ? renderedSteps
+    : [
+        ...renderedSteps.slice(0, 12),
+        `... ${renderedSteps.length - 16} middle step(s) omitted from this overview; executePlanWithSubAgents still receives the complete planState.steps list.`,
+        ...renderedSteps.slice(-4)
+      ];
   const lines = [
     'Approved implementation plan:',
     `Original goal: ${planState?.goal || '-'}`,
@@ -3820,10 +3897,8 @@ function buildApprovedPlanExecutionPrompt(planState, approvalText = '') {
     `Final planning summary: ${planState?.finalSummary || planState?.summary || '-'}`,
     `User approval: ${String(approvalText || '').trim() || 'approved'}`,
     requirementPacket,
-    Array.isArray(planState?.steps) && planState.steps.length > 0 ? 'Planned steps:' : '',
-    ...(Array.isArray(planState?.steps)
-      ? planState.steps.slice(0, 8).map((step, index) => `${index + 1}. [${step.role}] ${step.title} :: ${step.task}`)
-      : []),
+    planSteps.length > 0 ? `Planned steps (${planSteps.length} total):` : '',
+    ...stepLines,
     'Proceed with implementation now.',
     'Follow the approved direction unless a blocking contradiction appears.',
     'Before changing files, critically review the approved plan. If it has critical gaps, impossible steps, or unclear requirements, stop and ask for clarification.',
@@ -4122,7 +4197,7 @@ async function askModel({
       scheduleSessionSave();
     },
     onCreatePlan: normalizedExecutionMode === 'plan'
-      ? async ({ goal, assumptions = [], contextSummary = '' }) => {
+      ? async ({ goal, assumptions = [], contextSummary = '', steps = [] }) => {
           let enrichedGoal = String(goal || '').trim();
           if (contextSummary) {
             enrichedGoal += `\n\nExploration context:\n${contextSummary}`;
@@ -4130,16 +4205,23 @@ async function askModel({
           if (assumptions.length > 0) {
             enrichedGoal += `\n\nAssumptions:\n${normalizeAssumptionItems(assumptions).map((item) => `- ${item}`).join('\n')}`;
           }
-          const auto = await buildAutoPlanAndRun({
-            goal: enrichedGoal,
-            session,
-            config,
-            model,
-            systemPrompt: effectiveSystemPrompt,
-            onAgentEvent,
-            sessionId: session.id,
-            taskClass: classifyPlanTaskClass(goal)
-          });
+          const explicitSteps = normalizeStructuredPlanSteps(steps);
+          const auto = explicitSteps.length > 0
+            ? await writeExplicitAutoPlan({
+                goal: enrichedGoal,
+                steps: explicitSteps,
+                sessionId: session.id
+              })
+            : await buildAutoPlanAndRun({
+                goal: enrichedGoal,
+                session,
+                config,
+                model,
+                systemPrompt: effectiveSystemPrompt,
+                onAgentEvent,
+                sessionId: session.id,
+                taskClass: classifyPlanTaskClass(goal)
+              });
           session.planState = {
             status: 'pending_approval',
             source: 'auto',
@@ -4225,16 +4307,27 @@ async function askModel({
     backupManager
   });
 
+  const currentPlanStateForTools = normalizePlanState(session?.planState);
+  const exposeUpdatePlan = normalizedExecutionMode === 'plan' || Boolean(currentPlanStateForTools);
+  const baseDefinitions = exposeUpdatePlan
+    ? definitions
+    : definitions.filter((t) => (t.function?.name || t.name) !== 'update_plan');
+  const baseHandlers = exposeUpdatePlan
+    ? handlers
+    : Object.fromEntries(Object.entries(handlers).filter(([name]) => name !== 'update_plan'));
+  const baseDeferredDefinitions = exposeUpdatePlan
+    ? deferredDefinitions
+    : Object.fromEntries(Object.entries(deferredDefinitions).filter(([name]) => name !== 'update_plan'));
   const modeAllowedTools = resolveExecutionModeAllowedTools(normalizedExecutionMode, allowedTools);
   const filteredDefinitions = Array.isArray(modeAllowedTools)
-    ? definitions.filter((t) => modeAllowedTools.includes(t.function?.name || t.name))
-    : definitions;
+    ? baseDefinitions.filter((t) => modeAllowedTools.includes(t.function?.name || t.name))
+    : baseDefinitions;
   const filteredHandlers = Array.isArray(modeAllowedTools)
-    ? Object.fromEntries(Object.entries(handlers).filter(([name]) => modeAllowedTools.includes(name)))
-    : handlers;
+    ? Object.fromEntries(Object.entries(baseHandlers).filter(([name]) => modeAllowedTools.includes(name)))
+    : baseHandlers;
   const filteredDeferred = Array.isArray(modeAllowedTools)
-    ? Object.fromEntries(Object.entries(deferredDefinitions).filter(([name]) => modeAllowedTools.includes(name)))
-    : deferredDefinitions;
+    ? Object.fromEntries(Object.entries(baseDeferredDefinitions).filter(([name]) => modeAllowedTools.includes(name)))
+    : baseDeferredDefinitions;
   const modePolicyTools = EXECUTION_MODE_TOOL_POLICY[normalizedExecutionMode];
   const effectiveAlwaysAllowTools = Array.isArray(modePolicyTools)
     ? modePolicyTools
@@ -4721,8 +4814,9 @@ function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }
   if (toolCards.length > 0) {
     segments.push({ type: 'tools', cards: toolCards });
   }
-  if (stepRecord.role === 'summarizer' && stepRecord.output) {
-    segments.push({ type: 'text', text: stepRecord.output, isStreaming: false });
+  const displayOutput = formatPlanStepOutputForDisplay(stepRecord.output || '');
+  if (displayOutput) {
+    segments.push({ type: 'handoff', text: displayOutput, isStreaming: false });
   }
 
   return {
@@ -4735,6 +4829,13 @@ function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }
     segments,
     ...(stepRecord.usage ? { usage: stepRecord.usage } : {})
   };
+}
+
+function formatPlanStepOutputForDisplay(output, maxChars = 6000) {
+  const text = String(output || '').trim();
+  if (!text) return '';
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars).trimEnd()}\n\n... [step handoff truncated for display]`;
 }
 
 async function executePlanWithSubAgents({
@@ -4952,6 +5053,7 @@ async function executePlanWithSubAgents({
       summary: stepRecord.failed
         ? `[${stepRecord.retryCount > 0 ? `retried ${stepRecord.retryCount}x] ` : ''}${stepRecord.failureReason}`
         : trimInline(stepRecord.output, 160),
+      ...(step.role !== 'summarizer' ? { output: formatPlanStepOutputForDisplay(stepRecord.output) } : {}),
       ...(stepRecord.retryCount > 0 ? { retryCount: stepRecord.retryCount } : {}),
       ...(displayUsage ? { usage: displayUsage } : {})
     });
@@ -5066,7 +5168,7 @@ async function buildAutoPlanAndRun({
           role: 'user',
           content: [
             'Create an execution plan and assign best sub-agent role for each step.',
-            `Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|')}","task":"..."}]}. No markdown.`,
+            `Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|')}","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
             `The available roles are ${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join(', ')}. Use only the roles the task actually needs.`,
             'Always include a summarizer as the final step. The summarizer synthesizes prior step results without re-analyzing.',
             'All executor steps (explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer) should write detailed step results, not final summaries.',
@@ -5084,6 +5186,7 @@ async function buildAutoPlanAndRun({
             'For implementation-heavy changes, prefer review and/or testing steps near the end only when they materially improve confidence.',
             'Never assign every step to coder. Use explorer for inspection, coder for implementation, tester for verification, and summarizer as the final synthesis step.',
             'Never assign explorer, architect, or advisor to implementation, coding, editing, or feature-delivery tasks. Those roles are read-only.',
+            'Each step task must include enough handoff detail to execute without guessing: targets, expected outcome, out-of-scope boundaries, success criteria, verification intent, and handoff artifact.',
             'Prefer 3-5 steps total.'
           ]
             .filter(Boolean)
@@ -5132,6 +5235,39 @@ async function buildAutoPlanAndRun({
   };
 }
 
+async function writeExplicitAutoPlan({ goal, steps = [], sessionId }) {
+  const autoPlan = normalizeAutoPlan({
+    summary: `Structured plan for: ${goal}`,
+    steps
+  }, goal);
+  const finalSummary = 'Structured plan created and waiting for approval before implementation.';
+  const filePath = await writeMarkdownInProjectDir(
+    'plans',
+    `${goal}-auto`,
+    renderAutoPlanMarkdown({
+      goal,
+      autoPlan,
+      finalSummary,
+      approvalText: 'Pending user approval before implementation.',
+      progressLine: '- Structured plan created and waiting for execution.'
+    }),
+    'plan-auto',
+    sessionId
+  );
+  return {
+    filePath,
+    summary: autoPlan.summary,
+    finalSummary,
+    approvalStatus: 'pending',
+    steps: autoPlan.steps,
+    completedCount: 0,
+    warningCount: 0,
+    failedCount: 0,
+    warningTitles: [],
+    failedTitles: []
+  };
+}
+
 function renderAutoPlanMarkdown({
   goal,
   autoPlan,
@@ -5157,6 +5293,12 @@ function renderAutoPlanMarkdown({
   (Array.isArray(autoPlan?.steps) ? autoPlan.steps : []).forEach((s, idx) => {
     lines.push(`${idx + 1}. [${s.role}] ${s.title}`);
     lines.push(`   - task: ${s.task}`);
+    if (Array.isArray(s.target_files) && s.target_files.length > 0) {
+      lines.push(`   - targets: ${s.target_files.join(', ')}`);
+    }
+    if (s.success_criteria) lines.push(`   - success: ${s.success_criteria}`);
+    if (s.verification) lines.push(`   - verification: ${s.verification}`);
+    if (s.handoff) lines.push(`   - handoff: ${s.handoff}`);
   });
   lines.push('');
   lines.push('## Approval');
@@ -8368,6 +8510,7 @@ export async function createChatRuntime({
         });
       }
       syncExecutionModeWithSession();
+      await saveSession(currentSession);
       return next;
     },
     updatePendingReflect: async (patch = {}) => {

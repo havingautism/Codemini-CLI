@@ -193,6 +193,51 @@ function ThoughtBlock({ segment }) {
   );
 }
 
+function HandoffBlock({ segment }) {
+  const [open, setOpen] = useState(false);
+  const text = String(segment?.text || "").trim();
+  if (!text) return null;
+  const firstLine = text.split(/\r?\n/).find((line) => line.trim()) || "";
+  const preview =
+    firstLine.length > 120 ? `${firstLine.slice(0, 117).trimEnd()}...` : firstLine;
+
+  return (
+    <div className="my-3 text-(--text-primary)">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className={COLLAPSE_ROW_CLASS}
+        aria-expanded={open}
+      >
+        <ChevronRight
+          size={14}
+          className={cn(
+            COLLAPSE_CHEVRON_CLASS,
+            "transition-transform",
+            open && "rotate-90",
+          )}
+        />
+        <span className={COLLAPSE_ICON_CLASS}>
+          <span className="inline-block size-1.5 rounded-full bg-(--accent-blue)" />
+        </span>
+        <span className="font-medium">Handoff</span>
+        <span className="min-w-0 flex-1 truncate text-(--text-muted)">
+          {preview}
+        </span>
+      </button>
+      {open && (
+        <div className="relative ml-4.5 mt-1.5 pl-8 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
+          <StreamdownRenderer
+            text={text}
+            streaming={false}
+            className="pl-5 text-[13px] leading-5 text-(--text-secondary)"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function getToolDurationMs(cards = []) {
   return cards.reduce((sum, card) => {
     const value = Number(card?.durationMs);
@@ -1022,6 +1067,11 @@ function buildRenderGroups(segments) {
         flushTools();
         groups.push({ type: "thinking", ...seg });
       }
+    } else if (seg.type === "handoff") {
+      if (seg.text) {
+        flushTools();
+        groups.push({ type: "handoff", ...seg });
+      }
     } else if (seg.type === "skill") {
       flushTools();
       groups.push({ type: "skill", ...seg });
@@ -1095,7 +1145,7 @@ function getMessageText(message) {
   const text = String(message?.text || "");
   if (text) return text;
   return (message?.segments || [])
-    .filter((segment) => segment.type === "text")
+    .filter((segment) => segment.type === "text" || segment.type === "handoff")
     .map((segment) => String(segment.text || ""))
     .join("");
 }
@@ -1510,6 +1560,9 @@ export function MessageBubble({ message, skills = [] }) {
             }
             if (group.type === "thinking") {
               return <ThoughtBlock key={`th-${i}`} segment={group} />;
+            }
+            if (group.type === "handoff") {
+              return <HandoffBlock key={`ho-${i}`} segment={group} />;
             }
             if (group.type === "skill") {
               return <SkillActivityRow key={`sk-${i}-${group.name || "skill"}`} badge={group} />;

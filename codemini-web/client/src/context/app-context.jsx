@@ -1814,14 +1814,34 @@ export function AppProvider({ children }) {
               ...prev,
               messages: prev.messages.map((m) => {
                 if (m.id === msgId) {
-                  return {
-                    ...m,
-                    usage: mergeUsage(m.usage, event.usage),
-                    segments: finishThinkingSegments(m.segments).map((seg) =>
+                  const outputText = String(event.output || "").trim();
+                  const finishedSegments = finishThinkingSegments(m.segments).map(
+                    (seg) =>
                       seg.type === "text"
                         ? { ...seg, isStreaming: false }
                         : seg,
-                    ),
+                  );
+                  const hasOutputText =
+                    outputText &&
+                    finishedSegments.some(
+                      (seg) =>
+                        (seg.type === "text" || seg.type === "handoff") &&
+                        String(seg.text || "").trim() === outputText,
+                    );
+                  return {
+                    ...m,
+                    usage: mergeUsage(m.usage, event.usage),
+                    segments:
+                      outputText && !hasOutputText
+                        ? [
+                            ...finishedSegments,
+                            {
+                              type: "handoff",
+                              text: outputText,
+                              isStreaming: false,
+                            },
+                          ]
+                        : finishedSegments,
                     isComplete: true,
                     planStep: {
                       ...(m.planStep || {}),
@@ -2552,6 +2572,41 @@ export function AppProvider({ children }) {
         try {
           await api.abortRequest();
         } catch {}
+        update({
+          busy: false,
+          live: false,
+          stage: "idle",
+          stageLabel: "",
+        });
+        setState((prev) => ({
+          ...prev,
+          messages: prev.messages.map((message) => {
+            if (message.isComplete === false) {
+              return {
+                ...message,
+                isComplete: true,
+                segments: finishThinkingSegments(message.segments || []).map(
+                  (seg) =>
+                    seg.type === "text"
+                      ? { ...seg, isStreaming: false }
+                      : seg,
+                ),
+                planStep: message.planStep
+                  ? {
+                      ...message.planStep,
+                      status: ["done", "failed"].includes(
+                        String(message.planStep.status || ""),
+                      )
+                        ? message.planStep.status
+                        : "failed",
+                      summary: message.planStep.summary || "Aborted",
+                    }
+                  : message.planStep,
+              };
+            }
+            return message;
+          }),
+        }));
       },
 
       approve: async (id, approved) => {

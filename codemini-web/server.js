@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 
 import { loadConfig, saveConfig, setConfigValue, getConfigValue } from '../src/core/config-store.js';
 import {
@@ -389,6 +389,18 @@ function execGitStdout(command, cwd) {
   }
 }
 
+function execGitFileStdout(args, cwd) {
+  try {
+    return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+  } catch (err) {
+    return String(err.stdout || '');
+  }
+}
+
+function splitNulRecords(text) {
+  return String(text || '').split('\0').filter(Boolean);
+}
+
 function hasGitHead(cwd) {
   try {
     execSync('git rev-parse --verify HEAD', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
@@ -411,9 +423,9 @@ function parseGitNumstat(text) {
 }
 
 function countUntrackedLineStats(cwd) {
-  const untrackedRaw = execGitStdout('git ls-files --others --exclude-standard', cwd).trim();
+  const untrackedRaw = execGitFileStdout(['ls-files', '--others', '--exclude-standard', '-z'], cwd);
   let linesAdded = 0;
-  for (const relPath of untrackedRaw.split('\n').filter(Boolean)) {
+  for (const relPath of splitNulRecords(untrackedRaw)) {
     try {
       const fullPath = path.join(cwd, relPath);
       const content = readFileSync(fullPath, 'utf8');
@@ -445,10 +457,11 @@ function readGitLineStats(cwd) {
 }
 
 function readGitStatusEntries(cwd) {
-  const porcelain = execGitStdout('git status --porcelain', cwd).trim();
+  const records = splitNulRecords(execGitFileStdout(['status', '--porcelain=v1', '-z'], cwd));
   const statusByPath = new Map();
-  if (!porcelain) return statusByPath;
-  for (const line of porcelain.split('\n')) {
+  for (let index = 0; index < records.length; index += 1) {
+    const line = records[index];
+    if (line.length < 4) continue;
     const x = line[0];
     const y = line[1];
     const filePath = line.slice(3);
@@ -459,17 +472,19 @@ function readGitStatusEntries(cwd) {
     else status = 'M';
     const staged = (x !== ' ' && x !== '?');
     statusByPath.set(filePath, { path: filePath, status, staged });
+    if (x === 'R' || y === 'R' || x === 'C' || y === 'C') {
+      index += 1;
+    }
   }
   return statusByPath;
 }
 
 function appendUntrackedDiffPatches(cwd, patch) {
-  const untrackedRaw = execGitStdout('git ls-files --others --exclude-standard', cwd).trim();
+  const untrackedRaw = execGitFileStdout(['ls-files', '--others', '--exclude-standard', '-z'], cwd);
   const parts = [];
   const nullPath = process.platform === 'win32' ? 'NUL' : '/dev/null';
-  for (const relPath of untrackedRaw.split('\n').filter(Boolean)) {
-    const quotedRelPath = relPath.replace(/"/g, '\\"');
-    const diff = execGitStdout(`git diff --no-index --no-color -- "${nullPath}" "${quotedRelPath}"`, cwd).trim();
+  for (const relPath of splitNulRecords(untrackedRaw)) {
+    const diff = execGitFileStdout(['diff', '--no-index', '--no-color', '--', nullPath, relPath], cwd).trim();
     if (diff) parts.push(diff);
   }
   return [patch, ...parts].filter(Boolean).join('\n');
