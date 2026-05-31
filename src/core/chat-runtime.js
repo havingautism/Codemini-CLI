@@ -1,5 +1,5 @@
 import { parseInput } from './input-parser.js';
-import { formatLocalDate, loadCommandsAndSkills, renderCommandPrompt } from './command-loader.js';
+import { formatLocalDate, loadCommandsAndSkills, buildSkillIndexPromptBlock, renderCommandPrompt } from './command-loader.js';
 import { runAgentLoop } from './agent-loop.js';
 import { setResultDir, clearResultStore } from './tool-result-store.js';
 import { trimInline, normalizePath } from './string-utils.js';
@@ -6930,10 +6930,12 @@ export async function createChatRuntime({
   const buildActiveSystemPrompt = async () => {
     const memoryGuide =
       'Persistent memory stores durable preferences and stable workflow knowledge. Verify changeable details from files, and only write memory for future-useful, non-sensitive facts.';
+    const skillIndexPrompt = await buildSkillIndexPromptBlock(process.cwd(), config);
     return composeSystemPrompt({
       shellRulesPrompt: baseSystemPrompt,
       config,
       workspaceRoot: process.cwd(),
+      skillsPrompt: skillIndexPrompt,
       extraPrompts: [memoryGuide]
     });
   };

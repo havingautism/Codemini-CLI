@@ -248,15 +248,37 @@ function Shell() {
                 {state.gitInfo?.isGit && (
                   <span className="inline-flex items-center gap-1 text-[12px] text-(--text-muted) shrink-0">
                     <GitHubIcon size={13} />
-                    <span>{state.gitInfo.branch}</span>
+                    {state.gitInfo.branch ? (
+                      <span>{state.gitInfo.branch}</span>
+                    ) : null}
                   </span>
                 )}
-                {state.gitInfo?.isGit && state.gitInfo?.dirty && (
+                {state.gitInfo?.isGit &&
+                  (state.gitInfo.dirty ||
+                    Number(state.gitInfo.linesAdded) > 0 ||
+                    Number(state.gitInfo.linesRemoved) > 0) && (
                   <button
+                    type="button"
                     onClick={() => actions.setGitDiffOpen(true)}
-                    className="inline-flex items-center gap-1 text-[12px] text-(--text-muted) shrink-0 border-0 bg-transparent cursor-pointer hover:text-(--text-primary) p-0"
+                    className="inline-flex items-center gap-1.5 text-[12px] shrink-0 border-0 bg-transparent cursor-pointer hover:text-(--text-primary) p-0 text-(--text-muted)"
+                    title={t("gitDiffTitle")}
                   >
                     <GitCompare size={13} />
+                    {(Number(state.gitInfo.linesAdded) > 0 ||
+                      Number(state.gitInfo.linesRemoved) > 0) && (
+                      <span className="inline-flex items-center gap-1 font-mono text-[11px]">
+                        {Number(state.gitInfo.linesAdded) > 0 && (
+                          <span className="text-(--accent-green)">
+                            +{state.gitInfo.linesAdded}
+                          </span>
+                        )}
+                        {Number(state.gitInfo.linesRemoved) > 0 && (
+                          <span className="text-(--accent-red)">
+                            -{state.gitInfo.linesRemoved}
+                          </span>
+                        )}
+                      </span>
+                    )}
                   </button>
                 )}
               </div>

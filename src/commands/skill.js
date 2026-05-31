@@ -510,6 +510,15 @@ export async function installSkill(sourcePath, { scope = 'project', cwd = proces
     packageName: '',
     installedAt: new Date().toISOString()
   };
+  const catalogEntry = {
+    description,
+    mode: 'agent_requested',
+    enabled: true,
+    source: sourceLabel,
+    packageSource: packageMetadata.packageSource || sourceLabel,
+    packageName: packageMetadata.packageName || '',
+    installedAt: packageMetadata.installedAt || new Date().toISOString()
+  };
   if (scope === 'global') {
     await upsertSkillRegistryEntry(undefined, {
       name: folderName,
@@ -523,15 +532,9 @@ export async function installSkill(sourcePath, { scope = 'project', cwd = proces
       sha256: hash,
       installedAt: packageMetadata.installedAt || new Date().toISOString()
     });
+    await upsertSkillCatalogEntry(baseDirForScope(scope, cwd), folderName, catalogEntry);
   } else {
-    await upsertSkillCatalogEntry(baseDirForScope(scope, cwd), folderName, {
-      description,
-      enabled: true,
-      source: sourceLabel,
-      packageSource: packageMetadata.packageSource || sourceLabel,
-      packageName: packageMetadata.packageName || '',
-      installedAt: packageMetadata.installedAt || new Date().toISOString()
-    });
+    await upsertSkillCatalogEntry(baseDirForScope(scope, cwd), folderName, catalogEntry);
   }
   await setSkillEnabledConfig(folderName, true);
 
@@ -657,26 +660,28 @@ async function reindexSkills({ scope = 'global', cwd = process.cwd() } = {}) {
     });
   }
 
+  const catalog = await readSkillCatalogSafe(baseDir);
+  catalog.version = catalog.version || 1;
+  catalog.skills = catalog.skills || {};
+  for (const item of rebuilt) {
+    catalog.skills[item.name] = {
+      ...(catalog.skills[item.name] || {}),
+      description: item.description,
+      mode: catalog.skills[item.name]?.mode || 'agent_requested',
+      enabled: item.enabled !== false,
+      ...(item.source ? { source: item.source } : {}),
+      ...(item.packageSource ? { packageSource: item.packageSource } : {}),
+      ...(item.packageName ? { packageName: item.packageName } : {}),
+      triggers: Array.isArray(catalog.skills[item.name]?.triggers) ? catalog.skills[item.name].triggers : []
+    };
+  }
   if (scope === 'global') {
     await writeSkillRegistry(undefined, {
       version: 1,
       skills: rebuilt
     });
+    await writeSkillCatalog(baseDir, catalog);
   } else if (scope === 'project') {
-    const catalog = await readSkillCatalogSafe(baseDir);
-    catalog.version = catalog.version || 1;
-    catalog.skills = catalog.skills || {};
-    for (const item of rebuilt) {
-      catalog.skills[item.name] = {
-        ...(catalog.skills[item.name] || {}),
-        description: item.description,
-        enabled: item.enabled !== false,
-        ...(item.source ? { source: item.source } : {}),
-        ...(item.packageSource ? { packageSource: item.packageSource } : {}),
-        ...(item.packageName ? { packageName: item.packageName } : {}),
-        triggers: Array.isArray(catalog.skills[item.name]?.triggers) ? catalog.skills[item.name].triggers : []
-      };
-    }
     await writeSkillCatalog(baseDir, catalog);
   }
 

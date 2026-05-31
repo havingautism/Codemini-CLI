@@ -64,9 +64,14 @@ function extractKeyArg(args, toolName) {
     list: "path",
     web_fetch: "url",
     web_search: "query",
+    skill: "name",
   };
   const key = keyMap[toolName];
   if (key && obj[key] != null) return String(obj[key]);
+  if (toolName === "skill") {
+    const query = String(obj?.query || "").trim();
+    if (query) return query;
+  }
   for (const v of Object.values(obj)) {
     if (typeof v === "string" && v.length > 0 && v.length < 200) return v;
   }

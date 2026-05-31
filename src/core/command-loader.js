@@ -107,6 +107,20 @@ function normalizeSkillMode(value) {
   return mode;
 }
 
+function resolveSkillIndexMode(metadata = {}, source = '') {
+  const mode = normalizeSkillMode(metadata.mode);
+  if (mode === 'manual' || mode === 'always' || mode === 'agent_requested') return mode;
+  if (source === 'registry-skill' || source === 'global-skill' || source === 'project-skill') {
+    return 'agent_requested';
+  }
+  return mode || 'agent_requested';
+}
+
+export function isSkillIndexEligible(command) {
+  if (command?.metadata?.type !== 'skill') return false;
+  return resolveSkillIndexMode(command.metadata, command.source) !== 'manual';
+}
+
 function catalogMetadata(catalog, name) {
   const entry = catalog?.[name];
   if (!entry || typeof entry !== 'object') return {};
@@ -423,7 +437,46 @@ export async function loadIndexedSkills(cwd = process.cwd()) {
   const registry = await readSkillRegistry();
   loadInstalledSkillsFromRegistry(getSkillsDir(), registry, commands);
 
+  for (const command of commands.values()) {
+    if (command.metadata?.type !== 'skill') continue;
+    command.metadata.mode = resolveSkillIndexMode(command.metadata, command.source);
+  }
+
   return commands;
+}
+
+function skillScopeLabel(source = '') {
+  if (source === 'bundled-skill') return 'builtin';
+  if (source === 'project-skill') return 'project';
+  if (source === 'global-skill' || source === 'registry-skill') return 'global';
+  return source || 'unknown';
+}
+
+function isIndexedSkillEnabledForPrompt(command, config = {}) {
+  if (command?.metadata?.enabled === false) return false;
+  if (skillScopeLabel(command?.source) === 'builtin') return true;
+  return config?.skills?.enabled?.[command?.name] !== false;
+}
+
+export async function buildSkillIndexPromptBlock(cwd = process.cwd(), config = {}) {
+  const indexed = await loadIndexedSkills(cwd);
+  const lines = Array.from(indexed.values())
+    .filter((command) => isSkillIndexEligible(command))
+    .filter((command) => isIndexedSkillEnabledForPrompt(command, config))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((command) => {
+      const scope = skillScopeLabel(command.source);
+      const mode = resolveSkillIndexMode(command.metadata, command.source);
+      const desc = String(command.metadata?.description || '').trim().replace(/\s+/g, ' ');
+      const label = mode === 'agent_requested' ? `${scope}|agent_requested` : scope;
+      return desc ? `- /${command.name} [${label}] - ${desc}` : `- /${command.name} [${label}]`;
+    });
+  if (!lines.length) return '';
+  return [
+    '# Indexed skills',
+    'Agent-requested and always skills from bundled, project, global, and registry catalogs (manual slash-only skills are omitted). Load full instructions with skill({name:"<name>"}). Search with skill({query:"..."}).',
+    ...lines
+  ].join('\n');
 }
 
 export function renderCommandPrompt(command, args) {

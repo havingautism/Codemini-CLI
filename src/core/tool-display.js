@@ -99,8 +99,11 @@ export function formatToolDisplayName(name, args = {}) {
     return query ? formatToolWithArg(formatToolLabel('web_search'), query) : formatToolLabel('web_search');
   }
   if (toolName === 'skill') {
-    const target = trimInline(args?.name || args?.skill || args?.query || '', 96);
-    return target ? formatToolWithArg(formatToolLabel('skill'), target.replace(/^\/+/, '')) : formatToolLabel('skill');
+    const name = trimInline(args?.name || args?.skill || '', 96);
+    const query = trimInline(args?.query || '', 96);
+    if (query && !name) return formatToolWithArg(formatToolLabel('skill'), query);
+    if (name) return formatToolWithArg(formatToolLabel('skill'), name);
+    return formatToolLabel('skill');
   }
   if (toolName === 'edit') {
     const target = trimInline(args?.path || args?.file || '.', 96) || '.';

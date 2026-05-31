@@ -23,7 +23,13 @@ If `AGENTS.md` says "do not use TDD" and a skill says to use TDD, follow `AGENTS
 
 ## How to Access Skills
 
-Use Codemini's `skill` tool for indexed skills, or invoke a skill as a slash command such as `/systematic-debugging`. The full `SKILL.md` is loaded on demand; do not read skill files manually unless you are editing the skill itself.
+Use Codemini's `skill` tool against the indexed skill registry. Do not grep, glob, or list filesystem directories under `skills/` to discover skills.
+
+1. Browse all indexed skills: `skill({name:"list"})`
+2. Search by keywords: `skill({query:"fix ts generic error"})`
+3. Load the exact skill: `skill({name:"systematic-debugging"})` or invoke it as `/systematic-debugging`
+
+The full `SKILL.md` is loaded on demand through `skill`; do not read skill files manually unless you are editing the skill itself.
 
 # Using Skills
 

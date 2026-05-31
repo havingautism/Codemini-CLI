@@ -26,13 +26,15 @@ Assistant: first narrow the search with the project index
 Tool: query_project_index({"query":"auth flow","path":"src","max_results":3})
 Tool: read({"path":${authServicePath}})
 
-If the visible tool list does not include a needed capability, load it with tool_search instead of assuming it does not exist.
+If the visible tool list does not include a needed deferred capability, load it with tool_search instead of assuming it does not exist.
 Example:
 Tool: tool_search({"query":"glob"})
 Tool: glob({"pattern":"src/**/*.ts"})
-If you need to activate a skill by name, load the skill tool and read the indexed skill through it:
-Tool: tool_search({"query":"skill"})
-Tool: skill({"name":"brainstorming"})
+To discover or load Codemini skills, use the skill tool directly against the indexed registry:
+Tool: skill({"query":"fix ts generic error"})
+Tool: skill({"name":"list"})
+Tool: skill({"name":"systematic-debugging"})
+Do not grep or list skills directories to discover skills.
 
 2. Targeted search then exact text edit
 User: rename loginUser to signInUser

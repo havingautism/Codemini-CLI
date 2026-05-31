@@ -26,7 +26,7 @@ import { normalizePlanState } from './plan-state.js';
 import { normalizeTodos } from './todo-state.js';
 import { normalizeAssumptionItems } from './tool-args-helpers.js';
 import { createFffAdapter } from './fff-adapter.js';
-import { loadIndexedSkills, renderCommandPrompt } from './command-loader.js';
+import { isSkillIndexEligible, loadIndexedSkills, renderCommandPrompt } from './command-loader.js';
 import {
   getToolOutputSanitizeOptions,
   sanitizePreviewLines,
@@ -288,6 +288,64 @@ function summarizeIndexedSkill(command) {
     enabled: command.metadata?.enabled !== false
   };
 }
+
+function scoreIndexedSkillMatch(item, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return 0;
+  const name = String(item?.summary?.name || item?.command?.name || '').toLowerCase();
+  const desc = String(item?.summary?.description || '').toLowerCase();
+  const triggers = Array.isArray(item?.command?.metadata?.triggers)
+    ? item.command.metadata.triggers.map((entry) => String(entry || '').toLowerCase()).join(' ')
+    : '';
+
+  if (name === q) return 100;
+  if (name.includes(q) || q.includes(name)) return 85;
+  const tokens = q.split(/[\s\-_/|]+/).filter((token) => token.length >= 2);
+  if (tokens.length === 0) return 0;
+  let score = 0;
+  for (const token of tokens) {
+    if (name.includes(token)) score += 30;
+    if (desc.includes(token)) score += 18;
+    if (triggers.includes(token)) score += 22;
+  }
+  return score;
+}
+
+function searchIndexedSkills(allSkills, query, { limit = 10 } = {}) {
+  return allSkills
+    .map((item) => ({ item, score: scoreIndexedSkillMatch(item, query) }))
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score || `${a.item.summary.scope}:${a.item.summary.name}`.localeCompare(`${b.item.summary.scope}:${b.item.summary.name}`))
+    .slice(0, limit)
+    .map(({ item }) => item.summary);
+}
+
+const SKILL_TOOL_DEFINITION = {
+  type: 'function',
+  function: {
+    name: 'skill',
+    description:
+      'Search and load Codemini skills from the indexed skill registry/catalog. To browse skills, call skill({name:"list"}). To find a skill by keywords, call skill({query:"ts generic error"}) or skill({name:"fix-ts-generic-error"}). After you know the exact skill name, call skill({name:"<skill-name>"}) to load its instructions. Do NOT use grep, glob, or list on skills directories to discover skills.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description: 'Exact skill name, "list"/"all" to browse all indexed skills, or keywords to search the skill index'
+        },
+        query: {
+          type: 'string',
+          description: 'Search indexed skills by name/description keywords without loading one'
+        },
+        args: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional positional arguments to substitute into the skill prompt'
+        }
+      }
+    }
+  }
+};
 
 function normalizeWebUrl(value) {
   const text = String(value || '').trim();
@@ -2717,7 +2775,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'tool_search',
         description:
-          'Load one deferred tool schema by name. Use this when a needed tool is not in the current tool list.',
+          'Load one deferred tool schema by name. Use this when a needed tool is not in the current tool list. Skill discovery uses the always-available skill tool instead of tool_search.',
         parameters: {
           type: 'object',
           properties: {
@@ -2726,7 +2784,8 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
           required: ['query']
         }
       }
-    }
+    },
+    SKILL_TOOL_DEFINITION
   ];
 
   const workflowToolDefinitions = [];
@@ -2772,26 +2831,6 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
   }
 
   const deferredDefinitions = {
-    skill: {
-      type: 'function',
-      function: {
-        name: 'skill',
-        description:
-          'Load an enabled Codemini skill by name from the indexed skill registry/catalog. Use this when task instructions or an always-loaded skill tell you to activate a skill such as using-superpowers, brainstorming, systematic-debugging, or verification-before-completion.',
-        parameters: {
-          type: 'object',
-          properties: {
-            name: { type: 'string', description: 'Skill name, with or without a leading slash' },
-            args: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Optional positional arguments to substitute into the skill prompt'
-            }
-          },
-          required: ['name']
-        }
-      }
-    },
     glob: {
       type: 'function',
       function: {
@@ -3399,9 +3438,9 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       });
     },
     skill: async (args = {}) => {
-      const requested = normalizeSkillToolName(args?.name || args?.skill || args?.query);
       const indexedSkills = await loadIndexedSkills(workspaceRoot);
       const allSkills = Array.from(indexedSkills.values())
+        .filter((command) => isSkillIndexEligible(command))
         .map((command) => ({
           command,
           summary: {
@@ -3411,19 +3450,33 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         }))
         .sort((a, b) => `${a.summary.scope}:${a.summary.name}`.localeCompare(`${b.summary.scope}:${b.summary.name}`));
 
-      if (!requested || requested === 'list' || requested === 'all') {
+      const searchQuery = String(args?.query || '').trim();
+      if (searchQuery && !String(args?.name || args?.skill || '').trim()) {
+        const matches = searchIndexedSkills(allSkills, searchQuery).filter((item) => item.enabled !== false);
         return {
-          skills: allSkills.map((item) => item.summary),
-          message: 'Indexed skills loaded from catalogs and registry.'
+          matches,
+          message: matches.length
+            ? 'Skill search results from indexed registry. Load one with skill({name:"<exact-name>"}).'
+            : 'No indexed skills matched that query. Try skill({name:"list"}) to browse all skills.'
         };
       }
 
-      const command = indexedSkills.get(requested) ||
+      const requested = normalizeSkillToolName(args?.name || args?.skill || args?.query);
+      if (!requested || requested === 'list' || requested === 'all') {
+        return {
+          skills: allSkills.map((item) => item.summary),
+          message: 'Indexed skills loaded from catalogs and registry. Load one with skill({name:"<exact-name>"}).'
+        };
+      }
+
+      let command = indexedSkills.get(requested) ||
         allSkills.find((item) => item.command.name.toLowerCase() === requested.toLowerCase())?.command;
       if (!command) {
+        const matches = searchIndexedSkills(allSkills, requested).filter((item) => item.enabled !== false);
         return {
           error: `Unknown indexed skill: "${requested}".`,
-          available: allSkills.filter((item) => item.summary.enabled).map((item) => item.summary.name)
+          matches,
+          hint: 'Use skill({name:"list"}) to browse indexed skills, or skill({query:"keywords"}) to search by name/description. Do not grep or list skills directories.'
         };
       }
       if (!isIndexedSkillEnabled(command, config)) {
@@ -3775,12 +3828,28 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     skill(result) {
       if (!result || typeof result !== 'object') return String(result);
       if (result.error) {
-        const available = Array.isArray(result.available) && result.available.length > 0
-          ? `\nAvailable indexed skills: ${result.available.join(', ')}`
-          : '';
-        return `${result.error}${available}`;
+        const matches = Array.isArray(result.matches) && result.matches.length > 0
+          ? ['Possible matches:', ...result.matches.map((item) => {
+            const disabled = item.enabled === false ? ' disabled' : '';
+            const desc = item.description ? ` - ${item.description}` : '';
+            return `/${item.name} [${item.scope}${disabled}]${desc}`;
+          })]
+          : [];
+        const hint = result.hint ? `\n${result.hint}` : '';
+        return `${result.error}${matches.length ? `\n${matches.join('\n')}` : ''}${hint}`;
       }
       if (typeof result.content === 'string') return result.content;
+      if (Array.isArray(result.matches)) {
+        if (result.matches.length === 0) {
+          return result.message || 'No indexed skills matched that query.';
+        }
+        const lines = result.matches.map((item) => {
+          const disabled = item.enabled === false ? ' disabled' : '';
+          const desc = item.description ? ` - ${item.description}` : '';
+          return `/${item.name} [${item.scope}${disabled}]${desc}`;
+        });
+        return [result.message || 'Skill search results:', ...lines].join('\n');
+      }
       if (Array.isArray(result.skills)) {
         if (result.skills.length === 0) return 'No indexed skills found.';
         const lines = result.skills.map((item) => {
@@ -3788,7 +3857,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
           const desc = item.description ? ` - ${item.description}` : '';
           return `/${item.name} [${item.scope}${disabled}]${desc}`;
         });
-        return ['Indexed skills:', ...lines].join('\n');
+        return [result.message || 'Indexed skills:', ...lines].join('\n');
       }
       return JSON.stringify(result);
     },

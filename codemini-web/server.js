@@ -1,5 +1,6 @@
 import http from 'node:http';
 import fs from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
@@ -380,12 +381,142 @@ function getGitBranch(cwd) {
   }
 }
 
+function execGitStdout(command, cwd) {
+  try {
+    return execSync(command, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+  } catch (err) {
+    return String(err.stdout || '');
+  }
+}
+
+function hasGitHead(cwd) {
+  try {
+    execSync('git rev-parse --verify HEAD', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parseGitNumstat(text) {
+  let linesAdded = 0;
+  let linesRemoved = 0;
+  for (const line of String(text || '').split('\n')) {
+    if (!line.trim()) continue;
+    const [addedRaw, removedRaw] = line.split('\t');
+    if (addedRaw !== '-') linesAdded += Number(addedRaw) || 0;
+    if (removedRaw !== '-') linesRemoved += Number(removedRaw) || 0;
+  }
+  return { linesAdded, linesRemoved };
+}
+
+function countUntrackedLineStats(cwd) {
+  const untrackedRaw = execGitStdout('git ls-files --others --exclude-standard', cwd).trim();
+  let linesAdded = 0;
+  for (const relPath of untrackedRaw.split('\n').filter(Boolean)) {
+    try {
+      const fullPath = path.join(cwd, relPath);
+      const content = readFileSync(fullPath, 'utf8');
+      linesAdded += content ? content.split('\n').length : 0;
+    } catch {
+      // Skip binary or unreadable files.
+    }
+  }
+  return { linesAdded, linesRemoved: 0 };
+}
+
+function readGitLineStats(cwd) {
+  const hasHead = hasGitHead(cwd);
+  if (hasHead) {
+    const stats = parseGitNumstat(execGitStdout('git diff HEAD --numstat', cwd));
+    const untracked = countUntrackedLineStats(cwd);
+    return {
+      linesAdded: stats.linesAdded + untracked.linesAdded,
+      linesRemoved: stats.linesRemoved + untracked.linesRemoved
+    };
+  }
+  const cached = parseGitNumstat(execGitStdout('git diff --cached --numstat', cwd));
+  const unstaged = parseGitNumstat(execGitStdout('git diff --numstat', cwd));
+  const untracked = countUntrackedLineStats(cwd);
+  return {
+    linesAdded: cached.linesAdded + unstaged.linesAdded + untracked.linesAdded,
+    linesRemoved: cached.linesRemoved + unstaged.linesRemoved + untracked.linesRemoved
+  };
+}
+
+function readGitStatusEntries(cwd) {
+  const porcelain = execGitStdout('git status --porcelain', cwd).trim();
+  const statusByPath = new Map();
+  if (!porcelain) return statusByPath;
+  for (const line of porcelain.split('\n')) {
+    const x = line[0];
+    const y = line[1];
+    const filePath = line.slice(3);
+    let status;
+    if (x === '?' && y === '?') status = '?';
+    else if (x === 'A' || y === 'A') status = 'A';
+    else if (x === 'D' || y === 'D') status = 'D';
+    else status = 'M';
+    const staged = (x !== ' ' && x !== '?');
+    statusByPath.set(filePath, { path: filePath, status, staged });
+  }
+  return statusByPath;
+}
+
+function appendUntrackedDiffPatches(cwd, patch) {
+  const untrackedRaw = execGitStdout('git ls-files --others --exclude-standard', cwd).trim();
+  const parts = [];
+  const nullPath = process.platform === 'win32' ? 'NUL' : '/dev/null';
+  for (const relPath of untrackedRaw.split('\n').filter(Boolean)) {
+    const quotedRelPath = relPath.replace(/"/g, '\\"');
+    const diff = execGitStdout(`git diff --no-index --no-color -- "${nullPath}" "${quotedRelPath}"`, cwd).trim();
+    if (diff) parts.push(diff);
+  }
+  return [patch, ...parts].filter(Boolean).join('\n');
+}
+
+function readGitDiffPatch(cwd) {
+  const hasHead = hasGitHead(cwd);
+  let patch = '';
+  if (hasHead) {
+    patch = execGitStdout('git diff HEAD --no-color', cwd).trim();
+  } else {
+    patch = [
+      execGitStdout('git diff --cached --no-color', cwd).trim(),
+      execGitStdout('git diff --no-color', cwd).trim()
+    ].filter(Boolean).join('\n');
+  }
+  return appendUntrackedDiffPatches(cwd, patch);
+}
+
+function readGitDiffData(cwd) {
+  const patch = readGitDiffPatch(cwd);
+  const patchFiles = [];
+  const seenPatchFiles = new Set();
+  for (const line of patch.split('\n')) {
+    const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+    if (!match) continue;
+    const filePath = match[2] || match[1];
+    if (!filePath || seenPatchFiles.has(filePath)) continue;
+    seenPatchFiles.add(filePath);
+    patchFiles.push(filePath);
+  }
+  const statusByPath = readGitStatusEntries(cwd);
+  const files = patchFiles.map((filePath) => statusByPath.get(filePath) || { path: filePath, status: 'M', staged: false });
+  for (const [filePath, entry] of statusByPath.entries()) {
+    if (entry.status === '?' && !seenPatchFiles.has(filePath)) {
+      files.push(entry);
+    }
+  }
+  return { patch, files, ...readGitLineStats(cwd) };
+}
+
 function readGitInfo(cwd, { includeCounts = true } = {}) {
   execSync('git rev-parse --is-inside-work-tree', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
   const branch = getGitBranch(cwd);
   if (!includeCounts) return { isGit: true, branch };
 
-  const porcelain = execSync('git status --porcelain', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  const porcelain = execGitStdout('git status --porcelain', cwd).trim();
   const lines = porcelain ? porcelain.split('\n') : [];
   let staged = 0, modified = 0, untracked = 0;
   for (const line of lines) {
@@ -394,7 +525,17 @@ function readGitInfo(cwd, { includeCounts = true } = {}) {
     if (x !== ' ' && x !== '?') staged++;
     if (y === 'M' || y === 'D') modified++;
   }
-  return { isGit: true, branch, dirty: lines.length > 0, staged, modified, untracked };
+  const { linesAdded, linesRemoved } = readGitLineStats(cwd);
+  return {
+    isGit: true,
+    branch,
+    dirty: lines.length > 0,
+    staged,
+    modified,
+    untracked,
+    linesAdded,
+    linesRemoved
+  };
 }
 
 async function validProjectDir(value) {
@@ -1340,46 +1481,15 @@ async function main() {
       try {
         jsonResponse(res, readGitInfo(currentProjectDir));
       } catch {
-        jsonResponse(res, { isGit: false, branch: null, dirty: false, staged: 0, modified: 0, untracked: 0 });
+        jsonResponse(res, { isGit: false, branch: null, dirty: false, staged: 0, modified: 0, untracked: 0, linesAdded: 0, linesRemoved: 0 });
       }
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/git-diff') {
       try {
-        let patch;
-        try {
-          patch = execSync('git diff HEAD --no-color', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
-        } catch {
-          patch = execSync('git diff --cached --no-color', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
-        }
-        const patchFiles = [];
-        const seenPatchFiles = new Set();
-        for (const line of patch.split('\n')) {
-          const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
-          if (!match) continue;
-          const filePath = match[2] || match[1];
-          if (!filePath || seenPatchFiles.has(filePath)) continue;
-          seenPatchFiles.add(filePath);
-          patchFiles.push(filePath);
-        }
-        const porcelain = execSync('git status --porcelain', { cwd: currentProjectDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-        const statusByPath = new Map();
-        if (porcelain) {
-          for (const line of porcelain.split('\n')) {
-            const x = line[0], y = line[1], filePath = line.slice(3);
-            let status;
-            if (x === '?' && y === '?') status = '?';
-            else if (x === 'A' || y === 'A') status = 'A';
-            else if (x === 'D' || y === 'D') status = 'D';
-            else status = 'M';
-            const staged = (x !== ' ' && x !== '?');
-            statusByPath.set(filePath, { path: filePath, status, staged });
-          }
-        }
-        const files = patchFiles.map(filePath => statusByPath.get(filePath) || { path: filePath, status: 'M', staged: false });
-        jsonResponse(res, { patch, files });
+        jsonResponse(res, readGitDiffData(currentProjectDir));
       } catch {
-        jsonResponse(res, { patch: '', files: [] });
+        jsonResponse(res, { patch: '', files: [], linesAdded: 0, linesRemoved: 0 });
       }
       return;
     }
@@ -1660,6 +1770,13 @@ async function main() {
             entryFile: 'SKILL.md',
             sha256: await computeFileSha256(skillFile),
             installedAt: new Date().toISOString()
+          });
+          await upsertSkillCatalogMetadata(getSkillsDir(), name, {
+            description: description || '',
+            mode: 'agent_requested',
+            triggers: [],
+            enabled: true,
+            priority: 50
           });
         } else {
           await upsertProjectSkillMetadata(targetProjectDir, name, {
