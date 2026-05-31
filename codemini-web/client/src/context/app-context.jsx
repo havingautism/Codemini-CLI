@@ -1836,7 +1836,11 @@ export function AppProvider({ children }) {
                         ? [
                             ...finishedSegments,
                             {
-                              type: "handoff",
+                              type:
+                                String(event.role || m.planStep?.role || "")
+                                  .toLowerCase() === "summarizer"
+                                  ? "text"
+                                  : "handoff",
                               text: outputText,
                               isStreaming: false,
                             },

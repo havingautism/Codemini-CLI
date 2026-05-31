@@ -31,14 +31,17 @@ export function ReflectApprovalCard({ draft, onAction, onUpdate, disabled = fals
   };
 
   return (
-    <div className="border border-(--border-default) rounded-lg p-3 max-w-3xl mx-auto bg-(--bg-secondary) space-y-3 shadow-sm">
+    <div className="mx-auto max-w-3xl space-y-3 rounded-lg border border-(--border-default) bg-(--bg-primary) p-3 text-(--text-primary) shadow-[var(--shadow-sm)]">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 min-w-0">
             <span className="text-[13px] font-medium text-(--text-primary)">
               {t("reflectReviewTitle")}
             </span>
-            <Badge className="text-[11px] bg-(--accent-purple-bg) text-accent-purple">
+            <Badge
+              variant="outline"
+              className="h-5 rounded-md border-[color-mix(in_srgb,var(--accent-purple)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-purple-bg)_55%,transparent)] px-1.5 py-0 text-[11px] font-medium text-(--accent-purple) shadow-none"
+            >
               {t("reflectReviewStatus")}
             </Badge>
           </div>
@@ -89,7 +92,7 @@ export function ReflectApprovalCard({ draft, onAction, onUpdate, disabled = fals
           className="min-h-[220px] font-mono text-[12px]"
         />
       ) : draft.content && (
-        <pre className="max-h-56 overflow-auto rounded-md border border-(--border-default) bg-(--bg-primary) p-3 text-[12px] leading-relaxed text-(--text-secondary) whitespace-pre-wrap">
+        <pre className="max-h-56 overflow-auto rounded-md border border-(--border-default) bg-[color-mix(in_srgb,var(--bg-primary)_72%,var(--bg-secondary)_28%)] p-3 text-[12px] leading-relaxed text-(--text-secondary) whitespace-pre-wrap">
           {draft.content}
         </pre>
       )}

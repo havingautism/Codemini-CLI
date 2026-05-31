@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { formatTimestamp } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
 import * as api from "@/hooks/use-api.js";
-import { ROLE_PILLS } from "./PlanProgress.jsx";
+import { ROLE_BADGE_CLASS, ROLE_PILLS } from "./PlanProgress.jsx";
 import { PatchDiff } from "@pierre/diffs/react";
 import {
   Tooltip,
@@ -31,67 +31,93 @@ import {
 } from "lucide-react";
 
 const ROLE_STYLES = {
-  you: { badge: "bg-(--accent-blue-bg) text-(--accent-blue)", label: "You" },
+  you: {
+    badge:
+      "border-[color-mix(in_srgb,var(--accent-blue)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-blue-bg)_55%,transparent)] text-(--accent-blue)",
+    label: "You",
+  },
   general: {
-    badge: "bg-(--accent-green-bg) text-(--accent-green)",
+    badge:
+      "border-[color-mix(in_srgb,var(--accent-green)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-green-bg)_55%,transparent)] text-(--accent-green)",
     label: "General",
   },
   coder: {
-    badge: "bg-(--accent-green-bg) text-(--accent-green)",
+    badge:
+      "border-[color-mix(in_srgb,var(--accent-green)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-green-bg)_55%,transparent)] text-(--accent-green)",
     label: "Coder",
   },
   explorer: {
-    badge: "bg-(--accent-amber-bg) text-(--accent-amber)",
+    badge:
+      "border-[color-mix(in_srgb,var(--accent-amber)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-amber-bg)_55%,transparent)] text-(--accent-amber)",
     label: "Explorer",
   },
   architect: {
-    badge: "bg-(--accent-purple-bg) text-(--accent-purple)",
+    badge:
+      "border-[color-mix(in_srgb,var(--accent-purple)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-purple-bg)_55%,transparent)] text-(--accent-purple)",
     label: "Architect",
   },
   refactorer: {
-    badge: "bg-(--accent-teal-bg) text-(--accent-teal)",
+    badge:
+      "border-[color-mix(in_srgb,var(--accent-teal)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-teal-bg)_55%,transparent)] text-(--accent-teal)",
     label: "Refactorer",
   },
   writer: {
-    badge: "bg-(--accent-cyan-bg) text-(--accent-cyan)",
+    badge:
+      "border-[color-mix(in_srgb,var(--accent-cyan)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-cyan-bg)_55%,transparent)] text-(--accent-cyan)",
     label: "Writer",
   },
   advisor: {
-    badge: "bg-(--accent-blue-bg) text-(--accent-blue)",
+    badge:
+      "border-[color-mix(in_srgb,var(--accent-blue)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-blue-bg)_55%,transparent)] text-(--accent-blue)",
     label: "Advisor",
   },
   planner: {
-    badge: "bg-(--accent-purple-bg) text-(--accent-purple)",
+    badge:
+      "border-[color-mix(in_srgb,var(--accent-purple)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-purple-bg)_55%,transparent)] text-(--accent-purple)",
     label: "Planner",
   },
   reviewer: {
-    badge: "bg-(--accent-orange-bg) text-(--accent-orange)",
+    badge:
+      "border-[color-mix(in_srgb,var(--accent-orange)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-orange-bg)_55%,transparent)] text-(--accent-orange)",
     label: "Reviewer",
   },
   tester: {
-    badge: "bg-(--accent-blue-bg) text-(--accent-blue)",
+    badge:
+      "border-[color-mix(in_srgb,var(--accent-blue)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-blue-bg)_55%,transparent)] text-(--accent-blue)",
     label: "Tester",
   },
   debugger: {
-    badge: "bg-(--accent-red-bg) text-(--accent-red)",
+    badge:
+      "border-[color-mix(in_srgb,var(--accent-red)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-red-bg)_55%,transparent)] text-(--accent-red)",
     label: "Debugger",
   },
   summarizer: {
-    badge: "bg-(--accent-cyan-bg) text-(--accent-cyan)",
+    badge:
+      "border-[color-mix(in_srgb,var(--accent-cyan)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-cyan-bg)_55%,transparent)] text-(--accent-cyan)",
     label: "Summarizer",
   },
   "plan-overview": {
-    badge: "bg-(--accent-purple-bg) text-(--accent-purple)",
+    badge:
+      "border-[color-mix(in_srgb,var(--accent-purple)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-purple-bg)_55%,transparent)] text-(--accent-purple)",
     label: "Plan",
   },
   codewiki: {
-    badge: "bg-(--accent-green-bg) text-(--accent-green)",
+    badge:
+      "border-[color-mix(in_srgb,var(--accent-green)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-green-bg)_55%,transparent)] text-(--accent-green)",
     label: "CodeWiki",
   },
-  system: { badge: "bg-(--muted) text-(--muted-foreground)", label: "System" },
-  error: { badge: "bg-(--accent-red-bg) text-(--accent-red)", label: "Error" },
+  system: {
+    badge: "border-(--border-default) bg-(--bg-primary) text-(--text-muted)",
+    label: "System",
+  },
+  error: {
+    badge:
+      "border-[color-mix(in_srgb,var(--accent-red)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-red-bg)_55%,transparent)] text-(--accent-red)",
+    label: "Error",
+  },
   pending: {
-    badge: "bg-(--accent-cyan-bg) text-(--accent-cyan)",
+    badge:
+      "border-[color-mix(in_srgb,var(--accent-cyan)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-cyan-bg)_55%,transparent)] text-(--accent-cyan)",
     label: "Pending",
   },
 };
@@ -193,13 +219,56 @@ function ThoughtBlock({ segment }) {
   );
 }
 
+function renderInlineMarkdownPreview(text) {
+  const value = String(text || "")
+    .replace(/^\s{0,3}#{1,6}\s+/, "")
+    .replace(/^\s*[-*+]\s+/, "")
+    .trim();
+  const parts = [];
+  const pattern = /(\*\*([^*]+)\*\*|`([^`]+)`)/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = pattern.exec(value))) {
+    if (match.index > lastIndex) {
+      parts.push(value.slice(lastIndex, match.index));
+    }
+    if (match[2]) {
+      parts.push(
+        <strong key={`strong-${match.index}`} className="font-semibold text-current">
+          {match[2]}
+        </strong>,
+      );
+    } else if (match[3]) {
+      parts.push(
+        <code
+          key={`code-${match.index}`}
+          className="rounded bg-(--bg-tertiary) px-1 py-0.5 font-mono text-[0.92em] text-current"
+        >
+          {match[3]}
+        </code>,
+      );
+    }
+    lastIndex = pattern.lastIndex;
+  }
+  if (lastIndex < value.length) {
+    parts.push(value.slice(lastIndex));
+  }
+  return parts.length ? parts : value;
+}
+
 function HandoffBlock({ segment }) {
   const [open, setOpen] = useState(false);
   const text = String(segment?.text || "").trim();
   if (!text) return null;
-  const firstLine = text.split(/\r?\n/).find((line) => line.trim()) || "";
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const firstLine =
+    lines.find((line) => !/^(#{1,6}\s*)?[\w\s]+:\s*$/i.test(line)) ||
+    lines[0] ||
+    "";
   const preview =
-    firstLine.length > 120 ? `${firstLine.slice(0, 117).trimEnd()}...` : firstLine;
+    firstLine.length > 120
+      ? `${firstLine.slice(0, 117).trimEnd()}...`
+      : firstLine;
 
   return (
     <div className="my-3 text-(--text-primary)">
@@ -222,7 +291,7 @@ function HandoffBlock({ segment }) {
         </span>
         <span className="font-medium">Handoff</span>
         <span className="min-w-0 flex-1 truncate text-(--text-muted)">
-          {preview}
+          {renderInlineMarkdownPreview(preview)}
         </span>
       </button>
       {open && (
@@ -1429,7 +1498,7 @@ export function MessageBubble({ message, skills = [] }) {
         <div className="flex items-center gap-2 mb-1.5">
           <span
             className={cn(
-              "inline-flex items-center px-2 py-px rounded-full text-[11px] font-semibold uppercase tracking-[0.3px]",
+              "inline-flex h-5 items-center rounded-md border px-1.5 py-0 text-[10px] font-medium uppercase tracking-[0.04em]",
               ROLE_STYLES["plan-overview"].badge,
             )}
           >
@@ -1437,7 +1506,7 @@ export function MessageBubble({ message, skills = [] }) {
           </span>
           {ts && <span className="text-[11px] text-(--text-muted)">{ts}</span>}
         </div>
-        <div className="border border-(--border-default) rounded-lg p-3 max-w-3xl bg-(--bg-secondary) space-y-2.5">
+        <div className="max-w-3xl space-y-2.5 rounded-lg border border-(--border-default) bg-(--bg-primary) p-3 shadow-[var(--shadow-sm)]">
           {overview.goal && (
             <p className="text-[13px] text-(--text-primary) leading-relaxed font-medium">
               {overview.goal}
@@ -1448,15 +1517,15 @@ export function MessageBubble({ message, skills = [] }) {
               <div key={i} className="flex items-center gap-2 text-[13px]">
                 <span
                   className={cn(
-                    "w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-medium shrink-0",
+                    "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[11px] font-medium",
                     step.status === "done" &&
-                      "bg-(--accent-green-bg) text-(--accent-green)",
+                      "border-[color-mix(in_srgb,var(--accent-green)_30%,transparent)] bg-[color-mix(in_srgb,var(--accent-green-bg)_52%,transparent)] text-(--accent-green)",
                     step.status === "failed" &&
-                      "bg-(--accent-red-bg) text-(--accent-red)",
+                      "border-[color-mix(in_srgb,var(--accent-red)_30%,transparent)] bg-[color-mix(in_srgb,var(--accent-red-bg)_52%,transparent)] text-(--accent-red)",
                     step.status === "running" &&
-                      "bg-(--accent-blue-bg) text-(--accent-blue)",
+                      "border-[color-mix(in_srgb,var(--accent-blue)_30%,transparent)] bg-[color-mix(in_srgb,var(--accent-blue-bg)_52%,transparent)] text-(--accent-blue)",
                     step.status === "pending" &&
-                      "bg-(--muted) text-(--muted-foreground)",
+                      "border-(--border-default) bg-(--bg-primary) text-(--text-muted)",
                   )}
                 >
                   {step.status === "done"
@@ -1470,9 +1539,9 @@ export function MessageBubble({ message, skills = [] }) {
                 <Badge
                   variant="outline"
                   className={cn(
-                    "text-[11px] px-1.5 py-0",
+                    ROLE_BADGE_CLASS,
                     ROLE_PILLS[step.role] ||
-                      "bg-(--muted) text-(--muted-foreground)",
+                      "border-(--border-default) bg-(--bg-primary) text-(--text-muted)",
                   )}
                 >
                   {String(step.role || "step").toUpperCase()}
@@ -1506,7 +1575,7 @@ export function MessageBubble({ message, skills = [] }) {
     <div
       data-message-id={message.id}
       className={cn(
-        "py-2 my-[22px] group/message",
+        "py-2 my-[8px] group/message",
         role === "you" && "flex justify-end",
       )}
     >
@@ -1532,7 +1601,7 @@ export function MessageBubble({ message, skills = [] }) {
           <div className="flex items-center gap-2 mb-1.5">
             <span
               className={cn(
-                "inline-flex items-center px-2 py-px rounded-full text-[11px] font-semibold uppercase tracking-[0.3px]",
+                "inline-flex h-5 items-center rounded-md border px-1.5 py-0 text-[10px] font-medium uppercase tracking-[0.04em]",
                 style.badge,
               )}
             >
@@ -1565,7 +1634,12 @@ export function MessageBubble({ message, skills = [] }) {
               return <HandoffBlock key={`ho-${i}`} segment={group} />;
             }
             if (group.type === "skill") {
-              return <SkillActivityRow key={`sk-${i}-${group.name || "skill"}`} badge={group} />;
+              return (
+                <SkillActivityRow
+                  key={`sk-${i}-${group.name || "skill"}`}
+                  badge={group}
+                />
+              );
             }
             if (group.type === "process") {
               return <ProcessGroup key={`pg-${i}`} group={group} />;

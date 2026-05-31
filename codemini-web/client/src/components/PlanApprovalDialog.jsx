@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
-import { ROLE_PILLS } from "./PlanProgress.jsx";
+import { ROLE_BADGE_CLASS, ROLE_PILLS } from "./PlanProgress.jsx";
 import {
   ReviewFooter,
   ReviewMarkdown,
@@ -54,7 +54,7 @@ function PlanStepCard({ step, index }) {
   return (
     <ReviewCard className="space-y-2">
       <div className="flex items-start gap-2.5">
-        <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-medium text-muted-foreground">
+        <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-(--border-default) bg-(--bg-primary) text-[11px] font-medium text-(--text-muted)">
           {index + 1}
         </span>
         <div className="min-w-0 flex-1 space-y-2">
@@ -62,8 +62,10 @@ function PlanStepCard({ step, index }) {
             <Badge
               variant="outline"
               className={cn(
-                "px-1.5 py-0 text-[11px] shrink-0 border-border/80",
-                ROLE_PILLS[role] || "bg-muted text-muted-foreground",
+                ROLE_BADGE_CLASS,
+                "shrink-0",
+                ROLE_PILLS[role] ||
+                  "border-(--border-default) bg-(--bg-primary) text-(--text-muted)",
               )}
             >
               {role.toUpperCase()}
@@ -101,7 +103,7 @@ function PlanStepEditor({
   return (
     <ReviewCard className="space-y-3">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-xs font-medium text-muted-foreground">
+        <span className="text-xs font-medium text-(--text-muted)">
           {t("planStepLabel")} {index + 1}
         </span>
         <div className="flex items-center gap-1">
@@ -362,7 +364,7 @@ export function PlanApprovalDialog({
       description={plan.filePath || undefined}
       badge={t("planReviewStatus")}
       badgeVariant="outline"
-      badgeClassName="border-border bg-muted/50 text-foreground"
+      badgeClassName="border-(--border-default) bg-[color-mix(in_srgb,var(--bg-primary)_72%,var(--bg-secondary)_28%)] text-(--text-primary)"
       footer={footer}
     >
       {panel === "edit" ? (
@@ -408,7 +410,7 @@ export function PlanApprovalDialog({
         </div>
       ) : panel === "revise" ? (
         <div className="space-y-3">
-          <ReviewText className="text-muted-foreground">{t("planReviseHint")}</ReviewText>
+          <ReviewText className="text-(--text-secondary)">{t("planReviseHint")}</ReviewText>
           <Textarea
             value={reviseFeedback}
             onChange={(e) => setReviseFeedback(e.target.value)}
@@ -435,7 +437,7 @@ export function PlanApprovalDialog({
             <ReviewSection
               label={t("planReviewSteps")}
               action={
-                <span className="text-xs text-muted-foreground">
+                <span className="text-xs text-(--text-muted)">
                   {steps.length} {t("planStepCount")}
                 </span>
               }

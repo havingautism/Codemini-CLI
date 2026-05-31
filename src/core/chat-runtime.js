@@ -702,7 +702,9 @@ export const EXECUTION_MODE_TOOL_POLICY = {
   plan: [
     'read', 'grep', 'list', 'glob', 'ast_query', 'read_ast_node',
     'query_project_index', 'tool_search', 'skill', 'web_fetch', 'web_search',
-    'read_plan', 'update_todos', 'create_spec', 'create_plan'
+    'read_plan', 'update_plan', 'update_todos',
+    'edit', 'create', 'delete', 'run',
+    'create_spec', 'create_plan'
   ]
 };
 
@@ -725,18 +727,19 @@ function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools) {
 function buildExecutionModePromptBlock(executionMode) {
   if (normalizeExecutionMode(executionMode) === 'plan') {
     return [
-      'Execution Mode: engineering (plan)',
-      'You are in engineering mode, not normal execution mode. Your job is discovery, alignment, and producing reviewable spec/plan artifacts — not direct implementation.',
+      'Execution Mode: engineering',
+      'You are in engineering mode. You may implement directly for simple, well-scoped tasks; use plan/spec artifacts only when they add real coordination value.',
       '',
       'Engineering workflow:',
-      '1. Explore the codebase with read/grep/list/glob/query_project_index before proposing a spec or plan.',
-      '2. If requirements are unclear, ask one focused clarifying question and stop. Do not call create_spec or create_plan yet.',
-      '3. If multiple reasonable approaches exist, present short options with a recommendation and wait for user confirmation.',
-      '4. Choose the artifact:',
+      '1. Explore the codebase with read/grep/list/glob/query_project_index before editing or proposing a spec/plan.',
+      '2. If the request is simple and localized, implement directly with edit/create/delete as appropriate, then verify with focused checks when useful.',
+      '3. If requirements are unclear, ask one focused clarifying question and stop. Do not call create_spec or create_plan yet.',
+      '4. If multiple reasonable approaches exist, present short options with a recommendation and wait for user confirmation.',
+      '5. Escalate only when needed:',
       '   - create_spec when scope, architecture, UX, constraints, or trade-offs still need alignment. Spec answers what to build and why.',
-      '   - create_plan when the goal is already clear enough to break into sub-agent execution steps. Plan answers how to implement.',
-      '5. Prefer create_spec for large, novel, or cross-cutting work. Prefer create_plan when a spec is already approved or the task is localized.',
-      '6. create_spec and create_plan both enter user approval flows. Stop after creating the artifact and wait for review.',
+      '   - create_plan when the goal is clear but complex enough to benefit from sub-agent execution steps. Plan answers how to implement.',
+      '6. Prefer direct implementation for small fixes. Prefer create_plan for multi-file/multi-phase work. Prefer create_spec for large, novel, or cross-cutting work.',
+      '7. create_spec and create_plan both enter user approval flows. Stop after creating the artifact and wait for review.',
       '',
       'Quality bar:',
       '- Ground every recommendation in repository evidence, not assumptions.',
@@ -744,10 +747,10 @@ function buildExecutionModePromptBlock(executionMode) {
       '- Self-review for missing requirements, contradictions, inconsistent names, and untestable tasks before calling create_spec or create_plan.',
       '- Use update_todos to track exploration and planning work when it spans multiple steps.',
       '',
-      'Hard constraints:',
-      '- Do not use edit/create/delete/run tools in engineering mode.',
-      '- Do not implement fixes, refactors, or tests before the user approves a plan.',
-      '- Do not switch back to implementation tone; stay in planning/architecture mode until approval.',
+      'Direct implementation rules:',
+      '- Do not claim edit/create/delete/run are unavailable in engineering mode; they are available for direct simple tasks.',
+      '- If the user explicitly asks to start fixing, repair, update, implement, or change files, do not create an advisor-only plan. Either implement directly when simple or create an implementation plan with a coder/refactorer/writer step.',
+      '- If you create a spec or plan, do not implement before the user approves that artifact.',
       '',
       'Plan step roles (when the plan will use sub-agents):',
       '- explorer = read-only inspection and context mapping. Never assign explorer to implement, edit, or deliver code.',
@@ -965,7 +968,9 @@ export function getSubAgentRolePrompt(role) {
       'You may touch many files, but every change must preserve existing behavior. Do not add features or fix bugs unless explicitly asked.',
       'Before starting, verify you understand the current behavior so you can prove nothing changed.',
       'Output format — keep it short and direct:',
+      'Under Actions Taken, the first bullet MUST be a one-sentence overview suitable for collapsed handoff preview; follow with concrete file/action bullets.',
       'Actions Taken:',
+      '- <one-sentence overview of the refactor completed>',
       '- <files restructured, patterns applied>',
       'Findings:',
       '- <important structural issue addressed or "none">',
@@ -986,7 +991,9 @@ export function getSubAgentRolePrompt(role) {
       'Your job: generate documentation, README files, API docs, changelogs, or code comments.',
       'Do not modify implementation code. Only write documentation files and comments.',
       'Output format — keep it short and direct:',
+      'Under Actions Taken, the first bullet MUST be a one-sentence overview suitable for collapsed handoff preview; follow with concrete file/action bullets.',
       'Actions Taken:',
+      '- <one-sentence overview of the documentation change>',
       '- <what documentation was written or updated>',
       'Artifacts:',
       '- <created or changed file paths>',
@@ -1103,7 +1110,9 @@ export function getSubAgentRolePrompt(role) {
     'Your step owns implementation only. Do NOT run tests, builds, installs, or dev servers to verify your work — the tester step or user handles verification unless this step task explicitly requires a command to complete the edit.',
     'When code edits are done, finish immediately with the handoff below. Do not loop on blocked or declined run commands.',
     'Output format — keep it short and direct:',
+    'Under Actions Taken, the first bullet MUST be a one-sentence overview suitable for collapsed handoff preview; follow with concrete file/action bullets.',
     'Actions Taken:',
+    '- <one-sentence overview of what was changed>',
     '- <file changes, commands, or "none">',
     'Findings:',
     '- <important implementation note, regression risk, or "none">',
@@ -1131,8 +1140,9 @@ function buildPipelineStepGuidance({ role, stepIndex, totalSteps, isFirst, isLas
     }
     lines.push('Focus narrowly on fixing the specific issue that caused the failure. Do not start over from scratch.');
     if (role === 'coder' || role === 'refactorer' || role === 'writer') {
-      lines.push('Your final message MUST use this exact handoff format (heading, blank line, then bullet lines — not inline prose):');
+      lines.push('Your final message MUST use this exact handoff format. Under Actions Taken, the first bullet MUST be a one-sentence overview suitable for collapsed handoff preview; follow with concrete file/action bullets:');
       lines.push('Actions Taken:');
+      lines.push('- <one-sentence overview of what changed>');
       lines.push('- <concrete edits, commands, or file operations performed>');
       lines.push('Artifacts:');
       lines.push('- <each created or changed file path>');
@@ -1532,7 +1542,7 @@ function isLightweightAutoPlanGoal(goal, requirements = []) {
   return /\b(add|update|fix|rename|trim|export|create|remove|change|implement)\b/i.test(text);
 }
 
-function classifyPlanTaskClass(goal = '') {
+export function classifyPlanTaskClass(goal = '') {
   const text = String(goal || '').trim();
   const lowerGoal = text.toLowerCase();
   const advisory =
@@ -1541,6 +1551,9 @@ function classifyPlanTaskClass(goal = '') {
   const implementation =
     /\b(add|build|create|implement|support|introduce|refactor|rewrite|rework|migrate|change|update|fix)\b/i.test(lowerGoal) ||
     /(新增|增加|实现|支持|重构|重写|改造|迁移|修改|更新|修复)/.test(text);
+  const explicitFixIntent =
+    /\b(start\s+(?:fixing|repairing)|fix(?:\s+it|\s+them|\s+this|\s+these)?|repair|resolve|address)\b/i.test(lowerGoal) ||
+    /(开始修复|修复|修一下|改一下|改掉|处理掉|解决)/.test(text);
   const verificationHeavy =
     /\b(test|verify|validation|validate|prove|confirm|reproduce|check coverage)\b/i.test(lowerGoal) ||
     /(测试|验证|校验|确认|复现|覆盖率)/.test(text);
@@ -1555,10 +1568,11 @@ function classifyPlanTaskClass(goal = '') {
     const explicitHybrid =
       /\b(analyze\s+and|review\s+and|audit\s+and|assess\s+and|investigate\s+and\s+(fix|implement)|fix\s+after\s+(analysis|review))\b/i.test(lowerGoal) ||
       /(先分析.*再|分析.*并.*(实现|修复|改)|审查.*并.*(改|修|实现)|评估.*后.*(实现|改))/.test(text);
-    if (explicitHybrid) return 'implementation-advisory';
+    if (explicitHybrid || explicitFixIntent) return 'implementation-advisory';
+    return 'implementation-advisory';
   }
+  if (implementation) return verificationHeavy ? 'implementation-verification' : 'implementation';
   if (advisory) return 'advisory';
-  if (implementation && verificationHeavy) return 'implementation-verification';
   return 'implementation';
 }
 
@@ -2333,7 +2347,7 @@ function withStepContractTasks(steps = []) {
   }));
 }
 
-function normalizeAutoPlan(parsed, goal) {
+export function normalizeAutoPlan(parsed, goal) {
   const steps = Array.isArray(parsed?.steps) ? parsed.steps : [];
   const cleaned = withStepContractTasks(normalizePlanStepRoles(normalizeStructuredPlanSteps(steps)));
 
@@ -2586,9 +2600,7 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
   const lightweightGoal = isLightweightAutoPlanGoal(goal, requirements);
   const taskClass = classifyPlanTaskClass(goal);
   const summary = String(plan?.summary || `Auto plan for: ${goal}`).trim();
-  const implementationSteps = source.filter((step) =>
-    !['advisor', 'reviewer', 'tester', 'debugger', 'summarizer'].includes(step.role)
-  );
+  const implementationSteps = source.filter((step) => ['coder', 'refactorer', 'writer'].includes(step.role));
   const primaryImplementationStep =
     implementationSteps.find((step) => step.role === 'coder') ||
     implementationSteps[0] || {
@@ -2791,8 +2803,7 @@ function stepOutputHasFailureSignals(role, text = '', options = {}) {
   if (role === 'refactorer' && roleOutputLacksImplementationEvidence(role, actionsTakenBullet, artifactsBullet, artifactPaths)) return true;
   if (role === 'reviewer' && reviewerFindingNeedsAction(findingsBullet)) return true;
   if (role === 'writer' && roleOutputLacksImplementationEvidence(role, actionsTakenBullet, artifactsBullet, artifactPaths)) return true;
-  if ((role === 'tester' || role === 'summarizer') && notVerifiedBullet && !/^none\b/i.test(notVerifiedBullet)) return true;
-  if (role === 'summarizer' && remainingIssuesBullet && !/^none\b/i.test(remainingIssuesBullet)) return true;
+  if (role === 'tester' && notVerifiedBullet && !/^none\b/i.test(notVerifiedBullet)) return true;
   if (role === 'debugger' && debuggerOutputLacksTracedCause(findingsBullet, narrowedScopeBullet, evidenceBullet)) return true;
   if (nextActionBullet && /^(fix|retry|correct|repair)\b/i.test(nextActionBullet)) return true;
   return false;
@@ -2909,12 +2920,8 @@ function buildExitCriteriaFailureReason(role, text = '', options = {}) {
   const acceptanceFailure = extractAcceptanceStatusItems(value).find((item) => item.status !== 'met');
   if (acceptanceFailure) return `acceptance ${acceptanceFailure.status}: ${acceptanceFailure.label}`;
   const notVerifiedBullet = extractSectionFirstBullet(value, 'Not Verified');
-  if ((role === 'tester' || role === 'summarizer') && notVerifiedBullet && !/^none\b/i.test(notVerifiedBullet)) {
+  if (role === 'tester' && notVerifiedBullet && !/^none\b/i.test(notVerifiedBullet)) {
     return `not verified: ${notVerifiedBullet}`;
-  }
-  const remainingIssuesBullet = extractSectionFirstBullet(value, 'Remaining Issues');
-  if (role === 'summarizer' && remainingIssuesBullet && !/^none\b/i.test(remainingIssuesBullet)) {
-    return `remaining issues: ${remainingIssuesBullet}`;
   }
   return 'step output did not satisfy exit criteria';
 }
@@ -4816,7 +4823,11 @@ function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }
   }
   const displayOutput = formatPlanStepOutputForDisplay(stepRecord.output || '');
   if (displayOutput) {
-    segments.push({ type: 'handoff', text: displayOutput, isStreaming: false });
+    segments.push({
+      type: stepRecord.role === 'summarizer' ? 'text' : 'handoff',
+      text: displayOutput,
+      isStreaming: false
+    });
   }
 
   return {
@@ -5053,7 +5064,7 @@ async function executePlanWithSubAgents({
       summary: stepRecord.failed
         ? `[${stepRecord.retryCount > 0 ? `retried ${stepRecord.retryCount}x] ` : ''}${stepRecord.failureReason}`
         : trimInline(stepRecord.output, 160),
-      ...(step.role !== 'summarizer' ? { output: formatPlanStepOutputForDisplay(stepRecord.output) } : {}),
+      output: formatPlanStepOutputForDisplay(stepRecord.output),
       ...(stepRecord.retryCount > 0 ? { retryCount: stepRecord.retryCount } : {}),
       ...(displayUsage ? { usage: displayUsage } : {})
     });
@@ -5125,6 +5136,7 @@ async function buildAutoPlanAndRun({
     '- verification-heavy = the user explicitly asks to run tests, verify findings, reproduce a bug, prove a claim, or validate a result.',
     '- debugging = investigate bugs, crashes, errors, diagnose root causes, or trace unexpected behavior.',
     '- implementation-advisory = analyze AND implement (e.g. "analyze this and fix it").',
+    '- Explicit repair requests such as "start fixing", "fix the review findings", "开始修复", or "修复发现的问题" are implementation or implementation-advisory, never advisory-only.',
     '- For debugging goals, prefer: explorer -> debugger -> coder -> tester -> summarizer.',
     '- For implementation-advisory hybrid goals, prefer: explorer -> advisor -> coder -> summarizer.',
     '- For advisory goals, prefer explorer and advisor roles. Do not use coder unless the plan will actually modify code or files.',
@@ -5178,6 +5190,7 @@ async function buildAutoPlanAndRun({
             'The first step should usually be an explorer to inspect the target area before implementation.',
             'For debugging goals: explorer -> debugger (trace cause) -> coder (fix) -> tester (verify).',
             'For implementation-advisory goals: explorer -> advisor -> coder.',
+            'If the user explicitly asks to fix/repair/update/implement/change files, include a coder/refactorer/writer step. Do not return advisor-only plans for repair requests.',
             'For refactoring goals: explorer -> refactorer -> tester.',
             'For documentation goals: explorer -> writer.',
             'For analysis, recommendation, optimization, audit, or project-review goals, keep the plan lean and usually limit it to explorer/advisor.',
