@@ -145,6 +145,66 @@ function updateToolInSegments(segments, toolId, updater) {
   });
 }
 
+function hasToolInSegments(segments, toolId) {
+  return (Array.isArray(segments) ? segments : []).some(
+    (seg) =>
+      seg?.type === "tools" &&
+      Array.isArray(seg.cards) &&
+      seg.cards.some((card) => card.id === toolId),
+  );
+}
+
+function updateToolCardInMessages(messages, toolId, updater) {
+  let updated = false;
+  const nextMessages = messages.map((message) => {
+    if (!hasToolInSegments(message.segments, toolId)) return message;
+    updated = true;
+    return {
+      ...message,
+      segments: updateToolInSegments(message.segments, toolId, updater),
+    };
+  });
+  return { messages: nextMessages, updated };
+}
+
+function isCompletedStatus(status) {
+  return ["done", "failed", "error", "blocked", "completed"].includes(
+    String(status || "").toLowerCase(),
+  );
+}
+
+function hasCompletedPlanOverview(messages) {
+  return (Array.isArray(messages) ? messages : []).some((message) => {
+    const steps = message?.planOverview?.steps;
+    return (
+      message?.role === "plan-overview" &&
+      Array.isArray(steps) &&
+      steps.length > 0 &&
+      steps.every((step) => isCompletedStatus(step.status))
+    );
+  });
+}
+
+function settleCompletedPlanToolCards(messages) {
+  if (!hasCompletedPlanOverview(messages)) return messages;
+  return (Array.isArray(messages) ? messages : []).map((message) => ({
+    ...message,
+    segments: (Array.isArray(message.segments) ? message.segments : []).map(
+      (seg) => {
+        if (seg?.type !== "tools" || !Array.isArray(seg.cards)) return seg;
+        return {
+          ...seg,
+          cards: seg.cards.map((card) =>
+            card?.name === "create_plan" && card.status === "running"
+              ? { ...card, status: "done" }
+              : card,
+          ),
+        };
+      },
+    ),
+  }));
+}
+
 function addToolToSegments(segments, toolCard) {
   if (segments.length === 0) return [{ type: "tools", cards: [toolCard] }];
   const last = segments[segments.length - 1];
@@ -486,6 +546,7 @@ function isPlanSystemSummaryText(text) {
   const value = String(text || "");
   return (
     value.includes("Auto plan finished") ||
+    value.includes("Plan created for engineering-mode execution") ||
     value.includes("Plan created and waiting for approval") ||
     value.includes("Pending plan approval") ||
     (value.includes("Plan File:") && value.includes("/yes"))
@@ -639,7 +700,6 @@ function isPlanApprovalLine(line) {
       "yes",
       "y",
       "/yes",
-      "/plan approve",
       "approve",
       "approved",
       "no",
@@ -655,7 +715,7 @@ function isPlanApprovalCommandLine(line) {
     .trim()
     .toLowerCase();
   return (
-    ["/yes", "/plan approve", "/no", "/reject"].includes(value) ||
+    ["/yes", "/no", "/reject"].includes(value) ||
     value.startsWith("/edit ")
   );
 }
@@ -809,6 +869,58 @@ function createPlanTranscriptMessage(block, suffix) {
       summary: block.summary || "",
     },
   };
+}
+
+function getLatestPlanTranscript(messages = []) {
+  for (let i = (Array.isArray(messages) ? messages.length : 0) - 1; i >= 0; i -= 1) {
+    const transcript = messages[i]?.planTranscript;
+    if (Array.isArray(transcript) && transcript.length) return transcript;
+  }
+  return [];
+}
+
+function hasVisiblePlanStepOutput(message) {
+  return (Array.isArray(message?.segments) ? message.segments : []).some(
+    (segment) =>
+      (segment?.type === "text" || segment?.type === "handoff") &&
+      String(segment.text || "").trim(),
+  );
+}
+
+function mergePlanTranscriptIntoUiMessages(uiMessages, sessionMessages) {
+  const transcript = getLatestPlanTranscript(sessionMessages);
+  if (!transcript.length) return uiMessages;
+  const transcriptByStep = new Map(
+    transcript
+      .filter((block) => block?.step != null)
+      .map((block) => [String(block.step), block]),
+  );
+  if (!transcriptByStep.size) return uiMessages;
+
+  return (Array.isArray(uiMessages) ? uiMessages : []).map((message) => {
+    const step = message?.planStep?.step;
+    if (step == null || hasVisiblePlanStepOutput(message)) return message;
+    const block = transcriptByStep.get(String(step));
+    const segments = Array.isArray(block?.segments) ? block.segments : [];
+    if (!segments.some((segment) => String(segment?.text || "").trim())) {
+      return message;
+    }
+    return {
+      ...message,
+      segments,
+      fileChanges: Array.isArray(message.fileChanges) && message.fileChanges.length
+        ? message.fileChanges
+        : Array.isArray(block.fileChanges)
+          ? block.fileChanges
+          : [],
+      usage: message.usage || normalizeUsage(block.usage),
+      planStep: {
+        ...(message.planStep || {}),
+        status: block.status || message.planStep?.status || "done",
+        summary: block.summary || message.planStep?.summary || "",
+      },
+    };
+  });
 }
 
 function normalizeCodeWikiStep(step, index = 0) {
@@ -1097,14 +1209,51 @@ export function AppProvider({ children }) {
           : Array.isArray(uiData?.messages)
             ? uiData.messages
             : [];
+        const structuredUiMessages = uiMessages.some(
+          (m) => m?.role === "plan-overview" || m?.planStep,
+        );
+        if (!sessionData && structuredUiMessages) {
+          const changeSets =
+            (await api.fetchSessionChanges().catch(() => ({})))?.changes || [];
+          const restored = settleCompletedPlanToolCards(
+            mergePlanTranscriptIntoUiMessages(uiMessages, messages),
+          );
+          const overview = [...restored]
+            .reverse()
+            .find((m) => m.role === "plan-overview" && m.planOverview);
+          planOverviewMsgRef.current = overview?.id || null;
+          planStepMessagesRef.current = new Map(
+            restored
+              .filter((m) => m.planStep?.step != null)
+              .map((m) => [String(m.planStep.step), m.id]),
+          );
+          update({
+            messages: enrichMessageChangeStates(restored, changeSets),
+            runtimeActivities: restoredActivities,
+          });
+          return;
+        }
         if (!messages.length) {
           if (Array.isArray(uiMessages) && uiMessages.length) {
             const changeSets = sessionData
               ? []
               : (await api.fetchSessionChanges().catch(() => ({})))?.changes ||
                 [];
+            const restored = settleCompletedPlanToolCards(
+              mergePlanTranscriptIntoUiMessages(uiMessages, messages),
+            );
+            const overview = [...restored]
+              .reverse()
+              .find((m) => m.role === "plan-overview" && m.planOverview);
+            planOverviewMsgRef.current = overview?.id || null;
+            planStepMessagesRef.current = new Map(
+              restored
+                .filter((m) => m.planStep?.step != null)
+                .map((m) => [String(m.planStep.step), m.id]),
+            );
             update({
-              messages: enrichMessageChangeStates(uiMessages, changeSets),
+              messages: enrichMessageChangeStates(restored, changeSets),
+              runtimeActivities: restoredActivities,
             });
           } else {
             update({ messages: [], runtimeActivities: [] });
@@ -1575,115 +1724,99 @@ export function AppProvider({ children }) {
         }
 
         case "tool:end": {
-          if (activeId) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) => {
-                if (m.id !== activeId) return m;
+          setState((prev) => {
+            const { messages, updated } = updateToolCardInMessages(
+              prev.messages,
+              event.id,
+              (tc) => {
                 const eventChanges =
                   Array.isArray(event.fileChanges) && event.fileChanges.length
                     ? event.fileChanges
                     : event.fileChange
                       ? [event.fileChange]
                       : [];
-                if (eventChanges.length)
-                  pendingChangesRef.current = [
-                    ...pendingChangesRef.current,
-                    ...eventChanges,
-                  ];
+                const u = {
+                  ...tc,
+                  status: "done",
+                  durationMs: event.durationMs,
+                };
+                if (event.summary) u.summary = event.summary;
+                if (event.resultMeta) u.resultMeta = event.resultMeta;
+                if (event.fileChange) u.fileChange = event.fileChange;
+                if (eventChanges.length) u.fileChanges = eventChanges;
+                return u;
+              },
+            );
+            if (!updated) return prev;
+            const eventChanges =
+              Array.isArray(event.fileChanges) && event.fileChanges.length
+                ? event.fileChanges
+                : event.fileChange
+                  ? [event.fileChange]
+                  : [];
+            if (eventChanges.length)
+              pendingChangesRef.current = [
+                ...pendingChangesRef.current,
+                ...eventChanges,
+              ];
+            return {
+              ...prev,
+              messages: messages.map((m) => {
+                if (!hasToolInSegments(m.segments, event.id)) return m;
                 return {
                   ...m,
                   fileChanges: eventChanges.length
                     ? appendUniqueFileChanges(m.fileChanges, eventChanges)
                     : m.fileChanges,
-                  segments: updateToolInSegments(m.segments, event.id, (tc) => {
-                    const u = {
-                      ...tc,
-                      status: "done",
-                      durationMs: event.durationMs,
-                    };
-                    if (event.summary) u.summary = event.summary;
-                    if (event.resultMeta) u.resultMeta = event.resultMeta;
-                    if (event.fileChange) u.fileChange = event.fileChange;
-                    if (eventChanges.length) u.fileChanges = eventChanges;
-                    return u;
-                  }),
                 };
               }),
-            }));
-          }
+            };
+          });
           break;
         }
 
         case "tool:result": {
-          if (activeId) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id !== activeId
-                  ? m
-                  : {
-                      ...m,
-                      segments: updateToolInSegments(
-                        m.segments,
-                        event.id,
-                        (tc) => ({ ...tc, result: event.content || "" }),
-                      ),
-                    },
-              ),
-            }));
-          }
+          setState((prev) => {
+            const { messages, updated } = updateToolCardInMessages(
+              prev.messages,
+              event.id,
+              (tc) => ({ ...tc, result: event.content || "" }),
+            );
+            return updated ? { ...prev, messages } : prev;
+          });
           break;
         }
 
         case "tool:error": {
-          if (activeId) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id !== activeId
-                  ? m
-                  : {
-                      ...m,
-                      segments: updateToolInSegments(
-                        m.segments,
-                        event.id,
-                        (tc) => ({
-                          ...tc,
-                          status: "error",
-                          durationMs: event.durationMs,
-                          summary: event.summary || tc.summary,
-                        }),
-                      ),
-                    },
-              ),
-            }));
-          }
+          setState((prev) => {
+            const { messages, updated } = updateToolCardInMessages(
+              prev.messages,
+              event.id,
+              (tc) => ({
+                ...tc,
+                status: "error",
+                durationMs: event.durationMs,
+                summary: event.summary || tc.summary,
+              }),
+            );
+            return updated ? { ...prev, messages } : prev;
+          });
           break;
         }
 
         case "tool:blocked": {
-          if (activeId) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id !== activeId
-                  ? m
-                  : {
-                      ...m,
-                      segments: updateToolInSegments(
-                        m.segments,
-                        event.id,
-                        (tc) => ({
-                          ...tc,
-                          status: "blocked",
-                          summary: t("toolBlocked"),
-                        }),
-                      ),
-                    },
-              ),
-            }));
-          }
+          setState((prev) => {
+            const { messages, updated } = updateToolCardInMessages(
+              prev.messages,
+              event.id,
+              (tc) => ({
+                ...tc,
+                status: "blocked",
+                summary: t("toolBlocked"),
+              }),
+            );
+            return updated ? { ...prev, messages } : prev;
+          });
           break;
         }
 

@@ -5,28 +5,17 @@ import { t } from "../../i18n/index.js";
 import { X } from "lucide-react";
 
 export const ROLE_PILLS = {
-  planner:
-    "border-[color-mix(in_srgb,var(--accent-purple)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-purple-bg)_55%,transparent)] text-(--accent-purple)",
-  explorer:
-    "border-[color-mix(in_srgb,var(--accent-amber)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-amber-bg)_55%,transparent)] text-(--accent-amber)",
-  architect:
-    "border-[color-mix(in_srgb,var(--accent-purple)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-purple-bg)_55%,transparent)] text-(--accent-purple)",
-  coder:
-    "border-[color-mix(in_srgb,var(--accent-green)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-green-bg)_55%,transparent)] text-(--accent-green)",
-  refactorer:
-    "border-[color-mix(in_srgb,var(--accent-teal)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-teal-bg)_55%,transparent)] text-(--accent-teal)",
-  reviewer:
-    "border-[color-mix(in_srgb,var(--accent-orange)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-orange-bg)_55%,transparent)] text-(--accent-orange)",
-  tester:
-    "border-[color-mix(in_srgb,var(--accent-blue)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-blue-bg)_55%,transparent)] text-(--accent-blue)",
-  advisor:
-    "border-[color-mix(in_srgb,var(--accent-blue)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-blue-bg)_55%,transparent)] text-(--accent-blue)",
-  debugger:
-    "border-[color-mix(in_srgb,var(--accent-red)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-red-bg)_55%,transparent)] text-(--accent-red)",
-  writer:
-    "border-[color-mix(in_srgb,var(--accent-cyan)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-cyan-bg)_55%,transparent)] text-(--accent-cyan)",
-  summarizer:
-    "border-[color-mix(in_srgb,var(--accent-cyan)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-cyan-bg)_55%,transparent)] text-(--accent-cyan)",
+  planner: "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
+  explorer: "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
+  architect: "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
+  coder: "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
+  refactorer: "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
+  reviewer: "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
+  tester: "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
+  advisor: "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
+  debugger: "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
+  writer: "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
+  summarizer: "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
 };
 
 export const ROLE_BADGE_CLASS =

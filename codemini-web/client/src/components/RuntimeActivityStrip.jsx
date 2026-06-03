@@ -1,20 +1,22 @@
-import { CheckCircle2, Loader2, XCircle } from "lucide-react";
+import { CheckCircle2, XCircle } from "lucide-react";
+import { LinearRing } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 
 const STATUS_STYLES = {
   running: {
-    icon: Loader2,
-    className: "border-(--accent-cyan)/30 bg-(--accent-cyan-bg) text-(--accent-cyan)",
-    iconClassName: "animate-spin",
+    className:
+      "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
   },
   done: {
     icon: CheckCircle2,
-    className: "border-(--accent-green)/30 bg-(--accent-green-bg) text-(--accent-green)",
+    className:
+      "border-(--accent-green)/30 bg-(--accent-green-bg) text-(--accent-green)",
     iconClassName: "",
   },
   error: {
     icon: XCircle,
-    className: "border-(--accent-red)/30 bg-(--accent-red-bg) text-(--accent-red)",
+    className:
+      "border-(--accent-red)/30 bg-(--accent-red-bg) text-(--accent-red)",
     iconClassName: "",
   },
 };
@@ -28,6 +30,7 @@ export function RuntimeActivityStrip({ activities = [] }) {
       {visible.map((activity) => {
         const style = STATUS_STYLES[activity.status] || STATUS_STYLES.done;
         const Icon = style.icon;
+        const isRunning = activity.status === "running";
         return (
           <div
             key={activity.id}
@@ -39,7 +42,11 @@ export function RuntimeActivityStrip({ activities = [] }) {
             <span className="shrink-0" aria-hidden="true">
               {activity.emoji}
             </span>
-            <Icon size={13} className={cn("shrink-0", style.iconClassName)} />
+            {isRunning ? (
+              <LinearRing size="sm" />
+            ) : (
+              <Icon size={13} className={cn("shrink-0", style.iconClassName)} />
+            )}
             <span className="truncate text-(--text-primary)">
               {activity.label}
             </span>

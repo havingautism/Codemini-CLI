@@ -57,7 +57,9 @@
     "access": "public"
   },
   "dependencies": {
+    "@ast-grep/napi": "^0.43.0",
     "@cursorless/tree-sitter-wasms": "^0.8.1",
+    "@vscode/ripgrep": "^1.18.0",
     "cheerio": "^1.1.2",
     "cli-truncate": "^6.0.0",
     "execa": "^9.6.1",

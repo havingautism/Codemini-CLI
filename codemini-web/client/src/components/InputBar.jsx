@@ -123,7 +123,7 @@ const ACTION_COMMAND_NAMES = new Set(
 );
 
 const INPUT_PILL_CLASS =
-  "border border-transparent bg-(--bg-primary)/35 text-(--text-secondary) h-8 rounded-full inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[13px] whitespace-nowrap transition-colors hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)";
+  "border border-(--border-default) bg-transparent text-(--text-secondary) h-7 rounded-md inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[11px] sm:text-[12px] whitespace-nowrap transition-colors hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)";
 
 function ModeSelector({ current, disabled = false }) {
   const [open, setOpen] = useState(false);
@@ -154,7 +154,7 @@ function ModeSelector({ current, disabled = false }) {
           type="button"
           className={cn(
             INPUT_PILL_CLASS,
-            "px-3 hover:border-(--accent-blue)/55 hover:bg-(--accent-blue-bg) hover:text-(--accent-blue)",
+            "px-2.5 hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)",
             (switching || disabled) && "opacity-50 pointer-events-none",
           )}
           disabled={disabled}
@@ -169,7 +169,7 @@ function ModeSelector({ current, disabled = false }) {
         side="top"
         align="start"
         sideOffset={6}
-        className="w-88 p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-lg"
+        className="w-88 p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-[var(--shadow-default)]"
       >
         <div className="text-[11px] text-(--text-muted) px-2 py-1.5 font-medium">
           {t("executionMode")}
@@ -235,7 +235,7 @@ function ApprovalModeSelector({ current, disabled = false }) {
           type="button"
           className={cn(
             INPUT_PILL_CLASS,
-            "px-3 hover:border-(--accent-green)/55 hover:bg-(--accent-green-bg) hover:text-(--accent-green)",
+            "px-2.5 hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)",
             (switching || disabled) && "opacity-50 pointer-events-none",
           )}
           disabled={disabled}
@@ -250,7 +250,7 @@ function ApprovalModeSelector({ current, disabled = false }) {
         side="top"
         align="start"
         sideOffset={6}
-        className="w-76 p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-lg"
+        className="w-76 p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-[var(--shadow-default)]"
       >
         <div className="text-[11px] text-(--text-muted) px-2 py-1.5 font-medium">
           {t("approvalMode")}
@@ -318,7 +318,7 @@ function SoulQuickSwitch() {
       <PopoverTrigger asChild>
         <button
           type="button"
-          className={cn(INPUT_PILL_CLASS, "px-3")}
+          className={cn(INPUT_PILL_CLASS, "px-2.5")}
           title={t("soulSwitch")}
         >
           <Drama size={13} />
@@ -330,7 +330,7 @@ function SoulQuickSwitch() {
         side="top"
         align="start"
         sideOffset={6}
-        className="w-52 p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-lg"
+        className="w-52 p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-[var(--shadow-default)]"
       >
         <div className="text-[11px] text-(--text-muted) px-2 py-1.5 font-medium">
           {t("switchSoul")}
@@ -396,7 +396,7 @@ function SpecQuickSelect({ visible, disabled = false, onSelect }) {
           type="button"
           className={cn(
             INPUT_PILL_CLASS,
-            "px-3 hover:border-(--accent-purple)/55 hover:bg-(--accent-purple-bg) hover:text-(--accent-purple)",
+            "px-2.5 hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)",
             disabled && "opacity-50 pointer-events-none",
           )}
           disabled={disabled}
@@ -411,7 +411,7 @@ function SpecQuickSelect({ visible, disabled = false, onSelect }) {
         side="top"
         align="start"
         sideOffset={6}
-        className="w-[420px] max-w-[calc(100vw-32px)] p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-lg"
+        className="w-[420px] max-w-[calc(100vw-32px)] p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-[var(--shadow-default)]"
       >
         <div className="flex items-center justify-between gap-2 px-2 py-1.5">
           <span className="text-[11px] text-(--text-muted) font-medium">
@@ -436,26 +436,27 @@ function SpecQuickSelect({ visible, disabled = false, onSelect }) {
               {t("noSpecFiles")}
             </div>
           )}
-          {!loading && specs.map((spec) => (
-            <button
-              key={spec.path}
-              type="button"
-              className="w-full border-0 rounded-md px-2 py-2 text-left cursor-pointer grid grid-cols-[22px_minmax(0,1fr)] gap-2 bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
-              onClick={() => handleSelect(spec)}
-            >
-              <span className="mt-0.5 inline-flex size-5 items-center justify-center rounded-md bg-(--accent-purple-bg) text-(--accent-purple)">
-                <FileText size={12} />
-              </span>
-              <span className="min-w-0">
-                <span className="block truncate text-[12px] font-medium">
-                  {spec.name || spec.file}
+          {!loading &&
+            specs.map((spec) => (
+              <button
+                key={spec.path}
+                type="button"
+                className="w-full border-0 rounded-md px-2 py-2 text-left cursor-pointer grid grid-cols-[22px_minmax(0,1fr)] gap-2 bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                onClick={() => handleSelect(spec)}
+              >
+                <span className="mt-0.5 inline-flex size-5 items-center justify-center rounded-md bg-(--accent-purple-bg) text-(--accent-purple)">
+                  <FileText size={12} />
                 </span>
-                <span className="block truncate text-[11px] text-(--text-muted) font-mono">
-                  {spec.relativePath || spec.file}
+                <span className="min-w-0">
+                  <span className="block truncate text-[12px] font-medium">
+                    {spec.name || spec.file}
+                  </span>
+                  <span className="block truncate text-[11px] text-(--text-muted) font-mono">
+                    {spec.relativePath || spec.file}
+                  </span>
                 </span>
-              </span>
-            </button>
-          ))}
+              </button>
+            ))}
         </div>
       </PopoverContent>
     </Popover>
@@ -593,7 +594,7 @@ function CommandPalette({ query, onSelect, visible }) {
 
   return (
     <div
-      className="absolute bottom-full left-0 right-0 mb-1.5 max-h-[360px] overflow-y-auto rounded-xl border border-(--border-default) bg-(--bg-primary) shadow-lg z-50 animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
+      className="absolute bottom-full left-0 right-0 mb-1.5 max-h-[360px] overflow-y-auto rounded-lg border border-(--border-default) bg-(--bg-primary) shadow-[var(--shadow-default)] z-50 animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
       style={{ scrollbarWidth: "thin" }}
     >
       {/* <div className="px-2.5 py-1.5 text-[11px] text-(--text-muted) font-medium flex items-center gap-1.5 uppercase tracking-[0.45px]">
@@ -735,15 +736,8 @@ export function InputBar({
         onSelect={handleCommandSelect}
         visible={slashOpen}
       />
-      <div
-        className="flex flex-col gap-4 border border-border rounded-[28px] px-3 py-2 transition-colors bg-(--bg-primary) shadow-(--shadow-lg) dark:bg-(--bg-secondary) dark:shadow-[0_14px_44px_color-mix(in_srgb,var(--background)_70%,transparent)]"
-        // style={{
-        //   background:
-        //     "color-mix(in srgb, var(--bg-tertiary) 72%, var(--bg-input))",
-        //   // boxShadow: "var(--shadow-default)",
-        // }}
-      >
-        <div className="flex min-h-[58px]">
+      <div className="codemini-input-shell flex flex-col gap-2.5 px-2 py-2 sm:px-2.5">
+        <div className="flex min-h-[42px]">
           <textarea
             ref={textareaRef}
             value={value}
@@ -758,12 +752,12 @@ export function InputBar({
             }
             disabled={inputLocked}
             rows={1}
-            className="flex-1 resize-none border-0 outline-none bg-transparent text-(--text-primary) min-h-[34px] max-h-[160px] p-1 leading-[1.55] text-[16px] placeholder:text-(--text-muted) disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 resize-none border-0 outline-none bg-transparent text-(--text-primary) min-h-[30px] max-h-[150px] p-1 leading-[1.5] text-[14px] placeholder:text-(--text-muted) disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ height: "auto" }}
           />
         </div>
-        <div className="flex items-center gap-2 min-h-9 flex-wrap">
-          <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-1.5 min-h-8 flex-wrap">
+          <div className="flex min-w-0 flex-1 basis-full sm:basis-auto items-center gap-1.5 overflow-x-auto pb-0.5 sm:flex-wrap sm:overflow-visible sm:pb-0">
             <ModeSelector current={mode} disabled={inputLocked} />
             <SpecQuickSelect
               visible={!isGeneralChat}
@@ -774,17 +768,20 @@ export function InputBar({
                 textareaRef.current?.focus();
               }}
             />
-            <ApprovalModeSelector current={approvalMode} disabled={inputLocked} />
+            <ApprovalModeSelector
+              current={approvalMode}
+              disabled={inputLocked}
+            />
             <SoulQuickSwitch />
           </div>
-          <div className="flex items-center gap-2 ml-auto">
+          <div className="flex items-center gap-1.5 ml-auto shrink-0">
             {/* <button type="button" className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)" title="模型">
               <span className={cn('truncate', !rs.model && 'opacity-50')}>{rs.model || '加载中'}</span>
               <ChevronDown size={11} />
             </button> */}
             <button
               type="button"
-              className="border-0 bg-transparent text-(--text-secondary) min-w-9 h-9 rounded-full inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
+              className="border-0 bg-transparent text-(--text-secondary) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
               title={t("addContext")}
             >
               <Paperclip size={18} />
@@ -792,7 +789,7 @@ export function InputBar({
             {busy ? (
               <button
                 type="button"
-                className="border-0 text-(--accent-red) min-w-9 h-9 rounded-full inline-flex items-center justify-center shrink-0 cursor-pointer bg-(--accent-red-bg) transition-opacity hover:opacity-80"
+                className="border-0 text-(--accent-red) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer bg-(--accent-red-bg) transition-opacity hover:opacity-80"
                 onClick={onAbort}
                 title={t("abort")}
               >
@@ -802,7 +799,7 @@ export function InputBar({
               <button
                 type="button"
                 className={cn(
-                  "border-0 min-w-10 w-10 h-10 rounded-full inline-flex items-center justify-center shrink-0 cursor-pointer transition-all",
+                  "border-0 min-w-8 w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-all",
                   value.trim() && !inputLocked
                     ? "bg-(--accent-blue) text-white hover:bg-(--accent-hover)"
                     : "bg-(--text-muted)/25 text-(--text-muted) cursor-not-allowed",

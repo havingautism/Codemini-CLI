@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getSessionsDir } from './paths.js';
 import { normalizePlanState } from './plan-state.js';
+import { normalizeSpecState } from './spec-state.js';
 import { normalizeTodos } from './todo-state.js';
 
 const ALLOWED_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
@@ -226,8 +227,15 @@ function sanitizeSession(session, fallbackId = '') {
   }
   if (session?.model) out.model = String(session.model);
   if (session?.mode) out.mode = String(session.mode);
-  const normalizedPlan = normalizePlanState(session?.planState);
+  const legacySpecState = session?.planState?.status === 'pending_spec_approval'
+    ? normalizeSpecState(session.planState)
+    : null;
+  const normalizedPlan = session?.planState?.status === 'pending_spec_approval'
+    ? null
+    : normalizePlanState(session?.planState);
   if (normalizedPlan) out.planState = normalizedPlan;
+  const normalizedSpec = normalizeSpecState(session?.specState) || legacySpecState;
+  if (normalizedSpec) out.specState = normalizedSpec;
 
   const todos = normalizeTodos(session?.todos);
   if (todos.length > 0) out.todos = todos;

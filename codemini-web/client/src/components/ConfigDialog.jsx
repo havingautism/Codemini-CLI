@@ -33,7 +33,11 @@ function getNestedValue(obj, path) {
 
 function isBooleanOption(key) {
   const options = Array.isArray(key?.options) ? key.options.map(String) : [];
-  return options.length === 2 && options.includes("true") && options.includes("false");
+  return (
+    options.length === 2 &&
+    options.includes("true") &&
+    options.includes("false")
+  );
 }
 
 function SwitchControl({ checked, onClick, title }) {
@@ -257,10 +261,7 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
           : key?.type === "number"
             ? Number(value)
             : value;
-        await api.setConfig(
-          path,
-          normalizedValue,
-        );
+        await api.setConfig(path, normalizedValue);
       }
       await onSaved?.();
       setChanges({});
@@ -276,7 +277,7 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
         <DialogHeader className="shrink-0">
           <DialogTitle>{t("settingsTitle")}</DialogTitle>
         </DialogHeader>
-        <div className="space-y-5 px-3.5 py-1 overflow-y-auto flex-1 min-h-0">
+        <div className="space-y-5 px-3.5 py-1 overflow-y-auto flex-1 min-h-0 scroll-smooth">
           {status?.setupRequired && (
             <div className="rounded-md border border-(--border-default) bg-(--bg-secondary) px-3 py-2 text-[13px] text-(--text-primary)">
               <div className="font-medium">{t("configRequiredTitle")}</div>

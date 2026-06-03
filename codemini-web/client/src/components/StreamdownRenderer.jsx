@@ -46,7 +46,19 @@ class StreamdownErrorBoundary extends Component {
 
 export function StreamdownRenderer({ text, streaming, className }) {
   const content = typeof text === 'string' ? text : String(text || '');
-  if (!content) return null;
+  if (!content && !streaming) return null;
+
+  if (!content && streaming) {
+    return (
+      <div
+        className={cn(
+          'msg-body streaming-cursor streaming-cursor--pending',
+          className,
+        )}
+        aria-hidden="true"
+      />
+    );
+  }
 
   const mode = streaming ? 'streaming' : 'static';
 

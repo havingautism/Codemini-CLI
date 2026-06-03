@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { rgPath } from '@vscode/ripgrep';
 import net from 'node:net';
 import { escapeRegex, normalizePath } from './string-utils.js';
 import {
@@ -14,11 +15,11 @@ import {
   terminateChild
 } from './shell.js';
 import { evaluateCommandPolicy } from './command-policy.js';
-import { findEnclosingSymbol, queryAst, readAstNode, resolveAstTarget } from './ast.js';
+import { findEnclosingSymbol, queryAst, queryAstGrep, readAstNode, resolveAstTarget } from './ast.js';
 import { initializeProjectIndex, queryProjectIndex, refreshIndexedFile } from './project-index.js';
 import { checkReadDedup } from './tool-result-store.js';
 import { TOOL_SKIP_DIRS as SKIP_DIRS, TEXT_EXTENSIONS, CODE_WRITE_GUARD_EXTENSIONS, LANGUAGE_FILE_TYPES } from './constants.js';
-import { globFilesUnder, globWorkspaceEntriesUnder } from './workspace-glob.js';
+import { globFilePathsByPattern, globFilesUnder, globWorkspaceEntriesUnder } from './workspace-glob.js';
 import { sha256Prefixed as sha256, sha256 as sha256Hash } from './crypto-utils.js';
 import { forgetMemory, listMemories, rememberMemory, searchMemories, captureToInbox } from './memory-store.js';
 import { runDreamConsolidation } from './dream-consolidate.js';
@@ -1514,6 +1515,125 @@ async function listBackgroundTasks() {
   };
 }
 
+function toRipgrepGlob(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (text.includes('*') || text.includes('?') || text.includes('/') || text.includes('\\')) {
+    return text.replace(/\\/g, '/');
+  }
+  return `**/*.${text.replace(/^\./, '')}`;
+}
+
+function buildRipgrepArgs(pattern, normalizedArgs, targetPath, maxResults) {
+  const args = [
+    '--json',
+    '--line-number',
+    '--column',
+    '--no-heading',
+    '--color',
+    'never',
+    '--max-columns',
+    '500',
+    '--max-columns-preview'
+  ];
+  if (!normalizedArgs?.regex) args.push('--fixed-strings');
+  if (!normalizedArgs?.case_sensitive) args.push('--ignore-case');
+  for (const dirName of SKIP_DIRS) {
+    args.push('--glob', `!**/${dirName}/**`);
+  }
+  const fileTypes = normalizeFileTypes(normalizedArgs);
+  for (const fileType of fileTypes) {
+    const glob = toRipgrepGlob(fileType);
+    if (glob) args.push('--glob', glob);
+  }
+  args.push('--', pattern, targetPath);
+  return args;
+}
+
+async function runRipgrepSearch(root, normalizedArgs, config = {}) {
+  if (!rgPath) return null;
+  const pattern = String(normalizedArgs?.pattern || '').trim();
+  const maxResults = Math.max(1, Math.min(200, Number(normalizedArgs?.max_results || 50)));
+  const target = await resolveInWorkspace(root, normalizedArgs?.path || '.', config);
+  const args = buildRipgrepArgs(pattern, normalizedArgs, target, maxResults);
+  const child = spawn(rgPath, args, {
+    cwd: root,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => {
+    stdout += chunk.toString('utf8');
+  });
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk.toString('utf8');
+  });
+  const exitCode = await new Promise((resolve) => {
+    child.on('error', () => resolve(null));
+    child.on('close', (code) => resolve(code));
+  });
+  if (exitCode == null) return null;
+  if (exitCode !== 0 && exitCode !== 1) {
+    throw new Error(`ripgrep failed: ${stderr.trim() || `exit ${exitCode}`}`);
+  }
+  const matches = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (event?.type !== 'match') continue;
+    const data = event.data || {};
+    const absolutePath = String(data.path?.text || '');
+    const submatches = Array.isArray(data.submatches) ? data.submatches : [];
+    const firstMatch = submatches[0] || {};
+    matches.push({
+      path: toWorkspaceRelative(root, absolutePath),
+      line: Number(data.line_number || 1),
+      column: Math.max(1, Number(firstMatch.start || 0) + 1),
+      preview: trimLinePreview(data.lines?.text || '')
+    });
+    if (matches.length >= maxResults) break;
+  }
+  return {
+    pattern,
+    matches,
+    truncated: matches.length >= maxResults,
+    engine: 'ripgrep'
+  };
+}
+
+async function maybeAttachAstGrepMatches(root, result, normalizedArgs, config = {}) {
+  const shouldRun = semanticBoolean(normalizedArgs?.ast, false) || String(normalizedArgs?.ast_pattern || '').trim();
+  if (!shouldRun) return result;
+  const astPattern = String(normalizedArgs?.ast_pattern || normalizedArgs?.pattern || '').trim();
+  if (!astPattern) return result;
+  try {
+    const astResult = await queryAstGrep(root, {
+      path: normalizedArgs?.path || '.',
+      pattern: astPattern,
+      language: normalizedArgs?.language,
+      max_results: Math.min(50, Number(normalizedArgs?.max_results || 20))
+    });
+    return {
+      ...result,
+      ast_pattern: astPattern,
+      ast_matches: astResult.matches,
+      ast_truncated: astResult.truncated
+    };
+  } catch (error) {
+    return {
+      ...result,
+      ast_pattern: astPattern,
+      ast_warning: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
 async function stopBackgroundTask(_root, args) {
   const task = getBackgroundTaskOrThrow(args?.task_id || args?.taskId);
   if (task.status === 'stopped' || task.status === 'exited') {
@@ -1534,6 +1654,13 @@ async function builtinGrep(root, args, config = {}) {
   const pattern = String(normalizedArgs?.pattern || '').trim();
   if (!pattern) throw new Error('grep requires pattern');
   const maxResults = Math.max(1, Math.min(200, Number(normalizedArgs?.max_results || 50)));
+  const rgResult = await runRipgrepSearch(root, normalizedArgs, config).catch((error) => {
+    if (config?.tools?.ripgrep_strict === true) throw error;
+    return null;
+  });
+  if (rgResult) {
+    return maybeAttachAstGrepMatches(root, rgResult, normalizedArgs, config);
+  }
   const caseSensitive = Boolean(normalizedArgs?.case_sensitive);
   const files = await walkTextFiles(root, normalizedArgs?.path || '.', normalizeFileTypes(normalizedArgs), config);
   const regex = normalizedArgs?.regex
@@ -1556,12 +1683,12 @@ async function builtinGrep(root, args, config = {}) {
         preview: trimLinePreview(line)
       });
       if (matches.length >= maxResults) {
-        return { pattern, matches, truncated: true };
+        return maybeAttachAstGrepMatches(root, { pattern, matches, truncated: true, engine: 'js' }, normalizedArgs, config);
       }
     }
   }
 
-  return { pattern, matches, truncated: false };
+  return maybeAttachAstGrepMatches(root, { pattern, matches, truncated: false, engine: 'js' }, normalizedArgs, config);
 }
 
 async function builtinGlob(root, args, config = {}) {
@@ -1569,19 +1696,24 @@ async function builtinGlob(root, args, config = {}) {
   const pattern = String(normalizedArgs?.pattern || '').trim();
   if (!pattern) throw new Error('glob requires pattern');
   const maxResults = Math.max(1, Math.min(500, Number(normalizedArgs?.max_results || 200)));
-  const regex = globToRegex(pattern);
-  const entries = await walkWorkspaceEntries(root, normalizedArgs?.path || '.', {
+  const abs = await resolveInWorkspace(root, normalizedArgs?.path || '.', config);
+  const stat = await fs.stat(abs);
+  if (!stat.isDirectory()) {
+    const relative = toWorkspaceRelative(root, abs);
+    const regex = globToRegex(pattern);
+    const matches = regex.test(relative) ? [relative] : [];
+    return { pattern, matches, truncated: false, engine: 'fast-glob' };
+  }
+  const result = await globFilePathsByPattern(abs, pattern, {
     includeHidden: Boolean(normalizedArgs?.include_hidden),
-    config
+    skipDirs: SKIP_DIRS,
+    maxResults
   });
-  const matches = entries
-    .filter((entry) => entry.type === 'file' && regex.test(entry.path))
-    .slice(0, maxResults)
-    .map((entry) => entry.path);
   return {
     pattern,
-    matches,
-    truncated: entries.filter((entry) => entry.type === 'file' && regex.test(entry.path)).length > matches.length
+    matches: result.matches,
+    truncated: result.truncated,
+    engine: 'fast-glob'
   };
 }
 
@@ -2545,7 +2677,9 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
             case_sensitive: { type: 'boolean', description: 'Case-sensitive matching' },
             max_results: { type: 'number', description: 'Max matches to return' },
             language: { type: 'string', description: 'Filter by language' },
-            file_types: { type: 'array', items: { type: 'string' }, description: 'Filter by file glob' }
+            file_types: { type: 'array', items: { type: 'string' }, description: 'Filter by file glob' },
+            ast: { type: 'boolean', description: 'Also return ast-grep structural matches when supported. Defaults to false.' },
+            ast_pattern: { type: 'string', description: 'Optional ast-grep pattern to run alongside text grep, such as "function $A($$$) { $$$ }".' }
           },
           required: ['pattern']
         }
@@ -2673,7 +2807,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'update_plan',
         description:
-          'Synchronize progress for an existing structured plan state after an interruption. This tool cannot create a plan, request approval, or mark a plan approved; use create_plan/create_spec in plan mode for new approval-gated plans. Use clear=true only to remove existing plan state.',
+          'Synchronize progress for an existing structured plan state after an interruption. This tool cannot create a plan or manage spec approvals; use create_plan/create_spec in engineering mode for new workflows. Use clear=true only to remove existing plan state.',
         parameters: {
           type: 'object',
           properties: {
@@ -2681,7 +2815,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
             plan: {
               type: 'object',
               properties: {
-                status: { type: 'string', description: 'Progress status for an existing plan. Do not set pending_approval, pending_spec_approval, or approved.' },
+                status: { type: 'string', description: 'Progress status for an existing plan: draft, ready, running, completed, or failed.' },
                 source: { type: 'string', description: 'Existing plan source such as auto/manual/tool' },
                 goal: { type: 'string', description: 'Original user goal for the existing plan' },
                 filePath: { type: 'string', description: 'Existing plan markdown file path' },
@@ -2700,7 +2834,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
                 }
               }
             },
-            status: { type: 'string', description: 'Top-level alias for plan.status when plan is omitted. Do not set approval statuses.' },
+            status: { type: 'string', description: 'Top-level alias for plan.status when plan is omitted' },
             source: { type: 'string', description: 'Top-level alias for existing plan.source when plan is omitted' },
             goal: { type: 'string', description: 'Top-level alias for existing plan.goal when plan is omitted' },
             filePath: { type: 'string', description: 'Top-level alias for existing plan.filePath when plan is omitted' },
@@ -2807,7 +2941,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'create_plan',
         description:
-          'Create a structured implementation plan for user approval. Use when the goal, scope, and constraints are already clear enough to break work into sub-agent execution steps. Do not call if important details are still unknown or if a design spec is still needed. Assign roles correctly: explorer/architect/advisor are read-only; coder/refactorer/writer implement changes; never assign explorer to implement or edit code.',
+          'Create and execute a structured implementation plan in engineering mode. Use when the goal, scope, and constraints are already clear enough to break work into sub-agent execution steps. Do not call if important details are still unknown or if a design spec is still needed. Assign roles correctly: explorer/architect/advisor are read-only; coder/refactorer/writer implement changes; never assign explorer to implement or edit code.',
         parameters: {
           type: 'object',
           properties: {
@@ -3354,13 +3488,13 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         return {
           ok: true,
           plan: rest,
-          hasPendingApproval: rest.status === 'pending_approval'
+          hasPendingApproval: false
         };
       }
       return {
         ok: true,
         plan: currentPlan,
-        hasPendingApproval: currentPlan?.status === 'pending_approval'
+        hasPendingApproval: false
       };
     },
     update_plan: async (args = {}) => {
@@ -3375,7 +3509,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
           hasPendingApproval: false
         };
       }
-      const approvalStatuses = new Set(['pending_approval', 'pending_spec_approval', 'approved']);
+      const blockedStatuses = new Set(['pending_approval', 'pending_spec_approval', 'approved']);
       const nextRaw = shouldClear
         ? null
         : args?.plan && typeof args.plan === 'object'
@@ -3391,15 +3525,15 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       const nextPlan = normalizePlanState(mergedRaw);
       if (
         nextPlan &&
-        approvalStatuses.has(nextPlan.status) &&
+        blockedStatuses.has(nextPlan.status) &&
         nextPlan.status !== oldPlan?.status
       ) {
         return {
           ok: false,
-          error: `update_plan cannot set approval lifecycle status "${nextPlan.status}". Use the approval-gated plan/spec flow instead.`,
+          error: `update_plan cannot set approval lifecycle status "${nextPlan.status}". Use draft, ready, running, completed, or failed.`,
           oldPlan,
           newPlan: oldPlan,
-          hasPendingApproval: oldPlan?.status === 'pending_approval'
+          hasPendingApproval: false
         };
       }
       if (typeof onPlanStateUpdate === 'function') {
@@ -3409,7 +3543,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         ok: true,
         oldPlan,
         newPlan: nextPlan,
-        hasPendingApproval: nextPlan?.status === 'pending_approval'
+        hasPendingApproval: false
       };
     },
     create_plan: async (args = {}) => {
@@ -3637,15 +3771,26 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
 
     grep(result) {
       if (!result || typeof result !== 'object') return String(result);
-      const { pattern, matches, truncated } = result;
-      const header = pattern ? `[grep: "${pattern}"]` : '';
-      if (!Array.isArray(matches) || matches.length === 0) return `${header}\nNo matches found.`;
+      const { pattern, matches, truncated, engine, ast_matches: astMatches, ast_warning: astWarning } = result;
+      const header = pattern ? `[grep: "${pattern}"${engine ? ` via ${engine}` : ''}]` : '';
+      const astLines = [];
+      if (Array.isArray(astMatches) && astMatches.length > 0) {
+        astLines.push('', `[ast-grep: ${astMatches.length} structural match(es)${result.ast_truncated ? ', truncated' : ''}]`);
+        for (const match of astMatches.slice(0, 12)) {
+          const target = match.ast_target || {};
+          astLines.push(`${target.path || '?'}:${match.start_line || '?'}-${match.end_line || '?'} ${match.node_type || target.node_type || 'node'}: ${String(match.text || '').slice(0, 100)}`);
+        }
+        if (astMatches.length > 12) astLines.push(`... and ${astMatches.length - 12} more structural matches`);
+      } else if (astWarning) {
+        astLines.push('', `[ast-grep warning] ${astWarning}`);
+      }
+      if (!Array.isArray(matches) || matches.length === 0) return `${header}\nNo matches found.${astLines.join('\n')}`;
       if (matches.length <= 30) {
         const lines = matches.map((m) => `${m.path}:${m.line}: ${String(m.preview || '').slice(0, 120)}`);
-        return `${header}\n${lines.join('\n')}`;
+        return `${header}\n${lines.join('\n')}${astLines.join('\n')}`;
       }
       const shown = matches.slice(0, 30).map((m) => `${m.path}:${m.line}: ${String(m.preview || '').slice(0, 120)}`);
-      return `${header}\n${shown.join('\n')}\n... and ${matches.length - 30} more matches [total: ${matches.length}${truncated ? ', results were truncated' : ''}]`;
+      return `${header}\n${shown.join('\n')}\n... and ${matches.length - 30} more matches [total: ${matches.length}${truncated ? ', results were truncated' : ''}]${astLines.join('\n')}`;
     },
 
     glob(result) {

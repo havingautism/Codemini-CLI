@@ -32,9 +32,9 @@ function parseArgs(args) {
 
 function DetailRow({ label, value }) {
   return (
-    <div className="flex gap-3 py-1.5 min-w-0">
-      <span className="text-[13px] font-medium text-(--text-muted) w-20 shrink-0">{label}</span>
-      <span className="text-[13px] font-mono min-w-0 break-words text-(--text-primary)">{String(value)}</span>
+    <div className="flex gap-3 py-1 min-w-0">
+      <span className="text-[11px] font-medium text-(--text-muted) w-20 shrink-0">{label}</span>
+      <span className="text-[12px] font-mono min-w-0 break-words text-(--text-primary)">{String(value)}</span>
     </div>
   );
 }
@@ -42,9 +42,9 @@ function DetailRow({ label, value }) {
 function RiskDetailRow({ label, risk }) {
   if (!risk) return null;
   return (
-    <div className="flex gap-3 py-1.5 min-w-0">
-      <span className="text-[13px] font-medium text-(--text-muted) w-20 shrink-0">{label}</span>
-      <span className="text-[13px] min-w-0 break-words text-(--text-primary) inline-flex items-center gap-2">
+    <div className="flex gap-3 py-1 min-w-0">
+      <span className="text-[11px] font-medium text-(--text-muted) w-20 shrink-0">{label}</span>
+      <span className="text-[12px] min-w-0 break-words text-(--text-primary) inline-flex items-center gap-2">
         <span
           className={cn('inline-block size-2 rounded-full shrink-0', riskDotClass(risk))}
           aria-hidden
@@ -59,8 +59,8 @@ function PreviewRow({ label, value }) {
   if (value == null || value === '') return null;
   return (
     <div className="py-1.5 min-w-0">
-      <div className="mb-1 text-[13px] font-medium text-(--text-muted)">{label}</div>
-      <pre className="max-h-40 overflow-auto rounded-md border border-(--border-default) bg-(--bg-secondary) px-2.5 py-2 text-[12px] leading-5 text-(--text-primary) whitespace-pre-wrap break-words">
+      <div className="mb-1 text-[11px] font-medium text-(--text-muted)">{label}</div>
+      <pre className="max-h-40 overflow-auto rounded-md border border-(--border-default) bg-(--bg-secondary) px-2.5 py-2 font-mono text-[12px] leading-5 text-(--text-primary) whitespace-pre-wrap break-words">
         {String(value)}
       </pre>
     </div>
@@ -118,11 +118,11 @@ function ApprovalBody({ variant, args, details }) {
   if (variant === 'plan') {
     return (
       <>
-        {details?.title && <p className="text-sm mb-2">{details.title}</p>}
+        {details?.title && <p className="mb-2 text-[13px] leading-6 text-(--text-secondary)">{details.title}</p>}
         {details?.steps && (
           <ol className="list-decimal list-inside space-y-1">
             {details.steps.map((step, i) => (
-              <li key={i} className="text-sm">{step.role || ''}: {step.title || ''}</li>
+              <li key={i} className="text-[13px] leading-6 text-(--text-secondary)">{step.role || ''}: {step.title || ''}</li>
             ))}
           </ol>
         )}

@@ -31,7 +31,7 @@ export function ReflectApprovalCard({ draft, onAction, onUpdate, disabled = fals
   };
 
   return (
-    <div className="mx-auto max-w-3xl space-y-3 rounded-lg border border-(--border-default) bg-(--bg-primary) p-3 text-(--text-primary) shadow-[var(--shadow-sm)]">
+    <div className="mx-auto max-w-3xl space-y-3 rounded-lg border border-(--border-default) bg-(--bg-primary) p-3 text-(--text-primary) shadow-none">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 min-w-0">
@@ -40,12 +40,12 @@ export function ReflectApprovalCard({ draft, onAction, onUpdate, disabled = fals
             </span>
             <Badge
               variant="outline"
-              className="h-5 rounded-md border-[color-mix(in_srgb,var(--accent-purple)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-purple-bg)_55%,transparent)] px-1.5 py-0 text-[11px] font-medium text-(--accent-purple) shadow-none"
+              className="h-5 rounded-md border-(--border-default) bg-(--bg-secondary) px-1.5 py-0 text-[10px] font-medium text-(--text-secondary) shadow-none"
             >
               {t("reflectReviewStatus")}
             </Badge>
           </div>
-          <div className="mt-1 flex flex-wrap items-center gap-2 text-[12px] text-(--text-muted)">
+          <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-(--text-muted)">
             <span>{t("reflectScope")}: {draft.scope || "project"}</span>
             <span>{t("reflectConfidence")}: {confidenceLabel(draft.confidence)}</span>
           </div>
@@ -68,18 +68,18 @@ export function ReflectApprovalCard({ draft, onAction, onUpdate, disabled = fals
           </div>
         ) : (
           <>
-            <div className="text-[14px] font-medium text-(--text-primary) break-words">
+            <div className="text-[13px] font-medium text-(--text-primary) break-words">
               /{draft.name || "reflected-skill"}
             </div>
             {draft.description && (
-              <p className="text-[13px] leading-relaxed text-(--text-secondary)">
+              <p className="text-[13px] leading-6 text-(--text-secondary)">
                 {draft.description}
               </p>
             )}
           </>
         )}
         {draft.targetPath && (
-          <p className="text-[12px] font-mono break-all text-(--text-muted)">
+          <p className="text-[11px] font-mono break-all text-(--text-muted)">
             {draft.targetPath}
           </p>
         )}
@@ -92,12 +92,12 @@ export function ReflectApprovalCard({ draft, onAction, onUpdate, disabled = fals
           className="min-h-[220px] font-mono text-[12px]"
         />
       ) : draft.content && (
-        <pre className="max-h-56 overflow-auto rounded-md border border-(--border-default) bg-[color-mix(in_srgb,var(--bg-primary)_72%,var(--bg-secondary)_28%)] p-3 text-[12px] leading-relaxed text-(--text-secondary) whitespace-pre-wrap">
+        <pre className="max-h-56 overflow-auto rounded-md border border-(--border-default) bg-(--bg-secondary) p-3 font-mono text-[12px] leading-5 text-(--text-secondary) whitespace-pre-wrap">
           {draft.content}
         </pre>
       )}
 
-      <div className="flex items-center gap-2 pt-1">
+      <div className="flex items-center gap-2 border-t border-(--border-default) pt-3">
         <Button
           variant="destructive"
           size="xs"

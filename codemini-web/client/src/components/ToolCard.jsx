@@ -13,6 +13,7 @@ import {
   Trash2,
   Wrench,
 } from "lucide-react";
+import { LinearStatusDot } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { formatToolLabel, parseToolDisplayName } from "@core/tool-display.js";
 import { formatDuration } from "../../utils/time.js";
@@ -337,7 +338,6 @@ function BackupNotice({ meta }) {
 }
 
 const STATUS_STYLES = {
-  running: "bg-[var(--accent-blue)] animate-pulse",
   done: "bg-[var(--accent-green)]",
   error: "bg-[var(--accent-red)]",
   blocked: "bg-[var(--accent-orange)]",
@@ -452,12 +452,16 @@ export function ToolCard({ card }) {
             {formatDuration(card.durationMs)}
           </span>
         )}
-        <span
-          className={cn(
-            "w-1.5 h-1.5 rounded-full shrink-0",
-            STATUS_STYLES[card.status] || "bg-[var(--muted)]",
-          )}
-        />
+        {card.status === "running" ? (
+          <LinearStatusDot className="shrink-0" />
+        ) : (
+          <span
+            className={cn(
+              "w-1.5 h-1.5 rounded-full shrink-0",
+              STATUS_STYLES[card.status] || "bg-[var(--muted)]",
+            )}
+          />
+        )}
       </div>
 
       {open && (

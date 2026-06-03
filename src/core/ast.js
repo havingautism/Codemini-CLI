@@ -2,9 +2,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { Parser, Language, Query } from 'web-tree-sitter';
-import { LANGUAGE_ALIASES, EXTENSION_LANGUAGE_MAP } from './constants.js';
+import { LANGUAGE_ALIASES, EXTENSION_LANGUAGE_MAP, TOOL_SKIP_DIRS as SKIP_DIRS } from './constants.js';
 import { sha256Prefixed as sha256 } from './crypto-utils.js';
 import { BoundedCache } from './bounded-cache.js';
+import { globFilesUnder } from './workspace-glob.js';
 
 const require = createRequire(import.meta.url);
 
@@ -100,6 +101,24 @@ function astTargetForNode(relativePath, language, node) {
   };
 }
 
+function astTargetForSgNode(relativePath, language, node) {
+  const range = node.range();
+  const text = node.text();
+  const nameNode = node.field?.('name');
+  const name = String(nameNode?.text?.() || '').trim();
+  return {
+    path: relativePath,
+    language,
+    ...(name ? { name } : {}),
+    node_type: node.kind(),
+    start_line: range.start.line + 1,
+    start_column: range.start.column + 1,
+    end_line: range.end.line + 1,
+    end_column: range.end.column + 1,
+    range_hash: sha256(text)
+  };
+}
+
 function inferLanguage(filePath, explicitLanguage = '') {
   const alias = LANGUAGE_ALIASES[String(explicitLanguage || '').trim().toLowerCase()];
   if (alias) return alias;
@@ -109,6 +128,40 @@ function inferLanguage(filePath, explicitLanguage = '') {
     throw new Error(`No Tree-sitter language configured for file: ${filePath}`);
   }
   return inferred;
+}
+
+function inferAstGrepLanguage(filePath, explicitLanguage = '', astGrep = null) {
+  const normalized = LANGUAGE_ALIASES[String(explicitLanguage || '').trim().toLowerCase()] || '';
+  const language = normalized || EXTENSION_LANGUAGE_MAP[path.extname(String(filePath || '')).toLowerCase()];
+  const Lang = astGrep?.Lang;
+  if (!Lang) return null;
+  if (language === 'js') return { language: 'js', napi: Lang.JavaScript };
+  if (language === 'ts') return { language: 'ts', napi: Lang.TypeScript };
+  if (language === 'tsx') return { language: 'tsx', napi: Lang.Tsx };
+  if (language === 'html') return { language: 'html', napi: Lang.Html };
+  if (language === 'css') return { language: 'css', napi: Lang.Css };
+  return null;
+}
+
+function astGrepCandidateExtensions(language = '') {
+  if (language === 'js') return new Set(['.js', '.jsx', '.mjs', '.cjs']);
+  if (language === 'ts') return new Set(['.ts']);
+  if (language === 'tsx') return new Set(['.tsx']);
+  if (language === 'html') return new Set(['.html']);
+  if (language === 'css') return new Set(['.css', '.scss']);
+  return new Set(['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.html', '.css', '.scss']);
+}
+
+async function loadAstGrep() {
+  try {
+    return await import('@ast-grep/napi');
+  } catch (error) {
+    const message = String(error?.message || '');
+    if (error?.code === 'ERR_MODULE_NOT_FOUND' || /Cannot find package '@ast-grep\/napi'|Cannot find module '@ast-grep\/napi'/i.test(message)) {
+      return null;
+    }
+    throw error;
+  }
 }
 
 async function loadLanguage(language) {
@@ -253,6 +306,67 @@ export async function queryAst(root, args) {
     capture_name: captureName || undefined,
     matches,
     truncated: captures.length > matches.length
+  };
+}
+
+export async function queryAstGrep(root, args) {
+  const patternSource = String(args?.pattern || args?.query || '').trim();
+  if (!patternSource) throw new Error('ast_grep requires pattern');
+  const maxResults = Math.max(1, Math.min(200, Number(args?.max_results || 50)));
+  const startPath = String(args?.path || '.').trim() || '.';
+  const astGrep = await loadAstGrep();
+  if (!astGrep) {
+    throw new Error('ast_grep requires @ast-grep/napi. Install it with npm install @ast-grep/napi.');
+  }
+
+  const absoluteStart = path.resolve(root, startPath);
+  const stat = await fs.stat(absoluteStart);
+  const candidateFiles = stat.isDirectory()
+    ? await globFilesUnder(absoluteStart, { skipDirs: SKIP_DIRS })
+    : [absoluteStart];
+  const requestedLanguage = String(args?.language || '').trim();
+  const allExtensions = astGrepCandidateExtensions(
+    LANGUAGE_ALIASES[requestedLanguage.toLowerCase()] || requestedLanguage.toLowerCase()
+  );
+  const matches = [];
+
+  for (const absolutePath of candidateFiles) {
+    if (!allExtensions.has(path.extname(absolutePath).toLowerCase())) continue;
+    const relativePath = path.relative(root, absolutePath).replace(/\\/g, '/');
+    const langInfo = inferAstGrepLanguage(relativePath, requestedLanguage, astGrep);
+    if (!langInfo) continue;
+    const content = await fs.readFile(absolutePath, 'utf8');
+    const parsed = astGrep.parse(langInfo.napi, content);
+    const nodes = parsed.root().findAll(patternSource);
+    for (const node of nodes) {
+      const range = node.range();
+      matches.push({
+        node_type: node.kind(),
+        start_line: range.start.line + 1,
+        start_column: range.start.column + 1,
+        end_line: range.end.line + 1,
+        end_column: range.end.column + 1,
+        text: clipText(node.text()),
+        ast_target: astTargetForSgNode(relativePath, langInfo.language, node)
+      });
+      if (matches.length >= maxResults) {
+        return {
+          path: startPath,
+          pattern: patternSource,
+          engine: 'ast-grep',
+          matches,
+          truncated: true
+        };
+      }
+    }
+  }
+
+  return {
+    path: startPath,
+    pattern: patternSource,
+    engine: 'ast-grep',
+    matches,
+    truncated: false
   };
 }
 

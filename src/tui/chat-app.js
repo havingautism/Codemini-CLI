@@ -151,7 +151,7 @@ const TUI_COPY = {
       commandPaletteGroupedSuggestions: '命令面板 | 分组候选',
       startupHints: [
         '🧭 使用 /help 可查看命令帮助。Tab 可自动补全 slash 命令。',
-        '📋 试试用 /plan 模式来规划复杂任务，让 AI 先给出方案再动手。',
+        '📋 试试用 /mode plan 切换工程模式，让 AI 自动规划并执行复杂任务。',
         '⏫ 使用 ↑↓ 键可以浏览历史输入，快速重复之前的操作。',
         '🐚 输入 !<shell命令> 可以直接执行本地终端命令，如 !ls、!git status。',
         '🔧 Ctrl+T 可以切换工具调用详情的展开/收起状态。',
@@ -391,7 +391,7 @@ const TUI_COPY = {
       commandPaletteGroupedSuggestions: 'command palette | grouped suggestions',
       startupHints: [
         '🧭 Use /help to view command help. Tab for slash autocomplete.',
-        '📋 Try /plan mode for complex tasks — let the AI propose a plan before coding.',
+        '📋 Try /mode plan for engineering mode — the AI can plan and execute complex tasks automatically.',
         '⏫ Use ↑↓ arrow keys to browse input history and repeat previous actions.',
         '🐚 Type !<shell command> to run local terminal commands, e.g. !ls, !git status.',
         '🔧 Ctrl+T toggles tool call detail expansion/collapse.',

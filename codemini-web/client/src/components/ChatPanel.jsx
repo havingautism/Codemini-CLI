@@ -67,7 +67,7 @@ function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
     >
       {/* Expanded card */}
       {expanded && (
-        <div className="flex flex-col gap-px rounded-lg bg-(--bg-primary) border border-(--border-default) p-1.5 max-w-[180px] max-h-[60vh] overflow-y-auto shadow-lg">
+        <div className="flex flex-col gap-px rounded-lg bg-(--bg-primary) border border-(--border-default) p-1.5 max-w-[180px] max-h-[60vh] overflow-y-auto shadow-[var(--shadow-default)]">
           {userMessages.map((um, i) => (
             <button
               key={um.id}
@@ -189,26 +189,26 @@ export function ChatPanel({
         </div>
       )}
       {!messagesLoading && messages.length === 0 && (
-        <div className="absolute left-1/2 top-[38%] -translate-x-1/2 -translate-y-1/2 w-[min(760px,calc(100%-48px))] text-center pointer-events-none">
+        <div className="absolute left-1/2 top-[34%] -translate-x-1/2 -translate-y-1/2 w-[calc(100%_-_32px)] max-w-[640px] text-center pointer-events-none">
           {isGeneral ? (
             <div className="flex flex-col items-center">
-              <div className="mb-7 w-[min(560px,100%)]">
+              <div className="mb-5 w-[min(440px,100%)] opacity-80">
                 <PrintingPress />
               </div>
-              <h1 className="text-[clamp(24px,2.4vw,36px)] font-medium leading-tight tracking-normal">
+              <h1 className="mx-auto max-w-[320px] sm:max-w-none text-[20px] sm:text-[26px] font-medium leading-tight tracking-normal text-(--text-primary) break-words">
                 {t("askAnythingGeneral")}
               </h1>
             </div>
           ) : (
             <>
-              <h1 className="text-[clamp(24px,2.4vw,36px)] font-medium leading-tight tracking-normal">
+              <h1 className="mx-auto max-w-[320px] sm:max-w-none text-[20px] sm:text-[26px] font-medium leading-tight tracking-normal text-(--text-primary) break-words">
                 {t("buildInProject").replace(
                   "{{project}}",
                   projectCwd || "qurio-coder",
                 )}
               </h1>
               {gitInfo?.isGit && (
-                <div className="mt-4 flex items-center justify-center gap-3 text-[13px] text-(--text-muted)">
+                <div className="mt-3 flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-[12px] text-(--text-muted)">
                   <span className="inline-flex items-center gap-1.5">
                     <GitBranch size={13} />
                     <span>{gitInfo.branch}</span>
@@ -248,11 +248,11 @@ export function ChatPanel({
       )}
       <div
         ref={scrollRef}
-        className="h-full overflow-y-auto py-[44px_0_28px] scroll-smooth"
+        className="h-full overflow-y-auto py-[32px_0_24px] scroll-smooth"
         style={{ scrollbarWidth: "thin" }}
       >
         <div className="relative">
-          <div className="w-[min(960px,calc(100%-96px))] mx-auto">
+          <div className="w-[calc(100%_-_32px)] max-w-[920px] sm:w-[calc(100%_-_64px)] mx-auto">
             <Suspense fallback={null}>
               {messages.map((msg) => (
                 <MessageBubble key={msg.id} message={msg} skills={skills} />

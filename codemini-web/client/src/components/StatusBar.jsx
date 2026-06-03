@@ -2,12 +2,7 @@ import { Brain, Plug, ChartNoAxesCombined, ListChecks, ShieldAlert, Sparkles, Un
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
 
-const STAGE_COLORS = {
-  thinking: "bg-(--accent-blue)",
-  streaming: "bg-(--accent-green)",
-  tooling: "bg-(--accent-orange)",
-  live: "bg-(--accent-cyan)",
-};
+const STAGE_LIVE_CLASS = "linear-status-dot linear-status-dot--sm";
 
 const MODEL_LOGO_MAP = [
   { pattern: /\bdeepseek\b/i, logo: "/logos/deepseek-color.svg" },
@@ -66,10 +61,6 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
         ? "bg-(--accent-orange)"
         : "bg-(--accent-red)";
 
-  const stageKey =
-    Object.keys(STAGE_COLORS).find((k) => (stageLabel || "").includes(k)) ||
-    "live";
-
   const modelLogo = getModelLogo(rs.model);
   const sdkLogo = SDK_LOGO_MAP[rs.sdkProvider];
   const WorkIcon = mode === "plan" ? ListChecks : Brain;
@@ -80,16 +71,16 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
     approvalMode === "full_access" ? t("fullAccessMode") : approvalMode === "auto" ? t("autoMode") : t("reviewMode");
 
   return (
-    <div className="flex items-center gap-3 flex-1 min-w-0 text-[12px] text-(--text-muted) overflow-hidden">
-      <span className="inline-flex items-center gap-1 whitespace-nowrap">
+    <div className="flex items-center gap-2.5 flex-1 min-w-0 text-[11px] text-(--text-muted) overflow-hidden">
+      <span className="hidden sm:inline-flex items-center gap-1 whitespace-nowrap">
         <WorkIcon size={13} className="shrink-0 opacity-70" />
         <span>{workLabel}</span>
       </span>
-      <span className="inline-flex items-center gap-1 whitespace-nowrap">
+      <span className="hidden md:inline-flex items-center gap-1 whitespace-nowrap">
         <ApprovalIcon size={13} className="shrink-0 opacity-70" />
         <span>{approvalLabel}</span>
       </span>
-      <span className="inline-flex items-center gap-1 whitespace-nowrap">
+      <span className="hidden lg:inline-flex items-center gap-1 whitespace-nowrap">
         {modelLogo ? (
           <ModelLogo src={modelLogo} />
         ) : (
@@ -97,7 +88,7 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
         )}
         <span>{rs.model?.toUpperCase() || "-"}</span>
       </span>
-      <span className="inline-flex items-center gap-1 whitespace-nowrap">
+      <span className="hidden xl:inline-flex items-center gap-1 whitespace-nowrap">
         {sdkLogo ? (
           <ModelLogo src={sdkLogo} />
         ) : (
@@ -106,7 +97,7 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
         <span>{rs.sdkProvider?.toUpperCase() || "-"}</span>
       </span>
       {max > 0 && (
-        <span className="inline-flex items-center gap-1 whitespace-nowrap">
+        <span className="hidden lg:inline-flex items-center gap-1 whitespace-nowrap">
           <ChartNoAxesCombined size={13} className="shrink-0 opacity-70" />
           <span>CTX</span>
           <span className="w-12 h-1 bg-(--muted) rounded-full overflow-hidden">
@@ -122,13 +113,14 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
         </span>
       )}
       <span className="inline-flex items-center gap-1 ml-auto whitespace-nowrap">
-        <span
-          className={cn(
-            "w-1.5 h-1.5 rounded-full shrink-0",
-            live ? STAGE_COLORS[stageKey] : "bg-(--text-muted)",
-            live && "animate-pulse",
-          )}
-        />
+        {live ? (
+          <span className={cn(STAGE_LIVE_CLASS, "shrink-0")} aria-hidden="true" />
+        ) : (
+          <span
+            className="w-1.5 h-1.5 rounded-full shrink-0 bg-(--text-muted)"
+            aria-hidden="true"
+          />
+        )}
         <span>{live ? stageLabel : t("idle")}</span>
       </span>
     </div>

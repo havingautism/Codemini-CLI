@@ -76,7 +76,7 @@ function SidebarEmptyPlaceholder({ children, className }) {
   return (
     <div
       className={cn(
-        "rounded-lg border border-dashed border-(--border-default) px-3 py-5 text-center text-[12px] leading-relaxed text-(--text-muted)",
+        "rounded-md border border-(--border-default) bg-(--bg-primary)/35 px-2.5 py-3 text-center text-[11px] leading-relaxed text-(--text-muted)",
         className,
       )}
     >
@@ -449,7 +449,10 @@ export function Sidebar({
       await onNewSession?.();
       return;
     }
-    await onOpenProject?.(GENERAL_PROJECT_MARKER, { view: "chat", newSession: true });
+    await onOpenProject?.(GENERAL_PROJECT_MARKER, {
+      view: "chat",
+      newSession: true,
+    });
   };
 
   const confirmDeleteSession = async () => {
@@ -461,22 +464,22 @@ export function Sidebar({
   };
 
   return (
-    <aside className="w-[260px] shrink-0 flex flex-col bg-(--bg-secondary)">
+    <aside className="h-full w-[260px] shrink-0 flex flex-col border-r border-(--border-default) bg-(--bg-secondary)">
       {/* Fixed top action buttons */}
-      <div className="shrink-0 px-2.5 pt-3 flex flex-col gap-0.5">
-        <div className="mb-2 flex h-10 items-center gap-2.5 px-2">
+      <div className="shrink-0 px-2.5 pt-2.5 flex flex-col gap-0.5">
+        <div className="mb-1.5 flex h-9 items-center gap-2 px-2">
           <img
             src="/logos/codemini_logo.png"
             alt=""
-            className="size-6 shrink-0 rounded-md"
+            className="size-5 shrink-0 rounded-[5px]"
             draggable={false}
           />
-          <div className="min-w-0 truncate text-[23px] font-semibold leading-6 text-(--text-primary)">
+          <div className="min-w-0 truncate text-[17px] font-semibold leading-5 text-(--text-primary)">
             {t("brand")}
           </div>
         </div>
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onNewSession}
         >
           <Plus
@@ -500,7 +503,7 @@ export function Sidebar({
         </button> */}
 
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onOpenSkills}
         >
           <Hammer
@@ -512,7 +515,7 @@ export function Sidebar({
         </button>
 
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onOpenSouls}
         >
           <Drama
@@ -523,7 +526,7 @@ export function Sidebar({
           <span className="truncate">{t("souls")}</span>
         </button>
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onOpenMemory}
         >
           <Brain
@@ -533,7 +536,7 @@ export function Sidebar({
           />
           <span className="truncate">{t("memory")}</span>
         </button>
-        <Separator className="my-2 bg-transparent" />
+        <Separator className="my-1.5 bg-transparent" />
       </div>
 
       <div
@@ -541,7 +544,7 @@ export function Sidebar({
         // style={{ scrollbarWidth: "thin" }}
       >
         {/* Scrollable project history */}
-        <div className="flex items-center gap-1 px-4 pb-2.5">
+        <div className="flex items-center gap-1 px-4 pb-1.5">
           <span className="min-w-0 flex-1 text-[12px] font-medium text-(--text-muted)">
             {t("projects")}
           </span>
@@ -1005,7 +1008,7 @@ export function Sidebar({
             <PopoverContent
               align="center"
               side="top"
-              className="w-30 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+              className="w-40 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
             >
               {[
                 { mode: "light", icon: Sun, label: t("lightMode") },

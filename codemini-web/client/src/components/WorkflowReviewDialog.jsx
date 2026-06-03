@@ -40,21 +40,21 @@ export function WorkflowReviewDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className={cn(
-          "flex max-h-[85vh] w-full max-w-3xl flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl",
-          "border-(--border-default) bg-(--bg-primary) text-(--text-primary) shadow-[var(--shadow-lg)]",
+          "flex max-h-[86vh] w-[calc(100vw_-_1rem)] max-w-3xl flex-col gap-0 overflow-hidden p-0 sm:w-full sm:max-w-3xl",
+          "rounded-lg border-(--border-default) bg-(--bg-primary) text-(--text-primary) shadow-[var(--shadow-default)]",
           contentClassName,
         )}
       >
-        <div className="shrink-0 border-b border-(--border-default) bg-[color-mix(in_srgb,var(--bg-primary)_86%,var(--bg-secondary)_14%)] px-6 py-4">
+        <div className="shrink-0 border-b border-(--border-default) bg-(--bg-primary) px-4 py-3 sm:px-5">
           <DialogHeader showCloseButton={false} className="gap-0">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1 space-y-1">
-                <DialogTitle className="text-base font-semibold leading-none tracking-tight">
+                <DialogTitle className="text-[14px] font-semibold leading-5 tracking-normal">
                   {title}
                 </DialogTitle>
                 {fullDescription ? (
                   <DialogDescription
-                    className="font-mono text-xs leading-relaxed text-(--text-muted) line-clamp-2 break-all"
+                    className="font-mono text-[11px] leading-5 text-(--text-muted) line-clamp-2 break-all"
                     title={fullDescription}
                   >
                     {shortDescription}
@@ -65,7 +65,7 @@ export function WorkflowReviewDialog({
                 <Badge
                   variant={badgeVariant}
                   className={cn(
-                    "h-5 shrink-0 rounded-md px-1.5 py-0 text-[11px] font-medium shadow-none",
+                    "h-5 shrink-0 rounded-md border-(--border-default) bg-(--bg-secondary) px-1.5 py-0 text-[10px] font-medium text-(--text-secondary) shadow-none",
                     badgeClassName,
                   )}
                 >
@@ -76,11 +76,11 @@ export function WorkflowReviewDialog({
           </DialogHeader>
         </div>
 
-        <div className="min-h-0 overflow-y-auto overscroll-contain px-6 py-4 max-h-[min(calc(85vh-11rem),72vh)]">
-          <div className="space-y-4">{children}</div>
+        <div className="min-h-0 overflow-y-auto overscroll-contain px-4 py-3 max-h-[min(calc(86vh-10rem),72vh)] sm:px-5 sm:py-4">
+          <div className="space-y-3">{children}</div>
         </div>
 
-        <div className="shrink-0 border-t border-(--border-default) bg-[color-mix(in_srgb,var(--bg-primary)_84%,var(--bg-secondary)_16%)]">
+        <div className="shrink-0 border-t border-(--border-default) bg-(--bg-primary)">
           {footer}
         </div>
       </DialogContent>
@@ -90,9 +90,9 @@ export function WorkflowReviewDialog({
 
 export function ReviewSection({ label, children, className, action }) {
   return (
-    <section className={cn("space-y-2", className)}>
+    <section className={cn("space-y-1.5", className)}>
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-xs font-medium tracking-wide text-(--text-muted) uppercase">
+        <h3 className="text-[11px] font-medium tracking-normal text-(--text-muted)">
           {label}
         </h3>
         {action}
@@ -106,7 +106,7 @@ export function ReviewText({ children, className }) {
   return (
     <p
       className={cn(
-        "text-sm leading-relaxed whitespace-pre-wrap text-(--text-primary)",
+        "text-[13px] leading-6 whitespace-pre-wrap text-(--text-primary)",
         className,
       )}
     >
@@ -122,11 +122,11 @@ export function ReviewMarkdown({ children, className, bare = false }) {
     <div
       className={cn(
         !bare &&
-          "rounded-md border border-(--border-default) bg-[color-mix(in_srgb,var(--bg-primary)_76%,var(--bg-secondary)_24%)] px-3 py-2 text-(--text-secondary)",
+          "rounded-md border border-(--border-default) bg-(--bg-secondary) px-3 py-2 text-(--text-secondary)",
         className,
       )}
     >
-      <StreamdownRenderer text={text} streaming={false} className="text-sm" />
+      <StreamdownRenderer text={text} streaming={false} className="text-[13px] leading-6" />
     </div>
   );
 }
@@ -163,7 +163,7 @@ export function ReviewTaskPreview({
     <div className={cn("space-y-2", className)}>
       <div
         className={cn(
-          "rounded-md border border-(--border-default) bg-[color-mix(in_srgb,var(--bg-primary)_72%,var(--bg-secondary)_28%)] overflow-hidden",
+          "rounded-md border border-(--border-default) bg-(--bg-secondary) overflow-hidden",
           !expanded && needsToggle && `${collapsedMaxHeight} overflow-y-auto`,
         )}
       >
@@ -190,7 +190,7 @@ export function ReviewDocument({ children, className, edit = false }) {
   return (
     <pre
       className={cn(
-        "rounded-md border border-(--border-default) bg-[color-mix(in_srgb,var(--bg-primary)_72%,var(--bg-secondary)_28%)] p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap text-(--text-primary)",
+        "rounded-md border border-(--border-default) bg-(--bg-secondary) p-3 font-mono text-[12px] leading-5 whitespace-pre-wrap text-(--text-primary)",
         edit && "min-h-[320px] overflow-auto",
         className,
       )}
@@ -204,10 +204,10 @@ export function ReviewNotice({ variant = "muted", children, className }) {
   return (
     <div
       className={cn(
-        "rounded-md border px-3 py-2.5 text-sm leading-relaxed",
+        "rounded-md border px-3 py-2 text-[13px] leading-6",
         variant === "destructive"
           ? "border-[color-mix(in_srgb,var(--destructive)_32%,transparent)] bg-[color-mix(in_srgb,var(--destructive)_10%,var(--bg-primary))] text-destructive"
-          : "border-(--border-default) bg-[color-mix(in_srgb,var(--bg-primary)_78%,var(--bg-secondary)_22%)] text-(--text-primary)",
+          : "border-(--border-default) bg-(--bg-secondary) text-(--text-primary)",
         className,
       )}
     >
@@ -220,7 +220,7 @@ export function ReviewCard({ children, className }) {
   return (
     <div
       className={cn(
-        "rounded-md border border-(--border-default) bg-(--bg-primary) p-3 text-(--text-primary) shadow-[var(--shadow-sm)]",
+        "rounded-md border border-(--border-default) bg-(--bg-primary) p-3 text-(--text-primary) shadow-none",
         className,
       )}
     >
@@ -233,7 +233,7 @@ export function ReviewFooter({ leading, trailing, className }) {
   return (
     <DialogFooter
       className={cn(
-        "gap-3 border-0 bg-transparent px-6 py-4 sm:flex-row sm:items-center sm:justify-between sm:space-x-0",
+        "gap-2 border-0 bg-transparent px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:space-x-0 sm:px-5",
         className,
       )}
     >

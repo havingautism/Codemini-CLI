@@ -36,7 +36,7 @@ function isWorkflowControlLine(line = '', state = {}) {
   const trimmed = String(line || '').trim();
   const lower = trimmed.toLowerCase();
   if (!trimmed) return false;
-  if (['/yes', '/plan approve', '/no', '/reject', 'yes', 'y', 'approve', 'approved', 'no', 'n'].includes(lower)) return true;
+  if (['/yes', '/no', '/reject', 'yes', 'y', 'approve', 'approved', 'no', 'n'].includes(lower)) return true;
   if (lower.startsWith('/edit ')) return true;
   if (/^\/(?:plan|spec|reflect)(?:\s|$)/i.test(trimmed)) return true;
   return false;
@@ -58,6 +58,27 @@ function updateToolInSegments(segments, toolId, updater) {
     cards[idx] = updater(cards[idx]);
     return { ...seg, cards };
   });
+}
+
+function hasToolInSegments(segments, toolId) {
+  return (Array.isArray(segments) ? segments : []).some((seg) =>
+    seg?.type === 'tools' &&
+    Array.isArray(seg.cards) &&
+    seg.cards.some((card) => card.id === toolId)
+  );
+}
+
+function updateToolInMessages(messages, toolId, updater) {
+  let updated = false;
+  const nextMessages = (Array.isArray(messages) ? messages : []).map((message) => {
+    if (!hasToolInSegments(message.segments, toolId)) return message;
+    updated = true;
+    return {
+      ...message,
+      segments: updateToolInSegments(message.segments, toolId, updater)
+    };
+  });
+  return { messages: nextMessages, updated };
 }
 
 function appendTextSegment(segments, delta, isStreaming = true) {
@@ -377,6 +398,16 @@ export class RuntimeBridge {
     this.#persistUiTranscriptSoon();
   }
 
+  #updateUiToolCard(toolId, updater, mapMessage = null) {
+    const result = updateToolInMessages(this.#uiMessages, toolId, updater);
+    if (!result.updated) return false;
+    this.#uiMessages = typeof mapMessage === 'function'
+      ? result.messages.map((message) => hasToolInSegments(message.segments, toolId) ? mapMessage(message) : message)
+      : result.messages;
+    this.#persistUiTranscriptSoon();
+    return true;
+  }
+
   #removeUiTransientWaiting() {
     this.#uiMessages = this.#uiMessages.filter((message) => message.transientKey !== 'waiting-response');
   }
@@ -465,62 +496,48 @@ export class RuntimeBridge {
         break;
       }
       case 'tool:end': {
-        if (this.#uiActiveMsgId) {
-          const eventChanges = Array.isArray(event.fileChanges) && event.fileChanges.length
-            ? event.fileChanges
-            : (event.fileChange?.path ? [event.fileChange] : []);
-          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
+        const eventChanges = Array.isArray(event.fileChanges) && event.fileChanges.length
+          ? event.fileChanges
+          : (event.fileChange?.path ? [event.fileChange] : []);
+        this.#updateUiToolCard(
+          event.id,
+          (card) => ({
+            ...card,
+            status: 'done',
+            durationMs: event.durationMs,
+            summary: event.summary || card.summary,
+            ...(event.resultMeta ? { resultMeta: event.resultMeta } : {}),
+            ...(event.fileChange ? { fileChange: event.fileChange } : {}),
+            ...(eventChanges.length ? { fileChanges: eventChanges } : {})
+          }),
+          (message) => ({
             ...message,
             fileChanges: eventChanges.length
               ? [...(Array.isArray(message.fileChanges) ? message.fileChanges : []), ...eventChanges]
-              : (Array.isArray(message.fileChanges) ? message.fileChanges : []),
-            segments: updateToolInSegments(message.segments, event.id, (card) => ({
-              ...card,
-              status: 'done',
-              durationMs: event.durationMs,
-              summary: event.summary || card.summary,
-              ...(event.resultMeta ? { resultMeta: event.resultMeta } : {}),
-              ...(event.fileChange ? { fileChange: event.fileChange } : {}),
-              ...(eventChanges.length ? { fileChanges: eventChanges } : {})
-            }))
-          }));
-        }
+              : (Array.isArray(message.fileChanges) ? message.fileChanges : [])
+          })
+        );
         break;
       }
       case 'tool:result': {
-        if (this.#uiActiveMsgId) {
-          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
-            ...message,
-            segments: updateToolInSegments(message.segments, event.id, (card) => ({ ...card, result: event.content || '' }))
-          }));
-        }
+        this.#updateUiToolCard(event.id, (card) => ({ ...card, result: event.content || '' }));
         break;
       }
       case 'tool:error': {
-        if (this.#uiActiveMsgId) {
-          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
-            ...message,
-            segments: updateToolInSegments(message.segments, event.id, (card) => ({
-              ...card,
-              status: 'error',
-              durationMs: event.durationMs,
-              summary: event.summary || card.summary
-            }))
-          }));
-        }
+        this.#updateUiToolCard(event.id, (card) => ({
+          ...card,
+          status: 'error',
+          durationMs: event.durationMs,
+          summary: event.summary || card.summary
+        }));
         break;
       }
       case 'tool:blocked': {
-        if (this.#uiActiveMsgId) {
-          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
-            ...message,
-            segments: updateToolInSegments(message.segments, event.id, (card) => ({
-              ...card,
-              status: 'blocked',
-              summary: card.summary || 'Tool blocked'
-            }))
-          }));
-        }
+        this.#updateUiToolCard(event.id, (card) => ({
+          ...card,
+          status: 'blocked',
+          summary: card.summary || 'Tool blocked'
+        }));
         break;
       }
       case 'plan:steps': {
@@ -593,7 +610,27 @@ export class RuntimeBridge {
         if (msgId) {
           this.#updateUiMessage(msgId, (message) => ({
             ...message,
-            segments: message.segments.map((seg) => seg.type === 'text' ? { ...seg, isStreaming: false } : seg),
+            segments: (() => {
+              const outputText = String(event.output || '').trim();
+              const finishedSegments = message.segments.map((seg) => (
+                seg.type === 'text' ? { ...seg, isStreaming: false } : seg
+              ));
+              const hasOutputText = outputText && finishedSegments.some((seg) =>
+                (seg.type === 'text' || seg.type === 'handoff') &&
+                String(seg.text || '').trim() === outputText
+              );
+              if (!outputText || hasOutputText) return finishedSegments;
+              return [
+                ...finishedSegments,
+                {
+                  type: String(event.role || message.planStep?.role || '').toLowerCase() === 'summarizer'
+                    ? 'text'
+                    : 'handoff',
+                  text: outputText,
+                  isStreaming: false
+                }
+              ];
+            })(),
             planStep: {
               ...(message.planStep || {}),
               status: event.status || 'done',

@@ -53,6 +53,37 @@ export async function globFilesUnder(rootAbs, {
 }
 
 /**
+ * Find files under rootAbs by a caller-provided glob pattern. Returns posix-relative paths.
+ */
+export async function globFilePathsByPattern(rootAbs, pattern, {
+  includeHidden = false,
+  skipDirs = new Set(),
+  maxResults = 200,
+  extraIgnore = []
+} = {}) {
+  const ignore = [...buildSkipDirIgnores(skipDirs), ...extraIgnore];
+  const matches = await fg(String(pattern || ''), {
+    cwd: rootAbs,
+    absolute: false,
+    onlyFiles: true,
+    dot: includeHidden,
+    ignore,
+    suppressErrors: true,
+    followSymbolicLinks: false,
+    unique: true
+  });
+  const filtered = matches
+    .map((entry) => entry.replace(/\\/g, '/').replace(/^\.\/?/, ''))
+    .filter((entry) => entry && !hasSkippedSegment(entry, skipDirs) && !isHiddenEntry(entry, includeHidden))
+    .sort((left, right) => left.localeCompare(right));
+  const limit = Math.max(1, Math.min(5000, Number(maxResults || 200)));
+  return {
+    matches: filtered.slice(0, limit),
+    truncated: filtered.length > limit
+  };
+}
+
+/**
  * List files and directories under rootAbs. Returns { path, name, type } with posix-relative paths.
  */
 export async function globWorkspaceEntriesUnder(rootAbs, {

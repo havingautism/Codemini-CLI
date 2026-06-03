@@ -3,7 +3,7 @@ import { ToolCard } from "./ToolCard";
 import { StreamdownRenderer } from "./StreamdownRenderer";
 import { TodoList } from "./TodoList";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
-import { Spinner } from "@/components/ui/spinner";
+import { LinearRing, LinearStatusDot, Spinner } from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { formatTimestamp } from "../../utils/time.js";
@@ -23,91 +23,78 @@ import {
   ChevronRight,
   Copy,
   Brain,
-  Loader2,
   Moon,
   RotateCcw,
   Wrench,
   XCircle,
 } from "lucide-react";
 
+const NEUTRAL_ROLE_BADGE =
+  "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)";
+
 const ROLE_STYLES = {
   you: {
-    badge:
-      "border-[color-mix(in_srgb,var(--accent-blue)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-blue-bg)_55%,transparent)] text-(--accent-blue)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "You",
   },
   general: {
-    badge:
-      "border-[color-mix(in_srgb,var(--accent-green)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-green-bg)_55%,transparent)] text-(--accent-green)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "General",
   },
   coder: {
-    badge:
-      "border-[color-mix(in_srgb,var(--accent-green)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-green-bg)_55%,transparent)] text-(--accent-green)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Coder",
   },
   explorer: {
-    badge:
-      "border-[color-mix(in_srgb,var(--accent-amber)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-amber-bg)_55%,transparent)] text-(--accent-amber)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Explorer",
   },
   architect: {
-    badge:
-      "border-[color-mix(in_srgb,var(--accent-purple)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-purple-bg)_55%,transparent)] text-(--accent-purple)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Architect",
   },
   refactorer: {
-    badge:
-      "border-[color-mix(in_srgb,var(--accent-teal)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-teal-bg)_55%,transparent)] text-(--accent-teal)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Refactorer",
   },
   writer: {
-    badge:
-      "border-[color-mix(in_srgb,var(--accent-cyan)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-cyan-bg)_55%,transparent)] text-(--accent-cyan)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Writer",
   },
   advisor: {
-    badge:
-      "border-[color-mix(in_srgb,var(--accent-blue)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-blue-bg)_55%,transparent)] text-(--accent-blue)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Advisor",
   },
   planner: {
-    badge:
-      "border-[color-mix(in_srgb,var(--accent-purple)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-purple-bg)_55%,transparent)] text-(--accent-purple)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Planner",
   },
   reviewer: {
-    badge:
-      "border-[color-mix(in_srgb,var(--accent-orange)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-orange-bg)_55%,transparent)] text-(--accent-orange)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Reviewer",
   },
   tester: {
-    badge:
-      "border-[color-mix(in_srgb,var(--accent-blue)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-blue-bg)_55%,transparent)] text-(--accent-blue)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Tester",
   },
   debugger: {
-    badge:
-      "border-[color-mix(in_srgb,var(--accent-red)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-red-bg)_55%,transparent)] text-(--accent-red)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Debugger",
   },
   summarizer: {
-    badge:
-      "border-[color-mix(in_srgb,var(--accent-cyan)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-cyan-bg)_55%,transparent)] text-(--accent-cyan)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Summarizer",
   },
   "plan-overview": {
-    badge:
-      "border-[color-mix(in_srgb,var(--accent-purple)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-purple-bg)_55%,transparent)] text-(--accent-purple)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Plan",
   },
   codewiki: {
-    badge:
-      "border-[color-mix(in_srgb,var(--accent-green)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-green-bg)_55%,transparent)] text-(--accent-green)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "CodeWiki",
   },
   system: {
-    badge: "border-(--border-default) bg-(--bg-primary) text-(--text-muted)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "System",
   },
   error: {
@@ -116,14 +103,12 @@ const ROLE_STYLES = {
     label: "Error",
   },
   pending: {
-    badge:
-      "border-[color-mix(in_srgb,var(--accent-cyan)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-cyan-bg)_55%,transparent)] text-(--accent-cyan)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Pending",
   },
 };
 
 const SKILL_DOT_STYLES = {
-  running: "animate-pulse bg-(--accent-blue)",
   done: "bg-(--accent-green)",
   error: "bg-(--accent-red)",
   always: "bg-(--accent-purple)",
@@ -197,11 +182,7 @@ function ThoughtBlock({ segment }) {
           )}
         />
         <span className={COLLAPSE_ICON_CLASS}>
-          {segment.isStreaming ? (
-            <Loader2 size={14} className="animate-spin text-(--accent-cyan)" />
-          ) : (
-            <Brain size={15} />
-          )}
+          {segment.isStreaming ? <LinearRing size="md" /> : <Brain size={15} />}
         </span>
         <span>{label}</span>
         {segment.isStreaming && elapsed && <span>{elapsed}</span>}
@@ -234,7 +215,10 @@ function renderInlineMarkdownPreview(text) {
     }
     if (match[2]) {
       parts.push(
-        <strong key={`strong-${match.index}`} className="font-semibold text-current">
+        <strong
+          key={`strong-${match.index}`}
+          className="font-semibold text-current"
+        >
           {match[2]}
         </strong>,
       );
@@ -260,7 +244,10 @@ function HandoffBlock({ segment }) {
   const [open, setOpen] = useState(false);
   const text = String(segment?.text || "").trim();
   if (!text) return null;
-  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
   const firstLine =
     lines.find((line) => !/^(#{1,6}\s*)?[\w\s]+:\s*$/i.test(line)) ||
     lines[0] ||
@@ -367,6 +354,14 @@ function collapseProcessGroups(groups, { disabled = false } = {}) {
 
   const flush = () => {
     if (!pending.length) return;
+    if (pending.every((group) => group.type === "tools")) {
+      collapsed.push({
+        type: "tools",
+        cards: pending.flatMap((group) => group.cards || []),
+      });
+      pending = [];
+      return;
+    }
     if (shouldCollapseProcessGroups(pending)) {
       collapsed.push({
         type: "process",
@@ -429,12 +424,13 @@ function getDreamNotice(text) {
 }
 
 function DreamNotice({ notice }) {
+  const showRing = notice.status === "running";
   const Icon =
-    notice.status === "running"
-      ? Loader2
-      : notice.status === "error"
-        ? XCircle
-        : CheckCircle2;
+    notice.status === "error"
+      ? XCircle
+      : notice.status === "done"
+        ? CheckCircle2
+        : null;
 
   return (
     <div className="py-2 px-6">
@@ -447,15 +443,17 @@ function DreamNotice({ notice }) {
               : "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
           )}
         >
-          <Icon
-            size={14}
-            className={cn(
-              "shrink-0",
-              notice.status === "running" &&
-                "animate-spin text-(--accent-cyan)",
-              notice.status === "done" && "text-(--accent-green)",
-            )}
-          />
+          {showRing ? (
+            <LinearRing size="md" />
+          ) : (
+            <Icon
+              size={14}
+              className={cn(
+                "shrink-0",
+                notice.status === "done" && "text-(--accent-green)",
+              )}
+            />
+          )}
           <div className="min-w-0">
             <div className="font-medium text-(--text-primary) truncate">
               {notice.title}
@@ -501,14 +499,11 @@ function ToolGroup({ cards }) {
             <ChevronRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
           )}
           <span className={COLLAPSE_ICON_CLASS}>
-            <span
-              className={cn(
-                "inline-block size-1.5 rounded-full",
-                hasRunningTool
-                  ? "animate-pulse bg-(--accent-blue)"
-                  : "bg-(--accent-green)",
-              )}
-            />
+            {hasRunningTool ? (
+              <LinearStatusDot />
+            ) : (
+              <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
+            )}
           </span>
           <span className="font-medium">{summaryLabel}</span>
           {/* {!expanded && (
@@ -531,7 +526,7 @@ function ToolGroup({ cards }) {
       )}
       {hasRunningTool && (
         <div className="flex items-center gap-2 px-3 py-1.5 text-[11px] text-(--text-muted)">
-          <Spinner className="text-(--accent-cyan)" />
+          <Spinner />
           <span>{t("tooling")}</span>
         </div>
       )}
@@ -578,12 +573,16 @@ function SkillActivityList({ badges = [] }) {
           <span className="min-w-0 flex-1 truncate font-mono text-xs text-(--text-muted)">
             {skillActivityLabel(badge)}
           </span>
-          <span
-            className={cn(
-              "size-1.5 shrink-0 rounded-full",
-              SKILL_DOT_STYLES[badge.status] || SKILL_DOT_STYLES.done,
-            )}
-          />
+          {badge.status === "running" ? (
+            <LinearStatusDot className="shrink-0" />
+          ) : (
+            <span
+              className={cn(
+                "size-1.5 shrink-0 rounded-full",
+                SKILL_DOT_STYLES[badge.status] || SKILL_DOT_STYLES.done,
+              )}
+            />
+          )}
         </div>
       ))}
     </div>
@@ -602,12 +601,16 @@ function SkillActivityRow({ badge }) {
         <span className="min-w-0 flex-1 truncate font-mono text-xs text-(--text-muted)">
           {skillActivityLabel(badge)}
         </span>
-        <span
-          className={cn(
-            "size-1.5 shrink-0 rounded-full",
-            SKILL_DOT_STYLES[badge.status] || SKILL_DOT_STYLES.done,
-          )}
-        />
+        {badge.status === "running" ? (
+          <LinearStatusDot className="shrink-0" />
+        ) : (
+          <span
+            className={cn(
+              "size-1.5 shrink-0 rounded-full",
+              SKILL_DOT_STYLES[badge.status] || SKILL_DOT_STYLES.done,
+            )}
+          />
+        )}
       </div>
     </div>
   );
@@ -615,18 +618,39 @@ function SkillActivityRow({ badge }) {
 
 function ProcessGroup({ group }) {
   const [expanded, setExpanded] = useState(false);
-  const duration = formatProcessDuration(group.durationMs);
-  const label = duration
-    ? t("processedFor").replace("{{duration}}", duration)
-    : t("processed");
   const toolCount = group.groups.reduce(
     (sum, item) =>
       item.type === "tools" ? sum + Math.max(1, item.cards?.length || 0) : sum,
     0,
   );
+  const commandCount = group.groups.reduce((sum, item) => {
+    if (item.type !== "tools") return sum;
+    return (
+      sum +
+      (item.cards || []).filter((card) => {
+        const name = String(card?.name || "").toLowerCase();
+        return name === "run" || name.startsWith("run(");
+      }).length
+    );
+  }, 0);
   const thoughtCount = group.groups.filter(
     (item) => item.type === "thinking",
   ).length;
+  const duration = formatProcessDuration(group.durationMs);
+  const label =
+    thoughtCount === 0 && toolCount > 0
+      ? commandCount === toolCount
+        ? t("toolGroupCommands").replace("{{count}}", toolCount)
+        : t("toolGroupTools").replace("{{count}}", toolCount)
+      : duration
+        ? t("processedFor").replace("{{duration}}", duration)
+        : t("processed");
+  const details =
+    thoughtCount === 0 && toolCount > 0
+      ? ""
+      : t("processedDetails")
+          .replace("{{thoughts}}", thoughtCount)
+          .replace("{{tools}}", toolCount);
 
   return (
     <div className="my-3">
@@ -645,11 +669,11 @@ function ProcessGroup({ group }) {
           <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
         </span>
         <span className="font-medium">{label}</span>
-        <span className="min-w-0 truncate text-(--text-muted)">
-          {t("processedDetails")
-            .replace("{{thoughts}}", thoughtCount)
-            .replace("{{tools}}", toolCount)}
-        </span>
+        {details && (
+          <span className="min-w-0 truncate text-(--text-muted)">
+            {details}
+          </span>
+        )}
       </button>
       {expanded && (
         <div className="relative ml-4.5 mt-2 space-y-1 pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
@@ -1054,7 +1078,7 @@ function FileChangesSummary({ changes }) {
                     )}
                   >
                     {undoing.has(undoKey) ? (
-                      <Loader2 size={13} className="animate-spin" />
+                      <LinearRing size="sm" />
                     ) : isReverted ? (
                       <>
                         <Check size={13} />
@@ -1121,16 +1145,15 @@ function buildRenderGroups(segments) {
     if (seg.type === "tools") {
       pendingTools.push(...seg.cards);
     } else if (seg.type === "text") {
-      if (seg.text) {
-        // Non-empty text breaks the tool group
+      if (seg.text || seg.isStreaming) {
         flushTools();
         groups.push({
           type: "text",
-          text: seg.text,
+          text: seg.text || "",
           isStreaming: seg.isStreaming,
         });
       }
-      // Empty text between tools: skip, keep accumulating
+      // Empty non-streaming text between tools: skip, keep accumulating
     } else if (seg.type === "thinking") {
       if (seg.text) {
         flushTools();
@@ -1475,6 +1498,20 @@ export function MessageBubble({ message, skills = [] }) {
       return null;
     }
 
+    if (message.transientKey === "waiting-response") {
+      return (
+        <div data-message-id={message.id} className="py-2 my-[8px] px-6">
+          <div className="max-w-[860px] mx-auto">
+            <div
+              className="msg-body streaming-cursor streaming-cursor--pending"
+              role="status"
+              aria-label={legacyText || t("waitingResponse")}
+            />
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div
         data-message-id={message.id}
@@ -1506,7 +1543,7 @@ export function MessageBubble({ message, skills = [] }) {
           </span>
           {ts && <span className="text-[11px] text-(--text-muted)">{ts}</span>}
         </div>
-        <div className="max-w-3xl space-y-2.5 rounded-lg border border-(--border-default) bg-(--bg-primary) p-3 shadow-[var(--shadow-sm)]">
+        <div className="max-w-3xl space-y-2.5 rounded-lg border border-(--border-default) bg-(--bg-secondary) p-3 shadow-[var(--shadow-sm)]">
           {overview.goal && (
             <p className="text-[13px] text-(--text-primary) leading-relaxed font-medium">
               {overview.goal}
@@ -1570,13 +1607,17 @@ export function MessageBubble({ message, skills = [] }) {
   const messageComplete =
     role === "you" || isMessageComplete(message, renderGroups);
   const showActions = shouldShowMessageActions(message, messageComplete);
+  const isPlanFlowMessage = !!planStep && role !== "you";
+  const planFlowStatus = String(planStep?.status || "").toLowerCase();
 
   return (
     <div
       data-message-id={message.id}
+      data-plan-status={isPlanFlowMessage ? planFlowStatus : undefined}
       className={cn(
         "py-2 my-[8px] group/message",
         role === "you" && "flex justify-end",
+        isPlanFlowMessage && "codemini-plan-flow",
       )}
     >
       {role === "you" ? (
@@ -1651,10 +1692,11 @@ export function MessageBubble({ message, skills = [] }) {
             renderGroups.length === 0 &&
             planStep.status !== "done" &&
             planStep.status !== "failed" && (
-              <div className="text-[12px] text-(--text-muted) inline-flex items-center gap-1.5">
-                <span className="inline-block size-1 rounded-full bg-(--accent-blue) animate-pulse" />
-                <span>等待工具调用或模型输出…</span>
-              </div>
+              <div
+                className="msg-body streaming-cursor streaming-cursor--pending"
+                role="status"
+                aria-label="等待工具调用或模型输出"
+              />
             )}
 
           {messageComplete && mergedFileChanges.length > 0 && (

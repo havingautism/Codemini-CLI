@@ -5,6 +5,7 @@ import React, {
   memo,
   useCallback,
   useMemo,
+  useState,
 } from "react";
 import { createRoot } from "react-dom/client";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -19,7 +20,7 @@ import { PlanApprovalDialog } from "@/components/PlanApprovalDialog.jsx";
 import { ReflectApprovalCard } from "@/components/ReflectApprovalDialog.jsx";
 import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
-import { MoreHorizontal, Terminal, GitCompare } from "lucide-react";
+import { MoreHorizontal, Terminal, GitCompare, Menu, X } from "lucide-react";
 import "../style.css";
 
 const CodeWikiPanel = lazy(() =>
@@ -159,6 +160,7 @@ class ErrorBoundary extends Component {
 
 function Shell() {
   const { state, actions } = useApp();
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const rs = state.runtimeState || {};
   const currentId = rs.sessionId;
   const openSettings = useCallback(
@@ -188,14 +190,23 @@ function Shell() {
     [sidebarProjectTargets],
   );
 
-  return (
-    <div className="flex h-screen bg-(--bg-primary) text-(--text-primary)">
-      <MemoSidebar
+  const closeMobileSidebar = useCallback(() => {
+    setMobileSidebarOpen(false);
+  }, []);
+
+  const sidebar = (
+    <MemoSidebar
         sessions={state.sessions}
         sessionsLoading={state.sessionsLoading}
         currentSessionId={currentId}
-        onNewSession={actions.newSession}
-        onSwitchSession={actions.switchSession}
+        onNewSession={async (...args) => {
+          closeMobileSidebar();
+          return actions.newSession(...args);
+        }}
+        onSwitchSession={async (...args) => {
+          closeMobileSidebar();
+          return actions.switchSession(...args);
+        }}
         onToggleTheme={actions.toggleTheme}
         onSetTheme={actions.setTheme}
         onOpenSettings={openSettings}
@@ -209,11 +220,40 @@ function Shell() {
         updateStatus={state.updateStatus}
         currentView={state.currentView}
         onSwitchView={actions.switchView}
-        onOpenProject={actions.openProject}
+        onOpenProject={async (...args) => {
+          closeMobileSidebar();
+          return actions.openProject(...args);
+        }}
         onOpenProjectSelector={openProjectSelector}
         onRefreshSessions={actions.loadSessions}
         onDeleteSession={actions.deleteSession}
       />
+  );
+
+  return (
+    <div className="flex h-screen overflow-hidden bg-(--bg-secondary) text-(--text-primary)">
+      <div className="hidden md:block h-full shrink-0">{sidebar}</div>
+      {mobileSidebarOpen && (
+        <div className="fixed inset-0 z-50 md:hidden">
+          <button
+            type="button"
+            className="absolute inset-0 border-0 bg-black/45"
+            aria-label="Close sidebar"
+            onClick={closeMobileSidebar}
+          />
+          <div className="absolute inset-y-0 left-0 w-[280px] max-w-[82vw] shadow-[var(--shadow-lg)]">
+            {sidebar}
+          </div>
+          <button
+            type="button"
+            className="absolute right-3 top-3 inline-flex size-8 items-center justify-center rounded-md border border-(--border-default) bg-(--bg-primary) text-(--text-secondary)"
+            aria-label="Close sidebar"
+            onClick={closeMobileSidebar}
+          >
+            <X size={16} />
+          </button>
+        </div>
+      )}
 
       <div className="flex-1 flex flex-col min-w-0 bg-(--bg-secondary)">
         {state.currentView === "codewiki" ? (
@@ -236,10 +276,18 @@ function Shell() {
             />
           </Suspense>
         ) : (
-          <div className="flex-1 flex flex-col min-h-0 bg-(--bg-primary) rounded-[18px] shadow-[inset_0_0_0_1px_var(--panel-edge)] relative overflow-hidden my-1 mx-1">
+          <div className="flex-1 flex flex-col min-h-0 bg-(--bg-primary) border-l border-(--border-default) relative overflow-hidden">
             {/* Titlebar */}
-            <div className="flex items-center justify-between h-[52px] px-5 shrink-0">
+            <div className="flex items-center justify-between h-12 px-3 sm:px-5 shrink-0 border-b border-(--border-default)">
               <div className="flex items-center gap-2.5 min-w-0">
+                <button
+                  type="button"
+                  className="md:hidden inline-flex size-8 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                  aria-label="Open sidebar"
+                  onClick={() => setMobileSidebarOpen(true)}
+                >
+                  <Menu size={17} />
+                </button>
                 <span className="font-medium text-[14px] text-(--text-primary) truncate">
                   {state.isGeneral
                     ? t("generalChat")
@@ -289,6 +337,7 @@ function Shell() {
 
             {/* Plan Progress (during execution) — now rendered as a chat message via plan-overview */}
 
+            <div className="codemini-chat-session flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden">
             {/* Chat Panel */}
             <ChatPanel
               messages={state.messages}
@@ -300,7 +349,7 @@ function Shell() {
             />
 
             {/* Plan Review / Input Area */}
-            <div className="w-[min(980px,calc(100%-64px))] mx-auto mb-4 shrink-0 z-30 bg-transparent relative">
+            <div className="w-[calc(100%_-_32px)] max-w-[940px] sm:w-[calc(100%_-_48px)] mx-auto mb-2 sm:mb-3 shrink-0 z-30 bg-transparent relative">
               <RuntimeActivityStrip activities={state.runtimeActivities} />
               {state.pendingReflectApproval && (
                 <div className="mb-3">
@@ -337,7 +386,7 @@ function Shell() {
               />
 
               {/* Meta row */}
-              <div className="flex items-center gap-3 pt-2 px-3 min-h-[28px] overflow-hidden">
+              <div className="flex items-center gap-3 pt-1.5 px-1 sm:px-2 min-h-[24px] overflow-hidden">
                 {state.versionInfo?.current && (
                   <span className="inline-flex items-center gap-1 text-[11px] text-(--text-muted) shrink-0">
                     <span className="inline-flex h-3 w-3.5 items-center justify-center rounded-[3px] bg-black text-white dark:bg-white dark:text-black">
@@ -352,6 +401,7 @@ function Shell() {
                   stageLabel={state.stageLabel}
                 />
               </div>
+            </div>
             </div>
           </div>
         )}

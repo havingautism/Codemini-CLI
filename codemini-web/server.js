@@ -1049,7 +1049,7 @@ async function main() {
       const body = await readBody(req);
       try {
         const plan = await bridge.updatePendingPlan(body || {});
-        if (!plan) { jsonResponse(res, { error: true, message: 'No pending plan approval' }, 409); return; }
+        if (!plan) { jsonResponse(res, { error: true, message: 'Plan review has been removed; use engineering mode and /stop.' }, 409); return; }
         jsonResponse(res, { ok: true, plan });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;

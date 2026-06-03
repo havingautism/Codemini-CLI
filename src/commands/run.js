@@ -5,6 +5,7 @@ import { createChatCompletion } from '../core/provider/index.js';
 import { getBuiltinTools } from '../core/tools.js';
 import { getSubAgentRolePrompt } from '../core/chat-runtime.js';
 import { composeSystemPrompt } from '../core/system-prompt-composer.js';
+import { normalizePlanState } from '../core/plan-state.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -193,11 +194,56 @@ async function planPipeline({ goal, config, systemPrompt, model }) {
   return normalizePlan(parsed, goal);
 }
 
-function writePipelineState(workspaceRoot, state) {
+function createRunId() {
+  return new Date().toISOString().replace(/[:.]/g, '-');
+}
+
+function formatPriorStepsForTask(priorSteps = []) {
+  const steps = Array.isArray(priorSteps) ? priorSteps.filter(Boolean) : [];
+  if (steps.length === 0) return '';
+  const lines = ['Prior pipeline step outputs. Use these as working context for the current task:'];
+  for (const step of steps.slice(-4)) {
+    lines.push('');
+    lines.push(`[${step.role}] ${step.title}`);
+    if (step.outputRef) lines.push(`Output file: ${step.outputRef}`);
+    lines.push(String(step.output || '').trim() || '(no output captured)');
+  }
+  return lines.join('\n');
+}
+
+function buildStepTask({ goal, step, priorSteps }) {
+  return [
+    `Original goal:\n${goal}`,
+    formatPriorStepsForTask(priorSteps),
+    'Current step task:',
+    step.task
+  ].filter(Boolean).join('\n\n');
+}
+
+async function writeStepOutput(workspaceRoot, runId, stepIndex, stepResult) {
+  const dir = path.join(workspaceRoot, '.codemini', 'runs', runId);
+  await fs.mkdir(dir, { recursive: true });
+  const filePath = path.join(dir, `step_${stepIndex + 1}.md`);
+  const content = [
+    `# Step ${stepIndex + 1}: ${stepResult.title}`,
+    '',
+    `Role: ${stepResult.role}`,
+    `Status: ${stepResult.status}`,
+    '',
+    '## Output',
+    '',
+    stepResult.output || ''
+  ].join('\n');
+  await fs.writeFile(filePath, `${content.trim()}\n`, 'utf8');
+  return path.relative(workspaceRoot, filePath).replace(/\\/g, '/');
+}
+
+function writePlanState(workspaceRoot, state) {
   const dir = path.join(workspaceRoot, '.codemini');
-  const filePath = path.join(dir, 'pipeline-state.json');
+  const filePath = path.join(dir, 'plan-state.json');
+  const normalized = normalizePlanState(state);
   return fs.mkdir(dir, { recursive: true }).then(() =>
-    fs.writeFile(filePath, JSON.stringify(state, null, 2), 'utf-8')
+    fs.writeFile(filePath, JSON.stringify(normalized, null, 2), 'utf-8')
   ).catch(() => {});
 }
 
@@ -210,24 +256,27 @@ async function runPipeline({ task, config, systemPrompt, model }) {
   console.log('');
 
   const priorSteps = [];
-  const pipelineState = {
+  const runId = createRunId();
+  const planState = {
+    id: `plan_${runId}`,
+    status: 'running',
+    source: 'cli-pipeline',
     goal: task,
     summary: plan.summary,
-    steps: plan.steps.map((s) => ({ ...s, status: 'pending' })),
-    artifacts: [],
+    steps: plan.steps.map((s, index) => ({ id: `step_${index + 1}`, ...s, status: 'pending' })),
     startedAt: new Date().toISOString()
   };
 
   for (let i = 0; i < plan.steps.length; i += 1) {
     const step = plan.steps[i];
-    pipelineState.steps[i].status = 'running';
-    await writePipelineState(process.cwd(), pipelineState);
+    planState.steps[i].status = 'running';
+    await writePlanState(process.cwd(), planState);
 
     console.log(`[pipeline] Step ${i + 1}/${plan.steps.length} -> ${step.role}: ${step.title}`);
 
     const result = await runHarness({
       role: step.role,
-      task: step.task,
+      task: buildStepTask({ goal: task, step, priorSteps }),
       config,
       systemPrompt,
       model,
@@ -238,25 +287,27 @@ async function runPipeline({ task, config, systemPrompt, model }) {
     const stepResult = {
       role: step.role,
       title: step.title,
-      output: (result.text || '').slice(0, 500),
+      output: (result.text || '').slice(0, 2000),
       status: 'done'
     };
+    stepResult.outputRef = await writeStepOutput(process.cwd(), runId, i, stepResult);
     priorSteps.push(stepResult);
 
-    pipelineState.steps[i].status = 'done';
-    pipelineState.steps[i].output = stepResult.output;
-    pipelineState.artifacts.push(stepResult);
-    await writePipelineState(process.cwd(), pipelineState);
+    planState.steps[i].status = 'done';
+    planState.steps[i].output = stepResult.output;
+    planState.steps[i].outputRef = stepResult.outputRef;
+    await writePlanState(process.cwd(), planState);
 
     console.log(`[pipeline] Step ${i + 1} complete.\n`);
   }
 
-  pipelineState.completedAt = new Date().toISOString();
-  await writePipelineState(process.cwd(), pipelineState);
+  planState.status = 'completed';
+  planState.completedAt = new Date().toISOString();
+  await writePlanState(process.cwd(), planState);
 
   console.log('[pipeline] All steps complete.');
-  console.log(`[pipeline] State saved to .codemini/pipeline-state.json`);
-  return pipelineState;
+  console.log(`[pipeline] State saved to .codemini/plan-state.json`);
+  return planState;
 }
 
 export async function handleRun(args) {
