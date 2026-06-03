@@ -923,6 +923,98 @@ function mergePlanTranscriptIntoUiMessages(uiMessages, sessionMessages) {
   });
 }
 
+function messagePlainText(message) {
+  const direct = String(message?.text || message?.content || "").trim();
+  if (direct) return direct;
+  return (Array.isArray(message?.segments) ? message.segments : [])
+    .filter((segment) => segment?.type === "text" || segment?.type === "handoff")
+    .map((segment) => String(segment.text || ""))
+    .join("")
+    .trim();
+}
+
+function isStructuredPlanUiMessage(message) {
+  return message?.role === "plan-overview" || !!message?.planStep;
+}
+
+function collectUiPlanRuns(uiMessages = []) {
+  const runs = [];
+  let current = null;
+  let lastUserText = "";
+  for (const message of Array.isArray(uiMessages) ? uiMessages : []) {
+    if (message?.role === "you") {
+      lastUserText = messagePlainText(message);
+      if (current) {
+        runs.push(current);
+        current = null;
+      }
+      continue;
+    }
+    if (message?.role === "plan-overview") {
+      if (current) runs.push(current);
+      current = { anchorText: lastUserText, messages: [message] };
+      continue;
+    }
+    if (message?.planStep) {
+      if (!current) current = { anchorText: lastUserText, messages: [] };
+      current.messages.push(message);
+      continue;
+    }
+    if (current) {
+      runs.push(current);
+      current = null;
+    }
+  }
+  if (current) runs.push(current);
+  return runs.filter((run) => run.messages.some(isStructuredPlanUiMessage));
+}
+
+function mergeStructuredUiPlans(processedMessages, uiMessages) {
+  const runs = collectUiPlanRuns(uiMessages);
+  if (!runs.length) return processedMessages;
+  let merged = [...processedMessages];
+  let searchFrom = 0;
+  for (const run of runs) {
+    const anchor = String(run.anchorText || "").trim();
+    let userIndex = -1;
+    if (anchor) {
+      userIndex = merged.findIndex((message, index) => {
+        if (index < searchFrom || message.role !== "you") return false;
+        const text = messagePlainText(message);
+        return text === anchor || text.includes(anchor) || anchor.includes(text);
+      });
+    }
+    if (userIndex === -1) {
+      userIndex = merged.findIndex((message, index) => index >= searchFrom && message.role === "you");
+    }
+    if (userIndex === -1) {
+      merged = [...merged, ...run.messages];
+      searchFrom = merged.length;
+      continue;
+    }
+
+    const nextUserIndex = merged.findIndex((message, index) => index > userIndex && message.role === "you");
+    const sectionEnd = nextUserIndex === -1 ? merged.length : nextUserIndex;
+    const section = merged.slice(userIndex + 1, sectionEnd);
+    const firstExistingPlanIndex = section.findIndex(isStructuredPlanUiMessage);
+    const insertAt = firstExistingPlanIndex === -1 ? sectionEnd : userIndex + 1 + firstExistingPlanIndex;
+    const before = merged.slice(0, userIndex + 1);
+    const afterUserSection = merged
+      .slice(userIndex + 1, sectionEnd)
+      .filter((message) => !isStructuredPlanUiMessage(message));
+    const nextSection = merged.slice(sectionEnd);
+    const relativeInsert = Math.max(0, insertAt - (userIndex + 1));
+    const rebuiltSection = [
+      ...afterUserSection.slice(0, relativeInsert),
+      ...run.messages,
+      ...afterUserSection.slice(relativeInsert),
+    ];
+    merged = [...before, ...rebuiltSection, ...nextSection];
+    searchFrom = userIndex + rebuiltSection.length + 1;
+  }
+  return merged;
+}
+
 function normalizeCodeWikiStep(step, index = 0) {
   return {
     index: Number(step?.index || step?.step || index + 1),
@@ -1202,46 +1294,20 @@ export function AppProvider({ children }) {
           restoreRuntimeActivitiesFromMessages(messages);
 
         const uiData = sessionData
-          ? { messages: [] }
+          ? sessionData.uiMessages || { messages: [] }
           : await api.fetchSessionUiMessages().catch(() => []);
         const uiMessages = Array.isArray(uiData)
           ? uiData
           : Array.isArray(uiData?.messages)
             ? uiData.messages
             : [];
-        const structuredUiMessages = uiMessages.some(
-          (m) => m?.role === "plan-overview" || m?.planStep,
-        );
-        if (!sessionData && structuredUiMessages) {
-          const changeSets =
-            (await api.fetchSessionChanges().catch(() => ({})))?.changes || [];
-          const restored = settleCompletedPlanToolCards(
-            mergePlanTranscriptIntoUiMessages(uiMessages, messages),
-          );
-          const overview = [...restored]
-            .reverse()
-            .find((m) => m.role === "plan-overview" && m.planOverview);
-          planOverviewMsgRef.current = overview?.id || null;
-          planStepMessagesRef.current = new Map(
-            restored
-              .filter((m) => m.planStep?.step != null)
-              .map((m) => [String(m.planStep.step), m.id]),
-          );
-          update({
-            messages: enrichMessageChangeStates(restored, changeSets),
-            runtimeActivities: restoredActivities,
-          });
-          return;
-        }
         if (!messages.length) {
           if (Array.isArray(uiMessages) && uiMessages.length) {
             const changeSets = sessionData
               ? []
               : (await api.fetchSessionChanges().catch(() => ({})))?.changes ||
                 [];
-            const restored = settleCompletedPlanToolCards(
-              mergePlanTranscriptIntoUiMessages(uiMessages, messages),
-            );
+            const restored = settleCompletedPlanToolCards(uiMessages);
             const overview = [...restored]
               .reverse()
               .find((m) => m.role === "plan-overview" && m.planOverview);
@@ -1499,8 +1565,24 @@ export function AppProvider({ children }) {
           }
         }
 
+        const restored = settleCompletedPlanToolCards(
+          mergeStructuredUiPlans(
+            processed,
+            mergePlanTranscriptIntoUiMessages(uiMessages, messages),
+          ),
+        );
+        const overview = [...restored]
+          .reverse()
+          .find((m) => m.role === "plan-overview" && m.planOverview);
+        planOverviewMsgRef.current = overview?.id || null;
+        planStepMessagesRef.current = new Map(
+          restored
+            .filter((m) => m.planStep?.step != null)
+            .map((m) => [String(m.planStep.step), m.id]),
+        );
+
         update({
-          messages: enrichMessageChangeStates(processed, changeSets),
+          messages: enrichMessageChangeStates(restored, changeSets),
           runtimeActivities: restoredActivities,
         });
       } catch {

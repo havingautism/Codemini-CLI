@@ -965,13 +965,16 @@ export class RuntimeBridge {
     return result || { error: true, message: 'Git change oplog is not available' };
   }
 
-  async getUiMessages() {
-    this.#resetUiTranscriptIfSessionChanged();
-    if (this.#uiMessages.length > 0) return this.#uiMessages;
-    const sessionId = this.getSessionId();
-    if (!sessionId) return [];
+  async getUiMessages(sessionId = '') {
+    const requestedSessionId = String(sessionId || '').trim();
+    if (!requestedSessionId) {
+      this.#resetUiTranscriptIfSessionChanged();
+      if (this.#uiMessages.length > 0) return this.#uiMessages;
+    }
+    const sessionIdToRead = requestedSessionId || this.getSessionId();
+    if (!sessionIdToRead) return [];
     try {
-      const raw = await fs.readFile(webTranscriptPath(sessionId), 'utf8');
+      const raw = await fs.readFile(webTranscriptPath(sessionIdToRead), 'utf8');
       const parsed = JSON.parse(raw);
       return Array.isArray(parsed?.messages) ? parsed.messages : [];
     } catch {

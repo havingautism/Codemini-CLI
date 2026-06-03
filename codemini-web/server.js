@@ -1435,7 +1435,8 @@ async function main() {
           state: { ...bridge.getState(), cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) },
           sessionData: {
             messages: bridge.getSessionMessages(),
-            compact: bridge.getSessionCompactMeta()
+            compact: bridge.getSessionCompactMeta(),
+            uiMessages: await bridge.getUiMessages(sessionId)
           }
         });
       } catch (err) {
@@ -1477,7 +1478,8 @@ async function main() {
             state: { ...bridge.getState(), cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) },
             sessionData: {
               messages: bridge.getSessionMessages(),
-              compact: bridge.getSessionCompactMeta()
+              compact: bridge.getSessionCompactMeta(),
+              uiMessages: await bridge.getUiMessages(nextSessionId)
             }
           } : {})
         });
@@ -1614,7 +1616,8 @@ async function main() {
           state: { ...bridge.getState(), cwd: currentProjectDir, isGeneral },
           sessionData: {
             messages: bridge.getSessionMessages(),
-            compact: bridge.getSessionCompactMeta()
+            compact: bridge.getSessionCompactMeta(),
+            uiMessages: await bridge.getUiMessages(session.id)
           }
         });
       } catch (err) {
