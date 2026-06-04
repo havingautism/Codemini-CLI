@@ -11,10 +11,10 @@ import {
   ChevronDown,
   ArrowUp,
   Minus,
-  MessageCircle,
+  Coffee,
+  Code2,
   FileText,
   Sparkles,
-  ListChecks,
   Hammer,
   ShieldAlert,
   Unlock,
@@ -42,13 +42,13 @@ function getModeOptions() {
       value: "normal",
       label: t("normalExecutionMode"),
       desc: t("normalModeDesc"),
-      icon: MessageCircle,
+      icon: Coffee,
     },
     {
       value: "plan",
       label: t("planMode"),
       desc: t("planModeDesc"),
-      icon: ListChecks,
+      icon: Code2,
     },
   ];
 }

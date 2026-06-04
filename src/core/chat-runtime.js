@@ -498,7 +498,7 @@ function getCompletionCopy(language = 'zh') {
         'sdk.provider': '可选：openai-compatible | anthropic',
         'ui.language': '可选：zh | en',
         'ui.reply_language': '可选：zh | en',
-        'execution.mode': '可选：normal | plan',
+        'execution.mode': '可选：normal（日常）| code（编码）',
         'execution.approval_mode': '可选：review | auto | full_access',
         'shell.default': '常用：bash | powershell',
         'policy.safe_mode': '可选：true | false',
@@ -523,12 +523,12 @@ function getCompletionCopy(language = 'zh') {
         commands: '列出 slash/自定义命令',
         status: '查看运行状态（mode/model/session）',
         model: '查看或切换模型',
-        mode: '设置工作模式：normal|plan',
+        mode: '设置工作模式：normal（日常）| code（编码）',
         approval: '设置审阅权限：review|auto|full_access',
         compact: '压缩消息上下文',
         checkpoint: '创建/查看/加载检查点',
         spec: '在 .codemini/specs 中创建 spec',
-        plan: '已移除；请切换工程模式让系统自动规划执行',
+        plan: '已移除；请切换编码模式让系统自动规划执行',
         agents: '列出/运行子代理角色',
         config: '设置/读取/列出/重置配置',
         memory: '查看/搜索/删除持久记忆',
@@ -604,7 +604,7 @@ function getCompletionCopy(language = 'zh') {
         'sdk.provider': 'options: openai-compatible | anthropic',
         'ui.language': 'options: zh | en',
         'ui.reply_language': 'options: zh | en',
-        'execution.mode': 'options: normal | plan',
+        'execution.mode': 'options: normal (daily) | code (coding)',
         'execution.approval_mode': 'options: review | auto | full_access',
         'shell.default': 'common: bash | powershell',
         'policy.safe_mode': 'options: true | false',
@@ -629,12 +629,12 @@ function getCompletionCopy(language = 'zh') {
         commands: 'list slash/custom commands',
         status: 'show runtime status (mode/model/session)',
         model: 'show or switch model',
-        mode: 'set work mode: normal|plan',
+        mode: 'set work mode: normal (daily) | code (coding)',
         approval: 'set approval mode: review|auto|full_access',
         compact: 'compress message context',
         checkpoint: 'create/list/load conversation checkpoints',
         spec: 'create a spec markdown file in .codemini/specs',
-        plan: 'removed; use engineering mode for automatic planning and execution',
+        plan: 'removed; use coding mode for automatic planning and execution',
         agents: 'run/list sub-agent roles',
         config: 'set/get/list/reset config values',
         memory: 'list/search/delete persistent memories',
@@ -695,8 +695,18 @@ export const EXECUTION_MODE_TOOL_POLICY = {
 
 export function normalizeExecutionMode(mode) {
   const normalized = String(mode || 'normal').toLowerCase();
-  if (normalized === 'spec') return 'plan';
-  return ['normal', 'plan'].includes(normalized) ? normalized : 'normal';
+  if (['spec', 'plan', 'code', 'coding'].includes(normalized)) return 'plan';
+  if (['normal', 'daily'].includes(normalized)) return 'normal';
+  return 'normal';
+}
+
+function isExecutionModeInput(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return ['normal', 'daily', 'plan', 'code', 'coding', 'spec'].includes(normalized);
+}
+
+function displayExecutionMode(mode) {
+  return normalizeExecutionMode(mode) === 'plan' ? 'code' : 'normal';
 }
 
 function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools) {
@@ -712,10 +722,10 @@ function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools) {
 function buildExecutionModePromptBlock(executionMode) {
   if (normalizeExecutionMode(executionMode) === 'plan') {
     return [
-      'Execution Mode: engineering',
-      'You are in engineering mode. You may implement directly for simple, well-scoped tasks; use plan/spec artifacts only when they add real coordination value.',
+      'Execution Mode: coding',
+      'You are in coding mode. Treat the user request as implementation-oriented by default: inspect the repo, make focused changes when the task is clear, and use spec/plan artifacts only when they reduce coordination risk.',
       '',
-      'Engineering workflow:',
+      'Coding workflow:',
       '1. Explore the codebase with search_code/read before editing or proposing a spec/plan.',
       '2. If the request is simple and localized, implement directly with edit/create/delete as appropriate, then verify with focused checks when useful.',
       '3. If requirements are unclear, ask one focused clarifying question and stop. Do not call create_spec or create_plan yet.',
@@ -733,7 +743,7 @@ function buildExecutionModePromptBlock(executionMode) {
       '- Use update_todos to track exploration and planning work when it spans multiple steps.',
       '',
       'Direct implementation rules:',
-      '- Do not claim edit/create/delete/run are unavailable in engineering mode; they are available for direct simple tasks.',
+      '- Do not claim edit/create/delete/run are unavailable in coding mode; they are available for direct simple tasks.',
       '- If the user explicitly asks to start fixing, repair, update, implement, or change files, do not create an advisor-only plan. Either implement directly when simple or create an implementation plan with a coder/refactorer/writer step.',
       '- If you create a spec or plan, do not implement before the user approves that artifact.',
       '',
@@ -1723,7 +1733,7 @@ function replaceManagedPlanSection(content = '', key = 'findings', nextSection =
   return `${String(content || '').trimEnd()}\n\n${sectionBody}\n`;
 }
 
-function buildPlanReviewApprovalText(action, { feedback = '', via = 'engineering mode' } = {}) {
+function buildPlanReviewApprovalText(action, { feedback = '', via = 'coding mode' } = {}) {
   const stamp = new Date().toISOString();
   switch (action) {
     case 'approved':
@@ -1799,7 +1809,7 @@ async function readPlanApprovalSection(planFilePath) {
   }
 }
 
-async function writePlanReviewStatusToFile(planFilePath, action, { feedback = '', via = 'engineering mode' } = {}) {
+async function writePlanReviewStatusToFile(planFilePath, action, { feedback = '', via = 'coding mode' } = {}) {
   const filePath = String(planFilePath || '').trim();
   if (!filePath || !action) return;
   try {
@@ -1832,7 +1842,7 @@ async function recordPlanReviewStatus(planState, action, options = {}) {
 
 async function finalizeApprovedPlanFile(planState, result = {}) {
   const action = result?.aborted ? 'aborted' : 'executed';
-  await writePlanReviewStatusToFile(planState?.filePath, action, { via: 'engineering mode' });
+  await writePlanReviewStatusToFile(planState?.filePath, action, { via: 'coding mode' });
 }
 
 function normalizeLedgerItems(items = [], fallback = '- None recorded yet.') {
@@ -5232,7 +5242,7 @@ async function buildAutoPlanAndRun({
       autoPlan,
       finalSummary,
       planningError,
-      approvalText: 'Plan does not require approval; execution is controlled by engineering mode and /stop.',
+      approvalText: 'Plan does not require approval; execution is controlled by coding mode and /stop.',
       progressLine: '- Plan created for execution.'
     }),
     'plan-auto',
@@ -5265,7 +5275,7 @@ async function writeExplicitAutoPlan({ goal, steps = [], sessionId }) {
       goal,
       autoPlan,
       finalSummary,
-      approvalText: 'Plan does not require approval; execution is controlled by engineering mode and /stop.',
+      approvalText: 'Plan does not require approval; execution is controlled by coding mode and /stop.',
       progressLine: '- Structured plan created for execution.'
     }),
     'plan-auto',
@@ -5290,7 +5300,7 @@ function renderAutoPlanMarkdown({
   autoPlan,
   finalSummary,
   planningError = '',
-  approvalText = 'Plan does not require approval; execution is controlled by engineering mode and /stop.',
+  approvalText = 'Plan does not require approval; execution is controlled by coding mode and /stop.',
   progressLine = '- Plan created for execution.'
 }) {
   const lines = [];
@@ -6587,7 +6597,7 @@ export async function createChatRuntime({
 
   const historyTemplates = ['/history list', '/history current', '/history resume <session_id>'];
   const memoryTemplates = ['/memory list <scope>', '/memory search <scope> <query>', '/memory forget <scope> <id>'];
-  const modeTemplates = ['/mode normal', '/mode plan'];
+  const modeTemplates = ['/mode normal', '/mode code'];
   const approvalTemplates = ['/approval review', '/approval auto', '/approval full_access'];
   const modelTemplates = ['/model current', '/model main', '/model fast', '/model set <name>'];
   const checkpointTemplates = [
@@ -6780,7 +6790,7 @@ export async function createChatRuntime({
     if (commandPart === 'mode') {
       if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
         const sub = tokens[1] || '';
-        return ['normal', 'plan']
+        return ['normal', 'code']
           .filter((m) => m.startsWith(sub))
           .map((m) => registerSuggestion(`/mode ${m}`, completionCopy.generic.modeCommand));
       }
@@ -7327,7 +7337,7 @@ export async function createChatRuntime({
         const todoCount = countActiveTodos(currentSession.todos);
         return {
           type: 'system',
-          text: `mode=${executionMode} | approval=${config.execution?.approval_mode || 'review'} | role=general | model=${model || config.model.name} | max_ctx=${effectiveMaxContextTokens(config)} | session=${currentSession.id} | todos=${todoCount}`
+          text: `mode=${displayExecutionMode(executionMode)} | approval=${config.execution?.approval_mode || 'review'} | role=general | model=${model || config.model.name} | max_ctx=${effectiveMaxContextTokens(config)} | session=${currentSession.id} | todos=${todoCount}`
         };
       }
       if (parsedInput.command === 'model') {
@@ -7356,17 +7366,18 @@ export async function createChatRuntime({
         return { type: 'system', text: `Model switched to: ${model}` };
       }
       if (parsedInput.command === 'mode') {
-        const next = normalizeExecutionMode((parsedInput.args[0] || '').trim());
+        const rawMode = (parsedInput.args[0] || '').trim();
+        const next = normalizeExecutionMode(rawMode);
         if (!parsedInput.args[0]) {
-          return { type: 'system', text: `Current work mode: ${executionMode} (available: normal|plan)` };
+          return { type: 'system', text: `Current work mode: ${displayExecutionMode(executionMode)} (available: normal|code)` };
         }
-        if (!['normal', 'plan'].includes(next)) {
-          return { type: 'system', text: 'Usage: /mode <normal|plan>' };
+        if (!isExecutionModeInput(rawMode)) {
+          return { type: 'system', text: 'Usage: /mode <normal|code>' };
         }
         executionMode = next;
         await setConfigValue('execution.mode', next);
         config = await loadConfig();
-        const text = `Work mode set to: ${next}`;
+        const text = `Work mode set to: ${displayExecutionMode(next)}`;
         await persistLocalExchange(line, text);
         return { type: 'system', text };
       }
@@ -7566,7 +7577,7 @@ export async function createChatRuntime({
         return { type: 'system', text };
       }
       if (parsedInput.command === 'plan') {
-        const text = 'The /plan command has been removed. Switch to engineering mode with /mode plan and describe the task normally; plans execute automatically and can be stopped with /stop. Use /spec for approval-gated requirements.';
+        const text = 'The /plan command has been removed. Switch to coding mode with /mode code and describe the task normally; plans execute automatically and can be stopped with /stop. Use /spec for approval-gated requirements.';
         await persistLocalExchange('', text, { includeUser: false });
         return { type: 'system', text };
       }
@@ -8214,6 +8225,7 @@ export async function createChatRuntime({
       return true;
     },
     setExecutionMode: async (next) => {
+      if (!isExecutionModeInput(next)) return false;
       const normalized = normalizeExecutionMode(next);
       if (!['normal', 'plan'].includes(normalized)) return false;
       executionMode = normalized;

@@ -1,4 +1,13 @@
-import { Brain, Plug, ChartNoAxesCombined, ListChecks, ShieldAlert, Sparkles, Unlock } from "lucide-react";
+import {
+  Brain,
+  Plug,
+  ChartNoAxesCombined,
+  Code2,
+  Coffee,
+  ShieldAlert,
+  Sparkles,
+  Unlock,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
 
@@ -63,22 +72,38 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
 
   const modelLogo = getModelLogo(rs.model);
   const sdkLogo = SDK_LOGO_MAP[rs.sdkProvider];
-  const WorkIcon = mode === "plan" ? ListChecks : Brain;
+  const WorkIcon = mode === "plan" ? Code2 : Coffee;
   const workLabel = mode === "plan" ? t("planMode") : t("normalExecutionMode");
   const ApprovalIcon =
-    approvalMode === "full_access" ? Unlock : approvalMode === "auto" ? Sparkles : ShieldAlert;
+    approvalMode === "full_access"
+      ? Unlock
+      : approvalMode === "auto"
+        ? Sparkles
+        : ShieldAlert;
   const approvalLabel =
-    approvalMode === "full_access" ? t("fullAccessMode") : approvalMode === "auto" ? t("autoMode") : t("reviewMode");
+    approvalMode === "full_access"
+      ? t("fullAccessMode")
+      : approvalMode === "auto"
+        ? t("autoMode")
+        : t("reviewMode");
 
   return (
     <div className="flex items-center gap-2.5 flex-1 min-w-0 text-[11px] text-(--text-muted) overflow-hidden">
-      <span className="hidden sm:inline-flex items-center gap-1 whitespace-nowrap">
+      {/* <span className="hidden sm:inline-flex items-center gap-1 whitespace-nowrap">
         <WorkIcon size={13} className="shrink-0 opacity-70" />
         <span>{workLabel}</span>
       </span>
       <span className="hidden md:inline-flex items-center gap-1 whitespace-nowrap">
         <ApprovalIcon size={13} className="shrink-0 opacity-70" />
         <span>{approvalLabel}</span>
+      </span> */}
+      <span className="hidden xl:inline-flex items-center gap-1 whitespace-nowrap">
+        {sdkLogo ? (
+          <ModelLogo src={sdkLogo} />
+        ) : (
+          <Plug size={13} className="shrink-0 opacity-70" />
+        )}
+        <span>{rs.sdkProvider?.toUpperCase() || "-"}</span>
       </span>
       <span className="hidden lg:inline-flex items-center gap-1 whitespace-nowrap">
         {modelLogo ? (
@@ -88,14 +113,7 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
         )}
         <span>{rs.model?.toUpperCase() || "-"}</span>
       </span>
-      <span className="hidden xl:inline-flex items-center gap-1 whitespace-nowrap">
-        {sdkLogo ? (
-          <ModelLogo src={sdkLogo} />
-        ) : (
-          <Plug size={13} className="shrink-0 opacity-70" />
-        )}
-        <span>{rs.sdkProvider?.toUpperCase() || "-"}</span>
-      </span>
+
       {max > 0 && (
         <span className="hidden lg:inline-flex items-center gap-1 whitespace-nowrap">
           <ChartNoAxesCombined size={13} className="shrink-0 opacity-70" />
@@ -114,7 +132,10 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
       )}
       <span className="inline-flex items-center gap-1 ml-auto whitespace-nowrap">
         {live ? (
-          <span className={cn(STAGE_LIVE_CLASS, "shrink-0")} aria-hidden="true" />
+          <span
+            className={cn(STAGE_LIVE_CLASS, "shrink-0")}
+            aria-hidden="true"
+          />
         ) : (
           <span
             className="w-1.5 h-1.5 rounded-full shrink-0 bg-(--text-muted)"

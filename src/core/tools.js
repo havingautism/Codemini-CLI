@@ -2752,7 +2752,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'update_plan',
         description:
-          'Synchronize progress for an existing structured plan state after an interruption. This tool cannot create a plan or manage spec approvals; use create_plan/create_spec in engineering mode for new workflows. Use clear=true only to remove existing plan state.',
+          'Synchronize progress for an existing structured plan state after an interruption. This tool cannot create a plan or manage spec approvals; use create_plan/create_spec in coding mode for new workflows. Use clear=true only to remove existing plan state.',
         parameters: {
           type: 'object',
           properties: {
@@ -2886,7 +2886,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'create_plan',
         description:
-          'Create and execute a structured implementation plan in engineering mode. Use when the goal, scope, and constraints are already clear enough to break work into sub-agent execution steps. Do not call if important details are still unknown or if a design spec is still needed. Assign roles correctly: explorer/architect/advisor are read-only; coder/refactorer/writer implement changes; never assign explorer to implement or edit code.',
+          'Create and execute a structured implementation plan in coding mode. Use when the goal, scope, and constraints are already clear enough to break work into sub-agent execution steps. Do not call if important details are still unknown or if a design spec is still needed. Assign roles correctly: explorer/architect/advisor are read-only; coder/refactorer/writer implement changes; never assign explorer to implement or edit code.',
         parameters: {
           type: 'object',
           properties: {

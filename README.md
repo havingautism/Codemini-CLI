@@ -45,7 +45,7 @@ It runs on Windows, macOS, or Linux — in any terminal (PowerShell, bash, zsh, 
 
 Codemini can use **two models in one session**: a lightweight model for routing and simple tasks, and a larger model for complex reasoning. Configure both, and the system dispatches work to the right one.
 
-Other built-in capabilities include project indexing, persistent memory with self-evolution via `/reflect`, skill-based workflows, planning mode, approvals, and soul presets that change its tone without changing its behavior.
+Other built-in capabilities include project indexing, persistent memory with self-evolution via `/reflect`, skill-based workflows, coding mode for implementation-heavy work, approvals, and soul presets that change its tone without changing its behavior.
 
 No SaaS. No telemetry. No mandatory registration.
 

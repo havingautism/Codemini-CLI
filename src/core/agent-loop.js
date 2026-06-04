@@ -79,7 +79,7 @@ function buildApprovalBlockedResult(toolName, args = {}) {
   }
   return {
     blocked: true,
-    reason: 'Tool call requires approval in normal mode'
+    reason: 'Tool call requires approval in daily mode'
   };
 }
 

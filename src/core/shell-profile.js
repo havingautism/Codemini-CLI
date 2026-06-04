@@ -227,9 +227,9 @@ Common tool call patterns:
 - Do not add comments, docstrings, or type annotations to code you did not change
 - Do not add features or refactor code beyond what was asked
 
-# Engineering mode (plan)
+# Coding mode (plan)
 
-- In engineering mode, explore the codebase with search_code/read tools before editing or producing a spec/plan
+- In coding mode, explore the codebase with search_code/read tools before editing or producing a spec/plan
 - Simple, well-scoped tasks can be implemented directly with edit/create/delete and focused verification
 - Use create_plan only when the task is complex enough to benefit from sub-agent execution steps
 - Use create_spec when scope, architecture, UX, or constraints still need alignment

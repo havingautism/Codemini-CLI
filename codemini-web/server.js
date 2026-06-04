@@ -1032,11 +1032,11 @@ async function main() {
     }
     if (req.method === 'POST' && url.pathname === '/api/execution-mode') {
       const { mode } = await readBody(req);
-      if (!mode || !['normal', 'plan', 'spec'].includes(mode)) {
+      if (!mode || !['normal', 'plan', 'code', 'coding', 'spec'].includes(mode)) {
         jsonResponse(res, { error: true, message: 'Invalid mode' }, 400);
         return;
       }
-      const normalizedMode = mode === 'spec' ? 'plan' : mode;
+      const normalizedMode = ['spec', 'code', 'coding'].includes(mode) ? 'plan' : mode;
       if (bridge.isBusy()) {
         jsonResponse(res, { error: true, message: 'Cannot switch execution mode while a request is running' }, 409);
         return;
@@ -1049,7 +1049,7 @@ async function main() {
       const body = await readBody(req);
       try {
         const plan = await bridge.updatePendingPlan(body || {});
-        if (!plan) { jsonResponse(res, { error: true, message: 'Plan review has been removed; use engineering mode and /stop.' }, 409); return; }
+        if (!plan) { jsonResponse(res, { error: true, message: 'Plan review has been removed; use coding mode and /stop.' }, 409); return; }
         jsonResponse(res, { ok: true, plan });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
