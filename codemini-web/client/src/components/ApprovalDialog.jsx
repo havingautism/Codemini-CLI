@@ -81,7 +81,10 @@ function ApprovalBody({ variant, args, details }) {
     return (
       <>
         <ReviewSection label={t('approvalFieldCommand')}>
-          <ReviewCommandBlock command={parsed.command || '-'} />
+          <ReviewCommandBlock
+            command={parsed.command || '-'}
+            className="max-h-[min(42vh,24rem)] overflow-auto overscroll-contain"
+          />
         </ReviewSection>
         {details?.risk && <RiskDetailRow label={t('approvalFieldRisk')} risk={details.risk} />}
         {details?.evaluation?.recommendation && <DetailRow label={t('approvalFieldRecommend')} value={details.evaluation.recommendation} />}

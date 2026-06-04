@@ -1154,9 +1154,7 @@ async function main() {
       const specText = await fs.readFile(specPath, 'utf8');
       const spec = await bridge.setPendingSpecFromFile({
         filePath: specPath,
-        specText,
-        goal: path.basename(specPath, '.md'),
-        summary: path.basename(specPath, '.md')
+        specText
       });
       if (!spec) {
         jsonResponse(res, { error: true, message: 'Failed to open spec' }, 500);

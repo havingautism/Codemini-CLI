@@ -737,6 +737,40 @@ function isWorkflowControlLine(line, state = {}) {
   return false;
 }
 
+function getSpecDisplayTitle(spec = {}) {
+  return (
+    String(spec.summary || "").trim() ||
+    String(spec.goal || "").trim().split(/\r?\n/)[0] ||
+    "spec"
+  );
+}
+
+function buildSpecExecuteDisplayText(spec = {}, mode = "direct") {
+  const title =
+    getSpecDisplayTitle(spec);
+  const filePath = String(spec.filePath || "").trim();
+  const actionLabel =
+    mode === "plan" ? t("specPlanApproved") : t("specExecuteApproved");
+  return [
+    `${actionLabel}: ${title}`,
+    filePath ? `${t("specPathLabel")}: ${filePath}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function buildSpecExecuteDisplayMessage(spec = {}, mode = "direct") {
+  const text = buildSpecExecuteDisplayText(spec, mode);
+  return {
+    text,
+    specExecution: {
+      title: getSpecDisplayTitle(spec),
+      filePath: String(spec.filePath || "").trim(),
+      mode,
+    },
+  };
+}
+
 function createPlanStepMessage(event) {
   const id = `plan-step-${event.step}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   return {
@@ -928,6 +962,37 @@ function messagePlainText(message) {
 
 function isStructuredPlanUiMessage(message) {
   return message?.role === "plan-overview" || !!message?.planStep;
+}
+
+function isEmptyPlanRunPlaceholderMessage(message) {
+  if (!message || message.planStep || message.planOverview) return false;
+  const role = String(message.role || "").toLowerCase();
+  if (!["general", "agent", "coder", "pending"].includes(role)) return false;
+  if (String(message.text || "").trim()) return false;
+  if (Array.isArray(message.segments) && message.segments.length > 0)
+    return false;
+  if (Array.isArray(message.skillBadges) && message.skillBadges.length > 0)
+    return false;
+  return true;
+}
+
+function withoutEmptyPlanRunPlaceholder(messages, activeId) {
+  if (!activeId) return messages;
+  return (Array.isArray(messages) ? messages : []).filter(
+    (message) =>
+      message.id !== activeId || !isEmptyPlanRunPlaceholderMessage(message),
+  );
+}
+
+function getAbortedPlanStepIndexes(messages) {
+  return new Set(
+    (Array.isArray(messages) ? messages : [])
+      .filter(
+        (message) =>
+          message.isComplete === false && message.planStep?.step != null,
+      )
+      .map((message) => Number(message.planStep.step) - 1),
+  );
 }
 
 function collectUiPlanRuns(uiMessages = []) {
@@ -1911,6 +1976,7 @@ export function AppProvider({ children }) {
           }));
           planRunPendingRef.current = true;
           planStepMessagesRef.current = new Map();
+          const placeholderId = activeId;
           setActiveMsg(null);
           const overviewMsg = createPlanOverviewMessage(event);
           planOverviewMsgRef.current = overviewMsg.id;
@@ -1919,7 +1985,10 @@ export function AppProvider({ children }) {
             planSteps: steps,
             pendingPlanApproval: null,
             messages: [
-              ...removeTransientMessages(prev.messages, "waiting-response"),
+              ...withoutEmptyPlanRunPlaceholder(
+                removeTransientMessages(prev.messages, "waiting-response"),
+                placeholderId,
+              ),
               overviewMsg,
             ],
           }));
@@ -2782,41 +2851,71 @@ export function AppProvider({ children }) {
         try {
           await api.abortRequest();
         } catch {}
+        planRunPendingRef.current = false;
         update({
           busy: false,
           live: false,
           stage: "idle",
           stageLabel: "",
         });
-        setState((prev) => ({
-          ...prev,
-          messages: prev.messages.map((message) => {
-            if (message.isComplete === false) {
-              return {
-                ...message,
-                isComplete: true,
-                segments: finishThinkingSegments(message.segments || []).map(
-                  (seg) =>
-                    seg.type === "text"
-                      ? { ...seg, isStreaming: false }
-                      : seg,
-                ),
-                planStep: message.planStep
-                  ? {
-                      ...message.planStep,
-                      status: ["done", "failed"].includes(
-                        String(message.planStep.status || ""),
-                      )
-                        ? message.planStep.status
-                        : "failed",
-                      summary: message.planStep.summary || "Aborted",
-                    }
-                  : message.planStep,
-              };
-            }
-            return message;
-          }),
-        }));
+        setState((prev) => {
+          const abortedSteps = getAbortedPlanStepIndexes(prev.messages);
+          return {
+            ...prev,
+            planSteps: abortedSteps.size
+              ? prev.planSteps.map((step, index) =>
+                  abortedSteps.has(index) &&
+                  !["done", "failed"].includes(String(step.status || ""))
+                    ? { ...step, status: "failed" }
+                    : step,
+                )
+              : prev.planSteps,
+            messages: prev.messages.map((message) => {
+              if (
+                message.id === planOverviewMsgRef.current &&
+                message.planOverview
+              ) {
+                if (!abortedSteps.size) return message;
+                return {
+                  ...message,
+                  planOverview: {
+                    ...message.planOverview,
+                    steps: message.planOverview.steps.map((step, index) =>
+                      abortedSteps.has(index) &&
+                      !["done", "failed"].includes(String(step.status || ""))
+                        ? { ...step, status: "failed" }
+                        : step,
+                    ),
+                  },
+                };
+              }
+              if (message.isComplete === false) {
+                return {
+                  ...message,
+                  isComplete: true,
+                  segments: finishThinkingSegments(message.segments || []).map(
+                    (seg) =>
+                      seg.type === "text"
+                        ? { ...seg, isStreaming: false }
+                        : seg,
+                  ),
+                  planStep: message.planStep
+                    ? {
+                        ...message.planStep,
+                        status: ["done", "failed"].includes(
+                          String(message.planStep.status || ""),
+                        )
+                          ? message.planStep.status
+                          : "failed",
+                        summary: message.planStep.summary || "Aborted",
+                      }
+                    : message.planStep,
+                };
+              }
+              return message;
+            }),
+          };
+        });
       },
 
       approve: async (id, approved) => {
@@ -2958,6 +3057,18 @@ export function AppProvider({ children }) {
         if (action === "reject" || action === "save" || action === "delete") {
           update({ pendingSpecApproval: null });
         }
+        if (action === "execute" || action === "approve") {
+          const display = buildSpecExecuteDisplayMessage(
+            spec,
+            action === "approve" ? "plan" : "direct",
+          );
+          addMessage({
+            role: "you",
+            text: display.text,
+            specExecution: display.specExecution,
+            timestamp: new Date().toISOString(),
+          });
+        }
         update({
           busy: true,
           live: true,
@@ -2980,11 +3091,13 @@ export function AppProvider({ children }) {
                 : action === "approve"
                   ? "/spec plan"
                   : "/reject";
+          if (action === "approve") planRunPendingRef.current = true;
           const res = await api.submitLine(command);
           const result = await res.json().catch(() => ({}));
           if (result?.error)
             throw new Error(result.message || "Request failed");
         } catch (err) {
+          planRunPendingRef.current = false;
           addMessage({
             role: "error",
             text: `Failed: ${err.message}`,

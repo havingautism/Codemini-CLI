@@ -10,6 +10,7 @@ import { formatTimestamp } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
 import * as api from "@/hooks/use-api.js";
 import { ROLE_BADGE_CLASS, ROLE_PILLS } from "./PlanProgress.jsx";
+import { PlanStepStatusGlyph } from "@/components/plan-step-icons.jsx";
 import { PatchDiff } from "@pierre/diffs/react";
 import {
   Tooltip,
@@ -24,7 +25,9 @@ import {
   Check,
   CheckCircle,
   Copy,
+  FileText,
   Moon,
+  Play,
   Wrench,
   XCircle,
 } from "@phosphor-icons/react";
@@ -1243,6 +1246,73 @@ function UserText({ text, skills = [] }) {
   );
 }
 
+function parseSpecExecutionText(text = "") {
+  const value = String(text || "").trim();
+  const match = value.match(
+    /^(Execute approved spec|执行已批准的 spec|Plan execute approved spec|计划执行已批准的 spec):\s*(.+?)(?:\r?\n|$)/,
+  );
+  if (!match) return null;
+  const pathMatch = value.match(/(?:^|\r?\n)(?:Spec path|Spec 路径):\s*(.+)$/);
+  return {
+    title: match[2].trim() || "spec",
+    filePath: pathMatch?.[1]?.trim() || "",
+    mode:
+      match[1] === "Plan execute approved spec" ||
+      match[1] === "计划执行已批准的 spec"
+        ? "plan"
+        : "direct",
+  };
+}
+
+function SpecExecutionCard({ details = {} }) {
+  const title = String(details.title || "spec").trim();
+  const filePath = String(details.filePath || "").trim();
+  const mode = details.mode === "plan" ? "plan" : "direct";
+  const modeLabel = mode === "plan" ? t("specPlanMode") : t("specDirectMode");
+  return (
+    <div className="w-full max-w-2xl rounded-lg border border-(--border-default) bg-(--bg-secondary) p-3 text-left shadow-[var(--shadow-sm)]">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[color-mix(in_srgb,var(--accent-blue)_30%,transparent)] bg-[color-mix(in_srgb,var(--accent-blue-bg)_52%,transparent)] text-(--accent-blue)">
+          <FileText size={16} weight="regular" />
+        </span>
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge
+              variant="outline"
+              className={cn(
+                ROLE_BADGE_CLASS,
+                "border-(--border-default) bg-(--bg-primary) text-(--text-secondary)",
+              )}
+            >
+              SPEC
+            </Badge>
+            <Badge
+              variant="outline"
+              className="h-5 rounded-md border-[color-mix(in_srgb,var(--accent-blue)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-blue-bg)_55%,transparent)] px-1.5 py-0 text-[10px] font-medium uppercase tracking-[0.04em] text-(--accent-blue) shadow-none"
+            >
+              <span className="inline-flex items-center gap-1">
+                <Play size={9} weight="fill" />
+                {modeLabel}
+              </span>
+            </Badge>
+          </div>
+          <div className="truncate text-[14px] font-medium leading-5 text-(--text-primary)">
+            {title}
+          </div>
+          {filePath ? (
+            <div
+              className="truncate font-mono text-[11px] leading-5 text-(--text-muted)"
+              title={filePath}
+            >
+              {filePath}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function getMessageText(message) {
   const text = String(message?.text || "");
   if (text) return text;
@@ -1575,13 +1645,7 @@ export function MessageBubble({ message, skills = [] }) {
                       "border-(--border-default) bg-(--bg-primary) text-(--text-muted)",
                   )}
                 >
-                  {step.status === "done"
-                    ? "\u2713"
-                    : step.status === "failed"
-                      ? "\u2717"
-                      : step.status === "running"
-                        ? "\u25B6"
-                        : i + 1}
+                  <PlanStepStatusGlyph step={step} index={i} />
                 </span>
                 <Badge
                   variant="outline"
@@ -1619,6 +1683,10 @@ export function MessageBubble({ message, skills = [] }) {
   const showActions = shouldShowMessageActions(message, messageComplete);
   const isPlanFlowMessage = !!planStep && role !== "you";
   const planFlowStatus = String(planStep?.status || "").toLowerCase();
+  const specExecutionDetails =
+    role === "you"
+      ? message.specExecution || parseSpecExecutionText(youText)
+      : null;
 
   return (
     <div
@@ -1632,10 +1700,14 @@ export function MessageBubble({ message, skills = [] }) {
     >
       {role === "you" ? (
         <div className="flex w-fit max-w-full flex-col items-end">
-          <div className="w-fit max-w-full bg-(--bg-tertiary) rounded-2xl px-4 py-3">
-            {youText && <UserText text={youText} skills={skills} />}
-            {startupTodos && <TodoList todos={startupTodos} />}
-          </div>
+          {specExecutionDetails ? (
+            <SpecExecutionCard details={specExecutionDetails} />
+          ) : (
+            <div className="w-fit max-w-full bg-(--bg-tertiary) rounded-2xl px-4 py-3">
+              {youText && <UserText text={youText} skills={skills} />}
+              {startupTodos && <TodoList todos={startupTodos} />}
+            </div>
+          )}
           <MessageActions
             text={messageText}
             usage={usage}

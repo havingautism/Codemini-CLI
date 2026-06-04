@@ -582,9 +582,7 @@ export function Sidebar({
                 <div
                   className={cn(
                     "w-full border-0 bg-transparent flex items-center gap-1 h-[28px] px-1.5 rounded-md text-left text-[12px] font-medium tracking-[0.2px] hover:bg-(--bg-hover)",
-                    isActive
-                      ? "bg-(--bg-hover) text-(--text-primary)"
-                      : "text-(--text-muted) hover:text-(--text-secondary)",
+                    "text-(--text-muted) hover:text-(--text-secondary)",
                   )}
                   title={projectKey === "unknown" ? "" : projectKey}
                 >
@@ -593,7 +591,12 @@ export function Sidebar({
                     onClick={() => toggleProject(projectKey)}
                   >
                     <Folder size={13} className="shrink-0" />
-                    <span className="truncate flex-1">
+                    <span
+                      className={cn(
+                        "truncate flex-1",
+                        isActive && "font-semibold text-(--text-primary)",
+                      )}
+                    >
                       {getProjectName(projectKey)}
                     </span>
                   </button>

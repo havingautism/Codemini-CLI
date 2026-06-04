@@ -7198,6 +7198,36 @@ export async function createChatRuntime({
         '',
         specText
       ].join('\n');
+      if (executeImmediately) {
+        currentSession.specState = null;
+        if (currentSession.planState?.status === 'pending_spec_approval') {
+          currentSession.planState = null;
+        }
+        restoreConfiguredExecutionMode();
+        const displayGoal = [
+          `Execute approved spec: ${specTitle}`,
+          `Spec path: ${specPath}`
+        ].join('\n');
+        const result = await askModel({
+          text: displayGoal,
+          modelText: planGoal,
+          session: currentSession,
+          config,
+          model,
+          systemPrompt: activeReplySystemPrompt,
+          onAgentEvent,
+          requestToolApproval: activeRequestToolApproval,
+          executionMode,
+          signal,
+          compactedForModel,
+          onCompactedUpdate: setCompactedView,
+          changeTracker,
+          backupManager,
+          onExecutionModeSync: syncExecutionModeWithSession
+        });
+        syncExecutionModeWithSession();
+        return { type: 'assistant', text: result.text, aborted: !!result.aborted };
+      }
       const auto = await buildAutoPlanAndRun({
         goal: planGoal,
         session: currentSession,
@@ -8270,12 +8300,16 @@ export async function createChatRuntime({
       const resolvedPath = String(filePath || '').trim();
       const text = String(specText || '').trim();
       if (!resolvedPath || !text) return null;
+      const existing = getPendingSpecState(currentSession);
+      const existingPath = String(existing?.specPath || '').trim();
+      const samePendingSpec =
+        existingPath && path.resolve(existingPath) === path.resolve(resolvedPath);
       const title = summary || extractSpecTitle(text, path.basename(resolvedPath, '.md'));
       currentSession.specState = {
         status: 'pending_approval',
         source: 'spec-file',
-        goal: goal || title,
-        summary: title,
+        goal: goal || (samePendingSpec ? existing.goal : '') || title,
+        summary: summary || (samePendingSpec ? existing.summary : '') || title,
         specPath: resolvedPath,
         specText: text
       };

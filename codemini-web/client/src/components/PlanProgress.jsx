@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
 import { X } from "@phosphor-icons/react";
+import { PlanStepStatusGlyph } from "@/components/plan-step-icons.jsx";
 
 export const ROLE_PILLS = {
   planner: "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
@@ -78,13 +79,7 @@ export function PlanProgress({ steps, onDismiss }) {
                 STEP_STATUS_STYLES[step.status] || STEP_STATUS_STYLES.pending,
               )}
             >
-              {step.status === "done"
-                ? "\u2713"
-                : step.status === "failed"
-                  ? "\u2717"
-                  : step.status === "running"
-                    ? "\u25B6"
-                    : i + 1}
+              <PlanStepStatusGlyph step={step} index={i} />
             </span>
             <Badge
               variant="outline"
