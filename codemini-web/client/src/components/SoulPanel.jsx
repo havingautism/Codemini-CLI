@@ -18,15 +18,16 @@ import { t } from "../../i18n/index.js";
 
 const FILTERS = ["all", "builtin", "custom"];
 
-function SwitchControl({ checked, onClick, title }) {
+function SwitchControl({ checked, onClick, title, disabled = false }) {
   return (
     <button
       type="button"
       onClick={onClick}
       title={title}
       aria-pressed={checked}
+      disabled={disabled}
       className={cn(
-        "relative h-5 w-9 rounded-full border shadow-inner transition-colors",
+        "relative h-5 w-9 rounded-full border shadow-inner transition-colors disabled:cursor-not-allowed disabled:opacity-50",
         checked
           ? "border-(--text-primary) bg-(--text-primary)"
           : "border-(--border-strong) bg-(--bg-hover)",
@@ -204,7 +205,7 @@ function ViewDialog({ soul, open, onOpenChange }) {
   );
 }
 
-export function SoulPanel() {
+export function SoulPanel({ disabled = false }) {
   const [souls, setSouls] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
@@ -237,11 +238,13 @@ export function SoulPanel() {
   }, [souls, query, filter]);
 
   const handleActivate = async (name) => {
+    if (disabled) return;
     await api.activateSoul(name);
     loadSouls();
   };
 
   const handleDelete = async (name) => {
+    if (disabled) return;
     await api.deleteSoul(name);
     loadSouls();
   };
@@ -286,7 +289,7 @@ export function SoulPanel() {
             <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px]">
               {customCount} {t("custom")}
             </Badge> */}
-            <Button onClick={() => setEditing("new")} size="sm">
+            <Button onClick={() => setEditing("new")} size="sm" disabled={disabled}>
               <Plus size={13} />
               {t("addSoul")}
             </Button>
@@ -387,8 +390,9 @@ export function SoulPanel() {
                 <SwitchControl
                   checked={!!soul.active}
                   onClick={() => {
-                    if (!soul.active) handleActivate(soul.name);
+                    if (!disabled && !soul.active) handleActivate(soul.name);
                   }}
+                  disabled={disabled}
                   title={soul.active ? t("current") : t("activate")}
                 />
                 {soul.scope !== "builtin" && (
@@ -397,6 +401,7 @@ export function SoulPanel() {
                       variant="ghost"
                       size="icon-xs"
                       onClick={() => setEditing(soul)}
+                      disabled={disabled}
                       title={t("edit")}
                     >
                       <Pencil size={13} />
@@ -405,6 +410,7 @@ export function SoulPanel() {
                       variant="ghost"
                       size="icon-xs"
                       onClick={() => {
+                        if (disabled) return;
                         if (
                           confirm(
                             t("confirmDeleteSoul").replace(
@@ -416,6 +422,7 @@ export function SoulPanel() {
                           handleDelete(soul.name);
                         }
                       }}
+                      disabled={disabled}
                       title={t("delete")}
                       className="text-(--accent-red) hover:text-(--accent-red)"
                     >

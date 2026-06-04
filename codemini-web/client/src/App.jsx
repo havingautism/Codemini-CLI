@@ -460,6 +460,7 @@ function Shell() {
           <SoulDialog
             open={state.soulsOpen}
             onOpenChange={actions.setSoulsOpen}
+            disabled={state.busy}
           />
         )}
 

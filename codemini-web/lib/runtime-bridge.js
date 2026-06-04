@@ -610,6 +610,7 @@ export class RuntimeBridge {
         if (msgId) {
           this.#updateUiMessage(msgId, (message) => ({
             ...message,
+            usage: normalizeUiUsage(event.usage) || message.usage || null,
             segments: (() => {
               const outputText = String(event.output || '').trim();
               const finishedSegments = message.segments.map((seg) => (

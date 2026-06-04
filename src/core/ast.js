@@ -39,6 +39,45 @@ const LANGUAGE_WASM_PATHS = {
   ruby: require.resolve('@cursorless/tree-sitter-wasms/out/tree-sitter-ruby.wasm')
 };
 const TREE_SITTER_WASM_PATH = require.resolve('web-tree-sitter/web-tree-sitter.wasm');
+const AST_GREP_BUILTIN_LANGUAGE_MAP = {
+  js: 'JavaScript',
+  ts: 'TypeScript',
+  tsx: 'Tsx',
+  html: 'Html',
+  css: 'Css'
+};
+const AST_GREP_DYNAMIC_LANGUAGE_PACKAGES = {
+  python: '@ast-grep/lang-python',
+  go: '@ast-grep/lang-go',
+  c: '@ast-grep/lang-c',
+  cpp: '@ast-grep/lang-cpp',
+  bash: '@ast-grep/lang-bash',
+  java: '@ast-grep/lang-java',
+  rust: '@ast-grep/lang-rust',
+  csharp: '@ast-grep/lang-csharp',
+  php: '@ast-grep/lang-php',
+  ruby: '@ast-grep/lang-ruby'
+};
+const AST_GREP_EXTENSIONS_BY_LANGUAGE = {
+  js: ['.js', '.jsx', '.mjs', '.cjs'],
+  ts: ['.ts'],
+  tsx: ['.tsx'],
+  html: ['.html'],
+  css: ['.css', '.scss'],
+  python: ['.py'],
+  go: ['.go'],
+  c: ['.c', '.h'],
+  cpp: ['.cpp', '.cc', '.cxx', '.hpp', '.hh'],
+  bash: ['.sh', '.bash'],
+  java: ['.java'],
+  rust: ['.rs'],
+  csharp: ['.cs'],
+  php: ['.php'],
+  ruby: ['.rb']
+};
+let astGrepRegistrationPromise = null;
+let astGrepDynamicLanguages = new Set();
+let astGrepUnavailableDynamicLanguages = new Map();
 
 const parserInitPromise = Parser.init({
   locateFile(scriptName) {
@@ -135,26 +174,63 @@ function inferAstGrepLanguage(filePath, explicitLanguage = '', astGrep = null) {
   const language = normalized || EXTENSION_LANGUAGE_MAP[path.extname(String(filePath || '')).toLowerCase()];
   const Lang = astGrep?.Lang;
   if (!Lang) return null;
-  if (language === 'js') return { language: 'js', napi: Lang.JavaScript };
-  if (language === 'ts') return { language: 'ts', napi: Lang.TypeScript };
-  if (language === 'tsx') return { language: 'tsx', napi: Lang.Tsx };
-  if (language === 'html') return { language: 'html', napi: Lang.Html };
-  if (language === 'css') return { language: 'css', napi: Lang.Css };
+  const napiName = AST_GREP_BUILTIN_LANGUAGE_MAP[language];
+  if (napiName && Lang[napiName]) return { language, napi: Lang[napiName] };
+  if (astGrepDynamicLanguages.has(language)) return { language, napi: language };
   return null;
 }
 
 function astGrepCandidateExtensions(language = '') {
-  if (language === 'js') return new Set(['.js', '.jsx', '.mjs', '.cjs']);
-  if (language === 'ts') return new Set(['.ts']);
-  if (language === 'tsx') return new Set(['.tsx']);
-  if (language === 'html') return new Set(['.html']);
-  if (language === 'css') return new Set(['.css', '.scss']);
-  return new Set(['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.html', '.css', '.scss']);
+  if (language) return new Set(AST_GREP_EXTENSIONS_BY_LANGUAGE[language] || []);
+  return new Set(Object.values(AST_GREP_EXTENSIONS_BY_LANGUAGE).flat());
+}
+
+function supportedAstGrepLanguages(astGrep = null) {
+  const Lang = astGrep?.Lang;
+  if (!Lang) return Object.keys(AST_GREP_BUILTIN_LANGUAGE_MAP);
+  const builtin = Object.entries(AST_GREP_BUILTIN_LANGUAGE_MAP)
+    .filter(([, napiName]) => Lang[napiName])
+    .map(([language]) => language);
+  const dynamic = Array.from(astGrepDynamicLanguages);
+  return [...builtin, ...dynamic].sort();
+}
+
+async function registerAvailableAstGrepDynamicLanguages(astGrep) {
+  if (!astGrep?.registerDynamicLanguage) return astGrep;
+  if (!astGrepRegistrationPromise) {
+    astGrepRegistrationPromise = (async () => {
+      const registrations = {};
+      const languages = new Set();
+      const unavailable = new Map();
+      for (const [language, packageName] of Object.entries(AST_GREP_DYNAMIC_LANGUAGE_PACKAGES)) {
+        try {
+          const mod = await import(packageName);
+          const registration = mod.default || mod['module.exports'] || mod;
+          if (!registration?.libraryPath || !Array.isArray(registration.extensions)) {
+            unavailable.set(language, `${packageName} did not export a valid language registration`);
+            continue;
+          }
+          registrations[language] = registration;
+          languages.add(language);
+        } catch (error) {
+          unavailable.set(language, error instanceof Error ? error.message : String(error));
+        }
+      }
+      if (Object.keys(registrations).length > 0) {
+        astGrep.registerDynamicLanguage(registrations);
+      }
+      return { languages, unavailable };
+    })();
+  }
+  const state = await astGrepRegistrationPromise;
+  astGrepDynamicLanguages = state.languages;
+  astGrepUnavailableDynamicLanguages = state.unavailable;
+  return astGrep;
 }
 
 async function loadAstGrep() {
   try {
-    return await import('@ast-grep/napi');
+    return await registerAvailableAstGrepDynamicLanguages(await import('@ast-grep/napi'));
   } catch (error) {
     const message = String(error?.message || '');
     if (error?.code === 'ERR_MODULE_NOT_FOUND' || /Cannot find package '@ast-grep\/napi'|Cannot find module '@ast-grep\/napi'/i.test(message)) {
@@ -325,9 +401,16 @@ export async function queryAstGrep(root, args) {
     ? await globFilesUnder(absoluteStart, { skipDirs: SKIP_DIRS })
     : [absoluteStart];
   const requestedLanguage = String(args?.language || '').trim();
-  const allExtensions = astGrepCandidateExtensions(
-    LANGUAGE_ALIASES[requestedLanguage.toLowerCase()] || requestedLanguage.toLowerCase()
-  );
+  const normalizedRequestedLanguage = LANGUAGE_ALIASES[requestedLanguage.toLowerCase()] || requestedLanguage.toLowerCase();
+  const allExtensions = astGrepCandidateExtensions(normalizedRequestedLanguage);
+  if (requestedLanguage && allExtensions.size === 0) {
+    throw new Error(`ast_grep does not recognize language "${requestedLanguage}". Supported languages: ${supportedAstGrepLanguages(astGrep).join(', ')}`);
+  }
+  if (requestedLanguage && AST_GREP_DYNAMIC_LANGUAGE_PACKAGES[normalizedRequestedLanguage] && !astGrepDynamicLanguages.has(normalizedRequestedLanguage)) {
+    const packageName = AST_GREP_DYNAMIC_LANGUAGE_PACKAGES[normalizedRequestedLanguage];
+    const reason = astGrepUnavailableDynamicLanguages.get(normalizedRequestedLanguage);
+    throw new Error(`ast_grep language "${requestedLanguage}" requires optional package ${packageName}${reason ? ` (${reason})` : ''}. Install dependencies with npm install, or install ${packageName}.`);
+  }
   const matches = [];
 
   for (const absolutePath of candidateFiles) {

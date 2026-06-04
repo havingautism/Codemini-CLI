@@ -70,5 +70,17 @@
     "web-tree-sitter": "^0.26.8",
     "zod": "^4.4.3"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "optionalDependencies": {
+    "@ast-grep/lang-bash": "^0.0.8",
+    "@ast-grep/lang-c": "^0.0.6",
+    "@ast-grep/lang-cpp": "^0.0.6",
+    "@ast-grep/lang-csharp": "^0.0.6",
+    "@ast-grep/lang-go": "^0.0.6",
+    "@ast-grep/lang-java": "^0.0.7",
+    "@ast-grep/lang-php": "^0.0.7",
+    "@ast-grep/lang-python": "^0.0.6",
+    "@ast-grep/lang-ruby": "^0.0.7",
+    "@ast-grep/lang-rust": "^0.0.7"
+  }
 }

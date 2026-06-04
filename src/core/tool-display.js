@@ -8,6 +8,7 @@ export const TOOL_DISPLAY_LABELS = {
   update_plan: 'Update Plan',
   query_project_index: 'Query Project Index',
   tool_search: 'Tool Search',
+  ast_grep: 'AST Grep',
   ast_query: 'AST Query',
   read_ast_node: 'Read AST Node',
   web_fetch: 'Web Fetch',
@@ -66,6 +67,10 @@ export function formatToolDisplayName(name, args = {}) {
   if (toolName === 'grep') {
     const query = trimInline(args?.pattern || args?.query || args?.symbol || '', 96);
     return query ? formatToolWithArg(formatToolLabel('grep'), query, { quoted: true }) : formatToolLabel('grep');
+  }
+  if (toolName === 'ast_grep') {
+    const query = trimInline(args?.pattern || args?.query || '', 96);
+    return query ? formatToolWithArg(formatToolLabel('ast_grep'), query, { quoted: true }) : formatToolLabel('ast_grep');
   }
   if (toolName === 'glob') {
     const pattern = trimInline(args?.pattern || '', 96);

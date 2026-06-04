@@ -287,7 +287,7 @@ function ApprovalModeSelector({ current, disabled = false }) {
   );
 }
 
-function SoulQuickSwitch() {
+function SoulQuickSwitch({ disabled = false }) {
   const [souls, setSouls] = useState([]);
   const [active, setActive] = useState("");
   const [open, setOpen] = useState(false);
@@ -307,6 +307,7 @@ function SoulQuickSwitch() {
   }, [loadSouls]);
 
   const handleActivate = async (name) => {
+    if (disabled) return;
     await api.activateSoul(name);
     setActive(name);
     setOpen(false);
@@ -314,12 +315,13 @@ function SoulQuickSwitch() {
   };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={(next) => !disabled && setOpen(next)}>
       <PopoverTrigger asChild>
         <button
           type="button"
-          className={cn(INPUT_PILL_CLASS, "px-2.5")}
-          title={t("soulSwitch")}
+          className={cn(INPUT_PILL_CLASS, "px-2.5", disabled && "opacity-50 pointer-events-none")}
+          disabled={disabled}
+          title={disabled ? t("inputDisabled") : t("soulSwitch")}
         >
           <Drama size={13} />
           <span className="truncate max-w-[60px]">{active || "default"}</span>
@@ -339,8 +341,10 @@ function SoulQuickSwitch() {
           {souls.map((soul) => (
             <button
               key={`${soul.scope}-${soul.name}`}
+              disabled={disabled}
               className={cn(
                 "w-full border-0 rounded-md px-2 py-1.5 text-left text-[12px] cursor-pointer flex items-center gap-2",
+                disabled && "opacity-50 cursor-not-allowed",
                 soul.active
                   ? "bg-(--bg-active) text-(--text-primary) font-medium"
                   : "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
@@ -772,7 +776,7 @@ export function InputBar({
               current={approvalMode}
               disabled={inputLocked}
             />
-            <SoulQuickSwitch />
+            <SoulQuickSwitch disabled={inputLocked} />
           </div>
           <div className="flex items-center gap-1.5 ml-auto shrink-0">
             {/* <button type="button" className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)" title="模型">

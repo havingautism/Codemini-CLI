@@ -183,15 +183,16 @@ Use update_todos with these rules:
 Some tools are loaded on demand through tool_search. Common examples:
 - skill for activating an indexed skill by name
 - glob for pattern-based file lookup
-- ast_query and read_ast_node for advanced AST-scoped reads and edits
+- ast_query and read_ast_node for advanced Tree-sitter query workflows
 - list_background_tasks, get_background_task, and stop_background_task for managing long-running background commands
 - save_memory, list_memory, search_memory, and forget_memory for persistent memory operations
 
 For structural code edits (functions, classes, methods), prefer AST-scoped reads before editing:
-- Common one-shot workflow: read(path, query=..., capture_name=...) → edit with symbol or ast_target
+- Code generation workflow: query_project_index to find likely modules → ast_grep(pattern=..., path=...) to select the exact node → read(ast_target=...) to inspect full context → edit with ast_target or a precise old_text range
+- Common one-shot Tree-sitter workflow: read(path, query=..., capture_name=...) → edit with symbol or ast_target
 - If you already have ast_target: read(ast_target=...) → edit with ast_target
 - Advanced multi-step workflow: tool_search("ast_query") → ast_query → read_ast_node → edit with ast_target and kind=replace_block
-Fall back to plain grep/read/edit only when AST is not appropriate.
+Use grep for plain text, identifiers, error messages, docs, and config. Use ast_grep for supported code shapes such as functions, classes, methods, calls, imports, and JSX. ast_grep has built-in JS/TS/TSX/HTML/CSS support and optional language packages for Python, Go, C/C++, Bash, Java, Rust, C#, PHP, and Ruby.
 
 For background commands: use run to launch. If you need management tools that are not currently visible, load list_background_tasks/get_background_task/stop_background_task with tool_search. Prefer reading the returned output_file with read instead of asking for a separate logs tool.
 
@@ -202,6 +203,7 @@ Common tool call patterns:
 - Read a file: {path:"src/app.ts"} or {path:"src/app.ts", start_line:20, end_line:60}
 - Read a specific range inline: {path:"src/app.ts:20-60"}
 - Search text: {pattern:"loginUser", path:"src"} or {query:"loginUser", directory:"src"}
+- Search code structure before generating edits: {pattern:"function $A($$$) { $$$ }", path:"src", language:"js"} then read the returned ast_target
 - List a directory first: {path:"src"}
 - After loading glob, find files by pattern: {pattern:"src/**/*.ts"} or {query:"src/**/*.ts"}
 - Edit exact text: {path:"src/app.ts", old_text:"foo", new_text:"bar"}
@@ -227,7 +229,7 @@ Common tool call patterns:
 
 # Engineering mode (plan)
 
-- In engineering mode, explore the codebase with read/grep/list tools before editing or producing a spec/plan
+- In engineering mode, explore the codebase with query_project_index/read/grep/ast_grep/list tools before editing or producing a spec/plan
 - Simple, well-scoped tasks can be implemented directly with edit/create/delete and focused verification
 - Use create_plan only when the task is complex enough to benefit from sub-agent execution steps
 - Use create_spec when scope, architecture, UX, or constraints still need alignment
@@ -260,8 +262,9 @@ const SUB_AGENT_TOOL_HINTS = {
   tool_search: '- tool_search: load a deferred tool that is in your allowed list. Example: {query:"glob"} or {query:"ast_query"}',
   skill: '- skill: search/load indexed skills. Browse with {name:"list"}, search with {query:"ts generic"}, load with {name:"systematic-debugging"}. Do not grep/list skills directories.',
   update_todos: '- update_todos: maintain the session todo checklist; send the full current list each time',
-  query_project_index: '- query_project_index: broad repository understanding before reading source files',
-  grep: '- grep: search file contents. Example: {pattern:"loginUser", path:"src"}',
+  query_project_index: '- query_project_index: find likely modules and symbols before reading source files or generating code',
+  grep: '- grep: search plain file text such as identifiers, strings, errors, docs, or config. Example: {pattern:"loginUser", path:"src"}',
+  ast_grep: '- ast_grep: search supported language structure before refactors or generated edits; follow matches with read({ast_target}). Example: {pattern:"function $A($$$) { $$$ }", path:"src", language:"js"}',
   list: '- list: directory-by-directory filesystem discovery. Example: {path:"src"}',
   glob: '- glob: pattern-based file lookup (load with tool_search if not visible). Example: {pattern:"src/**/*.ts"}',
   ast_query: '- ast_query: AST-scoped symbol lookup (load with tool_search if not visible)',

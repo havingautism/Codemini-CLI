@@ -871,14 +871,6 @@ function createPlanTranscriptMessage(block, suffix) {
   };
 }
 
-function getLatestPlanTranscript(messages = []) {
-  for (let i = (Array.isArray(messages) ? messages.length : 0) - 1; i >= 0; i -= 1) {
-    const transcript = messages[i]?.planTranscript;
-    if (Array.isArray(transcript) && transcript.length) return transcript;
-  }
-  return [];
-}
-
 function hasVisiblePlanStepOutput(message) {
   return (Array.isArray(message?.segments) ? message.segments : []).some(
     (segment) =>
@@ -887,37 +879,38 @@ function hasVisiblePlanStepOutput(message) {
   );
 }
 
-function mergePlanTranscriptIntoUiMessages(uiMessages, sessionMessages) {
-  const transcript = getLatestPlanTranscript(sessionMessages);
-  if (!transcript.length) return uiMessages;
-  const transcriptByStep = new Map(
-    transcript
-      .filter((block) => block?.step != null)
-      .map((block) => [String(block.step), block]),
+function enrichPlanRunMessagesFromSection(runMessages, sectionMessages) {
+  const sourcesByStep = new Map(
+    (Array.isArray(sectionMessages) ? sectionMessages : [])
+      .filter((message) => message?.planStep?.step != null)
+      .map((message) => [String(message.planStep.step), message]),
   );
-  if (!transcriptByStep.size) return uiMessages;
-
-  return (Array.isArray(uiMessages) ? uiMessages : []).map((message) => {
+  if (!sourcesByStep.size) return runMessages;
+  return (Array.isArray(runMessages) ? runMessages : []).map((message) => {
     const step = message?.planStep?.step;
-    if (step == null || hasVisiblePlanStepOutput(message)) return message;
-    const block = transcriptByStep.get(String(step));
-    const segments = Array.isArray(block?.segments) ? block.segments : [];
-    if (!segments.some((segment) => String(segment?.text || "").trim())) {
-      return message;
-    }
+    if (step == null) return message;
+    const source = sourcesByStep.get(String(step));
+    if (!source) return message;
+    const messageFiles = Array.isArray(message.fileChanges)
+      ? message.fileChanges
+      : [];
+    const sourceFiles = Array.isArray(source.fileChanges)
+      ? source.fileChanges
+      : [];
     return {
       ...message,
-      segments,
-      fileChanges: Array.isArray(message.fileChanges) && message.fileChanges.length
-        ? message.fileChanges
-        : Array.isArray(block.fileChanges)
-          ? block.fileChanges
-          : [],
-      usage: message.usage || normalizeUsage(block.usage),
+      segments: hasVisiblePlanStepOutput(message)
+        ? message.segments
+        : Array.isArray(source.segments)
+          ? source.segments
+          : message.segments,
+      fileChanges: sourceFiles.length ? sourceFiles : messageFiles,
+      usage: source.usage || message.usage || null,
       planStep: {
         ...(message.planStep || {}),
-        status: block.status || message.planStep?.status || "done",
-        summary: block.summary || message.planStep?.summary || "",
+        ...(source.planStep || {}),
+        status: source.planStep?.status || message.planStep?.status || "done",
+        summary: source.planStep?.summary || message.planStep?.summary || "",
       },
     };
   });
@@ -998,6 +991,7 @@ function mergeStructuredUiPlans(processedMessages, uiMessages) {
     const section = merged.slice(userIndex + 1, sectionEnd);
     const firstExistingPlanIndex = section.findIndex(isStructuredPlanUiMessage);
     const insertAt = firstExistingPlanIndex === -1 ? sectionEnd : userIndex + 1 + firstExistingPlanIndex;
+    const planMessages = enrichPlanRunMessagesFromSection(run.messages, section);
     const before = merged.slice(0, userIndex + 1);
     const afterUserSection = merged
       .slice(userIndex + 1, sectionEnd)
@@ -1006,7 +1000,7 @@ function mergeStructuredUiPlans(processedMessages, uiMessages) {
     const relativeInsert = Math.max(0, insertAt - (userIndex + 1));
     const rebuiltSection = [
       ...afterUserSection.slice(0, relativeInsert),
-      ...run.messages,
+      ...planMessages,
       ...afterUserSection.slice(relativeInsert),
     ];
     merged = [...before, ...rebuiltSection, ...nextSection];
@@ -1566,10 +1560,7 @@ export function AppProvider({ children }) {
         }
 
         const restored = settleCompletedPlanToolCards(
-          mergeStructuredUiPlans(
-            processed,
-            mergePlanTranscriptIntoUiMessages(uiMessages, messages),
-          ),
+          mergeStructuredUiPlans(processed, uiMessages),
         );
         const overview = [...restored]
           .reverse()

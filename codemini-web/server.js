@@ -2066,6 +2066,10 @@ async function main() {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/souls/activate') {
+      if (bridge.isBusy()) {
+        jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
+        return;
+      }
       const { name: sname } = await readBody(req);
       if (!sname) { jsonResponse(res, { error: true, message: 'Missing name' }, 400); return; }
       try {
