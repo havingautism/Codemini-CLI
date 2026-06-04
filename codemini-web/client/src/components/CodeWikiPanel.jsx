@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { t } from "../../i18n/index.js";
 import {
-  AlertCircle,
+  ArrowClockwise,
   BookOpenText,
+  ChatText,
+  CircleNotch,
+  DotsSixVertical,
+  DotsThree,
   FileText,
-  GripVertical,
-  Loader2,
-  MessageSquareText,
-  MoreHorizontal,
   Network,
-  RefreshCw,
-  SendHorizontal,
-  Sparkles,
-} from "lucide-react";
+  PaperPlaneRight,
+  Sparkle,
+  WarningCircle,
+} from "@phosphor-icons/react";
 import {
   deleteCodeWikiReport,
   fetchCodeWikiReportText,
@@ -141,7 +141,7 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center text-[13px] text-(--text-muted)">
-        <Loader2 size={16} className="mr-2 animate-spin" />
+        <CircleNotch size={16} className="mr-2 animate-spin" />
         Loading code graph
       </div>
     );
@@ -150,7 +150,7 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
   if (error) {
     return (
       <div className="h-full flex flex-col items-center justify-center px-8 text-center">
-        <AlertCircle size={28} className="text-(--text-muted)" />
+        <WarningCircle size={28} className="text-(--text-muted)" />
         <p className="mt-3 text-[13px] text-(--text-secondary)">{error}</p>
         <button
           className="mt-4 h-8 rounded-md border border-(--border-default) px-3 text-[12px] text-(--text-primary) hover:bg-(--bg-hover)"
@@ -260,7 +260,7 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
                 </text>
                 <text x="12" y="42" fill="var(--text-muted)" fontSize="10">
                   {String(
-                    `${node.type} · ${String(node.file || "")
+                    `${node.type} 路 ${String(node.file || "")
                       .split("/")
                       .pop()}`,
                   ).slice(0, 28)}
@@ -277,7 +277,7 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
               Code Graph
             </p>
             <p className="mt-1 text-[11px] text-(--text-muted)">
-              {graph?.stats?.displayed_nodes || 0} nodes ·{" "}
+              {graph?.stats?.displayed_nodes || 0} nodes 路{" "}
               {graph?.stats?.displayed_edges || 0} edges
             </p>
           </div>
@@ -287,7 +287,7 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
             onClick={onRefresh}
             aria-label="Refresh graph"
           >
-            <RefreshCw size={14} />
+            <ArrowClockwise size={14} />
           </button>
         </div>
         {selected && (
@@ -973,15 +973,15 @@ export function CodeWikiPanel({
               disabled={isWorking}
             >
               {generating ? (
-                <Loader2 size={15} className="animate-spin" />
+                <CircleNotch size={15} className="animate-spin" />
               ) : (
-                <Sparkles size={15} />
+                <Sparkle size={15} />
               )}
               {generating ? t("generating") : t("generateNew")}
             </button>
             {/* {generating && (
               <div className="mt-3 flex items-center gap-2 rounded-lg border border-(--border-default) bg-(--bg-primary) px-3 py-2.5">
-                <Loader2 size={14} className="animate-spin shrink-0 text-(--text-muted)" />
+                <CircleNotch size={14} className="animate-spin shrink-0 text-(--text-muted)" />
                 <span className="text-[12px] text-(--text-secondary) truncate">
                   {t("generatingCodeWiki")}
                 </span>
@@ -1002,7 +1002,7 @@ export function CodeWikiPanel({
               title="Refresh"
               aria-label="Refresh"
             >
-              <RefreshCw size={14} />
+              <ArrowClockwise size={14} />
             </button>
           </div>
 
@@ -1023,9 +1023,9 @@ export function CodeWikiPanel({
                     size={14}
                     className="shrink-0 mt-0.5 text-(--text-muted)"
                   />
-                  <span className="min-w-0 flex-1">代码关系</span>
+                  <span className="min-w-0 flex-1">浠ｇ爜鍏崇郴</span>
                   {graphLoading && (
-                    <Loader2
+                    <CircleNotch
                       size={13}
                       className="mt-0.5 shrink-0 animate-spin text-(--text-muted)"
                     />
@@ -1033,7 +1033,7 @@ export function CodeWikiPanel({
                 </span>
                 <span className="mt-1 block truncate pl-6 text-[11px] text-(--text-muted)">
                   {symbolGraph?.stats
-                    ? `${symbolGraph.stats.displayed_nodes || 0} nodes · ${symbolGraph.stats.displayed_edges || 0} edges`
+                    ? `${symbolGraph.stats.displayed_nodes || 0} nodes 路 ${symbolGraph.stats.displayed_edges || 0} edges`
                     : "Symbol Graph"}
                 </span>
               </div>
@@ -1041,7 +1041,7 @@ export function CodeWikiPanel({
 
             {loading && (
               <div className="px-3 py-6 text-[12px] text-(--text-muted) inline-flex items-center gap-2">
-                <Loader2 size={14} className="animate-spin" />
+                <CircleNotch size={14} className="animate-spin" />
                 {t("loadingReport")}
               </div>
             )}
@@ -1084,7 +1084,7 @@ export function CodeWikiPanel({
                           onClick={(event) => event.stopPropagation()}
                           aria-label={t("reportActions")}
                         >
-                          <MoreHorizontal size={14} />
+                          <DotsThree size={14} />
                         </button>
                       </PopoverTrigger>
                       <PopoverContent
@@ -1105,7 +1105,7 @@ export function CodeWikiPanel({
                   <span className="mt-1 block truncate text-[11px] text-(--text-muted)">
                     {formatReportDate(report.mtime)}
                     {formatFileSize(report.size)
-                      ? ` · ${formatFileSize(report.size)}`
+                      ? ` 路 ${formatFileSize(report.size)}`
                       : ""}
                   </span>
                 </div>
@@ -1129,14 +1129,14 @@ export function CodeWikiPanel({
               onClick={handleGenerate}
               disabled={isWorking}
             >
-              {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+              {generating ? <CircleNotch size={14} className="animate-spin" /> : <Sparkle size={14} />}
               {t("generate")}
             </button>
           </div> */}
 
           {error && (
             <div className="mx-5 mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-400 inline-flex items-center gap-2">
-              <AlertCircle size={14} />
+              <WarningCircle size={14} />
               {error}
             </div>
           )}
@@ -1166,9 +1166,9 @@ export function CodeWikiPanel({
                   disabled={isWorking}
                 >
                   {generating ? (
-                    <Loader2 size={16} className="animate-spin" />
+                    <CircleNotch size={16} className="animate-spin" />
                   ) : (
-                    <Sparkles size={16} />
+                    <Sparkle size={16} />
                   )}
                   {generating ? t("generating") : t("generateNew")}
                 </button>
@@ -1210,7 +1210,7 @@ export function CodeWikiPanel({
                 </div>
                 {/* {generating && (
                   <div className="mt-5 flex items-center justify-center gap-2 rounded-lg border border-(--border-default) bg-(--bg-primary) px-4 py-4 w-full max-w-md">
-                    <Loader2
+                    <CircleNotch
                       size={16}
                       className="animate-spin shrink-0 text-(--text-muted)"
                     />
@@ -1224,7 +1224,7 @@ export function CodeWikiPanel({
               <div className="h-full min-h-[420px] overflow-hidden rounded-xl border border-(--border-default) bg-(--bg-secondary)">
                 {frameError ? (
                   <div className="h-full flex flex-col items-center justify-center px-8 text-center">
-                    <AlertCircle size={28} className="text-(--text-muted)" />
+                    <WarningCircle size={28} className="text-(--text-muted)" />
                     <p className="mt-3 text-[13px] text-(--text-secondary)">
                       {t("reportLoadFailed")}
                     </p>
@@ -1241,12 +1241,12 @@ export function CodeWikiPanel({
                       {markdownReport.loading ||
                       markdownReport.file !== selected.file ? (
                         <div className="flex h-full items-center justify-center text-[13px] text-(--text-muted)">
-                          <Loader2 size={16} className="mr-2 animate-spin" />
+                          <CircleNotch size={16} className="mr-2 animate-spin" />
                           {t("loadingReport")}
                         </div>
                       ) : markdownReport.error ? (
                         <div className="flex h-full flex-col items-center justify-center px-8 text-center">
-                          <AlertCircle
+                          <WarningCircle
                             size={28}
                             className="text-(--text-muted)"
                           />
@@ -1277,7 +1277,7 @@ export function CodeWikiPanel({
                   )
                 ) : (
                   <div className="h-full flex items-center justify-center text-[13px] text-(--text-muted)">
-                    <Loader2 size={16} className="mr-2 animate-spin" />
+                    <CircleNotch size={16} className="mr-2 animate-spin" />
                     {t("loading")}
                   </div>
                 )}
@@ -1295,14 +1295,14 @@ export function CodeWikiPanel({
           onMouseDown={handleQaResizeStart}
         >
           <span className="codewiki-resizer-handle">
-            <GripVertical size={14} aria-hidden="true" />
+            <DotsSixVertical size={14} aria-hidden="true" />
           </span>
         </div>
 
         <aside className="bg-(--bg-secondary) min-h-0 flex flex-col max-xl:hidden">
           <div className="p-4 border-b border-(--border-default)">
             {/* <div className="flex items-center gap-2 text-(--text-primary)">
-              <MessageSquareText size={17} />
+              <ChatText size={17} />
               <span className="font-medium text-[14px]">
                 Ask this repository
               </span>
@@ -1331,7 +1331,7 @@ export function CodeWikiPanel({
           >
             {chatMessages.length === 0 ? (
               <div className="rounded-xl border border-(--border-default) bg-(--bg-primary) p-4">
-                {/* <Sparkles size={22} className="text-(--text-muted)" /> */}
+                {/* <Sparkle size={22} className="text-(--text-muted)" /> */}
                 <p className="text-[13px] font-medium text-(--text-primary)">
                   {generating
                     ? t("generatingCodeWiki")
@@ -1358,7 +1358,7 @@ export function CodeWikiPanel({
                     {message.loading &&
                       (!message.segments || message.segments.length === 0) && (
                         <div className="mt-[-12px] mb-3 ml-1 inline-flex items-center gap-2 rounded-xl border border-(--border-default) bg-(--bg-primary) px-3 py-2 text-[12px] text-(--text-muted)">
-                          <Loader2 size={14} className="animate-spin" />
+                          <CircleNotch size={14} className="animate-spin" />
                           {t("answering")}
                         </div>
                       )}
@@ -1395,9 +1395,9 @@ export function CodeWikiPanel({
                 aria-label={t("sendingQuestion")}
               >
                 {asking ? (
-                  <Loader2 size={15} className="animate-spin" />
+                  <CircleNotch size={15} className="animate-spin" />
                 ) : (
-                  <SendHorizontal size={15} />
+                  <PaperPlaneRight size={15} />
                 )}
               </button>
             </div>

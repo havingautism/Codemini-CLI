@@ -1,18 +1,18 @@
 import { useEffect, useState } from "react";
 import {
   Archive,
-  ChevronDown,
-  ChevronRight,
-  FilePenLine,
+  CaretDown,
+  CaretRight,
   FileText,
   Folder,
   Globe,
   ListChecks,
-  Search,
+  MagnifyingGlass,
+  PencilLine,
   Terminal,
-  Trash2,
+  Trash,
   Wrench,
-} from "lucide-react";
+} from "@phosphor-icons/react";
 import { LinearStatusDot } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { formatToolLabel, parseToolDisplayName } from "@core/tool-display.js";
@@ -22,18 +22,18 @@ import { PatchDiff } from "@pierre/diffs/react";
 
 const TOOL_ICONS = {
   read: FileText,
-  edit: FilePenLine,
-  create: FilePenLine,
-  write: FilePenLine,
+  edit: PencilLine,
+  create: PencilLine,
+  write: PencilLine,
   create_plan: ListChecks,
   create_spec: FileText,
-  delete: Trash2,
+  delete: Trash,
   run: Terminal,
-  grep: Search,
+  grep: MagnifyingGlass,
   glob: Folder,
   list: Folder,
   web_fetch: Globe,
-  web_search: Search,
+  web_search: MagnifyingGlass,
   default: Wrench,
 };
 
@@ -343,10 +343,10 @@ const STATUS_STYLES = {
   blocked: "bg-[var(--accent-orange)]",
 };
 const TOOL_ROW_CLASS =
-  "flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-[13px] hover:bg-[var(--bg-hover)]";
-const TOOL_CHEVRON_CLASS = "size-[14px] shrink-0 text-(--text-muted)";
+  "msg-process-row flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-[13px] hover:bg-[var(--bg-hover)]";
+const TOOL_CHEVRON_CLASS = "size-[14px] shrink-0 text-(--text-process-detail)";
 const TOOL_ICON_CLASS =
-  "flex size-[18px] shrink-0 items-center justify-center rounded text-(--text-muted)";
+  "flex size-[18px] shrink-0 items-center justify-center rounded text-(--text-process-detail)";
 
 function resolveToolHeaderParts(card, toolName, fileMeta) {
   const fallbackLabel = formatToolLabel(toolName);
@@ -399,7 +399,7 @@ export function ToolCard({ card }) {
   return (
     <div
       className={cn(
-        "overflow-hidden bg-transparent",
+        "msg-process-meta overflow-hidden bg-transparent",
         card.status === "error" &&
           "rounded-md ring-1 ring-[var(--accent-red)]/25",
         card.status === "blocked" &&
@@ -408,23 +408,23 @@ export function ToolCard({ card }) {
     >
       <div className={TOOL_ROW_CLASS} onClick={() => setOpen(!open)}>
         {open ? (
-          <ChevronDown size={14} className={TOOL_CHEVRON_CLASS} />
+          <CaretDown size={14} className={TOOL_CHEVRON_CLASS} />
         ) : (
-          <ChevronRight size={14} className={TOOL_CHEVRON_CLASS} />
+          <CaretRight size={14} className={TOOL_CHEVRON_CLASS} />
         )}
         <span className={TOOL_ICON_CLASS}>
           <Icon size={14} />
         </span>
         <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
-          <span className="font-medium text-(--text-secondary)">{toolLabel}</span>
+          <span>{toolLabel}</span>
           {toolArg ? (
             wrapArg ? (
-              <span className="font-mono text-xs font-normal text-(--text-muted)">
+              <span className="msg-process-meta__detail font-mono text-xs font-normal">
                 {" "}
                 ({toolArg})
               </span>
             ) : (
-              <span className="font-mono text-xs font-normal text-(--text-muted)">
+              <span className="msg-process-meta__detail font-mono text-xs font-normal">
                 {" "}
                 {toolArg}
               </span>
@@ -448,7 +448,7 @@ export function ToolCard({ card }) {
           </span>
         )}
         {card.durationMs != null && (
-          <span className="text-[11px] text-[var(--text-muted)] font-mono ml-auto shrink-0">
+          <span className="msg-process-meta__detail text-[11px] font-mono ml-auto shrink-0">
             {formatDuration(card.durationMs)}
           </span>
         )}

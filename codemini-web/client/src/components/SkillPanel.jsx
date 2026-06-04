@@ -1,17 +1,17 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
-  ChevronDown,
-  ChevronRight,
+  CaretDown,
+  CaretRight,
   Download,
   Eye,
-  FileCode2,
+  FileCode,
   Folder,
-  Pencil,
+  MagnifyingGlass,
+  PencilSimple,
   Plus,
-  Search,
   SlidersHorizontal,
-  Trash2,
-} from "lucide-react";
+  Trash,
+} from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -587,7 +587,7 @@ function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
             {isBuiltin(skill) ? (
               <SlidersHorizontal size={13} />
             ) : (
-              <Pencil size={13} />
+              <PencilSimple size={13} />
             )}
           </Button>
           {!isBuiltin(skill) && (
@@ -606,7 +606,7 @@ function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
               title={t("delete")}
               className="text-(--accent-red) hover:text-(--accent-red)"
             >
-              <Trash2 size={13} />
+              <Trash size={13} />
             </Button>
           )}
         </div>
@@ -616,7 +616,7 @@ function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
 }
 
 function SkillGroupHeader({ icon = "folder", name, count, collapsed, title, onClick }) {
-  const Icon = icon === "package" ? FileCode2 : Folder;
+  const Icon = icon === "package" ? FileCode : Folder;
   return (
     <button
       type="button"
@@ -630,9 +630,9 @@ function SkillGroupHeader({ icon = "folder", name, count, collapsed, title, onCl
         {count}
       </span>
       {collapsed ? (
-        <ChevronRight size={13} className="shrink-0 text-(--text-muted)" />
+        <CaretRight size={13} className="shrink-0 text-(--text-muted)" />
       ) : (
-        <ChevronDown size={13} className="shrink-0 text-(--text-muted)" />
+        <CaretDown size={13} className="shrink-0 text-(--text-muted)" />
       )}
     </button>
   );
@@ -718,7 +718,7 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
         ),
       );
     }
-    // 静默后台刷新，不触发 loading
+    // 闈欓粯鍚庡彴鍒锋柊锛屼笉瑙﹀彂 loading
     try {
       const list = await api.fetchSkills(requestProjectDirs);
       setSkills(Array.isArray(list) ? list : []);
@@ -907,7 +907,7 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <FileCode2 size={14} className="text-(--text-muted)" />
+              <FileCode size={14} className="text-(--text-muted)" />
               <span className="text-[13px] font-medium text-(--text-primary)">
                 {t("skillLibrary")}
               </span>
@@ -971,7 +971,7 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
 
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <div className="relative flex-1">
-          <Search
+          <MagnifyingGlass
             size={13}
             className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-(--text-muted)"
           />

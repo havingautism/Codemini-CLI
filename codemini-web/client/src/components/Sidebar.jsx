@@ -1,24 +1,24 @@
-import { useState, useEffect, useMemo } from "react";
+﻿import { useState, useEffect, useMemo } from "react";
 import {
-  Plus,
-  Sun,
-  Moon,
-  Monitor,
-  Settings,
-  Folder,
-  Hammer,
-  User,
-  Info,
   BookOpenText,
-  MoreHorizontal,
-  Globe,
+  Brain,
   Check,
+  DotsThree,
+  Folder,
+  GearSix,
+  Globe,
+  Hammer,
+  Info,
+  MaskHappy,
+  Monitor,
+  Moon,
   Palette,
   PencilLine,
-  Drama,
-  Brain,
+  Plus,
+  Sun,
+  User,
   X,
-} from "lucide-react";
+} from "@phosphor-icons/react";
 import { Separator } from "@/components/ui/separator";
 import {
   Popover,
@@ -464,7 +464,7 @@ export function Sidebar({
   };
 
   return (
-    <aside className="h-full w-[260px] shrink-0 flex flex-col border-r border-(--border-default) bg-(--bg-secondary)">
+    <aside className="codemini-sidebar h-full w-[260px] shrink-0 flex flex-col">
       {/* Fixed top action buttons */}
       <div className="shrink-0 px-2.5 pt-2.5 flex flex-col gap-0.5">
         <div className="mb-1.5 flex h-9 items-center gap-2 px-2">
@@ -518,7 +518,7 @@ export function Sidebar({
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onOpenSouls}
         >
-          <Drama
+          <MaskHappy
             size={15}
             strokeWidth={2}
             className="text-(--text-secondary) shrink-0"
@@ -583,7 +583,7 @@ export function Sidebar({
                   className={cn(
                     "w-full border-0 bg-transparent flex items-center gap-1 h-[28px] px-1.5 rounded-md text-left text-[12px] font-medium tracking-[0.2px] hover:bg-(--bg-hover)",
                     isActive
-                      ? "text-(--text-primary)"
+                      ? "bg-(--bg-hover) text-(--text-primary)"
                       : "text-(--text-muted) hover:text-(--text-secondary)",
                   )}
                   title={projectKey === "unknown" ? "" : projectKey}
@@ -650,7 +650,7 @@ export function Sidebar({
                         aria-label={t("projectActions")}
                         onClick={(event) => event.stopPropagation()}
                       >
-                        <MoreHorizontal size={14} />
+                        <DotsThree size={14} />
                       </button>
                     </PopoverTrigger>
                     <PopoverContent
@@ -715,7 +715,7 @@ export function Sidebar({
                               onClick={(event) => event.stopPropagation()}
                               aria-label={t("sessionActions")}
                             >
-                              <MoreHorizontal size={14} />
+                              <DotsThree size={14} />
                             </button>
                           </PopoverTrigger>
                           <PopoverContent
@@ -831,7 +831,7 @@ export function Sidebar({
                         onClick={(event) => event.stopPropagation()}
                         aria-label={t("sessionActions")}
                       >
-                        <MoreHorizontal size={14} />
+                        <DotsThree size={14} />
                       </button>
                     </PopoverTrigger>
                     <PopoverContent
@@ -1039,7 +1039,7 @@ export function Sidebar({
             title={t("settings")}
             aria-label={t("settings")}
           >
-            <Settings size={15} strokeWidth={1.8} />
+            <GearSix size={15} />
           </button>
         </div>
       </div>

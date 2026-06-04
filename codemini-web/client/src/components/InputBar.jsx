@@ -7,24 +7,24 @@ import React, {
 } from "react";
 import { Separator } from "@/components/ui/separator";
 import {
-  Paperclip,
-  ChevronDown,
-  ArrowUp,
-  Minus,
-  Coffee,
-  Code2,
-  FileText,
-  Sparkles,
-  Hammer,
-  ShieldAlert,
-  Unlock,
-  Moon,
   Archive,
-  Database,
-  Inbox,
+  ArrowUp,
   Camera,
-  Drama,
-} from "lucide-react";
+  CaretDown,
+  Code,
+  Coffee,
+  Database,
+  FileText,
+  Hammer,
+  LockOpen,
+  MaskHappy,
+  Minus,
+  Moon,
+  Paperclip,
+  ShieldWarning,
+  Sparkle,
+  Tray,
+} from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
 import * as api from "@/hooks/use-api";
@@ -48,7 +48,7 @@ function getModeOptions() {
       value: "plan",
       label: t("planMode"),
       desc: t("planModeDesc"),
-      icon: Code2,
+      icon: Code,
     },
   ];
 }
@@ -59,19 +59,19 @@ function getApprovalModeOptions() {
       value: "review",
       label: t("reviewMode"),
       desc: t("reviewModeDesc"),
-      icon: ShieldAlert,
+      icon: ShieldWarning,
     },
     {
       value: "auto",
       label: t("autoMode"),
       desc: t("autoModeDesc"),
-      icon: Sparkles,
+      icon: Sparkle,
     },
     {
       value: "full_access",
       label: t("fullAccessMode"),
       desc: t("fullAccessModeDesc"),
-      icon: Unlock,
+      icon: LockOpen,
     },
   ];
 }
@@ -107,13 +107,13 @@ const ACTION_COMMANDS = [
   {
     name: "inbox",
     insert: "/inbox ",
-    icon: Inbox,
+    icon: Tray,
     description: "Review pending memory inbox entries.",
   },
   {
     name: "reflect",
     insert: "/reflect ",
-    icon: Sparkles,
+    icon: Sparkle,
     description: "Draft or update a reusable skill from the current workflow.",
   },
 ];
@@ -162,7 +162,7 @@ function ModeSelector({ current, disabled = false }) {
         >
           <ActiveIcon size={13} />
           <span className="truncate">{active.label}</span>
-          <ChevronDown size={11} />
+          <CaretDown size={11} />
         </button>
       </PopoverTrigger>
       <PopoverContent
@@ -243,7 +243,7 @@ function ApprovalModeSelector({ current, disabled = false }) {
         >
           <ActiveIcon size={13} />
           <span className="truncate">{active.label}</span>
-          <ChevronDown size={11} />
+          <CaretDown size={11} />
         </button>
       </PopoverTrigger>
       <PopoverContent
@@ -323,9 +323,9 @@ function SoulQuickSwitch({ disabled = false }) {
           disabled={disabled}
           title={disabled ? t("inputDisabled") : t("soulSwitch")}
         >
-          <Drama size={13} />
+          <MaskHappy size={13} />
           <span className="truncate max-w-[60px]">{active || "default"}</span>
-          <ChevronDown size={11} />
+          <CaretDown size={11} />
         </button>
       </PopoverTrigger>
       <PopoverContent
@@ -408,7 +408,7 @@ function SpecQuickSelect({ visible, disabled = false, onSelect }) {
         >
           <FileText size={13} />
           <span className="truncate">{t("specFile")}</span>
-          <ChevronDown size={11} />
+          <CaretDown size={11} />
         </button>
       </PopoverTrigger>
       <PopoverContent
@@ -781,7 +781,7 @@ export function InputBar({
           <div className="flex items-center gap-1.5 ml-auto shrink-0">
             {/* <button type="button" className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)" title="模型">
               <span className={cn('truncate', !rs.model && 'opacity-50')}>{rs.model || '加载中'}</span>
-              <ChevronDown size={11} />
+              <CaretDown size={11} />
             </button> */}
             <button
               type="button"

@@ -17,17 +17,17 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  Check,
-  CheckCircle2,
-  ChevronDown,
-  ChevronRight,
-  Copy,
+  ArrowCounterClockwise,
   Brain,
+  CaretDown,
+  CaretRight,
+  Check,
+  CheckCircle,
+  Copy,
   Moon,
-  RotateCcw,
   Wrench,
   XCircle,
-} from "lucide-react";
+} from "@phosphor-icons/react";
 
 const NEUTRAL_ROLE_BADGE =
   "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)";
@@ -115,9 +115,11 @@ const SKILL_DOT_STYLES = {
 };
 
 const TOOL_COLLAPSE_THRESHOLD = 1;
+const PROCESS_META_CLASS = "msg-process-meta";
 const COLLAPSE_ROW_CLASS =
-  "flex w-full cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover)";
-const COLLAPSE_CHEVRON_CLASS = "size-[14px] shrink-0 text-(--text-muted)";
+  "msg-process-row flex w-full cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent px-3 py-2 text-left text-[12px] hover:bg-(--bg-hover)";
+const COLLAPSE_CHEVRON_CLASS =
+  "size-[14px] shrink-0 text-(--text-process-detail)";
 const COLLAPSE_ICON_CLASS =
   "flex size-[18px] shrink-0 items-center justify-center";
 
@@ -166,14 +168,14 @@ function ThoughtBlock({ segment }) {
       : t("thought");
 
   return (
-    <div className="my-3 text-(--text-primary)">
+    <div className={cn("my-3", PROCESS_META_CLASS)}>
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className={cn(COLLAPSE_ROW_CLASS, "font-medium")}
+        className={COLLAPSE_ROW_CLASS}
         aria-expanded={open}
       >
-        <ChevronRight
+        <CaretRight
           size={14}
           className={cn(
             COLLAPSE_CHEVRON_CLASS,
@@ -181,18 +183,22 @@ function ThoughtBlock({ segment }) {
             open && "rotate-90",
           )}
         />
-        <span className={COLLAPSE_ICON_CLASS}>
+        <span
+          className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}
+        >
           {segment.isStreaming ? <LinearRing size="md" /> : <Brain size={15} />}
         </span>
         <span>{label}</span>
-        {segment.isStreaming && elapsed && <span>{elapsed}</span>}
+        {segment.isStreaming && elapsed && (
+          <span className="msg-process-meta__detail">{elapsed}</span>
+        )}
       </button>
       {open && (
         <div className="relative ml-4.5 mt-1.5 pl-8 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
           <StreamdownRenderer
             text={segment.text}
             streaming={segment.isStreaming}
-            className="pl-5 text-[13px] italic leading-5 text-(--text-secondary)"
+            className="msg-process-thought-body pl-5 text-[13px] italic leading-5"
           />
         </div>
       )}
@@ -265,7 +271,7 @@ function HandoffBlock({ segment }) {
         className={COLLAPSE_ROW_CLASS}
         aria-expanded={open}
       >
-        <ChevronRight
+        <CaretRight
           size={14}
           className={cn(
             COLLAPSE_CHEVRON_CLASS,
@@ -429,7 +435,7 @@ function DreamNotice({ notice }) {
     notice.status === "error"
       ? XCircle
       : notice.status === "done"
-        ? CheckCircle2
+        ? CheckCircle
         : null;
 
   return (
@@ -485,7 +491,7 @@ function ToolGroup({ cards }) {
       : t("toolGroupTools").replace("{{count}}", total);
 
   return (
-    <div className="my-2">
+    <div className={cn("my-2", PROCESS_META_CLASS)}>
       {shouldUseSummaryHeader && (
         <button
           type="button"
@@ -494,9 +500,9 @@ function ToolGroup({ cards }) {
           aria-expanded={expanded}
         >
           {expanded ? (
-            <ChevronDown size={14} className={COLLAPSE_CHEVRON_CLASS} />
+            <CaretDown size={14} className={COLLAPSE_CHEVRON_CLASS} />
           ) : (
-            <ChevronRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
+            <CaretRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
           )}
           <span className={COLLAPSE_ICON_CLASS}>
             {hasRunningTool ? (
@@ -505,7 +511,7 @@ function ToolGroup({ cards }) {
               <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
             )}
           </span>
-          <span className="font-medium">{summaryLabel}</span>
+          <span>{summaryLabel}</span>
           {/* {!expanded && (
             <span className="text-(--text-muted)">{t("toolGroupExpand")}</span>
           )} */}
@@ -525,7 +531,7 @@ function ToolGroup({ cards }) {
         </div>
       )}
       {hasRunningTool && (
-        <div className="flex items-center gap-2 px-3 py-1.5 text-[11px] text-(--text-muted)">
+        <div className="msg-process-meta__detail flex items-center gap-2 px-3 py-1.5 text-[11px]">
           <Spinner />
           <span>{t("tooling")}</span>
         </div>
@@ -560,17 +566,19 @@ function skillActivityLabel(badge) {
 function SkillActivityList({ badges = [] }) {
   if (!badges.length) return null;
   return (
-    <div className="my-2 space-y-1">
+    <div className={cn("my-2 space-y-1", PROCESS_META_CLASS)}>
       {badges.map((badge, index) => (
         <div
           key={`${badge.name || "skill"}-${badge.status || "done"}-${index}`}
-          className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-(--text-secondary) hover:bg-(--bg-hover)"
+          className={cn(COLLAPSE_ROW_CLASS, "text-[13px]")}
         >
-          <span className={COLLAPSE_ICON_CLASS}>
-            <Wrench size={14} className="text-(--text-muted)" />
+          <span
+            className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}
+          >
+            <Wrench size={14} />
           </span>
-          <span className="font-medium">{t("skillActivity")}</span>
-          <span className="min-w-0 flex-1 truncate font-mono text-xs text-(--text-muted)">
+          <span>{t("skillActivity")}</span>
+          <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
             {skillActivityLabel(badge)}
           </span>
           {badge.status === "running" ? (
@@ -592,13 +600,15 @@ function SkillActivityList({ badges = [] }) {
 function SkillActivityRow({ badge }) {
   if (!badge?.name) return null;
   return (
-    <div className="my-2">
-      <div className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-(--text-secondary) hover:bg-(--bg-hover)">
-        <span className={COLLAPSE_ICON_CLASS}>
-          <Wrench size={14} className="text-(--text-muted)" />
+    <div className={cn("my-2", PROCESS_META_CLASS)}>
+      <div className={cn(COLLAPSE_ROW_CLASS, "text-[13px]")}>
+        <span
+          className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}
+        >
+          <Wrench size={14} />
         </span>
-        <span className="font-medium">{t("skillActivity")}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-xs text-(--text-muted)">
+        <span>{t("skillActivity")}</span>
+        <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
           {skillActivityLabel(badge)}
         </span>
         {badge.status === "running" ? (
@@ -653,7 +663,7 @@ function ProcessGroup({ group }) {
           .replace("{{tools}}", toolCount);
 
   return (
-    <div className="my-3">
+    <div className={cn("my-3", PROCESS_META_CLASS)}>
       <button
         type="button"
         onClick={() => setExpanded((value) => !value)}
@@ -661,16 +671,16 @@ function ProcessGroup({ group }) {
         aria-expanded={expanded}
       >
         {expanded ? (
-          <ChevronDown size={14} className={COLLAPSE_CHEVRON_CLASS} />
+          <CaretDown size={14} className={COLLAPSE_CHEVRON_CLASS} />
         ) : (
-          <ChevronRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
+          <CaretRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
         )}
         <span className={COLLAPSE_ICON_CLASS}>
           <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
         </span>
-        <span className="font-medium">{label}</span>
+        <span>{label}</span>
         {details && (
-          <span className="min-w-0 truncate text-(--text-muted)">
+          <span className="msg-process-meta__detail min-w-0 truncate">
             {details}
           </span>
         )}
@@ -1014,12 +1024,12 @@ function FileChangesSummary({ changes }) {
               >
                 {hasPreview ? (
                   fileOpen ? (
-                    <ChevronDown
+                    <CaretDown
                       size={13}
                       className="shrink-0 text-(--text-muted)"
                     />
                   ) : (
-                    <ChevronRight
+                    <CaretRight
                       size={13}
                       className="shrink-0 text-(--text-muted)"
                     />
@@ -1085,7 +1095,7 @@ function FileChangesSummary({ changes }) {
                         <span>{t("undoChangeReverted")}</span>
                       </>
                     ) : (
-                      <RotateCcw size={13} />
+                      <ArrowCounterClockwise size={13} />
                     )}
                   </span>
                 )}

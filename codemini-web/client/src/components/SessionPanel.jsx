@@ -6,7 +6,7 @@ import { ConfirmDialog } from '@/components/ConfirmDialog.jsx';
 import { Spinner } from '@/components/ui/spinner';
 import { cn } from '@/lib/utils';
 import { formatTimestamp } from '../../utils/time.js';
-import { MoreHorizontal } from 'lucide-react';
+import { DotsThree } from "@phosphor-icons/react";
 import { useState } from 'react';
 import { t } from '../../i18n/index.js';
 
@@ -64,7 +64,7 @@ export function SessionPanel({ sessions, sessionsLoading, currentId, onSwitch, o
                         onClick={(event) => event.stopPropagation()}
                         aria-label={t('sessionActions')}
                       >
-                        <MoreHorizontal size={15} />
+                        <DotsThree size={15} />
                       </button>
                     </PopoverTrigger>
                     <PopoverContent

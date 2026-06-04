@@ -1,13 +1,13 @@
 import {
   Brain,
-  Plug,
-  ChartNoAxesCombined,
-  Code2,
+  ChartLine,
+  Code,
   Coffee,
-  ShieldAlert,
-  Sparkles,
-  Unlock,
-} from "lucide-react";
+  LockOpen,
+  Plug,
+  ShieldWarning,
+  Sparkle,
+} from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
 
@@ -72,14 +72,14 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
 
   const modelLogo = getModelLogo(rs.model);
   const sdkLogo = SDK_LOGO_MAP[rs.sdkProvider];
-  const WorkIcon = mode === "plan" ? Code2 : Coffee;
+  const WorkIcon = mode === "plan" ? Code : Coffee;
   const workLabel = mode === "plan" ? t("planMode") : t("normalExecutionMode");
   const ApprovalIcon =
     approvalMode === "full_access"
-      ? Unlock
+      ? LockOpen
       : approvalMode === "auto"
-        ? Sparkles
-        : ShieldAlert;
+        ? Sparkle
+        : ShieldWarning;
   const approvalLabel =
     approvalMode === "full_access"
       ? t("fullAccessMode")
@@ -116,7 +116,7 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
 
       {max > 0 && (
         <span className="hidden lg:inline-flex items-center gap-1 whitespace-nowrap">
-          <ChartNoAxesCombined size={13} className="shrink-0 opacity-70" />
+          <ChartLine size={13} className="shrink-0 opacity-70" />
           <span>CTX</span>
           <span className="w-12 h-1 bg-(--muted) rounded-full overflow-hidden">
             <span

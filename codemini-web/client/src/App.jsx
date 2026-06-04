@@ -1,4 +1,4 @@
-import React, {
+﻿import React, {
   Component,
   Suspense,
   lazy,
@@ -20,7 +20,7 @@ import { PlanApprovalDialog } from "@/components/PlanApprovalDialog.jsx";
 import { ReflectApprovalCard } from "@/components/ReflectApprovalDialog.jsx";
 import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
-import { MoreHorizontal, Terminal, GitCompare, Menu, X } from "lucide-react";
+import { DotsThree, GitDiff, List, Terminal, X } from "@phosphor-icons/react";
 import "../style.css";
 
 const CodeWikiPanel = lazy(() =>
@@ -231,8 +231,10 @@ function Shell() {
   );
 
   return (
-    <div className="flex h-screen overflow-hidden bg-(--bg-secondary) text-(--text-primary)">
-      <div className="hidden md:block h-full shrink-0">{sidebar}</div>
+    <div className="codemini-app-shell flex h-screen overflow-hidden text-(--text-primary)">
+      <div className="hidden md:flex h-full shrink-0 py-2 pl-2 pr-0">
+        {sidebar}
+      </div>
       {mobileSidebarOpen && (
         <div className="fixed inset-0 z-50 md:hidden">
           <button
@@ -241,7 +243,7 @@ function Shell() {
             aria-label="Close sidebar"
             onClick={closeMobileSidebar}
           />
-          <div className="absolute inset-y-0 left-0 w-[280px] max-w-[82vw] shadow-[var(--shadow-lg)]">
+          <div className="codemini-app-shell absolute inset-y-0 left-0 w-[280px] max-w-[82vw] shadow-[var(--shadow-lg)]">
             {sidebar}
           </div>
           <button
@@ -255,28 +257,30 @@ function Shell() {
         </div>
       )}
 
-      <div className="flex-1 flex flex-col min-w-0 bg-(--bg-secondary)">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 p-1.5 sm:p-2">
         {state.currentView === "codewiki" ? (
-          <Suspense fallback={null}>
-            <CodeWikiPanel
-              projectCwd={
-                state.codewikiProjectPath?.split(/[/\\]/).pop() ||
-                state.projectCwd
-              }
-              projectKey={
-                state.codewikiProjectPath ||
-                state.runtimeState?.cwd ||
-                state.projectCwd ||
-                ""
-              }
-              busy={state.busy}
-              planSteps={state.planSteps}
-              stageLabel={state.stageLabel}
-              generationStatus={state.codewikiGeneration}
-            />
-          </Suspense>
+          <div className="codemini-workspace-panel flex flex-1 flex-col min-h-0 overflow-hidden">
+            <Suspense fallback={null}>
+              <CodeWikiPanel
+                projectCwd={
+                  state.codewikiProjectPath?.split(/[/\\]/).pop() ||
+                  state.projectCwd
+                }
+                projectKey={
+                  state.codewikiProjectPath ||
+                  state.runtimeState?.cwd ||
+                  state.projectCwd ||
+                  ""
+                }
+                busy={state.busy}
+                planSteps={state.planSteps}
+                stageLabel={state.stageLabel}
+                generationStatus={state.codewikiGeneration}
+              />
+            </Suspense>
+          </div>
         ) : (
-          <div className="flex-1 flex flex-col min-h-0 bg-(--bg-primary) border-l border-(--border-default) relative overflow-hidden">
+          <div className="codemini-workspace-panel flex flex-1 flex-col min-h-0 overflow-hidden">
             {/* Titlebar */}
             <div className="flex items-center justify-between h-12 px-3 sm:px-5 shrink-0 border-b border-(--border-default)">
               <div className="flex items-center gap-2.5 min-w-0">
@@ -286,7 +290,7 @@ function Shell() {
                   aria-label="Open sidebar"
                   onClick={() => setMobileSidebarOpen(true)}
                 >
-                  <Menu size={17} />
+                  <List size={17} />
                 </button>
                 <span className="font-medium text-[14px] text-(--text-primary) truncate">
                   {state.isGeneral
@@ -311,7 +315,7 @@ function Shell() {
                     className="inline-flex items-center gap-1.5 text-[12px] shrink-0 border-0 bg-transparent cursor-pointer hover:text-(--text-primary) p-0 text-(--text-muted)"
                     title={t("gitDiffTitle")}
                   >
-                    <GitCompare size={13} />
+                    <GitDiff size={13} />
                     {(Number(state.gitInfo.linesAdded) > 0 ||
                       Number(state.gitInfo.linesRemoved) > 0) && (
                       <span className="inline-flex items-center gap-1 font-mono text-[11px]">
@@ -331,7 +335,7 @@ function Shell() {
                 )}
               </div>
               {/* <button className="border-0 bg-transparent text-(--text-muted) rounded-md p-1.5 cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) shrink-0">
-                <MoreHorizontal size={16} />
+                <DotsThree size={16} />
               </button> */}
             </div>
 

@@ -817,6 +817,26 @@
 :root[data-theme],
 :root[data-palette],
 :root[data-theme][data-palette] {
+  /* Thinking / tool / processed rows — dimmer than msg-body primary */
+  --text-process: color-mix(in srgb, var(--text-primary) 38%, var(--text-muted));
+  --text-process-detail: color-mix(in srgb, var(--text-primary) 22%, var(--text-muted) 78%);
+  --shell-canvas: var(--bg-secondary);
+  --workspace-panel-radius: 0.75rem;
+  --workspace-panel-border: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  /* Focus glow follows palette ring (shadcn) — set per palette below when needed */
+  --input-shell-accent: var(--ring);
+  --input-shell-glow: color-mix(in srgb, var(--input-shell-accent) 26%, transparent);
+  --input-shell-glow-soft: color-mix(in srgb, var(--input-shell-accent) 12%, transparent);
+  --input-shell-border-hover: color-mix(
+    in srgb,
+    var(--input-shell-accent) 22%,
+    var(--input-shell-border)
+  );
+  --input-shell-border-focus: color-mix(
+    in srgb,
+    var(--input-shell-accent) 40%,
+    var(--border-strong)
+  );
   --loader-fg: var(--text-secondary);
   --loader-track: color-mix(in srgb, var(--text-muted) 38%, transparent);
   --loader-dot: var(--text-muted);
@@ -834,6 +854,12 @@
   --shadow-lg:
     color-mix(in srgb, var(--text-primary) 9%, transparent) 0 0 0 1px,
     rgba(0, 0, 0, 0.28) 0 16px 36px;
+}
+
+/* Neutral default palette keeps blue accent; named palettes use --ring (mauve, teal, etc.) */
+:root:not([data-palette]),
+:root[data-palette="default"] {
+  --input-shell-accent: var(--accent-blue);
 }
 
 :root[data-theme="light"] {
@@ -887,6 +913,19 @@ body {
   line-height: 1.5;
 }
 
+/* Linear-style shell: gray canvas + inset rounded workspace panel */
+.codemini-app-shell {
+  background: var(--shell-canvas);
+}
+.codemini-sidebar {
+  background: transparent;
+}
+.codemini-workspace-panel {
+  border-radius: var(--workspace-panel-radius);
+  border: 1px solid var(--workspace-panel-border);
+  background: var(--bg-primary);
+}
+
 /* Chat session: +1px vs app chrome (14px → 15px base) */
 .codemini-chat-session {
   font-size: 15px;
@@ -894,6 +933,23 @@ body {
 .codemini-chat-session .msg-body {
   font-size: 15px;
   line-height: 1.65;
+}
+
+/* Process metadata: thinking, tools, processed summaries */
+.msg-process-meta {
+  color: var(--text-process);
+}
+.msg-process-meta .msg-process-meta__detail {
+  color: var(--text-process-detail);
+}
+.msg-process-meta .msg-process-row:hover {
+  color: color-mix(in srgb, var(--text-process) 50%, var(--text-secondary) 50%);
+}
+.msg-process-meta .msg-process-thought-body {
+  color: var(--text-process);
+}
+.msg-process-meta .msg-process-thought-body :where(p, li, span, em, strong, code) {
+  color: inherit;
 }
 .codemini-chat-session .text-\[10px\] {
   font-size: 11px !important;
@@ -930,12 +986,34 @@ body {
   font-size: 12px !important;
 }
 
-/* Chat input shell — soft elevation, no focus ring boost */
+/* Chat input shell — soft elevation + theme glow on hover / focus */
 .codemini-input-shell {
   border: 1px solid var(--input-shell-border);
   border-radius: var(--radius-lg);
   background: var(--input-shell-bg);
   box-shadow: var(--input-shell-shadow);
+  transition:
+    border-color var(--transition),
+    box-shadow 220ms ease,
+    background var(--transition);
+}
+
+.codemini-input-shell:hover:not(:focus-within) {
+  border-color: var(--input-shell-border-hover);
+  box-shadow:
+    var(--input-shell-shadow),
+    0 0 0 1px var(--input-shell-glow-soft),
+    0 0 16px 1px var(--input-shell-glow-soft),
+    0 0 32px 4px color-mix(in srgb, var(--input-shell-accent) 7%, transparent);
+}
+
+.codemini-input-shell:focus-within {
+  border-color: var(--input-shell-border-focus);
+  box-shadow:
+    var(--input-shell-shadow),
+    0 0 0 1px var(--input-shell-glow),
+    0 0 20px 2px var(--input-shell-glow-soft),
+    0 0 40px 8px color-mix(in srgb, var(--input-shell-accent) 15%, transparent);
 }
 
 code,

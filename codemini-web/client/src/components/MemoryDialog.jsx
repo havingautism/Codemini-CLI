@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ArrowClockwise,
   Brain,
-  ChevronDown,
-  ChevronRight,
+  CaretDown,
+  CaretRight,
   Folder,
-  RefreshCw,
-  Search,
-  Trash2,
-} from "lucide-react";
+  MagnifyingGlass,
+  Trash,
+} from "@phosphor-icons/react";
 import {
   Dialog,
   DialogContent,
@@ -104,7 +104,7 @@ function MemoryCard({ memory, deleting, onDelete }) {
           title={t("delete")}
           className="shrink-0 text-(--accent-red) hover:text-(--accent-red)"
         >
-          <Trash2 size={13} />
+          <Trash size={13} />
         </Button>
       </div>
     </div>
@@ -244,7 +244,7 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
                 disabled={loading}
                 size="sm"
               >
-                <RefreshCw
+                <ArrowClockwise
                   size={13}
                   className={cn(loading && "animate-spin")}
                 />
@@ -269,7 +269,7 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
               ))}
             </div>
             <div className="relative flex-1">
-              <Search
+              <MagnifyingGlass
                 size={13}
                 className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-(--text-muted)"
               />
@@ -349,12 +349,12 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
                           {group.items.length}
                         </span>
                         {collapsed ? (
-                          <ChevronRight
+                          <CaretRight
                             size={13}
                             className="shrink-0 text-(--text-muted)"
                           />
                         ) : (
-                          <ChevronDown
+                          <CaretDown
                             size={13}
                             className="shrink-0 text-(--text-muted)"
                           />

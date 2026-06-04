@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { XIcon } from "lucide-react"
+import { X } from "@phosphor-icons/react"
 import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
@@ -88,7 +88,7 @@ function DialogHeader({
         <DialogPrimitive.Close
           data-slot="dialog-close"
           className="inline-flex size-7 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) opacity-80 transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary) hover:opacity-100 focus:outline-hidden disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4">
-          <XIcon />
+          <X />
           <span className="sr-only">Close</span>
         </DialogPrimitive.Close>
       )}

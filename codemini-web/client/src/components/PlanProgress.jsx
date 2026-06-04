@@ -2,7 +2,7 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
-import { X } from "lucide-react";
+import { X } from "@phosphor-icons/react";
 
 export const ROLE_PILLS = {
   planner: "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
@@ -79,11 +79,11 @@ export function PlanProgress({ steps, onDismiss }) {
               )}
             >
               {step.status === "done"
-                ? "✓"
+                ? "\u2713"
                 : step.status === "failed"
-                  ? "✗"
+                  ? "\u2717"
                   : step.status === "running"
-                    ? "▶"
+                    ? "\u25B6"
                     : i + 1}
             </span>
             <Badge

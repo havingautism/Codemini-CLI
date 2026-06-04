@@ -21,7 +21,7 @@ import {
   ReviewCard,
   WorkflowReviewDialog,
 } from "@/components/WorkflowReviewDialog.jsx";
-import { ChevronDown, ChevronUp, Plus, Trash2 } from "lucide-react";
+import { CaretDown, CaretUp, Plus, Trash } from "@phosphor-icons/react";
 
 const PLAN_STEP_ROLES = [
   "explorer",
@@ -115,7 +115,7 @@ function PlanStepEditor({
             onClick={onMoveUp}
             aria-label={t("planStepMoveUp")}
           >
-            <ChevronUp size={14} />
+            <CaretUp size={14} />
           </Button>
           <Button
             type="button"
@@ -125,7 +125,7 @@ function PlanStepEditor({
             onClick={onMoveDown}
             aria-label={t("planStepMoveDown")}
           >
-            <ChevronDown size={14} />
+            <CaretDown size={14} />
           </Button>
           <Button
             type="button"
@@ -135,7 +135,7 @@ function PlanStepEditor({
             onClick={onRemove}
             aria-label={t("planStepRemove")}
           >
-            <Trash2 size={14} />
+            <Trash size={14} />
           </Button>
         </div>
       </div>

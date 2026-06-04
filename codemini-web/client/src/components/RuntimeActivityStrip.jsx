@@ -1,4 +1,4 @@
-import { CheckCircle2, XCircle } from "lucide-react";
+import { CheckCircle, XCircle } from "@phosphor-icons/react";
 import { LinearRing } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 
@@ -8,7 +8,7 @@ const STATUS_STYLES = {
       "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
   },
   done: {
-    icon: CheckCircle2,
+    icon: CheckCircle,
     className:
       "border-(--accent-green)/30 bg-(--accent-green-bg) text-(--accent-green)",
     iconClassName: "",

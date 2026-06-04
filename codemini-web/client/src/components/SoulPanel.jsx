@@ -1,5 +1,12 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { Eye, Pencil, Plus, Search, Trash2, Drama } from "lucide-react";
+import {
+  Eye,
+  MagnifyingGlass,
+  MaskHappy,
+  PencilSimple,
+  Plus,
+  Trash,
+} from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -268,7 +275,7 @@ export function SoulPanel({ disabled = false }) {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <Drama size={14} className="text-(--text-muted)" />
+              <MaskHappy size={14} className="text-(--text-muted)" />
               <span className="text-[13px] font-medium text-(--text-primary)">
                 {activeSoul?.name || t("noActiveSoul")}
               </span>
@@ -299,7 +306,7 @@ export function SoulPanel({ disabled = false }) {
 
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <div className="relative flex-1">
-          <Search
+          <MagnifyingGlass
             size={13}
             className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-(--text-muted)"
           />
@@ -404,7 +411,7 @@ export function SoulPanel({ disabled = false }) {
                       disabled={disabled}
                       title={t("edit")}
                     >
-                      <Pencil size={13} />
+                      <PencilSimple size={13} />
                     </Button>
                     <Button
                       variant="ghost"
@@ -426,7 +433,7 @@ export function SoulPanel({ disabled = false }) {
                       title={t("delete")}
                       className="text-(--accent-red) hover:text-(--accent-red)"
                     >
-                      <Trash2 size={13} />
+                      <Trash size={13} />
                     </Button>
                   </>
                 )}

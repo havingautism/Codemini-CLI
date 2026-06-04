@@ -1,5 +1,5 @@
-import { Suspense, lazy, useRef, useEffect, useState, useMemo, useCallback } from "react";
-import { ArrowDown, GitBranch } from "lucide-react";
+﻿import { Suspense, lazy, useRef, useEffect, useState, useMemo, useCallback } from "react";
+import { ArrowDown, GitBranch } from "@phosphor-icons/react";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
@@ -145,41 +145,58 @@ export function ChatPanel({
     }
   }, []);
 
+  const updateScrollState = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const bottomGap = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = bottomGap < 80;
+    const scrollable = bottomGap > 80 || el.scrollTop > 8;
+    setAutoScroll(atBottom);
+    setShowScrollToBottom(scrollable && !atBottom);
+
+    const userEls = el.querySelectorAll(
+      '[data-message-id][class*="justify-end"]',
+    );
+    if (userEls.length === 0) {
+      setActiveNavIndex(-1);
+      return;
+    }
+    const midLine = el.scrollTop + el.clientHeight * 0.4;
+    let last = -1;
+    userEls.forEach((uel, i) => {
+      if (uel.offsetTop <= midLine) last = i;
+    });
+    setActiveNavIndex(last);
+  }, []);
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const handleScroll = () => {
-      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-      setAutoScroll(atBottom);
-      setShowScrollToBottom(!atBottom && el.scrollTop > 100);
-
-      // Update active nav index based on visible position
-      const userEls = el.querySelectorAll(
-        '[data-message-id][class*="justify-end"]',
-      );
-      if (userEls.length === 0) {
-        setActiveNavIndex(-1);
-        return;
-      }
-      const midLine = el.scrollTop + el.clientHeight * 0.4;
-      let last = -1;
-      userEls.forEach((uel, i) => {
-        if (uel.offsetTop <= midLine) last = i;
-      });
-      setActiveNavIndex(last);
+    el.addEventListener("scroll", updateScrollState, { passive: true });
+    const observer = new ResizeObserver(() => updateScrollState());
+    observer.observe(el);
+    return () => {
+      el.removeEventListener("scroll", updateScrollState);
+      observer.disconnect();
     };
-    el.addEventListener("scroll", handleScroll);
-    return () => el.removeEventListener("scroll", handleScroll);
-  }, []);
+  }, [updateScrollState]);
 
   useEffect(() => {
     if (autoScroll && scrollRef.current) {
       requestAnimationFrame(() => {
-        if (scrollRef.current)
+        if (scrollRef.current) {
           scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+          updateScrollState();
+        }
       });
     }
-  }, [messages, autoScroll]);
+  }, [messages, autoScroll, updateScrollState]);
+
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(updateScrollState);
+    });
+  }, [messages, messagesLoading, updateScrollState]);
 
   return (
     <div className="flex-1 relative overflow-hidden">

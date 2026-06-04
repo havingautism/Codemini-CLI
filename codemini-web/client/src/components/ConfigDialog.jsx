@@ -21,7 +21,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Separator } from "@/components/ui/separator";
-import { CircleHelp } from "lucide-react";
+import { Question } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import * as api from "@/hooks/use-api";
 import { Spinner } from "@/components/ui/spinner";
@@ -309,7 +309,7 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
                                 className="ml-1 inline-flex align-[-2px] text-(--text-muted) hover:text-(--text-primary)"
                                 aria-label={key.help}
                               >
-                                <CircleHelp size={13} strokeWidth={1.8} />
+                                <Question size={13} />
                               </button>
                             </TooltipTrigger>
                             <TooltipContent
