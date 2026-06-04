@@ -102,6 +102,16 @@ const globArgsSchema = looseRecord.transform((source) =>
 const grepArgsSchema = looseRecord.transform((source) =>
   applyPatternAliases(source, ['query', 'symbol', 'q'], ['directory', 'dir', 'cwd', 'file_path', 'file'])
 );
+const searchCodeArgsSchema = looseRecord
+  .transform((source) => {
+    const normalized = applyPatternAliases(source, ['query', 'q', 'symbol'], ['directory', 'dir', 'cwd', 'file_path', 'file']);
+    const query = String(normalized.query || normalized.pattern || '').trim();
+    if (query) normalized.query = query;
+    if (normalized.intent != null && normalized.mode == null) normalized.mode = normalized.intent;
+    if (normalized.lang != null && normalized.language == null) normalized.language = normalized.lang;
+    if (normalized.limit != null && normalized.max_results == null) normalized.max_results = normalized.limit;
+    return normalized;
+  });
 const createArgsSchema = looseRecord.transform(applyWriteNormalization);
 const editArgsSchema = looseRecord.transform(applyEditNormalization);
 const deleteArgsSchema = looseRecord
@@ -129,6 +139,7 @@ const TOOL_SCHEMAS = {
   list: listArgsSchema,
   glob: globArgsSchema,
   grep: grepArgsSchema,
+  search_code: searchCodeArgsSchema,
   create: createArgsSchema,
   edit: editArgsSchema,
   delete: deleteArgsSchema,
@@ -215,6 +226,12 @@ export function normalizeToolArguments(toolName, args, rawArguments) {
     return schema.parse({
       ...source,
       ...(stringValue && !source.pattern ? { pattern: stringValue } : {})
+    });
+  }
+  if (toolName === 'search_code') {
+    return schema.parse({
+      ...source,
+      ...(stringValue && !source.query && !source.q && !source.pattern ? { query: stringValue } : {})
     });
   }
   if (toolName === 'create') {

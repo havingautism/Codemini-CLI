@@ -32,8 +32,8 @@ const DEFAULT_CONFIG = {
     preflight_trigger_pct: 60,
     hard_limit_pct: 98,
     tool_result_max_chars: 12000,
-    read_file_default_lines: 220,
-    read_file_max_chars: 24000,
+    read_file_default_lines: 120,
+    read_file_max_chars: 12000,
     prompt_budget_audit: false,
     microcompact_enabled: true,
     microcompact_keep_recent: 5,
@@ -45,9 +45,7 @@ const DEFAULT_CONFIG = {
     approval_mode: 'review',
     always_allow_tools: [
       'read',
-      'grep',
-      'glob',
-      'list',
+      'search_code',
       'list_background_tasks',
       'get_background_task'
     ]
@@ -167,9 +165,7 @@ function normalizePolicyLists(config) {
   next.execution.always_allow_tools = uniqueStrings(
     [
       'read',
-      'grep',
-      'glob',
-      'list',
+      'search_code',
       'list_background_tasks',
       'get_background_task',
       ...rawTools

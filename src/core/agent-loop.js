@@ -187,7 +187,7 @@ function compactToolResult(result, toolName, args, maxChars = 12000) {
 // ─── P1a: Read-only tool classification ──────────────────────────────
 
 const READ_ONLY_TOOLS = new Set([
-  'read', 'grep', 'ast_grep', 'glob', 'list',
+  'read', 'search_code', 'grep', 'ast_grep', 'glob', 'list',
   'ast_query', 'read_ast_node',
   'web_fetch', 'web_search',
   'list_background_tasks', 'get_background_task',

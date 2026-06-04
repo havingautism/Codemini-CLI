@@ -161,10 +161,10 @@ export function getShellSystemPrompt(value) {
 
 ALWAYS prefer dedicated tools over raw shell commands:
 - The visible default tool list is intentionally small. If a needed capability is not currently listed, do not assume it is unavailable — call tool_search to load additional tools first
-- Use query_project_index first for broad repository understanding. It combines project-map metadata with indexed file symbols so you can narrow candidates before reading source files
+- Use search_code first for code discovery. It routes text, symbol, and structural searches internally so you can narrow candidates before reading source files
 - Use read to inspect files — NEVER use cat, head, or tail via run. Use canonical shapes like {path:"src/app.ts"}, {path:"src/app.ts:10-40"}, or {path:"src/app.ts", start_line:10, end_line:40}
-- Use grep to search file contents — NEVER use grep or rg via run
-- Use list for directory-by-directory filesystem discovery. If you specifically need pattern-based file lookup like src/**/*.ts, load glob with tool_search instead of falling back to run
+- Do not use grep or rg via run. Use search_code for normal code search; load low-level grep with tool_search only when you need raw text search output
+- If you need directory listing or pattern-based file lookup, load list or glob with tool_search instead of falling back to run
 - Use edit to modify existing files — this is the DEFAULT path for code changes. Prefer {path:"src/app.ts", old_text:"foo", new_text:"bar"}
 - Use create only for new files. Use edit for existing files, including complete rewrites with {kind:"rewrite_file", new_content:"..."}
 - Use update_todos to manage the session todo checklist for complex work. Provide the full current list each time and usually keep exactly one item in_progress
@@ -182,29 +182,29 @@ Use update_todos with these rules:
 
 Some tools are loaded on demand through tool_search. Common examples:
 - skill for activating an indexed skill by name
-- glob for pattern-based file lookup
+- grep, ast_grep, query_project_index, list, and glob for low-level search/discovery when search_code is not enough
 - ast_query and read_ast_node for advanced Tree-sitter query workflows
 - list_background_tasks, get_background_task, and stop_background_task for managing long-running background commands
 - save_memory, list_memory, search_memory, and forget_memory for persistent memory operations
 
 For structural code edits (functions, classes, methods), prefer AST-scoped reads before editing:
-- Code generation workflow: query_project_index to find likely modules → ast_grep(pattern=..., path=...) to select the exact node → read(ast_target=...) to inspect full context → edit with ast_target or a precise old_text range
+- Code generation workflow: search_code(query=..., mode="auto" or "structure") → read the returned file/range or ast_target → edit with ast_target or a precise old_text range
 - Common one-shot Tree-sitter workflow: read(path, query=..., capture_name=...) → edit with symbol or ast_target
 - If you already have ast_target: read(ast_target=...) → edit with ast_target
 - Advanced multi-step workflow: tool_search("ast_query") → ast_query → read_ast_node → edit with ast_target and kind=replace_block
-Use grep for plain text, identifiers, error messages, docs, and config. Use ast_grep for supported code shapes such as functions, classes, methods, calls, imports, and JSX. ast_grep has built-in JS/TS/TSX/HTML/CSS support and optional language packages for Python, Go, C/C++, Bash, Java, Rust, C#, PHP, and Ruby.
+Use search_code for plain text, identifiers, error messages, symbols, docs, config, and supported code shapes. Load grep or ast_grep only for low-level debugging.
 
 For background commands: use run to launch. If you need management tools that are not currently visible, load list_background_tasks/get_background_task/stop_background_task with tool_search. Prefer reading the returned output_file with read instead of asking for a separate logs tool.
 
 Common tool call patterns:
-- Query the project index first: {query:"login auth flow", path:"src", max_results:5}
-- Load a deferred tool when needed: {query:"skill"}, {query:"glob"}, or {query:"all"}
+- Search code first: {query:"login auth flow", path:"src", max_results:5} or {query:"UserService", mode:"symbol", path:"src"}
+- Load a deferred tool when needed: {query:"skill"}, {query:"glob"}, {query:"grep"}, or {query:"all"}
 - Activate an indexed skill after loading skill: {name:"brainstorming"}
 - Read a file: {path:"src/app.ts"} or {path:"src/app.ts", start_line:20, end_line:60}
 - Read a specific range inline: {path:"src/app.ts:20-60"}
-- Search text: {pattern:"loginUser", path:"src"} or {query:"loginUser", directory:"src"}
-- Search code structure before generating edits: {pattern:"function $A($$$) { $$$ }", path:"src", language:"js"} then read the returned ast_target
-- List a directory first: {path:"src"}
+- Search text: {query:"loginUser", mode:"text", path:"src"}
+- Search code structure before generating edits: {query:"function $A($$$) { $$$ }", mode:"structure", path:"src", language:"js"} then read the returned ast_target
+- Load list before directory listing: tool_search({query:"list"}) then list({path:"src"})
 - After loading glob, find files by pattern: {pattern:"src/**/*.ts"} or {query:"src/**/*.ts"}
 - Edit exact text: {path:"src/app.ts", old_text:"foo", new_text:"bar"}
 - Edit with shorthand: {path:"src/app.ts", old_text:"foo", content:"bar"}
@@ -229,7 +229,7 @@ Common tool call patterns:
 
 # Engineering mode (plan)
 
-- In engineering mode, explore the codebase with query_project_index/read/grep/ast_grep/list tools before editing or producing a spec/plan
+- In engineering mode, explore the codebase with search_code/read tools before editing or producing a spec/plan
 - Simple, well-scoped tasks can be implemented directly with edit/create/delete and focused verification
 - Use create_plan only when the task is complex enough to benefit from sub-agent execution steps
 - Use create_spec when scope, architecture, UX, or constraints still need alignment
@@ -262,9 +262,10 @@ const SUB_AGENT_TOOL_HINTS = {
   tool_search: '- tool_search: load a deferred tool that is in your allowed list. Example: {query:"glob"} or {query:"ast_query"}',
   skill: '- skill: search/load indexed skills. Browse with {name:"list"}, search with {query:"ts generic"}, load with {name:"systematic-debugging"}. Do not grep/list skills directories.',
   update_todos: '- update_todos: maintain the session todo checklist; send the full current list each time',
-  query_project_index: '- query_project_index: find likely modules and symbols before reading source files or generating code',
-  grep: '- grep: search plain file text such as identifiers, strings, errors, docs, or config. Example: {pattern:"loginUser", path:"src"}',
-  ast_grep: '- ast_grep: search supported language structure before refactors or generated edits; follow matches with read({ast_target}). Example: {pattern:"function $A($$$) { $$$ }", path:"src", language:"js"}',
+  search_code: '- search_code: default code search. Routes text, symbol, and structure search; follow results with read on the returned file/range or ast_target. Example: {query:"loginUser", mode:"auto", path:"src"}',
+  query_project_index: '- query_project_index: low-level indexed symbol search; prefer search_code({mode:"symbol"}) unless raw index details are needed',
+  grep: '- grep: low-level plain text search; prefer search_code({mode:"text"}) unless raw grep output is needed',
+  ast_grep: '- ast_grep: low-level structural search; prefer search_code({mode:"structure"}) unless debugging ast-grep patterns',
   list: '- list: directory-by-directory filesystem discovery. Example: {path:"src"}',
   glob: '- glob: pattern-based file lookup (load with tool_search if not visible). Example: {pattern:"src/**/*.ts"}',
   ast_query: '- ast_query: AST-scoped symbol lookup (load with tool_search if not visible)',
@@ -289,7 +290,7 @@ export function buildSubAgentShellRulesPrompt(allowedTools = [], { shell, worksp
       return SUB_AGENT_TOOL_HINTS[name];
     })
     .filter(Boolean);
-  const deferredTools = allowed.filter((name) => !['read', 'read_plan', 'update_plan', 'update_todos', 'grep', 'list', 'edit', 'create', 'delete', 'run', 'tool_search', 'skill'].includes(name));
+  const deferredTools = allowed.filter((name) => !['read', 'search_code', 'read_plan', 'update_plan', 'update_todos', 'edit', 'create', 'delete', 'run', 'tool_search', 'skill'].includes(name));
   const lines = [
     `You are Codemini CLI, an AI coding assistant running as a pipeline sub-agent in a ${profile.label} shell environment.`,
     `Working directory: ${path.resolve(workspaceRoot || process.cwd())}`,

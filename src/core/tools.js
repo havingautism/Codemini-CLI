@@ -2615,7 +2615,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'read',
         description:
-          'Inspect code or text files before generating or editing code. Use {path} for normal reads; file_path/file are accepted aliases. Use start_line/end_line or path:"src/app.ts:10-40" for ranges. If ast_target comes from ast_grep, read returns the exact structural node. Normal code reads include enclosing symbol metadata when available; read with query is a Tree-sitter-query fallback that returns the matched AST node and ast_target.',
+          'Inspect code or text files before generating or editing code. Use search_code first to locate the file/range or ast_target, then read that precise context. Use {path} for normal reads; file_path/file are accepted aliases. Use start_line/end_line or path:"src/app.ts:10-40" for ranges. If ast_target comes from search_code structure results, read returns the exact structural node. Normal code reads include enclosing symbol metadata when available; read with query is a Tree-sitter-query fallback that returns the matched AST node and ast_target.',
         parameters: {
           type: 'object',
           properties: {
@@ -2625,8 +2625,8 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
             start_line: { type: 'number', description: '1-based start line' },
             end_line: { type: 'number', description: 'Inclusive end line' },
             max_chars: { type: 'number', description: 'Max chars to return' },
-            ast_target: { type: 'object', description: 'AST target from ast_grep, ast_query, or a prior AST selection. When provided, read returns that node instead of a line window.' },
-            query: { type: 'string', description: 'Optional Tree-sitter query to run inline before reading the first matched AST node. Prefer ast_grep for normal structural search; use query when you need Tree-sitter capture syntax.' },
+            ast_target: { type: 'object', description: 'AST target from search_code structure results, ast_grep, ast_query, or a prior AST selection. When provided, read returns that node instead of a line window.' },
+            query: { type: 'string', description: 'Optional Tree-sitter query to run inline before reading the first matched AST node. Prefer search_code for normal search; use query when you need Tree-sitter capture syntax.' },
             capture_name: { type: 'string', description: 'Optional capture name to select when query is provided.' },
             include_ast_context: { type: 'boolean', description: 'For AST reads, include compact parent/child summaries. Defaults to true.' },
             language: { type: 'string', description: 'Optional Tree-sitter language override for AST reads or inline queries.' }
@@ -2638,76 +2638,27 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     {
       type: 'function',
       function: {
-        name: 'grep',
+        name: 'search_code',
         description:
-          'Search plain file text quickly before read or edit. Use this for identifiers, strings, errors, docs, and exact text. For code shapes such as functions/classes/calls/JSX, use ast_grep instead. Do not use run with grep or rg for normal code search.',
+          'Find code locations before reading or editing. This is the default search entry point: it routes plain text to ripgrep, symbols to the project index, and structure patterns to ast-grep. Results are concise locations with ranges/previews; follow with read on the returned file/range or ast_target.',
         parameters: {
           type: 'object',
           properties: {
-            pattern: { type: 'string', description: 'Plain text or regex search pattern' },
-            path: { type: 'string', description: 'Directory or file to search. file_path/file/dir/directory/cwd are accepted aliases.' },
-            regex: { type: 'boolean', description: 'Treat pattern as regex' },
-            case_sensitive: { type: 'boolean', description: 'Case-sensitive matching' },
-            max_results: { type: 'number', description: 'Max matches to return' },
-            language: { type: 'string', description: 'Filter by language' },
-            file_types: { type: 'array', items: { type: 'string' }, description: 'Filter by file glob' }
-          },
-          required: ['pattern']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'ast_grep',
-        description:
-          'Search code structurally with ast-grep patterns. Built in: js, ts, tsx, html, css. Optional language packages enable python, go, c, cpp, bash, java, rust, csharp, php, and ruby. Prefer this before generating or refactoring code when you need the exact function, class, method, call, import, JSX element, or syntax shape. Returns ast_target objects; follow with read({ast_target}) to inspect the full node, then edit({ast_target}) for scoped replacement. Use grep for plain text.',
-        parameters: {
-          type: 'object',
-          properties: {
-            pattern: { type: 'string', description: 'ast-grep structural pattern, such as "function $A($$$) { $$$ }", "class $A { $$$ }", "$A($$$)", or "<$A $$$ />". query is accepted as an alias.' },
-            query: { type: 'string', description: 'Alias for pattern' },
-            path: { type: 'string', description: 'Directory or file to search. Defaults to workspace root.' },
+            query: { type: 'string', description: 'Search text, symbol name, or structural ast-grep pattern.' },
+            q: { type: 'string', description: 'Alias for query' },
+            mode: { type: 'string', enum: ['auto', 'text', 'symbol', 'structure', 'file'], description: 'Search mode. Defaults to auto.' },
+            intent: { type: 'string', enum: ['auto', 'text', 'symbol', 'structure', 'file'], description: 'Alias for mode.' },
+            path: { type: 'string', description: 'Optional directory or file to search. file_path/file/dir/directory/cwd are accepted aliases.' },
             file_path: { type: 'string', description: 'Alias for path' },
             file: { type: 'string', description: 'Alias for path' },
             dir: { type: 'string', description: 'Alias for path' },
             directory: { type: 'string', description: 'Alias for path' },
-            language: { type: 'string', description: 'Optional language filter such as js, ts, tsx, html, css, python, go, c, cpp, bash, java, rust, csharp, php, or ruby.' },
-            max_results: { type: 'number', description: 'Max structural matches to return' }
+            language: { type: 'string', description: 'Optional language filter such as js, ts, java, python, or go.' },
+            lang: { type: 'string', description: 'Alias for language' },
+            max_results: { type: 'number', description: 'Max locations to return. Defaults to 20.' },
+            include_preview: { type: 'boolean', description: 'Include short code previews. Defaults to true.' }
           },
-          required: []
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'list',
-        description: 'List files and directories in a workspace path. Use this for quick directory discovery before deeper reads.',
-        parameters: {
-          type: 'object',
-          properties: {
-            path: { type: 'string', description: 'Directory path to list. file_path/file/dir/directory are accepted aliases.' },
-            include_hidden: { type: 'boolean', description: 'Include dotfiles' }
-          }
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'query_project_index',
-        description:
-          'Query the lightweight project index before broad file reads or code generation. Use it to find likely modules and symbols, then use ast_grep/read for exact implementation context. Returns relevant files plus Symbol Graph summaries: symbol_id, type, range, signature, calls, called_by, imports, writes, and emits.',
-        parameters: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'Task or code search phrase such as "login auth" or "tui presenters"' },
-            path: { type: 'string', description: 'Optional path prefix like src or src/auth to narrow results' },
-            path_prefix: { type: 'string', description: 'Alias for path' },
-            language: { type: 'string', description: 'Optional language filter such as ts, js, python, or go' },
-            max_results: { type: 'number', description: 'Max result files to return' }
-          }
+          required: ['query']
         }
       }
     },
@@ -2716,7 +2667,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'edit',
         description:
-          'Edit existing files after reading enough surrounding code. Prefer {path, old_text, new_text}; old_string/new_string and file_path/file are accepted aliases. For structural replacements, prefer ast_grep → read({ast_target}) → edit({ast_target, kind:"replace_block", content}). If old_text is repeated, use path:"file:10-30" or rely on the most recent read range. Set replace_all=true to replace every match.',
+          'Edit existing files after reading enough surrounding code. Prefer search_code → read → edit. Use {path, old_text, new_text}; old_string/new_string and file_path/file are accepted aliases. For structural replacements, prefer search_code({mode:"structure"}) → read({ast_target}) → edit({ast_target, kind:"replace_block", content}). If old_text is repeated, use path:"file:10-30" or rely on the most recent read range. Set replace_all=true to replace every match.',
         parameters: {
           type: 'object',
           properties: {
@@ -2736,7 +2687,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
             position: { type: 'string', description: 'before or after' },
             kind: { type: 'string', description: 'replace_block, replace_text, insert_before, insert_after, or rewrite_file' },
             target: { type: 'object', description: 'Location object with symbol or line info' },
-            ast_target: { type: 'object', description: 'AST target from ast_grep, ast_query, or a prior AST selection' },
+            ast_target: { type: 'object', description: 'AST target from search_code structure results, ast_grep, ast_query, or a prior AST selection' },
             symbol: { type: 'string', description: 'Symbol to target' },
             line: { type: 'number', description: 'Line to target' },
             edit: { type: 'object', description: 'Structured edit input' }
@@ -2988,6 +2939,84 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
   }
 
   const deferredDefinitions = {
+    grep: {
+      type: 'function',
+      function: {
+        name: 'grep',
+        description:
+          'Low-level plain text search. Prefer search_code unless you specifically need raw grep/ripgrep-style output.',
+        parameters: {
+          type: 'object',
+          properties: {
+            pattern: { type: 'string', description: 'Plain text or regex search pattern' },
+            query: { type: 'string', description: 'Alias for pattern' },
+            path: { type: 'string', description: 'Directory or file to search. file_path/file/dir/directory/cwd are accepted aliases.' },
+            regex: { type: 'boolean', description: 'Treat pattern as regex' },
+            case_sensitive: { type: 'boolean', description: 'Case-sensitive matching' },
+            max_results: { type: 'number', description: 'Max matches to return' },
+            language: { type: 'string', description: 'Filter by language' },
+            file_types: { type: 'array', items: { type: 'string' }, description: 'Filter by file glob' }
+          },
+          required: ['pattern']
+        }
+      }
+    },
+    ast_grep: {
+      type: 'function',
+      function: {
+        name: 'ast_grep',
+        description:
+          'Low-level structural ast-grep search. Prefer search_code({mode:"structure"}) unless you need raw ast-grep results or advanced pattern debugging.',
+        parameters: {
+          type: 'object',
+          properties: {
+            pattern: { type: 'string', description: 'ast-grep structural pattern, such as "function $A($$$) { $$$ }", "class $A { $$$ }", "$A($$$)", or "<$A $$$ />". query is accepted as an alias.' },
+            query: { type: 'string', description: 'Alias for pattern' },
+            path: { type: 'string', description: 'Directory or file to search. Defaults to workspace root.' },
+            file_path: { type: 'string', description: 'Alias for path' },
+            file: { type: 'string', description: 'Alias for path' },
+            dir: { type: 'string', description: 'Alias for path' },
+            directory: { type: 'string', description: 'Alias for path' },
+            language: { type: 'string', description: 'Optional language filter such as js, ts, tsx, html, css, python, go, c, cpp, bash, java, rust, csharp, php, or ruby.' },
+            max_results: { type: 'number', description: 'Max structural matches to return' }
+          },
+          required: []
+        }
+      }
+    },
+    list: {
+      type: 'function',
+      function: {
+        name: 'list',
+        description:
+          'Low-level directory listing. Prefer search_code for code discovery and load this only when you need to inspect directory contents.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Directory path to list. file_path/file/dir/directory are accepted aliases.' },
+            include_hidden: { type: 'boolean', description: 'Include dotfiles' }
+          }
+        }
+      }
+    },
+    query_project_index: {
+      type: 'function',
+      function: {
+        name: 'query_project_index',
+        description:
+          'Low-level project index query. Prefer search_code({mode:"symbol"}) unless you need raw Symbol Graph summaries.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Task or code search phrase such as "login auth" or "tui presenters"' },
+            path: { type: 'string', description: 'Optional path prefix like src or src/auth to narrow results' },
+            path_prefix: { type: 'string', description: 'Alias for path' },
+            language: { type: 'string', description: 'Optional language filter such as ts, js, python, or go' },
+            max_results: { type: 'number', description: 'Max result files to return' }
+          }
+        }
+      }
+    },
     glob: {
       type: 'function',
       function: {
@@ -3265,6 +3294,242 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
     return result;
   }
 
+  function classifyCodeSearchQuery(query) {
+    const text = String(query || '').trim();
+    if (!text) return 'text';
+    const looksLikePath =
+      /[\\/]/.test(text) ||
+      /\.[a-zA-Z0-9]{1,8}$/.test(text) ||
+      /(?:package\.json|vite\.config|tsconfig|pom\.xml|build\.gradle)/i.test(text);
+    if (looksLikePath) return 'file';
+    const looksLikeAstPattern =
+      /\$\w+|\$\$\$/.test(text) ||
+      /<\$\w+/.test(text) ||
+      /^\s*(function|class|interface|enum|import|export|method|call|useEffect|annotation|decorator|jsx)\b/i.test(text) ||
+      /@\$\w+/.test(text);
+    if (looksLikeAstPattern) return 'structure';
+    const looksLikeSymbol =
+      /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)?$/.test(text) &&
+      (
+        /[A-Z]/.test(text) ||
+        /(Controller|Service|Mapper|Repository|Store|Provider|Handler|Manager|Client|Util|Config)$/i.test(text)
+      );
+    if (looksLikeSymbol) return 'symbol';
+    return 'text';
+  }
+
+  function enginesForSearchCode(mode, detectedIntent) {
+    const normalized = String(mode || 'auto').trim().toLowerCase();
+    const intent = normalized === 'auto' ? detectedIntent : normalized;
+    if (intent === 'symbol') return ['project-index', 'ripgrep'];
+    if (intent === 'structure') return ['ast-grep', 'project-index'];
+    if (intent === 'file') return ['glob', 'project-index'];
+    return ['ripgrep'];
+  }
+
+  function makeReadNext(result) {
+    if (!result?.path) return '';
+    if (result.ast_target) return `read({ast_target:${JSON.stringify(result.ast_target)}})`;
+    if (Number.isFinite(Number(result.start_line)) && Number.isFinite(Number(result.end_line))) {
+      return `read({path:"${result.path}", start_line:${result.start_line}, end_line:${result.end_line}})`;
+    }
+    if (Number.isFinite(Number(result.line))) {
+      return `read({path:"${result.path}", start_line:${result.line}, end_line:${result.line}})`;
+    }
+    return `read({path:"${result.path}"})`;
+  }
+
+  function scoreSearchCodeResult(result, query) {
+    let score = Number(result?.score || 0);
+    const q = String(query || '').toLowerCase();
+    const resultPath = String(result?.path || '').toLowerCase();
+    const preview = String(result?.preview || '').toLowerCase();
+    const symbol = String(result?.symbol || '').toLowerCase();
+    if (symbol && symbol === q) score += 50;
+    if (q && resultPath.includes(q)) score += 35;
+    if (q && preview.includes(q)) score += 15;
+    if (resultPath.startsWith('src/')) score += 10;
+    if (/(^|\/)(test|tests|__tests__)(\/|$)/.test(resultPath)) score -= 10;
+    if (/(^|\/)(node_modules|dist|build|coverage)(\/|$)/.test(resultPath)) score -= 100;
+    if (result?.engine === 'project-index') score += 20;
+    if (result?.kind === 'structure') score += 15;
+    return score;
+  }
+
+  function dedupeAndRankSearchCodeResults(results, query, maxResults) {
+    const seen = new Set();
+    const deduped = [];
+    for (const result of results) {
+      const key = [
+        result.path || '',
+        result.kind || '',
+        result.symbol || '',
+        result.start_line || result.line || '',
+        result.end_line || ''
+      ].join(':');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const scored = { ...result };
+      scored.score = scoreSearchCodeResult(scored, query);
+      scored.next = scored.next || makeReadNext(scored);
+      deduped.push(scored);
+    }
+    deduped.sort((left, right) => Number(right.score || 0) - Number(left.score || 0) || String(left.path || '').localeCompare(String(right.path || '')));
+    return deduped.slice(0, maxResults);
+  }
+
+  function compactSymbolSearchMatches(indexResult, maxResults, includePreview) {
+    const out = [];
+    for (const match of Array.isArray(indexResult?.matches) ? indexResult.matches : []) {
+      const symbols = Array.isArray(match.symbols) ? match.symbols : [];
+      if (symbols.length === 0) {
+        out.push({
+          path: match.file,
+          kind: 'file',
+          language: match.language,
+          engine: 'project-index',
+          score: Number(match.score || 0),
+          preview: includePreview ? `exports=[${(match.exports || []).join(', ')}] functions=[${(match.functions || []).join(', ')}] classes=[${(match.classes || []).join(', ')}]` : undefined,
+          next: match.file ? `read({path:"${match.file}"})` : undefined
+        });
+      }
+      for (const symbol of symbols) {
+        out.push({
+          path: match.file,
+          kind: 'symbol',
+          language: match.language,
+          symbol: symbol.name,
+          symbol_id: symbol.symbol_id,
+          type: symbol.type,
+          start_line: symbol.range?.start_line,
+          end_line: symbol.range?.end_line,
+          engine: 'project-index',
+          score: Number(match.score || 0),
+          preview: includePreview ? (symbol.signature || symbol.name || '') : undefined,
+          next: match.file && symbol.range
+            ? `read({path:"${match.file}", start_line:${symbol.range.start_line}, end_line:${symbol.range.end_line}})`
+            : match.file
+              ? `read({path:"${match.file}"})`
+              : undefined
+        });
+        if (out.length >= maxResults) return out;
+      }
+      if (out.length >= maxResults) return out;
+    }
+    return out.slice(0, maxResults);
+  }
+
+  function compactTextSearchMatches(grepResult, maxResults, includePreview) {
+    return (Array.isArray(grepResult?.matches) ? grepResult.matches : []).slice(0, maxResults).map((match) => ({
+      path: match.path,
+      kind: 'text',
+      line: match.line,
+      column: match.column,
+      engine: grepResult.engine || 'ripgrep',
+      score: 0,
+      preview: includePreview ? match.preview : undefined,
+      next: match.path ? `read({path:"${match.path}", start_line:${match.line}, end_line:${match.line}})` : undefined
+    }));
+  }
+
+  function compactStructureSearchMatches(astResult, maxResults, includePreview) {
+    return (Array.isArray(astResult?.matches) ? astResult.matches : []).slice(0, maxResults).map((match) => {
+      const target = match.ast_target || {};
+      return {
+        path: target.path || astResult.path,
+        kind: 'structure',
+        language: target.language,
+        symbol: target.name,
+        type: match.node_type || target.node_type,
+        start_line: match.start_line,
+        end_line: match.end_line,
+        engine: astResult.engine || 'ast-grep',
+        score: 0,
+        preview: includePreview ? match.text : undefined,
+        ast_target: target,
+        next: target.path ? `read({ast_target:${JSON.stringify(target)}})` : undefined
+      };
+    });
+  }
+
+  function compactFileSearchMatches(globResult, maxResults) {
+    return (Array.isArray(globResult?.matches) ? globResult.matches : []).slice(0, maxResults).map((match) => ({
+      path: match,
+      kind: 'file',
+      engine: globResult.engine || 'glob',
+      score: 0,
+      preview: match,
+      next: `read({path:"${match}"})`
+    }));
+  }
+
+  async function searchCode(args = {}) {
+    const query = String(args?.query || args?.q || args?.pattern || '').trim();
+    if (!query) throw new Error('search_code requires query');
+    const requestedMode = String(args?.mode || args?.intent || 'auto').trim().toLowerCase() || 'auto';
+    const maxResults = Math.max(1, Math.min(50, Number(args?.max_results || args?.limit || 20) || 20));
+    const includePreview = args?.include_preview !== false && args?.includePreview !== false;
+    const pathArg = args?.path || args?.file_path || args?.file || args?.dir || args?.directory || '.';
+    const language = String(args?.language || args?.lang || '').trim();
+    const detectedIntent = classifyCodeSearchQuery(query);
+    const normalizedMode = ['auto', 'text', 'symbol', 'structure', 'file'].includes(requestedMode)
+      ? requestedMode
+      : 'auto';
+    const engines = enginesForSearchCode(normalizedMode, detectedIntent);
+    const rawResults = [];
+    let truncated = false;
+
+    for (const engine of engines) {
+      if (engine === 'project-index') {
+        await ensureProjectIndex();
+        const result = await queryProjectIndex(workspaceRoot, {
+          query,
+          path: pathArg === '.' ? '' : pathArg,
+          language,
+          max_results: maxResults
+        });
+        rawResults.push(...compactSymbolSearchMatches(result, maxResults, includePreview));
+        truncated = truncated || (Array.isArray(result.matches) && result.matches.length >= maxResults);
+      } else if (engine === 'ripgrep') {
+        const result = await grep({ pattern: query, path: pathArg, language, max_results: maxResults });
+        rawResults.push(...compactTextSearchMatches(result, maxResults, includePreview));
+        truncated = truncated || Boolean(result.truncated);
+      } else if (engine === 'ast-grep') {
+        try {
+          const result = await astGrep({ pattern: query, path: pathArg, language, max_results: maxResults });
+          rawResults.push(...compactStructureSearchMatches(result, maxResults, includePreview));
+          truncated = truncated || Boolean(result.truncated);
+        } catch (error) {
+          if (normalizedMode === 'structure') throw error;
+          rawResults.push({
+            path: '',
+            kind: 'structure',
+            engine: 'ast-grep',
+            score: -100,
+            preview: `ast-grep skipped: ${error instanceof Error ? error.message : String(error)}`
+          });
+        }
+      } else if (engine === 'glob') {
+        const pattern = query.includes('*') || query.includes('?') ? query : `**/*${query}*`;
+        const result = await glob({ pattern, path: pathArg });
+        rawResults.push(...compactFileSearchMatches(result, maxResults));
+        truncated = truncated || Boolean(result.truncated);
+      }
+    }
+
+    const results = dedupeAndRankSearchCodeResults(rawResults.filter((item) => item.path), query, maxResults);
+    return {
+      query,
+      mode: normalizedMode,
+      detected_intent: detectedIntent,
+      resolved_mode: normalizedMode === 'auto' ? detectedIntent : normalizedMode,
+      engines,
+      results,
+      matches: results,
+      truncated
+    };
+  }
+
   async function glob(args) {
     const normalizedArgs = normalizePatternArgs(args, ['glob', 'query'], ['directory', 'dir', 'cwd']);
     if (!resolvesOutsideRoot(workspaceRoot, normalizedArgs?.path || '.') && activeFffAdapter?.glob) {
@@ -3366,11 +3631,11 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
 
       const result = await readFile(workspaceRoot, {
         ...args,
-        default_lines: config.context?.read_file_default_lines ?? 220,
+        default_lines: config.context?.read_file_default_lines ?? 120,
         max_chars:
           typeof args?.max_chars === 'number'
             ? args.max_chars
-            : config.context?.read_file_max_chars ?? 24000
+            : config.context?.read_file_max_chars ?? 12000
       }, config);
       const readPath = normalizePath(result?.path || args?.path || '').trim();
       if (readPath) {
@@ -3381,6 +3646,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       }
       return result;
     },
+    search_code: searchCode,
     query_project_index: async (args) => {
       await ensureProjectIndex();
       return queryProjectIndex(workspaceRoot, args);
@@ -3770,6 +4036,30 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         return `${header}\n${content.slice(0, headLen)}\n... [omitted ${content.length - headLen - tailLen} chars] ...\n${content.slice(-tailLen)}`;
       }
       return JSON.stringify(result);
+    },
+
+    search_code(result) {
+      if (!result || typeof result !== 'object') return String(result);
+      const results = Array.isArray(result.results) ? result.results : result.matches;
+      if (!Array.isArray(results)) return JSON.stringify(result);
+      const header = `[search_code: "${result.query || ''}" intent=${result.detected_intent || result.resolved_mode || result.mode || 'auto'} engines=${(result.engines || []).join(',') || result.engine || '?'}]`;
+      if (results.length === 0) return `${header}\nNo code locations found.`;
+      const lines = results.slice(0, 30).map((match) => {
+        const range = Number.isFinite(Number(match.start_line)) && Number.isFinite(Number(match.end_line))
+          ? `${match.start_line}-${match.end_line}`
+          : match.line
+            ? String(match.line)
+            : '?';
+        const symbol = match.symbol ? ` ${match.symbol}` : '';
+        const type = match.type ? ` ${match.type}` : '';
+        const engine = match.engine ? ` [${match.engine}]` : '';
+        const preview = match.preview ? `: ${String(match.preview).slice(0, 140)}` : '';
+        return `${match.path || match.file || '?'}:${range}${type}${symbol}${engine}${preview}`;
+      });
+      const more = results.length > 30
+        ? `\n... and ${results.length - 30} more location(s) [total: ${results.length}${result.truncated ? ', results were truncated' : ''}]`
+        : '';
+      return `${header}\n${lines.join('\n')}${more}`;
     },
 
     grep(result) {

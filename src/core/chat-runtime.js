@@ -681,11 +681,11 @@ function describeConfigKey(key, mode = 'set', language = 'zh') {
 }
 
 const SUB_AGENT_ROLES = ['planner', 'explorer', 'architect', 'advisor', 'coder', 'refactorer', 'reviewer', 'tester', 'debugger', 'writer', 'summarizer', 'codewiki'];
-const CODEWIKI_ROLE_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'add_code_comment', 'update_code_comment'];
-export const CODEWIKI_GENERATE_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'skill', 'edit', 'create'];
+const CODEWIKI_ROLE_TOOLS = ['read', 'search_code', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'add_code_comment', 'update_code_comment'];
+export const CODEWIKI_GENERATE_TOOLS = ['read', 'search_code', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'skill', 'edit', 'create'];
 export const EXECUTION_MODE_TOOL_POLICY = {
   plan: [
-    'read', 'grep', 'ast_grep', 'list', 'glob', 'ast_query', 'read_ast_node',
+    'read', 'search_code', 'grep', 'ast_grep', 'list', 'glob', 'ast_query', 'read_ast_node',
     'query_project_index', 'tool_search', 'skill', 'web_fetch', 'web_search',
     'read_plan', 'update_plan', 'update_todos',
     'edit', 'create', 'delete', 'run',
@@ -716,7 +716,7 @@ function buildExecutionModePromptBlock(executionMode) {
       'You are in engineering mode. You may implement directly for simple, well-scoped tasks; use plan/spec artifacts only when they add real coordination value.',
       '',
       'Engineering workflow:',
-      '1. Explore the codebase with read/grep/list/glob/query_project_index before editing or proposing a spec/plan.',
+      '1. Explore the codebase with search_code/read before editing or proposing a spec/plan.',
       '2. If the request is simple and localized, implement directly with edit/create/delete as appropriate, then verify with focused checks when useful.',
       '3. If requirements are unclear, ask one focused clarifying question and stop. Do not call create_spec or create_plan yet.',
       '4. If multiple reasonable approaches exist, present short options with a recommendation and wait for user confirmation.',
@@ -756,15 +756,15 @@ function buildExecutionModePromptBlock(executionMode) {
 
 export const ROLE_TOOL_POLICY = {
   planner: ['read', 'read_plan', 'tool_search', 'skill', 'update_plan', 'update_todos'],
-  explorer: ['read', 'grep', 'ast_grep', 'list', 'glob', 'ast_query', 'read_ast_node', 'query_project_index', 'tool_search', 'skill', 'web_fetch', 'web_search', 'read_plan'],
-  architect: ['read', 'grep', 'ast_grep', 'list', 'query_project_index', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
-  advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'skill', 'read_plan'],
-  coder: ['read', 'grep', 'ast_grep', 'list', 'edit', 'create', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
-  refactorer: ['read', 'grep', 'ast_grep', 'list', 'edit', 'create', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'skill', 'read_plan'],
-  reviewer: ['read', 'grep', 'ast_grep', 'list', 'glob', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'read_plan'],
-  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'skill', 'read_plan'],
-  debugger: ['read', 'grep', 'ast_grep', 'list', 'run', 'glob', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
-  writer: ['read', 'grep', 'list', 'glob', 'tool_search', 'skill', 'web_search', 'web_fetch', 'read_plan'],
+  explorer: ['read', 'search_code', 'tool_search', 'skill', 'web_fetch', 'web_search', 'read_plan'],
+  architect: ['read', 'search_code', 'tool_search', 'skill', 'web_search', 'read_plan'],
+  advisor: ['read', 'search_code', 'tool_search', 'skill', 'read_plan'],
+  coder: ['read', 'search_code', 'edit', 'create', 'delete', 'run', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
+  refactorer: ['read', 'search_code', 'edit', 'create', 'delete', 'run', 'tool_search', 'skill', 'read_plan'],
+  reviewer: ['read', 'search_code', 'tool_search', 'skill', 'read_plan'],
+  tester: ['read', 'search_code', 'run', 'tool_search', 'skill', 'read_plan'],
+  debugger: ['read', 'search_code', 'run', 'tool_search', 'skill', 'web_search', 'read_plan'],
+  writer: ['read', 'search_code', 'tool_search', 'skill', 'web_search', 'web_fetch', 'read_plan'],
   summarizer: ['read', 'read_plan', 'tool_search', 'skill'],
   codewiki: CODEWIKI_ROLE_TOOLS
 };
