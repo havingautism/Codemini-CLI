@@ -1088,6 +1088,8 @@ export function getSubAgentRolePrompt(role) {
       'Output format — keep it short and direct:',
       'Summary:',
       '- <overall result in 2-4 sentences>',
+      'Step Recap:',
+      '- [<role>] <step title>: <1 short sentence covering the agent action and outcome>',
       'Key Findings:',
       '- <most important findings from all steps>',
       'Actions Taken:',
@@ -1181,6 +1183,7 @@ function buildPipelineStepGuidance({ role, stepIndex, totalSteps, isFirst, isLas
   }
   if (isLast && role === 'summarizer') {
     lines.push('- Since you are the final step, give a concise overall verdict the user can act on.');
+    lines.push('- Include a Step Recap section with one short bullet per completed sub-agent step so future normal chat has compact plan context.');
   }
   return lines.join('\n');
 }

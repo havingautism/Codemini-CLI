@@ -2459,19 +2459,71 @@ export function AppProvider({ children }) {
           if (activeId) {
             setState((prev) => ({
               ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === activeId
-                  ? {
+              ...(() => {
+                const activeMessage = prev.messages.find(
+                  (m) => m.id === activeId,
+                );
+                const activePlanStep = activeMessage?.planStep;
+                const activeStepNumber = Number(activePlanStep?.step);
+                const shouldSettlePlanStep =
+                  activePlanStep &&
+                  Number.isFinite(activeStepNumber) &&
+                  !isCompletedStatus(activePlanStep.status);
+                const settledStatus =
+                  result.type === "error" ? "failed" : "done";
+                return {
+                  planSteps: shouldSettlePlanStep
+                    ? prev.planSteps.map((step, index) =>
+                        index === activeStepNumber - 1 &&
+                        !isCompletedStatus(step.status)
+                          ? { ...step, status: settledStatus }
+                          : step,
+                      )
+                    : prev.planSteps,
+                  messages: prev.messages.map((m) => {
+                    if (
+                      shouldSettlePlanStep &&
+                      m.id === planOverviewMsgRef.current &&
+                      m.planOverview
+                    ) {
+                      return {
+                        ...m,
+                        planOverview: {
+                          ...m.planOverview,
+                          steps: m.planOverview.steps.map((step, index) =>
+                            index === activeStepNumber - 1 &&
+                            !isCompletedStatus(step.status)
+                              ? { ...step, status: settledStatus }
+                              : step,
+                          ),
+                        },
+                      };
+                    }
+                    if (m.id !== activeId) return m;
+                    const segments = finishThinkingSegments(
+                      m.segments || [],
+                    ).map((seg) =>
+                      seg.type === "text"
+                        ? { ...seg, isStreaming: false }
+                        : seg,
+                    );
+                    return {
                       ...m,
                       isComplete: true,
-                      segments: finishThinkingSegments(m.segments).map((seg) =>
-                        seg.type === "text"
-                          ? { ...seg, isStreaming: false }
-                          : seg,
-                      ),
-                    }
-                  : m,
-              ),
+                      segments,
+                      planStep: shouldSettlePlanStep
+                        ? {
+                            ...(m.planStep || {}),
+                            status: settledStatus,
+                            summary:
+                              m.planStep?.summary ||
+                              (settledStatus === "failed" ? "Failed" : ""),
+                          }
+                        : m.planStep,
+                    };
+                  }),
+                };
+              })(),
             }));
           }
           if (result.type === "system" && result.text) {

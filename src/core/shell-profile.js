@@ -163,9 +163,10 @@ export function getShellSystemPrompt(value) {
 
 ALWAYS prefer dedicated tools over raw shell commands:
 - The visible default tool list is intentionally small. If a needed capability is not currently listed, do not assume it is unavailable — call tool_search to load additional tools first
+- Treat run as an execution tool, not a code-reading or code-search tool. Do not use run to inspect source files, list code directories, grep identifiers, or print file contents when read/search_code/list/glob can do it
 - Use search_code first for code discovery. It routes text, symbol, and structural searches internally so you can narrow candidates before reading source files
 - Use read to inspect files — NEVER use cat, head, or tail via run. Use canonical shapes like {path:"src/app.ts"}, {path:"src/app.ts:10-40"}, or {path:"src/app.ts", start_line:10, end_line:40}
-- Do not use grep or rg via run. Use search_code for normal code search; load low-level grep with tool_search only when you need raw text search output
+- Do not use grep, rg, find, ls, Get-ChildItem, Select-String, Get-Content, or type via run for normal code exploration. Use search_code/read first; load low-level grep/list/glob with tool_search only when that specific structured tool output is needed
 - If you need directory listing or pattern-based file lookup, load list or glob with tool_search instead of falling back to run
 - Use edit to modify existing files — this is the DEFAULT path for code changes. Prefer {path:"src/app.ts", old_text:"foo", new_text:"bar"}
 - Use create only for new files. Use edit for existing files, including complete rewrites with {kind:"rewrite_file", new_content:"..."}
@@ -275,7 +276,7 @@ const SUB_AGENT_TOOL_HINTS = {
   edit: '- edit: modify existing files. Example: {path:"src/app.ts", old_text:"foo", new_text:"bar"}',
   create: '- create: create new files only',
   delete: '- delete: remove files',
-  run: '- run: execute shell commands when no dedicated tool fits',
+  run: '- run: execute shell commands when no dedicated tool fits. Do not use run for code reading/search; use search_code/read/list/glob instead.',
   web_fetch: '- web_fetch: fetch remote URL content',
   web_search: '- web_search: search the web for external information'
 };
@@ -301,6 +302,7 @@ export function buildSubAgentShellRulesPrompt(allowedTools = [], { shell, worksp
     `You may ONLY call these tools: ${toolList}`,
     'Calling any other tool fails immediately. Parent-agent tools such as list, grep, run, or edit are NOT available unless they appear in the list above.',
     'Do not use raw shell commands via run unless run is in your allowed tool list.',
+    'Even when run is allowed, do not use it to read source files, list code directories, or search identifiers. Use read/search_code/list/glob-style tools for code context; reserve run for execution such as tests, builds, scripts, package commands, and servers.',
     '',
     '# Using your allowed tools',
     ...(hintLines.length > 0 ? hintLines : ['- No dedicated tools beyond the list above.']),

@@ -74,7 +74,12 @@ export function SpecApprovalDialog({
   const footer = editMode ? (
     <ReviewFooter
       leading={
-        <Button variant="outline" size="sm" disabled={disabled || saving} onClick={cancelEdit}>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={disabled || saving}
+          onClick={cancelEdit}
+        >
           {t("cancel")}
         </Button>
       }
@@ -88,31 +93,55 @@ export function SpecApprovalDialog({
     <ReviewFooter
       leading={
         <>
-          <Button variant="destructive" size="sm" disabled={disabled} onClick={() => onAction("delete")}>
+          <Button
+            variant="destructive"
+            size="sm"
+            disabled={disabled}
+            onClick={() => onAction("delete")}
+          >
             {t("specDelete")}
           </Button>
-          <Button variant="outline" size="sm" disabled={disabled} onClick={() => onAction("reject")}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={disabled}
+            onClick={() => onAction("reject")}
+          >
             {t("specReject")}
           </Button>
         </>
       }
       trailing={
         <>
-          <Button variant="outline" size="sm" disabled={disabled} onClick={startEdit}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={disabled}
+            onClick={startEdit}
+          >
             {t("specEdit")}
           </Button>
-          <Button variant="outline" size="sm" disabled={disabled} onClick={() => onAction("save")}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={disabled}
+            onClick={() => onAction("save")}
+          >
             {t("specSaveOnly")}
           </Button>
           <Button
+            variant="outline"
             size="sm"
-            variant="secondary"
             disabled={disabled || incomplete}
             onClick={() => onAction("approve")}
           >
             {t("specPlanExecute")}
           </Button>
-          <Button size="sm" disabled={disabled || incomplete} onClick={() => onAction("execute")}>
+          <Button
+            size="sm"
+            disabled={disabled || incomplete}
+            onClick={() => onAction("execute")}
+          >
             {t("specExecuteNow")}
           </Button>
         </>
