@@ -951,6 +951,57 @@ body {
 .msg-process-meta .msg-process-thought-body :where(p, li, span, em, strong, code) {
   color: inherit;
 }
+
+/* Linear-style cards for structured spec / plan messages */
+.codemini-linear-card {
+  border: 1px solid color-mix(in srgb, var(--border-default) 76%, var(--text-primary) 6%);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--bg-secondary) 78%, var(--bg-primary)) 0%,
+      color-mix(in srgb, var(--bg-secondary) 62%, var(--bg-primary)) 100%
+    );
+  box-shadow:
+    0 1px 1px color-mix(in srgb, black 5%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
+}
+
+.codemini-linear-icon {
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 24%, var(--border-default));
+  background: color-mix(in srgb, var(--accent-blue-bg) 26%, transparent);
+  color: var(--accent-blue);
+}
+
+.codemini-linear-pill {
+  border-color: color-mix(in srgb, var(--accent-blue) 24%, var(--border-default));
+  background: color-mix(in srgb, var(--accent-blue-bg) 24%, transparent);
+  color: color-mix(in srgb, var(--accent-blue) 82%, var(--text-primary));
+}
+
+.codemini-linear-step {
+  border-color: color-mix(in srgb, var(--border-default) 82%, var(--text-primary) 7%);
+  background: color-mix(in srgb, var(--bg-primary) 74%, var(--bg-secondary));
+  color: var(--text-muted);
+}
+
+.codemini-linear-step--done {
+  border-color: color-mix(in srgb, var(--accent-green) 28%, var(--border-default));
+  background: color-mix(in srgb, var(--accent-green-bg) 24%, transparent);
+  color: var(--accent-green);
+}
+
+.codemini-linear-step--failed {
+  border-color: color-mix(in srgb, var(--accent-red) 28%, var(--border-default));
+  background: color-mix(in srgb, var(--accent-red-bg) 24%, transparent);
+  color: var(--accent-red);
+}
+
+.codemini-linear-step--running {
+  border-color: color-mix(in srgb, var(--accent-blue) 30%, var(--border-default));
+  background: color-mix(in srgb, var(--accent-blue-bg) 24%, transparent);
+  color: var(--accent-blue);
+}
+
 .codemini-chat-session .text-\[10px\] {
   font-size: 11px !important;
 }

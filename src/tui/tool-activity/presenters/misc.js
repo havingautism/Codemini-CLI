@@ -1,5 +1,5 @@
 import { makeBlocked } from '../common.js';
-import { formatToolLabel } from '../../core/tool-display.js';
+import { formatToolLabel } from '../../../core/tool-display.js';
 
 export function isCodeGenerationActivityName(name) {
   return String(name || '').trim() === 'Code generation';

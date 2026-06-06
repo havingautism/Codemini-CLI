@@ -336,17 +336,18 @@ const TUI_COPY = {
       deleteStatus: '删除',
       changesLabel: '改动'
     },
-    planApproval: {
-      title: '确认执行计划？',
+    specApproval: {
+      title: '审阅工程 Spec？',
       goalLabel: '目标',
       summaryLabel: '摘要',
       fileLabel: '文件',
-      prompt: '输入 /yes 执行，输入 /edit <反馈> 修改，输入 /reject 拒绝。',
-      invalidAnswer: '请输入 /yes、/edit <反馈> 或 /reject。',
+      missingLabel: '缺失章节',
+      prompt: '输入 /yes 生成并执行计划，/spec execute 直接执行，/spec save 仅保存，/edit <反馈> 修改，或 /reject 拒绝。',
+      invalidAnswer: '请输入 /yes、/spec execute、/spec save、/edit <反馈> 或 /reject。',
       missingFeedback: '请在 /edit 后提供反馈内容。',
-      inputLocked: '计划审批进行中，请在审批框输入 /yes、/edit 或 /reject',
-      answerLabel: '审批输入',
-      answerPlaceholder: '/yes | /edit <反馈> | /reject'
+      inputLocked: 'Spec 审阅进行中，请在审阅框输入 /yes、/spec execute、/spec save、/edit 或 /reject',
+      answerLabel: '审阅输入',
+      answerPlaceholder: '/yes | /spec execute | /spec save | /edit <反馈> | /reject'
     },
     reflectApproval: {
       title: '审阅 Reflect 技能草稿？',
@@ -576,17 +577,18 @@ const TUI_COPY = {
       deleteStatus: 'Delete',
       changesLabel: 'Changes'
     },
-    planApproval: {
-      title: 'Approve this plan?',
+    specApproval: {
+      title: 'Review this engineering spec?',
       goalLabel: 'Goal',
       summaryLabel: 'Summary',
       fileLabel: 'File',
-      prompt: 'Type /yes to execute, /edit <feedback> to revise, or /reject to discard.',
-      invalidAnswer: 'Please enter /yes, /edit <feedback>, or /reject.',
+      missingLabel: 'Missing sections',
+      prompt: 'Type /yes to plan and execute, /spec execute to execute directly, /spec save to save only, /edit <feedback> to revise, or /reject to discard.',
+      invalidAnswer: 'Please enter /yes, /spec execute, /spec save, /edit <feedback>, or /reject.',
       missingFeedback: 'Please provide feedback after /edit.',
-      inputLocked: 'Plan approval is active; type /yes, /edit <feedback>, or /reject',
-      answerLabel: 'Approval input',
-      answerPlaceholder: '/yes | /edit <feedback> | /reject'
+      inputLocked: 'Spec review is active; type /yes, /spec execute, /spec save, /edit <feedback>, or /reject',
+      answerLabel: 'Review input',
+      answerPlaceholder: '/yes | /spec execute | /spec save | /edit <feedback> | /reject'
     },
     reflectApproval: {
       title: 'Review this reflected skill draft?',
@@ -1191,15 +1193,21 @@ export function normalizeFileApprovalRequest(request) {
   };
 }
 
-export function parsePlanApprovalAnswer(value) {
+export function parseSpecApprovalAnswer(value) {
   const raw = String(value || '').trim();
   if (!raw) return { action: 'empty', command: '' };
   const normalized = raw.toLowerCase();
   if (normalized === '/yes' || normalized === 'yes') {
-    return { action: 'approve', command: '/yes' };
+    return { action: 'approve', command: '/spec plan' };
   }
   if (normalized === '/reject' || normalized === 'reject' || normalized === 'no') {
     return { action: 'reject', command: '/reject' };
+  }
+  if (normalized === '/spec save' || normalized === 'save') {
+    return { action: 'save', command: '/spec save' };
+  }
+  if (normalized === '/spec execute' || normalized === '/spec run' || normalized === 'execute' || normalized === 'run') {
+    return { action: 'execute', command: '/spec execute' };
   }
   const editMatch = raw.match(/^\/?edit(?:\s+(.+))?$/i);
   if (editMatch) {
@@ -1229,19 +1237,6 @@ export function parseReflectApprovalAnswer(value) {
   return { action: 'invalid', command: '' };
 }
 
-export function parsePendingPlanApprovalMessage(text = '') {
-  const raw = String(text || '');
-  if (!/^Plan approval is still pending\./i.test(raw.trim())) return null;
-  const lines = raw.split(/\r?\n/);
-  const out = { goal: '', summary: '', filePath: '' };
-  for (const line of lines) {
-    if (line.startsWith('Goal: ')) out.goal = line.slice('Goal: '.length).trim();
-    else if (line.startsWith('Summary: ')) out.summary = line.slice('Summary: '.length).trim();
-    else if (line.startsWith('Plan File: ')) out.filePath = line.slice('Plan File: '.length).trim();
-  }
-  return out;
-}
-
 export function parsePendingReflectSkillMessage(text = '') {
   const raw = String(text || '');
   if (!/\bReflect skill draft pending\./i.test(raw)) return null;
@@ -1269,11 +1264,6 @@ export function formatDeleteApprovalLines(copy, request) {
     `${copy.deleteApproval.typeLabel}: ${typeLabel}`,
     copy.deleteApproval.prompt
   ];
-}
-
-export function formatPlanApprovalLines(copy, request) {
-  if (!request) return [];
-  return [String(copy?.planApproval?.title || '').trim()].filter(Boolean);
 }
 
 export function formatReflectApprovalLines(copy, request) {
@@ -1439,6 +1429,8 @@ export function shouldRefreshRuntimeStateForEvent(event) {
     type === 'assistant:response' ||
     type === 'tool:result' ||
     type === 'plan:progress' ||
+    type === 'spec:pending_approval' ||
+    type === 'spec:approval_cleared' ||
     type === 'compact:auto' ||
     type === 'dream:auto' ||
     type === 'dream:complete'
@@ -3413,12 +3405,15 @@ function FileChangeSummary({ segments, copy }) {
   );
 }
 
-function PlanApprovalPanel({ request, inputValue, errorText, copy, cursorVisible, contentWidth = 72 }) {
+function SpecApprovalPanel({ request, inputValue, errorText, copy, cursorVisible, contentWidth = 72 }) {
   if (!request) return null;
-  const placeholder = String(copy.planApproval.answerPlaceholder || '').trim();
-  const c = copy.planApproval || {};
-  const summary = request.finalSummary || request.summary || '';
-  const steps = Array.isArray(request.steps) ? request.steps : [];
+  const c = copy.specApproval || {};
+  const placeholder = String(c.answerPlaceholder || '').trim();
+  const goal = String(request.goal || '').trim();
+  const summary = String(request.summary || '').trim();
+  const filePath = String(request.filePath || '').trim();
+  const specText = String(request.specText || '').trim();
+  const missingHeadings = Array.isArray(request.missingHeadings) ? request.missingHeadings.filter(Boolean) : [];
   return h(
     Box,
     {
@@ -3430,55 +3425,22 @@ function PlanApprovalPanel({ request, inputValue, errorText, copy, cursorVisible
       paddingY: 0
     },
     h(Text, { color: 'yellowBright' }, c.title),
-    request.filePath
-      ? h(Text, { color: 'gray' }, `${c.fileLabel}: ${request.filePath}`)
+    filePath ? h(Text, { color: 'gray' }, `${c.fileLabel}: ${filePath}`) : null,
+    goal ? h(Text, { color: 'gray', marginTop: 1 }, `${c.goalLabel}:`) : null,
+    goal ? h(MarkdownPreviewBlock, { text: goal, contentWidth, msgId: 'spec-approval-goal' }) : null,
+    summary ? h(Text, { color: 'gray', marginTop: 1 }, `${c.summaryLabel}:`) : null,
+    summary ? h(MarkdownPreviewBlock, { text: summary, contentWidth, msgId: 'spec-approval-summary' }) : null,
+    missingHeadings.length > 0
+      ? h(Text, { color: 'yellowBright', marginTop: 1 }, `${c.missingLabel}: ${missingHeadings.join(', ')}`)
       : null,
-    request.goal
-      ? h(Text, { color: 'gray', marginTop: 1 }, `${c.goalLabel}:`)
-      : null,
-    request.goal
-      ? h(MarkdownPreviewBlock, { text: request.goal, contentWidth, msgId: 'plan-approval-goal' })
-      : null,
-    summary
-      ? h(Text, { color: 'gray', marginTop: 1 }, `${c.summaryLabel}:`)
-      : null,
-    summary
-      ? h(MarkdownPreviewBlock, { text: summary, contentWidth, msgId: 'plan-approval-summary' })
-      : null,
-    steps.length > 0
-      ? h(
-          Box,
-          { flexDirection: 'column', marginTop: 1 },
-          ...steps.flatMap((step, index) => {
-            const title = String(step?.title || '').trim();
-            const task = String(step?.task || '').trim();
-            const role = String(step?.role || 'step').trim();
-            const items = [
-              h(
-                Text,
-                { key: `plan-step-title-${index}`, color: 'cyanBright' },
-                `${index + 1}. [${role}] ${title || '-'}`
-              )
-            ];
-            if (task) {
-              items.push(
-                h(MarkdownPreviewBlock, {
-                  key: `plan-step-task-${index}`,
-                  text: task,
-                  contentWidth,
-                  msgId: `plan-approval-step-${index}`
-                })
-              );
-            }
-            return items;
-          })
-        )
+    specText
+      ? h(MarkdownPreviewBlock, { text: specText, contentWidth, msgId: 'spec-approval-body' })
       : null,
     h(Text, { color: 'gray', marginTop: 1 }, c.prompt),
     h(
       Box,
       { marginTop: 1 },
-      h(Text, { color: 'yellowBright' }, `${copy.planApproval.answerLabel}: `),
+      h(Text, { color: 'yellowBright' }, `${c.answerLabel}: `),
       h(ApprovalCursorLine, {
         inputValue,
         placeholder: placeholder || ' ',
@@ -3613,13 +3575,13 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   const [pendingFileApproval, setPendingFileApproval] = useState(null);
   const [fileApprovalInput, setFileApprovalInput] = useState('');
   const [fileApprovalError, setFileApprovalError] = useState('');
-  const [pendingPlanApproval, setPendingPlanApproval] = useState(null);
-  const [planApprovalInput, setPlanApprovalInput] = useState('');
-  const [planApprovalError, setPlanApprovalError] = useState('');
+  const [pendingSpecApproval, setPendingSpecApproval] = useState(null);
+  const [specApprovalInput, setSpecApprovalInput] = useState('');
+  const [specApprovalError, setSpecApprovalError] = useState('');
   const [pendingReflectApproval, setPendingReflectApproval] = useState(null);
   const [reflectApprovalInput, setReflectApprovalInput] = useState('');
   const [reflectApprovalError, setReflectApprovalError] = useState('');
-  const approvalLockActive = Boolean(pendingDeleteApproval || pendingRunApproval || pendingFileApproval || pendingPlanApproval || pendingReflectApproval);
+  const approvalLockActive = Boolean(pendingDeleteApproval || pendingRunApproval || pendingFileApproval || pendingSpecApproval || pendingReflectApproval);
   const activeAssistantIdRef = useRef(null);
   const activeAssistantAutoSkillNamesRef = useRef([]);
   const streamedAssistantHandledRef = useRef(false);
@@ -4013,48 +3975,12 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       return;
     }
     const parsedPlanSummary = result.type === 'system' ? parseAutoPlanSummaryMessage(result.text || '') : null;
-    if (parsedPlanSummary?.approval === 'pending') {
-      const preSteps = Array.isArray(parsedPlanSummary.planSteps) && parsedPlanSummary.planSteps.length > 0
-        ? parsedPlanSummary.planSteps
-        : [];
-      setPlanState({
-        current: 0,
-        total: preSteps.length,
-        role: '',
-        title: '',
-        failed: false,
-        steps: preSteps,
-        pendingApproval: true,
-        completed: false,
-        resultStatus: '',
-        resultVerified: '',
-        resultNext: ''
-      });
-      setPendingPlanApproval({
-        goal: parsedPlanSummary.planSummary || '',
-        summary: parsedPlanSummary.finalSummary || parsedPlanSummary.planSummary || '',
-        filePath: parsedPlanSummary.filePath || ''
-      });
-      setPlanApprovalInput('');
-      setPlanApprovalError('');
-    } else if (result.type === 'system') {
-      const pendingMeta = parsePendingPlanApprovalMessage(result.text || '');
-      if (pendingMeta) {
-        setPendingPlanApproval({
-          goal: pendingMeta.goal || '',
-          summary: pendingMeta.summary || '',
-          filePath: pendingMeta.filePath || ''
-        });
-        setPlanState((prev) => ({ ...prev, pendingApproval: true }));
-        setPlanApprovalInput('');
-        setPlanApprovalError('');
-      } else {
-        const pendingReflectMeta = parsePendingReflectSkillMessage(result.text || '');
-        if (pendingReflectMeta) {
-          setPendingReflectApproval(pendingReflectMeta);
-          setReflectApprovalInput('');
-          setReflectApprovalError('');
-        }
+    if (result.type === 'system') {
+      const pendingReflectMeta = parsePendingReflectSkillMessage(result.text || '');
+      if (pendingReflectMeta) {
+        setPendingReflectApproval(pendingReflectMeta);
+        setReflectApprovalInput('');
+        setReflectApprovalError('');
       }
     }
     setMessages((prev) => [
@@ -4194,9 +4120,9 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     setBusy(true);
     setInputStage('sending');
     setRuntimeStatus(makeStatus(copy.runtime.sendingToGateway, copy.runtime.preparingRequest, 'yellowBright'));
-    setPendingPlanApproval(null);
-    setPlanApprovalInput('');
-    setPlanApprovalError('');
+    setPendingSpecApproval(null);
+    setSpecApprovalInput('');
+    setSpecApprovalError('');
     setPendingReflectApproval(null);
     setReflectApprovalInput('');
     setReflectApprovalError('');
@@ -4472,9 +4398,6 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
         if (event?.type === 'plan:steps') {
           const planSteps = Array.isArray(event.steps) ? event.steps : [];
           if (planSteps.length > 0) {
-            setPendingPlanApproval(null);
-            setPlanApprovalInput('');
-            setPlanApprovalError('');
             setPlanState((prev) => ({
               ...prev,
               total: planSteps.length,
@@ -4533,6 +4456,16 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
               };
             });
           }
+        }
+        if (event?.type === 'spec:pending_approval') {
+          setPendingSpecApproval(event.spec || null);
+          setSpecApprovalInput('');
+          setSpecApprovalError('');
+        }
+        if (event?.type === 'spec:approval_cleared') {
+          setPendingSpecApproval(null);
+          setSpecApprovalInput('');
+          setSpecApprovalError('');
         }
         if (event?.type === 'skill:start') {
           ensureActiveAssistant();
@@ -4924,31 +4857,31 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       return;
     }
 
-    if (pendingPlanApproval) {
+    if (pendingSpecApproval) {
       if (key.return) {
-        const parsed = parsePlanApprovalAnswer(planApprovalInput);
-        if (parsed.action === 'approve' || parsed.action === 'reject' || parsed.action === 'edit') {
-          setPendingPlanApproval(null);
-          setPlanApprovalInput('');
-          setPlanApprovalError('');
+        const parsed = parseSpecApprovalAnswer(specApprovalInput);
+        if (parsed.action === 'approve' || parsed.action === 'reject' || parsed.action === 'edit' || parsed.action === 'save' || parsed.action === 'execute') {
+          setPendingSpecApproval(null);
+          setSpecApprovalInput('');
+          setSpecApprovalError('');
           runSubmission(parsed.command);
         } else if (parsed.action === 'missing_feedback') {
-          setPlanApprovalError(copy.planApproval.missingFeedback);
+          setSpecApprovalError(copy.specApproval.missingFeedback);
         } else {
-          setPlanApprovalError(copy.planApproval.invalidAnswer);
+          setSpecApprovalError(copy.specApproval.invalidAnswer);
         }
         return;
       }
 
       if (isBackspaceKey(value, key) || isDeleteKey(value, key)) {
-        setPlanApprovalInput((prev) => prev.slice(0, -1));
-        setPlanApprovalError('');
+        setSpecApprovalInput((prev) => prev.slice(0, -1));
+        setSpecApprovalError('');
         return;
       }
 
       if (isPrintableInput(value, key)) {
-        setPlanApprovalInput((prev) => `${prev}${value}`);
-        setPlanApprovalError('');
+        setSpecApprovalInput((prev) => `${prev}${value}`);
+        setSpecApprovalError('');
         return;
       }
 
@@ -5262,15 +5195,17 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   }, [busy]);
 
   useEffect(() => {
-    const pending = runtimeState?.pendingPlanApproval;
+    const pending = runtimeState?.pendingSpecApproval;
     if (!pending) {
-      setPendingPlanApproval(null);
+      setPendingSpecApproval(null);
       return;
     }
     if (!busy) {
-      setPendingPlanApproval(pending);
+      setPendingSpecApproval(pending);
+      setSpecApprovalInput('');
+      setSpecApprovalError('');
     }
-  }, [runtimeState?.pendingPlanApproval, busy]);
+  }, [runtimeState?.pendingSpecApproval, busy]);
 
   useEffect(() => {
     const pending = Boolean(runtimeState?.pendingReflectSkill);
@@ -5329,8 +5264,8 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       ? { text: copy.runApproval.inputLocked }
       : pendingFileApproval
         ? { text: copy.fileApproval.inputLocked }
-        : pendingPlanApproval
-          ? { text: copy.planApproval.inputLocked }
+        : pendingSpecApproval
+          ? { text: copy.specApproval.inputLocked }
           : pendingReflectApproval
             ? { text: copy.reflectApproval.inputLocked }
             : null;
@@ -5384,10 +5319,10 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       copy,
       cursorVisible
     }),
-    h(PlanApprovalPanel, {
-      request: pendingPlanApproval,
-      inputValue: planApprovalInput,
-      errorText: planApprovalError,
+    h(SpecApprovalPanel, {
+      request: pendingSpecApproval,
+      inputValue: specApprovalInput,
+      errorText: specApprovalError,
       copy,
       cursorVisible,
       contentWidth: messageContentWidth

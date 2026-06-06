@@ -702,7 +702,7 @@ export class RuntimeBridge {
     this.#runtime.submit(line, (event) => {
       this.#recordUiEvent(event);
       this.#broadcast(event);
-      if (['plan:pending_approval', 'spec:pending_approval', 'reflect:pending_approval'].includes(event?.type)) {
+      if (['spec:pending_approval', 'reflect:pending_approval'].includes(event?.type)) {
         this.#busy = false;
         this.#broadcastRuntimeState();
       }
@@ -855,13 +855,6 @@ export class RuntimeBridge {
     return ok;
   }
 
-  async updatePendingPlan(patch = {}) {
-    const plan = await this.#runtime.updatePendingPlan?.(patch);
-    if (plan) this.#broadcast({ type: 'plan:pending_approval', ...plan });
-    this.#broadcastRuntimeState();
-    return plan || null;
-  }
-
   async updatePendingReflect(patch = {}) {
     const draft = await this.#runtime.updatePendingReflect?.(patch);
     if (draft) this.#broadcast({ type: 'reflect:pending_approval', draft });
@@ -902,7 +895,6 @@ export class RuntimeBridge {
       busy: this.#busy,
       requestInFlight: this.#busy,
       codeWikiGenerating: this.#codeWikiGenerating,
-      pendingPlanApproval: serializableState.pendingPlanApproval,
       pendingReflectSkill: serializableState.pendingReflectSkill,
       pendingSpecApproval: serializableState.pendingSpecApproval
     };

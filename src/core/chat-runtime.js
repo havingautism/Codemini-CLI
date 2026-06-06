@@ -734,7 +734,7 @@ function buildExecutionModePromptBlock(executionMode) {
       '   - create_spec when scope, architecture, UX, constraints, or trade-offs still need alignment. Spec answers what to build and why.',
       '   - create_plan when the goal is clear but complex enough to benefit from sub-agent execution steps. Plan answers how to implement.',
       '6. Prefer direct implementation for small fixes. Prefer create_plan for multi-file/multi-phase work. Prefer create_spec for large, novel, or cross-cutting work.',
-      '7. create_spec and create_plan both enter user approval flows. Stop after creating the artifact and wait for review.',
+      '7. create_spec enters user approval before execution. create_plan writes a plan artifact and starts execution automatically; the user can interrupt with /stop.',
       '',
       'Quality bar:',
       '- Ground every recommendation in repository evidence, not assumptions.',
@@ -745,7 +745,7 @@ function buildExecutionModePromptBlock(executionMode) {
       'Direct implementation rules:',
       '- Do not claim edit/create/delete/run are unavailable in coding mode; they are available for direct simple tasks.',
       '- If the user explicitly asks to start fixing, repair, update, implement, or change files, do not create an advisor-only plan. Either implement directly when simple or create an implementation plan with a coder/refactorer/writer step.',
-      '- If you create a spec or plan, do not implement before the user approves that artifact.',
+      '- If you create a spec, do not implement before the user approves it. If you create a plan, execution starts automatically in coding mode.',
       '',
       'Plan step roles (when the plan will use sub-agents):',
       '- explorer = read-only inspection and context mapping. Never assign explorer to implement, edit, or deliver code.',
@@ -3930,10 +3930,6 @@ function stampedMessage(role, content, extra = {}) {
   };
 }
 
-function hasPendingPlanApproval(session) {
-  return session?.planState?.status === 'pending_approval';
-}
-
 function getPendingSpecState(session) {
   const specState = normalizeSpecState(session?.specState);
   if (specState?.status === 'pending_approval') return specState;
@@ -4033,25 +4029,6 @@ function validateBuiltinSlashArgs(parsedInput) {
   return '';
 }
 
-function buildPendingPlanApprovalMessage(planState) {
-  const lines = [
-    'Plan approval is still pending.',
-    `Goal: ${planState?.goal || '-'}`,
-    `Plan File: ${planState?.filePath || '-'}`,
-    `Summary: ${planState?.finalSummary || planState?.summary || '-'}`,
-    'Use /yes to execute this plan, /edit <feedback> to revise it, or /reject to discard it.'
-  ];
-  const steps = Array.isArray(planState?.steps) ? planState.steps : [];
-  if (steps.length > 0) {
-    lines.push('Steps:');
-    steps.forEach((step, index) => {
-      lines.push(`${index + 1}. [${step.role || '-'}] ${step.title || '-'}`);
-      if (step.task) lines.push(`   task: ${step.task}`);
-    });
-  }
-  return lines.join('\n');
-}
-
 function buildPendingReflectSkillMessage(reflectState) {
   const candidates = Array.isArray(reflectState?.candidates) ? reflectState.candidates : [];
   if (candidates.length === 0) {
@@ -4100,30 +4077,6 @@ function buildPendingSpecSnapshot(specState) {
     filePath: normalized.specPath || '',
     complete: completeness.complete,
     missingHeadings: completeness.missingHeadings
-  };
-}
-
-function updatePendingPlanState(session, patch = {}) {
-  if (!hasPendingPlanApproval(session)) return null;
-  const steps = Array.isArray(patch.steps)
-    ? patch.steps.map((step) => ({
-        title: String(step?.title || '').trim(),
-        role: String(step?.role || '').trim(),
-        task: String(step?.task || '').trim()
-      })).filter((step) => step.title || step.role || step.task)
-    : session.planState.steps || [];
-  session.planState = {
-    ...session.planState,
-    goal: String(patch.goal ?? session.planState.goal ?? '').trim(),
-    summary: String(patch.summary ?? session.planState.summary ?? '').trim(),
-    finalSummary: String(patch.finalSummary ?? patch.summary ?? session.planState.finalSummary ?? session.planState.summary ?? '').trim(),
-    steps
-  };
-  return {
-    goal: session.planState.goal,
-    summary: session.planState.finalSummary || session.planState.summary,
-    filePath: session.planState.filePath,
-    steps: session.planState.steps
   };
 }
 
@@ -5537,7 +5490,7 @@ async function buildAutoPlanAndRun({
     filePath,
     summary: autoPlan.summary,
     finalSummary,
-    approvalStatus: 'pending',
+    approvalStatus: 'not_required',
     steps: autoPlan.steps,
     completedCount: 0,
     warningCount: planningError ? 1 : 0,
@@ -8561,9 +8514,6 @@ export async function createChatRuntime({
     },
     setOnTitleUpdate: (cb) => {
       onTitleUpdateCallback = typeof cb === 'function' ? cb : null;
-    },
-    updatePendingPlan: async (patch = {}) => {
-      return null;
     },
     updatePendingReflect: async (patch = {}) => {
       const next = updatePendingReflectState(currentSession, patch, process.cwd());

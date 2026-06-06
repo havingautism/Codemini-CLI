@@ -16,7 +16,6 @@ import { ChatPanel } from "@/components/ChatPanel.jsx";
 import { InputBar } from "@/components/InputBar.jsx";
 import { StatusBar } from "@/components/StatusBar.jsx";
 import { ApprovalDialog } from "@/components/ApprovalDialog.jsx";
-import { PlanApprovalDialog } from "@/components/PlanApprovalDialog.jsx";
 import { ReflectApprovalCard } from "@/components/ReflectApprovalDialog.jsx";
 import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
@@ -370,7 +369,6 @@ function Shell() {
                 onAbort={actions.abort}
                 busy={state.busy}
                 disabled={
-                  !!state.pendingPlanApproval ||
                   !!state.pendingSpecApproval ||
                   !!state.pendingReflectApproval
                 }
@@ -379,9 +377,7 @@ function Shell() {
                     ? t("reflectReviewFirst")
                     : state.pendingSpecApproval
                       ? t("specReviewFirst")
-                      : state.pendingPlanApproval
-                        ? t("planReviewFirst")
-                        : ""
+                      : ""
                 }
                 runtimeState={state.runtimeState}
                 history={state.history}
@@ -415,14 +411,6 @@ function Shell() {
         request={state.approvalRequest}
         open={!!state.approvalRequest}
         onDecision={actions.approve}
-      />
-
-      <PlanApprovalDialog
-        plan={state.pendingPlanApproval}
-        open={!!state.pendingPlanApproval}
-        onAction={actions.approvePlan}
-        onUpdate={actions.updatePendingPlan}
-        disabled={state.busy}
       />
 
       <SpecApprovalDialog

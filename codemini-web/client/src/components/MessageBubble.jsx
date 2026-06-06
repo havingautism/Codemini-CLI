@@ -1270,11 +1270,11 @@ function SpecExecutionCard({ details = {} }) {
   const mode = details.mode === "plan" ? "plan" : "direct";
   const modeLabel = mode === "plan" ? t("specPlanMode") : t("specDirectMode");
   return (
-    <div className="w-full max-w-2xl rounded-lg border border-(--border-default) bg-(--bg-secondary) p-3 text-left shadow-[var(--shadow-sm)]">
+    <div className="codemini-linear-card w-full max-w-2xl rounded-lg p-3 text-left">
       <div className="flex items-start gap-3">
-        <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-[color-mix(in_srgb,var(--accent-blue)_30%,transparent)] bg-[color-mix(in_srgb,var(--accent-blue-bg)_52%,transparent)] text-(--accent-blue)">
+        {/* <span className="codemini-linear-icon mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md">
           <FileText size={16} weight="regular" />
-        </span>
+        </span> */}
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <Badge
@@ -1288,7 +1288,7 @@ function SpecExecutionCard({ details = {} }) {
             </Badge>
             <Badge
               variant="outline"
-              className="h-5 rounded-md border-[color-mix(in_srgb,var(--accent-blue)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-blue-bg)_55%,transparent)] px-1.5 py-0 text-[10px] font-medium uppercase tracking-[0.04em] text-(--accent-blue) shadow-none"
+              className="codemini-linear-pill h-5 rounded-md px-1.5 py-0 text-[10px] font-medium uppercase tracking-[0.04em] shadow-none"
             >
               <span className="inline-flex items-center gap-1">
                 <Play size={9} weight="fill" />
@@ -1296,12 +1296,12 @@ function SpecExecutionCard({ details = {} }) {
               </span>
             </Badge>
           </div>
-          <div className="truncate text-[14px] font-medium leading-5 text-(--text-primary)">
+          <div className="truncate text-[13px] font-medium leading-5 text-(--text-primary)">
             {title}
           </div>
           {filePath ? (
             <div
-              className="truncate font-mono text-[11px] leading-5 text-(--text-muted)"
+              className="truncate font-mono text-[10px] leading-5 text-(--text-muted)"
               title={filePath}
             >
               {filePath}
@@ -1483,6 +1483,13 @@ function shouldShowMessageActions(message, messageComplete) {
   );
 }
 
+function shouldShowFileChanges(message, messageComplete, mergedFileChanges) {
+  if (!messageComplete || mergedFileChanges.length === 0) return false;
+  const planStep = message?.planStep;
+  if (!planStep) return true;
+  return String(planStep.role || "").toLowerCase() === "summarizer";
+}
+
 function MessageActions({
   text,
   usage = null,
@@ -1623,7 +1630,7 @@ export function MessageBubble({ message, skills = [] }) {
           </span>
           {ts && <span className="text-[11px] text-(--text-muted)">{ts}</span>}
         </div>
-        <div className="max-w-3xl space-y-2.5 rounded-lg border border-(--border-default) bg-(--bg-secondary) p-3 shadow-[var(--shadow-sm)]">
+        <div className="codemini-linear-card max-w-3xl space-y-2.5 rounded-lg p-3">
           {overview.goal && (
             <p className="text-[13px] text-(--text-primary) leading-relaxed font-medium">
               {overview.goal}
@@ -1635,14 +1642,11 @@ export function MessageBubble({ message, skills = [] }) {
                 <span
                   className={cn(
                     "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[11px] font-medium",
-                    step.status === "done" &&
-                      "border-[color-mix(in_srgb,var(--accent-green)_30%,transparent)] bg-[color-mix(in_srgb,var(--accent-green-bg)_52%,transparent)] text-(--accent-green)",
-                    step.status === "failed" &&
-                      "border-[color-mix(in_srgb,var(--accent-red)_30%,transparent)] bg-[color-mix(in_srgb,var(--accent-red-bg)_52%,transparent)] text-(--accent-red)",
+                    "codemini-linear-step",
+                    step.status === "done" && "codemini-linear-step--done",
+                    step.status === "failed" && "codemini-linear-step--failed",
                     step.status === "running" &&
-                      "border-[color-mix(in_srgb,var(--accent-blue)_30%,transparent)] bg-[color-mix(in_srgb,var(--accent-blue-bg)_52%,transparent)] text-(--accent-blue)",
-                    step.status === "pending" &&
-                      "border-(--border-default) bg-(--bg-primary) text-(--text-muted)",
+                      "codemini-linear-step--running",
                   )}
                 >
                   <PlanStepStatusGlyph step={step} index={i} />
@@ -1681,6 +1685,11 @@ export function MessageBubble({ message, skills = [] }) {
   const messageComplete =
     role === "you" || isMessageComplete(message, renderGroups);
   const showActions = shouldShowMessageActions(message, messageComplete);
+  const showFileChanges = shouldShowFileChanges(
+    message,
+    messageComplete,
+    mergedFileChanges,
+  );
   const isPlanFlowMessage = !!planStep && role !== "you";
   const planFlowStatus = String(planStep?.status || "").toLowerCase();
   const specExecutionDetails =
@@ -1781,7 +1790,7 @@ export function MessageBubble({ message, skills = [] }) {
               />
             )}
 
-          {messageComplete && mergedFileChanges.length > 0 && (
+          {showFileChanges && (
             <FileChangesSummary changes={mergedFileChanges} />
           )}
           <MessageActions

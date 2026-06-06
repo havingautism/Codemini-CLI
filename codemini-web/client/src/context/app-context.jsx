@@ -77,7 +77,6 @@ const initialState = {
   activeMsgId: null,
   pendingToolChanges: [],
   planSteps: [],
-  pendingPlanApproval: null,
   pendingSpecApproval: null,
   pendingReflectApproval: null,
   runtimeActivities: [],
@@ -728,7 +727,7 @@ function restoreRuntimeActivitiesFromMessages(messages) {
     .slice(0, 3);
 }
 
-function isPlanApprovalLine(line) {
+function isApprovalAnswerLine(line) {
   const value = String(line || "")
     .trim()
     .toLowerCase();
@@ -747,7 +746,7 @@ function isPlanApprovalLine(line) {
   );
 }
 
-function isPlanApprovalCommandLine(line) {
+function isApprovalCommandLine(line) {
   const value = String(line || "")
     .trim()
     .toLowerCase();
@@ -760,16 +759,15 @@ function isPlanApprovalCommandLine(line) {
 function isWorkflowCommandLine(line) {
   const value = String(line || "").trim();
   return (
-    isPlanApprovalCommandLine(value) ||
+    isApprovalCommandLine(value) ||
     /^\/(?:plan|spec|reflect)(?:\s|$)/i.test(value)
   );
 }
 
 function isWorkflowControlLine(line, state = {}) {
   const trimmed = String(line || "").trim();
-  const value = trimmed.toLowerCase();
   if (!trimmed) return false;
-  if (isPlanApprovalLine(trimmed)) return true;
+  if ((state.pendingSpecApproval || state.pendingReflectApproval) && isApprovalAnswerLine(trimmed)) return true;
   if (/^\/(?:plan|spec|reflect)(?:\s|$)/i.test(trimmed)) return true;
   return false;
 }
@@ -1271,7 +1269,6 @@ export function AppProvider({ children }) {
         runtimeState: rs,
         projectCwd: projectNameFromRuntimeState(rs),
         isGeneral: !!rs.isGeneral,
-        pendingPlanApproval: rs?.pendingPlanApproval || null,
         pendingSpecApproval: rs?.pendingSpecApproval || null,
         pendingReflectApproval: rs?.pendingReflectSkill || null,
         busy,
@@ -1281,9 +1278,7 @@ export function AppProvider({ children }) {
         codewikiGeneration: codeWikiGenerating
           ? { status: "running", updatedAt: new Date().toISOString(), error: "" }
           : prev.codewikiGeneration,
-        messages: rs?.pendingPlanApproval
-          ? prev.messages
-          : removeTransientMessages(prev.messages, "plan-waiting-review"),
+        messages: removeTransientMessages(prev.messages, "plan-waiting-review"),
       }));
       return rs;
     } catch {
@@ -2037,7 +2032,6 @@ export function AppProvider({ children }) {
           setState((prev) => ({
             ...prev,
             planSteps: steps,
-            pendingPlanApproval: null,
             messages: [
               ...withoutEmptyPlanRunPlaceholder(
                 removeTransientMessages(prev.messages, "waiting-response"),
@@ -2075,8 +2069,6 @@ export function AppProvider({ children }) {
 
         case "plan:step_start": {
           planRunPendingRef.current = true;
-          if (stateRef.current.pendingPlanApproval)
-            update({ pendingPlanApproval: null });
           const key = String(event.step);
           let msgId = planStepMessagesRef.current.get(key);
           if (!msgId) {
@@ -2200,52 +2192,6 @@ export function AppProvider({ children }) {
               }),
             }));
           }
-          break;
-        }
-
-        case "plan:pending_approval": {
-          setState((prev) => ({
-            ...prev,
-            messages: [
-              ...removeTransientMessages(prev.messages, [
-                "plan-waiting-review",
-                "waiting-response",
-              ]).filter((m) => !isPlanSystemSummaryText(m.text)),
-              {
-                id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                role: "system",
-                text: t("planWaitingReview"),
-                segments: [
-                  {
-                    type: "text",
-                    text: t("planWaitingReview"),
-                    isStreaming: false,
-                  },
-                ],
-                skillBadges: [],
-                fileChanges: [],
-                transientKey: "plan-waiting-review",
-                timestamp: new Date().toISOString(),
-              },
-            ],
-            pendingPlanApproval: {
-              goal: event.goal,
-              summary: event.summary,
-              filePath: event.filePath,
-              steps: event.steps || [],
-            },
-          }));
-          break;
-        }
-        case "plan:approval_cleared": {
-          setState((prev) => ({
-            ...prev,
-            pendingPlanApproval: null,
-            messages: removeTransientMessages(
-              prev.messages,
-              "plan-waiting-review",
-            ),
-          }));
           break;
         }
 
@@ -2536,7 +2482,6 @@ export function AppProvider({ children }) {
                 timestamp: new Date().toISOString(),
               });
             } else if (
-              !stateRef.current.pendingPlanApproval &&
               !stateRef.current.pendingSpecApproval &&
               !stateRef.current.pendingReflectApproval &&
               !isPlanSystemSummaryText(result.text) &&
@@ -2568,8 +2513,7 @@ export function AppProvider({ children }) {
             stageLabel: "",
             messages: removeTransientMessages(
               prev.messages,
-              stateRef.current.pendingPlanApproval ||
-                stateRef.current.pendingSpecApproval
+              stateRef.current.pendingSpecApproval
                 ? "waiting-response"
                 : ["waiting-response", "plan-waiting-review"],
             ),
@@ -2612,7 +2556,6 @@ export function AppProvider({ children }) {
           const rs = event.state || {};
           update({
             runtimeState: { ...stateRef.current.runtimeState, ...rs },
-            pendingPlanApproval: rs?.pendingPlanApproval || null,
             pendingSpecApproval: rs?.pendingSpecApproval || null,
             pendingReflectApproval: rs?.pendingReflectSkill || null,
             busy: !!rs.busy,
@@ -2697,7 +2640,6 @@ export function AppProvider({ children }) {
             ...prev,
             messages: [],
             planSteps: [],
-            pendingPlanApproval: null,
             pendingSpecApproval: null,
             pendingReflectApproval: null,
             runtimeActivities: [],
@@ -2898,10 +2840,7 @@ export function AppProvider({ children }) {
         if (!line.trim()) return;
         if (stateRef.current.currentView !== "chat" && !options.stayInView)
           update({ currentView: "chat" });
-        const approvingPlan =
-          !!stateRef.current.pendingPlanApproval && isPlanApprovalLine(line);
         const workflowControl = isWorkflowControlLine(line, stateRef.current);
-        if (approvingPlan) planRunPendingRef.current = true;
         if (!workflowControl)
           addMessage({
             role: "you",
@@ -2938,7 +2877,6 @@ export function AppProvider({ children }) {
           if (result?.error)
             throw new Error(result.message || "Request failed");
         } catch (err) {
-          if (approvingPlan) planRunPendingRef.current = false;
           if (waitingId)
             setState((prev) => ({
               ...prev,
@@ -3029,63 +2967,6 @@ export function AppProvider({ children }) {
         try {
           await api.submitApproval(id, approved);
         } catch {}
-      },
-
-      approvePlan: async (action, feedback) => {
-        const plan = stateRef.current.pendingPlanApproval;
-        if (!plan) return;
-        planRunPendingRef.current = action === "approve";
-        update({
-          busy: true,
-          live: true,
-          stage: "thinking",
-          stageLabel: t("waitingResponse"),
-        });
-        try {
-          const command =
-            action === "approve"
-              ? "/yes"
-              : action === "reject"
-                ? "/reject"
-                : action === "revise" && feedback?.trim()
-                  ? `/edit ${feedback.trim()}`
-                  : "";
-          if (!command) {
-            update({ busy: false, live: false, stage: "idle", stageLabel: "" });
-            return;
-          }
-          const res = await api.submitLine(command);
-          const result = await res.json().catch(() => ({}));
-          if (result?.error)
-            throw new Error(result.message || "Request failed");
-        } catch (err) {
-          planRunPendingRef.current = false;
-          addMessage({
-            role: "error",
-            text: `Failed: ${err.message}`,
-            timestamp: new Date().toISOString(),
-          });
-          update({ busy: false, live: false, stage: "idle", stageLabel: "" });
-        }
-      },
-
-      updatePendingPlan: async (plan) => {
-        try {
-          const result = await api.updatePendingPlan(plan);
-          if (result?.error)
-            throw new Error(result.message || "Failed to update plan");
-          if (result?.plan) {
-            update({ pendingPlanApproval: result.plan });
-          }
-          return result?.plan || null;
-        } catch (err) {
-          addMessage({
-            role: "error",
-            text: `Failed: ${err.message}`,
-            timestamp: new Date().toISOString(),
-          });
-          return null;
-        }
       },
 
       approveReflect: async (action, feedback) => {

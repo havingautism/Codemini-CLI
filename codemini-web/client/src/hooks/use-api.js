@@ -98,15 +98,6 @@ export async function setApprovalMode(mode) {
   return res.json();
 }
 
-export async function updatePendingPlan(plan) {
-  const res = await api('/api/pending-plan', {
-    method: 'POST',
-    headers: JSON_HEADERS,
-    body: JSON.stringify(plan || {})
-  });
-  return res.json();
-}
-
 export async function updatePendingReflect(draft) {
   const res = await api('/api/pending-reflect', {
     method: 'POST',
