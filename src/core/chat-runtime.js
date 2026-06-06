@@ -1608,6 +1608,7 @@ function buildAutoPlanPlannerGuidance() {
     'Auto-plan planning rules:',
     '- Start with an explorer (codebase inspection) or architect (design) step when the target area is not yet clear.',
     '- Before defining execution steps, map the files/modules likely to be touched and what each step is responsible for.',
+    '- Before writing steps, classify task_size (trivial|small|medium|large), task_type (advisory|implementation|debugging|verification|refactor|documentation|hybrid), and target_confidence (known|likely|unknown).',
     '- If the goal still leaves room for multiple approaches, choose one practical direction before planning execution.',
     '- Prefer the smallest local approach that satisfies the goal.',
     '- Do not output multiple alternative branches in the final plan.',
@@ -1622,6 +1623,11 @@ function buildAutoPlanPlannerGuidance() {
     '- Keep type names, function names, command names, and file paths consistent across all steps.',
     '- Before returning the plan, self-review it for requirement coverage, placeholders, contradictions, and inconsistent API/type names.',
     '- If the plan has critical gaps or unclear requirements, create an explorer/advisor step to resolve them before implementation.',
+    '- If target_confidence is known, do not add explorer unless code context is genuinely missing.',
+    '- If task_size is trivial or small, prefer 2-3 steps total including summarizer.',
+    '- Add reviewer only when there is meaningful regression or edge-case risk.',
+    '- Add tester only when there is a concrete command or user-visible behavior to verify.',
+    '- Never add roles just to fill a template.',
     '- Available sub-agent roles: explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer, and summarizer. Use only the roles the task actually needs.',
     '- Always include a summarizer as the final step. The summarizer reads accumulated step results and synthesizes the final summary. It does NOT re-analyze or run tools.',
     '- Do not ask executor steps (explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer) to produce the final summary. They write detailed step results for the summarizer.',
@@ -1643,7 +1649,7 @@ function buildAutoPlanPlannerGuidance() {
     '- For advisory: explorer -> advisor -> summarizer.',
     '- Prefer 3-5 steps total unless the task needs more.',
     '- Keep the plan ordered, task-oriented, and easy for small sub-agents to follow.',
-    '- Step task text should be a complete handoff packet: Targets, Expected outcome, Out of scope, Success criteria, Verification intent, and Handoff artifact.'
+    '- Step task text should be a complete sub-agent work order: Inputs from prior steps, Scope, Out of scope, Success evidence, Verification intent, and Handoff to next step.'
   ].join('\n');
 }
 
@@ -2308,6 +2314,38 @@ function normalizeStepStringArray(value) {
   return single ? [single] : [];
 }
 
+function normalizePlannerChoice(value, allowed, fallback) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  return allowed.includes(normalized) ? normalized : fallback;
+}
+
+function normalizePlannerMetadata(parsed = {}, goal = '') {
+  const taskClass = classifyPlanTaskClass(goal);
+  const taskType = normalizePlannerChoice(
+    parsed?.task_type || parsed?.taskType || parsed?.classification?.task_type || parsed?.classification?.taskType,
+    ['advisory', 'implementation', 'debugging', 'verification', 'refactor', 'documentation', 'hybrid'],
+    taskClass === 'implementation-verification'
+      ? 'implementation'
+      : taskClass === 'implementation-advisory'
+        ? 'hybrid'
+        : taskClass
+  );
+  return {
+    task_size: normalizePlannerChoice(
+      parsed?.task_size || parsed?.taskSize || parsed?.classification?.task_size || parsed?.classification?.taskSize,
+      ['trivial', 'small', 'medium', 'large'],
+      ''
+    ),
+    task_type: taskType,
+    target_confidence: normalizePlannerChoice(
+      parsed?.target_confidence || parsed?.targetConfidence || parsed?.classification?.target_confidence || parsed?.classification?.targetConfidence,
+      ['known', 'likely', 'unknown'],
+      ''
+    ),
+    rationale: String(parsed?.rationale || parsed?.classification?.rationale || '').trim()
+  };
+}
+
 function normalizeStructuredPlanSteps(steps = []) {
   return (Array.isArray(steps) ? steps : [])
     .map((step) => ({
@@ -2348,11 +2386,13 @@ function withStepContractTasks(steps = []) {
 export function normalizeAutoPlan(parsed, goal) {
   const steps = Array.isArray(parsed?.steps) ? parsed.steps : [];
   const cleaned = withStepContractTasks(normalizePlanStepRoles(normalizeStructuredPlanSteps(steps)));
+  const planner = normalizePlannerMetadata(parsed, goal);
 
   const basePlan =
     cleaned.length === 0
       ? {
           summary: `Auto plan for: ${goal}`,
+          planner,
           steps: [
             {
               title: 'Initial exploration',
@@ -2363,6 +2403,7 @@ export function normalizeAutoPlan(parsed, goal) {
         }
       : {
           summary: String(parsed?.summary || `Auto plan for: ${goal}`).trim(),
+          planner,
           steps: cleaned
         };
 
@@ -2566,6 +2607,23 @@ function buildDefaultExplorerStep(goal) {
   };
 }
 
+function testerStepHasConcreteVerification(step = {}) {
+  const text = [
+    step.title,
+    step.task,
+    step.verification,
+    step.success_criteria
+  ].filter(Boolean).join('\n').toLowerCase();
+  if (!text) return false;
+  if (/\b(npm|pnpm|yarn|node --test|vitest|jest|playwright|pytest|cargo test|go test|mvn|gradle|npm run|npm test)\b/.test(text)) {
+    return true;
+  }
+  if (/\b(manual|browser|smoke|screenshot|api|endpoint)\b/.test(text) && /\b(verify|validate|test|check|confirm)\b/.test(text)) {
+    return true;
+  }
+  return false;
+}
+
 function finalizePlanWithTerminalRoles(steps, goal, {
   includeTester = true,
   includeReviewer = false,
@@ -2597,6 +2655,14 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
   const requirements = deriveGoalRequirements(goal);
   const lightweightGoal = isLightweightAutoPlanGoal(goal, requirements);
   const taskClass = classifyPlanTaskClass(goal);
+  const planner = plan?.planner && typeof plan.planner === 'object' ? plan.planner : {};
+  const taskSize = String(planner.task_size || '').toLowerCase();
+  const taskType = String(planner.task_type || '').toLowerCase();
+  const targetConfidence = String(planner.target_confidence || '').toLowerCase();
+  const plannerSaysSmall = taskSize === 'trivial' || taskSize === 'small';
+  const plannerSaysKnownTarget = targetConfidence === 'known';
+  const plannerSaysAdvisory = taskType === 'advisory';
+  const plannerSaysVerification = taskType === 'verification';
   const summary = String(plan?.summary || `Auto plan for: ${goal}`).trim();
   const implementationSteps = source.filter((step) => ['coder', 'refactorer', 'writer'].includes(step.role));
   const primaryImplementationStep =
@@ -2614,8 +2680,12 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
   const hasDebugger = source.some((step) => step.role === 'debugger');
 
   if (taskClass === 'advisory') {
+    const allowedAdvisoryRoles =
+      plannerSaysSmall || plannerSaysKnownTarget || plannerSaysAdvisory
+        ? new Set(['advisor', 'architect'])
+        : new Set(['explorer', 'advisor', 'architect']);
     const advisorySteps = source
-      .filter((step) => step.role === 'explorer' || step.role === 'advisor' || step.role === 'architect')
+      .filter((step) => allowedAdvisoryRoles.has(step.role))
       .map((step) =>
         step.role === 'coder'
           ? {
@@ -2715,10 +2785,24 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
   }
 
   if (lightweightGoal) {
+    const sourceHasTester = source.some((step) => step.role === 'tester' && testerStepHasConcreteVerification(step));
+    const includeTester = !plannerSaysSmall || plannerSaysVerification || sourceHasTester;
     return {
       summary,
       steps: finalizePlanWithTerminalRoles([primaryImplementationStep], goal, {
-        includeTester: true,
+        includeTester,
+        includeReviewer: false,
+        includeSummarizer: true
+      })
+    };
+  }
+
+  if (plannerSaysSmall && plannerSaysKnownTarget && implementationSteps.length > 0) {
+    const includeTester = plannerSaysVerification || source.some((step) => step.role === 'tester' && testerStepHasConcreteVerification(step));
+    return {
+      summary,
+      steps: finalizePlanWithTerminalRoles([primaryImplementationStep], goal, {
+        includeTester,
         includeReviewer: false,
         includeSummarizer: true
       })
@@ -3442,7 +3526,7 @@ async function buildPlanFromSpecWithModel({
   const prompt = [
     buildAutoPlanPlannerGuidance(),
     'Convert the provided engineering spec into an implementation plan.',
-    `Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|')}","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
+    `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|')}","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
     'Make the plan concrete and ordered for a coding agent.',
     'Before defining tasks, map the files/modules likely to be touched and what each is responsible for.',
     'Each task should name exact files where known, expected behavior, and verification commands or evidence.',
@@ -5359,7 +5443,7 @@ async function buildAutoPlanAndRun({
     '- Example advisory roles: explorer -> inspect project shape, advisor -> synthesize findings and prioritized recommendations.',
     '- Example implementation roles: explorer -> inspect target area, coder -> implement change, tester -> verify changed behavior.',
     '- Example debugging roles: explorer -> inspect failing area, debugger -> trace root cause, coder -> fix, tester -> verify fix.',
-    `Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|')}","task":"..."}]}. No markdown.`
+    `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|')}","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`
   ].join('\n');
   let autoPlan = {
     summary: `Auto plan for: ${goal}`,
@@ -5391,12 +5475,13 @@ async function buildAutoPlanAndRun({
           role: 'user',
           content: [
             'Create an execution plan and assign best sub-agent role for each step.',
-            `Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|')}","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
+            `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|')}","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
             `The available roles are ${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join(', ')}. Use only the roles the task actually needs.`,
             'Always include a summarizer as the final step. The summarizer synthesizes prior step results without re-analyzing.',
             'All executor steps (explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer) should write detailed step results, not final summaries.',
             `Task class: ${normalizedTaskClass}`,
             'Before choosing roles, decide whether the request is advisory, implementation, verification-heavy, debugging, or a hybrid.',
+            'Set task_size, task_type, target_confidence, and rationale before listing steps. Use these fields to justify why each role is necessary.',
             requirementPacket,
             'The first step should usually be an explorer to inspect the target area before implementation.',
             'For debugging goals: explorer -> debugger (trace cause) -> coder (fix) -> tester (verify).',
@@ -5408,6 +5493,9 @@ async function buildAutoPlanAndRun({
             'Do not include reviewer/tester for advisory goals unless the user explicitly asks to validate, verify, or independently review the findings.',
             'Avoid template-only titles like "Initial analysis", "Review recommendations", or "Test and verify" for advisory goals.',
             'For implementation-heavy changes, prefer review and/or testing steps near the end only when they materially improve confidence.',
+            'If target_confidence is known, skip explorer unless the implementation still needs fresh code context.',
+            'If task_size is small or trivial, keep the plan to the minimum useful executor steps plus summarizer.',
+            'Do not add reviewer or tester unless their specific success evidence is clear.',
             'Never assign every step to coder. Use explorer for inspection, coder for implementation, tester for verification, and summarizer as the final synthesis step.',
             'Never assign explorer, architect, or advisor to implementation, coding, editing, or feature-delivery tasks. Those roles are read-only.',
             'Each step task must include enough handoff detail to execute without guessing: targets, expected outcome, out-of-scope boundaries, success criteria, verification intent, and handoff artifact.',
@@ -6400,7 +6488,7 @@ async function revisePendingPlanWithModel({
   const prompt = [
     buildAutoPlanPlannerGuidance(),
     'You are revising an existing plan based on explicit user feedback.',
-    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"' + SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|') + '","task":"..."}]}. No markdown.',
+    'Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"' + SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|') + '","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.',
     'Keep roles minimal and only include steps that materially help the goal.',
     'Always keep a summarizer as the final step.'
   ].join('\n');
