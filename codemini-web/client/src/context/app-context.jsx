@@ -167,6 +167,32 @@ function updateToolCardInMessages(messages, toolId, updater) {
   return { messages: nextMessages, updated };
 }
 
+function upsertToolCardInMessage(message, toolCard) {
+  let found = false;
+  const segments = (Array.isArray(message.segments) ? message.segments : []).map(
+    (seg) => {
+      if (seg?.type !== "tools" || !Array.isArray(seg.cards)) return seg;
+      const idx = seg.cards.findIndex(
+        (card) =>
+          card.id === toolCard.id ||
+          (String(card.id || "").startsWith("stream-tool-") &&
+            !String(toolCard.id || "").startsWith("stream-tool-") &&
+            String(card.name || "") === String(toolCard.name || "")),
+      );
+      if (idx === -1) return seg;
+      found = true;
+      const cards = [...seg.cards];
+      cards[idx] = { ...cards[idx], ...toolCard };
+      return { ...seg, cards };
+    },
+  );
+  if (found) return { ...message, segments };
+  return {
+    ...message,
+    segments: addToolToSegments(finishThinkingSegments(segments), toolCard),
+  };
+}
+
 function isCompletedStatus(status) {
   return ["done", "failed", "error", "blocked", "completed"].includes(
     String(status || "").toLowerCase(),
@@ -258,6 +284,17 @@ function appendDeltaToSegments(segments, delta) {
     ...segs.slice(0, -1),
     { ...last, text: (last.text || "") + delta, isStreaming: true },
   ];
+}
+
+function replaceLastTextInSegments(segments, text) {
+  const source = Array.isArray(segments) ? segments : [];
+  for (let i = source.length - 1; i >= 0; i -= 1) {
+    if (source[i]?.type !== "text") continue;
+    return source.map((seg, index) =>
+      index === i ? { ...seg, text, isStreaming: false } : seg,
+    );
+  }
+  return [...source, { type: "text", text, isStreaming: false }];
 }
 
 function appendThinkingToSegments(segments, delta, isStreaming = true) {
@@ -1767,8 +1804,34 @@ export function AppProvider({ children }) {
           break;
         }
 
-        case "assistant:tool_call_delta":
+        case "assistant:tool_call_delta": {
+          const toolCall = event.toolCall || {};
+          const toolName = String(toolCall.name || "").trim();
+          const toolId =
+            String(toolCall.id || "").trim() ||
+            `stream-tool-${Number.isFinite(Number(toolCall.index)) ? Number(toolCall.index) : 0}`;
+          if (!toolId) break;
+          update({ stage: "tooling", live: true, stageLabel: t("tooling") });
+          if (activeId) {
+            const toolCard = {
+              id: toolId,
+              name: toolName || "tool",
+              displayName: toolName ? formatToolLabel(toolName) : t("tooling"),
+              arguments: toolCall.arguments || "",
+              status: "running",
+              durationMs: null,
+              summary: "",
+              result: "",
+            };
+            setState((prev) => ({
+              ...prev,
+              messages: prev.messages.map((m) =>
+                m.id === activeId ? upsertToolCardInMessage(m, toolCard) : m,
+              ),
+            }));
+          }
           break;
+        }
 
         case "assistant:response": {
           if (activeId) {
@@ -1796,18 +1859,15 @@ export function AppProvider({ children }) {
                     : m;
                 if (event.text) {
                   const text = stripPlanProgressText(event.text);
-                  const segs = ensureTextSegment(withReasoning.segments);
-                  const lastIdx = segs.length - 1;
                   return {
                     ...withReasoning,
                     usage: mergeUsage(
                       withReasoning.usage,
                       event.usage || event.assistantMessage?.usage,
                     ),
-                    segments: finishThinkingSegments(segs).map((seg, i) =>
-                      i === lastIdx && seg.type === "text"
-                        ? { ...seg, text, isStreaming: false }
-                        : seg,
+                    segments: replaceLastTextInSegments(
+                      finishThinkingSegments(withReasoning.segments),
+                      text,
                     ),
                   };
                 }
@@ -1847,13 +1907,7 @@ export function AppProvider({ children }) {
               ...prev,
               messages: prev.messages.map((m) =>
                 m.id === activeId
-                  ? {
-                      ...m,
-                      segments: addToolToSegments(
-                        finishThinkingSegments(m.segments),
-                        toolCard,
-                      ),
-                    }
+                  ? upsertToolCardInMessage(m, toolCard)
                   : m,
               ),
             }));

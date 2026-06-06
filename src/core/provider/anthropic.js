@@ -187,7 +187,21 @@ function normalizeTools(tools) {
     .filter(Boolean);
 }
 
-function buildPayload({ model, temperature, messages, tools, stream = false, maxTokens = 4096 }) {
+function normalizeToolChoice(toolChoice) {
+  if (!toolChoice) return { type: 'auto' };
+  if (typeof toolChoice === 'string') {
+    if (toolChoice === 'auto' || toolChoice === 'none') return { type: toolChoice };
+    return { type: 'tool', name: toolChoice };
+  }
+  if (toolChoice?.type === 'function' && toolChoice?.function?.name) {
+    return { type: 'tool', name: String(toolChoice.function.name) };
+  }
+  if (toolChoice?.type === 'tool' && toolChoice?.name) return toolChoice;
+  if (toolChoice?.name) return { type: 'tool', name: String(toolChoice.name) };
+  return { type: 'auto' };
+}
+
+function buildPayload({ model, temperature, messages, tools, stream = false, maxTokens = 4096, toolChoice }) {
   const normalized = normalizeMessages(messages);
   const payload = {
     model,
@@ -201,7 +215,7 @@ function buildPayload({ model, temperature, messages, tools, stream = false, max
   const normalizedTools = normalizeTools(tools);
   if (normalizedTools.length > 0) {
     payload.tools = normalizedTools;
-    payload.tool_choice = { type: 'auto' };
+    payload.tool_choice = normalizeToolChoice(toolChoice);
   }
   return payload;
 }
@@ -383,10 +397,11 @@ export async function createChatCompletion({
   messages,
   temperature = 0.2,
   tools,
+  toolChoice,
   timeoutMs = 1800000,
   maxTokens = 4096
 }) {
-  const payload = buildPayload({ model, temperature, messages, tools, maxTokens });
+  const payload = buildPayload({ model, temperature, messages, tools, maxTokens, toolChoice });
   const response = await fetch(buildMessagesUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
@@ -404,6 +419,7 @@ export async function createChatCompletionStream({
   messages,
   temperature = 0.2,
   tools,
+  toolChoice,
   onTextDelta,
   onReasoningDelta,
   onToolCallDelta,
@@ -423,7 +439,7 @@ export async function createChatCompletionStream({
       externalSignal.addEventListener('abort', onAbort, { once: true });
     }
   }
-  const payload = buildPayload({ model, temperature, messages, tools, stream: true, maxTokens });
+  const payload = buildPayload({ model, temperature, messages, tools, stream: true, maxTokens, toolChoice });
   const response = await fetch(buildMessagesUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
@@ -457,6 +473,14 @@ export async function createChatCompletionStream({
           : '';
         current.arguments = current.arguments || initialInput;
         toolCallsByIndex.set(index, current);
+        if (onToolCallDelta) {
+          onToolCallDelta({
+            index,
+            id: current.id || `tc-${index + 1}`,
+            name: current.name,
+            arguments: current.arguments || '{}'
+          });
+        }
       } else if (contentBlock.type === 'thinking' || contentBlock.type === 'redacted_thinking') {
         const current = cloneAnthropicContentBlock(contentBlock) || { type: contentBlock.type };
         if (current.type === 'thinking' && current.thinking == null) current.thinking = '';

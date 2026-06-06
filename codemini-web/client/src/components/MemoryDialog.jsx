@@ -225,7 +225,7 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-3">
-          <div className="rounded-lg border border-(--border-default) bg-(--bg-secondary) p-3">
+          <div className="rounded-lg border border-(--border-default) p-3">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">

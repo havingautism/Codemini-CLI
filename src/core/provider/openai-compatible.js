@@ -229,7 +229,17 @@ function sanitizeMiniMaxMessages(messages) {
   return out;
 }
 
-function buildPayload({ model, temperature, messages, tools, stream = false }) {
+function normalizeToolChoice(toolChoice) {
+  if (!toolChoice) return 'auto';
+  if (typeof toolChoice === 'string') {
+    if (toolChoice === 'auto' || toolChoice === 'none' || toolChoice === 'required') return toolChoice;
+    return { type: 'function', function: { name: toolChoice } };
+  }
+  if (toolChoice && typeof toolChoice === 'object') return toolChoice;
+  return 'auto';
+}
+
+function buildPayload({ model, temperature, messages, tools, stream = false, toolChoice }) {
   const sanitizedMessages = sanitizeGatewayMessages(messages);
   const payload = {
     model,
@@ -242,7 +252,7 @@ function buildPayload({ model, temperature, messages, tools, stream = false }) {
   }
   if (Array.isArray(tools) && tools.length > 0) {
     payload.tools = tools;
-    payload.tool_choice = 'auto';
+    payload.tool_choice = normalizeToolChoice(toolChoice);
   }
   if (isMiniMaxModel(model)) {
     payload.extra_body = { reasoning_split: true };
@@ -360,10 +370,11 @@ export async function createChatCompletion({
   messages,
   temperature = 0.2,
   tools,
+  toolChoice,
   timeoutMs = 1800000,
   maxRetries = 2
 }) {
-  const payload = buildPayload({ model, temperature, messages, tools });
+  const payload = buildPayload({ model, temperature, messages, tools, toolChoice });
   const response = await fetchWithRetry(buildChatCompletionsUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
@@ -413,6 +424,7 @@ export async function createChatCompletionStream({
   messages,
   temperature = 0.2,
   tools,
+  toolChoice,
   onTextDelta,
   onReasoningDelta,
   onToolCallDelta,
@@ -433,7 +445,7 @@ export async function createChatCompletionStream({
     }
   }
   const url = buildChatCompletionsUrl(baseUrl);
-  const payload = buildPayload({ model, temperature, messages, tools, stream: true });
+  const payload = buildPayload({ model, temperature, messages, tools, stream: true, toolChoice });
   const buildRequest = (bodyPayload) => ({
     method: 'POST',
     headers: createHeaders(apiKey),

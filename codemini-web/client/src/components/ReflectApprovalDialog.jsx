@@ -11,9 +11,18 @@ function confidenceLabel(value) {
   return num.toFixed(2);
 }
 
-export function ReflectApprovalCard({ draft, onAction, onUpdate, disabled = false }) {
+export function ReflectApprovalCard({
+  draft,
+  onAction,
+  onUpdate,
+  disabled = false,
+}) {
   const [editMode, setEditMode] = useState(false);
-  const [localDraft, setLocalDraft] = useState({ name: "", description: "", content: "" });
+  const [localDraft, setLocalDraft] = useState({
+    name: "",
+    description: "",
+    content: "",
+  });
   if (!draft) return null;
 
   const startEdit = () => {
@@ -31,7 +40,7 @@ export function ReflectApprovalCard({ draft, onAction, onUpdate, disabled = fals
   };
 
   return (
-    <div className="mx-auto max-w-3xl space-y-3 rounded-lg border border-(--border-default) bg-(--bg-primary) p-3 text-(--text-primary) shadow-none">
+    <div className="mx-auto max-w-3xl space-y-3 rounded-lg border border-(--border-default) dark:bg-(--bg-primary) bg-(--bg-secondary) p-3 text-(--text-primary) shadow-none">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 min-w-0">
@@ -46,8 +55,12 @@ export function ReflectApprovalCard({ draft, onAction, onUpdate, disabled = fals
             </Badge>
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-(--text-muted)">
-            <span>{t("reflectScope")}: {draft.scope || "project"}</span>
-            <span>{t("reflectConfidence")}: {confidenceLabel(draft.confidence)}</span>
+            <span>
+              {t("reflectScope")}: {draft.scope || "project"}
+            </span>
+            <span>
+              {t("reflectConfidence")}: {confidenceLabel(draft.confidence)}
+            </span>
           </div>
         </div>
       </div>
@@ -57,12 +70,19 @@ export function ReflectApprovalCard({ draft, onAction, onUpdate, disabled = fals
           <div className="space-y-2">
             <Input
               value={localDraft.name}
-              onChange={(e) => setLocalDraft((prev) => ({ ...prev, name: e.target.value }))}
+              onChange={(e) =>
+                setLocalDraft((prev) => ({ ...prev, name: e.target.value }))
+              }
               className="h-8 text-[13px]"
             />
             <Textarea
               value={localDraft.description}
-              onChange={(e) => setLocalDraft((prev) => ({ ...prev, description: e.target.value }))}
+              onChange={(e) =>
+                setLocalDraft((prev) => ({
+                  ...prev,
+                  description: e.target.value,
+                }))
+              }
               className="min-h-[56px] text-[13px]"
             />
           </div>
@@ -88,13 +108,17 @@ export function ReflectApprovalCard({ draft, onAction, onUpdate, disabled = fals
       {editMode ? (
         <Textarea
           value={localDraft.content}
-          onChange={(e) => setLocalDraft((prev) => ({ ...prev, content: e.target.value }))}
+          onChange={(e) =>
+            setLocalDraft((prev) => ({ ...prev, content: e.target.value }))
+          }
           className="min-h-[220px] font-mono text-[12px]"
         />
-      ) : draft.content && (
-        <pre className="max-h-56 overflow-auto rounded-md border border-(--border-default) bg-(--bg-secondary) p-3 font-mono text-[12px] leading-5 text-(--text-secondary) whitespace-pre-wrap">
-          {draft.content}
-        </pre>
+      ) : (
+        draft.content && (
+          <pre className="max-h-56 overflow-auto rounded-md border border-(--border-default) dark:bg-(--bg-secondary) bg-(--bg-primary) p-3 font-mono text-[12px] leading-5 text-(--text-secondary) whitespace-pre-wrap">
+            {draft.content}
+          </pre>
+        )
       )}
 
       <div className="flex items-center gap-2 border-t border-(--border-default) pt-3">
@@ -114,7 +138,11 @@ export function ReflectApprovalCard({ draft, onAction, onUpdate, disabled = fals
         >
           {editMode ? t("reflectSave") : t("reflectEdit")}
         </Button>
-        <Button size="xs" disabled={disabled || editMode} onClick={() => onAction("approve")}>
+        <Button
+          size="xs"
+          disabled={disabled || editMode}
+          onClick={() => onAction("approve")}
+        >
           {t("reflectApprove")}
         </Button>
       </div>

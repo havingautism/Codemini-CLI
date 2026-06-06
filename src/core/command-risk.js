@@ -7,7 +7,7 @@ export const READ_ONLY_TOKENS = new Set([
   'whoami', 'uname', 'date', 'env', 'printenv', 'hostname',
   'rg', 'find', 'grep', 'ag', 'ack', 'fd', 'bat',
   'get-childitem', 'get-content', 'get-location', 'get-command', 'get-help',
-  'get-item', 'get-process', 'select-string', 'select-object', 'where-object',
+  'get-item', 'get-process', 'type', 'select-string', 'select-object', 'select', 'where-object',
   'foreach-object', 'measure-object', 'sort-object', 'compare-object',
   'resolve-path', 'test-path',
   'git', 'node', 'npm', 'npx', 'python', 'python3', 'py', 'pip', 'pip3',

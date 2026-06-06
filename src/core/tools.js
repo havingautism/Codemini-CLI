@@ -2917,20 +2917,45 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       }
     });
   }
+  const specSectionSchema = (heading) => ({
+    type: 'object',
+    description: `${heading} section. Fill only when supported by exploration evidence; omit when unknown.`,
+    properties: {
+      goal: { type: 'string', description: 'One concise goal for this section' },
+      summary: { type: 'string', description: 'Concrete summary for this section' },
+      requirements: { type: 'array', items: { type: 'string' }, description: 'Requirements or facts for this section' },
+      acceptance_criteria: { type: 'array', items: { type: 'string' }, description: 'Observable acceptance checks' },
+      notes: { type: 'array', items: { type: 'string' }, description: 'Optional evidence, file names, constraints, or open points' }
+    },
+    required: []
+  });
+  const specSectionProperties = {
+    summary: specSectionSchema('Summary'),
+    goals: specSectionSchema('Goals'),
+    non_goals: specSectionSchema('Non-Goals'),
+    user_experience: specSectionSchema('User Experience / Command Behavior'),
+    architecture: specSectionSchema('Architecture'),
+    data_state_model: specSectionSchema('Data / State Model'),
+    safety_rules: specSectionSchema('Safety Rules'),
+    requirements: specSectionSchema('Requirements'),
+    risks_mitigations: specSectionSchema('Risks and Mitigations'),
+    testing_validation: specSectionSchema('Testing / Validation')
+  };
   if (typeof onCreateSpec === 'function') {
     workflowToolDefinitions.push({
       type: 'function',
       function: {
         name: 'create_spec',
         description:
-          'Create an engineering spec document for user approval. Use when scope, architecture, UX, or constraints still need alignment before implementation. Prefer this over create_plan for large, novel, or cross-cutting work. Do not call if important details are still unknown.',
+          'Create an engineering spec document for user approval. Use when scope, architecture, UX, or constraints still need alignment before implementation. Prefer this over create_plan for large, novel, or cross-cutting work. Do not call if important details are still unknown. Populate the structured section fields directly from explored evidence; do not put section content into assumptions.',
         parameters: {
           type: 'object',
           properties: {
             topic: { type: 'string', description: 'Clear, scoped feature or change to specify' },
             readiness: { type: 'string', enum: ['ready'], description: 'Must be "ready" when requirements are sufficiently clear' },
-            assumptions: { type: 'array', items: { type: 'string' }, description: 'Explicit assumptions made because details were inferred' },
-            context_summary: { type: 'string', description: 'Brief summary of what was learned from exploration' }
+            assumptions: { type: 'array', items: { type: 'string' }, description: 'Only explicit assumptions or inferred unknowns. Do not place explored requirements, architecture, or validation details here.' },
+            context_summary: { type: 'string', description: 'Brief summary of what was learned from exploration' },
+            ...specSectionProperties
           },
           required: ['topic', 'readiness']
         }
@@ -3854,10 +3879,26 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
         return { ok: false, error: 'topic is required' };
       }
       const assumptions = normalizeAssumptionItems(args?.assumptions);
+      const sections = {};
+      for (const key of [
+        'summary',
+        'goals',
+        'non_goals',
+        'user_experience',
+        'architecture',
+        'data_state_model',
+        'safety_rules',
+        'requirements',
+        'risks_mitigations',
+        'testing_validation'
+      ]) {
+        if (args?.[key] != null) sections[key] = args[key];
+      }
       return onCreateSpec({
         topic,
         assumptions,
-        contextSummary: String(args?.context_summary || '').trim()
+        contextSummary: String(args?.context_summary || '').trim(),
+        sections
       });
     },
     run: Object.assign(

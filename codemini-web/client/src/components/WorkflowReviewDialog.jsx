@@ -45,7 +45,7 @@ export function WorkflowReviewDialog({
           contentClassName,
         )}
       >
-        <div className="shrink-0 border-b border-(--border-default) bg-(--bg-primary) px-4 py-3 sm:px-5">
+        <div className="shrink-0 border-b border-(--border-default) bg-(--bg-primary) px-4 py-3">
           <DialogHeader showCloseButton={false} className="gap-0">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1 space-y-1">
@@ -76,7 +76,7 @@ export function WorkflowReviewDialog({
           </DialogHeader>
         </div>
 
-        <div className="min-h-0 overflow-y-auto overscroll-contain px-4 py-3 max-h-[min(calc(86vh-10rem),72vh)] sm:px-5 sm:py-4">
+        <div className="min-h-0 overflow-y-auto overscroll-contain px-4 py-3 max-h-[min(calc(86vh-10rem),72vh)]">
           <div className="space-y-3">{children}</div>
         </div>
 
@@ -233,7 +233,7 @@ export function ReviewFooter({ leading, trailing, className }) {
   return (
     <DialogFooter
       className={cn(
-        "gap-2 border-0 bg-transparent px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:space-x-0 sm:px-5",
+        "gap-2 border-0 bg-transparent px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:space-x-0",
         className,
       )}
     >

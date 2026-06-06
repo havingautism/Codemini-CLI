@@ -271,7 +271,7 @@ export function SoulPanel({ disabled = false }) {
 
   return (
     <div className="space-y-3">
-      <div className="rounded-lg border border-(--border-default) bg-(--bg-secondary) p-3">
+      <div className="rounded-lg border border-(--border-default) p-3">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -296,7 +296,11 @@ export function SoulPanel({ disabled = false }) {
             <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px]">
               {customCount} {t("custom")}
             </Badge> */}
-            <Button onClick={() => setEditing("new")} size="sm" disabled={disabled}>
+            <Button
+              onClick={() => setEditing("new")}
+              size="sm"
+              disabled={disabled}
+            >
               <Plus size={13} />
               {t("addSoul")}
             </Button>

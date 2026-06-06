@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   Dialog,
   DialogContent,
@@ -24,10 +24,40 @@ const statusLabels = {
   "?": () => t("gitDiffUntracked"),
 };
 
+const diffScrollCss = `
+  [data-code]::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  [data-code]::-webkit-scrollbar-thumb {
+    background-color: color-mix(in srgb, var(--text-muted) 50%, transparent);
+    border-radius: 3px;
+  }
+
+  [data-code]::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in srgb, var(--text-muted) 70%, transparent);
+  }
+
+  [data-code]::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+`;
+
+function formatDiffPath(filePath) {
+  const value = String(filePath || "").trim();
+  if (!value) return "";
+  const parts = value.replace(/\\/g, "/").split("/").filter(Boolean);
+  if (parts.length <= 2) return value;
+  return `.../${parts.slice(-2).join("/")}`;
+}
+
 export function GitDiffDialog({ open, onOpenChange }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [selectedFile, setSelectedFile] = useState(null);
+  const [diffContentWidth, setDiffContentWidth] = useState(null);
+  const diffPanelRef = useRef(null);
 
   const getIsDark = useCallback(
     () =>
@@ -108,10 +138,49 @@ export function GitDiffDialog({ open, onOpenChange }) {
     return getPatchForFile(selectedFile);
   }, [getPatchForFile, selectedFile]);
 
+  useEffect(() => {
+    setDiffContentWidth(null);
+    if (!patchForFile) return undefined;
+
+    const panel = diffPanelRef.current;
+    if (!panel) return undefined;
+
+    let rafId = 0;
+    let timeoutId = 0;
+    let disposed = false;
+
+    const measure = () => {
+      if (disposed) return;
+
+      const host = panel.querySelector("diffs-container");
+      const code = host?.shadowRoot?.querySelector("[data-code]");
+      if (!code) {
+        rafId = window.requestAnimationFrame(measure);
+        return;
+      }
+
+      const nextWidth = Math.ceil(code.scrollWidth);
+      setDiffContentWidth(
+        nextWidth > panel.clientWidth ? nextWidth : null,
+      );
+    };
+
+    rafId = window.requestAnimationFrame(measure);
+    timeoutId = window.setTimeout(measure, 350);
+    window.addEventListener("resize", measure);
+
+    return () => {
+      disposed = true;
+      window.cancelAnimationFrame(rafId);
+      window.clearTimeout(timeoutId);
+      window.removeEventListener("resize", measure);
+    };
+  }, [patchForFile]);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-5xl h-[80vh] flex flex-col p-0 gap-0">
-        <DialogHeader className="px-5 pt-5 pb-3 shrink-0">
+        <DialogHeader className="px-4 pt-4 pb-3 shrink-0">
           <DialogTitle>{t("gitDiffTitle")}</DialogTitle>
         </DialogHeader>
 
@@ -124,42 +193,59 @@ export function GitDiffDialog({ open, onOpenChange }) {
             {t("gitDiffNoChanges")}
           </div>
         ) : (
-          <div className="flex-1 flex min-h-0 border-t border-(--border-default)">
+          <div className="flex-1 flex min-h-0 gap-2 border-t border-(--border-default) p-2">
             {/* File list sidebar */}
-            <div className="w-[220px] shrink-0 border-r border-(--border-default) overflow-y-auto py-1">
-              {filesWithDiff.map((f) => (
-                <button
-                  key={f.path}
-                  onClick={() => setSelectedFile(f.path)}
-                  className={cn(
-                    "w-full text-left px-1 m-1 py-1.5 text-[12px] rounded-md cursor-pointer flex items-center gap-2 border-0 bg-transparent",
-                    selectedFile === f.path
-                      ? "bg-(--bg-hover) text-(--text-primary)"
-                      : "text-(--text-secondary) hover:bg-(--bg-hover)",
-                  )}
-                >
-                  <span
+            <div className="w-[220px] shrink-0 overflow-y-auto rounded-md border border-(--border-default) bg-(--bg-primary) py-1">
+              {filesWithDiff.map((f) => {
+                const displayPath = formatDiffPath(f.path);
+                return (
+                  <button
+                    key={f.path}
+                    onClick={() => setSelectedFile(f.path)}
+                    title={f.path}
                     className={cn(
-                      "shrink-0 text-[11px] font-mono w-[14px] text-center",
-                      statusColors[f.status] || "",
+                      "w-[calc(100%-0.5rem)] text-left px-1.5 mx-1 my-0.5 py-1.5 text-[12px] rounded-md cursor-pointer flex items-center gap-2 border-0 bg-transparent",
+                      selectedFile === f.path
+                        ? "bg-(--bg-hover) text-(--text-primary)"
+                        : "text-(--text-secondary) hover:bg-(--bg-hover)",
                     )}
                   >
-                    {f.status === "?" ? "U" : f.status}
-                  </span>
-                  <span className="truncate">{f.path}</span>
-                </button>
-              ))}
+                    <span
+                      className={cn(
+                        "shrink-0 text-[11px] font-mono w-[14px] text-center",
+                        statusColors[f.status] || "",
+                      )}
+                    >
+                      {f.status === "?" ? "U" : f.status}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">
+                      {displayPath}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
 
             {/* Diff content */}
-            <div className="flex-1 overflow-auto">
+            <div
+              ref={diffPanelRef}
+              className="min-w-0 flex-1 overflow-auto rounded-md border border-(--border-default) bg-(--bg-secondary)"
+            >
               {patchForFile ? (
                 <PatchDiff
+                  className="block min-w-full"
                   patch={patchForFile}
+                  style={
+                    diffContentWidth
+                      ? { minWidth: `${diffContentWidth}px` }
+                      : undefined
+                  }
                   options={{
                     theme: { dark: "pierre-dark", light: "pierre-light" },
                     themeType: isDark ? "dark" : "light",
                     diffStyle: "unified",
+                    overflow: "scroll",
+                    unsafeCSS: diffScrollCss,
                   }}
                 />
               ) : (

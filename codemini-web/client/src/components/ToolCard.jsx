@@ -347,6 +347,8 @@ const TOOL_ROW_CLASS =
 const TOOL_CHEVRON_CLASS = "size-[14px] shrink-0 text-(--text-process-detail)";
 const TOOL_ICON_CLASS =
   "flex size-[18px] shrink-0 items-center justify-center rounded text-(--text-process-detail)";
+const RUN_TOOL_ICON_CLASS =
+  "flex h-4 w-5 shrink-0 items-center justify-center rounded-[3px] border border-[color:color-mix(in_srgb,var(--text-process-detail)_45%,transparent)] text-(--text-process-detail)";
 
 function resolveToolHeaderParts(card, toolName, fileMeta) {
   const fallbackLabel = formatToolLabel(toolName);
@@ -412,8 +414,8 @@ export function ToolCard({ card }) {
         ) : (
           <CaretRight size={14} className={TOOL_CHEVRON_CLASS} />
         )}
-        <span className={TOOL_ICON_CLASS}>
-          <Icon size={14} />
+        <span className={toolName === "run" ? RUN_TOOL_ICON_CLASS : TOOL_ICON_CLASS}>
+          <Icon size={toolName === "run" ? 13 : 14} />
         </span>
         <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
           <span>{toolLabel}</span>

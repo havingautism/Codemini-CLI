@@ -45,16 +45,45 @@ function renderSkillContent({ name, description, content }) {
   ].join('\n').trimEnd() + '\n';
 }
 
+function normalizeList(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean);
+  }
+  return String(value || '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*(?:[-*]|\d+\.)\s+/, '').trim())
+    .filter(Boolean);
+}
+
+function renderSection(title, items) {
+  const normalized = normalizeList(items);
+  if (normalized.length === 0) return '';
+  return [`## ${title}`, '', ...normalized.map((item, index) => `${index + 1}. ${item}`)].join('\n');
+}
+
+function renderStructuredSkillBody(raw = {}) {
+  const sections = [
+    renderSection('Trigger Conditions', raw.trigger_conditions || raw.triggers),
+    renderSection('Workflow', raw.workflow),
+    renderSection('Key Decisions', raw.key_decisions || raw.decisions),
+    renderSection('Pitfalls', raw.pitfalls),
+    renderSection('Verification', raw.verification),
+    renderSection('Boundaries', raw.boundaries)
+  ].filter(Boolean);
+  return sections.join('\n\n').trim();
+}
+
 export function normalizeReflectDraft(raw = {}) {
   const name = slugifySkillName(raw.name || raw.skillName || raw.title);
   const description = String(raw.description || raw.summary || `Use when the ${name} workflow applies.`).trim();
   const confidence = Math.min(1, Math.max(0, Number(raw.confidence ?? 0.75)));
+  const structuredBody = renderStructuredSkillBody(raw);
   return {
     id: Number(raw.id || 1),
     name,
     description,
     confidence,
-    content: renderSkillContent({ name, description, content: raw.content || raw.markdown || raw.body })
+    content: renderSkillContent({ name, description, content: raw.content || raw.markdown || raw.body || structuredBody })
   };
 }
 
@@ -89,23 +118,37 @@ export function parseReflectScope(args = []) {
   return { scope, request: requestParts.join(' ').trim() };
 }
 
-function parseModelDrafts(text) {
-  const raw = String(text || '').trim();
-  if (!raw) return [];
+function parseJsonObject(rawValue) {
+  const raw = String(rawValue || '').trim();
+  if (!raw) return null;
   const unfenced = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   try {
-    const parsed = JSON.parse(unfenced);
-    if (Array.isArray(parsed?.candidates)) return parsed.candidates.map((item, index) => normalizeReflectDraft({ id: index + 1, ...item }));
-    if (Array.isArray(parsed)) return parsed.map((item, index) => normalizeReflectDraft({ id: index + 1, ...item }));
-    if (parsed && typeof parsed === 'object') return [normalizeReflectDraft(parsed)];
-  } catch {
-    // Fall back to wrapping plain markdown below.
+    return JSON.parse(unfenced);
+  } catch {}
+  const first = unfenced.indexOf('{');
+  const last = unfenced.lastIndexOf('}');
+  if (first !== -1 && last > first) {
+    try {
+      return JSON.parse(unfenced.slice(first, last + 1));
+    } catch {}
   }
-  return [normalizeReflectDraft({
-    name: 'reflected-success-workflow',
-    description: 'Use when the reflected successful workflow applies.',
-    content: raw
-  })];
+  return null;
+}
+
+function normalizeDraftList(parsed) {
+  if (Array.isArray(parsed?.candidates)) return parsed.candidates.map((item, index) => normalizeReflectDraft({ id: index + 1, ...item }));
+  if (Array.isArray(parsed)) return parsed.map((item, index) => normalizeReflectDraft({ id: index + 1, ...item }));
+  if (parsed && typeof parsed === 'object') return [normalizeReflectDraft(parsed)];
+  return [];
+}
+
+export function parseReflectModelDrafts(text) {
+  return normalizeDraftList(parseJsonObject(text));
+}
+
+function parseToolDrafts(toolCalls = []) {
+  const call = (Array.isArray(toolCalls) ? toolCalls : []).find((tc) => tc?.name === 'submit_reflect_candidates');
+  return call ? normalizeDraftList(parseJsonObject(call.arguments)) : null;
 }
 
 function recentContext(session, limit = 10) {
@@ -126,6 +169,37 @@ export async function buildReflectSkillDraft({
   previousDraft = null,
   feedback = ''
 } = {}) {
+  const reflectTool = {
+    type: 'function',
+    function: {
+      name: 'submit_reflect_candidates',
+      description: 'Submit structured reusable skill draft candidates for local SKILL.md rendering.',
+      parameters: {
+        type: 'object',
+        properties: {
+          candidates: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                name: { type: 'string', description: 'Kebab-case skill name' },
+                description: { type: 'string', description: 'Use-when trigger description' },
+                confidence: { type: 'number' },
+                trigger_conditions: { type: 'array', items: { type: 'string' } },
+                workflow: { type: 'array', items: { type: 'string' } },
+                key_decisions: { type: 'array', items: { type: 'string' } },
+                pitfalls: { type: 'array', items: { type: 'string' } },
+                verification: { type: 'array', items: { type: 'string' } },
+                boundaries: { type: 'array', items: { type: 'string' } }
+              },
+              required: ['name', 'description', 'confidence', 'trigger_conditions', 'workflow', 'key_decisions', 'pitfalls', 'verification', 'boundaries']
+            }
+          }
+        },
+        required: ['candidates']
+      }
+    }
+  };
   const mode = String(request || '').trim() ? 'directed' : 'exploratory';
   const prompt = [
     'Create a reusable Codex/Codemini SKILL.md draft from a successful workflow.',
@@ -136,9 +210,9 @@ export async function buildReflectSkillDraft({
     feedback ? `User edit feedback:\n${feedback}` : '',
     'Recent session context:',
     recentContext(session),
-    'Return valid JSON only, no markdown fences.',
-    'Shape: {"candidates":[{"name":"kebab-case-name","description":"when to use this skill","confidence":0.0,"content":"full SKILL.md body or markdown body"}]}',
-    'The content must include trigger conditions, workflow/toolchain, key decisions, pitfalls, verification, and boundaries.',
+    'You must call submit_reflect_candidates with structured fields. If there is no reusable success pattern, submit {"candidates":[]}.',
+    'Do not write markdown directly.',
+    'Each candidate must include trigger conditions, workflow/toolchain, key decisions, pitfalls, verification, and boundaries.',
     'Do not write memory or inbox content. This is only a skill draft.'
   ].filter(Boolean).join('\n\n');
 
@@ -151,11 +225,12 @@ export async function buildReflectSkillDraft({
       { role: 'system', content: systemPrompt || 'You draft concise, reusable coding workflow skills.' },
       { role: 'user', content: prompt }
     ],
+    tools: [reflectTool],
     temperature: 0,
     timeoutMs: REFLECT_TIMEOUT_MS
   });
 
-  return parseModelDrafts(result?.text || '');
+  return parseToolDrafts(result?.toolCalls) ?? parseReflectModelDrafts(result?.text || '');
 }
 
 export function attachReflectTargets({ candidates = [], scope = 'project', workspaceRoot = process.cwd() } = {}) {

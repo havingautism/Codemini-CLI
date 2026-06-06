@@ -30,6 +30,17 @@ function parseArgs(args) {
   } catch { return { _raw: String(args) }; }
 }
 
+function isEditableTarget(target) {
+  if (!(target instanceof HTMLElement)) return false;
+  const tagName = target.tagName.toLowerCase();
+  return (
+    tagName === 'input' ||
+    tagName === 'textarea' ||
+    tagName === 'select' ||
+    target.isContentEditable
+  );
+}
+
 function DetailRow({ label, value }) {
   return (
     <div className="flex gap-3 py-1 min-w-0">
@@ -148,6 +159,25 @@ export function ApprovalDialog({ request, open, onDecision }) {
   if (!request) return null;
   const { id, toolName, displayName, arguments: args, details } = request;
   const variant = detectVariant(toolName, details);
+  const hasRunShortcuts = variant === 'run';
+
+  const handleKeyDownCapture = (event) => {
+    if (!hasRunShortcuts) return;
+    if (event.defaultPrevented || event.repeat) return;
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      onDecision(id, false);
+      return;
+    }
+
+    if (event.key === 'Enter' && !event.shiftKey && !isEditableTarget(event.target)) {
+      event.preventDefault();
+      event.stopPropagation();
+      onDecision(id, true);
+    }
+  };
 
   const titles = {
     delete: t('deleteApproval'),
@@ -163,6 +193,7 @@ export function ApprovalDialog({ request, open, onDecision }) {
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) onDecision(id, false); }}>
       <DialogContent
+        onKeyDownCapture={handleKeyDownCapture}
         className={cn(
           'max-h-[82vh] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden',
           variant === 'run' ? 'sm:max-w-2xl' : 'sm:max-w-xl',
@@ -175,8 +206,18 @@ export function ApprovalDialog({ request, open, onDecision }) {
           <ApprovalBody variant={variant} args={args} details={details} />
         </div>
         <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => onDecision(id, false)}>{t('deny')}</Button>
-          <Button onClick={() => onDecision(id, true)}>{t('approve')}</Button>
+          <Button variant="outline" onClick={() => onDecision(id, false)}>
+            {t('deny')}
+            {hasRunShortcuts && (
+              <span className="ml-1.5 text-[11px] font-mono opacity-70">Esc</span>
+            )}
+          </Button>
+          <Button onClick={() => onDecision(id, true)}>
+            {t('approve')}
+            {hasRunShortcuts && (
+              <span className="ml-1.5 text-[13px] leading-none opacity-80">↩︎</span>
+            )}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

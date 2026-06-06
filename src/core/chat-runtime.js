@@ -3171,6 +3171,154 @@ function buildSpecTemplate(topic) {
 `;
 }
 
+const SPEC_SECTION_DEFINITIONS = [
+  ['summary', 'Summary'],
+  ['goals', 'Goals'],
+  ['non_goals', 'Non-Goals'],
+  ['user_experience', 'User Experience / Command Behavior'],
+  ['architecture', 'Architecture'],
+  ['data_state_model', 'Data / State Model'],
+  ['safety_rules', 'Safety Rules'],
+  ['requirements', 'Requirements'],
+  ['risks_mitigations', 'Risks and Mitigations'],
+  ['testing_validation', 'Testing / Validation']
+];
+const REQUIRED_SPEC_HEADINGS = SPEC_SECTION_DEFINITIONS.map(([, heading]) => heading);
+
+function normalizeHeadingText(value = '') {
+  return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+export function analyzeSpecCompleteness(specText = '') {
+  const text = String(specText || '');
+  const found = new Set();
+  for (const match of text.matchAll(/^##\s+(.+?)\s*#*\s*$/gm)) {
+    found.add(normalizeHeadingText(match[1]));
+  }
+  const missingHeadings = REQUIRED_SPEC_HEADINGS.filter((heading) => !found.has(normalizeHeadingText(heading)));
+  return {
+    complete: /^#\s+\S.+$/m.test(text) && missingHeadings.length === 0,
+    missingHeadings
+  };
+}
+
+export function normalizeGeneratedSpecText(specText = '', topic = 'spec') {
+  const raw = String(specText || '').trim();
+  const firstHeading = raw.search(/^#\s+\S.+$/m);
+  const candidate = firstHeading >= 0 ? raw.slice(firstHeading).trim() : raw;
+  return analyzeSpecCompleteness(candidate).complete
+    ? candidate
+    : buildFallbackStructuredSpec(topic);
+}
+
+function parseJsonObject(raw) {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  const unfenced = text
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  try {
+    const parsed = JSON.parse(unfenced);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {}
+  const start = unfenced.indexOf('{');
+  const end = unfenced.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try {
+      const parsed = JSON.parse(unfenced.slice(start, end + 1));
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {}
+  }
+  return null;
+}
+
+function normalizeSpecList(value, fallback = '') {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const out = [];
+    const goal = String(value.goal || '').trim();
+    const summary = String(value.summary || '').trim();
+    const requirements = normalizeSpecList(value.requirements);
+    const acceptance = normalizeSpecList(value.acceptance_criteria || value.acceptanceCriteria || value.acceptance);
+    const notes = normalizeSpecList(value.notes || value.details || value.considerations);
+    if (goal) out.push(`目标：${goal}`);
+    if (summary) out.push(`概述：${summary}`);
+    if (requirements.length > 0) out.push(['需求：', ...requirements.map((item) => `  - ${item}`)].join('\n'));
+    if (acceptance.length > 0) out.push(['验收：', ...acceptance.map((item) => `  - ${item}`)].join('\n'));
+    if (notes.length > 0) out.push(['备注：', ...notes.map((item) => `  - ${item}`)].join('\n'));
+    return out;
+  }
+  const source = Array.isArray(value)
+    ? value
+    : String(value || fallback)
+      .split(/\r?\n/)
+      .map((line) => line.replace(/^\s*[-*]\s+/, '').trim());
+  return source
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
+}
+
+function normalizeSpecTitle(value, topic) {
+  const raw = extractSpecTopicTitle(value || topic || 'Spec');
+  const withoutHash = raw.replace(/^#\s+/, '').trim();
+  return /design$/i.test(withoutHash) ? withoutHash : `${withoutHash} Design`;
+}
+
+function extractSpecTopicTitle(topic = 'spec') {
+  return String(topic || 'spec')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean) || 'spec';
+}
+
+function extractSpecTopicContext(topic = '') {
+  const text = String(topic || '');
+  const context = text.match(/Exploration context:\s*([\s\S]*?)(?:\n\nAssumptions:|\nAssumptions:|$)/i)?.[1]?.trim() || '';
+  const assumptionsText = text.match(/Assumptions:\s*([\s\S]*)$/i)?.[1] || '';
+  const assumptions = assumptionsText
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*[-*]\s+/, '').trim())
+    .filter(Boolean);
+  return { context, assumptions };
+}
+
+function buildFallbackStructuredSpec(topic = 'spec') {
+  const title = extractSpecTopicTitle(topic);
+  const { context, assumptions } = extractSpecTopicContext(topic);
+  return renderStructuredSpec({
+    title,
+    summary: [
+      context,
+      ...assumptions.map((item) => `假设：${item}`)
+    ].filter(Boolean)
+  }, title);
+}
+
+export function renderStructuredSpec(spec = {}, topic = 'spec') {
+  const title = normalizeSpecTitle(spec.title, extractSpecTopicTitle(topic));
+  const lines = [`# ${title}`, ''];
+  for (const [key, heading] of SPEC_SECTION_DEFINITIONS) {
+    const items = normalizeSpecList(spec[key]);
+    lines.push(`## ${heading}`);
+    for (const item of items.length > 0 ? items : ['无']) {
+      lines.push(`- ${item}`);
+    }
+    lines.push('');
+  }
+  return lines.join('\n').trim();
+}
+
+function structuredSpecFromToolCalls(toolCalls = []) {
+  const call = (Array.isArray(toolCalls) ? toolCalls : []).find((tc) => tc?.name === 'render_spec');
+  return call ? parseJsonObject(call.arguments) : null;
+}
+
+function hasStructuredSpecSections(sections = {}) {
+  if (!sections || typeof sections !== 'object' || Array.isArray(sections)) return false;
+  return SPEC_SECTION_DEFINITIONS.some(([key]) => normalizeSpecList(sections[key]).length > 0);
+}
+
 function extractSpecTitle(specText, fallback = 'spec') {
   const raw = String(specText || '');
   const heading = raw.match(/^#\s+Spec:\s+(.+)$/m) || raw.match(/^#\s+(.+)$/m);
@@ -3183,24 +3331,47 @@ async function buildSpecWithModel({
   model,
   systemPrompt
 }) {
+  const sectionSchema = (heading) => ({
+    type: 'object',
+    properties: {
+      goal: { type: 'string', description: `One-sentence goal for the "${heading}" section` },
+      summary: { type: 'string', description: `Concrete summary for the "${heading}" section` },
+      requirements: { type: 'array', items: { type: 'string' }, description: `Implementation-ready requirements for "${heading}"` },
+      acceptance_criteria: { type: 'array', items: { type: 'string' }, description: `Acceptance checks for "${heading}"` },
+      notes: { type: 'array', items: { type: 'string' }, description: `Optional notes, constraints, file names, or evidence for "${heading}"` }
+    },
+    required: []
+  });
+  const sectionProperties = Object.fromEntries(
+    SPEC_SECTION_DEFINITIONS.map(([key, heading]) => [
+      key,
+      sectionSchema(heading)
+    ])
+  );
+  const renderSpecTool = {
+    type: 'function',
+    function: {
+      name: 'render_spec',
+      description: 'Submit structured engineering spec fields for local Markdown rendering.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Short feature title without a leading markdown heading marker' },
+          ...sectionProperties
+        },
+        required: ['title']
+      }
+    }
+  };
   const prompt = [
-    'Write a practical engineering spec in markdown, like an implementation-ready design document.',
-    'Return the full spec only. Do not greet or chat.',
-    'Incorporate any explicit assumptions provided by the caller. Put unresolved items under Requirements or Open Questions.',
-    'Use these sections exactly:',
-    '# <Feature> Design',
-    '## Summary',
-    '## Goals',
-    '## Non-Goals',
-    '## User Experience / Command Behavior',
-    '## Architecture',
-    '## Data / State Model',
-    '## Safety Rules',
-    '## Requirements',
-    '## Risks and Mitigations',
-    '## Testing / Validation',
+    'Create a practical engineering spec, like an implementation-ready design document.',
+    'You must call the render_spec tool exactly once with structured fields. Do not write markdown prose directly.',
+    'Incorporate explicit assumptions provided by the caller.',
+    'Each section may be an object with goal, summary, requirements, acceptance_criteria, and optional notes.',
+    'Fill only sections that are supported by the provided context. Omit empty or unknown sections; the local renderer will display "无".',
+    'Avoid placeholders like TBD, TODO, Problem statement, Desired outcome, implement later, or made-up filler.',
     'Make it concrete, scoped, and suitable for turning into a sub-agent implementation plan.',
-    'Every listed section must be present as a level-2 heading.'
+    'Use concise engineering language. Include exact files/modules when known from the provided context.'
   ].join('\n');
   const specSystemPrompt = await composeSystemPrompt({
     shellRulesPrompt: systemPrompt,
@@ -3219,10 +3390,16 @@ async function buildSpecWithModel({
       { role: 'system', content: specSystemPrompt },
       { role: 'user', content: `Topic: ${topic}` }
     ],
+    tools: [renderSpecTool],
+    toolChoice: { type: 'function', function: { name: 'render_spec' } },
     timeoutMs: config.gateway.timeout_ms || 1800000,
     maxRetries: config.gateway.max_retries ?? 2
   });
-  return String(result.text || '').trim();
+  const structured = structuredSpecFromToolCalls(result.toolCalls) || parseJsonObject(result.text);
+  if (structured) {
+    return renderStructuredSpec(structured, topic);
+  }
+  return buildFallbackStructuredSpec(topic);
 }
 
 function buildPlanTemplate(goal) {
@@ -3260,13 +3437,9 @@ async function buildPlanFromSpecWithModel({
 }) {
   const projectConstraints = await inferProjectImplementationConstraints(process.cwd());
   const prompt = [
-    'Convert the provided engineering spec into an implementation plan in markdown.',
-    'Use this structure exactly:',
-    '# Plan: <title>',
-    '## Phase 1: Discovery',
-    '## Phase 2: Implementation',
-    '## Phase 3: Verification',
-    '## Task Breakdown',
+    buildAutoPlanPlannerGuidance(),
+    'Convert the provided engineering spec into an implementation plan.',
+    `Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|')}","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
     'Make the plan concrete and ordered for a coding agent.',
     'Before defining tasks, map the files/modules likely to be touched and what each is responsible for.',
     'Each task should name exact files where known, expected behavior, and verification commands or evidence.',
@@ -3274,7 +3447,7 @@ async function buildPlanFromSpecWithModel({
     'Break work into independently understandable tasks with clear responsibility and testable progress.',
     'Prefer small, focused file boundaries where the plan creates or reorganizes code, while respecting existing project patterns.',
     'Keep type names, function names, command names, and file paths consistent across all phases.',
-    'Include a self-review checklist for spec coverage, placeholder scan, contradictions, and type/API consistency.'
+    'Always include a summarizer as the final step.'
   ].join('\n');
   const planSystemPrompt = await composeSystemPrompt({
     shellRulesPrompt: systemPrompt,
@@ -3299,7 +3472,16 @@ async function buildPlanFromSpecWithModel({
     timeoutMs: config.gateway.timeout_ms || 1800000,
     maxRetries: config.gateway.max_retries ?? 2
   });
-  return String(result.text || '').trim();
+  const parsed = extractJsonBlock(result.text || '');
+  const goal = `approved spec ${specPath || '(inline)'}`;
+  const autoPlan = normalizeAutoPlan(parsed, goal);
+  return renderAutoPlanMarkdown({
+    goal,
+    autoPlan,
+    finalSummary: 'Plan generated from approved spec.',
+    approvalText: buildPlanReviewApprovalText('created'),
+    progressLine: buildPlanReviewProgressLine('created')
+  });
 }
 
 async function collectLikelyImplementationFiles(cwd) {
@@ -3823,13 +4005,14 @@ function buildPendingReflectSkillSnapshot(reflectState) {
 function buildPendingSpecSnapshot(specState) {
   const normalized = normalizeSpecState(specState);
   if (!normalized || normalized.status !== 'pending_approval') return null;
+  const completeness = analyzeSpecCompleteness(normalized.specText || '');
   return {
     goal: normalized.goal || '',
     summary: normalized.summary || '',
     specText: normalized.specText || '',
     filePath: normalized.specPath || '',
-    complete: true,
-    missingHeadings: []
+    complete: completeness.complete,
+    missingHeadings: completeness.missingHeadings
   };
 }
 
@@ -4149,19 +4332,22 @@ async function askModel({
     if (persistSession) await saveSession(session);
   }
 
-  const projectContextSnippet = await buildProjectContextSnippet(process.cwd(), modelInputText).catch(() => '');
+  const projectContextPromise = buildProjectContextSnippet(process.cwd(), modelInputText).catch(() => '');
   const projectContextGuidance =
     'Use this project context as lightweight guidance and verify important details with fresh reads when needed.';
   const normalizedExecutionMode = normalizeExecutionMode(executionMode || config.execution?.mode || 'normal');
   const executionModePrompt = buildExecutionModePromptBlock(normalizedExecutionMode);
-  const effectiveSystemPrompt = await composeSystemPrompt({
-    shellRulesPrompt: systemPrompt,
-    config,
-    workspaceRoot: process.cwd(),
-    skillsPrompt: executionModePrompt || undefined,
-    includeSoul: false,
-    includeMemory: false
-  });
+  const [projectContextSnippet, effectiveSystemPrompt] = await Promise.all([
+    projectContextPromise,
+    composeSystemPrompt({
+      shellRulesPrompt: systemPrompt,
+      config,
+      workspaceRoot: process.cwd(),
+      skillsPrompt: executionModePrompt || undefined,
+      includeSoul: false,
+      includeMemory: false
+    })
+  ]);
   const projectContextPrompt = buildProjectContextUserPrompt({
     projectContextSnippet,
     projectContextGuidance,
@@ -4272,7 +4458,7 @@ async function askModel({
         }
       : undefined,
     onCreateSpec: normalizedExecutionMode === 'plan'
-      ? async ({ topic, assumptions = [], contextSummary = '' }) => {
+      ? async ({ topic, assumptions = [], contextSummary = '', sections = {} }) => {
           let enrichedTopic = String(topic || '').trim();
           if (contextSummary) {
             enrichedTopic += `\n\nExploration context:\n${contextSummary}`;
@@ -4281,15 +4467,23 @@ async function askModel({
             enrichedTopic += `\n\nAssumptions:\n${normalizeAssumptionItems(assumptions).map((item) => `- ${item}`).join('\n')}`;
           }
           let content = '';
-          try {
-            content = await buildSpecWithModel({
-              topic: enrichedTopic,
-              config,
-              model,
-              systemPrompt: effectiveSystemPrompt
-            });
-          } catch {
-            content = buildSpecTemplate(enrichedTopic);
+          if (hasStructuredSpecSections(sections)) {
+            content = renderStructuredSpec({
+              title: topic,
+              ...(contextSummary && !sections.summary ? { summary: [contextSummary] } : {}),
+              ...sections
+            }, enrichedTopic);
+          } else {
+            try {
+              content = await buildSpecWithModel({
+                topic: enrichedTopic,
+                config,
+                model,
+                systemPrompt: effectiveSystemPrompt
+              });
+            } catch {
+              content = buildFallbackStructuredSpec(enrichedTopic);
+            }
           }
           const specTitle = extractSpecTitle(content, enrichedTopic);
           const specPath = await writeMarkdownInProjectDir(
@@ -7172,7 +7366,7 @@ export async function createChatRuntime({
         return { type: 'system', text: 'No pending spec approval.' };
       }
       const specState = getPendingSpecState(currentSession);
-      const specText = String(specState.specText || '').trim() || buildSpecTemplate(specState.goal || 'spec');
+      const specText = String(specState.specText || '').trim() || buildFallbackStructuredSpec(specState.goal || 'spec');
       const specTitle = extractSpecTitle(specText, specState.goal || 'spec');
       const specPath = String(specState.specPath || '').trim() || await writeMarkdownInProjectDir(
         'specs',
@@ -7592,7 +7786,7 @@ export async function createChatRuntime({
             systemPrompt: activeReplySystemPrompt
           });
         } catch (err) {
-          content = buildSpecTemplate(topic);
+          content = buildFallbackStructuredSpec(topic);
           buildNote = `\nGenerated with fallback template because model spec generation failed: ${String(err?.message || err)}`;
         }
         const filePath = await writeMarkdownInProjectDir(

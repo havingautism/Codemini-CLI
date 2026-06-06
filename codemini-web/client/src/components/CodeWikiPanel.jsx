@@ -362,6 +362,26 @@ function updateToolInSegments(segments, toolId, updater) {
   });
 }
 
+function upsertToolInSegments(segments, toolCard) {
+  let found = false;
+  const next = (Array.isArray(segments) ? segments : []).map((seg) => {
+    if (seg.type !== "tools") return seg;
+    const index = seg.cards.findIndex(
+      (card) =>
+        card.id === toolCard.id ||
+        (String(card.id || "").startsWith("stream-tool-") &&
+          !String(toolCard.id || "").startsWith("stream-tool-") &&
+          String(card.name || "") === String(toolCard.name || "")),
+    );
+    if (index === -1) return seg;
+    found = true;
+    const cards = [...seg.cards];
+    cards[index] = { ...cards[index], ...toolCard };
+    return { ...seg, cards };
+  });
+  return found ? next : addToolToSegments(next, toolCard);
+}
+
 function ensureTextSegment(segments) {
   const current = Array.isArray(segments) ? segments : [];
   if (current.length === 0) {
@@ -384,13 +404,14 @@ function appendDeltaToSegments(segments, delta) {
 }
 
 function replaceLastTextSegment(segments, text) {
-  const current = ensureTextSegment(segments);
-  const lastIndex = current.length - 1;
-  return current.map((seg, index) =>
-    index === lastIndex && seg.type === "text"
-      ? { ...seg, text, isStreaming: false }
-      : seg,
-  );
+  const current = Array.isArray(segments) ? segments : [];
+  for (let i = current.length - 1; i >= 0; i -= 1) {
+    if (current[i]?.type !== "text") continue;
+    return current.map((seg, index) =>
+      index === i ? { ...seg, text, isStreaming: false } : seg,
+    );
+  }
+  return [...current, { type: "text", text, isStreaming: false }];
 }
 
 function finishStreamingSegments(segments) {
@@ -413,10 +434,28 @@ function applyCodeWikiEventToMessage(message, event) {
           ? replaceLastTextSegment(message.segments, event.text)
           : finishStreamingSegments(message.segments),
       };
+    case "assistant:tool_call_delta": {
+      const toolCall = event.toolCall || {};
+      const id =
+        String(toolCall.id || "").trim() ||
+        `stream-tool-${Number.isFinite(Number(toolCall.index)) ? Number(toolCall.index) : 0}`;
+      return {
+        ...message,
+        segments: upsertToolInSegments(message.segments, {
+          id,
+          name: String(toolCall.name || "").trim() || "tool",
+          arguments: toolCall.arguments || "",
+          status: "running",
+          durationMs: null,
+          summary: "",
+          result: "",
+        }),
+      };
+    }
     case "tool:start":
       return {
         ...message,
-        segments: addToolToSegments(message.segments, {
+        segments: upsertToolInSegments(message.segments, {
           id: event.id,
           name: event.name,
           arguments: event.arguments,

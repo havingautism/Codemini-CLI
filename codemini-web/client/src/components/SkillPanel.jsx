@@ -75,7 +75,9 @@ function skillKey(skill) {
 
 function compactSourceLabel(value) {
   const text = String(value || "").trim();
-  const github = text.match(/github\.com[/:]([^/\s]+)\/([^/\s]+?)(?:\.git)?(?:\/|$)/i);
+  const github = text.match(
+    /github\.com[/:]([^/\s]+)\/([^/\s]+?)(?:\.git)?(?:\/|$)/i,
+  );
   if (github) return `${github[1]}/${github[2]}`;
   const ownerRepo = text.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:\s|$)/);
   if (ownerRepo) return ownerRepo[1];
@@ -128,7 +130,9 @@ function normalizeProjectTargets(projectTargets = [], projectDirs = []) {
     if (!dir || byDir.has(dir)) continue;
     byDir.set(dir, {
       dir,
-      label: item?.label || projectDisplayName(dir.split(/[/\\]/).filter(Boolean).pop() || dir),
+      label:
+        item?.label ||
+        projectDisplayName(dir.split(/[/\\]/).filter(Boolean).pop() || dir),
     });
   }
   for (const dir of Array.isArray(projectDirs) ? projectDirs : []) {
@@ -136,7 +140,9 @@ function normalizeProjectTargets(projectTargets = [], projectDirs = []) {
     if (!value || byDir.has(value)) continue;
     byDir.set(value, {
       dir: value,
-      label: projectDisplayName(value.split(/[/\\]/).filter(Boolean).pop() || value),
+      label: projectDisplayName(
+        value.split(/[/\\]/).filter(Boolean).pop() || value,
+      ),
     });
   }
   return Array.from(byDir.values());
@@ -157,7 +163,9 @@ function parseSkillTarget(value) {
 }
 
 function defaultSkillTarget(projectTargets = []) {
-  return projectTargets[0]?.dir ? projectTargetValue(projectTargets[0].dir) : "global";
+  return projectTargets[0]?.dir
+    ? projectTargetValue(projectTargets[0].dir)
+    : "global";
 }
 
 function isBuiltin(skill) {
@@ -169,7 +177,9 @@ function isEnabled(skill) {
 }
 
 function normalizeSkillMode(value) {
-  return value === "auto_attach" ? "agent_requested" : value || "agent_requested";
+  return value === "auto_attach"
+    ? "agent_requested"
+    : value || "agent_requested";
 }
 
 function skillSortValue(skill) {
@@ -201,7 +211,8 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
   const [target, setTarget] = useState(
     skill?.scope === "global"
       ? "global"
-      : projectTargetValue(skill?.projectDir) || defaultSkillTarget(projectTargets),
+      : projectTargetValue(skill?.projectDir) ||
+          defaultSkillTarget(projectTargets),
   );
   const [mode, setMode] = useState(normalizeSkillMode(skill?.mode));
   const [triggers, setTriggers] = useState((skill?.triggers || []).join(", "));
@@ -218,7 +229,8 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
     setTarget(
       skill?.scope === "global"
         ? "global"
-        : projectTargetValue(skill?.projectDir) || defaultSkillTarget(projectTargets),
+        : projectTargetValue(skill?.projectDir) ||
+            defaultSkillTarget(projectTargets),
     );
     setMode(normalizeSkillMode(skill?.mode));
     setTriggers((skill?.triggers || []).join(", "));
@@ -260,7 +272,9 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
       await api.updateSkillMetadata(
         name,
         metadata,
-        selectedTarget.scope === "project" ? selectedTarget.projectDir : undefined,
+        selectedTarget.scope === "project"
+          ? selectedTarget.projectDir
+          : undefined,
       );
     } else {
       if (!contentReadOnly) {
@@ -270,7 +284,10 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
         skill.name,
         {
           ...metadata,
-          targetProjectDir: selectedTarget.scope === "project" ? selectedTarget.projectDir : undefined,
+          targetProjectDir:
+            selectedTarget.scope === "project"
+              ? selectedTarget.projectDir
+              : undefined,
         },
         skill.projectDir,
       );
@@ -311,7 +328,10 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
                 <SelectContent align="start">
                   <SelectItem value="global">{t("globalScope")}</SelectItem>
                   {projectTargets.map((item) => (
-                    <SelectItem key={item.dir} value={projectTargetValue(item.dir)}>
+                    <SelectItem
+                      key={item.dir}
+                      value={projectTargetValue(item.dir)}
+                    >
                       {item.label}
                     </SelectItem>
                   ))}
@@ -446,7 +466,13 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
   );
 }
 
-function SkillEditorDialog({ skill, projectTargets = [], open, onSave, onOpenChange }) {
+function SkillEditorDialog({
+  skill,
+  projectTargets = [],
+  open,
+  onSave,
+  onOpenChange,
+}) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[760px] h-[86vh] max-h-[86vh] flex flex-col overflow-hidden">
@@ -615,7 +641,14 @@ function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
   );
 }
 
-function SkillGroupHeader({ icon = "folder", name, count, collapsed, title, onClick }) {
+function SkillGroupHeader({
+  icon = "folder",
+  name,
+  count,
+  collapsed,
+  title,
+  onClick,
+}) {
   const Icon = icon === "package" ? FileCode : Folder;
   return (
     <button
@@ -770,7 +803,9 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
       if (!needle) return true;
       return (
         skill.name.toLowerCase().includes(needle) ||
-        String(skill.packageName || "").toLowerCase().includes(needle) ||
+        String(skill.packageName || "")
+          .toLowerCase()
+          .includes(needle) ||
         String(compactSourceLabel(skill.packageSource || skill.source))
           .toLowerCase()
           .includes(needle) ||
@@ -903,7 +938,7 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
 
   return (
     <div className="space-y-3">
-      <div className="rounded-lg border border-(--border-default) bg-(--bg-secondary) p-3">
+      <div className="rounded-lg border border-(--border-default) p-3">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
