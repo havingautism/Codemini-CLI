@@ -32,6 +32,13 @@ function stripPlanProgressText(text) {
   return String(text || '').replace(/(?:^|\n)\[plan\]\s+Step\s+\d+\/\d+\s+->[^\n]*\n?/g, '');
 }
 
+function isAbortLikeError(err) {
+  if (!err) return false;
+  if (err.name === 'AbortError') return true;
+  const message = String(err.message || err || '').trim();
+  return /operation was aborted|request aborted|request released/i.test(message);
+}
+
 function isWorkflowControlLine(line = '', state = {}) {
   const trimmed = String(line || '').trim();
   const lower = trimmed.toLowerCase();
@@ -307,6 +314,8 @@ export class RuntimeBridge {
   #uiTranscriptSessionId = '';
   #uiPersisting = false;
   #uiPersistQueued = false;
+  #activeSubmitLine = '';
+  #runStatusRecorded = false;
 
   constructor(runtime) {
     this.#runtime = runtime;
@@ -410,6 +419,59 @@ export class RuntimeBridge {
 
   #removeUiTransientWaiting() {
     this.#uiMessages = this.#uiMessages.filter((message) => message.transientKey !== 'waiting-response');
+  }
+
+  #markUiMessageManualAborted() {
+    const mark = (id) => {
+      if (!id) return false;
+      return this.#updateUiMessage(id, (message) => ({
+        ...message,
+        manualAborted: true,
+        isComplete: true
+      }));
+    };
+    if (mark(this.#uiActiveMsgId)) return this.#uiActiveMsgId;
+    const lastAssistant = [...this.#uiMessages]
+      .reverse()
+      .find((message) =>
+        message?.role !== 'you' &&
+        message?.role !== 'divider' &&
+        message?.role !== 'system' &&
+        !message?.transientKey
+      );
+    if (lastAssistant?.id) mark(lastAssistant.id);
+    return lastAssistant?.id || '';
+  }
+
+  #addUiRunStatusMessage(text, { status = 'error', retryPrompt = '' } = {}) {
+    const messageText = String(text || '').trim();
+    if (!messageText) return '';
+    if (status === 'aborted') {
+      return this.#markUiMessageManualAborted();
+    }
+    return this.#addUiMessage({
+      role: 'error',
+      text: messageText,
+      timestamp: new Date().toISOString(),
+      responseStatus: status,
+      retryPrompt: String(retryPrompt || ''),
+      retryable: status === 'error' && Boolean(String(retryPrompt || '').trim())
+    });
+  }
+
+  async #persistRunStatus(text, { status = 'error', retryPrompt = '' } = {}) {
+    const messageText = String(text || '').trim();
+    if (!messageText) return;
+    try {
+      await this.#runtime.persistRunStatus?.(retryPrompt, messageText, { status });
+    } catch {}
+  }
+
+  async #recordRunStatus(text, { status = 'error', retryPrompt = '' } = {}) {
+    if (this.#runStatusRecorded) return;
+    this.#runStatusRecorded = true;
+    this.#addUiRunStatusMessage(text, { status, retryPrompt });
+    await this.#persistRunStatus(text, { status, retryPrompt });
   }
 
   #recordUiEvent(event) {
@@ -699,6 +761,8 @@ export class RuntimeBridge {
       });
     }
     this.#busy = true;
+    this.#activeSubmitLine = line;
+    this.#runStatusRecorded = false;
     this.#runtime.submit(line, (event) => {
       this.#recordUiEvent(event);
       this.#broadcast(event);
@@ -706,7 +770,7 @@ export class RuntimeBridge {
         this.#busy = false;
         this.#broadcastRuntimeState();
       }
-    }, options).then((result) => {
+    }, options).then(async (result) => {
       if (this.#uiActiveMsgId) {
         this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
           ...message,
@@ -716,16 +780,31 @@ export class RuntimeBridge {
       }
       this.#uiActiveMsgId = null;
       this.#uiPlanStepIds = new Map();
+      let suppressDone = false;
+      if (result?.aborted) {
+        const text = result?.text ? `Aborted: ${result.text}` : 'Aborted: Request aborted.';
+        suppressDone = this.#runStatusRecorded;
+        await this.#recordRunStatus(text, { status: 'aborted', retryPrompt: line });
+      }
+      if (suppressDone) return;
       this.#broadcast({ type: 'submit:done', result: { type: result.type, aborted: result.aborted, text: result.text } });
-    }).catch((err) => {
-      this.#addUiMessage({
-        role: 'error',
-        text: `Failed: ${err.message}`,
-        timestamp: new Date().toISOString()
-      });
-      this.#broadcast({ type: 'submit:done', result: { type: 'error', text: err.message } });
+    }).catch(async (err) => {
+      if (isAbortLikeError(err)) {
+        if (!this.#runStatusRecorded) {
+          await this.#recordRunStatus('Aborted: Request aborted.', { status: 'aborted', retryPrompt: line });
+          this.#broadcast({
+            type: 'submit:done',
+            result: { type: 'aborted', aborted: true, text: 'Request aborted.' }
+          });
+        }
+        return;
+      }
+      const text = `Failed: ${err.message}`;
+      await this.#recordRunStatus(text, { status: 'error', retryPrompt: line });
+      this.#broadcast({ type: 'submit:done', result: { type: 'error', text: err.message, retryPrompt: line } });
     }).finally(() => {
       this.#busy = false;
+      this.#activeSubmitLine = '';
       this.#broadcastRuntimeState();
     });
     return { accepted: true };
@@ -814,17 +893,26 @@ export class RuntimeBridge {
     return this.#busy;
   }
 
-  handleAbort() {
+  async handleAbort() {
+    const retryPrompt = this.#activeSubmitLine;
     const aborted = this.#runtime.abort();
     if (this.#busy && !aborted) {
+      if (!this.#runStatusRecorded) {
+        const text = 'Aborted: Request released.';
+        await this.#recordRunStatus(text, { status: 'aborted', retryPrompt });
+        this.#broadcast({ type: 'submit:done', result: { type: 'aborted', aborted: true, text: 'Request released.' } });
+      }
       this.#busy = false;
-      this.#broadcast({ type: 'submit:done', result: { type: 'aborted', aborted: true, text: 'Request released.' } });
       this.#broadcastRuntimeState();
     } else if (this.#busy && aborted) {
-      setTimeout(() => {
+      if (!this.#runStatusRecorded) {
+        const text = 'Aborted: Request aborted.';
+        await this.#recordRunStatus(text, { status: 'aborted', retryPrompt });
+        this.#broadcast({ type: 'submit:done', result: { type: 'aborted', aborted: true, text: 'Request aborted.' } });
+      }
+      setTimeout(async () => {
         if (!this.#busy) return;
         this.#busy = false;
-        this.#broadcast({ type: 'submit:done', result: { type: 'aborted', aborted: true, text: 'Request aborted.' } });
         this.#broadcastRuntimeState();
       }, 5000);
     }
@@ -926,6 +1014,8 @@ export class RuntimeBridge {
         planGoal: typeof m.plan_goal === 'string' ? m.plan_goal : '',
         planFile: typeof m.plan_file === 'string' ? m.plan_file : '',
         usage: normalizeUiUsage(m.usage),
+        responseStatus: typeof m.response_status === 'string' ? m.response_status : '',
+        retryPrompt: typeof m.retry_prompt === 'string' ? m.retry_prompt : '',
         at: m.at || null
       }));
   }

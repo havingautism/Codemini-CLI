@@ -235,6 +235,7 @@ export const zh = {
   messages: '条消息',
   renderError: '渲染错误',
   retry: '重试',
+  manualStopped: '已手动停止',
   refresh: '刷新',
   planReviewFirst: '请先审阅计划弹窗，批准、修改或否决后再继续输入',
   loading: '加载中',

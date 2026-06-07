@@ -184,16 +184,15 @@ function compactToolResult(result, toolName, args, maxChars = 12000) {
   return clipToolResult(obj, Math.min(maxChars, 4000));
 }
 
-// ─── P1a: Read-only tool classification ──────────────────────────────
+// ─── P1a: Parallel-safe tool classification ─────────────────────────
 
-const READ_ONLY_TOOLS = new Set([
+const PARALLEL_SAFE_TOOLS = new Set([
   'read', 'search_code', 'grep', 'ast_grep', 'glob', 'list',
   'ast_query', 'read_ast_node',
   'web_fetch', 'web_search',
   'list_background_tasks', 'get_background_task',
-  'read_plan', 'update_plan', 'update_todos',
+  'read_plan',
   'query_project_index', 'tool_search',
-  'create_plan', 'create_spec',
   'skill'
 ]);
 
@@ -720,14 +719,14 @@ export async function runAgentLoop({
       ? String(approvalMode || '').toLowerCase()
       : 'review';
 
-    // ─── P1a: Partition into read-only (parallel) and write (serial) ──
+    // ─── P1a: Partition into parallel-safe and serial tool calls ─────
 
     const callsWithMeta = toolCalls.map((call) => {
       const toolName = normalizeToolCallName(call.name);
       const args = normalizeToolArguments(toolName, safeJsonParse(call.arguments), call.arguments);
       const displayName = formatToolDisplayName(toolName, args);
-      const isReadOnly = READ_ONLY_TOOLS.has(toolName);
-      return { call, args, toolName, displayName, isReadOnly };
+      const isParallelSafe = PARALLEL_SAFE_TOOLS.has(toolName);
+      return { call, args, toolName, displayName, isParallelSafe };
     });
 
     // Approval checks first — must be done synchronously before any execution
@@ -848,7 +847,7 @@ export async function runAgentLoop({
     const resultEntries = new Map(); // call.id -> { content, error? }
 
     // Helper to execute a single tool call
-    async function executeOne({ call, args, toolName, displayName, isReadOnly }) {
+    async function executeOne({ call, args, toolName, displayName, isParallelSafe }) {
       const startedAt = Date.now();
       const approvalState = approvalResults.get(call.id) || { approved: true, args };
       const effectiveArgs = approvalState.args || args;
@@ -918,7 +917,7 @@ export async function runAgentLoop({
       }
 
       let captureScope = null;
-      if (!isReadOnly && changeTracker && typeof changeTracker.begin === 'function') {
+      if (!isParallelSafe && changeTracker && typeof changeTracker.begin === 'function') {
         try {
           captureScope = await changeTracker.begin({ toolName, args: effectiveArgs });
         } catch {}
@@ -987,7 +986,7 @@ export async function runAgentLoop({
       const declaredFileChange = extractFileChange(toolName, toolResult);
       let fileChanges = [];
       let fileChange = null;
-      if (!isReadOnly && changeTracker && typeof changeTracker.capture === 'function' && captureScope) {
+      if (!isParallelSafe && changeTracker && typeof changeTracker.capture === 'function' && captureScope) {
         try {
           const captured = await changeTracker.capture(captureScope, {
             toolName,
@@ -1055,20 +1054,20 @@ export async function runAgentLoop({
       };
     }
 
-    // Separate read-only and write calls, preserving order
-    const readOnlyCalls = callsWithMeta.filter((c) => c.isReadOnly && approvalResults.get(c.call.id)?.approved);
-    const writeCalls = callsWithMeta.filter((c) => !c.isReadOnly || !approvalResults.get(c.call.id)?.approved);
+    // Separate parallel-safe and serial calls, preserving order
+    const parallelSafeCalls = callsWithMeta.filter((c) => c.isParallelSafe && approvalResults.get(c.call.id)?.approved);
+    const serialCalls = callsWithMeta.filter((c) => !c.isParallelSafe || !approvalResults.get(c.call.id)?.approved);
 
-    // Execute read-only calls in parallel
-    if (readOnlyCalls.length > 0) {
-      const readOnlyResults = await Promise.all(readOnlyCalls.map((c) => executeOne(c)));
-      for (const r of readOnlyResults) {
+    // Execute parallel-safe calls in parallel
+    if (parallelSafeCalls.length > 0) {
+      const parallelSafeResults = await Promise.all(parallelSafeCalls.map((c) => executeOne(c)));
+      for (const r of parallelSafeResults) {
         resultEntries.set(r.callId, r);
       }
     }
 
-    // Execute write calls serially
-    for (const c of writeCalls) {
+    // Execute state-changing or approval-blocked calls serially
+    for (const c of serialCalls) {
       const r = await executeOne(c);
       resultEntries.set(r.callId, r);
     }

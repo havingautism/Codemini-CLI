@@ -1026,7 +1026,7 @@ async function main() {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/abort') {
-      bridge.handleAbort();
+      await bridge.handleAbort();
       jsonResponse(res, { ok: true });
       return;
     }

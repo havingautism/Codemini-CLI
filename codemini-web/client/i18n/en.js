@@ -226,6 +226,7 @@ export const en = {
   messages: 'messages',
   renderError: 'Render Error',
   retry: 'Retry',
+  manualStopped: 'Manually stopped',
   refresh: 'Refresh',
   planReviewFirst: 'Review the plan dialog first — approve, edit, or reject before continuing',
   loading: 'Loading',

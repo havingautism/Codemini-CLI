@@ -2886,7 +2886,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'create_plan',
         description:
-          'Create and execute a structured implementation plan in coding mode. Use when the goal, scope, and constraints are already clear enough to break work into sub-agent execution steps. Do not call if important details are still unknown or if a design spec is still needed. Assign roles correctly: explorer/architect/advisor are read-only; coder/refactorer/writer implement changes; never assign explorer to implement or edit code.',
+          'Create and execute a structured implementation plan in coding mode. Use when the goal, scope, and constraints are already clear enough to break work into sub-agent execution steps. Do not call for simple localized changes; implement those directly with edit/create/delete instead. Do not call if important details are still unknown or if a design spec is still needed. Assign roles correctly: explorer/architect/advisor are read-only; coder/refactorer/writer implement changes; never assign explorer to implement or edit code.',
         parameters: {
           type: 'object',
           properties: {
@@ -2947,7 +2947,7 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
       function: {
         name: 'create_spec',
         description:
-          'Create an engineering spec document for user approval. Use when scope, architecture, UX, or constraints still need alignment before implementation. Prefer this over create_plan for large, novel, or cross-cutting work. Do not call if important details are still unknown. Populate the structured section fields directly from explored evidence; do not put section content into assumptions.',
+          'Create an engineering spec document for user approval. Use when scope, architecture, UX, or constraints still need alignment before implementation. Prefer this over create_plan for large, novel, or cross-cutting work. If details are too unknown to write a reviewable spec, ask one focused clarifying question instead. If trade-offs, constraints, or open risks can be stated clearly, include them in the spec for approval. Populate the structured section fields directly from explored evidence; do not put section content into assumptions.',
         parameters: {
           type: 'object',
           properties: {

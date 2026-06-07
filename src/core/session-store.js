@@ -135,6 +135,12 @@ function sanitizeMessage(msg) {
   if (msg?.model_content_scope === 'current_turn') out.model_content_scope = 'current_turn';
   if (msg?.model_visible === false) out.model_visible = false;
   if (msg?.local_only === true) out.local_only = true;
+  if (typeof msg?.response_status === 'string' && msg.response_status.trim()) {
+    out.response_status = msg.response_status.trim();
+  }
+  if (typeof msg?.retry_prompt === 'string' && msg.retry_prompt.trim()) {
+    out.retry_prompt = msg.retry_prompt;
+  }
   if (msg?.tool_call_id) out.tool_call_id = String(msg.tool_call_id);
   if (Number.isFinite(Number(msg?.tool_duration_ms))) out.tool_duration_ms = Number(msg.tool_duration_ms);
   if (typeof msg?.tool_summary === 'string' && msg.tool_summary.trim()) out.tool_summary = msg.tool_summary.trim();

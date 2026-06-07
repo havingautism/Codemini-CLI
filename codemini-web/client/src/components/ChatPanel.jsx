@@ -114,6 +114,7 @@ export function ChatPanel({
   gitInfo,
   messagesLoading,
   isGeneral = false,
+  onRetryMessage,
 }) {
   const scrollRef = useRef(null);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -272,7 +273,12 @@ export function ChatPanel({
           <div className="w-[calc(100%_-_32px)] max-w-[920px] sm:w-[calc(100%_-_64px)] mx-auto">
             <Suspense fallback={null}>
               {messages.map((msg) => (
-                <MessageBubble key={msg.id} message={msg} skills={skills} />
+                <MessageBubble
+                  key={msg.id}
+                  message={msg}
+                  skills={skills}
+                  onRetry={onRetryMessage}
+                />
               ))}
             </Suspense>
           </div>

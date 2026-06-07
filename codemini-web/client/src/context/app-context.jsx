@@ -13,6 +13,96 @@ import * as api from "../hooks/use-api.js";
 
 const AppContext = createContext(null);
 
+function isAbortRelatedText(text = "") {
+  const trimmed = String(text || "").trim();
+  return (
+    /^Aborted:/i.test(trimmed) ||
+    /^Failed:\s*This operation was aborted\.?$/i.test(trimmed) ||
+    /operation was aborted/i.test(trimmed)
+  );
+}
+
+function isAbortRelatedResult(result = {}) {
+  return (
+    !!result.aborted ||
+    result.type === "aborted" ||
+    (result.type === "error" && isAbortRelatedText(result.text))
+  );
+}
+
+function isManualAbortDividerMessage(message = {}) {
+  return (
+    message?.dividerType === "manual-abort" ||
+    message?.dividerType === "abort" ||
+    (message?.role === "divider" &&
+      String(message?.responseStatus || message?.response_status || "")
+        .toLowerCase() === "aborted")
+  );
+}
+
+function markPreviousAssistantManualAborted(messages = [], fromIndex = -1) {
+  const list = Array.isArray(messages) ? [...messages] : [];
+  const start = fromIndex < 0 ? list.length + fromIndex : fromIndex;
+  for (let i = start; i >= 0; i--) {
+    const prev = list[i];
+    if (!prev || prev.role === "you" || prev.role === "divider" || prev.role === "system") {
+      continue;
+    }
+    list[i] = { ...prev, manualAborted: true, isComplete: true };
+    break;
+  }
+  return list;
+}
+
+function stripAbortTextSegments(segments = []) {
+  return (Array.isArray(segments) ? segments : []).filter(
+    (seg) => !(seg?.type === "text" && isAbortRelatedText(seg.text || "")),
+  );
+}
+
+function sanitizeManualAbortMessages(messages = []) {
+  const list = Array.isArray(messages) ? messages : [];
+  const result = [];
+  for (const message of list) {
+    if (isManualAbortDividerMessage(message)) {
+      const folded = markPreviousAssistantManualAborted(result);
+      result.length = 0;
+      result.push(...folded);
+      continue;
+    }
+    const text = String(message?.text || message?.content || "").trim();
+    if (message?.role === "error" && isAbortRelatedText(text)) {
+      const folded = markPreviousAssistantManualAborted(result);
+      result.length = 0;
+      result.push(...folded);
+      continue;
+    }
+    result.push(message);
+  }
+  return result.map((message) => {
+    const segments = stripAbortTextSegments(message.segments || []);
+    const plainText = String(message?.text || "").trim();
+    const hadAbortText =
+      message?.manualAborted ||
+      isAbortRelatedText(plainText) ||
+      (Array.isArray(message.segments) &&
+        message.segments.some(
+          (seg) => seg?.type === "text" && isAbortRelatedText(seg.text || ""),
+        ));
+    if (!hadAbortText) return message;
+    const next = {
+      ...message,
+      manualAborted: true,
+      isComplete: true,
+      segments,
+    };
+    if (isAbortRelatedText(plainText)) {
+      delete next.text;
+    }
+    return next;
+  });
+}
+
 function isProjectIndexEvent(event) {
   const name = String(event?.name || "").toLowerCase();
   const summary = String(event?.summary || "").toLowerCase();
@@ -1398,7 +1488,9 @@ export function AppProvider({ children }) {
               ? []
               : (await api.fetchSessionChanges().catch(() => ({})))?.changes ||
                 [];
-            const restored = settleCompletedPlanToolCards(uiMessages);
+            const restored = sanitizeManualAbortMessages(
+              settleCompletedPlanToolCards(uiMessages),
+            );
             const overview = [...restored]
               .reverse()
               .find((m) => m.role === "plan-overview" && m.planOverview);
@@ -1450,6 +1542,47 @@ export function AppProvider({ children }) {
               fileChanges: [],
             });
           } else if (msg.role === "assistant") {
+            const responseStatus = String(
+              msg.responseStatus || msg.response_status || "",
+            ).toLowerCase();
+            if (responseStatus === "aborted") {
+              assistantGroup = null;
+              const folded = markPreviousAssistantManualAborted(processed);
+              processed.length = 0;
+              processed.push(...folded);
+              continue;
+            }
+            if (responseStatus === "error") {
+              assistantGroup = null;
+              if (isAbortRelatedText(msg.content || "")) {
+                const folded = markPreviousAssistantManualAborted(processed);
+                processed.length = 0;
+                processed.push(...folded);
+                continue;
+              }
+              processed.push({
+                id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-e${processed.length}`,
+                role: "error",
+                text: msg.content || "",
+                segments: [
+                  {
+                    type: "text",
+                    text: msg.content || "",
+                    isStreaming: false,
+                  },
+                ],
+                skillBadges: [],
+                fileChanges: [],
+                timestamp: msg.at || new Date().toISOString(),
+                responseStatus,
+                retryPrompt: msg.retryPrompt || msg.retry_prompt || "",
+                retryable:
+                  responseStatus === "error" &&
+                  Boolean(String(msg.retryPrompt || msg.retry_prompt || "").trim()),
+              });
+              continue;
+            }
+
             const hiddenActivity = getRuntimeActivityFromSystemText(
               msg.content,
             );
@@ -1557,7 +1690,7 @@ export function AppProvider({ children }) {
                   : null,
               });
             }
-            if (msg.content)
+            if (msg.content && !isAbortRelatedText(msg.content))
               assistantGroup.segments.push({
                 type: "text",
                 text: msg.content,
@@ -1656,8 +1789,10 @@ export function AppProvider({ children }) {
           }
         }
 
-        const restored = settleCompletedPlanToolCards(
-          mergeStructuredUiPlans(processed, uiMessages),
+        const restored = sanitizeManualAbortMessages(
+          settleCompletedPlanToolCards(
+            mergeStructuredUiPlans(processed, uiMessages),
+          ),
         );
         const overview = [...restored]
           .reverse()
@@ -2457,6 +2592,9 @@ export function AppProvider({ children }) {
                       ...m,
                       isComplete: true,
                       segments,
+                      ...(isAbortRelatedResult(result)
+                        ? { manualAborted: true }
+                        : {}),
                       planStep: shouldSettlePlanStep
                         ? {
                             ...(m.planStep || {}),
@@ -2494,12 +2632,21 @@ export function AppProvider({ children }) {
               });
             }
           }
-          if (result.type === "error" && result.text) {
+          if (result.type === "error" && result.text && !isAbortRelatedResult(result)) {
             addMessage({
               role: "error",
               text: `Failed: ${result.text}`,
               timestamp: new Date().toISOString(),
+              responseStatus: "error",
+              retryPrompt: result.retryPrompt || "",
+              retryable: Boolean(String(result.retryPrompt || "").trim()),
             });
+          }
+          if (isAbortRelatedResult(result) && result.text && !activeId) {
+            setState((prev) => ({
+              ...prev,
+              messages: markPreviousAssistantManualAborted(prev.messages),
+            }));
           }
           setActiveMsg(null);
           planRunPendingRef.current = false;
@@ -2886,6 +3033,9 @@ export function AppProvider({ children }) {
             role: "error",
             text: `Failed: ${err.message}`,
             timestamp: new Date().toISOString(),
+            responseStatus: "error",
+            retryPrompt: line,
+            retryable: Boolean(line.trim()),
           });
           update({ busy: false, live: false });
         }
@@ -2937,6 +3087,7 @@ export function AppProvider({ children }) {
                 return {
                   ...message,
                   isComplete: true,
+                  manualAborted: true,
                   segments: finishThinkingSegments(message.segments || []).map(
                     (seg) =>
                       seg.type === "text"

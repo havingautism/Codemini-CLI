@@ -733,7 +733,7 @@ function buildExecutionModePromptBlock(executionMode) {
       '5. Escalate only when needed:',
       '   - create_spec when scope, architecture, UX, constraints, or trade-offs still need alignment. Spec answers what to build and why.',
       '   - create_plan when the goal is clear but complex enough to benefit from sub-agent execution steps. Plan answers how to implement.',
-      '6. Prefer direct implementation for small fixes. Prefer create_plan for multi-file/multi-phase work. Prefer create_spec for large, novel, or cross-cutting work.',
+      '6. Prefer direct implementation for small fixes and localized edits. Prefer create_plan for multi-file/multi-phase work. Prefer create_spec for large, novel, or cross-cutting work.',
       '7. create_spec enters user approval before execution. create_plan writes a plan artifact and starts execution automatically; the user can interrupt with /stop.',
       '',
       'Quality bar:',
@@ -744,8 +744,10 @@ function buildExecutionModePromptBlock(executionMode) {
       '',
       'Direct implementation rules:',
       '- Do not claim edit/create/delete/run are unavailable in coding mode; they are available for direct simple tasks.',
+      '- Do not call create_plan for a simple localized edit that can be implemented and verified in one coherent pass.',
       '- If the user explicitly asks to start fixing, repair, update, implement, or change files, do not create an advisor-only plan. Either implement directly when simple or create an implementation plan with a coder/refactorer/writer step.',
       '- If you create a spec, do not implement before the user approves it. If you create a plan, execution starts automatically in coding mode.',
+      '- If the request is too unknown to write a reviewable spec, ask one focused question instead of creating a vague spec.',
       '',
       'Plan step roles (when the plan will use sub-agents):',
       '- explorer = read-only inspection and context mapping. Never assign explorer to implement, edit, or deliver code.',
@@ -3065,7 +3067,7 @@ function buildAutoPlanSystemSummary(auto) {
     `Plan File: ${auto.filePath}`,
     `Plan Summary: ${auto.summary || '-'}`,
     `Final Summary: ${auto.finalSummary || auto.summary || '-'}`,
-    `Approval: ${auto.approvalStatus || 'not_required'}`
+    `Execution: ${auto.executionPolicy || 'automatic'}`
   ];
   lines.push(`Steps: ${auto.steps.length} total`);
   lines.push(`Completed: ${auto.completedCount}`);
@@ -4120,18 +4122,18 @@ function buildApprovedPlanExecutionPrompt(planState, approvalText = '') {
         ...renderedSteps.slice(-4)
       ];
   const lines = [
-    'Approved implementation plan:',
+    'Implementation plan:',
     `Original goal: ${planState?.goal || '-'}`,
     `Plan file: ${planState?.filePath || '-'}`,
     `Plan summary: ${planState?.summary || '-'}`,
     `Final planning summary: ${planState?.finalSummary || planState?.summary || '-'}`,
-    `User approval: ${String(approvalText || '').trim() || 'approved'}`,
+    `Execution trigger: ${String(approvalText || '').trim() || 'automatic coding-mode plan execution'}`,
     requirementPacket,
     planSteps.length > 0 ? `Planned steps (${planSteps.length} total):` : '',
     ...stepLines,
     'Proceed with implementation now.',
-    'Follow the approved direction unless a blocking contradiction appears.',
-    'Before changing files, critically review the approved plan. If it has critical gaps, impossible steps, or unclear requirements, stop and ask for clarification.',
+    'Follow the plan direction unless a blocking contradiction appears.',
+    'Before changing files, critically review the plan. If it has critical gaps, impossible steps, or unclear requirements, stop and ask for clarification.',
     'During execution, complete steps in order, keep scope tight, and leave runtime verification to tester steps or the user when the environment is not ready.',
     'If a step is blocked by missing dependencies, unclear instructions, repeated verification failures, or the user declining run commands, stop and report the blocker rather than guessing or retrying the same command.',
     'Output rules for this implementation phase:',
@@ -4445,7 +4447,7 @@ async function askModel({
                 steps: explicitSteps,
                 sessionId: session.id
               })
-            : await buildAutoPlanAndRun({
+            : await buildAutoPlanArtifact({
                 goal: enrichedGoal,
                 session,
                 config,
@@ -5364,7 +5366,7 @@ async function executePlanWithSubAgents({
   };
 }
 
-async function buildAutoPlanAndRun({
+async function buildAutoPlanArtifact({
   goal,
   config,
   model,
@@ -5490,7 +5492,7 @@ async function buildAutoPlanAndRun({
     filePath,
     summary: autoPlan.summary,
     finalSummary,
-    approvalStatus: 'not_required',
+    executionPolicy: 'automatic',
     steps: autoPlan.steps,
     completedCount: 0,
     warningCount: planningError ? 1 : 0,
@@ -5523,7 +5525,7 @@ async function writeExplicitAutoPlan({ goal, steps = [], sessionId }) {
     filePath,
     summary: autoPlan.summary,
     finalSummary,
-    approvalStatus: 'not_required',
+    executionPolicy: 'automatic',
     steps: autoPlan.steps,
     completedCount: 0,
     warningCount: 0,
@@ -7227,6 +7229,31 @@ export async function createChatRuntime({
     await saveSession(currentSession);
   };
 
+  const persistRunStatus = async (userText, statusText, { status = 'error' } = {}) => {
+    const prompt = String(userText || '').trim();
+    const text = String(statusText || '').trim();
+    if (!prompt && !text) return;
+    const messages = Array.isArray(currentSession.messages) ? currentSession.messages : [];
+    const lastUser = [...messages].reverse().find((msg) => msg?.role === 'user');
+    if (prompt && String(lastUser?.content || '').trim() !== prompt) {
+      appendSessionMessage(stampedMessage('user', userText));
+    }
+    if (text || status === 'aborted') {
+      appendSessionMessage(stampedMessage('assistant', status === 'aborted' ? '' : text, {
+        model_visible: false,
+        local_only: true,
+        response_status: status,
+        ...(prompt ? { retry_prompt: userText } : {})
+      }));
+    }
+    if (shouldReplaceSessionTitle(currentSession.title)) {
+      currentSession.title = deriveSessionTitle(currentSession.messages);
+    }
+    currentSession.model = model || config.model.name;
+    currentSession.mode = executionMode || config.execution?.mode || 'normal';
+    await saveSession(currentSession);
+  };
+
   const captureCompactSummary = async ({ summary, mode, beforeTokens, afterTokens }) => {
     if (config?.memory?.enabled === false || config?.memory?.auto_capture === false) return null;
     const normalizedSummary = String(summary || '').trim();
@@ -7466,7 +7493,7 @@ export async function createChatRuntime({
         syncExecutionModeWithSession();
         return { type: 'assistant', text: result.text, aborted: !!result.aborted };
       }
-      const auto = await buildAutoPlanAndRun({
+      const auto = await buildAutoPlanArtifact({
         goal: planGoal,
         session: currentSession,
         config,
@@ -8475,6 +8502,7 @@ export async function createChatRuntime({
     getCurrentSessionId: () => currentSession.id,
     getSessionMessages: () => currentSession.messages || [],
     getSessionCompact: () => currentSession.compact || null,
+    persistRunStatus,
     getChangeSets: () => listGitOplogChanges(changeTracker),
     getChangeSetPatch: (id) => readGitOplogPatch(changeTracker, id),
     undoChangeSet: (id) => undoGitOplogChange(changeTracker, id),

@@ -349,6 +349,7 @@ function Shell() {
               gitInfo={state.gitInfo}
               messagesLoading={state.messagesLoading}
               isGeneral={state.isGeneral}
+              onRetryMessage={(prompt) => actions.submit(prompt)}
             />
 
             {/* Plan Review / Input Area */}

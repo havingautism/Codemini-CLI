@@ -1494,6 +1494,9 @@ function MessageActions({
   text,
   usage = null,
   showUsage = true,
+  retryPrompt = "",
+  canRetry = false,
+  onRetry,
   align = "left",
   className,
 }) {
@@ -1523,12 +1526,21 @@ function MessageActions({
       >
         <Copy size={17} />
       </MessageActionButton>
+      {canRetry && (
+        <MessageActionButton
+          label={t("retry")}
+          disabled={!retryPrompt}
+          onClick={() => onRetry?.(retryPrompt)}
+        >
+          <ArrowCounterClockwise size={17} />
+        </MessageActionButton>
+      )}
       {showUsage && <UsageBadge usage={usage} />}
     </div>
   );
 }
 
-export function MessageBubble({ message, skills = [] }) {
+export function MessageBubble({ message, skills = [], onRetry }) {
   const {
     role,
     segments,
@@ -1540,7 +1552,6 @@ export function MessageBubble({ message, skills = [] }) {
     planStep,
     usage,
   } = message;
-  const style = ROLE_STYLES[role] || ROLE_STYLES.general;
   const ts = timestamp ? formatTimestamp(timestamp) : "";
 
   const renderGroups = useMemo(() => {
@@ -1561,17 +1572,32 @@ export function MessageBubble({ message, skills = [] }) {
     [fileChanges],
   );
 
-  if (role === "divider") {
-    return (
-      <div data-message-id={message.id} className="py-3 px-6 text-center">
-        <div className="max-w-[860px] mx-auto relative">
-          <div className="border-t border-border" />
-          <span className="text-xs text-(--text-muted) bg-(--bg-primary) px-2 absolute -top-2.5 left-1/2 -translate-x-1/2 whitespace-nowrap">
-            {legacyText || "以上内容已压缩"}
-          </span>
-        </div>
+  const rawMessageText = getMessageText(message) || legacyText || "";
+  const rawResponseStatus = String(
+    message.responseStatus || message.response_status || "",
+  ).toLowerCase();
+  const isStandaloneManualAbortDivider =
+    role === "divider" &&
+    (message.dividerType === "manual-abort" ||
+      message.dividerType === "abort" ||
+      rawResponseStatus === "aborted");
+  const renderDivider = (label) => (
+    <div data-message-id={message.id} className="py-3 px-6 text-center">
+      <div className="max-w-[860px] mx-auto relative">
+        <div className="border-t border-border" />
+        <span className="text-xs text-(--text-muted) bg-(--bg-primary) px-2 absolute -top-2.5 left-1/2 -translate-x-1/2 whitespace-nowrap">
+          {label}
+        </span>
       </div>
-    );
+    </div>
+  );
+
+  if (isStandaloneManualAbortDivider) {
+    return null;
+  }
+
+  if (role === "divider") {
+    return renderDivider(legacyText || "以上内容已压缩");
   }
 
   if (role === "system") {
@@ -1681,9 +1707,24 @@ export function MessageBubble({ message, skills = [] }) {
           .join("") ||
         ""
       : "";
-  const messageText = role === "you" ? youText : getMessageText(message);
+  const messageText = role === "you" ? youText : rawMessageText;
   const messageComplete =
     role === "you" || isMessageComplete(message, renderGroups);
+  const responseStatus = rawResponseStatus;
+  const statusLooksLikeError =
+    !message.manualAborted &&
+    (responseStatus === "error" ||
+      /^(Failed|Aborted):/i.test(messageText.trim()));
+  const displayRole = statusLooksLikeError && role !== "you" ? "error" : role;
+  const style = ROLE_STYLES[displayRole] || ROLE_STYLES.general;
+  const retryPrompt = String(
+    message.retryPrompt || message.retry_prompt || "",
+  ).trim();
+  const canRetry =
+    displayRole === "error" &&
+    responseStatus === "error" &&
+    Boolean(retryPrompt) &&
+    message.retryable !== false;
   const showActions = shouldShowMessageActions(message, messageComplete);
   const showFileChanges = shouldShowFileChanges(
     message,
@@ -1721,6 +1762,9 @@ export function MessageBubble({ message, skills = [] }) {
             text={messageText}
             usage={usage}
             showUsage={messageComplete}
+            retryPrompt={retryPrompt}
+            canRetry={canRetry}
+            onRetry={onRetry}
             align="right"
             className={cn(
               "mt-1 min-h-8 opacity-0 pointer-events-none transition-opacity group-hover/message:pointer-events-auto group-hover/message:opacity-100 group-focus-within/message:pointer-events-auto group-focus-within/message:opacity-100",
@@ -1793,10 +1837,18 @@ export function MessageBubble({ message, skills = [] }) {
           {showFileChanges && (
             <FileChangesSummary changes={mergedFileChanges} />
           )}
+          {message.manualAborted && (
+            <p className="mt-2 text-xs text-(--text-muted)">
+              {t("manualStopped")}
+            </p>
+          )}
           <MessageActions
             text={messageText}
             usage={usage}
             showUsage={showActions}
+            retryPrompt={retryPrompt}
+            canRetry={canRetry}
+            onRetry={onRetry}
             className={cn("mt-2 min-h-8", !showActions && "hidden")}
           />
         </div>
