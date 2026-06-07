@@ -8,7 +8,7 @@ node_modules/
 .codemini-global/
 .codemini-project/
 storage/
-
+audit.md
 # Local AI assistant/editor state
 .agents/
 skills-lock.json
