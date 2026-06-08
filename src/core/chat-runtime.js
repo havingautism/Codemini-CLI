@@ -28,6 +28,7 @@ import {
 } from './context-compact.js';
 import { getReplyLanguage, getReplyLanguageName } from './reply-language.js';
 import { composeSystemPrompt } from './system-prompt-composer.js';
+import { buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
 import { buildSubAgentShellRulesPrompt } from './shell-profile.js';
 import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
@@ -3725,16 +3726,15 @@ function buildPromptBudgetAudit({
 export function buildProjectContextUserPrompt({
   projectContextSnippet = '',
   projectContextGuidance = '',
-  userText = ''
+  userText = '',
+  turnContextPrefix = ''
 } = {}) {
-  const snippet = String(projectContextSnippet || '').trim();
-  const request = String(userText || '').trim();
-  if (!snippet) return request;
-  return [
-    snippet,
-    String(projectContextGuidance || '').trim(),
-    request ? `User request:\n${request}` : ''
-  ].filter(Boolean).join('\n\n');
+  return buildTurnUserPrompt({
+    turnContextPrefix,
+    projectContextSnippet,
+    projectContextGuidance,
+    userText
+  });
 }
 
 export function injectProjectContextIntoLastUserMessage(messages = [], projectContextPrompt = '') {
@@ -4411,7 +4411,8 @@ async function askModel({
       includeMemory: false
     })
   ]);
-  const projectContextPrompt = buildProjectContextUserPrompt({
+  const projectContextPrompt = buildTurnUserPrompt({
+    turnContextPrefix: buildTurnContextPrefix(config),
     projectContextSnippet,
     projectContextGuidance,
     userText: modelInputText
@@ -4614,18 +4615,20 @@ async function askModel({
   const modelSourceMessages = compacted ?? session.messages;
   const currentTurnUserIndex = findCurrentTurnUserIndex(modelSourceMessages, text, expectedModelText);
   const baseInitialMessages = toOpenAIMessages(modelSourceMessages, { currentTurnUserIndex });
-  const initialMessagesForModel = persistSession && projectContextSnippet
+  const initialMessagesForModel = persistSession
     ? injectProjectContextIntoLastUserMessage(baseInitialMessages, projectContextPrompt)
     : baseInitialMessages;
   const loopUserPrompt = persistSession
     ? ''
-    : (projectContextSnippet ? projectContextPrompt : modelInputText);
+    : projectContextPrompt;
 
   if (config.context?.prompt_budget_audit === true && onAgentEvent) {
     const auditId = `prompt-budget-${Date.now()}`;
     const audit = buildPromptBudgetAudit({
       systemPrompt: effectiveSystemPrompt,
-      projectContextPrompt: projectContextSnippet ? projectContextPrompt : '',
+      projectContextPrompt: projectContextSnippet || buildTurnContextPrefix(config)
+        ? projectContextPrompt
+        : '',
       messages: [
         ...initialMessagesForModel.filter((m) => m.role !== 'system'),
         ...(loopUserPrompt ? [{ role: 'user', content: loopUserPrompt }] : [])

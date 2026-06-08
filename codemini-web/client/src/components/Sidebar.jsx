@@ -918,6 +918,43 @@ export function Sidebar({
             <PopoverTrigger asChild>
               <button
                 className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
+                title={t("switchLanguage")}
+                aria-label={t("switchLanguage")}
+              >
+                <Globe size={15} strokeWidth={1.8} />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="center"
+              side="top"
+              className="w-30 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+            >
+              {["zh", "en"].map((locale) => (
+                <button
+                  key={locale}
+                  type="button"
+                  className={cn(
+                    "w-full rounded-md px-2.5 py-1.5 text-left text-[13px] flex items-center justify-between hover:bg-(--bg-hover)",
+                    getLocale() === locale &&
+                      "text-(--text-primary) font-medium",
+                  )}
+                  onClick={() => {
+                    if (getLocale() !== locale) {
+                      setLocale(locale);
+                      window.location.reload();
+                    }
+                  }}
+                >
+                  <span>{locale === "zh" ? "中文" : "English"}</span>
+                  {getLocale() === locale && <Check size={13} />}
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
                 title={t("switchThemePalette")}
                 aria-label={t("switchThemePalette")}
               >
@@ -957,43 +994,7 @@ export function Sidebar({
               ))}
             </PopoverContent>
           </Popover>
-          <Popover>
-            <PopoverTrigger asChild>
-              <button
-                className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
-                title={t("switchLanguage")}
-                aria-label={t("switchLanguage")}
-              >
-                <Globe size={15} strokeWidth={1.8} />
-              </button>
-            </PopoverTrigger>
-            <PopoverContent
-              align="center"
-              side="top"
-              className="w-30 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
-            >
-              {["zh", "en"].map((locale) => (
-                <button
-                  key={locale}
-                  type="button"
-                  className={cn(
-                    "w-full rounded-md px-2.5 py-1.5 text-left text-[13px] flex items-center justify-between hover:bg-(--bg-hover)",
-                    getLocale() === locale &&
-                      "text-(--text-primary) font-medium",
-                  )}
-                  onClick={() => {
-                    if (getLocale() !== locale) {
-                      setLocale(locale);
-                      window.location.reload();
-                    }
-                  }}
-                >
-                  <span>{locale === "zh" ? "中文" : "English"}</span>
-                  {getLocale() === locale && <Check size={13} />}
-                </button>
-              ))}
-            </PopoverContent>
-          </Popover>
+
           <Popover>
             <PopoverTrigger asChild>
               <button
