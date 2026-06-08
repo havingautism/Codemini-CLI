@@ -4,7 +4,6 @@ import { StreamdownRenderer } from "./StreamdownRenderer";
 import { EmbedBanner } from "./EmbedBanner.jsx";
 import {
   collectMessageEmbeds,
-  markdownWithoutEmbeds,
 } from "@/lib/message-embeds.js";
 import { TodoList } from "./TodoList";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
@@ -1912,14 +1911,10 @@ export function MessageBubble({ message, skills = [], onRetry }) {
 
           {renderGroups.map((group, i) => {
             if (group.type === "text") {
-              const displayText =
-                group.isStreaming || !messageComplete
-                  ? group.text
-                  : markdownWithoutEmbeds(group.text);
               return (
                 <StreamdownRenderer
                   key={`t-${i}-${group.isStreaming ? "s" : "d"}`}
-                  text={displayText}
+                  text={group.text}
                   streaming={group.isStreaming}
                   inlineEmbeds={false}
                 />

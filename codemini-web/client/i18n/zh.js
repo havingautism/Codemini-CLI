@@ -263,6 +263,8 @@ export const zh = {
   retry: '重试',
   manualStopped: '已手动停止',
   relatedLinks: '相关链接',
+  markdownLinkFallback: '链接',
+  markdownImageFallback: '图片',
   refresh: '刷新',
   planReviewFirst: '请先审阅计划弹窗，批准、修改或否决后再继续输入',
   loading: '加载中',

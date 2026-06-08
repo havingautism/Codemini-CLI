@@ -1463,6 +1463,12 @@ samp {
 .msg-body [data-streamdown="image-wrapper"] button {
   display: none !important;
 }
+.msg-body .markdown-lightbox img {
+  display: block;
+}
+.msg-body .markdown-lightbox figcaption {
+  line-height: 1.4;
+}
 /* Hide download button except in table-wrapper */
 .msg-body [data-streamdown="code-block-actions"] [title*="download" i],
 .msg-body [data-streamdown="code-block-actions"] [aria-label*="download" i],

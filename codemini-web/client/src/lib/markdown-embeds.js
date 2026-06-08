@@ -1,6 +1,7 @@
 const STANDALONE_URL_RE = /^https?:\/\/[^\s<>)\]"']+$/i;
 const INLINE_URL_RE = /https?:\/\/[^\s<>)\]"']+/gi;
-const MARKDOWN_LINK_RE = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/gi;
+const MARKDOWN_LINK_RE = /(?<!!)\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)/gi;
+const MARKDOWN_IMAGE_RE = /!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)/gi;
 const AUTOLINK_RE = /<(https?:\/\/[^>\s]+)>/gi;
 
 function trimUrlTrailingPunctuation(url) {
@@ -162,4 +163,67 @@ export function stripLinksFromMarkdownText(text) {
       .map((part) => part.text)
       .join(''),
   );
+}
+
+function linkDisplayLabel(url, fallback = 'Link') {
+  const cleaned = trimUrlTrailingPunctuation(String(url || '').trim());
+  if (!cleaned) return fallback;
+  try {
+    const parsed = new URL(cleaned);
+    const display = `${parsed.hostname}${parsed.pathname}${parsed.search}`;
+    if (display.length <= 52) return display;
+    return `${display.slice(0, 49).trimEnd()}...`;
+  } catch {
+    return cleaned.length <= 52 ? cleaned : `${cleaned.slice(0, 49).trimEnd()}...`;
+  }
+}
+
+function isPlaceholderLinkLabel(label) {
+  const value = String(label || '').trim().toLowerCase();
+  if (!value) return true;
+  return [
+    'link',
+    'url',
+    '链接',
+    'thumbnail',
+    '缩略图',
+    '!thumbnail',
+    'image',
+    '图片',
+  ].includes(value);
+}
+
+function normalizeLinkLabel(label, url, fallback = 'Link') {
+  const trimmed = String(label || '').trim();
+  if (isPlaceholderLinkLabel(trimmed)) {
+    return linkDisplayLabel(url, fallback);
+  }
+  return trimmed;
+}
+
+function normalizeImageAlt(alt, url, fallback = 'Image') {
+  const trimmed = String(alt || '').trim();
+  if (isPlaceholderLinkLabel(trimmed)) {
+    return fallback;
+  }
+  return trimmed || fallback;
+}
+
+export function normalizeMarkdownForDisplay(text, { linkFallback = 'Link', imageFallback = 'Image' } = {}) {
+  const source = typeof text === 'string' ? text : String(text || '');
+  if (!source.trim()) return '';
+
+  let normalized = source.replace(MARKDOWN_IMAGE_RE, (_full, alt, url) => {
+    const nextAlt = normalizeImageAlt(alt, url, imageFallback);
+    return `![${nextAlt}](${url})`;
+  });
+  MARKDOWN_IMAGE_RE.lastIndex = 0;
+
+  normalized = normalized.replace(MARKDOWN_LINK_RE, (_full, label, url) => {
+    const nextLabel = normalizeLinkLabel(label, url, linkFallback);
+    return `[${nextLabel}](${url})`;
+  });
+  MARKDOWN_LINK_RE.lastIndex = 0;
+
+  return normalized;
 }

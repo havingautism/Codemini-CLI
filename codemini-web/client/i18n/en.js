@@ -254,6 +254,8 @@ export const en = {
   retry: 'Retry',
   manualStopped: 'Manually stopped',
   relatedLinks: 'Related links',
+  markdownLinkFallback: 'Link',
+  markdownImageFallback: 'Image',
   refresh: 'Refresh',
   planReviewFirst: 'Review the plan dialog first — approve, edit, or reject before continuing',
   loading: 'Loading',

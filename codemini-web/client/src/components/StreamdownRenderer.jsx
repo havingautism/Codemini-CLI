@@ -1,11 +1,19 @@
-import { Component } from 'react';
+import { Component, useMemo } from 'react';
 import { Streamdown } from 'streamdown';
 import { cn } from '@/lib/utils';
 import { createCodePlugin } from '@/lib/shiki-plugin';
-import { splitMarkdownForEmbeds } from '@/lib/markdown-embeds';
+import { normalizeMarkdownForDisplay, splitMarkdownForEmbeds } from '@/lib/markdown-embeds';
 import { EmbedCard } from '@/components/EmbedCard.jsx';
+import { MarkdownLightboxImage } from '@/components/MarkdownLightboxImage.jsx';
+import { t } from '../../i18n/index.js';
 
 const codePlugin = createCodePlugin();
+
+const streamdownControls = {
+  tables: true,
+  codeBlocks: true,
+  mermaid: { display: true, wrap: true },
+};
 
 class StreamdownErrorBoundary extends Component {
   state = { hasError: false, retryCount: 0 };
@@ -46,8 +54,34 @@ class StreamdownErrorBoundary extends Component {
   }
 }
 
+function MarkdownStreamdown({ content, mode, streaming }) {
+  const components = useMemo(
+    () => ({ img: MarkdownLightboxImage }),
+    [],
+  );
+
+  return (
+    <Streamdown
+      mode={mode}
+      isAnimating={streaming}
+      parseIncompleteMarkdown
+      showLineNumbers={false}
+      plugins={{ code: codePlugin }}
+      controls={streamdownControls}
+      components={components}
+    >
+      {content}
+    </Streamdown>
+  );
+}
+
 export function StreamdownRenderer({ text, streaming, className, inlineEmbeds = true }) {
-  const content = typeof text === 'string' ? text : String(text || '');
+  const rawContent = typeof text === 'string' ? text : String(text || '');
+  const content = normalizeMarkdownForDisplay(rawContent, {
+    linkFallback: t('markdownLinkFallback'),
+    imageFallback: t('markdownImageFallback'),
+  });
+
   if (!content && !streaming) return null;
 
   if (!content && streaming) {
@@ -72,20 +106,7 @@ export function StreamdownRenderer({ text, streaming, className, inlineEmbeds = 
     return (
       <StreamdownErrorBoundary fallbackText={content} resetKey={mode}>
         <div className={cn('msg-body', streaming && 'streaming-cursor', className)}>
-          <Streamdown
-            mode={mode}
-            isAnimating={streaming}
-            parseIncompleteMarkdown
-            showLineNumbers={false}
-            plugins={{ code: codePlugin }}
-            controls={{
-              tables: true,
-              codeBlocks: true,
-              mermaid: { display: true, wrap: true },
-            }}
-          >
-            {content}
-          </Streamdown>
+          <MarkdownStreamdown content={content} mode={mode} streaming={streaming} />
         </div>
       </StreamdownErrorBoundary>
     );
@@ -104,20 +125,7 @@ export function StreamdownRenderer({ text, streaming, className, inlineEmbeds = 
             fallbackText={part.text}
             resetKey={`${mode}-${index}`}
           >
-            <Streamdown
-              mode={mode}
-              isAnimating={false}
-              parseIncompleteMarkdown
-              showLineNumbers={false}
-              plugins={{ code: codePlugin }}
-              controls={{
-                tables: true,
-                codeBlocks: true,
-                mermaid: { display: true, wrap: true },
-              }}
-            >
-              {part.text}
-            </Streamdown>
+            <MarkdownStreamdown content={part.text} mode={mode} streaming={false} />
           </StreamdownErrorBoundary>
         );
       })}
