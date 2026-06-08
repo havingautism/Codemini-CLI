@@ -1,6 +1,11 @@
 import { useEffect, useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
 import { StreamdownRenderer } from "./StreamdownRenderer";
+import { EmbedBanner } from "./EmbedBanner.jsx";
+import {
+  collectMessageEmbeds,
+  markdownWithoutEmbeds,
+} from "@/lib/message-embeds.js";
 import { TodoList } from "./TodoList";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { LinearRing, LinearStatusDot, Spinner } from "@/components/ui/spinner";
@@ -944,6 +949,103 @@ function FileChangePreview({ change }) {
   );
 }
 
+function summarizeFileChanges(changes = []) {
+  let totalAdded = 0;
+  let totalRemoved = 0;
+  let edits = 0;
+  let creates = 0;
+  let deletes = 0;
+
+  for (const change of changes) {
+    totalAdded += Number(change?.linesAdded || 0);
+    totalRemoved += Number(change?.linesRemoved || 0);
+    if (change?.action === "create") creates += 1;
+    else if (change?.action === "delete") deletes += 1;
+    else edits += 1;
+  }
+
+  return {
+    fileCount: changes.length,
+    totalAdded,
+    totalRemoved,
+    edits,
+    creates,
+    deletes,
+  };
+}
+
+function FileChangesOverviewBar({ changes }) {
+  const stats = summarizeFileChanges(changes);
+  if (!stats.fileCount) return null;
+
+  const actionColors = {
+    edit: "bg-(--accent-blue-bg) text-(--accent-blue)",
+    create: "bg-(--accent-green-bg) text-(--accent-green)",
+    delete: "bg-(--accent-red-bg) text-(--accent-red)",
+  };
+
+  const breakdown = [
+    stats.edits > 0
+      ? {
+          key: "edit",
+          label: t("fileChangesOverviewEdits").replace(
+            "{{count}}",
+            stats.edits,
+          ),
+        }
+      : null,
+    stats.creates > 0
+      ? {
+          key: "create",
+          label: t("fileChangesOverviewCreates").replace(
+            "{{count}}",
+            stats.creates,
+          ),
+        }
+      : null,
+    stats.deletes > 0
+      ? {
+          key: "delete",
+          label: t("fileChangesOverviewDeletes").replace(
+            "{{count}}",
+            stats.deletes,
+          ),
+        }
+      : null,
+  ].filter(Boolean);
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-(--border-default) bg-(--bg-tertiary) px-3 py-2.5">
+      <span className="text-xs font-medium text-(--text-primary)">
+        {t("fileChangesOverview").replace("{{count}}", stats.fileCount)}
+      </span>
+      <span className="flex items-center gap-2 font-mono text-[11px]">
+        {stats.totalAdded > 0 && (
+          <span className="text-(--accent-green)">+{stats.totalAdded}</span>
+        )}
+        {stats.totalRemoved > 0 && (
+          <span className="text-(--accent-red)">−{stats.totalRemoved}</span>
+        )}
+      </span>
+      {/* {breakdown.length > 0 && (
+        <div className="ml-auto flex flex-wrap items-center gap-1.5">
+          {breakdown.map((item) => (
+            <span
+              key={item.key}
+              className={cn(
+                "rounded px-[5px] py-px text-[10px] font-semibold",
+                actionColors[item.key],
+              )}
+            >
+              {item.label}
+            </span>
+          ))}
+        </div>
+      )} */}
+    </div>
+  );
+}
+
 function FileChangesSummary({ changes }) {
   const [openFiles, setOpenFiles] = useState(() => new Set());
   const [undoing, setUndoing] = useState(() => new Set());
@@ -991,6 +1093,7 @@ function FileChangesSummary({ changes }) {
   return (
     <>
       <div className="mt-6 overflow-hidden rounded-lg border border-(--border-default) bg-(--bg-secondary)">
+        <FileChangesOverviewBar changes={changes} />
         {changes.map((c, i) => {
           const key = `${c.path}-${i}`;
           const fileOpen = openFiles.has(key);
@@ -1483,11 +1586,19 @@ function shouldShowMessageActions(message, messageComplete) {
   );
 }
 
-function shouldShowFileChanges(message, messageComplete, mergedFileChanges) {
-  if (!messageComplete || mergedFileChanges.length === 0) return false;
+function shouldShowPostCompletionExtras(message, messageComplete, hasContent) {
+  if (!messageComplete || !hasContent) return false;
   const planStep = message?.planStep;
   if (!planStep) return true;
   return String(planStep.role || "").toLowerCase() === "summarizer";
+}
+
+function shouldShowFileChanges(message, messageComplete, mergedFileChanges) {
+  return shouldShowPostCompletionExtras(
+    message,
+    messageComplete,
+    mergedFileChanges.length > 0,
+  );
 }
 
 function MessageActions({
@@ -1570,6 +1681,10 @@ export function MessageBubble({ message, skills = [], onRetry }) {
   const mergedFileChanges = useMemo(
     () => mergeFileChanges(fileChanges || []),
     [fileChanges],
+  );
+  const messageEmbeds = useMemo(
+    () => collectMessageEmbeds(segments || []),
+    [segments],
   );
 
   const rawMessageText = getMessageText(message) || legacyText || "";
@@ -1731,6 +1846,11 @@ export function MessageBubble({ message, skills = [], onRetry }) {
     messageComplete,
     mergedFileChanges,
   );
+  const showRelatedLinks = shouldShowPostCompletionExtras(
+    message,
+    messageComplete,
+    messageEmbeds.length > 0,
+  );
   const isPlanFlowMessage = !!planStep && role !== "you";
   const planFlowStatus = String(planStep?.status || "").toLowerCase();
   const specExecutionDetails =
@@ -1792,11 +1912,16 @@ export function MessageBubble({ message, skills = [], onRetry }) {
 
           {renderGroups.map((group, i) => {
             if (group.type === "text") {
+              const displayText =
+                group.isStreaming || !messageComplete
+                  ? group.text
+                  : markdownWithoutEmbeds(group.text);
               return (
                 <StreamdownRenderer
                   key={`t-${i}-${group.isStreaming ? "s" : "d"}`}
-                  text={group.text}
+                  text={displayText}
                   streaming={group.isStreaming}
+                  inlineEmbeds={false}
                 />
               );
             }
@@ -1833,6 +1958,8 @@ export function MessageBubble({ message, skills = [], onRetry }) {
                 aria-label="等待工具调用或模型输出"
               />
             )}
+
+          {showRelatedLinks && <EmbedBanner items={messageEmbeds} />}
 
           {showFileChanges && (
             <FileChangesSummary changes={mergedFileChanges} />

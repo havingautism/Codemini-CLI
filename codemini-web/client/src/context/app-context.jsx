@@ -2666,7 +2666,7 @@ export function AppProvider({ children }) {
             ),
           }));
           loadHistory();
-          loadSessions();
+          loadSessions({ force: true });
           loadGitInfo();
           const rs = stateRef.current.runtimeState;
           if (rs?.sessionId && stateRef.current.currentView === "chat") {
@@ -2806,12 +2806,32 @@ export function AppProvider({ children }) {
 
         case "session:title": {
           if (event.sessionId && event.title) {
-            setState((prev) => ({
-              ...prev,
-              sessions: prev.sessions.map((s) =>
-                s.id === event.sessionId ? { ...s, title: event.title } : s,
-              ),
-            }));
+            setState((prev) => {
+              const hasSession = prev.sessions.some(
+                (s) => s.id === event.sessionId,
+              );
+              if (hasSession) {
+                return {
+                  ...prev,
+                  sessions: prev.sessions.map((s) =>
+                    s.id === event.sessionId
+                      ? { ...s, title: event.title }
+                      : s,
+                  ),
+                };
+              }
+              return {
+                ...prev,
+                sessions: [
+                  {
+                    id: event.sessionId,
+                    title: event.title,
+                    messageCount: 1,
+                  },
+                  ...prev.sessions,
+                ],
+              };
+            });
           }
           break;
         }

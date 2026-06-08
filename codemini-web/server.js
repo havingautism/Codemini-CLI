@@ -16,6 +16,7 @@ import { createChatRuntime } from '../src/core/chat-runtime.js';
 import { createSession, loadSession, listSessions, resolveSession, deleteSession } from '../src/core/session-store.js';
 import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
 import { RuntimeBridge } from './lib/runtime-bridge.js';
+import { resolveEmbed } from './lib/embed-resolver.js';
 import { installSkillSource, listSkillEntries } from '../src/commands/skill.js';
 import { computeFileSha256, readSkillRegistry, upsertSkillRegistryEntry, writeSkillRegistry } from '../src/core/skill-registry.js';
 import { forgetMemory, listMemories, searchMemories } from '../src/core/memory-store.js';
@@ -1084,6 +1085,24 @@ async function main() {
     }
 
     // ── Version ──
+    if (req.method === 'GET' && url.pathname === '/api/embed') {
+      const target = String(url.searchParams.get('url') || '').trim();
+      if (!target) {
+        jsonResponse(res, { error: true, message: 'Missing url parameter' }, 400);
+        return;
+      }
+      try {
+        const embed = await resolveEmbed(target);
+        jsonResponse(res, embed);
+      } catch (error) {
+        jsonResponse(res, {
+          error: true,
+          message: error instanceof Error ? error.message : String(error)
+        }, 400);
+      }
+      return;
+    }
+
     if (req.method === 'GET' && url.pathname === '/api/version') {
       let latest = null;
       try {

@@ -37,6 +37,7 @@ const DEFAULT_CONFIG = {
     prompt_budget_audit: false,
     microcompact_enabled: true,
     microcompact_keep_recent: 5,
+    project_context_enabled: true,
     project_instructions_enabled: true,
     project_instructions_max_chars: 12000
   },
@@ -191,6 +192,7 @@ function normalizePolicyLists(config) {
     : 'path-or-alias';
   next.context = next.context || {};
   next.context.prompt_budget_audit = next.context.prompt_budget_audit === true;
+  next.context.project_context_enabled = next.context.project_context_enabled !== false;
   next.web = next.web || {};
   next.web.search_enabled = next.web.search_enabled !== false;
   next.webui = next.webui || {};
@@ -248,12 +250,24 @@ function setNested(obj, keyPath, rawValue) {
   cursor[parts[parts.length - 1]] = value;
 }
 
+let cachedConfig = null;
+let cachedConfigStat = null;
+
 export async function loadConfig() {
   const configPath = getConfigFilePath();
   try {
+    const stat = await fs.stat(configPath).catch(() => null);
+    const mtime = stat ? stat.mtimeMs : 0;
+    const size = stat ? stat.size : 0;
+    if (cachedConfig && cachedConfigStat && cachedConfigStat.mtime === mtime && cachedConfigStat.size === size) {
+      return structuredClone(cachedConfig);
+    }
     const raw = await fs.readFile(configPath, 'utf8');
     const parsed = JSON.parse(raw);
-    return normalizePolicyLists(deepMerge(DEFAULT_CONFIG, parsed));
+    const config = normalizePolicyLists(deepMerge(DEFAULT_CONFIG, parsed));
+    cachedConfig = config;
+    cachedConfigStat = { mtime, size };
+    return structuredClone(config);
   } catch {
     const defaultConfig = normalizePolicyLists(structuredClone(DEFAULT_CONFIG));
     if (process.env.CODEMINI_GLOBAL_DIR) {
@@ -264,7 +278,12 @@ export async function loadConfig() {
       const legacyPath = path.join(getLegacyConfigDir(), 'config.json');
       const raw = await fs.readFile(legacyPath, 'utf8');
       const parsed = JSON.parse(raw);
-      return normalizePolicyLists(deepMerge(DEFAULT_CONFIG, parsed));
+      const config = normalizePolicyLists(deepMerge(DEFAULT_CONFIG, parsed));
+      cachedConfig = config;
+      // Get the stat of legacy or standard config path to store in cache stats
+      const finalStat = await fs.stat(configPath).catch(() => null);
+      cachedConfigStat = finalStat ? { mtime: finalStat.mtimeMs, size: finalStat.size } : null;
+      return structuredClone(config);
     } catch {
       await saveConfig(defaultConfig);
       return defaultConfig;
@@ -276,6 +295,9 @@ export async function saveConfig(config) {
   const configPath = getConfigFilePath();
   await ensureDir(configPath);
   await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  cachedConfig = normalizePolicyLists(structuredClone(config));
+  const stat = await fs.stat(configPath).catch(() => null);
+  cachedConfigStat = stat ? { mtime: stat.mtimeMs, size: stat.size } : null;
 }
 
 export async function setConfigValue(keyPath, value) {

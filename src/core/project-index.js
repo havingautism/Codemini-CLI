@@ -45,9 +45,19 @@ async function safeStat(filePath) {
   }
 }
 
+const jsonCache = new BoundedCache({ maxSize: 64, ttlMs: 30 * 1000 });
+
 async function safeReadJson(filePath, fallback) {
   try {
-    return JSON.parse(await fs.readFile(filePath, 'utf8'));
+    const stat = await safeStat(filePath);
+    if (!stat) return fallback;
+    const cacheKey = `${filePath}:${Number(stat.mtimeMs || 0)}:${Number(stat.size || 0)}`;
+    if (jsonCache.has(cacheKey)) {
+      return jsonCache.get(cacheKey);
+    }
+    const data = JSON.parse(await fs.readFile(filePath, 'utf8'));
+    jsonCache.set(cacheKey, data);
+    return data;
   } catch {
     return fallback;
   }
@@ -174,6 +184,72 @@ function shouldIgnorePath(relativePath, isDirectory, gitignoreRules = []) {
     ignored = !rule.negated;
   }
   return ignored;
+}
+
+const CODEMINI_GITIGNORE_ENTRY = '.codemini/';
+const CODEMINI_GITIGNORE_COMMENT = '# Codemini local workspace (indexes, backups, specs)';
+
+function invalidateIgnoreRulesCache(gitignorePath) {
+  for (const key of ignoreRulesCache.keys()) {
+    if (String(key).startsWith(`${gitignorePath}:`)) {
+      ignoreRulesCache.delete(key);
+    }
+  }
+}
+
+function isIgnoredByGitignore(relativePath, isDirectory, gitignoreRules = []) {
+  const normalizedPath = normalizeRelativePath(relativePath);
+  if (!normalizedPath) return false;
+  let ignored = false;
+  for (const rule of gitignoreRules) {
+    if (!matchesGitignoreRule(rule, normalizedPath, isDirectory)) continue;
+    ignored = !rule.negated;
+  }
+  return ignored;
+}
+
+function gitignoreAlreadyCoversCodemini(content, gitignoreRules = []) {
+  if (/\b\.codemini\/?\b/m.test(String(content || ''))) return true;
+  return isIgnoredByGitignore('.codemini', true, gitignoreRules)
+    || isIgnoredByGitignore('.codemini/', true, gitignoreRules);
+}
+
+async function isGitRepository(projectRoot) {
+  const gitPath = path.join(projectRoot, '.git');
+  const stat = await safeStat(gitPath);
+  return Boolean(stat?.isDirectory() || stat?.isFile());
+}
+
+export async function ensureCodeminiGitignore(projectRoot) {
+  const root = path.resolve(String(projectRoot || '').trim());
+  if (!root) return { updated: false, reason: 'missing_root' };
+  try {
+    if (!(await isGitRepository(root))) {
+      return { updated: false, reason: 'not_git' };
+    }
+    const gitignorePath = path.join(root, '.gitignore');
+    const { gitignoreRules } = await readProjectIgnoreRules(root);
+    let content = '';
+    try {
+      content = await fs.readFile(gitignorePath, 'utf8');
+    } catch {
+      content = '';
+    }
+    if (gitignoreAlreadyCoversCodemini(content, gitignoreRules)) {
+      return { updated: false, reason: 'already_ignored' };
+    }
+    const needsLeadingNewline = content.length > 0 && !content.endsWith('\n');
+    const block = `${needsLeadingNewline ? '\n' : ''}${CODEMINI_GITIGNORE_COMMENT}\n${CODEMINI_GITIGNORE_ENTRY}\n`;
+    await fs.writeFile(gitignorePath, `${content}${block}`, 'utf8');
+    invalidateIgnoreRulesCache(gitignorePath);
+    return { updated: true, reason: 'appended' };
+  } catch (error) {
+    return {
+      updated: false,
+      reason: 'error',
+      message: error instanceof Error ? error.message : String(error)
+    };
+  }
 }
 
 async function detectWorkspaceKind(cwd) {
@@ -555,6 +631,7 @@ export async function initializeProjectIndex(cwd = process.cwd()) {
   const promise = (async () => {
     const workspaceDir = getProjectWorkspaceDir(cwd);
     await fs.mkdir(workspaceDir, { recursive: true });
+    await ensureCodeminiGitignore(targetRoot);
     const existing = await loadExistingProjectIndex(targetRoot);
     if (existing) return existing;
     const { workspaceKind, projectMap, fileIndex } = await scanProject(targetRoot);
@@ -593,6 +670,7 @@ export async function refreshIndexedFile(cwd = process.cwd(), relativePath = '')
   const workspaceDir = getProjectWorkspaceDir(cwd);
   await fs.mkdir(workspaceDir, { recursive: true });
   const projectRoot = await findProjectRootFromFile(cwd, relativePath);
+  if (projectRoot) await ensureCodeminiGitignore(projectRoot);
   if (!projectRoot) return null;
   const fileIndexPath = getFileIndexPath(projectRoot);
   const { combinedRules } = await readProjectIgnoreRules(projectRoot);

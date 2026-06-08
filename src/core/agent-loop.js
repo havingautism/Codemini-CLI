@@ -360,7 +360,42 @@ function normalizeFileChanges(changes) {
 
 function extractToolResultMeta(toolName, result) {
   if (!result || typeof result !== 'object') return null;
-  if (!['edit', 'create', 'delete'].includes(String(toolName || ''))) return null;
+  const name = String(toolName || '');
+
+  if (name === 'web_search' && Array.isArray(result.results) && result.results.length) {
+    const items = result.results
+      .slice(0, 8)
+      .map((item) => ({
+        type: 'link',
+        url: String(item?.url || '').trim(),
+        title: String(item?.title || '').trim(),
+        description: String(item?.description || '').trim(),
+        siteName: String(item?.hostname || '').trim()
+      }))
+      .filter((item) => item.url);
+    if (!items.length) return null;
+    return {
+      embedType: 'search_results',
+      query: String(result.query || '').trim(),
+      items
+    };
+  }
+
+  if (name === 'web_fetch') {
+    const targetUrl = String(result.final_url || result.url || '').trim();
+    if (!targetUrl) return null;
+    return {
+      embedType: 'link',
+      items: [{
+        type: 'link',
+        url: targetUrl,
+        title: String(result.title || targetUrl).trim(),
+        description: String(result.description || '').trim()
+      }]
+    };
+  }
+
+  if (!['edit', 'create', 'delete'].includes(name)) return null;
   const meta = {};
   for (const key of [
     'path',

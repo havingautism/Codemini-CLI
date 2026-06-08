@@ -7,6 +7,13 @@ async function api(path, opts = {}) {
   return res;
 }
 
+export async function fetchEmbed(url) {
+  const target = String(url || '').trim();
+  if (!target) return { error: true, message: 'Missing url' };
+  const res = await api(`/api/embed?url=${encodeURIComponent(target)}`);
+  return res.json();
+}
+
 export async function fetchVersion() {
   const res = await api('/api/version');
   return res.json();

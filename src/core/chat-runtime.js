@@ -483,6 +483,7 @@ function getCompletionCopy(language = 'zh') {
         'context.microcompact_keep_recent': '微压缩保留最近工具结果数',
         'context.project_instructions_enabled': '项目 AGENTS.md 注入开关',
         'context.project_instructions_max_chars': '项目 AGENTS.md 字符上限',
+        'context.project_context_enabled': '项目上下文自动注入开关',
         'sessions.max_sessions': '会话保留上限',
         'sessions.retention_days': '会话保留天数',
         'shell.default': '默认 shell',
@@ -505,6 +506,7 @@ function getCompletionCopy(language = 'zh') {
         'policy.allowed_paths': 'JSON 数组，例如 ["D:\\\\shared"]',
         'policy.allow_dangerous_commands': '可选：true | false',
         'context.prompt_budget_audit': '可选：true | false',
+        'context.project_context_enabled': '可选：true | false',
         'context.project_instructions_enabled': '可选：true | false',
         'context.project_instructions_max_chars': '建议：8000-12000'
       },
@@ -589,6 +591,7 @@ function getCompletionCopy(language = 'zh') {
         'context.microcompact_keep_recent': 'micro-compact keep recent tool results',
         'context.project_instructions_enabled': 'project AGENTS.md injection switch',
         'context.project_instructions_max_chars': 'project AGENTS.md character limit',
+        'context.project_context_enabled': 'project context injection switch',
         'sessions.max_sessions': 'stored session limit',
         'sessions.retention_days': 'session retention days',
         'shell.default': 'default shell',
@@ -611,6 +614,7 @@ function getCompletionCopy(language = 'zh') {
         'policy.allowed_paths': 'JSON array, for example ["D:\\\\shared"]',
         'policy.allow_dangerous_commands': 'options: true | false',
         'context.prompt_budget_audit': 'options: true | false',
+        'context.project_context_enabled': 'options: true | false',
         'context.project_instructions_enabled': 'options: true | false',
         'context.project_instructions_max_chars': 'recommended: 8000-12000'
       },
@@ -3844,6 +3848,16 @@ function shouldReplaceSessionTitle(title) {
   return !value || value === '新会话' || value === 'New session';
 }
 
+/** @type {((sessionId: string, title: string) => void) | null} */
+let sessionTitleUpdateListener = null;
+
+function emitSessionTitleUpdate(sessionId, title) {
+  const id = String(sessionId || '').trim();
+  const nextTitle = String(title || '').trim();
+  if (!id || !nextTitle) return;
+  sessionTitleUpdateListener?.(id, nextTitle);
+}
+
 async function generateSessionTitle({ userText, assistantText = '', config, signal }) {
   const fallback = normalizeGeneratedSessionTitle(deriveSessionTitle([{ role: 'user', content: userText }]));
   const latestConfig = await loadConfig().catch(() => config);
@@ -4366,15 +4380,22 @@ async function askModel({
       compacted.push({ ...userMessage });
       if (onCompactedUpdate) onCompactedUpdate(compacted);
     }
+    let derivedTitle = false;
     if (shouldReplaceSessionTitle(session.title)) {
       session.title = deriveSessionTitle(session.messages);
+      derivedTitle = true;
     }
     session.model = model || config.model.name;
     session.mode = executionMode || config.execution?.mode || 'normal';
-    if (persistSession) await saveSession(session);
+    if (persistSession) {
+      await saveSession(session);
+      if (derivedTitle) emitSessionTitleUpdate(session.id, session.title);
+    }
   }
 
-  const projectContextPromise = buildProjectContextSnippet(process.cwd(), modelInputText).catch(() => '');
+  const projectContextPromise = (config.context?.project_context_enabled !== false)
+    ? buildProjectContextSnippet(process.cwd(), modelInputText).catch(() => '')
+    : Promise.resolve('');
   const projectContextGuidance =
     'Use this project context as lightweight guidance and verify important details with fresh reads when needed.';
   const normalizedExecutionMode = normalizeExecutionMode(executionMode || config.execution?.mode || 'normal');
@@ -4919,7 +4940,7 @@ async function askModel({
         if (generatedTitle && generatedTitle !== session.title) {
           session.title = generatedTitle;
           await saveSession(session);
-          onTitleUpdateCallback?.(titleSessionId, generatedTitle);
+          emitSessionTitleUpdate(titleSessionId, generatedTitle);
         }
       }).catch(() => {});
     }
@@ -6747,6 +6768,7 @@ export async function createChatRuntime({
     'context.read_file_max_chars',
     'context.microcompact_enabled',
     'context.microcompact_keep_recent',
+    'context.project_context_enabled',
     'context.project_instructions_enabled',
     'context.project_instructions_max_chars',
     'sessions.max_sessions',
@@ -7161,12 +7183,15 @@ export async function createChatRuntime({
     if (systemText) {
       appendSessionMessage(stampedMessage('system', systemText, localMeta));
     }
+    let derivedTitle = false;
     if (shouldReplaceSessionTitle(currentSession.title)) {
       currentSession.title = deriveSessionTitle(currentSession.messages);
+      derivedTitle = true;
     }
     currentSession.model = model || config.model.name;
     currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
+    if (derivedTitle) emitSessionTitleUpdate(currentSession.id, currentSession.title);
   };
 
   const persistAssistantExchange = async (userText, assistantText, { includeUser = true, extra = {} } = {}) => {
@@ -7181,9 +7206,15 @@ export async function createChatRuntime({
     if (assistantText) {
       appendSessionMessage(stampedMessage('assistant', assistantText, extra));
     }
+    let derivedTitle = false;
+    if (shouldReplaceSessionTitle(currentSession.title)) {
+      currentSession.title = deriveSessionTitle(currentSession.messages);
+      derivedTitle = true;
+    }
     currentSession.model = model || config.model.name;
     currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
+    if (derivedTitle) emitSessionTitleUpdate(currentSession.id, currentSession.title);
     // Generate a better title asynchronously after saving
     if (shouldGenerateTitle || shouldReplaceSessionTitle(currentSession.title)) {
       const titleSessionId = currentSession.id;
@@ -7195,7 +7226,7 @@ export async function createChatRuntime({
         if (generatedTitle && generatedTitle !== currentSession.title) {
           currentSession.title = generatedTitle;
           await saveSession(currentSession);
-          onTitleUpdateCallback?.(titleSessionId, generatedTitle);
+          emitSessionTitleUpdate(titleSessionId, generatedTitle);
         }
       }).catch(() => {});
     }
@@ -7221,12 +7252,15 @@ export async function createChatRuntime({
   const persistUserExchange = async (userText) => {
     if (!userText) return;
     appendSessionMessage(stampedMessage('user', userText));
+    let derivedTitle = false;
     if (shouldReplaceSessionTitle(currentSession.title)) {
       currentSession.title = deriveSessionTitle(currentSession.messages);
+      derivedTitle = true;
     }
     currentSession.model = model || config.model.name;
     currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
+    if (derivedTitle) emitSessionTitleUpdate(currentSession.id, currentSession.title);
   };
 
   const persistRunStatus = async (userText, statusText, { status = 'error' } = {}) => {
@@ -7246,12 +7280,15 @@ export async function createChatRuntime({
         ...(prompt ? { retry_prompt: userText } : {})
       }));
     }
+    let derivedTitle = false;
     if (shouldReplaceSessionTitle(currentSession.title)) {
       currentSession.title = deriveSessionTitle(currentSession.messages);
+      derivedTitle = true;
     }
     currentSession.model = model || config.model.name;
     currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
+    if (derivedTitle) emitSessionTitleUpdate(currentSession.id, currentSession.title);
   };
 
   const captureCompactSummary = async ({ summary, mode, beforeTokens, afterTokens }) => {
@@ -8542,6 +8579,7 @@ export async function createChatRuntime({
     },
     setOnTitleUpdate: (cb) => {
       onTitleUpdateCallback = typeof cb === 'function' ? cb : null;
+      sessionTitleUpdateListener = onTitleUpdateCallback;
     },
     updatePendingReflect: async (patch = {}) => {
       const next = updatePendingReflectState(currentSession, patch, process.cwd());

@@ -2,6 +2,8 @@ import { Component } from 'react';
 import { Streamdown } from 'streamdown';
 import { cn } from '@/lib/utils';
 import { createCodePlugin } from '@/lib/shiki-plugin';
+import { splitMarkdownForEmbeds } from '@/lib/markdown-embeds';
+import { EmbedCard } from '@/components/EmbedCard.jsx';
 
 const codePlugin = createCodePlugin();
 
@@ -44,7 +46,7 @@ class StreamdownErrorBoundary extends Component {
   }
 }
 
-export function StreamdownRenderer({ text, streaming, className }) {
+export function StreamdownRenderer({ text, streaming, className, inlineEmbeds = true }) {
   const content = typeof text === 'string' ? text : String(text || '');
   if (!content && !streaming) return null;
 
@@ -61,25 +63,64 @@ export function StreamdownRenderer({ text, streaming, className }) {
   }
 
   const mode = streaming ? 'streaming' : 'static';
+  const parts = streaming || !inlineEmbeds
+    ? [{ type: 'markdown', text: content }]
+    : splitMarkdownForEmbeds(content);
+  const hasEmbeds = parts.some((part) => part.type === 'embed');
+
+  if (!hasEmbeds) {
+    return (
+      <StreamdownErrorBoundary fallbackText={content} resetKey={mode}>
+        <div className={cn('msg-body', streaming && 'streaming-cursor', className)}>
+          <Streamdown
+            mode={mode}
+            isAnimating={streaming}
+            parseIncompleteMarkdown
+            showLineNumbers={false}
+            plugins={{ code: codePlugin }}
+            controls={{
+              tables: true,
+              codeBlocks: true,
+              mermaid: { display: true, wrap: true },
+            }}
+          >
+            {content}
+          </Streamdown>
+        </div>
+      </StreamdownErrorBoundary>
+    );
+  }
 
   return (
-    <StreamdownErrorBoundary fallbackText={content} resetKey={mode}>
-      <div className={cn('msg-body', streaming && 'streaming-cursor', className)}>
-        <Streamdown
-          mode={mode}
-          isAnimating={streaming}
-          parseIncompleteMarkdown
-          showLineNumbers={false}
-          plugins={{ code: codePlugin }}
-          controls={{
-            tables: true,
-            codeBlocks: true,
-            mermaid: { display: true, wrap: true },
-          }}
-        >
-          {content}
-        </Streamdown>
-      </div>
-    </StreamdownErrorBoundary>
+    <div className={cn('msg-body', className)}>
+      {parts.map((part, index) => {
+        if (part.type === 'embed') {
+          return <EmbedCard key={`embed-${part.url}-${index}`} url={part.url} />;
+        }
+        if (!part.text) return null;
+        return (
+          <StreamdownErrorBoundary
+            key={`md-${index}`}
+            fallbackText={part.text}
+            resetKey={`${mode}-${index}`}
+          >
+            <Streamdown
+              mode={mode}
+              isAnimating={false}
+              parseIncompleteMarkdown
+              showLineNumbers={false}
+              plugins={{ code: codePlugin }}
+              controls={{
+                tables: true,
+                codeBlocks: true,
+                mermaid: { display: true, wrap: true },
+              }}
+            >
+              {part.text}
+            </Streamdown>
+          </StreamdownErrorBoundary>
+        );
+      })}
+    </div>
   );
 }
