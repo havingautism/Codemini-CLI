@@ -3,26 +3,21 @@ import { buildDefaultSystemPrompt } from '../core/default-system-prompt.js';
 import { runAgentLoop } from '../core/agent-loop.js';
 import { createChatCompletion } from '../core/provider/index.js';
 import { getBuiltinTools } from '../core/tools.js';
-import { getSubAgentRolePrompt } from '../core/chat-runtime.js';
+import { getSubAgentRolePrompt, ROLE_TOOL_POLICY } from '../core/chat-runtime.js';
 import { composeSystemPrompt } from '../core/system-prompt-composer.js';
 import { normalizePlanState } from '../core/plan-state.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-const ROLE_TOOL_POLICY = {
+
+const CLI_ROLE_TOOL_POLICY = {
+  ...ROLE_TOOL_POLICY,
   planner: ['read', 'read_plan', 'tool_search', 'skill', 'update_plan', 'update_todos'],
-  explorer: ['read', 'grep', 'list', 'glob', 'ast_query', 'read_ast_node', 'query_project_index', 'tool_search', 'skill', 'web_fetch', 'web_search', 'read_plan'],
-  architect: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
-  advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'skill', 'read_plan'],
-  coder: ['read', 'grep', 'list', 'edit', 'create', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
-  refactorer: ['read', 'grep', 'list', 'edit', 'create', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'skill', 'read_plan'],
-  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'read_plan'],
-  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'skill', 'read_plan'],
-  debugger: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
-  writer: ['read', 'grep', 'list', 'glob', 'tool_search', 'skill', 'web_search', 'web_fetch', 'read_plan'],
-  summarizer: ['read', 'read_plan', 'tool_search', 'skill']
+  coder: (ROLE_TOOL_POLICY.coder || []).filter((tool) => !['web_fetch', 'web_search'].includes(tool)),
+  refactorer: (ROLE_TOOL_POLICY.refactorer || []).filter((tool) => !['web_fetch', 'web_search'].includes(tool)),
+  writer: ROLE_TOOL_POLICY.writer || []
 };
-const HARNESS_ROLES = Object.keys(ROLE_TOOL_POLICY);
+const HARNESS_ROLES = Object.keys(CLI_ROLE_TOOL_POLICY).filter((role) => !['planner', 'codewiki'].includes(role));
 
 function parseRunArgs(args) {
   const parsed = {
@@ -58,7 +53,7 @@ function parseRunArgs(args) {
 }
 
 function filterToolsForRole(definitions, handlers, deferredDefinitions, role) {
-  const allowed = ROLE_TOOL_POLICY[role];
+  const allowed = CLI_ROLE_TOOL_POLICY[role];
   if (!allowed) return { definitions, handlers, deferredDefinitions };
   return {
     definitions: definitions.filter((t) => allowed.includes(t.function?.name || t.name)),
@@ -144,7 +139,13 @@ function normalizePlan(parsed, goal) {
     .map((s) => ({
       title: String(s?.title || '').trim(),
       role: String(s?.role || '').trim().toLowerCase(),
-      task: String(s?.task || '').trim()
+      task: [
+        String(s?.task || '').trim(),
+        Array.isArray(s?.target_files) && s.target_files.length ? `Targets: ${s.target_files.join(', ')}` : '',
+        s?.success_criteria ? `Success criteria: ${s.success_criteria}` : '',
+        s?.verification ? `Verification intent: ${s.verification}` : '',
+        s?.handoff ? `Handoff artifact: ${s.handoff}` : ''
+      ].filter(Boolean).join('\n')
     }))
     .filter((s) => s.title && s.task && HARNESS_ROLES.includes(s.role));
   if (cleaned.length === 0) {
@@ -157,7 +158,7 @@ async function planPipeline({ goal, config, systemPrompt, model }) {
   const roleList = HARNESS_ROLES.filter(r => r !== 'planner').join(', ');
   const plannerPrompt = [
     'Create an execution plan and assign the best sub-agent role for each step.',
-    `Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"${HARNESS_ROLES.join('|')}","task":"..."}]}. No markdown.`,
+    `Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"${HARNESS_ROLES.join('|')}","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
     `Available roles: ${roleList}. The planner role generates the plan but does not execute steps. Start with explorer for codebase inspection.`,
     'Prefer 3-5 steps total. Always include a summarizer as the final step.',
     'For debugging: explorer -> debugger -> coder -> tester -> summarizer.',
@@ -217,7 +218,7 @@ function buildStepTask({ goal, step, priorSteps }) {
     formatPriorStepsForTask(priorSteps),
     'Current step task:',
     step.task
-  ].filter(Boolean).join('\n\n');
+  ].filter(Boolean).join('\n');
 }
 
 async function writeStepOutput(workspaceRoot, runId, stepIndex, stepResult) {

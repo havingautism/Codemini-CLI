@@ -45,11 +45,11 @@ function EmbedSkeleton({ variant = "default", url = "" }) {
     <div
       className={cn(
         "overflow-hidden rounded-xl border border-(--border-default) bg-(--bg-secondary) animate-pulse",
-        compact ? "min-h-[108px]" : "my-3 min-h-[120px]",
+        compact ? "h-[100px]" : "my-3 min-h-[120px]",
       )}
     >
-      <div className="h-8" style={{ background: brand.headerBg }} />
-      <div className={cn("px-4 py-3", compact ? "h-14" : "h-16")} />
+      <div className={cn(compact ? "h-8 shrink-0" : "h-8")} style={{ background: brand.headerBg }} />
+      <div className={cn("px-4", compact ? "min-h-[64px] flex-1 py-2" : "h-16 py-3")} />
     </div>
   );
 }
@@ -67,23 +67,101 @@ function MetaPill({ children, className }) {
   );
 }
 
-function EmbedHeroImage({ src, compact, resolvedType, brand }) {
+const MEDIA_PREVIEW_TYPES = new Set(["youtube", "instagram", "tiktok"]);
+
+function EmbedLinkPlaceholder() {
+  return (
+    <div
+      className="flex size-12 shrink-0 items-center justify-center rounded-md border border-(--border-default) bg-(--bg-tertiary) text-(--text-muted)"
+      aria-hidden="true"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        width="22"
+        height="22"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <circle cx="12" cy="12" r="9" />
+        <path d="M2.5 12h19" />
+        <path d="M12 2.5a15.3 15.3 0 0 1 4 9.5 15.3 15.3 0 0 1-4 9.5 15.3 15.3 0 0 1-4-9.5 15.3 15.3 0 0 1 4-9.5z" />
+      </svg>
+    </div>
+  );
+}
+
+function EmbedCompactThumb({
+  image,
+  showHeroImage,
+  ownerAvatar,
+  resolvedType,
+  brand,
+}) {
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  const placeholder = <EmbedLinkPlaceholder />;
+
+  if (showHeroImage) {
+    return (
+      <EmbedHeroImage
+        src={image}
+        compact
+        resolvedType={resolvedType}
+        brand={brand}
+        fallback={placeholder}
+      />
+    );
+  }
+
+  if (ownerAvatar && !avatarFailed) {
+    return (
+      <div className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-md bg-(--bg-tertiary)">
+        <img
+          src={ownerAvatar}
+          alt=""
+          loading="lazy"
+          className="size-9 rounded-full ring-2 ring-(--bg-secondary)"
+          onError={() => setAvatarFailed(true)}
+        />
+      </div>
+    );
+  }
+
+  return placeholder;
+}
+
+function EmbedHeroImage({ src, compact, resolvedType, brand, fallback = null }) {
   const [visible, setVisible] = useState(true);
 
-  if (!src || !visible) return null;
+  if (!src || !visible) {
+    if (compact && fallback) return fallback;
+    return null;
+  }
+
+  const mediaPreview = MEDIA_PREVIEW_TYPES.has(resolvedType);
 
   return (
     <div
       className={cn(
         "relative shrink-0 overflow-hidden bg-(--bg-tertiary)",
-        compact ? "w-[84px]" : "w-[132px] sm:w-[156px]",
+        compact
+          ? "size-12 rounded-md"
+          : "w-[132px] sm:w-[156px]",
       )}
     >
       <img
         src={src}
         alt=""
         loading="lazy"
-        className="h-full w-full object-cover"
+        className={cn(
+          "h-full w-full",
+          compact && !mediaPreview
+            ? "object-contain p-1"
+            : "object-cover",
+        )}
         onError={() => setVisible(false)}
       />
       {resolvedType === "youtube" && (
@@ -127,7 +205,7 @@ function EmbedAvatar({ src, compact, brand }) {
   );
 }
 
-function EmbedCardHeader({ brand, url }) {
+function EmbedCardHeader({ brand, url, compact = false }) {
   let hostname = "";
   try {
     hostname = new URL(url).hostname.replace(/^www\./, "");
@@ -139,7 +217,10 @@ function EmbedCardHeader({ brand, url }) {
 
   return (
     <div
-      className="flex items-center gap-2 border-b border-(--border-default) px-3 py-2"
+      className={cn(
+        "flex items-center gap-2 border-b border-(--border-default) px-3",
+        compact ? "py-1.5" : "py-2",
+      )}
       style={{ background: brand.headerBg }}
     >
       <span
@@ -201,42 +282,79 @@ function EmbedCardBody({ embed, variant = "default" }) {
       className={cn(
         "group block overflow-hidden rounded-xl border border-(--border-default) bg-(--bg-secondary) transition-colors hover:border-(--border-strong) hover:bg-(--bg-hover)",
         compact
-          ? "h-full"
+          ? "flex h-full w-full min-w-0 flex-col"
           : "my-3 shadow-[var(--shadow-default)] hover:shadow-md",
       )}
     >
-      <EmbedCardHeader brand={brand} url={url} />
+      <EmbedCardHeader brand={brand} url={url} compact={compact} />
 
-      <div className={cn("flex", compact ? "min-h-[72px]" : "min-h-[88px]")}>
-        {showHeroImage && (
-          <EmbedHeroImage
-            src={image}
-            compact={compact}
+      <div
+        className={cn(
+          "flex",
+          compact
+            ? "min-h-[64px] flex-1 items-center gap-2.5 px-3 py-2"
+            : "min-h-[88px]",
+        )}
+      >
+        {compact ? (
+          <EmbedCompactThumb
+            image={image}
+            showHeroImage={showHeroImage}
+            ownerAvatar={ownerAvatar}
             resolvedType={resolvedType}
             brand={brand}
           />
+        ) : (
+          <>
+            {showHeroImage && (
+              <EmbedHeroImage
+                src={image}
+                compact={compact}
+                resolvedType={resolvedType}
+                brand={brand}
+              />
+            )}
+            {ownerAvatar && (
+              <EmbedAvatar src={ownerAvatar} compact={compact} brand={brand} />
+            )}
+          </>
         )}
 
-        {ownerAvatar && (
-          <EmbedAvatar src={ownerAvatar} compact={compact} brand={brand} />
-        )}
-
-        <div className="flex min-w-0 flex-1 flex-col justify-center gap-1 px-3 py-2.5 sm:px-4 sm:py-3">
-          <div className="truncate text-sm font-semibold text-(--text-primary) group-hover:underline">
+        <div
+          className={cn(
+            "flex min-w-0 flex-1 flex-col justify-center gap-0.5",
+            compact ? "min-h-12" : "gap-1 px-3 py-2.5 sm:px-4 sm:py-3",
+          )}
+        >
+          <div
+            className={cn(
+              "truncate font-semibold text-(--text-primary) group-hover:underline",
+              compact ? "text-[13px] leading-snug" : "text-sm",
+            )}
+          >
             {displayTitle}
           </div>
 
-          {description && (
+          {compact ? (
             <div
               className={cn(
-                "text-xs leading-relaxed text-(--text-secondary)",
-                compact ? "line-clamp-2" : "line-clamp-2",
+                "line-clamp-1 min-h-4 text-xs leading-snug",
+                description
+                  ? "text-(--text-secondary)"
+                  : "text-transparent select-none",
               )}
             >
-              {description}
+              {description || "\u00A0"}
             </div>
+          ) : (
+            description && (
+              <div className="line-clamp-2 text-xs leading-relaxed text-(--text-secondary)">
+                {description}
+              </div>
+            )
           )}
 
+          {!compact && (
           <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
             {siteName && !isKnownPlatform(resolvedType, url) && (
               <MetaPill>{siteName}</MetaPill>
@@ -269,6 +387,7 @@ function EmbedCardBody({ embed, variant = "default" }) {
               </MetaPill>
             )}
           </div>
+          )}
         </div>
       </div>
     </a>

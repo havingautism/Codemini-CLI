@@ -1082,26 +1082,63 @@ samp {
   -moz-osx-font-smoothing: grayscale;
 }
 
+:root {
+  --scrollbar-size: 6px;
+  --scrollbar-thumb: color-mix(in srgb, var(--text-muted) 55%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--text-muted) 75%, transparent);
+  --scrollbar-track: color-mix(in srgb, var(--text-muted) 16%, var(--bg-secondary));
+}
+
 * {
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--text-muted) 50%, transparent) transparent;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 *::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
 }
 *::-webkit-scrollbar-track {
-  background: transparent;
+  background: var(--scrollbar-track);
 }
 *::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--text-muted) 50%, transparent);
+  background: var(--scrollbar-thumb);
   border-radius: 3px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--text-muted) 70%, transparent);
+  background: var(--scrollbar-thumb-hover);
 }
 *::-webkit-scrollbar-corner {
-  background: transparent;
+  background: var(--scrollbar-track);
+}
+
+/* Related links: native horizontal scroll with visible track + gap above thumb */
+.codemini-embed-banner-scroll {
+  --scrollbar-thumb: color-mix(in srgb, var(--text-muted) 68%, transparent);
+  --scrollbar-track: color-mix(in srgb, var(--text-muted) 30%, var(--bg-secondary));
+  overflow-x: scroll;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  padding-bottom: 18px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+.codemini-embed-banner-scroll::-webkit-scrollbar {
+  height: 8px;
+}
+
+.codemini-embed-banner-scroll::-webkit-scrollbar-track {
+  border-radius: 4px;
+  background: var(--scrollbar-track);
+}
+
+.codemini-embed-banner-scroll::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: var(--scrollbar-thumb);
+}
+
+.codemini-embed-banner-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
 }
 
 /* ── Linear loaders (theme + palette aware) ── */
@@ -1301,7 +1338,6 @@ samp {
   background: var(--bg-primary) !important;
   overflow: auto !important;
   overscroll-behavior-x: contain;
-  scrollbar-gutter: stable;
 }
 .msg-body [data-streamdown="code-block-actions"],
 .msg-body [data-streamdown="mermaid-block-actions"] {
@@ -1411,12 +1447,26 @@ samp {
   text-decoration-color: color-mix(in srgb, var(--md-link) 45%, transparent);
 }
 .msg-body blockquote {
-  border-left: 3px solid var(--accent-purple);
-  background: var(--md-table-row-alt-bg);
-  border-radius: var(--radius-md);
-  color: var(--text-secondary);
   margin: 12px 0;
-  padding: 8px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--md-code-border);
+  border-left: 2px solid color-mix(in srgb, var(--input-shell-accent) 28%, var(--md-code-border));
+  border-radius: var(--radius);
+  background: var(--md-code-bg);
+  color: var(--text-primary);
+  font-style: normal;
+}
+.msg-body blockquote :where(p, li, span, em, strong) {
+  font-style: normal;
+}
+.msg-body blockquote > :first-child {
+  margin-top: 0;
+}
+.msg-body blockquote > :last-child {
+  margin-bottom: 0;
+}
+.msg-body blockquote [data-streamdown="code-block"] {
+  margin: 10px 0 0 !important;
 }
 .msg-body hr {
   border-color: var(--border-default);

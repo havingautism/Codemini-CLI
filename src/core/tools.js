@@ -250,6 +250,7 @@ function semanticBoolean(value, fallback = false) {
   return Boolean(value);
 }
 
+
 function trimPreview(value, maxLen = 300) {
   const text = normalizeWhitespace(value);
   if (text.length <= maxLen) return text;

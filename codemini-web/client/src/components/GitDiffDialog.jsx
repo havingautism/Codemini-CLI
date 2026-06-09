@@ -25,22 +25,32 @@ const statusLabels = {
 };
 
 const diffScrollCss = `
+  [data-code] {
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  }
+
   [data-code]::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: var(--scrollbar-size);
+    height: var(--scrollbar-size);
+  }
+
+  [data-code]::-webkit-scrollbar-track {
+    background: var(--scrollbar-track);
   }
 
   [data-code]::-webkit-scrollbar-thumb {
-    background-color: color-mix(in srgb, var(--text-muted) 50%, transparent);
+    background: var(--scrollbar-thumb);
     border-radius: 3px;
   }
 
   [data-code]::-webkit-scrollbar-thumb:hover {
-    background-color: color-mix(in srgb, var(--text-muted) 70%, transparent);
+    background: var(--scrollbar-thumb-hover);
   }
 
   [data-code]::-webkit-scrollbar-corner {
-    background: transparent;
+    background: var(--scrollbar-track);
   }
 `;
 

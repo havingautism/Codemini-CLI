@@ -316,6 +316,16 @@ export class RuntimeBridge {
   #uiPersistQueued = false;
   #activeSubmitLine = '';
   #runStatusRecorded = false;
+  #submitToken = 0;
+
+  #isSubmitActive(token) {
+    return token === this.#submitToken;
+  }
+
+  #invalidateSubmit() {
+    this.#submitToken += 1;
+    return this.#submitToken;
+  }
 
   constructor(runtime) {
     this.#runtime = runtime;
@@ -761,9 +771,11 @@ export class RuntimeBridge {
       });
     }
     this.#busy = true;
+    const submitToken = this.#invalidateSubmit();
     this.#activeSubmitLine = line;
     this.#runStatusRecorded = false;
     this.#runtime.submit(line, (event) => {
+      if (!this.#isSubmitActive(submitToken)) return;
       this.#recordUiEvent(event);
       this.#broadcast(event);
       if (['spec:pending_approval', 'reflect:pending_approval'].includes(event?.type)) {
@@ -771,6 +783,7 @@ export class RuntimeBridge {
         this.#broadcastRuntimeState();
       }
     }, options).then(async (result) => {
+      if (!this.#isSubmitActive(submitToken)) return;
       if (this.#uiActiveMsgId) {
         this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
           ...message,
@@ -789,6 +802,7 @@ export class RuntimeBridge {
       if (suppressDone) return;
       this.#broadcast({ type: 'submit:done', result: { type: result.type, aborted: result.aborted, text: result.text } });
     }).catch(async (err) => {
+      if (!this.#isSubmitActive(submitToken)) return;
       if (isAbortLikeError(err)) {
         if (!this.#runStatusRecorded) {
           await this.#recordRunStatus('Aborted: Request aborted.', { status: 'aborted', retryPrompt: line });
@@ -803,6 +817,7 @@ export class RuntimeBridge {
       await this.#recordRunStatus(text, { status: 'error', retryPrompt: line });
       this.#broadcast({ type: 'submit:done', result: { type: 'error', text: err.message, retryPrompt: line } });
     }).finally(() => {
+      if (!this.#isSubmitActive(submitToken)) return;
       this.#busy = false;
       this.#activeSubmitLine = '';
       this.#broadcastRuntimeState();
@@ -813,9 +828,12 @@ export class RuntimeBridge {
   handleCodeWikiGenerate(line) {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
     this.#busy = true;
+    const submitToken = this.#invalidateSubmit();
+    const requestRuntime = this.#runtime;
     this.#codeWikiGenerating = true;
     this.#broadcastRuntimeState();
     const emitProgress = (event) => {
+      if (timedOut || !this.#isSubmitActive(submitToken)) return;
       try {
         const progress = toCodeWikiGenerateProgress(event);
         if (progress) this.#broadcast(progress);
@@ -823,17 +841,21 @@ export class RuntimeBridge {
     };
     // Keep this above the model gateway timeout used by the runtime. Large CodeWiki
     // generations can legitimately exceed ten minutes.
+    let timedOut = false;
     const safetyTimer = setTimeout(() => {
-      if (this.#busy) {
-        this.#busy = false;
-        this.#codeWikiGenerating = false;
-        this.#broadcast({ type: 'codewiki:generate_error', message: 'CodeWiki generation timed out' });
-        this.#broadcastRuntimeState();
-      }
+      if (!this.#busy || !this.#isSubmitActive(submitToken)) return;
+      timedOut = true;
+      this.#invalidateSubmit();
+      try { requestRuntime.abort?.(); } catch {}
+      this.#busy = false;
+      this.#codeWikiGenerating = false;
+      this.#broadcast({ type: 'codewiki:generate_error', message: 'CodeWiki generation timed out' });
+      this.#broadcastRuntimeState();
     }, CODEWIKI_GENERATE_TIMEOUT_MS);
     const clearSafetyTimer = () => clearTimeout(safetyTimer);
-    this.#runtime.submit(line, emitProgress, { codeWikiGenerate: true }).then((result) => {
+    requestRuntime.submit(line, emitProgress, { codeWikiGenerate: true }).then((result) => {
       clearSafetyTimer();
+      if (timedOut || !this.#isSubmitActive(submitToken)) return;
       if (result?.aborted) {
         this.#broadcast({
           type: 'codewiki:generate_error',
@@ -851,12 +873,14 @@ export class RuntimeBridge {
       });
     }).catch((err) => {
       clearSafetyTimer();
+      if (timedOut || !this.#isSubmitActive(submitToken)) return;
       this.#broadcast({
         type: 'codewiki:generate_error',
         message: err?.message || 'CodeWiki generation failed'
       });
     }).finally(() => {
       clearSafetyTimer();
+      if (timedOut || !this.#isSubmitActive(submitToken)) return;
       this.#busy = false;
       this.#codeWikiGenerating = false;
       this.#broadcastRuntimeState();
@@ -867,11 +891,14 @@ export class RuntimeBridge {
   async handleCodeWikiAsk(line, onEvent = null) {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
     this.#busy = true;
+    const submitToken = this.#invalidateSubmit();
     const emit = (event) => {
+      if (!this.#isSubmitActive(submitToken)) return;
       if (typeof onEvent === 'function' && event?.type) onEvent(event);
     };
     try {
       const result = await this.#runtime.submit(line, emit, { readOnlyCodeWiki: true });
+      if (!this.#isSubmitActive(submitToken)) return { error: true, stale: true, message: 'Request superseded' };
       const payload = {
         ok: true,
         type: result?.type || 'assistant',
@@ -881,11 +908,12 @@ export class RuntimeBridge {
       emit({ type: 'codewiki:done', result: payload });
       return payload;
     } catch (err) {
+      if (!this.#isSubmitActive(submitToken)) return { error: true, stale: true, message: 'Request superseded' };
       const payload = { error: true, message: err?.message || 'Request failed' };
       emit({ type: 'codewiki:error', message: payload.message });
       return payload;
     } finally {
-      this.#busy = false;
+      if (this.#isSubmitActive(submitToken)) this.#busy = false;
     }
   }
 
@@ -895,23 +923,28 @@ export class RuntimeBridge {
 
   async handleAbort() {
     const retryPrompt = this.#activeSubmitLine;
+    const wasBusy = this.#busy;
+    if (wasBusy) this.#invalidateSubmit();
+    const abortToken = this.#submitToken;
     const aborted = this.#runtime.abort();
-    if (this.#busy && !aborted) {
+    if (wasBusy && !aborted) {
       if (!this.#runStatusRecorded) {
         const text = 'Aborted: Request released.';
         await this.#recordRunStatus(text, { status: 'aborted', retryPrompt });
         this.#broadcast({ type: 'submit:done', result: { type: 'aborted', aborted: true, text: 'Request released.' } });
       }
       this.#busy = false;
+      this.#codeWikiGenerating = false;
+      this.#activeSubmitLine = '';
       this.#broadcastRuntimeState();
-    } else if (this.#busy && aborted) {
+    } else if (wasBusy && aborted) {
       if (!this.#runStatusRecorded) {
         const text = 'Aborted: Request aborted.';
         await this.#recordRunStatus(text, { status: 'aborted', retryPrompt });
         this.#broadcast({ type: 'submit:done', result: { type: 'aborted', aborted: true, text: 'Request aborted.' } });
       }
       setTimeout(async () => {
-        if (!this.#busy) return;
+        if (!this.#busy || !this.#isSubmitActive(abortToken)) return;
         this.#busy = false;
         this.#broadcastRuntimeState();
       }, 5000);
@@ -1089,6 +1122,10 @@ export class RuntimeBridge {
     if (this.#busy) {
       throw new Error('Runtime is busy');
     }
+    this.#invalidateSubmit();
+    this.#codeWikiGenerating = false;
+    this.#activeSubmitLine = '';
+    this.#runStatusRecorded = false;
     // Dispose old runtime
     try { await this.#runtime.dispose?.(); } catch {}
     // Swap

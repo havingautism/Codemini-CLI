@@ -2820,6 +2820,9 @@ export function AppProvider({ children }) {
                   ),
                 };
               }
+              const rs = prev.runtimeState || {};
+              const isGeneral = !!(prev.isGeneral || rs.isGeneral);
+              const projectDir = isGeneral ? null : rs.cwd || null;
               return {
                 ...prev,
                 sessions: [
@@ -2827,6 +2830,8 @@ export function AppProvider({ children }) {
                     id: event.sessionId,
                     title: event.title,
                     messageCount: 1,
+                    isGeneral,
+                    ...(projectDir ? { projectDir } : {}),
                   },
                   ...prev.sessions,
                 ],

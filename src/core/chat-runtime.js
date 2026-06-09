@@ -686,6 +686,7 @@ function describeConfigKey(key, mode = 'set', language = 'zh') {
 }
 
 const SUB_AGENT_ROLES = ['planner', 'explorer', 'architect', 'advisor', 'coder', 'refactorer', 'reviewer', 'tester', 'debugger', 'writer', 'summarizer', 'codewiki'];
+const EXECUTOR_AGENT_ROLES = SUB_AGENT_ROLES.filter((role) => !['planner', 'codewiki'].includes(role));
 const CODEWIKI_ROLE_TOOLS = ['read', 'search_code', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'add_code_comment', 'update_code_comment'];
 export const CODEWIKI_GENERATE_TOOLS = ['read', 'search_code', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'skill', 'edit', 'create'];
 export const EXECUTION_MODE_TOOL_POLICY = {
@@ -1631,7 +1632,7 @@ function buildAutoPlanPlannerGuidance() {
     '- Before returning the plan, self-review it for requirement coverage, placeholders, contradictions, and inconsistent API/type names.',
     '- If the plan has critical gaps or unclear requirements, create an explorer/advisor step to resolve them before implementation.',
     '- If target_confidence is known, do not add explorer unless code context is genuinely missing.',
-    '- If task_size is trivial or small, prefer 2-3 steps total including summarizer.',
+    '- If task_size is trivial or small and target_confidence is known, prefer a single coder step plus summarizer, or direct implementation without create_plan when possible.',
     '- Add reviewer only when there is meaningful regression or edge-case risk.',
     '- Add tester only when there is a concrete command or user-visible behavior to verify.',
     '- Never add roles just to fill a template.',
@@ -2239,6 +2240,7 @@ function buildMediumTaskPromptBlock() {
     'Execution guidance:',
     '- Give a brief execution outline before coding.',
     '- Keep the outline concise and focused on touched files/behaviors.',
+    '- For localized coding tasks, act as a direct coder fast path: inspect the target, edit, self-review the diff, and finish without create_plan.',
     '- Then implement directly instead of entering pending plan approval.',
     '- Verify the changed behavior before finishing.',
     '- If major ambiguity appears mid-task, say so clearly and ask for a plan instead of guessing.'
@@ -2364,7 +2366,7 @@ function normalizeStructuredPlanSteps(steps = []) {
       verification: String(step?.verification || step?.verify || '').trim(),
       handoff: String(step?.handoff || step?.handoff_artifact || '').trim()
     }))
-    .filter((step) => step.title && step.task && SUB_AGENT_ROLES.includes(step.role));
+    .filter((step) => step.title && step.task && EXECUTOR_AGENT_ROLES.includes(step.role));
 }
 
 function buildStepContractTask(step) {
@@ -2382,12 +2384,21 @@ function withStepContractTasks(steps = []) {
   return (Array.isArray(steps) ? steps : []).map((step) => ({
     title: step.title,
     role: step.role,
-    task: buildStepContractTask(step),
+    task: step.task,
     ...(Array.isArray(step.target_files) && step.target_files.length > 0 ? { target_files: step.target_files } : {}),
     ...(step.success_criteria ? { success_criteria: step.success_criteria } : {}),
     ...(step.verification ? { verification: step.verification } : {}),
     ...(step.handoff ? { handoff: step.handoff } : {})
   }));
+}
+
+function renderStepContractBlock(step = {}) {
+  const lines = ['Step Contract:'];
+  if (Array.isArray(step.target_files) && step.target_files.length > 0) lines.push(`- Targets: ${step.target_files.join(', ')}`);
+  if (step.success_criteria) lines.push(`- Success criteria: ${step.success_criteria}`);
+  if (step.verification) lines.push(`- Verification intent: ${step.verification}`);
+  if (step.handoff) lines.push(`- Handoff artifact: ${step.handoff}`);
+  return lines.length > 1 ? lines.join('\n') : '';
 }
 
 export function normalizeAutoPlan(parsed, goal) {
@@ -3533,7 +3544,7 @@ async function buildPlanFromSpecWithModel({
   const prompt = [
     buildAutoPlanPlannerGuidance(),
     'Convert the provided engineering spec into an implementation plan.',
-    `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|')}","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
+    `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${EXECUTOR_AGENT_ROLES.join('|')}","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
     'Make the plan concrete and ordered for a coding agent.',
     'Before defining tasks, map the files/modules likely to be touched and what each is responsible for.',
     'Each task should name exact files where known, expected behavior, and verification commands or evidence.',
@@ -5116,6 +5127,66 @@ function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }
   };
 }
 
+
+function normalizeStepDiffChange(change = {}) {
+  const pathText = String(change?.path || '').trim();
+  if (!pathText) return null;
+  return {
+    ...change,
+    path: pathText,
+    action: String(change.action || 'edit').trim() || 'edit',
+    changedLine: Number(change.changedLine ?? change.changed_line ?? 0),
+    linesAdded: Number(change.linesAdded ?? change.lines_added ?? 0),
+    linesRemoved: Number(change.linesRemoved ?? change.lines_removed ?? 0),
+    diffPreview: String(change.diffPreview ?? change.diff_preview ?? '')
+  };
+}
+
+function summarizeStepDiffEvidence(messages = []) {
+  const changes = [];
+  const seen = new Set();
+  for (const msg of Array.isArray(messages) ? messages : []) {
+    const items = [msg?.tool_file_change, ...(Array.isArray(msg?.tool_file_changes) ? msg.tool_file_changes : [])].filter(Boolean);
+    for (const item of items) {
+      const change = normalizeStepDiffChange(item);
+      if (!change) continue;
+      const key = `${change.path}:${change.action}:${change.changedLine}:${change.linesAdded}:${change.linesRemoved}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      changes.push(change);
+    }
+  }
+  if (changes.length === 0) return '';
+  const lines = ['## Diff Self-Review', 'Changed files from tool results:'];
+  for (const change of changes.slice(0, 8)) {
+    const added = Number(change.linesAdded || 0);
+    const removed = Number(change.linesRemoved || 0);
+    const risky = removed > 40 || added > 120 || change.action === 'delete';
+    lines.push(`- ${change.action || 'edit'} ${change.path}:${change.changedLine || 1} (+${added}/-${removed})${risky ? ' [review broad change]' : ''}`);
+    const preview = String(change.diffPreview || '').trim();
+    if (preview) lines.push(`  ${preview.split('\n').slice(0, 3).join('\n  ')}`);
+  }
+  lines.push('Self-check: confirm these changes are intentional, scoped to the step contract, and handed to reviewer/tester when needed.');
+  return lines.join('\n');
+}
+
+function classifyStepFailureType(role, text = '', output = {}) {
+  const body = String(text || '');
+  if (output.blockedCount > 0 || /declined|denied|User declined|requires approval|approval/i.test(body)) return 'approval_declined';
+  if (/old_text not found|old_hash mismatch|not unique|anchor not found|anchor not unique|edit requires/i.test(body)) return 'edit_mismatch';
+  if (/command not found|missing dependenc|ENOENT|Cannot find module|No such file|environment|not installed/i.test(body)) return 'env_missing';
+  if (role === 'tester') return 'verification_failed';
+  if (/\b(?:verification|verify|test(?:s|ing)?)\b[^\n]{0,80}\b(?:failed|failure|error|did not pass|not passing)\b/i.test(body)) return 'verification_failed';
+  if (/\b(?:failed|failure|error|did not pass|not passing)\b[^\n]{0,80}\b(?:verification|verify|test(?:s|ing)?)\b/i.test(body)) return 'verification_failed';
+  return 'unknown';
+}
+
+function shouldRetryStepFailure(failureType, role) {
+  if (['approval_declined', 'env_missing', 'verification_failed'].includes(failureType)) return false;
+  if (failureType === 'edit_mismatch') return ['coder', 'refactorer', 'writer'].includes(role);
+  return role !== 'summarizer';
+}
+
 function formatPlanStepOutputForDisplay(output, maxChars = 6000) {
   const text = String(output || '').trim();
   if (!text) return '';
@@ -5204,7 +5275,7 @@ async function executePlanWithSubAgents({
     const stepGuidance = buildPipelineStepGuidance({ role: step.role, stepIndex: i, totalSteps: steps.length, isFirst: i === 0, isLast: i === steps.length - 1, priorSteps });
     let output = await runSubAgentTask({
       role: step.role,
-      task: step.task,
+      task: [renderStepContractBlock(step), step.task].filter(Boolean).join('\n\n'),
       goal,
       priorSteps,
       parentSession,
@@ -5222,12 +5293,22 @@ async function executePlanWithSubAgents({
       projectIsGit
     });
 
+    if (['coder', 'refactorer', 'writer'].includes(step.role)) {
+      const diffReview = summarizeStepDiffEvidence(output.messages || []);
+      if (diffReview && !String(output.text || '').includes('## Diff Self-Review')) {
+        output.text = `${String(output.text || '').trim()}
+
+${diffReview}`.trim();
+      }
+    }
+
     const stepOutputOptions = { artifactPaths: output.artifactPaths || [] };
     let stepFailed = stepOutputHasFailureSignals(step.role, output.text || '', stepOutputOptions);
     let failureReason = stepFailed ? buildExitCriteriaFailureReason(step.role, output.text || '', stepOutputOptions) : '';
+    let failureType = stepFailed ? classifyStepFailureType(step.role, output.text || '', output) : '';
     let retryCount = 0;
 
-    while (stepFailed && retryCount < MAX_STEP_RETRIES && step.role !== 'summarizer' && !signal?.aborted) {
+    while (stepFailed && retryCount < MAX_STEP_RETRIES && shouldRetryStepFailure(failureType, step.role) && !signal?.aborted) {
       retryCount += 1;
       emitPlanEvent({
         type: 'assistant:delta',
@@ -5242,12 +5323,12 @@ async function executePlanWithSubAgents({
         isLast: i === steps.length - 1,
         priorSteps,
         isRetry: true,
-        previousError: failureReason
+        previousError: `${failureType}: ${failureReason}`
       });
 
       output = await runSubAgentTask({
         role: step.role,
-        task: step.task,
+        task: [renderStepContractBlock(step), step.task].filter(Boolean).join('\n\n'),
         goal,
         priorSteps,
         parentSession,
@@ -5265,8 +5346,17 @@ async function executePlanWithSubAgents({
         projectIsGit
       });
 
+      if (['coder', 'refactorer', 'writer'].includes(step.role)) {
+        const diffReview = summarizeStepDiffEvidence(output.messages || []);
+        if (diffReview && !String(output.text || '').includes('## Diff Self-Review')) {
+          output.text = `${String(output.text || '').trim()}
+
+${diffReview}`.trim();
+        }
+      }
       stepOutputOptions.artifactPaths = output.artifactPaths || [];
       stepFailed = stepOutputHasFailureSignals(step.role, output.text || '', stepOutputOptions);
+      failureType = stepFailed ? classifyStepFailureType(step.role, output.text || '', output) : '';
       failureReason = stepFailed ? buildExitCriteriaFailureReason(step.role, output.text || '', stepOutputOptions) : '';
     }
 
@@ -5289,6 +5379,7 @@ async function executePlanWithSubAgents({
       usage: displayUsage,
       retryCount,
       failed: stepFailed,
+      failureType,
       failureReason
     };
     priorSteps.push(stepRecord);
@@ -5321,7 +5412,7 @@ async function executePlanWithSubAgents({
       title: step.title,
       status: stepRecord.failed ? 'failed' : 'done',
       summary: stepRecord.failed
-        ? `[${stepRecord.retryCount > 0 ? `retried ${stepRecord.retryCount}x] ` : ''}${stepRecord.failureReason}`
+        ? `[${stepRecord.retryCount > 0 ? `retried ${stepRecord.retryCount}x] ` : ''}${stepRecord.failureType ? `${stepRecord.failureType}: ` : ''}${stepRecord.failureReason}`
         : trimInline(stepRecord.output, 160),
       ...(stepRecord.retryCount > 0 ? { retryCount: stepRecord.retryCount } : {}),
       ...(displayUsage ? { usage: displayUsage } : {})
@@ -5336,7 +5427,7 @@ async function executePlanWithSubAgents({
       title: step.title,
       status: stepRecord.failed ? 'failed' : 'done',
       summary: stepRecord.failed
-        ? `[${stepRecord.retryCount > 0 ? `retried ${stepRecord.retryCount}x] ` : ''}${stepRecord.failureReason}`
+        ? `[${stepRecord.retryCount > 0 ? `retried ${stepRecord.retryCount}x] ` : ''}${stepRecord.failureType ? `${stepRecord.failureType}: ` : ''}${stepRecord.failureReason}`
         : trimInline(stepRecord.output, 160),
       output: formatPlanStepOutputForDisplay(stepRecord.output),
       ...(stepRecord.retryCount > 0 ? { retryCount: stepRecord.retryCount } : {}),
@@ -5422,7 +5513,7 @@ async function buildAutoPlanArtifact({
     '- Example advisory roles: explorer -> inspect project shape, advisor -> synthesize findings and prioritized recommendations.',
     '- Example implementation roles: explorer -> inspect target area, coder -> implement change, tester -> verify changed behavior.',
     '- Example debugging roles: explorer -> inspect failing area, debugger -> trace root cause, coder -> fix, tester -> verify fix.',
-    `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|')}","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`
+    `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${EXECUTOR_AGENT_ROLES.join('|')}","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`
   ].join('\n');
   let autoPlan = {
     summary: `Auto plan for: ${goal}`,
@@ -5454,8 +5545,8 @@ async function buildAutoPlanArtifact({
           role: 'user',
           content: [
             'Create an execution plan and assign best sub-agent role for each step.',
-            `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|')}","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
-            `The available roles are ${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join(', ')}. Use only the roles the task actually needs.`,
+            `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${EXECUTOR_AGENT_ROLES.join('|')}","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
+            `The available roles are ${EXECUTOR_AGENT_ROLES.join(', ')}. Use only the roles the task actually needs.`,
             'Always include a summarizer as the final step. The summarizer synthesizes prior step results without re-analyzing.',
             'All executor steps (explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer) should write detailed step results, not final summaries.',
             `Task class: ${normalizedTaskClass}`,
@@ -6467,7 +6558,7 @@ async function revisePendingPlanWithModel({
   const prompt = [
     buildAutoPlanPlannerGuidance(),
     'You are revising an existing plan based on explicit user feedback.',
-    'Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"' + SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|') + '","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.',
+    'Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"' + EXECUTOR_AGENT_ROLES.join('|') + '","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.',
     'Keep roles minimal and only include steps that materially help the goal.',
     'Always keep a summarizer as the final step.'
   ].join('\n');
@@ -7921,15 +8012,15 @@ export async function createChatRuntime({
         if (sub === 'list') {
           return {
             type: 'system',
-            text: 'Sub-agent roles: ' + SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join(', ') + '\nUse: /agents run <role> <task>'
+            text: 'Sub-agent roles: ' + EXECUTOR_AGENT_ROLES.join(', ') + '\nUse: /agents run <role> <task>'
           };
         }
         if (sub === 'run') {
           const role = (parsedInput.args[1] || '').trim().toLowerCase();
           const task = parsedInput.args.slice(2).join(' ').trim();
           if (!role || !task) return { type: 'system', text: 'Usage: /agents run <role> <task>' };
-          if (!SUB_AGENT_ROLES.includes(role)) {
-            return { type: 'system', text: 'Unknown role. Allowed: ' + SUB_AGENT_ROLES.join('|') };
+          if (!EXECUTOR_AGENT_ROLES.includes(role)) {
+            return { type: 'system', text: 'Unknown role. Allowed: ' + EXECUTOR_AGENT_ROLES.join('|') };
           }
           const output = await runSubAgentTask({
             role,
