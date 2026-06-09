@@ -1003,6 +1003,14 @@ async function readFile(root, args, config = {}) {
   const normalizedArgs = normalizeReadArgs(args);
   const target = await resolveInWorkspace(root, normalizedArgs?.path, config);
   const stat = await fs.stat(target);
+  if (stat.isDirectory()) {
+    const listing = await builtinList(root, { path: normalizedArgs?.path }, config);
+    return {
+      ...listing,
+      phase: 'directory_listing',
+      note: 'Path is a directory. Returned a listing instead of file contents. Prefer list for directory discovery, or read a specific file path inside it.'
+    };
+  }
   const text = await fs.readFile(target, 'utf8');
   const lines = splitLines(text);
   const totalLines = lines.length;
@@ -4060,6 +4068,14 @@ export function getBuiltinTools({ workspaceRoot = process.cwd(), config, onSyste
           contextLines.push(`Children: ${result.child_summaries.join(' | ')}`);
         }
         return `${header}\n${contextLines.length > 0 ? `${contextLines.join('\n')}\n` : ''}${result.content}`;
+      }
+      if (result.phase === 'directory_listing') {
+        if (!Array.isArray(result.items)) return JSON.stringify(result);
+        const header = `[Directory: ${result.path || '?'}] (read received a directory path; listing contents)`;
+        const dirs = result.items.filter((item) => item.type === 'dir').map((item) => `${item.name}/`);
+        const files = result.items.filter((item) => item.type === 'file').map((item) => item.name);
+        const note = result.note ? `\n${result.note}` : '';
+        return `${header}${note}\n${dirs.join('\n')}${dirs.length && files.length ? '\n' : ''}${files.join('\n')}`;
       }
       // Phase 1 metadata: small, return as-is
       if (result.phase === 'metadata') {
