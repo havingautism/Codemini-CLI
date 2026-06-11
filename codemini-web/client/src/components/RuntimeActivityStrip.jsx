@@ -35,7 +35,8 @@ export function RuntimeActivityStrip({ activities = [] }) {
           <div
             key={activity.id}
             className={cn(
-              "inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] leading-none shadow-sm",
+              "inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] leading-none",
+              "border shadow-sm",
               style.className,
             )}
           >

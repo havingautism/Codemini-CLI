@@ -33,6 +33,7 @@ import {
   PopoverTrigger,
   PopoverContent,
 } from "@/components/ui/popover";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 
 const IMPLICIT_SKILLS = new Set(["superpowers-lite"]);
 
@@ -165,42 +166,36 @@ function ModeSelector({ current, disabled = false }) {
           <CaretDown size={11} />
         </button>
       </PopoverTrigger>
-      <PopoverContent
-        side="top"
-        align="start"
-        sideOffset={6}
-        className="w-88 p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-[var(--shadow-default)]"
-      >
-        <div className="text-[11px] text-(--text-muted) px-2 py-1.5 font-medium">
+      <PopoverContent side="top" align="start" sideOffset={6} className="w-88 p-2">
+        <div className="px-0.5 pb-1.5 text-[11px] font-medium text-muted-foreground">
           {t("executionMode")}
         </div>
-        <div className="flex flex-col gap-0.5">
+        <ToggleGroup
+          type="single"
+          value={current}
+          onValueChange={handleSelect}
+          disabled={disabled || switching}
+          className="flex w-full flex-col items-stretch gap-0.5"
+        >
           {MODE_OPTIONS.map((opt) => {
             const Icon = opt.icon;
             return (
-              <button
+              <ToggleGroupItem
                 key={opt.value}
-                disabled={disabled || switching}
-                className={cn(
-                  "w-full border-0 rounded-md px-2 py-1.5 text-left text-[12px] cursor-pointer flex items-center gap-2",
-                  (disabled || switching) && "opacity-50 cursor-not-allowed",
-                  current === opt.value
-                    ? "bg-(--bg-active) text-(--text-primary) font-medium"
-                    : "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
-                )}
-                onClick={() => handleSelect(opt.value)}
+                value={opt.value}
+                className="h-auto min-h-8 w-full justify-start px-2 py-1.5 text-left"
               >
-                <Icon size={14} className="shrink-0 mt-0.5" />
+                <Icon data-icon="inline-start" />
                 <span className="min-w-0 flex-1">
                   <span className="block">{opt.label}</span>
-                  <span className="block text-(--text-muted) text-[11px] font-normal leading-snug">
+                  <span className="block text-[11px] font-normal leading-snug text-muted-foreground">
                     {opt.desc}
                   </span>
                 </span>
-              </button>
+              </ToggleGroupItem>
             );
           })}
-        </div>
+        </ToggleGroup>
       </PopoverContent>
     </Popover>
   );
@@ -246,42 +241,36 @@ function ApprovalModeSelector({ current, disabled = false }) {
           <CaretDown size={11} />
         </button>
       </PopoverTrigger>
-      <PopoverContent
-        side="top"
-        align="start"
-        sideOffset={6}
-        className="w-76 p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-[var(--shadow-default)]"
-      >
-        <div className="text-[11px] text-(--text-muted) px-2 py-1.5 font-medium">
+      <PopoverContent side="top" align="start" sideOffset={6} className="w-76 p-2">
+        <div className="px-0.5 pb-1.5 text-[11px] font-medium text-muted-foreground">
           {t("approvalMode")}
         </div>
-        <div className="flex flex-col gap-0.5">
+        <ToggleGroup
+          type="single"
+          value={current}
+          onValueChange={handleSelect}
+          disabled={disabled || switching}
+          className="flex w-full flex-col items-stretch gap-0.5"
+        >
           {MODE_OPTIONS.map((opt) => {
             const Icon = opt.icon;
             return (
-              <button
+              <ToggleGroupItem
                 key={opt.value}
-                disabled={disabled || switching}
-                className={cn(
-                  "w-full border-0 rounded-md px-2 py-1.5 text-left text-[12px] cursor-pointer flex items-center gap-2",
-                  (disabled || switching) && "opacity-50 cursor-not-allowed",
-                  current === opt.value
-                    ? "bg-(--bg-active) text-(--text-primary) font-medium"
-                    : "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
-                )}
-                onClick={() => handleSelect(opt.value)}
+                value={opt.value}
+                className="h-auto min-h-8 w-full justify-start px-2 py-1.5 text-left"
               >
-                <Icon size={14} className="shrink-0 mt-0.5" />
+                <Icon data-icon="inline-start" />
                 <span className="min-w-0 flex-1">
                   <span className="block">{opt.label}</span>
-                  <span className="block text-(--text-muted) text-[11px] font-normal leading-snug">
+                  <span className="block text-[11px] font-normal leading-snug text-muted-foreground">
                     {opt.desc}
                   </span>
                 </span>
-              </button>
+              </ToggleGroupItem>
             );
           })}
-        </div>
+        </ToggleGroup>
       </PopoverContent>
     </Popover>
   );
@@ -332,7 +321,7 @@ function SoulQuickSwitch({ disabled = false }) {
         side="top"
         align="start"
         sideOffset={6}
-        className="w-52 p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-[var(--shadow-default)]"
+        className="w-52 p-1"
       >
         <div className="text-[11px] text-(--text-muted) px-2 py-1.5 font-medium">
           {t("switchSoul")}
@@ -415,7 +404,7 @@ function SpecQuickSelect({ visible, disabled = false, onSelect }) {
         side="top"
         align="start"
         sideOffset={6}
-        className="w-[420px] max-w-[calc(100vw-32px)] p-1 rounded-lg bg-(--bg-primary) border border-(--border-default) shadow-[var(--shadow-default)]"
+        className="w-[420px] max-w-[calc(100vw-32px)] p-1"
       >
         <div className="flex items-center justify-between gap-2 px-2 py-1.5">
           <span className="text-[11px] text-(--text-muted) font-medium">

@@ -13,6 +13,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import {
+  Field,
+  FieldContent,
+  FieldGroup,
+  FieldTitle,
+} from "@/components/ui/field";
+import { Empty, EmptyDescription } from "@/components/ui/empty";
+import { Switch } from "@/components/ui/switch";
+import {
   Dialog,
   DialogContent,
   DialogHeader,
@@ -24,32 +32,6 @@ import * as api from "@/hooks/use-api";
 import { t } from "../../i18n/index.js";
 
 const FILTERS = ["all", "builtin", "custom"];
-
-function SwitchControl({ checked, onClick, title, disabled = false }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      aria-pressed={checked}
-      disabled={disabled}
-      className={cn(
-        "relative h-5 w-9 rounded-full border shadow-inner transition-colors disabled:cursor-not-allowed disabled:opacity-50",
-        checked
-          ? "border-(--text-primary) bg-(--text-primary)"
-          : "border-(--border-strong) bg-(--bg-hover)",
-      )}
-    >
-      <span
-        className={cn(
-          "absolute left-0.5 top-0.5 size-3.5 rounded-full transition-transform",
-          checked ? "bg-(--bg-primary)" : "bg-(--text-muted)",
-          checked ? "translate-x-4" : "translate-x-0",
-        )}
-      />
-    </button>
-  );
-}
 
 function scopeLabel(scope) {
   return scope === "builtin" ? t("builtin") : t("custom");
@@ -85,7 +67,7 @@ function SoulEditor({ soul, onSave, onCancel }) {
   };
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-3">
       <div className="mb-3 flex items-start justify-between gap-3">
         <div>
           <div className="text-[13px] font-medium text-(--text-primary)">
@@ -100,35 +82,36 @@ function SoulEditor({ soul, onSave, onCancel }) {
         </Badge>
       </div>
 
-      <div className="grid gap-3">
-        <div className="grid gap-1.5">
-          <label className="text-[12px] text-(--text-muted)">{t("name")}</label>
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            disabled={!isNew}
-            placeholder="my-soul"
-            className="h-8 text-[13px]"
-          />
-        </div>
-        <div className="grid gap-1.5">
-          <label className="text-[12px] text-(--text-muted)">
-            {t("soulContent")}
-          </label>
-          {loading ? (
-            <div className="rounded-md border border-(--border-default) py-8 text-center text-[12px] text-(--text-muted)">
-              {t("loading")}...
-            </div>
-          ) : (
-            <Textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              className="min-h-[220px] resize-y text-[13px] font-mono leading-5"
-              placeholder={t("soulPlaceholder")}
+      <FieldGroup className="gap-3">
+        <Field className="flex-col items-stretch gap-1.5">
+          <FieldTitle>{t("name")}</FieldTitle>
+          <FieldContent>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              disabled={!isNew}
+              placeholder="my-soul"
             />
-          )}
-        </div>
-      </div>
+          </FieldContent>
+        </Field>
+        <Field className="flex-col items-stretch gap-1.5">
+          <FieldTitle>{t("soulContent")}</FieldTitle>
+          <FieldContent>
+            {loading ? (
+              <Empty className="rounded-md border border-(--border-default) py-8">
+                <EmptyDescription>{t("loading")}...</EmptyDescription>
+              </Empty>
+            ) : (
+              <Textarea
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                className="min-h-[220px] resize-y font-mono leading-5"
+                placeholder={t("soulPlaceholder")}
+              />
+            )}
+          </FieldContent>
+        </Field>
+      </FieldGroup>
 
       <div className="mt-3 flex justify-end gap-2">
         <Button variant="outline" onClick={onCancel} size="sm">
@@ -270,7 +253,7 @@ export function SoulPanel({ disabled = false }) {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-3">
       <div className="rounded-lg border border-(--border-default) p-3">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
@@ -280,7 +263,7 @@ export function SoulPanel({ disabled = false }) {
                 {activeSoul?.name || t("noActiveSoul")}
               </span>
               {activeSoul && (
-                <Badge className="h-4 rounded-md border-0 bg-(--text-primary) px-1.5 py-0 text-[10px] text-(--bg-primary)">
+                <Badge variant="secondary" className="h-4 px-1.5 py-0 text-[10px]">
                   {t("current")}
                 </Badge>
               )}
@@ -340,14 +323,12 @@ export function SoulPanel({ disabled = false }) {
       <Separator className="bg-(--border-default)" />
 
       {souls.length === 0 && !editing && (
-        <div className="rounded-lg border border-dashed border-(--border-default) py-8 text-center">
-          <div className="text-[13px] text-(--text-primary)">
+        <Empty className="rounded-lg py-8">
+          <EmptyDescription className="text-[13px] text-(--text-primary)">
             {t("noSouls")}
-          </div>
-          <div className="mt-1 text-[11px] text-(--text-muted)">
-            {t("noSoulsHint")}
-          </div>
-        </div>
+          </EmptyDescription>
+          <EmptyDescription className="text-[11px]">{t("noSoulsHint")}</EmptyDescription>
+        </Empty>
       )}
 
       {souls.length > 0 && filteredSouls.length === 0 && (
@@ -380,7 +361,7 @@ export function SoulPanel({ disabled = false }) {
                     {scopeLabel(soul.scope)}
                   </Badge>
                   {soul.active && (
-                    <Badge className="h-4 rounded-md border-0 bg-(--text-primary) px-1.5 py-0 text-[10px] text-(--bg-primary)">
+                    <Badge variant="secondary" className="h-4 px-1.5 py-0 text-[10px]">
                       {t("current")}
                     </Badge>
                   )}
@@ -398,13 +379,13 @@ export function SoulPanel({ disabled = false }) {
                 >
                   <Eye size={13} />
                 </Button>
-                <SwitchControl
+                <Switch
                   checked={!!soul.active}
-                  onClick={() => {
-                    if (!disabled && !soul.active) handleActivate(soul.name);
+                  onCheckedChange={(next) => {
+                    if (next && !disabled && !soul.active) handleActivate(soul.name);
                   }}
-                  disabled={disabled}
-                  title={soul.active ? t("current") : t("activate")}
+                  disabled={disabled || soul.active}
+                  aria-label={soul.active ? t("current") : t("activate")}
                 />
                 {soul.scope !== "builtin" && (
                   <>

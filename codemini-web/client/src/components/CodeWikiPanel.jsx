@@ -1128,7 +1128,7 @@ export function CodeWikiPanel({
                       </PopoverTrigger>
                       <PopoverContent
                         align="end"
-                        className="w-36 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+                        className="w-36 p-1"
                         onClick={(event) => event.stopPropagation()}
                       >
                         <button

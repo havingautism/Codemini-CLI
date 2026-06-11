@@ -1,6 +1,12 @@
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Field,
+  FieldContent,
+  FieldGroup,
+  FieldTitle,
+} from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { t } from "../../i18n/index.js";
@@ -40,17 +46,14 @@ export function ReflectApprovalCard({
   };
 
   return (
-    <div className="mx-auto max-w-3xl space-y-3 rounded-lg border border-(--border-default) dark:bg-(--bg-primary) bg-(--bg-secondary) p-3 text-(--text-primary) shadow-none">
+    <div className="mx-auto max-w-3xl flex flex-col gap-3 rounded-lg border border-(--border-default) bg-(--bg-secondary) p-3 text-(--text-primary)">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2 min-w-0">
             <span className="text-[13px] font-medium text-(--text-primary)">
               {t("reflectReviewTitle")}
             </span>
-            <Badge
-              variant="outline"
-              className="h-5 rounded-md border-(--border-default) bg-(--bg-secondary) px-1.5 py-0 text-[10px] font-medium text-(--text-secondary) shadow-none"
-            >
+            <Badge variant="secondary">
               {t("reflectReviewStatus")}
             </Badge>
           </div>
@@ -65,27 +68,36 @@ export function ReflectApprovalCard({
         </div>
       </div>
 
-      <div className="space-y-1">
+      <FieldGroup className="gap-2">
         {editMode ? (
-          <div className="space-y-2">
-            <Input
-              value={localDraft.name}
-              onChange={(e) =>
-                setLocalDraft((prev) => ({ ...prev, name: e.target.value }))
-              }
-              className="h-8 text-[13px]"
-            />
-            <Textarea
-              value={localDraft.description}
-              onChange={(e) =>
-                setLocalDraft((prev) => ({
-                  ...prev,
-                  description: e.target.value,
-                }))
-              }
-              className="min-h-[56px] text-[13px]"
-            />
-          </div>
+          <>
+            <Field className="flex-col items-stretch gap-1.5">
+              <FieldTitle>{t("name")}</FieldTitle>
+              <FieldContent>
+                <Input
+                  value={localDraft.name}
+                  onChange={(e) =>
+                    setLocalDraft((prev) => ({ ...prev, name: e.target.value }))
+                  }
+                />
+              </FieldContent>
+            </Field>
+            <Field className="flex-col items-stretch gap-1.5">
+              <FieldTitle>{t("description")}</FieldTitle>
+              <FieldContent>
+                <Textarea
+                  value={localDraft.description}
+                  onChange={(e) =>
+                    setLocalDraft((prev) => ({
+                      ...prev,
+                      description: e.target.value,
+                    }))
+                  }
+                  className="min-h-[56px]"
+                />
+              </FieldContent>
+            </Field>
+          </>
         ) : (
           <>
             <div className="text-[13px] font-medium text-(--text-primary) break-words">
@@ -103,7 +115,7 @@ export function ReflectApprovalCard({
             {draft.targetPath}
           </p>
         )}
-      </div>
+      </FieldGroup>
 
       {editMode ? (
         <Textarea
@@ -115,7 +127,7 @@ export function ReflectApprovalCard({
         />
       ) : (
         draft.content && (
-          <pre className="max-h-56 overflow-auto rounded-md border border-(--border-default) dark:bg-(--bg-secondary) bg-(--bg-primary) p-3 font-mono text-[12px] leading-5 text-(--text-secondary) whitespace-pre-wrap">
+          <pre className="max-h-56 overflow-auto rounded-md border border-(--border-default) bg-(--bg-secondary) p-3 font-mono text-[12px] leading-5 text-(--text-secondary) whitespace-pre-wrap">
             {draft.content}
           </pre>
         )

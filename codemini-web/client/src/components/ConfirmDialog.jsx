@@ -7,6 +7,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { t } from "../../i18n/index.js";
 
 export function ConfirmDialog({
@@ -44,7 +45,14 @@ export function ConfirmDialog({
             disabled={loading}
             onClick={onConfirm}
           >
-            {loading ? (loadingLabel || t('deleting')) : (confirmLabel || t('delete'))}
+            {loading ? (
+              <>
+                <Spinner data-icon="inline-start" />
+                {loadingLabel || t("deleting")}
+              </>
+            ) : (
+              confirmLabel || t("delete")
+            )}
           </Button>
         </DialogFooter>
       </DialogContent>

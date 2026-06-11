@@ -6,6 +6,7 @@ import {
   Play,
   Star,
 } from "@phosphor-icons/react";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { fetchEmbed } from "@/hooks/use-api.js";
 import {
@@ -44,12 +45,18 @@ function EmbedSkeleton({ variant = "default", url = "" }) {
   return (
     <div
       className={cn(
-        "overflow-hidden rounded-xl border border-(--border-default) bg-(--bg-secondary) animate-pulse",
+        "overflow-hidden rounded-xl border border-(--border-default)",
         compact ? "h-[100px]" : "my-3 min-h-[120px]",
       )}
     >
-      <div className={cn(compact ? "h-8 shrink-0" : "h-8")} style={{ background: brand.headerBg }} />
-      <div className={cn("px-4", compact ? "min-h-[64px] flex-1 py-2" : "h-16 py-3")} />
+      <Skeleton
+        className={cn("h-8 w-full shrink-0 rounded-none")}
+        style={{ background: brand.headerBg }}
+      />
+      <div className={cn("flex flex-col gap-2 px-4 py-3", compact ? "min-h-[64px] flex-1" : "")}>
+        <Skeleton className="h-3 w-2/3" />
+        <Skeleton className="h-3 w-1/2" />
+      </div>
     </div>
   );
 }
@@ -482,7 +489,7 @@ export function EmbedCard({ url, embed: presetEmbed, variant = "default" }) {
 export function EmbedCardList({ items = [], compact = true }) {
   if (!items.length) return null;
   return (
-    <div className="my-2 space-y-2">
+    <div className="my-2 flex flex-col gap-2">
       {items.map((item, index) => (
         <EmbedCard
           key={`${item.url || "item"}-${index}`}

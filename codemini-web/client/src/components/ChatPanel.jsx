@@ -234,13 +234,13 @@ export function ChatPanel({
                   {gitInfo.dirty ? (
                     <>
                       {gitInfo.staged > 0 && (
-                        <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
+                        <span className="inline-flex items-center gap-1 text-(--accent-green)">
                           <span className="w-1.5 h-1.5 rounded-full bg-current" />
                           {t("gitStaged")} {gitInfo.staged}
                         </span>
                       )}
                       {gitInfo.modified > 0 && (
-                        <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+                        <span className="inline-flex items-center gap-1 text-(--accent-orange)">
                           <span className="w-1.5 h-1.5 rounded-full bg-current" />
                           {t("gitModified")} {gitInfo.modified}
                         </span>
@@ -292,7 +292,7 @@ export function ChatPanel({
       <div className="absolute right-7 bottom-0 flex flex-col gap-2 z-20">
         {showScrollToBottom && (
           <button
-            className="w-9 h-9 rounded-full bg-(--bg-primary) dark:bg-(--bg-secondary) border border-(--border-default) cursor-pointer flex items-center justify-center text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) animate-in fade-in-0 zoom-in-95"
+            className="size-9 cursor-pointer flex items-center justify-center rounded-full border border-(--border-default) bg-(--bg-primary) text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) animate-in fade-in-0 zoom-in-95"
             // style={{ boxShadow: "var(--shadow-default)" }}
             onClick={() => {
               setAutoScroll(true);

@@ -45,7 +45,7 @@ export function AboutDialog({ open, onOpenChange, version }) {
           <DialogTitle className="sr-only">{t("aboutTitle")}</DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-5">
+        <div className="flex flex-col gap-5">
           <div className="flex items-start gap-4">
             <img
               src="/logos/codemini_logo.png"

@@ -4,7 +4,7 @@ export function TodoList({ todos }) {
   if (!todos?.length) return null;
 
   return (
-    <div className="space-y-1 mt-2">
+    <div className="mt-2 flex flex-col gap-1">
       {todos.map((todo, i) => {
         const statusIcon = todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '●' : '';
         return (

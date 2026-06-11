@@ -1089,23 +1089,29 @@ export async function runAgentLoop({
       };
     }
 
-    // Separate parallel-safe and serial calls, preserving order
-    const parallelSafeCalls = callsWithMeta.filter((c) => c.isParallelSafe && approvalResults.get(c.call.id)?.approved);
-    const serialCalls = callsWithMeta.filter((c) => !c.isParallelSafe || !approvalResults.get(c.call.id)?.approved);
-
-    // Execute parallel-safe calls in parallel
-    if (parallelSafeCalls.length > 0) {
-      const parallelSafeResults = await Promise.all(parallelSafeCalls.map((c) => executeOne(c)));
-      for (const r of parallelSafeResults) {
+    // Execute consecutive read-only batches in parallel, but never move them
+    // across state-changing or approval-blocked calls.
+    let parallelBatch = [];
+    const flushParallelBatch = async () => {
+      if (parallelBatch.length === 0) return;
+      const results = await Promise.all(parallelBatch.map((c) => executeOne(c)));
+      for (const r of results) {
         resultEntries.set(r.callId, r);
       }
-    }
+      parallelBatch = [];
+    };
 
-    // Execute state-changing or approval-blocked calls serially
-    for (const c of serialCalls) {
+    for (const c of callsWithMeta) {
+      const canRunInCurrentParallelBatch = c.isParallelSafe && approvalResults.get(c.call.id)?.approved;
+      if (canRunInCurrentParallelBatch) {
+        parallelBatch.push(c);
+        continue;
+      }
+      await flushParallelBatch();
       const r = await executeOne(c);
       resultEntries.set(r.callId, r);
     }
+    await flushParallelBatch();
 
     // Write results to messages in original tool call order
     for (const { call, toolName, displayName, args } of callsWithMeta) {

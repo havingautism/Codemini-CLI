@@ -27,10 +27,10 @@ export function SessionPanel({ sessions, sessionsLoading, currentId, onSwitch, o
     <div className="p-6 max-w-3xl mx-auto">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-[15px] font-semibold text-(--text-primary)">{t('sessions')}</h2>
-        <Button size="sm" onClick={onNew} className="text-[13px]">+ {t('newChat')}</Button>
+        <Button size="sm" onClick={onNew}>+ {t('newChat')}</Button>
       </div>
       <ScrollArea className="h-[calc(100vh-160px)]">
-        <div className="space-y-2">
+        <div className="flex flex-col gap-2">
           {sessionsLoading && allSessions.length === 0 && (
             <div className="flex items-center justify-center py-12">
               <Spinner />
@@ -69,7 +69,7 @@ export function SessionPanel({ sessions, sessionsLoading, currentId, onSwitch, o
                     </PopoverTrigger>
                     <PopoverContent
                       align="end"
-                      className="w-36 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+                      className="w-36 p-1"
                       onClick={(event) => event.stopPropagation()}
                     >
                       <button

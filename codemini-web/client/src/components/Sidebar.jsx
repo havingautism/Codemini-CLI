@@ -26,6 +26,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
+import { Empty, EmptyDescription } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { t, setLocale, getLocale } from "../../i18n/index.js";
@@ -74,14 +75,9 @@ function getProjectKey(session) {
 
 function SidebarEmptyPlaceholder({ children, className }) {
   return (
-    <div
-      className={cn(
-        "rounded-md border border-(--border-default) bg-(--bg-primary)/35 px-2.5 py-3 text-center text-[11px] leading-relaxed text-(--text-muted)",
-        className,
-      )}
-    >
-      {children}
-    </div>
+    <Empty className={cn("rounded-md px-2.5 py-3", className)}>
+      <EmptyDescription className="text-[11px]">{children}</EmptyDescription>
+    </Empty>
   );
 }
 
@@ -658,7 +654,7 @@ export function Sidebar({
                     </PopoverTrigger>
                     <PopoverContent
                       align="end"
-                      className="w-44 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+                      className="w-44 p-1"
                       onClick={(event) => event.stopPropagation()}
                     >
                       <button
@@ -723,7 +719,7 @@ export function Sidebar({
                           </PopoverTrigger>
                           <PopoverContent
                             align="end"
-                            className="w-36 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+                            className="w-36 p-1"
                             onClick={(event) => event.stopPropagation()}
                           >
                             <button
@@ -839,7 +835,7 @@ export function Sidebar({
                     </PopoverTrigger>
                     <PopoverContent
                       align="end"
-                      className="w-36 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+                      className="w-36 p-1"
                       onClick={(event) => event.stopPropagation()}
                     >
                       <button
@@ -927,7 +923,7 @@ export function Sidebar({
             <PopoverContent
               align="center"
               side="top"
-              className="w-30 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+              className="w-30 p-1"
             >
               {["zh", "en"].map((locale) => (
                 <button
@@ -964,7 +960,7 @@ export function Sidebar({
             <PopoverContent
               align="center"
               side="top"
-              className="w-44 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+              className="w-44 p-1"
             >
               {THEME_PALETTES.map((palette) => (
                 <button
@@ -1012,7 +1008,7 @@ export function Sidebar({
             <PopoverContent
               align="center"
               side="top"
-              className="w-40 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+              className="w-40 p-1"
             >
               {[
                 { mode: "light", icon: Sun, label: t("lightMode") },

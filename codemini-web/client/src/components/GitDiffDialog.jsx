@@ -11,9 +11,9 @@ import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
 
 const statusColors = {
-  M: "text-amber-600 dark:text-amber-400",
-  A: "text-green-600 dark:text-green-400",
-  D: "text-red-600 dark:text-red-400",
+  M: "text-(--accent-orange)",
+  A: "text-(--accent-green)",
+  D: "text-(--accent-red)",
   "?": "text-(--text-muted)",
 };
 

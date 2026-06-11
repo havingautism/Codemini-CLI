@@ -527,7 +527,7 @@ function ToolGroup({ cards }) {
       {(!shouldUseSummaryHeader || expanded) && (
         <div
           className={cn(
-            "space-y-1",
+            "flex flex-col gap-1",
             shouldUseSummaryHeader &&
               "relative ml-4.5 pl-6 mt-2 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)",
           )}
@@ -573,7 +573,7 @@ function skillActivityLabel(badge) {
 function SkillActivityList({ badges = [] }) {
   if (!badges.length) return null;
   return (
-    <div className={cn("my-2 space-y-1", PROCESS_META_CLASS)}>
+    <div className={cn("my-2 flex flex-col gap-1", PROCESS_META_CLASS)}>
       {badges.map((badge, index) => (
         <div
           key={`${badge.name || "skill"}-${badge.status || "done"}-${index}`}
@@ -693,7 +693,7 @@ function ProcessGroup({ group }) {
         )}
       </button>
       {expanded && (
-        <div className="relative ml-4.5 mt-2 space-y-1 pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
+        <div className="relative ml-4.5 mt-2 flex flex-col gap-1 pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
           {group.groups.map((item, index) => {
             if (item.type === "thinking") {
               return <ThoughtBlock key={`p-th-${index}`} segment={item} />;
@@ -1377,7 +1377,7 @@ function SpecExecutionCard({ details = {} }) {
         {/* <span className="codemini-linear-icon mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md">
           <FileText size={16} weight="regular" />
         </span> */}
-        <div className="min-w-0 flex-1 space-y-1">
+        <div className="min-w-0 flex-1 flex flex-col gap-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <Badge
               variant="outline"
@@ -1770,13 +1770,13 @@ export function MessageBubble({ message, skills = [], onRetry }) {
           </span>
           {ts && <span className="text-[11px] text-(--text-muted)">{ts}</span>}
         </div>
-        <div className="codemini-linear-card max-w-3xl space-y-2.5 rounded-lg p-3">
+        <div className="codemini-linear-card max-w-3xl flex flex-col gap-2.5 rounded-lg p-3">
           {overview.goal && (
             <p className="text-[13px] text-(--text-primary) leading-relaxed font-medium">
               {overview.goal}
             </p>
           )}
-          <div className="space-y-1.5">
+          <div className="flex flex-col gap-1.5">
             {steps.map((step, i) => (
               <div key={i} className="flex items-center gap-2 text-[13px]">
                 <span

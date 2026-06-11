@@ -8,6 +8,7 @@
   useState,
 } from "react";
 import { createRoot } from "react-dom/client";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppProvider, useApp } from "@/context/app-context.jsx";
 import { t } from "../i18n/index.js";
@@ -19,7 +20,7 @@ import { ApprovalDialog } from "@/components/ApprovalDialog.jsx";
 import { ReflectApprovalCard } from "@/components/ReflectApprovalDialog.jsx";
 import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
-import { DotsThree, GitDiff, List, Terminal, X } from "@phosphor-icons/react";
+import { DotsThree, GitDiff, List, Terminal } from "@phosphor-icons/react";
 import "../style.css";
 
 const CodeWikiPanel = lazy(() =>
@@ -234,27 +235,16 @@ function Shell() {
       <div className="hidden md:flex h-full shrink-0 py-2 pl-2 pr-0">
         {sidebar}
       </div>
-      {mobileSidebarOpen && (
-        <div className="fixed inset-0 z-50 md:hidden">
-          <button
-            type="button"
-            className="absolute inset-0 border-0 bg-black/45"
-            aria-label="Close sidebar"
-            onClick={closeMobileSidebar}
-          />
-          <div className="codemini-app-shell absolute inset-y-0 left-0 w-[280px] max-w-[82vw] shadow-[var(--shadow-lg)]">
-            {sidebar}
-          </div>
-          <button
-            type="button"
-            className="absolute right-3 top-3 inline-flex size-8 items-center justify-center rounded-md border border-(--border-default) bg-(--bg-primary) text-(--text-secondary)"
-            aria-label="Close sidebar"
-            onClick={closeMobileSidebar}
-          >
-            <X size={16} />
-          </button>
-        </div>
-      )}
+      <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
+        <SheetContent
+          side="left"
+          className="w-[280px] max-w-[82vw] gap-0 border-r p-0 md:hidden"
+          showCloseButton
+        >
+          <SheetTitle className="sr-only">{t("brand")}</SheetTitle>
+          <div className="codemini-app-shell h-full">{sidebar}</div>
+        </SheetContent>
+      </Sheet>
 
       <div className="flex-1 flex flex-col min-w-0 min-h-0 p-1.5 sm:p-2">
         {state.currentView === "codewiki" ? (
@@ -390,7 +380,7 @@ function Shell() {
               <div className="flex items-center gap-3 pt-1.5 px-1 sm:px-2 min-h-[24px] overflow-hidden">
                 {state.versionInfo?.current && (
                   <span className="inline-flex items-center gap-1 text-[11px] text-(--text-muted) shrink-0">
-                    <span className="inline-flex h-3 w-3.5 items-center justify-center rounded-[3px] bg-black text-white dark:bg-white dark:text-black">
+                    <span className="inline-flex size-3.5 items-center justify-center rounded-[3px] bg-foreground text-background">
                       <Terminal size={12} strokeWidth={2.5} />
                     </span>
                     Codemini CLI@{state.versionInfo.current}

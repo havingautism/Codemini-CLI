@@ -20,10 +20,19 @@ import { Separator } from "@/components/ui/separator";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Field,
+  FieldContent,
+  FieldGroup,
+  FieldTitle,
+} from "@/components/ui/field";
+import { Empty, EmptyDescription } from "@/components/ui/empty";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -37,31 +46,6 @@ import { t } from "../../i18n/index.js";
 
 const FILTERS = ["all", "enabled", "builtin", "custom"];
 const SKILL_MODES = ["always", "agent_requested", "manual"];
-
-function SwitchControl({ checked, onClick, title }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      aria-pressed={checked}
-      className={cn(
-        "relative h-5 w-9 rounded-full border shadow-inner transition-colors",
-        checked
-          ? "border-(--text-primary) bg-(--text-primary)"
-          : "border-(--border-strong) bg-(--bg-hover)",
-      )}
-    >
-      <span
-        className={cn(
-          "absolute left-0.5 top-0.5 size-3.5 rounded-full transition-transform",
-          checked ? "bg-(--bg-primary)" : "bg-(--text-muted)",
-          checked ? "translate-x-4" : "translate-x-0",
-        )}
-      />
-    </button>
-  );
-}
 
 function scopeLabel(scope) {
   if (scope === "builtin") return t("builtin");
@@ -315,53 +299,53 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
           </Badge>
         </div>
 
-        <div className="grid gap-3">
+        <FieldGroup className="gap-3">
           {(isNew || !isBuiltin(skill)) && (
-            <div className="grid gap-1.5">
-              <label className="text-[12px] text-(--text-muted)">
-                {t("skillScope")}
-              </label>
-              <Select value={target} onValueChange={setTarget}>
-                <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px]">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent align="start">
-                  <SelectItem value="global">{t("globalScope")}</SelectItem>
-                  {projectTargets.map((item) => (
-                    <SelectItem
-                      key={item.dir}
-                      value={projectTargetValue(item.dir)}
-                    >
-                      {item.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            <Field className="flex-col items-stretch gap-1.5">
+              <FieldTitle>{t("skillScope")}</FieldTitle>
+              <FieldContent>
+                <Select value={target} onValueChange={setTarget}>
+                  <SelectTrigger className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="start">
+                    <SelectGroup>
+                      <SelectItem value="global">{t("globalScope")}</SelectItem>
+                      {projectTargets.map((item) => (
+                        <SelectItem
+                          key={item.dir}
+                          value={projectTargetValue(item.dir)}
+                        >
+                          {item.label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </FieldContent>
+            </Field>
           )}
-          <div className="grid gap-1.5">
-            <label className="text-[12px] text-(--text-muted)">
-              {t("name")}
-            </label>
-            <Input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              disabled={!isNew}
-              placeholder="my-skill"
-              className="h-8 text-[13px]"
-            />
-          </div>
-          <div className="grid gap-1.5">
-            <label className="text-[12px] text-(--text-muted)">
-              {t("description")}
-            </label>
-            <Input
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder={t("skillDescriptionPlaceholder")}
-              className="h-8 text-[13px]"
-            />
-          </div>
+          <Field className="flex-col items-stretch gap-1.5">
+            <FieldTitle>{t("name")}</FieldTitle>
+            <FieldContent>
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                disabled={!isNew}
+                placeholder="my-skill"
+              />
+            </FieldContent>
+          </Field>
+          <Field className="flex-col items-stretch gap-1.5">
+            <FieldTitle>{t("description")}</FieldTitle>
+            <FieldContent>
+              <Input
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder={t("skillDescriptionPlaceholder")}
+              />
+            </FieldContent>
+          </Field>
 
           <div className="rounded-md border border-(--border-default) bg-(--bg-secondary) p-3">
             <div className="mb-2 flex items-center gap-2 text-[12px] font-medium text-(--text-primary)">
@@ -369,81 +353,81 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
               {t("skillRoutingSettings")}
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
-              <div className="grid gap-1.5">
-                <label className="text-[12px] text-(--text-muted)">
-                  {t("skillMode")}
-                </label>
-                <Select value={mode} onValueChange={setMode}>
-                  <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent align="start">
-                    {SKILL_MODES.map((item) => (
-                      <SelectItem key={item} value={item}>
-                        {t(`skillMode_${item}`)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="grid gap-1.5">
-                <label className="text-[12px] text-(--text-muted)">
-                  {t("skillPriority")}
-                </label>
-                <Input
-                  type="number"
-                  min="0"
-                  max="100"
-                  value={priority}
-                  onChange={(e) => setPriority(e.target.value)}
-                  className="h-8 text-[13px]"
-                />
-              </div>
-              <div className="grid gap-1.5 sm:col-span-2">
-                <label className="text-[12px] text-(--text-muted)">
-                  {t("skillTriggers")}
-                </label>
-                <Input
-                  value={triggers}
-                  onChange={(e) => setTriggers(e.target.value)}
-                  placeholder="after_edit, before_final"
-                  className="h-8 text-[13px]"
-                />
-              </div>
+              <Field className="flex-col items-stretch gap-1.5">
+                <FieldTitle>{t("skillMode")}</FieldTitle>
+                <FieldContent>
+                  <Select value={mode} onValueChange={setMode}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent align="start">
+                      <SelectGroup>
+                        {SKILL_MODES.map((item) => (
+                          <SelectItem key={item} value={item}>
+                            {t(`skillMode_${item}`)}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </FieldContent>
+              </Field>
+              <Field className="flex-col items-stretch gap-1.5">
+                <FieldTitle>{t("skillPriority")}</FieldTitle>
+                <FieldContent>
+                  <Input
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={priority}
+                    onChange={(e) => setPriority(e.target.value)}
+                  />
+                </FieldContent>
+              </Field>
+              <Field className="flex-col items-stretch gap-1.5 sm:col-span-2">
+                <FieldTitle>{t("skillTriggers")}</FieldTitle>
+                <FieldContent>
+                  <Input
+                    value={triggers}
+                    onChange={(e) => setTriggers(e.target.value)}
+                    placeholder="after_edit, before_final"
+                  />
+                </FieldContent>
+              </Field>
               <div className="flex items-center justify-between rounded-md border border-(--border-default) bg-(--bg-primary) px-2 py-1.5 sm:col-span-2">
                 <span className="text-[12px] text-(--text-muted)">
                   {enabled ? t("enabled") : t("disabled")}
                 </span>
-                <SwitchControl
+                <Switch
                   checked={enabled}
-                  onClick={() => setEnabled((value) => !value)}
-                  title={enabled ? t("disable") : t("enable")}
+                  onCheckedChange={setEnabled}
+                  aria-label={enabled ? t("disable") : t("enable")}
                 />
               </div>
             </div>
           </div>
 
-          <div className="grid gap-1.5">
-            <label className="text-[12px] text-(--text-muted)">
-              {t("skillContent")}
-            </label>
-            {loading ? (
-              <div className="rounded-md border border-(--border-default) py-8 text-center text-[12px] text-(--text-muted)">
-                {t("loading")}...
-              </div>
-            ) : (
-              <Textarea
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                disabled={contentReadOnly}
-                className="min-h-[360px] resize-y text-[13px] font-mono leading-5"
-                placeholder={
-                  "---\nname: my-skill\ndescription: ...\n---\n\nSkill instructions..."
-                }
-              />
-            )}
-          </div>
-        </div>
+          <Field className="flex-col items-stretch gap-1.5">
+            <FieldTitle>{t("skillContent")}</FieldTitle>
+            <FieldContent>
+              {loading ? (
+                <Empty className="rounded-md border border-(--border-default) py-8">
+                  <EmptyDescription>{t("loading")}...</EmptyDescription>
+                </Empty>
+              ) : (
+                <Textarea
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  disabled={contentReadOnly}
+                  className="min-h-[360px] resize-y font-mono leading-5"
+                  placeholder={
+                    "---\nname: my-skill\ndescription: ...\n---\n\nSkill instructions..."
+                  }
+                />
+              )}
+            </FieldContent>
+          </Field>
+        </FieldGroup>
       </div>
 
       <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-(--border-default) bg-(--bg-primary) pt-3">
@@ -599,10 +583,10 @@ function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
           >
             <Eye size={13} />
           </Button>
-          <SwitchControl
+          <Switch
             checked={enabled}
-            onClick={() => onToggle(skill, !enabled)}
-            title={enabled ? t("disable") : t("enable")}
+            onCheckedChange={(next) => onToggle(skill, next)}
+            aria-label={enabled ? t("disable") : t("enable")}
           />
           <Button
             variant="ghost"
@@ -937,7 +921,7 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
   }
 
   return (
-    <div className="space-y-3">
+    <div className="flex flex-col gap-3">
       <div className="rounded-lg border border-(--border-default) p-3">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
@@ -977,16 +961,18 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
           value={installTarget || defaultSkillTarget(normalizedProjectTargets)}
           onValueChange={setInstallTarget}
         >
-          <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px] sm:w-[150px]">
+          <SelectTrigger className="w-full sm:w-[150px]">
             <SelectValue />
           </SelectTrigger>
           <SelectContent align="start">
-            <SelectItem value="global">{t("globalScope")}</SelectItem>
-            {normalizedProjectTargets.map((item) => (
-              <SelectItem key={item.dir} value={projectTargetValue(item.dir)}>
-                {item.label}
-              </SelectItem>
-            ))}
+            <SelectGroup>
+              <SelectItem value="global">{t("globalScope")}</SelectItem>
+              {normalizedProjectTargets.map((item) => (
+                <SelectItem key={item.dir} value={projectTargetValue(item.dir)}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectGroup>
           </SelectContent>
         </Select>
         <Button
@@ -994,7 +980,7 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
           disabled={installing || !installSource.trim()}
           size="sm"
         >
-          <Download size={13} />
+          <Download data-icon="inline-start" />
           {installing ? t("installing") : t("installSkill")}
         </Button>
       </div>
@@ -1036,14 +1022,14 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
       <Separator className="bg-(--border-default)" />
 
       {skills.length === 0 && !editing && (
-        <div className="rounded-lg border border-dashed border-(--border-default) py-8 text-center">
-          <div className="text-[13px] text-(--text-primary)">
+        <Empty className="rounded-lg py-8">
+          <EmptyDescription className="text-[13px] text-(--text-primary)">
             {t("noSkills")}
-          </div>
-          <div className="mt-1 text-[11px] text-(--text-muted)">
+          </EmptyDescription>
+          <EmptyDescription className="text-[11px]">
             {t("noSkillsHint")}
-          </div>
-        </div>
+          </EmptyDescription>
+        </Empty>
       )}
 
       {skills.length > 0 && filteredSkills.length === 0 && (

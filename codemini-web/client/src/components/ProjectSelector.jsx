@@ -11,6 +11,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -128,20 +129,22 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
                 browseDir(nextPath);
               }}
             >
-              <SelectTrigger className="w-[4.75rem] shrink-0 h-8 px-2.5 bg-(--bg-input) text-(--text-primary)">
+              <SelectTrigger className="w-[4.75rem] shrink-0 px-2.5">
                 <SelectValue>{formatRootLabel(activeRoot || roots[0])}</SelectValue>
               </SelectTrigger>
               <SelectContent align="start" className="min-w-[4.75rem]">
-                {roots.map((root) => (
-                  <SelectItem
-                    key={root.path}
-                    value={root.path}
-                    textValue={root.path}
-                    className="pr-8"
-                  >
-                    {formatRootLabel(root)}
-                  </SelectItem>
-                ))}
+                <SelectGroup>
+                  {roots.map((root) => (
+                    <SelectItem
+                      key={root.path}
+                      value={root.path}
+                      textValue={root.path}
+                      className="pr-8"
+                    >
+                      {formatRootLabel(root)}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
               </SelectContent>
             </Select>
           )}
@@ -152,7 +155,7 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
             onKeyDown={(e) => e.key === "Enter" && handleOpen()}
             className="flex-1 h-8 text-[13px]"
           />
-          <Button onClick={handleOpen} className="text-[13px] h-8">
+          <Button onClick={handleOpen} size="default">
             {t("select")}
           </Button>
         </div>

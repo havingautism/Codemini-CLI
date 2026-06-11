@@ -70,7 +70,7 @@ export function PlanProgress({ steps, onDismiss }) {
         </div>
       </div>
       <Progress value={pct} className="h-1.5 mb-3" />
-      <div className="space-y-1.5">
+      <div className="flex flex-col gap-1.5">
         {steps.map((step, i) => (
           <div key={i} className="flex items-center gap-2 text-[13px]">
             <span

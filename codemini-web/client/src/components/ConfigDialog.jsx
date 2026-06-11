@@ -11,10 +11,19 @@ import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Field,
+  FieldContent,
+  FieldGroup,
+  FieldLabel,
+} from "@/components/ui/field";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
   TooltipContent,
@@ -37,31 +46,6 @@ function isBooleanOption(key) {
     options.length === 2 &&
     options.includes("true") &&
     options.includes("false")
-  );
-}
-
-function SwitchControl({ checked, onClick, title }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      aria-pressed={checked}
-      className={cn(
-        "relative h-5 w-9 rounded-full border shadow-inner transition-colors",
-        checked
-          ? "border-(--text-primary) bg-(--text-primary)"
-          : "border-(--border-strong) bg-(--bg-hover)",
-      )}
-    >
-      <span
-        className={cn(
-          "absolute left-0.5 top-0.5 size-3.5 rounded-full transition-transform",
-          checked ? "bg-(--bg-primary)" : "bg-(--text-muted)",
-          checked ? "translate-x-4" : "translate-x-0",
-        )}
-      />
-    </button>
   );
 }
 
@@ -310,14 +294,12 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
         <DialogHeader className="shrink-0">
           <DialogTitle>{t("settingsTitle")}</DialogTitle>
         </DialogHeader>
-        <div className="space-y-5 px-3.5 py-1 overflow-y-auto flex-1 min-h-0 scroll-smooth">
+        <div className="flex flex-col gap-5 px-3.5 py-1 overflow-y-auto flex-1 min-h-0 scroll-smooth">
           {status?.setupRequired && (
-            <div className="rounded-md border border-(--border-default) bg-(--bg-secondary) px-3 py-2 text-[13px] text-(--text-primary)">
-              <div className="font-medium">{t("configRequiredTitle")}</div>
-              <div className="mt-1 text-(--text-secondary)">
-                {t("configRequiredDesc")}
-              </div>
-            </div>
+            <Alert>
+              <AlertTitle>{t("configRequiredTitle")}</AlertTitle>
+              <AlertDescription>{t("configRequiredDesc")}</AlertDescription>
+            </Alert>
           )}
           {configLoading ? (
             <div className="flex items-center justify-center py-12">
@@ -329,10 +311,10 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
                 <div className="text-[13px] font-semibold text-(--text-secondary) mb-2.5 uppercase tracking-[0.3px]">
                   {group.title}
                 </div>
-                <div className="space-y-2.5">
+                <FieldGroup className="gap-2.5">
                   {group.keys.map((key) => (
-                    <div key={key.path} className="flex items-center gap-3">
-                      <label className="text-[13px] text-(--text-muted) w-32 shrink-0">
+                    <Field key={key.path} className="items-center">
+                      <FieldLabel htmlFor={key.path}>
                         <span>{key.label}</span>
                         {key.help && (
                           <Tooltip>
@@ -353,62 +335,64 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
                             </TooltipContent>
                           </Tooltip>
                         )}
-                      </label>
-                      {isBooleanOption(key) ? (
-                        <div className="flex-1 flex items-center justify-end min-h-8">
-                          <SwitchControl
-                            checked={getValue(key.path) === "true"}
-                            title={key.label}
-                            onClick={() =>
-                              handleChange(
-                                key.path,
-                                getValue(key.path) === "true" ? false : true,
-                              )
+                      </FieldLabel>
+                      <FieldContent>
+                        {isBooleanOption(key) ? (
+                          <div className="flex items-center justify-end min-h-8">
+                            <Switch
+                              id={key.path}
+                              checked={getValue(key.path) === "true"}
+                              onCheckedChange={(checked) =>
+                                handleChange(key.path, checked)
+                              }
+                            />
+                          </div>
+                        ) : key.options ? (
+                          <Select
+                            value={getValue(key.path)}
+                            onValueChange={(v) => handleChange(key.path, v)}
+                          >
+                            <SelectTrigger className="flex-1">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectGroup>
+                                {key.options.map((opt) => (
+                                  <SelectItem key={opt} value={opt}>
+                                    <span className="inline-flex items-center gap-1.5">
+                                      {key.optionLogos?.[opt] && (
+                                        <img
+                                          src={key.optionLogos[opt]}
+                                          alt=""
+                                          width={13}
+                                          height={13}
+                                          className="shrink-0 rounded-sm object-contain"
+                                        />
+                                      )}
+                                      {key.optionLabels?.[opt] ||
+                                        (key.optionLogos ? opt.toUpperCase() : opt)}
+                                    </span>
+                                  </SelectItem>
+                                ))}
+                              </SelectGroup>
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <Input
+                            id={key.path}
+                            type={key.type || "text"}
+                            value={getValue(key.path)}
+                            onChange={(e) =>
+                              handleChange(key.path, e.target.value)
                             }
+                            placeholder={key.placeholder || ""}
+                            className="flex-1"
                           />
-                        </div>
-                      ) : key.options ? (
-                        <Select
-                          value={getValue(key.path)}
-                          onValueChange={(v) => handleChange(key.path, v)}
-                        >
-                          <SelectTrigger className="flex-1 h-8 text-[13px]">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {key.options.map((opt) => (
-                              <SelectItem key={opt} value={opt}>
-                                <span className="inline-flex items-center gap-1.5">
-                                  {key.optionLogos?.[opt] && (
-                                    <img
-                                      src={key.optionLogos[opt]}
-                                      alt=""
-                                      width={13}
-                                      height={13}
-                                      className="shrink-0 rounded-sm object-contain"
-                                    />
-                                  )}
-                                  {key.optionLabels?.[opt] ||
-                                    (key.optionLogos ? opt.toUpperCase() : opt)}
-                                </span>
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      ) : (
-                        <Input
-                          type={key.type || "text"}
-                          value={getValue(key.path)}
-                          onChange={(e) =>
-                            handleChange(key.path, e.target.value)
-                          }
-                          placeholder={key.placeholder || ""}
-                          className="flex-1 h-8 text-[13px]"
-                        />
-                      )}
-                    </div>
+                        )}
+                      </FieldContent>
+                    </Field>
                   ))}
-                </div>
+                </FieldGroup>
                 {gi < CONFIG_GROUPS.length - 1 && (
                   <Separator className="mt-4 bg-(--border-default)" />
                 )}
@@ -417,18 +401,10 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
           )}
         </div>
         <DialogFooter className="gap-2 shrink-0">
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            className="text-[13px]"
-          >
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
             {t("cancel")}
           </Button>
-          <Button
-            onClick={handleSave}
-            disabled={!hasChanges}
-            className="text-[13px]"
-          >
+          <Button onClick={handleSave} disabled={!hasChanges}>
             {t("saveChanges")}
           </Button>
         </DialogFooter>

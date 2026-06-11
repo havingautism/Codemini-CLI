@@ -3095,6 +3095,8 @@ export function getBuiltinTools({
   let lastAstTarget = null;
   let lastReadPath = "";
   let lastReadRange = null;
+  let projectIndexPromise = null;
+  let projectIndexEventEmitted = false;
   const rememberAstSelection = (filePath, astTarget) => {
     const key = normalizePath(filePath).trim();
     if (!key || !astTarget) return;
@@ -3136,10 +3138,15 @@ export function getBuiltinTools({
     const name =
       "project_index(.codemini/project-map.json,.codemini/file-index.json)";
     try {
-      const result = await initializeProjectIndex(workspaceRoot);
+      projectIndexPromise ||= initializeProjectIndex(workspaceRoot);
+      const result = await projectIndexPromise;
       if (result?.skipped || !result?.summary) {
         return result;
       }
+      if (projectIndexEventEmitted) {
+        return result;
+      }
+      projectIndexEventEmitted = true;
       emitSystemTool({
         type: "system_tool:end",
         id: eventId,
@@ -3148,6 +3155,7 @@ export function getBuiltinTools({
       });
       return result;
     } catch (error) {
+      projectIndexPromise = null;
       emitSystemTool({
         type: "system_tool:error",
         id: eventId,
@@ -3427,7 +3435,7 @@ export function getBuiltinTools({
             line: { type: "number", description: "Line to target" },
             edit: { type: "object", description: "Structured edit input" },
           },
-          required: ["path", "content"],
+          required: [],
         },
       },
     },

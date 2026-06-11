@@ -134,7 +134,7 @@ function ApprovalBody({ variant, args, details }) {
       <>
         {details?.title && <p className="mb-2 text-[13px] leading-6 text-(--text-secondary)">{details.title}</p>}
         {details?.steps && (
-          <ol className="list-decimal list-inside space-y-1">
+          <ol className="list-decimal list-inside flex flex-col gap-1">
             {details.steps.map((step, i) => (
               <li key={i} className="text-[13px] leading-6 text-(--text-secondary)">{step.role || ''}: {step.title || ''}</li>
             ))}

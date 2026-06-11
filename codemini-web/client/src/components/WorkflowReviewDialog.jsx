@@ -7,6 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -41,15 +42,14 @@ export function WorkflowReviewDialog({
       <DialogContent
         className={cn(
           "flex max-h-[86vh] w-[calc(100vw_-_1rem)] max-w-3xl flex-col gap-0 overflow-hidden p-0 sm:w-full sm:max-w-3xl",
-          "rounded-lg border-(--border-default) bg-(--bg-primary) text-(--text-primary) shadow-[var(--shadow-default)]",
           contentClassName,
         )}
       >
         <div className="shrink-0 border-b border-(--border-default) bg-(--bg-primary) px-4 py-3">
           <DialogHeader showCloseButton={false} className="gap-0">
             <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0 flex-1 space-y-1">
-                <DialogTitle className="text-[14px] font-semibold leading-5 tracking-normal">
+              <div className="flex min-w-0 flex-1 flex-col gap-1">
+                <DialogTitle>
                   {title}
                 </DialogTitle>
                 {fullDescription ? (
@@ -62,13 +62,7 @@ export function WorkflowReviewDialog({
                 ) : null}
               </div>
               {badge ? (
-                <Badge
-                  variant={badgeVariant}
-                  className={cn(
-                    "h-5 shrink-0 rounded-md border-(--border-default) bg-(--bg-secondary) px-1.5 py-0 text-[10px] font-medium text-(--text-secondary) shadow-none",
-                    badgeClassName,
-                  )}
-                >
+                <Badge variant={badgeVariant} className={cn("shrink-0", badgeClassName)}>
                   {badge}
                 </Badge>
               ) : null}
@@ -77,7 +71,7 @@ export function WorkflowReviewDialog({
         </div>
 
         <div className="min-h-0 overflow-y-auto overscroll-contain px-4 py-3 max-h-[min(calc(86vh-10rem),72vh)]">
-          <div className="space-y-3">{children}</div>
+          <div className="flex flex-col gap-3">{children}</div>
         </div>
 
         <div className="shrink-0 border-t border-(--border-default) bg-(--bg-primary)">
@@ -90,7 +84,7 @@ export function WorkflowReviewDialog({
 
 export function ReviewSection({ label, children, className, action }) {
   return (
-    <section className={cn("space-y-1.5", className)}>
+    <section className={cn("flex flex-col gap-1.5", className)}>
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-[11px] font-medium tracking-normal text-(--text-muted)">
           {label}
@@ -160,7 +154,7 @@ export function ReviewTaskPreview({
   const needsToggle = value.length > 320 || lineCount > 8;
 
   return (
-    <div className={cn("space-y-2", className)}>
+    <div className={cn("flex flex-col gap-2", className)}>
       <div
         className={cn(
           "rounded-md border border-(--border-default) bg-(--bg-secondary) overflow-hidden",
@@ -202,17 +196,12 @@ export function ReviewDocument({ children, className, edit = false }) {
 
 export function ReviewNotice({ variant = "muted", children, className }) {
   return (
-    <div
-      className={cn(
-        "rounded-md border px-3 py-2 text-[13px] leading-6",
-        variant === "destructive"
-          ? "border-[color-mix(in_srgb,var(--destructive)_32%,transparent)] bg-[color-mix(in_srgb,var(--destructive)_10%,var(--bg-primary))] text-destructive"
-          : "border-(--border-default) bg-(--bg-secondary) text-(--text-primary)",
-        className,
-      )}
+    <Alert
+      variant={variant === "destructive" ? "destructive" : "default"}
+      className={className}
     >
-      {children}
-    </div>
+      <AlertDescription>{children}</AlertDescription>
+    </Alert>
   );
 }
 
@@ -233,7 +222,7 @@ export function ReviewFooter({ leading, trailing, className }) {
   return (
     <DialogFooter
       className={cn(
-        "gap-2 border-0 bg-transparent px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:space-x-0",
+        "gap-2 border-0 bg-transparent px-4 py-3 sm:flex-row sm:items-center sm:justify-between",
         className,
       )}
     >
