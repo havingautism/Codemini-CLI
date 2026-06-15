@@ -7,6 +7,7 @@ import {
 } from "@/components/ui/dialog";
 import { PatchDiff } from "@pierre/diffs/react";
 import { fetchGitDiff } from "@/hooks/use-api";
+import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
 
@@ -228,6 +229,7 @@ export function GitDiffDialog({ open, onOpenChange }) {
                     >
                       {f.status === "?" ? "U" : f.status}
                     </span>
+                    <FileTypeIcon path={f.path} size="sm" />
                     <span className="min-w-0 flex-1 truncate">
                       {displayPath}
                     </span>

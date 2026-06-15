@@ -6,6 +6,7 @@ import { MarkdownLightboxImage } from "./MarkdownLightboxImage.jsx";
 import { collectMessageEmbeds } from "@/lib/message-embeds.js";
 import { TodoList } from "./TodoList";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
+import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
 import { LinearRing, LinearStatusDot, Spinner } from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -1167,6 +1168,7 @@ function FileChangesSummary({ changes }) {
                 >
                   {c.action?.toUpperCase()}
                 </span>
+                <FileTypeIcon path={c.path} size="sm" />
                 <span className="min-w-0 flex-1 truncate text-(--text-primary)">
                   {c.path}
                 </span>

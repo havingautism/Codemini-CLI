@@ -14,6 +14,7 @@ import {
   Wrench,
 } from "@phosphor-icons/react";
 import { LinearStatusDot } from "@/components/ui/spinner";
+import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
 import { cn } from "@/lib/utils";
 import { formatToolLabel, parseToolDisplayName } from "@core/tool-display.js";
 import { formatDuration } from "../../utils/time.js";
@@ -114,6 +115,17 @@ function parseMaybeJson(value) {
 function basename(pathText) {
   const value = String(pathText || "").replace(/\\/g, "/");
   return value.split("/").filter(Boolean).pop() || value;
+}
+
+function splitPathForDisplay(pathText) {
+  const value = String(pathText || "");
+  const normalized = value.replace(/\\/g, "/");
+  const slashIndex = normalized.lastIndexOf("/");
+  if (slashIndex < 0) return { dir: "", name: value };
+  return {
+    dir: normalized.slice(0, slashIndex + 1),
+    name: normalized.slice(slashIndex + 1) || value,
+  };
 }
 
 function isUnifiedPatch(text) {
@@ -347,6 +359,7 @@ const TOOL_ICON_CLASS =
   "flex size-[18px] shrink-0 items-center justify-center rounded text-(--text-process-detail)";
 const RUN_TOOL_ICON_CLASS =
   "flex h-4 w-5 shrink-0 items-center justify-center rounded-[3px] border border-[color:color-mix(in_srgb,var(--text-process-detail)_45%,transparent)] text-(--text-process-detail)";
+const FILE_PATH_ARG_TOOLS = new Set(["read", "edit", "create", "write", "delete"]);
 
 function resolveToolHeaderParts(card, toolName, fileMeta) {
   const fallbackLabel = formatToolLabel(toolName);
@@ -369,6 +382,24 @@ function resolveToolHeaderParts(card, toolName, fileMeta) {
   return { label: parsed.label || fallbackLabel, arg: "", wrapArg: false };
 }
 
+function FilePathArgument({ path, wrapped = false }) {
+  const { dir, name } = splitPathForDisplay(path);
+  return (
+    <span
+      className="msg-process-meta__detail ml-1 flex min-w-0 items-center font-mono text-xs font-normal leading-[18px]"
+      title={path}
+    >
+      {wrapped ? "(" : null}
+      {dir && <span className="min-w-0 truncate">{dir}</span>}
+      <span className="flex shrink-0 items-center gap-1.5">
+        <FileTypeIcon path={path} size="sm" />
+        <span>{name}</span>
+      </span>
+      {wrapped ? ")" : null}
+    </span>
+  );
+}
+
 export function ToolCard({ card }) {
   const [open, setOpen] = useState(false);
   const toolName = extractToolName(card.name);
@@ -387,6 +418,9 @@ export function ToolCard({ card }) {
     toolName,
     fileMeta,
   );
+  const shouldRenderFileArg =
+    Boolean(fileMeta?.path) ||
+    (wrapArg && FILE_PATH_ARG_TOOLS.has(toolName) && Boolean(toolArg));
 
   const sections = [];
   if (card.arguments != null && card.arguments !== "")
@@ -415,20 +449,19 @@ export function ToolCard({ card }) {
         <span className={toolName === "run" ? RUN_TOOL_ICON_CLASS : TOOL_ICON_CLASS}>
           <Icon size={toolName === "run" ? 13 : 14} />
         </span>
-        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
-          <span>{toolLabel}</span>
+        <span className="flex min-w-0 flex-1 items-center overflow-hidden whitespace-nowrap leading-[18px]">
+          <span className="shrink-0">{toolLabel}</span>
           {toolArg ? (
-            wrapArg ? (
-              <span className="msg-process-meta__detail font-mono text-xs font-normal">
-                {" "}
+            shouldRenderFileArg ? (
+              <FilePathArgument
+                path={fileMeta?.path || toolArg}
+                wrapped={wrapArg || Boolean(fileMeta?.path)}
+              />
+            ) : wrapArg ? (
+              <span className="msg-process-meta__detail ml-1 flex min-w-0 items-center overflow-hidden text-ellipsis font-mono text-xs font-normal leading-[18px]">
                 ({toolArg})
               </span>
-            ) : (
-              <span className="msg-process-meta__detail font-mono text-xs font-normal">
-                {" "}
-                {toolArg}
-              </span>
-            )
+            ) : null
           ) : null}
         </span>
         {fileMeta?.added > 0 && (
