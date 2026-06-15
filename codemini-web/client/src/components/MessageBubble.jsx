@@ -2,9 +2,8 @@ import { useEffect, useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
 import { StreamdownRenderer } from "./StreamdownRenderer";
 import { EmbedBanner } from "./EmbedBanner.jsx";
-import {
-  collectMessageEmbeds,
-} from "@/lib/message-embeds.js";
+import { MarkdownLightboxImage } from "./MarkdownLightboxImage.jsx";
+import { collectMessageEmbeds } from "@/lib/message-embeds.js";
 import { TodoList } from "./TodoList";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { LinearRing, LinearStatusDot, Spinner } from "@/components/ui/spinner";
@@ -30,6 +29,7 @@ import {
   CheckCircle,
   Copy,
   FileText,
+  ImageSquare,
   Moon,
   Play,
   Wrench,
@@ -129,6 +129,14 @@ const COLLAPSE_CHEVRON_CLASS =
   "size-[14px] shrink-0 text-(--text-process-detail)";
 const COLLAPSE_ICON_CLASS =
   "flex size-[18px] shrink-0 items-center justify-center";
+
+function compactBytes(bytes = 0) {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  if (value < 1024) return `${Math.round(value)} B`;
+  if (value < 1024 * 1024) return `${Math.round(value / 102.4) / 10} KB`;
+  return `${Math.round(value / 1024 / 102.4) / 10} MB`;
+}
 
 function formatThoughtDuration(ms) {
   const value = Number(ms);
@@ -571,10 +579,18 @@ function skillActivityLabel(badge) {
 }
 
 function SkillActivityList({ badges = [] }) {
-  if (!badges.length) return null;
+  const visibleBadges = [];
+  const seen = new Set();
+  for (const badge of Array.isArray(badges) ? badges : []) {
+    const key = `${String(badge?.status || "done")}::${String(badge?.name || "").trim()}`;
+    if (!String(badge?.name || "").trim() || seen.has(key)) continue;
+    seen.add(key);
+    visibleBadges.push(badge);
+  }
+  if (!visibleBadges.length) return null;
   return (
     <div className={cn("my-2 flex flex-col gap-1", PROCESS_META_CLASS)}>
-      {badges.map((badge, index) => (
+      {visibleBadges.map((badge, index) => (
         <div
           key={`${badge.name || "skill"}-${badge.status || "done"}-${index}`}
           className={cn(COLLAPSE_ROW_CLASS, "text-[13px]")}
@@ -1348,6 +1364,57 @@ function UserText({ text, skills = [] }) {
   );
 }
 
+function UserAttachments({ attachments = [] }) {
+  const items = Array.isArray(attachments) ? attachments : [];
+  if (!items.length) return null;
+  const images = items.filter((item) => item?.kind === "image" && item.url);
+  const files = items.filter((item) => item?.kind !== "image" || !item.url);
+
+  return (
+    <div className="mt-3 flex max-w-full flex-col gap-2">
+      {images.length > 0 && (
+        <div className="grid max-w-full grid-cols-2 gap-2 sm:grid-cols-[repeat(auto-fit,minmax(120px,160px))]">
+          {images.map((item) => (
+            <div
+              key={item.id || item.url}
+              className="w-[132px] overflow-hidden rounded-lg border border-(--border-default) bg-(--bg-secondary)"
+            >
+              <MarkdownLightboxImage
+                src={item.url}
+                alt={item.name || t("attachmentImage")}
+                figureClassName="m-0"
+                buttonClassName="max-w-none rounded-none border-0 bg-transparent p-0"
+                className="h-24 w-full object-cover"
+              />
+              <div className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] text-(--text-muted)">
+                <ImageSquare size={12} className="shrink-0" />
+                <span className="min-w-0 flex-1 truncate">{item.name}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {files.length > 0 && (
+        <div className="flex max-w-full flex-wrap gap-1.5">
+          {files.map((item) => (
+            <span
+              key={item.id || item.name}
+              className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-(--border-default) bg-(--bg-secondary) px-2 py-1 text-[12px] text-(--text-secondary)"
+              title={item.name}
+            >
+              <FileText size={14} className="shrink-0" />
+              <span className="max-w-[220px] truncate">{item.name}</span>
+              <span className="shrink-0 text-(--text-muted)">
+                {compactBytes(item.size)}
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function parseSpecExecutionText(text = "") {
   const value = String(text || "").trim();
   const match = value.match(
@@ -1661,6 +1728,7 @@ export function MessageBubble({ message, skills = [], onRetry }) {
     timestamp,
     planStep,
     usage,
+    attachments,
   } = message;
   const ts = timestamp ? formatTimestamp(timestamp) : "";
 
@@ -1874,6 +1942,7 @@ export function MessageBubble({ message, skills = [], onRetry }) {
           ) : (
             <div className="w-fit max-w-full bg-(--bg-tertiary) rounded-2xl px-4 py-3">
               {youText && <UserText text={youText} skills={skills} />}
+              <UserAttachments attachments={attachments} />
               {startupTodos && <TodoList todos={startupTodos} />}
             </div>
           )}

@@ -16,6 +16,7 @@ import {
   Database,
   FileText,
   Hammer,
+  ImageSquare,
   LockOpen,
   MaskHappy,
   Minus,
@@ -24,6 +25,7 @@ import {
   ShieldWarning,
   Sparkle,
   Tray,
+  X,
 } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
@@ -125,6 +127,52 @@ const ACTION_COMMAND_NAMES = new Set(
 
 const INPUT_PILL_CLASS =
   "border border-(--border-default) bg-transparent text-(--text-secondary) h-7 rounded-md inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[11px] sm:text-[12px] whitespace-nowrap transition-colors hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)";
+
+const ATTACHMENT_ACCEPT =
+  "image/png,image/jpeg,image/webp,image/gif,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.png,.jpg,.jpeg,.webp,.gif,.pdf,.docx";
+const IMAGE_MAX_EDGE = 1600;
+const IMAGE_JPEG_QUALITY = 0.82;
+
+function isImageFile(file) {
+  return String(file?.type || "").startsWith("image/");
+}
+
+function extensionFromName(name = "") {
+  const match = String(name || "").match(/\.([^.]+)$/);
+  return match ? match[1].toLowerCase() : "";
+}
+
+function compactBytes(bytes = 0) {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  if (value < 1024) return `${Math.round(value)} B`;
+  if (value < 1024 * 1024) return `${Math.round(value / 102.4) / 10} KB`;
+  return `${Math.round(value / 1024 / 102.4) / 10} MB`;
+}
+
+async function compressImageFile(file) {
+  if (!isImageFile(file)) return file;
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, IMAGE_MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0, width, height);
+  bitmap.close?.();
+  const blob = await new Promise((resolve) =>
+    canvas.toBlob(resolve, "image/jpeg", IMAGE_JPEG_QUALITY),
+  );
+  if (!blob) return file;
+  const base = String(file.name || "image").replace(/\.[^.]+$/, "");
+  const compressed = new File([blob], `${base || "image"}.jpg`, {
+    type: "image/jpeg",
+    lastModified: Date.now(),
+  });
+  return compressed.size < file.size ? compressed : file;
+}
 
 function ModeSelector({ current, disabled = false }) {
   const [open, setOpen] = useState(false);
@@ -625,12 +673,16 @@ export function InputBar({
   const [draftBeforeHistory, setDraftBeforeHistory] = useState("");
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
+  const [attachments, setAttachments] = useState([]);
+  const [attachmentError, setAttachmentError] = useState("");
+  const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const textareaRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   const rs = runtimeState || {};
   const mode = rs.mode || "normal";
   const approvalMode = rs.approvalMode || "review";
-  const inputLocked = busy || disabled;
+  const inputLocked = busy || disabled || uploadingAttachments;
   const isGeneralChat = projectCwd === "__codemini_general__";
 
   useEffect(() => {
@@ -646,13 +698,19 @@ export function InputBar({
 
   const submitCurrent = useCallback(() => {
     const val = value.trim();
-    if (!val || inputLocked) return;
-    onSubmit(val);
+    if ((!val && attachments.length === 0) || inputLocked) return;
+    const line = val || t("attachmentFallbackPrompt");
+    onSubmit(line, {
+      attachmentIds: attachments.map((item) => item.id).filter(Boolean),
+      attachments,
+    });
     setValue("");
+    setAttachments([]);
+    setAttachmentError("");
     setSlashOpen(false);
     setHistoryIndex(-1);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-  }, [value, inputLocked, onSubmit]);
+  }, [value, attachments, inputLocked, onSubmit]);
 
   const handleKeyDown = useCallback(
     (e) => {
@@ -722,6 +780,45 @@ export function InputBar({
     textareaRef.current?.focus();
   }, []);
 
+  const handleFiles = useCallback(async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (!files.length || inputLocked) return;
+    setAttachmentError("");
+    setUploadingAttachments(true);
+    try {
+      const prepared = [];
+      for (const file of files.slice(0, 8)) {
+        const ext = extensionFromName(file.name);
+        if (ext === "doc") {
+          throw new Error(t("attachmentDocUnsupported"));
+        }
+        try {
+          prepared.push(await compressImageFile(file));
+        } catch {
+          prepared.push(file);
+        }
+      }
+      const result = await api.uploadAttachments(prepared);
+      if (result?.error) {
+        throw new Error(result.message || t("attachmentUploadFailed"));
+      }
+      setAttachments((current) => [
+        ...current,
+        ...(Array.isArray(result.attachments) ? result.attachments : []),
+      ].slice(0, 8));
+    } catch (error) {
+      setAttachmentError(error?.message || t("attachmentUploadFailed"));
+    } finally {
+      setUploadingAttachments(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      textareaRef.current?.focus();
+    }
+  }, [inputLocked]);
+
+  const removeAttachment = useCallback((id) => {
+    setAttachments((current) => current.filter((item) => item.id !== id));
+  }, []);
+
   return (
     <div className="w-full relative">
       <CommandPalette
@@ -749,6 +846,43 @@ export function InputBar({
             style={{ height: "auto" }}
           />
         </div>
+        {(attachments.length > 0 || attachmentError || uploadingAttachments) && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {attachments.map((item) => {
+              const Icon = item.kind === "image" ? ImageSquare : FileText;
+              return (
+                <span
+                  key={item.id}
+                  className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-(--border-default) bg-(--bg-secondary) px-2 py-1 text-[12px] text-(--text-secondary)"
+                  title={`${item.name} (${compactBytes(item.size)})`}
+                >
+                  <Icon size={14} className="shrink-0" />
+                  <span className="max-w-[180px] truncate">{item.name}</span>
+                  <span className="shrink-0 text-(--text-muted)">{compactBytes(item.size)}</span>
+                  <button
+                    type="button"
+                    className="ml-0.5 inline-flex size-4 items-center justify-center rounded hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                    onClick={() => removeAttachment(item.id)}
+                    title={t("removeAttachment")}
+                    disabled={inputLocked}
+                  >
+                    <X size={11} />
+                  </button>
+                </span>
+              );
+            })}
+            {uploadingAttachments && (
+              <span className="text-[12px] text-(--text-muted)">
+                {t("attachmentUploading")}
+              </span>
+            )}
+            {attachmentError && (
+              <span className="text-[12px] text-(--accent-red)">
+                {attachmentError}
+              </span>
+            )}
+          </div>
+        )}
         <div className="flex items-center gap-1.5 min-h-8 flex-wrap">
           <div className="flex min-w-0 flex-1 basis-full sm:basis-auto items-center gap-1.5 overflow-x-auto pb-0.5 sm:flex-wrap sm:overflow-visible sm:pb-0">
             <ModeSelector current={mode} disabled={inputLocked} />
@@ -776,9 +910,19 @@ export function InputBar({
               type="button"
               className="border-0 bg-transparent text-(--text-secondary) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
               title={t("addContext")}
+              disabled={inputLocked}
+              onClick={() => fileInputRef.current?.click()}
             >
               <Paperclip size={18} />
             </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              accept={ATTACHMENT_ACCEPT}
+              multiple
+              onChange={(event) => handleFiles(event.target.files)}
+            />
             {busy ? (
               <button
                 type="button"
@@ -793,12 +937,12 @@ export function InputBar({
                 type="button"
                 className={cn(
                   "border-0 min-w-8 w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-all",
-                  value.trim() && !inputLocked
+                  (value.trim() || attachments.length > 0) && !inputLocked
                     ? "bg-(--accent-blue) text-white hover:bg-(--accent-hover)"
                     : "bg-(--text-muted)/25 text-(--text-muted) cursor-not-allowed",
                 )}
                 onClick={submitCurrent}
-                disabled={!value.trim() || inputLocked}
+                disabled={(!value.trim() && attachments.length === 0) || inputLocked}
                 title={t("sending")}
               >
                 <ArrowUp size={16} />

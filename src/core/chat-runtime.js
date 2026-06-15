@@ -103,6 +103,15 @@ function findCurrentTurnUserIndex(messages = [], text = '', modelText = '') {
   return -1;
 }
 
+export function mergeCurrentTurnModelText(primary = '', extra = '', label = 'Additional current-turn context') {
+  const base = String(primary || '').trim();
+  const addition = String(extra || '').trim();
+  if (!base) return addition;
+  if (!addition) return base;
+  if (base.includes(addition)) return base;
+  return [base, `<${label}>`, addition, `</${label}>`].join('\n\n');
+}
+
 export function toOpenAIMessages(sessionMessages, options = {}) {
   const mapped = [];
   for (let index = 0; index < (sessionMessages || []).length; index += 1) {
@@ -688,13 +697,13 @@ function describeConfigKey(key, mode = 'set', language = 'zh') {
 const SUB_AGENT_ROLES = ['planner', 'explorer', 'architect', 'advisor', 'coder', 'refactorer', 'reviewer', 'tester', 'debugger', 'writer', 'summarizer', 'codewiki'];
 const EXECUTOR_AGENT_ROLES = SUB_AGENT_ROLES.filter((role) => !['planner', 'codewiki'].includes(role));
 const CODEWIKI_ROLE_TOOLS = ['read', 'search_code', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'add_code_comment', 'update_code_comment'];
-export const CODEWIKI_GENERATE_TOOLS = ['read', 'search_code', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'skill', 'edit', 'create'];
+export const CODEWIKI_GENERATE_TOOLS = ['read', 'search_code', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'skill', 'edit', 'write', 'apply_patch'];
 export const EXECUTION_MODE_TOOL_POLICY = {
   plan: [
     'read', 'search_code', 'grep', 'ast_grep', 'list', 'glob', 'ast_query', 'read_ast_node',
     'query_project_index', 'tool_search', 'skill', 'web_fetch', 'web_search',
     'read_plan', 'update_plan', 'update_todos',
-    'edit', 'create', 'delete', 'run',
+    'edit', 'write', 'apply_patch', 'delete', 'run',
     'create_spec', 'create_plan'
   ]
 };
@@ -733,7 +742,7 @@ function buildExecutionModePromptBlock(executionMode) {
       '',
       'Coding workflow:',
       '1. Explore the codebase with search_code/read before editing or proposing a spec/plan.',
-      '2. If the request is simple and localized, implement directly with edit/create/delete as appropriate, then verify with focused checks when useful.',
+      '2. If the request is simple and localized, implement directly with edit/write/apply_patch/delete as appropriate, then verify with focused checks when useful.',
       '3. If requirements are unclear, ask one focused clarifying question and stop. Do not call create_spec or create_plan yet.',
       '4. If multiple reasonable approaches exist, present short options with a recommendation and wait for user confirmation.',
       '5. Escalate only when needed:',
@@ -749,7 +758,7 @@ function buildExecutionModePromptBlock(executionMode) {
       '- Use update_todos to track exploration and planning work when it spans multiple steps.',
       '',
       'Direct implementation rules:',
-      '- Do not claim edit/create/delete/run are unavailable in coding mode; they are available for direct simple tasks.',
+      '- Do not claim edit/write/apply_patch/delete/run are unavailable in coding mode; they are available for direct simple tasks.',
       '- Do not call create_plan for a simple localized edit that can be implemented and verified in one coherent pass.',
       '- If the user explicitly asks to start fixing, repair, update, implement, or change files, do not create an advisor-only plan. Either implement directly when simple or create an implementation plan with a coder/refactorer/writer step.',
       '- If you create a spec, do not implement before the user approves it. If you create a plan, execution starts automatically in coding mode.',
@@ -777,8 +786,8 @@ export const ROLE_TOOL_POLICY = {
   explorer: ['read', 'search_code', 'tool_search', 'skill', 'web_fetch', 'web_search', 'read_plan'],
   architect: ['read', 'search_code', 'tool_search', 'skill', 'web_search', 'read_plan'],
   advisor: ['read', 'search_code', 'tool_search', 'skill', 'read_plan'],
-  coder: ['read', 'search_code', 'edit', 'create', 'delete', 'run', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
-  refactorer: ['read', 'search_code', 'edit', 'create', 'delete', 'run', 'tool_search', 'skill', 'read_plan'],
+  coder: ['read', 'search_code', 'edit', 'write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
+  refactorer: ['read', 'search_code', 'edit', 'write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill', 'read_plan'],
   reviewer: ['read', 'search_code', 'tool_search', 'skill', 'read_plan'],
   tester: ['read', 'search_code', 'run', 'tool_search', 'skill', 'read_plan'],
   debugger: ['read', 'search_code', 'run', 'tool_search', 'skill', 'web_search', 'read_plan'],
@@ -927,7 +936,7 @@ export function getSubAgentRolePrompt(role) {
       'You are the explorer in a multi-step agent pipeline.',
       'Your job: inspect the codebase to gather context, map the target area, and identify constraints and dependencies for downstream steps.',
       'The high-level plan is already defined — your role is to ground it with real codebase evidence.',
-      'You are read-only in this harness: use read/search tools only. Do not edit, create, delete, or run commands, and do not write implementation code even if the step title sounds like implementation.',
+      'You are read-only in this harness: use read/search tools only. Do not edit, write, apply_patch, delete, or run commands, and do not write implementation code even if the step title sounds like implementation.',
       'Output format — keep it short and direct:',
       'Findings:',
       '- <important constraint, dependency, file layout, or "none">',
@@ -1090,7 +1099,7 @@ export function getSubAgentRolePrompt(role) {
       'Your job is to synthesize the results of all prior steps into a concise, actionable final summary.',
       'Primary input: the accumulated plan file context and handoff packets already included in your task.',
       'Do NOT browse the codebase. Your only tools are read, read_plan, tool_search, and skill.',
-      'Do NOT call list, grep, run, edit, create, delete, or any other tool — they are unavailable and will fail.',
+      'Do NOT call list, grep, run, edit, write, apply_patch, delete, or any other tool — they are unavailable and will fail.',
       'Use read ONLY when you have a specific artifact path from handoff/context that is not already covered in the plan file.',
       'If the plan file and handoff evidence are sufficient, produce the summary without any tool calls.',
       'Output format — keep it short and direct:',
@@ -1319,13 +1328,9 @@ function registerSubAgentArtifactPath(pathValue, out, seen) {
 
 function extractPathFromToolArguments(toolName, args = {}) {
   const name = String(toolName || '').toLowerCase();
-  if (!['edit', 'create', 'delete'].includes(name)) return '';
+  if (!['edit', 'create', 'write', 'apply_patch', 'delete'].includes(name)) return '';
   return String(
     args.path ||
-    args.file ||
-    args.file_path ||
-    args.edit?.target?.path ||
-    args.edit?.path ||
     ''
   ).trim();
 }
@@ -4621,7 +4626,7 @@ async function askModel({
   const modePolicyTools = EXECUTION_MODE_TOOL_POLICY[normalizedExecutionMode];
   const effectiveAlwaysAllowTools = Array.isArray(modePolicyTools)
     ? modePolicyTools
-    : (alwaysAllowTools || config.execution?.always_allow_tools || ['run', 'read', 'create']);
+    : (alwaysAllowTools || config.execution?.always_allow_tools || ['run', 'read']);
 
   const modelSourceMessages = compacted ?? session.messages;
   const currentTurnUserIndex = findCurrentTurnUserIndex(modelSourceMessages, text, expectedModelText);
@@ -7529,6 +7534,9 @@ export async function createChatRuntime({
     const { signal } = activeAbortController;
     const activeReplySystemPrompt = await buildActiveSystemPrompt();
     const parsedInput = parseInput(line);
+    const optionModelText = typeof options?.modelText === 'string' && options.modelText.trim()
+      ? await expandFileMentions(options.modelText, process.cwd())
+      : '';
     const readOnlyCodeWiki = options?.readOnlyCodeWiki === true;
     const codeWikiGenerate = options?.codeWikiGenerate === true;
     const maybeAutoDreamFromRuntime = async () => {
@@ -7707,7 +7715,7 @@ export async function createChatRuntime({
         '- Use the CodeWiki role regardless of the user-selected global soul. Tone is the default Codemini tone: clear, concise, and technical.',
         '- Use read-only project inspection tools when evidence is needed.',
         '- You may modify files only when the user explicitly asks you to add or edit code comments. In that case, use add_code_comment or update_code_comment only, and never change executable code.',
-        '- Do not use shell commands, edit/create/delete tools, update plans, generate reports, or write memories.',
+        '- Do not use shell commands, edit/write/apply_patch/delete tools, update plans, generate reports, or write memories.',
         '- Be concise and cite relevant files or report sections when useful.'
       ].join('\n\n');
       const transientSession = structuredClone(currentSession);
@@ -8440,6 +8448,11 @@ export async function createChatRuntime({
               .join('\n\n')
           : renderCommandPrompt(custom, parsedInput.args);
       const rendered = await expandFileMentions(customPrompt, process.cwd());
+      const renderedWithAttachments = mergeCurrentTurnModelText(
+        rendered,
+        optionModelText,
+        'uploaded_attachments_context'
+      );
       if (custom.metadata.type === 'skill' && onAgentEvent) {
         onAgentEvent({ type: 'skill:start', name: custom.name });
       }
@@ -8447,7 +8460,9 @@ export async function createChatRuntime({
       try {
         result = await askModel({
           text: custom.metadata.type === 'skill' ? line : rendered,
-          modelText: custom.metadata.type === 'skill' ? rendered : undefined,
+          modelText: custom.metadata.type === 'skill'
+            ? renderedWithAttachments
+            : (optionModelText ? renderedWithAttachments : undefined),
           session: currentSession,
           config,
           model,
@@ -8594,6 +8609,7 @@ export async function createChatRuntime({
         : skillPrompt;
     const result = await askModel({
       text: expandedText,
+      ...(optionModelText ? { modelText: optionModelText } : {}),
       session: currentSession,
       config,
       model,

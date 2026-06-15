@@ -8,6 +8,8 @@ export function MarkdownLightboxImage({
   alt,
   title,
   className,
+  figureClassName,
+  buttonClassName,
   ...props
 }) {
   const [open, setOpen] = useState(false);
@@ -30,17 +32,23 @@ export function MarkdownLightboxImage({
   if (!src || failed) return null;
 
   const caption =
-    alt && !/^(image|图片|thumbnail|缩略图|link|链接)$/i.test(String(alt).trim())
+    alt &&
+    !/^(image|图片|thumbnail|缩略图|link|链接)$/i.test(String(alt).trim())
       ? alt
       : "";
 
   return (
     <>
-      <figure className="markdown-lightbox my-3 max-w-full">
+      <figure
+        className={cn("markdown-lightbox my-3 max-w-full", figureClassName)}
+      >
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="group block w-full max-w-xl overflow-hidden rounded-lg border border-(--border-default) bg-(--bg-secondary)/60 p-1 text-left transition hover:border-(--border-strong) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--text-primary)/20"
+          className={cn(
+            "group block w-full max-w-xl overflow-hidden rounded-lg border border-(--border-default) bg-(--bg-secondary)/60 p-1 text-left transition hover:border-(--border-strong) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--text-primary)/20",
+            buttonClassName,
+          )}
           aria-label={caption || title || src}
         >
           <img
@@ -58,11 +66,11 @@ export function MarkdownLightboxImage({
             {...props}
           />
         </button>
-        {caption && (
+        {/* {caption && (
           <figcaption className="mt-1.5 text-[12px] text-(--text-muted)">
             {caption}
           </figcaption>
-        )}
+        )} */}
       </figure>
       {open &&
         createPortal(

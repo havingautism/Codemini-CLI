@@ -22,6 +22,8 @@ export const TOOL_DISPLAY_LABELS = {
   read: 'Read',
   edit: 'Edit',
   create: 'Create',
+  write: 'Write',
+  apply_patch: 'Apply Patch',
   delete: 'Delete',
   run: 'Run',
   grep: 'Search',
@@ -85,7 +87,7 @@ export function formatToolDisplayName(name, args = {}) {
     const target = trimInline(args?.path || '.', 96) || '.';
     return formatToolWithArg(formatToolLabel('list'), target);
   }
-  if (toolName === 'read' || toolName === 'create') {
+  if (toolName === 'read' || toolName === 'create' || toolName === 'write') {
     const target = trimInline(args?.path || '.', 96) || '.';
     if (toolName === 'read') {
       const start = Number(args?.start_line);
@@ -94,7 +96,7 @@ export function formatToolDisplayName(name, args = {}) {
       const suffix = hasRange ? `:${start}-${Number.isFinite(end) && end >= start ? end : start}` : '';
       return formatToolWithArg(formatToolLabel('read'), `${target}${suffix}`);
     }
-    return formatToolWithArg(formatToolLabel('create'), target);
+    return formatToolWithArg(formatToolLabel(toolName), target);
   }
   if (toolName === 'run') {
     const command = trimInline(args?.command || '', 96);
@@ -116,12 +118,24 @@ export function formatToolDisplayName(name, args = {}) {
     return formatToolLabel('skill');
   }
   if (toolName === 'edit') {
-    const target = trimInline(args?.path || args?.file || '.', 96) || '.';
+    const target = trimInline(args?.path || '.', 96) || '.';
     return formatToolWithArg(formatToolLabel('edit'), target);
   }
   if (toolName === 'delete') {
     const target = trimInline(args?.path || args?.target || '.', 96) || '.';
     return formatToolWithArg(formatToolLabel('delete'), target);
+  }
+  if (toolName === 'apply_patch') {
+    const patchText = String(args?.patch_text || '');
+    const fileMatches = [...patchText.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)]
+      .map((match) => trimInline(match[1], 48))
+      .filter(Boolean);
+    const label = formatToolLabel('apply_patch');
+    if (fileMatches.length === 0) return label;
+    const target = fileMatches.length === 1
+      ? fileMatches[0]
+      : `${fileMatches[0]} +${fileMatches.length - 1}`;
+    return formatToolWithArg(label, target);
   }
   if (toolName === 'create_plan') {
     const goal = trimInline(args?.goal || '', 96);

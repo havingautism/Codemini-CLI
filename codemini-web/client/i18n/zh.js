@@ -13,6 +13,13 @@ export const zh = {
   inputDisabled: '等待当前请求完成...',
   inputPlanReviewDisabled: '请先在上方审阅计划，批准、修改或否决后再继续输入',
   abort: '停止',
+  attachmentsLabel: '附件',
+  attachmentFallbackPrompt: '请查看附件',
+  attachmentUploading: '正在上传附件…',
+  attachmentUploadFailed: '附件上传失败',
+  attachmentDocUnsupported: '暂不支持 .doc，请上传 .docx 文件',
+  attachmentImage: '图片附件',
+  removeAttachment: '移除附件',
 
   // Approval
   approveTitle: '确认操作',

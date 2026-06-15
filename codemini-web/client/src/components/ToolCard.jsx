@@ -25,6 +25,7 @@ const TOOL_ICONS = {
   edit: PencilLine,
   create: PencilLine,
   write: PencilLine,
+  apply_patch: PencilLine,
   create_plan: ListChecks,
   create_spec: FileText,
   delete: Trash,
@@ -53,11 +54,20 @@ function extractKeyArg(args, toolName) {
     }
   }
   if (typeof obj !== "object") return String(obj);
+  if (toolName === "apply_patch") {
+    const patchText = String(obj.patch_text || "");
+    const paths = [...patchText.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)]
+      .map((match) => String(match[1] || "").trim())
+      .filter(Boolean);
+    if (paths.length > 1) return `${paths[0]} +${paths.length - 1}`;
+    if (paths.length === 1) return paths[0];
+  }
   const keyMap = {
     read: "path",
     edit: "path",
     create: "path",
     write: "path",
+    apply_patch: "patch_text",
     delete: "path",
     run: "command",
     grep: "pattern",
@@ -106,11 +116,6 @@ function basename(pathText) {
   return value.split("/").filter(Boolean).pop() || value;
 }
 
-function getNestedEdit(args) {
-  if (!args || typeof args !== "object") return {};
-  return args.edit && typeof args.edit === "object" ? args.edit : args;
-}
-
 function isUnifiedPatch(text) {
   const value = String(text || "");
   return value.startsWith("diff --git ") || value.includes("\ndiff --git ") || value.includes("\n@@ ");
@@ -131,7 +136,7 @@ function usePatchThemeType() {
 }
 
 function getFileToolMeta(toolName, args, result, summary, fileChange, resultMeta, fileChanges) {
-  if (!["edit", "create", "delete"].includes(toolName)) return null;
+  if (!["edit", "create", "write", "apply_patch", "delete"].includes(toolName)) return null;
   const parsedArgs = parseMaybeJson(args) || {};
   const parsedResult = {
     ...(parseMaybeJson(result) || {}),
@@ -146,13 +151,10 @@ function getFileToolMeta(toolName, args, result, summary, fileChange, resultMeta
     .map((change) => String(change?.diffPreview || ""))
     .filter(Boolean)
     .join("\n");
-  const edit = getNestedEdit(parsedArgs);
   const pathText =
     parsedResult.path ||
     structuredChange.path ||
     parsedArgs.path ||
-    parsedArgs.file ||
-    parsedArgs.file_path ||
     "";
   const added = Number(
     parsedResult.lines_added ??
@@ -168,15 +170,11 @@ function getFileToolMeta(toolName, args, result, summary, fileChange, resultMeta
   );
   const oldText =
     toolName === "edit"
-      ? (edit.old_text ?? edit.old_string ?? parsedArgs.old_text)
+      ? parsedArgs.old_text
       : "";
   const newText =
     toolName === "edit"
-      ? (edit.new_text ??
-        edit.new_string ??
-        edit.new_content ??
-        edit.content ??
-        parsedArgs.new_text)
+      ? (parsedArgs.new_text ?? parsedArgs.new_content ?? parsedArgs.content)
       : "";
   const changedLine = Number(
     parsedResult.changed_line ||
@@ -189,7 +187,7 @@ function getFileToolMeta(toolName, args, result, summary, fileChange, resultMeta
     action: String(
       parsedResult.action ||
         structuredChange.action ||
-        (toolName === "create" ? "create" : toolName),
+        (toolName === "create" || toolName === "write" ? parsedResult.action || toolName : toolName),
     ),
     added,
     removed,

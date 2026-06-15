@@ -1178,18 +1178,24 @@ export function normalizeRunApprovalRequest(request) {
 
 export function normalizeFileApprovalRequest(request) {
   const toolName = String(request?.name || '').trim();
-  if (!['edit', 'create'].includes(toolName)) return null;
+  if (!['edit', 'create', 'write', 'apply_patch'].includes(toolName)) return null;
   const args = request?.arguments && typeof request.arguments === 'object' && !Array.isArray(request.arguments)
     ? request.arguments
     : {};
-  const edit = args.edit && typeof args.edit === 'object' && !Array.isArray(args.edit) ? args.edit : {};
-  const pathValue = String(args.path || args.file || args.file_path || edit.path || edit.file || edit.file_path || '').trim();
+  let pathValue = String(args.path || '').trim();
+  if (!pathValue && toolName === 'apply_patch') {
+    const patchText = String(args.patch_text || '');
+    const paths = [...patchText.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)]
+      .map((match) => String(match[1] || '').trim())
+      .filter(Boolean);
+    pathValue = paths.length > 1 ? `${paths[0]} +${paths.length - 1}` : (paths[0] || '');
+  }
   if (!pathValue) return null;
   return {
     id: String(request?.id || '').trim(),
     toolName,
     path: pathValue,
-    action: String(args.kind || args.mode || edit.kind || toolName).trim() || toolName
+    action: String(args.kind || args.mode || toolName).trim() || toolName
   };
 }
 
@@ -1314,9 +1320,10 @@ function getActivityDisplayParts(activity) {
   const labels = {
     read: 'Read',
     edit: 'Edit',
+    create: 'Create',
     write: 'Write',
+    apply_patch: 'Apply Patch',
     delete: 'Delete',
-    patch: 'Patch',
     run: 'Run',
     grep: 'Search',
     web_fetch: 'Fetch',
@@ -1338,9 +1345,10 @@ function getActivityDisplayParts(activity) {
   const emojis = {
     read: '📖',
     edit: '✏️',
+    create: '📝',
     write: '📝',
+    apply_patch: '🩹',
     delete: '🗑️',
-    patch: '🩹',
     run: '⚙️',
     grep: '🔍',
     web_fetch: '🌐',
@@ -3317,7 +3325,7 @@ function RunApprovalPanel({ request, inputValue, errorText, copy, cursorVisible,
 
 function FileApprovalPanel({ request, inputValue, errorText, copy, cursorVisible }) {
   if (!request) return null;
-  const details = request?.toolName === 'edit' || request?.toolName === 'create'
+  const details = ['edit', 'create', 'write', 'apply_patch'].includes(request?.toolName)
     ? request
     : normalizeFileApprovalRequest(request);
   if (!details) return null;

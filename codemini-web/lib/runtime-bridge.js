@@ -767,6 +767,7 @@ export class RuntimeBridge {
       this.#addUiMessage({
         role: 'you',
         text: line,
+        attachments: Array.isArray(options.attachments) ? options.attachments : [],
         timestamp: new Date().toISOString()
       });
     }

@@ -4,6 +4,9 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, execSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { Readable } from 'node:stream';
 
 import { loadConfig, saveConfig, setConfigValue, getConfigValue } from '../src/core/config-store.js';
 import {
@@ -229,6 +232,7 @@ This is a general conversation, not an opened project workspace.
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
 const CLIENT_SOURCE_DIR = path.join(__dirname, 'client');
 let CLIENT_DIR = CLIENT_SOURCE_DIR;
 try {
@@ -249,6 +253,11 @@ const MIME_TYPES = {
 };
 
 const DEFAULT_GATEWAY_BASE_URL = 'http://127.0.0.1:8000/v1';
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const MAX_ATTACHMENT_TEXT_CHARS = 80_000;
+const ATTACHMENT_UPLOAD_DIR = path.join(getBaseConfigDir(), 'web-ui-uploads');
+const SUPPORTED_ATTACHMENT_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.pdf', '.docx']);
+const IMAGE_ATTACHMENT_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
 
 function normalizeBaseUrl(value) {
   return String(value || '').trim().replace(/\/+$/, '');
@@ -295,6 +304,165 @@ function jsonResponse(res, data, status = 200) {
   const body = JSON.stringify(data);
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) });
   res.end(body);
+}
+
+function safeUploadFileName(name = '') {
+  const ext = path.extname(String(name || '')).toLowerCase();
+  const base = path.basename(String(name || 'attachment'), ext)
+    .replace(/[^A-Za-z0-9._\-\u4e00-\u9fa5]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+  return `${base || 'attachment'}${ext}`;
+}
+
+function attachmentSessionDir(sessionId = '') {
+  const safeSession = String(sessionId || 'unknown').replace(/[^A-Za-z0-9._-]+/g, '-');
+  return path.join(ATTACHMENT_UPLOAD_DIR, safeSession || 'unknown');
+}
+
+function attachmentMetaPath(sessionId, id) {
+  return path.join(attachmentSessionDir(sessionId), `${String(id || '').replace(/[^A-Za-z0-9._-]+/g, '')}.json`);
+}
+
+function attachmentPublicUrl(sessionId, id) {
+  return `/api/attachments/${encodeURIComponent(String(sessionId || ''))}/${encodeURIComponent(String(id || ''))}/file`;
+}
+
+function clipAttachmentText(text = '') {
+  const value = String(text || '').replace(/\r\n/g, '\n').trim();
+  if (value.length <= MAX_ATTACHMENT_TEXT_CHARS) return { text: value, truncated: false };
+  return {
+    text: `${value.slice(0, MAX_ATTACHMENT_TEXT_CHARS).trimEnd()}\n\n[Attachment text truncated at ${MAX_ATTACHMENT_TEXT_CHARS} characters.]`,
+    truncated: true
+  };
+}
+
+async function readMultipartForm(req) {
+  const headers = new Headers();
+  for (const [key, value] of Object.entries(req.headers || {})) {
+    if (Array.isArray(value)) headers.set(key, value.join(', '));
+    else if (value != null) headers.set(key, String(value));
+  }
+  const request = new Request('http://codemini.local/upload', {
+    method: req.method,
+    headers,
+    body: Readable.toWeb(req),
+    duplex: 'half'
+  });
+  return request.formData();
+}
+
+async function extractAttachmentText(buffer, ext) {
+  if (ext === '.pdf') {
+    const parsePdf = require('pdf-parse');
+    const parsed = await parsePdf(buffer);
+    return String(parsed?.text || '').trim();
+  }
+  if (ext === '.docx') {
+    const mammoth = await import('mammoth');
+    const parsed = await mammoth.extractRawText({ buffer });
+    return String(parsed?.value || '').trim();
+  }
+  return '';
+}
+
+async function saveUploadedAttachment({ file, sessionId }) {
+  const originalName = safeUploadFileName(file?.name || 'attachment');
+  const ext = path.extname(originalName).toLowerCase();
+  if (!SUPPORTED_ATTACHMENT_EXTENSIONS.has(ext)) {
+    throw new Error('Unsupported attachment type. Use images, PDF, or DOCX.');
+  }
+  if (Number(file?.size || 0) > MAX_ATTACHMENT_BYTES) {
+    throw new Error('Attachment is too large. Maximum size is 20 MB.');
+  }
+  const arrayBuffer = await file.arrayBuffer();
+  const buffer = Buffer.from(arrayBuffer);
+  const id = randomUUID();
+  const sessionDir = attachmentSessionDir(sessionId);
+  await fs.mkdir(sessionDir, { recursive: true });
+  const storedName = `${id}-${originalName}`;
+  const storedPath = path.join(sessionDir, storedName);
+  await fs.writeFile(storedPath, buffer);
+
+  const extractedRaw = IMAGE_ATTACHMENT_EXTENSIONS.has(ext)
+    ? ''
+    : await extractAttachmentText(buffer, ext);
+  const clipped = clipAttachmentText(extractedRaw);
+  const meta = {
+    id,
+    name: originalName,
+    mime: file?.type || '',
+    extension: ext,
+    kind: IMAGE_ATTACHMENT_EXTENSIONS.has(ext) ? 'image' : 'document',
+    size: buffer.length,
+    path: storedPath,
+    text: clipped.text,
+    textChars: clipped.text.length,
+    truncated: clipped.truncated,
+    uploadedAt: new Date().toISOString()
+  };
+  await fs.writeFile(attachmentMetaPath(sessionId, id), `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
+  return {
+    id,
+    name: meta.name,
+    mime: meta.mime,
+    kind: meta.kind,
+    size: meta.size,
+    path: meta.path,
+    url: attachmentPublicUrl(sessionId, id),
+    textChars: meta.textChars,
+    truncated: meta.truncated,
+    preview: meta.text ? meta.text.slice(0, 500) : ''
+  };
+}
+
+async function loadAttachmentMetas(sessionId, ids = []) {
+  const cleanIds = (Array.isArray(ids) ? ids : [])
+    .map((id) => String(id || '').trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  const metas = [];
+  for (const id of cleanIds) {
+    const metaFile = attachmentMetaPath(sessionId, id);
+    try {
+      const parsed = JSON.parse(await fs.readFile(metaFile, 'utf8'));
+      if (parsed?.id === id && parsed?.path) metas.push(parsed);
+    } catch {}
+  }
+  return metas;
+}
+
+function buildAttachmentModelText(line, metas = []) {
+  const prompt = String(line || '').trim();
+  if (!metas.length) return '';
+  const blocks = metas.map((meta, index) => {
+    const header = [
+      `Attachment ${index + 1}: ${meta.name || meta.id}`,
+      `Type: ${meta.kind || 'file'}${meta.mime ? ` (${meta.mime})` : ''}`,
+      `Path: ${meta.path || ''}`,
+      `Size: ${meta.size || 0} bytes`
+    ];
+    if (meta.kind === 'image') {
+      return [
+        ...header,
+        'Content: Image file uploaded and compressed by the Web UI. Use the path if local inspection is needed.'
+      ].join('\n');
+    }
+    return [
+      ...header,
+      meta.truncated ? 'Note: Extracted text was truncated for context size.' : '',
+      '',
+      'Extracted text:',
+      meta.text || '[No extractable text found.]'
+    ].filter(Boolean).join('\n');
+  });
+  return [
+    prompt,
+    '',
+    '<uploaded_attachments>',
+    blocks.join('\n\n---\n\n'),
+    '</uploaded_attachments>'
+  ].join('\n');
 }
 
 function buildCodeWikiAskPrompt({ question, reportPath, projectDir, replyLanguage, history = [] }) {
@@ -991,6 +1159,34 @@ async function main() {
       return;
     }
 
+    const attachmentFileMatch = url.pathname.match(/^\/api\/attachments\/([^/]+)\/([^/]+)\/file$/);
+    if (req.method === 'GET' && attachmentFileMatch) {
+      try {
+        const sessionId = decodeURIComponent(attachmentFileMatch[1]);
+        const id = decodeURIComponent(attachmentFileMatch[2]);
+        const meta = JSON.parse(await fs.readFile(attachmentMetaPath(sessionId, id), 'utf8'));
+        const filePath = path.resolve(meta.path || '');
+        const uploadRoot = path.resolve(ATTACHMENT_UPLOAD_DIR);
+        if (!isPathInside(uploadRoot, filePath)) {
+          res.writeHead(403);
+          res.end();
+          return;
+        }
+        const ext = path.extname(filePath).toLowerCase();
+        const contentType = meta.mime || MIME_TYPES[ext] || 'application/octet-stream';
+        const data = await fs.readFile(filePath);
+        res.writeHead(200, {
+          'Content-Type': contentType,
+          'Content-Length': data.length,
+          'Cache-Control': 'private, max-age=86400'
+        });
+        res.end(data);
+      } catch {
+        jsonResponse(res, { error: true, message: 'Attachment not found' }, 404);
+      }
+      return;
+    }
+
     // Static files
     if (req.method === 'GET' && !url.pathname.startsWith('/api/')) {
       let filePath;
@@ -1008,8 +1204,28 @@ async function main() {
     }
 
     // ── Submit / Abort / Approval ──
+    if (req.method === 'POST' && url.pathname === '/api/attachments') {
+      try {
+        const form = await readMultipartForm(req);
+        const files = form.getAll('files').filter((item) => item && typeof item.arrayBuffer === 'function');
+        if (!files.length) {
+          jsonResponse(res, { error: true, message: 'Missing attachment file' }, 400);
+          return;
+        }
+        const sessionId = bridge.getSessionId();
+        const attachments = [];
+        for (const file of files.slice(0, 8)) {
+          attachments.push(await saveUploadedAttachment({ file, sessionId }));
+        }
+        jsonResponse(res, { ok: true, attachments });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err?.message || 'Failed to upload attachment' }, 400);
+      }
+      return;
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/submit') {
-      const { line, readOnlyCodeWiki } = await readBody(req);
+      const { line, readOnlyCodeWiki, attachmentIds } = await readBody(req);
       if (!line || typeof line !== 'string') { jsonResponse(res, { error: true, message: 'Missing "line" field' }, 400); return; }
       const currentConfig = await loadConfig();
       const configStatus = getConfigStatus(currentConfig);
@@ -1022,7 +1238,20 @@ async function main() {
         }, 409);
         return;
       }
-      const result = bridge.handleSubmit(line, { readOnlyCodeWiki: readOnlyCodeWiki === true });
+      const attachmentMetas = await loadAttachmentMetas(bridge.getSessionId(), attachmentIds);
+      const attachmentModelText = buildAttachmentModelText(line, attachmentMetas);
+      const result = bridge.handleSubmit(line, {
+        readOnlyCodeWiki: readOnlyCodeWiki === true,
+        attachments: attachmentMetas.map((meta) => ({
+          id: meta.id,
+          name: meta.name,
+          mime: meta.mime,
+          kind: meta.kind,
+          size: meta.size,
+          url: attachmentPublicUrl(bridge.getSessionId(), meta.id)
+        })),
+        ...(attachmentModelText ? { modelText: attachmentModelText } : {})
+      });
       jsonResponse(res, result);
       return;
     }

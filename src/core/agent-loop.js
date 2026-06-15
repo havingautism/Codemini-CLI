@@ -83,6 +83,17 @@ function buildApprovalBlockedResult(toolName, args = {}) {
   };
 }
 
+function buildInvalidToolArgumentsResult(toolName, args = {}) {
+  const parseError = String(args?._parseError || '').trim();
+  return {
+    error: `Invalid JSON arguments for ${toolName}`,
+    reason: parseError
+      ? `Tool arguments could not be parsed as JSON: ${parseError}`
+      : 'Tool arguments could not be parsed as JSON',
+    raw: String(args?._raw || '')
+  };
+}
+
 function emptyToolResultMarker(toolName) {
   const name = String(toolName || 'tool').trim() || 'tool';
   return `(${name} completed with no output)`;
@@ -199,7 +210,7 @@ const PARALLEL_SAFE_TOOLS = new Set([
 // ─── Auto-capture tool errors to dream loop inbox ────────────────────
 
 const DREAM_AUTO_CAPTURE_TOOLS = new Set([
-  'edit', 'create', 'run', 'delete'
+  'edit', 'create', 'write', 'apply_patch', 'run', 'delete'
 ]);
 
 const DREAM_AUTO_CAPTURE_COOLDOWN_MS = 60_000;
@@ -285,7 +296,7 @@ async function checkAutoDreamThreshold(config) {
 
 function extractFileChange(toolName, result) {
   if (!result || typeof result !== 'object') return null;
-  const FILE_TOOLS = new Set(['edit', 'create', 'delete']);
+  const FILE_TOOLS = new Set(['edit', 'create', 'write', 'apply_patch', 'delete']);
   if (!FILE_TOOLS.has(toolName)) return null;
 
   /* delete */
@@ -296,6 +307,19 @@ function extractFileChange(toolName, result) {
   /* edit / write */
   if ('path' in result && 'action' in result) {
     const action = String(result.action || '');
+    if (action === 'apply_patch' && Array.isArray(result.files)) {
+      return result.files
+        .map((filePath) => String(filePath || '').trim())
+        .filter(Boolean)
+        .map((filePath) => ({
+          path: filePath,
+          action: 'edit',
+          linesAdded: Number(result.lines_added || 0),
+          linesRemoved: Number(result.lines_removed || 0),
+          changedLine: Number(result.changed_line || 0),
+          diffPreview: String(result.diff_preview || '')
+        }));
+    }
     const isCreate = action === 'create';
     const added = Number(result.lines_added || 0);
     const removed = Number(result.lines_removed || 0);
@@ -395,7 +419,7 @@ function extractToolResultMeta(toolName, result) {
     };
   }
 
-  if (!['edit', 'create', 'delete'].includes(name)) return null;
+  if (!['edit', 'create', 'write', 'apply_patch', 'delete'].includes(name)) return null;
   const meta = {};
   for (const key of [
     'path',
@@ -770,6 +794,14 @@ export async function runAgentLoop({
       let approved = true;
       let approvalArgs = args;
       let preflightErrorContent = '';
+      if (args?._invalid_json && ['create', 'write', 'edit', 'apply_patch', 'delete'].includes(toolName)) {
+        approvalResults.set(call.id, {
+          approved: false,
+          args: approvalArgs,
+          errorContent: clipToolResult(buildInvalidToolArgumentsResult(toolName, args), toolResultMaxChars)
+        });
+        continue;
+      }
       const runPolicyCheck = toolName === 'run'
         ? evaluateCommandPolicy(args?.command || '', config, config?.workspaceRoot || process.cwd())
         : { allowed: true };
@@ -780,7 +812,7 @@ export async function runAgentLoop({
       const isSafeModeRun = toolName === 'run'
         && config?.policy?.safe_mode !== false
         && (isSafeModePolicyBlocked || requiresApprovalEvaluation(args?.command || '', config?.shell?.default));
-      const isFileWriteTool = toolName === 'edit' || toolName === 'create' || toolName === 'delete';
+      const isFileWriteTool = toolName === 'edit' || toolName === 'create' || toolName === 'write' || toolName === 'apply_patch' || toolName === 'delete';
       const needsApproval = normalizedApprovalMode === 'full_access'
         ? false
         : normalizedApprovalMode === 'auto'

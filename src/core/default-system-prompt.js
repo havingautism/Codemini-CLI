@@ -19,6 +19,7 @@ Use these as style examples for tool calls:
 Current working directory: ${cwd}
 When a tool takes path, build it from the current working directory and prefer absolute paths.
 If the user mentions a project-relative path like src/app.ts, resolve it from ${cwd} instead of guessing parent directories.
+Tool arguments must be valid JSON objects. When a string contains file content, encode newlines as \\n inside the JSON string; never put raw unescaped line breaks inside a JSON string.
 
 1. File discovery then read
 User: compare the auth flow
@@ -42,6 +43,11 @@ Assistant: first find the exact occurrences
 Tool: grep({"pattern":"loginUser","path":"src"})
 Tool: edit({"path":${authServicePath},"old_text":"loginUser","new_text":"signInUser"})
 
+For an existing file full rewrite, use edit with new_content:
+Tool: edit({"path":${authServicePath},"new_content":"export function signInUser() {\\n  return true;\\n}\\n"})
+If the intent is explicitly whole-file output or overwrite, write is also available:
+Tool: write({"path":${authServicePath},"content":"export function signInUser() {\\n  return true;\\n}\\n","overwrite":true})
+
 3. Read a specific range
 User: inspect the reducer around line 120
 Assistant: read only the needed range
@@ -53,10 +59,13 @@ Assistant: create a focused todo checklist before starting
 Tool: update_todos({"todos":[{"content":"Inspect the current login flow","activeForm":"Inspecting the current login flow","status":"in_progress"},{"content":"Implement the requested login changes","activeForm":"Implementing the requested login changes","status":"pending"},{"content":"Run focused verification for the login flow","activeForm":"Running focused verification for the login flow","status":"pending"}]})
 Assistant: keep the checklist updated as each phase finishes, and do not give a completion-style wrap-up until the checklist is complete or a blocker is recorded
 
-5. Create a new file
+5. Write a new file
 User: add a notes file
-Assistant: create the file directly
-Tool: create({"path":${notesPath},"content":"todo\\n"})
+Assistant: write the file directly
+Tool: write({"path":${notesPath},"content":"todo\\n"})
+
+For a large or multi-file code patch, use apply_patch with one escaped patch_text string:
+Tool: apply_patch({"patch_text":"*** Begin Patch\\n*** Update File: ${path.join('src', 'auth', 'service.ts').replace(/\\/g, '/')}\\n@@\\n-export const enabled = false;\\n+export const enabled = true;\\n*** End Patch"})
 
 6. Save a high-signal observation to memory
 When you notice a reusable pattern, a user correction, a repeated failure, or a stable preference — save it to persistent memory. Choose scope carefully:

@@ -17,6 +17,8 @@ function detectVariant(toolName, details) {
   if (toolName === 'run') return 'run';
   if (toolName === 'edit') return 'edit';
   if (toolName === 'create') return 'create';
+  if (toolName === 'write') return 'write';
+  if (toolName === 'apply_patch') return 'apply_patch';
   if (details?.planApproval) return 'plan';
   if (details?.reflectApproval) return 'reflect';
   return 'generic';
@@ -108,15 +110,14 @@ function ApprovalBody({ variant, args, details }) {
     );
   }
   if (variant === 'edit') {
-    const edit = parsed.edit && typeof parsed.edit === 'object' ? parsed.edit : {};
-    const kind = parsed.kind || edit.kind || parsed.mode || 'edit';
+    const kind = parsed.kind || parsed.mode || 'edit';
     return (
       <>
         <DetailRow label={t('approvalFieldTool')} value="edit" />
-        <DetailRow label={t('approvalFieldFile')} value={parsed.file || parsed.path || '-'} />
+        <DetailRow label={t('approvalFieldFile')} value={parsed.path || '-'} />
         <DetailRow label={t('approvalFieldAction')} value={kind} />
-        <PreviewRow label={t('approvalFieldOld')} value={parsed.old_text || parsed.old_string || edit.old_text || edit.old_string} />
-        <PreviewRow label={t('approvalFieldNew')} value={parsed.new_text || parsed.new_string || edit.new_text || edit.new_string || edit.new_content || parsed.content} />
+        <PreviewRow label={t('approvalFieldOld')} value={parsed.old_text} />
+        <PreviewRow label={t('approvalFieldNew')} value={parsed.new_text || parsed.new_content || parsed.content} />
       </>
     );
   }
@@ -124,8 +125,31 @@ function ApprovalBody({ variant, args, details }) {
     return (
       <>
         <DetailRow label={t('approvalFieldTool')} value="create" />
-        <DetailRow label={t('approvalFieldFile')} value={parsed.file || parsed.path || '-'} />
-        <PreviewRow label={t('approvalFieldContent')} value={parsed.content || parsed.text || parsed.body} />
+        <DetailRow label={t('approvalFieldFile')} value={parsed.path || '-'} />
+        <PreviewRow label={t('approvalFieldContent')} value={parsed.content} />
+      </>
+    );
+  }
+  if (variant === 'write') {
+    return (
+      <>
+        <DetailRow label={t('approvalFieldTool')} value="write" />
+        <DetailRow label={t('approvalFieldFile')} value={parsed.path || '-'} />
+        <DetailRow label={t('approvalFieldAction')} value={parsed.overwrite ? 'overwrite' : 'write'} />
+        <PreviewRow label={t('approvalFieldContent')} value={parsed.content} />
+      </>
+    );
+  }
+  if (variant === 'apply_patch') {
+    const patchText = String(parsed.patch_text || '');
+    const files = [...patchText.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)]
+      .map((match) => match[1])
+      .filter(Boolean);
+    return (
+      <>
+        <DetailRow label={t('approvalFieldTool')} value="apply_patch" />
+        {files.length > 0 && <DetailRow label={t('approvalFieldFile')} value={files.join(', ')} />}
+        <PreviewRow label={t('approvalFieldContent')} value={patchText} />
       </>
     );
   }
@@ -159,10 +183,10 @@ export function ApprovalDialog({ request, open, onDecision }) {
   if (!request) return null;
   const { id, toolName, displayName, arguments: args, details } = request;
   const variant = detectVariant(toolName, details);
-  const hasRunShortcuts = variant === 'run';
+  const hasApprovalShortcuts = ['delete', 'run', 'edit', 'create', 'write', 'apply_patch'].includes(variant);
 
   const handleKeyDownCapture = (event) => {
-    if (!hasRunShortcuts) return;
+    if (!hasApprovalShortcuts) return;
     if (event.defaultPrevented || event.repeat) return;
 
     if (event.key === 'Escape') {
@@ -185,6 +209,7 @@ export function ApprovalDialog({ request, open, onDecision }) {
     edit: t('editApproval'),
     create: t('createApproval'),
     write: t('writeApproval'),
+    apply_patch: t('writeApproval'),
     plan: t('planApproval'),
     reflect: t('reflectApproval'),
     generic: t('approveTitle')
@@ -208,13 +233,13 @@ export function ApprovalDialog({ request, open, onDecision }) {
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={() => onDecision(id, false)}>
             {t('deny')}
-            {hasRunShortcuts && (
+            {hasApprovalShortcuts && (
               <span className="ml-1.5 text-[11px] font-mono opacity-70">Esc</span>
             )}
           </Button>
           <Button onClick={() => onDecision(id, true)}>
             {t('approve')}
-            {hasRunShortcuts && (
+            {hasApprovalShortcuts && (
               <span className="ml-1.5 text-[13px] leading-none opacity-80">↩︎</span>
             )}
           </Button>

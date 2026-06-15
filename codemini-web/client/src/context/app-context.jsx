@@ -1085,6 +1085,22 @@ function messagePlainText(message) {
     .trim();
 }
 
+function skillBadgeKey(badge = {}) {
+  return `${String(badge.status || "done")}::${String(badge.name || "").trim()}`;
+}
+
+function appendUniqueSkillBadges(current = [], next = []) {
+  const out = Array.isArray(current) ? [...current] : [];
+  const seen = new Set(out.map(skillBadgeKey));
+  for (const badge of Array.isArray(next) ? next : []) {
+    const key = skillBadgeKey(badge);
+    if (!String(badge?.name || "").trim() || seen.has(key)) continue;
+    seen.add(key);
+    out.push(badge);
+  }
+  return out;
+}
+
 function isStructuredPlanUiMessage(message) {
   return message?.role === "plan-overview" || !!message?.planStep;
 }
@@ -1867,10 +1883,10 @@ export function AppProvider({ children }) {
                   ? {
                       ...m,
                       isComplete: false,
-                      skillBadges: [
-                        ...(m.skillBadges || []),
-                        ...pendingSkillBadgesRef.current,
-                      ],
+                      skillBadges: appendUniqueSkillBadges(
+                        m.skillBadges || [],
+                        pendingSkillBadgesRef.current,
+                      ),
                     }
                   : m,
               ),
@@ -2425,10 +2441,10 @@ export function AppProvider({ children }) {
           };
           if (!names) break;
           if (!activeId) {
-            pendingSkillBadgesRef.current = [
-              ...pendingSkillBadgesRef.current,
-              badge,
-            ];
+            pendingSkillBadgesRef.current = appendUniqueSkillBadges(
+              pendingSkillBadgesRef.current,
+              [badge],
+            );
             break;
           }
           if (activeId) {
@@ -2438,7 +2454,10 @@ export function AppProvider({ children }) {
                 m.id === activeId
                   ? {
                       ...m,
-                      skillBadges: [...m.skillBadges, badge],
+                      skillBadges: appendUniqueSkillBadges(
+                        m.skillBadges || [],
+                        [badge],
+                      ),
                     }
                   : m,
               ),
@@ -3017,6 +3036,9 @@ export function AppProvider({ children }) {
           addMessage({
             role: "you",
             text: line,
+            attachments: Array.isArray(options.attachments)
+              ? options.attachments
+              : [],
             timestamp: new Date().toISOString(),
           });
         const waitingId = workflowControl
@@ -3036,6 +3058,9 @@ export function AppProvider({ children }) {
         try {
           const res = await api.submitLine(line, {
             readOnlyCodeWiki: options.readOnlyCodeWiki === true,
+            attachmentIds: Array.isArray(options.attachmentIds)
+              ? options.attachmentIds
+              : [],
           });
           const result = await res.json().catch(() => ({}));
           if (result?.code === "CONFIG_REQUIRED") {

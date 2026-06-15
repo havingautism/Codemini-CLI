@@ -59,24 +59,18 @@ function applyPatternAliases(source, patternAliases = [], pathAliases = []) {
 
 function applyWriteNormalization(source) {
   const normalized = { ...source };
-  const filePath = normalizeFilePathValue(source.path || source.file_path || source.file || '', {
+  const filePath = normalizeFilePathValue(source.path || '', {
     stripInlineRange: true
   });
   if (filePath) normalized.path = filePath;
-  const append = normalizeBooleanValue(source.append);
-  const fullFileRewrite = normalizeBooleanValue(source.full_file_rewrite);
-  if (append !== undefined) normalized.append = append;
-  if (fullFileRewrite !== undefined) normalized.full_file_rewrite = fullFileRewrite;
-  if (normalized.content == null) {
-    if (source.text != null) normalized.content = source.text;
-    if (source.new_content != null) normalized.content = source.new_content;
-  }
+  const overwrite = normalizeBooleanValue(source.overwrite);
+  if (overwrite !== undefined) normalized.overwrite = overwrite;
   return normalized;
 }
 
 function applyEditNormalization(source) {
   const normalized = { ...source };
-  const rawPathValue = source.path || source.file || source.file_path || '';
+  const rawPathValue = source.path || '';
   const inlineRange = parseInlineRangePath(rawPathValue);
   const value = normalizeFilePathValue(rawPathValue, { stripInlineRange: true });
   if (value) normalized.path = value;
@@ -84,12 +78,7 @@ function applyEditNormalization(source) {
     if (!Number.isFinite(Number(normalized.start_line))) normalized.start_line = inlineRange.start_line;
     if (!Number.isFinite(Number(normalized.end_line))) normalized.end_line = inlineRange.end_line;
   }
-  if (normalized.old_text == null && source.old_string != null) normalized.old_text = source.old_string;
-  if (normalized.new_text == null && source.new_string != null) normalized.new_text = source.new_string;
-  if (normalized.new_text == null && source.content != null && normalized.old_text != null) {
-    normalized.new_text = source.content;
-  }
-  const replaceAll = normalizeBooleanValue(source.replace_all ?? source.replaceAll);
+  const replaceAll = normalizeBooleanValue(source.replace_all);
   if (replaceAll !== undefined) normalized.replace_all = replaceAll;
   return normalized;
 }
@@ -113,6 +102,7 @@ const searchCodeArgsSchema = looseRecord
     return normalized;
   });
 const createArgsSchema = looseRecord.transform(applyWriteNormalization);
+const writeArgsSchema = looseRecord.transform(applyWriteNormalization);
 const editArgsSchema = looseRecord.transform(applyEditNormalization);
 const deleteArgsSchema = looseRecord
   .transform((source) => applyPathAliases(source, ['file_path', 'file', 'target', 'directory', 'dir']))
@@ -133,6 +123,11 @@ const webSearchArgsSchema = looseRecord
     const query = String(normalized.query || normalized.pattern || '').trim();
     return { ...normalized, query };
   });
+const applyPatchArgsSchema = looseRecord
+  .transform((source) => {
+    const normalized = { ...source };
+    return normalized;
+  });
 
 const TOOL_SCHEMAS = {
   read: readArgsSchema,
@@ -141,7 +136,9 @@ const TOOL_SCHEMAS = {
   grep: grepArgsSchema,
   search_code: searchCodeArgsSchema,
   create: createArgsSchema,
+  write: writeArgsSchema,
   edit: editArgsSchema,
+  apply_patch: applyPatchArgsSchema,
   delete: deleteArgsSchema,
   web_fetch: webFetchArgsSchema,
   web_search: webSearchArgsSchema
@@ -203,6 +200,13 @@ export function normalizeWebSearchArgs(rawArgs) {
 export function normalizeToolArguments(toolName, args, rawArguments) {
   const { source, stringValue } = prepareToolSource(args, rawArguments);
   const schema = TOOL_SCHEMAS[toolName];
+  if (source._invalid_json && ['create', 'write', 'edit', 'apply_patch', 'delete'].includes(toolName)) {
+    return {
+      _invalid_json: true,
+      _raw: source._raw || stringValue,
+      _parseError: source._parseError || 'Invalid JSON tool arguments'
+    };
+  }
 
   if (toolName === 'read') {
     return schema.parse({
@@ -234,23 +238,20 @@ export function normalizeToolArguments(toolName, args, rawArguments) {
       ...(stringValue && !source.query && !source.q && !source.pattern ? { query: stringValue } : {})
     });
   }
-  if (toolName === 'create') {
-    return schema.parse({
-      ...source,
-      ...(stringValue && !source.path ? { path: stringValue } : {})
-    });
+  if (toolName === 'create' || toolName === 'write') {
+    return schema.parse(source);
   }
   if (toolName === 'edit') {
-    return schema.parse({
-      ...source,
-      ...(stringValue && !source.path && !source.file && !source.file_path ? { path: stringValue } : {})
-    });
+    return schema.parse(source);
   }
   if (toolName === 'delete') {
     return schema.parse({
       ...source,
       ...(stringValue && !source.path ? { path: stringValue } : {})
     });
+  }
+  if (toolName === 'apply_patch') {
+    return schema.parse(source);
   }
   if (toolName === 'web_fetch' || toolName === 'web_search') {
     return schema.parse(source);

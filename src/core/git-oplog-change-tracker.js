@@ -5,7 +5,7 @@ import { normalizePath } from './string-utils.js';
 import { runGit } from './process-run.js';
 
 const CHANGE_OPLOG_VERSION = 1;
-const FILE_TOOLS = new Set(['edit', 'create', 'delete']);
+const FILE_TOOLS = new Set(['edit', 'create', 'write', 'apply_patch', 'delete']);
 
 function ensurePatchNewline(patch) {
   const text = String(patch || '');
@@ -41,15 +41,18 @@ function extractPathCandidates(args = {}, declaredChanges = [], options = {}) {
   }
   for (const value of [
     args?.path,
-    args?.file,
-    args?.file_path,
     args?.target,
-    args?.edit?.path,
-    args?.edit?.file,
-    args?.edit?.file_path,
-    args?.edit?.target?.path
   ]) {
     if (typeof value === 'string') candidates.push(value);
+  }
+  const patchText = String(args?.patch_text || '');
+  if (patchText) {
+    for (const match of patchText.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)) {
+      candidates.push(match[1]);
+    }
+    for (const match of patchText.matchAll(/^\*\*\* Move to: (.+)$/gm)) {
+      candidates.push(match[1]);
+    }
   }
   const out = [];
   const seen = new Set();

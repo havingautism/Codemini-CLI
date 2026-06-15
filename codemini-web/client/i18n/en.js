@@ -11,6 +11,13 @@ export const en = {
   inputDisabled: 'Waiting for current request to finish...',
   inputPlanReviewDisabled: 'Review the plan above before continuing',
   abort: 'Stop',
+  attachmentsLabel: 'Attachments',
+  attachmentFallbackPrompt: 'Please review the attachments',
+  attachmentUploading: 'Uploading attachment…',
+  attachmentUploadFailed: 'Attachment upload failed',
+  attachmentDocUnsupported: '.doc is not supported yet. Upload a .docx file instead.',
+  attachmentImage: 'Image attachment',
+  removeAttachment: 'Remove attachment',
 
   approveTitle: 'Confirm Action',
   approve: 'Approve',

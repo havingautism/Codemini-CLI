@@ -1303,7 +1303,7 @@ async function writeFile(root, args, config = {}) {
       throw new Error(`create target is a directory: ${rawPath}`);
     }
   } catch (error) {
-    if (error?.code && error.code !== "ENOENT") throw error;
+    if (!error?.code || error.code !== "ENOENT") throw error;
   }
   let existed = false;
   try {
@@ -1330,6 +1330,267 @@ async function writeFile(root, args, config = {}) {
     diff_preview: buildDiffPreview("", nextContent),
     lines_added: changed.added,
     lines_removed: changed.removed,
+  };
+}
+
+async function writeAnyFile(root, args, config = {}) {
+  const normalizedArgs = normalizeWriteArgs(args);
+  const rawPath = String(normalizedArgs?.path || "").trim();
+  if (!rawPath) {
+    throw new Error("write requires a file path like src/app.js");
+  }
+  if (rawPath === "." || rawPath === "./") {
+    throw new Error("write requires a file path, not the workspace root");
+  }
+  if (normalizedArgs?.content == null) {
+    throw new Error("write requires content");
+  }
+  const overwrite = semanticBoolean(
+    normalizedArgs?.overwrite,
+    false,
+  );
+  const target = await resolveInWorkspace(root, rawPath, config);
+  let beforeContent = "";
+  let existed = false;
+  try {
+    const stat = await fs.stat(target);
+    if (stat.isDirectory()) {
+      throw new Error(`write target is a directory: ${rawPath}`);
+    }
+    beforeContent = await fs.readFile(target, "utf8");
+    existed = true;
+  } catch (error) {
+    if (error?.code && error.code !== "ENOENT") throw error;
+  }
+  if (existed && !overwrite) {
+    throw new Error(
+      `write target already exists: ${rawPath}. Set overwrite=true for an intentional full-file replacement, or use edit for a small change.`,
+    );
+  }
+  const nextContent = String(normalizedArgs.content ?? "");
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.writeFile(target, nextContent, "utf8");
+  const beforeLines = splitLines(beforeContent);
+  const afterLines = splitLines(nextContent);
+  return {
+    ok: true,
+    path: rawPath,
+    action: existed ? "rewrite_file" : "create",
+    changed_line: 1,
+    diff_preview: buildDiffPreview(beforeContent, nextContent),
+    lines_added: afterLines.length,
+    lines_removed: existed ? beforeLines.length : 0,
+    overwritten: existed,
+  };
+}
+
+function normalizePatchText(value = "") {
+  return String(value || "").replace(/\r\n|\r/g, "\n");
+}
+
+function parsePatchText(rawPatchText = "") {
+  const text = normalizePatchText(rawPatchText).trim();
+  if (!text) throw new Error("patch_text is required");
+  const lines = text.split("\n");
+  if (lines[0] !== "*** Begin Patch") {
+    throw new Error("patch must start with *** Begin Patch");
+  }
+  if (lines[lines.length - 1] !== "*** End Patch") {
+    throw new Error("patch must end with *** End Patch");
+  }
+  const hunks = [];
+  let i = 1;
+  while (i < lines.length - 1) {
+    const line = lines[i];
+    if (!line.trim()) {
+      i += 1;
+      continue;
+    }
+    if (line.startsWith("*** Add File: ")) {
+      const filePath = normalizeFilePathValue(line.slice("*** Add File: ".length), { stripInlineRange: true }).trim();
+      i += 1;
+      const contentLines = [];
+      while (i < lines.length - 1 && !lines[i].startsWith("*** ")) {
+        if (!lines[i].startsWith("+")) {
+          throw new Error(`add file lines must start with + for ${filePath}`);
+        }
+        contentLines.push(lines[i].slice(1));
+        i += 1;
+      }
+      hunks.push({ type: "add", path: filePath, content: contentLines.join("\n") });
+      continue;
+    }
+    if (line.startsWith("*** Delete File: ")) {
+      const filePath = normalizeFilePathValue(line.slice("*** Delete File: ".length), { stripInlineRange: true }).trim();
+      hunks.push({ type: "delete", path: filePath });
+      i += 1;
+      continue;
+    }
+    if (line.startsWith("*** Update File: ")) {
+      const filePath = normalizeFilePathValue(line.slice("*** Update File: ".length), { stripInlineRange: true }).trim();
+      i += 1;
+      let movePath = "";
+      if (i < lines.length - 1 && lines[i].startsWith("*** Move to: ")) {
+        movePath = normalizeFilePathValue(lines[i].slice("*** Move to: ".length), { stripInlineRange: true }).trim();
+        i += 1;
+      }
+      const chunks = [];
+      while (i < lines.length - 1 && !lines[i].startsWith("*** ")) {
+        if (!lines[i].startsWith("@@")) {
+          throw new Error(`update chunk for ${filePath} must start with @@`);
+        }
+        const context = lines[i].slice(2).trim();
+        i += 1;
+        const oldLines = [];
+        const newLines = [];
+        while (
+          i < lines.length - 1 &&
+          !lines[i].startsWith("@@") &&
+          !lines[i].startsWith("*** ")
+        ) {
+          const changeLine = lines[i];
+          if (changeLine === "*** End of File") {
+            i += 1;
+            break;
+          }
+          if (changeLine.startsWith(" ")) {
+            oldLines.push(changeLine.slice(1));
+            newLines.push(changeLine.slice(1));
+          } else if (changeLine.startsWith("-")) {
+            oldLines.push(changeLine.slice(1));
+          } else if (changeLine.startsWith("+")) {
+            newLines.push(changeLine.slice(1));
+          } else if (!changeLine.trim()) {
+            oldLines.push("");
+            newLines.push("");
+          } else {
+            throw new Error(`invalid patch line in ${filePath}: ${changeLine.slice(0, 80)}`);
+          }
+          i += 1;
+        }
+        chunks.push({ context, oldText: oldLines.join("\n"), newText: newLines.join("\n") });
+      }
+      hunks.push({ type: movePath ? "move" : "update", path: filePath, movePath, chunks });
+      continue;
+    }
+    throw new Error(`unknown patch header: ${line}`);
+  }
+  if (hunks.length === 0) throw new Error("patch rejected: no file changes");
+  return hunks;
+}
+
+function applyPatchChunksToContent(content, chunks, relativePath) {
+  let current = String(content || "");
+  let changedLine = 1;
+  for (const chunk of chunks || []) {
+    const oldText = String(chunk.oldText ?? "");
+    const newText = String(chunk.newText ?? "");
+    if (!oldText && !newText) continue;
+    if (!oldText) {
+      current = `${current}${applyEol(newText, detectEol(current))}`;
+      continue;
+    }
+    const matches = findFlexibleTextMatches(current, oldText);
+    if (matches.length === 0) {
+      throw new Error(`apply_patch old text not found in ${relativePath}`);
+    }
+    if (matches.length > 1) {
+      throw new Error(`apply_patch old text not unique in ${relativePath}; add more context lines`);
+    }
+    const match = matches[0];
+    const original = current.slice(match.start, match.end);
+    const replacement = applyEol(newText, detectEol(original));
+    changedLine = splitLines(current.slice(0, match.start)).length;
+    current = `${current.slice(0, match.start)}${replacement}${current.slice(match.end)}`;
+  }
+  return { content: current, changedLine };
+}
+
+async function applyPatchText(root, args, config = {}) {
+  const patchText = String(args?.patch_text ?? "").trim();
+  const hunks = parsePatchText(patchText);
+  const changes = [];
+  for (const hunk of hunks) {
+    if (!hunk.path) throw new Error("patch file path is required");
+    const target = await resolveInWorkspace(root, hunk.path, config);
+    if (hunk.type === "add") {
+      try {
+        const stat = await fs.stat(target);
+        if (stat.isDirectory()) throw new Error(`apply_patch target is a directory: ${hunk.path}`);
+        throw new Error(`apply_patch add target already exists: ${hunk.path}`);
+      } catch (error) {
+        if (!error?.code || error.code !== "ENOENT") throw error;
+      }
+      const afterContent = String(hunk.content ?? "");
+      changes.push({
+        type: "add",
+        path: hunk.path,
+        target,
+        beforeContent: "",
+        afterContent,
+        changedLine: 1,
+      });
+      continue;
+    }
+    if (hunk.type === "delete") {
+      const beforeContent = await fs.readFile(target, "utf8");
+      changes.push({
+        type: "delete",
+        path: hunk.path,
+        target,
+        beforeContent,
+        afterContent: "",
+        changedLine: 1,
+      });
+      continue;
+    }
+    const beforeContent = await fs.readFile(target, "utf8");
+    const applied = applyPatchChunksToContent(beforeContent, hunk.chunks, hunk.path);
+    const moveTarget = hunk.movePath ? await resolveInWorkspace(root, hunk.movePath, config) : "";
+    changes.push({
+      type: hunk.type,
+      path: hunk.path,
+      target,
+      movePath: hunk.movePath || "",
+      moveTarget,
+      beforeContent,
+      afterContent: applied.content,
+      changedLine: applied.changedLine,
+    });
+  }
+
+  for (const change of changes) {
+    if (change.type === "delete") {
+      await fs.rm(change.target, { force: false });
+      continue;
+    }
+    const writeTarget = change.moveTarget || change.target;
+    await fs.mkdir(path.dirname(writeTarget), { recursive: true });
+    await fs.writeFile(writeTarget, change.afterContent, "utf8");
+    if (change.moveTarget) {
+      await fs.rm(change.target, { force: false });
+    }
+  }
+
+  const diffPreview = changes
+    .map((change) => {
+      const label = change.movePath ? `${change.path} -> ${change.movePath}` : change.path;
+      return [`# ${change.type} ${label}`, buildDiffPreview(change.beforeContent, change.afterContent)]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n");
+  const linesAdded = changes.reduce((sum, change) => sum + splitLines(change.afterContent).length, 0);
+  const linesRemoved = changes.reduce((sum, change) => sum + splitLines(change.beforeContent).length, 0);
+  return {
+    ok: true,
+    action: "apply_patch",
+    path: changes.length === 1 ? (changes[0].movePath || changes[0].path) : "",
+    files: changes.map((change) => change.movePath || change.path),
+    changed_line: changes[0]?.changedLine || 1,
+    diff_preview: diffPreview,
+    lines_added: linesAdded,
+    lines_removed: linesRemoved,
   };
 }
 async function prepareDeleteTarget(root, args, config = {}) {
@@ -2311,7 +2572,70 @@ function findLineBlockMatches(
   return matches;
 }
 
-function findFlexibleTextMatches(content, oldText) {
+function parseSingleLineTag(text = "") {
+  const trimmed = String(text || "").trim();
+  if (/[\r\n]/.test(trimmed)) return null;
+  const match = trimmed.match(/^<([A-Za-z][A-Za-z0-9:_-]*)(\s[^<>]*?)?\s*\/?>$/);
+  if (!match) return null;
+  const tagName = match[1];
+  const attrText = match[2] || "";
+  const attrs = new Map();
+  const attrRegex =
+    /([A-Za-z_:][A-Za-z0-9:_.-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+  let attrMatch;
+  while ((attrMatch = attrRegex.exec(attrText)) !== null) {
+    const name = attrMatch[1];
+    const value = attrMatch[2] ?? attrMatch[3] ?? attrMatch[4] ?? "";
+    attrs.set(name, value);
+  }
+  return { tagName, attrs, trimmed };
+}
+
+function findAttributeDriftTagMatches(content, oldText, newText) {
+  const oldTag = parseSingleLineTag(oldText);
+  const newTag = parseSingleLineTag(newText);
+  if (!oldTag || !newTag || oldTag.tagName !== newTag.tagName) return [];
+
+  const stableAttrs = [];
+  for (const [name, value] of oldTag.attrs.entries()) {
+    if (newTag.attrs.has(name) && newTag.attrs.get(name) === value) {
+      stableAttrs.push([name, value]);
+    }
+  }
+  const hasStrongAnchor =
+    stableAttrs.some(([name]) => name === "id") || stableAttrs.length >= 2;
+  if (!hasStrongAnchor) return [];
+
+  const matches = [];
+  let offset = 0;
+  while (offset < content.length) {
+    const newlineIndex = content.indexOf("\n", offset);
+    const lineEnd = newlineIndex === -1 ? content.length : newlineIndex + 1;
+    const rawLine = content.slice(offset, lineEnd);
+    const lineBody = rawLine.replace(/\r?\n$/, "").replace(/\r$/, "");
+    const leading = lineBody.match(/^\s*/)?.[0] || "";
+    const candidate = parseSingleLineTag(lineBody);
+    if (candidate && candidate.tagName === oldTag.tagName) {
+      const stableMatch = stableAttrs.every(
+        ([name, value]) => candidate.attrs.get(name) === value,
+      );
+      const wouldDropAttrs = [...candidate.attrs.keys()].some(
+        (name) => !newTag.attrs.has(name),
+      );
+      if (stableMatch && !wouldDropAttrs) {
+        matches.push({
+          start: offset,
+          end: offset + lineBody.length,
+          replacementText: `${leading}${newTag.trimmed}`,
+        });
+      }
+    }
+    offset = lineEnd;
+  }
+  return matches;
+}
+
+function findFlexibleTextMatches(content, oldText, newText = "") {
   if (!oldText) return [];
 
   const exact = [];
@@ -2335,6 +2659,13 @@ function findFlexibleTextMatches(content, oldText) {
   });
   if (flexTrim.length > 0) return flexTrim;
 
+  const attributeDrift = findAttributeDriftTagMatches(
+    content,
+    oldText,
+    newText,
+  );
+  if (attributeDrift.length > 0) return attributeDrift;
+
   return findLineBlockMatches(content, oldText, { compareTrimStart: false });
 }
 
@@ -2345,8 +2676,9 @@ function applyMatchReplacements(searchContent, matches, newText, replaceAll) {
   let replaced = "";
   for (const match of selected) {
     const originalMatch = searchContent.slice(match.start, match.end);
+    const replacementText = match.replacementText ?? newText;
     replaced += searchContent.slice(cursor, match.start);
-    replaced += applyEol(newText, detectEol(originalMatch));
+    replaced += applyEol(replacementText, detectEol(originalMatch));
     cursor = match.end;
     if (!replaceAll) break;
   }
@@ -2437,7 +2769,7 @@ async function replaceText(root, args, config = {}) {
   const relativePath = String(args?.path || "").trim();
   const oldText = String(args?.old_text || "");
   const newText = String(args?.new_text || "");
-  const replaceAll = semanticBoolean(args?.replace_all ?? args?.replaceAll);
+  const replaceAll = semanticBoolean(args?.replace_all);
   const state = await getFileState(root, relativePath, config);
   if (!oldText) {
     throw new Error("replace_text requires old_text");
@@ -2457,7 +2789,7 @@ async function replaceText(root, args, config = {}) {
   const searchContent = range
     ? state.content.slice(range.startOffset, range.endOffset)
     : state.content;
-  let matches = findFlexibleTextMatches(searchContent, oldText);
+  let matches = findFlexibleTextMatches(searchContent, oldText, newText);
   let effectiveSearchContent = searchContent;
   let effectiveRange = range;
   if (
@@ -2465,7 +2797,7 @@ async function replaceText(root, args, config = {}) {
     range &&
     args?.auto_range_from_recent_read === true
   ) {
-    const fullMatches = findFlexibleTextMatches(state.content, oldText);
+    const fullMatches = findFlexibleTextMatches(state.content, oldText, newText);
     if (fullMatches.length > 0) {
       matches = fullMatches;
       effectiveSearchContent = state.content;
@@ -2846,46 +3178,13 @@ async function openTarget(root, args, config = {}) {
 }
 
 function normalizeEditTargetArgs(args = {}) {
-  const rawFile = String(
-    args?.file || args?.path || args?.file_path || "",
-  ).trim();
+  const rawFile = String(args?.path || args?.ast_target?.path || "").trim();
   const inlineRange = parseInlineRangePath(rawFile);
   const file = normalizeFilePathValue(rawFile, {
     stripInlineRange: true,
   }).trim();
-  const nestedEdit =
-    args?.edit && typeof args.edit === "object" ? args.edit : null;
   const startLine = args?.start_line ?? args?.line ?? inlineRange?.start_line;
   const endLine = args?.end_line ?? inlineRange?.end_line ?? args?.line;
-  if (nestedEdit) {
-    const normalizedEdit = { ...nestedEdit };
-    if (normalizedEdit.new_content == null && normalizedEdit.content != null) {
-      normalizedEdit.new_content = normalizedEdit.content;
-    }
-    if (normalizedEdit.old_text == null && normalizedEdit.old_string != null) {
-      normalizedEdit.old_text = normalizedEdit.old_string;
-    }
-    if (
-      normalizedEdit.new_text == null &&
-      normalizedEdit.content != null &&
-      normalizedEdit.old_text != null
-    ) {
-      normalizedEdit.new_text = normalizedEdit.content;
-    }
-    if (normalizedEdit.new_text == null && normalizedEdit.new_string != null) {
-      normalizedEdit.new_text = normalizedEdit.new_string;
-    }
-    return {
-      path: file,
-      file,
-      start_line: startLine,
-      end_line: endLine,
-      ast_target: normalizedEdit.ast_target ?? args?.ast_target,
-      edit: normalizedEdit,
-    };
-  }
-  const topLevelOldText = args?.old_text ?? args?.old_string;
-  const topLevelContent = args?.content;
   return {
     path: file,
     file,
@@ -2895,18 +3194,12 @@ function normalizeEditTargetArgs(args = {}) {
     edit: {
       kind: args?.kind,
       target: args?.target,
-      new_content: args?.new_content ?? args?.content,
+      new_content: args?.new_content,
       old_text: args?.old_text,
-      new_text:
-        args?.new_text ??
-        (topLevelOldText != null && topLevelContent != null
-          ? topLevelContent
-          : undefined),
-      old_string: args?.old_string,
-      new_string: args?.new_string,
+      new_text: args?.new_text,
       anchor_text: args?.anchor_text,
       content: args?.content,
-      replace_all: args?.replace_all ?? args?.replaceAll,
+      replace_all: args?.replace_all,
     },
   };
 }
@@ -2921,13 +3214,8 @@ async function editTarget(root, args, config = {}) {
   const astTarget = normalized.ast_target;
   const edit = normalized.edit || {};
   let kind = String(edit.kind || "").trim();
-  if (edit.old_text == null && edit.old_string != null) {
-    edit.old_text = edit.old_string;
-  }
-  if (edit.new_text == null && edit.new_string != null) {
-    edit.new_text = edit.new_string;
-  }
   const hasContent = edit.new_content != null || edit.content != null;
+  const hasExplicitNewContent = args?.new_content != null;
   const hasExplicitRewrite =
     edit.kind === "rewrite_file" || args?.kind === "rewrite_file";
   const hasTargetHint = Boolean(
@@ -2950,7 +3238,15 @@ async function editTarget(root, args, config = {}) {
         "after"
           ? "insert_after"
           : "insert_before";
-    } else if (hasContent && hasExplicitRewrite) {
+    } else if (edit.new_content != null && hasExplicitRewrite) {
+      kind = "rewrite_file";
+    } else if (
+      edit.old_text == null &&
+      edit.anchor_text == null &&
+      edit.target_text == null &&
+      !hasTargetHint &&
+      hasExplicitNewContent
+    ) {
       kind = "rewrite_file";
     }
   }
@@ -2966,8 +3262,8 @@ async function editTarget(root, args, config = {}) {
         ? "new_text"
         : "edit operation";
     const hint = recentFile
-      ? ` If you meant the recently read file ${recentFile}, use edit with {file:"${recentFile}", old_text:"...", new_text:"..."} for a text replacement, or {file:"${recentFile}", kind:"rewrite_file", new_content:"..."} for a full rewrite.`
-      : ' Use edit with {file:"path", old_text:"...", new_text:"..."} for a text replacement, or {file:"path", kind:"rewrite_file", new_content:"..."} for a full rewrite.';
+      ? ` If you meant the recently read file ${recentFile}, use edit with {path:"${recentFile}", old_text:"...", new_text:"..."} for a text replacement, or {path:"${recentFile}", new_content:"..."} for a full rewrite.`
+      : ' Use edit with {path:"path", old_text:"...", new_text:"..."} for a text replacement, or {path:"path", new_content:"..."} for a full rewrite.';
     throw new Error(`edit requires ${missing}.${rawArgs}${hint}`);
   }
   if (astTarget) {
@@ -3042,7 +3338,7 @@ async function editTarget(root, args, config = {}) {
         path: file,
         old_text: edit.old_text,
         new_text: edit.new_text,
-        replace_all: edit.replace_all ?? args?.replace_all ?? args?.replaceAll,
+        replace_all: edit.replace_all ?? args?.replace_all,
         start_line: edit.start_line ?? normalized.start_line,
         end_line: edit.end_line ?? normalized.end_line,
         auto_range_from_recent_read: args?.auto_range_from_recent_read === true,
@@ -3067,8 +3363,11 @@ async function editTarget(root, args, config = {}) {
     );
   }
   if (kind === "rewrite_file") {
+    if (edit.new_content == null) {
+      throw new Error("rewrite_file requires new_content");
+    }
     const state = await getFileState(root, file, config);
-    const afterContent = String(edit.new_content ?? edit.content ?? "");
+    const afterContent = String(edit.new_content ?? "");
     await fs.writeFile(state.target, afterContent, "utf8");
     return editResult(file, "rewrite_file", state.content, afterContent, 1);
   }
@@ -3108,11 +3407,7 @@ export function getBuiltinTools({
       args?.ast_target ||
       args?.symbol ||
       args?.line ||
-      args?.target ||
-      args?.edit?.ast_target ||
-      args?.edit?.symbol ||
-      args?.edit?.line ||
-      args?.edit?.target,
+      args?.target,
     );
   const resolveCachedAstTarget = (
     args = {},
@@ -3120,8 +3415,6 @@ export function getBuiltinTools({
   ) => {
     const file = normalizeFilePathValue(
       args?.path ||
-        args?.file ||
-        args?.file_path ||
         args?.ast_target?.path ||
         "",
       { stripInlineRange: true },
@@ -3380,7 +3673,7 @@ export function getBuiltinTools({
       function: {
         name: "edit",
         description:
-          'Edit existing files after reading enough surrounding code. Prefer search_code → read → edit. Use {path, old_text, new_text}; old_string/new_string and file_path/file are accepted aliases. For structural replacements, prefer search_code({mode:"structure"}) → read({ast_target}) → edit({ast_target, kind:"replace_block", content}). If old_text is repeated, use path:"file:10-30" or rely on the most recent read range. Set replace_all=true to replace every match.',
+          'Edit an existing file after reading enough surrounding code. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. Use exactly one canonical shape: {path, old_text, new_text} for text replacement; {path, new_content} for full-file rewrite; {path, anchor_text, content, position:"before"|"after"} for inserts; or {path, kind:"replace_block", target|ast_target, new_content} for structural replacement. If old_text is repeated, use path:"file:10-30" or rely on the most recent read range. Set replace_all=true to replace every match.',
         parameters: {
           type: "object",
           properties: {
@@ -3389,13 +3682,9 @@ export function getBuiltinTools({
               description:
                 "File path to edit. Inline ranges like src/app.js:10-30 are accepted.",
             },
-            file_path: { type: "string", description: "Alias for path" },
-            file: { type: "string", description: "Alias for path" },
-            new_content: { type: "string", description: "Replacement content" },
+            new_content: { type: "string", description: "Full-file replacement content for existing files. In JSON text, encode newlines as \\n." },
             old_text: { type: "string", description: "Exact text to replace" },
-            new_text: { type: "string", description: "Replacement text" },
-            old_string: { type: "string", description: "Alias for old_text" },
-            new_string: { type: "string", description: "Alias for new_text" },
+            new_text: { type: "string", description: "Replacement text for old_text" },
             replace_all: {
               type: "boolean",
               description: "Replace all matching old_text occurrences",
@@ -3414,7 +3703,7 @@ export function getBuiltinTools({
             },
             content: {
               type: "string",
-              description: "Content to insert or append",
+              description: "Content to insert with anchor_text/position, or block content for kind:\"replace_block\". Use new_text with old_text replacements, and new_content for full-file rewrites.",
             },
             position: { type: "string", description: "before or after" },
             kind: {
@@ -3433,7 +3722,6 @@ export function getBuiltinTools({
             },
             symbol: { type: "string", description: "Symbol to target" },
             line: { type: "number", description: "Line to target" },
-            edit: { type: "object", description: "Structured edit input" },
           },
           required: [],
         },
@@ -3442,22 +3730,47 @@ export function getBuiltinTools({
     {
       type: "function",
       function: {
-        name: "create",
+        name: "write",
         description:
-          "Create a new file. Always include path and content; file_path/file are accepted aliases. For modifying existing files, use edit instead. Target must not already exist.",
+          "Write an entire file. Use for new files, or for an intentional full-file overwrite of an existing file with overwrite=true. Always include exactly {path, content}. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. For small changes in existing files, prefer edit with {path, old_text, new_text}.",
         parameters: {
           type: "object",
           properties: {
             path: {
               type: "string",
               description:
-                "Required file path like src/app.js or pages/index.html. Never omit this.",
+                "Required file path like src/app.js or pages/index.html.",
             },
-            file_path: { type: "string", description: "Alias for path" },
-            file: { type: "string", description: "Alias for path" },
-            content: { type: "string", description: "File content" },
+            content: {
+              type: "string",
+              description: "Complete file content. In JSON text, encode newlines as \\n.",
+            },
+            overwrite: {
+              type: "boolean",
+              description:
+                "Set true to intentionally replace an existing file. Defaults to false.",
+            },
           },
           required: ["path", "content"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "apply_patch",
+        description:
+          "Apply one or more explicit file patches. Use this for large or multi-file changes when exact edit calls would be unwieldy. The patch_text string must be valid JSON string content, with newlines escaped as \\n. Patch format: *** Begin Patch, then hunks using *** Add File:, *** Update File:, optional *** Move to:, or *** Delete File:, then *** End Patch. Update hunks use @@ chunks with space context lines, - removed lines, and + added lines.",
+        parameters: {
+          type: "object",
+          properties: {
+            patch_text: {
+              type: "string",
+              description:
+                "Patch text beginning with *** Begin Patch and ending with *** End Patch. In JSON text, encode newlines as \\n.",
+            },
+          },
+          required: ["patch_text"],
         },
       },
     },
@@ -3716,7 +4029,7 @@ export function getBuiltinTools({
       function: {
         name: "create_plan",
         description:
-          "Create and execute a structured implementation plan in coding mode. Use when the goal, scope, and constraints are already clear enough to break work into sub-agent execution steps. Do not call for simple localized changes; implement those directly with edit/create/delete instead. Do not call if important details are still unknown or if a design spec is still needed. Assign roles correctly: explorer/architect/advisor are read-only; coder/refactorer/writer implement changes; never assign explorer to implement or edit code.",
+          "Create and execute a structured implementation plan in coding mode. Use when the goal, scope, and constraints are already clear enough to break work into sub-agent execution steps. Do not call for simple localized changes; implement those directly with edit/write/apply_patch/delete instead. Do not call if important details are still unknown or if a design spec is still needed. Assign roles correctly: explorer/architect/advisor are read-only; coder/refactorer/writer implement changes; never assign explorer to implement or edit code.",
         parameters: {
           type: "object",
           properties: {
@@ -4311,6 +4624,24 @@ export function getBuiltinTools({
       backupReason: backup.reason || "",
     };
   }
+  function attachBackups(result, backups = []) {
+    const validBackups = (Array.isArray(backups) ? backups : []).filter(Boolean);
+    if (validBackups.length === 0 || !result || typeof result !== "object") return result;
+    const [first] = validBackups;
+    return {
+      ...attachBackup(result, first),
+      non_git_backups: validBackups.map((backup) => ({
+        path: backup.path || "",
+        backupPath: backup.backupPath || "",
+        backupRelativePath: backup.backupRelativePath || "",
+        created: backup.created === true,
+        reused: backup.reused === true,
+        skipped: backup.skipped === true,
+        error: backup.error || "",
+        reason: backup.reason || "",
+      })),
+    };
+  }
   let fffConnected = false;
 
   async function ensureFffConnected() {
@@ -4867,13 +5198,9 @@ export function getBuiltinTools({
     },
     edit: async (args) => {
       await ensureProjectIndex();
-      const normalizedKind = String(
-        args?.edit?.kind || args?.kind || "",
-      ).trim();
+      const normalizedKind = String(args?.kind || "").trim();
       const hasReplaceTextArgs =
-        args?.edit?.old_text != null ||
-        args?.old_text != null ||
-        args?.old_string != null;
+        args?.old_text != null;
       const astTarget =
         hasReplaceTextArgs ||
         (normalizedKind && normalizedKind !== "replace_block")
@@ -4883,10 +5210,7 @@ export function getBuiltinTools({
             });
       const editPath = normalizeFilePathValue(
         args?.path ||
-          args?.file ||
-          args?.file_path ||
           args?.ast_target?.path ||
-          args?.edit?.target?.path ||
           "",
         { stripInlineRange: true },
       ).trim();
@@ -4894,9 +5218,9 @@ export function getBuiltinTools({
         editPath &&
         lastReadRange?.path === editPath &&
         !Number.isFinite(
-          Number(args?.start_line || args?.line || args?.edit?.start_line),
+          Number(args?.start_line || args?.line),
         ) &&
-        !Number.isFinite(Number(args?.end_line || args?.edit?.end_line));
+        !Number.isFinite(Number(args?.end_line));
       const rangeArgs = shouldUseRecentReadRange
         ? {
             start_line: lastReadRange.start_line,
@@ -4923,13 +5247,52 @@ export function getBuiltinTools({
     create: async (args) => {
       await ensureProjectIndex();
       const createPath = normalizeFilePathValue(
-        args?.path || args?.file || args?.file_path || "",
+        args?.path || "",
         { stripInlineRange: true },
       ).trim();
       const backup = await backupNonGitPathOnce(createPath);
       const result = await writeFile(workspaceRoot, args, config);
       if (result?.path) await refreshProjectFile(result.path);
       return attachBackup(result, backup);
+    },
+    write: async (args) => {
+      await ensureProjectIndex();
+      const writePath = normalizeFilePathValue(
+        args?.path || "",
+        { stripInlineRange: true },
+      ).trim();
+      const backup = await backupNonGitPathOnce(writePath);
+      const result = await writeAnyFile(workspaceRoot, args, config);
+      if (result?.path) await refreshProjectFile(result.path);
+      return attachBackup(result, backup);
+    },
+    apply_patch: async (args) => {
+      await ensureProjectIndex();
+      const patchText = String(
+        args?.patch_text ?? "",
+      );
+      const parsedHunks = parsePatchText(patchText);
+      const backupPaths = [];
+      const seenBackupPaths = new Set();
+      for (const hunk of parsedHunks) {
+        for (const pathValue of [hunk.path, hunk.movePath].filter(Boolean)) {
+          const normalized = normalizeFilePathValue(pathValue, {
+            stripInlineRange: true,
+          }).trim();
+          if (!normalized || seenBackupPaths.has(normalized)) continue;
+          seenBackupPaths.add(normalized);
+          backupPaths.push(normalized);
+        }
+      }
+      const backups = [];
+      for (const pathValue of backupPaths) {
+        backups.push(await backupNonGitPathOnce(pathValue));
+      }
+      const result = await applyPatchText(workspaceRoot, args, config);
+      for (const changedPath of result?.files || []) {
+        await refreshProjectFile(changedPath);
+      }
+      return attachBackups(result, backups);
     },
     delete: Object.assign(
       async (args) => {

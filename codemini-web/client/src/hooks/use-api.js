@@ -77,10 +77,25 @@ export async function submitLine(line, options = {}) {
     headers: JSON_HEADERS,
     body: JSON.stringify({
       line,
-      ...(options.readOnlyCodeWiki ? { readOnlyCodeWiki: true } : {})
+      ...(options.readOnlyCodeWiki ? { readOnlyCodeWiki: true } : {}),
+      ...(Array.isArray(options.attachmentIds) && options.attachmentIds.length
+        ? { attachmentIds: options.attachmentIds }
+        : {})
     })
   });
   return res;
+}
+
+export async function uploadAttachments(files = []) {
+  const form = new FormData();
+  for (const file of files) {
+    form.append('files', file);
+  }
+  const res = await api('/api/attachments', {
+    method: 'POST',
+    body: form
+  });
+  return res.json();
 }
 
 export async function abortRequest() {

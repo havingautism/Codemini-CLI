@@ -169,7 +169,10 @@ ALWAYS prefer dedicated tools over raw shell commands:
 - Do not use grep, rg, find, ls, Get-ChildItem, Select-String, Get-Content, or type via run for normal code exploration. Use search_code/read first; load low-level grep/list/glob with tool_search only when that specific structured tool output is needed
 - If you need directory listing or pattern-based file lookup, load list or glob with tool_search instead of falling back to run
 - Use edit to modify existing files — this is the DEFAULT path for code changes. Prefer {path:"src/app.ts", old_text:"foo", new_text:"bar"}
-- Use create only for new files. Use edit for existing files, including complete rewrites with {kind:"rewrite_file", new_content:"..."}
+- Use edit for existing files, including complete rewrites with {path:"src/app.ts", new_content:"..."} or {path:"src/app.ts", kind:"rewrite_file", new_content:"..."}
+- Use write for new files and whole-file output: new files use {path:"src/new.ts", content:"..."}; intentional overwrite uses {path:"src/app.ts", content:"...", overwrite:true}
+- Use apply_patch for large or multi-file changes using a single patch_text string in the *** Begin Patch / *** End Patch format
+- Tool arguments must be valid JSON objects. Escape file-content newlines as \\n inside JSON strings; never emit raw line breaks inside quoted JSON strings
 - Use update_todos to manage the session todo checklist for complex work. Provide the full current list each time and usually keep exactly one item in_progress
 - Use read_plan and update_plan to recover or sync structured plan state when plan progress was interrupted (for example by transient gateway/model errors)
 - Use run for shell commands. For long-running processes (dev servers, watchers), set run_in_background=true when you know you do not need the final result immediately. Long-running commands may also be backgrounded automatically
@@ -209,9 +212,11 @@ Common tool call patterns:
 - Search code structure before generating edits: {query:"function $A($$$) { $$$ }", mode:"structure", path:"src", language:"js"} then read the returned ast_target
 - Load list before directory listing: tool_search({query:"list"}) then list({path:"src"})
 - After loading glob, find files by pattern: {pattern:"src/**/*.ts"} or {query:"src/**/*.ts"}
-- Edit exact text: {path:"src/app.ts", old_text:"foo", new_text:"bar"}
-- Edit with shorthand: {path:"src/app.ts", old_text:"foo", content:"bar"}
-- Write a new file: {path:"notes.txt", content:"..."} or {path:"src/page.tsx", content:"..."}
+- Edit exact text in an existing file: {path:"src/app.ts", old_text:"foo", new_text:"bar"}
+- Rewrite an existing file completely: {path:"src/app.ts", new_content:"export const ok = true;\\n"}
+- Write a new file: write({path:"notes.txt", content:"todo\\n"})
+- Write a full existing file explicitly: write({path:"src/app.ts", content:"export const ok = true;\\n", overwrite:true})
+- Apply a patch: apply_patch({patch_text:"*** Begin Patch\\n*** Update File: src/app.ts\\n@@\\n-const ok = false;\\n+const ok = true;\\n*** End Patch"})
 - When the environment provides a Working directory, prefer absolute path values rooted there instead of guessing prefixes
 - If the user gives a relative path like src/app.ts, resolve it from the current Working directory rather than inventing ../ or sibling folders
 
@@ -233,7 +238,7 @@ Common tool call patterns:
 # Coding mode (plan)
 
 - In coding mode, explore the codebase with search_code/read tools before editing or producing a spec/plan
-- Simple, well-scoped tasks can be implemented directly with edit/create/delete and focused verification
+- Simple, well-scoped tasks can be implemented directly with edit/write/apply_patch/delete and focused verification
 - Use create_plan only when the task is complex enough to benefit from sub-agent execution steps
 - Use create_spec when scope, architecture, UX, or constraints still need alignment
 - If the user explicitly asks to start fixing, repair, update, implement, or change files, do not create an advisor-only plan. Either implement directly when simple or create an implementation plan with a coder/refactorer/writer step
@@ -274,8 +279,9 @@ const SUB_AGENT_TOOL_HINTS = {
   glob: '- glob: pattern-based file lookup (load with tool_search if not visible). Example: {pattern:"src/**/*.ts"}',
   ast_query: '- ast_query: AST-scoped symbol lookup (load with tool_search if not visible)',
   read_ast_node: '- read_ast_node: read AST node details for structural edits',
-  edit: '- edit: modify existing files. Example: {path:"src/app.ts", old_text:"foo", new_text:"bar"}',
-  create: '- create: create new files only',
+  edit: '- edit: modify existing files. Exact replace: {path:"src/app.ts", old_text:"foo", new_text:"bar"}. Full rewrite: {path:"src/app.ts", new_content:"...\\n"}. Tool JSON strings must escape newlines as \\n',
+  write: '- write: write a complete file. New file: {path:"src/new.ts", content:"...\\n"}. Existing file overwrite requires {path:"src/app.ts", content:"...\\n", overwrite:true}',
+  apply_patch: '- apply_patch: apply large or multi-file patches with one patch_text string using *** Begin Patch / *** End Patch. Escape newlines as \\n inside JSON strings',
   delete: '- delete: remove files',
   run: '- run: execute shell commands when no dedicated tool fits. Do not use run for code reading/search; use search_code/read/list/glob instead.',
   web_fetch: '- web_fetch: fetch remote URL content',
@@ -294,7 +300,7 @@ export function buildSubAgentShellRulesPrompt(allowedTools = [], { shell, worksp
       return SUB_AGENT_TOOL_HINTS[name];
     })
     .filter(Boolean);
-  const deferredTools = allowed.filter((name) => !['read', 'search_code', 'read_plan', 'update_plan', 'update_todos', 'edit', 'create', 'delete', 'run', 'tool_search', 'skill'].includes(name));
+  const deferredTools = allowed.filter((name) => !['read', 'search_code', 'read_plan', 'update_plan', 'update_todos', 'edit', 'write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill'].includes(name));
   const lines = [
     `You are Codemini CLI, an AI coding assistant running as a pipeline sub-agent in a ${profile.label} shell environment.`,
     `Working directory: ${path.resolve(workspaceRoot || process.cwd())}`,
