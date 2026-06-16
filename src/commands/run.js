@@ -84,12 +84,33 @@ async function buildSystemPrompt(config) {
   });
 }
 
+async function isGitWorkspace(workspaceRoot) {
+  try {
+    await fs.stat(path.join(workspaceRoot, '.git'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function buildAgentLoopRuntimeOptions(config, workspaceRoot) {
+  return {
+    executionMode: config.execution?.mode || 'normal',
+    approvalMode: config.execution?.approval_mode || 'review',
+    alwaysAllowTools: config.execution?.always_allow_tools || [],
+    projectIsGit: await isGitWorkspace(workspaceRoot),
+    toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
+    config: { ...config, workspaceRoot }
+  };
+}
+
 async function runHarness({ role, task, config, systemPrompt, model }) {
   if (!HARNESS_ROLES.includes(role)) {
     throw new Error(`Unknown harness role: ${role}. Available: ${HARNESS_ROLES.join(', ')}`);
   }
+  const workspaceRoot = process.cwd();
   const { definitions, handlers, formatters, deferredDefinitions, dispose } = getBuiltinTools({
-    workspaceRoot: process.cwd(),
+    workspaceRoot,
     config
   });
   try {
@@ -111,6 +132,7 @@ async function runHarness({ role, task, config, systemPrompt, model }) {
       toolHandlers: filtered.handlers,
       toolFormatters: formatters,
       deferredDefinitions: filtered.deferredDefinitions,
+      ...(await buildAgentLoopRuntimeOptions(config, workspaceRoot)),
       requestCompletion: makeCompletionFn(config)
     });
     return result;
@@ -349,8 +371,9 @@ export async function handleRun(args) {
     return;
   }
 
+  const workspaceRoot = process.cwd();
   const { definitions, handlers, formatters, deferredDefinitions, dispose } = getBuiltinTools({
-    workspaceRoot: process.cwd(),
+    workspaceRoot,
     config
   });
   try {
@@ -362,6 +385,7 @@ export async function handleRun(args) {
       toolHandlers: handlers,
       toolFormatters: formatters,
       deferredDefinitions,
+      ...(await buildAgentLoopRuntimeOptions(config, workspaceRoot)),
 
       requestCompletion: makeCompletionFn(config)
     });
