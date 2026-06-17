@@ -366,6 +366,10 @@ export async function captureToInbox({
   const normalizedSummary = normalizeMemoryText(summary);
   if (!normalizedSummary) throw new Error('Inbox capture summary is required');
   assertSafeMemoryContent(normalizedSummary);
+  const normalizedDetails = normalizeMemoryText(details);
+  const normalizedSuggestedAction = normalizeMemoryText(suggestedAction);
+  if (normalizedDetails) assertSafeMemoryContent(normalizedDetails);
+  if (normalizedSuggestedAction) assertSafeMemoryContent(normalizedSuggestedAction);
 
   const dir = todayDir(getInboxDir());
   await fs.mkdir(dir, { recursive: true });
@@ -378,8 +382,8 @@ export async function captureToInbox({
     source,
     type: String(type || 'observation').trim().toLowerCase(),
     summary: normalizedSummary,
-    details: normalizeMemoryText(details),
-    suggestedAction: normalizeMemoryText(suggestedAction),
+    details: normalizedDetails,
+    suggestedAction: normalizedSuggestedAction,
     tags: Array.isArray(tags) ? tags.map((t) => String(t).trim()).filter(Boolean) : [],
     lifecycle: 'observed'
   };

@@ -48,7 +48,7 @@ function parseResults(text) {
     if (!json?.results || !Array.isArray(json.results)) return [];
     return json.results.map((r) => ({
       id: String(r.id || ''),
-      action: r.action === 'keep' ? 'keep' : 'discard',
+      action: r.action === 'keep' ? 'keep' : r.action === 'retry' ? 'retry' : 'discard',
       scope: r.scope === 'project' ? 'project' : 'global',
       kind: ['pattern', 'observation', 'correction', 'decision', 'failure'].includes(r.kind) ? r.kind : 'observation',
       content: String(r.content || '').slice(0, 300),
@@ -109,11 +109,11 @@ export async function evaluateInboxBatch({ entries, config, workspaceRoot }) {
     }
     return parsed;
   } catch {
-    /* LLM 调用失败 → 全部 discard（fail-safe） */
+    /* LLM 调用失败 → 保留 inbox，等待下次 dream 重试 */
     return entries.map((e) => ({
       id: e.id,
-      action: 'discard',
-      reason: 'LLM evaluation failed'
+      action: 'retry',
+      reason: 'evaluator-unavailable: LLM evaluation failed'
     }));
   }
 }

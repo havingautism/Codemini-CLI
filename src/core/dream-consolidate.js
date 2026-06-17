@@ -11,6 +11,7 @@ import { evaluateInboxBatch, evaluateMemoryMaintenance } from './dream-evaluator
 
 const LONGTERM_TYPES = new Set(['preference', 'pattern', 'win', 'decision']);
 const OPERATIONAL_TYPES = new Set(['correction', 'failure', 'gap', 'observation']);
+let dreamConsolidationRunning = false;
 
 function normalizeText(value) {
   return String(value || '').trim().toLowerCase();
@@ -106,6 +107,22 @@ export async function runDreamConsolidation({
   config = {},
   writeAudit = true
 } = {}) {
+  if (dreamConsolidationRunning) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: 'dream-already-running',
+      dryRun,
+      timestamp: new Date().toISOString(),
+      candidatesGenerated: 0,
+      promotions: [],
+      rejections: [],
+      archives: [],
+      maintenance: []
+    };
+  }
+  dreamConsolidationRunning = true;
+  try {
   const scopeFilter = scope || null;
   const inbox = await listInbox({ scope: scopeFilter });
 
@@ -162,6 +179,11 @@ export async function runDreamConsolidation({
     /* ── Phase 3: 按评估结果 promote 或 archive ─────────────────── */
     for (const entry of candidates) {
       const evaluation = resultMap.get(entry.id);
+
+      if (evaluation?.action === 'retry') {
+        rejections.push({ summary: entry.summary, reason: evaluation.reason || 'evaluator-unavailable' });
+        continue;
+      }
 
       if (!evaluation || evaluation.action === 'discard') {
         const reason = evaluation?.reason || 'LLM discarded';
@@ -226,4 +248,7 @@ export async function runDreamConsolidation({
   }
 
   return { ok: true, dryRun, ...report };
+  } finally {
+    dreamConsolidationRunning = false;
+  }
 }

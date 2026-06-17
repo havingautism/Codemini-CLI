@@ -412,7 +412,7 @@ export const en = {
   memoryLoadFailed: 'Failed to load memories',
   searchMemories: 'Search memories...',
   noMemories: 'No memories yet',
-  noMemoriesHint: 'Long-term memories will appear here after /memory or automatic consolidation runs.',
+  noMemoriesHint: 'Long-term memories will appear here after automatic consolidation runs or when you save memory.',
   pinned: 'Pinned',
   deleteFailed: 'Delete failed',
   confirmDeleteMemory: 'Delete memory "{{summary}}"?',

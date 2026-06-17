@@ -13,7 +13,6 @@ import {
   CaretDown,
   Code,
   Coffee,
-  Database,
   FileText,
   Hammer,
   ImageSquare,
@@ -93,12 +92,6 @@ const ACTION_COMMANDS = [
     icon: Archive,
     description:
       "Compress the current conversation context while keeping the useful working summary.",
-  },
-  {
-    name: "memory",
-    insert: "/memory ",
-    icon: Database,
-    description: "Inspect or manage remembered project and user context.",
   },
   {
     name: "capture",

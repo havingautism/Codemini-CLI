@@ -421,7 +421,7 @@ export const zh = {
   memoryLoadFailed: '无法加载记忆',
   searchMemories: '搜索记忆内容...',
   noMemories: '暂无记忆',
-  noMemoriesHint: '运行 /memory 或等待自动整理后，长期记忆会显示在这里。',
+  noMemoriesHint: '等待自动整理或保存记忆后，长期记忆会显示在这里。',
   pinned: '已固定',
   deleteFailed: '删除失败',
   confirmDeleteMemory: '确定删除记忆 "{{summary}}"？',
