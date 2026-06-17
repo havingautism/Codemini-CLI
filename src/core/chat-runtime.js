@@ -5087,7 +5087,27 @@ async function runSubAgentTask({
   };
 }
 
-function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }) {
+export function collectPlanImplementationFileChanges(priorSteps = []) {
+  const changes = [];
+  const seen = new Set();
+  for (const step of Array.isArray(priorSteps) ? priorSteps : []) {
+    if (!['coder', 'refactorer', 'writer'].includes(String(step?.role || ''))) continue;
+    for (const msg of Array.isArray(step?.messages) ? step.messages : []) {
+      const items = [msg?.tool_file_change, ...(Array.isArray(msg?.tool_file_changes) ? msg.tool_file_changes : [])].filter(Boolean);
+      for (const item of items) {
+        const change = normalizeStepDiffChange(item);
+        if (!change) continue;
+        const key = `${change.path}:${change.action}:${change.changedLine}:${change.linesAdded}:${change.linesRemoved}:${change.changeSetId || ''}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        changes.push(change);
+      }
+    }
+  }
+  return changes;
+}
+
+export function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages, extraFileChanges = [] }) {
   const toolCardsById = new Map();
   const toolCards = [];
   const source = Array.isArray(messages) ? messages : [];
@@ -5132,6 +5152,19 @@ function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }
       isStreaming: false
     });
   }
+  const fileChanges = (Array.isArray(extraFileChanges) ? extraFileChanges : [])
+    .map(normalizeStepDiffChange)
+    .filter(Boolean);
+  if (stepRecord.role === 'summarizer' && fileChanges.length > 0) {
+    for (const change of fileChanges) {
+      segments.push({
+        type: 'handoff',
+        text: '',
+        isStreaming: false,
+        fileChange: change
+      });
+    }
+  }
 
   return {
     step: stepIndex + 1,
@@ -5141,6 +5174,7 @@ function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }
     status: stepRecord.failed ? 'failed' : 'done',
     summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output || '', 160),
     segments,
+    ...(fileChanges.length > 0 ? { fileChanges } : {}),
     ...(stepRecord.usage ? { usage: stepRecord.usage } : {})
   };
 }
@@ -5406,7 +5440,10 @@ ${diffReview}`.trim();
       stepRecord,
       stepIndex: i,
       totalSteps: steps.length,
-      messages: output.messages || []
+      messages: output.messages || [],
+      extraFileChanges: step.role === 'summarizer'
+        ? collectPlanImplementationFileChanges(priorSteps)
+        : []
     }));
 
     // Write step result to plan file for subsequent steps to read

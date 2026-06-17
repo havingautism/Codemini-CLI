@@ -265,6 +265,11 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
     return String(value ?? "");
   };
 
+  const getBooleanValue = (path) => {
+    const value = getValue(path);
+    return value === true || value === "true";
+  };
+
   const hasChanges = Object.keys(changes).length > 0;
 
   const handleSave = async () => {
@@ -341,7 +346,7 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
                           <div className="flex items-center justify-end min-h-8">
                             <Switch
                               id={key.path}
-                              checked={getValue(key.path) === "true"}
+                              checked={getBooleanValue(key.path)}
                               onCheckedChange={(checked) =>
                                 handleChange(key.path, checked)
                               }
@@ -352,10 +357,14 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
                             value={getValue(key.path)}
                             onValueChange={(v) => handleChange(key.path, v)}
                           >
-                            <SelectTrigger className="flex-1">
+                            <SelectTrigger className="w-full">
                               <SelectValue />
                             </SelectTrigger>
-                            <SelectContent>
+                            <SelectContent
+                              position="popper"
+                              align="start"
+                              className="w-[var(--radix-select-trigger-width)]"
+                            >
                               <SelectGroup>
                                 {key.options.map((opt) => (
                                   <SelectItem key={opt} value={opt}>

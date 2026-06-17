@@ -16,7 +16,13 @@ export default defineConfig({
   },
   build: {
     outDir: '../dist',
-    emptyOutDir: true
+    emptyOutDir: true,
+    chunkSizeWarningLimit: 1300,
+    rolldownOptions: {
+      output: {
+        codeSplitting: true
+      }
+    }
   },
   server: {
     proxy: {
