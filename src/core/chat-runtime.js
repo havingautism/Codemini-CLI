@@ -2277,6 +2277,10 @@ function buildAlwaysSkillPromptBlock(commands, config) {
   return selected.map((skill) => `[Always skill: ${skill.name}]\n${skill.content}`).join('\n\n');
 }
 
+export function shouldInjectAlwaysSkills(executionMode) {
+  return normalizeExecutionMode(executionMode) === 'plan';
+}
+
 function extractJsonBlock(text) {
   const raw = String(text || '').trim();
   if (!raw) return null;
@@ -8629,14 +8633,15 @@ export async function createChatRuntime({
 
     const expandedText = await expandFileMentions(parsedInput.text, process.cwd());
     const autoRoute = classifyAutoRoute(expandedText);
-    const alwaysSkills = getAlwaysSkillCommands(commands, config);
+    const injectAlwaysSkills = shouldInjectAlwaysSkills(executionMode);
+    const alwaysSkills = injectAlwaysSkills ? getAlwaysSkillCommands(commands, config) : [];
     if (alwaysSkills.length > 0 && onAgentEvent) {
       onAgentEvent({
         type: 'skill:always',
         names: alwaysSkills.map((skill) => skill.name)
       });
     }
-    const alwaysSkillPrompt = buildAlwaysSkillPromptBlock(commands, config);
+    const alwaysSkillPrompt = injectAlwaysSkills ? buildAlwaysSkillPromptBlock(commands, config) : '';
     const skillPrompt = alwaysSkillPrompt
       ? await composeSystemPrompt({
           shellRulesPrompt: activeReplySystemPrompt,

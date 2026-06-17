@@ -370,6 +370,9 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
                       </SelectGroup>
                     </SelectContent>
                   </Select>
+                  <p className="text-[11px] leading-4 text-(--text-muted)">
+                    {t("skillModeHint")}
+                  </p>
                 </FieldContent>
               </Field>
               <Field className="flex-col items-stretch gap-1.5">
