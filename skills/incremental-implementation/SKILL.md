@@ -28,8 +28,19 @@ Build one logical slice at a time. Each slice should leave the repo understandab
 - Prefer vertical slices when a user-visible path can be completed end-to-end.
 - Prefer contract-first slices when frontend/backend or CLI/runtime boundaries are involved.
 - Prefer risk-first slices when one unknown could invalidate the design.
+- Treat setup, fixtures, and docs as part of the slice whose deliverable needs them.
+- Split only where one slice can be reviewed, accepted, or rejected independently.
 
-For each slice, be able to answer: what changed, how it is proven, and what the next slice depends on.
+For each slice, be able to answer: what changed, how it is proven, what it consumes from earlier work, and what later work depends on.
+
+## Slice Self-Review
+
+Before moving to the next slice, check:
+
+- Requirement coverage: this slice satisfies the acceptance condition it claimed.
+- Naming consistency: paths, functions, types, commands, and user-facing names match the spec or previous slices.
+- No placeholders: comments, docs, and tests do not contain deferred decisions disguised as implementation.
+- Verification fit: the focused check proves the slice, and any broader final check remains explicit.
 
 ## Red Flags
 
@@ -38,6 +49,8 @@ For each slice, be able to answer: what changed, how it is proven, and what the 
 - New abstraction for a single use
 - Tests deferred until the end
 - Touching generated output or adjacent files without need
+- Moving to the next slice while current outputs are unnamed or unverified
+- "Similar to previous slice" notes instead of concrete implementation details
 
 ## Exit Criteria
 

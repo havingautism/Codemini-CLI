@@ -4029,7 +4029,7 @@ export function getBuiltinTools({
       function: {
         name: "create_plan",
         description:
-          "Create and execute a structured implementation plan in coding mode. Use when the goal, scope, and constraints are already clear enough to break work into sub-agent execution steps. Do not call for simple localized changes; implement those directly with edit/write/apply_patch/delete instead. Do not call if important details are still unknown or if a design spec is still needed. Assign roles correctly: explorer/architect/advisor are read-only; coder/refactorer/writer implement changes; never assign explorer to implement or edit code.",
+          "Create and execute a structured implementation plan in coding mode. Use when the goal, scope, and constraints are already clear enough to break work into sub-agent execution steps. Do not call for simple localized changes; implement those directly with edit/write/apply_patch/delete instead. Do not call if important details are still unknown or if a design spec is still needed. Plan tasks should be independently testable units with clear consumes/produces handoffs, concrete target files/modules, success criteria, and verification. Fold setup, fixtures, and docs into the task whose deliverable needs them instead of creating template-only steps. Assign roles correctly: explorer/architect/advisor are read-only; coder/refactorer/writer implement changes; never assign explorer to implement or edit code.",
         parameters: {
           type: "object",
           properties: {
@@ -4073,6 +4073,16 @@ export function getBuiltinTools({
                     type: "string",
                     description:
                       "Executable handoff task with target files/modules, expected result, and scope boundaries",
+                  },
+                  consumes: {
+                    type: "string",
+                    description:
+                      "Inputs from earlier steps or existing code this step relies on, such as APIs, files, decisions, or verification evidence",
+                  },
+                  produces: {
+                    type: "string",
+                    description:
+                      "Outputs later steps depend on, such as changed files, APIs, behavior, documentation, or verification evidence",
                   },
                   target_files: {
                     type: "array",

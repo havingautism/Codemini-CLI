@@ -754,6 +754,8 @@ function buildExecutionModePromptBlock(executionMode) {
       'Quality bar:',
       '- Ground every recommendation in repository evidence, not assumptions.',
       '- Name concrete files, modules, APIs, commands, and verification steps — avoid placeholder steps.',
+      '- For multi-step plans, make each task an independently testable unit with explicit consumes/produces handoffs.',
+      '- Fold setup, fixtures, test updates, and docs into the task whose deliverable needs them unless they are independently reviewable deliverables.',
       '- Self-review for missing requirements, contradictions, inconsistent names, and untestable tasks before calling create_spec or create_plan.',
       '- Use update_todos to track exploration and planning work when it spans multiple steps.',
       '',
@@ -772,7 +774,7 @@ function buildExecutionModePromptBlock(executionMode) {
       '- Typical implementation flow: explorer -> coder -> tester -> summarizer.',
       '',
       'Step contract for create_plan steps:',
-      '- Each step must name target files/modules when known, expected outcome, out-of-scope boundaries, success criteria, and handoff artifact.',
+      '- Each step must name target files/modules when known, inputs it consumes, outputs it produces, expected outcome, out-of-scope boundaries, success criteria, and handoff artifact.',
       '- Coder/refactorer/writer steps should produce implementation artifacts, not final summaries or broad verification.',
       '- Tester steps should run or identify concrete verification commands and report evidence.',
       '- Summarizer must be final and should synthesize prior handoffs without re-analyzing the repo.'
@@ -1627,14 +1629,17 @@ function buildAutoPlanPlannerGuidance() {
     '- Do not output multiple alternative branches in the final plan.',
     '- Do not assume implementation should begin before the plan is coherent.',
     '- Make steps concrete enough to execute without guessing: include target files, expected behavior, and verification intent when known.',
-    '- Each step must satisfy this contract: target files/modules when known, expected outcome, out-of-scope boundaries, success criteria, verification intent, and handoff artifact.',
-    '- Prefer filling structured fields target_files, success_criteria, verification, and handoff when returning JSON.',
+    '- Each step must satisfy this contract: target files/modules when known, inputs it consumes, outputs it produces, expected outcome, out-of-scope boundaries, success criteria, verification intent, and handoff artifact.',
+    '- Prefer filling structured fields consumes, produces, target_files, success_criteria, verification, and handoff when returning JSON.',
+    '- Fold setup, fixtures, test updates, and documentation into the task whose deliverable needs them unless they are independently reviewable deliverables.',
+    '- Do not create standalone "write tests", "update docs", or "setup fixtures" steps when they only support another implementation task.',
     '- Do not create placeholder steps such as "add validation", "handle edge cases", "write tests", or "finish implementation" unless they name the exact behavior or command.',
     '- Decompose work into independently understandable tasks; each task should have a clear responsibility and produce testable progress.',
+    '- Each task should be small enough that a reviewer can accept or reject it independently.',
     '- Prefer small, focused file boundaries when the plan creates or reorganizes code, while respecting existing project patterns.',
     '- If a step changes behavior, include how that behavior should be tested or manually verified.',
     '- Keep type names, function names, command names, and file paths consistent across all steps.',
-    '- Before returning the plan, self-review it for requirement coverage, placeholders, contradictions, and inconsistent API/type names.',
+    '- Before returning the plan, self-review it for requirement coverage, placeholders, contradictions, untestable tasks, missing consumes/produces handoffs, and inconsistent API/type names.',
     '- If the plan has critical gaps or unclear requirements, create an explorer/advisor step to resolve them before implementation.',
     '- If target_confidence is known, do not add explorer unless code context is genuinely missing.',
     '- If task_size is trivial or small and target_confidence is known, prefer a single coder step plus summarizer, or direct implementation without create_plan when possible.',
@@ -1662,7 +1667,7 @@ function buildAutoPlanPlannerGuidance() {
     '- For advisory: explorer -> advisor -> summarizer.',
     '- Prefer 3-5 steps total unless the task needs more.',
     '- Keep the plan ordered, task-oriented, and easy for small sub-agents to follow.',
-    '- Step task text should be a complete sub-agent work order: Inputs from prior steps, Scope, Out of scope, Success evidence, Verification intent, and Handoff to next step.'
+    '- Step task text should be a complete sub-agent work order: Inputs from prior steps, Scope, Out of scope, Success evidence, Verification intent, Produced outputs, and Handoff to next step.'
   ].join('\n');
 }
 
@@ -2366,6 +2371,8 @@ function normalizeStructuredPlanSteps(steps = []) {
       title: String(step?.title || '').trim(),
       role: String(step?.role || '').trim().toLowerCase(),
       task: String(step?.task || '').trim(),
+      consumes: String(step?.consumes || step?.inputs || '').trim(),
+      produces: String(step?.produces || step?.outputs || '').trim(),
       target_files: normalizeStepStringArray(step?.target_files || step?.targets || step?.files),
       success_criteria: String(step?.success_criteria || step?.success || '').trim(),
       verification: String(step?.verification || step?.verify || '').trim(),
@@ -2376,6 +2383,8 @@ function normalizeStructuredPlanSteps(steps = []) {
 
 function buildStepContractTask(step) {
   const lines = [String(step?.task || '').trim()];
+  if (step?.consumes) lines.push(`Consumes: ${step.consumes}`);
+  if (step?.produces) lines.push(`Produces: ${step.produces}`);
   if (Array.isArray(step?.target_files) && step.target_files.length > 0) {
     lines.push(`Targets: ${step.target_files.join(', ')}`);
   }
@@ -2390,6 +2399,8 @@ function withStepContractTasks(steps = []) {
     title: step.title,
     role: step.role,
     task: step.task,
+    ...(step.consumes ? { consumes: step.consumes } : {}),
+    ...(step.produces ? { produces: step.produces } : {}),
     ...(Array.isArray(step.target_files) && step.target_files.length > 0 ? { target_files: step.target_files } : {}),
     ...(step.success_criteria ? { success_criteria: step.success_criteria } : {}),
     ...(step.verification ? { verification: step.verification } : {}),
@@ -2399,6 +2410,8 @@ function withStepContractTasks(steps = []) {
 
 function renderStepContractBlock(step = {}) {
   const lines = ['Step Contract:'];
+  if (step.consumes) lines.push(`- Consumes: ${step.consumes}`);
+  if (step.produces) lines.push(`- Produces: ${step.produces}`);
   if (Array.isArray(step.target_files) && step.target_files.length > 0) lines.push(`- Targets: ${step.target_files.join(', ')}`);
   if (step.success_criteria) lines.push(`- Success criteria: ${step.success_criteria}`);
   if (step.verification) lines.push(`- Verification intent: ${step.verification}`);
@@ -3549,7 +3562,7 @@ async function buildPlanFromSpecWithModel({
   const prompt = [
     buildAutoPlanPlannerGuidance(),
     'Convert the provided engineering spec into an implementation plan.',
-    `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${EXECUTOR_AGENT_ROLES.join('|')}","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
+    `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${EXECUTOR_AGENT_ROLES.join('|')}","task":"...","consumes":"...","produces":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
     'Make the plan concrete and ordered for a coding agent.',
     'Before defining tasks, map the files/modules likely to be touched and what each is responsible for.',
     'Each task should name exact files where known, expected behavior, and verification commands or evidence.',
@@ -5518,7 +5531,7 @@ async function buildAutoPlanArtifact({
     '- Example advisory roles: explorer -> inspect project shape, advisor -> synthesize findings and prioritized recommendations.',
     '- Example implementation roles: explorer -> inspect target area, coder -> implement change, tester -> verify changed behavior.',
     '- Example debugging roles: explorer -> inspect failing area, debugger -> trace root cause, coder -> fix, tester -> verify fix.',
-    `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${EXECUTOR_AGENT_ROLES.join('|')}","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`
+    `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${EXECUTOR_AGENT_ROLES.join('|')}","task":"...","consumes":"...","produces":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`
   ].join('\n');
   let autoPlan = {
     summary: `Auto plan for: ${goal}`,
@@ -5550,7 +5563,7 @@ async function buildAutoPlanArtifact({
           role: 'user',
           content: [
             'Create an execution plan and assign best sub-agent role for each step.',
-            `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${EXECUTOR_AGENT_ROLES.join('|')}","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
+            `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${EXECUTOR_AGENT_ROLES.join('|')}","task":"...","consumes":"...","produces":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
             `The available roles are ${EXECUTOR_AGENT_ROLES.join(', ')}. Use only the roles the task actually needs.`,
             'Always include a summarizer as the final step. The summarizer synthesizes prior step results without re-analyzing.',
             'All executor steps (explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer) should write detailed step results, not final summaries.',
@@ -5573,7 +5586,8 @@ async function buildAutoPlanArtifact({
             'Do not add reviewer or tester unless their specific success evidence is clear.',
             'Never assign every step to coder. Use explorer for inspection, coder for implementation, tester for verification, and summarizer as the final synthesis step.',
             'Never assign explorer, architect, or advisor to implementation, coding, editing, or feature-delivery tasks. Those roles are read-only.',
-            'Each step task must include enough handoff detail to execute without guessing: targets, expected outcome, out-of-scope boundaries, success criteria, verification intent, and handoff artifact.',
+            'Each step task must include enough handoff detail to execute without guessing: targets, consumed inputs, produced outputs, expected outcome, out-of-scope boundaries, success criteria, verification intent, and handoff artifact.',
+            'Fold setup, fixtures, tests, and docs into the task whose deliverable needs them unless they are independently reviewable deliverables.',
             'Prefer 3-5 steps total.'
           ]
             .filter(Boolean)
@@ -6563,7 +6577,7 @@ async function revisePendingPlanWithModel({
   const prompt = [
     buildAutoPlanPlannerGuidance(),
     'You are revising an existing plan based on explicit user feedback.',
-    'Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"' + EXECUTOR_AGENT_ROLES.join('|') + '","task":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.',
+    'Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"' + EXECUTOR_AGENT_ROLES.join('|') + '","task":"...","consumes":"...","produces":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.',
     'Keep roles minimal and only include steps that materially help the goal.',
     'Always keep a summarizer as the final step.'
   ].join('\n');

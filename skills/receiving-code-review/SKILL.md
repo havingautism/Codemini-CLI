@@ -126,7 +126,7 @@ Push back when:
 - Reference working tests/code
 - Involve your human partner if architectural
 
-**Signal if uncomfortable pushing back out loud:** "Strange things are afoot at the Circle K"
+**If pushing back feels uncomfortable:** state the technical concern plainly and ask your human partner to arbitrate if the decision is architectural.
 
 ## Acknowledging Correct Feedback
 

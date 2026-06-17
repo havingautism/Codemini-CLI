@@ -12,6 +12,7 @@ Run a focused code review pass before changes cascade. Use the review rubric in 
 ## When to Request Review
 
 **Mandatory:**
+- After each independently testable task in a multi-step plan, or at the next natural checkpoint when tasks are tightly coupled
 - After completing major feature
 - Before merge to main
 
@@ -73,8 +74,13 @@ You: [Fix progress indicators]
 
 ## Integration with Workflows
 
+**Multi-Step Plans:**
+- Review after each independently testable task when feedback could prevent compounded rework
+- If several steps are tightly coupled, review at the smallest natural checkpoint that has a coherent diff and verification result
+- Give the reviewer the relevant task, acceptance criteria, verification output, and clean diff range
+
 **Executing Plans:**
-- Review after each task or at natural checkpoints
+- Review after each independently testable task or at natural checkpoints
 - Get feedback, apply, continue
 
 **Ad-Hoc Development:**
