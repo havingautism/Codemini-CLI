@@ -339,10 +339,11 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
           <Field className="flex-col items-stretch gap-1.5">
             <FieldTitle>{t("description")}</FieldTitle>
             <FieldContent>
-              <Input
+              <Textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 placeholder={t("skillDescriptionPlaceholder")}
+                className="min-h-[72px] resize-none leading-5"
               />
             </FieldContent>
           </Field>

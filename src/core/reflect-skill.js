@@ -73,6 +73,23 @@ function renderStructuredSkillBody(raw = {}) {
   return sections.join('\n\n').trim();
 }
 
+function hasReflectDraftSignal(raw = {}) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const textFields = ['name', 'skillName', 'title', 'description', 'summary', 'content', 'markdown', 'body'];
+  if (textFields.some((field) => String(raw[field] || '').trim())) return true;
+  const listFields = [
+    'trigger_conditions',
+    'triggers',
+    'workflow',
+    'key_decisions',
+    'decisions',
+    'pitfalls',
+    'verification',
+    'boundaries'
+  ];
+  return listFields.some((field) => normalizeList(raw[field]).length > 0);
+}
+
 export function normalizeReflectDraft(raw = {}) {
   const name = slugifySkillName(raw.name || raw.skillName || raw.title);
   const description = String(raw.description || raw.summary || `Use when the ${name} workflow applies.`).trim();
@@ -136,9 +153,17 @@ function parseJsonObject(rawValue) {
 }
 
 function normalizeDraftList(parsed) {
-  if (Array.isArray(parsed?.candidates)) return parsed.candidates.map((item, index) => normalizeReflectDraft({ id: index + 1, ...item }));
-  if (Array.isArray(parsed)) return parsed.map((item, index) => normalizeReflectDraft({ id: index + 1, ...item }));
-  if (parsed && typeof parsed === 'object') return [normalizeReflectDraft(parsed)];
+  if (Array.isArray(parsed?.candidates)) {
+    return parsed.candidates
+      .filter(hasReflectDraftSignal)
+      .map((item, index) => normalizeReflectDraft({ id: index + 1, ...item }));
+  }
+  if (Array.isArray(parsed)) {
+    return parsed
+      .filter(hasReflectDraftSignal)
+      .map((item, index) => normalizeReflectDraft({ id: index + 1, ...item }));
+  }
+  if (hasReflectDraftSignal(parsed)) return [normalizeReflectDraft(parsed)];
   return [];
 }
 
