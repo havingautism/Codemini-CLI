@@ -501,6 +501,10 @@ function getCompletionCopy(language = 'zh') {
         'context.max_tokens': '上下文 token 预算',
         'soul.preset': 'soul 预设',
         'soul.custom_path': '自定义 soul 路径',
+        'web.search_enabled': '联网搜索开关',
+        'web.search_provider': '联网搜索提供方',
+        'web.tavily_api_key': 'Tavily 搜索 API Key',
+        'web.exa_api_key': 'Exa 搜索 API Key',
         'policy.safe_mode': '安全模式开关',
         'policy.allowed_paths': '安全模式目录白名单',
         'policy.allow_dangerous_commands': '危险命令开关'
@@ -518,7 +522,11 @@ function getCompletionCopy(language = 'zh') {
         'context.prompt_budget_audit': '可选：true | false',
         'context.project_context_enabled': '可选：true | false',
         'context.project_instructions_enabled': '可选：true | false',
-        'context.project_instructions_max_chars': '建议：8000-12000'
+        'context.project_instructions_max_chars': '建议：8000-12000',
+        'web.search_enabled': '可选：true | false',
+        'web.search_provider': '可选：bing_rss | tavily | exa',
+        'web.tavily_api_key': '也可用环境变量 TAVILY_API_KEY',
+        'web.exa_api_key': '也可用环境变量 EXA_API_KEY'
       },
       describeSet: (label, hint) => `设置${label}${hint ? `（${hint}）` : ''}`,
       describeGet: (label, hint) => `查看${label}${hint ? `（${hint}）` : ''}`,
@@ -609,6 +617,10 @@ function getCompletionCopy(language = 'zh') {
         'context.max_tokens': 'context token budget',
         'soul.preset': 'soul preset',
         'soul.custom_path': 'custom soul prompt path',
+        'web.search_enabled': 'web search switch',
+        'web.search_provider': 'web search provider',
+        'web.tavily_api_key': 'Tavily search API key',
+        'web.exa_api_key': 'Exa search API key',
         'policy.safe_mode': 'safe mode switch',
         'policy.allowed_paths': 'safe-mode allowed path roots',
         'policy.allow_dangerous_commands': 'dangerous command allowance'
@@ -626,7 +638,11 @@ function getCompletionCopy(language = 'zh') {
         'context.prompt_budget_audit': 'options: true | false',
         'context.project_context_enabled': 'options: true | false',
         'context.project_instructions_enabled': 'options: true | false',
-        'context.project_instructions_max_chars': 'recommended: 8000-12000'
+        'context.project_instructions_max_chars': 'recommended: 8000-12000',
+        'web.search_enabled': 'options: true | false',
+        'web.search_provider': 'options: bing_rss | tavily | exa',
+        'web.tavily_api_key': 'environment variable TAVILY_API_KEY also works',
+        'web.exa_api_key': 'environment variable EXA_API_KEY also works'
       },
       describeSet: (label, hint) => `set the ${label}${hint ? ` (${hint})` : ''}`,
       describeGet: (label, hint) => `show the ${label}${hint ? ` (${hint})` : ''}`,
@@ -6931,6 +6947,10 @@ export async function createChatRuntime({
     'context.max_tokens',
     'soul.preset',
     'soul.custom_path',
+    'web.search_enabled',
+    'web.search_provider',
+    'web.tavily_api_key',
+    'web.exa_api_key',
     'policy.safe_mode',
     'policy.allowed_paths',
     'policy.allow_dangerous_commands'

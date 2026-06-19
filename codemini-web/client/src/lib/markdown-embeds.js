@@ -2,6 +2,8 @@ const STANDALONE_URL_RE = /^https?:\/\/[^\s<>)\]"']+$/i;
 const INLINE_URL_RE = /https?:\/\/[^\s<>)\]"']+/gi;
 const MARKDOWN_LINK_RE = /(?<!!)\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)/gi;
 const MARKDOWN_IMAGE_RE = /!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)/gi;
+const STANDALONE_MARKDOWN_IMAGE_RE = /^!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)$/i;
+const STANDALONE_LINKED_MARKDOWN_IMAGE_RE = /^\[!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)\]\((https?:\/\/[^\s)]+)\)$/i;
 const AUTOLINK_RE = /<(https?:\/\/[^>\s]+)>/gi;
 
 function trimUrlTrailingPunctuation(url) {
@@ -64,20 +66,21 @@ export function splitInlineUrls(text) {
   return parts.length ? parts : [{ type: 'markdown', text: source }];
 }
 
-function flattenMarkdownParts(parts) {
+function flattenMarkdownParts(parts, { includeLinks = true } = {}) {
   const flattened = [];
   for (const part of parts) {
-    if (part.type === 'embed') {
+    if (part.type === 'embed' || part.type === 'image') {
       flattened.push(part);
       continue;
     }
     if (!part.text?.trim()) continue;
-    flattened.push(...splitInlineUrls(part.text));
+    if (includeLinks) flattened.push(...splitInlineUrls(part.text));
+    else flattened.push(part);
   }
   return flattened;
 }
 
-export function splitMarkdownForEmbeds(text) {
+export function splitMarkdownForEmbeds(text, { includeLinks = true } = {}) {
   const source = typeof text === 'string' ? text : String(text || '');
   if (!source.trim()) return [];
 
@@ -94,16 +97,37 @@ export function splitMarkdownForEmbeds(text) {
 
   for (const line of lines) {
     const trimmed = line.trim();
-    if (isStandaloneUrl(trimmed)) {
+    if (includeLinks && isStandaloneUrl(trimmed)) {
       flushMarkdown();
       parts.push({ type: 'embed', url: trimmed });
+      continue;
+    }
+    const linkedImageMatch = trimmed.match(STANDALONE_LINKED_MARKDOWN_IMAGE_RE);
+    if (linkedImageMatch) {
+      flushMarkdown();
+      parts.push({
+        type: 'image',
+        alt: linkedImageMatch[1] || '',
+        url: trimUrlTrailingPunctuation(linkedImageMatch[2]),
+        href: trimUrlTrailingPunctuation(linkedImageMatch[3]),
+      });
+      continue;
+    }
+    const imageMatch = trimmed.match(STANDALONE_MARKDOWN_IMAGE_RE);
+    if (imageMatch) {
+      flushMarkdown();
+      parts.push({
+        type: 'image',
+        alt: imageMatch[1] || '',
+        url: trimUrlTrailingPunctuation(imageMatch[2]),
+      });
       continue;
     }
     buffer.push(line);
   }
 
   flushMarkdown();
-  const withInline = flattenMarkdownParts(parts.length ? parts : [{ type: 'markdown', text: source }]);
+  const withInline = flattenMarkdownParts(parts.length ? parts : [{ type: 'markdown', text: source }], { includeLinks });
   return withInline.length ? withInline : [{ type: 'markdown', text: source }];
 }
 

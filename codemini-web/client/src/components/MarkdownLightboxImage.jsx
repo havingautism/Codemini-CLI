@@ -46,7 +46,7 @@ export function MarkdownLightboxImage({
           type="button"
           onClick={() => setOpen(true)}
           className={cn(
-            "group block w-full max-w-xl overflow-hidden rounded-lg border border-(--border-default) bg-(--bg-secondary)/60 p-1 text-left transition hover:border-(--border-strong) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--text-primary)/20",
+            "group inline-block max-w-full overflow-hidden rounded-lg text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--text-primary)/20",
             buttonClassName,
           )}
           aria-label={caption || title || src}
@@ -60,7 +60,7 @@ export function MarkdownLightboxImage({
             referrerPolicy="no-referrer"
             onError={() => setFailed(true)}
             className={cn(
-              "max-h-60 w-full cursor-zoom-in object-contain transition duration-200 group-hover:brightness-[1.02]",
+              "max-h-[520px] max-w-full cursor-zoom-in rounded-lg object-contain transition duration-200 group-hover:brightness-[1.03]",
               className,
             )}
             {...props}

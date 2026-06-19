@@ -154,6 +154,49 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
       ],
     },
     {
+      title: t("webSearch"),
+      keys: [
+        {
+          path: "web.search_enabled",
+          label: t("webSearchEnabled"),
+          options: ["true", "false"],
+          help: t("webSearchEnabledHelp"),
+        },
+        {
+          path: "web.search_provider",
+          label: t("webSearchProvider"),
+          options: ["bing_rss", "tavily", "exa"],
+          optionLabels: {
+            bing_rss: t("webSearchProviderBingRss"),
+            tavily: t("webSearchProviderTavily"),
+            exa: "Exa",
+          },
+          optionLogos: {
+            bing_rss: "/logos/microsoft-color.svg",
+            tavily: "/logos/tavily-color.svg",
+            exa: "/logos/exa-color.svg",
+          },
+          help: t("webSearchProviderHelp"),
+        },
+        {
+          path: "web.tavily_api_key",
+          label: t("tavilyApiKey"),
+          type: "password",
+          placeholder: t("tavilyApiKeyPlaceholder"),
+          help: t("tavilyApiKeyHelp"),
+          visibleWhen: ({ getValue }) => getValue("web.search_provider") === "tavily",
+        },
+        {
+          path: "web.exa_api_key",
+          label: t("exaApiKey"),
+          type: "password",
+          placeholder: t("exaApiKeyPlaceholder"),
+          help: t("exaApiKeyHelp"),
+          visibleWhen: ({ getValue }) => getValue("web.search_provider") === "exa",
+        },
+      ],
+    },
+    {
       title: t("context"),
       keys: [
         {
@@ -271,6 +314,8 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
   };
 
   const hasChanges = Object.keys(changes).length > 0;
+  const shouldShowKey = (key) =>
+    typeof key.visibleWhen !== "function" || key.visibleWhen({ getValue });
 
   const handleSave = async () => {
     try {
@@ -317,7 +362,7 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
                   {group.title}
                 </div>
                 <FieldGroup className="gap-2.5">
-                  {group.keys.map((key) => (
+                  {group.keys.filter(shouldShowKey).map((key) => (
                     <Field key={key.path} className="items-center">
                       <FieldLabel htmlFor={key.path}>
                         <span>{key.label}</span>

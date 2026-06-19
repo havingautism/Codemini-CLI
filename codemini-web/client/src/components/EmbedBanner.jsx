@@ -4,6 +4,8 @@ import { t } from '../../i18n/index.js';
 
 export function EmbedBanner({ items = [] }) {
   if (!items.length) return null;
+  const links = items.filter((item) => item?.type !== 'image');
+  if (!links.length) return null;
 
   return (
     <div className="my-4">
@@ -13,7 +15,7 @@ export function EmbedBanner({ items = [] }) {
       </div>
 
       <div className="codemini-embed-banner-scroll flex items-stretch gap-3 px-0.5">
-        {items.map((item, index) => (
+        {links.map((item, index) => (
           <div
             key={`${item.url || 'embed'}-${index}`}
             className="w-[288px] shrink-0 sm:w-[300px]"

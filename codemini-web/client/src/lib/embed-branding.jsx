@@ -242,6 +242,7 @@ const HERO_IMAGE_TYPES = new Set([
   'weibo',
   'twitch',
   'link',
+  'image',
 ]);
 
 export function shouldShowHeroImage(type, url, image) {

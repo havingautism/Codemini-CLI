@@ -105,6 +105,21 @@ codemini
 
 Three commands, and you are in an interactive session.
 
+### Web Search Provider
+
+`web_search` defaults to `bing_rss`, which does not require an API key. To use an API-backed search provider:
+
+```bash
+codemini config set web.search_provider tavily
+codemini config set web.tavily_api_key your_tavily_api_key
+
+# or
+codemini config set web.search_provider exa
+codemini config set web.exa_api_key your_exa_api_key
+```
+
+You can also use `TAVILY_API_KEY` or `EXA_API_KEY` environment variables instead of saving the key in config.
+
 ### Beyond Code: Automated Tasks
 
 Codemini's `codemini run` command turns any natural-language task into an automated workflow — no coding required.
@@ -382,6 +397,21 @@ codemini
 ```
 
 三步完成配置，进入交互式会话。
+
+### 联网搜索提供方
+
+`web_search` 默认使用无需 API Key 的 `bing_rss`。如需切换到 API 搜索服务：
+
+```bash
+codemini config set web.search_provider tavily
+codemini config set web.tavily_api_key 你的_tavily_api_key
+
+# 或
+codemini config set web.search_provider exa
+codemini config set web.exa_api_key 你的_exa_api_key
+```
+
+也可以使用 `TAVILY_API_KEY` 或 `EXA_API_KEY` 环境变量，避免把 key 写入配置文件。
 
 ### 不止写代码：自动化任务
 

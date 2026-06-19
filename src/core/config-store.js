@@ -3,6 +3,7 @@ import path from 'node:path';
 import { getConfigFilePath, getLegacyConfigDir } from './paths.js';
 import { normalizeReplyLanguage } from './reply-language.js';
 import { normalizeShellName } from './shell-profile.js';
+import { MEMORY_ALWAYS_ALLOW_TOOLS } from './constants.js';
 
 function normalizeUiLanguage(value) {
   const raw = String(value || '').trim().toLowerCase();
@@ -48,7 +49,8 @@ const DEFAULT_CONFIG = {
       'read',
       'search_code',
       'list_background_tasks',
-      'get_background_task'
+      'get_background_task',
+      ...MEMORY_ALWAYS_ALLOW_TOOLS
     ]
   },
   sessions: {
@@ -81,7 +83,11 @@ const DEFAULT_CONFIG = {
     custom_path: ''
   },
   web: {
-    search_enabled: true
+    search_enabled: true,
+    search_provider: 'bing_rss',
+    search_api_key: '',
+    tavily_api_key: '',
+    exa_api_key: ''
   },
   webui: {
     sidebar: {
@@ -169,6 +175,7 @@ function normalizePolicyLists(config) {
       'search_code',
       'list_background_tasks',
       'get_background_task',
+      ...MEMORY_ALWAYS_ALLOW_TOOLS,
       ...rawTools
     ].filter((name) => String(name) !== 'list_files')
       .filter((name) => !['edit', 'create', 'write', 'apply_patch', 'delete', 'run', 'stop_background_task'].includes(String(name)))
@@ -195,6 +202,13 @@ function normalizePolicyLists(config) {
   next.context.project_context_enabled = next.context.project_context_enabled !== false;
   next.web = next.web || {};
   next.web.search_enabled = next.web.search_enabled !== false;
+  const rawSearchProvider = String(next.web.search_provider || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  next.web.search_provider = ['bing_rss', 'bing', 'tavily', 'exa'].includes(rawSearchProvider)
+    ? (rawSearchProvider === 'bing' ? 'bing_rss' : rawSearchProvider)
+    : 'bing_rss';
+  next.web.search_api_key = String(next.web.search_api_key || '').trim();
+  next.web.tavily_api_key = String(next.web.tavily_api_key || '').trim();
+  next.web.exa_api_key = String(next.web.exa_api_key || '').trim();
   next.webui = next.webui || {};
   next.webui.sidebar = next.webui.sidebar || {};
   next.webui.sidebar.active_project_dirs = uniqueStrings(

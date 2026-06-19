@@ -19,7 +19,8 @@ function parseMaybeJson(value) {
 export function getWebEmbedMeta(card, toolName) {
   const meta = card?.resultMeta;
   if (meta?.embedType === 'search_results' && Array.isArray(meta.items) && meta.items.length) {
-    return { query: meta.query || '', items: meta.items };
+    const items = meta.items.filter((item) => item?.type !== 'image');
+    return items.length ? { query: meta.query || '', items } : null;
   }
   if (meta?.embedType === 'link' && Array.isArray(meta.items) && meta.items.length) {
     return { items: meta.items };
@@ -30,7 +31,8 @@ export function getWebEmbedMeta(card, toolName) {
   if (!parsed || typeof parsed !== 'object') return null;
 
   if (toolName === 'web_search' && Array.isArray(parsed.results) && parsed.results.length) {
-    const items = parsed.results
+    const results = Array.isArray(parsed.results) ? parsed.results : [];
+    const items = results
       .slice(0, 8)
       .map((item) => ({
         type: 'link',

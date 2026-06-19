@@ -3,6 +3,15 @@
  * 所有需要在多个模块间复用的目录集、扩展名集、语言映射等统一在此定义。
  */
 
+// ─── 记忆工具（审阅模式下免确认）────────────────────────────────────
+export const MEMORY_ALWAYS_ALLOW_TOOLS = [
+  'save_memory',
+  'list_memory',
+  'search_memory',
+  'forget_memory',
+  'dream_consolidate'
+];
+
 // ─── 工具遍历跳过的目录（glob / list / grep 等）─────────────────────
 export const TOOL_SKIP_DIRS = new Set([
   '.git',

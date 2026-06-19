@@ -8,6 +8,7 @@ import { normalizeToolArguments } from './tool-args.js';
 import { storeResultIfNeeded, summarizeToolResult } from './tool-result-store.js';
 import { markRunCommandSafeModeApproved } from './tools.js';
 import { formatToolDisplayName } from './tool-display.js';
+import { MEMORY_ALWAYS_ALLOW_TOOLS } from './constants.js';
 
 /**
  * 安全解析 JSON 字符串。
@@ -387,7 +388,8 @@ function extractToolResultMeta(toolName, result) {
   const name = String(toolName || '');
 
   if (name === 'web_search' && Array.isArray(result.results) && result.results.length) {
-    const items = result.results
+    const results = Array.isArray(result.results) ? result.results : [];
+    const items = results
       .slice(0, 8)
       .map((item) => ({
         type: 'link',
@@ -658,7 +660,10 @@ export async function runAgentLoop({
   let lastAssistantText = '';
   let pendingSummaryNudges = 0;
   const analysisGuard = createAnalysisGuardState(userPrompt);
-  const alwaysAllowSet = new Set((Array.isArray(alwaysAllowTools) ? alwaysAllowTools : []).map((t) => String(t)));
+  const alwaysAllowSet = new Set([
+    ...MEMORY_ALWAYS_ALLOW_TOOLS,
+    ...(Array.isArray(alwaysAllowTools) ? alwaysAllowTools : []).map((t) => String(t))
+  ]);
   let lastAutoDreamCheckStep = 0;
 
   // Mutable tool list — grows as tool_search loads deferred tools

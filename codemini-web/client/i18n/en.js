@@ -234,6 +234,23 @@ export const en = {
   executionModeHelp:
     "Daily: general chat and lighter tasks. Coding: code-focused work with spec/plan workflows and a broader edit tool set.",
   maxSteps: "Max Steps",
+  webSearch: "Web Search",
+  webSearchEnabled: "Enable Web Search",
+  webSearchEnabledHelp:
+    "Allow the web_search tool to run live network searches.",
+  webSearchProvider: "Search Provider",
+  webSearchProviderBingRss: "Bing RSS (no API key)",
+  webSearchProviderTavily: "Tavily (Recommended)",
+  webSearchProviderHelp:
+    "Bing RSS works without an API key. Tavily is recommended and can return image candidates. Tavily and Exa require a search API key or matching environment variable.",
+  tavilyApiKey: "Tavily API Key",
+  tavilyApiKeyPlaceholder: "Required for Tavily",
+  tavilyApiKeyHelp:
+    "Stored locally in your Codemini config file. You can also leave this empty and use TAVILY_API_KEY.",
+  exaApiKey: "Exa API Key",
+  exaApiKeyPlaceholder: "Required for Exa",
+  exaApiKeyHelp:
+    "Stored locally in your Codemini config file. You can also leave this empty and use EXA_API_KEY.",
   context: "Context",
   contextMaxTokens: "Context Token Budget",
   preflightTrigger: "Preflight Trigger (%)",

@@ -665,6 +665,9 @@ async function webSearchQuery(config, args = {}) {
   if (!query) throw new Error("web_search requires query");
 
   const maxResults = clampNumber(normalizedArgs.max_results, 1, 20, 8);
+  const provider = normalizeWebSearchProvider(
+    normalizedArgs.provider || config?.web?.search_provider,
+  );
   const locale =
     String(
       normalizedArgs.locale || config?.web?.search_locale || "en-US",
@@ -688,6 +691,106 @@ async function webSearchQuery(config, args = {}) {
     60_000,
     15_000,
   );
+
+  if (provider === "tavily") {
+    return searchWithTavily(config, { query, maxResults, timeoutMs });
+  }
+  if (provider === "exa") {
+    return searchWithExa(config, { query, maxResults, timeoutMs });
+  }
+
+  return searchWithBingRss(config, {
+    query,
+    maxResults,
+    locale,
+    region,
+    timeoutMs,
+  });
+}
+
+function normalizeWebSearchProvider(value) {
+  const provider = String(value || "bing_rss")
+    .trim()
+    .toLowerCase()
+    .replace(/[-\s]+/g, "_");
+  if (provider === "bing") return "bing_rss";
+  if (["bing_rss", "tavily", "exa"].includes(provider)) return provider;
+  return "bing_rss";
+}
+
+function resolveSearchApiKey(config, provider) {
+  if (provider === "tavily") {
+    const configured = String(config?.web?.tavily_api_key || "").trim();
+    if (configured) return configured;
+    const legacy = String(config?.web?.search_api_key || "").trim();
+    if (legacy) return legacy;
+    return String(process.env.TAVILY_API_KEY || "").trim();
+  }
+  if (provider === "exa") {
+    const configured = String(config?.web?.exa_api_key || "").trim();
+    if (configured) return configured;
+    const legacy = String(config?.web?.search_api_key || "").trim();
+    if (legacy) return legacy;
+    return String(process.env.EXA_API_KEY || "").trim();
+  }
+  return "";
+}
+
+function requireSearchApiKey(config, provider) {
+  const key = resolveSearchApiKey(config, provider);
+  if (key) return key;
+  const envName = provider === "tavily" ? "TAVILY_API_KEY" : "EXA_API_KEY";
+  const configKey = provider === "tavily" ? "web.tavily_api_key" : "web.exa_api_key";
+  throw new Error(
+    `web_search provider "${provider}" requires an API key. Set ${configKey} or ${envName}.`,
+  );
+}
+
+async function fetchJsonWithTimeout(url, {
+  body,
+  headers = {},
+  timeoutMs,
+  errorPrefix,
+}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "content-type": "application/json",
+        "user-agent": "CodeminiCLI/0.4 web_search",
+        ...headers,
+      },
+      body: JSON.stringify(body),
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+  if (!response.ok) {
+    const text = trimPreview(await response.text().catch(() => ""), 400);
+    throw new Error(
+      `${errorPrefix}: HTTP ${response.status}${text ? ` - ${text}` : ""}`,
+    );
+  }
+  return response.json();
+}
+
+async function searchWithBingRss(config, {
+  query,
+  maxResults,
+  locale,
+  region,
+  timeoutMs,
+}) {
+  const searchUrl = buildBingRssSearchUrl({
+    baseUrl: config?.web?.search_base_url,
+    query,
+    locale,
+    region,
+  });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   let response;
@@ -723,6 +826,118 @@ async function webSearchQuery(config, args = {}) {
     results: parsed.results,
     related: [],
   };
+}
+
+async function searchWithTavily(config, { query, maxResults, timeoutMs }) {
+  const apiKey = requireSearchApiKey(config, "tavily");
+  const endpoint = String(config?.web?.search_base_url || "https://api.tavily.com/search").trim();
+  const json = await fetchJsonWithTimeout(endpoint, {
+    timeoutMs,
+    errorPrefix: "web_search Tavily request failed",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+    },
+    body: {
+      query,
+      max_results: maxResults,
+      search_depth: "basic",
+      include_answer: false,
+      include_images: true,
+      include_image_descriptions: true,
+      include_raw_content: false,
+    },
+  });
+  const results = Array.isArray(json?.results)
+    ? json.results.slice(0, maxResults).map((item) => normalizeProviderSearchResult({
+        title: item.title,
+        url: item.url,
+        description: item.content,
+        score: item.score,
+        images: item.images,
+      }))
+    : [];
+  const images = normalizeTavilyImages(json?.images, maxResults * 2);
+  return {
+    query,
+    engine: "tavily",
+    source_url: endpoint,
+    no_results: results.length === 0,
+    results,
+    images,
+    related: [],
+  };
+}
+
+async function searchWithExa(config, { query, maxResults, timeoutMs }) {
+  const apiKey = requireSearchApiKey(config, "exa");
+  const endpoint = String(config?.web?.search_base_url || "https://api.exa.ai/search").trim();
+  const json = await fetchJsonWithTimeout(endpoint, {
+    timeoutMs,
+    errorPrefix: "web_search Exa request failed",
+    headers: {
+      "x-api-key": apiKey,
+    },
+    body: {
+      query,
+      numResults: maxResults,
+      contents: {
+        text: {
+          maxCharacters: 1000,
+        },
+      },
+    },
+  });
+  const results = Array.isArray(json?.results)
+    ? json.results.slice(0, maxResults).map((item) => normalizeProviderSearchResult({
+        title: item.title,
+        url: item.url,
+        description: item.text || item.summary,
+        published_at: item.publishedDate,
+        score: item.score,
+      }))
+    : [];
+  return {
+    query,
+    engine: "exa",
+    source_url: endpoint,
+    no_results: results.length === 0,
+    results,
+    related: [],
+  };
+}
+
+function normalizeProviderSearchResult(item = {}) {
+  const url = normalizeSearchResultUrl(item.url);
+  const images = normalizeTavilyImages(item.images, 4);
+  return {
+    title: normalizeWhitespace(item.title || url),
+    url,
+    description: normalizeWhitespace(item.description || ""),
+    hostname: hostnameFromUrl(url),
+    published_at: normalizeWhitespace(item.published_at || ""),
+    ...(Number.isFinite(Number(item.score)) ? { score: Number(item.score) } : {}),
+    ...(images.length ? { images } : {}),
+  };
+}
+
+function normalizeTavilyImages(value, limit = 8) {
+  const rawItems = Array.isArray(value) ? value : [];
+  const images = [];
+  const seen = new Set();
+  for (const item of rawItems) {
+    if (images.length >= limit) break;
+    const rawUrl = typeof item === "string" ? item : item?.url;
+    const url = normalizeSearchResultUrl(rawUrl);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    images.push({
+      url,
+      description: normalizeWhitespace(
+        typeof item === "string" ? "" : item?.description || item?.alt || "",
+      ),
+    });
+  }
+  return images;
 }
 
 function buildBingRssSearchUrl({ baseUrl, query, locale, region }) {
@@ -4419,7 +4634,7 @@ export function getBuiltinTools({
       function: {
         name: "web_search",
         description:
-          "Run a live web search by fetching Bing RSS results. Use this for keyword-based internet search. This tool respects config.web.search_enabled and will fail when network search is disabled.",
+          "Run a live web search. Defaults to no-API Bing RSS, or uses config.web.search_provider=tavily|exa when configured with an API key. This tool respects config.web.search_enabled and will fail when network search is disabled.",
         parameters: {
           type: "object",
           properties: {
@@ -4436,6 +4651,11 @@ export function getBuiltinTools({
             region: {
               type: "string",
               description: "Bing country code such as US or CN",
+            },
+            provider: {
+              type: "string",
+              description:
+                "Optional search provider override: bing_rss, tavily, or exa",
             },
           },
           required: ["query"],
@@ -6191,6 +6411,21 @@ export function getBuiltinTools({
         if (item.url) lines.push(`  ${item.url}`);
         if (item.description)
           lines.push(`  ${trimPreview(item.description, 180)}`);
+        if (Array.isArray(item.images) && item.images.length) {
+          lines.push(
+            ...item.images.slice(0, 2).map((image) =>
+              `  image: ![${trimPreview(image.description || "Image", 80)}](${image.url})`,
+            ),
+          );
+        }
+      }
+      if (Array.isArray(result.images) && result.images.length) {
+        lines.push("Images:");
+        for (const image of result.images.slice(0, 6)) {
+          lines.push(
+            `- ![${trimPreview(image.description || "Image", 100)}](${image.url})`,
+          );
+        }
       }
       return lines.join("\n");
     },

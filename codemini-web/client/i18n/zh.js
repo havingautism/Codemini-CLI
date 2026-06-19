@@ -235,6 +235,22 @@ export const zh = {
   executionModeHelp:
     "日常：通用对话与轻量任务。编码：面向代码任务，支持 spec/plan 工作流及更完整的编辑工具集。",
   maxSteps: "最大步数",
+  webSearch: "联网搜索",
+  webSearchEnabled: "启用联网搜索",
+  webSearchEnabledHelp: "允许 web_search 工具执行实时网络搜索。",
+  webSearchProvider: "搜索提供方",
+  webSearchProviderBingRss: "Bing RSS（无需 API Key）",
+  webSearchProviderTavily: "Tavily（推荐）",
+  webSearchProviderHelp:
+    "Bing RSS 无需 API Key。Tavily 推荐使用，并可返回图片候选。Tavily 和 Exa 需要搜索 API Key，或使用对应环境变量。",
+  tavilyApiKey: "Tavily API Key",
+  tavilyApiKeyPlaceholder: "Tavily 需要填写",
+  tavilyApiKeyHelp:
+    "保存在本机 Codemini 配置文件中。也可以留空并使用 TAVILY_API_KEY。",
+  exaApiKey: "Exa API Key",
+  exaApiKeyPlaceholder: "Exa 需要填写",
+  exaApiKeyHelp:
+    "保存在本机 Codemini 配置文件中。也可以留空并使用 EXA_API_KEY。",
   context: "上下文",
   contextMaxTokens: "上下文 Token 预算",
   preflightTrigger: "预压缩阈值 (%)",
