@@ -1,5 +1,7 @@
 import { extractLinksFromMarkdownText, stripLinksFromMarkdownText } from '@/lib/markdown-embeds.js';
 
+const MAX_MESSAGE_EMBEDS = 8;
+
 function extractToolName(name) {
   const match = String(name || '').match(/^(\w+)/);
   return match ? match[1] : name;
@@ -91,7 +93,7 @@ export function collectMessageEmbeds(segments = []) {
     }
   }
 
-  return items;
+  return items.slice(0, MAX_MESSAGE_EMBEDS);
 }
 
 export function markdownWithoutEmbeds(text) {

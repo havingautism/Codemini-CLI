@@ -18,7 +18,6 @@
     "@tailwindcss/vite": "^4.2.4",
     "@tanstack/react-router": "^1.169.1",
     "@vitejs/plugin-react": "^6.0.1",
-    "cheerio": "^1.1.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "geist": "^1.7.2",

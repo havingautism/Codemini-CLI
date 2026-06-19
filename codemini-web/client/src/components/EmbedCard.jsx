@@ -6,19 +6,91 @@ import {
   Play,
   Star,
 } from "@phosphor-icons/react";
-import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { fetchEmbed } from "@/hooks/use-api.js";
+import {
+  cancelDeferred,
+  deferUntilIdle,
+  queueEmbedFetch,
+} from "@/lib/embed-fetch-queue.js";
 import {
   BrandLogo,
   faviconUrl,
   getEmbedBrand,
   inferEmbedType,
   isKnownPlatform,
+  isShortLinkUrl,
   shouldShowHeroImage,
 } from "@/lib/embed-branding.jsx";
 
 const embedCache = new Map();
+const failedEmbedCache = new Map();
+const FAILED_EMBED_TTL_MS = 5 * 60 * 1000;
+const EMBED_FETCH_STAGGER_MS = 60;
+
+function readFailedEmbedCache(target) {
+  const failedAt = failedEmbedCache.get(target);
+  if (!failedAt) return false;
+  if (Date.now() - failedAt > FAILED_EMBED_TTL_MS) {
+    failedEmbedCache.delete(target);
+    return false;
+  }
+  return true;
+}
+
+function writeFailedEmbedCache(target) {
+  failedEmbedCache.set(target, Date.now());
+  if (failedEmbedCache.size > 200) {
+    const oldest = failedEmbedCache.keys().next().value;
+    if (oldest) failedEmbedCache.delete(oldest);
+  }
+}
+
+function shouldFetchEmbed(target, presetEmbed) {
+  if (!target) return false;
+  if (embedCache.has(target)) return false;
+  if (readFailedEmbedCache(target)) return false;
+  if (isShortLinkUrl(target)) return false;
+  if (presetEmbed && hasSufficientEmbedMeta(presetEmbed)) return false;
+  return true;
+}
+
+function hostnameFromUrl(value) {
+  try {
+    return new URL(value).hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function buildImmediateEmbed(target, presetEmbed) {
+  if (presetEmbed && hasSufficientEmbedMeta(presetEmbed)) {
+    return {
+      ...presetEmbed,
+      type: inferEmbedType(presetEmbed.url || target, presetEmbed.type),
+      title: presetEmbed.title || target,
+      description: presetEmbed.description || "",
+    };
+  }
+
+  const hostname = hostnameFromUrl(target);
+  return {
+    type: inferEmbedType(target),
+    url: target,
+    title: presetEmbed?.title || hostname || target,
+    description: presetEmbed?.description || "",
+    siteName: presetEmbed?.siteName || hostname,
+    image: presetEmbed?.image || null,
+    meta: presetEmbed?.meta || {},
+  };
+}
+
+function deferEmbedWork(callback, deferIndex = 0) {
+  const delayMs = Math.min(deferIndex, 16) * EMBED_FETCH_STAGGER_MS;
+  return deferUntilIdle(() => {
+    window.setTimeout(callback, delayMs);
+  }, { timeout: 2000 + delayMs });
+}
 
 function formatCount(value) {
   const num = Number(value);
@@ -39,26 +111,12 @@ function isRichEmbed(data) {
   return Boolean(data.image || data.description);
 }
 
-function EmbedSkeleton({ variant = "default", url = "" }) {
-  const brand = getEmbedBrand(inferEmbedType(url), url);
-  const compact = variant === "banner";
-  return (
-    <div
-      className={cn(
-        "overflow-hidden rounded-xl border border-(--border-default)",
-        compact ? "h-[100px]" : "my-3 min-h-[120px]",
-      )}
-    >
-      <Skeleton
-        className={cn("h-8 w-full shrink-0 rounded-none")}
-        style={{ background: brand.headerBg }}
-      />
-      <div className={cn("flex flex-col gap-2 px-4 py-3", compact ? "min-h-[64px] flex-1" : "")}>
-        <Skeleton className="h-3 w-2/3" />
-        <Skeleton className="h-3 w-1/2" />
-      </div>
-    </div>
-  );
+function hasSufficientEmbedMeta(data) {
+  if (!data || typeof data !== "object") return false;
+  if (isRichEmbed(data)) return true;
+  const title = String(data.title || "").trim();
+  const url = String(data.url || "").trim();
+  return Boolean(title && title !== url);
 }
 
 function MetaPill({ children, className }) {
@@ -76,77 +134,10 @@ function MetaPill({ children, className }) {
 
 const MEDIA_PREVIEW_TYPES = new Set(["youtube", "instagram", "tiktok"]);
 
-function EmbedLinkPlaceholder() {
-  return (
-    <div
-      className="flex size-12 shrink-0 items-center justify-center rounded-md border border-(--border-default) bg-(--bg-tertiary) text-(--text-muted)"
-      aria-hidden="true"
-    >
-      <svg
-        viewBox="0 0 24 24"
-        width="22"
-        height="22"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        <circle cx="12" cy="12" r="9" />
-        <path d="M2.5 12h19" />
-        <path d="M12 2.5a15.3 15.3 0 0 1 4 9.5 15.3 15.3 0 0 1-4 9.5 15.3 15.3 0 0 1-4-9.5 15.3 15.3 0 0 1 4-9.5z" />
-      </svg>
-    </div>
-  );
-}
-
-function EmbedCompactThumb({
-  image,
-  showHeroImage,
-  ownerAvatar,
-  resolvedType,
-  brand,
-}) {
-  const [avatarFailed, setAvatarFailed] = useState(false);
-  const placeholder = <EmbedLinkPlaceholder />;
-
-  if (showHeroImage) {
-    return (
-      <EmbedHeroImage
-        src={image}
-        compact
-        resolvedType={resolvedType}
-        brand={brand}
-        fallback={placeholder}
-      />
-    );
-  }
-
-  if (ownerAvatar && !avatarFailed) {
-    return (
-      <div className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-md bg-(--bg-tertiary)">
-        <img
-          src={ownerAvatar}
-          alt=""
-          loading="lazy"
-          className="size-9 rounded-full ring-2 ring-(--bg-secondary)"
-          onError={() => setAvatarFailed(true)}
-        />
-      </div>
-    );
-  }
-
-  return placeholder;
-}
-
-function EmbedHeroImage({ src, compact, resolvedType, brand, fallback = null }) {
+function EmbedHeroImage({ src, compact, resolvedType, brand }) {
   const [visible, setVisible] = useState(true);
 
-  if (!src || !visible) {
-    if (compact && fallback) return fallback;
-    return null;
-  }
+  if (!src || !visible) return null;
 
   const mediaPreview = MEDIA_PREVIEW_TYPES.has(resolvedType);
 
@@ -295,122 +286,105 @@ function EmbedCardBody({ embed, variant = "default" }) {
     >
       <EmbedCardHeader brand={brand} url={url} compact={compact} />
 
-      <div
-        className={cn(
-          "flex",
-          compact
-            ? "min-h-[64px] flex-1 items-center gap-2.5 px-3 py-2"
-            : "min-h-[88px]",
-        )}
-      >
-        {compact ? (
-          <EmbedCompactThumb
-            image={image}
-            showHeroImage={showHeroImage}
-            ownerAvatar={ownerAvatar}
-            resolvedType={resolvedType}
-            brand={brand}
-          />
-        ) : (
-          <>
-            {showHeroImage && (
-              <EmbedHeroImage
-                src={image}
-                compact={compact}
-                resolvedType={resolvedType}
-                brand={brand}
-              />
-            )}
-            {ownerAvatar && (
-              <EmbedAvatar src={ownerAvatar} compact={compact} brand={brand} />
-            )}
-          </>
-        )}
-
-        <div
-          className={cn(
-            "flex min-w-0 flex-1 flex-col justify-center gap-0.5",
-            compact ? "min-h-12" : "gap-1 px-3 py-2.5 sm:px-4 sm:py-3",
-          )}
-        >
+      {compact ? (
+        <div className="flex min-w-0 flex-col justify-center gap-0.5 px-3 py-2">
           <div
-            className={cn(
-              "truncate font-semibold text-(--text-primary) group-hover:underline",
-              compact ? "text-[13px] leading-snug" : "text-sm",
-            )}
+            className="truncate text-[13px] font-semibold leading-snug text-(--text-primary) group-hover:underline"
           >
             {displayTitle}
           </div>
+          <div
+            className={cn(
+              "line-clamp-2 text-xs leading-snug",
+              description
+                ? "text-(--text-secondary)"
+                : "text-transparent select-none",
+            )}
+          >
+            {description || "\u00A0"}
+          </div>
+        </div>
+      ) : (
+        <div className="flex min-h-[88px]">
+          {showHeroImage && (
+            <EmbedHeroImage
+              src={image}
+              compact={compact}
+              resolvedType={resolvedType}
+              brand={brand}
+            />
+          )}
+          {ownerAvatar && (
+            <EmbedAvatar src={ownerAvatar} compact={compact} brand={brand} />
+          )}
 
-          {compact ? (
+          <div
+            className="flex min-w-0 flex-1 flex-col justify-center gap-1 px-3 py-2.5 sm:px-4 sm:py-3"
+          >
             <div
-              className={cn(
-                "line-clamp-1 min-h-4 text-xs leading-snug",
-                description
-                  ? "text-(--text-secondary)"
-                  : "text-transparent select-none",
-              )}
+              className="truncate text-sm font-semibold text-(--text-primary) group-hover:underline"
             >
-              {description || "\u00A0"}
+              {displayTitle}
             </div>
-          ) : (
-            description && (
+
+            {description && (
               <div className="line-clamp-2 text-xs leading-relaxed text-(--text-secondary)">
                 {description}
               </div>
-            )
-          )}
+            )}
 
-          {!compact && (
-          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-            {siteName && !isKnownPlatform(resolvedType, url) && (
-              <MetaPill>{siteName}</MetaPill>
-            )}
-            {resolvedType === "github" && meta.language && (
-              <MetaPill>
-                <span className="inline-block size-2 rounded-full bg-(--accent-blue)" />
-                {meta.language}
-              </MetaPill>
-            )}
-            {resolvedType === "github" && meta.stars != null && (
-              <MetaPill>
-                <Star size={12} weight="fill" className="text-amber-500" />
-                {formatCount(meta.stars)}
-              </MetaPill>
-            )}
-            {resolvedType === "github" && meta.forks != null && (
-              <MetaPill>
-                <GitBranch size={12} />
-                {formatCount(meta.forks)}
-              </MetaPill>
-            )}
-            {resolvedType === "reddit" && meta.score != null && (
-              <MetaPill>↑ {formatCount(meta.score)}</MetaPill>
-            )}
-            {resolvedType === "reddit" && meta.comments != null && (
-              <MetaPill>
-                <ChatCircle size={12} />
-                {formatCount(meta.comments)}
-              </MetaPill>
-            )}
+            <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+              {siteName && !isKnownPlatform(resolvedType, url) && (
+                <MetaPill>{siteName}</MetaPill>
+              )}
+              {resolvedType === "github" && meta.language && (
+                <MetaPill>
+                  <span className="inline-block size-2 rounded-full bg-(--accent-blue)" />
+                  {meta.language}
+                </MetaPill>
+              )}
+              {resolvedType === "github" && meta.stars != null && (
+                <MetaPill>
+                  <Star size={12} weight="fill" className="text-amber-500" />
+                  {formatCount(meta.stars)}
+                </MetaPill>
+              )}
+              {resolvedType === "github" && meta.forks != null && (
+                <MetaPill>
+                  <GitBranch size={12} />
+                  {formatCount(meta.forks)}
+                </MetaPill>
+              )}
+              {resolvedType === "reddit" && meta.score != null && (
+                <MetaPill>↑ {formatCount(meta.score)}</MetaPill>
+              )}
+              {resolvedType === "reddit" && meta.comments != null && (
+                <MetaPill>
+                  <ChatCircle size={12} />
+                  {formatCount(meta.comments)}
+                </MetaPill>
+              )}
+            </div>
           </div>
-          )}
         </div>
-      </div>
+      )}
     </a>
   );
 }
 
-export function EmbedCard({ url, embed: presetEmbed, variant = "default" }) {
+export function EmbedCard({
+  url,
+  embed: presetEmbed,
+  variant = "default",
+  deferIndex = 0,
+}) {
   const target = String(url || presetEmbed?.url || "").trim();
   const [embed, setEmbed] = useState(() => {
     const cached = target ? embedCache.get(target) : null;
     if (cached) return cached;
-    if (presetEmbed && isRichEmbed(presetEmbed)) return presetEmbed;
-    return null;
+    if (!target) return null;
+    return buildImmediateEmbed(target, presetEmbed);
   });
-  const [loading, setLoading] = useState(() => !embed && Boolean(target));
-  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     if (!target) return undefined;
@@ -418,70 +392,47 @@ export function EmbedCard({ url, embed: presetEmbed, variant = "default" }) {
     const cached = embedCache.get(target);
     if (cached) {
       setEmbed(cached);
-      setLoading(false);
-      setFailed(false);
+      return undefined;
+    }
+
+    if (variant === "banner" || !shouldFetchEmbed(target, presetEmbed)) {
+      setEmbed(buildImmediateEmbed(target, presetEmbed));
       return undefined;
     }
 
     let cancelled = false;
-    setLoading(true);
-    setFailed(false);
 
-    fetchEmbed(target)
-      .then((data) => {
-        if (cancelled) return;
-        if (data?.error) {
-          if (presetEmbed) {
-            setEmbed(presetEmbed);
-          } else {
-            setFailed(true);
-            setEmbed(null);
+    const runFetch = () => {
+      if (cancelled) return;
+      queueEmbedFetch(() => fetchEmbed(target))
+        .then((data) => {
+          if (cancelled) return;
+          if (data?.error) {
+            writeFailedEmbedCache(target);
+            return;
           }
-          return;
-        }
-        embedCache.set(target, data);
-        setEmbed({
-          ...data,
-          type: inferEmbedType(data.url, data.type),
-          title: data.title || presetEmbed?.title || target,
-          description: data.description || presetEmbed?.description || "",
+          embedCache.set(target, data);
+          setEmbed({
+            ...data,
+            type: inferEmbedType(data.url, data.type),
+            title: data.title || presetEmbed?.title || target,
+            description: data.description || presetEmbed?.description || "",
+          });
+        })
+        .catch(() => {
+          if (!cancelled) writeFailedEmbedCache(target);
         });
-      })
-      .catch(() => {
-        if (!cancelled) {
-          if (presetEmbed) setEmbed(presetEmbed);
-          else setFailed(true);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    };
+
+    const idleId = deferEmbedWork(runFetch, deferIndex);
 
     return () => {
       cancelled = true;
+      cancelDeferred(idleId);
     };
-  }, [target, presetEmbed]);
+  }, [target, presetEmbed, deferIndex, variant]);
 
-  if (loading && !embed) return <EmbedSkeleton variant={variant} url={target} />;
-  if (!embed) {
-    if (failed && target) {
-      return (
-        <a
-          href={target}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={cn(
-            "inline-flex items-center gap-1 text-sm text-accent-blue hover:underline",
-            variant === "default" && "my-3",
-          )}
-        >
-          {target}
-          <ArrowSquareOut size={13} />
-        </a>
-      );
-    }
-    return null;
-  }
+  if (!embed) return null;
 
   return <EmbedCardBody embed={embed} variant={variant} />;
 }

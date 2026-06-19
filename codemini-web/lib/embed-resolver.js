@@ -1,8 +1,12 @@
-import * as cheerio from 'cheerio';
-
 const CACHE_TTL_MS = 5 * 60 * 1000;
+const FAIL_CACHE_TTL_MS = 5 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 12_000;
+const SHORT_FETCH_TIMEOUT_MS = 4_000;
 const cache = new Map();
+const failCache = new Map();
+
+const SHORT_LINK_HOST_RE =
+  /^(t\.co|bit\.ly|goo\.gl|tinyurl\.com|ow\.ly|buff\.ly|is\.gd|j\.mp|aka\.ms|lnkd\.in|dl\.tiktok\.com)$/i;
 
 const USER_AGENT = 'CodeminiCLI/0.6 embed';
 
@@ -55,15 +59,45 @@ function readCache(key) {
 
 function writeCache(key, value) {
   cache.set(key, { at: Date.now(), value });
+  failCache.delete(key);
   if (cache.size > 200) {
     const oldest = cache.keys().next().value;
     if (oldest) cache.delete(oldest);
   }
 }
 
+function readFailCache(key) {
+  const entry = failCache.get(key);
+  if (!entry) return false;
+  if (Date.now() - entry.at > FAIL_CACHE_TTL_MS) {
+    failCache.delete(key);
+    return false;
+  }
+  return true;
+}
+
+function writeFailCache(key) {
+  failCache.set(key, { at: Date.now() });
+  if (failCache.size > 200) {
+    const oldest = failCache.keys().next().value;
+    if (oldest) failCache.delete(oldest);
+  }
+}
+
+export function isShortLinkUrl(rawUrl) {
+  try {
+    const host = new URL(String(rawUrl || '').trim()).hostname.replace(/^www\./, '').toLowerCase();
+    return SHORT_LINK_HOST_RE.test(host);
+  } catch {
+    return false;
+  }
+}
+
 async function fetchWithTimeout(url, options = {}) {
+  const { timeoutMs: requestedTimeoutMs, headers, ...fetchOptions } = options;
+  const timeoutMs = Number(requestedTimeoutMs) > 0 ? Number(requestedTimeoutMs) : FETCH_TIMEOUT_MS;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, {
       redirect: 'follow',
@@ -71,27 +105,58 @@ async function fetchWithTimeout(url, options = {}) {
       headers: {
         'user-agent': USER_AGENT,
         accept: 'text/html,application/json,application/xml;q=0.9,*/*;q=0.8',
-        ...(options.headers || {}),
+        ...(headers || {}),
       },
-      ...options,
+      ...fetchOptions,
     });
   } finally {
     clearTimeout(timeout);
   }
 }
 
-function extractHtmlMeta($, key) {
-  const lower = String(key || '').toLowerCase();
-  const meta = $(`meta[name="${lower}"], meta[property="${lower}"]`).first();
-  return trimPreview(meta.attr('content') || '', 320);
+function decodeHtmlEntities(value) {
+  return String(value || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, num) => String.fromCharCode(Number(num)));
 }
 
-function pickImage($, pageUrl) {
+function extractHtmlMeta(html, key) {
+  const lower = String(key || '').toLowerCase();
+  const patterns = [
+    new RegExp(`<meta[^>]*(?:name|property)\\s*=\\s*["']${lower}["'][^>]*content\\s*=\\s*["']([^"']*)["']`, 'i'),
+    new RegExp(`<meta[^>]*content\\s*=\\s*["']([^"']*)["'][^>]*(?:name|property)\\s*=\\s*["']${lower}["']`, 'i'),
+  ];
+  for (const pattern of patterns) {
+    const match = String(html || '').match(pattern);
+    if (match?.[1]) return trimPreview(decodeHtmlEntities(match[1]), 320);
+  }
+  return '';
+}
+
+function extractHtmlTitle(html) {
+  const match = String(html || '').match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (!match) return '';
+  return trimPreview(decodeHtmlEntities(match[1].replace(/<[^>]+>/g, '')), 240);
+}
+
+function pickImage(html, pageUrl) {
   const candidates = [
-    extractHtmlMeta($, 'og:image'),
-    extractHtmlMeta($, 'twitter:image'),
-    $('link[rel="image_src"]').attr('href'),
-  ].filter(Boolean);
+    extractHtmlMeta(html, 'og:image'),
+    extractHtmlMeta(html, 'twitter:image'),
+  ];
+  const linkPatterns = [
+    /<link[^>]*rel\s*=\s*["']image_src["'][^>]*href\s*=\s*["']([^"']+)["']/i,
+    /<link[^>]*href\s*=\s*["']([^"']+)["'][^>]*rel\s*=\s*["']image_src["']/i,
+  ];
+  for (const pattern of linkPatterns) {
+    const match = String(html || '').match(pattern);
+    if (match?.[1]) candidates.push(match[1]);
+  }
   for (const candidate of candidates) {
     try {
       return new URL(candidate, pageUrl).toString();
@@ -278,26 +343,25 @@ async function resolveReddit(url) {
   });
 }
 
-async function resolveGenericLink(url) {
-  const response = await fetchWithTimeout(url);
+async function resolveGenericLink(url, { timeoutMs = FETCH_TIMEOUT_MS } = {}) {
+  const response = await fetchWithTimeout(url, { timeoutMs });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
   const html = await response.text();
-  const $ = cheerio.load(html);
   const finalUrl = response.url || url;
-  const title = extractHtmlMeta($, 'og:title')
-    || $('title').first().text()
+  const title = extractHtmlMeta(html, 'og:title')
+    || extractHtmlTitle(html)
     || hostnameFromUrl(finalUrl);
-  const description = extractHtmlMeta($, 'og:description')
-    || extractHtmlMeta($, 'description');
-  const siteName = extractHtmlMeta($, 'og:site_name') || hostnameFromUrl(finalUrl);
+  const description = extractHtmlMeta(html, 'og:description')
+    || extractHtmlMeta(html, 'description');
+  const siteName = extractHtmlMeta(html, 'og:site_name') || hostnameFromUrl(finalUrl);
   return baseEmbed({
     type: 'link',
     url: finalUrl,
     title,
     description,
-    image: pickImage($, finalUrl),
+    image: pickImage(html, finalUrl),
     siteName,
     meta: {},
   });
@@ -342,13 +406,32 @@ export async function resolveEmbed(rawUrl) {
 
   const cached = readCache(url);
   if (cached) return cached;
+  if (readFailCache(url)) {
+    throw new Error('Embed resolution previously failed');
+  }
 
-  let embed = null;
-  if (parseYouTubeId(url)) embed = await resolveYouTube(url);
-  if (!embed) embed = await resolveGitHub(url);
-  if (!embed) embed = await resolveReddit(url);
-  if (!embed) embed = await resolveGenericLink(url);
+  if (isShortLinkUrl(url)) {
+    const minimal = baseEmbed({
+      type: inferPlatformType(url),
+      url,
+      title: hostnameFromUrl(url),
+      siteName: hostnameFromUrl(url),
+    });
+    writeCache(url, minimal);
+    return minimal;
+  }
 
-  writeCache(url, embed);
-  return embed;
+  try {
+    let embed = null;
+    if (parseYouTubeId(url)) embed = await resolveYouTube(url);
+    if (!embed) embed = await resolveGitHub(url);
+    if (!embed) embed = await resolveReddit(url);
+    if (!embed) embed = await resolveGenericLink(url, { timeoutMs: SHORT_FETCH_TIMEOUT_MS });
+
+    writeCache(url, embed);
+    return embed;
+  } catch (error) {
+    writeFailCache(url);
+    throw error;
+  }
 }

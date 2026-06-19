@@ -36,6 +36,18 @@ export function inferEmbedType(url, type) {
   return 'link';
 }
 
+const SHORT_LINK_HOST_RE =
+  /^(t\.co|bit\.ly|goo\.gl|tinyurl\.com|ow\.ly|buff\.ly|is\.gd|j\.mp|aka\.ms|lnkd\.in|dl\.tiktok\.com)$/i;
+
+export function isShortLinkUrl(url) {
+  try {
+    const host = new URL(String(url || '').trim()).hostname.replace(/^www\./, '').toLowerCase();
+    return SHORT_LINK_HOST_RE.test(host);
+  } catch {
+    return false;
+  }
+}
+
 export const EMBED_BRANDS = {
   github: {
     label: 'GitHub',

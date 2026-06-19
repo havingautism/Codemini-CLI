@@ -1,11 +1,28 @@
+import { useEffect, useState } from 'react';
 import { LinkSimple } from '@phosphor-icons/react';
 import { EmbedCard } from '@/components/EmbedCard.jsx';
+import { cancelDeferred, deferUntilIdle } from '@/lib/embed-fetch-queue.js';
 import { t } from '../../i18n/index.js';
 
 export function EmbedBanner({ items = [] }) {
-  if (!items.length) return null;
   const links = items.filter((item) => item?.type !== 'image');
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    if (!items.length || !links.length) {
+      setReady(false);
+      return undefined;
+    }
+
+    setReady(false);
+    const idleId = deferUntilIdle(() => setReady(true), { timeout: 1200 });
+    return () => {
+      cancelDeferred(idleId);
+    };
+  }, [items, links.length]);
+
   if (!links.length) return null;
+  if (!ready) return null;
 
   return (
     <div className="my-4">
@@ -20,7 +37,7 @@ export function EmbedBanner({ items = [] }) {
             key={`${item.url || 'embed'}-${index}`}
             className="w-[288px] shrink-0 sm:w-[300px]"
           >
-            <EmbedCard url={item.url} embed={item} variant="banner" />
+            <EmbedCard url={item.url} embed={item} variant="banner" deferIndex={index} />
           </div>
         ))}
       </div>
