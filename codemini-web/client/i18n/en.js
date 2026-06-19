@@ -44,6 +44,12 @@ export const en = {
   approvalFieldSkill: "Skill",
   approvalFieldPath: "Path",
   approvalFieldArguments: "Arguments",
+  userInputTitle: "Need your input",
+  userInputSelectPlaceholder: "Choose an option",
+  userInputOther: "Other",
+  userInputOtherPlaceholder: "Enter another answer",
+  userInputSkip: "Skip",
+  userInputSubmit: "Continue",
 
   toolRunning: "Running",
   toolDone: "Done",

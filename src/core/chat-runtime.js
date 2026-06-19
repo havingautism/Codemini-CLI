@@ -720,7 +720,7 @@ export const EXECUTION_MODE_TOOL_POLICY = {
     'query_project_index', 'tool_search', 'skill', 'web_fetch', 'web_search',
     'read_plan', 'update_plan', 'update_todos',
     'edit', 'write', 'apply_patch', 'delete', 'run',
-    'create_spec', 'create_plan'
+    'create_spec', 'create_plan', 'request_user_input'
   ]
 };
 
@@ -4298,6 +4298,7 @@ async function askModel({
   alwaysAllowTools,
   signal,
   allowedTools,
+  requestUserInput,
   skipAnalysisNudge = false,
   compactedForModel: compactedInput = null,
   onCompactedUpdate = null,
@@ -4492,6 +4493,7 @@ async function askModel({
     config: toolConfig,
     sessionId: session.id,
     onSystemEvent: onAgentEvent,
+    requestUserInput,
     getTodos: () => normalizeTodos(session.todos),
     onTodosUpdate: (todos) => {
       session.todos = normalizeTodos(todos);
@@ -4658,8 +4660,14 @@ async function askModel({
     : baseDeferredDefinitions;
   const modePolicyTools = EXECUTION_MODE_TOOL_POLICY[normalizedExecutionMode];
   const effectiveAlwaysAllowTools = Array.isArray(modePolicyTools)
-    ? modePolicyTools
-    : (alwaysAllowTools || config.execution?.always_allow_tools || ['run', 'read']);
+    ? [
+        ...modePolicyTools,
+        ...(typeof requestUserInput === 'function' ? ['request_user_input'] : [])
+      ]
+    : [
+        ...(alwaysAllowTools || config.execution?.always_allow_tools || ['run', 'read']),
+        ...(typeof requestUserInput === 'function' ? ['request_user_input'] : [])
+      ];
 
   const modelSourceMessages = compacted ?? session.messages;
   const currentTurnUserIndex = findCurrentTurnUserIndex(modelSourceMessages, text, expectedModelText);
@@ -6768,6 +6776,7 @@ export async function createChatRuntime({
     session.projectDir = process.cwd();
   }
   let activeRequestToolApproval = typeof requestToolApproval === 'function' ? requestToolApproval : null;
+  let activeRequestUserInput = null;
   let onTitleUpdateCallback = null;
   const startupEvents = [];
   const initialIndex = await initializeProjectIndex(process.cwd()).catch(() => null);
@@ -7696,6 +7705,7 @@ export async function createChatRuntime({
           systemPrompt: activeReplySystemPrompt,
           onAgentEvent,
           requestToolApproval: activeRequestToolApproval,
+          requestUserInput: activeRequestUserInput,
           executionMode,
           signal,
           compactedForModel,
@@ -8544,6 +8554,7 @@ export async function createChatRuntime({
           systemPrompt: activeReplySystemPrompt,
           onAgentEvent,
           requestToolApproval: activeRequestToolApproval,
+          requestUserInput: activeRequestUserInput,
           executionMode,
           signal,
           compactedForModel,
@@ -8692,6 +8703,7 @@ export async function createChatRuntime({
       systemPrompt: routedSystemPrompt,
       onAgentEvent,
       requestToolApproval: activeRequestToolApproval,
+      requestUserInput: activeRequestUserInput,
       executionMode,
       signal,
       compactedForModel,
@@ -8761,6 +8773,10 @@ export async function createChatRuntime({
     },
     setRequestToolApproval: (handler) => {
       activeRequestToolApproval = typeof handler === 'function' ? handler : null;
+      return true;
+    },
+    setRequestUserInput: (handler) => {
+      activeRequestUserInput = typeof handler === 'function' ? handler : null;
       return true;
     },
     setOnTitleUpdate: (cb) => {

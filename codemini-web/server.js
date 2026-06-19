@@ -1312,6 +1312,16 @@ async function main() {
       jsonResponse(res, { ok: bridge.handleApproval(id, !!approved) });
       return;
     }
+    if (req.method === 'POST' && url.pathname === '/api/user-input') {
+      const { id, status, answers } = await readBody(req);
+      if (!id) {
+        jsonResponse(res, { error: true, message: 'Missing user input request id' }, 400);
+        return;
+      }
+      const ok = bridge.handleUserInput(id, { status, answers });
+      jsonResponse(res, { ok }, ok ? 200 : 409);
+      return;
+    }
 
     // ── Version ──
     if (req.method === 'GET' && url.pathname === '/api/embed') {

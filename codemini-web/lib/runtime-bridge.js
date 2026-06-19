@@ -1,4 +1,5 @@
 import { ApprovalManager } from './approval-manager.js';
+import { UserInputManager } from './user-input-manager.js';
 import { summarizeToolResult } from '../../src/core/tool-result-store.js';
 import { formatToolLabel } from '../../src/core/tool-display.js';
 import fs from 'node:fs/promises';
@@ -304,6 +305,7 @@ export class RuntimeBridge {
   #runtime = null;
   #clients = new Set();
   #approval = new ApprovalManager();
+  #userInput = new UserInputManager();
   #busy = false;
   #codeWikiGenerating = false;
   #startupConsumed = false;
@@ -341,6 +343,14 @@ export class RuntimeBridge {
       const { id, name, displayName, arguments: args, approvalDetails } = request;
       this.#broadcast({ type: 'approval:request', id, toolName: name, displayName, arguments: args, details: approvalDetails });
       return this.#approval.create(id);
+    });
+    this.#runtime.setRequestUserInput?.((form) => {
+      const id = `user-input-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const request = { ...form, id };
+      const pending = this.#userInput.create(id, form);
+      this.#broadcast({ type: 'user-input:request', request });
+      this.#broadcastRuntimeState();
+      return pending;
     });
   }
 
@@ -925,6 +935,7 @@ export class RuntimeBridge {
   async handleAbort() {
     const retryPrompt = this.#activeSubmitLine;
     const wasBusy = this.#busy;
+    this.#userInput.resolveAll({ status: 'skipped', answers: {} });
     if (wasBusy) this.#invalidateSubmit();
     const abortToken = this.#submitToken;
     const aborted = this.#runtime.abort();
@@ -1009,6 +1020,15 @@ export class RuntimeBridge {
     return this.#approval.resolve(id, approved);
   }
 
+  handleUserInput(id, response) {
+    const resolved = this.#userInput.resolve(id, response);
+    if (resolved) {
+      this.#broadcast({ type: 'user-input:resolved', id });
+      this.#broadcastRuntimeState();
+    }
+    return resolved;
+  }
+
   getState() {
     const state = this.#runtime.getRuntimeState();
     const serializableState = typeof state?.toJSON === 'function' ? state.toJSON() : state;
@@ -1018,7 +1038,8 @@ export class RuntimeBridge {
       requestInFlight: this.#busy,
       codeWikiGenerating: this.#codeWikiGenerating,
       pendingReflectSkill: serializableState.pendingReflectSkill,
-      pendingSpecApproval: serializableState.pendingSpecApproval
+      pendingSpecApproval: serializableState.pendingSpecApproval,
+      pendingUserInput: this.#userInput.current
     };
   }
 
@@ -1127,12 +1148,14 @@ export class RuntimeBridge {
     this.#codeWikiGenerating = false;
     this.#activeSubmitLine = '';
     this.#runStatusRecorded = false;
+    this.#userInput.resolveAll({ status: 'skipped', answers: {} });
     // Dispose old runtime
     try { await this.#runtime.dispose?.(); } catch {}
     // Swap
     this.#runtime = newRuntime;
     this.#startupConsumed = false;
     this.#approval = new ApprovalManager();
+    this.#userInput = new UserInputManager();
     this.#uiMessages = [];
     this.#uiActiveMsgId = null;
     this.#uiPlanStepIds = new Map();

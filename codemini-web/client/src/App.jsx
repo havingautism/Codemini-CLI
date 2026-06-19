@@ -17,6 +17,7 @@ import { ChatPanel } from "@/components/ChatPanel.jsx";
 import { InputBar } from "@/components/InputBar.jsx";
 import { StatusBar } from "@/components/StatusBar.jsx";
 import { ApprovalDialog } from "@/components/ApprovalDialog.jsx";
+import { UserInputDialog } from "@/components/UserInputDialog.jsx";
 import { ReflectApprovalCard } from "@/components/ReflectApprovalDialog.jsx";
 import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
@@ -402,6 +403,12 @@ function Shell() {
         request={state.approvalRequest}
         open={!!state.approvalRequest}
         onDecision={actions.approve}
+      />
+
+      <UserInputDialog
+        request={state.userInputRequest}
+        open={!!state.userInputRequest}
+        onRespond={actions.respondToUserInput}
       />
 
       <SpecApprovalDialog

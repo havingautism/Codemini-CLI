@@ -151,6 +151,15 @@ export async function submitApproval(id, approved) {
   });
 }
 
+export async function submitUserInput(id, response = {}) {
+  const res = await api('/api/user-input', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ id, ...response })
+  });
+  return res.json().catch(() => ({}));
+}
+
 export async function fetchCompletions(query) {
   const res = await api(`/api/completions?q=${encodeURIComponent(query)}`);
   return res.json();

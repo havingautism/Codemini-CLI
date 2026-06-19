@@ -171,6 +171,7 @@ const initialState = {
   pendingReflectApproval: null,
   runtimeActivities: [],
   approvalRequest: null,
+  userInputRequest: null,
   config: null,
   configStatus: null,
   configOpen: false,
@@ -1377,6 +1378,7 @@ export function AppProvider({ children }) {
         isGeneral: !!rs.isGeneral,
         pendingSpecApproval: rs?.pendingSpecApproval || null,
         pendingReflectApproval: rs?.pendingReflectSkill || null,
+        userInputRequest: rs?.pendingUserInput || null,
         busy,
         live: busy || prev.live,
         stage: busy ? "thinking" : prev.stage,
@@ -2520,6 +2522,14 @@ export function AppProvider({ children }) {
           update({ approvalRequest: event });
           break;
 
+        case "user-input:request":
+          update({ userInputRequest: event.request || null });
+          break;
+
+        case "user-input:resolved":
+          update({ userInputRequest: null });
+          break;
+
         case "change:undone": {
           const result = event.result || {};
           const ids =
@@ -2724,6 +2734,7 @@ export function AppProvider({ children }) {
             runtimeState: { ...stateRef.current.runtimeState, ...rs },
             pendingSpecApproval: rs?.pendingSpecApproval || null,
             pendingReflectApproval: rs?.pendingReflectSkill || null,
+            userInputRequest: rs?.pendingUserInput || null,
             busy: !!rs.busy,
             live: !!rs.busy,
             stage: rs.busy ? stateRef.current.stage : "idle",
@@ -3168,6 +3179,16 @@ export function AppProvider({ children }) {
         try {
           await api.submitApproval(id, approved);
         } catch {}
+      },
+
+      respondToUserInput: async (id, response) => {
+        update({ userInputRequest: null });
+        try {
+          const result = await api.submitUserInput(id, response);
+          if (!result?.ok) await loadState();
+        } catch {
+          await loadState();
+        }
       },
 
       approveReflect: async (action, feedback) => {

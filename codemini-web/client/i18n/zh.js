@@ -46,6 +46,12 @@ export const zh = {
   approvalFieldSkill: "技能",
   approvalFieldPath: "路径",
   approvalFieldArguments: "参数",
+  userInputTitle: "需要你的输入",
+  userInputSelectPlaceholder: "请选择",
+  userInputOther: "其他",
+  userInputOtherPlaceholder: "输入其他回答",
+  userInputSkip: "跳过",
+  userInputSubmit: "继续",
 
   // Tool
   toolRunning: "运行中",

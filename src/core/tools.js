@@ -3599,6 +3599,7 @@ export function getBuiltinTools({
   onPlanStateUpdate,
   onCreatePlan,
   onCreateSpec,
+  requestUserInput,
   fffAdapter,
   backupManager,
 }) {
@@ -4237,6 +4238,79 @@ export function getBuiltinTools({
     SKILL_TOOL_DEFINITION,
   ];
 
+  const userInputToolDefinitions = typeof requestUserInput === "function"
+    ? [
+        {
+          type: "function",
+          function: {
+            name: "request_user_input",
+            description:
+              "Pause and ask the user for structured input in the Web UI. Use this only when an answer is needed to continue. Supports text fields, dropdowns, radio buttons, and checkboxes. The user may submit answers, choose an other value, or skip the request.",
+            parameters: {
+              type: "object",
+              properties: {
+                title: {
+                  type: "string",
+                  description: "Short title for the form.",
+                },
+                description: {
+                  type: "string",
+                  description: "Optional context explaining why the input is needed.",
+                },
+                questions: {
+                  type: "array",
+                  minItems: 1,
+                  maxItems: 6,
+                  items: {
+                    type: "object",
+                    properties: {
+                      id: {
+                        type: "string",
+                        description: "Stable snake_case key used in the returned answers object.",
+                      },
+                      label: { type: "string", description: "Visible field label or question." },
+                      type: {
+                        type: "string",
+                        enum: ["text", "select", "radio", "checkbox"],
+                      },
+                      placeholder: { type: "string" },
+                      required: { type: "boolean" },
+                      multiline: {
+                        type: "boolean",
+                        description: "For text fields, render a multi-line input.",
+                      },
+                      allow_other: {
+                        type: "boolean",
+                        description: "Allow the user to provide a value not listed in options.",
+                      },
+                      options: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            label: { type: "string" },
+                            value: { type: "string" },
+                            description: { type: "string" },
+                          },
+                          required: ["label", "value"],
+                        },
+                      },
+                    },
+                    required: ["id", "label", "type"],
+                  },
+                },
+                submit_label: {
+                  type: "string",
+                  description: "Optional submit button label.",
+                },
+              },
+              required: ["questions"],
+            },
+          },
+        },
+      ]
+    : [];
+
   const workflowToolDefinitions = [];
   if (typeof onCreatePlan === "function") {
     workflowToolDefinitions.push({
@@ -4815,9 +4889,10 @@ export function getBuiltinTools({
     ? [
         ...primaryDefinitions,
         ...workflowToolDefinitions,
+        ...userInputToolDefinitions,
         ...codeWikiCommentToolDefinitions,
       ]
-    : [...primaryDefinitions, ...workflowToolDefinitions];
+    : [...primaryDefinitions, ...workflowToolDefinitions, ...userInputToolDefinitions];
   const activeFffAdapter =
     fffAdapter || createFffAdapter({ workspaceRoot, config });
   async function backupNonGitPathOnce(rawPath) {
@@ -5859,6 +5934,64 @@ export function getBuiltinTools({
     list_background_tasks: () => listBackgroundTasks(workspaceRoot),
     get_background_task: (args) => getBackgroundTask(workspaceRoot, args),
     stop_background_task: (args) => stopBackgroundTask(workspaceRoot, args),
+    ...(typeof requestUserInput === "function"
+      ? {
+          request_user_input: async (args = {}) => {
+            const seenQuestionIds = new Set();
+            const questions = (Array.isArray(args.questions) ? args.questions : [])
+              .slice(0, 6)
+              .map((question, index) => {
+                const type = ["text", "select", "radio", "checkbox"].includes(question?.type)
+                  ? question.type
+                  : "text";
+                const options = (Array.isArray(question?.options) ? question.options : [])
+                  .slice(0, 20)
+                  .map((option) => ({
+                    label: String(option?.label || option?.value || "").trim(),
+                    value: String(option?.value || option?.label || "").trim(),
+                    ...(String(option?.description || "").trim()
+                      ? { description: String(option.description).trim() }
+                      : {}),
+                  }))
+                  .filter((option) => option.label && option.value);
+                return {
+                  id: String(question?.id || `question_${index + 1}`).trim(),
+                  label: String(question?.label || `Question ${index + 1}`).trim(),
+                  type,
+                  ...(String(question?.placeholder || "").trim()
+                    ? { placeholder: String(question.placeholder).trim() }
+                    : {}),
+                  required: question?.required === true,
+                  multiline: type === "text" && question?.multiline === true,
+                  allow_other: question?.allow_other === true,
+                  ...(options.length ? { options } : {}),
+                };
+              })
+              .filter((question) => {
+                if (!question.id || !question.label || seenQuestionIds.has(question.id)) return false;
+                seenQuestionIds.add(question.id);
+                return true;
+              });
+            if (questions.length === 0) {
+              return { error: "request_user_input requires at least one valid question" };
+            }
+            const unusableChoice = questions.find((question) =>
+              ["select", "radio", "checkbox"].includes(question.type) &&
+              !question.options?.length &&
+              !question.allow_other,
+            );
+            if (unusableChoice) {
+              return { error: `Question "${unusableChoice.id}" requires options or allow_other=true` };
+            }
+            return requestUserInput({
+              title: String(args.title || "Need your input").trim(),
+              description: String(args.description || "").trim(),
+              questions,
+              submit_label: String(args.submit_label || "").trim(),
+            });
+          },
+        }
+      : {}),
     tool_search: (args) => {
       const query = String(args?.query || "")
         .trim()
