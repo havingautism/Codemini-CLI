@@ -4245,7 +4245,7 @@ export function getBuiltinTools({
           function: {
             name: "request_user_input",
             description:
-              "Pause and ask the user for structured input in the Web UI. Use this only when an answer is needed to continue. Supports text fields, dropdowns, radio buttons, and checkboxes. The user may submit answers, choose an other value, or skip the request.",
+              "Pause and ask the user for structured input in the Web UI. Use when an answer is required to continue or when focused choices about preferences, scope, outcomes, or reasonable approaches would materially improve the result. Prefer 1-3 concise questions and include a recommended or sensible default when appropriate. Supports text fields, dropdowns, radio buttons, and checkboxes. The user may submit answers, choose an other value, or skip the request.",
             parameters: {
               type: "object",
               properties: {

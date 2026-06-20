@@ -796,7 +796,17 @@ function buildExecutionModePromptBlock(executionMode) {
       '- Summarizer must be final and should synthesize prior handoffs without re-analyzing the repo.'
     ].join('\n');
   }
-  return '';
+  return [
+    'Execution Mode: normal',
+    'You are in normal mode. Help with everyday questions and lightweight tasks conversationally, while gathering user preferences when they materially affect the result.',
+    '',
+    'User input workflow:',
+    '- When request_user_input is available, use it if the user\'s preference, desired scope, target outcome, or choice among multiple reasonable approaches would materially change the response.',
+    '- Prefer a short structured form over a plain-text clarification when 1-3 focused choices can capture the needed direction. Include a recommended or sensible default option when appropriate.',
+    '- Use request_user_input when an answer is required to continue, and also when structured choices would substantially improve the usefulness or fit of the result.',
+    '- Do not interrupt for low-impact details. If a safe, reversible assumption is obvious, state it briefly and continue.',
+    '- After the user responds or skips, incorporate the result and continue the original task.'
+  ].join('\n');
 }
 
 export const ROLE_TOOL_POLICY = {
