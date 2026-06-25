@@ -19,6 +19,7 @@ export const en = {
     ".doc is not supported yet. Upload a .docx file instead.",
   attachmentImage: "Image attachment",
   removeAttachment: "Remove attachment",
+  removeLoadedSkill: "Remove skill",
 
   approveTitle: "Confirm Action",
   approve: "Approve",

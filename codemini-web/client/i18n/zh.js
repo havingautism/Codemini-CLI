@@ -20,6 +20,7 @@ export const zh = {
   attachmentDocUnsupported: "暂不支持 .doc，请上传 .docx 文件",
   attachmentImage: "图片附件",
   removeAttachment: "移除附件",
+  removeLoadedSkill: "移除技能",
 
   // Approval
   approveTitle: "确认操作",

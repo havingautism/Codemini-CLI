@@ -375,6 +375,7 @@ function Shell() {
                 history={state.history}
                 onOpenSpec={actions.openSpecReview}
                 projectCwd={state.projectCwd}
+                projectDirs={sidebarProjectDirs}
               />
 
               {/* Meta row */}

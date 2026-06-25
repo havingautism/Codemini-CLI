@@ -10,6 +10,10 @@ import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
 import { LinearRing, LinearStatusDot, Spinner } from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import {
+  isManualSkillCommand,
+  parseUserSkillPrompt,
+} from "@/lib/user-skill-prompt.js";
 import { formatTimestamp } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
 import * as api from "@/hooks/use-api.js";
@@ -30,6 +34,7 @@ import {
   CheckCircle,
   Copy,
   FileText,
+  Hammer,
   ImageSquare,
   Moon,
   Play,
@@ -1306,7 +1311,7 @@ function buildRenderGroups(segments) {
   return groups;
 }
 
-function UserText({ text, skills = [] }) {
+function UserText({ text }) {
   const match = String(text || "").match(/^(\/([A-Za-z0-9_-]+))(\s+[\s\S]*)?$/);
   if (!match) return <StreamdownRenderer text={text} streaming={false} />;
 
@@ -1339,41 +1344,49 @@ function UserText({ text, skills = [] }) {
     );
   }
 
-  const skill = skills.find((s) => s.name === skillName);
-  if (!skill) return <StreamdownRenderer text={text} streaming={false} />;
+  return <StreamdownRenderer text={text} streaming={false} />;
+}
+
+function UserSkillChips({ skillName, skills = [], className }) {
+  const name = String(skillName || "").trim();
+  if (!name) return null;
+  const skill = skills.find((item) => item.name === name);
+  const description = skill?.description || "";
 
   return (
-    <div className="msg-body whitespace-pre-wrap text-(--text-primary)">
+    <div
+      className={cn("flex max-w-full flex-wrap gap-1.5", className)}
+    >
       <Tooltip>
         <TooltipTrigger asChild>
-          <span className="inline-flex items-center rounded-md bg-(--accent-purple-bg) px-1.5 py-0.5 text-accent-purple font-mono text-[0.92em] cursor-help align-baseline">
-            {token}
+          <span className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-(--accent-purple)/25 bg-(--accent-purple-bg) px-2 py-1 text-[12px] text-accent-purple">
+            <Hammer size={14} className="shrink-0" />
+            <span className="max-w-[220px] truncate">{name}</span>
           </span>
         </TooltipTrigger>
-        <TooltipContent
-          side="top"
-          sideOffset={8}
-          className="max-w-75 px-4 py-3 leading-relaxed whitespace-normal"
-        >
-          <div className="font-semibold mb-1.5">{skill.name}</div>
-          <div className="text-(--text-secondary)">
-            {skill.description || "No description"}
-          </div>
-        </TooltipContent>
+        {description ? (
+          <TooltipContent
+            side="top"
+            sideOffset={8}
+            className="max-w-75 px-4 py-3 leading-relaxed whitespace-normal"
+          >
+            <div className="font-semibold mb-1.5">{name}</div>
+            <div className="text-(--text-secondary)">{description}</div>
+          </TooltipContent>
+        ) : null}
       </Tooltip>
-      {rest}
     </div>
   );
 }
 
-function UserAttachments({ attachments = [] }) {
+function UserAttachments({ attachments = [], className }) {
   const items = Array.isArray(attachments) ? attachments : [];
   if (!items.length) return null;
   const images = items.filter((item) => item?.kind === "image" && item.url);
   const files = items.filter((item) => item?.kind !== "image" || !item.url);
 
   return (
-    <div className="mt-3 flex max-w-full flex-col gap-2">
+    <div className={cn("flex max-w-full flex-col gap-2", className)}>
       {images.length > 0 && (
         <div className="grid max-w-full grid-cols-2 gap-2 sm:grid-cols-[repeat(auto-fit,minmax(120px,160px))]">
           {images.map((item) => (
@@ -1730,7 +1743,7 @@ export function MessageBubble({ message, skills = [], onRetry }) {
     timestamp,
     planStep,
     usage,
-    attachments,
+    attachments = [],
   } = message;
   const ts = timestamp ? formatTimestamp(timestamp) : "";
 
@@ -1891,6 +1904,13 @@ export function MessageBubble({ message, skills = [], onRetry }) {
           .join("") ||
         ""
       : "";
+  const userSkillPrompt = useMemo(() => {
+    if (role !== "you" || !youText) return null;
+    const parsed = parseUserSkillPrompt(youText);
+    if (!isManualSkillCommand(parsed.skillName)) return null;
+    return parsed;
+  }, [role, youText]);
+  const userDisplayText = userSkillPrompt ? userSkillPrompt.prompt : youText;
   const messageText = role === "you" ? youText : rawMessageText;
   const messageComplete =
     role === "you" || isMessageComplete(message, renderGroups);
@@ -1943,8 +1963,23 @@ export function MessageBubble({ message, skills = [], onRetry }) {
             <SpecExecutionCard details={specExecutionDetails} />
           ) : (
             <div className="w-fit max-w-full bg-(--bg-tertiary) rounded-2xl px-4 py-3">
-              {youText && <UserText text={youText} skills={skills} />}
-              <UserAttachments attachments={attachments} />
+              {(userSkillPrompt?.skillName || attachments.length > 0) && (
+                <div
+                  className={cn(
+                    "flex max-w-full flex-col gap-2",
+                    userDisplayText && "mb-3",
+                  )}
+                >
+                  {userSkillPrompt?.skillName && (
+                    <UserSkillChips
+                      skillName={userSkillPrompt.skillName}
+                      skills={skills}
+                    />
+                  )}
+                  <UserAttachments attachments={attachments} />
+                </div>
+              )}
+              {userDisplayText && <UserText text={userDisplayText} />}
               {startupTodos && <TodoList todos={startupTodos} />}
             </div>
           )}

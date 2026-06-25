@@ -10,6 +10,7 @@ import React, {
 import { t } from "../../i18n/index.js";
 import { formatToolLabel } from "@core/tool-display.js";
 import * as api from "../hooks/use-api.js";
+import { parseAttachmentsFromModelContent } from "../lib/message-attachments.js";
 
 const AppContext = createContext(null);
 
@@ -332,17 +333,38 @@ function addToolToSegments(segments, toolCard) {
   return [...segments, { type: "tools", cards: [toolCard] }];
 }
 
-function addSkillToSegments(segments, event) {
+function createSkillSegment(event, status = "running") {
   const now = new Date().toISOString();
-  return [
-    ...(Array.isArray(segments) ? segments : []),
-    {
-      type: "skill",
-      name: event.name,
-      status: "running",
-      startedAt: event.startedAt || now,
-    },
-  ];
+  return {
+    type: "skill",
+    name: event.name,
+    status,
+    startedAt: event.startedAt || now,
+    ...(status === "done" || status === "error"
+      ? { endedAt: event.endedAt || now }
+      : {}),
+    ...(status === "error" && event.summary ? { summary: event.summary } : {}),
+  };
+}
+
+function addSkillToSegments(segments, event) {
+  return [...(Array.isArray(segments) ? segments : []), createSkillSegment(event)];
+}
+
+function updatePendingSkillSegments(segments, name, updater) {
+  const source = Array.isArray(segments) ? segments : [];
+  let targetIndex = -1;
+  for (let i = source.length - 1; i >= 0; i -= 1) {
+    const segment = source[i];
+    if (segment?.type === "skill" && segment.name === name && segment.status === "running") {
+      targetIndex = i;
+      break;
+    }
+  }
+  if (targetIndex === -1) return source;
+  return source.map((segment, index) =>
+    index === targetIndex ? updater(segment) : segment,
+  );
 }
 
 function updateSkillInSegments(segments, name, updater) {
@@ -1216,6 +1238,27 @@ function mergeStructuredUiPlans(processedMessages, uiMessages) {
   return merged;
 }
 
+function mergeUserContextFromUiMessages(processedMessages, uiMessages) {
+  const uiUsers = (Array.isArray(uiMessages) ? uiMessages : []).filter(
+    (message) => message?.role === "you" && !message?.transientKey,
+  );
+  if (!uiUsers.length) return processedMessages;
+
+  let uiIndex = 0;
+  return processedMessages.map((message) => {
+    if (message.role !== "you") return message;
+    const uiMessage = uiUsers[uiIndex++];
+    if (!uiMessage) return message;
+
+    const uiAttachments = Array.isArray(uiMessage.attachments)
+      ? uiMessage.attachments.filter(Boolean)
+      : [];
+    if (!uiAttachments.length) return message;
+
+    return { ...message, attachments: uiAttachments };
+  });
+}
+
 function normalizeCodeWikiStep(step, index = 0) {
   return {
     index: Number(step?.index || step?.step || index + 1),
@@ -1271,6 +1314,7 @@ export function AppProvider({ children }) {
   const skipSwitchedReloadRef = useRef(false);
   const sessionsLoadPromiseRef = useRef(null);
   const pendingSkillBadgesRef = useRef([]);
+  const pendingSkillSegmentsRef = useRef([]);
   const planRunPendingRef = useRef(false);
   const planStepMessagesRef = useRef(new Map());
   const planOverviewMsgRef = useRef(null);
@@ -1285,13 +1329,18 @@ export function AppProvider({ children }) {
   const addMessage = useCallback((msg) => {
     const id =
       msg.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const segments = [];
-    if (msg.text)
-      segments.push({
-        type: "text",
-        text: msg.text,
-        isStreaming: msg.isStreaming || false,
-      });
+    const segments =
+      Array.isArray(msg.segments) && msg.segments.length > 0
+        ? [...msg.segments]
+        : msg.text
+          ? [
+              {
+                type: "text",
+                text: msg.text,
+                isStreaming: msg.isStreaming || false,
+              },
+            ]
+          : [];
     const newMsg = {
       ...msg,
       id,
@@ -1556,6 +1605,7 @@ export function AppProvider({ children }) {
               segments: [
                 { type: "text", text: visibleContent, isStreaming: false },
               ],
+              attachments: parseAttachmentsFromModelContent(msg.model_content),
               skillBadges: [],
               fileChanges: [],
             });
@@ -1809,7 +1859,10 @@ export function AppProvider({ children }) {
 
         const restored = sanitizeManualAbortMessages(
           settleCompletedPlanToolCards(
-            mergeStructuredUiPlans(processed, uiMessages),
+            mergeUserContextFromUiMessages(
+              mergeStructuredUiPlans(processed, uiMessages),
+              uiMessages,
+            ),
           ),
         );
         const overview = [...restored]
@@ -1868,6 +1921,8 @@ export function AppProvider({ children }) {
           if (!msgId) {
             const pendingSkillBadges = pendingSkillBadgesRef.current;
             pendingSkillBadgesRef.current = [];
+            const pendingSkillSegments = pendingSkillSegmentsRef.current;
+            pendingSkillSegmentsRef.current = [];
             msgId = addMessage({
               role: "general",
               timestamp: new Date().toISOString(),
@@ -1875,9 +1930,14 @@ export function AppProvider({ children }) {
               isStreaming: false,
               isComplete: false,
               skillBadges: pendingSkillBadges,
+              segments: pendingSkillSegments,
             });
             setActiveMsg(msgId);
           } else {
+            const pendingSkillBadges = pendingSkillBadgesRef.current;
+            pendingSkillBadgesRef.current = [];
+            const pendingSkillSegments = pendingSkillSegmentsRef.current;
+            pendingSkillSegmentsRef.current = [];
             setState((prev) => ({
               ...prev,
               messages: prev.messages.map((m) =>
@@ -1887,13 +1947,18 @@ export function AppProvider({ children }) {
                       isComplete: false,
                       skillBadges: appendUniqueSkillBadges(
                         m.skillBadges || [],
-                        pendingSkillBadgesRef.current,
+                        pendingSkillBadges,
                       ),
+                      segments: pendingSkillSegments.length
+                        ? [
+                            ...pendingSkillSegments,
+                            ...(Array.isArray(m.segments) ? m.segments : []),
+                          ]
+                        : m.segments,
                     }
                   : m,
               ),
             }));
-            pendingSkillBadgesRef.current = [];
           }
           update({
             stage: "thinking",
@@ -2378,7 +2443,7 @@ export function AppProvider({ children }) {
         }
 
         case "skill:start": {
-          if (activeId)
+          if (activeId) {
             setState((prev) => ({
               ...prev,
               messages: prev.messages.map((m) =>
@@ -2393,10 +2458,16 @@ export function AppProvider({ children }) {
                   : m,
               ),
             }));
+          } else {
+            pendingSkillSegmentsRef.current = [
+              ...pendingSkillSegmentsRef.current,
+              createSkillSegment(event),
+            ];
+          }
           break;
         }
         case "skill:end": {
-          if (activeId)
+          if (activeId) {
             setState((prev) => ({
               ...prev,
               messages: prev.messages.map((m) =>
@@ -2412,10 +2483,21 @@ export function AppProvider({ children }) {
                   : m,
               ),
             }));
+          } else {
+            pendingSkillSegmentsRef.current = updatePendingSkillSegments(
+              pendingSkillSegmentsRef.current,
+              event.name,
+              (segment) => ({
+                ...segment,
+                status: "done",
+                endedAt: event.endedAt || new Date().toISOString(),
+              }),
+            );
+          }
           break;
         }
         case "skill:error": {
-          if (activeId)
+          if (activeId) {
             setState((prev) => ({
               ...prev,
               messages: prev.messages.map((m) =>
@@ -2432,6 +2514,18 @@ export function AppProvider({ children }) {
                   : m,
               ),
             }));
+          } else {
+            pendingSkillSegmentsRef.current = updatePendingSkillSegments(
+              pendingSkillSegmentsRef.current,
+              event.name,
+              (segment) => ({
+                ...segment,
+                status: "error",
+                summary: event.summary,
+                endedAt: event.endedAt || new Date().toISOString(),
+              }),
+            );
+          }
           break;
         }
         case "skill:always": {
