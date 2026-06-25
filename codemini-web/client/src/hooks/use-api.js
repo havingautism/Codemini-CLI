@@ -194,6 +194,11 @@ export async function fetchConfigStatus() {
   return res.json();
 }
 
+export async function fetchPlaywrightStatus() {
+  const res = await api('/api/playwright/status');
+  return res.json();
+}
+
 export async function setConfig(key, value) {
   const res = await api('/api/config/set', {
     method: 'POST',

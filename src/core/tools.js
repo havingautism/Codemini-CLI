@@ -528,6 +528,29 @@ async function loadOptionalPlaywright() {
   }
 }
 
+export async function detectPlaywrightStatus() {
+  const installCommand =
+    "npm install -g playwright && playwright install chromium";
+  const playwright = await loadOptionalPlaywright();
+  if (!playwright) {
+    return {
+      packageInstalled: false,
+      chromiumReady: false,
+      installCommand,
+    };
+  }
+  let chromiumReady = false;
+  try {
+    playwright.chromium.executablePath();
+    chromiumReady = true;
+  } catch {}
+  return {
+    packageInstalled: true,
+    chromiumReady,
+    installCommand,
+  };
+}
+
 async function buildPlaywrightLaunchEnv() {
   const localLibDir = path.join(
     process.env.HOME || "",

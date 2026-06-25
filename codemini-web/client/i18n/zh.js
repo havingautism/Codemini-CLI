@@ -257,6 +257,13 @@ export const zh = {
   exaApiKeyPlaceholder: "Exa 需要填写",
   exaApiKeyHelp:
     "保存在本机 Codemini 配置文件中。也可以留空并使用 EXA_API_KEY。",
+  playwright: "Playwright",
+  playwrightHelp:
+    "web_fetch 的可选浏览器运行时。安装后可更好地读取 JavaScript 渲染页面，而不只依赖静态 HTML。安装命令：npm install -g playwright && playwright install chromium",
+  playwrightReady: "已就绪",
+  playwrightNotInstalled: "未安装",
+  playwrightBrowserMissing: "缺少 Chromium",
+  playwrightChecking: "检测中…",
   context: "上下文",
   contextMaxTokens: "上下文 Token 预算",
   preflightTrigger: "预压缩阈值 (%)",

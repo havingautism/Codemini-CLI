@@ -257,6 +257,13 @@ export const en = {
   exaApiKeyPlaceholder: "Required for Exa",
   exaApiKeyHelp:
     "Stored locally in your Codemini config file. You can also leave this empty and use EXA_API_KEY.",
+  playwright: "Playwright",
+  playwrightHelp:
+    "Optional browser runtime for web_fetch. When installed, Codemini can render JavaScript-heavy pages instead of relying on static HTML only. Install: npm install -g playwright && playwright install chromium",
+  playwrightReady: "Ready",
+  playwrightNotInstalled: "Not installed",
+  playwrightBrowserMissing: "Chromium missing",
+  playwrightChecking: "Checking…",
   context: "Context",
   contextMaxTokens: "Context Token Budget",
   preflightTrigger: "Preflight Trigger (%)",

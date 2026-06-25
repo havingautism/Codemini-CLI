@@ -30,7 +30,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Separator } from "@/components/ui/separator";
-import { Question } from "@phosphor-icons/react";
+import { Question, CheckCircle, WarningCircle, XCircle } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import * as api from "@/hooks/use-api";
 import { Spinner } from "@/components/ui/spinner";
@@ -154,6 +154,7 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
       ],
     },
     {
+      id: "webSearch",
       title: t("webSearch"),
       keys: [
         {
@@ -280,10 +281,14 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
   const [config, setConfig] = useState(null);
   const [changes, setChanges] = useState({});
   const [configLoading, setConfigLoading] = useState(false);
+  const [playwrightStatus, setPlaywrightStatus] = useState(null);
+  const [playwrightLoading, setPlaywrightLoading] = useState(false);
 
   useEffect(() => {
     if (open) {
       setConfigLoading(true);
+      setPlaywrightLoading(true);
+      setPlaywrightStatus(null);
       api
         .fetchConfig()
         .then((cfg) => {
@@ -292,6 +297,11 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
         })
         .catch(() => {})
         .finally(() => setConfigLoading(false));
+      api
+        .fetchPlaywrightStatus()
+        .then((status) => setPlaywrightStatus(status))
+        .catch(() => setPlaywrightStatus(null))
+        .finally(() => setPlaywrightLoading(false));
     }
   }, [open]);
 
@@ -316,6 +326,30 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
   const hasChanges = Object.keys(changes).length > 0;
   const shouldShowKey = (key) =>
     typeof key.visibleWhen !== "function" || key.visibleWhen({ getValue });
+
+  const playwrightReady =
+    playwrightStatus?.packageInstalled && playwrightStatus?.chromiumReady;
+  const playwrightLabel = playwrightLoading
+    ? t("playwrightChecking")
+    : playwrightReady
+      ? t("playwrightReady")
+      : playwrightStatus?.packageInstalled
+        ? t("playwrightBrowserMissing")
+        : t("playwrightNotInstalled");
+  const PlaywrightStatusIcon = playwrightLoading
+    ? null
+    : playwrightReady
+      ? CheckCircle
+      : playwrightStatus?.packageInstalled
+        ? WarningCircle
+        : XCircle;
+  const playwrightStatusClass = playwrightLoading
+    ? "text-(--text-muted)"
+    : playwrightReady
+      ? "text-(--accent-green)"
+      : playwrightStatus?.packageInstalled
+        ? "text-(--accent-amber, #d97706)"
+        : "text-(--text-muted)";
 
   const handleSave = async () => {
     try {
@@ -357,7 +391,7 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
             </div>
           ) : (
             CONFIG_GROUPS.map((group, gi) => (
-              <div key={group.title}>
+              <div key={group.id || group.title}>
                 <div className="text-[13px] font-semibold text-(--text-secondary) mb-2.5 uppercase tracking-[0.3px]">
                   {group.title}
                 </div>
@@ -446,6 +480,45 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
                       </FieldContent>
                     </Field>
                   ))}
+                  {group.id === "webSearch" && (
+                    <Field className="items-center">
+                      <FieldLabel>
+                        <span>{t("playwright")}</span>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              className="ml-1 inline-flex align-[-2px] text-(--text-muted) hover:text-(--text-primary)"
+                              aria-label={t("playwrightHelp")}
+                            >
+                              <Question size={13} />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent
+                            side="right"
+                            className="max-w-[300px] leading-relaxed"
+                          >
+                            {t("playwrightHelp")}
+                          </TooltipContent>
+                        </Tooltip>
+                      </FieldLabel>
+                      <FieldContent>
+                        <div
+                          className={cn(
+                            "flex min-h-8 items-center justify-end gap-1.5 text-[13px]",
+                            playwrightStatusClass,
+                          )}
+                        >
+                          {playwrightLoading ? (
+                            <Spinner className="size-4" />
+                          ) : PlaywrightStatusIcon ? (
+                            <PlaywrightStatusIcon size={15} weight="fill" />
+                          ) : null}
+                          <span>{playwrightLabel}</span>
+                        </div>
+                      </FieldContent>
+                    </Field>
+                  )}
                 </FieldGroup>
                 {gi < CONFIG_GROUPS.length - 1 && (
                   <Separator className="mt-4 bg-(--border-default)" />

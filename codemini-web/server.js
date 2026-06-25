@@ -28,6 +28,7 @@ import { getBaseConfigDir, getFileIndexPath, getProjectSkillsDir, getProjectSpec
 import { initializeProjectIndex } from '../src/core/project-index.js';
 import { INDEX_SKIP_DIRS } from '../src/core/constants.js';
 import { VERSION } from '../src/core/version.js';
+import { detectPlaywrightStatus } from '../src/core/tools.js';
 
 const GENERAL_PROJECT_DIR = (() => {
   const base = getBaseConfigDir();
@@ -1905,6 +1906,14 @@ async function main() {
     if (req.method === 'GET' && url.pathname === '/api/config/status') {
       const config = await loadConfig();
       jsonResponse(res, getConfigStatus(config));
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/playwright/status') {
+      try {
+        jsonResponse(res, await detectPlaywrightStatus());
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/config') {

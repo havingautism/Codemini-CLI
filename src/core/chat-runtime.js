@@ -13,7 +13,15 @@ import {
 } from './provider/index.js';
 import { isDangerousCommand, runShellCommand } from './shell.js';
 import { getBuiltinTools } from './tools.js';
-import { createSession, deriveSessionTitle, listSessions, loadSession, pruneSessions, saveSession } from './session-store.js';
+import {
+  createSession,
+  deriveSessionTitle,
+  listSessions,
+  loadSession,
+  pruneSessions,
+  resolveTitleUserText,
+  saveSession
+} from './session-store.js';
 import { getConfigValue, loadConfig, resetConfig, setConfigValue } from './config-store.js';
 import { evaluateCommandPolicy } from './command-policy.js';
 import { appendInputHistory, loadInputHistory } from './input-history-store.js';
@@ -5001,8 +5009,12 @@ async function askModel({
     // Generate a better title asynchronously after saving
     if (shouldGenerateTitle) {
       const titleSessionId = session.id;
+      const titleUserText = resolveTitleUserText({
+        content: text,
+        model_content: expectedModelText || undefined
+      });
       generateSessionTitle({
-        userText: text,
+        userText: titleUserText,
         assistantText: loopResult.text || '',
         config,
         signal

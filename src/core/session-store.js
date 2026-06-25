@@ -111,11 +111,34 @@ function stripMarkdown(value) {
     .trim();
 }
 
+export function resolveTitleUserText(source = {}) {
+  const message = source?.role ? source : null;
+  const content = String(message?.content ?? source?.content ?? source?.text ?? '').trim();
+  const modelContent = typeof (message?.model_content ?? source?.model_content ?? source?.modelText) === 'string'
+    ? (message?.model_content ?? source?.model_content ?? source?.modelText).trim()
+    : '';
+
+  if (modelContent) {
+    const isSkillPrompt = /^\[Executing skill: \/[^\]\s]+\]\n\n/.test(modelContent);
+    if (isSkillPrompt) {
+      const currentQuestion = modelContent.match(/\nCurrent question:\n([\s\S]+)$/);
+      if (currentQuestion?.[1]?.trim()) return currentQuestion[1].trim();
+      const userTask = modelContent.match(/(?:^|\n)\[User task\]\n([\s\S]+?)(?:\n\n\[|$)/);
+      if (userTask?.[1]?.trim()) return userTask[1].trim();
+    }
+  }
+
+  const slashMatch = content.match(/^\/([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\s+([\s\S]+))?$/);
+  if (slashMatch?.[2]?.trim()) return slashMatch[2].trim();
+
+  return content;
+}
+
 export function deriveSessionTitle(messages = []) {
   const firstUser = Array.isArray(messages)
     ? messages.find((msg) => msg?.role === 'user' && normalizeWhitespace(msg?.content))
     : null;
-  const text = stripMarkdown(firstUser?.content || '');
+  const text = stripMarkdown(resolveTitleUserText(firstUser || {}));
   if (!text) return DEFAULT_SESSION_TITLE;
   return text.length > 48 ? `${text.slice(0, 45).trimEnd()}...` : text;
 }
