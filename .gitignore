@@ -2,6 +2,8 @@ node_modules/
 .npm-cache/
 
 # Local runtime/state
+.env
+codemini-web/.env
 
 .codemini/
 .npm-pack-cache/

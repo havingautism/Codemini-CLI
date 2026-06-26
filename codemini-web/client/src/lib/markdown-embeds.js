@@ -233,6 +233,93 @@ function normalizeImageAlt(alt, url, fallback = 'Image') {
   return trimmed || fallback;
 }
 
+export function extractInlineImagesFromMarkdown(text) {
+  const source = typeof text === 'string' ? text : String(text || '');
+  if (!source.trim()) return [];
+
+  const images = [];
+  for (const match of source.matchAll(MARKDOWN_IMAGE_RE)) {
+    images.push({
+      url: trimUrlTrailingPunctuation(match[2]),
+      alt: match[1] || '',
+    });
+  }
+  MARKDOWN_IMAGE_RE.lastIndex = 0;
+  return images;
+}
+
+export function groupGalleryParts(parts) {
+  const grouped = [];
+  let images = [];
+
+  const flushImages = () => {
+    if (!images.length) return;
+    grouped.push({
+      type: images.length > 1 ? 'gallery' : 'image',
+      images,
+    });
+    images = [];
+  };
+
+  for (const part of parts) {
+    if (part.type === 'image') {
+      images.push(part);
+      continue;
+    }
+    flushImages();
+    grouped.push(part);
+  }
+
+  flushImages();
+  return grouped;
+}
+
+export function collectMessageImages(text, { includeLinks = true } = {}) {
+  const source = typeof text === 'string' ? text : String(text || '');
+  if (!source.trim()) return [];
+
+  const parts = splitMarkdownForEmbeds(source, { includeLinks });
+  const groupedParts = groupGalleryParts(parts);
+  const images = [];
+
+  for (const part of groupedParts) {
+    if (part.type === 'image' || part.type === 'gallery') {
+      for (const image of part.images) {
+        images.push({ url: image.url, alt: image.alt || '' });
+      }
+      continue;
+    }
+    if (part.type === 'markdown' && part.text) {
+      images.push(...extractInlineImagesFromMarkdown(part.text));
+    }
+  }
+
+  return images;
+}
+
+export function createGalleryIndexResolver(images) {
+  const list = Array.isArray(images) ? images : [];
+  const seen = new Map();
+
+  return ({ src, alt }) => {
+    const url = String(src || '').trim();
+    const normalizedAlt = String(alt || '');
+    const key = `${url}\0${normalizedAlt}`;
+    const count = seen.get(key) || 0;
+    seen.set(key, count + 1);
+
+    let occurrence = 0;
+    for (let index = 0; index < list.length; index += 1) {
+      const item = list[index];
+      if (item.url === url && (item.alt || '') === normalizedAlt) {
+        if (occurrence === count) return index;
+        occurrence += 1;
+      }
+    }
+    return 0;
+  };
+}
+
 export function normalizeMarkdownForDisplay(text, { linkFallback = 'Link', imageFallback = 'Image' } = {}) {
   const source = typeof text === 'string' ? text : String(text || '');
   if (!source.trim()) return '';

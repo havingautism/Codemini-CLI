@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { LinkSimple } from '@phosphor-icons/react';
 import { EmbedCard } from '@/components/EmbedCard.jsx';
+import { HorizontalScrollStrip } from '@/components/HorizontalScrollStrip.jsx';
 import { cancelDeferred, deferUntilIdle } from '@/lib/embed-fetch-queue.js';
 import { t } from '../../i18n/index.js';
 
@@ -31,7 +32,7 @@ export function EmbedBanner({ items = [] }) {
         <span>{t('relatedLinks')}</span>
       </div>
 
-      <div className="codemini-embed-banner-scroll flex items-stretch gap-3 px-0.5">
+      <HorizontalScrollStrip>
         {links.map((item, index) => (
           <div
             key={`${item.url || 'embed'}-${index}`}
@@ -40,7 +41,7 @@ export function EmbedBanner({ items = [] }) {
             <EmbedCard url={item.url} embed={item} variant="banner" deferIndex={index} />
           </div>
         ))}
-      </div>
+      </HorizontalScrollStrip>
     </div>
   );
 }
