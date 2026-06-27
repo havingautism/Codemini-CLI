@@ -27,9 +27,12 @@ Use Codemini's `skill` tool against the indexed registry. Do not grep, glob, or 
 
 - Browse: `skill({name:"list"})`
 - Search: `skill({query:"debug failing test"})`
-- Load: `skill({name:"systematic-debugging"})`
+- Load one: `skill({name:"systematic-debugging"})`
+- Load multiple (2+): `skill({names:["systematic-debugging","test-driven-development"]})`
 
 The full `SKILL.md` is loaded on demand. Read skill files manually only when editing the skill itself.
+
+`name`, `query`, and `args` are all mutually exclusive with `names` — never combine them. `names` takes exact skill names only (no `list`/`all`/keywords); use it when two or more plain skills clearly apply, to avoid repeated single calls. To pass arguments to a parameterized skill, use `skill({name:"...", args:[...]})` instead of `names`.
 
 ## Default Routing
 

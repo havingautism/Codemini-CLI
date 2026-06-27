@@ -392,25 +392,31 @@ const SKILL_TOOL_DEFINITION = {
   function: {
     name: "skill",
     description:
-      'Search and load Codemini skills from the indexed skill registry/catalog. To browse skills, call skill({name:"list"}). To find a skill by keywords, call skill({query:"ts generic error"}) or skill({name:"fix-ts-generic-error"}). After you know the exact skill name, call skill({name:"<skill-name>"}) to load its instructions. Do NOT use grep, glob, or list on skills directories to discover skills.',
+      'Search and load Codemini skills from the indexed skill registry/catalog. To browse skills, call skill({name:"list"}). To find a skill by keywords, call skill({query:"ts generic error"}) or skill({name:"fix-ts-generic-error"}). After you know the exact skill name, call skill({name:"<skill-name>"}) to load that SINGLE skill. To load MULTIPLE skills (2+) in one call, call skill({names:["<skill-a>","<skill-b>","<skill-c>"]}). Do NOT use grep, glob, or list on skills directories to discover skills.',
     parameters: {
       type: "object",
       properties: {
         name: {
           type: "string",
           description:
-            'Exact skill name, "list"/"all" to browse all indexed skills, or keywords to search the skill index',
+            'Exact skill name, "list"/"all" to browse all indexed skills, or keywords to search the skill index. Use this for a SINGLE skill. Mutually exclusive with "names".',
+        },
+        names: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            'Load MULTIPLE skills (2+) by exact name in one call. Use this instead of repeated "name" calls when two or more skills apply. Each element MUST be an exact skill name (aliases supported); does NOT accept "list"/"all"/keywords. Mutually exclusive with "name" and "query".',
         },
         query: {
           type: "string",
           description:
-            "Search indexed skills by name/description keywords without loading one",
+            'Search indexed skills by name/description keywords without loading one. Mutually exclusive with "names".',
         },
         args: {
           type: "array",
           items: { type: "string" },
           description:
-            "Optional positional arguments to substitute into the skill prompt",
+            'Optional positional arguments to substitute into the skill prompt. Only valid with "name" (single-skill, parameterized). Mutually exclusive with "names".',
         },
       },
     },
@@ -5881,7 +5887,36 @@ export function getBuiltinTools({
         );
 
       const searchQuery = String(args?.query || "").trim();
-      if (searchQuery && !String(args?.name || args?.skill || "").trim()) {
+      const requestedName = String(args?.name || args?.skill || "").trim();
+      const requestedNamesRaw = Array.isArray(args?.names)
+        ? args.names.map((item) => String(item || "").trim()).filter(Boolean)
+        : [];
+      const hasBatch = requestedNamesRaw.length > 0;
+      const hasArgs =
+        (Array.isArray(args?.args) && args.args.length > 0) ||
+        String(args?.arguments || "").trim().length > 0;
+
+      // Conflict guard: "names" is mutually exclusive with "name", "query",
+      // and "args". Parameterized skills (those needing args) must be loaded
+      // one at a time via "name"; "names" is for batch-loading plain skills.
+      // Returning an error (with a concrete correction) teaches the model the
+      // right form without relying on prior "learning" — every session reads it.
+      if (hasBatch && (requestedName || searchQuery || hasArgs)) {
+        const parts = ["'names' is mutually exclusive with 'name', 'query', and 'args'."];
+        if (hasArgs) {
+          parts.push(
+            'To pass arguments to a skill, use skill({name:"<skill>", args:[...]}).',
+          );
+        }
+        parts.push('For multiple plain skills use skill({names:["a","b","c"]}).');
+        if (!hasArgs) {
+          parts.push('For a single skill use skill({name:"a"}).');
+          parts.push('To browse use skill({name:"list"}); to search use skill({query:"..."}).');
+        }
+        return { error: parts.join(" ") };
+      }
+
+      if (searchQuery && !requestedName) {
         const matches = searchIndexedSkills(allSkills, searchQuery).filter(
           (item) => item.enabled !== false,
         );
@@ -5891,6 +5926,117 @@ export function getBuiltinTools({
             ? 'Skill search results from indexed registry. Load one with skill({name:"<exact-name>"}).'
             : 'No indexed skills matched that query. Try skill({name:"list"}) to browse all skills.',
         };
+      }
+
+      // Batch load path: resolve each name via the same alias/registry lookup
+      // used for single loads. Successful skills emit skill:start/skill:end
+      // (so the existing Web/TUI badge protocol just works), failures are
+      // collected into an errors[] array that mirrors the single-load failure
+      // shape (error + matches + hint) so the model handles them with the same
+      // cognition it already uses for skill({name:"..."}) failures.
+      //
+      // Placed BEFORE the list/all fallback so an empty "name" (which happens
+      // in batch mode since name/query are rejected by the conflict guard)
+      // does not accidentally trigger the "list all" path.
+      if (hasBatch) {
+        const maxBatchLoad = Math.max(
+          1,
+          Number(config?.skills?.maxBatchLoad) || 5,
+        );
+        if (requestedNamesRaw.length > maxBatchLoad) {
+          return {
+            error: `Too many skills requested (${requestedNamesRaw.length}). Batch load supports up to ${maxBatchLoad}. Load them in smaller groups with skill({names:[...]}).`,
+          };
+        }
+
+        // De-duplicate while preserving first-seen order.
+        const seen = new Set();
+        const requestedNames = [];
+        for (const raw of requestedNamesRaw) {
+          const resolved = normalizeSkillToolName(raw);
+          const key = resolved.toLowerCase();
+          if (seen.has(key)) continue;
+          seen.add(key);
+          requestedNames.push(resolved);
+        }
+
+        const loaded = [];
+        const errors = [];
+
+        for (const requestedItem of requestedNames) {
+          const command =
+            indexedSkills.get(requestedItem) ||
+            allSkills.find(
+              (item) =>
+                item.command.name.toLowerCase() ===
+                requestedItem.toLowerCase(),
+            )?.command;
+
+          if (!command) {
+            const matches = searchIndexedSkills(allSkills, requestedItem)
+              .filter((item) => item.enabled !== false)
+              .slice(0, 3);
+            errors.push({
+              name: requestedItem,
+              error: "Unknown indexed skill.",
+              matches,
+              hint: 'Use skill({name:"list"}) to browse indexed skills, or skill({query:"keywords"}) to search by name/description. Do not grep or list skills directories.',
+            });
+            continue;
+          }
+          if (!isIndexedSkillEnabled(command, config)) {
+            errors.push({
+              name: command.name,
+              error: "Skill is disabled in the skill index.",
+            });
+            continue;
+          }
+
+          emitSystemTool({ type: "skill:start", name: command.name });
+          try {
+            const content = renderCommandPrompt(command, []);
+            emitSystemTool({ type: "skill:end", name: command.name });
+            loaded.push({
+              name: command.name,
+              path: command.path,
+              scope: skillScopeFromSource(command.source),
+              packageName: command.metadata?.packageName || "",
+              packageSource:
+                command.metadata?.packageSource || command.metadata?.source || "",
+              content,
+            });
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : String(error);
+            emitSystemTool({
+              type: "skill:error",
+              name: command.name,
+              summary: message,
+            });
+            emitSystemTool({ type: "skill:end", name: command.name });
+            errors.push({ name: command.name, error: message });
+          }
+        }
+
+        if (loaded.length === 0) {
+          return {
+            error: "No skills could be loaded.",
+            errors,
+          };
+        }
+
+        const result = {
+          names: loaded.map((item) => item.name),
+          skills: loaded,
+          content: loaded
+            .map((item) => item.content)
+            .join("\n\n---\n\n"),
+        };
+        if (errors.length > 0) {
+          result.partial = true;
+          result.errors = errors;
+        }
+        return result;
       }
 
       const requested = normalizeSkillToolName(
@@ -6481,7 +6627,7 @@ export function getBuiltinTools({
 
     skill(result) {
       if (!result || typeof result !== "object") return String(result);
-      if (result.error) {
+      if (result.error && !Array.isArray(result.errors)) {
         const matches =
           Array.isArray(result.matches) && result.matches.length > 0
             ? [
@@ -6495,6 +6641,54 @@ export function getBuiltinTools({
             : [];
         const hint = result.hint ? `\n${result.hint}` : "";
         return `${result.error}${matches.length ? `\n${matches.join("\n")}` : ""}${hint}`;
+      }
+      // Batch load: result.skills[] with merged content, optional partial/errors.
+      if (Array.isArray(result.skills) && Array.isArray(result.names)) {
+        const header = `Loaded skills (${result.skills.length}): ${result.names.join(", ")}`;
+        const errorLines = Array.isArray(result.errors) && result.errors.length > 0
+          ? [
+              "",
+              `Some skills failed to load (${result.errors.length}):`,
+              ...result.errors.map((entry) => {
+                const matches =
+                  Array.isArray(entry.matches) && entry.matches.length > 0
+                    ? [
+                        "Possible matches:",
+                        ...entry.matches.map((item) => {
+                          const disabled =
+                            item.enabled === false ? " disabled" : "";
+                          const desc = item.description
+                            ? ` - ${item.description}`
+                            : "";
+                          return `/${item.name} [${item.scope}${disabled}]${desc}`;
+                        }),
+                      ]
+                    : [];
+                const hint = entry.hint ? `\n${entry.hint}` : "";
+                return `- ${entry.name}: ${entry.error}${matches.length ? `\n${matches.join("\n")}` : ""}${hint}`;
+              }),
+            ]
+          : [];
+        return [header, ...errorLines, "", result.content].join("\n");
+      }
+      if (result.error && Array.isArray(result.errors)) {
+        // Batch: all failed.
+        const errorLines = result.errors.map((entry) => {
+          const matches =
+            Array.isArray(entry.matches) && entry.matches.length > 0
+              ? [
+                  "Possible matches:",
+                  ...entry.matches.map((item) => {
+                    const disabled = item.enabled === false ? " disabled" : "";
+                    const desc = item.description ? ` - ${item.description}` : "";
+                    return `/${item.name} [${item.scope}${disabled}]${desc}`;
+                  }),
+                ]
+              : [];
+          const hint = entry.hint ? `\n${entry.hint}` : "";
+          return `- ${entry.name}: ${entry.error}${matches.length ? `\n${matches.join("\n")}` : ""}${hint}`;
+        });
+        return `${result.error}\n${errorLines.join("\n")}`;
       }
       if (typeof result.content === "string") return result.content;
       if (Array.isArray(result.matches)) {
