@@ -7,6 +7,7 @@ import { t } from '../../i18n/index.js';
 
 export function EmbedBanner({ items = [] }) {
   const links = items.filter((item) => item?.type !== 'image');
+  const fitsWithoutScroll = links.length <= 3;
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
@@ -32,11 +33,15 @@ export function EmbedBanner({ items = [] }) {
         <span>{t('relatedLinks')}</span>
       </div>
 
-      <HorizontalScrollStrip>
+      <HorizontalScrollStrip contentClassName={fitsWithoutScroll ? 'w-full' : undefined}>
         {links.map((item, index) => (
           <div
             key={`${item.url || 'embed'}-${index}`}
-            className="w-[288px] shrink-0 sm:w-[300px]"
+            className={
+              fitsWithoutScroll
+                ? 'min-w-0 flex-1'
+                : 'w-[288px] shrink-0 sm:w-[300px]'
+            }
           >
             <EmbedCard url={item.url} embed={item} variant="banner" deferIndex={index} />
           </div>

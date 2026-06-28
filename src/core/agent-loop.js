@@ -606,6 +606,12 @@ function normalizeToolCallName(name) {
   return String(name || '').trim();
 }
 
+const FULL_CONTEXT_TOOL_RESULTS = new Set(['skill', 'update_todos']);
+
+function shouldPersistLargeToolResult(toolName) {
+  return !FULL_CONTEXT_TOOL_RESULTS.has(normalizeToolCallName(toolName));
+}
+
 // ─── Format a single tool result using per-tool formatter or fallback ──
 
 function formatToolResult(toolResult, toolName, args, toolFormatters, toolResultMaxChars) {
@@ -1052,7 +1058,9 @@ export async function runAgentLoop({
         } else if (!/^error:/im.test(formatted)) {
           formatted = `error: ${runFailureMessage}\n\n${formatted}`;
         }
-        formatted = await storeResultIfNeeded(call.id, formatted, toolResult);
+        if (shouldPersistLargeToolResult(toolName)) {
+          formatted = await storeResultIfNeeded(call.id, formatted, toolResult);
+        }
         return {
           callId: call.id,
           content: formatted,
@@ -1121,7 +1129,9 @@ export async function runAgentLoop({
       }
 
       // P0: Persist to disk if still large
-      formatted = await storeResultIfNeeded(call.id, formatted, toolResult);
+      if (shouldPersistLargeToolResult(toolName)) {
+        formatted = await storeResultIfNeeded(call.id, formatted, toolResult);
+      }
 
       return {
         callId: call.id,

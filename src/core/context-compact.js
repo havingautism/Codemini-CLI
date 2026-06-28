@@ -54,6 +54,23 @@ function getMessageToolCallIds(message) {
   return message.tool_calls.map(getToolCallId).filter(Boolean);
 }
 
+function getToolCallName(call) {
+  return String(call?.function?.name || call?.name || '').trim();
+}
+
+function mapToolCallNames(messages) {
+  const names = new Map();
+  for (const message of messages || []) {
+    if (!Array.isArray(message?.tool_calls)) continue;
+    for (const call of message.tool_calls) {
+      const id = getToolCallId(call);
+      const name = getToolCallName(call);
+      if (id && name) names.set(id, name);
+    }
+  }
+  return names;
+}
+
 function summarizeToolResultText(text, options = {}) {
   const maxSummaryChars = Number(options.maxSummaryChars ?? 600);
   const summaryTailChars = Number(options.summaryTailChars ?? Math.floor(maxSummaryChars * 0.2));
@@ -334,6 +351,7 @@ export function microCompactMessages(messages, {
   replaceWith = 'clear',
   maxSummaryChars = 600,
   summaryTailChars,
+  protectedToolNames = [],
   triggerExtra = 0
 } = {}) {
   if (!enabled || !Array.isArray(messages)) {
@@ -355,7 +373,18 @@ export function microCompactMessages(messages, {
 
   // Indices to clear = all except the last keepRecent
   const keepSet = new Set(toolIndices.slice(-keepRecent));
-  const clearSet = new Set(toolIndices.filter((idx) => !keepSet.has(idx)));
+  const protectedNames = new Set(
+    (Array.isArray(protectedToolNames) ? protectedToolNames : [])
+      .map((name) => String(name || '').trim())
+      .filter(Boolean)
+  );
+  const toolCallNames = protectedNames.size > 0 ? mapToolCallNames(messages) : new Map();
+  const clearSet = new Set(toolIndices.filter((idx) => {
+    if (keepSet.has(idx)) return false;
+    const message = messages[idx];
+    const toolName = toolCallNames.get(String(message?.tool_call_id || '').trim()) || '';
+    return !protectedNames.has(toolName);
+  }));
 
   if (clearSet.size === 0) {
     return { messages: [...messages], changed: false, tokensSaved: 0 };
@@ -406,6 +435,7 @@ export function applyAggressiveToolPruneBeta(messages, config = {}) {
     replaceWith: 'summary',
     maxSummaryChars: summaryHeadChars + summaryTailChars,
     summaryTailChars,
+    protectedToolNames: ['skill', 'update_todos'],
     triggerExtra
   });
 }
