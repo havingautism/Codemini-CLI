@@ -50,6 +50,54 @@ function isWorkflowControlLine(line = '', state = {}) {
   return false;
 }
 
+function appendUniqueSkillBadges(current = [], next = []) {
+  const out = Array.isArray(current) ? [...current] : [];
+  const seen = new Set(out.map((badge) => `${String(badge?.status || 'done')}::${String(badge?.name || '').trim()}`));
+  for (const badge of Array.isArray(next) ? next : []) {
+    const key = `${String(badge?.status || 'done')}::${String(badge?.name || '').trim()}`;
+    if (!String(badge?.name || '').trim() || seen.has(key)) continue;
+    seen.add(key);
+    out.push(badge);
+  }
+  return out;
+}
+
+function createSkillSegment(event, status = 'running') {
+  const now = new Date().toISOString();
+  return {
+    type: 'skill',
+    name: event.name,
+    status,
+    startedAt: event.startedAt || now,
+    ...(status === 'done' || status === 'error'
+      ? { endedAt: event.endedAt || now }
+      : {}),
+    ...(status === 'error' && event.summary ? { summary: event.summary } : {})
+  };
+}
+
+function addSkillToSegments(segments, event) {
+  return [...(Array.isArray(segments) ? segments : []), createSkillSegment(event)];
+}
+
+function updateSkillInSegments(segments, name, updater) {
+  const source = Array.isArray(segments) ? segments : [];
+  let targetIndex = -1;
+  for (let i = source.length - 1; i >= 0; i -= 1) {
+    const segment = source[i];
+    if (segment?.type === 'skill' && segment.name === name && segment.status === 'running') {
+      targetIndex = i;
+      break;
+    }
+  }
+  if (targetIndex === -1) return source;
+  return source.map((segment, index) => (index === targetIndex ? updater(segment) : segment));
+}
+
+function updatePendingSkillSegments(segments, name, updater) {
+  return updateSkillInSegments(segments, name, updater);
+}
+
 function addToolToSegments(segments, toolCard) {
   if (!Array.isArray(segments) || segments.length === 0) return [{ type: 'tools', cards: [toolCard] }];
   const last = segments[segments.length - 1];
@@ -311,8 +359,11 @@ export class RuntimeBridge {
   #startupConsumed = false;
   #uiMessages = [];
   #uiActiveMsgId = null;
+  #aggressivePruneSaved = 0;
   #uiPlanStepIds = new Map();
   #uiPlanOverviewId = null;
+  #uiPendingSkillBadges = [];
+  #uiPendingSkillSegments = [];
   #uiTranscriptSessionId = '';
   #uiPersisting = false;
   #uiPersistQueued = false;
@@ -404,6 +455,9 @@ export class RuntimeBridge {
     this.#uiActiveMsgId = null;
     this.#uiPlanStepIds = new Map();
     this.#uiPlanOverviewId = null;
+    this.#uiPendingSkillBadges = [];
+    this.#uiPendingSkillSegments = [];
+    this.#aggressivePruneSaved = 0;
   }
 
   #addUiMessage(message) {
@@ -502,12 +556,26 @@ export class RuntimeBridge {
     switch (event.type) {
       case 'assistant:start': {
         this.#removeUiTransientWaiting();
+        const pendingSkillBadges = this.#uiPendingSkillBadges;
+        const pendingSkillSegments = this.#uiPendingSkillSegments;
+        this.#uiPendingSkillBadges = [];
+        this.#uiPendingSkillSegments = [];
         if (!activeId) {
           this.#uiActiveMsgId = this.#addUiMessage({
             role: 'general',
             text: '',
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            skillBadges: pendingSkillBadges,
+            segments: pendingSkillSegments
           });
+        } else {
+          this.#updateUiMessage(activeId, (message) => ({
+            ...message,
+            skillBadges: appendUniqueSkillBadges(message.skillBadges || [], pendingSkillBadges),
+            segments: pendingSkillSegments.length
+              ? [...pendingSkillSegments, ...(Array.isArray(message.segments) ? message.segments : [])]
+              : message.segments
+          }));
         }
         break;
       }
@@ -746,6 +814,93 @@ export class RuntimeBridge {
         });
         break;
       }
+      case 'compact:aggressive-prune': {
+        // Beta aggressive prune runs proactively every step; stay silent in the
+        // transcript to avoid divider spam. Callers that want visibility can
+        // surface this via runtime activity.
+        break;
+      }
+      case 'skill:start': {
+        if (this.#uiActiveMsgId) {
+          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
+            ...message,
+            segments: addSkillToSegments(finishThinkingSegments(message.segments), event)
+          }));
+        } else {
+          this.#uiPendingSkillSegments = [
+            ...this.#uiPendingSkillSegments,
+            createSkillSegment(event)
+          ];
+        }
+        break;
+      }
+      case 'skill:end': {
+        const endedAt = event.endedAt || new Date().toISOString();
+        if (this.#uiActiveMsgId) {
+          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
+            ...message,
+            segments: updateSkillInSegments(message.segments, event.name, (segment) => ({
+              ...segment,
+              status: 'done',
+              endedAt
+            }))
+          }));
+        } else {
+          this.#uiPendingSkillSegments = updatePendingSkillSegments(
+            this.#uiPendingSkillSegments,
+            event.name,
+            (segment) => ({ ...segment, status: 'done', endedAt })
+          );
+        }
+        break;
+      }
+      case 'skill:error': {
+        const endedAt = event.endedAt || new Date().toISOString();
+        if (this.#uiActiveMsgId) {
+          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
+            ...message,
+            segments: updateSkillInSegments(message.segments, event.name, (segment) => ({
+              ...segment,
+              status: 'error',
+              summary: event.summary,
+              endedAt
+            }))
+          }));
+        } else {
+          this.#uiPendingSkillSegments = updatePendingSkillSegments(
+            this.#uiPendingSkillSegments,
+            event.name,
+            (segment) => ({
+              ...segment,
+              status: 'error',
+              summary: event.summary,
+              endedAt
+            })
+          );
+        }
+        break;
+      }
+      case 'skill:always': {
+        const names = (event.names || []).join(', ');
+        if (!names) break;
+        const badge = {
+          name: names,
+          status: 'always',
+          startedAt: event.startedAt || new Date().toISOString()
+        };
+        if (this.#uiActiveMsgId) {
+          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
+            ...message,
+            skillBadges: appendUniqueSkillBadges(message.skillBadges || [], [badge])
+          }));
+        } else {
+          this.#uiPendingSkillBadges = appendUniqueSkillBadges(
+            this.#uiPendingSkillBadges,
+            [badge]
+          );
+        }
+        break;
+      }
       default:
         break;
     }
@@ -782,6 +937,8 @@ export class RuntimeBridge {
       });
     }
     this.#busy = true;
+    this.#uiPendingSkillBadges = [];
+    this.#uiPendingSkillSegments = [];
     const submitToken = this.#invalidateSubmit();
     this.#activeSubmitLine = line;
     this.#runStatusRecorded = false;
@@ -1159,6 +1316,8 @@ export class RuntimeBridge {
     this.#uiMessages = [];
     this.#uiActiveMsgId = null;
     this.#uiPlanStepIds = new Map();
+    this.#uiPendingSkillBadges = [];
+    this.#uiPendingSkillSegments = [];
     this.#uiTranscriptSessionId = newRuntime.getCurrentSessionId?.() || '';
     this.#installApprovalHandler();
     // Push title updates via SSE

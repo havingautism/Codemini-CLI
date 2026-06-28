@@ -120,6 +120,7 @@ export const en = {
   runtimeActivityDreamDone: "Dream complete",
   runtimeActivityDreamError: "Dream failed",
   runtimeActivityCompactDone: "Context compacted",
+  runtimeActivityAggressivePrune: "Aggressive prune (beta)",
   runtimeActivityCompactPreview: "Compact preview",
   runtimeActivityMicroCompactDone: "Micro-compact complete",
   runtimeActivityMicroCompactPreview: "Micro-compact preview",
@@ -282,6 +283,12 @@ export const en = {
   microcompactKeepRecent: "Micro Keep Recent",
   microcompactKeepRecentHelp:
     "How many of the most recent tool results to keep intact during micro-compact.",
+  aggressiveToolPruneBeta: "Aggressive Tool Prune (Beta)",
+  aggressiveToolPruneBetaHelp:
+    "Experimental: before each model call, replace older tool result bodies with structured summaries while keeping only the most recent results intact. May reduce token use on long tasks with minimal impact on reasoning quality. Recommended for models with strong reasoning ability.",
+  aggressiveToolPruneKeepRecent: "Aggressive Prune Keep Recent",
+  aggressiveToolPruneKeepRecentHelp:
+    "When aggressive prune (beta) is enabled, how many of the most recent tool results to keep in full.",
   projectContextEnabled: "Project Index Context",
   projectContextEnabledHelp:
     "Loads the project AST map and file index (.codemini/project-map.json, file-index.json) into the model context each turn for lightweight navigation.",

@@ -36,8 +36,9 @@ function isManualAbortDividerMessage(message = {}) {
     message?.dividerType === "manual-abort" ||
     message?.dividerType === "abort" ||
     (message?.role === "divider" &&
-      String(message?.responseStatus || message?.response_status || "")
-        .toLowerCase() === "aborted")
+      String(
+        message?.responseStatus || message?.response_status || "",
+      ).toLowerCase() === "aborted")
   );
 }
 
@@ -46,7 +47,12 @@ function markPreviousAssistantManualAborted(messages = [], fromIndex = -1) {
   const start = fromIndex < 0 ? list.length + fromIndex : fromIndex;
   for (let i = start; i >= 0; i--) {
     const prev = list[i];
-    if (!prev || prev.role === "you" || prev.role === "divider" || prev.role === "system") {
+    if (
+      !prev ||
+      prev.role === "you" ||
+      prev.role === "divider" ||
+      prev.role === "system"
+    ) {
       continue;
     }
     list[i] = { ...prev, manualAborted: true, isComplete: true };
@@ -260,23 +266,23 @@ function updateToolCardInMessages(messages, toolId, updater) {
 
 function upsertToolCardInMessage(message, toolCard) {
   let found = false;
-  const segments = (Array.isArray(message.segments) ? message.segments : []).map(
-    (seg) => {
-      if (seg?.type !== "tools" || !Array.isArray(seg.cards)) return seg;
-      const idx = seg.cards.findIndex(
-        (card) =>
-          card.id === toolCard.id ||
-          (String(card.id || "").startsWith("stream-tool-") &&
-            !String(toolCard.id || "").startsWith("stream-tool-") &&
-            String(card.name || "") === String(toolCard.name || "")),
-      );
-      if (idx === -1) return seg;
-      found = true;
-      const cards = [...seg.cards];
-      cards[idx] = { ...cards[idx], ...toolCard };
-      return { ...seg, cards };
-    },
-  );
+  const segments = (
+    Array.isArray(message.segments) ? message.segments : []
+  ).map((seg) => {
+    if (seg?.type !== "tools" || !Array.isArray(seg.cards)) return seg;
+    const idx = seg.cards.findIndex(
+      (card) =>
+        card.id === toolCard.id ||
+        (String(card.id || "").startsWith("stream-tool-") &&
+          !String(toolCard.id || "").startsWith("stream-tool-") &&
+          String(card.name || "") === String(toolCard.name || "")),
+    );
+    if (idx === -1) return seg;
+    found = true;
+    const cards = [...seg.cards];
+    cards[idx] = { ...cards[idx], ...toolCard };
+    return { ...seg, cards };
+  });
   if (found) return { ...message, segments };
   return {
     ...message,
@@ -348,7 +354,10 @@ function createSkillSegment(event, status = "running") {
 }
 
 function addSkillToSegments(segments, event) {
-  return [...(Array.isArray(segments) ? segments : []), createSkillSegment(event)];
+  return [
+    ...(Array.isArray(segments) ? segments : []),
+    createSkillSegment(event),
+  ];
 }
 
 function updatePendingSkillSegments(segments, name, updater) {
@@ -356,7 +365,11 @@ function updatePendingSkillSegments(segments, name, updater) {
   let targetIndex = -1;
   for (let i = source.length - 1; i >= 0; i -= 1) {
     const segment = source[i];
-    if (segment?.type === "skill" && segment.name === name && segment.status === "running") {
+    if (
+      segment?.type === "skill" &&
+      segment.name === name &&
+      segment.status === "running"
+    ) {
       targetIndex = i;
       break;
     }
@@ -372,13 +385,19 @@ function updateSkillInSegments(segments, name, updater) {
   let targetIndex = -1;
   for (let i = source.length - 1; i >= 0; i -= 1) {
     const segment = source[i];
-    if (segment?.type === "skill" && segment.name === name && segment.status === "running") {
+    if (
+      segment?.type === "skill" &&
+      segment.name === name &&
+      segment.status === "running"
+    ) {
       targetIndex = i;
       break;
     }
   }
   if (targetIndex === -1) return source;
-  return source.map((segment, index) => (index === targetIndex ? updater(segment) : segment));
+  return source.map((segment, index) =>
+    index === targetIndex ? updater(segment) : segment,
+  );
 }
 
 function ensureTextSegment(segments) {
@@ -864,8 +883,7 @@ function isApprovalCommandLine(line) {
     .trim()
     .toLowerCase();
   return (
-    ["/yes", "/no", "/reject"].includes(value) ||
-    value.startsWith("/edit ")
+    ["/yes", "/no", "/reject"].includes(value) || value.startsWith("/edit ")
   );
 }
 
@@ -880,7 +898,11 @@ function isWorkflowCommandLine(line) {
 function isWorkflowControlLine(line, state = {}) {
   const trimmed = String(line || "").trim();
   if (!trimmed) return false;
-  if ((state.pendingSpecApproval || state.pendingReflectApproval) && isApprovalAnswerLine(trimmed)) return true;
+  if (
+    (state.pendingSpecApproval || state.pendingReflectApproval) &&
+    isApprovalAnswerLine(trimmed)
+  )
+    return true;
   if (/^\/(?:plan|spec|reflect)(?:\s|$)/i.test(trimmed)) return true;
   return false;
 }
@@ -888,14 +910,15 @@ function isWorkflowControlLine(line, state = {}) {
 function getSpecDisplayTitle(spec = {}) {
   return (
     String(spec.summary || "").trim() ||
-    String(spec.goal || "").trim().split(/\r?\n/)[0] ||
+    String(spec.goal || "")
+      .trim()
+      .split(/\r?\n/)[0] ||
     "spec"
   );
 }
 
 function buildSpecExecuteDisplayText(spec = {}, mode = "direct") {
-  const title =
-    getSpecDisplayTitle(spec);
+  const title = getSpecDisplayTitle(spec);
   const filePath = String(spec.filePath || "").trim();
   const actionLabel =
     mode === "plan" ? t("specPlanApproved") : t("specExecuteApproved");
@@ -1102,7 +1125,9 @@ function messagePlainText(message) {
   const direct = String(message?.text || message?.content || "").trim();
   if (direct) return direct;
   return (Array.isArray(message?.segments) ? message.segments : [])
-    .filter((segment) => segment?.type === "text" || segment?.type === "handoff")
+    .filter(
+      (segment) => segment?.type === "text" || segment?.type === "handoff",
+    )
     .map((segment) => String(segment.text || ""))
     .join("")
     .trim();
@@ -1203,11 +1228,15 @@ function mergeStructuredUiPlans(processedMessages, uiMessages) {
       userIndex = merged.findIndex((message, index) => {
         if (index < searchFrom || message.role !== "you") return false;
         const text = messagePlainText(message);
-        return text === anchor || text.includes(anchor) || anchor.includes(text);
+        return (
+          text === anchor || text.includes(anchor) || anchor.includes(text)
+        );
       });
     }
     if (userIndex === -1) {
-      userIndex = merged.findIndex((message, index) => index >= searchFrom && message.role === "you");
+      userIndex = merged.findIndex(
+        (message, index) => index >= searchFrom && message.role === "you",
+      );
     }
     if (userIndex === -1) {
       merged = [...merged, ...run.messages];
@@ -1215,12 +1244,20 @@ function mergeStructuredUiPlans(processedMessages, uiMessages) {
       continue;
     }
 
-    const nextUserIndex = merged.findIndex((message, index) => index > userIndex && message.role === "you");
+    const nextUserIndex = merged.findIndex(
+      (message, index) => index > userIndex && message.role === "you",
+    );
     const sectionEnd = nextUserIndex === -1 ? merged.length : nextUserIndex;
     const section = merged.slice(userIndex + 1, sectionEnd);
     const firstExistingPlanIndex = section.findIndex(isStructuredPlanUiMessage);
-    const insertAt = firstExistingPlanIndex === -1 ? sectionEnd : userIndex + 1 + firstExistingPlanIndex;
-    const planMessages = enrichPlanRunMessagesFromSection(run.messages, section);
+    const insertAt =
+      firstExistingPlanIndex === -1
+        ? sectionEnd
+        : userIndex + 1 + firstExistingPlanIndex;
+    const planMessages = enrichPlanRunMessagesFromSection(
+      run.messages,
+      section,
+    );
     const before = merged.slice(0, userIndex + 1);
     const afterUserSection = merged
       .slice(userIndex + 1, sectionEnd)
@@ -1256,6 +1293,90 @@ function mergeUserContextFromUiMessages(processedMessages, uiMessages) {
     if (!uiAttachments.length) return message;
 
     return { ...message, attachments: uiAttachments };
+  });
+}
+
+function isSkillMergeAssistantMessage(message) {
+  if (!message || message.transientKey) return false;
+  if (["you", "divider", "system"].includes(message.role)) return false;
+  if (message.planStep || message.planOverview) return false;
+  return true;
+}
+
+function hasSkillContext(message) {
+  const badges = Array.isArray(message?.skillBadges) ? message.skillBadges : [];
+  const segments = Array.isArray(message?.segments) ? message.segments : [];
+  return (
+    badges.length > 0 || segments.some((segment) => segment?.type === "skill")
+  );
+}
+
+function mergeSkillSegments(processedSegments, uiSegments) {
+  const uiSkillSegments = (Array.isArray(uiSegments) ? uiSegments : []).filter(
+    (segment) => segment?.type === "skill",
+  );
+  if (!uiSkillSegments.length) return processedSegments;
+
+  const processed = Array.isArray(processedSegments)
+    ? [...processedSegments]
+    : [];
+  const existing = new Set(
+    processed
+      .filter((segment) => segment?.type === "skill")
+      .map(
+        (segment) =>
+          `${segment.name}::${segment.status}::${segment.startedAt || ""}`,
+      ),
+  );
+  const toInsert = uiSkillSegments.filter((segment) => {
+    const key = `${segment.name}::${segment.status}::${segment.startedAt || ""}`;
+    return !existing.has(key);
+  });
+  if (!toInsert.length) return processed;
+
+  const firstContentIndex = processed.findIndex(
+    (segment) => segment?.type !== "skill",
+  );
+  if (firstContentIndex === -1) return [...processed, ...toInsert];
+  return [
+    ...processed.slice(0, firstContentIndex),
+    ...toInsert,
+    ...processed.slice(firstContentIndex),
+  ];
+}
+
+function mergeAssistantSkillContextFromUiMessages(
+  processedMessages,
+  uiMessages,
+) {
+  const uiAssistants = (Array.isArray(uiMessages) ? uiMessages : []).filter(
+    isSkillMergeAssistantMessage,
+  );
+  if (!uiAssistants.length) return processedMessages;
+
+  let uiIndex = 0;
+  return processedMessages.map((message) => {
+    if (!isSkillMergeAssistantMessage(message)) return message;
+    const uiMessage = uiAssistants[uiIndex++];
+    if (!uiMessage || !hasSkillContext(uiMessage)) return message;
+
+    const skillBadges = Array.isArray(uiMessage.skillBadges)
+      ? uiMessage.skillBadges
+      : [];
+    const segments = mergeSkillSegments(message.segments, uiMessage.segments);
+
+    return {
+      ...message,
+      ...(skillBadges.length
+        ? {
+            skillBadges: appendUniqueSkillBadges(
+              message.skillBadges || [],
+              skillBadges,
+            ),
+          }
+        : {}),
+      ...(segments !== message.segments ? { segments } : {}),
+    };
   });
 }
 
@@ -1316,6 +1437,7 @@ export function AppProvider({ children }) {
   const pendingSkillBadgesRef = useRef([]);
   const pendingSkillSegmentsRef = useRef([]);
   const planRunPendingRef = useRef(false);
+  const aggressivePruneSavedRef = useRef(0);
   const planStepMessagesRef = useRef(new Map());
   const planOverviewMsgRef = useRef(null);
   const activityTimersRef = useRef(new Map());
@@ -1433,7 +1555,11 @@ export function AppProvider({ children }) {
         stage: busy ? "thinking" : prev.stage,
         stageLabel: busy ? t("waitingResponse") : prev.stageLabel,
         codewikiGeneration: codeWikiGenerating
-          ? { status: "running", updatedAt: new Date().toISOString(), error: "" }
+          ? {
+              status: "running",
+              updatedAt: new Date().toISOString(),
+              error: "",
+            }
           : prev.codewikiGeneration,
         messages: removeTransientMessages(prev.messages, "plan-waiting-review"),
       }));
@@ -1490,26 +1616,29 @@ export function AppProvider({ children }) {
     } catch {}
   }, [update]);
 
-  const loadSessions = useCallback(async (options = {}) => {
-    const force = options?.force === true;
-    if (force) sessionsLoadPromiseRef.current = null;
-    if (sessionsLoadPromiseRef.current) return sessionsLoadPromiseRef.current;
-    update({ sessionsLoading: true });
-    const promise = (async () => {
-      try {
-        const sessions = await api.fetchSessions(200);
-        const list = Array.isArray(sessions) ? sessions : [];
-        update({ sessions: list });
-        loadGitBatch(list);
-      } catch {
-      } finally {
-        update({ sessionsLoading: false });
-        sessionsLoadPromiseRef.current = null;
-      }
-    })();
-    sessionsLoadPromiseRef.current = promise;
-    return promise;
-  }, [update, loadGitBatch]);
+  const loadSessions = useCallback(
+    async (options = {}) => {
+      const force = options?.force === true;
+      if (force) sessionsLoadPromiseRef.current = null;
+      if (sessionsLoadPromiseRef.current) return sessionsLoadPromiseRef.current;
+      update({ sessionsLoading: true });
+      const promise = (async () => {
+        try {
+          const sessions = await api.fetchSessions(200);
+          const list = Array.isArray(sessions) ? sessions : [];
+          update({ sessions: list });
+          loadGitBatch(list);
+        } catch {
+        } finally {
+          update({ sessionsLoading: false });
+          sessionsLoadPromiseRef.current = null;
+        }
+      })();
+      sessionsLoadPromiseRef.current = promise;
+      return promise;
+    },
+    [update, loadGitBatch],
+  );
 
   const openCodeWikiProjectFromRoute = useCallback(async (projectPath) => {
     if (!projectPath) return null;
@@ -1646,7 +1775,9 @@ export function AppProvider({ children }) {
                 retryPrompt: msg.retryPrompt || msg.retry_prompt || "",
                 retryable:
                   responseStatus === "error" &&
-                  Boolean(String(msg.retryPrompt || msg.retry_prompt || "").trim()),
+                  Boolean(
+                    String(msg.retryPrompt || msg.retry_prompt || "").trim(),
+                  ),
               });
               continue;
             }
@@ -1859,8 +1990,11 @@ export function AppProvider({ children }) {
 
         const restored = sanitizeManualAbortMessages(
           settleCompletedPlanToolCards(
-            mergeUserContextFromUiMessages(
-              mergeStructuredUiPlans(processed, uiMessages),
+            mergeAssistantSkillContextFromUiMessages(
+              mergeUserContextFromUiMessages(
+                mergeStructuredUiPlans(processed, uiMessages),
+                uiMessages,
+              ),
               uiMessages,
             ),
           ),
@@ -2119,9 +2253,7 @@ export function AppProvider({ children }) {
             setState((prev) => ({
               ...prev,
               messages: prev.messages.map((m) =>
-                m.id === activeId
-                  ? upsertToolCardInMessage(m, toolCard)
-                  : m,
+                m.id === activeId ? upsertToolCardInMessage(m, toolCard) : m,
               ),
             }));
           }
@@ -2354,11 +2486,10 @@ export function AppProvider({ children }) {
               messages: prev.messages.map((m) => {
                 if (m.id === msgId) {
                   const outputText = String(event.output || "").trim();
-                  const finishedSegments = finishThinkingSegments(m.segments).map(
-                    (seg) =>
-                      seg.type === "text"
-                        ? { ...seg, isStreaming: false }
-                        : seg,
+                  const finishedSegments = finishThinkingSegments(
+                    m.segments,
+                  ).map((seg) =>
+                    seg.type === "text" ? { ...seg, isStreaming: false } : seg,
                   );
                   const hasOutputText =
                     outputText &&
@@ -2376,8 +2507,9 @@ export function AppProvider({ children }) {
                             ...finishedSegments,
                             {
                               type:
-                                String(event.role || m.planStep?.role || "")
-                                  .toLowerCase() === "summarizer"
+                                String(
+                                  event.role || m.planStep?.role || "",
+                                ).toLowerCase() === "summarizer"
                                   ? "text"
                                   : "handoff",
                               text: outputText,
@@ -2474,11 +2606,15 @@ export function AppProvider({ children }) {
                 m.id === activeId
                   ? {
                       ...m,
-                      segments: updateSkillInSegments(m.segments, event.name, (segment) => ({
-                        ...segment,
-                        status: "done",
-                        endedAt: event.endedAt || new Date().toISOString(),
-                      })),
+                      segments: updateSkillInSegments(
+                        m.segments,
+                        event.name,
+                        (segment) => ({
+                          ...segment,
+                          status: "done",
+                          endedAt: event.endedAt || new Date().toISOString(),
+                        }),
+                      ),
                     }
                   : m,
               ),
@@ -2504,12 +2640,16 @@ export function AppProvider({ children }) {
                 m.id === activeId
                   ? {
                       ...m,
-                      segments: updateSkillInSegments(m.segments, event.name, (segment) => ({
-                        ...segment,
-                        status: "error",
-                        summary: event.summary,
-                        endedAt: event.endedAt || new Date().toISOString(),
-                      })),
+                      segments: updateSkillInSegments(
+                        m.segments,
+                        event.name,
+                        (segment) => ({
+                          ...segment,
+                          status: "error",
+                          summary: event.summary,
+                          endedAt: event.endedAt || new Date().toISOString(),
+                        }),
+                      ),
                     }
                   : m,
               ),
@@ -2578,6 +2718,22 @@ export function AppProvider({ children }) {
             timestamp: new Date().toISOString(),
           });
           break;
+
+        case "compact:aggressive-prune": {
+          // Beta aggressive prune runs proactively each step; accumulate tokens
+          // saved across the entire session so the activity reflects cumulative
+          // savings rather than a single prune.
+          const saved = Number(event.tokensSaved) || 0;
+          aggressivePruneSavedRef.current += saved;
+          upsertRuntimeActivity({
+            key: "aggressive-prune",
+            status: "done",
+            emoji: "✂️",
+            label: t("runtimeActivityAggressivePrune"),
+            detail: `-${aggressivePruneSavedRef.current} tokens (session)`,
+          });
+          break;
+        }
 
         case "dream:auto":
           {
@@ -2755,7 +2911,11 @@ export function AppProvider({ children }) {
               });
             }
           }
-          if (result.type === "error" && result.text && !isAbortRelatedResult(result)) {
+          if (
+            result.type === "error" &&
+            result.text &&
+            !isAbortRelatedResult(result)
+          ) {
             addMessage({
               role: "error",
               text: `Failed: ${result.text}`,
@@ -2856,12 +3016,16 @@ export function AppProvider({ children }) {
             planSteps: applyCodeWikiProgressToSteps(prev.planSteps, event),
             codewikiGeneration: {
               status: terminalStatus
-                ? (String(event.status).toLowerCase() === "failed" ? "error" : "done")
+                ? String(event.status).toLowerCase() === "failed"
+                  ? "error"
+                  : "done"
                 : "running",
               updatedAt: event.timestamp || new Date().toISOString(),
-              error: terminalStatus && String(event.status).toLowerCase() === "failed"
-                ? label
-                : "",
+              error:
+                terminalStatus &&
+                String(event.status).toLowerCase() === "failed"
+                  ? label
+                  : "",
             },
           }));
           break;
@@ -2938,9 +3102,7 @@ export function AppProvider({ children }) {
                 return {
                   ...prev,
                   sessions: prev.sessions.map((s) =>
-                    s.id === event.sessionId
-                      ? { ...s, title: event.title }
-                      : s,
+                    s.id === event.sessionId ? { ...s, title: event.title } : s,
                   ),
                 };
               }
@@ -3450,6 +3612,7 @@ export function AppProvider({ children }) {
       switchSession: async (sessionId) => {
         const currentSessionId = stateRef.current.runtimeState?.sessionId;
         if (!sessionId || sessionId === currentSessionId) return;
+        aggressivePruneSavedRef.current = 0;
         update({ currentView: "chat", messagesLoading: true });
         setState((prev) => ({ ...prev, messages: [] }));
         skipSwitchedReloadRef.current = true;
@@ -3515,6 +3678,7 @@ export function AppProvider({ children }) {
       },
 
       newSession: async () => {
+        aggressivePruneSavedRef.current = 0;
         update({ currentView: "chat", messagesLoading: true });
         setState((prev) => ({ ...prev, messages: [] }));
         try {

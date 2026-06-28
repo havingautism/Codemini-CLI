@@ -2,6 +2,7 @@ import { trimInline } from './string-utils.js';
 import { summarizeToolResult } from './tool-result-store.js';
 
 const MICRO_CLEAR_MARKER = '[Old tool result cleared by micro-compact]';
+export const AGGRESSIVE_PRUNE_MARKER = '[Tool result pruned — summary only]';
 
 function textFromContent(content) {
   if (typeof content === 'string') return content;
@@ -15,6 +16,11 @@ function textFromContent(content) {
       .join('');
   }
   return '';
+}
+
+function finiteNumber(value, fallback, minimum = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(minimum, parsed) : fallback;
 }
 
 export function estimateMessagesTokens(messages) {
@@ -48,15 +54,85 @@ function getMessageToolCallIds(message) {
   return message.tool_calls.map(getToolCallId).filter(Boolean);
 }
 
-function toolResultNote(message) {
-  const text = textFromContent(message?.content);
+function summarizeToolResultText(text, options = {}) {
+  const maxSummaryChars = Number(options.maxSummaryChars ?? 600);
+  const summaryTailChars = Number(options.summaryTailChars ?? Math.floor(maxSummaryChars * 0.2));
+  const raw = String(text || '').trim();
+  if (!raw) return 'No content';
+  if (raw === MICRO_CLEAR_MARKER || raw.startsWith(AGGRESSIVE_PRUNE_MARKER)) {
+    return raw.startsWith(AGGRESSIVE_PRUNE_MARKER)
+      ? raw.slice(AGGRESSIVE_PRUNE_MARKER.length).trim() || 'No content'
+      : 'cleared';
+  }
   let parsed;
-  try { parsed = JSON.parse(text); } catch { parsed = null; }
-  const summary = parsed && typeof parsed === 'object'
-    ? summarizeToolResult(parsed)
-    : text.replace(/\s+/g, ' ').trim();
-  const clipped = summary.length > 600 ? `${summary.slice(0, 597)}...` : summary;
-  return `[Compacted orphan tool result]\n${clipped || 'No content'}`;
+  try { parsed = JSON.parse(raw); } catch { parsed = null; }
+  if (parsed && typeof parsed === 'object') {
+    return summarizeObjectToolResult(parsed, { maxSummaryChars, summaryTailChars });
+  }
+  // Plain-text tool results (e.g. update_todos, read_plan, update_plan) are
+  // already structured summaries. Preserve newlines so the model can still
+  // read the structure; only clip by length.
+  if (raw.length <= maxSummaryChars) return raw;
+  return clipWithTail(raw, maxSummaryChars, summaryTailChars);
+}
+
+function clipWithTail(text, maxChars, tailChars = Math.floor(maxChars * 0.25)) {
+  const value = String(text || '');
+  if (value.length <= maxChars) return value;
+  const markerBudget = 40;
+  const tail = Math.max(0, Math.min(Number(tailChars) || 0, maxChars - markerBudget));
+  const head = Math.max(0, maxChars - tail - markerBudget);
+  const tailText = tail > 0 ? `\n${value.slice(-tail)}` : '';
+  return `${value.slice(0, head)}\n... [omitted ${value.length - head - tail} chars] ...${tailText}`;
+}
+
+function extractPersistedFilePath(text) {
+  const match = String(text || '').match(/Full output saved to:[ \t]*([^\r\n<]+)/);
+  return match ? match[1].trim() : null;
+}
+
+function summarizeObjectToolResult(obj, {
+  maxSummaryChars = 600,
+  summaryTailChars = Math.floor(maxSummaryChars * 0.25)
+} = {}) {
+  const base = summarizeToolResult(obj);
+  const parts = [base];
+
+  // Content-bearing results: keep head + tail of the actual content for semantic recall.
+  if (typeof obj.content === 'string' && obj.content.length > 0) {
+    const contentClip = clipWithTail(obj.content, maxSummaryChars, summaryTailChars);
+    parts.push(`content:\n${contentClip}`);
+  } else if (typeof obj.text === 'string' && obj.text.length > 0) {
+    const textClip = clipWithTail(obj.text, maxSummaryChars, summaryTailChars);
+    parts.push(`text:\n${textClip}`);
+  } else if (typeof obj.stdout === 'string' && obj.stdout.length > 0) {
+    const stdoutBudget = Math.min(maxSummaryChars, 400);
+    const stdoutClip = clipWithTail(obj.stdout, stdoutBudget, Math.min(summaryTailChars, Math.floor(stdoutBudget / 2)));
+    parts.push(`stdout:\n${stdoutClip}`);
+  } else if (typeof obj.stderr === 'string' && obj.stderr.length > 0) {
+    const stderrBudget = Math.min(maxSummaryChars, 400);
+    const stderrClip = clipWithTail(obj.stderr, stderrBudget, Math.min(summaryTailChars, Math.floor(stderrBudget / 2)));
+    parts.push(`stderr:\n${stderrClip}`);
+  } else if (typeof obj.diff === 'string' && obj.diff.length > 0) {
+    const diffBudget = Math.min(maxSummaryChars, 400);
+    parts.push(`diff:\n${clipWithTail(obj.diff, diffBudget, Math.min(summaryTailChars, Math.floor(diffBudget / 2)))}`);
+  }
+
+  return parts.join('\n');
+}
+
+function buildPrunedToolResultContent(text, options = {}) {
+  const maxSummaryChars = Number(options.maxSummaryChars ?? 600);
+  const summaryTailChars = Number(options.summaryTailChars ?? Math.floor(maxSummaryChars * 0.2));
+  const summary = summarizeToolResultText(text, { maxSummaryChars, summaryTailChars });
+  const persisted = extractPersistedFilePath(text);
+  const persistedLine = persisted ? `\n<persisted full output: ${persisted}>` : '';
+  return `${AGGRESSIVE_PRUNE_MARKER}${persistedLine}\n${summary}`;
+}
+
+function toolResultNote(message) {
+  const summary = summarizeToolResultText(textFromContent(message?.content));
+  return `[Compacted orphan tool result]\n${summary}`;
 }
 
 function expandRecentStartToToolBoundary(messages, start) {
@@ -252,7 +328,14 @@ Write in the same language as the conversation. Be concise but do not omit impor
  * Strategy inspired by Claude Code's Phase 0 micro-compact:
  * keep recent N tool results intact, clear the rest.
  */
-export function microCompactMessages(messages, { keepRecent = 5, enabled = true } = {}) {
+export function microCompactMessages(messages, {
+  keepRecent = 5,
+  enabled = true,
+  replaceWith = 'clear',
+  maxSummaryChars = 600,
+  summaryTailChars,
+  triggerExtra = 0
+} = {}) {
   if (!enabled || !Array.isArray(messages)) {
     return { messages: [...messages], changed: false, tokensSaved: 0 };
   }
@@ -263,7 +346,10 @@ export function microCompactMessages(messages, { keepRecent = 5, enabled = true 
     if (messages[i].role === 'tool') toolIndices.push(i);
   }
 
-  if (toolIndices.length <= keepRecent) {
+  // Triggered: only prune once the number of tool results exceeds keepRecent
+  // plus a configurable buffer (triggerExtra). This avoids rewriting tool
+  // payloads on every step, which would invalidate cached prefixes downstream.
+  if (toolIndices.length <= keepRecent + Math.max(0, Number(triggerExtra || 0))) {
     return { messages: [...messages], changed: false, tokensSaved: 0 };
   }
 
@@ -279,8 +365,11 @@ export function microCompactMessages(messages, { keepRecent = 5, enabled = true 
   const result = messages.map((msg, i) => {
     if (!clearSet.has(i)) return msg;
     const text = textFromContent(msg.content);
-    if (!text || text === MICRO_CLEAR_MARKER) return msg;
-    return { ...msg, content: MICRO_CLEAR_MARKER };
+    if (!text || text === MICRO_CLEAR_MARKER || text.startsWith(AGGRESSIVE_PRUNE_MARKER)) return msg;
+    const content = replaceWith === 'summary'
+      ? buildPrunedToolResultContent(text, { maxSummaryChars, summaryTailChars })
+      : MICRO_CLEAR_MARKER;
+    return { ...msg, content };
   });
   const afterTokens = estimateMessagesTokens(result);
   const tokensSaved = beforeTokens - afterTokens;
@@ -290,6 +379,35 @@ export function microCompactMessages(messages, { keepRecent = 5, enabled = true 
   }
 
   return { messages: result, changed: true, tokensSaved };
+}
+
+export function isAggressiveToolPruneBetaEnabled(config = {}) {
+  return config.context?.aggressive_tool_prune_beta === true;
+}
+
+/**
+ * Beta: proactively replace older tool results with structured summaries.
+ * Keeps only the most recent N tool payloads intact for exact recall, and
+ * only triggers when the tool-result count exceeds keepRecent + triggerExtra
+ * so cached prefixes are not invalidated on every step.
+ */
+export function applyAggressiveToolPruneBeta(messages, config = {}) {
+  if (!isAggressiveToolPruneBetaEnabled(config)) {
+    return { messages: [...(messages || [])], changed: false, tokensSaved: 0 };
+  }
+  const ctx = config.context || {};
+  const keepRecent = Math.floor(finiteNumber(ctx.aggressive_tool_prune_keep_recent, 3, 1));
+  const triggerExtra = Math.floor(finiteNumber(ctx.aggressive_tool_prune_trigger_extra, 2, 0));
+  const summaryHeadChars = Math.floor(finiteNumber(ctx.aggressive_tool_prune_summary_head, 600, 80));
+  const summaryTailChars = Math.floor(finiteNumber(ctx.aggressive_tool_prune_summary_tail, 240, 0));
+  return microCompactMessages(messages, {
+    keepRecent,
+    enabled: true,
+    replaceWith: 'summary',
+    maxSummaryChars: summaryHeadChars + summaryTailChars,
+    summaryTailChars,
+    triggerExtra
+  });
 }
 
 export async function compactMessagesLocally(messages, { mode = 'default', force = false, generateSummary = null } = {}) {

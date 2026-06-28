@@ -235,6 +235,19 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
           help: t("microcompactKeepRecentHelp"),
         },
         {
+          path: "context.aggressive_tool_prune_beta",
+          label: t("aggressiveToolPruneBeta"),
+          options: ["false", "true"],
+          help: t("aggressiveToolPruneBetaHelp"),
+        },
+        {
+          path: "context.aggressive_tool_prune_keep_recent",
+          label: t("aggressiveToolPruneKeepRecent"),
+          type: "number",
+          placeholder: "2",
+          help: t("aggressiveToolPruneKeepRecentHelp"),
+        },
+        {
           path: "context.project_context_enabled",
           label: t("projectContextEnabled"),
           options: ["true", "false"],

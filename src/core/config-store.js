@@ -38,6 +38,11 @@ const DEFAULT_CONFIG = {
     prompt_budget_audit: false,
     microcompact_enabled: true,
     microcompact_keep_recent: 5,
+    aggressive_tool_prune_beta: false,
+    aggressive_tool_prune_keep_recent: 3,
+    aggressive_tool_prune_trigger_extra: 2,
+    aggressive_tool_prune_summary_head: 600,
+    aggressive_tool_prune_summary_tail: 240,
     project_context_enabled: true,
     project_instructions_enabled: true,
     project_instructions_max_chars: 12000
@@ -143,6 +148,13 @@ function uniqueStrings(items = []) {
   return out;
 }
 
+function normalizedNumber(value, fallback, minimum = 0, { integer = false } = {}) {
+  const parsed = Number(value);
+  const finite = Number.isFinite(parsed) ? parsed : fallback;
+  const bounded = Math.max(minimum, finite);
+  return integer ? Math.floor(bounded) : bounded;
+}
+
 function normalizePolicyLists(config) {
   const next = structuredClone(config);
   next.sdk = next.sdk || {};
@@ -199,6 +211,31 @@ function normalizePolicyLists(config) {
     : 'path-or-alias';
   next.context = next.context || {};
   next.context.prompt_budget_audit = next.context.prompt_budget_audit === true;
+  next.context.aggressive_tool_prune_beta = next.context.aggressive_tool_prune_beta === true;
+  next.context.aggressive_tool_prune_keep_recent = normalizedNumber(
+    next.context.aggressive_tool_prune_keep_recent,
+    DEFAULT_CONFIG.context.aggressive_tool_prune_keep_recent,
+    1,
+    { integer: true }
+  );
+  next.context.aggressive_tool_prune_trigger_extra = normalizedNumber(
+    next.context.aggressive_tool_prune_trigger_extra,
+    DEFAULT_CONFIG.context.aggressive_tool_prune_trigger_extra,
+    0,
+    { integer: true }
+  );
+  next.context.aggressive_tool_prune_summary_head = normalizedNumber(
+    next.context.aggressive_tool_prune_summary_head,
+    DEFAULT_CONFIG.context.aggressive_tool_prune_summary_head,
+    80,
+    { integer: true }
+  );
+  next.context.aggressive_tool_prune_summary_tail = normalizedNumber(
+    next.context.aggressive_tool_prune_summary_tail,
+    DEFAULT_CONFIG.context.aggressive_tool_prune_summary_tail,
+    0,
+    { integer: true }
+  );
   next.context.project_context_enabled = next.context.project_context_enabled !== false;
   next.web = next.web || {};
   next.web.search_enabled = next.web.search_enabled !== false;

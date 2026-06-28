@@ -6,6 +6,7 @@ import { evaluateCommandPolicy } from './command-policy.js';
 import { buildRunFailureMessage, getToolOutputSanitizeOptions, sanitizeTextForModel } from './tool-output.js';
 import { normalizeToolArguments } from './tool-args.js';
 import { storeResultIfNeeded, summarizeToolResult } from './tool-result-store.js';
+import { applyAggressiveToolPruneBeta } from './context-compact.js';
 import { markRunCommandSafeModeApproved } from './tools.js';
 import { formatToolDisplayName } from './tool-display.js';
 import { MEMORY_ALWAYS_ALLOW_TOOLS } from './constants.js';
@@ -706,6 +707,16 @@ export async function runAgentLoop({
     }
     if (onEvent) onEvent({ type: 'step:start', step });
     await maybeRunAutoDream(step);
+    const pruneResult = applyAggressiveToolPruneBeta(messages, config);
+    if (pruneResult.changed) {
+      messages.splice(0, messages.length, ...pruneResult.messages);
+      if (onEvent) {
+        onEvent({
+          type: 'compact:aggressive-prune',
+          tokensSaved: pruneResult.tokensSaved
+        });
+      }
+    }
     const completion = await requestCompletion({
       model,
       messages,

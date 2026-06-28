@@ -119,6 +119,7 @@ export const zh = {
   runtimeActivityDreamDone: "Dream 已完成",
   runtimeActivityDreamError: "Dream 失败",
   runtimeActivityCompactDone: "上下文已压缩",
+  runtimeActivityAggressivePrune: "激进压缩(Beta)",
   runtimeActivityCompactPreview: "上下文压缩预览",
   runtimeActivityMicroCompactDone: "微压缩已完成",
   runtimeActivityMicroCompactPreview: "微压缩预览",
@@ -279,6 +280,11 @@ export const zh = {
     "轻量压缩：清除较早的工具结果正文，保留最近若干条完整结果。",
   microcompactKeepRecent: "微压缩保留数",
   microcompactKeepRecentHelp: "微压缩时保留最近几条完整工具结果不被清除。",
+  aggressiveToolPruneBeta: "激进工具结果压缩 (Beta)",
+  aggressiveToolPruneBetaHelp:
+    "实验性功能：每次调用模型前，将较早的工具结果正文替换为结构化摘要，仅保留最近若干条完整结果。长任务可显著节省 token，推理质量影响通常较小。建议推理能力强的模型使用。",
+  aggressiveToolPruneKeepRecent: "激进压缩保留数",
+  aggressiveToolPruneKeepRecentHelp: "开启激进压缩 (Beta) 时，保留最近几条完整工具结果。",
   projectContextEnabled: "项目索引上下文",
   projectContextEnabledHelp:
     "每次对话时将项目的 AST 索引与文件索引（.codemini/project-map.json、file-index.json）载入模型上下文，供轻量导航参考。",
