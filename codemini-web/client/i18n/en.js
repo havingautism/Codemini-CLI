@@ -331,6 +331,11 @@ export const en = {
   relatedLinks: "Related links",
   markdownLinkFallback: "Link",
   markdownImageFallback: "Image",
+  imageGalleryPreview: "Image preview",
+  imageGalleryClose: "Close",
+  imageGalleryPrevious: "Previous image",
+  imageGalleryNext: "Next image",
+  imageGalleryCounter: "{current} / {total}",
   refresh: "Refresh",
   planReviewFirst:
     "Review the plan dialog first — approve, edit, or reject before continuing",

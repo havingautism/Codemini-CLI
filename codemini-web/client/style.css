@@ -1111,11 +1111,11 @@ samp {
   background: var(--scrollbar-track);
 }
 
-/* Related links: native horizontal scroll with visible track + gap above thumb */
+/* Chat horizontal scroll (native fallback for markdown tables / code blocks) */
 .codemini-embed-banner-scroll {
   --scrollbar-thumb: color-mix(in srgb, var(--text-muted) 68%, transparent);
   --scrollbar-track: color-mix(in srgb, var(--text-muted) 30%, var(--bg-secondary));
-  overflow-x: scroll;
+  overflow-x: auto;
   overflow-y: hidden;
   overscroll-behavior-x: contain;
   padding-bottom: 18px;
@@ -1123,22 +1123,69 @@ samp {
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
+.codemini-embed-banner-scroll::-webkit-scrollbar,
+.msg-body [data-streamdown="table-wrapper"] > div:nth-child(2)::-webkit-scrollbar,
+.msg-body [data-streamdown="code-block-body"]::-webkit-scrollbar {
+  -webkit-appearance: none;
+  width: 8px;
+  height: 8px;
+}
+
+.codemini-embed-banner-scroll::-webkit-scrollbar-track,
+.msg-body [data-streamdown="table-wrapper"] > div:nth-child(2)::-webkit-scrollbar-track,
+.msg-body [data-streamdown="code-block-body"]::-webkit-scrollbar-track {
+  border-radius: 4px;
+  background: var(--scrollbar-track, color-mix(in srgb, var(--text-muted) 16%, var(--bg-secondary)));
+}
+
+.codemini-embed-banner-scroll::-webkit-scrollbar-thumb,
+.msg-body [data-streamdown="table-wrapper"] > div:nth-child(2)::-webkit-scrollbar-thumb,
+.msg-body [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: var(--scrollbar-thumb, color-mix(in srgb, var(--text-muted) 55%, transparent));
+}
+
+.codemini-embed-banner-scroll::-webkit-scrollbar-thumb:hover,
+.msg-body [data-streamdown="table-wrapper"] > div:nth-child(2)::-webkit-scrollbar-thumb:hover,
+.msg-body [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover, color-mix(in srgb, var(--text-muted) 75%, transparent));
+}
+
 .codemini-embed-banner-scroll::-webkit-scrollbar {
   height: 8px;
 }
 
-.codemini-embed-banner-scroll::-webkit-scrollbar-track {
-  border-radius: 4px;
-  background: var(--scrollbar-track);
+.msg-body [data-streamdown="table-wrapper"] > div:nth-child(2),
+.msg-body [data-streamdown="code-block-body"] {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  overscroll-behavior-x: contain;
 }
 
-.codemini-embed-banner-scroll::-webkit-scrollbar-thumb {
-  border-radius: 4px;
-  background: var(--scrollbar-thumb);
+/* Custom horizontal scroll strip (related links, image gallery) */
+.codemini-horizontal-scroll-strip__viewport {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
-.codemini-embed-banner-scroll::-webkit-scrollbar-thumb:hover {
-  background: var(--scrollbar-thumb-hover);
+.codemini-horizontal-scroll-strip__viewport::-webkit-scrollbar {
+  display: none;
+}
+
+.codemini-horizontal-scroll-strip__track {
+  position: relative;
+  background: color-mix(in srgb, var(--text-muted) 22%, var(--bg-secondary));
+}
+
+.codemini-horizontal-scroll-strip__thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  background: color-mix(in srgb, var(--text-muted) 62%, transparent);
+}
+
+.codemini-horizontal-scroll-strip__thumb:hover {
+  background: color-mix(in srgb, var(--text-muted) 78%, transparent);
 }
 
 /* ── Linear loaders (theme + palette aware) ── */

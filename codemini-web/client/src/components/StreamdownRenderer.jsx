@@ -1,10 +1,20 @@
-import { Component, useMemo } from 'react';
+import { Component, useMemo, useRef } from 'react';
 import { Streamdown } from 'streamdown';
 import { cn } from '@/lib/utils';
 import { createCodePlugin } from '@/lib/shiki-plugin';
-import { normalizeMarkdownForDisplay, splitMarkdownForEmbeds } from '@/lib/markdown-embeds';
+import {
+  collectMessageImages,
+  extractInlineImagesFromMarkdown,
+  groupGalleryParts,
+  normalizeMarkdownForDisplay,
+  splitMarkdownForEmbeds,
+} from '@/lib/markdown-embeds';
 import { EmbedCard } from '@/components/EmbedCard.jsx';
+import { HorizontalScrollStrip } from '@/components/HorizontalScrollStrip.jsx';
 import { MarkdownLightboxImage } from '@/components/MarkdownLightboxImage.jsx';
+import {
+  MessageImageGalleryProvider,
+} from '@/components/MessageImageGallery.jsx';
 import { t } from '../../i18n/index.js';
 
 const codePlugin = createCodePlugin();
@@ -54,10 +64,30 @@ class StreamdownErrorBoundary extends Component {
   }
 }
 
-function MarkdownStreamdown({ content, mode, streaming }) {
+function MarkdownStreamdown({
+  content,
+  mode,
+  streaming,
+  useGallery,
+  inlineImageStartIndex = 0,
+}) {
+  const inlineImageCounterRef = useRef(0);
+  inlineImageCounterRef.current = 0;
+
   const components = useMemo(
-    () => ({ img: MarkdownLightboxImage }),
-    [],
+    () => ({
+      img: (props) => {
+        const galleryIndex = inlineImageStartIndex + inlineImageCounterRef.current;
+        inlineImageCounterRef.current += 1;
+        return (
+          <MarkdownLightboxImage
+            {...props}
+            galleryIndex={useGallery ? galleryIndex : undefined}
+          />
+        );
+      },
+    }),
+    [inlineImageStartIndex, useGallery],
   );
 
   return (
@@ -75,33 +105,7 @@ function MarkdownStreamdown({ content, mode, streaming }) {
   );
 }
 
-function groupGalleryParts(parts) {
-  const grouped = [];
-  let images = [];
-
-  const flushImages = () => {
-    if (!images.length) return;
-    grouped.push({
-      type: images.length > 1 ? 'gallery' : 'image',
-      images,
-    });
-    images = [];
-  };
-
-  for (const part of parts) {
-    if (part.type === 'image') {
-      images.push(part);
-      continue;
-    }
-    flushImages();
-    grouped.push(part);
-  }
-
-  flushImages();
-  return grouped;
-}
-
-function MarkdownImageGallery({ images = [] }) {
+function MarkdownImageGallery({ images = [], startIndex = 0 }) {
   if (!images.length) return null;
 
   if (images.length === 1) {
@@ -110,6 +114,7 @@ function MarkdownImageGallery({ images = [] }) {
       <MarkdownLightboxImage
         src={image.url}
         alt={image.alt || ''}
+        galleryIndex={startIndex}
         figureClassName="my-3"
       />
     );
@@ -117,18 +122,89 @@ function MarkdownImageGallery({ images = [] }) {
 
   return (
     <div className="my-4 max-w-full">
-      <div className="codemini-embed-banner-scroll flex gap-3 overflow-x-auto px-0.5 pb-1">
+      <HorizontalScrollStrip>
         {images.map((image, index) => (
           <MarkdownLightboxImage
             key={`${image.url || 'image'}-${index}`}
             src={image.url}
             alt={image.alt || ''}
+            galleryIndex={startIndex + index}
             figureClassName="m-0 w-[260px] shrink-0 sm:w-[320px]"
             buttonClassName="block w-full rounded-xl"
             className="aspect-[4/3] max-h-none w-full rounded-xl object-cover"
           />
         ))}
-      </div>
+      </HorizontalScrollStrip>
+    </div>
+  );
+}
+
+function StreamdownRendererBody({
+  content,
+  streaming,
+  className,
+  inlineEmbeds,
+  useGallery,
+}) {
+  const mode = streaming ? 'streaming' : 'static';
+  const parts = streaming
+    ? [{ type: 'markdown', text: content }]
+    : splitMarkdownForEmbeds(content, { includeLinks: inlineEmbeds });
+  const groupedParts = groupGalleryParts(parts);
+  const hasRichParts = groupedParts.some((part) => part.type === 'embed' || part.type === 'image' || part.type === 'gallery');
+  let imageIndex = 0;
+
+  if (!hasRichParts) {
+    return (
+      <StreamdownErrorBoundary fallbackText={content} resetKey={mode}>
+        <div className={cn('msg-body', streaming && 'streaming-cursor', className)}>
+          <MarkdownStreamdown
+            content={content}
+            mode={mode}
+            streaming={streaming}
+            useGallery={useGallery}
+          />
+        </div>
+      </StreamdownErrorBoundary>
+    );
+  }
+
+  return (
+    <div className={cn('msg-body', className)}>
+      {groupedParts.map((part, index) => {
+        if (part.type === 'embed') {
+          return <EmbedCard key={`embed-${part.url}-${index}`} url={part.url} />;
+        }
+        if (part.type === 'image' || part.type === 'gallery') {
+          const startIndex = imageIndex;
+          imageIndex += part.images.length;
+          return (
+            <MarkdownImageGallery
+              key={`gallery-${index}`}
+              images={part.images}
+              startIndex={startIndex}
+            />
+          );
+        }
+        if (!part.text) return null;
+        const inlineStartIndex = imageIndex;
+        imageIndex += extractInlineImagesFromMarkdown(part.text).length;
+        return (
+          <StreamdownErrorBoundary
+            key={`md-${index}`}
+            fallbackText={part.text}
+            resetKey={`${mode}-${index}`}
+          >
+            <MarkdownStreamdown
+              content={part.text}
+              mode={mode}
+              streaming={false}
+              useGallery={useGallery}
+              inlineImageStartIndex={inlineStartIndex}
+            />
+          </StreamdownErrorBoundary>
+        );
+      })}
     </div>
   );
 }
@@ -154,43 +230,27 @@ export function StreamdownRenderer({ text, streaming, className, inlineEmbeds = 
     );
   }
 
-  const mode = streaming ? 'streaming' : 'static';
-  const parts = streaming
-    ? [{ type: 'markdown', text: content }]
-    : splitMarkdownForEmbeds(content, { includeLinks: inlineEmbeds });
-  const groupedParts = groupGalleryParts(parts);
-  const hasRichParts = groupedParts.some((part) => part.type === 'embed' || part.type === 'image' || part.type === 'gallery');
+  const messageImages = useMemo(
+    () => collectMessageImages(content, { includeLinks: inlineEmbeds }),
+    [content, inlineEmbeds],
+  );
+  const useGallery = !streaming && messageImages.length > 0;
 
-  if (!hasRichParts) {
-    return (
-      <StreamdownErrorBoundary fallbackText={content} resetKey={mode}>
-        <div className={cn('msg-body', streaming && 'streaming-cursor', className)}>
-          <MarkdownStreamdown content={content} mode={mode} streaming={streaming} />
-        </div>
-      </StreamdownErrorBoundary>
-    );
-  }
+  const body = (
+    <StreamdownRendererBody
+      content={content}
+      streaming={streaming}
+      className={className}
+      inlineEmbeds={inlineEmbeds}
+      useGallery={useGallery}
+    />
+  );
+
+  if (!useGallery) return body;
 
   return (
-    <div className={cn('msg-body', className)}>
-      {groupedParts.map((part, index) => {
-        if (part.type === 'embed') {
-          return <EmbedCard key={`embed-${part.url}-${index}`} url={part.url} />;
-        }
-        if (part.type === 'image' || part.type === 'gallery') {
-          return <MarkdownImageGallery key={`gallery-${index}`} images={part.images} />;
-        }
-        if (!part.text) return null;
-        return (
-          <StreamdownErrorBoundary
-            key={`md-${index}`}
-            fallbackText={part.text}
-            resetKey={`${mode}-${index}`}
-          >
-            <MarkdownStreamdown content={part.text} mode={mode} streaming={false} />
-          </StreamdownErrorBoundary>
-        );
-      })}
-    </div>
+    <MessageImageGalleryProvider images={messageImages} enabled>
+      {body}
+    </MessageImageGalleryProvider>
   );
 }
