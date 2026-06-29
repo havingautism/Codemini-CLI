@@ -978,6 +978,12 @@ function textFromSessionContent(content) {
   return sanitizeRenderableText(String(content || ''));
 }
 
+export function isCommandDirectiveInput(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/^command:\[([^\]]+)\]\s*[\s\S]*$/i);
+  return Boolean(match && String(match[1] || '').trim());
+}
+
 export function buildUiMessagesFromSessionHistory(sessionMessages, nextId) {
   const source = Array.isArray(sessionMessages) ? sessionMessages : [];
   const out = [];
@@ -990,6 +996,7 @@ export function buildUiMessagesFromSessionHistory(sessionMessages, nextId) {
     if (!text.trim()) continue;
 
     if (message.role === 'user') {
+      if (isCommandDirectiveInput(text)) continue;
       out.push({ id: nextId(), label: 'you', text, color: 'blueBright' });
       continue;
     }
@@ -2840,6 +2847,12 @@ function groupCommandSuggestions(items) {
   };
   const grouped = new Map();
   for (const item of items) {
+    const kind = getSuggestionKind(item);
+    if (kind === 'skill') {
+      if (!grouped.has('Skills')) grouped.set('Skills', []);
+      grouped.get('Skills').push(item);
+      continue;
+    }
     const value = typeof item === 'string' ? item : String(item?.value || '');
     const root = String(value || '').trim().slice(1).split(/\s+/)[0] || 'other';
     const category = categoryMap[root] || 'Other';
@@ -2859,6 +2872,26 @@ function getSuggestionDisplay(item) {
 
 function getSuggestionDescription(item) {
   return typeof item === 'string' ? '' : String(item?.description || '');
+}
+
+function getSuggestionKind(item) {
+  return typeof item === 'string' ? '' : String(item?.kind || '');
+}
+
+function getSuggestionName(item) {
+  return typeof item === 'string' ? '' : String(item?.name || '');
+}
+
+function buildSkillInvocationLine(skillNames, inputText) {
+  const names = [...new Set(
+    (Array.isArray(skillNames) ? skillNames : [])
+      .map((name) => String(name || '').trim())
+      .filter(Boolean)
+  )];
+  const text = String(inputText || '').trim();
+  if (!names.length) return text;
+  if (!text) return '';
+  return `skill:[${names.join(',')}] ${text}`;
 }
 
 export function formatSuggestionDescription(text, maxChars = 40) {
@@ -3130,10 +3163,14 @@ function InputBar({
   runtimeStatus,
   commandSuggestions,
   suggestionNav,
+  selectedSkillNames = [],
+  defaultSkillNames = [],
   copy
 }) {
   const status = stageDescriptor(inputStage, busy, runtimeStatus, copy);
   const commandHint = describeCommandHint(commandSuggestions, suggestionNav, copy);
+  const selectedSkills = (Array.isArray(selectedSkillNames) ? selectedSkillNames : []).filter(Boolean);
+  const defaultSkills = (Array.isArray(defaultSkillNames) ? defaultSkillNames : []).filter(Boolean);
   return h(
     Box,
     {
@@ -3161,6 +3198,18 @@ function InputBar({
         inputStage !== 'idle' || busy ? h(Text, { color: status.color }, ` ${status.tag}`) : null
       )
     ),
+    selectedSkills.length > 0 || defaultSkills.length > 0
+      ? h(
+          Box,
+          { marginBottom: 1, flexWrap: 'wrap' },
+          defaultSkills.length > 0
+            ? h(Text, { color: 'gray' }, `default skills: ${defaultSkills.map((name) => `/${name}`).join(', ')}  `)
+            : null,
+          selectedSkills.length > 0
+            ? h(Text, { color: 'magentaBright' }, `selected skills: ${selectedSkills.map((name) => `/${name}`).join(', ')}`)
+            : null
+        )
+      : null,
     h(
       Box,
       null,
@@ -3547,6 +3596,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   const [historyMatches, setHistoryMatches] = useState([]);
   const [menuIndex, setMenuIndex] = useState(0);
   const [suggestionNav, setSuggestionNav] = useState(false);
+  const [selectedSkillNames, setSelectedSkillNames] = useState([]);
   const [cursorVisible, setCursorVisible] = useState(true);
   const [displaySessionId, setDisplaySessionId] = useState(sessionId);
   const [displayModel, setDisplayModel] = useState(model);
@@ -3557,6 +3607,13 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     makeIdleStatus(copy, runtime.getRuntimeState?.(), 'ready')
   );
   const [runtimeState, setRuntimeState] = useState(runtime.getRuntimeState?.() || null);
+  const defaultSkillNames = useMemo(
+    () =>
+      (Array.isArray(runtimeState?.alwaysSkillNames) ? runtimeState.alwaysSkillNames : [])
+        .map((name) => String(name || '').trim())
+        .filter(Boolean),
+    [runtimeState?.alwaysSkillNames]
+  );
   const [inputStage, setInputStage] = useState('idle');
   const [planState, setPlanState] = useState({
     current: 0,
@@ -3704,8 +3761,14 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
   }, []);
 
   const commandSuggestions =
-    inputValue.startsWith('/')
-      ? runtime.getCompletionOptions(inputValue) || []
+    inputValue.startsWith('/') ||
+    inputValue.startsWith('skill:[') ||
+    inputValue.startsWith('command:[')
+      ? (runtime.getCompletionOptions(inputValue) || []).filter((item) => {
+          if (getSuggestionKind(item) !== 'skill') return true;
+          const name = getSuggestionName(item);
+          return name && !selectedSkillNames.includes(name) && !defaultSkillNames.includes(name);
+        })
       : [];
   const hasTransientPanels =
     commandSuggestions.length > 0 || pendingQueue.length > 0 || debugKeys || Boolean(planState?.total);
@@ -4711,6 +4774,18 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       });
   };
 
+  const selectSkillSuggestion = (item) => {
+    if (getSuggestionKind(item) !== 'skill') return false;
+    const name = getSuggestionName(item);
+    if (!name) return false;
+    setSelectedSkillNames((current) => current.includes(name) ? current : [...current, name]);
+    setInputValue('');
+    cursorIndexRef.current = 0;
+    setCursorIndex(0);
+    setSuggestionNav(false);
+    return true;
+  };
+
   useInput((value, key) => {
     if (debugKeys) {
       const printable = JSON.stringify(value ?? '');
@@ -5029,8 +5104,12 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     }
 
     if (key.return) {
+      if (!suggestionNav && inputValue.startsWith('skill:[') && commandSuggestions.length === 1) {
+        if (selectSkillSuggestion(commandSuggestions[0])) return;
+      }
       if (suggestionNav && commandSuggestions.length > 0) {
         const selected = commandSuggestions[Math.min(menuIndex, commandSuggestions.length - 1)];
+        if (selectSkillSuggestion(selected)) return;
         const selectedValue = getSuggestionValue(selected);
         const current = inputValue.trim();
         if (selectedValue && current !== selectedValue.trim()) {
@@ -5042,8 +5121,10 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
         }
       }
 
-      const line = inputValue.trim();
+      if (selectedSkillNames.length > 0 && !inputValue.trim()) return;
+      const line = buildSkillInvocationLine(selectedSkillNames, inputValue.trim());
       setInputValue('');
+      setSelectedSkillNames([]);
       setSuggestionNav(false);
       cursorIndexRef.current = 0;
       setCursorIndex(0);
@@ -5068,35 +5149,43 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       const immediateLocal =
         typeof runtime.isImmediateLocalInput === 'function' &&
         runtime.isImmediateLocalInput(line);
+      const showUserMessage = !isCommandDirectiveInput(line);
       const pendingUserMeta = getPendingUserMessageMeta(copy, {
         immediateLocal,
         inFlight: inFlightRef.current
       });
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: messageId,
-          label: 'you',
-          text: line,
-          color: 'white',
-          loading: true,
-          phase: pendingUserMeta.phase,
-          liveStatus: pendingUserMeta.liveStatus
-        }
-      ]);
+      if (showUserMessage) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: messageId,
+            label: 'you',
+            text: line,
+            color: 'white',
+            loading: true,
+            phase: pendingUserMeta.phase,
+            liveStatus: pendingUserMeta.liveStatus
+          }
+        ]);
+      }
+      const visibleMessageId = showUserMessage ? messageId : null;
       if (immediateLocal) {
-        runImmediateLocalCommand(line, messageId);
+        runImmediateLocalCommand(line, visibleMessageId);
       } else if (inFlightRef.current) {
-        pendingQueueRef.current = [...pendingQueueRef.current, { line, messageId }];
+        pendingQueueRef.current = [...pendingQueueRef.current, { line, messageId: visibleMessageId }];
         setPendingQueue([...pendingQueueRef.current]);
       } else {
-        runSubmission(line, messageId);
+        runSubmission(line, visibleMessageId);
       }
       return;
     }
 
     if (isBackspaceKey(value, key) || isDeleteKey(value, key)) {
       setSuggestionNav(false);
+      if (!inputValue && selectedSkillNames.length > 0) {
+        setSelectedSkillNames((current) => current.slice(0, -1));
+        return;
+      }
       const backspace = true;
       const idxSnapshot = cursorIndexRef.current;
       setInputValue((prev) => {
@@ -5113,9 +5202,9 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
     }
 
     if (key.tab) {
-      if (!inputValue.startsWith('/')) return;
       if (commandSuggestions.length === 0) return;
       if (commandSuggestions.length === 1) {
+        if (selectSkillSuggestion(commandSuggestions[0])) return;
         const selected = getSuggestionValue(commandSuggestions[0]);
         setInputValue(selected);
         cursorIndexRef.current = selected.length;
@@ -5363,6 +5452,8 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       runtimeStatus,
       commandSuggestions,
       suggestionNav,
+      selectedSkillNames,
+      defaultSkillNames,
       copy
     }),
     h(SignatureBar, { version })

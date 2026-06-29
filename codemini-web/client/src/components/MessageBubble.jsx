@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
   isManualSkillCommand,
+  isUserCommandDirective,
   parseUserSkillPrompt,
 } from "@/lib/user-skill-prompt.js";
 import { formatTimestamp } from "../../utils/time.js";
@@ -1347,34 +1348,27 @@ function UserText({ text }) {
   return <StreamdownRenderer text={text} streaming={false} />;
 }
 
-function UserSkillChips({ skillName, skills = [], className }) {
-  const name = String(skillName || "").trim();
-  if (!name) return null;
-  const skill = skills.find((item) => item.name === name);
-  const description = skill?.description || "";
-
+function UserSkillChips({ skillNames = [], skills = [], className }) {
+  const names = (Array.isArray(skillNames) ? skillNames : [skillNames])
+    .map((name) => String(name || "").trim())
+    .filter(Boolean);
+  if (!names.length) return null;
   return (
-    <div
-      className={cn("flex max-w-full flex-wrap gap-1.5", className)}
-    >
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-(--accent-purple)/25 bg-(--accent-purple-bg) px-2 py-1 text-[12px] text-accent-purple">
-            <Hammer size={14} className="shrink-0" />
-            <span className="max-w-[220px] truncate">{name}</span>
-          </span>
-        </TooltipTrigger>
-        {description ? (
-          <TooltipContent
-            side="top"
-            sideOffset={8}
-            className="max-w-75 px-4 py-3 leading-relaxed whitespace-normal"
-          >
-            <div className="font-semibold mb-1.5">{name}</div>
-            <div className="text-(--text-secondary)">{description}</div>
-          </TooltipContent>
-        ) : null}
-      </Tooltip>
+    <div className={cn("flex max-w-full flex-wrap gap-1.5", className)}>
+      {names.map((name) => {
+        const description = skills.find((item) => item.name === name)?.description || "";
+        return (
+          <Tooltip key={name}>
+            <TooltipTrigger asChild>
+              <span className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-(--accent-purple)/25 bg-(--accent-purple-bg) px-2 py-1 text-[12px] text-accent-purple">
+                <Hammer size={14} className="shrink-0" />
+                <span className="max-w-[220px] truncate">{name}</span>
+              </span>
+            </TooltipTrigger>
+            {description ? <TooltipContent side="top" sideOffset={8} className="max-w-75 px-4 py-3 leading-relaxed whitespace-normal">{description}</TooltipContent> : null}
+          </Tooltip>
+        );
+      })}
     </div>
   );
 }
@@ -1904,6 +1898,7 @@ export function MessageBubble({ message, skills = [], onRetry }) {
           .join("") ||
         ""
       : "";
+  const hideUserCommandDirective = role === "you" && isUserCommandDirective(youText);
   const userSkillPrompt = useMemo(() => {
     if (role !== "you" || !youText) return null;
     const parsed = parseUserSkillPrompt(youText);
@@ -1947,6 +1942,10 @@ export function MessageBubble({ message, skills = [], onRetry }) {
       ? message.specExecution || parseSpecExecutionText(youText)
       : null;
 
+  if (hideUserCommandDirective) {
+    return null;
+  }
+
   return (
     <div
       data-message-id={message.id}
@@ -1963,16 +1962,16 @@ export function MessageBubble({ message, skills = [], onRetry }) {
             <SpecExecutionCard details={specExecutionDetails} />
           ) : (
             <div className="w-fit max-w-full bg-(--bg-tertiary) rounded-2xl px-4 py-3">
-              {(userSkillPrompt?.skillName || attachments.length > 0) && (
+              {(userSkillPrompt?.skillNames?.length || attachments.length > 0) && (
                 <div
                   className={cn(
                     "flex max-w-full flex-col gap-2",
                     userDisplayText && "mb-3",
                   )}
                 >
-                  {userSkillPrompt?.skillName && (
+                  {userSkillPrompt?.skillNames?.length > 0 && (
                     <UserSkillChips
-                      skillName={userSkillPrompt.skillName}
+                      skillNames={userSkillPrompt.skillNames}
                       skills={skills}
                     />
                   )}

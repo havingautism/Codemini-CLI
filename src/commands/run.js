@@ -6,6 +6,8 @@ import { getBuiltinTools } from '../core/tools.js';
 import { getSubAgentRolePrompt, ROLE_TOOL_POLICY } from '../core/chat-runtime.js';
 import { composeSystemPrompt } from '../core/system-prompt-composer.js';
 import { normalizePlanState } from '../core/plan-state.js';
+import { composeExplicitSkillPrompt, loadCommandsAndSkills } from '../core/command-loader.js';
+import { parseInput } from '../core/input-parser.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -342,10 +344,25 @@ export async function handleRun(args) {
   const config = await loadConfig();
   const selectedModel = parsed.fast ? (config.model?.fast_name || config.model?.name) : parsed.model;
   const systemPrompt = await buildSystemPrompt(config);
+  const invocation = parseInput(parsed.task);
+  let effectiveTask = parsed.task;
+  if (invocation.type === 'slash' && invocation.syntax === 'directive') {
+    throw new Error('command:[...] is not supported in run mode. Use codemini chat "command:[...]" or an interactive chat session.');
+  }
+  if (invocation.type === 'skill') {
+    const commands = await loadCommandsAndSkills(process.cwd());
+    const composed = composeExplicitSkillPrompt(commands, invocation.skills, invocation.text, {
+      isEnabled: (command) =>
+        command.metadata?.enabled !== false &&
+        (command.source === 'bundled-skill' || config.skills?.enabled?.[command.name] !== false)
+    });
+    if (composed.error) throw new Error(composed.error);
+    effectiveTask = composed.prompt;
+  }
 
   if (parsed.pipeline) {
     const state = await runPipeline({
-      task: parsed.task,
+      task: effectiveTask,
       config,
       systemPrompt,
       model: selectedModel
@@ -360,7 +377,7 @@ export async function handleRun(args) {
   if (parsed.harness) {
     const result = await runHarness({
       role: parsed.harness,
-      task: parsed.task,
+      task: effectiveTask,
       config,
       systemPrompt,
       model: selectedModel,
@@ -379,7 +396,7 @@ export async function handleRun(args) {
   try {
     const result = await runAgentLoop({
       systemPrompt,
-      userPrompt: parsed.task,
+      userPrompt: effectiveTask,
       model: selectedModel || config.model.name,
       toolDefinitions: definitions,
       toolHandlers: handlers,

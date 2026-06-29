@@ -1,5 +1,12 @@
 import { parseInput } from './input-parser.js';
-import { formatLocalDate, loadCommandsAndSkills, buildSkillIndexPromptBlock, renderCommandPrompt } from './command-loader.js';
+import {
+  formatLocalDate,
+  loadCommandsAndSkills,
+  buildSkillIndexPromptBlock,
+  composeExplicitSkillPrompt,
+  isUserInvocableSkill,
+  renderCommandPrompt
+} from './command-loader.js';
 import { runAgentLoop } from './agent-loop.js';
 import { setResultDir, clearResultStore } from './tool-result-store.js';
 import { trimInline, normalizePath } from './string-utils.js';
@@ -3839,7 +3846,7 @@ function summarizePromptBudgetAudit(audit) {
   return `prompt budget: ${totalTokens}/${maxContextTokens} est tokens (${pct}%)${components ? `; ${components}` : ''}`;
 }
 
-function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession }) {
+function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, alwaysSkillNames = [] }) {
   const activeParentMessages = Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
     ? currentSession.compact.view
     : currentSession?.messages || [];
@@ -3850,11 +3857,15 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
   const contextUsagePct = maxContextTokens > 0 ? Math.min(100, Math.max(0, (currentContextTokens / maxContextTokens) * 100)) : 0;
   const planState = currentSession?.planState;
   const specState = getPendingSpecState(currentSession);
+  const resolvedMode = resolveRuntimeExecutionMode(executionMode, config, currentSession);
+  const visibleAlwaysSkillNames = shouldInjectAlwaysSkills(resolvedMode)
+    ? (Array.isArray(alwaysSkillNames) ? alwaysSkillNames : []).map((name) => String(name || '').trim()).filter(Boolean)
+    : [];
   const snapshot = {
     sessionId: currentSession?.id || '',
     sessionTitle: currentSession?.title || '',
     messageCount: Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0,
-    mode: resolveRuntimeExecutionMode(executionMode, config, currentSession),
+    mode: resolvedMode,
     approvalMode: config.execution?.approval_mode || 'review',
     sdkProvider: config.sdk?.provider || 'openai-compatible',
     agentRole: 'general',
@@ -3862,6 +3873,7 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     mainModel: config.model?.name || '',
     fastModel: config.model?.fast_name || config.model?.name || '',
     maxContextTokens,
+    alwaysSkillNames: visibleAlwaysSkillNames,
     pendingPlanApproval: null,
     pendingSpecApproval: specState
       ? buildPendingSpecSnapshot(specState)
@@ -7042,9 +7054,7 @@ export async function createChatRuntime({
     ];
     const out = [];
     for (const cmd of commands.values()) {
-      if (cmd.metadata.type === 'skill' && !isSkillEnabled(config, cmd.name, cmd)) {
-        continue;
-      }
+      if (cmd.metadata.type === 'skill') continue;
       out.push({
         name: cmd.name,
         description: cmd.metadata.description || ''
@@ -7052,6 +7062,11 @@ export async function createChatRuntime({
     }
     return [...builtins, ...out].sort((a, b) => a.name.localeCompare(b.name));
   };
+  const listSelectableSkills = () =>
+    Array.from(commands.values())
+      .filter((command) => isUserInvocableSkill(command))
+      .filter((command) => isSkillEnabled(config, command.name, command))
+      .sort((a, b) => a.name.localeCompare(b.name));
 
   const compactOptions = [
     '--preview',
@@ -7129,6 +7144,34 @@ export async function createChatRuntime({
 
   const getCompletionOptions = (rawInput) => {
     const input = String(rawInput || '');
+    if (input.startsWith('skill:[')) {
+      const inner = input.slice('skill:['.length);
+      const closeIndex = inner.indexOf(']');
+      if (closeIndex >= 0) return [];
+      const parts = inner.split(',');
+      const prefix = parts.pop()?.trim() || '';
+      const selected = parts.map((item) => item.trim()).filter(Boolean);
+      return listSelectableSkills()
+        .filter((skill) => !selected.includes(skill.name) && skill.name.startsWith(prefix))
+        .map((skill) => ({
+          kind: 'skill',
+          name: skill.name,
+          value: `skill:[${[...selected, skill.name].join(',')}] `,
+          display: `skill:${skill.name}`,
+          description: skill.metadata.description || ''
+        }));
+    }
+    if (input.startsWith('command:[')) {
+      const prefix = input.slice('command:['.length).split(']')[0].trim();
+      return listCommandNames()
+        .filter((entry) => entry.name.startsWith(prefix))
+        .map((entry) => ({
+          kind: 'command',
+          name: entry.name,
+          value: `command:[${entry.name}] `,
+          description: entry.description || ''
+        }));
+    }
     if (!input.startsWith('/')) return [];
     const completionCopy = getCompletionCopy(config.ui?.language);
     const configSubcommandDescriptions = completionCopy.configSubcommands;
@@ -7857,6 +7900,43 @@ export async function createChatRuntime({
       const shell = await handleShellInput(parsedInput.command, config);
       return { type: 'shell', text: shell.text };
     }
+    if (parsedInput.type === 'skill') {
+      await reloadCommandsAndSkills();
+      const composed = composeExplicitSkillPrompt(
+        commands,
+        parsedInput.skills,
+        parsedInput.text,
+        { isEnabled: (command) => isSkillEnabled(config, command.name, command) }
+      );
+      if (composed.error) return { type: 'system', text: composed.error };
+      const rendered = await expandFileMentions(composed.prompt, process.cwd());
+      const modelText = mergeCurrentTurnModelText(rendered, optionModelText, 'uploaded_attachments_context');
+      for (const skill of composed.selected) {
+        if (onAgentEvent) onAgentEvent({ type: 'skill:start', name: skill.name });
+      }
+      try {
+        const result = await askModel({
+          text: line,
+          modelText,
+          session: currentSession,
+          config,
+          model,
+          systemPrompt: activeReplySystemPrompt,
+          onAgentEvent,
+          requestToolApproval: activeRequestToolApproval,
+          requestUserInput: activeRequestUserInput,
+          executionMode,
+          signal,
+          compactedForModel,
+          onCompactedUpdate: setCompactedView
+        });
+        return { type: 'assistant', text: result.text };
+      } finally {
+        for (const skill of composed.selected) {
+          if (onAgentEvent) onAgentEvent({ type: 'skill:end', name: skill.name });
+        }
+      }
+    }
     if (parsedInput.type === 'slash') {
       const argError = validateBuiltinSlashArgs(parsedInput);
       if (argError) return { type: 'system', text: argError };
@@ -7881,7 +7961,7 @@ export async function createChatRuntime({
       if (parsedInput.command === 'help') {
         return {
           type: 'system',
-          text: 'Commands: /help /exit /new /stop /commands /status /model /mode /compact /checkpoint /spec /yes /no /edit /reject /agents /config /memory /capture /inbox /dream /reflect /history /debug /<custom> !<shell>'
+          text: 'Use command:[help], command:[status], command:[config] ..., or skill:[skill-a,skill-b] <question>. Legacy slash aliases remain available for built-in control commands.'
         };
       }
       if (parsedInput.command === 'status') {
@@ -8491,10 +8571,14 @@ export async function createChatRuntime({
       }
       if (parsedInput.command === 'commands') {
         const all = listCommandNames();
-        if (all.length === 0) {
+        const skills = listSelectableSkills();
+        if (all.length === 0 && skills.length === 0) {
           return { type: 'system', text: 'No commands/skills available' };
         }
-        const rows = all.map((c) => `/${c.name}${c.description ? ` - ${c.description}` : ''}`);
+        const rows = [
+          ...all.map((c) => `command:[${c.name}]${c.description ? ` - ${c.description}` : ''}`),
+          ...skills.map((skill) => `skill:[${skill.name}]${skill.metadata.description ? ` - ${skill.metadata.description}` : ''}`)
+        ];
         return { type: 'system', text: rows.join('\n') };
       }
 
@@ -8508,6 +8592,12 @@ export async function createChatRuntime({
       }
       if (custom.metadata.type === 'skill' && !isSkillEnabled(config, custom.name, custom)) {
         return { type: 'system', text: `Skill is disabled: ${custom.name}` };
+      }
+      if (isUserInvocableSkill(custom)) {
+        return {
+          type: 'system',
+          text: `Slash skill invocation is no longer supported. Use skill:[${custom.name}] <question>.`
+        };
       }
       if (custom.metadata.type === 'skill' && (custom.name === 'project-requirements' || custom.name === 'project-requirements-md')) {
         const defaultOutputFormat = getProjectRequirementsDefaultOutputFormat(custom);
@@ -8878,7 +8968,8 @@ export async function createChatRuntime({
         config,
         model,
         executionMode,
-        extraSession: activeSubSession
+        extraSession: activeSubSession,
+        alwaysSkillNames: getAlwaysSkillCommands(commands, config).map((skill) => skill.name)
       })
   };
 }

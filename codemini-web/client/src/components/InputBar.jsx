@@ -41,6 +41,7 @@ import {
 } from "@/lib/user-skill-prompt.js";
 
 const IMPLICIT_SKILLS = new Set(["superpowers-lite"]);
+const INTERNAL_SKILLS = new Set(["project-requirements", "project-requirements-md"]);
 
 function getModeOptions() {
   return [
@@ -85,34 +86,38 @@ function getApprovalModeOptions() {
 const ACTION_COMMANDS = [
   {
     name: "dream",
-    insert: "/dream ",
+    insert: "command:[dream] ",
+    executeImmediately: true,
     icon: Moon,
     description:
       "Run memory consolidation now. Auto dream still runs in the background when needed.",
   },
   {
     name: "compact",
-    insert: "/compact ",
+    insert: "command:[compact] ",
+    executeImmediately: true,
     icon: Archive,
     description:
       "Compress the current conversation context while keeping the useful working summary.",
   },
   {
     name: "capture",
-    insert: "/capture ",
+    insert: "command:[capture] ",
     icon: Camera,
     description:
       "Capture an explicit note into the memory inbox for later consolidation.",
   },
   {
     name: "inbox",
-    insert: "/inbox ",
+    insert: "command:[inbox] ",
+    executeImmediately: true,
     icon: Tray,
     description: "Review pending memory inbox entries.",
   },
   {
     name: "reflect",
-    insert: "/reflect ",
+    insert: "command:[reflect] ",
+    executeImmediately: true,
     icon: Sparkle,
     description: "Draft or update a reusable skill from the current workflow.",
   },
@@ -497,7 +502,7 @@ function SpecQuickSelect({ visible, disabled = false, onSelect }) {
   );
 }
 
-function CommandPalette({ query, onSelect, visible, projectDirs = [] }) {
+function CommandPalette({ query, onSelect, visible, projectDirs = [], defaultSkillNames = [] }) {
   const [skills, setSkills] = useState([]);
   const [hoveredItem, setHoveredItem] = useState(null);
 
@@ -512,6 +517,7 @@ function CommandPalette({ query, onSelect, visible, projectDirs = [] }) {
                   (s) =>
                     s.enabled !== false &&
                     !IMPLICIT_SKILLS.has(s.name) &&
+                    !INTERNAL_SKILLS.has(s.name) &&
                     !USER_ACTION_COMMAND_NAMES.has(s.name),
                 )
               : [],
@@ -542,19 +548,19 @@ function CommandPalette({ query, onSelect, visible, projectDirs = [] }) {
       skills
         .filter(
           (skill) =>
-            !needle ||
-            skill.name.toLowerCase().includes(needle) ||
-            (skill.description || "").toLowerCase().includes(needle),
+            !defaultSkillNames.includes(skill.name) &&
+            (!needle ||
+              skill.name.toLowerCase().includes(needle) ||
+              (skill.description || "").toLowerCase().includes(needle)),
         )
         .map((skill) => ({
           name: skill.name,
-          insert: `/${skill.name} `,
           icon: Hammer,
           description: skill.description || "Manual skill",
           kind: "skill",
           key: `skill-${skill.name}`,
         })),
-    [skills, needle],
+    [skills, needle, defaultSkillNames],
   );
 
   if (!visible) return null;
@@ -668,7 +674,7 @@ export function InputBar({
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState("");
   const [attachments, setAttachments] = useState([]);
-  const [selectedSkill, setSelectedSkill] = useState(null);
+  const [selectedSkills, setSelectedSkills] = useState([]);
   const [attachmentError, setAttachmentError] = useState("");
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const textareaRef = useRef(null);
@@ -677,6 +683,17 @@ export function InputBar({
   const rs = runtimeState || {};
   const mode = rs.mode || "normal";
   const approvalMode = rs.approvalMode || "review";
+  const defaultSkillNames = useMemo(
+    () =>
+      (Array.isArray(rs.alwaysSkillNames) ? rs.alwaysSkillNames : [])
+        .map((name) => String(name || "").trim())
+        .filter(Boolean),
+    [rs.alwaysSkillNames],
+  );
+  const selectedSkillNames = useMemo(
+    () => selectedSkills.map((skill) => skill.name).filter(Boolean),
+    [selectedSkills],
+  );
   const inputLocked = busy || disabled || uploadingAttachments;
   const isGeneralChat = projectCwd === "__codemini_general__";
 
@@ -693,9 +710,9 @@ export function InputBar({
 
   const submitCurrent = useCallback(() => {
     const val = value.trim();
-    if ((!val && attachments.length === 0 && !selectedSkill) || inputLocked) return;
-    const line = selectedSkill
-      ? buildUserSkillLine(selectedSkill.name, val)
+    if ((!val && attachments.length === 0 && selectedSkills.length === 0) || inputLocked) return;
+    const line = selectedSkills.length
+      ? buildUserSkillLine(selectedSkillNames, val)
       : val || t("attachmentFallbackPrompt");
     onSubmit(line, {
       attachmentIds: attachments.map((item) => item.id).filter(Boolean),
@@ -703,12 +720,12 @@ export function InputBar({
     });
     setValue("");
     setAttachments([]);
-    setSelectedSkill(null);
+    setSelectedSkills([]);
     setAttachmentError("");
     setSlashOpen(false);
     setHistoryIndex(-1);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-  }, [value, attachments, selectedSkill, inputLocked, onSubmit]);
+  }, [value, attachments, selectedSkills, selectedSkillNames, inputLocked, onSubmit]);
 
   const handleKeyDown = useCallback(
     (e) => {
@@ -772,23 +789,49 @@ export function InputBar({
     }
   }, []);
 
-  const handleCommandSelect = useCallback((item) => {
-    if (item?.kind === "skill") {
-      setSelectedSkill({
-        name: item.name,
-        description: item.description || "",
-      });
+  const handleCommandSelect = useCallback(
+    (item) => {
+      if (item?.kind === "skill") {
+        if (defaultSkillNames.includes(item.name)) {
+          setValue("");
+          setSlashOpen(false);
+          textareaRef.current?.focus();
+          return;
+        }
+        setSelectedSkills((current) =>
+          current.some((skill) => skill.name === item.name)
+            ? current
+            : [...current, { name: item.name, description: item.description || "" }],
+        );
+        setValue("");
+        setSlashOpen(false);
+        textareaRef.current?.focus();
+        return;
+      }
+
+      if (item?.executeImmediately) {
+        const command = String(item.insert || "").trim();
+        if (command && !inputLocked) {
+          onSubmit(command);
+          setValue("");
+          setAttachments([]);
+          setSelectedSkills([]);
+          setAttachmentError("");
+        }
+        setSlashOpen(false);
+        textareaRef.current?.focus();
+        return;
+      }
+
+      setValue(item?.insert || "");
       setSlashOpen(false);
       textareaRef.current?.focus();
-      return;
-    }
-    setValue(item?.insert || "");
-    setSlashOpen(false);
-    textareaRef.current?.focus();
-  }, []);
+    },
+    [defaultSkillNames, inputLocked, onSubmit],
+  );
 
-  const removeSelectedSkill = useCallback(() => {
-    setSelectedSkill(null);
+  const removeSelectedSkill = useCallback((name) => {
+    setSelectedSkills((current) => current.filter((skill) => skill.name !== name));
   }, []);
 
   const handleFiles = useCallback(async (fileList) => {
@@ -837,15 +880,29 @@ export function InputBar({
         onSelect={handleCommandSelect}
         visible={slashOpen}
         projectDirs={projectDirs}
+        defaultSkillNames={defaultSkillNames}
       />
       <div className="codemini-input-shell flex flex-col gap-2.5 px-2 py-2 sm:px-2.5">
-        {(selectedSkill ||
+        {(selectedSkills.length > 0 ||
+          defaultSkillNames.length > 0 ||
           attachments.length > 0 ||
           attachmentError ||
           uploadingAttachments) && (
           <div className="flex flex-wrap items-center gap-1.5">
-            {selectedSkill && (
+            {defaultSkillNames.map((name) => (
               <span
+                key={`default-${name}`}
+                className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-(--accent-purple)/20 bg-(--bg-secondary) px-2 py-1 text-[12px] text-(--text-secondary)"
+                title={`Always-loaded skill: ${name}`}
+              >
+                <Hammer size={14} className="shrink-0" />
+                <span className="max-w-[180px] truncate font-mono">{name}</span>
+                <span className="text-[10px] uppercase text-(--text-muted)">default</span>
+              </span>
+            ))}
+            {selectedSkills.map((selectedSkill) => (
+              <span
+                key={selectedSkill.name}
                 className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-(--accent-purple)/25 bg-(--accent-purple-bg) px-2 py-1 text-[12px] text-accent-purple"
                 title={selectedSkill.description || selectedSkill.name}
               >
@@ -856,14 +913,14 @@ export function InputBar({
                 <button
                   type="button"
                   className="ml-0.5 inline-flex size-4 items-center justify-center rounded hover:bg-(--bg-hover) hover:text-(--text-primary)"
-                  onClick={removeSelectedSkill}
+                  onClick={() => removeSelectedSkill(selectedSkill.name)}
                   title={t("removeLoadedSkill")}
                   disabled={inputLocked}
                 >
                   <X size={11} />
                 </button>
               </span>
-            )}
+            ))}
             {attachments.map((item) => {
               const Icon = item.kind === "image" ? ImageSquare : FileText;
               return (
@@ -972,14 +1029,14 @@ export function InputBar({
                 type="button"
                 className={cn(
                   "border-0 min-w-8 w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-all",
-                  (value.trim() || attachments.length > 0 || selectedSkill) &&
+                  (value.trim() || attachments.length > 0 || selectedSkills.length > 0) &&
                   !inputLocked
                     ? "bg-(--accent-blue) text-white hover:bg-(--accent-hover)"
                     : "bg-(--text-muted)/25 text-(--text-muted) cursor-not-allowed",
                 )}
                 onClick={submitCurrent}
                 disabled={
-                  (!value.trim() && attachments.length === 0 && !selectedSkill) ||
+                  (!value.trim() && attachments.length === 0 && selectedSkills.length === 0) ||
                   inputLocked
                 }
                 title={t("sending")}

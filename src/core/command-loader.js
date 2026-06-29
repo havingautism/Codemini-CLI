@@ -13,6 +13,7 @@ const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const BUNDLED_SKILLS_DIR = path.resolve(MODULE_DIR, '..', '..', 'skills');
 const SKILL_CATALOG_FILE = 'codemini.skills.json';
 const FRONTMATTER_READ_BYTES = 16 * 1024;
+const INTERNAL_SKILL_NAMES = new Set(['project-requirements', 'project-requirements-md']);
 
 function parseArrayText(value) {
   const inner = value.slice(1, -1).trim();
@@ -118,7 +119,13 @@ function resolveSkillIndexMode(metadata = {}, source = '') {
 
 export function isSkillIndexEligible(command) {
   if (command?.metadata?.type !== 'skill') return false;
+  if (INTERNAL_SKILL_NAMES.has(String(command?.name || ''))) return false;
   return resolveSkillIndexMode(command.metadata, command.source) !== 'manual';
+}
+
+export function isUserInvocableSkill(command) {
+  return command?.metadata?.type === 'skill' &&
+    !INTERNAL_SKILL_NAMES.has(String(command?.name || ''));
 }
 
 function catalogMetadata(catalog, name) {
@@ -486,4 +493,28 @@ export function renderCommandPrompt(command, args) {
     content = `${content}\n\n[User task]\n${args.join(' ')}`;
   }
   return `[Executing ${command.metadata.type === 'skill' ? 'skill' : 'command'}: /${command.name}]\n\n${content}`;
+}
+
+export function composeExplicitSkillPrompt(commands, names, question, { isEnabled } = {}) {
+  const selected = [];
+  for (const name of names || []) {
+    const command = commands?.get?.(name);
+    if (!command || !isUserInvocableSkill(command)) {
+      return { error: `Unknown or unavailable skill: ${name}` };
+    }
+    if (typeof isEnabled === 'function' && !isEnabled(command)) {
+      return { error: `Skill is disabled: ${name}` };
+    }
+    selected.push(command);
+  }
+  const task = String(question || '').trim();
+  if (selected.length === 0) return { error: 'skill:[...] requires at least one skill name.' };
+  if (!task) return { error: 'skill:[...] requires a question after the closing bracket.' };
+  const prompt = [
+    '[Explicit skill composition]',
+    'Apply every selected skill. Preserve declaration order. If instructions conflict, explain the conflict instead of silently overriding one skill.',
+    ...selected.map((command) => renderCommandPrompt(command, [])),
+    `[User task]\n${task}`
+  ].join('\n\n');
+  return { prompt, selected };
 }

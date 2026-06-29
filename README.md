@@ -197,7 +197,7 @@ Invoke any enabled skill as a slash command inside a session, or pass the slash 
 /plan auto add OAuth refresh-token rotation
 
 # One-off invocation from your shell
-codemini '/brainstorming compare SQLite, Postgres, and DuckDB for local analytics'
+codemini 'skill:[brainstorming] compare SQLite, Postgres, and DuckDB for local analytics'
 codemini '/project-requirements generate a CodeWiki report for this repository'
 ```
 
@@ -242,7 +242,7 @@ Typical reflect loop:
 /yes
 
 # 3. Codemini writes .codemini/skills/provider-tool-call-recovery/SKILL.md
-#    and immediately exposes it as a slash skill.
+#    and immediately exposes it through skill:[skill-name] <question>.
 /provider-tool-call-recovery fix the same issue in the Anthropic adapter
 
 # 4. The same skill can also be launched directly from the shell.
@@ -492,7 +492,7 @@ codemini skill reindex
 /plan auto 设计 OAuth refresh-token 轮换方案
 
 # 从 shell 一次性调用
-codemini '/brainstorming 比较 SQLite、Postgres 和 DuckDB 做本地分析的取舍'
+codemini 'skill:[brainstorming] 比较 SQLite、Postgres 和 DuckDB 做本地分析的取舍'
 codemini '/project-requirements 为当前仓库生成一份 CodeWiki 报告'
 ```
 
@@ -537,7 +537,7 @@ Inbox 本质上是临时噪声层。Dream 循环决定哪些内容值得晋升�
 /yes
 
 # 3. Codemini 写入 .codemini/skills/provider-tool-call-recovery/SKILL.md
-#    并立即暴露为 slash skill。
+#    并立即通过 skill:[skill-name] <问题> 显式调用。
 /provider-tool-call-recovery 把同类问题修到 Anthropic adapter
 
 # 4. 也可以从 shell 直接一次性启动这个 skill。
