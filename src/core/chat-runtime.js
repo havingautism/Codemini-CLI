@@ -4078,11 +4078,23 @@ function isRejectPlanText(text = '') {
   return /^(\/reject|reject|no|discard|cancel|否决|拒绝|不要了|取消计划)$/.test(value);
 }
 
-function shouldPersistInputHistory(parsedInput) {
+export function shouldPersistInputHistory(parsedInput) {
   if (!parsedInput || parsedInput.type !== 'slash') return true;
   const command = String(parsedInput.command || '').trim().toLowerCase();
   // Keep workflow/control commands out of input history (↑/↓ should focus on real task prompts).
-  return !['yes', 'no', 'edit', 'reject', 'plan', 'spec', 'reflect'].includes(command);
+  return ![
+    'yes',
+    'no',
+    'edit',
+    'reject',
+    'plan',
+    'spec',
+    'dream',
+    'compact',
+    'capture',
+    'inbox',
+    'reflect'
+  ].includes(command);
 }
 
 const NO_ARG_SLASH_COMMANDS = new Set(['exit', 'new', 'help', 'status', 'commands']);

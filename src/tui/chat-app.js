@@ -984,6 +984,19 @@ export function isCommandDirectiveInput(value) {
   return Boolean(match && String(match[1] || '').trim());
 }
 
+function parseCommandDirectiveName(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/^command:\[([^\]]+)\]\s*[\s\S]*$/i);
+  return match ? String(match[1] || '').trim() : '';
+}
+
+export function formatPendingQueueLine(item) {
+  const line = typeof item === 'string' ? item : item?.line;
+  const command = parseCommandDirectiveName(line);
+  if (command) return `command: ${command}`;
+  return String(line || '');
+}
+
 export function buildUiMessagesFromSessionHistory(sessionMessages, nextId) {
   const source = Array.isArray(sessionMessages) ? sessionMessages : [];
   const out = [];
@@ -3117,7 +3130,7 @@ function PendingPanel({ pendingQueue, copy }) {
     ...pendingQueue
       .slice(0, 3)
       .map((p, idx) =>
-        h(Text, { key: `pending-${idx}`, color: 'cyan' }, `- ${typeof p === 'string' ? p : p.line}`)
+        h(Text, { key: `pending-${idx}`, color: 'cyan' }, `- ${formatPendingQueueLine(p)}`)
       )
   );
 }
@@ -5140,7 +5153,10 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
         return;
       }
 
-      setHistory((prev) => [...prev, line]);
+      const showUserMessage = !isCommandDirectiveInput(line);
+      if (showUserMessage) {
+        setHistory((prev) => [...prev, line]);
+      }
       setHistoryIndex(null);
       setDraftBeforeHistory('');
       setHistoryMatches([]);
@@ -5149,7 +5165,6 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
       const immediateLocal =
         typeof runtime.isImmediateLocalInput === 'function' &&
         runtime.isImmediateLocalInput(line);
-      const showUserMessage = !isCommandDirectiveInput(line);
       const pendingUserMeta = getPendingUserMessageMeta(copy, {
         immediateLocal,
         inFlight: inFlightRef.current
