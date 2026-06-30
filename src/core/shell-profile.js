@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { getSearchToolHint, resolveSearchToolContext } from './provider/search-tool-registry.js';
 
 const DEFAULT_SHELL = process.platform === 'win32' ? 'powershell' : 'bash';
 
@@ -288,14 +289,18 @@ const SUB_AGENT_TOOL_HINTS = {
   web_search: '- web_search: search the web for external information'
 };
 
-export function buildSubAgentShellRulesPrompt(allowedTools = [], { shell, workspaceRoot = process.cwd(), role = '' } = {}) {
+export function buildSubAgentShellRulesPrompt(allowedTools = [], { shell, workspaceRoot = process.cwd(), role = '', config = {} } = {}) {
   const profile = getShellProfile(shell);
   const allowed = uniqueStrings(Array.isArray(allowedTools) ? allowedTools : []);
+  const searchCtx = resolveSearchToolContext(config);
   const toolList = allowed.join(', ') || 'none';
   const hintLines = allowed
     .map((name) => {
       if (name === 'run' && ['coder', 'refactorer', 'writer'].includes(role)) {
         return '- run: only for commands required to complete the edit itself (for example code generation). Do not use run for tests, builds, installs, or dev servers unless the step task explicitly requires it';
+      }
+      if (searchCtx.toolId && name === searchCtx.toolId) {
+        return getSearchToolHint(config);
       }
       return SUB_AGENT_TOOL_HINTS[name];
     })

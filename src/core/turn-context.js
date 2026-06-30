@@ -1,20 +1,22 @@
 import { formatLocalDate } from './command-loader.js';
+import { getSearchTurnContextLine } from './provider/search-tool-registry.js';
 
 export function buildTurnContextPrefix(config = {}, date = new Date()) {
   const today = formatLocalDate(date);
   const en = String(config?.ui?.reply_language || '').toLowerCase() === 'en';
+  const searchLine = getSearchTurnContextLine(config, { language: en ? 'en' : 'zh' });
   if (en) {
     return [
       '<runtime>',
       `Today's date (local): ${today}`,
-      'When using web_search or judging news, releases, and other time-sensitive facts, treat this as the current date unless the user says otherwise.',
+      searchLine,
       '</runtime>'
     ].join('\n');
   }
   return [
     '<runtime>',
     `当前日期（本地）：${today}`,
-    '使用 web_search 或判断新闻、版本发布等时效性信息时，除非用户另有说明，请以此为准。',
+    searchLine,
     '</runtime>'
   ].join('\n');
 }

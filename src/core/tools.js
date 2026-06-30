@@ -56,6 +56,11 @@ import { normalizeTodos } from "./todo-state.js";
 import { normalizeAssumptionItems } from "./tool-args-helpers.js";
 import { createFffAdapter } from "./fff-adapter.js";
 import {
+  buildSearchDeferredEntries,
+  buildSearchFormatters,
+  buildSearchHandlers
+} from "./provider/search-tool-registry.js";
+import {
   isSkillIndexEligible,
   loadIndexedSkills,
   renderCommandPrompt,
@@ -4726,39 +4731,6 @@ export function getBuiltinTools({
         },
       },
     },
-    web_search: {
-      type: "function",
-      function: {
-        name: "web_search",
-        description:
-          "Run a live web search. Defaults to no-API Bing RSS, or uses config.web.search_provider=tavily|exa when configured with an API key. This tool respects config.web.search_enabled and will fail when network search is disabled.",
-        parameters: {
-          type: "object",
-          properties: {
-            query: { type: "string", description: "Search query" },
-            q: { type: "string", description: "Alias for query" },
-            max_results: {
-              type: "number",
-              description: "Max results to return",
-            },
-            locale: {
-              type: "string",
-              description: "Bing market and language such as en-US or zh-CN",
-            },
-            region: {
-              type: "string",
-              description: "Bing country code such as US or CN",
-            },
-            provider: {
-              type: "string",
-              description:
-                "Optional search provider override: bing_rss, tavily, or exa",
-            },
-          },
-          required: ["query"],
-        },
-      },
-    },
     save_memory: {
       type: "function",
       function: {
@@ -4904,6 +4876,11 @@ export function getBuiltinTools({
         },
       },
     },
+  };
+
+  const deferredToolCatalog = {
+    ...deferredDefinitions,
+    ...buildSearchDeferredEntries(config)
   };
 
   const enableCodeWikiCommentTools =
@@ -5501,7 +5478,6 @@ export function getBuiltinTools({
       return readAstNode(workspaceRoot, { ...args, ast_target: astTarget });
     },
     web_fetch: (args) => webFetchPage(args),
-    web_search: (args) => webSearchQuery(config, args),
     add_code_comment: async (args) => {
       await ensureProjectIndex();
       const commentPath = normalizeFilePathValue(
@@ -6020,18 +5996,18 @@ export function getBuiltinTools({
         .trim()
         .toLowerCase();
       if (query === "all") {
-        const all = Object.values(deferredDefinitions);
+        const all = Object.values(deferredToolCatalog);
         return {
-          loaded: Object.keys(deferredDefinitions),
+          loaded: Object.keys(deferredToolCatalog),
           schemas: all,
           message: `Loaded all ${all.length} deferred tools. You can now call them directly.`,
         };
       }
-      const match = Object.entries(deferredDefinitions).find(
+      const match = Object.entries(deferredToolCatalog).find(
         ([name]) => name === query,
       );
       if (!match) {
-        const available = Object.keys(deferredDefinitions).join(", ");
+        const available = Object.keys(deferredToolCatalog).join(", ");
         return {
           error: `Unknown tool: "${query}". Available deferred tools: ${available}`,
         };
@@ -6549,43 +6525,6 @@ export function getBuiltinTools({
       return lines.join("\n");
     },
 
-    web_search(result) {
-      if (!result || typeof result !== "object") return String(result);
-      const lines = [
-        result.query ? `[web_search: "${result.query}"]` : "[web_search]",
-      ];
-      if (!Array.isArray(result.results) || result.results.length === 0) {
-        lines.push(
-          result.no_results
-            ? "No results found."
-            : "No search results returned.",
-        );
-        return lines.join("\n");
-      }
-      for (const item of result.results.slice(0, 8)) {
-        lines.push(`- ${item.title || item.url}`);
-        if (item.url) lines.push(`  ${item.url}`);
-        if (item.description)
-          lines.push(`  ${trimPreview(item.description, 180)}`);
-        if (Array.isArray(item.images) && item.images.length) {
-          lines.push(
-            ...item.images.slice(0, 2).map((image) =>
-              `  image: ![${trimPreview(image.description || "Image", 80)}](${image.url})`,
-            ),
-          );
-        }
-      }
-      if (Array.isArray(result.images) && result.images.length) {
-        lines.push("Images:");
-        for (const image of result.images.slice(0, 6)) {
-          lines.push(
-            `- ![${trimPreview(image.description || "Image", 100)}](${image.url})`,
-          );
-        }
-      }
-      return lines.join("\n");
-    },
-
     list_background_tasks(result) {
       if (!result || typeof result !== "object") return String(result);
       if (!Array.isArray(result.tasks)) return JSON.stringify(result);
@@ -6615,8 +6554,18 @@ export function getBuiltinTools({
     },
   };
 
+  Object.assign(
+    handlers,
+    buildSearchHandlers(config, {
+      webSearchHandler: (args) => webSearchQuery(config, args)
+    })
+  );
+
   const formatters = Object.fromEntries(
-    Object.entries(rawFormatters).map(([name, formatter]) => [
+    Object.entries({
+      ...rawFormatters,
+      ...buildSearchFormatters(config)
+    }).map(([name, formatter]) => [
       name,
       (result, args) =>
         sanitizeTextForModel(
@@ -6634,5 +6583,5 @@ export function getBuiltinTools({
     }
   }
 
-  return { definitions, handlers, formatters, deferredDefinitions, dispose };
+  return { definitions, handlers, formatters, deferredDefinitions: deferredToolCatalog, dispose };
 }

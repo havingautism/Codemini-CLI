@@ -245,7 +245,7 @@ function normalizeToolChoice(toolChoice) {
   return 'auto';
 }
 
-function buildPayload({ model, temperature, messages, tools, stream = false, toolChoice }) {
+function buildPayload({ model, temperature, messages, tools, stream = false, toolChoice, payloadExtras }) {
   const sanitizedMessages = sanitizeGatewayMessages(messages);
   const payload = {
     model,
@@ -267,6 +267,12 @@ function buildPayload({ model, temperature, messages, tools, stream = false, too
   if (isMiniMaxModel(model)) {
     payload.extra_body = { reasoning_split: true };
   }
+  if (payloadExtras && typeof payloadExtras === 'object') {
+    Object.assign(payload, payloadExtras);
+  }
+  // #region debug log
+  fetch('http://127.0.0.1:7297/ingest/2e8bd74e-c749-4436-b14a-f4e50eefd59c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ce94d4'},body:JSON.stringify({sessionId:'ce94d4',location:'openai-compatible.js:buildPayload',message:'final payload',data:{model,hasThinking:!!payload.thinking,thinkingValue:payload.thinking,hasPayloadExtras:!!payloadExtras,payloadExtrasKeys:payloadExtras?Object.keys(payloadExtras):[],toolTypes:(payload.tools||[]).map((t)=>({name:t?.function?.name,type:t?.type})),payloadKeys:Object.keys(payload)},timestamp:Date.now(),hypothesisId:'E'})}).catch(()=>{});
+  // #endregion
   return payload;
 }
 
@@ -381,10 +387,11 @@ export async function createChatCompletion({
   temperature = 0.2,
   tools,
   toolChoice,
+  payloadExtras,
   timeoutMs = 1800000,
   maxRetries = 2
 }) {
-  const payload = buildPayload({ model, temperature, messages, tools, toolChoice });
+  const payload = buildPayload({ model, temperature, messages, tools, toolChoice, payloadExtras });
   const response = await fetchWithRetry(buildChatCompletionsUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
@@ -435,6 +442,7 @@ export async function createChatCompletionStream({
   temperature = 0.2,
   tools,
   toolChoice,
+  payloadExtras,
   onTextDelta,
   onReasoningDelta,
   onToolCallDelta,
@@ -455,7 +463,7 @@ export async function createChatCompletionStream({
     }
   }
   const url = buildChatCompletionsUrl(baseUrl);
-  const payload = buildPayload({ model, temperature, messages, tools, stream: true, toolChoice });
+  const payload = buildPayload({ model, temperature, messages, tools, stream: true, toolChoice, payloadExtras });
   const buildRequest = (bodyPayload) => ({
     method: 'POST',
     headers: createHeaders(apiKey),

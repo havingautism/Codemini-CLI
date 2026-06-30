@@ -14,6 +14,7 @@ export const TOOL_DISPLAY_LABELS = {
   read_ast_node: 'Read AST Node',
   web_fetch: 'Web Fetch',
   web_search: 'Web Search',
+  '$web_search': 'Web Search',
   list_background_tasks: 'List Background Tasks',
   get_background_task: 'Get Background Task',
   stop_background_task: 'Stop Background Task',
@@ -106,9 +107,10 @@ export function formatToolDisplayName(name, args = {}) {
     const url = trimInline(args?.url || args?.href || '', 96);
     return url ? formatToolWithArg(formatToolLabel('web_fetch'), url) : formatToolLabel('web_fetch');
   }
-  if (toolName === 'web_search') {
+  if (toolName === 'web_search' || toolName === '$web_search') {
     const query = trimInline(args?.query || args?.q || '', 96);
-    return query ? formatToolWithArg(formatToolLabel('web_search'), query) : formatToolLabel('web_search');
+    const label = formatToolLabel(toolName === '$web_search' ? '$web_search' : 'web_search');
+    return query ? formatToolWithArg(label, query) : label;
   }
   if (toolName === 'skill') {
     const name = trimInline(args?.name || args?.skill || '', 96);

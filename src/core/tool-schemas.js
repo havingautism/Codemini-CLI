@@ -141,7 +141,8 @@ const TOOL_SCHEMAS = {
   apply_patch: applyPatchArgsSchema,
   delete: deleteArgsSchema,
   web_fetch: webFetchArgsSchema,
-  web_search: webSearchArgsSchema
+  web_search: webSearchArgsSchema,
+  '$web_search': z.object({}).passthrough()
 };
 
 function prepareToolSource(args, rawArguments) {
@@ -253,7 +254,7 @@ export function normalizeToolArguments(toolName, args, rawArguments) {
   if (toolName === 'apply_patch') {
     return schema.parse(source);
   }
-  if (toolName === 'web_fetch' || toolName === 'web_search') {
+  if (toolName === 'web_fetch' || toolName === 'web_search' || toolName === '$web_search') {
     return schema.parse(source);
   }
 

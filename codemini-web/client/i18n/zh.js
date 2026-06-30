@@ -249,8 +249,9 @@ export const zh = {
   webSearchProvider: "搜索提供方",
   webSearchProviderBingRss: "Bing RSS（无需 API Key）",
   webSearchProviderTavily: "Tavily（推荐）",
+  webSearchProviderBuiltin: "模型内置",
   webSearchProviderHelp:
-    "Bing RSS 无需 API Key。Tavily 推荐使用，并可返回图片候选。Tavily 和 Exa 需要搜索 API Key，或使用对应环境变量。",
+    "Bing RSS 无需 API Key。Tavily 推荐使用，并可返回图片候选。Tavily 和 Exa 需要搜索 API Key，或使用对应环境变量。模型内置使用当前模型网关的搜索能力（如 Kimi）。",
   tavilyApiKey: "Tavily API Key",
   tavilyApiKeyPlaceholder: "Tavily 需要填写",
   tavilyApiKeyHelp:

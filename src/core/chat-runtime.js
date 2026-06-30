@@ -69,6 +69,11 @@ import {
   undoGitOplogChanges
 } from './git-oplog-change-tracker.js';
 import { createNonGitBackupManager } from './non-git-backup.js';
+import {
+  assertSearchConfig,
+  normalizeToolPolicy,
+  resolveGatewayPayloadExtras
+} from './provider/search-tool-registry.js';
 
 const STREAM_SAVE_DEBOUNCE_MS = 120;
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -543,7 +548,7 @@ function getCompletionCopy(language = 'zh') {
         'context.project_instructions_enabled': '可选：true | false',
         'context.project_instructions_max_chars': '建议：8000-12000',
         'web.search_enabled': '可选：true | false',
-        'web.search_provider': '可选：bing_rss | tavily | exa',
+        'web.search_provider': '可选：bing_rss | tavily | exa | builtin',
         'web.tavily_api_key': '也可用环境变量 TAVILY_API_KEY',
         'web.exa_api_key': '也可用环境变量 EXA_API_KEY'
       },
@@ -663,7 +668,7 @@ function getCompletionCopy(language = 'zh') {
         'context.project_instructions_enabled': 'options: true | false',
         'context.project_instructions_max_chars': 'recommended: 8000-12000',
         'web.search_enabled': 'options: true | false',
-        'web.search_provider': 'options: bing_rss | tavily | exa',
+        'web.search_provider': 'options: bing_rss | tavily | exa | builtin',
         'web.tavily_api_key': 'environment variable TAVILY_API_KEY also works',
         'web.exa_api_key': 'environment variable EXA_API_KEY also works'
       },
@@ -763,12 +768,12 @@ function displayExecutionMode(mode) {
   return normalizeExecutionMode(mode) === 'plan' ? 'code' : 'normal';
 }
 
-function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools) {
+function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools, config) {
   const mode = normalizeExecutionMode(executionMode);
-  const modePolicy = EXECUTION_MODE_TOOL_POLICY[mode];
-  if (!modePolicy) return callerAllowedTools;
+  const modePolicy = normalizeToolPolicy(EXECUTION_MODE_TOOL_POLICY[mode] || [], config);
+  if (!modePolicy.length) return callerAllowedTools;
   if (Array.isArray(callerAllowedTools)) {
-    return callerAllowedTools.filter((name) => modePolicy.includes(name));
+    return normalizeToolPolicy(callerAllowedTools, config).filter((name) => modePolicy.includes(name));
   }
   return modePolicy;
 }
@@ -4698,7 +4703,7 @@ async function askModel({
   const baseDeferredDefinitions = exposeUpdatePlan
     ? deferredDefinitions
     : Object.fromEntries(Object.entries(deferredDefinitions).filter(([name]) => name !== 'update_plan'));
-  const modeAllowedTools = resolveExecutionModeAllowedTools(normalizedExecutionMode, allowedTools);
+  const modeAllowedTools = resolveExecutionModeAllowedTools(normalizedExecutionMode, allowedTools, config);
   const filteredDefinitions = Array.isArray(modeAllowedTools)
     ? baseDefinitions.filter((t) => modeAllowedTools.includes(t.function?.name || t.name))
     : baseDefinitions;
@@ -5000,6 +5005,7 @@ async function askModel({
         model: selectedModel,
         messages,
         tools,
+        payloadExtras: resolveGatewayPayloadExtras(config, { tools }),
         timeoutMs: config.gateway.timeout_ms || 1800000,
         maxRetries: config.gateway.max_retries ?? 2,
         signal,
@@ -5125,11 +5131,12 @@ async function runSubAgentTask({
     }
     if (onAgentEvent) onAgentEvent(evt);
   };
-  const roleAllowedTools = ROLE_TOOL_POLICY[role] || ROLE_TOOL_POLICY.coder;
+  const roleAllowedTools = normalizeToolPolicy(ROLE_TOOL_POLICY[role] || ROLE_TOOL_POLICY.coder, config);
   const subShellRulesPrompt = buildSubAgentShellRulesPrompt(roleAllowedTools, {
     shell: config?.shell?.default,
     workspaceRoot: process.cwd(),
-    role
+    role,
+    config
   });
   if (onSessionActive) onSessionActive(subSession);
   const subSystemPrompt = await composeSystemPrompt({
@@ -6826,6 +6833,7 @@ export async function createChatRuntime({
   systemPrompt,
   requestToolApproval
 }) {
+  assertSearchConfig(initialConfig);
   if (session && typeof session === 'object' && !session.projectDir) {
     session.projectDir = process.cwd();
   }

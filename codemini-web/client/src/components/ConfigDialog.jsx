@@ -166,16 +166,18 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
         {
           path: "web.search_provider",
           label: t("webSearchProvider"),
-          options: ["bing_rss", "tavily", "exa"],
+          options: ["bing_rss", "tavily", "exa", "builtin"],
           optionLabels: {
             bing_rss: t("webSearchProviderBingRss"),
             tavily: t("webSearchProviderTavily"),
             exa: "Exa",
+            builtin: t("webSearchProviderBuiltin"),
           },
           optionLogos: {
             bing_rss: "/logos/microsoft-color.svg",
             tavily: "/logos/tavily-color.svg",
             exa: "/logos/exa-color.svg",
+            builtin: "/logos/kimi-color.svg",
           },
           help: t("webSearchProviderHelp"),
         },

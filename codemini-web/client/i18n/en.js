@@ -249,8 +249,9 @@ export const en = {
   webSearchProvider: "Search Provider",
   webSearchProviderBingRss: "Bing RSS (no API key)",
   webSearchProviderTavily: "Tavily (Recommended)",
+  webSearchProviderBuiltin: "Model builtin",
   webSearchProviderHelp:
-    "Bing RSS works without an API key. Tavily is recommended and can return image candidates. Tavily and Exa require a search API key or matching environment variable.",
+    "Bing RSS works without an API key. Tavily is recommended and can return image candidates. Tavily and Exa require a search API key or matching environment variable. Model builtin uses the current model gateway for search when supported (e.g. Kimi).",
   tavilyApiKey: "Tavily API Key",
   tavilyApiKeyPlaceholder: "Required for Tavily",
   tavilyApiKeyHelp:

@@ -2,16 +2,18 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getShellSystemPrompt } from './shell-profile.js';
+import { getSearchFewShotBlock } from './provider/search-tool-registry.js';
 
 function formatToolPath(...segments) {
   return JSON.stringify(path.join(process.cwd(), ...segments));
 }
 
-function getToolFewShotBlock() {
+function getToolFewShotBlock(config = {}) {
   const cwd = process.cwd();
   const authServicePath = formatToolPath('src', 'auth', 'service.ts');
   const reducerRangePath = JSON.stringify(`${path.join(cwd, 'src', 'store', 'reducer.ts')}:110-150`);
   const notesPath = formatToolPath('notes.txt');
+  const searchFewShot = getSearchFewShotBlock(config);
   return `# Tool Examples
 
 Use these as style examples for tool calls:
@@ -88,12 +90,7 @@ Assistant: load the web fetch tool and read the page directly
 Tool: tool_search({"query":"web_fetch"})
 Tool: web_fetch({"url":"https://example.com/docs"})
 
-9. Search the web
-User: search the web for latest pnpm release
-Assistant: load the web search tool and run a targeted search
-Tool: tool_search({"query":"web_search"})
-Tool: web_search({"query":"latest pnpm release","max_results":5})
-If web_search returns direct image URLs, select the most relevant ones and embed only those chosen images in the final answer with Markdown image syntax: ![description](https://example.com/image.jpg)
+${searchFewShot || ''}
 
 Prefer these direct tool shapes over multi-step metadata reads or shell fallbacks.
 Prefer explicit absolute path values when the current working directory is known.`;
@@ -125,7 +122,7 @@ function normalizePromptBlocks(blocks) {
 export function buildDefaultSystemPrompt(config = {}, options = {}) {
   return [
     getShellSystemPrompt(config?.shell?.default),
-    getToolFewShotBlock(),
+    getToolFewShotBlock(config),
     getEnvBlock(),
     ...normalizePromptBlocks(options.extraPrompts)
   ].filter(Boolean).join('\n\n');
