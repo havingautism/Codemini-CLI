@@ -1,3 +1,5 @@
+import { isKimiModelName } from './kimi-gateway.js';
+
 function extractTextContent(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -124,6 +126,10 @@ function isMiniMaxModel(model) {
   return String(model || '').toLowerCase().includes('minimax');
 }
 
+function isKimiModel(model) {
+  return isKimiModelName(model);
+}
+
 function normalizeToolCallArguments(argumentsText) {
   const raw = typeof argumentsText === 'string' ? argumentsText : JSON.stringify(argumentsText ?? {});
   try {
@@ -243,9 +249,13 @@ function buildPayload({ model, temperature, messages, tools, stream = false, too
   const sanitizedMessages = sanitizeGatewayMessages(messages);
   const payload = {
     model,
-    temperature,
     messages: isMiniMaxModel(model) ? sanitizeMiniMaxMessages(sanitizedMessages) : sanitizedMessages
   };
+  if (isKimiModel(model)) {
+    // K2.x locks sampling params to server defaults by thinking mode — omit temperature.
+  } else {
+    payload.temperature = temperature;
+  }
   if (stream) {
     payload.stream = true;
     payload.stream_options = { include_usage: true };
