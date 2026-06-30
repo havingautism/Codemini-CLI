@@ -295,10 +295,10 @@ export const en = {
     "How many of the most recent tool results to keep intact during micro-compact.",
   aggressiveToolPruneBeta: "Aggressive Tool Prune (Beta)",
   aggressiveToolPruneBetaHelp:
-    "Experimental: before each model call, replace older tool result bodies with structured summaries while keeping only the most recent results intact. May reduce token use on long tasks with minimal impact on reasoning quality. Recommended for models with strong reasoning ability.",
-  aggressiveToolPruneKeepRecent: "Aggressive Prune Keep Recent",
+    "Experimental: before each model call, replace older tool result bodies with structured summaries while keeping only the most recent steps intact (parallel tool calls within a step are grouped together). May reduce token use on long tasks with minimal impact on reasoning quality. Recommended for models with strong reasoning ability.",
+  aggressiveToolPruneKeepRecent: "Aggressive Prune Keep Recent Steps",
   aggressiveToolPruneKeepRecentHelp:
-    "When aggressive prune (beta) is enabled, how many of the most recent tool results to keep in full.",
+    "When aggressive prune (beta) is enabled, how many of the most recent agent steps to keep intact (parallel tool calls within a step are kept or pruned together).",
   projectContextEnabled: "Project Index Context",
   projectContextEnabledHelp:
     "Loads the project AST map and file index (.codemini/project-map.json, file-index.json) into the model context each turn for lightweight navigation.",

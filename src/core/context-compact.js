@@ -338,12 +338,79 @@ Include:
 Write in the same language as the conversation. Be concise but do not omit important details.`;
 
 /**
+ * Group tool results by their parent assistant message (step boundary).
+ * Returns the Set of tool-result indices to KEEP, or null if pruning
+ * shouldn't trigger yet (not enough steps).
+ *
+ * Each assistant message with tool_calls defines a "step". All tool results
+ * belonging to the same step are kept or pruned together as a group, so
+ * parallel tool calls within the same step are preserved atomically.
+ */
+function computeStepKeepSet(messages, toolIndices, keepRecent, triggerExtra) {
+  // Map tool_call_id → step number (1-based, by assistant message position)
+  const toolCallStep = new Map();
+  let stepNum = 0;
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+      stepNum++;
+      for (const call of msg.tool_calls) {
+        const id = String(call?.id || '').trim();
+        if (id) toolCallStep.set(id, stepNum);
+      }
+    }
+  }
+
+  // Assign each tool result to its step group
+  // Also track orphans (no matching assistant) — always keep those
+  const stepIndices = new Map(); // stepNum → [tool message indices]
+  const orphans = [];
+  for (const idx of toolIndices) {
+    const id = String(messages[idx]?.tool_call_id || '').trim();
+    const step = toolCallStep.get(id);
+    if (step) {
+      if (!stepIndices.has(step)) stepIndices.set(step, []);
+      stepIndices.get(step).push(idx);
+    } else {
+      orphans.push(idx);
+    }
+  }
+
+  const totalSteps = stepIndices.size;
+
+  // Trigger: prune only when step count exceeds keepRecent + triggerExtra
+  if (totalSteps <= keepRecent + Math.max(0, Number(triggerExtra || 0))) {
+    return null;
+  }
+
+  // Keep the last keepRecent steps — all their tool results stay intact
+  const sortedSteps = [...stepIndices.keys()].sort((a, b) => a - b);
+  const keepSteps = new Set(sortedSteps.slice(-keepRecent));
+
+  const keepSet = new Set();
+  for (const [step, indices] of stepIndices) {
+    if (keepSteps.has(step)) {
+      for (const idx of indices) keepSet.add(idx);
+    }
+  }
+  // Always keep orphans (tool results without a matching assistant message)
+  for (const idx of orphans) keepSet.add(idx);
+
+  return keepSet;
+}
+
+/**
  * Micro-compact: in-place clearing of old tool result content.
  * Does NOT change message count or order — only replaces tool result text
  * with a lightweight marker, preserving conversation structure.
  *
  * Strategy inspired by Claude Code's Phase 0 micro-compact:
  * keep recent N tool results intact, clear the rest.
+ *
+ * When groupByStep is true, tool results are grouped by their parent
+ * assistant message (step boundary). All tool results within the same
+ * step are kept or pruned together, so parallel tool calls are preserved
+ * atomically.
  */
 export function microCompactMessages(messages, {
   keepRecent = 5,
@@ -352,7 +419,8 @@ export function microCompactMessages(messages, {
   maxSummaryChars = 600,
   summaryTailChars,
   protectedToolNames = [],
-  triggerExtra = 0
+  triggerExtra = 0,
+  groupByStep = false
 } = {}) {
   if (!enabled || !Array.isArray(messages)) {
     return { messages: [...messages], changed: false, tokensSaved: 0 };
@@ -364,21 +432,28 @@ export function microCompactMessages(messages, {
     if (messages[i].role === 'tool') toolIndices.push(i);
   }
 
-  // Triggered: only prune once the number of tool results exceeds keepRecent
-  // plus a configurable buffer (triggerExtra). This avoids rewriting tool
-  // payloads on every step, which would invalidate cached prefixes downstream.
-  if (toolIndices.length <= keepRecent + Math.max(0, Number(triggerExtra || 0))) {
-    return { messages: [...messages], changed: false, tokensSaved: 0 };
-  }
-
-  // Indices to clear = all except the last keepRecent
-  const keepSet = new Set(toolIndices.slice(-keepRecent));
   const protectedNames = new Set(
     (Array.isArray(protectedToolNames) ? protectedToolNames : [])
       .map((name) => String(name || '').trim())
       .filter(Boolean)
   );
   const toolCallNames = protectedNames.size > 0 ? mapToolCallNames(messages) : new Map();
+
+  let keepSet;
+  if (groupByStep) {
+    keepSet = computeStepKeepSet(messages, toolIndices, keepRecent, triggerExtra);
+    if (!keepSet) return { messages: [...messages], changed: false, tokensSaved: 0 };
+  } else {
+    // Triggered: only prune once the number of tool results exceeds keepRecent
+    // plus a configurable buffer (triggerExtra). This avoids rewriting tool
+    // payloads on every step, which would invalidate cached prefixes downstream.
+    if (toolIndices.length <= keepRecent + Math.max(0, Number(triggerExtra || 0))) {
+      return { messages: [...messages], changed: false, tokensSaved: 0 };
+    }
+    // Indices to keep = last keepRecent tool results
+    keepSet = new Set(toolIndices.slice(-keepRecent));
+  }
+
   const clearSet = new Set(toolIndices.filter((idx) => {
     if (keepSet.has(idx)) return false;
     const message = messages[idx];
@@ -416,9 +491,10 @@ export function isAggressiveToolPruneBetaEnabled(config = {}) {
 
 /**
  * Beta: proactively replace older tool results with structured summaries.
- * Keeps only the most recent N tool payloads intact for exact recall, and
- * only triggers when the tool-result count exceeds keepRecent + triggerExtra
- * so cached prefixes are not invalidated on every step.
+ * Keeps only the most recent N steps intact for exact recall (parallel tool
+ * calls within a step are grouped together), and only triggers when the
+ * step count exceeds keepRecent + triggerExtra so cached prefixes are not
+ * invalidated on every step.
  */
 export function applyAggressiveToolPruneBeta(messages, config = {}) {
   if (!isAggressiveToolPruneBetaEnabled(config)) {
@@ -436,7 +512,8 @@ export function applyAggressiveToolPruneBeta(messages, config = {}) {
     maxSummaryChars: summaryHeadChars + summaryTailChars,
     summaryTailChars,
     protectedToolNames: ['skill', 'update_todos'],
-    triggerExtra
+    triggerExtra,
+    groupByStep: true
   });
 }
 

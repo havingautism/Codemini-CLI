@@ -264,7 +264,7 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
           path: "context.aggressive_tool_prune_keep_recent",
           label: t("aggressiveToolPruneKeepRecent"),
           type: "number",
-          placeholder: "2",
+          placeholder: "3",
           help: t("aggressiveToolPruneKeepRecentHelp"),
         },
         {
