@@ -202,7 +202,7 @@ function compactToolResult(result, toolName, args, maxChars = 12000) {
 const PARALLEL_SAFE_TOOLS = new Set([
   'read', 'search_code', 'grep', 'ast_grep', 'glob', 'list',
   'ast_query', 'read_ast_node',
-  'web_fetch', 'web_search', '$web_search',
+  'web_fetch', 'web_search',
   'list_background_tasks', 'get_background_task',
   'read_plan',
   'query_project_index', 'tool_search',
@@ -606,7 +606,7 @@ function normalizeToolCallName(name) {
   return String(name || '').trim();
 }
 
-const FULL_CONTEXT_TOOL_RESULTS = new Set(['skill', 'update_todos']);
+const FULL_CONTEXT_TOOL_RESULTS = new Set(['skill', 'update_todos', 'web_search']);
 
 function shouldPersistLargeToolResult(toolName) {
   return !FULL_CONTEXT_TOOL_RESULTS.has(normalizeToolCallName(toolName));

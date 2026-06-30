@@ -73,9 +73,57 @@ export function buildSearchHandlers(config, { webSearchHandler } = {}) {
   return {};
 }
 
+export function formatWebSearchResult(result) {
+  if (!result || typeof result !== 'object') return String(result ?? '');
+  const results = Array.isArray(result.results) ? result.results : [];
+  const engine = result.engine ? ` via ${result.engine}` : '';
+  const header = `[web_search: "${String(result.query || '').trim()}"${engine}]`;
+  if (result.no_results || results.length === 0) {
+    return `${header}\nNo results found.`;
+  }
+
+  const blocks = results.map((item, index) => {
+    const title = String(item?.title || item?.url || '?').trim();
+    const url = String(item?.url || '').trim();
+    const desc = String(item?.description || '').trim();
+    const hostname = String(item?.hostname || '').trim();
+    const published = String(item?.published_at || '').trim();
+    const lines = [`${index + 1}. ${title}`];
+    if (url) lines.push(`   url: ${url}`);
+    if (hostname) lines.push(`   site: ${hostname}`);
+    if (published) lines.push(`   published: ${published}`);
+    if (desc) lines.push(`   description: ${desc}`);
+    const images = Array.isArray(item?.images) ? item.images : [];
+    if (images.length) {
+      const urls = images
+        .slice(0, 3)
+        .map((img) => (typeof img === 'string' ? img : img?.url))
+        .filter(Boolean);
+      if (urls.length) lines.push(`   images: ${urls.join(', ')}`);
+    }
+    return lines.join('\n');
+  });
+
+  const topImages = Array.isArray(result.images) ? result.images : [];
+  if (topImages.length) {
+    blocks.push('');
+    blocks.push('Related images:');
+    for (const img of topImages.slice(0, 6)) {
+      const url = typeof img === 'string' ? img : img?.url;
+      if (!url) continue;
+      const desc = typeof img === 'object' ? String(img.description || '').trim() : '';
+      blocks.push(desc ? `- ${url} (${desc})` : `- ${url}`);
+    }
+  }
+
+  return `${header}\n${blocks.join('\n\n')}`;
+}
+
 export function buildSearchFormatters(config) {
   resolveSearchToolContext(config);
-  return {};
+  return {
+    web_search: formatWebSearchResult
+  };
 }
 
 export function resolveGatewayPayloadExtras(config, { tools } = {}) {

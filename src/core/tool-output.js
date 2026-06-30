@@ -46,7 +46,13 @@ export function sanitizeTextForModel(
 
 export function getToolOutputSanitizeOptions(toolName) {
   const name = String(toolName || '').trim();
-  if (name === 'read' || name === 'read_ast_node' || name === 'run' || name === 'web_fetch') {
+  if (
+    name === 'read'
+    || name === 'read_ast_node'
+    || name === 'run'
+    || name === 'web_fetch'
+    || name === 'web_search'
+  ) {
     return {
       maxLineLength: 0
     };
