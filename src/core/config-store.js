@@ -4,6 +4,7 @@ import { getConfigFilePath, getLegacyConfigDir } from './paths.js';
 import { normalizeReplyLanguage } from './reply-language.js';
 import { normalizeShellName } from './shell-profile.js';
 import { MEMORY_ALWAYS_ALLOW_TOOLS } from './constants.js';
+import { normalizeReasoningEffort } from './provider/reasoning-effort.js';
 
 function normalizeUiLanguage(value) {
   const raw = String(value || '').trim().toLowerCase();
@@ -26,6 +27,8 @@ const DEFAULT_CONFIG = {
   model: {
     name: 'gpt-4.1-mini',
     fast_name: '',
+    reasoning_enabled: true,
+    reasoning_effort: 'auto',
     max_context_tokens: 202752
   },
   context: {
@@ -170,6 +173,11 @@ function normalizePolicyLists(config) {
   }
   next.model.name = String(next.model.name || DEFAULT_CONFIG.model.name).trim() || DEFAULT_CONFIG.model.name;
   next.model.fast_name = String(next.model.fast_name || '').trim();
+  const legacyReasoningOff = String(next.model.reasoning_effort || '').trim().toLowerCase() === 'off';
+  next.model.reasoning_enabled = legacyReasoningOff
+    ? false
+    : next.model.reasoning_enabled !== false && next.model.reasoning_enabled !== 'false';
+  next.model.reasoning_effort = normalizeReasoningEffort(next.model.reasoning_effort);
   const rawExecutionMode = String(next.execution.mode || '').toLowerCase();
   const rawApprovalMode = String(next.execution.approval_mode || '').toLowerCase().replace(/-/g, '_');
   next.execution.mode = rawExecutionMode === 'spec'
@@ -240,7 +248,7 @@ function normalizePolicyLists(config) {
   next.web = next.web || {};
   next.web.search_enabled = next.web.search_enabled !== false;
   const rawSearchProvider = String(next.web.search_provider || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
-  next.web.search_provider = ['bing_rss', 'bing', 'tavily', 'exa', 'builtin'].includes(rawSearchProvider)
+  next.web.search_provider = ['bing_rss', 'bing', 'tavily', 'exa'].includes(rawSearchProvider)
     ? (rawSearchProvider === 'bing' ? 'bing_rss' : rawSearchProvider)
     : 'bing_rss';
   next.web.search_api_key = String(next.web.search_api_key || '').trim();

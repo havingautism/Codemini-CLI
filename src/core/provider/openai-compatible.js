@@ -1,4 +1,5 @@
 import { isKimiModelName } from './kimi-gateway.js';
+import { resolveOpenAICompatibleReasoning } from './reasoning-effort.js';
 
 function extractTextContent(content) {
   if (typeof content === 'string') return content;
@@ -245,7 +246,7 @@ function normalizeToolChoice(toolChoice) {
   return 'auto';
 }
 
-function buildPayload({ model, temperature, messages, tools, stream = false, toolChoice, payloadExtras }) {
+function buildPayload({ model, temperature, messages, tools, stream = false, toolChoice, payloadExtras, reasoningEffort }) {
   const sanitizedMessages = sanitizeGatewayMessages(messages);
   const payload = {
     model,
@@ -267,12 +268,10 @@ function buildPayload({ model, temperature, messages, tools, stream = false, too
   if (isMiniMaxModel(model)) {
     payload.extra_body = { reasoning_split: true };
   }
+  Object.assign(payload, resolveOpenAICompatibleReasoning({ model, effort: reasoningEffort }));
   if (payloadExtras && typeof payloadExtras === 'object') {
     Object.assign(payload, payloadExtras);
   }
-  // #region debug log
-  fetch('http://127.0.0.1:7297/ingest/2e8bd74e-c749-4436-b14a-f4e50eefd59c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ce94d4'},body:JSON.stringify({sessionId:'ce94d4',location:'openai-compatible.js:buildPayload',message:'final payload',data:{model,hasThinking:!!payload.thinking,thinkingValue:payload.thinking,hasPayloadExtras:!!payloadExtras,payloadExtrasKeys:payloadExtras?Object.keys(payloadExtras):[],toolTypes:(payload.tools||[]).map((t)=>({name:t?.function?.name,type:t?.type})),payloadKeys:Object.keys(payload)},timestamp:Date.now(),hypothesisId:'E'})}).catch(()=>{});
-  // #endregion
   return payload;
 }
 
@@ -388,10 +387,11 @@ export async function createChatCompletion({
   tools,
   toolChoice,
   payloadExtras,
+  reasoningEffort,
   timeoutMs = 1800000,
   maxRetries = 2
 }) {
-  const payload = buildPayload({ model, temperature, messages, tools, toolChoice, payloadExtras });
+  const payload = buildPayload({ model, temperature, messages, tools, toolChoice, payloadExtras, reasoningEffort });
   const response = await fetchWithRetry(buildChatCompletionsUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
@@ -443,6 +443,7 @@ export async function createChatCompletionStream({
   tools,
   toolChoice,
   payloadExtras,
+  reasoningEffort,
   onTextDelta,
   onReasoningDelta,
   onToolCallDelta,
@@ -463,7 +464,7 @@ export async function createChatCompletionStream({
     }
   }
   const url = buildChatCompletionsUrl(baseUrl);
-  const payload = buildPayload({ model, temperature, messages, tools, stream: true, toolChoice, payloadExtras });
+  const payload = buildPayload({ model, temperature, messages, tools, stream: true, toolChoice, payloadExtras, reasoningEffort });
   const buildRequest = (bodyPayload) => ({
     method: 'POST',
     headers: createHeaders(apiKey),

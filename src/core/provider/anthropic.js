@@ -1,3 +1,5 @@
+import { resolveAnthropicReasoning } from './reasoning-effort.js';
+
 function extractTextContent(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -201,14 +203,16 @@ function normalizeToolChoice(toolChoice) {
   return { type: 'auto' };
 }
 
-function buildPayload({ model, temperature, messages, tools, stream = false, maxTokens = 4096, toolChoice }) {
+function buildPayload({ model, temperature, messages, tools, stream = false, maxTokens = 4096, toolChoice, reasoningEffort }) {
   const normalized = normalizeMessages(messages);
+  const reasoning = resolveAnthropicReasoning({ model, effort: reasoningEffort, maxTokens });
   const payload = {
     model,
     max_tokens: maxTokens,
-    temperature,
     messages: normalized.messages
   };
+  if (!reasoning.thinking) payload.temperature = temperature;
+  Object.assign(payload, reasoning);
   if (normalized.system) payload.system = normalized.system;
   if (stream) payload.stream = true;
 
@@ -398,10 +402,11 @@ export async function createChatCompletion({
   temperature = 0.2,
   tools,
   toolChoice,
+  reasoningEffort,
   timeoutMs = 1800000,
   maxTokens = 4096
 }) {
-  const payload = buildPayload({ model, temperature, messages, tools, maxTokens, toolChoice });
+  const payload = buildPayload({ model, temperature, messages, tools, maxTokens, toolChoice, reasoningEffort });
   const response = await fetch(buildMessagesUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
@@ -420,6 +425,7 @@ export async function createChatCompletionStream({
   temperature = 0.2,
   tools,
   toolChoice,
+  reasoningEffort,
   onTextDelta,
   onReasoningDelta,
   onToolCallDelta,
@@ -439,7 +445,7 @@ export async function createChatCompletionStream({
       externalSignal.addEventListener('abort', onAbort, { once: true });
     }
   }
-  const payload = buildPayload({ model, temperature, messages, tools, stream: true, maxTokens, toolChoice });
+  const payload = buildPayload({ model, temperature, messages, tools, stream: true, maxTokens, toolChoice, reasoningEffort });
   const response = await fetch(buildMessagesUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),

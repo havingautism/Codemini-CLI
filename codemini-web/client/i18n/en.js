@@ -230,6 +230,16 @@ export const en = {
   fastModelHelp:
     "Cheaper or faster model for titles, compaction summaries, and other lightweight tasks. Falls back to Default Model when empty.",
   fastModelPlaceholder: "Fallback to Default Model when empty",
+  reasoningEnabled: "Thinking Mode",
+  reasoningEnabledHelp:
+    "Turn off to avoid requesting additional reasoning from the model. Turn on to choose a reasoning effort.",
+  reasoningEffort: "Reasoning Effort",
+  reasoningEffortAuto: "Auto",
+  reasoningEffortLow: "Low",
+  reasoningEffortMedium: "Medium",
+  reasoningEffortHigh: "High",
+  reasoningEffortHelp:
+    "The unified level is mapped to the current model protocol. Unsupported models receive no extra field.",
   maxContextTokens: "Max Context Tokens",
   maxContextTokensHelp:
     "Declared context window size used for token budgeting, compaction triggers, and preflight checks.",
@@ -249,9 +259,8 @@ export const en = {
   webSearchProvider: "Search Provider",
   webSearchProviderBingRss: "Bing RSS (no API key)",
   webSearchProviderTavily: "Tavily (Recommended)",
-  webSearchProviderBuiltin: "Model builtin",
   webSearchProviderHelp:
-    "Bing RSS works without an API key. Tavily is recommended and can return image candidates. Tavily and Exa require a search API key or matching environment variable. Model builtin uses the current model gateway for search when supported (e.g. Kimi).",
+    "Bing RSS works without an API key. Tavily is recommended and can return image candidates. Tavily and Exa require a search API key or matching environment variable.",
   tavilyApiKey: "Tavily API Key",
   tavilyApiKeyPlaceholder: "Required for Tavily",
   tavilyApiKeyHelp:

@@ -113,6 +113,26 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
           help: t("fastModelHelp"),
         },
         {
+          path: "model.reasoning_enabled",
+          label: t("reasoningEnabled"),
+          options: ["true", "false"],
+          help: t("reasoningEnabledHelp"),
+        },
+        {
+          path: "model.reasoning_effort",
+          label: t("reasoningEffort"),
+          options: ["auto", "low", "medium", "high"],
+          optionLabels: {
+            auto: t("reasoningEffortAuto"),
+            low: t("reasoningEffortLow"),
+            medium: t("reasoningEffortMedium"),
+            high: t("reasoningEffortHigh"),
+          },
+          help: t("reasoningEffortHelp"),
+          visibleWhen: ({ getValue }) =>
+            getValue("model.reasoning_enabled") !== "false",
+        },
+        {
           path: "model.max_context_tokens",
           label: t("maxContextTokens"),
           type: "number",
@@ -166,18 +186,16 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
         {
           path: "web.search_provider",
           label: t("webSearchProvider"),
-          options: ["bing_rss", "tavily", "exa", "builtin"],
+          options: ["bing_rss", "tavily", "exa"],
           optionLabels: {
             bing_rss: t("webSearchProviderBingRss"),
             tavily: t("webSearchProviderTavily"),
             exa: "Exa",
-            builtin: t("webSearchProviderBuiltin"),
           },
           optionLogos: {
             bing_rss: "/logos/microsoft-color.svg",
             tavily: "/logos/tavily-color.svg",
             exa: "/logos/exa-color.svg",
-            builtin: "/logos/kimi-color.svg",
           },
           help: t("webSearchProviderHelp"),
         },

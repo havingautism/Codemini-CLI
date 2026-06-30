@@ -723,9 +723,6 @@ export async function runAgentLoop({
         });
       }
     }
-    // #region debug log
-    fetch('http://127.0.0.1:7297/ingest/2e8bd74e-c749-4436-b14a-f4e50eefd59c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ce94d4'},body:JSON.stringify({sessionId:'ce94d4',location:'agent-loop.js:726',message:'before requestCompletion',data:{step,toolCount:activeTools.length,toolNames:activeTools.map((t)=>({name:t?.function?.name,type:t?.type,hasParams:!!t?.function?.parameters}))},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
-    // #endregion
     const completion = await requestCompletion({
       model,
       messages,
@@ -745,9 +742,6 @@ export async function runAgentLoop({
 
     const toolCalls = Array.isArray(completion.toolCalls) ? completion.toolCalls : [];
     const assistantText = completion.text || '';
-    // #region debug log
-    fetch('http://127.0.0.1:7297/ingest/2e8bd74e-c749-4436-b14a-f4e50eefd59c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ce94d4'},body:JSON.stringify({sessionId:'ce94d4',location:'agent-loop.js:747',message:'API response toolCalls',data:{step,toolCallNames:toolCalls.map((tc)=>tc.name),toolCallCount:toolCalls.length,textSnippet:String(assistantText||'').slice(0,200)},timestamp:Date.now(),hypothesisId:'D'})}).catch(()=>{});
-    // #endregion
     lastAssistantText = assistantText || lastAssistantText;
 
     const assistantMessage = completion?.assistantMessage
@@ -1128,16 +1122,10 @@ export async function runAgentLoop({
       if (toolName === 'tool_search' && toolResult && Array.isArray(toolResult.schemas)) {
         for (const schema of toolResult.schemas) {
           const name = schema?.function?.name;
-          // #region debug log
-          fetch('http://127.0.0.1:7297/ingest/2e8bd74e-c749-4436-b14a-f4e50eefd59c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ce94d4'},body:JSON.stringify({sessionId:'ce94d4',location:'agent-loop.js:1124',message:'P2 tool_search push',data:{name,hasFunction:!!schema?.function,type:schema?.type,hasParameters:!!schema?.function?.parameters,alreadyInActive:activeTools.some((t)=>t?.function?.name===name)},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-          // #endregion
           if (name && !activeTools.some((t) => t?.function?.name === name)) {
             activeTools.push(schema);
           }
         }
-        // #region debug log
-        fetch('http://127.0.0.1:7297/ingest/2e8bd74e-c749-4436-b14a-f4e50eefd59c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ce94d4'},body:JSON.stringify({sessionId:'ce94d4',location:'agent-loop.js:1131',message:'P2 activeTools after push',data:{toolNames:activeTools.map((t)=>({name:t?.function?.name,type:t?.type,hasParams:!!t?.function?.parameters}))},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
-        // #endregion
       }
 
       // P0: Persist to disk if still large
@@ -1208,9 +1196,6 @@ export async function runAgentLoop({
       }
 
       attachToolCallSessionMeta(assistantMessage, call.id, { durationMs: entry.durationMs, summary: entry.summary || '', status: entry.status || 'done', fileChange: entry.fileChange, fileChanges: entry.fileChanges, resultMeta: entry.resultMeta });
-      // #region debug log
-      fetch('http://127.0.0.1:7297/ingest/2e8bd74e-c749-4436-b14a-f4e50eefd59c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'ce94d4'},body:JSON.stringify({sessionId:'ce94d4',location:'agent-loop.js:toolMsg',message:'tool result message pushed',data:{toolName,hasName:!!entry.toolWireName,name:entry.toolWireName||null,contentSnippet:String(entry.content||'').slice(0,300)},timestamp:Date.now(),hypothesisId:'G'})}).catch(()=>{});
-      // #endregion
       messages.push({
         role: 'tool',
         tool_call_id: call.id,

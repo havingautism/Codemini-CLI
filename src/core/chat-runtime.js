@@ -74,6 +74,7 @@ import {
   normalizeToolPolicy,
   resolveGatewayPayloadExtras
 } from './provider/search-tool-registry.js';
+import { resolveConfiguredReasoningEffort } from './provider/reasoning-effort.js';
 
 const STREAM_SAVE_DEBOUNCE_MS = 120;
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -497,6 +498,8 @@ function getCompletionCopy(language = 'zh') {
         'gateway.max_retries': '网关重试次数',
         'model.name': '当前模型名称',
         'model.fast_name': '快速模型名称',
+        'model.reasoning_enabled': '模型思考模式',
+        'model.reasoning_effort': '模型思考强度',
         'model.max_context_tokens': '模型上下文 token 上限',
         'ui.language': '界面语言',
         'ui.reply_language': '回复语言',
@@ -533,6 +536,8 @@ function getCompletionCopy(language = 'zh') {
       },
       optionHints: {
         'sdk.provider': '可选：openai-compatible | anthropic',
+        'model.reasoning_enabled': '可选：true | false',
+        'model.reasoning_effort': '可选：auto | low | medium | high',
         'ui.language': '可选：zh | en',
         'ui.reply_language': '可选：zh | en',
         'execution.mode': '可选：normal（日常）| code（编码）',
@@ -548,7 +553,7 @@ function getCompletionCopy(language = 'zh') {
         'context.project_instructions_enabled': '可选：true | false',
         'context.project_instructions_max_chars': '建议：8000-12000',
         'web.search_enabled': '可选：true | false',
-        'web.search_provider': '可选：bing_rss | tavily | exa | builtin',
+        'web.search_provider': '可选：bing_rss | tavily | exa',
         'web.tavily_api_key': '也可用环境变量 TAVILY_API_KEY',
         'web.exa_api_key': '也可用环境变量 EXA_API_KEY'
       },
@@ -617,6 +622,8 @@ function getCompletionCopy(language = 'zh') {
         'gateway.max_retries': 'gateway retry count',
         'model.name': 'active model name',
         'model.fast_name': 'fast model name',
+        'model.reasoning_enabled': 'model thinking mode',
+        'model.reasoning_effort': 'model reasoning effort',
         'model.max_context_tokens': 'model context token limit',
         'ui.language': 'UI language',
         'ui.reply_language': 'reply language',
@@ -653,6 +660,8 @@ function getCompletionCopy(language = 'zh') {
       },
       optionHints: {
         'sdk.provider': 'options: openai-compatible | anthropic',
+        'model.reasoning_enabled': 'options: true | false',
+        'model.reasoning_effort': 'options: auto | low | medium | high',
         'ui.language': 'options: zh | en',
         'ui.reply_language': 'options: zh | en',
         'execution.mode': 'options: normal (daily) | code (coding)',
@@ -668,7 +677,7 @@ function getCompletionCopy(language = 'zh') {
         'context.project_instructions_enabled': 'options: true | false',
         'context.project_instructions_max_chars': 'recommended: 8000-12000',
         'web.search_enabled': 'options: true | false',
-        'web.search_provider': 'options: bing_rss | tavily | exa | builtin',
+        'web.search_provider': 'options: bing_rss | tavily | exa',
         'web.tavily_api_key': 'environment variable TAVILY_API_KEY also works',
         'web.exa_api_key': 'environment variable EXA_API_KEY also works'
       },
@@ -5005,6 +5014,10 @@ async function askModel({
         model: selectedModel,
         messages,
         tools,
+        reasoningEffort: resolveConfiguredReasoningEffort({
+          enabled: config.model?.reasoning_enabled,
+          effort: config.model?.reasoning_effort
+        }),
         payloadExtras: resolveGatewayPayloadExtras(config, { tools }),
         timeoutMs: config.gateway.timeout_ms || 1800000,
         maxRetries: config.gateway.max_retries ?? 2,
@@ -6992,6 +7005,8 @@ export async function createChatRuntime({
     'gateway.api_key',
     'model.name',
     'model.fast_name',
+    'model.reasoning_enabled',
+    'model.reasoning_effort',
     'ui.language',
     'ui.reply_language',
     'execution.mode',

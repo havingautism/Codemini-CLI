@@ -231,6 +231,16 @@ export const zh = {
   fastModelHelp:
     "用于标题生成、压缩摘要等轻量任务的更快/更便宜模型。留空则回退到默认模型。",
   fastModelPlaceholder: "留空则回退到默认模型",
+  reasoningEnabled: "思考模式",
+  reasoningEnabledHelp:
+    "关闭后不向模型请求额外思考；开启后可继续选择思考强度。",
+  reasoningEffort: "思考强度",
+  reasoningEffortAuto: "自动",
+  reasoningEffortLow: "低",
+  reasoningEffortMedium: "中",
+  reasoningEffortHigh: "高",
+  reasoningEffortHelp:
+    "统一思考档位会按当前模型转换为对应协议；模型不支持时不会发送额外参数。",
   maxContextTokens: "最大上下文 Tokens",
   maxContextTokensHelp:
     "声明的上下文窗口大小，用于 Token 预算、压缩触发与预检计算。",
@@ -249,9 +259,8 @@ export const zh = {
   webSearchProvider: "搜索提供方",
   webSearchProviderBingRss: "Bing RSS（无需 API Key）",
   webSearchProviderTavily: "Tavily（推荐）",
-  webSearchProviderBuiltin: "模型内置",
   webSearchProviderHelp:
-    "Bing RSS 无需 API Key。Tavily 推荐使用，并可返回图片候选。Tavily 和 Exa 需要搜索 API Key，或使用对应环境变量。模型内置使用当前模型网关的搜索能力（如 Kimi）。",
+    "Bing RSS 无需 API Key。Tavily 推荐使用，并可返回图片候选。Tavily 和 Exa 需要搜索 API Key，或使用对应环境变量。",
   tavilyApiKey: "Tavily API Key",
   tavilyApiKeyPlaceholder: "Tavily 需要填写",
   tavilyApiKeyHelp:
