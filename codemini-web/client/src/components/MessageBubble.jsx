@@ -1905,6 +1905,14 @@ export function MessageBubble({ message, skills = [], onRetry }) {
     if (!isManualSkillCommand(parsed.skillName)) return null;
     return parsed;
   }, [role, youText]);
+  const alwaysSkillNames = useMemo(
+    () => (skillBadges || [])
+      .filter((b) => b.status === "always")
+      .flatMap((b) => b.name.split(", "))
+      .map((s) => s.trim())
+      .filter(Boolean),
+    [skillBadges],
+  );
   const userDisplayText = userSkillPrompt ? userSkillPrompt.prompt : youText;
   const messageText = role === "you" ? youText : rawMessageText;
   const messageComplete =
@@ -1962,16 +1970,16 @@ export function MessageBubble({ message, skills = [], onRetry }) {
             <SpecExecutionCard details={specExecutionDetails} />
           ) : (
             <div className="w-fit max-w-full bg-(--bg-tertiary) rounded-2xl px-4 py-3">
-              {(userSkillPrompt?.skillNames?.length || attachments.length > 0) && (
+              {(alwaysSkillNames.length > 0 || userSkillPrompt?.skillNames?.length || attachments.length > 0) && (
                 <div
                   className={cn(
                     "flex max-w-full flex-col gap-2",
                     userDisplayText && "mb-3",
                   )}
                 >
-                  {userSkillPrompt?.skillNames?.length > 0 && (
+                  {(alwaysSkillNames.length > 0 || userSkillPrompt?.skillNames?.length > 0) && (
                     <UserSkillChips
-                      skillNames={userSkillPrompt.skillNames}
+                      skillNames={[...alwaysSkillNames, ...(userSkillPrompt?.skillNames || [])]}
                       skills={skills}
                     />
                   )}

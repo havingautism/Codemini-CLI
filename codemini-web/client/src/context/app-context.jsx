@@ -2681,9 +2681,7 @@ export function AppProvider({ children }) {
               pendingSkillBadgesRef.current,
               [badge],
             );
-            break;
-          }
-          if (activeId) {
+          } else {
             setState((prev) => ({
               ...prev,
               messages: prev.messages.map((m) =>
@@ -2699,6 +2697,29 @@ export function AppProvider({ children }) {
               ),
             }));
           }
+          // Also attach to the last user message so the badge appears on
+          // the user's own bubble alongside the assistant response.
+          setState((prev) => {
+            let lastUserIdx = -1;
+            for (let i = prev.messages.length - 1; i >= 0; i--) {
+              if (prev.messages[i].role === "you") { lastUserIdx = i; break; }
+            }
+            if (lastUserIdx === -1) return prev;
+            return {
+              ...prev,
+              messages: prev.messages.map((m, i) =>
+                i === lastUserIdx
+                  ? {
+                      ...m,
+                      skillBadges: appendUniqueSkillBadges(
+                        m.skillBadges || [],
+                        [badge],
+                      ),
+                    }
+                  : m,
+              ),
+            };
+          });
           break;
         }
 

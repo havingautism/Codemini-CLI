@@ -675,6 +675,7 @@ export function InputBar({
   const [slashQuery, setSlashQuery] = useState("");
   const [attachments, setAttachments] = useState([]);
   const [selectedSkills, setSelectedSkills] = useState([]);
+  const [dismissedDefaultSkills, setDismissedDefaultSkills] = useState(new Set());
   const [attachmentError, setAttachmentError] = useState("");
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const textareaRef = useRef(null);
@@ -690,6 +691,13 @@ export function InputBar({
         .filter(Boolean),
     [rs.alwaysSkillNames],
   );
+  const visibleDefaultSkillNames = useMemo(
+    () => defaultSkillNames.filter((name) => !dismissedDefaultSkills.has(name)),
+    [defaultSkillNames, dismissedDefaultSkills],
+  );
+  const removeDefaultSkill = useCallback((name) => {
+    setDismissedDefaultSkills((prev) => new Set([...prev, name]));
+  }, []);
   const selectedSkillNames = useMemo(
     () => selectedSkills.map((skill) => skill.name).filter(Boolean),
     [selectedSkills],
@@ -714,18 +722,21 @@ export function InputBar({
     const line = selectedSkills.length
       ? buildUserSkillLine(selectedSkillNames, val)
       : val || t("attachmentFallbackPrompt");
+    const dismissedSkills = [...dismissedDefaultSkills];
     onSubmit(line, {
       attachmentIds: attachments.map((item) => item.id).filter(Boolean),
       attachments,
+      ...(dismissedSkills.length > 0 ? { dismissedAlwaysSkills: dismissedSkills } : {}),
     });
     setValue("");
     setAttachments([]);
     setSelectedSkills([]);
+    setDismissedDefaultSkills(new Set());
     setAttachmentError("");
     setSlashOpen(false);
     setHistoryIndex(-1);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-  }, [value, attachments, selectedSkills, selectedSkillNames, inputLocked, onSubmit]);
+  }, [value, attachments, selectedSkills, selectedSkillNames, dismissedDefaultSkills, inputLocked, onSubmit]);
 
   const handleKeyDown = useCallback(
     (e) => {
@@ -884,12 +895,12 @@ export function InputBar({
       />
       <div className="codemini-input-shell flex flex-col gap-2.5 px-2 py-2 sm:px-2.5">
         {(selectedSkills.length > 0 ||
-          defaultSkillNames.length > 0 ||
+          visibleDefaultSkillNames.length > 0 ||
           attachments.length > 0 ||
           attachmentError ||
           uploadingAttachments) && (
           <div className="flex flex-wrap items-center gap-1.5">
-            {defaultSkillNames.map((name) => (
+            {visibleDefaultSkillNames.map((name) => (
               <span
                 key={`default-${name}`}
                 className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-(--accent-purple)/20 bg-(--bg-secondary) px-2 py-1 text-[12px] text-(--text-secondary)"
@@ -898,6 +909,15 @@ export function InputBar({
                 <Hammer size={14} className="shrink-0" />
                 <span className="max-w-[180px] truncate font-mono">{name}</span>
                 <span className="text-[10px] uppercase text-(--text-muted)">default</span>
+                <button
+                  type="button"
+                  className="ml-0.5 inline-flex size-4 items-center justify-center rounded hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                  onClick={() => removeDefaultSkill(name)}
+                  title={t("removeLoadedSkill")}
+                  disabled={inputLocked}
+                >
+                  <X size={11} />
+                </button>
               </span>
             ))}
             {selectedSkills.map((selectedSkill) => (

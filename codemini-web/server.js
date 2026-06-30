@@ -1226,7 +1226,7 @@ async function main() {
     }
 
     if (req.method === 'POST' && url.pathname === '/api/submit') {
-      const { line, readOnlyCodeWiki, attachmentIds } = await readBody(req);
+      const { line, readOnlyCodeWiki, attachmentIds, dismissedAlwaysSkills } = await readBody(req);
       if (!line || typeof line !== 'string') { jsonResponse(res, { error: true, message: 'Missing "line" field' }, 400); return; }
       const currentConfig = await loadConfig();
       const configStatus = getConfigStatus(currentConfig);
@@ -1251,6 +1251,9 @@ async function main() {
           size: meta.size,
           url: attachmentPublicUrl(bridge.getSessionId(), meta.id)
         })),
+        ...(Array.isArray(dismissedAlwaysSkills) && dismissedAlwaysSkills.length > 0
+          ? { dismissedAlwaysSkills }
+          : {}),
         ...(attachmentModelText ? { modelText: attachmentModelText } : {})
       });
       jsonResponse(res, result);

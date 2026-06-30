@@ -364,7 +364,13 @@ export async function handleRun(args) {
         (command.source === 'bundled-skill' || config.skills?.enabled?.[command.name] !== false)
     });
     if (composed.error) throw new Error(composed.error);
-    effectiveTask = composed.prompt;
+    // Inject always-mode skills so they are active regardless of which
+    // skills the user explicitly selected.
+    const alwaysSkills = Array.from(commands.values())
+      .filter((cmd) => cmd?.metadata?.type === 'skill' && cmd?.metadata?.mode === 'always');
+    effectiveTask = alwaysSkills.length > 0
+      ? alwaysSkills.map((s) => `[Always skill: ${s.name}]\n${s.content}`).join('\n\n') + '\n\n' + composed.prompt
+      : composed.prompt;
   }
 
   if (parsed.pipeline) {

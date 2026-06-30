@@ -548,6 +548,13 @@ export class RuntimeBridge {
     await this.#persistRunStatus(text, { status, retryPrompt });
   }
 
+  #lastUserMessageId() {
+    for (let i = this.#uiMessages.length - 1; i >= 0; i--) {
+      if (this.#uiMessages[i].role === 'you') return this.#uiMessages[i].id;
+    }
+    return null;
+  }
+
   #recordUiEvent(event) {
     if (!event?.type) return;
     this.#resetUiTranscriptIfSessionChanged();
@@ -898,6 +905,15 @@ export class RuntimeBridge {
             this.#uiPendingSkillBadges,
             [badge]
           );
+        }
+        // Also attach to the last user message so the badge appears on
+        // the user's own bubble alongside the assistant response.
+        const userMsgId = this.#lastUserMessageId();
+        if (userMsgId && userMsgId !== this.#uiActiveMsgId) {
+          this.#updateUiMessage(userMsgId, (message) => ({
+            ...message,
+            skillBadges: appendUniqueSkillBadges(message.skillBadges || [], [badge])
+          }));
         }
         break;
       }
