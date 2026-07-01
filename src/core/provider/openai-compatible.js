@@ -164,6 +164,7 @@ function extractUsageObject(data) {
     || data.meta?.billedUnits
     || data.response?.usage
     || data.response?.usage_metadata
+    || data.choices?.[0]?.usage
     || null;
 }
 
