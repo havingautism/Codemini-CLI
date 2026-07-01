@@ -29,6 +29,7 @@ import {
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
 import * as api from "@/hooks/use-api";
+import { ReasoningQuickControl } from "@/components/ReasoningControls.jsx";
 import {
   Popover,
   PopoverTrigger,
@@ -684,6 +685,8 @@ export function InputBar({
   const rs = runtimeState || {};
   const mode = rs.mode || "normal";
   const approvalMode = rs.approvalMode || "review";
+  const reasoningEnabled = rs.reasoningEnabled !== false;
+  const reasoningEffort = rs.reasoningEffort || "auto";
   const defaultSkillNames = useMemo(
     () =>
       (Array.isArray(rs.alwaysSkillNames) ? rs.alwaysSkillNames : [])
@@ -1012,6 +1015,11 @@ export function InputBar({
               disabled={inputLocked}
             />
             <SoulQuickSwitch disabled={inputLocked} />
+            <ReasoningQuickControl
+              enabled={reasoningEnabled}
+              effort={reasoningEffort}
+              disabled={inputLocked}
+            />
           </div>
           <div className="flex items-center gap-1.5 ml-auto shrink-0">
             {/* <button type="button" className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)" title="模型">

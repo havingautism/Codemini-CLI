@@ -240,6 +240,13 @@ export const en = {
   reasoningEffortHigh: "High",
   reasoningEffortHelp:
     "The unified level is mapped to the current model protocol. Unsupported models receive no extra field.",
+  reasoningControls: "Thinking",
+  reasoningQuickControl: "Thinking mode and effort",
+  reasoningOffShort: "Off",
+  reasoningEffortAutoShort: "Auto",
+  reasoningEffortLowShort: "Low",
+  reasoningEffortMediumShort: "Med",
+  reasoningEffortHighShort: "High",
   maxContextTokens: "Max Context Tokens",
   maxContextTokensHelp:
     "Declared context window size used for token budgeting, compaction triggers, and preflight checks.",

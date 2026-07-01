@@ -35,6 +35,11 @@ import { cn } from "@/lib/utils";
 import * as api from "@/hooks/use-api";
 import { Spinner } from "@/components/ui/spinner";
 import { t } from "../../i18n/index.js";
+import { ReasoningControlsPanel } from "@/components/ReasoningControls.jsx";
+import {
+  normalizeReasoningEffort,
+  normalizeReasoningEnabled,
+} from "@/lib/reasoning-controls.js";
 
 function getNestedValue(obj, path) {
   return path.split(".").reduce((o, k) => o?.[k], obj);
@@ -49,7 +54,13 @@ function isBooleanOption(key) {
   );
 }
 
-export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
+export function ConfigDialog({
+  open,
+  onOpenChange,
+  status = null,
+  onSaved,
+  reasoningSyncKey = "",
+}) {
   // Define config groups inside the component to ensure proper translation
   const CONFIG_GROUPS = [
     {
@@ -99,6 +110,7 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
     },
     {
       title: t("model"),
+      id: "model",
       keys: [
         {
           path: "model.name",
@@ -111,26 +123,6 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
           label: t("fastModel"),
           placeholder: t("fastModelPlaceholder"),
           help: t("fastModelHelp"),
-        },
-        {
-          path: "model.reasoning_enabled",
-          label: t("reasoningEnabled"),
-          options: ["true", "false"],
-          help: t("reasoningEnabledHelp"),
-        },
-        {
-          path: "model.reasoning_effort",
-          label: t("reasoningEffort"),
-          options: ["auto", "low", "medium", "high"],
-          optionLabels: {
-            auto: t("reasoningEffortAuto"),
-            low: t("reasoningEffortLow"),
-            medium: t("reasoningEffortMedium"),
-            high: t("reasoningEffortHigh"),
-          },
-          help: t("reasoningEffortHelp"),
-          visibleWhen: ({ getValue }) =>
-            getValue("model.reasoning_enabled") !== "false",
         },
         {
           path: "model.max_context_tokens",
@@ -318,25 +310,59 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
   const [playwrightLoading, setPlaywrightLoading] = useState(false);
 
   useEffect(() => {
-    if (open) {
-      setConfigLoading(true);
-      setPlaywrightLoading(true);
-      setPlaywrightStatus(null);
-      api
-        .fetchConfig()
-        .then((cfg) => {
-          setConfig(cfg);
-          setChanges({});
-        })
-        .catch(() => {})
-        .finally(() => setConfigLoading(false));
-      api
-        .fetchPlaywrightStatus()
-        .then((status) => setPlaywrightStatus(status))
-        .catch(() => setPlaywrightStatus(null))
-        .finally(() => setPlaywrightLoading(false));
-    }
+    if (!open) return;
+    let cancelled = false;
+    setConfigLoading(true);
+    setPlaywrightLoading(true);
+    setPlaywrightStatus(null);
+    setChanges({});
+    api
+      .fetchConfig()
+      .then((cfg) => {
+        if (!cancelled) setConfig(cfg);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setConfigLoading(false);
+      });
+    api
+      .fetchPlaywrightStatus()
+      .then((status) => {
+        if (!cancelled) setPlaywrightStatus(status);
+      })
+      .catch(() => {
+        if (!cancelled) setPlaywrightStatus(null);
+      })
+      .finally(() => {
+        if (!cancelled) setPlaywrightLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [open]);
+
+  useEffect(() => {
+    if (!open || !reasoningSyncKey) return;
+    let cancelled = false;
+    api
+      .fetchConfig()
+      .then((cfg) => {
+        if (cancelled) return;
+        setChanges((prev) => {
+          const hasReasoningDraft =
+            "model.reasoning_enabled" in prev ||
+            "model.reasoning_effort" in prev;
+          if (!hasReasoningDraft) {
+            setConfig(cfg);
+          }
+          return prev;
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [open, reasoningSyncKey]);
 
   const handleChange = (path, value) => {
     setChanges((prev) => ({ ...prev, [path]: value }));
@@ -354,6 +380,20 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
   const getBooleanValue = (path) => {
     const value = getValue(path);
     return value === true || value === "true";
+  };
+
+  const getReasoningEnabled = () => {
+    if ("model.reasoning_enabled" in changes) {
+      return normalizeReasoningEnabled(changes["model.reasoning_enabled"]);
+    }
+    return normalizeReasoningEnabled(config?.model?.reasoning_enabled);
+  };
+
+  const getReasoningEffort = () => {
+    if ("model.reasoning_effort" in changes) {
+      return normalizeReasoningEffort(changes["model.reasoning_effort"]);
+    }
+    return normalizeReasoningEffort(config?.model?.reasoning_effort);
   };
 
   const hasChanges = Object.keys(changes).length > 0;
@@ -386,18 +426,27 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
 
   const handleSave = async () => {
     try {
+      let savedConfig = config;
       for (const [path, value] of Object.entries(changes)) {
-        const key = CONFIG_GROUPS.flatMap((g) => g.keys).find(
-          (k) => k.path === path,
-        );
-        const normalizedValue = isBooleanOption(key)
-          ? value === true || value === "true"
-          : key?.type === "number"
-            ? Number(value)
-            : value;
-        await api.setConfig(path, normalizedValue);
+        let normalizedValue = value;
+        if (path === "model.reasoning_enabled") {
+          normalizedValue = value === true || value === "true";
+        } else if (path === "model.reasoning_effort") {
+          normalizedValue = normalizeReasoningEffort(value);
+        } else {
+          const key = CONFIG_GROUPS.flatMap((g) => g.keys).find(
+            (k) => k.path === path,
+          );
+          normalizedValue = isBooleanOption(key)
+            ? value === true || value === "true"
+            : key?.type === "number"
+              ? Number(value)
+              : value;
+        }
+        const result = await api.setConfig(path, normalizedValue);
+        if (result?.config) savedConfig = result.config;
       }
-      await onSaved?.();
+      await onSaved?.(savedConfig);
       setChanges({});
       onOpenChange(false);
     } catch (err) {
@@ -513,6 +562,44 @@ export function ConfigDialog({ open, onOpenChange, status = null, onSaved }) {
                       </FieldContent>
                     </Field>
                   ))}
+                  {group.id === "model" && (
+                    <Field className="items-start">
+                      <FieldLabel className="pt-1.5">
+                        <span>{t("reasoningControls")}</span>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <button
+                              type="button"
+                              className="ml-1 inline-flex align-[-2px] text-(--text-muted) hover:text-(--text-primary)"
+                              aria-label={t("reasoningEnabledHelp")}
+                            >
+                              <Question size={13} />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent
+                            side="right"
+                            className="max-w-[300px] leading-relaxed"
+                          >
+                            {t("reasoningEnabledHelp")}
+                          </TooltipContent>
+                        </Tooltip>
+                      </FieldLabel>
+                      <FieldContent className="min-w-0 flex-1">
+                        <ReasoningControlsPanel
+                          idPrefix="settings-reasoning"
+                          enabled={getReasoningEnabled()}
+                          effort={getReasoningEffort()}
+                          onEnabledChange={(checked) =>
+                            handleChange("model.reasoning_enabled", checked)
+                          }
+                          onEffortChange={(level) =>
+                            handleChange("model.reasoning_effort", level)
+                          }
+                          showHelp
+                        />
+                      </FieldContent>
+                    </Field>
+                  )}
                   {group.id === "webSearch" && (
                     <Field className="items-center">
                       <FieldLabel>

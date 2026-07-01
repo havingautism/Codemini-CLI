@@ -205,7 +205,11 @@ export async function setConfig(key, value) {
     headers: JSON_HEADERS,
     body: JSON.stringify({ key, value })
   });
-  return res.json().catch(() => ({}));
+  const result = await res.json().catch(() => ({}));
+  if (result?.error) {
+    throw new Error(result.message || `Failed to save config: ${key}`);
+  }
+  return result;
 }
 
 export async function fetchWebuiActiveProjects() {

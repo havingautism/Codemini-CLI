@@ -10,6 +10,7 @@ import React, {
 import { t } from "../../i18n/index.js";
 import { formatToolLabel } from "@core/tool-display.js";
 import * as api from "../hooks/use-api.js";
+import { extractReasoningRuntimePatch } from "../lib/reasoning-controls.js";
 import { parseAttachmentsFromModelContent } from "../lib/message-attachments.js";
 
 const AppContext = createContext(null);
@@ -1539,12 +1540,16 @@ export function AppProvider({ children }) {
 
   const loadState = useCallback(async () => {
     try {
-      const rs = await api.fetchState();
+      const [rs, cfg] = await Promise.all([
+        api.fetchState(),
+        api.fetchConfig().catch(() => null),
+      ]);
+      const reasoningPatch = cfg ? extractReasoningRuntimePatch(cfg) : {};
       const busy = !!rs.busy;
       const codeWikiGenerating = !!rs.codeWikiGenerating;
       setState((prev) => ({
         ...prev,
-        runtimeState: rs,
+        runtimeState: { ...prev.runtimeState, ...rs, ...reasoningPatch },
         projectCwd: projectNameFromRuntimeState(rs),
         isGeneral: !!rs.isGeneral,
         pendingSpecApproval: rs?.pendingSpecApproval || null,
@@ -1563,7 +1568,7 @@ export function AppProvider({ children }) {
           : prev.codewikiGeneration,
         messages: removeTransientMessages(prev.messages, "plan-waiting-review"),
       }));
-      return rs;
+      return { ...rs, ...reasoningPatch };
     } catch {
       return null;
     }
@@ -3005,8 +3010,17 @@ export function AppProvider({ children }) {
 
         case "runtime:state": {
           const rs = event.state || {};
+          const runtimeState = { ...stateRef.current.runtimeState, ...rs };
+          if (rs.reasoningEffort == null) {
+            runtimeState.reasoningEffort =
+              stateRef.current.runtimeState?.reasoningEffort;
+          }
+          if (rs.reasoningEnabled == null) {
+            runtimeState.reasoningEnabled =
+              stateRef.current.runtimeState?.reasoningEnabled;
+          }
           update({
-            runtimeState: { ...stateRef.current.runtimeState, ...rs },
+            runtimeState,
             pendingSpecApproval: rs?.pendingSpecApproval || null,
             pendingReflectApproval: rs?.pendingReflectSkill || null,
             userInputRequest: rs?.pendingUserInput || null,
@@ -3810,6 +3824,16 @@ export function AppProvider({ children }) {
 
       setConfigOpen: (open) => update({ configOpen: open }),
       refreshConfigStatus: () => loadConfigStatus(),
+      refreshRuntimeState: () => loadState(),
+      patchRuntimeReasoning: (config) => {
+        const patch = extractReasoningRuntimePatch(config);
+        update({
+          runtimeState: {
+            ...stateRef.current.runtimeState,
+            ...patch,
+          },
+        });
+      },
       setProjectOpen: (open) => update({ projectOpen: open }),
       setSkillsOpen: (open) => update({ skillsOpen: open }),
       setMemoryOpen: (open) => update({ memoryOpen: open }),

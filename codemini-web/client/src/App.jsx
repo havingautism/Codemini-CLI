@@ -164,6 +164,11 @@ function Shell() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const rs = state.runtimeState || {};
   const currentId = rs.sessionId;
+  const reasoningSyncKey = useMemo(
+    () =>
+      `${rs.reasoningEnabled !== false ? "1" : "0"}:${rs.reasoningEffort || "auto"}`,
+    [rs.reasoningEnabled, rs.reasoningEffort],
+  );
   const openSettings = useCallback(
     () => actions.setConfigOpen(true),
     [actions],
@@ -426,7 +431,11 @@ function Shell() {
             open={state.configOpen}
             onOpenChange={actions.setConfigOpen}
             status={state.configStatus}
-            onSaved={actions.refreshConfigStatus}
+            reasoningSyncKey={reasoningSyncKey}
+            onSaved={async () => {
+              await actions.refreshConfigStatus();
+              await actions.refreshRuntimeState();
+            }}
           />
         )}
 

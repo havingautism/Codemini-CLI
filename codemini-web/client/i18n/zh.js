@@ -241,6 +241,13 @@ export const zh = {
   reasoningEffortHigh: "高",
   reasoningEffortHelp:
     "统一思考档位会按当前模型转换为对应协议；模型不支持时不会发送额外参数。",
+  reasoningControls: "思考",
+  reasoningQuickControl: "思考模式与强度",
+  reasoningOffShort: "关",
+  reasoningEffortAutoShort: "自动",
+  reasoningEffortLowShort: "低",
+  reasoningEffortMediumShort: "中",
+  reasoningEffortHighShort: "高",
   maxContextTokens: "最大上下文 Tokens",
   maxContextTokensHelp:
     "声明的上下文窗口大小，用于 Token 预算、压缩触发与预检计算。",

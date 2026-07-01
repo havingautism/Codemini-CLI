@@ -74,7 +74,7 @@ import {
   normalizeToolPolicy,
   resolveGatewayPayloadExtras
 } from './provider/search-tool-registry.js';
-import { resolveConfiguredReasoningEffort } from './provider/reasoning-effort.js';
+import { normalizeReasoningEffort, resolveConfiguredReasoningEffort } from './provider/reasoning-effort.js';
 
 const STREAM_SAVE_DEBOUNCE_MS = 120;
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -3889,6 +3889,8 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     fastModel: config.model?.fast_name || config.model?.name || '',
     maxContextTokens,
     alwaysSkillNames: visibleAlwaysSkillNames,
+    reasoningEnabled: config.model?.reasoning_enabled !== false,
+    reasoningEffort: normalizeReasoningEffort(config.model?.reasoning_effort),
     pendingPlanApproval: null,
     pendingSpecApproval: specState
       ? buildPendingSpecSnapshot(specState)
