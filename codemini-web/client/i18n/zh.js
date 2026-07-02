@@ -462,9 +462,10 @@ export const zh = {
   builtin: "内置",
   custom: "自定义",
   sendMessageToCodemini: "给 Codemini 发送消息",
-  sendMessageToCodeminiWithSlash: "给 Codemini 发送消息，输入 / 查看更多功能",
-  askAnything: "可向 Codemini 询问任何事。输入 / 使用命令或技能",
+  searchActionsAndSkills: "搜索操作和技能",
+  actionFailed: "操作失败",
   addContext: "添加上下文",
+  addActionOrSkill: "添加操作或技能",
   switchWorkspace: "切换工作区",
 
   // SoulPanel

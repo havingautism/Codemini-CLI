@@ -9,6 +9,7 @@ import {
   WorkflowReviewDialog,
 } from "@/components/WorkflowReviewDialog.jsx";
 import { t } from "../../i18n/index.js";
+import { CHAT_ACTION_NAMES, LOCAL_SPEC_REVIEW_ACTIONS } from "@/lib/chat-action-names.js";
 
 export function SpecApprovalDialog({
   spec,
@@ -97,7 +98,7 @@ export function SpecApprovalDialog({
             variant="destructive"
             size="sm"
             disabled={disabled}
-            onClick={() => onAction("delete")}
+            onClick={() => onAction(LOCAL_SPEC_REVIEW_ACTIONS.DELETE)}
           >
             {t("specDelete")}
           </Button>
@@ -105,7 +106,7 @@ export function SpecApprovalDialog({
             variant="outline"
             size="sm"
             disabled={disabled}
-            onClick={() => onAction("reject")}
+            onClick={() => onAction(CHAT_ACTION_NAMES.SPEC_REJECT)}
           >
             {t("specReject")}
           </Button>
@@ -125,7 +126,7 @@ export function SpecApprovalDialog({
             variant="outline"
             size="sm"
             disabled={disabled}
-            onClick={() => onAction("save")}
+            onClick={() => onAction(CHAT_ACTION_NAMES.SPEC_SAVE)}
           >
             {t("specSaveOnly")}
           </Button>
@@ -133,14 +134,14 @@ export function SpecApprovalDialog({
             variant="outline"
             size="sm"
             disabled={disabled || incomplete}
-            onClick={() => onAction("approve")}
+            onClick={() => onAction(CHAT_ACTION_NAMES.SPEC_PLAN_AND_EXECUTE)}
           >
             {t("specPlanExecute")}
           </Button>
           <Button
             size="sm"
             disabled={disabled || incomplete}
-            onClick={() => onAction("execute")}
+            onClick={() => onAction(CHAT_ACTION_NAMES.SPEC_EXECUTE)}
           >
             {t("specExecuteNow")}
           </Button>

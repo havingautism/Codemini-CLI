@@ -45,13 +45,17 @@ function getModelLogo(modelName) {
 
 function ModelLogo({ src, size = 13 }) {
   if (!src) return null;
+  const needsLightBg = src.includes("kimi");
   return (
     <img
       src={src}
       alt=""
       width={size}
       height={size}
-      className="shrink-0 rounded-sm object-contain"
+      className={cn(
+        "shrink-0 rounded-sm object-contain",
+        needsLightBg && "dark:bg-white",
+      )}
     />
   );
 }

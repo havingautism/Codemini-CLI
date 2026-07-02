@@ -856,10 +856,10 @@
     rgba(0, 0, 0, 0.28) 0 16px 36px;
 }
 
-/* Neutral default palette keeps blue accent; named palettes use --ring (mauve, teal, etc.) */
+/* Neutral default palette uses text-primary for a black/white adaptive accent */
 :root:not([data-palette]),
 :root[data-palette="default"] {
-  --input-shell-accent: var(--accent-blue);
+  --input-shell-accent: var(--text-primary);
 }
 
 :root[data-theme="light"] {

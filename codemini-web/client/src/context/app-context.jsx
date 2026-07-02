@@ -12,6 +12,9 @@ import { formatToolLabel } from "@core/tool-display.js";
 import * as api from "../hooks/use-api.js";
 import { extractReasoningRuntimePatch } from "../lib/reasoning-controls.js";
 import { parseAttachmentsFromModelContent } from "../lib/message-attachments.js";
+import { CHAT_ACTION_NAMES, LOCAL_SPEC_REVIEW_ACTIONS } from "../lib/chat-action-names.js";
+import { waitForAcceptedOperation } from "../lib/chat-operation-waiter.js";
+import { finishInitialization } from "../lib/async-lifecycle.js";
 
 const AppContext = createContext(null);
 
@@ -718,7 +721,7 @@ function isPlanSystemSummaryText(text) {
     value.includes("Plan created for engineering-mode execution") ||
     value.includes("Plan created and waiting for approval") ||
     value.includes("Pending plan approval") ||
-    (value.includes("Plan File:") && value.includes("/yes"))
+    value.includes("Pending plan approval")
   );
 }
 
@@ -858,54 +861,6 @@ function restoreRuntimeActivitiesFromMessages(messages) {
   return [...byKey.values()]
     .sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)))
     .slice(0, 3);
-}
-
-function isApprovalAnswerLine(line) {
-  const value = String(line || "")
-    .trim()
-    .toLowerCase();
-  return (
-    [
-      "yes",
-      "y",
-      "/yes",
-      "approve",
-      "approved",
-      "no",
-      "n",
-      "/no",
-      "/reject",
-    ].includes(value) || value.startsWith("/edit ")
-  );
-}
-
-function isApprovalCommandLine(line) {
-  const value = String(line || "")
-    .trim()
-    .toLowerCase();
-  return (
-    ["/yes", "/no", "/reject"].includes(value) || value.startsWith("/edit ")
-  );
-}
-
-function isWorkflowCommandLine(line) {
-  const value = String(line || "").trim();
-  return (
-    isApprovalCommandLine(value) ||
-    /^\/(?:plan|spec|reflect)(?:\s|$)/i.test(value)
-  );
-}
-
-function isWorkflowControlLine(line, state = {}) {
-  const trimmed = String(line || "").trim();
-  if (!trimmed) return false;
-  if (
-    (state.pendingSpecApproval || state.pendingReflectApproval) &&
-    isApprovalAnswerLine(trimmed)
-  )
-    return true;
-  if (/^\/(?:plan|spec|reflect)(?:\s|$)/i.test(trimmed)) return true;
-  return false;
 }
 
 function getSpecDisplayTitle(spec = {}) {
@@ -1444,6 +1399,8 @@ export function AppProvider({ children }) {
   const activityTimersRef = useRef(new Map());
   const sseRef = useRef(null);
   const reconnectRef = useRef(null);
+  const operationWaitersRef = useRef(new Map());
+  const earlyOperationResultsRef = useRef(new Map());
 
   const update = useCallback((updates) => {
     setState((prev) => ({ ...prev, ...updates }));
@@ -1538,12 +1495,13 @@ export function AppProvider({ children }) {
     [update],
   );
 
-  const loadState = useCallback(async () => {
+  const loadState = useCallback(async ({ isAlive = () => true } = {}) => {
     try {
       const [rs, cfg] = await Promise.all([
         api.fetchState(),
         api.fetchConfig().catch(() => null),
       ]);
+      if (!isAlive()) return null;
       const reasoningPatch = cfg ? extractReasoningRuntimePatch(cfg) : {};
       const busy = !!rs.busy;
       const codeWikiGenerating = !!rs.codeWikiGenerating;
@@ -1575,9 +1533,10 @@ export function AppProvider({ children }) {
   }, [update]);
 
   const loadConfigStatus = useCallback(
-    async ({ openIfRequired = false } = {}) => {
+    async ({ openIfRequired = false, isAlive = () => true } = {}) => {
       try {
         const configStatus = await api.fetchConfigStatus();
+        if (!isAlive()) return null;
         update({
           configStatus,
           configOpen:
@@ -1593,49 +1552,51 @@ export function AppProvider({ children }) {
     [update],
   );
 
-  const loadGitInfo = useCallback(async () => {
+  const loadGitInfo = useCallback(async ({ isAlive = () => true } = {}) => {
     try {
       const info = await api.fetchGitInfo();
-      update({ gitInfo: info });
+      if (isAlive()) update({ gitInfo: info });
     } catch {}
   }, [update]);
 
   const loadGitBatch = useCallback(
-    async (sessions) => {
+    async (sessions, { isAlive = () => true } = {}) => {
       const dirs = [
         ...new Set((sessions || []).map((s) => s.projectDir).filter(Boolean)),
       ];
       if (!dirs.length) return;
       try {
         const batch = await api.fetchGitBatch(dirs);
-        update({ gitBatch: batch });
+        if (isAlive()) update({ gitBatch: batch });
       } catch {}
     },
     [update],
   );
 
-  const loadHistory = useCallback(async () => {
+  const loadHistory = useCallback(async ({ isAlive = () => true } = {}) => {
     try {
       const history = await api.fetchHistory();
-      update({ history: Array.isArray(history) ? history : [] });
+      if (isAlive()) update({ history: Array.isArray(history) ? history : [] });
     } catch {}
   }, [update]);
 
   const loadSessions = useCallback(
     async (options = {}) => {
       const force = options?.force === true;
+      const isAlive = options?.isAlive || (() => true);
       if (force) sessionsLoadPromiseRef.current = null;
       if (sessionsLoadPromiseRef.current) return sessionsLoadPromiseRef.current;
-      update({ sessionsLoading: true });
+      if (isAlive()) update({ sessionsLoading: true });
       const promise = (async () => {
         try {
           const sessions = await api.fetchSessions(200);
+          if (!isAlive()) return;
           const list = Array.isArray(sessions) ? sessions : [];
           update({ sessions: list });
-          loadGitBatch(list);
+          loadGitBatch(list, { isAlive });
         } catch {
         } finally {
-          update({ sessionsLoading: false });
+          if (isAlive()) update({ sessionsLoading: false });
           sessionsLoadPromiseRef.current = null;
         }
       })();
@@ -1658,18 +1619,19 @@ export function AppProvider({ children }) {
     }
   }, []);
 
-  const loadSkills = useCallback(async () => {
+  const loadSkills = useCallback(async ({ isAlive = () => true } = {}) => {
     try {
       const skills = await api.fetchSkills();
-      update({ skills: Array.isArray(skills) ? skills : [] });
+      if (isAlive()) update({ skills: Array.isArray(skills) ? skills : [] });
     } catch {}
   }, [update]);
 
   const loadSessionMessages = useCallback(
-    async (sessionData = null) => {
-      update({ messagesLoading: true });
+    async (sessionData = null, { isAlive = () => true } = {}) => {
+      if (isAlive()) update({ messagesLoading: true });
       try {
         const data = sessionData || (await api.fetchSessionMessages());
+        if (!isAlive()) return;
         const messages = Array.isArray(data) ? data : data.messages || [];
         const compactMeta = data?.compact || null;
         const restoredActivities =
@@ -1678,6 +1640,7 @@ export function AppProvider({ children }) {
         const uiData = sessionData
           ? sessionData.uiMessages || { messages: [] }
           : await api.fetchSessionUiMessages().catch(() => []);
+        if (!isAlive()) return;
         const uiMessages = Array.isArray(uiData)
           ? uiData
           : Array.isArray(uiData?.messages)
@@ -1689,6 +1652,7 @@ export function AppProvider({ children }) {
               ? []
               : (await api.fetchSessionChanges().catch(() => ({})))?.changes ||
                 [];
+            if (!isAlive()) return;
             const restored = sanitizeManualAbortMessages(
               settleCompletedPlanToolCards(uiMessages),
             );
@@ -1728,7 +1692,6 @@ export function AppProvider({ children }) {
             dividerInserted = true;
           }
           if (msg.role === "user") {
-            if (isWorkflowCommandLine(msg.content)) continue;
             assistantGroup = null;
             const visibleContent = collapseRenderedSkillPrompt(
               msg.content || "",
@@ -1962,6 +1925,7 @@ export function AppProvider({ children }) {
         const changeSets = sessionData
           ? []
           : (await api.fetchSessionChanges().catch(() => ({})))?.changes || [];
+        if (!isAlive()) return;
 
         const uiPlanOverview = uiMessages.find(
           (m) => m.role === "plan-overview" && m.planOverview?.goal,
@@ -2020,7 +1984,7 @@ export function AppProvider({ children }) {
         });
       } catch {
       } finally {
-        update({ messagesLoading: false });
+        if (isAlive()) update({ messagesLoading: false });
       }
     },
     [update],
@@ -2825,6 +2789,22 @@ export function AppProvider({ children }) {
 
         case "submit:done": {
           const result = event.result || {};
+          if (event.operationId) {
+            const waiter = operationWaitersRef.current.get(event.operationId);
+            if (waiter) {
+              operationWaitersRef.current.delete(event.operationId);
+              if (result.type === "error") {
+                waiter.reject(new Error(result.text || t("actionFailed")));
+              } else {
+                waiter.resolve(result);
+              }
+            } else {
+              earlyOperationResultsRef.current.set(event.operationId, result);
+              setTimeout(() => {
+                earlyOperationResultsRef.current.delete(event.operationId);
+              }, 30000);
+            }
+          }
           if (activeId && pendingChangesRef.current.length) {
             setState((prev) => ({
               ...prev,
@@ -3194,10 +3174,16 @@ export function AppProvider({ children }) {
   }, [handleEvent]);
 
   useEffect(() => {
+    let alive = true;
     (async () => {
+      const isAlive = () => alive;
       const route = parseRoute();
-      const configStatusPromise = loadConfigStatus({ openIfRequired: true });
+      const configStatusPromise = loadConfigStatus({
+        openIfRequired: true,
+        isAlive,
+      });
       const startupEventsPromise = api.fetchStartupEvents().catch(() => []);
+      if (!alive) return;
       update({
         currentView: route.view,
         codewikiProjectPath:
@@ -3208,18 +3194,23 @@ export function AppProvider({ children }) {
       if (route.sessionId) {
         try {
           const currentState = await api.fetchState();
+          if (!alive) return;
           if (currentState.sessionId !== route.sessionId) {
             await api.switchSession(route.sessionId);
+            if (!alive) return;
           }
         } catch {}
       } else if (route.view === "codewiki" && route.projectPath) {
         await openCodeWikiProjectFromRoute(route.projectPath);
+        if (!alive) return;
       }
 
       await configStatusPromise;
+      if (!alive) return;
 
       try {
         const startupEvents = await startupEventsPromise;
+        if (!alive) return;
         for (const ev of startupEvents) {
           if (!ev || isProjectIndexEvent(ev)) continue;
           if (ev.type === "system_tool" || ev.type === "tool") {
@@ -3236,7 +3227,8 @@ export function AppProvider({ children }) {
         }
       } catch {}
 
-      const rs = await loadState();
+      const rs = await loadState({ isAlive });
+      if (!alive) return;
       if (route.view === "chat" && rs?.sessionId) {
         updateRoute("chat", rs.sessionId, { replace: true });
       } else if (route.view === "codewiki") {
@@ -3245,19 +3237,24 @@ export function AppProvider({ children }) {
         if (projectPath)
           updateRoute("codewiki", null, { replace: true, projectPath });
       }
-      await Promise.all([
-        loadSessionMessages(),
-        loadHistory(),
-        loadSessions(),
-        loadSkills(),
-        loadGitInfo(),
+      await finishInitialization({
+        tasks: [
+        loadSessionMessages(null, { isAlive }),
+        loadHistory({ isAlive }),
+        loadSessions({ isAlive }),
+        loadSkills({ isAlive }),
+        loadGitInfo({ isAlive }),
         api
           .fetchVersion()
-          .then((versionInfo) => update({ versionInfo }))
+          .then((versionInfo) => {
+            if (isAlive()) update({ versionInfo });
+          })
           .catch(() => {}),
-      ]);
-      update({ initialLoading: false });
-      connectSSE();
+        ],
+        isAlive,
+        update,
+        connect: connectSSE,
+      });
     })();
 
     const handlePopState = async () => {
@@ -3297,11 +3294,16 @@ export function AppProvider({ children }) {
     window.addEventListener("popstate", handlePopState);
 
     return () => {
+      alive = false;
       if (sseRef.current) sseRef.current.close();
       clearTimeout(reconnectRef.current);
       for (const timer of activityTimersRef.current.values())
         clearTimeout(timer);
       activityTimersRef.current.clear();
+      for (const waiter of operationWaitersRef.current.values())
+        waiter.reject(new Error("Chat connection closed"));
+      operationWaitersRef.current.clear();
+      earlyOperationResultsRef.current.clear();
       window.removeEventListener("popstate", handlePopState);
     };
   }, [
@@ -3329,28 +3331,36 @@ export function AppProvider({ children }) {
 
   const actions = useMemo(
     () => ({
-      submit: async (line, options = {}) => {
-        if (!line.trim()) return;
+      submit: async (input, options = {}) => {
+        const message = typeof input === "string"
+          ? { text: input, skillNames: [], attachmentIds: [], dismissedAlwaysSkills: [] }
+          : input || {};
+        const line = String(message.text || "");
+        if (!line.trim() && !(message.attachmentIds || []).length && !(message.skillNames || []).length) return;
+        const selectedSkillBadges = [
+          ...new Set(
+            (Array.isArray(message.skillNames) ? message.skillNames : [])
+              .map((name) => String(name || "").trim())
+              .filter(Boolean),
+          ),
+        ].map((name) => ({ name, status: "selected" }));
         if (stateRef.current.currentView !== "chat" && !options.stayInView)
           update({ currentView: "chat" });
-        const workflowControl = isWorkflowControlLine(line, stateRef.current);
-        if (!workflowControl)
-          addMessage({
-            role: "you",
-            text: line,
-            attachments: Array.isArray(options.attachments)
-              ? options.attachments
-              : [],
-            timestamp: new Date().toISOString(),
-          });
-        const waitingId = workflowControl
-          ? null
-          : addMessage({
-              role: "system",
-              text: t("waitingResponse"),
-              timestamp: new Date().toISOString(),
-              transientKey: "waiting-response",
-            });
+        addMessage({
+          role: "you",
+          text: line,
+          skillBadges: selectedSkillBadges,
+          attachments: Array.isArray(options.attachments)
+            ? options.attachments
+            : [],
+          timestamp: new Date().toISOString(),
+        });
+        const waitingId = addMessage({
+          role: "system",
+          text: t("waitingResponse"),
+          timestamp: new Date().toISOString(),
+          transientKey: "waiting-response",
+        });
         update({
           busy: true,
           live: true,
@@ -3358,10 +3368,14 @@ export function AppProvider({ children }) {
           stageLabel: t("waitingResponse"),
         });
         try {
-          const res = await api.submitLine(line, {
-            readOnlyCodeWiki: options.readOnlyCodeWiki === true,
-            attachmentIds: Array.isArray(options.attachmentIds)
-              ? options.attachmentIds
+          const res = await api.submitMessage({
+            text: line,
+            skillNames: Array.isArray(message.skillNames) ? message.skillNames : [],
+            attachmentIds: Array.isArray(message.attachmentIds)
+              ? message.attachmentIds
+              : [],
+            dismissedAlwaysSkills: Array.isArray(message.dismissedAlwaysSkills)
+              ? message.dismissedAlwaysSkills
               : [],
           });
           const result = await res.json().catch(() => ({}));
@@ -3375,6 +3389,11 @@ export function AppProvider({ children }) {
           }
           if (result?.error)
             throw new Error(result.message || "Request failed");
+          await waitForAcceptedOperation(result, {
+            waiters: operationWaitersRef.current,
+            earlyResults: earlyOperationResultsRef.current,
+            fallbackError: t("actionFailed"),
+          });
         } catch (err) {
           if (waitingId)
             setState((prev) => ({
@@ -3390,6 +3409,35 @@ export function AppProvider({ children }) {
             retryable: Boolean(line.trim()),
           });
           update({ busy: false, live: false });
+          throw err;
+        }
+      },
+
+      runChatAction: async (actionName, payload = {}) => {
+        if (!isAlive()) return null;
+        update({
+          busy: true,
+          live: true,
+          stage: "thinking",
+          stageLabel: t("waitingResponse"),
+        });
+        try {
+          const response = await api.submitChatAction(actionName, payload);
+          if (response?.error) throw new Error(response.message || t("actionFailed"));
+          const accepted = response?.result;
+          return await waitForAcceptedOperation(accepted, {
+            waiters: operationWaitersRef.current,
+            earlyResults: earlyOperationResultsRef.current,
+            fallbackError: t("actionFailed"),
+          });
+        } catch (err) {
+          addMessage({
+            role: "error",
+            text: `Failed: ${err.message}`,
+            timestamp: new Date().toISOString(),
+          });
+          update({ busy: false, live: false, stage: "idle", stageLabel: "" });
+          throw err;
         }
       },
 
@@ -3465,11 +3513,21 @@ export function AppProvider({ children }) {
         });
       },
 
-      approve: async (id, approved) => {
-        update({ approvalRequest: null });
+      approve: async (id, actionName) => {
         try {
-          await api.submitApproval(id, approved);
-        } catch {}
+          const result = await api.submitChatAction(
+            actionName,
+            { requestId: id },
+          );
+          if (result?.error) throw new Error(result.message || "Request failed");
+          update({ approvalRequest: null });
+        } catch (err) {
+          addMessage({
+            role: "error",
+            text: `Failed: ${err.message}`,
+            timestamp: new Date().toISOString(),
+          });
+        }
       },
 
       respondToUserInput: async (id, response) => {
@@ -3489,18 +3547,15 @@ export function AppProvider({ children }) {
           key: "reflect",
           status: "running",
           emoji:
-            action === "approve" ? "💾" : action === "reject" ? "🗑️" : "📝",
+            action === CHAT_ACTION_NAMES.REFLECT_APPROVE ? "💾" : action === CHAT_ACTION_NAMES.REFLECT_REJECT ? "🗑️" : "📝",
           label:
-            action === "approve"
+            action === CHAT_ACTION_NAMES.REFLECT_APPROVE
               ? t("runtimeActivityReflectSaving")
-              : action === "reject"
+              : action === CHAT_ACTION_NAMES.REFLECT_REJECT
                 ? t("runtimeActivityReflectDiscarding")
                 : t("runtimeActivityReflectRevising"),
           detail: draft.name ? `/${draft.name}` : "",
         });
-        if (action === "reject") {
-          update({ pendingReflectApproval: null });
-        }
         update({
           busy: true,
           live: true,
@@ -3508,20 +3563,21 @@ export function AppProvider({ children }) {
           stageLabel: t("waitingResponse"),
         });
         try {
-          const command =
-            action === "approve"
-              ? "/yes"
-              : action === "reject"
-                ? "/no"
+          const actionName =
+            action === CHAT_ACTION_NAMES.REFLECT_APPROVE
+              ? CHAT_ACTION_NAMES.REFLECT_APPROVE
+              : action === CHAT_ACTION_NAMES.REFLECT_REJECT
+                ? CHAT_ACTION_NAMES.REFLECT_REJECT
                 : feedback?.trim()
-                  ? `/edit ${feedback.trim()}`
-                  : "";
-          if (!command) {
+                  ? CHAT_ACTION_NAMES.REFLECT_REVISE
+                  : null;
+          if (!actionName) {
             update({ busy: false, live: false, stage: "idle", stageLabel: "" });
             return;
           }
-          const res = await api.submitLine(command);
-          const result = await res.json().catch(() => ({}));
+          const result = await api.submitChatAction(actionName, {
+            ...(feedback?.trim() ? { feedback: feedback.trim() } : {}),
+          });
           if (result?.error)
             throw new Error(result.message || "Request failed");
         } catch (err) {
@@ -3554,13 +3610,10 @@ export function AppProvider({ children }) {
       approveSpec: async (action) => {
         const spec = stateRef.current.pendingSpecApproval;
         if (!spec) return;
-        if (action === "reject" || action === "save" || action === "delete") {
-          update({ pendingSpecApproval: null });
-        }
-        if (action === "execute" || action === "approve") {
+        if (action === CHAT_ACTION_NAMES.SPEC_EXECUTE || action === CHAT_ACTION_NAMES.SPEC_PLAN_AND_EXECUTE) {
           const display = buildSpecExecuteDisplayMessage(
             spec,
-            action === "approve" ? "plan" : "direct",
+            action === CHAT_ACTION_NAMES.SPEC_PLAN_AND_EXECUTE ? "plan" : "direct",
           );
           addMessage({
             role: "you",
@@ -3576,24 +3629,15 @@ export function AppProvider({ children }) {
           stageLabel: t("waitingResponse"),
         });
         try {
-          if (action === "delete") {
+          if (action === LOCAL_SPEC_REVIEW_ACTIONS.DELETE) {
             const result = await api.deletePendingSpec();
             if (result?.error)
               throw new Error(result.message || "Failed to delete spec");
             update({ busy: false, live: false, stage: "idle", stageLabel: "" });
             return;
           }
-          const command =
-            action === "save"
-              ? "/spec save"
-              : action === "execute"
-                ? "/spec execute"
-                : action === "approve"
-                  ? "/spec plan"
-                  : "/reject";
-          if (action === "approve") planRunPendingRef.current = true;
-          const res = await api.submitLine(command);
-          const result = await res.json().catch(() => ({}));
+          if (action === CHAT_ACTION_NAMES.SPEC_PLAN_AND_EXECUTE) planRunPendingRef.current = true;
+          const result = await api.submitChatAction(action);
           if (result?.error)
             throw new Error(result.message || "Request failed");
         } catch (err) {

@@ -12,8 +12,8 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
   isManualSkillCommand,
-  isUserCommandDirective,
   parseUserSkillPrompt,
+  skillNamesFromBadges,
 } from "@/lib/user-skill-prompt.js";
 import { formatTimestamp } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
@@ -1335,7 +1335,7 @@ function UserText({ text }) {
             <div className="font-semibold mb-1.5">Dream</div>
             <div className="text-(--text-secondary)">
               Consolidates memory inbox entries and stale memory buckets. It can
-              run manually with /dream or automatically when the inbox threshold
+              run from the action palette or automatically when the inbox threshold
               is reached.
             </div>
           </TooltipContent>
@@ -1898,19 +1898,14 @@ export function MessageBubble({ message, skills = [], onRetry }) {
           .join("") ||
         ""
       : "";
-  const hideUserCommandDirective = role === "you" && isUserCommandDirective(youText);
   const userSkillPrompt = useMemo(() => {
     if (role !== "you" || !youText) return null;
     const parsed = parseUserSkillPrompt(youText);
     if (!isManualSkillCommand(parsed.skillName)) return null;
     return parsed;
   }, [role, youText]);
-  const alwaysSkillNames = useMemo(
-    () => (skillBadges || [])
-      .filter((b) => b.status === "always")
-      .flatMap((b) => b.name.split(", "))
-      .map((s) => s.trim())
-      .filter(Boolean),
+  const badgeSkillNames = useMemo(
+    () => skillNamesFromBadges(skillBadges),
     [skillBadges],
   );
   const userDisplayText = userSkillPrompt ? userSkillPrompt.prompt : youText;
@@ -1950,10 +1945,6 @@ export function MessageBubble({ message, skills = [], onRetry }) {
       ? message.specExecution || parseSpecExecutionText(youText)
       : null;
 
-  if (hideUserCommandDirective) {
-    return null;
-  }
-
   return (
     <div
       data-message-id={message.id}
@@ -1970,16 +1961,16 @@ export function MessageBubble({ message, skills = [], onRetry }) {
             <SpecExecutionCard details={specExecutionDetails} />
           ) : (
             <div className="w-fit max-w-full bg-(--bg-tertiary) rounded-2xl px-4 py-3">
-              {(alwaysSkillNames.length > 0 || userSkillPrompt?.skillNames?.length || attachments.length > 0) && (
+              {(badgeSkillNames.length > 0 || userSkillPrompt?.skillNames?.length || attachments.length > 0) && (
                 <div
                   className={cn(
                     "flex max-w-full flex-col gap-2",
                     userDisplayText && "mb-3",
                   )}
                 >
-                  {(alwaysSkillNames.length > 0 || userSkillPrompt?.skillNames?.length > 0) && (
+                  {(badgeSkillNames.length > 0 || userSkillPrompt?.skillNames?.length > 0) && (
                     <UserSkillChips
-                      skillNames={[...alwaysSkillNames, ...(userSkillPrompt?.skillNames || [])]}
+                      skillNames={[...badgeSkillNames, ...(userSkillPrompt?.skillNames || [])]}
                       skills={skills}
                     />
                   )}

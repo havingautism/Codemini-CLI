@@ -363,6 +363,7 @@ function Shell() {
               )}
               <MemoInputBar
                 onSubmit={actions.submit}
+                onAction={actions.runChatAction}
                 onAbort={actions.abort}
                 busy={state.busy}
                 disabled={

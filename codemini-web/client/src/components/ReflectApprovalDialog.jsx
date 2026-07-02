@@ -10,6 +10,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { t } from "../../i18n/index.js";
+import { CHAT_ACTION_NAMES } from "@/lib/chat-action-names.js";
 
 function confidenceLabel(value) {
   const num = Number(value);
@@ -138,7 +139,7 @@ export function ReflectApprovalCard({
           variant="destructive"
           size="xs"
           disabled={disabled}
-          onClick={() => onAction("reject")}
+          onClick={() => onAction(CHAT_ACTION_NAMES.REFLECT_REJECT)}
         >
           {t("reflectReject")}
         </Button>
@@ -153,7 +154,7 @@ export function ReflectApprovalCard({
         <Button
           size="xs"
           disabled={disabled || editMode}
-          onClick={() => onAction("approve")}
+          onClick={() => onAction(CHAT_ACTION_NAMES.REFLECT_APPROVE)}
         >
           {t("reflectApprove")}
         </Button>

@@ -475,10 +475,10 @@ export const en = {
   builtin: "Built-in",
   custom: "Custom",
   sendMessageToCodemini: "Message Codemini",
-  sendMessageToCodeminiWithSlash: "Message Codemini, type / for more features",
-  askAnything:
-    "You can ask Codemini anything. Type / to use commands or skills",
+  searchActionsAndSkills: "Search actions and skills",
+  actionFailed: "Action failed",
   addContext: "Add Context",
+  addActionOrSkill: "Add action or skill",
   switchWorkspace: "Switch Workspace",
 
   // SoulPanel

@@ -307,6 +307,74 @@ function jsonResponse(res, data, status = 200) {
   res.end(body);
 }
 
+const CHAT_CONFLICT_CODES = new Set([
+  'BUSY',
+  'STALE_ACTION',
+  'NO_PENDING_REVIEW',
+  'NO_PENDING_APPROVAL'
+]);
+
+function chatErrorResponse(res, error, fallbackCode) {
+  const code = error?.code || fallbackCode;
+  const status = CHAT_CONFLICT_CODES.has(code) ? 409 : 400;
+  jsonResponse(res, {
+    error: true,
+    code,
+    message: error?.message || String(error)
+  }, status);
+}
+
+function ensureAcceptedBridgeResult(result) {
+  if (result?.accepted === false || result?.error) {
+    const error = new Error(result?.message || 'Chat request was rejected');
+    error.code = result?.code || 'INVALID_REQUEST';
+    throw error;
+  }
+  return result;
+}
+
+export async function handleStructuredChatRequest(req, res, bridge) {
+  const url = new URL(req.url, 'http://localhost');
+
+  if (req.method === 'POST' && url.pathname === '/api/chat/message') {
+    const body = await readBody(req);
+    try {
+      const attachmentData = await resolveAttachmentSubmission(
+        bridge.getSessionId?.(),
+        body?.text,
+        body?.attachmentIds
+      );
+      const result = ensureAcceptedBridgeResult(await bridge.handleSubmitMessage({
+        text: body?.text,
+        skillNames: body?.skillNames,
+        attachmentIds: body?.attachmentIds,
+        dismissedAlwaysSkills: body?.dismissedAlwaysSkills,
+        ...attachmentData
+      }));
+      jsonResponse(res, { ok: true, result }, 202);
+    } catch (error) {
+      chatErrorResponse(res, error, 'INVALID_REQUEST');
+    }
+    return true;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/chat/action') {
+    const body = await readBody(req);
+    try {
+      const result = ensureAcceptedBridgeResult(await bridge.handleAction({
+        name: body?.name,
+        payload: body?.payload || {}
+      }));
+      jsonResponse(res, { ok: true, result }, 200);
+    } catch (error) {
+      chatErrorResponse(res, error, 'ACTION_FAILED');
+    }
+    return true;
+  }
+
+  return false;
+}
+
 function safeUploadFileName(name = '') {
   const ext = path.extname(String(name || '')).toLowerCase();
   const base = path.basename(String(name || 'attachment'), ext)
@@ -464,6 +532,22 @@ function buildAttachmentModelText(line, metas = []) {
     blocks.join('\n\n---\n\n'),
     '</uploaded_attachments>'
   ].join('\n');
+}
+
+export async function resolveAttachmentSubmission(sessionId, line, attachmentIds = []) {
+  const metas = await loadAttachmentMetas(sessionId, attachmentIds);
+  const modelText = buildAttachmentModelText(line, metas);
+  return {
+    attachments: metas.map((meta) => ({
+      id: meta.id,
+      name: meta.name,
+      mime: meta.mime,
+      kind: meta.kind,
+      size: meta.size,
+      url: attachmentPublicUrl(sessionId, meta.id)
+    })),
+    ...(modelText ? { modelText } : {})
+  };
 }
 
 function buildCodeWikiAskPrompt({ question, reportPath, projectDir, replyLanguage, history = [] }) {
@@ -1154,6 +1238,8 @@ async function main() {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
+    if (await handleStructuredChatRequest(req, res, bridge)) return;
+
     // SSE
     if (url.pathname === '/api/events' && req.method === 'GET') {
       bridge.addClient(res);
@@ -1239,22 +1325,18 @@ async function main() {
         }, 409);
         return;
       }
-      const attachmentMetas = await loadAttachmentMetas(bridge.getSessionId(), attachmentIds);
-      const attachmentModelText = buildAttachmentModelText(line, attachmentMetas);
+      const attachmentData = await resolveAttachmentSubmission(
+        bridge.getSessionId(),
+        line,
+        attachmentIds
+      );
       const result = bridge.handleSubmit(line, {
         readOnlyCodeWiki: readOnlyCodeWiki === true,
-        attachments: attachmentMetas.map((meta) => ({
-          id: meta.id,
-          name: meta.name,
-          mime: meta.mime,
-          kind: meta.kind,
-          size: meta.size,
-          url: attachmentPublicUrl(bridge.getSessionId(), meta.id)
-        })),
+        attachments: attachmentData.attachments,
         ...(Array.isArray(dismissedAlwaysSkills) && dismissedAlwaysSkills.length > 0
           ? { dismissedAlwaysSkills }
           : {}),
-        ...(attachmentModelText ? { modelText: attachmentModelText } : {})
+        ...(attachmentData.modelText ? { modelText: attachmentData.modelText } : {})
       });
       jsonResponse(res, result);
       return;
@@ -1367,10 +1449,6 @@ async function main() {
     // ── Runtime state ──
     if (req.method === 'GET' && url.pathname === '/api/state') {
       jsonResponse(res, { ...bridge.getState(), cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) });
-      return;
-    }
-    if (req.method === 'GET' && url.pathname === '/api/completions') {
-      jsonResponse(res, bridge.getCompletions(url.searchParams.get('q') || ''));
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/history') {
@@ -2364,7 +2442,13 @@ async function main() {
   process.on('SIGTERM', cleanup);
 }
 
-main().catch((err) => {
-  console.error('Failed to start:', err);
-  process.exit(1);
-});
+const isDirectRun = process.argv[1]
+  ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+  : false;
+
+if (isDirectRun) {
+  main().catch((err) => {
+    console.error('Failed to start:', err);
+    process.exit(1);
+  });
+}

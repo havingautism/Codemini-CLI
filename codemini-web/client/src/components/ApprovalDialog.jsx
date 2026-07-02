@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { ReviewCommandBlock, ReviewSection } from '@/components/WorkflowReviewDialog.jsx';
 import { t } from '../../i18n/index.js';
+import { CHAT_ACTION_NAMES } from '@/lib/chat-action-names.js';
 
 function riskDotClass(risk) {
   const level = String(risk || '').trim().toLowerCase();
@@ -192,14 +193,14 @@ export function ApprovalDialog({ request, open, onDecision }) {
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
-      onDecision(id, false);
+      onDecision(id, CHAT_ACTION_NAMES.APPROVAL_REJECT);
       return;
     }
 
     if (event.key === 'Enter' && !event.shiftKey && !isEditableTarget(event.target)) {
       event.preventDefault();
       event.stopPropagation();
-      onDecision(id, true);
+      onDecision(id, CHAT_ACTION_NAMES.APPROVAL_APPROVE);
     }
   };
 
@@ -216,7 +217,7 @@ export function ApprovalDialog({ request, open, onDecision }) {
   };
 
   return (
-    <Dialog open={open} onOpenChange={(v) => { if (!v) onDecision(id, false); }}>
+    <Dialog open={open} onOpenChange={(v) => { if (!v) onDecision(id, CHAT_ACTION_NAMES.APPROVAL_REJECT); }}>
       <DialogContent
         onKeyDownCapture={handleKeyDownCapture}
         className={cn(
@@ -231,13 +232,13 @@ export function ApprovalDialog({ request, open, onDecision }) {
           <ApprovalBody variant={variant} args={args} details={details} />
         </div>
         <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => onDecision(id, false)}>
+          <Button variant="outline" onClick={() => onDecision(id, CHAT_ACTION_NAMES.APPROVAL_REJECT)}>
             {t('deny')}
             {hasApprovalShortcuts && (
               <span className="ml-1.5 text-[11px] font-mono opacity-70">Esc</span>
             )}
           </Button>
-          <Button onClick={() => onDecision(id, true)}>
+          <Button onClick={() => onDecision(id, CHAT_ACTION_NAMES.APPROVAL_APPROVE)}>
             {t('approve')}
             {hasApprovalShortcuts && (
               <span className="ml-1.5 text-[13px] leading-none opacity-80">↩︎</span>

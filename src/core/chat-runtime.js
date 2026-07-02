@@ -1,14 +1,12 @@
-import { parseInput } from './input-parser.js';
 import {
   formatLocalDate,
   loadCommandsAndSkills,
   buildSkillIndexPromptBlock,
-  composeExplicitSkillPrompt,
   isUserInvocableSkill,
   renderCommandPrompt
 } from './command-loader.js';
 import { runAgentLoop } from './agent-loop.js';
-import { setResultDir, clearResultStore } from './tool-result-store.js';
+import { setResultDir } from './tool-result-store.js';
 import { trimInline, normalizePath } from './string-utils.js';
 import { normalizeAssumptionItems } from './tool-args-helpers.js';
 import fs from 'node:fs/promises';
@@ -21,18 +19,15 @@ import {
 import { isDangerousCommand, runShellCommand } from './shell.js';
 import { getBuiltinTools } from './tools.js';
 import {
-  createSession,
   deriveSessionTitle,
   listSessions,
-  loadSession,
   pruneSessions,
   resolveTitleUserText,
   saveSession
 } from './session-store.js';
-import { getConfigValue, loadConfig, resetConfig, setConfigValue } from './config-store.js';
+import { loadConfig, setConfigValue } from './config-store.js';
 import { evaluateCommandPolicy } from './command-policy.js';
-import { appendInputHistory, loadInputHistory } from './input-history-store.js';
-import { createCheckpoint, listCheckpoints, loadCheckpoint } from './checkpoint-store.js';
+import { loadInputHistory } from './input-history-store.js';
 import {
   compactMessagesLocally,
   estimateMessagesTokens,
@@ -47,16 +42,15 @@ import { buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
 import { buildSubAgentShellRulesPrompt } from './shell-profile.js';
 import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
-import { forgetMemory, listMemories, rememberMemory, searchMemories, captureToInbox, listInbox } from './memory-store.js';
+import { listMemories, rememberMemory, captureToInbox, listInbox } from './memory-store.js';
 import { runDreamConsolidation } from './dream-consolidate.js';
 import { normalizePlanState } from './plan-state.js';
 import { normalizeSpecState } from './spec-state.js';
-import { countActiveTodos, normalizeTodos } from './todo-state.js';
+import { normalizeTodos } from './todo-state.js';
 import {
   attachReflectTargets,
   buildReflectSkillDraft,
   normalizeReflectDraft,
-  parseReflectScope,
   writeReflectSkillDraft
 } from './reflect-skill.js';
 import {
@@ -75,8 +69,21 @@ import {
   resolveGatewayPayloadExtras
 } from './provider/search-tool-registry.js';
 import { normalizeReasoningEffort, resolveConfiguredReasoningEffort } from './provider/reasoning-effort.js';
+import { appendAttachmentContext, composeSelectedSkills, normalizeChatSubmission } from './chat-message.js';
+import { CHAT_ACTIONS, validateChatAction } from './chat-action-dispatcher.js';
 
 const STREAM_SAVE_DEBOUNCE_MS = 120;
+
+export function takePendingApproval(state, requestId) {
+  const request = state?.current;
+  if (!request || String(request.id || '') !== String(requestId || '')) {
+    const error = new Error('No matching approval request is pending');
+    error.code = request ? 'STALE_ACTION' : 'NO_PENDING_APPROVAL';
+    throw error;
+  }
+  state.current = null;
+  return request;
+}
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_REQUIREMENTS_TEMPLATE = path.resolve(MODULE_DIR, '..', '..', 'templates', 'project-requirements', 'report-shell.html');
 const PROJECT_REQUIREMENTS_MD_TEMPLATE = path.resolve(MODULE_DIR, '..', '..', 'templates', 'project-requirements', 'report-template.md');
@@ -486,266 +493,6 @@ function formatLocalDateTimeSlug(date = new Date()) {
   return `${year}-${month}-${day}-${hour}-${minute}-${second}`;
 }
 
-function getCompletionCopy(language = 'zh') {
-  const lang = normalizeUiLocale(language);
-  return {
-    zh: {
-      configLabels: {
-        'gateway.base_url': '网关基础 URL',
-        'gateway.api_key': '网关 API Key',
-        'sdk.provider': 'SDK provider',
-        'gateway.timeout_ms': '网关超时时间（毫秒）',
-        'gateway.max_retries': '网关重试次数',
-        'model.name': '当前模型名称',
-        'model.fast_name': '快速模型名称',
-        'model.reasoning_enabled': '模型思考模式',
-        'model.reasoning_effort': '模型思考强度',
-        'model.max_context_tokens': '模型上下文 token 上限',
-        'ui.language': '界面语言',
-        'ui.reply_language': '回复语言',
-        'execution.mode': '执行模式',
-        'execution.always_allow_tools': '始终允许的工具列表',
-
-        'context.preflight_trigger_pct': '预压缩阈值',
-        'context.hard_limit_pct': '硬压缩阈值',
-        'context.tool_result_max_chars': '工具结果字符上限',
-        'context.read_file_default_lines': 'read_file 默认行数窗口',
-        'context.read_file_max_chars': 'read_file 字符上限',
-        'context.prompt_budget_audit': 'Prompt 预算审计开关',
-        'context.microcompact_enabled': '微压缩(micro-compact)开关',
-        'context.microcompact_keep_recent': '微压缩保留最近工具结果数',
-        'context.aggressive_tool_prune_beta': '激进工具结果压缩(Beta)',
-        'context.aggressive_tool_prune_keep_recent': '激进压缩保留最近轮数',
-        'context.project_instructions_enabled': '项目 AGENTS.md 注入开关',
-        'context.project_instructions_max_chars': '项目 AGENTS.md 字符上限',
-        'context.project_context_enabled': '项目上下文自动注入开关',
-        'sessions.max_sessions': '会话保留上限',
-        'sessions.retention_days': '会话保留天数',
-        'shell.default': '默认 shell',
-        'shell.timeout_ms': 'shell 超时时间（毫秒）',
-        'context.max_tokens': '上下文 token 预算',
-        'soul.preset': 'soul 预设',
-        'soul.custom_path': '自定义 soul 路径',
-        'web.search_enabled': '联网搜索开关',
-        'web.search_provider': '联网搜索提供方',
-        'web.tavily_api_key': 'Tavily 搜索 API Key',
-        'web.exa_api_key': 'Exa 搜索 API Key',
-        'policy.safe_mode': '安全模式开关',
-        'policy.allowed_paths': '安全模式目录白名单',
-        'policy.allow_dangerous_commands': '危险命令开关'
-      },
-      optionHints: {
-        'sdk.provider': '可选：openai-compatible | anthropic',
-        'model.reasoning_enabled': '可选：true | false',
-        'model.reasoning_effort': '可选：auto | low | medium | high',
-        'ui.language': '可选：zh | en',
-        'ui.reply_language': '可选：zh | en',
-        'execution.mode': '可选：normal（日常）| code（编码）',
-        'execution.approval_mode': '可选：review | auto | full_access',
-        'shell.default': '常用：bash | powershell',
-        'policy.safe_mode': '可选：true | false',
-        'policy.allowed_paths': 'JSON 数组，例如 ["D:\\\\shared"]',
-        'policy.allow_dangerous_commands': '可选：true | false',
-        'context.prompt_budget_audit': '可选：true | false',
-        'context.aggressive_tool_prune_beta': '可选：true | false（建议推理能力强的模型使用）',
-        'context.aggressive_tool_prune_keep_recent': '建议：2-4 轮',
-        'context.project_context_enabled': '可选：true | false',
-        'context.project_instructions_enabled': '可选：true | false',
-        'context.project_instructions_max_chars': '建议：8000-12000',
-        'web.search_enabled': '可选：true | false',
-        'web.search_provider': '可选：bing_rss | tavily | exa',
-        'web.tavily_api_key': '也可用环境变量 TAVILY_API_KEY',
-        'web.exa_api_key': '也可用环境变量 EXA_API_KEY'
-      },
-      describeSet: (label, hint) => `设置${label}${hint ? `（${hint}）` : ''}`,
-      describeGet: (label, hint) => `查看${label}${hint ? `（${hint}）` : ''}`,
-      configSubcommands: {
-        '/config set': '设置配置项',
-        '/config get': '查看配置项',
-        '/config list': '查看完整配置',
-        '/config reset': '重置为默认配置'
-      },
-      planSubcommands: {},
-      commands: {
-        help: '显示聊天帮助',
-        exit: '退出聊天',
-        commands: '列出 slash/自定义命令',
-        status: '查看运行状态（mode/model/session）',
-        model: '查看或切换模型',
-        mode: '设置工作模式：normal（日常）| code（编码）',
-        approval: '设置审阅权限：review|auto|full_access',
-        compact: '压缩消息上下文',
-        checkpoint: '创建/查看/加载检查点',
-        spec: '在 .codemini/specs 中创建 spec',
-        plan: '已移除；请切换编码模式让系统自动规划执行',
-        agents: '列出/运行子代理角色',
-        config: '设置/读取/列出/重置配置',
-        memory: '查看/搜索/删除持久记忆',
-        dream: '整理记忆收件箱（dream consolidation）',
-        reflect: '复盘成功链路并生成可审阅 skill 草稿',
-        history: '查看/恢复会话',
-        debug: '运行时调试开关',
-        stop: '中止当前回答',
-        new: '开始新会话',
-        yes: '确认当前待审批事项',
-        no: '放弃当前待审批事项',
-        edit: '修改当前待审批事项',
-        reject: '拒绝当前待审批事项'
-      },
-      generic: {
-        configCommand: '配置命令',
-        historyCommand: '历史会话命令',
-        modeCommand: '切换工作模式',
-        approvalCommand: '切换审阅权限',
-        checkpointCommand: '检查点命令',
-        specCommand: '创建 spec 文件',
-        planCommand: '规划命令',
-        agentCommand: '子代理命令',
-        memoryCommand: '记忆命令',
-        dreamCommand: '记忆整理命令',
-        reflectCommand: '复盘生成 skill 草稿',
-        debugCommand: '调试命令',
-        keyboardDebugCommand: '键盘调试命令',
-        compactCommand: '上下文压缩命令',
-        stopCommand: '中止当前回答',
-        statusCommand: '查看运行状态',
-        modelCommand: '查看或切换模型',
-        resumeSession: '恢复一个已保存的会话'
-      }
-    },
-    en: {
-      configLabels: {
-        'gateway.base_url': 'gateway base URL',
-        'gateway.api_key': 'gateway API key',
-        'sdk.provider': 'SDK provider',
-        'gateway.timeout_ms': 'gateway timeout in milliseconds',
-        'gateway.max_retries': 'gateway retry count',
-        'model.name': 'active model name',
-        'model.fast_name': 'fast model name',
-        'model.reasoning_enabled': 'model thinking mode',
-        'model.reasoning_effort': 'model reasoning effort',
-        'model.max_context_tokens': 'model context token limit',
-        'ui.language': 'UI language',
-        'ui.reply_language': 'reply language',
-        'execution.mode': 'execution mode',
-        'execution.always_allow_tools': 'always-allowed tools',
-
-        'context.preflight_trigger_pct': 'preflight compact threshold',
-        'context.hard_limit_pct': 'hard compact threshold',
-        'context.tool_result_max_chars': 'tool result character limit',
-        'context.read_file_default_lines': 'default read_file line window',
-        'context.read_file_max_chars': 'read_file character limit',
-        'context.prompt_budget_audit': 'prompt budget audit switch',
-        'context.microcompact_enabled': 'micro-compact enabled',
-        'context.microcompact_keep_recent': 'micro-compact keep recent tool results',
-        'context.aggressive_tool_prune_beta': 'aggressive tool result prune (beta)',
-        'context.aggressive_tool_prune_keep_recent': 'aggressive prune keep recent steps',
-        'context.project_instructions_enabled': 'project AGENTS.md injection switch',
-        'context.project_instructions_max_chars': 'project AGENTS.md character limit',
-        'context.project_context_enabled': 'project context injection switch',
-        'sessions.max_sessions': 'stored session limit',
-        'sessions.retention_days': 'session retention days',
-        'shell.default': 'default shell',
-        'shell.timeout_ms': 'shell timeout in milliseconds',
-        'context.max_tokens': 'context token budget',
-        'soul.preset': 'soul preset',
-        'soul.custom_path': 'custom soul prompt path',
-        'web.search_enabled': 'web search switch',
-        'web.search_provider': 'web search provider',
-        'web.tavily_api_key': 'Tavily search API key',
-        'web.exa_api_key': 'Exa search API key',
-        'policy.safe_mode': 'safe mode switch',
-        'policy.allowed_paths': 'safe-mode allowed path roots',
-        'policy.allow_dangerous_commands': 'dangerous command allowance'
-      },
-      optionHints: {
-        'sdk.provider': 'options: openai-compatible | anthropic',
-        'model.reasoning_enabled': 'options: true | false',
-        'model.reasoning_effort': 'options: auto | low | medium | high',
-        'ui.language': 'options: zh | en',
-        'ui.reply_language': 'options: zh | en',
-        'execution.mode': 'options: normal (daily) | code (coding)',
-        'execution.approval_mode': 'options: review | auto | full_access',
-        'shell.default': 'common: bash | powershell',
-        'policy.safe_mode': 'options: true | false',
-        'policy.allowed_paths': 'JSON array, for example ["D:\\\\shared"]',
-        'policy.allow_dangerous_commands': 'options: true | false',
-        'context.prompt_budget_audit': 'options: true | false',
-        'context.aggressive_tool_prune_beta': 'options: true | false (recommended for strong-reasoning models)',
-        'context.aggressive_tool_prune_keep_recent': 'recommended: 2-4 steps',
-        'context.project_context_enabled': 'options: true | false',
-        'context.project_instructions_enabled': 'options: true | false',
-        'context.project_instructions_max_chars': 'recommended: 8000-12000',
-        'web.search_enabled': 'options: true | false',
-        'web.search_provider': 'options: bing_rss | tavily | exa',
-        'web.tavily_api_key': 'environment variable TAVILY_API_KEY also works',
-        'web.exa_api_key': 'environment variable EXA_API_KEY also works'
-      },
-      describeSet: (label, hint) => `set the ${label}${hint ? ` (${hint})` : ''}`,
-      describeGet: (label, hint) => `show the ${label}${hint ? ` (${hint})` : ''}`,
-      configSubcommands: {
-        '/config set': 'update a config value',
-        '/config get': 'show a config value',
-        '/config list': 'print the full config',
-        '/config reset': 'reset config to defaults'
-      },
-      planSubcommands: {},
-      commands: {
-        help: 'show chat help',
-        exit: 'exit chat',
-        commands: 'list slash/custom commands',
-        status: 'show runtime status (mode/model/session)',
-        model: 'show or switch model',
-        mode: 'set work mode: normal (daily) | code (coding)',
-        approval: 'set approval mode: review|auto|full_access',
-        compact: 'compress message context',
-        checkpoint: 'create/list/load conversation checkpoints',
-        spec: 'create a spec markdown file in .codemini/specs',
-        plan: 'removed; use coding mode for automatic planning and execution',
-        agents: 'run/list sub-agent roles',
-        config: 'set/get/list/reset config values',
-        memory: 'list/search/delete persistent memories',
-        dream: 'consolidate memory inbox (dream)',
-        reflect: 'reflect on a successful workflow and draft a reusable skill',
-        history: 'list/resume sessions',
-        debug: 'runtime debug switches',
-        stop: 'stop the current response',
-        new: 'start a new session',
-        yes: 'approve the pending item',
-        no: 'discard the pending item',
-        edit: 'revise the pending item',
-        reject: 'reject the pending item'
-      },
-      generic: {
-        configCommand: 'config command',
-        historyCommand: 'history command',
-        modeCommand: 'switch work mode',
-        approvalCommand: 'switch approval mode',
-        checkpointCommand: 'checkpoint command',
-        specCommand: 'create a spec file',
-        planCommand: 'planning command',
-        agentCommand: 'sub-agent command',
-        memoryCommand: 'memory command',
-        dreamCommand: 'dream consolidation command',
-        reflectCommand: 'reflect skill draft command',
-        debugCommand: 'debug command',
-        keyboardDebugCommand: 'keyboard debug command',
-        compactCommand: 'context compaction command',
-        stopCommand: 'stop the current response',
-        statusCommand: 'show runtime status',
-        modelCommand: 'show or switch model',
-        resumeSession: 'resume a saved session'
-      }
-    }
-  }[lang];
-}
-
-function describeConfigKey(key, mode = 'set', language = 'zh') {
-  const copy = getCompletionCopy(language);
-  const label = copy.configLabels[key] || key;
-  const hint = copy.optionHints[key] || '';
-  return mode === 'get' ? copy.describeGet(label, hint) : copy.describeSet(label, hint);
-}
 
 const SUB_AGENT_ROLES = ['planner', 'explorer', 'architect', 'advisor', 'coder', 'refactorer', 'reviewer', 'tester', 'debugger', 'writer', 'summarizer', 'codewiki'];
 const EXECUTOR_AGENT_ROLES = SUB_AGENT_ROLES.filter((role) => !['planner', 'codewiki'].includes(role));
@@ -802,7 +549,7 @@ function buildExecutionModePromptBlock(executionMode) {
       '   - create_spec when scope, architecture, UX, constraints, or trade-offs still need alignment. Spec answers what to build and why.',
       '   - create_plan when the goal is clear but complex enough to benefit from sub-agent execution steps. Plan answers how to implement.',
       '6. Prefer direct implementation for small fixes and localized edits. Prefer create_plan for multi-file/multi-phase work. Prefer create_spec for large, novel, or cross-cutting work.',
-      '7. create_spec enters user approval before execution. create_plan writes a plan artifact and starts execution automatically; the user can interrupt with /stop.',
+      '7. create_spec enters user approval before execution. create_plan writes a plan artifact and starts execution automatically; the user can interrupt it with the Stop control.',
       '',
       'Quality bar:',
       '- Ground every recommendation in repository evidence, not assumptions.',
@@ -2231,7 +1978,7 @@ function classifyTaskComplexity(text = '') {
 
   const lower = input.toLowerCase();
   const explicitPlanning =
-    /(\/plan\b|plan first|make a plan|implementation plan|先做计划|先出方案|先规划|先计划)/i.test(lower);
+    /(plan first|make a plan|implementation plan|先做计划|先出方案|先规划|先计划)/i.test(lower);
   if (explicitPlanning) return 'complex';
 
   const simpleSkip =
@@ -3929,6 +3676,15 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
   return snapshot;
 }
 
+export function buildChatActionValidationState(runtimeState = {}, activeApproval = null) {
+  const { resolve: _resolve, ...pendingApproval } = activeApproval || {};
+  return {
+    ...runtimeState,
+    pendingReflectApproval: runtimeState.pendingReflectSkill || null,
+    pendingApproval: activeApproval ? pendingApproval : null
+  };
+}
+
 function resolveDefaultModel(config) {
   return String(config?.model?.name || '').trim();
 }
@@ -4077,90 +3833,6 @@ export function resolveRuntimeExecutionMode(executionMode, config, session) {
   return normalizeExecutionMode(executionMode || config?.execution?.mode || 'normal');
 }
 
-function isApprovalText(text = '') {
-  const value = String(text || '').trim().toLowerCase();
-  if (!value) return false;
-  return /^(yes|\/yes|y|ok|okay|approve|approved|continue|proceed|go ahead|start|开始|继续|可以|同意|批准|通过|按这个做)$/.test(value);
-}
-
-function isStayInPlanText(text = '') {
-  const value = String(text || '').trim().toLowerCase();
-  if (!value) return false;
-  return /^(stay|\/stay|keep planning|keep in plan mode|not yet|wait|先别|先等等|继续计划|继续讨论|继续规划|暂不批准)$/.test(value);
-}
-
-function isRejectPlanText(text = '') {
-  const value = String(text || '').trim().toLowerCase();
-  if (!value) return false;
-  return /^(\/reject|reject|no|discard|cancel|否决|拒绝|不要了|取消计划)$/.test(value);
-}
-
-export function shouldPersistInputHistory(parsedInput) {
-  if (!parsedInput || parsedInput.type !== 'slash') return true;
-  const command = String(parsedInput.command || '').trim().toLowerCase();
-  // Keep workflow/control commands out of input history (↑/↓ should focus on real task prompts).
-  return ![
-    'yes',
-    'no',
-    'edit',
-    'reject',
-    'plan',
-    'spec',
-    'dream',
-    'compact',
-    'capture',
-    'inbox',
-    'reflect'
-  ].includes(command);
-}
-
-const NO_ARG_SLASH_COMMANDS = new Set(['exit', 'new', 'help', 'status', 'commands']);
-const APPROVAL_NO_ARG_SLASH_COMMANDS = new Set(['yes', 'no', 'reject']);
-const COMPACT_FLAGS_WITH_VALUE = new Set(['--threshold']);
-const COMPACT_FLAGS = new Set([
-  '--preview',
-  '--restore',
-  '--micro',
-  '--aggressive',
-  '--conservative',
-  '--default',
-  '--auto-on',
-  '--auto-off',
-  ...COMPACT_FLAGS_WITH_VALUE
-]);
-
-function validateBuiltinSlashArgs(parsedInput) {
-  if (!parsedInput || parsedInput.type !== 'slash') return '';
-  const command = String(parsedInput.command || '').trim().toLowerCase();
-  const args = Array.isArray(parsedInput.args) ? parsedInput.args : [];
-  if ((NO_ARG_SLASH_COMMANDS.has(command) || APPROVAL_NO_ARG_SLASH_COMMANDS.has(command)) && args.length > 0) {
-    return `/${command} does not accept extra text. Use /${command} by itself.`;
-  }
-  if (command === 'compact') {
-    for (let index = 0; index < args.length; index += 1) {
-      const arg = String(args[index] || '');
-      if (!COMPACT_FLAGS.has(arg)) {
-        return `Unknown /compact option: ${arg}\nUsage: /compact [--preview|--restore|--micro|--aggressive|--conservative|--default|--auto-on|--auto-off|--threshold N]`;
-      }
-      if (COMPACT_FLAGS_WITH_VALUE.has(arg)) {
-        const value = args[index + 1];
-        if (value === undefined || Number.isNaN(Number(value))) {
-          return 'Usage: /compact --threshold <50-95>';
-        }
-        index += 1;
-      }
-    }
-  }
-  if (command === 'dream') {
-    for (const arg of args) {
-      if (arg === '--dry-run') continue;
-      if (String(arg || '').startsWith('--scope=')) continue;
-      return `Unknown /dream option: ${arg}\nUsage: /dream [--dry-run] [--scope=user|global|project]`;
-    }
-  }
-  return '';
-}
-
 function buildPendingReflectSkillMessage(reflectState) {
   const candidates = Array.isArray(reflectState?.candidates) ? reflectState.candidates : [];
   if (candidates.length === 0) {
@@ -4179,7 +3851,7 @@ function buildPendingReflectSkillMessage(reflectState) {
     lines.push(String(candidate.content || '').trim());
   }
   lines.push('');
-  lines.push('Use /yes to write this skill, /edit <feedback> to revise it, or /no to discard it.');
+  lines.push('Choose Write, Revise, or Discard in the review controls.');
   return lines.join('\n');
 }
 
@@ -5758,7 +5430,7 @@ async function buildAutoPlanArtifact({
       autoPlan,
       finalSummary,
       planningError,
-      approvalText: 'Plan does not require approval; execution is controlled by coding mode and /stop.',
+      approvalText: 'Plan does not require approval; execution is controlled by coding mode and the Stop control.',
       progressLine: '- Plan created for execution.'
     }),
     'plan-auto',
@@ -5791,7 +5463,7 @@ async function writeExplicitAutoPlan({ goal, steps = [], sessionId }) {
       goal,
       autoPlan,
       finalSummary,
-      approvalText: 'Plan does not require approval; execution is controlled by coding mode and /stop.',
+      approvalText: 'Plan does not require approval; execution is controlled by coding mode and the Stop control.',
       progressLine: '- Structured plan created for execution.'
     }),
     'plan-auto',
@@ -5816,7 +5488,7 @@ function renderAutoPlanMarkdown({
   autoPlan,
   finalSummary,
   planningError = '',
-  approvalText = 'Plan does not require approval; execution is controlled by coding mode and /stop.',
+  approvalText = 'Plan does not require approval; execution is controlled by coding mode and the Stop control.',
   progressLine = '- Plan created for execution.'
 }) {
   const lines = [];
@@ -5975,7 +5647,7 @@ function validateProjectRequirementsFormat(skillName, outputFormat) {
   if (skillName === 'project-requirements-md' && outputFormat !== 'md') {
     return [
       'project-requirements-md always outputs Markdown CodeWiki.',
-      'Use /project-requirements --html for the same CodeWiki report in HTML format instead of passing --html here.'
+      'Use the HTML project-requirements workflow for a CodeWiki report instead of passing --html here.'
     ].join(' ');
   }
   return null;
@@ -6238,7 +5910,7 @@ function renderProjectRequirementsPlanMarkdown({ goal, steps, reportPath, compan
       goal,
       autoPlan,
       finalSummary: 'Project requirements pipeline created and will execute immediately.',
-      approvalText: 'No approval required. Triggered explicitly by /project-requirements.',
+      approvalText: 'No approval required. Triggered explicitly by the project-requirements workflow.',
       progressLine: progressLines
     })
   ].join('\n');
@@ -6834,11 +6506,10 @@ function formatHistoryList({ currentSession, sessions }) {
       `   id=${session.id}`,
       `   ${count} ${count === 1 ? 'msg' : 'msgs'}  |  ${formatHistoryTimestamp(session.updatedAt)}${session.model ? `  |  ${session.model}` : ''}`,
       `   ${compactHistoryPreview(session.preview)}`,
-      `   resume: /history resume ${session.id}`
+      `   session: ${session.id}`
     );
   }
 
-  lines.push('', 'Tip: use /history resume <session_id>');
   return lines.join('\n');
 }
 
@@ -6853,7 +6524,23 @@ export async function createChatRuntime({
   if (session && typeof session === 'object' && !session.projectDir) {
     session.projectDir = process.cwd();
   }
-  let activeRequestToolApproval = typeof requestToolApproval === 'function' ? requestToolApproval : null;
+  let requestToolApprovalObserver = typeof requestToolApproval === 'function' ? requestToolApproval : null;
+  const approvalRequestState = { current: null };
+  const activeRequestToolApproval = async (request) => {
+    let resolveStructuredApproval;
+    const structuredDecision = new Promise((resolve) => {
+      resolveStructuredApproval = resolve;
+    });
+    approvalRequestState.current = { ...request, resolve: resolveStructuredApproval };
+    try {
+      const observerDecision = requestToolApprovalObserver
+        ? Promise.resolve(requestToolApprovalObserver(request))
+        : new Promise(() => {});
+      return await Promise.race([structuredDecision, observerDecision]);
+    } finally {
+      approvalRequestState.current = null;
+    }
+  };
   let activeRequestUserInput = null;
   let onTitleUpdateCallback = null;
   const startupEvents = [];
@@ -7002,474 +6689,6 @@ export async function createChatRuntime({
   } catch {
     // keep startup resilient even if historical sessions cannot be listed
   }
-
-  const configKeyHints = [
-    'gateway.base_url',
-    'gateway.api_key',
-    'model.name',
-    'model.fast_name',
-    'model.reasoning_enabled',
-    'model.reasoning_effort',
-    'ui.language',
-    'ui.reply_language',
-    'execution.mode',
-    'execution.approval_mode',
-    'shell.default',
-    'sdk.provider',
-    'gateway.timeout_ms',
-    'gateway.max_retries',
-    'model.max_context_tokens',
-    'execution.always_allow_tools',
-        'context.preflight_trigger_pct',
-    'context.hard_limit_pct',
-    'context.tool_result_max_chars',
-    'context.read_file_default_lines',
-    'context.read_file_max_chars',
-    'context.microcompact_enabled',
-    'context.microcompact_keep_recent',
-    'context.aggressive_tool_prune_beta',
-    'context.aggressive_tool_prune_keep_recent',
-    'context.project_context_enabled',
-    'context.project_instructions_enabled',
-    'context.project_instructions_max_chars',
-    'sessions.max_sessions',
-    'sessions.retention_days',
-    'shell.timeout_ms',
-    'context.max_tokens',
-    'soul.preset',
-    'soul.custom_path',
-    'web.search_enabled',
-    'web.search_provider',
-    'web.tavily_api_key',
-    'web.exa_api_key',
-    'policy.safe_mode',
-    'policy.allowed_paths',
-    'policy.allow_dangerous_commands'
-  ];
-
-  const commandPriorityOrder = [
-    '/help',
-    '/status',
-    '/model',
-    '/config',
-    '/memory',
-    '/capture',
-    '/inbox',
-    '/dream',
-    '/mode',
-    '/approval',
-    '/history',
-    '/checkpoint',
-    '/agents',
-    '/compact',
-    '/debug',
-    '/new'
-  ];
-  const configSubcommandPriority = ['/config set', '/config get', '/config list', '/config reset'];
-
-  const listCommandNames = () => {
-    const completionCopy = getCompletionCopy(config.ui?.language);
-    const builtins = [
-      { name: 'help', description: completionCopy.commands.help },
-      { name: 'exit', description: completionCopy.commands.exit },
-      { name: 'commands', description: completionCopy.commands.commands },
-      { name: 'status', description: completionCopy.commands.status },
-      { name: 'model', description: completionCopy.commands.model },
-      { name: 'mode', description: completionCopy.commands.mode },
-      { name: 'approval', description: completionCopy.commands.approval },
-      { name: 'compact', description: completionCopy.commands.compact },
-      { name: 'checkpoint', description: completionCopy.commands.checkpoint },
-      { name: 'spec', description: completionCopy.commands.spec },
-      { name: 'agents', description: completionCopy.commands.agents },
-      { name: 'config', description: completionCopy.commands.config },
-      { name: 'memory', description: completionCopy.commands.memory },
-      { name: 'dream', description: completionCopy.commands.dream },
-      { name: 'reflect', description: completionCopy.commands.reflect },
-      { name: 'history', description: completionCopy.commands.history },
-      { name: 'debug', description: completionCopy.commands.debug },
-      { name: 'stop', description: completionCopy.commands.stop },
-      { name: 'new', description: completionCopy.commands.new }
-    ];
-    const out = [];
-    for (const cmd of commands.values()) {
-      if (cmd.metadata.type === 'skill') continue;
-      out.push({
-        name: cmd.name,
-        description: cmd.metadata.description || ''
-      });
-    }
-    return [...builtins, ...out].sort((a, b) => a.name.localeCompare(b.name));
-  };
-  const listSelectableSkills = () =>
-    Array.from(commands.values())
-      .filter((command) => isUserInvocableSkill(command))
-      .filter((command) => isSkillEnabled(config, command.name, command))
-      .sort((a, b) => a.name.localeCompare(b.name));
-
-  const compactOptions = [
-    '--preview',
-    '--restore',
-    '--micro',
-    '--aggressive',
-    '--conservative',
-    '--default',
-    '--auto-on',
-    '--auto-off',
-    '--threshold 60'
-  ];
-
-  const configTemplates = [
-    '/config list',
-    '/config get <key>',
-    '/config set <key> <value>',
-    '/config reset'
-  ];
-
-  const historyTemplates = ['/history list', '/history current', '/history resume <session_id>'];
-  const memoryTemplates = ['/memory list <scope>', '/memory search <scope> <query>', '/memory forget <scope> <id>'];
-  const modeTemplates = ['/mode normal', '/mode code'];
-  const approvalTemplates = ['/approval review', '/approval auto', '/approval full_access'];
-  const modelTemplates = ['/model current', '/model main', '/model fast', '/model set <name>'];
-  const checkpointTemplates = [
-    '/checkpoint create <name>',
-    '/checkpoint list',
-    '/checkpoint list --all',
-    '/checkpoint load <id>'
-  ];
-  const specTemplates = ['/spec <topic>'];
-  const planTemplates = [];
-  const agentTemplates = ['/agents list', '/agents run explorer <task>', '/agents run architect <task>', '/agents run advisor <task>', '/agents run coder <task>', '/agents run refactorer <task>', '/agents run reviewer <task>', '/agents run tester <task>', '/agents run debugger <task>', '/agents run writer <task>', '/agents run summarizer <task>'];
-  const debugTemplates = ['/debug keys on', '/debug keys off', '/debug keys status'];
-  const dreamTemplates = ['/dream', '/dream --dry-run', '/dream --scope=project', '/dream --scope=global'];
-  const reflectTemplates = ['/reflect', '/reflect --scope=global <request>', '/reflect <request>'];
-  const compactTemplates = compactOptions.map((opt) => `/compact ${opt}`);
-  const slashTemplates = [
-    ...configTemplates,
-    ...memoryTemplates,
-    ...historyTemplates,
-    ...modeTemplates,
-    ...approvalTemplates,
-    ...modelTemplates,
-    ...checkpointTemplates,
-    ...specTemplates,
-    ...planTemplates,
-    ...agentTemplates,
-    ...debugTemplates,
-    ...dreamTemplates,
-    ...reflectTemplates,
-    ...compactTemplates,
-    '/status'
-  ];
-  const compactKey = (value) => String(value || '').toLowerCase().replace(/[\/\s<>?]/g, '');
-  const commandDescriptions = new Map();
-  const registerSuggestion = (value, description = '') => {
-    commandDescriptions.set(value, description);
-    return { value, description };
-  };
-  const materializeSuggestions = (items) =>
-    (Array.isArray(items) ? items : []).map((item) => {
-      if (item && typeof item === 'object' && 'value' in item) return item;
-      const value = String(item || '');
-      return { value, description: commandDescriptions.get(value) || '' };
-    });
-  const matchCompactTemplates = (value) => {
-    const needle = compactKey(value);
-    if (!needle) return [];
-    return materializeSuggestions(
-      slashTemplates.filter((template) => compactKey(template).startsWith(needle))
-    );
-  };
-
-  const getCompletionOptions = (rawInput) => {
-    const input = String(rawInput || '');
-    if (input.startsWith('skill:[')) {
-      const inner = input.slice('skill:['.length);
-      const closeIndex = inner.indexOf(']');
-      if (closeIndex >= 0) return [];
-      const parts = inner.split(',');
-      const prefix = parts.pop()?.trim() || '';
-      const selected = parts.map((item) => item.trim()).filter(Boolean);
-      return listSelectableSkills()
-        .filter((skill) => !selected.includes(skill.name) && skill.name.startsWith(prefix))
-        .map((skill) => ({
-          kind: 'skill',
-          name: skill.name,
-          value: `skill:[${[...selected, skill.name].join(',')}] `,
-          display: `skill:${skill.name}`,
-          description: skill.metadata.description || ''
-        }));
-    }
-    if (input.startsWith('command:[')) {
-      const prefix = input.slice('command:['.length).split(']')[0].trim();
-      return listCommandNames()
-        .filter((entry) => entry.name.startsWith(prefix))
-        .map((entry) => ({
-          kind: 'command',
-          name: entry.name,
-          value: `command:[${entry.name}] `,
-          description: entry.description || ''
-        }));
-    }
-    if (!input.startsWith('/')) return [];
-    const completionCopy = getCompletionCopy(config.ui?.language);
-    const configSubcommandDescriptions = completionCopy.configSubcommands;
-    const planSubcommandDescriptions = completionCopy.planSubcommands || {};
-
-    const hasTrailingSpace = /\s$/.test(input);
-    const body = input.slice(1);
-    const tokens = body.trim().split(/\s+/).filter(Boolean);
-    const commandPart = tokens[0] || '';
-    const commandHasSubcommands = new Set([
-      'config',
-      'memory',
-      'compact',
-      'mode',
-      'approval',
-      'model',
-      'checkpoint',
-      'agents',
-      'history',
-      'debug'
-    ]);
-
-    const allCommandEntries = listCommandNames();
-    const allCommands = allCommandEntries.map((c) => c.name);
-    const exactCommand = Boolean(commandPart) && allCommands.includes(commandPart);
-    for (const entry of allCommandEntries) {
-      registerSuggestion(`/${entry.name}`, entry.description || '');
-    }
-    for (const template of configTemplates) {
-      registerSuggestion(template, configSubcommandDescriptions[template] || completionCopy.generic.configCommand);
-    }
-    for (const template of memoryTemplates) registerSuggestion(template, completionCopy.generic.memoryCommand);
-    for (const template of historyTemplates) registerSuggestion(template, completionCopy.generic.historyCommand);
-    for (const template of modeTemplates) registerSuggestion(template, completionCopy.generic.modeCommand);
-    for (const template of approvalTemplates) registerSuggestion(template, completionCopy.generic.approvalCommand);
-    for (const template of modelTemplates) registerSuggestion(template, completionCopy.generic.modelCommand || completionCopy.commands.model);
-    for (const template of checkpointTemplates) registerSuggestion(template, completionCopy.generic.checkpointCommand);
-    for (const template of specTemplates) registerSuggestion(template, completionCopy.generic.specCommand);
-    for (const template of planTemplates) {
-      registerSuggestion(template, planSubcommandDescriptions[template] || completionCopy.generic.planCommand);
-    }
-    for (const template of agentTemplates) registerSuggestion(template, completionCopy.generic.agentCommand);
-    for (const template of debugTemplates) registerSuggestion(template, completionCopy.generic.debugCommand);
-    for (const template of dreamTemplates) registerSuggestion(template, completionCopy.generic.dreamCommand);
-    for (const template of reflectTemplates) registerSuggestion(template, completionCopy.generic.reflectCommand);
-    for (const template of compactTemplates) registerSuggestion(template, completionCopy.generic.compactCommand);
-    registerSuggestion('/status', completionCopy.generic.statusCommand);
-
-    if (!commandPart) {
-      return materializeSuggestions(prioritizeByPreferredOrder(
-        allCommands.map((name) => `/${name}`),
-        commandPriorityOrder
-      ));
-    }
-
-    if (tokens.length === 1 && !hasTrailingSpace && !(exactCommand && commandHasSubcommands.has(commandPart))) {
-      const direct = prioritizeByPreferredOrder(
-        allCommands
-          .filter((name) => name.startsWith(commandPart))
-          .map((name) => `/${name}`),
-        commandPriorityOrder
-      );
-      if (direct.length > 0) return materializeSuggestions(direct);
-      return matchCompactTemplates(input);
-    }
-
-    if (commandPart === 'config') {
-      const subcommand = tokens[1] || '';
-      const subcommandIsExact = ['set', 'get', 'list', 'reset'].includes(subcommand);
-
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace && !subcommandIsExact)) {
-        return materializeSuggestions(prioritizeByPreferredOrder(
-          ['set', 'get', 'list', 'reset']
-            .filter((s) => s.startsWith(subcommand))
-            .map((s) => registerSuggestion(`/config ${s}`, configSubcommandDescriptions[`/config ${s}`] || completionCopy.generic.configCommand).value),
-          configSubcommandPriority
-        ));
-      }
-
-      if (subcommand === 'get') {
-        const keyPrefix = tokens.length >= 3 ? tokens[2] || '' : '';
-        return configKeyHints
-          .filter((k) => k.startsWith(keyPrefix))
-          .map((k) => registerSuggestion(`/config get ${k}`, describeConfigKey(k, 'get', config.ui?.language)));
-      }
-      if (subcommand === 'set') {
-        const keyPrefix = tokens.length >= 3 ? tokens[2] || '' : '';
-        return configKeyHints
-          .filter((k) => k.startsWith(keyPrefix))
-          .map((k) => registerSuggestion(`/config set ${k} `, describeConfigKey(k, 'set', config.ui?.language)));
-      }
-
-      return materializeSuggestions(configTemplates);
-    }
-
-    if (commandPart === 'memory') {
-      const sub = tokens[1] || '';
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        return ['list', 'search', 'forget']
-          .filter((item) => item.startsWith(sub))
-          .map((item) => registerSuggestion(`/memory ${item}`, completionCopy.generic.memoryCommand));
-      }
-      const scope = tokens[2] || '';
-      if (['list', 'search', 'forget'].includes(sub) && (tokens.length === 2 || (tokens.length === 3 && !hasTrailingSpace))) {
-        return ['user', 'global', 'project']
-          .filter((item) => item.startsWith(scope))
-          .map((item) => registerSuggestion(`/memory ${sub} ${item}${sub === 'list' ? '' : ' '}`, completionCopy.generic.memoryCommand));
-      }
-      return materializeSuggestions(memoryTemplates);
-    }
-
-    if (commandPart === 'compact') {
-      const joined = tokens.slice(1).join(' ');
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        return compactOptions
-          .filter((opt) => opt.startsWith(joined) || joined === '')
-          .map((opt) => registerSuggestion(`/compact ${opt}`, completionCopy.generic.compactCommand));
-      }
-      return compactOptions
-        .filter((opt) => opt.includes(joined) || joined === '')
-        .map((opt) => registerSuggestion(`/compact ${opt}`, completionCopy.generic.compactCommand));
-    }
-
-    if (commandPart === 'status') {
-      return [registerSuggestion('/status', completionCopy.generic.statusCommand)];
-    }
-    if (commandPart === 'model') {
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        const sub = tokens[1] || '';
-        return ['current', 'main', 'fast', 'set']
-          .filter((m) => m.startsWith(sub))
-          .map((m) => registerSuggestion(`/model ${m}${m === 'set' ? ' ' : ''}`, completionCopy.generic.modelCommand));
-      }
-      return materializeSuggestions(modelTemplates);
-    }
-    if (commandPart === 'mode') {
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        const sub = tokens[1] || '';
-        return ['normal', 'code']
-          .filter((m) => m.startsWith(sub))
-          .map((m) => registerSuggestion(`/mode ${m}`, completionCopy.generic.modeCommand));
-      }
-      return materializeSuggestions(modeTemplates);
-    }
-    if (commandPart === 'approval') {
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        const sub = tokens[1] || '';
-        return ['review', 'auto', 'full_access']
-          .filter((m) => m.startsWith(sub))
-          .map((m) => registerSuggestion(`/approval ${m}`, completionCopy.generic.approvalCommand));
-      }
-      return materializeSuggestions(approvalTemplates);
-    }
-    if (commandPart === 'checkpoint') {
-      if (tokens.length <= 2 && !hasTrailingSpace) {
-        const sub = tokens[1] || '';
-        if (sub === 'list') {
-          return ['--all']
-            .map((v) => registerSuggestion(`/checkpoint list ${v}`, completionCopy.generic.checkpointCommand));
-        }
-        return ['create', 'list', 'load']
-          .filter((s) => s.startsWith(sub))
-          .map((s) => registerSuggestion(`/checkpoint ${s}`, completionCopy.generic.checkpointCommand));
-      }
-      if (tokens[1] === 'list') {
-        const hint = tokens[2] || '';
-        return ['--all']
-          .filter((v) => v.startsWith(hint))
-          .map((v) => registerSuggestion(`/checkpoint list ${v}`, completionCopy.generic.checkpointCommand));
-      }
-      if (tokens[1] === 'load') {
-        if (tokens.length >= 3) {
-          const hint = tokens[3] || '';
-          return ['--all']
-            .filter((v) => v.startsWith(hint))
-            .map((v) => registerSuggestion(`/checkpoint load ${tokens[2]} ${v}`, completionCopy.generic.checkpointCommand));
-        }
-      }
-      return materializeSuggestions(checkpointTemplates);
-    }
-    if (commandPart === 'spec') {
-      return materializeSuggestions(specTemplates);
-    }
-    if (commandPart === 'plan') {
-      return [];
-    }
-    if (commandPart === 'agents') {
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        const sub = tokens[1] || '';
-        if (sub === 'run') {
-          return SUB_AGENT_ROLES
-            .map((r) => registerSuggestion(`/agents run ${r} `, completionCopy.generic.agentCommand));
-        }
-        return ['list', 'run']
-          .filter((s) => s.startsWith(sub))
-          .map((s) => registerSuggestion(`/agents ${s}`, completionCopy.generic.agentCommand));
-      }
-      if (tokens[1] === 'run') {
-        const rolePrefix = tokens[2] || '';
-        return SUB_AGENT_ROLES
-          .filter((r) => r.startsWith(rolePrefix))
-          .map((r) => registerSuggestion(`/agents run ${r} `, completionCopy.generic.agentCommand));
-      }
-      return materializeSuggestions(agentTemplates);
-    }
-
-    if (commandPart === 'history') {
-      const sub = tokens[1] || '';
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        if (sub === 'resume') {
-          const dynamic = historySessionCache
-            .filter((session) => String(session.id || '').startsWith(''))
-            .map((session) => ({
-              value: `/history resume ${session.id}`,
-              display: `/history resume ${session.id}  ·  ${session.title || 'untitled'}  ·  ${Number(session.messageCount || 0)} msgs`,
-              description: completionCopy.generic.resumeSession
-            }));
-          if (dynamic.length > 0) return dynamic;
-        }
-        return ['list', 'current', 'resume']
-          .filter((s) => s.startsWith(sub))
-          .map((s) => registerSuggestion(`/history ${s}`, completionCopy.generic.historyCommand));
-      }
-      if (sub === 'resume') {
-        const idPrefix = tokens[2] || '';
-        const dynamic = historySessionCache
-          .filter((session) => String(session.id || '').startsWith(idPrefix))
-          .map((session) => ({
-            value: `/history resume ${session.id}`,
-            display: `/history resume ${session.id}  ·  ${session.title || 'untitled'}  ·  ${Number(session.messageCount || 0)} msgs`,
-            description: completionCopy.generic.resumeSession
-          }));
-        if (dynamic.length > 0) return dynamic;
-        return materializeSuggestions(historyTemplates);
-      }
-      return materializeSuggestions(historyTemplates);
-    }
-
-    if (commandPart === 'debug') {
-      const sub = tokens[1] || '';
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        if (sub === 'keys') {
-          return ['on', 'off', 'status']
-            .map((v) => registerSuggestion(`/debug keys ${v}`, completionCopy.generic.keyboardDebugCommand));
-        }
-        return ['keys']
-          .filter((s) => s.startsWith(sub))
-          .map((s) => registerSuggestion(`/debug ${s}`, completionCopy.generic.debugCommand));
-      }
-      if (sub === 'keys') {
-        const action = tokens[2] || '';
-        return ['on', 'off', 'status']
-          .filter((v) => v.startsWith(action))
-          .map((v) => registerSuggestion(`/debug keys ${v}`, completionCopy.generic.keyboardDebugCommand));
-      }
-      return materializeSuggestions(debugTemplates);
-    }
-
-    return [];
-  };
 
   const persistLocalExchange = async (userText, systemText, { includeUser = true, modelVisible = false } = {}) => {
     const localMeta = modelVisible ? {} : { model_visible: false, local_only: true };
@@ -7690,31 +6909,6 @@ export async function createChatRuntime({
     });
   };
 
-  const isImmediateLocalInput = (line) => {
-    const parsedInput = parseInput(line);
-    if (parsedInput.type !== 'slash') return false;
-    const command = String(parsedInput.command || '').trim().toLowerCase();
-    if (!command) return false;
-    if (command === 'agents') {
-      const sub = String(parsedInput.args?.[0] || 'list').trim().toLowerCase();
-      return sub === 'list';
-    }
-    const localCommands = new Set([
-      'exit',
-      'help',
-      'commands',
-      'status',
-      'mode',
-      'checkpoint',
-      'history',
-      'memory',
-      'config',
-      'compact',
-      'debug'
-    ]);
-    return localCommands.has(command);
-  };
-
   // 当前的 AbortController 引用，用于中止正在进行的回答
   let activeAbortController = null;
   let activeSubSession = null;
@@ -7725,12 +6919,12 @@ export async function createChatRuntime({
     executionMode = resolveRuntimeExecutionMode(executionMode, config, currentSession);
   };
 
-  const submit = async (line, onAgentEvent, options = {}) => {
+  const executeSubmission = async (line, onAgentEvent, options = {}) => {
     // 每次提交创建新的 AbortController，替代旧的
     activeAbortController = new AbortController();
     const { signal } = activeAbortController;
     const activeReplySystemPrompt = await buildActiveSystemPrompt();
-    const parsedInput = parseInput(line);
+    const inputText = String(line || '');
     const optionModelText = typeof options?.modelText === 'string' && options.modelText.trim()
       ? await expandFileMentions(options.modelText, process.cwd())
       : '';
@@ -7882,15 +7076,129 @@ export async function createChatRuntime({
       await persistApprovedPlanExecution(planState, result);
       return { type: 'assistant', text: result.text, aborted: !!result.aborted };
     };
-    try {
-      if (!readOnlyCodeWiki && !codeWikiGenerate && shouldPersistInputHistory(parsedInput)) {
-        await appendInputHistory(line);
+    const structuredAction = options?.structuredAction;
+    if (structuredAction) {
+      const { name, payload = {} } = structuredAction;
+      if (name === CHAT_ACTIONS.SPEC_SAVE) return approvePendingSpec({ saveOnly: true });
+      if (name === CHAT_ACTIONS.SPEC_EXECUTE) return approvePendingSpec({ executeImmediately: true });
+      if (name === CHAT_ACTIONS.SPEC_PLAN_AND_EXECUTE) return approvePendingSpec();
+      if (name === CHAT_ACTIONS.SPEC_REVISE) {
+        const state = getPendingSpecState(currentSession);
+        const revised = await buildSpecWithModel({
+          topic: [
+            state.goal || state.summary || 'spec',
+            `Revise the pending spec using this feedback: ${payload.feedback}`,
+            '',
+            state.specText || ''
+          ].join('\n'),
+          config,
+          model,
+          systemPrompt: activeReplySystemPrompt
+        });
+        currentSession.specState = { ...state, specText: revised };
+        if (state.specPath) await fs.writeFile(state.specPath, `${revised.trim()}\n`, 'utf8');
+        await saveSession(currentSession);
+        return { type: 'system', text: 'Spec draft revised.' };
       }
-    } catch {
-      // Non-fatal: history persistence should not block chat flow.
+      if (name === CHAT_ACTIONS.REFLECT) {
+        const scope = payload.scope || 'project';
+        const request = String(payload.request || '').trim();
+        const drafts = await buildReflectSkillDraft({
+          request,
+          scope,
+          session: currentSession,
+          config,
+          model,
+          systemPrompt: activeReplySystemPrompt
+        });
+        const candidates = attachReflectTargets({ candidates: drafts, scope, workspaceRoot: process.cwd() });
+        if (candidates.length === 0) return { type: 'system', text: 'Reflect found no reusable skill candidate.' };
+        currentSession.planState = {
+          status: 'pending_reflect_skill',
+          source: 'reflect',
+          targetScope: scope,
+          request,
+          candidates
+        };
+        await saveSession(currentSession);
+        return { type: 'system', text: buildPendingReflectSkillMessage(currentSession.planState) };
+      }
+      if (name === CHAT_ACTIONS.REFLECT_APPROVE) {
+        const state = { ...currentSession.planState };
+        const candidate = Array.isArray(state.candidates) ? state.candidates[0] : null;
+        if (!candidate) throw new Error('No reflect skill draft to write');
+        const written = await writeReflectSkillDraft({
+          draft: candidate,
+          scope: state.targetScope || 'project',
+          workspaceRoot: process.cwd()
+        });
+        currentSession.planState = null;
+        restoreConfiguredExecutionMode();
+        await saveSession(currentSession);
+        await reloadCommandsAndSkills();
+        return { type: 'system', text: `Reflect skill written and loaded: /${written.draft.name}\nPath: ${written.filePath}` };
+      }
+      if (name === CHAT_ACTIONS.REFLECT_REVISE) {
+        const state = { ...currentSession.planState };
+        const previousDraft = Array.isArray(state.candidates) ? state.candidates[0] : null;
+        const drafts = await buildReflectSkillDraft({
+          request: state.request || '',
+          scope: state.targetScope || 'project',
+          session: currentSession,
+          config,
+          model,
+          systemPrompt: activeReplySystemPrompt,
+          previousDraft,
+          feedback: payload.feedback
+        });
+        currentSession.planState = {
+          ...state,
+          candidates: attachReflectTargets({
+            candidates: drafts,
+            scope: state.targetScope || 'project',
+            workspaceRoot: process.cwd()
+          })
+        };
+        await saveSession(currentSession);
+        return { type: 'system', text: `Reflect skill draft revised.\n${buildPendingReflectSkillMessage(currentSession.planState)}` };
+      }
+      if (name === CHAT_ACTIONS.COMPACT) {
+        const args = Array.isArray(payload.args) ? payload.args : [];
+        const cargs = parseCompactArgs(args);
+        if (cargs.restore) {
+          setCompactedView(null);
+          return { type: 'system', text: 'Context restored to full view' };
+        }
+        const source = modelVisibleMessages(compactedForModel ?? currentSession.messages);
+        const beforeTokens = estimateMessagesTokens(source);
+        const result = cargs.micro
+          ? (() => {
+              const micro = microCompactMessages(source, {
+                keepRecent: Number(config.context?.microcompact_keep_recent || 5),
+                enabled: true
+              });
+              return { changed: micro.changed, compacted: micro.messages, summary: '', tokensSaved: micro.tokensSaved };
+            })()
+          : await compactMessagesLocally(source, {
+              mode: cargs.mode || compactState.mode,
+              force: true,
+              generateSummary: createCompactSummaryGenerator(config, null)
+            });
+        if (!result.changed) return { type: 'system', text: 'Nothing to compact yet' };
+        const afterTokens = estimateMessagesTokens(result.compacted);
+        const report = `Compact ${cargs.preview ? 'preview' : 'applied'}: ${beforeTokens} -> ${afterTokens} tokens`;
+        if (!cargs.preview) {
+          setCompactedView(result.compacted.map((message) => ({ ...message, at: new Date().toISOString() })));
+          await saveSession(currentSession);
+        }
+        return { type: 'system', text: report };
+      }
+      throw new Error(`Chat action handler is not available: ${name}`);
     }
-    if (parsedInput.type === 'empty') {
-      return { type: 'noop' };
+    if (!inputText.trim()) return { type: 'noop' };
+    if (inputText.trimStart().startsWith('!')) {
+      const shell = await handleShellInput(inputText.trimStart().slice(1), config);
+      return { type: 'shell', text: shell.text };
     }
     if (readOnlyCodeWiki) {
       const expandedText = await expandFileMentions(line, process.cwd());
@@ -7937,913 +7245,7 @@ export async function createChatRuntime({
       });
       return { type: 'assistant', text: result.text, aborted: !!result.aborted };
     }
-    if (parsedInput.type === 'shell') {
-      const shell = await handleShellInput(parsedInput.command, config);
-      return { type: 'shell', text: shell.text };
-    }
-    if (parsedInput.type === 'skill') {
-      await reloadCommandsAndSkills();
-      const composed = composeExplicitSkillPrompt(
-        commands,
-        parsedInput.skills,
-        parsedInput.text,
-        { isEnabled: (command) => isSkillEnabled(config, command.name, command) }
-      );
-      if (composed.error) return { type: 'system', text: composed.error };
-      // Inject always-mode skills into the system prompt so they are
-      // active regardless of which skills the user explicitly selected.
-      // Respect dismissedAlwaysSkills so users can cancel a default skill this turn.
-      const alwaysSkills = getAlwaysSkillCommands(commands, config, dismissedAlwaysSkills);
-      if (alwaysSkills.length > 0 && onAgentEvent) {
-        onAgentEvent({ type: 'skill:always', names: alwaysSkills.map((s) => s.name) });
-      }
-      const alwaysPrompt = buildAlwaysSkillPromptBlock(commands, config, dismissedAlwaysSkills);
-      const skillSystemPrompt = alwaysPrompt
-        ? await composeSystemPrompt({
-            shellRulesPrompt: activeReplySystemPrompt,
-            config,
-            workspaceRoot: process.cwd(),
-            skillsPrompt: alwaysPrompt,
-            includeSoul: false,
-            includeMemory: false
-          })
-        : activeReplySystemPrompt;
-      const rendered = await expandFileMentions(composed.prompt, process.cwd());
-      const modelText = mergeCurrentTurnModelText(rendered, optionModelText, 'uploaded_attachments_context');
-      for (const skill of composed.selected) {
-        if (onAgentEvent) onAgentEvent({ type: 'skill:start', name: skill.name });
-      }
-      try {
-        const result = await askModel({
-          text: line,
-          modelText,
-          session: currentSession,
-          config,
-          model,
-          systemPrompt: skillSystemPrompt,
-          onAgentEvent,
-          requestToolApproval: activeRequestToolApproval,
-          requestUserInput: activeRequestUserInput,
-          executionMode,
-          signal,
-          compactedForModel,
-          onCompactedUpdate: setCompactedView
-        });
-        return { type: 'assistant', text: result.text };
-      } finally {
-        for (const skill of composed.selected) {
-          if (onAgentEvent) onAgentEvent({ type: 'skill:end', name: skill.name });
-        }
-      }
-    }
-    if (parsedInput.type === 'slash') {
-      const argError = validateBuiltinSlashArgs(parsedInput);
-      if (argError) return { type: 'system', text: argError };
-      if (parsedInput.command === 'exit') return { type: 'exit' };
-      if (parsedInput.command === 'new') {
-        const fresh = await createSession();
-        currentSession = fresh;
-        executionMode = config.execution?.mode || 'normal';
-        compactState.backupMessages = null;
-        setResultDir(path.join(getSessionsDir(), String(fresh.id)));
-        historyIdCache = [fresh.id, ...historyIdCache.filter((id) => id !== fresh.id)];
-        historySessionCache = [
-          { id: fresh.id, title: fresh.title || '', messageCount: 0 },
-          ...historySessionCache.filter((s) => s.id !== fresh.id)
-        ];
-        return {
-          type: 'system',
-          text: `New session started: ${fresh.id}`,
-          restoredMessages: []
-        };
-      }
-      if (parsedInput.command === 'help') {
-        return {
-          type: 'system',
-          text: 'Use command:[help], command:[status], command:[config] ..., or skill:[skill-a,skill-b] <question>. Legacy slash aliases remain available for built-in control commands.'
-        };
-      }
-      if (parsedInput.command === 'status') {
-        const todoCount = countActiveTodos(currentSession.todos);
-        return {
-          type: 'system',
-          text: `mode=${displayExecutionMode(executionMode)} | approval=${config.execution?.approval_mode || 'review'} | role=general | model=${model || config.model.name} | max_ctx=${effectiveMaxContextTokens(config)} | session=${currentSession.id} | todos=${todoCount}`
-        };
-      }
-      if (parsedInput.command === 'model') {
-        const sub = String(parsedInput.args[0] || 'current').trim().toLowerCase();
-        const mainModel = resolveDefaultModel(config);
-        const fastModel = resolveFastModel(config);
-        if (sub === 'current' || sub === 'status') {
-          return {
-            type: 'system',
-            text: `Current model: ${model || mainModel}\nDefault model: ${mainModel}\nFast model: ${fastModel}${config.model?.fast_name ? '' : ' (fallback to default; set /config set model.fast_name <name>)'}`
-          };
-        }
-        if (sub === 'main' || sub === 'default') {
-          model = mainModel;
-        } else if (sub === 'fast') {
-          model = fastModel;
-        } else if (sub === 'set') {
-          const next = parsedInput.args.slice(1).join(' ').trim();
-          if (!next) return { type: 'system', text: 'Usage: /model set <name>' };
-          model = next;
-        } else {
-          return { type: 'system', text: 'Usage: /model current | /model main | /model fast | /model set <name>' };
-        }
-        currentSession.model = model;
-        await saveSession(currentSession);
-        return { type: 'system', text: `Model switched to: ${model}` };
-      }
-      if (parsedInput.command === 'mode') {
-        const rawMode = (parsedInput.args[0] || '').trim();
-        const next = normalizeExecutionMode(rawMode);
-        if (!parsedInput.args[0]) {
-          return { type: 'system', text: `Current work mode: ${displayExecutionMode(executionMode)} (available: normal|code)` };
-        }
-        if (!isExecutionModeInput(rawMode)) {
-          return { type: 'system', text: 'Usage: /mode <normal|code>' };
-        }
-        executionMode = next;
-        await setConfigValue('execution.mode', next);
-        config = await loadConfig();
-        const text = `Work mode set to: ${displayExecutionMode(next)}`;
-        await persistLocalExchange(line, text);
-        return { type: 'system', text };
-      }
-      if (parsedInput.command === 'approval') {
-        const raw = (parsedInput.args[0] || '').trim().toLowerCase().replace(/-/g, '_');
-        const next = raw === 'full' ? 'full_access' : raw;
-        if (!next) {
-          return { type: 'system', text: `Current approval mode: ${config.execution?.approval_mode || 'review'} (available: review|auto|full_access)` };
-        }
-        if (!['review', 'auto', 'full_access'].includes(next)) {
-          return { type: 'system', text: 'Usage: /approval <review|auto|full_access>' };
-        }
-        await setConfigValue('execution.approval_mode', next);
-        config = await loadConfig();
-        const text = `Approval mode set to: ${next}`;
-        await persistLocalExchange(line, text);
-        return { type: 'system', text };
-      }
-      if (parsedInput.command === 'yes') {
-        if (hasPendingSpecApproval(currentSession)) {
-          return approvePendingSpec();
-        }
-        if (hasPendingReflectSkill(currentSession)) {
-          const state = { ...currentSession.planState };
-          const candidate = Array.isArray(state.candidates) ? state.candidates[0] : null;
-          if (!candidate) {
-            currentSession.planState = null;
-            const text = 'No reflect skill draft to write.';
-            await persistLocalExchange(line, text, { includeUser: false });
-            return { type: 'system', text };
-          }
-          const written = await writeReflectSkillDraft({
-            draft: candidate,
-            scope: state.targetScope || 'project',
-            workspaceRoot: process.cwd()
-          });
-          currentSession.planState = null;
-          restoreConfiguredExecutionMode();
-          if (onAgentEvent) onAgentEvent({ type: 'reflect:approval_cleared' });
-          await reloadCommandsAndSkills();
-          const text = `Reflect skill written and loaded: /${written.draft.name}\nPath: ${written.filePath}`;
-          await persistLocalExchange(line, text, { includeUser: false });
-          return { type: 'system', text };
-        }
-        return { type: 'system', text: 'No pending approval item.' };
-      }
-      if (parsedInput.command === 'edit') {
-        if (hasPendingReflectSkill(currentSession)) {
-          const feedback = parsedInput.args.join(' ').trim();
-          if (!feedback) {
-            return { type: 'system', text: 'Usage: /edit <feedback>' };
-          }
-          const state = { ...currentSession.planState };
-          const previousDraft = Array.isArray(state.candidates) ? state.candidates[0] : null;
-          const drafts = await buildReflectSkillDraft({
-            request: state.request || '',
-            scope: state.targetScope || 'project',
-            session: currentSession,
-            config,
-            model,
-            systemPrompt: activeReplySystemPrompt,
-            previousDraft,
-            feedback
-          });
-          currentSession.planState = {
-            ...state,
-            candidates: attachReflectTargets({
-              candidates: drafts,
-              scope: state.targetScope || 'project',
-              workspaceRoot: process.cwd()
-            })
-          };
-          if (onAgentEvent) {
-            onAgentEvent({
-              type: 'reflect:pending_approval',
-              draft: buildPendingReflectSkillSnapshot(currentSession.planState)
-            });
-          }
-          const text = `Reflect skill draft revised.\n${buildPendingReflectSkillMessage(currentSession.planState)}`;
-          await persistLocalExchange('', text, { includeUser: false });
-          return { type: 'system', text };
-        }
-        return { type: 'system', text: 'No pending editable approval item.' };
-      }
-      if (parsedInput.command === 'no') {
-        if (hasPendingSpecApproval(currentSession)) {
-          currentSession.specState = null;
-          if (currentSession.planState?.status === 'pending_spec_approval') currentSession.planState = null;
-          restoreConfiguredExecutionMode();
-          if (onAgentEvent) onAgentEvent({ type: 'spec:approval_cleared' });
-          const text = 'Spec draft discarded.';
-          await persistLocalExchange(line, text, { includeUser: false });
-          return { type: 'system', text };
-        }
-        if (hasPendingReflectSkill(currentSession)) {
-          currentSession.planState = null;
-          restoreConfiguredExecutionMode();
-          if (onAgentEvent) onAgentEvent({ type: 'reflect:approval_cleared' });
-          const text = 'Reflect skill draft discarded.';
-          await persistLocalExchange(line, text, { includeUser: false });
-          return { type: 'system', text };
-        }
-        return { type: 'system', text: 'No pending reflect skill draft.' };
-      }
-      if (parsedInput.command === 'reject') {
-        if (hasPendingSpecApproval(currentSession)) {
-          currentSession.specState = null;
-          if (currentSession.planState?.status === 'pending_spec_approval') currentSession.planState = null;
-          restoreConfiguredExecutionMode();
-          if (onAgentEvent) onAgentEvent({ type: 'spec:approval_cleared' });
-          const text = 'Pending spec rejected and cleared.';
-          await persistLocalExchange('', text, { includeUser: false });
-          return { type: 'system', text };
-        }
-        return { type: 'system', text: 'No pending approval item.' };
-      }
-      if (parsedInput.command === 'checkpoint') {
-        const sub = (parsedInput.args[0] || 'list').trim().toLowerCase();
-        if (sub === 'create') {
-          const name = parsedInput.args.slice(1).join(' ').trim();
-          const cp = await createCheckpoint(
-            {
-              name,
-              session: currentSession,
-              config
-            },
-            process.cwd()
-          );
-          const text = `Checkpoint created: ${cp.id}`;
-          await persistLocalExchange(line, text);
-          return { type: 'system', text };
-        }
-        if (sub === 'list') {
-          const showAll = parsedInput.args.includes('--all');
-          const checkpoints = (await listCheckpoints(process.cwd())).filter((c) =>
-            showAll ? true : c.sessionId === currentSession.id
-          );
-          if (checkpoints.length === 0) return { type: 'system', text: 'No checkpoints found' };
-          const rows = checkpoints.map(
-            (c, idx) =>
-              `${idx + 1}. ${c.id} | session:${c.sessionId || '-'} | ${c.createdAt} | ${c.name || '-'}`
-          );
-          return { type: 'system', text: rows.join('\n') };
-        }
-        if (sub === 'load') {
-          const id = parsedInput.args[1];
-          if (!id) return { type: 'system', text: 'Usage: /checkpoint load <id>' };
-          const cp = await loadCheckpoint(id, process.cwd());
-          if (cp?.session?.id && cp.session.id !== currentSession.id && !parsedInput.args.includes('--all')) {
-            return {
-              type: 'system',
-              text: `Checkpoint belongs to session ${cp.session.id}. Use /checkpoint load ${id} --all to force load.`
-            };
-          }
-          if (cp?.session?.id) currentSession = cp.session;
-          if (cp?.config) {
-            config = cp.config;
-            executionMode = config.execution?.mode || executionMode;
-          }
-          const text = `Checkpoint loaded: ${id}`;
-          await persistLocalExchange(line, text, { includeUser: false });
-          return { type: 'system', text };
-        }
-        return { type: 'system', text: 'Usage: /checkpoint create <name> | /checkpoint list | /checkpoint load <id>' };
-      }
-      if (parsedInput.command === 'spec') {
-        const specSub = String(parsedInput.args[0] || '').trim().toLowerCase();
-        if (hasPendingSpecApproval(currentSession) && ['save', 'plan', 'execute', 'run'].includes(specSub)) {
-          if (specSub === 'save') return approvePendingSpec({ saveOnly: true });
-          if (specSub === 'execute' || specSub === 'run') return approvePendingSpec({ executeImmediately: true });
-          return approvePendingSpec();
-        }
-        const topic = parsedInput.args.join(' ').trim();
-        if (!topic) return { type: 'system', text: 'Usage: /spec <topic> | /spec save | /spec plan | /spec execute' };
-        let content = '';
-        let buildNote = '';
-        try {
-          content = await buildSpecWithModel({
-            topic,
-            config,
-            model,
-            systemPrompt: activeReplySystemPrompt
-          });
-        } catch (err) {
-          content = buildFallbackStructuredSpec(topic);
-          buildNote = `\nGenerated with fallback template because model spec generation failed: ${String(err?.message || err)}`;
-        }
-        const filePath = await writeMarkdownInProjectDir(
-          'specs',
-          topic,
-          content,
-          'spec',
-          currentSession.id
-        );
-        const text = `Spec created: ${filePath}${buildNote}`;
-        await persistLocalExchange('', text, { includeUser: false });
-        return { type: 'system', text };
-      }
-      if (parsedInput.command === 'plan') {
-        const text = 'The /plan command has been removed. Switch to coding mode with /mode code and describe the task normally; plans execute automatically and can be stopped with /stop. Use /spec for approval-gated requirements.';
-        await persistLocalExchange('', text, { includeUser: false });
-        return { type: 'system', text };
-      }
-      if (parsedInput.command === 'agents') {
-        const sub = parsedInput.args[0] || 'list';
-        if (sub === 'list') {
-          return {
-            type: 'system',
-            text: 'Sub-agent roles: ' + EXECUTOR_AGENT_ROLES.join(', ') + '\nUse: /agents run <role> <task>'
-          };
-        }
-        if (sub === 'run') {
-          const role = (parsedInput.args[1] || '').trim().toLowerCase();
-          const task = parsedInput.args.slice(2).join(' ').trim();
-          if (!role || !task) return { type: 'system', text: 'Usage: /agents run <role> <task>' };
-          if (!EXECUTOR_AGENT_ROLES.includes(role)) {
-            return { type: 'system', text: 'Unknown role. Allowed: ' + EXECUTOR_AGENT_ROLES.join('|') };
-          }
-          const output = await runSubAgentTask({
-            role,
-            task,
-            parentSession: currentSession,
-            config,
-            model,
-            systemPrompt: activeReplySystemPrompt,
-            onAgentEvent,
-            requestToolApproval: activeRequestToolApproval,
-            changeTracker,
-            backupManager,
-            projectIsGit: Boolean(changeTracker?.enabled)
-          });
-          const text = `[sub-agent:${role}]\n${output.text || output}`;
-          await persistLocalExchange(line, text);
-          return { type: 'assistant', text };
-        }
-        return { type: 'system', text: `Unknown /agents subcommand: ${sub}` };
-      }
-      if (parsedInput.command === 'debug') {
-        const sub = parsedInput.args[0] || '';
-        const action = parsedInput.args[1] || '';
-        if (sub === 'keys') {
-          if (action === 'on') return { type: 'system', text: '[debug:keys:on]' };
-          if (action === 'off') return { type: 'system', text: '[debug:keys:off]' };
-          if (action === 'status') return { type: 'system', text: '[debug:keys:status]' };
-          return { type: 'system', text: 'Usage: /debug keys on|off|status' };
-        }
-        return { type: 'system', text: 'Usage: /debug keys on|off|status' };
-      }
-      if (parsedInput.command === 'history') {
-        const sub = parsedInput.args[0] || 'list';
-        if (sub === 'list') {
-          const sessions = await listSessions(20);
-          historyIdCache = sessions.map((s) => s.id);
-          historySessionCache = sessions.map((s) => ({
-            id: s.id,
-            title: s.title || '',
-            messageCount: Number(s.messageCount || 0)
-          }));
-          if (sessions.length === 0) return { type: 'system', text: 'No sessions found' };
-          return {
-            type: 'system',
-            text: formatHistoryList({ currentSession, sessions })
-          };
-        }
-        if (sub === 'current') {
-          return {
-            type: 'system',
-            text: `Current session: ${currentSession.id} (${currentSession.messages.length} messages)`
-          };
-        }
-        if (sub === 'resume') {
-          const targetId = parsedInput.args[1];
-          if (!targetId) return { type: 'system', text: 'Usage: /history resume <session_id>' };
-          const loaded = await loadSession(targetId);
-          currentSession = loaded;
-          setResultDir(path.join(getSessionsDir(), String(targetId)));
-          syncExecutionModeWithSession();
-          if (!historyIdCache.includes(targetId)) historyIdCache.unshift(targetId);
-          historySessionCache = [
-            { id: targetId, title: loaded.title || deriveSessionTitle(loaded.messages || []), messageCount: Array.isArray(loaded.messages) ? loaded.messages.length : 0 },
-            ...historySessionCache.filter((s) => s.id !== targetId)
-          ];
-          return {
-            type: 'system',
-            text: `Switched to session: ${targetId} (${loaded.messages.length} messages)`,
-            restoredMessages: structuredClone(loaded.messages || [])
-          };
-        }
-        return { type: 'system', text: `Unknown /history subcommand: ${sub}` };
-      }
-      if (parsedInput.command === 'memory') {
-        const sub = String(parsedInput.args[0] || '').trim().toLowerCase();
-        if (!sub) {
-          return { type: 'system', text: 'Usage: /memory list <user|global|project> | /memory search <scope> <query> | /memory forget <scope> <id>' };
-        }
-        if (sub === 'list') {
-          const scope = String(parsedInput.args[1] || '').trim().toLowerCase();
-          if (!['user', 'global', 'project'].includes(scope)) {
-            return { type: 'system', text: 'Usage: /memory list <user|global|project>' };
-          }
-          const items = await listMemories({ scope, workspaceRoot: process.cwd() });
-          if (items.length === 0) return { type: 'system', text: `No ${scope} memories found.` };
-          return {
-            type: 'system',
-            text: items.map((item) => `${item.id} | ${item.kind} | ${item.content}`).join('\n')
-          };
-        }
-        if (sub === 'search') {
-          const scope = String(parsedInput.args[1] || '').trim().toLowerCase();
-          const query = parsedInput.args.slice(2).join(' ').trim();
-          if (!['user', 'global', 'project'].includes(scope) || !query) {
-            return { type: 'system', text: 'Usage: /memory search <user|global|project> <query>' };
-          }
-          const items = await searchMemories({ scope, query, workspaceRoot: process.cwd() });
-          if (items.length === 0) return { type: 'system', text: `No ${scope} memories matched: ${query}` };
-          return {
-            type: 'system',
-            text: items.map((item) => `${item.id} | ${item.kind} | ${item.content}`).join('\n')
-          };
-        }
-        if (sub === 'forget') {
-          const scope = String(parsedInput.args[1] || '').trim().toLowerCase();
-          const id = String(parsedInput.args[2] || '').trim();
-          if (!['user', 'global', 'project'].includes(scope) || !id) {
-            return { type: 'system', text: 'Usage: /memory forget <user|global|project> <id>' };
-          }
-          const result = await forgetMemory({ scope, id, workspaceRoot: process.cwd() });
-          const text = `Removed ${Number(result.removed || 0)} ${scope} memory item(s)`;
-          await persistLocalExchange(line, text, { includeUser: false });
-          return { type: 'system', text };
-        }
-        return { type: 'system', text: `Unknown /memory subcommand: ${sub}` };
-      }
-      if (parsedInput.command === 'capture') {
-        const summary = parsedInput.args.join(' ').trim();
-        if (!summary) return { type: 'system', text: 'Usage: /capture <summary> [--scope global|repo|thread] [--type observation|correction|failure|preference|pattern|win|gap|decision]' };
-        let scope = 'global';
-        let capType = 'observation';
-        const filtered = [];
-        for (const arg of parsedInput.args) {
-          if (arg.startsWith('--scope=')) { scope = arg.slice(7); continue; }
-          if (arg.startsWith('--type=')) { capType = arg.slice(7); continue; }
-          if (arg === '--scope') { scope = ''; continue; }
-          if (arg === '--type') { capType = ''; continue; }
-          filtered.push(arg);
-        }
-        const capSummary = filtered.join(' ').trim();
-        if (!capSummary) return { type: 'system', text: 'Usage: /capture <summary>' };
-        try {
-          const entry = await captureToInbox({ summary: capSummary, scope, type: capType, source: 'slash' });
-          const text = `Captured to inbox: ${entry.id} [${entry.lifecycle}] ${entry.summary}`;
-          return { type: 'system', text };
-        } catch (err) {
-          return { type: 'system', text: `Capture failed: ${err.message}` };
-        }
-      }
-      if (parsedInput.command === 'inbox') {
-        const since = parsedInput.args[0] || '';
-        try {
-          const entries = await listInbox({ since: since || undefined });
-          if (entries.length === 0) return { type: 'system', text: 'Inbox is empty.' };
-          const rows = entries.map((e) => `[${e.lifecycle}] ${e.scope}/${e.type}: ${e.summary} (${e.id})`);
-          return { type: 'system', text: `Inbox (${entries.length}):\n${rows.join('\n')}` };
-        } catch (err) {
-          return { type: 'system', text: `Failed to list inbox: ${err.message}` };
-        }
-      }
-      if (parsedInput.command === 'dream') {
-        let dryRun = false;
-        let scope = null;
-        for (const arg of parsedInput.args) {
-          if (arg === '--dry-run') {
-            dryRun = true;
-            continue;
-          }
-          if (arg.startsWith('--scope=')) {
-            scope = arg.slice(8) || null;
-          }
-        }
-        try {
-          const report = await runDreamConsolidation({
-            dryRun,
-            scope,
-            workspaceRoot: process.cwd(),
-            config,
-            writeAudit: true
-          });
-          const summary = [
-            `Dream done${dryRun ? ' (dry-run)' : ''}.`,
-            `Candidates: ${Number(report.candidatesGenerated || 0)}`,
-            `Promotions: ${Array.isArray(report.promotions) ? report.promotions.length : 0}`,
-            `Rejections: ${Array.isArray(report.rejections) ? report.rejections.length : 0}`,
-            `Archives: ${Array.isArray(report.archives) ? report.archives.length : 0}`,
-            report.auditReport ? `Audit: ${report.auditReport}` : ''
-          ]
-            .filter(Boolean)
-            .join('\n');
-          return { type: 'system', text: summary };
-        } catch (err) {
-          return { type: 'system', text: `Dream failed: ${err.message}` };
-        }
-      }
-      if (parsedInput.command === 'reflect') {
-        const parsedReflect = parseReflectScope(parsedInput.args);
-        const drafts = await buildReflectSkillDraft({
-          request: parsedReflect.request,
-          scope: parsedReflect.scope,
-          session: currentSession,
-          config,
-          model,
-          systemPrompt: activeReplySystemPrompt
-        });
-        const candidates = attachReflectTargets({
-          candidates: drafts,
-          scope: parsedReflect.scope,
-          workspaceRoot: process.cwd()
-        });
-        if (candidates.length === 0) {
-          const text = 'Reflect found no reusable skill candidate.';
-          await persistLocalExchange('', text, { includeUser: false });
-          return { type: 'system', text };
-        }
-        currentSession.planState = {
-          status: 'pending_reflect_skill',
-          source: 'reflect',
-          targetScope: parsedReflect.scope,
-          request: parsedReflect.request,
-          candidates
-        };
-        if (onAgentEvent) {
-          onAgentEvent({
-            type: 'reflect:pending_approval',
-            draft: buildPendingReflectSkillSnapshot(currentSession.planState)
-          });
-        }
-        const text = buildPendingReflectSkillMessage(currentSession.planState);
-        await persistLocalExchange('', text, { includeUser: false });
-        return { type: 'system', text };
-      }
-      if (parsedInput.command === 'config') {
-        const sub = parsedInput.args[0];
-        if (!sub || sub === 'help') {
-          return {
-            type: 'system',
-            text: 'Usage:\n/config list\n/config get <key>\n/config set <key> <value>\n/config reset'
-          };
-        }
-
-        if (sub === 'list') {
-          config = await loadConfig();
-          return { type: 'system', text: JSON.stringify(config, null, 2) };
-        }
-
-        if (sub === 'get') {
-          const key = parsedInput.args[1];
-          if (!key) return { type: 'system', text: 'Usage: /config get <key>' };
-          const value = await getConfigValue(key);
-          if (value === undefined) return { type: 'system', text: 'undefined' };
-          return {
-            type: 'system',
-            text: typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)
-          };
-        }
-
-        if (sub === 'set') {
-          const key = parsedInput.args[1];
-          const value = parsedInput.args.slice(2).join(' ');
-          if (!key || !value) return { type: 'system', text: 'Usage: /config set <key> <value>' };
-          await setConfigValue(key, value);
-          config = await loadConfig();
-          await syncRuntimeFromConfig(
-            key === 'model.name' ? { model: config.model?.name } : {}
-          );
-          const text = `Set ${key}=${value}`;
-          await persistLocalExchange(line, text);
-          return { type: 'system', text };
-        }
-
-        if (sub === 'reset') {
-          await resetConfig();
-          config = await loadConfig();
-          await syncRuntimeFromConfig({ model: resolveDefaultModel(config) });
-          syncCompactStateFromConfig();
-          compactState.mode = 'conservative';
-          compactState.autoEnabled = true;
-          const text = 'Config reset complete';
-          await persistLocalExchange(line, text);
-          return { type: 'system', text };
-        }
-
-        return { type: 'system', text: `Unknown /config subcommand: ${sub}` };
-      }
-      if (parsedInput.command === 'compact') {
-        const cargs = parseCompactArgs(parsedInput.args);
-
-        if (cargs.auto === 'on') compactState.autoEnabled = true;
-        if (cargs.auto === 'off') compactState.autoEnabled = false;
-        if (typeof cargs.threshold === 'number' && cargs.threshold >= 50 && cargs.threshold <= 95) {
-          compactState.threshold = cargs.threshold;
-        }
-        if (cargs.mode) compactState.mode = cargs.mode;
-
-        if (cargs.restore) {
-          setCompactedView(null);
-          const text = 'Context restored to full view';
-          await persistLocalExchange(line, text, { includeUser: false });
-          return { type: 'system', text };
-        }
-
-        const compactSource = modelVisibleMessages(compactedForModel ?? currentSession.messages);
-        const beforeTokens = estimateMessagesTokens(compactSource);
-
-        // --micro: only do micro-compact (in-place tool result clearing)
-        if (cargs.micro) {
-          const microKeep = Number(config.context?.microcompact_keep_recent || 5);
-          const micro = microCompactMessages(compactSource, { keepRecent: microKeep, enabled: true });
-          if (!micro.changed) {
-            return { type: 'system', text: 'Micro-compact: nothing to clear' };
-          }
-          const afterTokens = estimateMessagesTokens(micro.messages);
-          const report = `Micro-compact ${cargs.preview ? 'preview' : 'applied'}: ${beforeTokens} -> ${afterTokens} tokens (saved ${micro.tokensSaved})`;
-
-          if (cargs.preview) {
-            return { type: 'system', text: report };
-          }
-
-          setCompactedView(micro.messages.map((m) => ({ ...m, at: new Date().toISOString() })));
-          await persistLocalExchange(line, report, { includeUser: false });
-          return { type: 'system', text: report };
-        }
-
-        const sourceIsCompacted = Boolean(compactedForModel);
-        const macroSource = modelVisibleMessages(compactedForModel ?? currentSession.messages);
-        const result = await compactMessagesLocally(macroSource, { mode: compactState.mode, force: true, generateSummary: createCompactSummaryGenerator(config, null) });
-        if (!result.changed) {
-          return { type: 'system', text: 'Nothing to compact yet' };
-        }
-        const afterTokens = estimateMessagesTokens(result.compacted);
-        const report = `Compact ${cargs.preview ? 'preview' : 'applied'} (${compactState.mode}): ${beforeTokens} -> ${afterTokens} tokens`;
-
-        if (cargs.preview) {
-          return { type: 'system', text: `${report}\n\n${result.summary}` };
-        }
-
-        setCompactedView(
-          result.compacted.map((m) => ({ ...m, at: new Date().toISOString() })),
-          {
-            boundaryIndex: translateCompactBoundaryToOriginal(sourceIsCompacted, currentSession.compact, result.boundaryIndex),
-            mode: compactState.mode
-          }
-        );
-        await captureCompactSummary({
-          summary: result.summary,
-          mode: compactState.mode,
-          beforeTokens,
-          afterTokens
-        });
-        await persistLocalExchange(line, report, { includeUser: false });
-        return { type: 'system', text: report };
-      }
-      if (parsedInput.command === 'commands') {
-        const all = listCommandNames();
-        const skills = listSelectableSkills();
-        if (all.length === 0 && skills.length === 0) {
-          return { type: 'system', text: 'No commands/skills available' };
-        }
-        const rows = [
-          ...all.map((c) => `command:[${c.name}]${c.description ? ` - ${c.description}` : ''}`),
-          ...skills.map((skill) => `skill:[${skill.name}]${skill.metadata.description ? ` - ${skill.metadata.description}` : ''}`)
-        ];
-        return { type: 'system', text: rows.join('\n') };
-      }
-
-      let custom = commands.get(parsedInput.command);
-      if (!custom) {
-        await reloadCommandsAndSkills();
-        custom = commands.get(parsedInput.command);
-        if (!custom) {
-          return { type: 'system', text: `Unknown slash command: /${parsedInput.command}` };
-        }
-      }
-      if (custom.metadata.type === 'skill' && !isSkillEnabled(config, custom.name, custom)) {
-        return { type: 'system', text: `Skill is disabled: ${custom.name}` };
-      }
-      if (isUserInvocableSkill(custom)) {
-        return {
-          type: 'system',
-          text: `Slash skill invocation is no longer supported. Use skill:[${custom.name}] <question>.`
-        };
-      }
-      if (custom.metadata.type === 'skill' && (custom.name === 'project-requirements' || custom.name === 'project-requirements-md')) {
-        const defaultOutputFormat = getProjectRequirementsDefaultOutputFormat(custom);
-        const projectRequirementsOptions = parseProjectRequirementsOptions(parsedInput.args, { defaultOutputFormat });
-        const formatError = validateProjectRequirementsFormat(custom.name, projectRequirementsOptions.outputFormat);
-        if (formatError) {
-          return { type: 'system', text: formatError };
-        }
-        if (codeWikiGenerate || projectRequirementsOptions.runner === 'agent') {
-          return await runProjectRequirementsSingleAgent({
-            custom,
-            parsedInput,
-            currentSession,
-            config,
-            model,
-            systemPrompt: activeReplySystemPrompt,
-            onAgentEvent,
-            // CodeWiki generation uses scoped full-access inside runProjectRequirementsSingleAgent.
-            requestToolApproval: codeWikiGenerate ? null : activeRequestToolApproval,
-            signal,
-            compactedForModel,
-            onCompactedUpdate: setCompactedView,
-            codeWikiGenerate
-          });
-        }
-        try {
-          return await runProjectRequirementsPipeline({
-            custom,
-            parsedInput,
-            currentSession,
-            config,
-            model,
-            systemPrompt: activeReplySystemPrompt,
-            onAgentEvent,
-            signal,
-            onSubSessionActive: (sub) => { activeSubSession = sub; }
-          });
-        } finally {
-          activeSubSession = null;
-        }
-      }
-
-      const customPrompt =
-        custom.name === 'brainstorming'
-          ? [
-              renderCommandPrompt(custom, []),
-              'Explicit brainstorm mode:',
-              '- Ask exactly one clarifying question first if any important uncertainty remains.',
-              '- Stop after the question and wait for the user\'s answer before continuing.',
-              '- Do not inspect the repo or generate code unless the user explicitly asks for that.',
-              '- If you recommend an option, present it as a suggested decision rather than a final choice for the user.',
-              parsedInput.args.length > 0 ? `Current question:\n${parsedInput.args.join(' ')}` : ''
-            ]
-              .filter(Boolean)
-              .join('\n\n')
-          : renderCommandPrompt(custom, parsedInput.args);
-      const rendered = await expandFileMentions(customPrompt, process.cwd());
-      const renderedWithAttachments = mergeCurrentTurnModelText(
-        rendered,
-        optionModelText,
-        'uploaded_attachments_context'
-      );
-      if (custom.metadata.type === 'skill' && onAgentEvent) {
-        onAgentEvent({ type: 'skill:start', name: custom.name });
-      }
-      let result;
-      try {
-        result = await askModel({
-          text: custom.metadata.type === 'skill' ? line : rendered,
-          modelText: custom.metadata.type === 'skill'
-            ? renderedWithAttachments
-            : (optionModelText ? renderedWithAttachments : undefined),
-          session: currentSession,
-          config,
-          model,
-          systemPrompt: activeReplySystemPrompt,
-          onAgentEvent,
-          requestToolApproval: activeRequestToolApproval,
-          requestUserInput: activeRequestUserInput,
-          executionMode,
-          signal,
-          compactedForModel,
-          onCompactedUpdate: setCompactedView
-        });
-      } catch (error) {
-        if (custom.metadata.type === 'skill' && onAgentEvent) {
-          onAgentEvent({
-            type: 'skill:error',
-            name: custom.name,
-            summary: error instanceof Error ? error.message : String(error)
-          });
-          onAgentEvent({ type: 'skill:end', name: custom.name });
-        }
-        return {
-          type: 'system',
-          text: `Skill "${custom.name}" failed: ${error instanceof Error ? error.message : String(error)}`
-        };
-      }
-      if (custom.metadata.type === 'skill' && onAgentEvent) {
-        onAgentEvent({ type: 'skill:end', name: custom.name });
-      }
-      return { type: 'assistant', text: result.text };
-    }
-
-    // Pending spec outputs are handled by agent loop via create_spec.
-
-    if (compactState.autoEnabled) {
-      const compactSource = modelVisibleMessages(compactedForModel ?? currentSession.messages);
-      const currentTokens = estimateMessagesTokens(compactSource);
-      const maxTokens = effectiveMaxContextTokens(config);
-      const usagePct = (currentTokens / maxTokens) * 100;
-      if (usagePct >= compactState.threshold) {
-        // Phase 0: try micro-compact first
-        const microEnabled = config.context?.microcompact_enabled !== false;
-        const microKeep = Number(config.context?.microcompact_keep_recent || 5);
-        let needsMacro = true;
-        if (microEnabled) {
-          const micro = microCompactMessages(compactSource, { keepRecent: microKeep, enabled: true });
-          if (micro.changed) {
-            setCompactedView(micro.messages.map((m) => ({
-              ...m,
-              at: new Date().toISOString()
-            })));
-            const afterMicroTokens = estimateMessagesTokens(compactedForModel);
-            const afterMicroPct = (afterMicroTokens / maxTokens) * 100;
-            if (onAgentEvent) {
-              onAgentEvent({
-                type: 'compact:auto',
-                mode: 'micro',
-                threshold: compactState.threshold,
-                tokensSaved: micro.tokensSaved
-              });
-            }
-            if (afterMicroPct < compactState.threshold) {
-              needsMacro = false;
-              await captureCompactSummary({
-                summary: `Micro-compact saved ${micro.tokensSaved} tokens`,
-                mode: 'micro',
-                beforeTokens: currentTokens,
-                afterTokens: afterMicroTokens
-              });
-            }
-          }
-        }
-        // Phase 1: macro compact if still over threshold
-        if (needsMacro) {
-          const sourceIsCompacted = Boolean(compactedForModel);
-          const macroSource = modelVisibleMessages(compactedForModel ?? currentSession.messages);
-          const autoResult = await compactMessagesLocally(macroSource, {
-            mode: compactState.mode,
-            force: true,
-            generateSummary: createCompactSummaryGenerator(config, null)
-          });
-          if (autoResult.changed) {
-            setCompactedView(
-              autoResult.compacted.map((m) => ({
-                ...m,
-                at: new Date().toISOString()
-              })),
-              {
-                boundaryIndex: translateCompactBoundaryToOriginal(
-                  sourceIsCompacted,
-                  currentSession.compact,
-                  autoResult.boundaryIndex
-                ),
-                mode: compactState.mode
-              }
-            );
-            await captureCompactSummary({
-              summary: autoResult.summary,
-              mode: compactState.mode,
-              beforeTokens: currentTokens,
-              afterTokens: estimateMessagesTokens(compactedForModel)
-            });
-            if (onAgentEvent) {
-              onAgentEvent({
-                type: 'compact:auto',
-                mode: compactState.mode,
-                threshold: compactState.threshold
-              });
-            }
-          }
-        }
-      }
-    }
-
-    const expandedText = await expandFileMentions(parsedInput.text, process.cwd());
+    const expandedText = await expandFileMentions(inputText, process.cwd());
     const autoRoute = classifyAutoRoute(expandedText);
     const injectAlwaysSkills = shouldInjectAlwaysSkills(executionMode);
     const alwaysSkills = injectAlwaysSkills ? getAlwaysSkillCommands(commands, config, dismissedAlwaysSkills) : [];
@@ -8900,12 +7302,128 @@ export async function createChatRuntime({
     ]);
     return { type: 'assistant', text: result.text, aborted: !!result.aborted };
   };
+  const getAvailableSkills = () =>
+    Array.from(commands.values())
+      .filter((command) => isUserInvocableSkill(command))
+      .filter((command) => isSkillEnabled(config, command.name, command))
+      .map((command) => {
+        const source = String(command.source || '');
+        const scope = source.startsWith('project-')
+          ? 'project'
+          : source.startsWith('global-') || source.startsWith('registry-')
+            ? 'global'
+            : source.startsWith('bundled-')
+              ? 'builtin'
+              : '';
+        return {
+          name: String(command.name || ''),
+          description: String(command.metadata?.description || '').trim(),
+          ...(scope ? { scope } : {})
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+  const submitMessage = async (submission, onAgentEvent) => {
+    const normalized = normalizeChatSubmission(submission);
+    await reloadCommandsAndSkills();
+    const composed = composeSelectedSkills(commands, normalized, {
+      isEnabled: (command) => isSkillEnabled(config, command.name, command)
+    });
+    if (composed.error) throw new Error(composed.error);
+    return executeSubmission(composed.text, onAgentEvent, {
+      modelText: appendAttachmentContext(composed.modelText, submission?.modelText),
+      attachmentIds: normalized.attachmentIds,
+      dismissedAlwaysSkills: normalized.dismissedAlwaysSkills
+    });
+  };
+
+  const submit = async (line, onAgentEvent) => {
+    const text = String(line || '');
+    if (!text.trim()) return { type: 'noop' };
+    if (text.trimStart().startsWith('!')) {
+      const shell = await handleShellInput(text.trimStart().slice(1), config);
+      return { type: 'shell', text: shell.text };
+    }
+    return submitMessage({ text }, onAgentEvent);
+  };
+
+  const dispatchAction = async (action, options = {}) => {
+    const onAgentEvent = typeof options.onAgentEvent === 'function'
+      ? options.onAgentEvent
+      : undefined;
+    const normalized = validateChatAction(action, buildChatActionValidationState(buildRuntimeStateSnapshot({
+      currentSession,
+      config,
+      model,
+      executionMode,
+      extraSession: activeSubSession,
+      alwaysSkillNames: getAlwaysSkillCommands(commands, config).map((skill) => skill.name)
+    }), approvalRequestState.current));
+    const payload = normalized.payload;
+    const handlers = {
+      [CHAT_ACTIONS.CAPTURE]: async () => captureToInbox({
+        summary: String(payload.summary || '').trim(),
+        scope: payload.scope || 'repo',
+        type: payload.type || 'observation',
+        details: String(payload.details || '').trim(),
+        source: 'chat-action'
+      }),
+      [CHAT_ACTIONS.INBOX]: async () => listInbox(),
+      [CHAT_ACTIONS.DREAM]: async () => runDreamConsolidation({
+        dryRun: payload.dryRun === true,
+        scope: payload.scope || null,
+        workspaceRoot: process.cwd(),
+        config,
+        writeAudit: true
+      }),
+      [CHAT_ACTIONS.SPEC_REJECT]: async () => {
+        currentSession.specState = null;
+        if (currentSession.planState?.status === 'pending_spec_approval') currentSession.planState = null;
+        restoreConfiguredExecutionMode();
+        await saveSession(currentSession);
+        return { type: 'system', text: 'Spec rejected.' };
+      },
+      [CHAT_ACTIONS.REFLECT_REJECT]: async () => {
+        currentSession.planState = null;
+        restoreConfiguredExecutionMode();
+        await saveSession(currentSession);
+        return { type: 'system', text: 'Reflect skill draft rejected.' };
+      },
+      [CHAT_ACTIONS.COMPACT]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
+      [CHAT_ACTIONS.REFLECT]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
+      [CHAT_ACTIONS.SPEC_PLAN_AND_EXECUTE]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
+      [CHAT_ACTIONS.SPEC_EXECUTE]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
+      [CHAT_ACTIONS.SPEC_SAVE]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
+      [CHAT_ACTIONS.SPEC_REVISE]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
+      [CHAT_ACTIONS.REFLECT_APPROVE]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
+      [CHAT_ACTIONS.REFLECT_REVISE]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
+      [CHAT_ACTIONS.APPROVAL_APPROVE]: async () => {
+        const request = takePendingApproval(approvalRequestState, payload.requestId);
+        request.resolve({ approved: true });
+        return { type: 'approval', approved: true, requestId: payload.requestId };
+      },
+      [CHAT_ACTIONS.APPROVAL_REJECT]: async () => {
+        const request = takePendingApproval(approvalRequestState, payload.requestId);
+        request.resolve({
+          approved: false,
+          reason: payload.reason || ''
+        });
+        return { type: 'approval', approved: false, requestId: payload.requestId };
+      }
+    };
+    const handler = handlers[normalized.name];
+    if (!handler) {
+      throw new Error(`Chat action handler is not available: ${normalized.name}`);
+    }
+    return handler();
+  };
 
   return {
-    listCommandNames,
-    getCompletionOptions,
-    isImmediateLocalInput,
     submit,
+    submitMessage,
+    submitCodeWiki: (line, onAgentEvent, options = {}) => executeSubmission(line, onAgentEvent, options),
+    dispatchAction,
+    getSession: () => currentSession,
     abort: () => {
       if (activeAbortController && !activeAbortController.signal.aborted) {
         activeAbortController.abort();
@@ -8918,6 +7436,7 @@ export async function createChatRuntime({
     getCurrentSessionId: () => currentSession.id,
     getSessionMessages: () => currentSession.messages || [],
     getSessionCompact: () => currentSession.compact || null,
+    getAvailableSkills,
     persistRunStatus,
     getChangeSets: () => listGitOplogChanges(changeTracker),
     getChangeSetPatch: (id) => readGitOplogPatch(changeTracker, id),
@@ -8953,7 +7472,7 @@ export async function createChatRuntime({
       return true;
     },
     setRequestToolApproval: (handler) => {
-      activeRequestToolApproval = typeof handler === 'function' ? handler : null;
+      requestToolApprovalObserver = typeof handler === 'function' ? handler : null;
       return true;
     },
     setRequestUserInput: (handler) => {

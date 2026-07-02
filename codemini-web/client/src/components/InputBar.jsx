@@ -18,9 +18,11 @@ import {
   ImageSquare,
   LockOpen,
   MaskHappy,
+  MagnifyingGlass,
   Minus,
   Moon,
   Paperclip,
+  Plus,
   ShieldWarning,
   Sparkle,
   Tray,
@@ -38,11 +40,18 @@ import {
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   USER_ACTION_COMMAND_NAMES,
-  buildUserSkillLine,
 } from "@/lib/user-skill-prompt.js";
+import {
+  beginActionParameter,
+  cancelActionParameter,
+  createComposerState,
+  runComposerAction,
+  toggleComposerSkill,
+} from "@/lib/chat-composer-state.js";
 
 const IMPLICIT_SKILLS = new Set(["superpowers-lite"]);
 const INTERNAL_SKILLS = new Set(["project-requirements", "project-requirements-md"]);
+const EMPTY_PROJECT_DIRS = Object.freeze([]);
 
 function getModeOptions() {
   return [
@@ -87,38 +96,29 @@ function getApprovalModeOptions() {
 const ACTION_COMMANDS = [
   {
     name: "dream",
-    insert: "command:[dream] ",
-    executeImmediately: true,
     icon: Moon,
     description:
       "Run memory consolidation now. Auto dream still runs in the background when needed.",
   },
   {
     name: "compact",
-    insert: "command:[compact] ",
-    executeImmediately: true,
     icon: Archive,
     description:
       "Compress the current conversation context while keeping the useful working summary.",
   },
   {
     name: "capture",
-    insert: "command:[capture] ",
     icon: Camera,
     description:
       "Capture an explicit note into the memory inbox for later consolidation.",
   },
   {
     name: "inbox",
-    insert: "command:[inbox] ",
-    executeImmediately: true,
     icon: Tray,
     description: "Review pending memory inbox entries.",
   },
   {
     name: "reflect",
-    insert: "command:[reflect] ",
-    executeImmediately: true,
     icon: Sparkle,
     description: "Draft or update a reusable skill from the current workflow.",
   },
@@ -503,15 +503,18 @@ function SpecQuickSelect({ visible, disabled = false, onSelect }) {
   );
 }
 
-function CommandPalette({ query, onSelect, visible, projectDirs = [], defaultSkillNames = [] }) {
+function ActionSkillPalette({ query, error, onQueryChange, onSelect, visible, projectDirs = EMPTY_PROJECT_DIRS, defaultSkillNames = [] }) {
   const [skills, setSkills] = useState([]);
   const [hoveredItem, setHoveredItem] = useState(null);
+  const searchRef = useRef(null);
 
   useEffect(() => {
+    let cancelled = false;
     if (visible) {
       api
         .fetchSkills(projectDirs)
         .then((list) => {
+          if (cancelled) return;
           setSkills(
             Array.isArray(list)
               ? list.filter(
@@ -526,7 +529,14 @@ function CommandPalette({ query, onSelect, visible, projectDirs = [], defaultSki
         })
         .catch(() => {});
     }
+    return () => {
+      cancelled = true;
+    };
   }, [visible, projectDirs]);
+
+  useEffect(() => {
+    if (visible) searchRef.current?.focus();
+  }, [visible]);
 
   const needle = query.trim().toLowerCase();
   const actionItems = useMemo(
@@ -638,6 +648,21 @@ function CommandPalette({ query, onSelect, visible, projectDirs = [], defaultSki
       className="absolute bottom-full left-0 right-0 mb-1.5 max-h-[360px] overflow-y-auto rounded-lg border border-(--border-default) bg-(--bg-primary) shadow-[var(--shadow-default)] z-50 animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
       style={{ scrollbarWidth: "thin" }}
     >
+      <div className="sticky top-0 z-10 bg-(--bg-primary) p-2">
+        <label className="flex items-center gap-2 rounded-md border border-(--border-default) px-2">
+          <MagnifyingGlass size={14} className="text-(--text-muted)" />
+          <input
+            ref={searchRef}
+            type="search"
+            value={query}
+            onChange={(event) => onQueryChange(event.target.value)}
+            aria-label={t("searchActionsAndSkills")}
+            placeholder={t("searchActionsAndSkills")}
+            className="h-8 min-w-0 flex-1 border-0 bg-transparent text-[12px] outline-none"
+          />
+        </label>
+        {error ? <div role="alert" className="px-1 pt-1.5 text-[11px] text-(--accent-red)">{error}</div> : null}
+      </div>
       {/* <div className="px-2.5 py-1.5 text-[11px] text-(--text-muted) font-medium flex items-center gap-1.5 uppercase tracking-[0.45px]">
         Commands
       </div>
@@ -658,6 +683,7 @@ function CommandPalette({ query, onSelect, visible, projectDirs = [], defaultSki
 
 export function InputBar({
   onSubmit,
+  onAction,
   onAbort,
   busy,
   disabled = false,
@@ -666,14 +692,17 @@ export function InputBar({
   history: externalHistory,
   onOpenSpec,
   projectCwd,
-  projectDirs = [],
+  projectDirs = EMPTY_PROJECT_DIRS,
 }) {
   const [value, setValue] = useState("");
   const [history, setHistory] = useState([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [draftBeforeHistory, setDraftBeforeHistory] = useState("");
-  const [slashOpen, setSlashOpen] = useState(false);
-  const [slashQuery, setSlashQuery] = useState("");
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteQuery, setPaletteQuery] = useState("");
+  const [paletteError, setPaletteError] = useState("");
+  const [actionSubmitting, setActionSubmitting] = useState(false);
+  const [actionParameter, setActionParameter] = useState(() => createComposerState());
   const [attachments, setAttachments] = useState([]);
   const [selectedSkills, setSelectedSkills] = useState([]);
   const [dismissedDefaultSkills, setDismissedDefaultSkills] = useState(new Set());
@@ -681,6 +710,7 @@ export function InputBar({
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
+  const actionSubmissionRef = useRef(false);
 
   const rs = runtimeState || {};
   const mode = rs.mode || "normal";
@@ -715,28 +745,39 @@ export function InputBar({
   }, [externalHistory]);
 
   useEffect(() => {
-    if (!inputLocked) return;
-    setSlashOpen(false);
-  }, [inputLocked]);
+    if (!inputLocked || actionSubmitting) return;
+    setPaletteOpen(false);
+  }, [inputLocked, actionSubmitting]);
 
-  const submitCurrent = useCallback(() => {
+  const submitCurrent = useCallback(async () => {
     const val = value.trim();
-    if ((!val && attachments.length === 0 && selectedSkills.length === 0) || inputLocked) return;
-    const line = selectedSkills.length
-      ? buildUserSkillLine(selectedSkillNames, val)
-      : val || t("attachmentFallbackPrompt");
+    const hasText = val.length > 0;
+    const hasAttachments = attachments.length > 0;
+    const hasSkills = selectedSkills.length > 0;
+    if ((!hasText && !hasAttachments && !hasSkills) || inputLocked) return;
+
+    let fallbackText = val;
+    if (!hasText && hasAttachments) {
+      fallbackText = t("attachmentFallbackPrompt");
+    }
+
     const dismissedSkills = [...dismissedDefaultSkills];
-    onSubmit(line, {
-      attachmentIds: attachments.map((item) => item.id).filter(Boolean),
-      attachments,
-      ...(dismissedSkills.length > 0 ? { dismissedAlwaysSkills: dismissedSkills } : {}),
-    });
+    try {
+      await onSubmit({
+        text: fallbackText,
+        skillNames: selectedSkillNames,
+        attachmentIds: attachments.map((item) => item.id).filter(Boolean),
+        dismissedAlwaysSkills: dismissedSkills,
+      });
+    } catch {
+      return;
+    }
     setValue("");
     setAttachments([]);
     setSelectedSkills([]);
     setDismissedDefaultSkills(new Set());
     setAttachmentError("");
-    setSlashOpen(false);
+    setPaletteOpen(false);
     setHistoryIndex(-1);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
   }, [value, attachments, selectedSkills, selectedSkillNames, dismissedDefaultSkills, inputLocked, onSubmit]);
@@ -744,7 +785,22 @@ export function InputBar({
   const handleKeyDown = useCallback(
     (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
-        if (slashOpen) {
+        if (actionParameter.activeAction) {
+          e.preventDefault();
+          if (actionSubmissionRef.current) return;
+          actionSubmissionRef.current = true;
+          setActionSubmitting(true);
+          setPaletteError("");
+          runComposerAction(actionParameter.activeAction, onAction, actionParameter.parameterText)
+            .then(() => setActionParameter(createComposerState()))
+            .catch((error) => setPaletteError(error?.message || t("actionFailed")))
+            .finally(() => {
+              actionSubmissionRef.current = false;
+              setActionSubmitting(false);
+            });
+          return;
+        }
+        if (paletteOpen) {
           e.preventDefault();
           return;
         }
@@ -752,12 +808,17 @@ export function InputBar({
         submitCurrent();
         return;
       }
-      if (slashOpen && e.key === "Escape") {
+      if (paletteOpen && e.key === "Escape") {
         e.preventDefault();
-        setSlashOpen(false);
+        setPaletteOpen(false);
         return;
       }
-      if (e.key === "ArrowUp" && history.length > 0 && !slashOpen) {
+      if (actionParameter.activeAction && e.key === "Escape") {
+        e.preventDefault();
+        setActionParameter((current) => cancelActionParameter(current));
+        return;
+      }
+      if (e.key === "ArrowUp" && history.length > 0 && !paletteOpen) {
         e.preventDefault();
         if (historyIndex === -1) setDraftBeforeHistory(value);
         const next = Math.min(historyIndex + 1, history.length - 1);
@@ -765,7 +826,7 @@ export function InputBar({
         setValue(history[next]);
         return;
       }
-      if (e.key === "ArrowDown" && historyIndex !== -1 && !slashOpen) {
+      if (e.key === "ArrowDown" && historyIndex !== -1 && !paletteOpen) {
         e.preventDefault();
         const next = historyIndex - 1;
         setHistoryIndex(next);
@@ -782,7 +843,9 @@ export function InputBar({
       historyIndex,
       draftBeforeHistory,
       submitCurrent,
-      slashOpen,
+      paletteOpen,
+      actionParameter,
+      onAction,
     ],
   );
 
@@ -792,56 +855,54 @@ export function InputBar({
     e.target.style.height = "auto";
     e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
 
-    if (val === "/") {
-      setSlashOpen(true);
-      setSlashQuery("");
-    } else if (val.startsWith("/") && !val.includes(" ")) {
-      setSlashOpen(true);
-      setSlashQuery(val.slice(1));
-    } else {
-      setSlashOpen(false);
-    }
   }, []);
 
   const handleCommandSelect = useCallback(
-    (item) => {
+    async (item) => {
       if (item?.kind === "skill") {
         if (defaultSkillNames.includes(item.name)) {
           setValue("");
-          setSlashOpen(false);
+          setPaletteOpen(false);
           textareaRef.current?.focus();
           return;
         }
         setSelectedSkills((current) =>
-          current.some((skill) => skill.name === item.name)
-            ? current
-            : [...current, { name: item.name, description: item.description || "" }],
+          toggleComposerSkill(
+            { selectedSkills: current },
+            { name: item.name, description: item.description || "" },
+          ).selectedSkills,
         );
-        setValue("");
-        setSlashOpen(false);
+        setPaletteOpen(false);
         textareaRef.current?.focus();
         return;
       }
 
-      if (item?.executeImmediately) {
-        const command = String(item.insert || "").trim();
-        if (command && !inputLocked) {
-          onSubmit(command);
-          setValue("");
-          setAttachments([]);
-          setSelectedSkills([]);
-          setAttachmentError("");
+      if (item?.kind === "action") {
+        if (inputLocked) return;
+        if (item.name === "capture") {
+          setActionParameter((current) => beginActionParameter(current, item.name));
+          setPaletteOpen(false);
+          textareaRef.current?.focus();
+          return;
         }
-        setSlashOpen(false);
+        if (actionSubmissionRef.current) return;
+        actionSubmissionRef.current = true;
+        setPaletteError("");
+        setActionSubmitting(true);
+        try {
+          await runComposerAction(item.name, onAction);
+          setPaletteOpen(false);
+        } catch (error) {
+          setPaletteError(error?.message || t("actionFailed"));
+        } finally {
+          actionSubmissionRef.current = false;
+          setActionSubmitting(false);
+        }
         textareaRef.current?.focus();
         return;
       }
-
-      setValue(item?.insert || "");
-      setSlashOpen(false);
-      textareaRef.current?.focus();
     },
-    [defaultSkillNames, inputLocked, onSubmit],
+    [defaultSkillNames, inputLocked, onAction],
   );
 
   const removeSelectedSkill = useCallback((name) => {
@@ -889,10 +950,12 @@ export function InputBar({
 
   return (
     <div className="w-full relative">
-      <CommandPalette
-        query={slashQuery}
+      <ActionSkillPalette
+        query={paletteQuery}
+        error={paletteError}
+        onQueryChange={setPaletteQuery}
         onSelect={handleCommandSelect}
-        visible={slashOpen}
+        visible={paletteOpen}
         projectDirs={projectDirs}
         defaultSkillNames={defaultSkillNames}
       />
@@ -982,15 +1045,19 @@ export function InputBar({
         <div className="flex min-h-[42px]">
           <textarea
             ref={textareaRef}
-            value={value}
-            onChange={handleInput}
+            value={actionParameter.activeAction ? actionParameter.parameterText : value}
+            onChange={actionParameter.activeAction
+              ? (event) => setActionParameter((current) => ({ ...current, parameterText: event.target.value }))
+              : handleInput}
             onKeyDown={handleKeyDown}
             placeholder={
-              busy
+              actionParameter.activeAction === "capture"
+                ? "Capture summary (required; Esc to cancel)"
+                : busy
                 ? t("inputDisabled")
                 : disabled
                   ? disabledReason || t("inputDisabled")
-                  : t("sendMessageToCodeminiWithSlash")
+                  : t("sendMessageToCodemini")
             }
             disabled={inputLocked}
             rows={1}
@@ -1000,13 +1067,26 @@ export function InputBar({
         </div>
         <div className="flex items-center gap-1.5 min-h-8 flex-wrap">
           <div className="flex min-w-0 flex-1 basis-full sm:basis-auto items-center gap-1.5 overflow-x-auto pb-0.5 sm:flex-wrap sm:overflow-visible sm:pb-0">
+            <button
+              type="button"
+              className="border-0 bg-transparent text-(--text-secondary) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
+              title={t("addActionOrSkill")}
+              aria-label={t("addActionOrSkill")}
+              disabled={inputLocked}
+              onClick={() => {
+                setPaletteQuery("");
+                setPaletteOpen((open) => !open);
+              }}
+            >
+              <Plus size={18} />
+            </button>
             <ModeSelector current={mode} disabled={inputLocked} />
             <SpecQuickSelect
               visible={!isGeneralChat}
               disabled={inputLocked}
               onSelect={(spec) => {
                 onOpenSpec?.(spec);
-                setSlashOpen(false);
+                setPaletteOpen(false);
                 textareaRef.current?.focus();
               }}
             />
@@ -1059,7 +1139,7 @@ export function InputBar({
                   "border-0 min-w-8 w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-all",
                   (value.trim() || attachments.length > 0 || selectedSkills.length > 0) &&
                   !inputLocked
-                    ? "bg-(--accent-blue) text-white hover:bg-(--accent-hover)"
+                    ? "bg-(--text-primary) text-(--bg-primary) hover:opacity-85"
                     : "bg-(--text-muted)/25 text-(--text-muted) cursor-not-allowed",
                 )}
                 onClick={submitCurrent}

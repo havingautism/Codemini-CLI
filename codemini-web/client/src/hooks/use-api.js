@@ -86,6 +86,23 @@ export async function submitLine(line, options = {}) {
   return res;
 }
 
+export async function submitMessage(body = {}) {
+  return api('/api/chat/message', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body)
+  });
+}
+
+export async function submitChatAction(name, payload = {}) {
+  const res = await api('/api/chat/action', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ name, payload })
+  });
+  return res.json();
+}
+
 export async function uploadAttachments(files = []) {
   const form = new FormData();
   for (const file of files) {
@@ -158,11 +175,6 @@ export async function submitUserInput(id, response = {}) {
     body: JSON.stringify({ id, ...response })
   });
   return res.json().catch(() => ({}));
-}
-
-export async function fetchCompletions(query) {
-  const res = await api(`/api/completions?q=${encodeURIComponent(query)}`);
-  return res.json();
 }
 
 export async function switchSession(sessionId) {

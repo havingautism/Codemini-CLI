@@ -5,6 +5,7 @@ import { formatToolLabel } from '../../src/core/tool-display.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getSessionsDir } from '../../src/core/paths.js';
+import { CHAT_ACTIONS } from '../../src/core/chat-action-dispatcher.js';
 
 const CODEWIKI_GENERATE_TIMEOUT_MS = 35 * 60 * 1000;
 
@@ -370,6 +371,8 @@ export class RuntimeBridge {
   #activeSubmitLine = '';
   #runStatusRecorded = false;
   #submitToken = 0;
+  #operationSequence = 0;
+  #activeStructuredOperationId = null;
 
   #isSubmitActive(token) {
     return token === this.#submitToken;
@@ -1009,6 +1012,104 @@ export class RuntimeBridge {
     return { accepted: true };
   }
 
+  #handleStructuredRun(run, { userMessage = null, retryPrompt = '', selectedSkillNames = [] } = {}) {
+    if (this.#busy) {
+      return { accepted: false, error: true, code: 'BUSY', message: 'A request is already in progress' };
+    }
+    this.#resetUiTranscriptIfSessionChanged();
+    const selectedSkills = [...new Set(
+      (Array.isArray(selectedSkillNames) ? selectedSkillNames : [])
+        .map((name) => String(name || '').trim())
+        .filter(Boolean)
+    )];
+    const selectedBadges = selectedSkills.map((name) => ({
+      name,
+      status: 'selected'
+    }));
+    if (userMessage) {
+      this.#addUiMessage({
+        role: 'you',
+        text: userMessage.text,
+        attachments: userMessage.attachments || [],
+        skillBadges: selectedBadges,
+        timestamp: new Date().toISOString()
+      });
+    }
+    this.#busy = true;
+    this.#uiPendingSkillBadges = selectedBadges;
+    this.#uiPendingSkillSegments = [];
+    const submitToken = this.#invalidateSubmit();
+    const operationId = `chat-${Date.now()}-${++this.#operationSequence}`;
+    this.#activeStructuredOperationId = operationId;
+    const onAgentEvent = (event) => {
+      if (!this.#isSubmitActive(submitToken)) return;
+      this.#recordUiEvent(event);
+      this.#broadcast(event);
+    };
+    for (const name of selectedSkills) {
+      const startedAt = new Date().toISOString();
+      onAgentEvent({ type: 'skill:start', name, startedAt });
+      onAgentEvent({
+        type: 'skill:end',
+        name,
+        startedAt,
+        endedAt: new Date().toISOString()
+      });
+    }
+    Promise.resolve().then(() => run(onAgentEvent)).then((result) => {
+      if (!this.#isSubmitActive(submitToken)) return;
+      this.#uiActiveMsgId = null;
+      this.#uiPlanStepIds = new Map();
+      this.#broadcast({ type: 'submit:done', operationId, result });
+    }).catch(async (err) => {
+      if (!this.#isSubmitActive(submitToken)) return;
+      await this.#recordRunStatus(`Failed: ${err.message}`, {
+        status: 'error',
+        retryPrompt
+      });
+      this.#broadcast({
+        type: 'submit:done',
+        operationId,
+        result: { type: 'error', text: err.message, retryPrompt }
+      });
+    }).finally(() => {
+      if (!this.#isSubmitActive(submitToken)) return;
+      if (this.#activeStructuredOperationId === operationId) {
+        this.#activeStructuredOperationId = null;
+      }
+      this.#busy = false;
+      this.#broadcastRuntimeState();
+    });
+    this.#broadcastRuntimeState();
+    return { accepted: true, operationId };
+  }
+
+  handleSubmitMessage(message = {}) {
+    const text = String(message.text || '');
+    return this.#handleStructuredRun(
+      (onAgentEvent) => this.#runtime.submitMessage(message, onAgentEvent),
+      {
+        userMessage: {
+          text,
+          attachments: Array.isArray(message.attachments) ? message.attachments : []
+        },
+        selectedSkillNames: message.skillNames,
+        retryPrompt: text
+      }
+    );
+  }
+
+  handleAction(action = {}) {
+    const isApprovalDecision = action?.name === CHAT_ACTIONS.APPROVAL_APPROVE
+      || action?.name === CHAT_ACTIONS.APPROVAL_REJECT;
+    if (this.#busy && this.#activeStructuredOperationId && isApprovalDecision) {
+      return this.#runtime.dispatchAction(action);
+    }
+    return this.#handleStructuredRun(
+      (onAgentEvent) => this.#runtime.dispatchAction(action, { onAgentEvent })
+    );
+  }
+
   handleCodeWikiGenerate(line) {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
     this.#busy = true;
@@ -1037,7 +1138,7 @@ export class RuntimeBridge {
       this.#broadcastRuntimeState();
     }, CODEWIKI_GENERATE_TIMEOUT_MS);
     const clearSafetyTimer = () => clearTimeout(safetyTimer);
-    requestRuntime.submit(line, emitProgress, { codeWikiGenerate: true }).then((result) => {
+    requestRuntime.submitCodeWiki(line, emitProgress, { codeWikiGenerate: true }).then((result) => {
       clearSafetyTimer();
       if (timedOut || !this.#isSubmitActive(submitToken)) return;
       if (result?.aborted) {
@@ -1081,7 +1182,7 @@ export class RuntimeBridge {
       if (typeof onEvent === 'function' && event?.type) onEvent(event);
     };
     try {
-      const result = await this.#runtime.submit(line, emit, { readOnlyCodeWiki: true });
+      const result = await this.#runtime.submitCodeWiki(line, emit, { readOnlyCodeWiki: true });
       if (!this.#isSubmitActive(submitToken)) return { error: true, stale: true, message: 'Request superseded' };
       const payload = {
         ok: true,
@@ -1108,6 +1209,8 @@ export class RuntimeBridge {
   async handleAbort() {
     const retryPrompt = this.#activeSubmitLine;
     const wasBusy = this.#busy;
+    const operationId = this.#activeStructuredOperationId;
+    this.#activeStructuredOperationId = null;
     this.#userInput.resolveAll({ status: 'skipped', answers: {} });
     if (wasBusy) this.#invalidateSubmit();
     const abortToken = this.#submitToken;
@@ -1116,7 +1219,11 @@ export class RuntimeBridge {
       if (!this.#runStatusRecorded) {
         const text = 'Aborted: Request released.';
         await this.#recordRunStatus(text, { status: 'aborted', retryPrompt });
-        this.#broadcast({ type: 'submit:done', result: { type: 'aborted', aborted: true, text: 'Request released.' } });
+        this.#broadcast({
+          type: 'submit:done',
+          ...(operationId ? { operationId } : {}),
+          result: { type: 'aborted', aborted: true, text: 'Request released.' }
+        });
       }
       this.#busy = false;
       this.#codeWikiGenerating = false;
@@ -1126,7 +1233,11 @@ export class RuntimeBridge {
       if (!this.#runStatusRecorded) {
         const text = 'Aborted: Request aborted.';
         await this.#recordRunStatus(text, { status: 'aborted', retryPrompt });
-        this.#broadcast({ type: 'submit:done', result: { type: 'aborted', aborted: true, text: 'Request aborted.' } });
+        this.#broadcast({
+          type: 'submit:done',
+          ...(operationId ? { operationId } : {}),
+          result: { type: 'aborted', aborted: true, text: 'Request aborted.' }
+        });
       }
       setTimeout(async () => {
         if (!this.#busy || !this.#isSubmitActive(abortToken)) return;

@@ -8,8 +8,8 @@ import { getBuiltinTools } from '../core/tools.js';
 import { getSubAgentRolePrompt, ROLE_TOOL_POLICY } from '../core/chat-runtime.js';
 import { composeSystemPrompt } from '../core/system-prompt-composer.js';
 import { normalizePlanState } from '../core/plan-state.js';
-import { composeExplicitSkillPrompt, loadCommandsAndSkills } from '../core/command-loader.js';
-import { parseInput } from '../core/input-parser.js';
+import { composeSelectedSkills } from '../core/chat-message.js';
+import { loadCommandsAndSkills } from '../core/command-loader.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -29,7 +29,8 @@ function parseRunArgs(args) {
     model: undefined,
     fast: false,
     harness: null,
-    pipeline: false
+    pipeline: false,
+    skillNames: []
   };
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
@@ -49,6 +50,11 @@ function parseRunArgs(args) {
     }
     if (arg === '--pipeline') {
       parsed.pipeline = true;
+      continue;
+    }
+    if (arg === '--skill') {
+      parsed.skillNames.push(String(args[i + 1] || '').trim());
+      i += 1;
       continue;
     }
     parsed.task += `${parsed.task ? ' ' : ''}${arg}`;
@@ -351,26 +357,19 @@ export async function handleRun(args) {
   const config = await loadConfig();
   const selectedModel = parsed.fast ? (config.model?.fast_name || config.model?.name) : parsed.model;
   const systemPrompt = await buildSystemPrompt(config);
-  const invocation = parseInput(parsed.task);
   let effectiveTask = parsed.task;
-  if (invocation.type === 'slash' && invocation.syntax === 'directive') {
-    throw new Error('command:[...] is not supported in run mode. Use codemini chat "command:[...]" or an interactive chat session.');
-  }
-  if (invocation.type === 'skill') {
+  if (parsed.skillNames.length > 0) {
     const commands = await loadCommandsAndSkills(process.cwd());
-    const composed = composeExplicitSkillPrompt(commands, invocation.skills, invocation.text, {
+    const composed = composeSelectedSkills(commands, {
+      text: parsed.task,
+      skillNames: parsed.skillNames
+    }, {
       isEnabled: (command) =>
         command.metadata?.enabled !== false &&
         (command.source === 'bundled-skill' || config.skills?.enabled?.[command.name] !== false)
     });
     if (composed.error) throw new Error(composed.error);
-    // Inject always-mode skills so they are active regardless of which
-    // skills the user explicitly selected.
-    const alwaysSkills = Array.from(commands.values())
-      .filter((cmd) => cmd?.metadata?.type === 'skill' && cmd?.metadata?.mode === 'always');
-    effectiveTask = alwaysSkills.length > 0
-      ? alwaysSkills.map((s) => `[Always skill: ${s.name}]\n${s.content}`).join('\n\n') + '\n\n' + composed.prompt
-      : composed.prompt;
+    effectiveTask = composed.modelText;
   }
 
   if (parsed.pipeline) {
