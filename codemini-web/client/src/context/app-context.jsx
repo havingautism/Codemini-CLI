@@ -3414,7 +3414,6 @@ export function AppProvider({ children }) {
       },
 
       runChatAction: async (actionName, payload = {}) => {
-        if (!isAlive()) return null;
         update({
           busy: true,
           live: true,
