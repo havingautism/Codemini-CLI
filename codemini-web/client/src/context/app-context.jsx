@@ -359,10 +359,14 @@ function createSkillSegment(event, status = "running") {
 }
 
 function addSkillToSegments(segments, event) {
-  return [
-    ...(Array.isArray(segments) ? segments : []),
-    createSkillSegment(event),
-  ];
+  const source = Array.isArray(segments) ? segments : [];
+  const existingIndex = source.findIndex(
+    (segment) => segment?.type === "skill" && segment.name === event.name,
+  );
+  if (existingIndex === -1) return [...source, createSkillSegment(event)];
+  return source.map((segment, index) =>
+    index === existingIndex ? createSkillSegment(event) : segment,
+  );
 }
 
 function updatePendingSkillSegments(segments, name, updater) {
@@ -2561,10 +2565,10 @@ export function AppProvider({ children }) {
               ),
             }));
           } else {
-            pendingSkillSegmentsRef.current = [
-              ...pendingSkillSegmentsRef.current,
-              createSkillSegment(event),
-            ];
+            pendingSkillSegmentsRef.current = addSkillToSegments(
+              pendingSkillSegmentsRef.current,
+              event,
+            );
           }
           break;
         }

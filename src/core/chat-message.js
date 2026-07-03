@@ -5,6 +5,10 @@ function uniqueStrings(values) {
   return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
 }
 
+export function formatSelectedSkillTurn(skillNames) {
+  return ['skill:', '[', uniqueStrings(skillNames).join(','), ']'].join('');
+}
+
 export function normalizeChatSubmission(input = {}) {
   return {
     text: String(input.text || '').trim(),
@@ -37,7 +41,7 @@ export function composeSelectedSkills(commands, submission, options = {}) {
   );
   if (composed.error) return { error: composed.error };
   return {
-    text: normalized.text,
+    text: normalized.text || formatSelectedSkillTurn(normalized.skillNames),
     modelText: composed.prompt,
     skillNames: normalized.skillNames
   };

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import { shouldCaptureEscapeSequence } from './input-escape.js';
 import { classifyCommandIntent } from '../core/shell.js';
+import { formatSelectedSkillTurn } from '../core/chat-message.js';
 import { formatToolLabel } from '../core/tool-display.js';
 import {
   createActionSelectorState,
@@ -4973,19 +4974,19 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
         }
       }
 
-      if (selectedSkillNames.length > 0 && !inputValue.trim()) return;
       const line = inputValue.trim();
+      if (!line && selectedSkillNames.length === 0) return;
+      const displayLine = line || formatSelectedSkillTurn(selectedSkillNames);
       const submission = { text: line, skillNames: selectedSkillNames };
       setInputValue('');
       setActionSelector((current) => reduceActionSelector(current, { type: 'clear-skills' }));
       setSuggestionNav(false);
       cursorIndexRef.current = 0;
       setCursorIndex(0);
-      if (!line) return;
 
       const showUserMessage = true;
       if (showUserMessage) {
-        setHistory((prev) => [...prev, line]);
+        setHistory((prev) => [...prev, displayLine]);
       }
       setHistoryIndex(null);
       setDraftBeforeHistory('');
@@ -5005,7 +5006,7 @@ export function ChatApp({ runtime, sessionId, model, sdkProvider = 'openai-compa
           {
             id: messageId,
             label: 'you',
-            text: line,
+            text: displayLine,
             color: 'white',
             loading: true,
             phase: pendingUserMeta.phase,

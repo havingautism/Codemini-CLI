@@ -31,7 +31,7 @@ export function SettingsProviderCards({
               "flex min-h-[72px] flex-col items-start gap-2 rounded-lg border px-3 py-2.5 text-left transition-all",
               "disabled:cursor-not-allowed disabled:opacity-50",
               selected
-                ? "border-[color-mix(in_srgb,var(--input-shell-accent)_50%,transparent)] bg-[var(--input-shell-glow-soft)] ring-2 ring-[var(--input-shell-glow)]"
+                ? "border-ring bg-accent text-accent-foreground shadow-sm"
                 : "border-(--border-default) bg-transparent hover:border-(--border-strong) hover:bg-(--bg-hover)",
             )}
           >
@@ -45,14 +45,7 @@ export function SettingsProviderCards({
               />
             )}
             <span className="min-w-0">
-              <span
-                className={cn(
-                  "block text-[13px] font-medium",
-                  selected
-                    ? "text-[var(--input-shell-accent)]"
-                    : "text-(--text-primary)",
-                )}
-              >
+              <span className="block text-[13px] font-medium text-(--text-primary)">
                 {opt.label}
               </span>
               {opt.description && (

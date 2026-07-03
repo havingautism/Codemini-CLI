@@ -13,12 +13,6 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import {
-  Question,
   CheckCircle,
   WarningCircle,
   XCircle,
@@ -396,6 +390,7 @@ export function ConfigDialog({
             id={field.path}
             label={field.label}
             help={field.help}
+            inline={field.control === "switch"}
           >
             {renderControl(field)}
           </SettingsField>
@@ -445,7 +440,7 @@ export function ConfigDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[720px] max-h-[85vh] flex flex-col p-0 gap-0">
+      <DialogContent className="sm:max-w-[720px] h-[666px] max-h-[85vh] flex flex-col p-0 gap-0">
         <DialogHeader className="shrink-0 px-6 pt-6 pb-2">
           <DialogTitle>{t("settingsTitle")}</DialogTitle>
         </DialogHeader>

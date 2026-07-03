@@ -509,12 +509,13 @@ export function composeExplicitSkillPrompt(commands, names, question, { isEnable
   }
   const task = String(question || '').trim();
   if (selected.length === 0) return { error: 'skill:[...] requires at least one skill name.' };
-  if (!task) return { error: 'skill:[...] requires a question after the closing bracket.' };
+  const effectiveTask = task ||
+    'Begin the selected skill workflow. If required information is missing, ask the user for it.';
   const prompt = [
     '[Explicit skill composition]',
     'Apply every selected skill. Preserve declaration order. If instructions conflict, explain the conflict instead of silently overriding one skill.',
     ...selected.map((command) => renderCommandPrompt(command, [])),
-    `[User task]\n${task}`
+    `[User task]\n${effectiveTask}`
   ].join('\n\n');
   return { prompt, selected };
 }

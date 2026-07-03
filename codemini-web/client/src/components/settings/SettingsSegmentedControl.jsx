@@ -26,8 +26,9 @@ export function SettingsSegmentedControl({
           id={`${idPrefix}-${opt.value}`}
           value={opt.value}
           className={cn(
-            "h-8 flex-1 rounded-md border-0 text-[12px] font-medium",
-            "data-[state=on]:bg-background data-[state=on]:text-[var(--input-shell-accent)] data-[state=on]:shadow-xs",
+            "h-8 flex-1 rounded-md border-0 text-[12px] font-medium transition-shadow",
+            "data-[state=on]:bg-accent data-[state=on]:text-accent-foreground data-[state=on]:shadow-sm",
+            "data-[state=off]:text-muted-foreground",
           )}
         >
           {opt.label}

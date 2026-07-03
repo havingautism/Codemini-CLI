@@ -31,7 +31,7 @@ export function SettingsChoiceList({
             className={cn(
               "h-auto min-h-[52px] w-full justify-start rounded-lg border px-3 py-2.5 text-left transition-colors",
               selected
-                ? "border-[color-mix(in_srgb,var(--input-shell-accent)_40%,transparent)] bg-[var(--input-shell-glow-soft)] text-(--text-primary)"
+                ? "border-ring bg-accent text-accent-foreground shadow-sm"
                 : "border-(--border-default) bg-transparent hover:border-(--border-strong) hover:bg-(--bg-hover)",
             )}
           >
