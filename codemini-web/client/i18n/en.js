@@ -507,6 +507,7 @@ export const en = {
   soulPlaceholder: "Describe tone, phrasing, and personality preferences...",
   soulPanelHint:
     "Choose the default personality. New prompts will use the active soul tone.",
+  soulLibrary: "Soul Library",
   noActiveSoul: "No soul selected",
   searchSouls: "Search souls by name...",
   create: "Create",
@@ -514,6 +515,7 @@ export const en = {
   contentPreview: "- Content Preview",
   close: "Close",
   addSoul: "Add Soul",
+  soulActions: "Soul actions",
   noSouls: "No souls yet",
   noSoulsHint:
     "Create a custom soul to keep Codemini response tone consistent.",

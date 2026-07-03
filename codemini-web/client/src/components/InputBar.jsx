@@ -27,6 +27,7 @@ import {
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
 import * as api from "@/hooks/use-api";
+import { useApp } from "@/context/app-context.jsx";
 import { ReasoningQuickControl } from "@/components/ReasoningControls.jsx";
 import {
   Popover,
@@ -284,6 +285,7 @@ function ApprovalModeSelector({ current, disabled = false }) {
 }
 
 function SoulQuickSwitch({ disabled = false }) {
+  const { state, actions } = useApp();
   const [souls, setSouls] = useState([]);
   const [active, setActive] = useState("");
   const [open, setOpen] = useState(false);
@@ -302,12 +304,19 @@ function SoulQuickSwitch({ disabled = false }) {
     loadSouls();
   }, [loadSouls]);
 
+  useEffect(() => {
+    if (state.soulsRevision > 0) {
+      loadSouls();
+    }
+  }, [state.soulsRevision, loadSouls]);
+
   const handleActivate = async (name) => {
     if (disabled) return;
     await api.activateSoul(name);
     setActive(name);
     setOpen(false);
-    loadSouls();
+    await loadSouls();
+    actions.notifySoulsChanged();
   };
 
   return (

@@ -190,6 +190,7 @@ const initialState = {
   skillsOpen: false,
   memoryOpen: false,
   soulsOpen: false,
+  soulsRevision: 0,
   aboutOpen: false,
   gitDiffOpen: false,
   sessions: [],
@@ -3881,6 +3882,10 @@ export function AppProvider({ children }) {
       setSkillsOpen: (open) => update({ skillsOpen: open }),
       setMemoryOpen: (open) => update({ memoryOpen: open }),
       setSoulsOpen: (open) => update({ soulsOpen: open }),
+      notifySoulsChanged: () =>
+        update({
+          soulsRevision: (stateRef.current.soulsRevision || 0) + 1,
+        }),
       setAboutOpen: (open) => update({ aboutOpen: open }),
       setGitDiffOpen: (open) => update({ gitDiffOpen: open }),
 

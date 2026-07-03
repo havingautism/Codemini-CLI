@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowClockwise,
-  Brain,
   CaretDown,
   CaretRight,
   Folder,
@@ -17,7 +16,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
+import { Empty, EmptyDescription } from "@/components/ui/empty";
+import { SettingsSection } from "@/components/settings/SettingsSection.jsx";
+import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmentedControl.jsx";
 import { cn } from "@/lib/utils";
 import * as api from "@/hooks/use-api";
 import { t } from "../../i18n/index.js";
@@ -58,10 +59,46 @@ function projectDirsKey(projectDirs = []) {
     : "";
 }
 
-function MemoryCard({ memory, deleting, onDelete }) {
+function MemoryGroupHeader({ name, count, collapsed, title, onClick }) {
   return (
-    <div className="rounded-lg border border-(--border-default) bg-(--bg-primary) p-3">
-      <div className="flex items-start justify-between gap-3">
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex h-8 w-full items-center gap-2 rounded-lg border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-primary) hover:bg-(--bg-hover)"
+      title={title}
+    >
+      <Folder size={14} className="shrink-0 text-(--text-muted)" />
+      <span className="min-w-0 flex-1 truncate">{name}</span>
+      <span className="shrink-0 text-[12px] font-medium text-[var(--input-shell-accent)]">
+        {count}
+      </span>
+      {collapsed ? (
+        <CaretRight size={13} className="shrink-0 text-(--text-muted)" />
+      ) : (
+        <CaretDown size={13} className="shrink-0 text-(--text-muted)" />
+      )}
+    </button>
+  );
+}
+
+function MemoryCard({ memory, deleting, onDelete }) {
+  const pinned = !!memory.pinned;
+  return (
+    <div
+      className={cn(
+        "relative rounded-lg border p-2.5 transition-colors hover:bg-(--bg-hover)",
+        pinned
+          ? "border-[color-mix(in_srgb,var(--input-shell-accent)_40%,transparent)] bg-[var(--input-shell-glow-soft)]"
+          : "border-(--border-default) bg-(--bg-primary)",
+      )}
+    >
+      {pinned && (
+        <span
+          className="absolute bottom-2.5 left-0 top-2.5 w-0.5 rounded-full bg-[var(--input-shell-accent)]"
+          aria-hidden
+        />
+      )}
+      <div className="flex items-start justify-between gap-3 pl-1">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="truncate text-[13px] font-medium text-(--text-primary)">
@@ -82,10 +119,10 @@ function MemoryCard({ memory, deleting, onDelete }) {
               </Badge>
             )}
           </div>
-          <div className="mt-1 whitespace-pre-wrap break-words text-[12px] leading-5 text-(--text-secondary)">
+          <div className="mt-0.5 line-clamp-3 whitespace-pre-wrap break-words text-[12px] leading-5 text-(--text-secondary)">
             {memory.content || t("noPreview")}
           </div>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-(--text-muted)">
+          <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[10px] text-(--text-muted)">
             <span className="font-mono">{memory.id}</span>
             {memory.updatedAt && (
               <span>{formatMemoryTime(memory.updatedAt)}</span>
@@ -93,7 +130,7 @@ function MemoryCard({ memory, deleting, onDelete }) {
             {Number.isFinite(Number(memory.confidence)) && (
               <span>{Math.round(Number(memory.confidence) * 100)}%</span>
             )}
-            {memory.pinned && <span>{t("pinned")}</span>}
+            {pinned && <span>{t("pinned")}</span>}
           </div>
         </div>
         <Button
@@ -152,13 +189,17 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
     loadMemories();
   }, [open, loadMemories]);
 
-  const counts = useMemo(() => {
-    return items.reduce((acc, item) => {
+  const kindSummary = useMemo(() => {
+    const counts = items.reduce((acc, item) => {
       const kind = item.kind || "note";
       acc[kind] = (acc[kind] || 0) + 1;
       return acc;
     }, {});
+    return Object.entries(counts)
+      .map(([kind, count]) => `${kind}: ${count}`)
+      .join(" · ");
   }, [items]);
+
   const groupedItems = useMemo(() => {
     if (scope !== "project") return { regular: items, projectGroups: [] };
     const projectGroups = [];
@@ -219,30 +260,30 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[760px] h-[82vh] max-h-[82vh] flex flex-col overflow-hidden">
-        <DialogHeader className="shrink-0">
+      <DialogContent className="flex h-[82vh] max-h-[82vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[720px]">
+        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
           <DialogTitle>{t("memoryManagement")}</DialogTitle>
         </DialogHeader>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-3">
-          <div className="rounded-lg border border-(--border-default) p-3">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden px-4 pb-4 sm:px-6">
+          <SettingsSection
+            title={t("memoryLibrary")}
+            description={t("memoryPanelHint")}
+            className="shrink-0 gap-3"
+          >
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <Brain size={14} className="text-(--text-muted)" />
-                  <span className="text-[13px] font-medium text-(--text-primary)">
-                    {t("memoryLibrary")}
-                  </span>
-                </div>
-                <div className="mt-1 text-[11px] text-(--text-muted)">
-                  {t("memoryPanelHint")}
-                </div>
-              </div>
+              {items.length > 0 && (
+                <p className="text-[12px] text-(--text-muted)">
+                  {items.length} {t("items")}
+                  {kindSummary ? ` · ${kindSummary}` : ""}
+                </p>
+              )}
               <Button
                 variant="outline"
                 onClick={loadMemories}
                 disabled={loading}
                 size="sm"
+                className="w-full sm:ml-auto sm:w-auto"
               >
                 <ArrowClockwise
                   size={13}
@@ -251,24 +292,20 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
                 {t("refresh")}
               </Button>
             </div>
-          </div>
+          </SettingsSection>
 
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <div className="flex shrink-0 rounded-md border border-(--border-default) p-0.5 gap-0.5">
-              {SCOPES.map((item) => (
-                <Button
-                  key={item}
-                  type="button"
-                  variant={scope === item ? "secondary" : "ghost"}
-                  size="xs"
-                  onClick={() => setScope(item)}
-                  className="px-2"
-                >
-                  {scopeLabel(item)}
-                </Button>
-              ))}
-            </div>
-            <div className="relative flex-1">
+          <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center">
+            <SettingsSegmentedControl
+              idPrefix="memory-scope"
+              value={scope}
+              onValueChange={setScope}
+              options={SCOPES.map((item) => ({
+                value: item,
+                label: scopeLabel(item),
+              }))}
+              className="w-full shrink-0 sm:min-w-[240px] sm:w-auto [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
+            />
+            <div className="relative min-w-0 flex-1">
               <MagnifyingGlass
                 size={13}
                 className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-(--text-muted)"
@@ -277,47 +314,31 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder={t("searchMemories")}
-                className="h-8 pl-8 text-[13px]"
+                className="h-9 pl-8 text-[13px]"
               />
             </div>
           </div>
 
-          {/* {Object.keys(counts).length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {Object.entries(counts).map(([kind, count]) => (
-                <Badge
-                  key={kind}
-                  variant="outline"
-                  className="rounded-md px-1.5 py-0 text-[10px] uppercase"
-                >
-                  {kind}: {count}
-                </Badge>
-              ))}
-            </div>
-          )} */}
-
-          <Separator className="bg-(--border-default)" />
-
           {error && (
-            <div className="rounded-md border border-(--accent-red) bg-(--accent-red-bg) px-3 py-2 text-[12px] text-(--accent-red)">
+            <div className="shrink-0 rounded-md border border-(--accent-red) bg-(--accent-red-bg) px-3 py-2 text-[12px] text-(--accent-red)">
               {error}
             </div>
           )}
 
-          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+          <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth pr-3 [scrollbar-gutter:stable]">
             {loading ? (
               <div className="py-8 text-center text-[12px] text-(--text-muted)">
                 {t("loading")}...
               </div>
             ) : items.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-(--border-default) py-8 text-center">
-                <div className="text-[13px] text-(--text-primary)">
+              <Empty className="rounded-lg py-8">
+                <EmptyDescription className="text-[13px] text-(--text-primary)">
                   {trimmedQuery ? t("noMatches") : t("noMemories")}
-                </div>
-                <div className="mt-1 text-[11px] text-(--text-muted)">
+                </EmptyDescription>
+                <EmptyDescription className="text-[11px]">
                   {t("noMemoriesHint")}
-                </div>
-              </div>
+                </EmptyDescription>
+              </Empty>
             ) : (
               <div className="grid gap-2">
                 {groupedItems.regular.map((memory) => (
@@ -332,41 +353,22 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
                   const collapsed = collapsedProjects.has(group.key);
                   return (
                     <div key={group.key} className="grid gap-1">
-                      <button
-                        type="button"
-                        onClick={() => toggleProjectGroup(group.key)}
-                        className="flex h-8 w-full items-center gap-2 rounded-md border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-primary) hover:bg-(--bg-hover)"
+                      <MemoryGroupHeader
+                        name={group.name}
+                        count={group.items.length}
+                        collapsed={collapsed}
                         title={group.key}
-                      >
-                        <Folder
-                          size={14}
-                          className="shrink-0 text-(--text-muted)"
-                        />
-                        <span className="min-w-0 flex-1 truncate">
-                          {group.name}
-                        </span>
-                        <span className="shrink-0 text-[12px] font-medium text-(--text-accent)">
-                          {group.items.length}
-                        </span>
-                        {collapsed ? (
-                          <CaretRight
-                            size={13}
-                            className="shrink-0 text-(--text-muted)"
-                          />
-                        ) : (
-                          <CaretDown
-                            size={13}
-                            className="shrink-0 text-(--text-muted)"
-                          />
-                        )}
-                      </button>
+                        onClick={() => toggleProjectGroup(group.key)}
+                      />
                       {!collapsed && (
                         <div className="grid gap-2 pl-6">
                           {group.items.map((memory) => (
                             <MemoryCard
                               key={memoryKey(memory, scope)}
                               memory={memory}
-                              deleting={deletingId === memoryKey(memory, scope)}
+                              deleting={
+                                deletingId === memoryKey(memory, scope)
+                              }
                               onDelete={handleDelete}
                             />
                           ))}
