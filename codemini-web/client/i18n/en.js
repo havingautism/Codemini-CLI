@@ -545,6 +545,8 @@ export const en = {
     "GitHub repo, URL, folder path, or npx skills@latest add owner/repo",
   skillInstallSection: "Install Skill",
   skillInstallSource: "Source",
+  skillInstallHint:
+    "Install a skill package from a GitHub repo, URL, or local folder into global or project scope.",
   skillBrowseSection: "Browse Skills",
   skillScope: "Install Scope",
   noSkills: "No skills yet",

@@ -491,7 +491,7 @@ export function ConfigDialog({
               ))}
             </TabsList>
 
-            <div className="min-h-0 flex-1 overflow-y-auto pl-4 scroll-smooth">
+            <div className="min-h-0 flex-1 overflow-y-auto pl-4 scroll-smooth pr-3 [scrollbar-gutter:stable]">
               {SETTINGS_TABS.map((tab) => (
                 <TabsContent
                   key={tab.id}
