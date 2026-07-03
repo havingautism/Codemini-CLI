@@ -525,6 +525,9 @@ export const zh = {
   installing: "安装中...",
   skillInstallPlaceholder:
     "GitHub 仓库、URL、目录路径，或 npx skills@latest add owner/repo",
+  skillInstallSection: "安装技能",
+  skillInstallSource: "来源",
+  skillBrowseSection: "浏览技能",
   skillScope: "安装范围",
   noSkills: "暂无技能",
   noSkillsHint: "创建项目技能，把可复用工作流沉淀成 / 命令。",

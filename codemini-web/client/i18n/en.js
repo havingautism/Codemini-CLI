@@ -543,6 +543,9 @@ export const en = {
   installing: "Installing...",
   skillInstallPlaceholder:
     "GitHub repo, URL, folder path, or npx skills@latest add owner/repo",
+  skillInstallSection: "Install Skill",
+  skillInstallSource: "Source",
+  skillBrowseSection: "Browse Skills",
   skillScope: "Install Scope",
   noSkills: "No skills yet",
   noSkillsHint:

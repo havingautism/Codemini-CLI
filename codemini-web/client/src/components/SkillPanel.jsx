@@ -9,6 +9,7 @@ import {
   MagnifyingGlass,
   PencilSimple,
   Plus,
+  Question,
   SlidersHorizontal,
   Trash,
 } from "@phosphor-icons/react";
@@ -16,7 +17,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
 import {
   Select,
   SelectContent,
@@ -25,13 +25,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Field,
-  FieldContent,
-  FieldGroup,
-  FieldTitle,
-} from "@/components/ui/field";
 import { Empty, EmptyDescription } from "@/components/ui/empty";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { SettingsField } from "@/components/settings/SettingsField.jsx";
+import { SettingsSection } from "@/components/settings/SettingsSection.jsx";
+import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmentedControl.jsx";
 import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
@@ -281,126 +288,96 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-        <div className="mb-3 flex items-start justify-between gap-3">
-          <div>
-            <div className="text-[13px] font-medium text-(--text-primary)">
-              {isNew ? t("newSkill") : t("editSkill")}
-            </div>
-            <div className="mt-0.5 text-[11px] text-(--text-muted)">
-              {t("skillEditorHint")}
-            </div>
-          </div>
-          <Badge
-            variant="outline"
-            className="rounded-md px-1.5 py-0 text-[10px]"
-          >
-            {scopeLabel(parseSkillTarget(target).scope)}
-          </Badge>
-        </div>
-
-        <FieldGroup className="gap-3">
+      <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth pr-1">
+        <SettingsSection
+          description={t("skillEditorHint")}
+          className="gap-4"
+        >
           {(isNew || !isBuiltin(skill)) && (
-            <Field className="flex-col items-stretch gap-1.5">
-              <FieldTitle>{t("skillScope")}</FieldTitle>
-              <FieldContent>
-                <Select value={target} onValueChange={setTarget}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent align="start">
-                    <SelectGroup>
-                      <SelectItem value="global">{t("globalScope")}</SelectItem>
-                      {projectTargets.map((item) => (
-                        <SelectItem
-                          key={item.dir}
-                          value={projectTargetValue(item.dir)}
-                        >
-                          {item.label}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </FieldContent>
-            </Field>
+            <SettingsField id="skill-editor-scope" label={t("skillScope")}>
+              <Select value={target} onValueChange={setTarget}>
+                <SelectTrigger className="h-9 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectGroup>
+                    <SelectItem value="global">{t("globalScope")}</SelectItem>
+                    {projectTargets.map((item) => (
+                      <SelectItem
+                        key={item.dir}
+                        value={projectTargetValue(item.dir)}
+                      >
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </SettingsField>
           )}
-          <Field className="flex-col items-stretch gap-1.5">
-            <FieldTitle>{t("name")}</FieldTitle>
-            <FieldContent>
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                disabled={!isNew}
-                placeholder="my-skill"
-              />
-            </FieldContent>
-          </Field>
-          <Field className="flex-col items-stretch gap-1.5">
-            <FieldTitle>{t("description")}</FieldTitle>
-            <FieldContent>
-              <Textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder={t("skillDescriptionPlaceholder")}
-                className="min-h-[72px] resize-none leading-5"
-              />
-            </FieldContent>
-          </Field>
+          <SettingsField id="skill-editor-name" label={t("name")}>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              disabled={!isNew}
+              placeholder="my-skill"
+            />
+          </SettingsField>
+          <SettingsField id="skill-editor-description" label={t("description")}>
+            <Textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder={t("skillDescriptionPlaceholder")}
+              className="min-h-[72px] resize-none leading-5"
+            />
+          </SettingsField>
 
-          <div className="rounded-md border border-(--border-default) bg-(--bg-secondary) p-3">
-            <div className="mb-2 flex items-center gap-2 text-[12px] font-medium text-(--text-primary)">
-              <SlidersHorizontal size={13} />
+          <div className="rounded-lg border border-(--border-default) bg-(--bg-subtle) p-4">
+            <div className="mb-3 flex items-center gap-2 text-[13px] font-medium text-(--text-primary)">
+              <SlidersHorizontal size={14} className="text-(--text-muted)" />
               {t("skillRoutingSettings")}
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field className="flex-col items-stretch gap-1.5">
-                <FieldTitle>{t("skillMode")}</FieldTitle>
-                <FieldContent>
-                  <Select value={mode} onValueChange={setMode}>
-                    <SelectTrigger className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent align="start">
-                      <SelectGroup>
-                        {SKILL_MODES.map((item) => (
-                          <SelectItem key={item} value={item}>
-                            {t(`skillMode_${item}`)}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                  <p className="text-[11px] leading-4 text-(--text-muted)">
-                    {t("skillModeHint")}
-                  </p>
-                </FieldContent>
-              </Field>
-              <Field className="flex-col items-stretch gap-1.5">
-                <FieldTitle>{t("skillPriority")}</FieldTitle>
-                <FieldContent>
-                  <Input
-                    type="number"
-                    min="0"
-                    max="100"
-                    value={priority}
-                    onChange={(e) => setPriority(e.target.value)}
-                  />
-                </FieldContent>
-              </Field>
-              <Field className="flex-col items-stretch gap-1.5 sm:col-span-2">
-                <FieldTitle>{t("skillTriggers")}</FieldTitle>
-                <FieldContent>
-                  <Input
-                    value={triggers}
-                    onChange={(e) => setTriggers(e.target.value)}
-                    placeholder="after_edit, before_final"
-                  />
-                </FieldContent>
-              </Field>
-              <div className="flex items-center justify-between rounded-md border border-(--border-default) bg-(--bg-primary) px-2 py-1.5 sm:col-span-2">
-                <span className="text-[12px] text-(--text-muted)">
-                  {enabled ? t("enabled") : t("disabled")}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <SettingsField
+                id="skill-editor-mode"
+                label={t("skillMode")}
+                description={t("skillModeHint")}
+                className="sm:col-span-2"
+              >
+                <SettingsSegmentedControl
+                  idPrefix="skill-editor-mode"
+                  value={mode}
+                  onValueChange={setMode}
+                  options={SKILL_MODES.map((item) => ({
+                    value: item,
+                    label: t(`skillMode_${item}`),
+                  }))}
+                  className="[&_button]:text-[11px] sm:[&_button]:text-[12px]"
+                />
+              </SettingsField>
+              <SettingsField id="skill-editor-priority" label={t("skillPriority")}>
+                <Input
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={priority}
+                  onChange={(e) => setPriority(e.target.value)}
+                />
+              </SettingsField>
+              <SettingsField
+                id="skill-editor-triggers"
+                label={t("skillTriggers")}
+                className="sm:col-span-2"
+              >
+                <Input
+                  value={triggers}
+                  onChange={(e) => setTriggers(e.target.value)}
+                  placeholder="after_edit, before_final"
+                />
+              </SettingsField>
+              <div className="flex items-center justify-between sm:col-span-2">
+                <span className="text-[13px] font-medium text-(--text-primary)">
+                  {t("enabled")}
                 </span>
                 <Switch
                   checked={enabled}
@@ -411,30 +388,27 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
             </div>
           </div>
 
-          <Field className="flex-col items-stretch gap-1.5">
-            <FieldTitle>{t("skillContent")}</FieldTitle>
-            <FieldContent>
-              {loading ? (
-                <Empty className="rounded-md border border-(--border-default) py-8">
-                  <EmptyDescription>{t("loading")}...</EmptyDescription>
-                </Empty>
-              ) : (
-                <Textarea
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  disabled={contentReadOnly}
-                  className="min-h-[360px] resize-y font-mono leading-5"
-                  placeholder={
-                    "---\nname: my-skill\ndescription: ...\n---\n\nSkill instructions..."
-                  }
-                />
-              )}
-            </FieldContent>
-          </Field>
-        </FieldGroup>
+          <SettingsField id="skill-editor-content" label={t("skillContent")}>
+            {loading ? (
+              <Empty className="rounded-lg border border-(--border-default) py-8">
+                <EmptyDescription>{t("loading")}...</EmptyDescription>
+              </Empty>
+            ) : (
+              <Textarea
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                disabled={contentReadOnly}
+                className="min-h-[360px] resize-y font-mono leading-5"
+                placeholder={
+                  "---\nname: my-skill\ndescription: ...\n---\n\nSkill instructions..."
+                }
+              />
+            )}
+          </SettingsField>
+        </SettingsSection>
       </div>
 
-      <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-(--border-default) bg-(--bg-primary) pt-3">
+      <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-(--border-default) pt-4">
         <Button variant="outline" onClick={onCancel} size="sm">
           {t("cancel")}
         </Button>
@@ -463,16 +437,18 @@ function SkillEditorDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[760px] h-[86vh] max-h-[86vh] flex flex-col overflow-hidden">
-        <DialogHeader className="shrink-0">
+      <DialogContent className="flex h-[86vh] max-h-[86vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[720px]">
+        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
           <DialogTitle>{skill ? t("editSkill") : t("newSkill")}</DialogTitle>
         </DialogHeader>
-        <SkillEditor
-          skill={skill}
-          projectTargets={projectTargets}
-          onSave={onSave}
-          onCancel={() => onOpenChange(false)}
-        />
+        <div className="flex min-h-0 flex-1 flex-col px-4 pb-4 sm:px-6">
+          <SkillEditor
+            skill={skill}
+            projectTargets={projectTargets}
+            onSave={onSave}
+            onCancel={() => onOpenChange(false)}
+          />
+        </div>
       </DialogContent>
     </Dialog>
   );
@@ -494,24 +470,24 @@ function ViewDialog({ skill, open, onOpenChange }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[720px] max-h-[82vh] flex flex-col overflow-hidden">
-        <DialogHeader className="shrink-0">
+      <DialogContent className="flex max-h-[82vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[720px]">
+        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
           <DialogTitle>
             {skill?.name} {t("contentPreview")}
           </DialogTitle>
         </DialogHeader>
-        <div className="flex-1 overflow-y-auto min-h-0 pr-1">
+        <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth px-4 sm:px-6">
           {loading ? (
             <div className="py-8 text-center text-[12px] text-(--text-muted)">
               {t("loading")}...
             </div>
           ) : (
-            <pre className="rounded-lg bg-(--bg-secondary) p-3 text-[13px] whitespace-pre-wrap break-words font-mono leading-5">
+            <pre className="rounded-lg border border-(--border-default) bg-(--bg-subtle) p-3 text-[13px] whitespace-pre-wrap break-words font-mono leading-5">
               {content}
             </pre>
           )}
         </div>
-        <DialogFooter className="shrink-0">
+        <DialogFooter className="shrink-0 gap-2 border-t border-(--border-default) px-4 py-4 sm:px-6">
           <Button
             variant="outline"
             onClick={() => onOpenChange(false)}
@@ -530,13 +506,19 @@ function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
   return (
     <div
       className={cn(
-        "rounded-lg border p-3 transition-colors",
+        "relative rounded-lg border p-2.5 transition-colors",
         enabled
-          ? "border-(--border-default) bg-(--bg-primary) hover:bg-(--bg-hover)"
+          ? "border-[color-mix(in_srgb,var(--input-shell-accent)_40%,transparent)] bg-[var(--input-shell-glow-soft)] hover:bg-(--bg-hover)"
           : "border-(--border-default) bg-(--bg-secondary) opacity-75",
       )}
     >
-      <div className="flex items-start justify-between gap-3">
+      {enabled && (
+        <span
+          className="absolute bottom-3 left-0 top-3 w-0.5 rounded-full bg-[var(--input-shell-accent)]"
+          aria-hidden
+        />
+      )}
+      <div className="flex items-start justify-between gap-3 pl-1">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="truncate text-[13px] font-medium text-(--text-primary)">
@@ -547,12 +529,6 @@ function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
               className="h-4 rounded-md px-1.5 py-0 text-[10px]"
             >
               {scopeLabel(skill.scope)}
-            </Badge>
-            <Badge
-              variant={enabled ? "outline" : "secondary"}
-              className="h-4 rounded-md px-1.5 py-0 text-[10px]"
-            >
-              {enabled ? t("enabled") : t("disabled")}
             </Badge>
             {skill.version && skill.version !== "0.0.0" && (
               <span className="text-[10px] text-(--text-muted)">
@@ -568,7 +544,7 @@ function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
               </Badge>
             )}
           </div>
-          <div className="mt-1 line-clamp-2 text-[11px] leading-4 text-(--text-muted)">
+          <div className="mt-0.5 line-clamp-1 text-[11px] leading-4 text-(--text-muted)">
             {skill.description || t("noDescription")}
           </div>
           {skill.triggers?.length > 0 && (
@@ -642,12 +618,12 @@ function SkillGroupHeader({
     <button
       type="button"
       onClick={onClick}
-      className="flex h-8 w-full items-center gap-2 rounded-md border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-primary) hover:bg-(--bg-hover)"
+      className="flex h-8 w-full items-center gap-2 rounded-lg border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-primary) hover:bg-(--bg-hover)"
       title={title}
     >
       <Icon size={14} className="shrink-0 text-(--text-muted)" />
       <span className="min-w-0 flex-1 truncate">{name}</span>
-      <span className="shrink-0 text-[12px] font-medium text-(--text-accent)">
+      <span className="shrink-0 text-[12px] font-medium text-[var(--input-shell-accent)]">
         {count}
       </span>
       {collapsed ? (
@@ -689,6 +665,7 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
   const [installTarget, setInstallTarget] = useState("");
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState("");
+  const [installExpanded, setInstallExpanded] = useState(false);
   const projectKey = projectDirsKey(projectDirs);
   const requestProjectDirs = useMemo(
     () => (projectKey ? projectKey.split("\n") : []),
@@ -704,6 +681,10 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
       setInstallTarget("");
     }
   }, [installTarget, normalizedProjectTargets]);
+
+  useEffect(() => {
+    if (installError) setInstallExpanded(true);
+  }, [installError]);
 
   const loadSkills = useCallback(async () => {
     setLoading(true);
@@ -925,77 +906,119 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="rounded-lg border border-(--border-default) p-3">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <FileCode size={14} className="text-(--text-muted)" />
-              <span className="text-[13px] font-medium text-(--text-primary)">
-                {t("skillLibrary")}
-              </span>
-            </div>
-            <div className="mt-1 text-[11px] text-(--text-muted)">
-              {t("skillPanelHint")}
-            </div>
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <Collapsible open={installExpanded} onOpenChange={setInstallExpanded}>
+        <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex min-w-0 items-center gap-2">
+            {skills.length > 0 && (
+              <p className="text-[12px] text-(--text-muted)">
+                {enabledCount}/{skills.length} {t("enabled")} · {customCount}{" "}
+                {t("custom")}
+              </p>
+            )}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  className="inline-flex text-(--text-muted) hover:text-(--text-primary)"
+                  aria-label={t("skillPanelHint")}
+                >
+                  <Question size={14} />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent
+                side="bottom"
+                className="max-w-[320px] leading-relaxed"
+              >
+                {t("skillPanelHint")}
+              </TooltipContent>
+            </Tooltip>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {/* <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px]">
-              {enabledCount}/{skills.length} {t("enabled")}
-            </Badge>
-            <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px]">
-              {customCount} {t("custom")}
-            </Badge> */}
-            <Button onClick={() => setEditing("new")} size="sm">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <CollapsibleTrigger asChild>
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full sm:w-auto"
+              >
+                <Download data-icon="inline-start" />
+                {t("skillInstallSection")}
+                <CaretDown
+                  size={13}
+                  className={cn(
+                    "transition-transform",
+                    installExpanded && "rotate-180",
+                  )}
+                />
+              </Button>
+            </CollapsibleTrigger>
+            <Button
+              onClick={() => setEditing("new")}
+              size="sm"
+              className="w-full sm:w-auto"
+            >
               <Plus size={13} />
               {t("addSkill")}
             </Button>
           </div>
         </div>
-      </div>
 
-      <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto] sm:items-center">
-        <Input
-          value={installSource}
-          onChange={(e) => setInstallSource(e.target.value)}
-          placeholder={t("skillInstallPlaceholder")}
-          className="h-8 text-[13px]"
-        />
-        <Select
-          value={installTarget || defaultSkillTarget(normalizedProjectTargets)}
-          onValueChange={setInstallTarget}
-        >
-          <SelectTrigger className="w-full sm:w-[150px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent align="start">
-            <SelectGroup>
-              <SelectItem value="global">{t("globalScope")}</SelectItem>
-              {normalizedProjectTargets.map((item) => (
-                <SelectItem key={item.dir} value={projectTargetValue(item.dir)}>
-                  {item.label}
-                </SelectItem>
-              ))}
-            </SelectGroup>
-          </SelectContent>
-        </Select>
-        <Button
-          onClick={handleInstall}
-          disabled={installing || !installSource.trim()}
-          size="sm"
-        >
-          <Download data-icon="inline-start" />
-          {installing ? t("installing") : t("installSkill")}
-        </Button>
-      </div>
-      {installError && (
-        <div className="mt-2 text-[11px] text-(--accent-red)">
-          {installError}
-        </div>
-      )}
+        <CollapsibleContent className="grid gap-3 pt-1">
+          <SettingsField
+            id="skill-install-source"
+            label={t("skillInstallSource")}
+          >
+            <Input
+              value={installSource}
+              onChange={(e) => setInstallSource(e.target.value)}
+              placeholder={t("skillInstallPlaceholder")}
+              className="h-9 text-[13px]"
+            />
+          </SettingsField>
+          <div className="flex flex-col gap-2 sm:grid sm:grid-cols-[1fr_auto] sm:items-end">
+            <SettingsField id="skill-install-target" label={t("skillScope")}>
+              <Select
+                value={
+                  installTarget || defaultSkillTarget(normalizedProjectTargets)
+                }
+                onValueChange={setInstallTarget}
+              >
+                <SelectTrigger className="h-9 w-full sm:w-[150px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectGroup>
+                    <SelectItem value="global">{t("globalScope")}</SelectItem>
+                    {normalizedProjectTargets.map((item) => (
+                      <SelectItem
+                        key={item.dir}
+                        value={projectTargetValue(item.dir)}
+                      >
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </SettingsField>
+            <Button
+              onClick={handleInstall}
+              disabled={installing || !installSource.trim()}
+              size="sm"
+              className="w-full sm:w-auto"
+            >
+              <Download data-icon="inline-start" />
+              {installing ? t("installing") : t("installSkill")}
+            </Button>
+          </div>
+          {installError && (
+            <div className="text-[11px] text-(--accent-red)">{installError}</div>
+          )}
+        </CollapsibleContent>
+      </Collapsible>
 
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <div className="relative flex-1">
+      <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="relative min-w-0 flex-1">
           <MagnifyingGlass
             size={13}
             className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-(--text-muted)"
@@ -1004,29 +1027,23 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={t("searchSkills")}
-            className="h-8 pl-8 text-[13px]"
+            className="h-9 pl-8 text-[13px]"
           />
         </div>
-        <div className="flex shrink-0 rounded-md border border-(--border-default) p-0.5 gap-0.5">
-          {FILTERS.map((item) => (
-            <Button
-              key={item}
-              type="button"
-              variant={filter === item ? "secondary" : "ghost"}
-              size="xs"
-              onClick={() => setFilter(item)}
-              className="px-2"
-            >
-              {t(`filter_${item}`)}
-            </Button>
-          ))}
-        </div>
+        <SettingsSegmentedControl
+          idPrefix="skill-filter"
+          value={filter}
+          onValueChange={setFilter}
+          options={FILTERS.map((item) => ({
+            value: item,
+            label: t(`filter_${item}`),
+          }))}
+          className="w-full shrink-0 sm:min-w-[240px] sm:w-auto [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
+        />
       </div>
 
-      <Separator className="bg-(--border-default)" />
-
       {skills.length === 0 && !editing && (
-        <Empty className="rounded-lg py-8">
+        <Empty className="shrink-0 rounded-lg py-8">
           <EmptyDescription className="text-[13px] text-(--text-primary)">
             {t("noSkills")}
           </EmptyDescription>
@@ -1037,12 +1054,12 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
       )}
 
       {skills.length > 0 && filteredSkills.length === 0 && (
-        <div className="py-8 text-center text-[12px] text-(--text-muted)">
+        <div className="shrink-0 py-8 text-center text-[12px] text-(--text-muted)">
           {t("noMatches")}
         </div>
       )}
 
-      <div className="grid max-h-[420px] gap-2 overflow-y-auto pr-1">
+      <div className="grid min-h-0 flex-1 gap-2 overflow-y-auto scroll-smooth pr-1">
         <SkillCards
           items={groupedSkills.regular}
           onView={setViewSkill}

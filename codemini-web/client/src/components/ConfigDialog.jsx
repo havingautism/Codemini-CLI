@@ -52,6 +52,71 @@ function isSwitchField(field) {
   return field.control === "switch";
 }
 
+function buildFieldsByPath(fields) {
+  return new Map(fields.map((field) => [field.path, field]));
+}
+
+function normalizeDraftValue(path, value, fieldsByPath) {
+  if (path === "model.reasoning_enabled") {
+    return normalizeReasoningEnabled(value);
+  }
+  if (path === "model.reasoning_effort") {
+    return normalizeReasoningEffort(value);
+  }
+  const field = fieldsByPath.get(path);
+  if (field && isSwitchField(field)) {
+    return value === true || value === "true";
+  }
+  if (field?.control === "number" || field?.control === "percent") {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : value;
+  }
+  return value;
+}
+
+function getBaselineValue(path, config, fieldsByPath) {
+  if (!config) return undefined;
+  if (path === "model.reasoning_enabled") {
+    return normalizeReasoningEnabled(config?.model?.reasoning_enabled);
+  }
+  if (path === "model.reasoning_effort") {
+    return normalizeReasoningEffort(config?.model?.reasoning_effort);
+  }
+  const field = fieldsByPath.get(path);
+  const raw = getNestedValue(config, path);
+  if (field && isSwitchField(field)) {
+    return raw === true || raw === "true";
+  }
+  if (field?.control === "number" || field?.control === "percent") {
+    return Number(raw);
+  }
+  if (Array.isArray(raw) || (raw && typeof raw === "object")) {
+    return JSON.stringify(raw);
+  }
+  return String(raw ?? "");
+}
+
+function isSameAsBaseline(path, value, config, fieldsByPath) {
+  if (!config) return false;
+  return (
+    normalizeDraftValue(path, value, fieldsByPath) ===
+    getBaselineValue(path, config, fieldsByPath)
+  );
+}
+
+function pruneChanges(changes, config, fieldsByPath) {
+  if (!config || !changes || Object.keys(changes).length === 0) {
+    return changes;
+  }
+  const next = { ...changes };
+  for (const path of Object.keys(next)) {
+    if (isSameAsBaseline(path, next[path], config, fieldsByPath)) {
+      delete next[path];
+    }
+  }
+  return next;
+}
+
 export function ConfigDialog({
   open,
   onOpenChange,
@@ -60,6 +125,10 @@ export function ConfigDialog({
   reasoningSyncKey = "",
 }) {
   const SETTINGS_FIELDS = useMemo(() => buildSettingsFields(), []);
+  const fieldsByPath = useMemo(
+    () => buildFieldsByPath(SETTINGS_FIELDS),
+    [SETTINGS_FIELDS],
+  );
 
   const [config, setConfig] = useState(null);
   const [changes, setChanges] = useState({});
@@ -115,17 +184,23 @@ export function ConfigDialog({
           if (!hasReasoningDraft) {
             setConfig(cfg);
           }
-          return prev;
+          return pruneChanges(prev, cfg, fieldsByPath);
         });
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [open, reasoningSyncKey]);
+  }, [open, reasoningSyncKey, fieldsByPath]);
 
   const handleChange = (path, value) => {
-    setChanges((prev) => ({ ...prev, [path]: value }));
+    setChanges((prev) => {
+      const next = { ...prev, [path]: value };
+      if (isSameAsBaseline(path, value, config, fieldsByPath)) {
+        delete next[path];
+      }
+      return next;
+    });
   };
 
   const getValue = (path) => {
@@ -204,7 +279,7 @@ export function ConfigDialog({
         } else if (path === "model.reasoning_effort") {
           normalizedValue = normalizeReasoningEffort(value);
         } else {
-          const field = SETTINGS_FIELDS.find((item) => item.path === path);
+          const field = fieldsByPath.get(path);
           normalizedValue = isSwitchField(field)
             ? value === true || value === "true"
             : field?.control === "number" || field?.control === "percent"
