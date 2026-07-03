@@ -529,6 +529,10 @@ export const en = {
   enable: "Enable",
   userScope: "User",
   memoryManagement: "Memory Management",
+  memoryActions: "Memory actions",
+  memoryScope: "Scope",
+  memoryUpdatedAt: "Updated",
+  memoryConfidence: "Confidence",
   memoryLibrary: "Memory Library",
   memoryPanelHint:
     "View, search, and delete user, project, and global persistent memories.",
@@ -566,6 +570,7 @@ export const en = {
   skillDescriptionPlaceholder: "When should this skill be used...",
   skillContent: "SKILL.md Content",
   skillRoutingSettings: "Routing Settings",
+  skillActions: "Skill actions",
   skillMode: "Mode",
   skillMode_always: "Always",
   skillMode_agent_requested: "Agent Requested",

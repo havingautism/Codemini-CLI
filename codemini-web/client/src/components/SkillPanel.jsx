@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   CaretDown,
   CaretRight,
+  DotsThree,
   Download,
   Eye,
   FileCode,
@@ -25,6 +26,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Empty, EmptyDescription } from "@/components/ui/empty";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { SettingsField } from "@/components/settings/SettingsField.jsx";
 import { SettingsSection } from "@/components/settings/SettingsSection.jsx";
 import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmentedControl.jsx";
@@ -496,29 +502,31 @@ function ViewDialog({ skill, open, onOpenChange }) {
 
 function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
   const enabled = isEnabled(skill);
+  const builtin = isBuiltin(skill);
+
   return (
     <div
       className={cn(
-        "relative rounded-lg border p-2.5 transition-colors",
+        "relative flex w-full items-stretch overflow-hidden rounded-lg border transition-colors",
         enabled
           ? "border-[color-mix(in_srgb,var(--input-shell-accent)_40%,transparent)] bg-[var(--input-shell-glow-soft)] hover:bg-(--bg-hover)"
-          : "border-(--border-default) bg-(--bg-secondary) opacity-75",
+          : "border-(--border-default) bg-(--bg-secondary) opacity-75 hover:opacity-100",
       )}
     >
       {enabled && (
         <span
-          className="absolute bottom-3 left-0 top-3 w-0.5 rounded-full bg-[var(--input-shell-accent)]"
+          className="absolute bottom-0 left-0 top-0 w-0.5 bg-[var(--input-shell-accent)]"
           aria-hidden
         />
       )}
-      <div className="flex items-start justify-between gap-3 pl-1">
+      <div className="flex min-w-0 flex-1 items-start gap-2.5 px-3 py-2.5 pl-1">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="truncate text-[13px] font-medium text-(--text-primary)">
               {skill.name}
             </span>
             <Badge
-              variant={isBuiltin(skill) ? "secondary" : "outline"}
+              variant={builtin ? "secondary" : "outline"}
               className="h-4 rounded-md px-1.5 py-0 text-[10px]"
             >
               {scopeLabel(skill.scope)}
@@ -546,53 +554,65 @@ function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
             </div>
           )}
         </div>
+      </div>
 
-        <div className="flex shrink-0 items-center gap-1">
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={() => onView(skill)}
-            title={t("view")}
-          >
-            <Eye size={13} />
-          </Button>
-          <Switch
-            checked={enabled}
-            onCheckedChange={(next) => onToggle(skill, next)}
-            aria-label={enabled ? t("disable") : t("enable")}
-          />
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={() => onEdit(skill)}
-            title={isBuiltin(skill) ? t("skillRoutingSettings") : t("edit")}
-          >
-            {isBuiltin(skill) ? (
-              <SlidersHorizontal size={13} />
-            ) : (
-              <PencilSimple size={13} />
-            )}
-          </Button>
-          {!isBuiltin(skill) && (
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => {
-                if (
-                  confirm(
-                    t("confirmDeleteSkill").replace("{{name}}", skill.name),
-                  )
-                ) {
-                  onDelete(skill);
-                }
-              }}
-              title={t("delete")}
-              className="text-(--accent-red) hover:text-(--accent-red)"
+      <div className="flex shrink-0 items-center gap-1 py-2 pr-2">
+        <Switch
+          checked={enabled}
+          onCheckedChange={(next) => onToggle(skill, next)}
+          aria-label={enabled ? t("disable") : t("enable")}
+        />
+        <Popover>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className="inline-flex size-7 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+              aria-label={t("skillActions")}
             >
-              <Trash size={13} />
-            </Button>
-          )}
-        </div>
+              <DotsThree size={15} />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="end" className="w-44 p-1">
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--text-primary) hover:bg-(--bg-hover)"
+              onClick={() => onView(skill)}
+            >
+              <Eye size={14} />
+              {t("view")}
+            </button>
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--text-primary) hover:bg-(--bg-hover)"
+              onClick={() => onEdit(skill)}
+            >
+              {builtin ? (
+                <SlidersHorizontal size={14} />
+              ) : (
+                <PencilSimple size={14} />
+              )}
+              {builtin ? t("skillRoutingSettings") : t("edit")}
+            </button>
+            {!builtin && (
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
+                onClick={() => {
+                  if (
+                    confirm(
+                      t("confirmDeleteSkill").replace("{{name}}", skill.name),
+                    )
+                  ) {
+                    onDelete(skill);
+                  }
+                }}
+              >
+                <Trash size={14} />
+                {t("delete")}
+              </button>
+            )}
+          </PopoverContent>
+        </Popover>
       </div>
     </div>
   );
