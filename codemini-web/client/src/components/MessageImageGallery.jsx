@@ -6,8 +6,9 @@ import {
   useMemo,
   useState,
 } from 'react';
-import { createPortal } from 'react-dom';
 import { CaretLeft, CaretRight, X } from '@phosphor-icons/react';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogClose, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { t } from '../../i18n/index.js';
 
 const MessageImageGalleryContext = createContext(null);
@@ -194,22 +195,21 @@ function MessageImageGalleryModal({
   const caption =
     current.alt && !isPlaceholderAlt(current.alt) ? current.alt : '';
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-100 flex items-center justify-center bg-black/78 p-4 backdrop-blur-sm animate-in fade-in-0 duration-150"
-      role="dialog"
-      aria-modal="true"
-      aria-label={caption || t('imageGalleryPreview')}
-      onClick={onClose}
-    >
-      <button
-        type="button"
-        className="absolute right-4 top-4 inline-flex size-9 items-center justify-center rounded-full bg-black/55 text-white transition hover:bg-black/75"
-        aria-label={t('imageGalleryClose')}
-        onClick={onClose}
-      >
-        <X size={18} />
-      </button>
+  return (
+    <Dialog open={open} onOpenChange={(next) => { if (!next) onClose(); }}>
+      <DialogContent className="flex max-h-[96vh] max-w-[96vw] items-center justify-center border-0 bg-transparent p-4 shadow-none sm:max-w-[96vw]">
+      <DialogTitle className="sr-only">{caption || t('imageGalleryPreview')}</DialogTitle>
+      <DialogClose asChild>
+        <Button
+          type="button"
+          variant="secondary"
+          size="icon"
+          className="absolute right-4 top-4"
+          aria-label={t('imageGalleryClose')}
+        >
+          <X />
+        </Button>
+      </DialogClose>
 
       {canGoPrevious && (
         <button
@@ -264,7 +264,7 @@ function MessageImageGalleryModal({
           </p>
         )}
       </div>
-    </div>,
-    document.body,
+      </DialogContent>
+    </Dialog>
   );
 }

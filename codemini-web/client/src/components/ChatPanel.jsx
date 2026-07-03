@@ -1,6 +1,14 @@
 ﻿import { Suspense, lazy, useRef, useEffect, useState, useMemo, useCallback } from "react";
-import { ArrowDown, GitBranch } from "@phosphor-icons/react";
+import { GitBranch } from "@phosphor-icons/react";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+} from "@/components/ui/message-scroller";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
 
@@ -117,8 +125,6 @@ export function ChatPanel({
   onRetryMessage,
 }) {
   const scrollRef = useRef(null);
-  const [autoScroll, setAutoScroll] = useState(true);
-  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [activeNavIndex, setActiveNavIndex] = useState(-1);
 
   const userMessages = useMemo(
@@ -149,12 +155,6 @@ export function ChatPanel({
   const updateScrollState = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const bottomGap = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const atBottom = bottomGap < 80;
-    const scrollable = bottomGap > 80 || el.scrollTop > 8;
-    setAutoScroll(atBottom);
-    setShowScrollToBottom(scrollable && !atBottom);
-
     const userEls = el.querySelectorAll(
       '[data-message-id][class*="justify-end"]',
     );
@@ -174,24 +174,10 @@ export function ChatPanel({
     const el = scrollRef.current;
     if (!el) return;
     el.addEventListener("scroll", updateScrollState, { passive: true });
-    const observer = new ResizeObserver(() => updateScrollState());
-    observer.observe(el);
     return () => {
       el.removeEventListener("scroll", updateScrollState);
-      observer.disconnect();
     };
   }, [updateScrollState]);
-
-  useEffect(() => {
-    if (autoScroll && scrollRef.current) {
-      requestAnimationFrame(() => {
-        if (scrollRef.current) {
-          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-          updateScrollState();
-        }
-      });
-    }
-  }, [messages, autoScroll, updateScrollState]);
 
   useEffect(() => {
     requestAnimationFrame(() => {
@@ -235,26 +221,26 @@ export function ChatPanel({
                     <>
                       {gitInfo.staged > 0 && (
                         <span className="inline-flex items-center gap-1 text-(--accent-green)">
-                          <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                          <span className="size-1.5 rounded-full bg-current" />
                           {t("gitStaged")} {gitInfo.staged}
                         </span>
                       )}
                       {gitInfo.modified > 0 && (
                         <span className="inline-flex items-center gap-1 text-(--accent-orange)">
-                          <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                          <span className="size-1.5 rounded-full bg-current" />
                           {t("gitModified")} {gitInfo.modified}
                         </span>
                       )}
                       {gitInfo.untracked > 0 && (
                         <span className="inline-flex items-center gap-1">
-                          <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                          <span className="size-1.5 rounded-full bg-current" />
                           {t("gitUntracked")} {gitInfo.untracked}
                         </span>
                       )}
                     </>
                   ) : (
                     <span className="inline-flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                      <span className="size-1.5 rounded-full bg-(--accent-green)" />
                       {t("gitClean")}
                     </span>
                   )}
@@ -264,48 +250,33 @@ export function ChatPanel({
           )}
         </div>
       )}
-      <div
-        ref={scrollRef}
-        className="h-full overflow-y-auto py-[32px_0_24px] scroll-smooth"
-        style={{ scrollbarWidth: "thin" }}
-      >
-        <div className="relative">
-          <div className="w-[calc(100%_-_32px)] max-w-[920px] sm:w-[calc(100%_-_64px)] mx-auto">
+      <MessageScrollerProvider>
+        <MessageScroller>
+          <MessageScrollerViewport ref={scrollRef} className="scroll-smooth">
+            <MessageScrollerContent className="gap-0 py-[32px_0_24px]">
+              <div className="w-[calc(100%_-_32px)] max-w-[920px] sm:w-[calc(100%_-_64px)] mx-auto">
             <Suspense fallback={null}>
               {messages.map((msg) => (
-                <MessageBubble
-                  key={msg.id}
-                  message={msg}
-                  skills={skills}
-                  onRetry={onRetryMessage}
-                />
+                <MessageScrollerItem key={msg.id}>
+                  <MessageBubble
+                    message={msg}
+                    skills={skills}
+                    onRetry={onRetryMessage}
+                  />
+                </MessageScrollerItem>
               ))}
             </Suspense>
-          </div>
-        </div>
-      </div>
+              </div>
+            </MessageScrollerContent>
+          </MessageScrollerViewport>
+          <MessageScrollerButton className="bottom-2" />
+        </MessageScroller>
+      </MessageScrollerProvider>
       <UserMessageNav
         userMessages={userMessages}
         activeNavIndex={activeNavIndex}
         scrollToMessage={scrollToMessage}
       />
-      <div className="absolute right-7 bottom-0 flex flex-col gap-2 z-20">
-        {showScrollToBottom && (
-          <button
-            className="size-9 cursor-pointer flex items-center justify-center rounded-full border border-(--border-default) bg-(--bg-primary) text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) animate-in fade-in-0 zoom-in-95"
-            // style={{ boxShadow: "var(--shadow-default)" }}
-            onClick={() => {
-              setAutoScroll(true);
-              scrollRef.current?.scrollTo({
-                top: scrollRef.current.scrollHeight,
-                behavior: "smooth",
-              });
-            }}
-          >
-            <ArrowDown size={16} />
-          </button>
-        )}
-      </div>
     </div>
   );
 }

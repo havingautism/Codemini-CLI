@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Empty, EmptyDescription } from "@/components/ui/empty";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Popover,
   PopoverContent,
@@ -82,12 +83,12 @@ function MemoryCardSkeleton() {
     <div className="rounded-lg border border-(--border-default) px-3 py-2.5">
       <div className="flex flex-col gap-2">
         <div className="flex items-center gap-2">
-          <div className="h-3.5 w-2/5 animate-pulse rounded bg-(--bg-hover)" />
-          <div className="h-4 w-10 animate-pulse rounded-md bg-(--bg-hover)" />
+          <Skeleton className="h-3.5 w-2/5" />
+          <Skeleton className="h-4 w-10" />
         </div>
-        <div className="h-3 w-full animate-pulse rounded bg-(--bg-hover)" />
-        <div className="h-3 w-4/5 animate-pulse rounded bg-(--bg-hover)" />
-        <div className="mt-0.5 h-2.5 w-16 animate-pulse rounded bg-(--bg-hover)" />
+        <Skeleton className="h-3 w-full" />
+        <Skeleton className="h-3 w-4/5" />
+        <Skeleton className="mt-0.5 h-2.5 w-16" />
       </div>
     </div>
   );
@@ -251,16 +252,10 @@ function MemoryCard({ memory, deleting, onView, onDelete }) {
       className={cn(
         "group relative flex w-full items-stretch overflow-hidden rounded-lg border transition-colors",
         pinned
-          ? "border-[color-mix(in_srgb,var(--input-shell-accent)_40%,transparent)] bg-[var(--input-shell-glow-soft)]"
-          : "border-(--border-default) bg-transparent hover:border-(--border-strong) hover:bg-(--bg-hover)",
+          ? "border-primary/40 bg-primary/5"
+          : "border-border bg-background hover:bg-muted/50",
       )}
     >
-      {pinned && (
-        <span
-          className="absolute bottom-0 left-0 top-0 w-0.5 bg-[var(--input-shell-accent)]"
-          aria-hidden
-        />
-      )}
       <button
         type="button"
         onClick={handleView}
@@ -469,9 +464,8 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 pb-4 sm:px-6">
           <SettingsSection
-            title={t("memoryLibrary")}
             description={t("memoryPanelHint")}
-            className="shrink-0 gap-3"
+            className="shrink-0 gap-2"
           >
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex min-w-0 flex-wrap items-center gap-1.5">

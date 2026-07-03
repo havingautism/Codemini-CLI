@@ -736,6 +736,7 @@ export function InputBar({
         text: fallbackText,
         skillNames: selectedSkillNames,
         attachmentIds: attachments.map((item) => item.id).filter(Boolean),
+        attachments,
         dismissedAlwaysSkills: dismissedSkills,
       });
     } catch {

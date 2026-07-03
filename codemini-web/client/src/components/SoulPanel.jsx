@@ -223,16 +223,10 @@ function SoulChoiceCard({
       className={cn(
         "relative flex w-full items-stretch overflow-hidden rounded-lg border transition-colors",
         active
-          ? "border-[color-mix(in_srgb,var(--input-shell-accent)_40%,transparent)] bg-[var(--input-shell-glow-soft)]"
-          : "border-(--border-default) bg-transparent hover:border-(--border-strong) hover:bg-(--bg-hover)",
+          ? "border-primary/40 bg-primary/5"
+          : "border-border bg-background hover:bg-muted/50",
       )}
     >
-      {active && (
-        <span
-          className="absolute bottom-0 left-0 top-0 w-0.5 bg-[var(--input-shell-accent)]"
-          aria-hidden
-        />
-      )}
       <button
         type="button"
         disabled={disabled}
@@ -420,9 +414,8 @@ export function SoulPanel({ disabled = false }) {
     <>
       <div className="flex min-h-0 flex-1 flex-col gap-4">
         <SettingsSection
-          title={t("soulLibrary")}
           description={t("soulPanelHint")}
-          className="shrink-0 gap-3"
+          className="shrink-0 gap-2"
         >
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 items-center gap-2">

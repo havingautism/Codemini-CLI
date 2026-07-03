@@ -30,6 +30,7 @@ import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { MessageBubble } from "@/components/MessageBubble.jsx";
 import { StreamdownRenderer } from "@/components/StreamdownRenderer.jsx";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 const CODEWIKI_QA_WIDTH_KEY = "codemini:codewiki:qa-width";
 const CODEWIKI_QA_MIN_WIDTH = 320;
 const CODEWIKI_QA_MAX_WIDTH = 760;
@@ -1174,10 +1175,10 @@ export function CodeWikiPanel({
           </div> */}
 
           {error && (
-            <div className="mx-5 mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-400 inline-flex items-center gap-2">
-              <WarningCircle size={14} />
-              {error}
-            </div>
+            <Alert variant="destructive" className="mx-5 mt-4">
+              <WarningCircle />
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
           )}
 
           <div className="flex-1 min-h-0 p-4">

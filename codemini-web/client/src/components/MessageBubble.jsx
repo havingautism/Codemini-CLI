@@ -2,13 +2,25 @@ import { useEffect, useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
 import { StreamdownRenderer } from "./StreamdownRenderer";
 import { EmbedBanner } from "./EmbedBanner.jsx";
-import { MarkdownLightboxImage } from "./MarkdownLightboxImage.jsx";
+import {
+  ImagePreviewDialog,
+  MarkdownLightboxImage,
+} from "./MarkdownLightboxImage.jsx";
 import { collectMessageEmbeds } from "@/lib/message-embeds.js";
 import { TodoList } from "./TodoList";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
 import { LinearRing, LinearStatusDot, Spinner } from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
+import {
+  Attachment,
+  AttachmentContent,
+  AttachmentDescription,
+  AttachmentGroup,
+  AttachmentMedia,
+  AttachmentTitle,
+  AttachmentTrigger,
+} from "@/components/ui/attachment";
 import { cn } from "@/lib/utils";
 import {
   isManualSkillCommand,
@@ -36,7 +48,6 @@ import {
   Copy,
   FileText,
   Hammer,
-  ImageSquare,
   Moon,
   Play,
   Wrench,
@@ -1376,51 +1387,61 @@ function UserSkillChips({ skillNames = [], skills = [], className }) {
 function UserAttachments({ attachments = [], className }) {
   const items = Array.isArray(attachments) ? attachments : [];
   if (!items.length) return null;
-  const images = items.filter((item) => item?.kind === "image" && item.url);
-  const files = items.filter((item) => item?.kind !== "image" || !item.url);
 
   return (
-    <div className={cn("flex max-w-full flex-col gap-2", className)}>
-      {images.length > 0 && (
-        <div className="grid max-w-full grid-cols-2 gap-2 sm:grid-cols-[repeat(auto-fit,minmax(120px,160px))]">
-          {images.map((item) => (
-            <div
-              key={item.id || item.url}
-              className="w-[132px] overflow-hidden rounded-lg border border-(--border-default) bg-(--bg-secondary)"
-            >
-              <MarkdownLightboxImage
-                src={item.url}
-                alt={item.name || t("attachmentImage")}
-                figureClassName="m-0"
-                buttonClassName="max-w-none rounded-none border-0 bg-transparent p-0"
-                className="h-24 w-full object-cover"
-              />
-              <div className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] text-(--text-muted)">
-                <ImageSquare size={12} className="shrink-0" />
-                <span className="min-w-0 flex-1 truncate">{item.name}</span>
-              </div>
-            </div>
-          ))}
-        </div>
+    <AttachmentGroup className={cn("max-w-full", className)}>
+      {items.map((item) =>
+        item?.kind === "image" && item.url ? (
+          <UserImageAttachment key={item.id || item.url} item={item} />
+        ) : (
+          <Attachment key={item.id || item.name} size="sm">
+            <AttachmentMedia>
+              <FileText />
+            </AttachmentMedia>
+            <AttachmentContent>
+              <AttachmentTitle>{item.name}</AttachmentTitle>
+              <AttachmentDescription>{compactBytes(item.size)}</AttachmentDescription>
+            </AttachmentContent>
+          </Attachment>
+        ),
       )}
-      {files.length > 0 && (
-        <div className="flex max-w-full flex-wrap gap-1.5">
-          {files.map((item) => (
-            <span
-              key={item.id || item.name}
-              className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-(--border-default) bg-(--bg-secondary) px-2 py-1 text-[12px] text-(--text-secondary)"
-              title={item.name}
-            >
-              <FileText size={14} className="shrink-0" />
-              <span className="max-w-[220px] truncate">{item.name}</span>
-              <span className="shrink-0 text-(--text-muted)">
-                {compactBytes(item.size)}
-              </span>
-            </span>
-          ))}
-        </div>
+    </AttachmentGroup>
+  );
+}
+
+function UserImageAttachment({ item }) {
+  const [open, setOpen] = useState(false);
+  const label = item.name || t("attachmentImage");
+
+  return (
+    <>
+      <Attachment
+        orientation="vertical"
+        className="w-40 border-0 bg-transparent p-0 shadow-none focus-within:ring-0"
+      >
+        <AttachmentMedia variant="image" className="aspect-[4/3] w-full rounded-xl p-0">
+          <img
+            src={item.url}
+            alt={label}
+            loading="lazy"
+            decoding="async"
+            className="size-full object-cover"
+          />
+        </AttachmentMedia>
+        <AttachmentTrigger
+          aria-label={label}
+          onClick={() => setOpen(true)}
+        />
+      </Attachment>
+      {open && (
+        <ImagePreviewDialog
+          src={item.url}
+          alt={label}
+          caption={label}
+          onClose={() => setOpen(false)}
+        />
       )}
-    </div>
+    </>
   );
 }
 

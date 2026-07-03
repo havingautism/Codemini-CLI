@@ -5,8 +5,8 @@ import { t } from '../../i18n/index.js';
 export function SkillDialog({ open, onOpenChange, projectDirs = [], projectTargets = [] }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[86vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[720px]">
-        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
+      <DialogContent className="flex h-[82vh] max-h-[82vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[760px]">
+        <DialogHeader className="shrink-0 border-b border-border px-4 py-4 sm:px-6">
           <DialogTitle>{t('skills')}</DialogTitle>
         </DialogHeader>
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 pb-4 sm:px-6">

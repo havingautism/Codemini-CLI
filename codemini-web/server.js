@@ -7,6 +7,7 @@ import { execFileSync, execSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { Readable } from 'node:stream';
+import sharp from 'sharp';
 
 import { loadConfig, saveConfig, setConfigValue, getConfigValue } from '../src/core/config-store.js';
 import {
@@ -256,6 +257,8 @@ const MIME_TYPES = {
 const DEFAULT_GATEWAY_BASE_URL = 'http://127.0.0.1:8000/v1';
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
 const MAX_ATTACHMENT_TEXT_CHARS = 80_000;
+const MODEL_IMAGE_MAX_DIMENSION = 1568;
+const MODEL_IMAGE_WEBP_QUALITY = 80;
 const ATTACHMENT_UPLOAD_DIR = path.join(getBaseConfigDir(), 'web-ui-uploads');
 const SUPPORTED_ATTACHMENT_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.pdf', '.docx']);
 const IMAGE_ATTACHMENT_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
@@ -514,7 +517,7 @@ function buildAttachmentModelText(line, metas = []) {
     if (meta.kind === 'image') {
       return [
         ...header,
-        'Content: Image file uploaded and compressed by the Web UI. Use the path if local inspection is needed.'
+        'Content: Image file uploaded by the Web UI. Use the path if local inspection is needed.'
       ].join('\n');
     }
     return [
@@ -534,9 +537,31 @@ function buildAttachmentModelText(line, metas = []) {
   ].join('\n');
 }
 
+async function encodeModelImage(meta) {
+  try {
+    const data = await sharp(meta.path, { animated: false })
+      .rotate()
+      .resize({
+        width: MODEL_IMAGE_MAX_DIMENSION,
+        height: MODEL_IMAGE_MAX_DIMENSION,
+        fit: 'inside',
+        withoutEnlargement: true
+      })
+      .webp({ quality: MODEL_IMAGE_WEBP_QUALITY, effort: 4 })
+      .toBuffer();
+    return { mime: 'image/webp', data: data.toString('base64') };
+  } catch {
+    const data = await fs.readFile(meta.path);
+    return { mime: meta.mime || 'image/jpeg', data: data.toString('base64') };
+  }
+}
+
 export async function resolveAttachmentSubmission(sessionId, line, attachmentIds = []) {
   const metas = await loadAttachmentMetas(sessionId, attachmentIds);
   const modelText = buildAttachmentModelText(line, metas);
+  const modelImages = await Promise.all(
+    metas.filter((meta) => meta.kind === 'image').map(encodeModelImage)
+  );
   return {
     attachments: metas.map((meta) => ({
       id: meta.id,
@@ -546,6 +571,7 @@ export async function resolveAttachmentSubmission(sessionId, line, attachmentIds
       size: meta.size,
       url: attachmentPublicUrl(sessionId, meta.id)
     })),
+    ...(modelImages.length ? { modelImages } : {}),
     ...(modelText ? { modelText } : {})
   };
 }

@@ -139,9 +139,25 @@ function normalizeMessages(messages) {
     }
 
     const contentBlocks = message.role === 'assistant' ? extractThinkingBlocks(message) : [];
-    const text = extractTextContent(message.content);
-    if (text) {
-      contentBlocks.push({ type: 'text', text });
+    if (Array.isArray(message.content) && message.role === 'user') {
+      for (const block of message.content) {
+        if (block?.type === 'text' && block.text) {
+          contentBlocks.push({ type: 'text', text: String(block.text) });
+        }
+        if (block?.type === 'image_url') {
+          const url = String(block.image_url?.url || '');
+          const match = url.match(/^data:([^;]+);base64,([\s\S]+)$/);
+          if (match) {
+            contentBlocks.push({
+              type: 'image',
+              source: { type: 'base64', media_type: match[1], data: match[2] }
+            });
+          }
+        }
+      }
+    } else {
+      const text = extractTextContent(message.content);
+      if (text) contentBlocks.push({ type: 'text', text });
     }
 
     const hasContentToolUse = Array.isArray(message.content)

@@ -5,7 +5,6 @@ import {
   DotsThree,
   Download,
   Eye,
-  FileCode,
   Folder,
   MagnifyingGlass,
   PencilSimple,
@@ -43,6 +42,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { skillAuthorLabel, sortSkillsByAuthor } from "@/lib/skill-display.js";
 import * as api from "@/hooks/use-api";
 import { t } from "../../i18n/index.js";
 
@@ -61,43 +61,6 @@ function scopeLabel(scope) {
 
 function skillKey(skill) {
   return `${skill?.scope || "unknown"}:${skill?.projectDir || ""}:${skill?.name || ""}`;
-}
-
-function compactSourceLabel(value) {
-  const text = String(value || "").trim();
-  const github = text.match(
-    /github\.com[/:]([^/\s]+)\/([^/\s]+?)(?:\.git)?(?:\/|$)/i,
-  );
-  if (github) return `${github[1]}/${github[2]}`;
-  const ownerRepo = text.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:\s|$)/);
-  if (ownerRepo) return ownerRepo[1];
-  return text.replace(/\\/g, "/").split("/").filter(Boolean).pop() || text;
-}
-
-function isPackagedSkill(skill) {
-  if (isBuiltin(skill)) return false;
-  const source = String(skill?.source || "").trim();
-  const packageSource = String(skill?.packageSource || "").trim();
-  const packageName = String(skill?.packageName || "").trim();
-  if (!packageSource && !packageName) return false;
-  return !["web-create", "web-move", "reindex"].includes(source);
-}
-
-function skillPackageKey(skill) {
-  if (!isPackagedSkill(skill)) return "";
-  return [
-    skill?.scope || "unknown",
-    skill?.projectDir || "",
-    skill?.packageSource || skill?.source || skill?.packageName || "",
-  ].join(":");
-}
-
-function skillPackageName(skill) {
-  return (
-    String(skill?.packageName || "").trim() ||
-    compactSourceLabel(skill?.packageSource || skill?.source) ||
-    t("skillPackage")
-  );
 }
 
 function projectDisplayName(value) {
@@ -170,29 +133,6 @@ function normalizeSkillMode(value) {
   return value === "auto_attach"
     ? "agent_requested"
     : value || "agent_requested";
-}
-
-function skillSortValue(skill) {
-  const modeRank = normalizeSkillMode(skill?.mode) === "always" ? 0 : 1;
-  const enabledRank = isEnabled(skill) ? 0 : 1;
-  const priority = Number(skill?.priority);
-  return {
-    modeRank,
-    enabledRank,
-    priority: Number.isFinite(priority) ? priority : 0,
-    name: String(skill?.name || "").toLowerCase(),
-  };
-}
-
-function compareSkills(a, b) {
-  const left = skillSortValue(a);
-  const right = skillSortValue(b);
-  return (
-    left.modeRank - right.modeRank ||
-    left.enabledRank - right.enabledRank ||
-    right.priority - left.priority ||
-    left.name.localeCompare(right.name)
-  );
 }
 
 function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
@@ -503,28 +443,28 @@ function ViewDialog({ skill, open, onOpenChange }) {
 function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
   const enabled = isEnabled(skill);
   const builtin = isBuiltin(skill);
+  const author = skillAuthorLabel(skill);
 
   return (
     <div
       className={cn(
-        "relative flex w-full items-stretch overflow-hidden rounded-lg border transition-colors",
+        "relative flex w-full items-stretch overflow-hidden rounded-md border bg-background transition-colors hover:bg-muted/50",
         enabled
-          ? "border-[color-mix(in_srgb,var(--input-shell-accent)_40%,transparent)] bg-[var(--input-shell-glow-soft)] hover:bg-(--bg-hover)"
-          : "border-(--border-default) bg-(--bg-secondary) opacity-75 hover:opacity-100",
+          ? "border-primary/40 bg-primary/5"
+          : "border-border/70 text-muted-foreground",
       )}
     >
-      {enabled && (
-        <span
-          className="absolute bottom-0 left-0 top-0 w-0.5 bg-[var(--input-shell-accent)]"
-          aria-hidden
-        />
-      )}
-      <div className="flex min-w-0 flex-1 items-start gap-2.5 px-3 py-2.5 pl-1">
+      <div className="flex min-w-0 flex-1 items-start gap-2.5 px-3 py-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="truncate text-[13px] font-medium text-(--text-primary)">
+            <span className="truncate text-[13px] font-medium text-foreground">
               {skill.name}
             </span>
+            {author && (
+              <Badge variant="secondary" className="h-4 rounded-md px-1.5 py-0 text-[10px]">
+                {author}
+              </Badge>
+            )}
             <Badge
               variant={builtin ? "secondary" : "outline"}
               className="h-4 rounded-md px-1.5 py-0 text-[10px]"
@@ -545,7 +485,7 @@ function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
               </Badge>
             )}
           </div>
-          <div className="mt-0.5 line-clamp-1 text-[11px] leading-4 text-(--text-muted)">
+          <div className="mt-0.5 line-clamp-1 text-[11px] leading-4 text-muted-foreground">
             {skill.description || t("noDescription")}
           </div>
           {skill.triggers?.length > 0 && (
@@ -618,36 +558,6 @@ function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
   );
 }
 
-function SkillGroupHeader({
-  icon = "folder",
-  name,
-  count,
-  collapsed,
-  title,
-  onClick,
-}) {
-  const Icon = icon === "package" ? FileCode : Folder;
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex h-8 w-full items-center gap-2 rounded-lg border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-primary) hover:bg-(--bg-hover)"
-      title={title}
-    >
-      <Icon size={14} className="shrink-0 text-(--text-muted)" />
-      <span className="min-w-0 flex-1 truncate">{name}</span>
-      <span className="shrink-0 text-[12px] font-medium text-[var(--input-shell-accent)]">
-        {count}
-      </span>
-      {collapsed ? (
-        <CaretRight size={13} className="shrink-0 text-(--text-muted)" />
-      ) : (
-        <CaretDown size={13} className="shrink-0 text-(--text-muted)" />
-      )}
-    </button>
-  );
-}
-
 function SkillCards({ items, onView, onToggle, onEdit, onDelete }) {
   return items.map((skill) => (
     <SkillCard
@@ -661,13 +571,28 @@ function SkillCards({ items, onView, onToggle, onEdit, onDelete }) {
   ));
 }
 
+function SkillGroupHeader({ name, count, collapsed, title, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[12px] font-medium text-foreground hover:bg-muted/50"
+      title={title}
+    >
+      <Folder size={14} className="shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1 truncate">{name}</span>
+      <span className="shrink-0 text-muted-foreground">{count}</span>
+      {collapsed ? <CaretRight size={13} /> : <CaretDown size={13} />}
+    </button>
+  );
+}
+
 export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
   const [viewSkill, setViewSkill] = useState(null);
   const [collapsedProjects, setCollapsedProjects] = useState(() => new Set());
-  const [collapsedPackages, setCollapsedPackages] = useState(() => new Set());
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [installSource, setInstallSource] = useState("");
@@ -789,7 +714,7 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
         String(skill.packageName || "")
           .toLowerCase()
           .includes(needle) ||
-        String(compactSourceLabel(skill.packageSource || skill.source))
+        String(skillAuthorLabel(skill))
           .toLowerCase()
           .includes(needle) ||
         String(projectDisplayName(skill.projectName || ""))
@@ -800,116 +725,41 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
   }, [skills, query, filter]);
   const groupedSkills = useMemo(() => {
     const regular = [];
-    const packageGroups = [];
-    const projectGroups = [];
-    const packageIndex = new Map();
-    const projectIndex = new Map();
-    const addToPackage = (groups, index, skill) => {
-      const key = skillPackageKey(skill);
-      if (!key) return false;
-      if (!index.has(key)) {
-        const group = {
-          key,
-          name: skillPackageName(skill),
-          source: skill.packageSource || skill.source || "",
-          items: [],
-        };
-        index.set(key, group);
-        groups.push(group);
-      }
-      index.get(key).items.push(skill);
-      return true;
-    };
-
+    const projects = new Map();
     for (const skill of filteredSkills) {
       if (skill.scope !== "project") {
-        if (!addToPackage(packageGroups, packageIndex, skill)) {
-          regular.push(skill);
-        }
+        regular.push(skill);
         continue;
       }
       const key = skill.projectDir || "__current_project__";
-      if (!projectIndex.has(key)) {
-        const group = {
+      if (!projects.has(key)) {
+        projects.set(key, {
           key,
           name: projectDisplayName(skill.projectName || t("projectScope")),
           items: [],
-          packageGroups: [],
-          packageIndex: new Map(),
-          total: 0,
-        };
-        projectIndex.set(key, group);
-        projectGroups.push(group);
+        });
       }
-      const group = projectIndex.get(key);
-      group.total += 1;
-      if (!addToPackage(group.packageGroups, group.packageIndex, skill)) {
-        group.items.push(skill);
-      }
+      projects.get(key).items.push(skill);
     }
-    for (const group of projectGroups) {
-      delete group.packageIndex;
-    }
-    regular.sort(compareSkills);
-    packageGroups.sort((a, b) => a.name.localeCompare(b.name));
-    for (const group of packageGroups) {
-      group.items.sort(compareSkills);
-    }
-    projectGroups.sort((a, b) => a.name.localeCompare(b.name));
-    for (const group of projectGroups) {
-      group.items.sort(compareSkills);
-      group.packageGroups.sort((a, b) => a.name.localeCompare(b.name));
-      for (const packageGroup of group.packageGroups) {
-        packageGroup.items.sort(compareSkills);
-      }
-    }
-    return { regular, packageGroups, projectGroups };
+    return {
+      regular: sortSkillsByAuthor(regular),
+      projects: [...projects.values()]
+        .map((group) => ({
+          ...group,
+          items: sortSkillsByAuthor(group.items),
+        }))
+        .sort((left, right) => left.name.localeCompare(right.name)),
+    };
   }, [filteredSkills]);
 
-  const togglePackageGroup = useCallback((key) => {
-    setCollapsedPackages((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }, []);
-
   const toggleProjectGroup = useCallback((key) => {
-    setCollapsedProjects((prev) => {
-      const next = new Set(prev);
+    setCollapsedProjects((current) => {
+      const next = new Set(current);
       if (next.has(key)) next.delete(key);
       else next.add(key);
       return next;
     });
   }, []);
-
-  const renderPackageGroup = (group, indentClass = "pl-6") => {
-    const collapsed = collapsedPackages.has(group.key);
-    return (
-      <div key={group.key} className="grid gap-1">
-        <SkillGroupHeader
-          icon="package"
-          name={group.name}
-          count={group.items.length}
-          collapsed={collapsed}
-          title={group.source || group.key}
-          onClick={() => togglePackageGroup(group.key)}
-        />
-        {!collapsed && (
-          <div className={cn("grid gap-2", indentClass)}>
-            <SkillCards
-              items={group.items}
-              onView={setViewSkill}
-              onToggle={handleToggle}
-              onEdit={setEditing}
-              onDelete={handleDelete}
-            />
-          </div>
-        )}
-      </div>
-    );
-  };
 
   const renderSkillList = () => (
     <>
@@ -939,14 +789,13 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
             onEdit={setEditing}
             onDelete={handleDelete}
           />
-          {groupedSkills.packageGroups.map((group) => renderPackageGroup(group))}
-          {groupedSkills.projectGroups.map((group) => {
+          {groupedSkills.projects.map((group) => {
             const collapsed = collapsedProjects.has(group.key);
             return (
               <div key={group.key} className="grid gap-1">
                 <SkillGroupHeader
                   name={group.name}
-                  count={group.total}
+                  count={group.items.length}
                   collapsed={collapsed}
                   title={group.key}
                   onClick={() => toggleProjectGroup(group.key)}
@@ -960,7 +809,6 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
                       onEdit={setEditing}
                       onDelete={handleDelete}
                     />
-                    {group.packageGroups.map((pkg) => renderPackageGroup(pkg))}
                   </div>
                 )}
               </div>
@@ -996,11 +844,7 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
         <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth pr-3 [scrollbar-gutter:stable]">
           {activeTab === "browse" ? (
             <div className="flex flex-col gap-4">
-              <SettingsSection
-                title={t("skillLibrary")}
-                description={t("skillPanelHint")}
-                className="gap-3"
-              >
+              <SettingsSection description={t("skillPanelHint")} className="gap-2">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   {skills.length > 0 && (
                     <p className="text-[12px] text-(--text-muted)">
@@ -1019,7 +863,7 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
                 </div>
               </SettingsSection>
 
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="sticky top-0 z-10 flex flex-col gap-2 bg-background pb-2 sm:flex-row sm:items-center">
                 <div className="relative min-w-0 flex-1">
                   <MagnifyingGlass
                     size={13}

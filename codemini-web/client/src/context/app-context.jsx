@@ -3357,7 +3357,9 @@ export function AppProvider({ children }) {
           skillBadges: selectedSkillBadges,
           attachments: Array.isArray(options.attachments)
             ? options.attachments
-            : [],
+            : Array.isArray(message.attachments)
+              ? message.attachments
+              : [],
           timestamp: new Date().toISOString(),
         });
         const waitingId = addMessage({

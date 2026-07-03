@@ -117,8 +117,26 @@ export function resolveTitleUserText(source = {}) {
   const modelContent = typeof (message?.model_content ?? source?.model_content ?? source?.modelText) === 'string'
     ? (message?.model_content ?? source?.model_content ?? source?.modelText).trim()
     : '';
+  const skillTransport = content.match(/^skill:\[([^\]]+)\]$/i);
+  const transportSkillNames = skillTransport?.[1]
+    ?.split(',')
+    .map((name) => name.trim())
+    .filter(Boolean) || [];
 
   if (modelContent) {
+    if (/^\[Explicit skill composition\]\n\n/.test(modelContent)) {
+      const userTask = modelContent.match(/(?:^|\n)\[User task\]\n([\s\S]+)$/);
+      const task = userTask?.[1]?.trim() || '';
+      const generatedTask =
+        'Begin the selected skill workflow. If required information is missing, ask the user for it.';
+      if (task && task !== generatedTask) return task;
+      const composedSkillNames = [...modelContent.matchAll(/\[Executing skill: \/([^\]\s]+)\]/g)]
+        .map((match) => match[1])
+        .filter(Boolean);
+      const names = composedSkillNames.length ? composedSkillNames : transportSkillNames;
+      if (names.length) return names.join(' + ');
+    }
+
     const isSkillPrompt = /^\[Executing skill: \/[^\]\s]+\]\n\n/.test(modelContent);
     if (isSkillPrompt) {
       const currentQuestion = modelContent.match(/\nCurrent question:\n([\s\S]+)$/);
@@ -130,6 +148,7 @@ export function resolveTitleUserText(source = {}) {
 
   const slashMatch = content.match(/^\/([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\s+([\s\S]+))?$/);
   if (slashMatch?.[2]?.trim()) return slashMatch[2].trim();
+  if (transportSkillNames.length) return transportSkillNames.join(' + ');
 
   return content;
 }

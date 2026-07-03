@@ -8,7 +8,7 @@ import { CHAT_ACTION_NAMES } from '@/lib/chat-action-names.js';
 function riskDotClass(risk) {
   const level = String(risk || '').trim().toLowerCase();
   if (level === 'low') return 'bg-(--accent-green)';
-  if (level === 'medium') return 'bg-yellow-500';
+  if (level === 'medium') return 'bg-(--accent-amber)';
   if (level === 'high') return 'bg-(--accent-red)';
   return 'bg-(--text-muted)';
 }

@@ -4,7 +4,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { FieldDescription } from "@/components/ui/field";
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldLabel,
+} from "@/components/ui/field";
 import { cn } from "@/lib/utils";
 
 export function SettingsField({
@@ -17,7 +22,7 @@ export function SettingsField({
   inline = false,
 }) {
   return (
-    <div
+    <Field
       className={cn(
         inline
           ? "flex items-center justify-between gap-3"
@@ -25,14 +30,14 @@ export function SettingsField({
         className,
       )}
     >
-      <div className="min-w-0">
+      <FieldContent className="min-w-0">
         <div className="flex items-center gap-1">
-          <label
+          <FieldLabel
             htmlFor={id}
-            className="text-[13px] font-medium text-(--text-primary)"
+            className="w-auto text-[13px] font-medium text-(--text-primary)"
           >
             {label}
-          </label>
+          </FieldLabel>
           {help && (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -56,8 +61,8 @@ export function SettingsField({
         {description && (
           <FieldDescription className="mt-0.5">{description}</FieldDescription>
         )}
-      </div>
+      </FieldContent>
       <div className="min-w-0">{children}</div>
-    </div>
+    </Field>
   );
 }

@@ -110,6 +110,21 @@ function modelContentForMessage(message, index, { currentTurnUserIndex = -1 } = 
   const modelContent = typeof message?.model_content === 'string' && message.model_content
     ? message.model_content
     : '';
+  const baseContent = modelContent || message?.content;
+  const images = index === currentTurnUserIndex && Array.isArray(message?.model_images)
+    ? message.model_images
+    : [];
+  if (images.length) {
+    return [
+      { type: 'text', text: String(baseContent || '') },
+      ...images.map((image) => ({
+        type: 'image_url',
+        image_url: {
+          url: `data:${image.mime || 'image/jpeg'};base64,${image.data}`
+        }
+      }))
+    ];
+  }
   if (!modelContent) return message?.content;
   if (message?.model_content_scope === 'current_turn' && index !== currentTurnUserIndex) {
     return message?.content;
@@ -3588,9 +3603,15 @@ export function injectProjectContextIntoLastUserMessage(messages = [], projectCo
   const next = source.map((message) => ({ ...message }));
   for (let index = next.length - 1; index >= 0; index -= 1) {
     if (next[index]?.role !== 'user') continue;
+    const content = next[index].content;
     next[index] = {
       ...next[index],
-      content: contextPrompt
+      content: Array.isArray(content)
+        ? [
+            { type: 'text', text: contextPrompt },
+            ...content.filter((block) => block?.type !== 'text')
+          ]
+        : contextPrompt
     };
     return next;
   }
@@ -4026,6 +4047,7 @@ async function expandFileMentions(rawText, workspaceRoot = process.cwd()) {
 async function askModel({
   text,
   modelText,
+  modelImages = [],
   session,
   config,
   model,
@@ -4163,7 +4185,10 @@ async function askModel({
       typeof modelText === 'string' && modelText && modelText !== text
         ? { model_content: modelText, model_content_scope: 'current_turn' }
         : {};
-    const userMessage = stampedMessage('user', text, modelExtra);
+    const imageExtra = Array.isArray(modelImages) && modelImages.length
+      ? { model_images: modelImages }
+      : {};
+    const userMessage = stampedMessage('user', text, { ...modelExtra, ...imageExtra });
     session.messages.push(userMessage);
     if (compacted) {
       compacted.push({ ...userMessage });
@@ -7280,6 +7305,7 @@ export async function createChatRuntime({
     const result = await askModel({
       text: expandedText,
       ...(optionModelText ? { modelText: optionModelText } : {}),
+      modelImages: Array.isArray(options?.modelImages) ? options.modelImages : [],
       session: currentSession,
       config,
       model,
@@ -7332,6 +7358,7 @@ export async function createChatRuntime({
     if (composed.error) throw new Error(composed.error);
     return executeSubmission(composed.text, onAgentEvent, {
       modelText: appendAttachmentContext(composed.modelText, submission?.modelText),
+      modelImages: Array.isArray(submission?.modelImages) ? submission.modelImages : [],
       attachmentIds: normalized.attachmentIds,
       dismissedAlwaysSkills: normalized.dismissedAlwaysSkills
     });

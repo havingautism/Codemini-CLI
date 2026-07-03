@@ -6,10 +6,14 @@ import { Textarea } from '@/components/ui/textarea';
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { Checkbox } from '@/components/ui/checkbox';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Field, FieldContent, FieldGroup, FieldLabel } from '@/components/ui/field';
 import { t } from '../../i18n/index.js';
 
 const OTHER_VALUE = '__codemini_other__';
@@ -32,18 +36,12 @@ function OptionLabel({ option }) {
   );
 }
 
-function ChoiceRow({ type, name, checked, onChange, option }) {
+function ChoiceRow({ control, id, option }) {
   return (
-    <label className="flex cursor-pointer items-start gap-2.5 rounded-md border border-(--border-default) px-3 py-2 transition-colors hover:bg-(--bg-hover)">
-      <input
-        className="mt-0.5 size-4 shrink-0 accent-(--accent-blue)"
-        type={type}
-        name={name}
-        checked={checked}
-        onChange={onChange}
-      />
+    <FieldLabel htmlFor={id} className="w-full cursor-pointer items-start gap-2.5 rounded-md border border-(--border-default) px-3 py-2 font-normal transition-colors hover:bg-(--bg-hover)">
+      {control}
       <OptionLabel option={option} />
-    </label>
+    </FieldLabel>
   );
 }
 
@@ -54,11 +52,12 @@ function QuestionField({ question, value, other, onChange, onOtherChange }) {
   );
 
   return (
-    <div className="flex flex-col gap-2">
-      <label className="text-[13px] font-medium leading-5 text-(--text-primary)">
+    <Field className="flex-col gap-2">
+      <FieldLabel className="w-auto text-[13px] font-medium leading-5 text-(--text-primary)">
         {question.label}
         {question.required && <span className="ml-1 text-(--accent-red)">*</span>}
-      </label>
+      </FieldLabel>
+      <FieldContent>
 
       {question.type === 'text' && (question.multiline ? (
         <Textarea value={value} placeholder={question.placeholder || ''} onChange={(event) => onChange(event.target.value)} />
@@ -72,55 +71,56 @@ function QuestionField({ question, value, other, onChange, onOtherChange }) {
             <SelectValue placeholder={question.placeholder || t('userInputSelectPlaceholder')} />
           </SelectTrigger>
           <SelectContent position="popper" className="max-w-[min(32rem,calc(100vw-2rem))]">
-            {options.map((option) => (
-              <SelectItem key={option.value} value={option.value}><OptionLabel option={option} /></SelectItem>
-            ))}
-            {question.allow_other && <SelectItem value={OTHER_VALUE}>{t('userInputOther')}</SelectItem>}
+            <SelectGroup>
+              {options.map((option) => (
+                <SelectItem key={option.value} value={option.value}><OptionLabel option={option} /></SelectItem>
+              ))}
+              {question.allow_other && <SelectItem value={OTHER_VALUE}>{t('userInputOther')}</SelectItem>}
+            </SelectGroup>
           </SelectContent>
         </Select>
       )}
 
       {question.type === 'radio' && (
-        <div className="grid gap-2">
+        <RadioGroup value={value} onValueChange={onChange} className="gap-2">
           {options.map((option) => (
             <ChoiceRow
               key={option.value}
-              type="radio"
-              name={question.id}
+              id={`${question.id}-${option.value}`}
               option={option}
-              checked={value === option.value}
-              onChange={() => onChange(option.value)}
+              control={<RadioGroupItem id={`${question.id}-${option.value}`} value={option.value} className="mt-0.5" />}
             />
           ))}
           {question.allow_other && (
             <ChoiceRow
-              type="radio"
-              name={question.id}
+              id={`${question.id}-${OTHER_VALUE}`}
               option={{ label: t('userInputOther') }}
-              checked={value === OTHER_VALUE}
-              onChange={() => onChange(OTHER_VALUE)}
+              control={<RadioGroupItem id={`${question.id}-${OTHER_VALUE}`} value={OTHER_VALUE} className="mt-0.5" />}
             />
           )}
-        </div>
+        </RadioGroup>
       )}
 
       {question.type === 'checkbox' && (
-        <div className="grid gap-2">
+        <FieldGroup className="gap-2">
           {[...options, ...(question.allow_other ? [{ label: t('userInputOther'), value: OTHER_VALUE }] : [])].map((option) => (
             <ChoiceRow
               key={option.value}
-              type="checkbox"
-              name={question.id}
+              id={`${question.id}-${option.value}`}
               option={option}
-              checked={value.includes(option.value)}
-              onChange={() => onChange(
-                value.includes(option.value)
-                  ? value.filter((item) => item !== option.value)
-                  : [...value, option.value],
-              )}
+              control={<Checkbox
+                id={`${question.id}-${option.value}`}
+                checked={value.includes(option.value)}
+                onCheckedChange={() => onChange(
+                  value.includes(option.value)
+                    ? value.filter((item) => item !== option.value)
+                    : [...value, option.value],
+                )}
+                className="mt-0.5"
+              />}
             />
           ))}
-        </div>
+        </FieldGroup>
       )}
 
       {showOther && (
@@ -131,7 +131,8 @@ function QuestionField({ question, value, other, onChange, onOtherChange }) {
           onChange={(event) => onOtherChange(event.target.value)}
         />
       )}
-    </div>
+      </FieldContent>
+    </Field>
   );
 }
 
@@ -177,7 +178,7 @@ export function UserInputDialog({ request, open, onRespond }) {
           <DialogTitle>{request.title || t('userInputTitle')}</DialogTitle>
           {request.description && <p className="pt-1 text-[13px] leading-5 text-(--text-secondary)">{request.description}</p>}
         </DialogHeader>
-        <div className="min-h-0 space-y-5 overflow-y-auto py-1 pr-1">
+        <FieldGroup className="min-h-0 gap-5 overflow-y-auto py-1 pr-1">
           {questions.map((question) => (
             <QuestionField
               key={question.id}
@@ -188,7 +189,7 @@ export function UserInputDialog({ request, open, onRespond }) {
               onOtherChange={(value) => setOtherAnswers((current) => ({ ...current, [question.id]: value }))}
             />
           ))}
-        </div>
+        </FieldGroup>
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={() => respond('skipped')}>{t('userInputSkip')}</Button>
           <Button disabled={missingRequired} onClick={() => respond('submitted')}>

@@ -433,11 +433,11 @@ export function ToolCard({ card }) {
   return (
     <div
       className={cn(
-        "msg-process-meta overflow-hidden bg-transparent",
+        "msg-process-meta relative overflow-hidden rounded-md border border-transparent bg-transparent after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:border after:border-transparent after:content-['']",
         card.status === "error" &&
-          "rounded-md ring-1 ring-[var(--accent-red)]/25",
+          "after:border-[color:color-mix(in_srgb,var(--accent-red)_32%,transparent)]",
         card.status === "blocked" &&
-          "rounded-md ring-1 ring-[var(--accent-orange)]/25",
+          "after:border-[color:color-mix(in_srgb,var(--accent-orange)_32%,transparent)]",
       )}
     >
       <div className={TOOL_ROW_CLASS} onClick={() => setOpen(!open)}>
