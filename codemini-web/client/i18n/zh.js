@@ -255,6 +255,11 @@ export const zh = {
   provider: "服务商",
   providerHelp:
     "API 协议格式。OpenAI、DeepSeek、Ollama 等选 openai-compatible；Claude 原生 API 选 anthropic。",
+  providerOpenaiCompatible: "OpenAI Compatible",
+  providerOpenaiCompatibleDesc:
+    "适用于 OpenAI、DeepSeek、Ollama 等 OpenAI 风格接口。",
+  providerAnthropic: "Anthropic",
+  providerAnthropicDesc: "Claude 原生 Messages API 格式。",
   execution: "执行",
   mode: "模式",
   executionModeHelp:
@@ -266,6 +271,10 @@ export const zh = {
   webSearchProvider: "搜索提供方",
   webSearchProviderBingRss: "Bing RSS（无需 API Key）",
   webSearchProviderTavily: "Tavily（推荐）",
+  webSearchProviderExa: "Exa",
+  webSearchProviderBingRssDesc: "无需 API Key，通过 RSS 获取基础网页结果。",
+  webSearchProviderTavilyDesc: "推荐使用，结果更丰富，可返回图片候选。",
+  webSearchProviderExaDesc: "语义搜索 API，需要 Exa API Key。",
   webSearchProviderHelp:
     "Bing RSS 无需 API Key。Tavily 推荐使用，并可返回图片候选。Tavily 和 Exa 需要搜索 API Key，或使用对应环境变量。",
   tavilyApiKey: "Tavily API Key",
@@ -308,6 +317,10 @@ export const zh = {
   shell: "终端",
   defaultShell: "默认 Shell",
   defaultShellHelp: "run 工具使用的 Shell（bash、PowerShell、zsh 或 cmd）。",
+  shellBashDesc: "Linux 与 macOS 常用默认 Shell。",
+  shellPowershellDesc: "Windows 推荐使用。",
+  shellZshDesc: "macOS 与 Linux 上的增强 Bourne Shell。",
+  shellCmdDesc: "经典 Windows 命令提示符。",
   policy: "策略",
   safeMode: "安全模式",
   safeModeHelp:
@@ -322,6 +335,9 @@ export const zh = {
   uiLanguage: "界面语言",
   replyLanguage: "回复语言",
   replyLanguageHelp: "写入系统提示的回复语言偏好，助手会尽量按此语言作答。",
+  replyLanguageZh: "中文",
+  replyLanguageEn: "English",
+  settingsUnsavedChanges: "有未保存的更改",
   approvalModeHelp:
     "审阅：编辑、删除和风险命令需确认。自动：Git 项目自动执行，非 Git 文件变更仍需审阅。完全访问：工具调用不弹确认。",
 

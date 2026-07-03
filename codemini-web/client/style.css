@@ -856,10 +856,11 @@
     rgba(0, 0, 0, 0.28) 0 16px 36px;
 }
 
-/* Neutral default palette uses text-primary for a black/white adaptive accent */
+/* Default palette: use primary (near-black / near-white), not neutral ring gray */
 :root:not([data-palette]),
-:root[data-palette="default"] {
-  --input-shell-accent: var(--text-primary);
+:root[data-palette="default"],
+:root[data-theme][data-palette="default"] {
+  --input-shell-accent: var(--primary);
 }
 
 :root[data-theme="light"] {

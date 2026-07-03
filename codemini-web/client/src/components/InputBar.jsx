@@ -11,19 +11,15 @@ import {
   ArrowUp,
   Camera,
   CaretDown,
-  Code,
-  Coffee,
   FileText,
   Hammer,
   ImageSquare,
-  LockOpen,
   MaskHappy,
   MagnifyingGlass,
   Minus,
   Moon,
   Paperclip,
   Plus,
-  ShieldWarning,
   Sparkle,
   Tray,
   X,
@@ -48,50 +44,14 @@ import {
   runComposerAction,
   toggleComposerSkill,
 } from "@/lib/chat-composer-state.js";
+import {
+  getExecutionModeOptions,
+  getApprovalModeOptions,
+} from "@/lib/settings-options.js";
 
 const IMPLICIT_SKILLS = new Set(["superpowers-lite"]);
 const INTERNAL_SKILLS = new Set(["project-requirements", "project-requirements-md"]);
 const EMPTY_PROJECT_DIRS = Object.freeze([]);
-
-function getModeOptions() {
-  return [
-    {
-      value: "normal",
-      label: t("normalExecutionMode"),
-      desc: t("normalModeDesc"),
-      icon: Coffee,
-    },
-    {
-      value: "plan",
-      label: t("planMode"),
-      desc: t("planModeDesc"),
-      icon: Code,
-    },
-  ];
-}
-
-function getApprovalModeOptions() {
-  return [
-    {
-      value: "review",
-      label: t("reviewMode"),
-      desc: t("reviewModeDesc"),
-      icon: ShieldWarning,
-    },
-    {
-      value: "auto",
-      label: t("autoMode"),
-      desc: t("autoModeDesc"),
-      icon: Sparkle,
-    },
-    {
-      value: "full_access",
-      label: t("fullAccessMode"),
-      desc: t("fullAccessModeDesc"),
-      icon: LockOpen,
-    },
-  ];
-}
 
 const ACTION_COMMANDS = [
   {
@@ -176,7 +136,7 @@ async function compressImageFile(file) {
 function ModeSelector({ current, disabled = false }) {
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
-  const MODE_OPTIONS = getModeOptions();
+  const MODE_OPTIONS = getExecutionModeOptions();
   const active =
     MODE_OPTIONS.find((m) => m.value === current) || MODE_OPTIONS[0];
   const ActiveIcon = active.icon;
@@ -236,7 +196,7 @@ function ModeSelector({ current, disabled = false }) {
                 <span className="min-w-0 flex-1">
                   <span className="block">{opt.label}</span>
                   <span className="block text-[11px] font-normal leading-snug text-muted-foreground">
-                    {opt.desc}
+                    {opt.description}
                   </span>
                 </span>
               </ToggleGroupItem>
@@ -311,7 +271,7 @@ function ApprovalModeSelector({ current, disabled = false }) {
                 <span className="min-w-0 flex-1">
                   <span className="block">{opt.label}</span>
                   <span className="block text-[11px] font-normal leading-snug text-muted-foreground">
-                    {opt.desc}
+                    {opt.description}
                   </span>
                 </span>
               </ToggleGroupItem>

@@ -254,6 +254,11 @@ export const en = {
   provider: "Provider",
   providerHelp:
     "API wire format. Use openai-compatible for OpenAI, DeepSeek, Ollama, and similar endpoints; anthropic for Claude-native APIs.",
+  providerOpenaiCompatible: "OpenAI Compatible",
+  providerOpenaiCompatibleDesc:
+    "OpenAI, DeepSeek, Ollama, and most OpenAI-style endpoints.",
+  providerAnthropic: "Anthropic",
+  providerAnthropicDesc: "Claude-native Messages API format.",
   execution: "Execution",
   mode: "Mode",
   executionModeHelp:
@@ -266,6 +271,10 @@ export const en = {
   webSearchProvider: "Search Provider",
   webSearchProviderBingRss: "Bing RSS (no API key)",
   webSearchProviderTavily: "Tavily (Recommended)",
+  webSearchProviderExa: "Exa",
+  webSearchProviderBingRssDesc: "No API key required; basic web results via RSS.",
+  webSearchProviderTavilyDesc: "Recommended; richer results and optional image candidates.",
+  webSearchProviderExaDesc: "Semantic search API; requires an Exa API key.",
   webSearchProviderHelp:
     "Bing RSS works without an API key. Tavily is recommended and can return image candidates. Tavily and Exa require a search API key or matching environment variable.",
   tavilyApiKey: "Tavily API Key",
@@ -313,6 +322,10 @@ export const en = {
   defaultShell: "Default Shell",
   defaultShellHelp:
     "Shell executable used by the run tool (bash, PowerShell, zsh, or cmd).",
+  shellBashDesc: "Default on Linux and macOS.",
+  shellPowershellDesc: "Recommended on Windows.",
+  shellZshDesc: "Extended Bourne shell on macOS and Linux.",
+  shellCmdDesc: "Classic Windows command prompt.",
   policy: "Policy",
   safeMode: "Safe Mode",
   safeModeHelp:
@@ -328,6 +341,9 @@ export const en = {
   replyLanguage: "Reply Language",
   replyLanguageHelp:
     "Preferred language injected into the system prompt so assistant replies follow it when possible.",
+  replyLanguageZh: "中文",
+  replyLanguageEn: "English",
+  settingsUnsavedChanges: "Unsaved changes",
   approvalModeHelp:
     "Review: confirm edits, deletes, and risky shell commands. Auto: auto-run in Git repos; non-Git file changes still need approval. Full access: skip approval prompts.",
 

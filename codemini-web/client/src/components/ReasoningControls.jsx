@@ -39,7 +39,7 @@ export function ReasoningEffortStepper({
     >
       <div className="relative flex items-center px-1">
         <div
-          className="pointer-events-none absolute left-3 right-3 top-[9px] h-1 rounded-full bg-(--accent-purple)/15"
+          className="pointer-events-none absolute left-3 right-3 top-[9px] h-1 rounded-full bg-[var(--input-shell-glow-soft)]"
           aria-hidden="true"
         />
         {REASONING_EFFORT_LEVELS.map((level) => {
@@ -63,8 +63,8 @@ export function ReasoningEffortStepper({
                 className={cn(
                   "rounded-full transition-all duration-200",
                   selected
-                    ? "size-3.5 bg-(--accent-purple) ring-4 ring-(--accent-purple)/20"
-                    : "size-2.5 bg-(--border-strong) hover:bg-(--accent-purple)/45",
+                    ? "size-3.5 bg-[var(--input-shell-accent)] ring-4 ring-[var(--input-shell-glow)]"
+                    : "size-2.5 bg-(--border-strong) hover:bg-[color-mix(in_srgb,var(--input-shell-accent)_45%,transparent)]",
                 )}
               />
               {!compact && (
@@ -72,7 +72,7 @@ export function ReasoningEffortStepper({
                   className={cn(
                     "text-[10px] leading-none",
                     selected
-                      ? "font-medium text-(--accent-purple)"
+                      ? "font-medium text-[var(--input-shell-accent)]"
                       : "text-(--text-muted)",
                   )}
                 >
@@ -214,7 +214,7 @@ export function ReasoningQuickControl({
             INPUT_PILL_CLASS,
             "px-2.5 hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)",
             (saving || disabled) && "opacity-50 pointer-events-none",
-            reasoningEnabled && "text-(--accent-purple)",
+            reasoningEnabled && "text-[var(--input-shell-accent)]",
           )}
           disabled={disabled}
           title={t("reasoningQuickControl")}
