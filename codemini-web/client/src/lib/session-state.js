@@ -235,7 +235,7 @@ export function reduceSessionTranscriptEvent(state, event) {
                   isStreaming: false,
                 }));
                 if (!event.text) return segments;
-                const textIndex = segments.findIndex(
+                const textIndex = segments.findLastIndex(
                   (segment) => segment.type === "text",
                 );
                 if (textIndex === -1) {
@@ -305,7 +305,15 @@ function alignSessionMessages(processed, uiMessages, predicate) {
     if (!predicate(message)) return message;
     const persistedMessage = persistedMessages[persistedIndex++];
     const persistedId = String(persistedMessage?.id || "").trim();
-    return persistedId ? { ...message, id: persistedId } : message;
+    return persistedId
+      ? {
+          ...message,
+          id: persistedId,
+          ...(typeof persistedMessage.isComplete === "boolean"
+            ? { isComplete: persistedMessage.isComplete }
+            : {}),
+        }
+      : message;
   });
   return [...aligned, ...persistedMessages.slice(persistedIndex)];
 }
