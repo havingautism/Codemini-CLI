@@ -30,6 +30,7 @@ import { Empty, EmptyDescription } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { t, setLocale, getLocale } from "../../i18n/index.js";
+import { ACTIVE_SESSION_STATUSES } from "@/lib/session-ui-state.js";
 import {
   fetchWebuiActiveProjects,
   patchWebuiActiveProject,
@@ -269,7 +270,6 @@ export function Sidebar({
   const {
     allSessions,
     currentSession,
-    activeIsGeneral,
     activeProjectKey,
     generalSessions,
     projectSessionsOnly,
@@ -309,7 +309,6 @@ export function Sidebar({
     return {
       allSessions: all,
       currentSession: current,
-      activeIsGeneral: !!current?.isGeneral,
       activeProjectKey: current ? getProjectKey(current) : null,
       generalSessions: general,
       projectSessionsOnly: projectOnly,
@@ -441,10 +440,6 @@ export function Sidebar({
   };
 
   const openGeneralNewSession = async () => {
-    if (activeIsGeneral) {
-      await onNewSession?.();
-      return;
-    }
     await onOpenProject?.(GENERAL_PROJECT_MARKER, {
       view: "chat",
       newSession: true,
@@ -476,7 +471,7 @@ export function Sidebar({
         </div>
         <button
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
-          onClick={onNewSession}
+          onClick={openGeneralNewSession}
         >
           <Plus
             size={15}
@@ -695,11 +690,16 @@ export function Sidebar({
                             : "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
                         )}
                       >
-                        <span
-                          className="truncate flex-1"
-                          title={getSessionLabel(session)}
-                        >
-                          {getSessionLabel(session)}
+                        <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                          {ACTIVE_SESSION_STATUSES.has(
+                            session.runtimeStatus,
+                          ) && <Spinner className="size-3 shrink-0" />}
+                          <span
+                            className="truncate"
+                            title={getSessionLabel(session)}
+                          >
+                            {getSessionLabel(session)}
+                          </span>
                         </span>
                         {session.updatedAt && (
                           <span className="text-[11px] text-(--text-muted) shrink-0 tabular-nums">
@@ -811,11 +811,16 @@ export function Sidebar({
                       : "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
                   )}
                 >
-                  <span
-                    className="min-w-0 flex-1 truncate font-medium"
-                    title={getSessionLabel(session)}
-                  >
-                    {getSessionLabel(session)}
+                  <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                    {ACTIVE_SESSION_STATUSES.has(
+                      session.runtimeStatus,
+                    ) && <Spinner className="size-3 shrink-0" />}
+                    <span
+                      className="truncate font-medium"
+                      title={getSessionLabel(session)}
+                    >
+                      {getSessionLabel(session)}
+                    </span>
                   </span>
                   {session.updatedAt && (
                     <span className="shrink-0 text-[11px] tabular-nums text-(--text-muted)">

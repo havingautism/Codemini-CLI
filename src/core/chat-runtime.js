@@ -1863,8 +1863,8 @@ async function readPlanFileAsContext(planFilePath, maxChars = 6000) {
   }
 }
 
-async function buildTesterVerificationPacket(focusPaths = []) {
-  const cwd = process.cwd();
+async function buildTesterVerificationPacket(focusPaths = [], workspaceRoot = process.cwd()) {
+  const cwd = path.resolve(workspaceRoot);
   const primary = [];
   const secondary = [];
   const fallback = [];
@@ -3057,13 +3057,13 @@ async function buildAutoPlanFinalSummary({
   }
 }
 
-async function writeMarkdownInProjectDir(subDir, title, body, fallbackName, sessionId) {
+async function writeMarkdownInProjectDir(subDir, title, body, fallbackName, sessionId, workspaceRoot = process.cwd()) {
   const dir =
     subDir === 'specs'
-      ? getProjectSpecsDir(process.cwd(), sessionId)
+      ? getProjectSpecsDir(workspaceRoot, sessionId)
       : subDir === 'plans'
-        ? getProjectPlansDir(process.cwd(), sessionId)
-        : path.join(getProjectWorkspaceDir(process.cwd()), subDir, ...(sessionId ? [String(sessionId)] : []));
+        ? getProjectPlansDir(workspaceRoot, sessionId)
+        : path.join(getProjectWorkspaceDir(workspaceRoot), subDir, ...(sessionId ? [String(sessionId)] : []));
   await fs.mkdir(dir, { recursive: true });
   const slug = slugify(title).slice(0, 64);
   const fileName = `${nowStamp()}-${slug || fallbackName}.md`;
@@ -3386,9 +3386,10 @@ async function buildPlanFromSpecWithModel({
   specPath,
   config,
   model,
-  systemPrompt
+  systemPrompt,
+  workspaceRoot = process.cwd()
 }) {
-  const projectConstraints = await inferProjectImplementationConstraints(process.cwd());
+  const projectConstraints = await inferProjectImplementationConstraints(workspaceRoot);
   const prompt = [
     buildAutoPlanPlannerGuidance(),
     'Convert the provided engineering spec into an implementation plan.',
@@ -3629,7 +3630,7 @@ function summarizePromptBudgetAudit(audit) {
   return `prompt budget: ${totalTokens}/${maxContextTokens} est tokens (${pct}%)${components ? `; ${components}` : ''}`;
 }
 
-function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, alwaysSkillNames = [] }) {
+function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [] }) {
   const activeParentMessages = Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
     ? currentSession.compact.view
     : currentSession?.messages || [];
@@ -3645,6 +3646,7 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     ? (Array.isArray(alwaysSkillNames) ? alwaysSkillNames : []).map((name) => String(name || '').trim()).filter(Boolean)
     : [];
   const snapshot = {
+    workspaceRoot,
     sessionId: currentSession?.id || '',
     sessionTitle: currentSession?.title || '',
     messageCount: Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0,
@@ -3974,15 +3976,15 @@ function buildApprovedPlanExecutionPrompt(planState, approvalText = '') {
   return lines.join('\n');
 }
 
-async function resolveSpecPath(rawArg = '', sessionId = '') {
+async function resolveSpecPath(rawArg = '', sessionId = '', workspaceRoot = process.cwd()) {
   const input = String(rawArg || '').trim();
   const roots = [
-    getProjectSpecsDir(process.cwd(), String(sessionId || '')),
-    getProjectSpecsDir(process.cwd())
+    getProjectSpecsDir(workspaceRoot, String(sessionId || '')),
+    getProjectSpecsDir(workspaceRoot)
   ];
 
   if (input) {
-    const direct = path.resolve(process.cwd(), input);
+    const direct = path.resolve(workspaceRoot, input);
     try {
       await fs.access(direct);
       return direct;
@@ -4066,7 +4068,8 @@ async function askModel({
   changeTracker = null,
   backupManager = null,
   projectIsGit = Boolean(config?.runtime?.project_is_git),
-  onExecutionModeSync = null
+  onExecutionModeSync = null,
+  workspaceRoot = process.cwd()
 }) {
   let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
@@ -4208,7 +4211,7 @@ async function askModel({
   }
 
   const projectContextPromise = (config.context?.project_context_enabled !== false)
-    ? buildProjectContextSnippet(process.cwd(), modelInputText).catch(() => '')
+    ? buildProjectContextSnippet(workspaceRoot, modelInputText).catch(() => '')
     : Promise.resolve('');
   const projectContextGuidance =
     'Use this project context as lightweight guidance and verify important details with fresh reads when needed.';
@@ -4219,7 +4222,7 @@ async function askModel({
     composeSystemPrompt({
       shellRulesPrompt: systemPrompt,
       config,
-      workspaceRoot: process.cwd(),
+      workspaceRoot,
       skillsPrompt: executionModePrompt || undefined,
       includeSoul: false,
       includeMemory: false
@@ -4241,7 +4244,7 @@ async function askModel({
         allowedTools.includes('update_code_comment')
       )
     },
-    workspaceRoot: process.cwd(),
+    workspaceRoot,
     policy: {
       ...(config.policy || {}),
       allowed_paths: [
@@ -4253,7 +4256,7 @@ async function askModel({
   };
 
   const { definitions, handlers, formatters, deferredDefinitions, dispose: disposeTools } = getBuiltinTools({
-    workspaceRoot: process.cwd(),
+    workspaceRoot,
     config: toolConfig,
     sessionId: session.id,
     onSystemEvent: onAgentEvent,
@@ -4282,7 +4285,8 @@ async function askModel({
             ? await writeExplicitAutoPlan({
                 goal: enrichedGoal,
                 steps: explicitSteps,
-                sessionId: session.id
+                sessionId: session.id,
+                workspaceRoot
               })
             : await buildAutoPlanArtifact({
                 goal: enrichedGoal,
@@ -4292,7 +4296,8 @@ async function askModel({
                 systemPrompt: effectiveSystemPrompt,
                 onAgentEvent,
                 sessionId: session.id,
-                taskClass: classifyPlanTaskClass(goal)
+                taskClass: classifyPlanTaskClass(goal),
+                workspaceRoot
               });
           const planState = {
             status: 'running',
@@ -4318,7 +4323,8 @@ async function askModel({
             signal,
             changeTracker,
             backupManager,
-            projectIsGit
+            projectIsGit,
+            workspaceRoot
           });
           session.planState = normalizePlanState({
             ...session.planState,
@@ -4370,7 +4376,8 @@ async function askModel({
             specTitle,
             content,
             'spec',
-            session.id
+            session.id,
+            workspaceRoot
           );
           session.specState = {
             status: 'pending_approval',
@@ -4801,7 +4808,8 @@ async function runSubAgentTask({
   planFileContext = '',
   changeTracker = null,
   backupManager = null,
-  projectIsGit = Boolean(config?.runtime?.project_is_git)
+  projectIsGit = Boolean(config?.runtime?.project_is_git),
+  workspaceRoot = process.cwd()
 }) {
   const subSession = { id: `sub-${Date.now()}`, messages: [] };
   const rolePrompt = getSubAgentRolePrompt(role);
@@ -4811,7 +4819,9 @@ async function runSubAgentTask({
   const handoffFocusPaths = collectStepArtifacts(priorSteps, role)?.focusPaths || [];
   const focusedTaskNote = buildFocusedTaskNote(role, handoffFocusPaths);
   const goalRequirementPacket = buildGoalRequirementPacket(goal, role);
-  const verificationPacket = role === 'tester' ? await buildTesterVerificationPacket(handoffFocusPaths) : '';
+  const verificationPacket = role === 'tester'
+    ? await buildTesterVerificationPacket(handoffFocusPaths, workspaceRoot)
+    : '';
   const planFileSection = planFileContext
     ? `Accumulated plan file context (results from prior steps):\n${planFileContext}`
     : '';
@@ -4847,7 +4857,7 @@ async function runSubAgentTask({
   const roleAllowedTools = normalizeToolPolicy(ROLE_TOOL_POLICY[role] || ROLE_TOOL_POLICY.coder, config);
   const subShellRulesPrompt = buildSubAgentShellRulesPrompt(roleAllowedTools, {
     shell: config?.shell?.default,
-    workspaceRoot: process.cwd(),
+    workspaceRoot,
     role,
     config
   });
@@ -4874,6 +4884,7 @@ async function runSubAgentTask({
     signal,
     changeTracker,
     backupManager,
+    workspaceRoot,
     projectIsGit
   });
   collectSubAgentArtifactsFromMessages(subSession.messages, artifactPaths, seenArtifactPaths);
@@ -5060,7 +5071,8 @@ async function executePlanWithSubAgents({
   onSubSessionActive,
   changeTracker = null,
   backupManager = null,
-  projectIsGit = Boolean(config?.runtime?.project_is_git)
+  projectIsGit = Boolean(config?.runtime?.project_is_git),
+  workspaceRoot = process.cwd()
 }) {
   const steps = Array.isArray(planState.steps) ? planState.steps : [];
   const goal = planState.goal || '';
@@ -5144,7 +5156,8 @@ async function executePlanWithSubAgents({
       planFileContext,
       changeTracker,
       backupManager,
-      projectIsGit
+      projectIsGit,
+      workspaceRoot
     });
 
     if (['coder', 'refactorer', 'writer'].includes(step.role)) {
@@ -5197,7 +5210,8 @@ ${diffReview}`.trim();
         planFileContext,
         changeTracker,
         backupManager,
-        projectIsGit
+        projectIsGit,
+        workspaceRoot
       });
 
       if (['coder', 'refactorer', 'writer'].includes(step.role)) {
@@ -5345,7 +5359,8 @@ async function buildAutoPlanArtifact({
   systemPrompt,
   onAgentEvent,
   sessionId,
-  taskClass
+  taskClass,
+  workspaceRoot = process.cwd()
 }) {
   const normalizedTaskClass = taskClass || classifyPlanTaskClass(goal);
   const requirementPacket = buildGoalRequirementPacket(goal, 'explorer');
@@ -5387,6 +5402,7 @@ async function buildAutoPlanArtifact({
     const plannerSystemPrompt = await composeSystemPrompt({
       shellRulesPrompt: systemPrompt,
       config,
+      workspaceRoot,
       skillsPrompt: plannerPrompt,
       includeSoul: false,
       includeMemory: false
@@ -5459,7 +5475,8 @@ async function buildAutoPlanArtifact({
       progressLine: '- Plan created for execution.'
     }),
     'plan-auto',
-    sessionId
+    sessionId,
+    workspaceRoot
   );
   return {
     filePath,
@@ -5475,7 +5492,12 @@ async function buildAutoPlanArtifact({
   };
 }
 
-async function writeExplicitAutoPlan({ goal, steps = [], sessionId }) {
+export async function writeExplicitAutoPlan({
+  goal,
+  steps = [],
+  sessionId,
+  workspaceRoot = process.cwd()
+}) {
   const autoPlan = normalizeAutoPlan({
     summary: `Structured plan for: ${goal}`,
     steps
@@ -5492,7 +5514,8 @@ async function writeExplicitAutoPlan({ goal, steps = [], sessionId }) {
       progressLine: '- Structured plan created for execution.'
     }),
     'plan-auto',
-    sessionId
+    sessionId,
+    workspaceRoot
   );
   return {
     filePath,
@@ -5651,9 +5674,9 @@ function stripFrontmatter(raw = '') {
   return text.slice(end + 5).trim();
 }
 
-async function renderProjectRequirementsSkillPrompt(custom, options) {
+async function renderProjectRequirementsSkillPrompt(custom, options, workspaceRoot = process.cwd()) {
   if (options?.outputFormat !== 'md') {
-    return expandFileMentions(renderCommandPrompt(custom, options.focusArgs), process.cwd());
+    return expandFileMentions(renderCommandPrompt(custom, options.focusArgs), workspaceRoot);
   }
   const raw = await fs.readFile(PROJECT_REQUIREMENTS_MD_SKILL, 'utf8');
   const mdSkill = {
@@ -5661,7 +5684,7 @@ async function renderProjectRequirementsSkillPrompt(custom, options) {
     metadata: { type: 'skill' },
     content: stripFrontmatter(raw)
   };
-  return expandFileMentions(renderCommandPrompt(mdSkill, options.focusArgs), process.cwd());
+  return expandFileMentions(renderCommandPrompt(mdSkill, options.focusArgs), workspaceRoot);
 }
 
 function getProjectRequirementsDefaultOutputFormat(custom) {
@@ -5950,6 +5973,7 @@ function replaceTemplateVariables(template, variables) {
 }
 
 async function createProjectRequirementsShell({
+  workspaceRoot = process.cwd(),
   reportPath,
   companionPath,
   manifestPath,
@@ -5960,7 +5984,7 @@ async function createProjectRequirementsShell({
   outputFormat = 'html',
   config = {}
 }) {
-  const workspaceRoot = process.cwd();
+  workspaceRoot = path.resolve(workspaceRoot);
   const absoluteReportPath = path.resolve(workspaceRoot, reportPath);
   const absoluteManifestPath = path.resolve(workspaceRoot, manifestPath);
   await fs.mkdir(path.dirname(absoluteReportPath), { recursive: true });
@@ -6011,10 +6035,10 @@ async function createProjectRequirementsShell({
   return manifest;
 }
 
-async function updateProjectRequirementsManifest(manifestPath, updates = {}) {
+async function updateProjectRequirementsManifest(manifestPath, updates = {}, workspaceRoot = process.cwd()) {
   if (!manifestPath) return;
   try {
-    const absoluteManifestPath = path.resolve(process.cwd(), manifestPath);
+    const absoluteManifestPath = path.resolve(workspaceRoot, manifestPath);
     const current = JSON.parse(await fs.readFile(absoluteManifestPath, 'utf8'));
     const next = {
       ...current,
@@ -6048,8 +6072,8 @@ function buildProjectRequirementsTerminalManifestPatch(status = 'completed', ext
   };
 }
 
-async function readProjectRequirementsReportState(reportPath, outputFormat = 'html') {
-  const absoluteReportPath = path.resolve(process.cwd(), reportPath);
+async function readProjectRequirementsReportState(reportPath, outputFormat = 'html', workspaceRoot = process.cwd()) {
+  const absoluteReportPath = path.resolve(workspaceRoot, reportPath);
   const text = await fs.readFile(absoluteReportPath, 'utf8');
   const stat = await fs.stat(absoluteReportPath);
   const normalizedFormat = outputFormat === 'md' ? 'md' : 'html';
@@ -6087,11 +6111,12 @@ async function runProjectRequirementsPipeline({
   systemPrompt,
   onAgentEvent,
   signal,
-  onSubSessionActive
+  onSubSessionActive,
+  workspaceRoot = process.cwd()
 }) {
   const defaultOutputFormat = getProjectRequirementsDefaultOutputFormat(custom);
   const options = parseProjectRequirementsOptions(parsedInput.args, { defaultOutputFormat });
-  const renderedSkillPrompt = await renderProjectRequirementsSkillPrompt(custom, options);
+  const renderedSkillPrompt = await renderProjectRequirementsSkillPrompt(custom, options, workspaceRoot);
   const userFocus = options.raw;
   const goal = userFocus ? `project requirements report: ${userFocus}` : 'project requirements report';
   const reportSlug = formatLocalDateTimeSlug();
@@ -6103,9 +6128,11 @@ async function runProjectRequirementsPipeline({
     'project-requirements-pipeline',
     renderProjectRequirementsPlanMarkdown({ goal, steps, reportPath, companionPath }),
     'project-requirements',
-    currentSession.id
+    currentSession.id,
+    workspaceRoot
   );
   await createProjectRequirementsShell({
+    workspaceRoot,
     reportPath,
     companionPath,
     manifestPath,
@@ -6150,7 +6177,8 @@ async function runProjectRequirementsPipeline({
       systemPrompt,
       onAgentEvent,
       signal,
-      onSubSessionActive
+      onSubSessionActive,
+      workspaceRoot
     });
   } catch (error) {
     if (onAgentEvent) {
@@ -6166,7 +6194,7 @@ async function runProjectRequirementsPipeline({
         status: 'failed',
         failedCount: steps.length,
         error: error instanceof Error ? error.message : String(error)
-      }).catch(() => {});
+      }, workspaceRoot).catch(() => {});
     }
     return {
       type: 'assistant',
@@ -6199,7 +6227,7 @@ async function runProjectRequirementsPipeline({
       : failedCount > 0
         ? buildProjectRequirementsTerminalManifestPatch('failed', { failedCount })
         : buildProjectRequirementsTerminalManifestPatch('completed'))
-  });
+  }, workspaceRoot);
   const text = [
     execution.text || '',
     '',
@@ -6235,11 +6263,12 @@ async function runProjectRequirementsSingleAgent({
   signal,
   compactedForModel,
   onCompactedUpdate,
-  codeWikiGenerate = false
+  codeWikiGenerate = false,
+  workspaceRoot = process.cwd()
 }) {
   const defaultOutputFormat = getProjectRequirementsDefaultOutputFormat(custom);
   const options = parseProjectRequirementsOptions(parsedInput.args, { defaultOutputFormat });
-  const renderedSkillPrompt = await renderProjectRequirementsSkillPrompt(custom, options);
+  const renderedSkillPrompt = await renderProjectRequirementsSkillPrompt(custom, options, workspaceRoot);
   const userFocus = options.raw;
   const goal = userFocus ? `project requirements report: ${userFocus}` : 'project requirements report';
   const reportSlug = formatLocalDateTimeSlug();
@@ -6259,10 +6288,12 @@ async function runProjectRequirementsSingleAgent({
       `Output Format: ${outputFormat}`
     ].join('\n'),
     'project-requirements',
-    currentSession.id
+    currentSession.id,
+    workspaceRoot
   );
   const steps = [{ title: 'Generate project requirements report', role: 'coder', task: goal }];
   await createProjectRequirementsShell({
+    workspaceRoot,
     reportPath,
     companionPath,
     manifestPath,
@@ -6344,13 +6375,14 @@ async function runProjectRequirementsSingleAgent({
       signal,
       compactedForModel: codeWikiGenerate ? structuredClone(compactedForModel) : compactedForModel,
       onCompactedUpdate: codeWikiGenerate ? null : onCompactedUpdate,
-      persistSession: !codeWikiGenerate
+      persistSession: !codeWikiGenerate,
+      workspaceRoot
     });
     await updateProjectRequirementsManifest(manifestPath, {
       ...(result?.aborted
         ? buildProjectRequirementsTerminalManifestPatch('aborted', { failedCount: 1 })
         : buildProjectRequirementsTerminalManifestPatch('completed'))
-    });
+    }, workspaceRoot);
     if (onAgentEvent) {
       onAgentEvent({
         type: 'plan:progress',
@@ -6384,7 +6416,7 @@ async function runProjectRequirementsSingleAgent({
         failedCount: 1,
         error: message
       })
-    }).catch(() => {});
+    }, workspaceRoot).catch(() => {});
     if (onAgentEvent) {
       onAgentEvent({ type: 'skill:error', name: custom.name, summary: message });
       onAgentEvent({ type: 'skill:end', name: custom.name });
@@ -6475,7 +6507,7 @@ async function revisePendingPlanWithModel({
   };
 }
 
-async function handleShellInput(shellText, config) {
+async function handleShellInput(shellText, config, workspaceRoot = process.cwd()) {
   if (!shellText) return { text: '' };
   if (
     !config.policy.allow_dangerous_commands &&
@@ -6483,7 +6515,7 @@ async function handleShellInput(shellText, config) {
   ) {
     return { text: 'Blocked by policy: dangerous command pattern detected' };
   }
-  const check = evaluateCommandPolicy(shellText, config, process.cwd());
+  const check = evaluateCommandPolicy(shellText, config, workspaceRoot);
   if (!check.allowed) {
     return { text: `Blocked by safe mode: ${check.reason}${check.suggestion ? ` | ${check.suggestion}` : ''}` };
   }
@@ -6543,12 +6575,12 @@ export async function createChatRuntime({
   config: initialConfig,
   model,
   systemPrompt,
-  requestToolApproval
+  requestToolApproval,
+  workspaceRoot
 }) {
   assertSearchConfig(initialConfig);
-  if (session && typeof session === 'object' && !session.projectDir) {
-    session.projectDir = process.cwd();
-  }
+  const root = path.resolve(workspaceRoot || session?.projectDir || process.cwd());
+  if (session && typeof session === 'object') session.projectDir = root;
   let requestToolApprovalObserver = typeof requestToolApproval === 'function' ? requestToolApproval : null;
   const approvalRequestState = { current: null };
   const activeRequestToolApproval = async (request) => {
@@ -6569,7 +6601,7 @@ export async function createChatRuntime({
   let activeRequestUserInput = null;
   let onTitleUpdateCallback = null;
   const startupEvents = [];
-  const initialIndex = await initializeProjectIndex(process.cwd()).catch(() => null);
+  const initialIndex = await initializeProjectIndex(root).catch(() => null);
   if (initialIndex?.summary) {
     startupEvents.push({
       type: 'system_tool',
@@ -6631,28 +6663,34 @@ export async function createChatRuntime({
       }
     }
   };
-  const commands = await loadCommandsAndSkills();
+  const commands = await loadCommandsAndSkills(root);
   const reloadCommandsAndSkills = async () => {
-    const next = await loadCommandsAndSkills();
+    const next = await loadCommandsAndSkills(root);
     commands.clear();
     for (const [name, command] of next.entries()) {
       commands.set(name, command);
     }
   };
   let changeTracker = await createGitOplogChangeTracker({
-    workspaceRoot: process.cwd(),
+    workspaceRoot: root,
     sessionId: currentSession.id
   });
   let backupManager = changeTracker?.enabled
     ? null
     : await createNonGitBackupManager({
-        workspaceRoot: process.cwd(),
+        workspaceRoot: root,
         sessionId: currentSession.id
       }).catch(() => null);
-  config.runtime = {
-    ...(config.runtime || {}),
-    project_is_git: Boolean(changeTracker?.enabled)
+  const fileObservations = new Map();
+  const attachRuntimeState = (nextConfig) => {
+    nextConfig.runtime = {
+      ...(nextConfig.runtime || {}),
+      project_is_git: Boolean(changeTracker?.enabled),
+      fileObservations
+    };
+    return nextConfig;
   };
+  config = attachRuntimeState(config);
 
   // Set up tool result store under session directory
   const sessionResultsDir = path.join(getSessionsDir(), String(currentSession.id));
@@ -6876,7 +6914,7 @@ export async function createChatRuntime({
     if (!direct) return null;
     const existing = await listMemories({
       scope: direct.scope,
-      workspaceRoot: process.cwd()
+      workspaceRoot: root
     }).catch(() => []);
     const directText = String(direct.content || '').toLowerCase();
     const directTokens = new Set(directText.match(/[a-z0-9_\u4e00-\u9fa5]+/g) || []);
@@ -6902,7 +6940,7 @@ export async function createChatRuntime({
       summary: direct.content.slice(0, 80),
       source: 'auto-user-directive',
       replaceSimilar: true,
-      workspaceRoot: process.cwd(),
+      workspaceRoot: root,
       config
     }).catch(() => null);
   };
@@ -6924,11 +6962,11 @@ export async function createChatRuntime({
   const buildActiveSystemPrompt = async () => {
     const memoryGuide =
       'Persistent memory stores durable preferences and stable workflow knowledge. Verify changeable details from files, and only write memory for future-useful, non-sensitive facts.';
-    const skillIndexPrompt = await buildSkillIndexPromptBlock(process.cwd(), config);
+    const skillIndexPrompt = await buildSkillIndexPromptBlock(root, config);
     return composeSystemPrompt({
       shellRulesPrompt: baseSystemPrompt,
       config,
-      workspaceRoot: process.cwd(),
+      workspaceRoot: root,
       skillsPrompt: skillIndexPrompt,
       extraPrompts: [memoryGuide]
     });
@@ -6951,7 +6989,7 @@ export async function createChatRuntime({
     const activeReplySystemPrompt = await buildActiveSystemPrompt();
     const inputText = String(line || '');
     const optionModelText = typeof options?.modelText === 'string' && options.modelText.trim()
-      ? await expandFileMentions(options.modelText, process.cwd())
+      ? await expandFileMentions(options.modelText, root)
       : '';
     const readOnlyCodeWiki = options?.readOnlyCodeWiki === true;
     const codeWikiGenerate = options?.codeWikiGenerate === true;
@@ -6972,7 +7010,7 @@ export async function createChatRuntime({
       try {
         const report = await runDreamConsolidation({
           dryRun: false,
-          workspaceRoot: process.cwd(),
+          workspaceRoot: root,
           config,
           writeAudit: true
         });
@@ -7002,7 +7040,8 @@ export async function createChatRuntime({
         specTitle,
         specText,
         'spec',
-        currentSession.id
+        currentSession.id,
+        root
       );
       await fs.writeFile(specPath, `${specText.trim()}\n`, 'utf8');
       if (saveOnly) {
@@ -7047,7 +7086,8 @@ export async function createChatRuntime({
           onCompactedUpdate: setCompactedView,
           changeTracker,
           backupManager,
-          onExecutionModeSync: syncExecutionModeWithSession
+          onExecutionModeSync: syncExecutionModeWithSession,
+          workspaceRoot: root
         });
         syncExecutionModeWithSession();
         return { type: 'assistant', text: result.text, aborted: !!result.aborted };
@@ -7060,7 +7100,8 @@ export async function createChatRuntime({
         systemPrompt: activeReplySystemPrompt,
         onAgentEvent,
         sessionId: currentSession.id,
-        taskClass: classifyPlanTaskClass(planGoal)
+        taskClass: classifyPlanTaskClass(planGoal),
+        workspaceRoot: root
       });
       currentSession.planState = {
         status: 'running',
@@ -7089,7 +7130,8 @@ export async function createChatRuntime({
         requestToolApproval: activeRequestToolApproval,
         changeTracker,
         backupManager,
-        projectIsGit: Boolean(changeTracker?.enabled)
+        projectIsGit: Boolean(changeTracker?.enabled),
+        workspaceRoot: root
       });
       activeSubSession = null;
       currentSession.planState = normalizePlanState({
@@ -7136,7 +7178,7 @@ export async function createChatRuntime({
           model,
           systemPrompt: activeReplySystemPrompt
         });
-        const candidates = attachReflectTargets({ candidates: drafts, scope, workspaceRoot: process.cwd() });
+        const candidates = attachReflectTargets({ candidates: drafts, scope, workspaceRoot: root });
         if (candidates.length === 0) return { type: 'system', text: 'Reflect found no reusable skill candidate.' };
         currentSession.planState = {
           status: 'pending_reflect_skill',
@@ -7155,7 +7197,7 @@ export async function createChatRuntime({
         const written = await writeReflectSkillDraft({
           draft: candidate,
           scope: state.targetScope || 'project',
-          workspaceRoot: process.cwd()
+          workspaceRoot: root
         });
         currentSession.planState = null;
         restoreConfiguredExecutionMode();
@@ -7181,7 +7223,7 @@ export async function createChatRuntime({
           candidates: attachReflectTargets({
             candidates: drafts,
             scope: state.targetScope || 'project',
-            workspaceRoot: process.cwd()
+            workspaceRoot: root
           })
         };
         await saveSession(currentSession);
@@ -7222,11 +7264,11 @@ export async function createChatRuntime({
     }
     if (!inputText.trim()) return { type: 'noop' };
     if (inputText.trimStart().startsWith('!')) {
-      const shell = await handleShellInput(inputText.trimStart().slice(1), config);
+      const shell = await handleShellInput(inputText.trimStart().slice(1), config, root);
       return { type: 'shell', text: shell.text };
     }
     if (readOnlyCodeWiki) {
-      const expandedText = await expandFileMentions(line, process.cwd());
+      const expandedText = await expandFileMentions(line, root);
       const codeWikiConfig = {
         ...config,
         soul: {
@@ -7237,7 +7279,7 @@ export async function createChatRuntime({
       const codeWikiBasePrompt = await composeSystemPrompt({
         shellRulesPrompt: baseSystemPrompt,
         config: codeWikiConfig,
-        workspaceRoot: process.cwd(),
+        workspaceRoot: root,
         includeMemory: false,
         includeProjectInstructions: true,
         includeSoul: true
@@ -7265,12 +7307,13 @@ export async function createChatRuntime({
         alwaysAllowTools: CODEWIKI_ROLE_TOOLS,
         allowedTools: CODEWIKI_ROLE_TOOLS,
         persistSession: false,
-                skipAnalysisNudge: true,
-        signal
+        skipAnalysisNudge: true,
+        signal,
+        workspaceRoot: root
       });
       return { type: 'assistant', text: result.text, aborted: !!result.aborted };
     }
-    const expandedText = await expandFileMentions(inputText, process.cwd());
+    const expandedText = await expandFileMentions(inputText, root);
     const autoRoute = classifyAutoRoute(expandedText);
     const injectAlwaysSkills = shouldInjectAlwaysSkills(executionMode);
     const alwaysSkills = injectAlwaysSkills ? getAlwaysSkillCommands(commands, config, dismissedAlwaysSkills) : [];
@@ -7285,7 +7328,7 @@ export async function createChatRuntime({
       ? await composeSystemPrompt({
           shellRulesPrompt: activeReplySystemPrompt,
           config,
-          workspaceRoot: process.cwd(),
+          workspaceRoot: root,
           skillsPrompt: alwaysSkillPrompt,
           includeSoul: false,
           includeMemory: false
@@ -7296,7 +7339,7 @@ export async function createChatRuntime({
         ? await composeSystemPrompt({
             shellRulesPrompt: skillPrompt,
             config,
-            workspaceRoot: process.cwd(),
+            workspaceRoot: root,
             skillsPrompt: buildMediumTaskPromptBlock(),
             includeSoul: false,
             includeMemory: false
@@ -7319,7 +7362,8 @@ export async function createChatRuntime({
       onCompactedUpdate: setCompactedView,
       changeTracker,
       backupManager,
-      onExecutionModeSync: syncExecutionModeWithSession
+      onExecutionModeSync: syncExecutionModeWithSession,
+      workspaceRoot: root
     });
     syncExecutionModeWithSession();
     void Promise.allSettled([
@@ -7368,7 +7412,7 @@ export async function createChatRuntime({
     const text = String(line || '');
     if (!text.trim()) return { type: 'noop' };
     if (text.trimStart().startsWith('!')) {
-      const shell = await handleShellInput(text.trimStart().slice(1), config);
+      const shell = await handleShellInput(text.trimStart().slice(1), config, root);
       return { type: 'shell', text: shell.text };
     }
     return submitMessage({ text }, onAgentEvent);
@@ -7399,7 +7443,7 @@ export async function createChatRuntime({
       [CHAT_ACTIONS.DREAM]: async () => runDreamConsolidation({
         dryRun: payload.dryRun === true,
         scope: payload.scope || null,
-        workspaceRoot: process.cwd(),
+        workspaceRoot: root,
         config,
         writeAudit: true
       }),
@@ -7470,11 +7514,7 @@ export async function createChatRuntime({
     undoChangeSet: (id) => undoGitOplogChange(changeTracker, id),
     undoChangeSets: (ids) => undoGitOplogChanges(changeTracker, ids),
     reloadConfig: async (options = {}) => {
-      config = await loadConfig();
-      config.runtime = {
-        ...(config.runtime || {}),
-        project_is_git: Boolean(changeTracker?.enabled)
-      };
+      config = attachRuntimeState(await loadConfig());
       await syncRuntimeFromConfig(options);
       return config;
     },
@@ -7488,14 +7528,14 @@ export async function createChatRuntime({
       if (!['normal', 'plan'].includes(normalized)) return false;
       executionMode = normalized;
       await setConfigValue('execution.mode', normalized);
-      config = await loadConfig();
+      config = attachRuntimeState(await loadConfig());
       return true;
     },
     setApprovalMode: async (next) => {
       const normalized = String(next || '').toLowerCase().replace(/-/g, '_');
       if (!['review', 'auto', 'full_access'].includes(normalized)) return false;
       await setConfigValue('execution.approval_mode', normalized);
-      config = await loadConfig();
+      config = attachRuntimeState(await loadConfig());
       return true;
     },
     setRequestToolApproval: (handler) => {
@@ -7511,7 +7551,7 @@ export async function createChatRuntime({
       sessionTitleUpdateListener = onTitleUpdateCallback;
     },
     updatePendingReflect: async (patch = {}) => {
-      const next = updatePendingReflectState(currentSession, patch, process.cwd());
+      const next = updatePendingReflectState(currentSession, patch, root);
       if (!next) return null;
       await saveSession(currentSession);
       return next;
@@ -7574,6 +7614,7 @@ export async function createChatRuntime({
         model,
         executionMode,
         extraSession: activeSubSession,
+        workspaceRoot: root,
         alwaysSkillNames: getAlwaysSkillCommands(commands, config).map((skill) => skill.name)
       })
   };

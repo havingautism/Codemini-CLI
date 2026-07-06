@@ -1,5 +1,3 @@
-import { t } from '../../i18n/index.js';
-
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 async function api(path, opts = {}) {
@@ -24,18 +22,28 @@ export async function runUpdate() {
   return res.json();
 }
 
-export async function fetchState() {
-  const res = await api('/api/state');
+function withSessionQuery(path, sessionId) {
+  const params = new URLSearchParams({ sessionId });
+  return `${path}?${params.toString()}`;
+}
+
+export async function fetchRuntimeSessions() {
+  const res = await api('/api/runtime/sessions');
   return res.json();
 }
 
-export async function fetchStartupEvents() {
-  const res = await api('/api/startup-events');
+export async function fetchState(sessionId) {
+  const res = await api(withSessionQuery('/api/state', sessionId));
   return res.json();
 }
 
-export async function fetchHistory() {
-  const res = await api('/api/history');
+export async function fetchStartupEvents(sessionId) {
+  const res = await api(withSessionQuery('/api/startup-events', sessionId));
+  return res.json();
+}
+
+export async function fetchHistory(sessionId) {
+  const res = await api(withSessionQuery('/api/history', sessionId));
   return res.json();
 }
 
@@ -47,35 +55,36 @@ export async function fetchSessions(limit = 200) {
   return res.json();
 }
 
-export async function fetchSessionMessages() {
-  const res = await api('/api/session/messages');
+export async function fetchSessionMessages(sessionId) {
+  const res = await api(withSessionQuery('/api/session/messages', sessionId));
   return res.json();
 }
 
-export async function fetchSessionUiMessages() {
-  const res = await api('/api/session/ui-messages');
+export async function fetchSessionUiMessages(sessionId) {
+  const res = await api(withSessionQuery('/api/session/ui-messages', sessionId));
   return res.json();
 }
 
-export async function fetchSpecs() {
-  const res = await api('/api/specs');
+export async function fetchSpecs(sessionId) {
+  const res = await api(withSessionQuery('/api/specs', sessionId));
   return res.json();
 }
 
-export async function openSpecReview(path) {
+export async function openSpecReview(sessionId, path) {
   const res = await api('/api/specs/open', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ path })
+    body: JSON.stringify({ sessionId, path })
   });
   return res.json();
 }
 
-export async function submitLine(line, options = {}) {
+export async function submitLine(sessionId, line, options = {}) {
   const res = await api('/api/submit', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({
+      sessionId,
       line,
       ...(options.readOnlyCodeWiki ? { readOnlyCodeWiki: true } : {}),
       ...(Array.isArray(options.attachmentIds) && options.attachmentIds.length
@@ -86,93 +95,109 @@ export async function submitLine(line, options = {}) {
   return res;
 }
 
-export async function submitMessage(body = {}) {
+export async function submitMessage(sessionId, body = {}) {
   return api('/api/chat/message', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify(body)
+    body: JSON.stringify({ sessionId, ...body })
   });
 }
 
-export async function submitChatAction(name, payload = {}) {
+export async function submitChatAction(sessionId, name, payload = {}) {
   const res = await api('/api/chat/action', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ name, payload })
+    body: JSON.stringify({ sessionId, name, payload })
   });
   return res.json();
 }
 
-export async function uploadAttachments(files = []) {
+export async function uploadAttachments(sessionId, files = []) {
   const form = new FormData();
   for (const file of files) {
     form.append('files', file);
   }
-  const res = await api('/api/attachments', {
+  const res = await api(withSessionQuery('/api/attachments', sessionId), {
     method: 'POST',
     body: form
   });
   return res.json();
 }
 
-export async function abortRequest() {
-  await api('/api/abort', { method: 'POST' });
+export async function abortRequest(sessionId) {
+  const res = await api('/api/abort', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId })
+  });
+  if (res.ok) return;
+
+  let message = '';
+  try {
+    const body = await res.clone().json();
+    message = String(body?.message || body?.error || '').trim();
+  } catch {
+    try {
+      message = String(await res.text()).trim();
+    } catch {}
+  }
+  throw new Error(message || `Abort request failed (${res.status})`);
 }
 
-export async function setExecutionMode(mode) {
+export async function setExecutionMode(sessionId, mode) {
   const res = await api('/api/execution-mode', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ mode })
+    body: JSON.stringify({ sessionId, mode })
   });
   return res.json();
 }
 
-export async function setApprovalMode(mode) {
+export async function setApprovalMode(sessionId, mode) {
   const res = await api('/api/approval-mode', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ mode })
+    body: JSON.stringify({ sessionId, mode })
   });
   return res.json();
 }
 
-export async function updatePendingReflect(draft) {
+export async function updatePendingReflect(sessionId, draft) {
   const res = await api('/api/pending-reflect', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify(draft || {})
+    body: JSON.stringify({ sessionId, ...(draft || {}) })
   });
   return res.json();
 }
 
-export async function updatePendingSpec(spec) {
+export async function updatePendingSpec(sessionId, spec) {
   const res = await api('/api/pending-spec', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify(spec || {})
+    body: JSON.stringify({ sessionId, ...(spec || {}) })
   });
   return res.json();
 }
 
-export async function deletePendingSpec() {
-  const res = await api('/api/pending-spec', { method: 'DELETE' });
+export async function deletePendingSpec(sessionId) {
+  const res = await api(withSessionQuery('/api/pending-spec', sessionId), { method: 'DELETE' });
   return res.json();
 }
 
-export async function submitApproval(id, approved) {
+export async function submitApproval(sessionId, id, approved) {
   await api('/api/approval', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ id, approved })
+    body: JSON.stringify({ sessionId, id, approved })
   });
 }
 
-export async function submitUserInput(id, response = {}) {
+export async function submitUserInput(sessionId, id, response = {}) {
   const res = await api('/api/user-input', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ id, ...response })
+    body: JSON.stringify({ sessionId, id, ...response })
   });
   return res.json().catch(() => ({}));
 }
@@ -191,8 +216,12 @@ export async function deleteSession(sessionId) {
   return res.json();
 }
 
-export async function newSession() {
-  const res = await api('/api/sessions/new', { method: 'POST' });
+export async function newSession(projectDir) {
+  const res = await api('/api/sessions/new', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ projectDir })
+  });
   return res.json();
 }
 
@@ -262,21 +291,21 @@ export async function fetchGitDiff() {
   return res.json();
 }
 
-export async function undoSessionChange(id) {
-  const res = await api(`/api/session-changes/${encodeURIComponent(id)}/undo`, { method: 'POST' });
+export async function undoSessionChange(sessionId, id) {
+  const res = await api(withSessionQuery(`/api/session-changes/${encodeURIComponent(id)}/undo`, sessionId), { method: 'POST' });
   return res.json();
 }
 
-export async function fetchSessionChanges() {
-  const res = await api('/api/session-changes');
+export async function fetchSessionChanges(sessionId) {
+  const res = await api(withSessionQuery('/api/session-changes', sessionId));
   return res.json();
 }
 
-export async function undoSessionChanges(ids) {
+export async function undoSessionChanges(sessionId, ids) {
   const res = await api('/api/session-changes/undo', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ ids })
+    body: JSON.stringify({ sessionId, ids })
   });
   return res.json();
 }

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { rgPath } from "@vscode/ripgrep";
 import net from "node:net";
 import { escapeRegex, normalizePath } from "./string-utils.js";
@@ -1482,7 +1483,7 @@ async function readFile(root, args, config = {}) {
 
   // Read deduplication: if same path+range+mtime was read before, return a short stub
   const isDuplicate = checkReadDedup(
-    normalizedArgs?.path,
+    target,
     startLine,
     endLine,
     stat.mtimeMs,
@@ -1562,7 +1563,16 @@ async function writeFile(root, args, config = {}) {
   }
   const nextContent = String(normalizedArgs.content ?? "");
   await fs.mkdir(path.dirname(target), { recursive: true });
-  await fs.writeFile(target, nextContent, "utf8");
+  try {
+    await fs.writeFile(target, nextContent, { encoding: "utf8", flag: "wx" });
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      throw new Error(
+        `create target already exists: ${rawPath}. Use edit to modify existing files.`,
+      );
+    }
+    throw error;
+  }
   const afterLines = splitLines(nextContent);
   const changed = { added: afterLines.length, removed: 0 };
   return {
@@ -1749,7 +1759,7 @@ function applyPatchChunksToContent(content, chunks, relativePath) {
   return { content: current, changedLine };
 }
 
-async function applyPatchText(root, args, config = {}) {
+async function applyPatchText(root, args, config = {}, { beforeMutation } = {}) {
   const patchText = String(args?.patch_text ?? "").trim();
   const hunks = parsePatchText(patchText);
   const changes = [];
@@ -1802,6 +1812,7 @@ async function applyPatchText(root, args, config = {}) {
     });
   }
 
+  await beforeMutation?.();
   for (const change of changes) {
     if (change.type === "delete") {
       await fs.rm(change.target, { force: false });
@@ -3620,6 +3631,8 @@ async function editTarget(root, args, config = {}) {
 export function getBuiltinTools({
   workspaceRoot = process.cwd(),
   config,
+  sessionId,
+  fileObservations: providedFileObservations,
   onSystemEvent,
   getTodos,
   onTodosUpdate,
@@ -3628,9 +3641,76 @@ export function getBuiltinTools({
   onCreatePlan,
   onCreateSpec,
   requestUserInput,
+  afterManagedFileBackup,
+  beforeApplyPatchMutation,
   fffAdapter,
   backupManager,
 }) {
+  workspaceRoot = path.resolve(workspaceRoot);
+  const fileObservations = providedFileObservations instanceof Map
+    ? providedFileObservations
+    : config?.runtime?.fileObservations instanceof Map
+      ? config.runtime.fileObservations
+      : new Map();
+  const hashFileOrNull = async (target) => {
+    try {
+      return createHash("sha256").update(await fs.readFile(target)).digest("hex");
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    }
+  };
+  const observeFile = async (target) => {
+    fileObservations.set(target, await hashFileOrNull(target));
+  };
+  const createFileConflict = (relativePath) => {
+    const error = new Error(
+      `File changed since this session observed it: ${relativePath}. Reread the file and retry.`,
+    );
+    error.code = "FILE_CONFLICT";
+    error.path = relativePath;
+    return error;
+  };
+  const assertObservedVersion = async (target, relativePath) => {
+    if (!fileObservations.has(target)) return;
+    const expected = fileObservations.get(target);
+    const current = await hashFileOrNull(target);
+    if (current === expected) return;
+    emitSystemTool({
+      type: "file:conflict",
+      sessionId: String(sessionId || ""),
+      path: relativePath,
+    });
+    throw createFileConflict(relativePath);
+  };
+  const commitManagedMutation = async ({
+    targets,
+    operation,
+    prepare,
+    mutate,
+  }) => {
+    if (operation !== "create") {
+      for (const item of targets) {
+        if (!fileObservations.has(item.target)) {
+          await observeFile(item.target);
+        }
+      }
+    }
+    for (const item of targets) {
+      await assertObservedVersion(item.target, item.path);
+    }
+    const prepared = await prepare?.();
+    await afterManagedFileBackup?.({
+      operation,
+      path: targets[0]?.path || "",
+    });
+    for (const item of targets) {
+      await assertObservedVersion(item.target, item.path);
+    }
+    const result = await mutate(prepared);
+    for (const item of targets) await observeFile(item.target);
+    return result;
+  };
   const emitSystemTool = (event) => {
     if (typeof onSystemEvent === "function" && event) onSystemEvent(event);
   };
@@ -5439,6 +5519,10 @@ export function getBuiltinTools({
         config,
       );
       const readPath = normalizePath(result?.path || args?.path || "").trim();
+      if (readPath && result?.phase !== "directory_listing") {
+        const readTarget = await resolveInWorkspace(workspaceRoot, readPath, config);
+        await observeFile(readTarget);
+      }
       if (readPath) {
         lastReadPath = readPath;
         lastReadRange =
@@ -5484,10 +5568,18 @@ export function getBuiltinTools({
         args?.path || args?.file || args?.file_path || "",
         { stripInlineRange: true },
       ).trim();
-      const backup = await backupNonGitPathOnce(commentPath);
-      const result = await addCodeComment(workspaceRoot, args, config);
+      const commentTarget = await resolveInWorkspace(workspaceRoot, commentPath, config);
+      const result = await commitManagedMutation({
+        targets: [{ target: commentTarget, path: commentPath }],
+        operation: "add_code_comment",
+        prepare: () => backupNonGitPathOnce(commentPath),
+        mutate: async (backup) => attachBackup(
+          await addCodeComment(workspaceRoot, args, config),
+          backup,
+        ),
+      });
       if (result?.path) await refreshProjectFile(result.path);
-      return attachBackup(result, backup);
+      return result;
     },
     update_code_comment: async (args) => {
       await ensureProjectIndex();
@@ -5495,10 +5587,18 @@ export function getBuiltinTools({
         args?.path || args?.file || args?.file_path || "",
         { stripInlineRange: true },
       ).trim();
-      const backup = await backupNonGitPathOnce(commentPath);
-      const result = await updateCodeComment(workspaceRoot, args, config);
+      const commentTarget = await resolveInWorkspace(workspaceRoot, commentPath, config);
+      const result = await commitManagedMutation({
+        targets: [{ target: commentTarget, path: commentPath }],
+        operation: "update_code_comment",
+        prepare: () => backupNonGitPathOnce(commentPath),
+        mutate: async (backup) => attachBackup(
+          await updateCodeComment(workspaceRoot, args, config),
+          backup,
+        ),
+      });
       if (result?.path) await refreshProjectFile(result.path);
-      return attachBackup(result, backup);
+      return result;
     },
     edit: async (args) => {
       await ensureProjectIndex();
@@ -5532,21 +5632,30 @@ export function getBuiltinTools({
             auto_range_from_recent_read: true,
           }
         : {};
-      const backup = await backupNonGitPathOnce(editPath || astTarget?.path);
-      const result = await editTarget(
-        workspaceRoot,
-        astTarget
-          ? {
-              ...args,
-              ...rangeArgs,
-              ast_target: astTarget,
-              recent_file: lastReadPath,
-            }
-          : { ...args, ...rangeArgs, recent_file: lastReadPath },
-        config,
-      );
+      const observedPath = editPath || astTarget?.path || lastReadPath;
+      const editTargetPath = await resolveInWorkspace(workspaceRoot, observedPath, config);
+      const result = await commitManagedMutation({
+        targets: [{ target: editTargetPath, path: observedPath }],
+        operation: "edit",
+        prepare: () => backupNonGitPathOnce(observedPath),
+        mutate: async (backup) => attachBackup(
+          await editTarget(
+            workspaceRoot,
+            astTarget
+              ? {
+                  ...args,
+                  ...rangeArgs,
+                  ast_target: astTarget,
+                  recent_file: lastReadPath,
+                }
+              : { ...args, ...rangeArgs, recent_file: lastReadPath },
+            config,
+          ),
+          backup,
+        ),
+      });
       if (result?.path) await refreshProjectFile(result.path);
-      return attachBackup(result, backup);
+      return result;
     },
     create: async (args) => {
       await ensureProjectIndex();
@@ -5554,10 +5663,18 @@ export function getBuiltinTools({
         args?.path || "",
         { stripInlineRange: true },
       ).trim();
-      const backup = await backupNonGitPathOnce(createPath);
-      const result = await writeFile(workspaceRoot, args, config);
+      const createTarget = await resolveInWorkspace(workspaceRoot, createPath, config);
+      const result = await commitManagedMutation({
+        targets: [{ target: createTarget, path: createPath }],
+        operation: "create",
+        prepare: () => backupNonGitPathOnce(createPath),
+        mutate: async (backup) => attachBackup(
+          await writeFile(workspaceRoot, args, config),
+          backup,
+        ),
+      });
       if (result?.path) await refreshProjectFile(result.path);
-      return attachBackup(result, backup);
+      return result;
     },
     write: async (args) => {
       await ensureProjectIndex();
@@ -5565,10 +5682,18 @@ export function getBuiltinTools({
         args?.path || "",
         { stripInlineRange: true },
       ).trim();
-      const backup = await backupNonGitPathOnce(writePath);
-      const result = await writeAnyFile(workspaceRoot, args, config);
+      const writeTarget = await resolveInWorkspace(workspaceRoot, writePath, config);
+      const result = await commitManagedMutation({
+        targets: [{ target: writeTarget, path: writePath }],
+        operation: "write",
+        prepare: () => backupNonGitPathOnce(writePath),
+        mutate: async (backup) => attachBackup(
+          await writeAnyFile(workspaceRoot, args, config),
+          backup,
+        ),
+      });
       if (result?.path) await refreshProjectFile(result.path);
-      return attachBackup(result, backup);
+      return result;
     },
     apply_patch: async (args) => {
       await ensureProjectIndex();
@@ -5576,6 +5701,20 @@ export function getBuiltinTools({
         args?.patch_text ?? "",
       );
       const parsedHunks = parsePatchText(patchText);
+      const observedTargets = [];
+      for (const hunk of parsedHunks) {
+        const target = await resolveInWorkspace(workspaceRoot, hunk.path, config);
+        observedTargets.push({ target, path: hunk.path });
+        if (hunk.movePath) {
+          observedTargets.push({
+            target: await resolveInWorkspace(workspaceRoot, hunk.movePath, config),
+            path: hunk.movePath,
+          });
+        }
+      }
+      for (const target of observedTargets) {
+        await assertObservedVersion(target.target, target.path);
+      }
       const backupPaths = [];
       const seenBackupPaths = new Set();
       for (const hunk of parsedHunks) {
@@ -5592,7 +5731,17 @@ export function getBuiltinTools({
       for (const pathValue of backupPaths) {
         backups.push(await backupNonGitPathOnce(pathValue));
       }
-      const result = await applyPatchText(workspaceRoot, args, config);
+      const result = await applyPatchText(workspaceRoot, args, config, {
+        beforeMutation: async () => {
+          await beforeApplyPatchMutation?.();
+          for (const target of observedTargets) {
+            await assertObservedVersion(target.target, target.path);
+          }
+        },
+      });
+      for (const target of observedTargets) {
+        await observeFile(target.target);
+      }
       for (const changedPath of result?.files || []) {
         await refreshProjectFile(changedPath);
       }
@@ -5605,10 +5754,18 @@ export function getBuiltinTools({
           args?.path || args?.file || args?.file_path || args?.target || "",
           { stripInlineRange: true },
         ).trim();
-        const backup = await backupNonGitPathOnce(deletePathValue);
-        const result = await deletePath(workspaceRoot, args, config);
+        const deleteTarget = await resolveInWorkspace(workspaceRoot, deletePathValue, config);
+        const result = await commitManagedMutation({
+          targets: [{ target: deleteTarget, path: deletePathValue }],
+          operation: "delete",
+          prepare: () => backupNonGitPathOnce(deletePathValue),
+          mutate: async (backup) => attachBackup(
+            await deletePath(workspaceRoot, args, config),
+            backup,
+          ),
+        });
         if (result?.path) await refreshProjectFile(result.path);
-        return attachBackup(result, backup);
+        return result;
       },
       {
         prepareApproval: async (args) => {

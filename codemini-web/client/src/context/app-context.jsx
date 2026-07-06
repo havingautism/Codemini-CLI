@@ -13,8 +13,31 @@ import * as api from "../hooks/use-api.js";
 import { extractReasoningRuntimePatch } from "../lib/reasoning-controls.js";
 import { parseAttachmentsFromModelContent } from "../lib/message-attachments.js";
 import { CHAT_ACTION_NAMES, LOCAL_SPEC_REVIEW_ACTIONS } from "../lib/chat-action-names.js";
-import { waitForAcceptedOperation } from "../lib/chat-operation-waiter.js";
-import { finishInitialization } from "../lib/async-lifecycle.js";
+import {
+  operationKey,
+  waitForAcceptedOperation,
+} from "../lib/chat-operation-waiter.js";
+import {
+  finishInitialization,
+  hydrateBeforeConnect,
+} from "../lib/async-lifecycle.js";
+import {
+  activateSession,
+  alignSessionAssistantMessages,
+  alignSessionUserMessages,
+  hydrateSessionRuntimes,
+  projectVisibleSessionState,
+  reconcileSessionMessages,
+  reduceSessionEvent,
+  reduceSessionRuntimeEvent,
+  runSessionOperation,
+} from "../lib/session-state.js";
+import {
+  ACTIVE_SESSION_STATUSES,
+  activeSessionIds,
+  abortSessionIds,
+  projectSessionRuntime,
+} from "../lib/session-ui-state.js";
 
 const AppContext = createContext(null);
 
@@ -131,12 +154,14 @@ function parseRoute() {
   const chatMatch = path.match(/^\/chat\/([^/]+)$/);
   if (chatMatch)
     return { view: "chat", sessionId: decodeURIComponent(chatMatch[1]) };
+  if (path === "/sessions") return { view: "sessions" };
   if (path === "/codewiki")
     return { view: "codewiki", projectPath: params.get("project") || "" };
   return { view: "chat" };
 }
 
 function routeFor(view, sessionId, options = {}) {
+  if (view === "sessions") return "/sessions";
   if (view === "codewiki") {
     const projectPath = String(options.projectPath || "").trim();
     return projectPath
@@ -164,7 +189,8 @@ function updateRoute(
 
 function projectNameFromRuntimeState(rs = {}) {
   if (rs.isGeneral) return "__codemini_general__";
-  return rs.cwd?.split(/[/\\]/).pop() || rs.cwd || "...";
+  const dir = rs.cwd || rs.projectDir || "";
+  return dir.split(/[/\\]/).pop() || dir || "...";
 }
 
 const initialState = {
@@ -172,6 +198,9 @@ const initialState = {
   busy: false,
   currentView: "chat",
   runtimeState: null,
+  currentSessionId: null,
+  sessionRuntimeById: {},
+  sessionMessagesById: {},
   live: false,
   stageLabel: "",
   messages: [],
@@ -1387,13 +1416,33 @@ function applyCodeWikiProgressToSteps(steps, event) {
 }
 
 export function AppProvider({ children }) {
-  const [state, setState] = useState(initialState);
+  const [state, rawSetState] = useState(initialState);
+  const setState = useCallback((updater) => {
+    rawSetState((previous) => {
+      const next =
+        typeof updater === "function" ? updater(previous) : updater;
+      if (
+        next &&
+        next.currentSessionId === previous.currentSessionId &&
+        next.currentSessionId &&
+        next.messages !== previous.messages
+      ) {
+        return {
+          ...next,
+          sessionMessagesById: {
+            ...next.sessionMessagesById,
+            [next.currentSessionId]: next.messages,
+          },
+        };
+      }
+      return next;
+    });
+  }, []);
   const stateRef = useRef(state);
   stateRef.current = state;
 
   const activeMsgRef = useRef(null);
   const pendingChangesRef = useRef([]);
-  const skipSwitchedReloadRef = useRef(false);
   const sessionsLoadPromiseRef = useRef(null);
   const pendingSkillBadgesRef = useRef([]);
   const pendingSkillSegmentsRef = useRef([]);
@@ -1406,6 +1455,17 @@ export function AppProvider({ children }) {
   const reconnectRef = useRef(null);
   const operationWaitersRef = useRef(new Map());
   const earlyOperationResultsRef = useRef(new Map());
+  const sessionOperationsRef = useRef(new Set());
+
+  const activateSessionView = useCallback((sessionId) => {
+    activeMsgRef.current = null;
+    pendingChangesRef.current = [];
+    pendingSkillBadgesRef.current = [];
+    pendingSkillSegmentsRef.current = [];
+    planStepMessagesRef.current = new Map();
+    planOverviewMsgRef.current = null;
+    setState((prev) => activateSession(prev, sessionId));
+  }, [setState]);
 
   const update = useCallback((updates) => {
     setState((prev) => ({ ...prev, ...updates }));
@@ -1500,10 +1560,10 @@ export function AppProvider({ children }) {
     [update],
   );
 
-  const loadState = useCallback(async ({ isAlive = () => true } = {}) => {
+  const loadState = useCallback(async (sessionId, { isAlive = () => true } = {}) => {
     try {
       const [rs, cfg] = await Promise.all([
-        api.fetchState(),
+        api.fetchState(sessionId || stateRef.current.currentSessionId),
         api.fetchConfig().catch(() => null),
       ]);
       if (!isAlive()) return null;
@@ -1513,6 +1573,15 @@ export function AppProvider({ children }) {
       setState((prev) => ({
         ...prev,
         runtimeState: { ...prev.runtimeState, ...rs, ...reasoningPatch },
+        currentSessionId: rs.sessionId || sessionId || prev.currentSessionId,
+        sessionRuntimeById: {
+          ...prev.sessionRuntimeById,
+          [rs.sessionId || sessionId]: {
+            ...prev.sessionRuntimeById[rs.sessionId || sessionId],
+            ...rs,
+            ...reasoningPatch,
+          },
+        },
         projectCwd: projectNameFromRuntimeState(rs),
         isGeneral: !!rs.isGeneral,
         pendingSpecApproval: rs?.pendingSpecApproval || null,
@@ -1536,6 +1605,17 @@ export function AppProvider({ children }) {
       return null;
     }
   }, [update]);
+
+  const loadRuntimeSessions = useCallback(async ({ isAlive = () => true } = {}) => {
+    try {
+      const result = await api.fetchRuntimeSessions();
+      if (!isAlive()) return null;
+      setState((prev) => hydrateSessionRuntimes(prev, result?.sessions));
+      return result?.sessions || {};
+    } catch {
+      return null;
+    }
+  }, []);
 
   const loadConfigStatus = useCallback(
     async ({ openIfRequired = false, isAlive = () => true } = {}) => {
@@ -1578,9 +1658,11 @@ export function AppProvider({ children }) {
     [update],
   );
 
-  const loadHistory = useCallback(async ({ isAlive = () => true } = {}) => {
+  const loadHistory = useCallback(async ({ isAlive = () => true, sessionId } = {}) => {
     try {
-      const history = await api.fetchHistory();
+      const history = await api.fetchHistory(
+        sessionId || stateRef.current.currentSessionId,
+      );
       if (isAlive()) update({ history: Array.isArray(history) ? history : [] });
     } catch {}
   }, [update]);
@@ -1614,7 +1696,7 @@ export function AppProvider({ children }) {
   const openCodeWikiProjectFromRoute = useCallback(async (projectPath) => {
     if (!projectPath) return null;
     try {
-      const currentState = await api.fetchState();
+      const currentState = await api.fetchState(stateRef.current.currentSessionId);
       if (currentState?.cwd === projectPath) return currentState;
       const result = await api.openProject(projectPath);
       if (result?.error) return null;
@@ -1631,11 +1713,70 @@ export function AppProvider({ children }) {
     } catch {}
   }, [update]);
 
+  // Restore the active-message ref to the last incomplete assistant/plan
+  // message so that SSE deltas arriving after a session switch continue
+  // the existing bubble instead of creating a new one.
+  //
+  // When the session is still active (busy status) we also fall back to
+  // the last assistant message even when it looks "complete" — agentic
+  // loops pause between model calls (isComplete=true, no streaming, no
+  // running tools) and the next assistant:start must land on the same
+  // bubble.
+  function restoreActiveMsgRef(messages, sessionActive = false) {
+    const list = Array.isArray(messages) ? messages : [];
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      if (
+        m.role === "you" ||
+        m.role === "divider" ||
+        m.role === "system" ||
+        m.transientKey
+      )
+        continue;
+      if (m.isComplete === false) {
+        activeMsgRef.current = m.id;
+        return;
+      }
+      if (
+        (m.segments || []).some(
+          (seg) =>
+            seg.isStreaming ||
+            (seg.type === "tools" &&
+              (seg.cards || []).some((c) => c.status === "running")),
+        )
+      ) {
+        activeMsgRef.current = m.id;
+        return;
+      }
+      if (
+        m.planStep &&
+        !["done", "failed"].includes(String(m.planStep.status || ""))
+      ) {
+        activeMsgRef.current = m.id;
+        return;
+      }
+      // Fallback for active sessions: use the last assistant message
+      // even if it appears complete (between model calls).
+      if (sessionActive && !activeMsgRef.current) {
+        activeMsgRef.current = m.id;
+        return;
+      }
+    }
+  }
+
   const loadSessionMessages = useCallback(
-    async (sessionData = null, { isAlive = () => true } = {}) => {
+    async (
+      sessionData = null,
+      {
+        isAlive = () => true,
+        sessionId,
+        reconcileCached = false,
+      } = {},
+    ) => {
+      const ownerSessionId = sessionId || stateRef.current.currentSessionId;
       if (isAlive()) update({ messagesLoading: true });
       try {
-        const data = sessionData || (await api.fetchSessionMessages());
+        const data = sessionData || (await api.fetchSessionMessages(ownerSessionId));
         if (!isAlive()) return;
         const messages = Array.isArray(data) ? data : data.messages || [];
         const compactMeta = data?.compact || null;
@@ -1644,18 +1785,57 @@ export function AppProvider({ children }) {
 
         const uiData = sessionData
           ? sessionData.uiMessages || { messages: [] }
-          : await api.fetchSessionUiMessages().catch(() => []);
+          : await api.fetchSessionUiMessages(ownerSessionId).catch(() => []);
         if (!isAlive()) return;
         const uiMessages = Array.isArray(uiData)
           ? uiData
           : Array.isArray(uiData?.messages)
             ? uiData.messages
             : [];
+        const commitMessages = (loadedMessages, runtimeActivities) => {
+          const cachedMessages =
+            stateRef.current.sessionMessagesById?.[ownerSessionId] || [];
+          const previewMessages = reconcileCached
+            ? reconcileSessionMessages(loadedMessages, cachedMessages)
+            : loadedMessages;
+          setState((prev) => {
+            const latestCachedMessages =
+              prev.sessionMessagesById?.[ownerSessionId] || [];
+            const nextMessages = reconcileCached
+              ? reconcileSessionMessages(
+                  loadedMessages,
+                  latestCachedMessages,
+                )
+              : loadedMessages;
+            const isVisible = prev.currentSessionId === ownerSessionId;
+            return {
+              ...prev,
+              ...(isVisible
+                ? {
+                    messages: nextMessages,
+                    runtimeActivities,
+                  }
+                : {}),
+              sessionMessagesById: {
+                ...prev.sessionMessagesById,
+                [ownerSessionId]: nextMessages,
+              },
+            };
+          });
+          if (stateRef.current.currentSessionId === ownerSessionId) {
+            restoreActiveMsgRef(
+              previewMessages,
+              ACTIVE_SESSION_STATUSES.has(
+                stateRef.current.sessionRuntimeById?.[ownerSessionId]?.status,
+              ),
+            );
+          }
+        };
         if (!messages.length) {
           if (Array.isArray(uiMessages) && uiMessages.length) {
             const changeSets = sessionData
               ? []
-              : (await api.fetchSessionChanges().catch(() => ({})))?.changes ||
+              : (await api.fetchSessionChanges(ownerSessionId).catch(() => ({})))?.changes ||
                 [];
             if (!isAlive()) return;
             const restored = sanitizeManualAbortMessages(
@@ -1670,12 +1850,12 @@ export function AppProvider({ children }) {
                 .filter((m) => m.planStep?.step != null)
                 .map((m) => [String(m.planStep.step), m.id]),
             );
-            update({
-              messages: enrichMessageChangeStates(restored, changeSets),
-              runtimeActivities: restoredActivities,
-            });
+            commitMessages(
+              enrichMessageChangeStates(restored, changeSets),
+              restoredActivities,
+            );
           } else {
-            update({ messages: [], runtimeActivities: [] });
+            commitMessages([], []);
           }
           return;
         }
@@ -1929,7 +2109,7 @@ export function AppProvider({ children }) {
         }
         const changeSets = sessionData
           ? []
-          : (await api.fetchSessionChanges().catch(() => ({})))?.changes || [];
+          : (await api.fetchSessionChanges(ownerSessionId).catch(() => ({})))?.changes || [];
         if (!isAlive()) return;
 
         const uiPlanOverview = uiMessages.find(
@@ -1965,8 +2145,14 @@ export function AppProvider({ children }) {
         const restored = sanitizeManualAbortMessages(
           settleCompletedPlanToolCards(
             mergeAssistantSkillContextFromUiMessages(
-              mergeUserContextFromUiMessages(
-                mergeStructuredUiPlans(processed, uiMessages),
+              alignSessionAssistantMessages(
+                mergeUserContextFromUiMessages(
+                  alignSessionUserMessages(
+                    mergeStructuredUiPlans(processed, uiMessages),
+                    uiMessages,
+                  ),
+                  uiMessages,
+                ),
                 uiMessages,
               ),
               uiMessages,
@@ -1983,10 +2169,8 @@ export function AppProvider({ children }) {
             .map((m) => [String(m.planStep.step), m.id]),
         );
 
-        update({
-          messages: enrichMessageChangeStates(restored, changeSets),
-          runtimeActivities: restoredActivities,
-        });
+        const enrichedMessages = enrichMessageChangeStates(restored, changeSets);
+        commitMessages(enrichedMessages, restoredActivities);
       } catch {
       } finally {
         if (isAlive()) update({ messagesLoading: false });
@@ -2000,6 +2184,31 @@ export function AppProvider({ children }) {
       if (!event?.type) return;
       if (isProjectIndexEvent(event)) return;
       const s = stateRef.current;
+      if (event.type === "submit:done" && event.operationId) {
+        const result = event.result || {};
+        const key = operationKey(event.sessionId, event.operationId);
+        const waiter = operationWaitersRef.current.get(key);
+        if (waiter) {
+          operationWaitersRef.current.delete(key);
+          if (result.type === "error") {
+            waiter.reject(new Error(result.text || t("actionFailed")));
+          } else {
+            waiter.resolve(result);
+          }
+        } else {
+          earlyOperationResultsRef.current.set(key, result);
+          setTimeout(() => {
+            earlyOperationResultsRef.current.delete(key);
+          }, 30000);
+        }
+      }
+      if (event.sessionId) {
+        if (event.sessionId !== s.currentSessionId) {
+          setState((prev) => reduceSessionEvent(prev, event));
+          return;
+        }
+        setState((prev) => reduceSessionRuntimeEvent(prev, event));
+      }
       const activeId = activeMsgRef.current;
 
       switch (event.type) {
@@ -2007,7 +2216,11 @@ export function AppProvider({ children }) {
           break;
 
         case "assistant:start": {
-          if (s.currentView !== "chat" && s.currentView !== "codewiki")
+          if (
+            s.currentView !== "chat" &&
+            s.currentView !== "codewiki" &&
+            s.currentView !== "sessions"
+          )
             update({ currentView: "chat" });
           setState((prev) => ({
             ...prev,
@@ -2032,6 +2245,7 @@ export function AppProvider({ children }) {
             const pendingSkillSegments = pendingSkillSegmentsRef.current;
             pendingSkillSegmentsRef.current = [];
             msgId = addMessage({
+              id: event.messageId,
               role: "general",
               timestamp: new Date().toISOString(),
               text: "",
@@ -2763,18 +2977,6 @@ export function AppProvider({ children }) {
           });
           break;
 
-        case "approval:request":
-          update({ approvalRequest: event });
-          break;
-
-        case "user-input:request":
-          update({ userInputRequest: event.request || null });
-          break;
-
-        case "user-input:resolved":
-          update({ userInputRequest: null });
-          break;
-
         case "change:undone": {
           const result = event.result || {};
           const ids =
@@ -2794,22 +2996,6 @@ export function AppProvider({ children }) {
 
         case "submit:done": {
           const result = event.result || {};
-          if (event.operationId) {
-            const waiter = operationWaitersRef.current.get(event.operationId);
-            if (waiter) {
-              operationWaitersRef.current.delete(event.operationId);
-              if (result.type === "error") {
-                waiter.reject(new Error(result.text || t("actionFailed")));
-              } else {
-                waiter.resolve(result);
-              }
-            } else {
-              earlyOperationResultsRef.current.set(event.operationId, result);
-              setTimeout(() => {
-                earlyOperationResultsRef.current.delete(event.operationId);
-              }, 30000);
-            }
-          }
           if (activeId && pendingChangesRef.current.length) {
             setState((prev) => ({
               ...prev,
@@ -3086,32 +3272,6 @@ export function AppProvider({ children }) {
           break;
         }
 
-        case "runtime:switched": {
-          if (skipSwitchedReloadRef.current) {
-            skipSwitchedReloadRef.current = false;
-            break;
-          }
-          setState((prev) => ({
-            ...prev,
-            messages: [],
-            planSteps: [],
-            pendingSpecApproval: null,
-            pendingReflectApproval: null,
-            runtimeActivities: [],
-            codewikiGeneration: { status: "idle", updatedAt: null, error: "" },
-          }));
-          activeMsgRef.current = null;
-          pendingChangesRef.current = [];
-          loadState();
-          loadGitInfo();
-          loadHistory();
-          loadSessionMessages();
-          loadSessions();
-          if (stateRef.current.currentView !== "codewiki")
-            updateRoute("chat", event.sessionId);
-          break;
-        }
-
         case "session:title": {
           if (event.sessionId && event.title) {
             setState((prev) => {
@@ -3173,10 +3333,15 @@ export function AppProvider({ children }) {
     es.onerror = () => {
       es.close();
       clearTimeout(reconnectRef.current);
-      reconnectRef.current = setTimeout(connectSSE, 3000);
+      reconnectRef.current = setTimeout(() => {
+        hydrateBeforeConnect({
+          hydrate: loadRuntimeSessions,
+          connect: connectSSE,
+        }).catch(() => {});
+      }, 3000);
     };
     sseRef.current = es;
-  }, [handleEvent]);
+  }, [handleEvent, loadRuntimeSessions]);
 
   useEffect(() => {
     let alive = true;
@@ -3187,7 +3352,6 @@ export function AppProvider({ children }) {
         openIfRequired: true,
         isAlive,
       });
-      const startupEventsPromise = api.fetchStartupEvents().catch(() => []);
       if (!alive) return;
       update({
         currentView: route.view,
@@ -3196,16 +3360,7 @@ export function AppProvider({ children }) {
             ? route.projectPath || ""
             : stateRef.current.codewikiProjectPath,
       });
-      if (route.sessionId) {
-        try {
-          const currentState = await api.fetchState();
-          if (!alive) return;
-          if (currentState.sessionId !== route.sessionId) {
-            await api.switchSession(route.sessionId);
-            if (!alive) return;
-          }
-        } catch {}
-      } else if (route.view === "codewiki" && route.projectPath) {
+      if (route.view === "codewiki" && route.projectPath) {
         await openCodeWikiProjectFromRoute(route.projectPath);
         if (!alive) return;
       }
@@ -3213,8 +3368,33 @@ export function AppProvider({ children }) {
       await configStatusPromise;
       if (!alive) return;
 
+      const runtimeSessions = await loadRuntimeSessions({ isAlive });
+      if (!alive) return;
+      let preferredSessionId = route.sessionId || stateRef.current.currentSessionId;
+      if (!preferredSessionId) {
+        preferredSessionId = Object.keys(runtimeSessions || {})[0] || null;
+      }
+      let rs = preferredSessionId
+        ? await loadState(preferredSessionId, { isAlive })
+        : null;
+      if (!alive) return;
+      if (!rs) {
+        const sessions = await api.fetchSessions(200).catch(() => []);
+        if (!alive) return;
+        preferredSessionId =
+          Object.keys(runtimeSessions || {}).find((id) => id !== preferredSessionId) ||
+          sessions?.[0]?.id ||
+          null;
+        update({ sessions, currentSessionId: preferredSessionId });
+        rs = preferredSessionId
+          ? await loadState(preferredSessionId, { isAlive })
+          : null;
+      }
+      if (!alive) return;
       try {
-        const startupEvents = await startupEventsPromise;
+        const startupEvents = rs?.sessionId
+          ? await api.fetchStartupEvents(rs.sessionId)
+          : [];
         if (!alive) return;
         for (const ev of startupEvents) {
           if (!ev || isProjectIndexEvent(ev)) continue;
@@ -3231,9 +3411,6 @@ export function AppProvider({ children }) {
           }
         }
       } catch {}
-
-      const rs = await loadState({ isAlive });
-      if (!alive) return;
       if (route.view === "chat" && rs?.sessionId) {
         updateRoute("chat", rs.sessionId, { replace: true });
       } else if (route.view === "codewiki") {
@@ -3244,8 +3421,8 @@ export function AppProvider({ children }) {
       }
       await finishInitialization({
         tasks: [
-        loadSessionMessages(null, { isAlive }),
-        loadHistory({ isAlive }),
+        loadSessionMessages(null, { isAlive, sessionId: rs?.sessionId }),
+        loadHistory({ isAlive, sessionId: rs?.sessionId }),
         loadSessions({ isAlive }),
         loadSkills({ isAlive }),
         loadGitInfo({ isAlive }),
@@ -3273,13 +3450,11 @@ export function AppProvider({ children }) {
       });
       if (route.sessionId) {
         try {
-          const currentState = await api.fetchState();
-          if (currentState.sessionId !== route.sessionId) {
+          if (stateRef.current.currentSessionId !== route.sessionId) {
             update({ messagesLoading: true });
-            setState((prev) => ({ ...prev, messages: [] }));
-            await api.switchSession(route.sessionId);
-            await loadState();
-            await loadSessionMessages();
+            activateSessionView(route.sessionId);
+            await loadState(route.sessionId);
+            await loadSessionMessages(null, { sessionId: route.sessionId });
             loadSessions();
             loadGitInfo();
           }
@@ -3312,6 +3487,7 @@ export function AppProvider({ children }) {
       window.removeEventListener("popstate", handlePopState);
     };
   }, [
+    activateSessionView,
     addMessage,
     connectSSE,
     loadConfigStatus,
@@ -3319,6 +3495,7 @@ export function AppProvider({ children }) {
     loadHistory,
     loadSessionMessages,
     loadSessions,
+    loadRuntimeSessions,
     loadSkills,
     loadState,
     openCodeWikiProjectFromRoute,
@@ -3337,6 +3514,8 @@ export function AppProvider({ children }) {
   const actions = useMemo(
     () => ({
       submit: async (input, options = {}) => {
+        const sessionId = stateRef.current.currentSessionId;
+        return runSessionOperation(sessionOperationsRef.current, sessionId, async () => {
         const message = typeof input === "string"
           ? { text: input, skillNames: [], attachmentIds: [], dismissedAlwaysSkills: [] }
           : input || {};
@@ -3351,7 +3530,7 @@ export function AppProvider({ children }) {
         ].map((name) => ({ name, status: "selected" }));
         if (stateRef.current.currentView !== "chat" && !options.stayInView)
           update({ currentView: "chat" });
-        addMessage({
+        const userMessageId = addMessage({
           role: "you",
           text: line,
           skillBadges: selectedSkillBadges,
@@ -3375,8 +3554,9 @@ export function AppProvider({ children }) {
           stageLabel: t("waitingResponse"),
         });
         try {
-          const res = await api.submitMessage({
+          const res = await api.submitMessage(sessionId, {
             text: line,
+            messageId: userMessageId,
             skillNames: Array.isArray(message.skillNames) ? message.skillNames : [],
             attachmentIds: Array.isArray(message.attachmentIds)
               ? message.attachmentIds
@@ -3397,6 +3577,7 @@ export function AppProvider({ children }) {
           if (result?.error)
             throw new Error(result.message || "Request failed");
           await waitForAcceptedOperation(result, {
+            sessionId,
             waiters: operationWaitersRef.current,
             earlyResults: earlyOperationResultsRef.current,
             fallbackError: t("actionFailed"),
@@ -3418,9 +3599,12 @@ export function AppProvider({ children }) {
           update({ busy: false, live: false });
           throw err;
         }
+        });
       },
 
       runChatAction: async (actionName, payload = {}) => {
+        const sessionId = stateRef.current.currentSessionId;
+        return runSessionOperation(sessionOperationsRef.current, sessionId, async () => {
         update({
           busy: true,
           live: true,
@@ -3428,10 +3612,11 @@ export function AppProvider({ children }) {
           stageLabel: t("waitingResponse"),
         });
         try {
-          const response = await api.submitChatAction(actionName, payload);
+          const response = await api.submitChatAction(sessionId, actionName, payload);
           if (response?.error) throw new Error(response.message || t("actionFailed"));
           const accepted = response?.result;
           return await waitForAcceptedOperation(accepted, {
+            sessionId,
             waiters: operationWaitersRef.current,
             earlyResults: earlyOperationResultsRef.current,
             fallbackError: t("actionFailed"),
@@ -3445,11 +3630,12 @@ export function AppProvider({ children }) {
           update({ busy: false, live: false, stage: "idle", stageLabel: "" });
           throw err;
         }
+        });
       },
 
       abort: async () => {
         try {
-          await api.abortRequest();
+          await api.abortRequest(stateRef.current.currentSessionId);
         } catch {}
         planRunPendingRef.current = false;
         update({
@@ -3519,14 +3705,65 @@ export function AppProvider({ children }) {
         });
       },
 
-      approve: async (id, actionName) => {
+      abortSession: async (sessionId) => {
+        if (!sessionId) return;
+        await abortSessionIds([sessionId], api.abortRequest);
+        setState((prev) => ({
+          ...prev,
+          sessionRuntimeById: {
+            ...prev.sessionRuntimeById,
+            [sessionId]: {
+              ...prev.sessionRuntimeById[sessionId],
+              sessionId,
+              status: "interrupted",
+              busy: false,
+              needsAttention: false,
+            },
+          },
+        }));
+      },
+
+      abortAllSessions: async () => {
+        const sessionIds = activeSessionIds(
+          stateRef.current.sessionRuntimeById,
+        );
+        const result = await abortSessionIds(
+          sessionIds,
+          api.abortRequest,
+          { allowPartial: true },
+        );
+        setState((prev) => {
+          const sessionRuntimeById = { ...prev.sessionRuntimeById };
+          for (const sessionId of result.succeeded) {
+            sessionRuntimeById[sessionId] = {
+              ...sessionRuntimeById[sessionId],
+              sessionId,
+              status: "interrupted",
+              busy: false,
+              needsAttention: false,
+            };
+          }
+          return { ...prev, sessionRuntimeById };
+        });
+        if (result.failed.length) {
+          throw new AggregateError(
+            result.failed.map((failure) => failure.reason),
+            t("abortSessionsFailed").replace(
+              "{{count}}",
+              String(result.failed.length),
+            ),
+          );
+        }
+      },
+
+      approve: async (id, actionName, ownerSessionId) => {
         try {
           const result = await api.submitChatAction(
+            ownerSessionId,
             actionName,
             { requestId: id },
           );
           if (result?.error) throw new Error(result.message || "Request failed");
-          update({ approvalRequest: null });
         } catch (err) {
           addMessage({
             role: "error",
@@ -3536,10 +3773,13 @@ export function AppProvider({ children }) {
         }
       },
 
-      respondToUserInput: async (id, response) => {
-        update({ userInputRequest: null });
+      respondToUserInput: async (id, response, ownerSessionId) => {
         try {
-          const result = await api.submitUserInput(id, response);
+          const result = await api.submitUserInput(
+            ownerSessionId,
+            id,
+            response,
+          );
           if (!result?.ok) await loadState();
         } catch {
           await loadState();
@@ -3581,7 +3821,7 @@ export function AppProvider({ children }) {
             update({ busy: false, live: false, stage: "idle", stageLabel: "" });
             return;
           }
-          const result = await api.submitChatAction(actionName, {
+          const result = await api.submitChatAction(stateRef.current.currentSessionId, actionName, {
             ...(feedback?.trim() ? { feedback: feedback.trim() } : {}),
           });
           if (result?.error)
@@ -3598,7 +3838,10 @@ export function AppProvider({ children }) {
 
       updatePendingReflect: async (draft) => {
         try {
-          const result = await api.updatePendingReflect(draft);
+          const result = await api.updatePendingReflect(
+            stateRef.current.currentSessionId,
+            draft,
+          );
           if (result?.error)
             throw new Error(result.message || "Failed to update reflect draft");
           if (result?.draft) update({ pendingReflectApproval: result.draft });
@@ -3636,14 +3879,19 @@ export function AppProvider({ children }) {
         });
         try {
           if (action === LOCAL_SPEC_REVIEW_ACTIONS.DELETE) {
-            const result = await api.deletePendingSpec();
+            const result = await api.deletePendingSpec(
+              stateRef.current.currentSessionId,
+            );
             if (result?.error)
               throw new Error(result.message || "Failed to delete spec");
             update({ busy: false, live: false, stage: "idle", stageLabel: "" });
             return;
           }
           if (action === CHAT_ACTION_NAMES.SPEC_PLAN_AND_EXECUTE) planRunPendingRef.current = true;
-          const result = await api.submitChatAction(action);
+          const result = await api.submitChatAction(
+            stateRef.current.currentSessionId,
+            action,
+          );
           if (result?.error)
             throw new Error(result.message || "Request failed");
         } catch (err) {
@@ -3659,7 +3907,10 @@ export function AppProvider({ children }) {
 
       updatePendingSpec: async (spec) => {
         try {
-          const result = await api.updatePendingSpec(spec);
+          const result = await api.updatePendingSpec(
+            stateRef.current.currentSessionId,
+            spec,
+          );
           if (result?.error)
             throw new Error(result.message || "Failed to update spec");
           if (result?.spec) update({ pendingSpecApproval: result.spec });
@@ -3677,7 +3928,10 @@ export function AppProvider({ children }) {
       openSpecReview: async (spec) => {
         if (!spec?.path) return null;
         try {
-          const result = await api.openSpecReview(spec.path);
+          const result = await api.openSpecReview(
+            stateRef.current.currentSessionId,
+            spec.path,
+          );
           if (result?.error)
             throw new Error(result.message || "Failed to open spec");
           if (result?.spec) update({ pendingSpecApproval: result.spec });
@@ -3695,24 +3949,37 @@ export function AppProvider({ children }) {
       dismissPlanProgress: () => update({ planSteps: [] }),
 
       switchSession: async (sessionId) => {
-        const currentSessionId = stateRef.current.runtimeState?.sessionId;
+        const currentSessionId = stateRef.current.currentSessionId;
         if (!sessionId || sessionId === currentSessionId) return;
         aggressivePruneSavedRef.current = 0;
         update({ currentView: "chat", messagesLoading: true });
-        setState((prev) => ({ ...prev, messages: [] }));
-        skipSwitchedReloadRef.current = true;
         try {
           const result = await api.switchSession(sessionId);
           if (result.ok) {
+            const cachedTargetMessages =
+              stateRef.current.sessionMessagesById?.[sessionId] || [];
             updateRoute("chat", sessionId);
+            activateSessionView(sessionId);
+            restoreActiveMsgRef(
+              cachedTargetMessages,
+              result.state?.busy === true ||
+                ACTIVE_SESSION_STATUSES.has(
+                  stateRef.current.sessionRuntimeById?.[sessionId]?.status,
+                ),
+            );
+
             if (result.state)
               update({
                 runtimeState: result.state,
                 projectCwd: projectNameFromRuntimeState(result.state),
                 isGeneral: !!result.state.isGeneral,
               });
-            else await loadState();
-            const msgPromise = loadSessionMessages(result.sessionData);
+            else await loadState(sessionId);
+
+            const msgPromise = loadSessionMessages(
+              result.sessionData,
+              { sessionId, reconcileCached: true },
+            );
             loadSessions();
             loadGitInfo();
             await msgPromise;
@@ -3720,7 +3987,6 @@ export function AppProvider({ children }) {
             update({ messagesLoading: false });
           }
         } catch {
-          skipSwitchedReloadRef.current = false;
           update({ messagesLoading: false });
         }
       },
@@ -3729,7 +3995,6 @@ export function AppProvider({ children }) {
         try {
           const deletingCurrent =
             sessionId === stateRef.current.runtimeState?.sessionId;
-          if (deletingCurrent) skipSwitchedReloadRef.current = true;
           const result = await api.deleteSession(sessionId);
           if (result?.error) return result;
           setState((prev) => ({
@@ -3737,27 +4002,39 @@ export function AppProvider({ children }) {
             sessions: prev.sessions.filter(
               (session) => session.id !== sessionId,
             ),
+            sessionRuntimeById: Object.fromEntries(
+              Object.entries(prev.sessionRuntimeById).filter(
+                ([id]) => id !== sessionId,
+              ),
+            ),
+            sessionMessagesById: Object.fromEntries(
+              Object.entries(prev.sessionMessagesById).filter(
+                ([id]) => id !== sessionId,
+              ),
+            ),
           }));
           if (deletingCurrent) {
             update({ currentView: "chat", messagesLoading: true });
-            if (result.sessionId)
-              updateRoute("chat", result.sessionId, { replace: true });
-            if (result.state)
-              update({
-                runtimeState: result.state,
-                projectCwd: projectNameFromRuntimeState(result.state),
-                isGeneral: !!result.state.isGeneral,
-              });
-            else await loadState();
-            setState((prev) => ({ ...prev, messages: [] }));
-            const msgPromise = loadSessionMessages(result.sessionData);
-            loadGitInfo();
-            await msgPromise;
+            const replacement = await api.newSession(
+              stateRef.current.runtimeState?.cwd ||
+                stateRef.current.runtimeState?.projectDir,
+            );
+            if (!replacement?.ok || !replacement.sessionId) {
+              throw new Error(
+                replacement?.message || "Failed to create replacement session",
+              );
+            }
+            updateRoute("chat", replacement.sessionId, { replace: true });
+            activateSessionView(replacement.sessionId);
+            await Promise.all([
+              loadState(replacement.sessionId),
+              loadSessionMessages(null, { sessionId: replacement.sessionId }),
+              loadGitInfo(),
+            ]);
           }
           loadSessions();
           return result;
         } catch (err) {
-          if (deletingCurrent) skipSwitchedReloadRef.current = false;
           return { error: true, message: err.message };
         }
       },
@@ -3765,12 +4042,17 @@ export function AppProvider({ children }) {
       newSession: async () => {
         aggressivePruneSavedRef.current = 0;
         update({ currentView: "chat", messagesLoading: true });
-        setState((prev) => ({ ...prev, messages: [] }));
         try {
-          const result = await api.newSession();
+          const result = await api.newSession(
+            stateRef.current.runtimeState?.cwd ||
+              stateRef.current.runtimeState?.projectDir,
+          );
           if (result.ok) {
-            if (result.sessionId) updateRoute("chat", result.sessionId);
-            await loadState();
+            if (result.sessionId) {
+              updateRoute("chat", result.sessionId);
+              activateSessionView(result.sessionId);
+              await loadState(result.sessionId);
+            }
             loadSessions();
             update({ messagesLoading: false });
           } else {
@@ -3797,8 +4079,6 @@ export function AppProvider({ children }) {
           codewikiProjectPath: pendingCodeWikiProjectPath,
           isGeneral: openingGeneral,
         });
-        if (nextView === "chat")
-          setState((prev) => ({ ...prev, messages: [] }));
         try {
           const result = await api.openProject(projectPath, {
             newSession: Boolean(options.newSession),
@@ -3817,7 +4097,10 @@ export function AppProvider({ children }) {
               updateRoute("codewiki", null, {
                 projectPath: nextCodeWikiProjectPath,
               });
-            else if (result.sessionId) updateRoute("chat", result.sessionId);
+            else if (result.sessionId) {
+              updateRoute("chat", result.sessionId);
+              activateSessionView(result.sessionId);
+            }
             if (result.state) {
               update({
                 runtimeState: result.state,
@@ -3825,11 +4108,13 @@ export function AppProvider({ children }) {
                 isGeneral: !!result.state.isGeneral,
               });
             } else {
-              await loadState();
+              await loadState(result.sessionId);
             }
             const msgPromise =
               nextView === "chat" && result.sessionData
-                ? loadSessionMessages(result.sessionData)
+                ? loadSessionMessages(result.sessionData, {
+                    sessionId: result.sessionId,
+                  })
                 : Promise.resolve();
             await Promise.all([
               loadSessions({ force: true }),
@@ -3857,6 +4142,7 @@ export function AppProvider({ children }) {
         if (view === "codewiki") {
           updateRoute(view, null, { projectPath: codewikiProjectPath });
         }
+        if (view === "sessions") updateRoute(view, null);
         if (view === "chat") {
           const rs = stateRef.current.runtimeState;
           updateRoute("chat", rs?.sessionId);
@@ -3917,6 +4203,7 @@ export function AppProvider({ children }) {
       },
     }),
     [
+      activateSessionView,
       addMessage,
       applyTheme,
       loadConfigStatus,
@@ -3930,7 +4217,23 @@ export function AppProvider({ children }) {
     ],
   );
 
-  const value = useMemo(() => ({ state, actions }), [state, actions]);
+  const projectedSessions = useMemo(
+    () => projectSessionRuntime(state.sessions, state.sessionRuntimeById),
+    [state.sessions, state.sessionRuntimeById],
+  );
+  const projectedState = useMemo(
+    () =>
+      projectVisibleSessionState({
+        ...state,
+        sessions: projectedSessions,
+      }),
+    [state, projectedSessions],
+  );
+
+  const value = useMemo(
+    () => ({ state: projectedState, actions }),
+    [projectedState, actions],
+  );
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 

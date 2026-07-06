@@ -215,6 +215,12 @@ Sessions are shared between terminal and browser — switch freely. From an acti
 
 Additional Web UI options (port, project directory, session, model) are available via flags like `--port`, `--project`, `--session`, `--model`, `--no-open`.
 
+### Concurrent Web sessions
+
+The Web UI can run up to three sessions at once. Additional sessions queue automatically, and switching conversations does not stop background work. Approval and user-input requests pause only their owning session.
+
+Sessions may share a project directory. Codemini detects stale writes made through its managed file tools, but arbitrary shell commands can still conflict; the session list shows a warning while same-project tasks overlap. Interrupted work is not replayed after a server restart.
+
 **Souls** — change the agent's tone without changing behavior. Built-in presets: `default`, `professional`, `ceo`, `playful`, `anime`, `caveman`, `pirate`. Configure with `codemini config set soul.preset professional`.
 
 ### Memory, Self-Evolution & Dream Loop

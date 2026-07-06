@@ -21,6 +21,8 @@ import { UserInputDialog } from "@/components/UserInputDialog.jsx";
 import { ReflectApprovalCard } from "@/components/ReflectApprovalDialog.jsx";
 import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
+import { SessionPanel } from "@/components/SessionPanel.jsx";
+import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
 import { DotsThree, GitDiff, List, Terminal } from "@phosphor-icons/react";
 import "../style.css";
 
@@ -161,6 +163,8 @@ class ErrorBoundary extends Component {
 
 function Shell() {
   const { state, actions } = useApp();
+  const approvalRequest = interactiveRequestForSession(state, "approval");
+  const userInputRequest = interactiveRequestForSession(state, "userInput");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const rs = state.runtimeState || {};
   const currentId = rs.sessionId;
@@ -253,7 +257,25 @@ function Shell() {
       </Sheet>
 
       <div className="flex-1 flex flex-col min-w-0 min-h-0 p-1.5 sm:p-2">
-        {state.currentView === "codewiki" ? (
+        {state.currentView === "sessions" ? (
+          <div className="codemini-workspace-panel flex flex-1 flex-col min-h-0 overflow-hidden">
+            <SessionPanel
+              sessions={state.sessions}
+              sessionsLoading={state.sessionsLoading}
+              currentId={currentId}
+              onSwitch={actions.switchSession}
+              onNew={() =>
+                actions.openProject("__codemini_general__", {
+                  view: "chat",
+                  newSession: true,
+                })
+              }
+              onDelete={actions.deleteSession}
+              onAbort={actions.abortSession}
+              onAbortAll={actions.abortAllSessions}
+            />
+          </div>
+        ) : state.currentView === "codewiki" ? (
           <div className="codemini-workspace-panel flex flex-1 flex-col min-h-0 overflow-hidden">
             <Suspense fallback={null}>
               <CodeWikiPanel
@@ -407,15 +429,19 @@ function Shell() {
       </div>
 
       <ApprovalDialog
-        request={state.approvalRequest}
-        open={!!state.approvalRequest}
-        onDecision={actions.approve}
+        request={approvalRequest}
+        open={!!approvalRequest}
+        onDecision={(id, actionName) =>
+          actions.approve(id, actionName, approvalRequest?.sessionId)
+        }
       />
 
       <UserInputDialog
-        request={state.userInputRequest}
-        open={!!state.userInputRequest}
-        onRespond={actions.respondToUserInput}
+        request={userInputRequest}
+        open={!!userInputRequest}
+        onRespond={(id, response) =>
+          actions.respondToUserInput(id, response, userInputRequest?.sessionId)
+        }
       />
 
       <SpecApprovalDialog

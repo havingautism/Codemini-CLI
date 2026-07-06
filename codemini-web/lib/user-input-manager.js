@@ -25,6 +25,10 @@ export class UserInputManager {
     return ids.length;
   }
 
+  has(id) {
+    return this.#pending.has(id);
+  }
+
   get current() {
     return this.#pending.values().next().value?.form || null;
   }

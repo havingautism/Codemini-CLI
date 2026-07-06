@@ -134,7 +134,7 @@ async function compressImageFile(file) {
   return compressed.size < file.size ? compressed : file;
 }
 
-function ModeSelector({ current, disabled = false }) {
+function ModeSelector({ sessionId, current, disabled = false }) {
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const MODE_OPTIONS = getExecutionModeOptions();
@@ -146,7 +146,7 @@ function ModeSelector({ current, disabled = false }) {
     if (mode === current || switching || disabled) return;
     setSwitching(true);
     try {
-      const result = await api.setExecutionMode(mode);
+      const result = await api.setExecutionMode(sessionId, mode);
       if (result?.error)
         throw new Error(result.message || "Failed to switch mode");
     } catch {
@@ -209,7 +209,7 @@ function ModeSelector({ current, disabled = false }) {
   );
 }
 
-function ApprovalModeSelector({ current, disabled = false }) {
+function ApprovalModeSelector({ sessionId, current, disabled = false }) {
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const MODE_OPTIONS = getApprovalModeOptions();
@@ -221,7 +221,7 @@ function ApprovalModeSelector({ current, disabled = false }) {
     if (mode === current || switching || disabled) return;
     setSwitching(true);
     try {
-      const result = await api.setApprovalMode(mode);
+      const result = await api.setApprovalMode(sessionId, mode);
       if (result?.error)
         throw new Error(result.message || "Failed to switch approval mode");
     } catch {
@@ -368,7 +368,7 @@ function SoulQuickSwitch({ disabled = false }) {
   );
 }
 
-function SpecQuickSelect({ visible, disabled = false, onSelect }) {
+function SpecQuickSelect({ sessionId, visible, disabled = false, onSelect }) {
   const [open, setOpen] = useState(false);
   const [specs, setSpecs] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -377,14 +377,14 @@ function SpecQuickSelect({ visible, disabled = false, onSelect }) {
     if (!visible || disabled) return;
     setLoading(true);
     try {
-      const result = await api.fetchSpecs();
+      const result = await api.fetchSpecs(sessionId);
       setSpecs(Array.isArray(result?.specs) ? result.specs : []);
     } catch {
       setSpecs([]);
     } finally {
       setLoading(false);
     }
-  }, [visible, disabled]);
+  }, [sessionId, visible, disabled]);
 
   useEffect(() => {
     if (open) loadSpecs();
@@ -897,7 +897,7 @@ export function InputBar({
           prepared.push(file);
         }
       }
-      const result = await api.uploadAttachments(prepared);
+      const result = await api.uploadAttachments(rs.sessionId, prepared);
       if (result?.error) {
         throw new Error(result.message || t("attachmentUploadFailed"));
       }
@@ -912,7 +912,7 @@ export function InputBar({
       if (fileInputRef.current) fileInputRef.current.value = "";
       textareaRef.current?.focus();
     }
-  }, [inputLocked]);
+  }, [inputLocked, rs.sessionId]);
 
   const removeAttachment = useCallback((id) => {
     setAttachments((current) => current.filter((item) => item.id !== id));
@@ -1050,8 +1050,9 @@ export function InputBar({
             >
               <Plus size={18} />
             </button>
-            <ModeSelector current={mode} disabled={inputLocked} />
+            <ModeSelector sessionId={rs.sessionId} current={mode} disabled={inputLocked} />
             <SpecQuickSelect
+              sessionId={rs.sessionId}
               visible={!isGeneralChat}
               disabled={inputLocked}
               onSelect={(spec) => {
@@ -1061,6 +1062,7 @@ export function InputBar({
               }}
             />
             <ApprovalModeSelector
+              sessionId={rs.sessionId}
               current={approvalMode}
               disabled={inputLocked}
             />

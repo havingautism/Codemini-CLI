@@ -380,6 +380,9 @@ export class RuntimeBridge {
   #submitToken = 0;
   #operationSequence = 0;
   #activeStructuredOperationId = null;
+  #sessionId = '';
+  #onEvent = null;
+  #onLifecycle = null;
 
   #isSubmitActive(token) {
     return token === this.#submitToken;
@@ -390,40 +393,70 @@ export class RuntimeBridge {
     return this.#submitToken;
   }
 
-  constructor(runtime) {
+  constructor(runtime, {
+    sessionId = runtime.getCurrentSessionId?.(),
+    onEvent = null,
+    onLifecycle = null
+  } = {}) {
     this.#runtime = runtime;
+    this.#sessionId = String(sessionId || '');
+    this.#onEvent = onEvent;
+    this.#onLifecycle = onLifecycle;
     this.#installApprovalHandler();
     this.#uiTranscriptSessionId = this.getSessionId();
     runtime.setOnTitleUpdate?.((sessionId, title) => {
-      this.#broadcast({ type: 'session:title', sessionId, title });
+      this.#publish({ type: 'session:title', sessionId, title });
     });
   }
 
   #installApprovalHandler() {
     this.#runtime.setRequestToolApproval((request) => {
       const { id, name, displayName, arguments: args, approvalDetails } = request;
-      this.#broadcast({ type: 'approval:request', id, toolName: name, displayName, arguments: args, details: approvalDetails });
+      this.#publish({ type: 'approval:request', id, toolName: name, displayName, arguments: args, details: approvalDetails });
       return this.#approval.create(id);
     });
     this.#runtime.setRequestUserInput?.((form) => {
       const id = `user-input-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const request = { ...form, id };
       const pending = this.#userInput.create(id, form);
-      this.#broadcast({ type: 'user-input:request', request });
+      this.#publish({ type: 'user-input:request', request });
       this.#broadcastRuntimeState();
       return pending;
     });
   }
 
+  #publish(event) {
+    const tagged = { ...event, sessionId: this.#sessionId };
+    this.#onEvent?.(tagged);
+    this.#broadcast(tagged);
+    if (event?.type === 'approval:request') {
+      this.#publishLifecycle('waiting_approval', event.id);
+    } else if (event?.type === 'user-input:request') {
+      this.#publishLifecycle('waiting_input', event.request?.id);
+    }
+  }
+
+  #publishLifecycle(status, requestId = null) {
+    this.#onLifecycle?.({
+      sessionId: this.#sessionId,
+      status,
+      ...(requestId ? { requestId } : {})
+    });
+  }
+
   #broadcast(event) {
-    const data = `data: ${JSON.stringify(event)}\n\n`;
+    const tagged = event?.sessionId === this.#sessionId
+      ? event
+      : { ...event, sessionId: this.#sessionId };
+    if (tagged !== event) this.#onEvent?.(tagged);
+    const data = `data: ${JSON.stringify(tagged)}\n\n`;
     for (const res of this.#clients) {
       try { res.write(data); } catch {}
     }
   }
 
   #broadcastRuntimeState() {
-    this.#broadcast({ type: 'runtime:state', state: this.getState() });
+    this.#publish({ type: 'runtime:state', state: this.getState() });
   }
 
   broadcastRuntimeState() {
@@ -566,7 +599,7 @@ export class RuntimeBridge {
   }
 
   #recordUiEvent(event) {
-    if (!event?.type) return;
+    if (!event?.type) return null;
     this.#resetUiTranscriptIfSessionChanged();
     const activeId = this.#uiActiveMsgId;
 
@@ -583,11 +616,13 @@ export class RuntimeBridge {
             text: '',
             timestamp: new Date().toISOString(),
             skillBadges: pendingSkillBadges,
-            segments: pendingSkillSegments
+            segments: pendingSkillSegments,
+            isComplete: false
           });
         } else {
           this.#updateUiMessage(activeId, (message) => ({
             ...message,
+            isComplete: false,
             skillBadges: appendUniqueSkillBadges(message.skillBadges || [], pendingSkillBadges),
             segments: pendingSkillSegments.length
               ? [...pendingSkillSegments, ...(Array.isArray(message.segments) ? message.segments : [])]
@@ -930,6 +965,9 @@ export class RuntimeBridge {
       default:
         break;
     }
+    return String(event.type).startsWith('assistant:')
+      ? this.#uiActiveMsgId
+      : null;
   }
 
   addClient(res) {
@@ -939,9 +977,13 @@ export class RuntimeBridge {
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no'
     });
-    res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'connected', sessionId: this.#sessionId })}\n\n`);
     this.#clients.add(res);
     res.on('close', () => this.#clients.delete(res));
+  }
+
+  removeClient(res) {
+    return this.#clients.delete(res);
   }
 
   async handleStartupEvents() {
@@ -963,6 +1005,7 @@ export class RuntimeBridge {
       });
     }
     this.#busy = true;
+    this.#publishLifecycle('running');
     this.#uiPendingSkillBadges = [];
     this.#uiPendingSkillSegments = [];
     const submitToken = this.#invalidateSubmit();
@@ -970,8 +1013,8 @@ export class RuntimeBridge {
     this.#runStatusRecorded = false;
     this.#runtime.submit(line, (event) => {
       if (!this.#isSubmitActive(submitToken)) return;
-      this.#recordUiEvent(event);
-      this.#broadcast(event);
+      const messageId = this.#recordUiEvent(event);
+      this.#publish(messageId ? { ...event, messageId } : event);
       if (['spec:pending_approval', 'reflect:pending_approval'].includes(event?.type)) {
         this.#busy = false;
         this.#broadcastRuntimeState();
@@ -981,6 +1024,7 @@ export class RuntimeBridge {
       if (this.#uiActiveMsgId) {
         this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
           ...message,
+          isComplete: true,
           segments: finishThinkingSegments(message.segments)
             .map((seg) => seg.type === 'text' ? { ...seg, isStreaming: false } : seg)
         }));
@@ -994,22 +1038,25 @@ export class RuntimeBridge {
         await this.#recordRunStatus(text, { status: 'aborted', retryPrompt: line });
       }
       if (suppressDone) return;
-      this.#broadcast({ type: 'submit:done', result: { type: result.type, aborted: result.aborted, text: result.text } });
+      this.#publish({ type: 'submit:done', result: { type: result.type, aborted: result.aborted, text: result.text } });
+      this.#publishLifecycle(result?.aborted ? 'aborted' : 'completed');
     }).catch(async (err) => {
       if (!this.#isSubmitActive(submitToken)) return;
       if (isAbortLikeError(err)) {
         if (!this.#runStatusRecorded) {
           await this.#recordRunStatus('Aborted: Request aborted.', { status: 'aborted', retryPrompt: line });
-          this.#broadcast({
+          this.#publish({
             type: 'submit:done',
             result: { type: 'aborted', aborted: true, text: 'Request aborted.' }
           });
         }
+        this.#publishLifecycle('aborted');
         return;
       }
       const text = `Failed: ${err.message}`;
       await this.#recordRunStatus(text, { status: 'error', retryPrompt: line });
-      this.#broadcast({ type: 'submit:done', result: { type: 'error', text: err.message, retryPrompt: line } });
+      this.#publish({ type: 'submit:done', result: { type: 'error', text: err.message, retryPrompt: line } });
+      this.#publishLifecycle('failed');
     }).finally(() => {
       if (!this.#isSubmitActive(submitToken)) return;
       this.#busy = false;
@@ -1035,6 +1082,7 @@ export class RuntimeBridge {
     }));
     if (userMessage) {
       this.#addUiMessage({
+        id: userMessage.id,
         role: 'you',
         text: userMessage.text,
         attachments: userMessage.attachments || [],
@@ -1043,6 +1091,7 @@ export class RuntimeBridge {
       });
     }
     this.#busy = true;
+    this.#publishLifecycle('running');
     this.#uiPendingSkillBadges = selectedBadges;
     this.#uiPendingSkillSegments = [];
     const submitToken = this.#invalidateSubmit();
@@ -1050,8 +1099,8 @@ export class RuntimeBridge {
     this.#activeStructuredOperationId = operationId;
     const onAgentEvent = (event) => {
       if (!this.#isSubmitActive(submitToken)) return;
-      this.#recordUiEvent(event);
-      this.#broadcast(event);
+      const messageId = this.#recordUiEvent(event);
+      this.#publish(messageId ? { ...event, messageId } : event);
     };
     for (const name of selectedSkills) {
       const startedAt = new Date().toISOString();
@@ -1065,20 +1114,30 @@ export class RuntimeBridge {
     }
     Promise.resolve().then(() => run(onAgentEvent)).then((result) => {
       if (!this.#isSubmitActive(submitToken)) return;
+      if (this.#uiActiveMsgId) {
+        this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
+          ...message,
+          isComplete: true,
+          segments: finishThinkingSegments(message.segments)
+            .map((seg) => seg.type === 'text' ? { ...seg, isStreaming: false } : seg)
+        }));
+      }
       this.#uiActiveMsgId = null;
       this.#uiPlanStepIds = new Map();
-      this.#broadcast({ type: 'submit:done', operationId, result });
+      this.#publish({ type: 'submit:done', operationId, result });
+      this.#publishLifecycle(result?.aborted || result?.type === 'aborted' ? 'aborted' : 'completed');
     }).catch(async (err) => {
       if (!this.#isSubmitActive(submitToken)) return;
       await this.#recordRunStatus(`Failed: ${err.message}`, {
         status: 'error',
         retryPrompt
       });
-      this.#broadcast({
+      this.#publish({
         type: 'submit:done',
         operationId,
         result: { type: 'error', text: err.message, retryPrompt }
       });
+      this.#publishLifecycle(isAbortLikeError(err) ? 'aborted' : 'failed');
     }).finally(() => {
       if (!this.#isSubmitActive(submitToken)) return;
       if (this.#activeStructuredOperationId === operationId) {
@@ -1097,6 +1156,7 @@ export class RuntimeBridge {
       (onAgentEvent) => this.#runtime.submitMessage(message, onAgentEvent),
       {
         userMessage: {
+          id: message.messageId,
           text,
           attachments: Array.isArray(message.attachments) ? message.attachments : []
         },
@@ -1120,15 +1180,22 @@ export class RuntimeBridge {
   handleCodeWikiGenerate(line) {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
     this.#busy = true;
+    this.#publishLifecycle('running');
     const submitToken = this.#invalidateSubmit();
     const requestRuntime = this.#runtime;
     this.#codeWikiGenerating = true;
+    let terminalPublished = false;
+    const publishTerminal = (status) => {
+      if (terminalPublished) return;
+      terminalPublished = true;
+      this.#publishLifecycle(status);
+    };
     this.#broadcastRuntimeState();
     const emitProgress = (event) => {
       if (timedOut || !this.#isSubmitActive(submitToken)) return;
       try {
         const progress = toCodeWikiGenerateProgress(event);
-        if (progress) this.#broadcast(progress);
+        if (progress) this.#publish(progress);
       } catch {}
     };
     // Keep this above the model gateway timeout used by the runtime. Large CodeWiki
@@ -1137,11 +1204,12 @@ export class RuntimeBridge {
     const safetyTimer = setTimeout(() => {
       if (!this.#busy || !this.#isSubmitActive(submitToken)) return;
       timedOut = true;
+      publishTerminal('failed');
       this.#invalidateSubmit();
       try { requestRuntime.abort?.(); } catch {}
       this.#busy = false;
       this.#codeWikiGenerating = false;
-      this.#broadcast({ type: 'codewiki:generate_error', message: 'CodeWiki generation timed out' });
+      this.#publish({ type: 'codewiki:generate_error', message: 'CodeWiki generation timed out' });
       this.#broadcastRuntimeState();
     }, CODEWIKI_GENERATE_TIMEOUT_MS);
     const clearSafetyTimer = () => clearTimeout(safetyTimer);
@@ -1153,6 +1221,7 @@ export class RuntimeBridge {
           type: 'codewiki:generate_error',
           message: result?.text || 'CodeWiki generation failed'
         });
+        publishTerminal('aborted');
         return;
       }
       this.#broadcast({
@@ -1163,6 +1232,7 @@ export class RuntimeBridge {
           text: result?.text || ''
         }
       });
+      publishTerminal('completed');
     }).catch((err) => {
       clearSafetyTimer();
       if (timedOut || !this.#isSubmitActive(submitToken)) return;
@@ -1170,6 +1240,7 @@ export class RuntimeBridge {
         type: 'codewiki:generate_error',
         message: err?.message || 'CodeWiki generation failed'
       });
+      publishTerminal(isAbortLikeError(err) ? 'aborted' : 'failed');
     }).finally(() => {
       clearSafetyTimer();
       if (timedOut || !this.#isSubmitActive(submitToken)) return;
@@ -1235,6 +1306,7 @@ export class RuntimeBridge {
       this.#busy = false;
       this.#codeWikiGenerating = false;
       this.#activeSubmitLine = '';
+      this.#publishLifecycle('aborted');
       this.#broadcastRuntimeState();
     } else if (wasBusy && aborted) {
       if (!this.#runStatusRecorded) {
@@ -1246,6 +1318,7 @@ export class RuntimeBridge {
           result: { type: 'aborted', aborted: true, text: 'Request aborted.' }
         });
       }
+      this.#publishLifecycle('aborted');
       setTimeout(async () => {
         if (!this.#busy || !this.#isSubmitActive(abortToken)) return;
         this.#busy = false;
@@ -1258,14 +1331,14 @@ export class RuntimeBridge {
   async setExecutionMode(mode) {
     if (this.#busy) return false;
     const ok = await this.#runtime.setExecutionMode(mode);
-    if (ok) this.#broadcast({ type: 'mode:changed', mode, ...this.getState() });
+    if (ok) this.#publish({ type: 'mode:changed', mode, ...this.getState() });
     return ok;
   }
 
   async setApprovalMode(mode) {
     if (this.#busy) return false;
     const ok = await this.#runtime.setApprovalMode?.(mode);
-    if (ok) this.#broadcast({ type: 'approval-mode:changed', approvalMode: mode, ...this.getState() });
+    if (ok) this.#publish({ type: 'approval-mode:changed', approvalMode: mode, ...this.getState() });
     return ok;
   }
 
@@ -1281,43 +1354,54 @@ export class RuntimeBridge {
 
   async updatePendingReflect(patch = {}) {
     const draft = await this.#runtime.updatePendingReflect?.(patch);
-    if (draft) this.#broadcast({ type: 'reflect:pending_approval', draft });
+    if (draft) this.#publish({ type: 'reflect:pending_approval', draft });
     this.#broadcastRuntimeState();
     return draft || null;
   }
 
   async updatePendingSpec(patch = {}) {
     const spec = await this.#runtime.updatePendingSpec?.(patch);
-    if (spec) this.#broadcast({ type: 'spec:pending_approval', spec });
+    if (spec) this.#publish({ type: 'spec:pending_approval', spec });
     this.#broadcastRuntimeState();
     return spec || null;
   }
 
   async setPendingSpecFromFile(payload = {}) {
     const spec = await this.#runtime.setPendingSpecFromFile?.(payload);
-    if (spec) this.#broadcast({ type: 'spec:pending_approval', spec });
+    if (spec) this.#publish({ type: 'spec:pending_approval', spec });
     this.#broadcastRuntimeState();
     return spec || null;
   }
 
   async deletePendingSpec() {
     const result = await this.#runtime.deletePendingSpec?.();
-    if (result) this.#broadcast({ type: 'spec:approval_cleared' });
+    if (result) this.#publish({ type: 'spec:approval_cleared' });
     this.#broadcastRuntimeState();
     return result || null;
   }
 
   handleApproval(id, approved) {
-    return this.#approval.resolve(id, approved);
+    const resolved = this.#approval.resolve(id, approved);
+    if (resolved) this.#publishLifecycle('running', id);
+    return resolved;
+  }
+
+  hasPendingApproval(id) {
+    return this.#approval.has(id);
   }
 
   handleUserInput(id, response) {
     const resolved = this.#userInput.resolve(id, response);
     if (resolved) {
-      this.#broadcast({ type: 'user-input:resolved', id });
+      this.#publish({ type: 'user-input:resolved', id });
+      this.#publishLifecycle('running', id);
       this.#broadcastRuntimeState();
     }
     return resolved;
+  }
+
+  hasPendingUserInput(id) {
+    return this.#userInput.has(id);
   }
 
   getState() {
@@ -1383,20 +1467,25 @@ export class RuntimeBridge {
   async undoChangeSet(id) {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
     const result = await this.#runtime.undoChangeSet?.(id);
-    this.#broadcast({ type: 'change:undone', result });
+    this.#publish({ type: 'change:undone', result });
     return result || { error: true, message: 'Git change oplog is not available' };
   }
 
   async undoChangeSets(ids) {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
     const result = await this.#runtime.undoChangeSets?.(ids);
-    this.#broadcast({ type: 'change:undone', result });
+    this.#publish({ type: 'change:undone', result });
     return result || { error: true, message: 'Git change oplog is not available' };
   }
 
   async getUiMessages(sessionId = '') {
     const requestedSessionId = String(sessionId || '').trim();
-    if (!requestedSessionId) {
+    // Return in-memory messages for the bridge's own session so the
+    // caller always sees the freshest state (streaming text, running
+    // tools, isComplete flags).  Falls back to the persisted transcript
+    // only for cross-session reads, which shouldn't happen in the pool
+    // architecture (one bridge per session).
+    if (!requestedSessionId || requestedSessionId === this.getSessionId()) {
       this.#resetUiTranscriptIfSessionChanged();
       if (this.#uiMessages.length > 0) return this.#uiMessages;
     }
@@ -1430,37 +1519,6 @@ export class RuntimeBridge {
   get busy() { return this.#busy; }
 
   get runtime() { return this.#runtime; }
-
-  async switchRuntime(newRuntime) {
-    if (this.#busy) {
-      throw new Error('Runtime is busy');
-    }
-    this.#invalidateSubmit();
-    this.#codeWikiGenerating = false;
-    this.#activeSubmitLine = '';
-    this.#runStatusRecorded = false;
-    this.#userInput.resolveAll({ status: 'skipped', answers: {} });
-    // Dispose old runtime
-    try { await this.#runtime.dispose?.(); } catch {}
-    // Swap
-    this.#runtime = newRuntime;
-    this.#startupConsumed = false;
-    this.#approval = new ApprovalManager();
-    this.#userInput = new UserInputManager();
-    this.#uiMessages = [];
-    this.#uiActiveMsgId = null;
-    this.#uiPlanStepIds = new Map();
-    this.#uiPendingSkillBadges = [];
-    this.#uiPendingSkillSegments = [];
-    this.#uiTranscriptSessionId = newRuntime.getCurrentSessionId?.() || '';
-    this.#installApprovalHandler();
-    // Push title updates via SSE
-    newRuntime.setOnTitleUpdate?.((sessionId, title) => {
-      this.#broadcast({ type: 'session:title', sessionId, title });
-    });
-    // Notify clients
-    this.#broadcast({ type: 'runtime:switched', sessionId: newRuntime.getCurrentSessionId?.() });
-  }
 
   async dispose() {
     for (const res of this.#clients) {

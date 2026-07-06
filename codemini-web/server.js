@@ -20,6 +20,10 @@ import { createChatRuntime } from '../src/core/chat-runtime.js';
 import { createSession, loadSession, listSessions, resolveSession, deleteSession } from '../src/core/session-store.js';
 import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
 import { RuntimeBridge } from './lib/runtime-bridge.js';
+import {
+  RuntimePool,
+  startRuntimeEvictionTimer
+} from './lib/runtime-pool.js';
 import { resolveEmbed } from './lib/embed-resolver.js';
 import { installSkillSource, listSkillEntries } from '../src/commands/skill.js';
 import { computeFileSha256, readSkillRegistry, upsertSkillRegistryEntry, writeSkillRegistry } from '../src/core/skill-registry.js';
@@ -336,6 +340,651 @@ function ensureAcceptedBridgeResult(result) {
   return result;
 }
 
+export function createEventBroker() {
+  const clients = new Set();
+  const publish = (event) => {
+    const tagged = event?.sessionId || !event?.state?.sessionId
+      ? event
+      : { ...event, sessionId: event.state.sessionId };
+    const payload = `data: ${JSON.stringify(tagged)}\n\n`;
+    for (const client of clients) {
+      try { client.write(payload); } catch { clients.delete(client); }
+    }
+  };
+  return {
+    publish,
+    addClient(res) {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no'
+      });
+      res.write(`data: ${JSON.stringify({ type: 'connected' })}\n\n`);
+      clients.add(res);
+      res.on('close', () => clients.delete(res));
+    }
+  };
+}
+
+function poolBridge(pool, sessionId) {
+  return pool.entries.get(sessionId)?.bridge || null;
+}
+
+function requireSessionId(res, sessionId) {
+  const normalized = String(sessionId || '').trim();
+  if (normalized) return normalized;
+  jsonResponse(res, { error: true, message: 'Missing sessionId' }, 400);
+  return '';
+}
+
+const RECOVERABLE_RUNTIME_STATUSES = new Set([
+  'queued', 'running', 'waiting_approval', 'waiting_input'
+]);
+const ACTIVE_RUNTIME_STATUSES = new Set(RECOVERABLE_RUNTIME_STATUSES);
+const APPROVAL_ACTION_NAMES = new Set(['approval.approve', 'approval.reject']);
+
+function interactionConflict(res, status) {
+  const alreadyResuming = status === 'queued' || status === 'running';
+  jsonResponse(res, {
+    error: true,
+    code: alreadyResuming ? 'ALREADY_RESUMING' : 'NOT_WAITING',
+    message: alreadyResuming
+      ? 'Interaction response is already queued or running'
+      : 'Session is not waiting for this interaction'
+  }, 409);
+}
+
+function staleInteractionResponse(res) {
+  jsonResponse(res, {
+    error: true,
+    code: 'STALE_INTERACTION',
+    message: 'Interaction request is no longer pending'
+  }, 409);
+}
+
+export function createServerCleanup({
+  runtimeEvictionTimer,
+  pool,
+  runtimeStatusStore,
+  server,
+  exit = () => process.exit(0)
+}) {
+  let cleanupPromise = null;
+  return () => {
+    if (cleanupPromise) return cleanupPromise;
+    cleanupPromise = (async () => {
+      runtimeEvictionTimer.stop();
+      await Promise.allSettled(
+        [...pool.entries.values()].map(entry => entry.bridge?.dispose?.())
+      );
+      pool.entries.clear();
+      await runtimeStatusStore.flush();
+      await new Promise(resolve => server.close(() => resolve()));
+      exit();
+    })();
+    return cleanupPromise;
+  };
+}
+
+export function createRuntimeStatusStore(
+  filePath = path.join(getBaseConfigDir(), 'web-runtime-status.json')
+) {
+  let writes = Promise.resolve();
+  const read = async () => {
+    try {
+      const parsed = JSON.parse(await fs.readFile(filePath, 'utf8'));
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (error) {
+      if (error?.code === 'ENOENT') return {};
+      throw error;
+    }
+  };
+  const update = (mutate) => {
+    writes = writes.then(async () => {
+      const states = await read();
+      await mutate(states);
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, `${JSON.stringify(states, null, 2)}\n`, 'utf8');
+    });
+    return writes;
+  };
+  return {
+    read,
+    set(sessionId, status) {
+      return update(states => {
+        states[sessionId] = {
+          status,
+          updatedAt: new Date().toISOString()
+        };
+      });
+    },
+    remove(sessionId) {
+      return update(states => {
+        delete states[sessionId];
+      });
+    },
+    flush() {
+      return writes;
+    },
+    async recoverInterrupted() {
+      const recovered = [];
+      await update(states => {
+        for (const [sessionId, state] of Object.entries(states)) {
+          if (!RECOVERABLE_RUNTIME_STATUSES.has(state?.status)) continue;
+          states[sessionId] = {
+            ...state,
+            status: 'interrupted',
+            updatedAt: new Date().toISOString()
+          };
+          recovered.push(sessionId);
+        }
+      });
+      return recovered;
+    }
+  };
+}
+
+export function createWebRuntimeApi({
+  pool,
+  eventBroker,
+  ensureSession,
+  listSessions: listStoredSessions = listSessions,
+  deleteSession: deleteStoredSession = deleteSession,
+  createSession: createStoredSession = createSession,
+  loadActiveProjects = loadWebuiActiveProjects,
+  runtimeStatusStore = null,
+  getDefaultProjectDir = () => process.cwd(),
+  loadConfig: loadRuntimeConfig = loadConfig,
+  getConfigStatus: getRuntimeConfigStatus = getConfigStatus
+}) {
+  const loadBridge = async (res, sessionId) => {
+    const id = requireSessionId(res, sessionId);
+    if (!id) return null;
+    try {
+      await ensureSession(id);
+    } catch (error) {
+      const notFound = error?.code === 'ENOENT' || error?.code === 'SESSION_NOT_FOUND';
+      jsonResponse(res, {
+        error: true,
+        code: notFound ? 'SESSION_NOT_FOUND' : 'SESSION_LOAD_FAILED',
+        message: notFound ? 'Session not found' : (error?.message || 'Failed to load session')
+      }, notFound ? 404 : 400);
+      return null;
+    }
+    return poolBridge(pool, id);
+  };
+  const submitOperation = (sessionId, invoke) => pool.submit(
+    sessionId,
+    bridge => typeof bridge.runPooled === 'function'
+      ? bridge.runPooled(() => invoke(bridge))
+      : invoke(bridge)
+  );
+  const resumeOperation = (sessionId, invoke) => pool.resume(
+    sessionId,
+    bridge => {
+      const start = () => invoke(bridge);
+      return typeof bridge.runPooled === 'function'
+        ? bridge.runPooled(start)
+        : start();
+    }
+  );
+
+  return async function handleWebRuntimeApi(req, res) {
+    const url = new URL(req.url, 'http://localhost');
+
+    if (req.method === 'GET' && url.pathname === '/api/events') {
+      eventBroker.addClient(res);
+      return true;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/runtime/sessions') {
+      const persisted = await runtimeStatusStore?.read?.() || {};
+      const states = Object.fromEntries(pool.listStates().map(state => [state.sessionId, state]));
+      for (const [sessionId, state] of Object.entries(persisted)) {
+        if (!states[sessionId]) states[sessionId] = { sessionId, ...state };
+      }
+      jsonResponse(res, {
+        sessions: states
+      });
+      return true;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/sessions') {
+      const requestedLimit = Number(url.searchParams.get('limit') || 200);
+      const limit = Number.isFinite(requestedLimit)
+        ? Math.max(1, Math.min(1000, Math.round(requestedLimit)))
+        : 200;
+      const sessions = await listStoredSessions(limit);
+      const { active } = await loadActiveProjects();
+      const activeSet = new Set(active);
+      jsonResponse(res, sessions
+        .map(session => ({
+          ...session,
+          projectKey: normalizeProjectDirKey(session.projectDir) || 'unknown',
+          isGeneral: isGeneralProjectDir(session.projectDir),
+          runtime: pool.getSessionState(session.id)
+        }))
+        .filter(session => sessionMatchesActiveProjects(session, activeSet)));
+      return true;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/sessions/new') {
+      const body = await readBody(req);
+      try {
+        const session = await createStoredSession(body?.projectDir || getDefaultProjectDir());
+        await ensureSession(session.id);
+        jsonResponse(res, {
+          ok: true,
+          sessionId: session.id,
+          cwd: session.projectDir,
+          isGeneral: isGeneralProjectDir(session.projectDir)
+        });
+      } catch (error) {
+        jsonResponse(res, {
+          error: true,
+          message: error?.message || 'Failed to create session'
+        }, 400);
+      }
+      return true;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/attachments') {
+      const sessionId = url.searchParams.get('sessionId');
+      const bridge = await loadBridge(res, sessionId);
+      if (!bridge) return true;
+      try {
+        const form = await readMultipartForm(req);
+        const files = form.getAll('files').filter(
+          item => item && typeof item.arrayBuffer === 'function'
+        );
+        if (!files.length) {
+          jsonResponse(res, { error: true, message: 'Missing attachment file' }, 400);
+          return true;
+        }
+        const attachments = [];
+        for (const file of files.slice(0, 8)) {
+          attachments.push(await saveUploadedAttachment({ file, sessionId }));
+        }
+        jsonResponse(res, { ok: true, attachments });
+      } catch (error) {
+        jsonResponse(res, {
+          error: true,
+          message: error?.message || 'Failed to upload attachment'
+        }, 400);
+      }
+      return true;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/pending-reflect') {
+      const body = await readBody(req);
+      const bridge = await loadBridge(res, body?.sessionId);
+      if (!bridge) return true;
+      try {
+        const draft = await bridge.updatePendingReflect(body || {});
+        if (!draft) {
+          jsonResponse(res, { error: true, message: 'No pending reflect approval' }, 409);
+          return true;
+        }
+        jsonResponse(res, { ok: true, draft });
+      } catch (error) {
+        jsonResponse(res, { error: true, message: error?.message || 'Failed to update reflect' }, 500);
+      }
+      return true;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/pending-spec') {
+      const body = await readBody(req);
+      const bridge = await loadBridge(res, body?.sessionId);
+      if (!bridge) return true;
+      try {
+        const spec = await bridge.updatePendingSpec(body || {});
+        if (!spec) {
+          jsonResponse(res, { error: true, message: 'No pending spec approval' }, 409);
+          return true;
+        }
+        jsonResponse(res, { ok: true, spec });
+      } catch (error) {
+        jsonResponse(res, { error: true, message: error?.message || 'Failed to update spec' }, 500);
+      }
+      return true;
+    }
+    if (req.method === 'DELETE' && url.pathname === '/api/pending-spec') {
+      const bridge = await loadBridge(res, url.searchParams.get('sessionId'));
+      if (!bridge) return true;
+      const result = await bridge.deletePendingSpec();
+      if (!result) {
+        jsonResponse(res, { error: true, message: 'No pending spec approval' }, 409);
+        return true;
+      }
+      jsonResponse(res, { ok: true, ...result });
+      return true;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/specs') {
+      const sessionId = url.searchParams.get('sessionId');
+      const bridge = await loadBridge(res, sessionId);
+      if (!bridge) return true;
+      const projectDir = pool.getSessionState(sessionId)?.projectDir;
+      jsonResponse(res, { specs: await listProjectSpecFiles(projectDir) });
+      return true;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/specs/open') {
+      const body = await readBody(req);
+      const bridge = await loadBridge(res, body?.sessionId);
+      if (!bridge) return true;
+      const projectDir = pool.getSessionState(body.sessionId)?.projectDir;
+      const specPath = await resolveProjectSpecFile(projectDir, body?.path);
+      if (!specPath) {
+        jsonResponse(res, { error: true, message: 'Spec file not found' }, 404);
+        return true;
+      }
+      const specText = await fs.readFile(specPath, 'utf8');
+      const spec = await bridge.setPendingSpecFromFile({ filePath: specPath, specText });
+      if (!spec) {
+        jsonResponse(res, { error: true, message: 'Failed to open spec' }, 500);
+        return true;
+      }
+      jsonResponse(res, { ok: true, spec });
+      return true;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/chat/message') {
+      const body = await readBody(req);
+      const bridge = await loadBridge(res, body?.sessionId);
+      if (!bridge) return true;
+      try {
+        const attachmentData = await resolveAttachmentSubmission(
+          body.sessionId,
+          body.text,
+          body.attachmentIds
+        );
+        const accepted = submitOperation(body.sessionId, target =>
+          target.handleSubmitMessage({
+            text: body.text,
+            messageId: body.messageId,
+            skillNames: body.skillNames,
+            attachmentIds: body.attachmentIds,
+            dismissedAlwaysSkills: body.dismissedAlwaysSkills,
+            ...attachmentData
+          })
+        );
+        jsonResponse(res, accepted, accepted.accepted ? 202 : 409);
+      } catch (error) {
+        chatErrorResponse(res, error, 'INVALID_REQUEST');
+      }
+      return true;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/submit') {
+      const body = await readBody(req);
+      const bridge = await loadBridge(res, body?.sessionId);
+      if (!bridge) return true;
+      if (!body.line || typeof body.line !== 'string') {
+        jsonResponse(res, { error: true, message: 'Missing "line" field' }, 400);
+        return true;
+      }
+      const currentConfig = await loadRuntimeConfig();
+      const configStatus = getRuntimeConfigStatus(currentConfig);
+      if (configStatus.setupRequired) {
+        jsonResponse(res, {
+          error: true,
+          code: 'CONFIG_REQUIRED',
+          message: 'Gateway is not configured. Open Settings and set the API Base URL and API Key.',
+          configStatus
+        }, 409);
+        return true;
+      }
+      const attachmentData = await resolveAttachmentSubmission(
+        body.sessionId,
+        body.line,
+        body.attachmentIds
+      );
+      const accepted = submitOperation(body.sessionId, target => target.handleSubmit(
+        body.line,
+        {
+          readOnlyCodeWiki: body.readOnlyCodeWiki === true,
+          attachments: attachmentData.attachments,
+          ...(Array.isArray(body.dismissedAlwaysSkills) && body.dismissedAlwaysSkills.length > 0
+            ? { dismissedAlwaysSkills: body.dismissedAlwaysSkills }
+            : {}),
+          ...(attachmentData.modelText ? { modelText: attachmentData.modelText } : {})
+        }
+      ));
+      jsonResponse(res, accepted, accepted.accepted ? 202 : 409);
+      return true;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/chat/action') {
+      const body = await readBody(req);
+      const bridge = await loadBridge(res, body?.sessionId);
+      if (!bridge) return true;
+      try {
+        const status = pool.getSessionState(body.sessionId)?.status;
+        if (APPROVAL_ACTION_NAMES.has(body.name) && status === 'waiting_approval') {
+          if (!bridge.hasPendingApproval?.(body.payload?.requestId)) {
+            staleInteractionResponse(res);
+            return true;
+          }
+          const accepted = resumeOperation(body.sessionId, target =>
+            target.handleAction({
+              name: body.name,
+              payload: body.payload || {}
+            })
+          );
+          jsonResponse(res, accepted, accepted.accepted ? 202 : 409);
+          return true;
+        }
+        if (APPROVAL_ACTION_NAMES.has(body.name)) {
+          interactionConflict(res, status);
+          return true;
+        }
+        const result = ensureAcceptedBridgeResult(await bridge.handleAction({
+          name: body.name,
+          payload: body.payload || {}
+        }));
+        jsonResponse(res, { ok: true, result });
+      } catch (error) {
+        chatErrorResponse(res, error, 'ACTION_FAILED');
+      }
+      return true;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/abort') {
+      const body = await readBody(req);
+      const id = requireSessionId(res, body?.sessionId);
+      if (!id) return true;
+      const aborted = await pool.abort(id);
+      jsonResponse(res, { ok: aborted }, aborted ? 200 : 404);
+      return true;
+    }
+
+    const directOperations = new Map([
+      ['/api/approval', ({ bridge, body }) => ({ ok: bridge.handleApproval(body.id, !!body.approved) })],
+      ['/api/user-input', ({ bridge, body }) => {
+        const ok = bridge.handleUserInput(body.id, { status: body.status, answers: body.answers });
+        return { ok, status: ok ? 200 : 409 };
+      }],
+      ['/api/execution-mode', async ({ bridge, body }) => {
+        const mode = ['spec', 'code', 'coding'].includes(body.mode) ? 'plan' : body.mode;
+        return { ok: await bridge.setExecutionMode(mode) };
+      }],
+      ['/api/approval-mode', async ({ bridge, body }) => ({ ok: await bridge.setApprovalMode(body.mode) })]
+    ]);
+    if (req.method === 'POST' && directOperations.has(url.pathname)) {
+      const body = await readBody(req);
+      const bridge = await loadBridge(res, body?.sessionId);
+      if (!bridge) return true;
+      if (url.pathname === '/api/user-input' && !body.id) {
+        jsonResponse(res, { error: true, message: 'Missing user input request id' }, 400);
+        return true;
+      }
+      if (
+        url.pathname === '/api/execution-mode' &&
+        !['normal', 'plan', 'code', 'coding', 'spec'].includes(body.mode)
+      ) {
+        jsonResponse(res, { error: true, message: 'Invalid mode' }, 400);
+        return true;
+      }
+      if (
+        url.pathname === '/api/approval-mode' &&
+        !['review', 'auto', 'full_access'].includes(body.mode)
+      ) {
+        jsonResponse(res, { error: true, message: 'Invalid approval mode' }, 400);
+        return true;
+      }
+      if (
+        ['/api/execution-mode', '/api/approval-mode'].includes(url.pathname) &&
+        (
+          ACTIVE_RUNTIME_STATUSES.has(pool.getSessionState(body.sessionId)?.status) ||
+          bridge.isBusy?.()
+        )
+      ) {
+        const message = url.pathname === '/api/execution-mode'
+          ? 'Cannot switch execution mode while a request is running'
+          : 'Cannot switch approval mode while a request is running';
+        jsonResponse(res, { error: true, message }, 409);
+        return true;
+      }
+      const status = pool.getSessionState(body.sessionId)?.status;
+      const expectedWaitingStatus = url.pathname === '/api/approval'
+        ? 'waiting_approval'
+        : url.pathname === '/api/user-input'
+          ? 'waiting_input'
+          : null;
+      if (expectedWaitingStatus && status === expectedWaitingStatus) {
+        const pendingMatches = url.pathname === '/api/approval'
+          ? bridge.hasPendingApproval?.(body.id)
+          : bridge.hasPendingUserInput?.(body.id);
+        if (!pendingMatches) {
+          staleInteractionResponse(res);
+          return true;
+        }
+        const accepted = resumeOperation(body.sessionId, target => {
+          const result = directOperations.get(url.pathname)({
+            bridge: target,
+            body
+          });
+          return result.ok ? result : { accepted: false };
+        });
+        jsonResponse(res, accepted, accepted.accepted ? 202 : 409);
+        return true;
+      }
+      if (expectedWaitingStatus) {
+        interactionConflict(res, status);
+        return true;
+      }
+      const result = await directOperations.get(url.pathname)({ bridge, body });
+      const responseStatus = result.status || 200;
+      delete result.status;
+      jsonResponse(res, result, responseStatus);
+      return true;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/sessions/switch') {
+      const body = await readBody(req);
+      const bridge = await loadBridge(res, body?.sessionId);
+      if (!bridge) return true;
+      const projectDir = pool.getSessionState(body.sessionId)?.projectDir;
+      const state = {
+        ...bridge.getState(),
+        cwd: projectDir,
+        isGeneral: isGeneralProjectDir(projectDir),
+      };
+      jsonResponse(res, {
+        ok: true,
+        sessionId: body.sessionId,
+        cwd: projectDir,
+        state,
+        sessionData: {
+          messages: bridge.getSessionMessages(),
+          compact: bridge.getSessionCompactMeta(),
+          uiMessages: await bridge.getUiMessages(body.sessionId)
+        }
+      });
+      return true;
+    }
+    if (req.method === 'DELETE' && url.pathname.startsWith('/api/sessions/')) {
+      const sessionId = requireSessionId(
+        res,
+        decodeURIComponent(url.pathname.slice('/api/sessions/'.length))
+      );
+      if (!sessionId) return true;
+      const state = pool.getSessionState(sessionId);
+      if (state && ['queued', 'running', 'waiting_approval', 'waiting_input'].includes(state.status)) {
+        jsonResponse(res, { error: true, message: 'Session is active' }, 409);
+        return true;
+      }
+      const result = await deleteStoredSession(sessionId);
+      const entry = pool.entries.get(sessionId);
+      await entry?.bridge?.dispose?.();
+      pool.entries.delete(sessionId);
+      await runtimeStatusStore?.remove?.(sessionId);
+      jsonResponse(res, { ok: true, ...result });
+      return true;
+    }
+
+    const sessionReads = new Map([
+      ['/api/state', bridge => {
+        const rawState = bridge.getState();
+        const sessionId = rawState.sessionId;
+        const poolEntry = sessionId ? pool.entries.get(sessionId) : undefined;
+        const projectDir = poolEntry?.projectDir || '';
+        return {
+          ...rawState,
+          cwd: projectDir,
+          isGeneral: isGeneralProjectDir(projectDir),
+        };
+      }],
+      ['/api/history', bridge => bridge.getHistory()],
+      ['/api/commands', bridge => bridge.getCommands()],
+      ['/api/startup-events', bridge => bridge.handleStartupEvents()],
+      ['/api/session/messages', bridge => ({
+        messages: bridge.getSessionMessages(),
+        compact: bridge.getSessionCompactMeta()
+      })],
+      ['/api/session/ui-messages', bridge => bridge.getUiMessages()]
+    ]);
+    if (req.method === 'GET' && sessionReads.has(url.pathname)) {
+      const bridge = await loadBridge(res, url.searchParams.get('sessionId'));
+      if (!bridge) return true;
+      jsonResponse(res, await sessionReads.get(url.pathname)(bridge));
+      return true;
+    }
+
+    if (url.pathname === '/api/session-changes' && req.method === 'GET') {
+      const bridge = await loadBridge(res, url.searchParams.get('sessionId'));
+      if (!bridge) return true;
+      jsonResponse(res, { changes: await bridge.getChangeSets() });
+      return true;
+    }
+    if (
+      req.method === 'GET' &&
+      url.pathname.startsWith('/api/session-changes/') &&
+      url.pathname.endsWith('/patch')
+    ) {
+      const bridge = await loadBridge(res, url.searchParams.get('sessionId'));
+      if (!bridge) return true;
+      const id = decodeURIComponent(
+        url.pathname.slice('/api/session-changes/'.length, -'/patch'.length)
+      );
+      jsonResponse(res, { id, patch: await bridge.getChangeSetPatch(id) });
+      return true;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/session-changes/undo') {
+      const body = await readBody(req);
+      const bridge = await loadBridge(res, body?.sessionId);
+      if (!bridge) return true;
+      jsonResponse(res, await bridge.undoChangeSets(body.ids));
+      return true;
+    }
+    if (
+      req.method === 'POST' &&
+      url.pathname.startsWith('/api/session-changes/') &&
+      url.pathname.endsWith('/undo')
+    ) {
+      const body = await readBody(req);
+      const bridge = await loadBridge(res, body?.sessionId);
+      if (!bridge) return true;
+      const id = decodeURIComponent(
+        url.pathname.slice('/api/session-changes/'.length, -'/undo'.length)
+      );
+      jsonResponse(res, await bridge.undoChangeSet(id));
+      return true;
+    }
+    return false;
+  };
+}
+
 export async function handleStructuredChatRequest(req, res, bridge) {
   const url = new URL(req.url, 'http://localhost');
 
@@ -349,6 +998,7 @@ export async function handleStructuredChatRequest(req, res, bridge) {
       );
       const result = ensureAcceptedBridgeResult(await bridge.handleSubmitMessage({
         text: body?.text,
+        messageId: body?.messageId,
         skillNames: body?.skillNames,
         attachmentIds: body?.attachmentIds,
         dismissedAlwaysSkills: body?.dismissedAlwaysSkills,
@@ -1207,19 +1857,15 @@ async function findPreferredSessionForProject(projectDir) {
   return sorted[0]?.id || null;
 }
 
-async function buildRuntimeForSession({ sessionId, model, projectDir }) {
+export async function buildRuntimeForSession({ sessionId, model, projectDir }) {
   const config = await loadConfig();
-  const resolvedDir = projectDir || process.cwd();
+  const resolvedDir = normalizeProjectPath(projectDir || process.cwd());
   const session = sessionId ? await loadSession(sessionId) : await createSession(resolvedDir);
-  const sessionProjectDir = projectDir ? normalizeProjectPath(projectDir) : await inferSessionProjectDir(session);
-  if (sessionProjectDir) {
-    try {
-      const stat = await fs.stat(sessionProjectDir);
-      if (stat.isDirectory()) process.chdir(sessionProjectDir);
-    } catch {}
-  }
-  session.projectDir = process.cwd();
-  const isGeneral = isGeneralProjectDir(process.cwd());
+  const sessionProjectDir = normalizeProjectPath(
+    (projectDir ? projectDir : await inferSessionProjectDir(session)) || resolvedDir
+  );
+  session.projectDir = sessionProjectDir;
+  const isGeneral = isGeneralProjectDir(sessionProjectDir);
   const systemPrompt = buildDefaultSystemPrompt(config, {
     extraPrompts: isGeneral ? [getGeneralChatSystemPromptBlock()] : []
   });
@@ -1227,9 +1873,10 @@ async function buildRuntimeForSession({ sessionId, model, projectDir }) {
     session,
     config,
     model: model || config.model?.name,
-    systemPrompt
+    systemPrompt,
+    workspaceRoot: sessionProjectDir
   });
-  return { runtime, config, session, cwd: process.cwd(), isGeneral };
+  return { runtime, config, session, cwd: sessionProjectDir, isGeneral };
 }
 
 async function main() {
@@ -1249,12 +1896,93 @@ async function main() {
     } catch {}
   }
 
-  const { runtime: initialRuntime, config } = await buildRuntimeForSession({
+  const { runtime: initialRuntime, session: initialSession } = await buildRuntimeForSession({
     sessionId: args.session,
     model: args.model
   });
-  let bridge = new RuntimeBridge(initialRuntime);
+  const eventBroker = createEventBroker();
+  const runtimeStatusStore = createRuntimeStatusStore();
+  const recoveredSessionIds = new Set(await runtimeStatusStore.recoverInterrupted());
+  const lifecycleWaiters = new Map();
+  let initialRuntimeAvailable = true;
+  const pool = new RuntimePool({
+    maxConcurrent: 3,
+    onEvent: event => {
+      eventBroker.publish(event);
+      if (event?.type === 'runtime_pool_state' && event.state?.sessionId) {
+        runtimeStatusStore.set(event.state.sessionId, event.state.status).catch(() => {});
+      }
+    },
+    runtimeFactory: async ({ sessionId, projectDir, model }) => {
+      let runtime;
+      if (initialRuntimeAvailable && sessionId === initialSession.id) {
+        initialRuntimeAvailable = false;
+        runtime = initialRuntime;
+      } else {
+        ({ runtime } = await buildRuntimeForSession({ sessionId, projectDir, model }));
+      }
+      const sessionBridge = new RuntimeBridge(runtime, {
+        sessionId,
+        onEvent: eventBroker.publish,
+        onLifecycle: lifecycle => {
+          const resolve = lifecycleWaiters.get(sessionId);
+          if (!resolve || lifecycle.status === 'running') return;
+          lifecycleWaiters.delete(sessionId);
+          resolve({ status: lifecycle.status });
+        }
+      });
+      sessionBridge.abort = () => sessionBridge.handleAbort();
+      sessionBridge.runPooled = (start) => new Promise((resolve, reject) => {
+        lifecycleWaiters.set(sessionId, resolve);
+        try {
+          const accepted = start();
+          if (accepted?.accepted === false || accepted?.error) {
+            lifecycleWaiters.delete(sessionId);
+            resolve({ status: 'failed' });
+          }
+        } catch (error) {
+          lifecycleWaiters.delete(sessionId);
+          reject(error);
+        }
+      });
+      return sessionBridge;
+    }
+  });
+  const initialEntry = await pool.ensureSession({
+    sessionId: initialSession.id,
+    projectDir: initialSession.projectDir || process.cwd(),
+    model: args.model
+  });
+  const runtimeEvictionTimer = startRuntimeEvictionTimer(pool);
+  if (recoveredSessionIds.has(initialSession.id)) {
+    initialEntry.status = 'interrupted';
+  } else {
+    await runtimeStatusStore.set(initialSession.id, 'idle');
+  }
+  let bridge = initialEntry.bridge;
   let currentProjectDir = process.cwd();
+  const ensurePooledSession = async (sessionId) => {
+    const session = await loadSession(sessionId);
+    const alreadyLoaded = Boolean(pool.getSessionState(sessionId));
+    const entry = await pool.ensureSession({
+      sessionId,
+      projectDir: session.projectDir,
+      model: args.model
+    });
+    if (!alreadyLoaded && recoveredSessionIds.has(sessionId)) {
+      entry.status = 'interrupted';
+    } else if (!alreadyLoaded) {
+      await runtimeStatusStore.set(sessionId, 'idle');
+    }
+    return entry;
+  };
+  const runtimeApi = createWebRuntimeApi({
+    pool,
+    eventBroker,
+    ensureSession: ensurePooledSession,
+    runtimeStatusStore,
+    getDefaultProjectDir: () => currentProjectDir
+  });
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://localhost:${args.port}`);
@@ -1264,13 +1992,9 @@ async function main() {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
-    if (await handleStructuredChatRequest(req, res, bridge)) return;
-
+    if (await runtimeApi(req, res)) return;
     // SSE
-    if (url.pathname === '/api/events' && req.method === 'GET') {
-      bridge.addClient(res);
-      return;
-    }
+    // Handled by the global runtime API broker above.
 
     const attachmentFileMatch = url.pathname.match(/^\/api\/attachments\/([^/]+)\/([^/]+)\/file$/);
     if (req.method === 'GET' && attachmentFileMatch) {
@@ -1316,125 +2040,6 @@ async function main() {
       return;
     }
 
-    // ── Submit / Abort / Approval ──
-    if (req.method === 'POST' && url.pathname === '/api/attachments') {
-      try {
-        const form = await readMultipartForm(req);
-        const files = form.getAll('files').filter((item) => item && typeof item.arrayBuffer === 'function');
-        if (!files.length) {
-          jsonResponse(res, { error: true, message: 'Missing attachment file' }, 400);
-          return;
-        }
-        const sessionId = bridge.getSessionId();
-        const attachments = [];
-        for (const file of files.slice(0, 8)) {
-          attachments.push(await saveUploadedAttachment({ file, sessionId }));
-        }
-        jsonResponse(res, { ok: true, attachments });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err?.message || 'Failed to upload attachment' }, 400);
-      }
-      return;
-    }
-
-    if (req.method === 'POST' && url.pathname === '/api/submit') {
-      const { line, readOnlyCodeWiki, attachmentIds, dismissedAlwaysSkills } = await readBody(req);
-      if (!line || typeof line !== 'string') { jsonResponse(res, { error: true, message: 'Missing "line" field' }, 400); return; }
-      const currentConfig = await loadConfig();
-      const configStatus = getConfigStatus(currentConfig);
-      if (configStatus.setupRequired) {
-        jsonResponse(res, {
-          error: true,
-          code: 'CONFIG_REQUIRED',
-          message: 'Gateway is not configured. Open Settings and set the API Base URL and API Key.',
-          configStatus
-        }, 409);
-        return;
-      }
-      const attachmentData = await resolveAttachmentSubmission(
-        bridge.getSessionId(),
-        line,
-        attachmentIds
-      );
-      const result = bridge.handleSubmit(line, {
-        readOnlyCodeWiki: readOnlyCodeWiki === true,
-        attachments: attachmentData.attachments,
-        ...(Array.isArray(dismissedAlwaysSkills) && dismissedAlwaysSkills.length > 0
-          ? { dismissedAlwaysSkills }
-          : {}),
-        ...(attachmentData.modelText ? { modelText: attachmentData.modelText } : {})
-      });
-      jsonResponse(res, result);
-      return;
-    }
-    if (req.method === 'POST' && url.pathname === '/api/abort') {
-      await bridge.handleAbort();
-      jsonResponse(res, { ok: true });
-      return;
-    }
-    if (req.method === 'POST' && url.pathname === '/api/execution-mode') {
-      const { mode } = await readBody(req);
-      if (!mode || !['normal', 'plan', 'code', 'coding', 'spec'].includes(mode)) {
-        jsonResponse(res, { error: true, message: 'Invalid mode' }, 400);
-        return;
-      }
-      const normalizedMode = ['spec', 'code', 'coding'].includes(mode) ? 'plan' : mode;
-      if (bridge.isBusy()) {
-        jsonResponse(res, { error: true, message: 'Cannot switch execution mode while a request is running' }, 409);
-        return;
-      }
-      const ok = await bridge.setExecutionMode(normalizedMode);
-      jsonResponse(res, { ok });
-      return;
-    }
-    if (req.method === 'POST' && url.pathname === '/api/pending-reflect') {
-      const body = await readBody(req);
-      try {
-        const draft = await bridge.updatePendingReflect(body || {});
-        if (!draft) { jsonResponse(res, { error: true, message: 'No pending reflect approval' }, 409); return; }
-        jsonResponse(res, { ok: true, draft });
-      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
-      return;
-    }
-    if (req.method === 'POST' && url.pathname === '/api/pending-spec') {
-      const body = await readBody(req);
-      try {
-        const spec = await bridge.updatePendingSpec(body || {});
-        if (!spec) { jsonResponse(res, { error: true, message: 'No pending spec approval' }, 409); return; }
-        jsonResponse(res, { ok: true, spec });
-      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
-      return;
-    }
-    if (req.method === 'POST' && url.pathname === '/api/approval-mode') {
-      const { mode } = await readBody(req);
-      if (!mode || !['review', 'auto', 'full_access'].includes(mode)) {
-        jsonResponse(res, { error: true, message: 'Invalid approval mode' }, 400);
-        return;
-      }
-      if (bridge.isBusy()) {
-        jsonResponse(res, { error: true, message: 'Cannot switch approval mode while a request is running' }, 409);
-        return;
-      }
-      const ok = await bridge.setApprovalMode(mode);
-      jsonResponse(res, { ok });
-      return;
-    }
-    if (req.method === 'POST' && url.pathname === '/api/approval') {
-      const { id, approved } = await readBody(req);
-      jsonResponse(res, { ok: bridge.handleApproval(id, !!approved) });
-      return;
-    }
-    if (req.method === 'POST' && url.pathname === '/api/user-input') {
-      const { id, status, answers } = await readBody(req);
-      if (!id) {
-        jsonResponse(res, { error: true, message: 'Missing user input request id' }, 400);
-        return;
-      }
-      const ok = bridge.handleUserInput(id, { status, answers });
-      jsonResponse(res, { ok }, ok ? 200 : 409);
-      return;
-    }
-
     // ── Version ──
     if (req.method === 'GET' && url.pathname === '/api/embed') {
       const target = String(url.searchParams.get('url') || '').trim();
@@ -1469,64 +2074,6 @@ async function main() {
       } catch (err) {
         jsonResponse(res, { ok: false, error: err.message }, 500);
       }
-      return;
-    }
-
-    // ── Runtime state ──
-    if (req.method === 'GET' && url.pathname === '/api/state') {
-      jsonResponse(res, { ...bridge.getState(), cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) });
-      return;
-    }
-    if (req.method === 'GET' && url.pathname === '/api/history') {
-      jsonResponse(res, bridge.getHistory());
-      return;
-    }
-    if (req.method === 'GET' && url.pathname === '/api/commands') {
-      jsonResponse(res, bridge.getCommands());
-      return;
-    }
-    if (req.method === 'GET' && url.pathname === '/api/startup-events') {
-      jsonResponse(res, await bridge.handleStartupEvents());
-      return;
-    }
-    if (req.method === 'GET' && url.pathname === '/api/session/messages') {
-      jsonResponse(res, { messages: bridge.getSessionMessages(), compact: bridge.getSessionCompactMeta() });
-      return;
-    }
-    if (req.method === 'GET' && url.pathname === '/api/session/ui-messages') {
-      jsonResponse(res, await bridge.getUiMessages());
-      return;
-    }
-    if (req.method === 'GET' && url.pathname === '/api/specs') {
-      jsonResponse(res, { specs: await listProjectSpecFiles(currentProjectDir) });
-      return;
-    }
-    if (req.method === 'POST' && url.pathname === '/api/specs/open') {
-      const body = await readBody(req);
-      const specPath = await resolveProjectSpecFile(currentProjectDir, body?.path);
-      if (!specPath) {
-        jsonResponse(res, { error: true, message: 'Spec file not found' }, 404);
-        return;
-      }
-      const specText = await fs.readFile(specPath, 'utf8');
-      const spec = await bridge.setPendingSpecFromFile({
-        filePath: specPath,
-        specText
-      });
-      if (!spec) {
-        jsonResponse(res, { error: true, message: 'Failed to open spec' }, 500);
-        return;
-      }
-      jsonResponse(res, { ok: true, spec });
-      return;
-    }
-    if (req.method === 'DELETE' && url.pathname === '/api/pending-spec') {
-      const result = await bridge.deletePendingSpec();
-      if (!result) {
-        jsonResponse(res, { error: true, message: 'No pending spec approval' }, 409);
-        return;
-      }
-      jsonResponse(res, { ok: true, ...result });
       return;
     }
 
@@ -1634,10 +2181,6 @@ async function main() {
     }
 
     if (req.method === 'POST' && url.pathname === '/api/codewiki/generate') {
-      if (bridge.isBusy()) {
-        jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
-        return;
-      }
       const { depth, format } = await readBody(req);
       const normalizedDepth = ['fast', 'standard', 'deep'].includes(String(depth || '').toLowerCase())
         ? String(depth).toLowerCase()
@@ -1646,15 +2189,18 @@ async function main() {
         ? String(format).toLowerCase()
         : 'html';
       const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
+      let codeWikiBridge = bridge;
       if (codeWikiProjectDir !== currentProjectDir) {
-        const { runtime } = await buildRuntimeForSession({
-          model: bridge.getState().model,
-          projectDir: codeWikiProjectDir
-        });
-        await bridge.switchRuntime(runtime);
-        currentProjectDir = process.cwd();
+        const session = await createSession(codeWikiProjectDir);
+        codeWikiBridge = (await ensurePooledSession(session.id)).bridge;
       }
-      const result = bridge.handleCodeWikiGenerate(`/project-requirements --${normalizedDepth} --${normalizedFormat}`);
+      if (codeWikiBridge.isBusy()) {
+        jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
+        return;
+      }
+      const result = codeWikiBridge.handleCodeWikiGenerate(
+        `/project-requirements --${normalizedDepth} --${normalizedFormat}`
+      );
       jsonResponse(res, result);
       return;
     }
@@ -1708,142 +2254,6 @@ async function main() {
       return;
     }
 
-    // ── Session management ──
-    if (req.method === 'GET' && url.pathname === '/api/sessions') {
-      const requestedLimit = Number(url.searchParams.get('limit') || 200);
-      const limit = Number.isFinite(requestedLimit)
-        ? Math.max(1, Math.min(1000, Math.round(requestedLimit)))
-        : 200;
-      try {
-        const sessions = await listSessions(limit);
-        const { active } = await loadWebuiActiveProjects();
-        const activeSet = new Set(active);
-        const enriched = sessions
-          .map((s) => {
-            const projectKey = normalizeProjectDirKey(s.projectDir) || 'unknown';
-            const isGeneral = isGeneralProjectDir(s.projectDir);
-            return {
-              ...s,
-              projectKey,
-              isGeneral
-            };
-          })
-          .filter((s) => sessionMatchesActiveProjects(s, activeSet));
-        jsonResponse(res, enriched);
-      } catch (err) {
-        console.error('[sessions] failed to list sessions:', err?.message || err);
-        jsonResponse(res, { error: true, message: err?.message || 'Failed to list sessions' }, 500);
-      }
-      return;
-    }
-    if (req.method === 'POST' && url.pathname === '/api/sessions/new') {
-      if (bridge.isBusy()) {
-        jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
-        return;
-      }
-      try {
-        const currentMessages = bridge.getSessionMessages();
-        if (!Array.isArray(currentMessages) || currentMessages.length === 0) {
-          jsonResponse(res, {
-            ok: true,
-            reused: true,
-            sessionId: bridge.getSessionId(),
-            cwd: currentProjectDir,
-            isGeneral: isGeneralProjectDir(currentProjectDir)
-          });
-          return;
-        }
-        const { runtime: newRuntime, session } = await buildRuntimeForSession({
-          model: bridge.getState().model,
-          projectDir: currentProjectDir
-        });
-        await bridge.switchRuntime(newRuntime);
-        currentProjectDir = process.cwd();
-        jsonResponse(res, { ok: true, sessionId: session.id, cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
-    if (req.method === 'POST' && url.pathname === '/api/sessions/switch') {
-      const { sessionId } = await readBody(req);
-      if (!sessionId) { jsonResponse(res, { error: true, message: 'Missing sessionId' }, 400); return; }
-      if (bridge.isBusy()) {
-        jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
-        return;
-      }
-      try {
-        const { runtime: newRuntime, session: switchedSession } = await buildRuntimeForSession({
-          sessionId,
-          model: bridge.getState().model
-        });
-        await bridge.switchRuntime(newRuntime);
-        currentProjectDir = process.cwd();
-        if (!isGeneralProjectDir(currentProjectDir)) {
-          await patchWebuiActiveProjects({ action: 'activate', projectDir: currentProjectDir });
-        }
-        jsonResponse(res, {
-          ok: true,
-          sessionId,
-          cwd: currentProjectDir,
-          isGeneral: isGeneralProjectDir(currentProjectDir),
-          state: { ...bridge.getState(), cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) },
-          sessionData: {
-            messages: bridge.getSessionMessages(),
-            compact: bridge.getSessionCompactMeta(),
-            uiMessages: await bridge.getUiMessages(sessionId)
-          }
-        });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
-
-    if (req.method === 'DELETE' && url.pathname.startsWith('/api/sessions/')) {
-      const sessionId = decodeURIComponent(url.pathname.slice('/api/sessions/'.length));
-      if (!sessionId) { jsonResponse(res, { error: true, message: 'Missing sessionId' }, 400); return; }
-      const deletingCurrent = sessionId === bridge.getSessionId();
-      if (deletingCurrent && bridge.isBusy()) {
-        jsonResponse(res, { error: true, message: 'Current session is busy' }, 409);
-        return;
-      }
-      try {
-        const result = await deleteSession(sessionId);
-        let nextSessionId = bridge.getSessionId();
-        let cwd = currentProjectDir;
-        if (deletingCurrent) {
-          const remaining = await listSessions(1);
-          const next = remaining.find((session) => session.id !== sessionId);
-          const built = next
-            ? await buildRuntimeForSession({ sessionId: next.id, model: bridge.getState().model })
-            : await buildRuntimeForSession({ model: bridge.getState().model, projectDir: currentProjectDir });
-          await bridge.switchRuntime(built.runtime);
-          currentProjectDir = process.cwd();
-          nextSessionId = built.session.id;
-          cwd = currentProjectDir;
-        }
-        jsonResponse(res, {
-          ok: true,
-          removed: result.removed,
-          sessionId: nextSessionId,
-          cwd,
-          isGeneral: isGeneralProjectDir(currentProjectDir),
-          ...(deletingCurrent ? {
-            state: { ...bridge.getState(), cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) },
-            sessionData: {
-              messages: bridge.getSessionMessages(),
-              compact: bridge.getSessionCompactMeta(),
-              uiMessages: await bridge.getUiMessages(nextSessionId)
-            }
-          } : {})
-        });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
-
     // ── Project management ──
     if (req.method === 'GET' && url.pathname === '/api/project') {
       jsonResponse(res, { cwd: currentProjectDir, isGeneral: isGeneralProjectDir(currentProjectDir) });
@@ -1865,41 +2275,6 @@ async function main() {
       }
       return;
     }
-    if (req.method === 'GET' && url.pathname === '/api/session-changes') {
-      try {
-        jsonResponse(res, { changes: await bridge.getChangeSets() });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err?.message || 'Failed to read session changes' }, 500);
-      }
-      return;
-    }
-    if (req.method === 'GET' && url.pathname.startsWith('/api/session-changes/') && url.pathname.endsWith('/patch')) {
-      const id = decodeURIComponent(url.pathname.slice('/api/session-changes/'.length, -'/patch'.length));
-      try {
-        jsonResponse(res, { id, patch: await bridge.getChangeSetPatch(id) });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err?.message || 'Failed to read change patch' }, 404);
-      }
-      return;
-    }
-    if (req.method === 'POST' && url.pathname !== '/api/session-changes/undo' && url.pathname.startsWith('/api/session-changes/') && url.pathname.endsWith('/undo')) {
-      const id = decodeURIComponent(url.pathname.slice('/api/session-changes/'.length, -'/undo'.length));
-      try {
-        jsonResponse(res, await bridge.undoChangeSet(id));
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err?.message || 'Failed to undo change' }, 409);
-      }
-      return;
-    }
-    if (req.method === 'POST' && url.pathname === '/api/session-changes/undo') {
-      const { ids } = await readBody(req);
-      try {
-        jsonResponse(res, await bridge.undoChangeSets(ids));
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err?.message || 'Failed to undo changes' }, 409);
-      }
-      return;
-    }
     if (req.method === 'POST' && url.pathname === '/api/git-batch') {
       const { dirs } = await readBody(req);
       const result = {};
@@ -1917,50 +2292,39 @@ async function main() {
     if (req.method === 'POST' && url.pathname === '/api/project/open') {
       const { path: projectPath, newSession: forceNewSession = false } = await readBody(req);
       if (!projectPath) { jsonResponse(res, { error: true, message: 'Missing path' }, 400); return; }
-      if (bridge.isBusy()) {
-        jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
-        return;
-      }
       try {
         // Client marker for general workspace
         const openingGeneral = projectPath === '__codemini_general__';
         const resolved = openingGeneral ? GENERAL_PROJECT_DIR : path.resolve(projectPath);
         const stat = await fs.stat(resolved);
         if (!stat.isDirectory()) throw new Error('Not a directory');
-        let built;
         let reusedSessionId = null;
+        let session;
         if (openingGeneral) {
-          if (forceNewSession) {
-            built = await buildRuntimeForSession({
-              model: bridge.getState().model,
-              projectDir: GENERAL_PROJECT_DIR
-            });
-          } else {
+          if (!forceNewSession) {
             const all = await listSessions(1000, { includeEmpty: true });
             const reusable = all.find((session) =>
               isGeneralProjectDir(session.projectDir) &&
               Number(session.messageCount || 0) === 0
             );
-            built = reusable
-              ? await buildRuntimeForSession({ sessionId: reusable.id, model: bridge.getState().model })
-              : await buildRuntimeForSession({ model: bridge.getState().model, projectDir: GENERAL_PROJECT_DIR });
+            reusedSessionId = reusable?.id || null;
           }
+          session = reusedSessionId
+            ? await loadSession(reusedSessionId)
+            : await createSession(GENERAL_PROJECT_DIR);
         } else {
           await patchWebuiActiveProjects({ action: 'activate', projectDir: resolved });
-          process.chdir(resolved);
-          currentProjectDir = process.cwd();
+          currentProjectDir = resolved;
           if (!forceNewSession) {
             reusedSessionId = await findPreferredSessionForProject(currentProjectDir);
           }
-          built = await buildRuntimeForSession({
-            sessionId: reusedSessionId || undefined,
-            model: bridge.getState().model,
-            projectDir: currentProjectDir
-          });
+          session = reusedSessionId
+            ? await loadSession(reusedSessionId)
+            : await createSession(currentProjectDir);
         }
-        const { runtime: newRuntime, session } = built;
-        await bridge.switchRuntime(newRuntime);
-        currentProjectDir = process.cwd();
+        const targetBridge = (await ensurePooledSession(session.id)).bridge;
+        bridge = targetBridge;
+        currentProjectDir = session.projectDir;
         const isGeneral = isGeneralProjectDir(currentProjectDir);
         jsonResponse(res, {
           ok: true,
@@ -1968,11 +2332,11 @@ async function main() {
           sessionId: session.id,
           isGeneral,
           reusedSession: Boolean(reusedSessionId),
-          state: { ...bridge.getState(), cwd: currentProjectDir, isGeneral },
+          state: { ...targetBridge.getState(), cwd: currentProjectDir, isGeneral },
           sessionData: {
-            messages: bridge.getSessionMessages(),
-            compact: bridge.getSessionCompactMeta(),
-            uiMessages: await bridge.getUiMessages(session.id)
+            messages: targetBridge.getSessionMessages(),
+            compact: targetBridge.getSessionCompactMeta(),
+            uiMessages: await targetBridge.getUiMessages(session.id)
           }
         });
       } catch (err) {
@@ -2459,11 +2823,12 @@ async function main() {
     });
   });
 
-  const cleanup = async () => {
-    await bridge.dispose();
-    server.close();
-    process.exit(0);
-  };
+  const cleanup = createServerCleanup({
+    runtimeEvictionTimer,
+    pool,
+    runtimeStatusStore,
+    server
+  });
   process.on('SIGINT', cleanup);
   process.on('SIGTERM', cleanup);
 }

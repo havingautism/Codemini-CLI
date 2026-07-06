@@ -30,6 +30,7 @@ import {
 import { formatTimestamp } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
 import * as api from "@/hooks/use-api.js";
+import { useApp } from "@/context/app-context.jsx";
 import { ROLE_BADGE_CLASS, ROLE_PILLS } from "./PlanProgress.jsx";
 import { PlanStepStatusGlyph } from "@/components/plan-step-icons.jsx";
 import { PatchDiff } from "@pierre/diffs/react";
@@ -1080,6 +1081,7 @@ function FileChangesOverviewBar({ changes }) {
 }
 
 function FileChangesSummary({ changes }) {
+  const { state } = useApp();
   const [openFiles, setOpenFiles] = useState(() => new Set());
   const [undoing, setUndoing] = useState(() => new Set());
   const [revertedUndoKeys, setRevertedUndoKeys] = useState(() => new Set());
@@ -1102,8 +1104,8 @@ function FileChangesSummary({ changes }) {
     try {
       const result =
         changeSetIds.length > 1
-          ? await api.undoSessionChanges(changeSetIds)
-          : await api.undoSessionChange(changeSetIds[0]);
+          ? await api.undoSessionChanges(state.currentSessionId, changeSetIds)
+          : await api.undoSessionChange(state.currentSessionId, changeSetIds[0]);
       if (result?.error || result?.ok === false)
         throw new Error(result.message || t("undoChangeFailed"));
       setRevertedUndoKeys((prev) => new Set(prev).add(undoKey));

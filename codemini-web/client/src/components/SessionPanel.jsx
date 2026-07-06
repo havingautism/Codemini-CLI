@@ -4,16 +4,59 @@ import { Badge } from '@/components/ui/badge';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ConfirmDialog } from '@/components/ConfirmDialog.jsx';
 import { Spinner } from '@/components/ui/spinner';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { cn } from '@/lib/utils';
 import { formatTimestamp } from '../../utils/time.js';
-import { DotsThree } from "@phosphor-icons/react";
+import { DotsThree, HandPalm, Warning } from "@phosphor-icons/react";
 import { useState } from 'react';
 import { t } from '../../i18n/index.js';
+import { ACTIVE_SESSION_STATUSES } from '@/lib/session-ui-state.js';
 
-export function SessionPanel({ sessions, sessionsLoading, currentId, onSwitch, onNew, onDelete }) {
+export function SessionPanel({
+  sessions,
+  sessionsLoading,
+  currentId,
+  onSwitch,
+  onNew,
+  onDelete,
+  onAbort,
+  onAbortAll,
+}) {
   const allSessions = Array.isArray(sessions) ? sessions : [];
+  const generalSessions = allSessions.filter((session) => session.isGeneral);
+  const projectSessions = allSessions.filter((session) => !session.isGeneral);
+  const orderedSessions = [...generalSessions, ...projectSessions];
+  const hasActiveSessions = allSessions.some((session) =>
+    ACTIVE_SESSION_STATUSES.has(session.runtimeStatus),
+  );
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [abortError, setAbortError] = useState("");
+
+  const abortFailureMessage = (count) =>
+    t("abortSessionsFailed").replace("{{count}}", String(count));
+
+  const handleAbort = async (sessionId) => {
+    setAbortError("");
+    try {
+      await onAbort(sessionId);
+    } catch {
+      setAbortError(abortFailureMessage(1));
+    }
+  };
+
+  const handleAbortAll = async () => {
+    setAbortError("");
+    try {
+      await onAbortAll();
+    } catch (error) {
+      const failedCount =
+        error instanceof AggregateError && error.errors.length
+          ? error.errors.length
+          : 1;
+      setAbortError(abortFailureMessage(failedCount));
+    }
+  };
 
   const confirmDelete = async () => {
     if (!pendingDelete) return;
@@ -27,8 +70,20 @@ export function SessionPanel({ sessions, sessionsLoading, currentId, onSwitch, o
     <div className="p-6 max-w-3xl mx-auto">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-[15px] font-semibold text-(--text-primary)">{t('sessions')}</h2>
-        <Button size="sm" onClick={onNew}>+ {t('newChat')}</Button>
+        <div className="flex items-center gap-2">
+          {hasActiveSessions ? (
+            <Button variant="destructive" size="sm" onClick={handleAbortAll}>
+              {t("abortAllSessions")}
+            </Button>
+          ) : null}
+          <Button size="sm" onClick={onNew}>+ {t('newChat')}</Button>
+        </div>
       </div>
+      {abortError ? (
+        <Alert variant="destructive" className="mb-4">
+          <AlertDescription>{abortError}</AlertDescription>
+        </Alert>
+      ) : null}
       <ScrollArea className="h-[calc(100vh-160px)]">
         <div className="flex flex-col gap-2">
           {sessionsLoading && allSessions.length === 0 && (
@@ -39,23 +94,83 @@ export function SessionPanel({ sessions, sessionsLoading, currentId, onSwitch, o
           {!sessionsLoading && allSessions.length === 0 && (
             <div className="text-center text-(--text-muted) text-[13px] py-8">{t('noSessions')}</div>
           )}
-          {allSessions.map(session => (
+          {orderedSessions.map(session => (
             <div
               key={session.id}
-              onClick={() => session.id !== currentId && onSwitch(session.id)}
               className={cn(
-                'w-full text-left rounded-lg border border-(--border-default) p-3 transition-colors bg-(--bg-primary) cursor-pointer',
+                'flex w-full items-center gap-3 rounded-lg border border-(--border-default) p-3 transition-colors bg-(--bg-primary)',
                 session.id === currentId ? 'border-(--accent-blue)/30 bg-(--accent-blue-bg)' : 'hover:bg-(--bg-hover)'
               )}
             >
-              <div className="flex items-center justify-between">
-                <span className="font-mono text-[11px] text-(--text-muted)">
+              <button
+                type="button"
+                onClick={() =>
+                  session.id !== currentId && onSwitch(session.id)
+                }
+                className="min-w-0 flex-1 cursor-pointer border-0 bg-transparent p-0 text-left"
+              >
+                <span className="block font-mono text-[11px] text-(--text-muted)">
                   {session.id?.slice(-12)}
                 </span>
-                <div className="flex items-center gap-2">
+                <span className="mt-1 block truncate text-[13px] font-medium text-(--text-primary)">
+                  {session.title || session.preview || (session.messageCount > 0 ? `${session.messageCount} ${t('messages')}` : t('emptyChat'))}
+                </span>
+                {session.updatedAt ? (
+                  <span className="mt-1 block text-[11px] text-(--text-muted)">
+                    {formatTimestamp(session.updatedAt)}
+                  </span>
+                ) : null}
+              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                  <Badge variant="outline">
+                    {session.isGeneral ? t("generalChat") : t("projects")}
+                  </Badge>
+                  <Badge
+                    variant={session.needsAttention ? "destructive" : "secondary"}
+                    aria-label={
+                      session.runtimeStatus === "queued"
+                        ? t("sessionQueuedPosition").replace(
+                            "{{position}}",
+                            String(session.queuePosition),
+                          )
+                        : t(`sessionStatus_${session.runtimeStatus || "idle"}`)
+                    }
+                  >
+                    {session.runtimeStatus === "queued"
+                      ? t("sessionQueuedPosition").replace(
+                          "{{position}}",
+                          String(session.queuePosition),
+                        )
+                      : t(`sessionStatus_${session.runtimeStatus || "idle"}`)}
+                  </Badge>
+                  {session.needsAttention ? (
+                    <HandPalm
+                      aria-label={t("sessionNeedsAttention")}
+                      className="text-(--accent-red)"
+                    />
+                  ) : null}
+                  {session.parallelWriteRisk ? (
+                    <Warning
+                      aria-label={t("parallelWriteWarning")}
+                      className="text-(--accent-yellow)"
+                    />
+                  ) : null}
                   {session.id === currentId && (
                     <Badge variant="secondary" className="text-[11px]">{t('current')}</Badge>
                   )}
+                  {ACTIVE_SESSION_STATUSES.has(session.runtimeStatus) ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={async (event) => {
+                        event.stopPropagation();
+                        await handleAbort(session.id);
+                      }}
+                      aria-label={t("abortSession")}
+                    >
+                      {t("abort")}
+                    </Button>
+                  ) : null}
                   <Popover>
                     <PopoverTrigger asChild>
                       <button
@@ -81,16 +196,7 @@ export function SessionPanel({ sessions, sessionsLoading, currentId, onSwitch, o
                       </button>
                     </PopoverContent>
                   </Popover>
-                </div>
               </div>
-              <div className="text-[13px] font-medium truncate mt-1 text-(--text-primary)">
-                {session.title || session.preview || (session.messageCount > 0 ? `${session.messageCount} ${t('messages')}` : t('emptyChat'))}
-              </div>
-              {session.updatedAt && (
-                <div className="text-[11px] text-(--text-muted) mt-1">
-                  {formatTimestamp(session.updatedAt)}
-                </div>
-              )}
             </div>
           ))}
         </div>
