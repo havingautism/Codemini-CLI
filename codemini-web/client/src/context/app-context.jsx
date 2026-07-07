@@ -264,10 +264,33 @@ function collapseRenderedSkillPrompt(content) {
   return prefix;
 }
 
-function updateToolInSegments(segments, toolId, updater) {
+function isStreamToolId(toolId) {
+  return String(toolId || "").startsWith("stream-tool-");
+}
+
+function toolCardMatches(card, tool) {
+  const cardId = String(card?.id || "");
+  const toolId = String(
+    tool && typeof tool === "object" ? tool.id || "" : tool || "",
+  );
+  if (cardId && cardId === toolId) return true;
+  const cardName = String(card?.name || "");
+  const toolName = String(
+    tool && typeof tool === "object" ? tool.name || "" : "",
+  );
+  return (
+    isStreamToolId(cardId) &&
+    toolId &&
+    !isStreamToolId(toolId) &&
+    cardName &&
+    cardName === toolName
+  );
+}
+
+function updateToolInSegments(segments, tool, updater) {
   return segments.map((seg) => {
     if (seg.type !== "tools") return seg;
-    const idx = seg.cards.findIndex((c) => c.id === toolId);
+    const idx = seg.cards.findIndex((card) => toolCardMatches(card, tool));
     if (idx === -1) return seg;
     const newCards = [...seg.cards];
     newCards[idx] = updater(newCards[idx]);
@@ -275,23 +298,23 @@ function updateToolInSegments(segments, toolId, updater) {
   });
 }
 
-function hasToolInSegments(segments, toolId) {
+function hasToolInSegments(segments, tool) {
   return (Array.isArray(segments) ? segments : []).some(
     (seg) =>
       seg?.type === "tools" &&
       Array.isArray(seg.cards) &&
-      seg.cards.some((card) => card.id === toolId),
+      seg.cards.some((card) => toolCardMatches(card, tool)),
   );
 }
 
-function updateToolCardInMessages(messages, toolId, updater) {
+function updateToolCardInMessages(messages, tool, updater) {
   let updated = false;
   const nextMessages = messages.map((message) => {
-    if (!hasToolInSegments(message.segments, toolId)) return message;
+    if (!hasToolInSegments(message.segments, tool)) return message;
     updated = true;
     return {
       ...message,
-      segments: updateToolInSegments(message.segments, toolId, updater),
+      segments: updateToolInSegments(message.segments, tool, updater),
     };
   });
   return { messages: nextMessages, updated };
@@ -304,11 +327,7 @@ function upsertToolCardInMessage(message, toolCard) {
   ).map((seg) => {
     if (seg?.type !== "tools" || !Array.isArray(seg.cards)) return seg;
     const idx = seg.cards.findIndex(
-      (card) =>
-        card.id === toolCard.id ||
-        (String(card.id || "").startsWith("stream-tool-") &&
-          !String(toolCard.id || "").startsWith("stream-tool-") &&
-          String(card.name || "") === String(toolCard.name || "")),
+      (card) => toolCardMatches(card, toolCard),
     );
     if (idx === -1) return seg;
     found = true;
@@ -2448,7 +2467,7 @@ export function AppProvider({ children }) {
           setState((prev) => {
             const { messages, updated } = updateToolCardInMessages(
               prev.messages,
-              event.id,
+              event,
               (tc) => {
                 const eventChanges =
                   Array.isArray(event.fileChanges) && event.fileChanges.length
@@ -2458,6 +2477,9 @@ export function AppProvider({ children }) {
                       : [];
                 const u = {
                   ...tc,
+                  id: event.id || tc.id,
+                  name: event.name || tc.name,
+                  displayName: event.displayName || tc.displayName,
                   status: "done",
                   durationMs: event.durationMs,
                 };
@@ -2500,8 +2522,14 @@ export function AppProvider({ children }) {
           setState((prev) => {
             const { messages, updated } = updateToolCardInMessages(
               prev.messages,
-              event.id,
-              (tc) => ({ ...tc, result: event.content || "" }),
+              event,
+              (tc) => ({
+                ...tc,
+                id: event.id || tc.id,
+                name: event.name || tc.name,
+                displayName: event.displayName || tc.displayName,
+                result: event.content || "",
+              }),
             );
             return updated ? { ...prev, messages } : prev;
           });
@@ -2512,9 +2540,12 @@ export function AppProvider({ children }) {
           setState((prev) => {
             const { messages, updated } = updateToolCardInMessages(
               prev.messages,
-              event.id,
+              event,
               (tc) => ({
                 ...tc,
+                id: event.id || tc.id,
+                name: event.name || tc.name,
+                displayName: event.displayName || tc.displayName,
                 status: "error",
                 durationMs: event.durationMs,
                 summary: event.summary || tc.summary,
@@ -2529,9 +2560,12 @@ export function AppProvider({ children }) {
           setState((prev) => {
             const { messages, updated } = updateToolCardInMessages(
               prev.messages,
-              event.id,
+              event,
               (tc) => ({
                 ...tc,
+                id: event.id || tc.id,
+                name: event.name || tc.name,
+                displayName: event.displayName || tc.displayName,
                 status: "blocked",
                 summary: t("toolBlocked"),
               }),

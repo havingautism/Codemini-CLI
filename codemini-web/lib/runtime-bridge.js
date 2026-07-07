@@ -113,10 +113,29 @@ function addToolToSegments(segments, toolCard) {
   return [...segments, { type: 'tools', cards: [toolCard] }];
 }
 
-function updateToolInSegments(segments, toolId, updater) {
+function isStreamToolId(toolId) {
+  return String(toolId || '').startsWith('stream-tool-');
+}
+
+function toolCardMatches(card, tool) {
+  const cardId = String(card?.id || '');
+  const toolId = String(tool && typeof tool === 'object' ? tool.id || '' : tool || '');
+  if (cardId && cardId === toolId) return true;
+  const cardName = String(card?.name || '');
+  const toolName = String(tool && typeof tool === 'object' ? tool.name || '' : '');
+  return (
+    isStreamToolId(cardId) &&
+    toolId &&
+    !isStreamToolId(toolId) &&
+    cardName &&
+    cardName === toolName
+  );
+}
+
+function updateToolInSegments(segments, tool, updater) {
   return (Array.isArray(segments) ? segments : []).map((seg) => {
     if (seg.type !== 'tools') return seg;
-    const idx = seg.cards.findIndex((card) => card.id === toolId);
+    const idx = seg.cards.findIndex((card) => toolCardMatches(card, tool));
     if (idx === -1) return seg;
     const cards = [...seg.cards];
     cards[idx] = updater(cards[idx]);
@@ -124,25 +143,39 @@ function updateToolInSegments(segments, toolId, updater) {
   });
 }
 
-function hasToolInSegments(segments, toolId) {
+function hasToolInSegments(segments, tool) {
   return (Array.isArray(segments) ? segments : []).some((seg) =>
     seg?.type === 'tools' &&
     Array.isArray(seg.cards) &&
-    seg.cards.some((card) => card.id === toolId)
+    seg.cards.some((card) => toolCardMatches(card, tool))
   );
 }
 
-function updateToolInMessages(messages, toolId, updater) {
+function updateToolInMessages(messages, tool, updater) {
   let updated = false;
   const nextMessages = (Array.isArray(messages) ? messages : []).map((message) => {
-    if (!hasToolInSegments(message.segments, toolId)) return message;
+    if (!hasToolInSegments(message.segments, tool)) return message;
     updated = true;
     return {
       ...message,
-      segments: updateToolInSegments(message.segments, toolId, updater)
+      segments: updateToolInSegments(message.segments, tool, updater)
     };
   });
   return { messages: nextMessages, updated };
+}
+
+function upsertToolCardInSegments(segments, toolCard) {
+  let found = false;
+  const source = (Array.isArray(segments) ? segments : []).map((seg) => {
+    if (seg?.type !== 'tools' || !Array.isArray(seg.cards)) return seg;
+    const idx = seg.cards.findIndex((card) => toolCardMatches(card, toolCard));
+    if (idx === -1) return seg;
+    found = true;
+    const cards = [...seg.cards];
+    cards[idx] = { ...cards[idx], ...toolCard };
+    return { ...seg, cards };
+  });
+  return found ? source : addToolToSegments(source, toolCard);
 }
 
 function appendTextSegment(segments, delta, isStreaming = true) {
@@ -524,11 +557,11 @@ export class RuntimeBridge {
     this.#persistUiTranscriptSoon();
   }
 
-  #updateUiToolCard(toolId, updater, mapMessage = null) {
-    const result = updateToolInMessages(this.#uiMessages, toolId, updater);
+  #updateUiToolCard(tool, updater, mapMessage = null) {
+    const result = updateToolInMessages(this.#uiMessages, tool, updater);
     if (!result.updated) return false;
     this.#uiMessages = typeof mapMessage === 'function'
-      ? result.messages.map((message) => hasToolInSegments(message.segments, toolId) ? mapMessage(message) : message)
+      ? result.messages.map((message) => hasToolInSegments(message.segments, tool) ? mapMessage(message) : message)
       : result.messages;
     this.#persistUiTranscriptSoon();
     return true;
@@ -692,7 +725,7 @@ export class RuntimeBridge {
           };
           this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
             ...message,
-            segments: addToolToSegments(finishThinkingSegments(message.segments), toolCard)
+            segments: upsertToolCardInSegments(finishThinkingSegments(message.segments), toolCard)
           }));
         }
         break;
@@ -702,9 +735,12 @@ export class RuntimeBridge {
           ? event.fileChanges
           : (event.fileChange?.path ? [event.fileChange] : []);
         this.#updateUiToolCard(
-          event.id,
+          event,
           (card) => ({
             ...card,
+            id: event.id || card.id,
+            name: event.name || card.name,
+            displayName: event.displayName || card.displayName,
             status: 'done',
             durationMs: event.durationMs,
             summary: event.summary || card.summary,
@@ -722,12 +758,21 @@ export class RuntimeBridge {
         break;
       }
       case 'tool:result': {
-        this.#updateUiToolCard(event.id, (card) => ({ ...card, result: event.content || '' }));
+        this.#updateUiToolCard(event, (card) => ({
+          ...card,
+          id: event.id || card.id,
+          name: event.name || card.name,
+          displayName: event.displayName || card.displayName,
+          result: event.content || ''
+        }));
         break;
       }
       case 'tool:error': {
-        this.#updateUiToolCard(event.id, (card) => ({
+        this.#updateUiToolCard(event, (card) => ({
           ...card,
+          id: event.id || card.id,
+          name: event.name || card.name,
+          displayName: event.displayName || card.displayName,
           status: 'error',
           durationMs: event.durationMs,
           summary: event.summary || card.summary
@@ -735,8 +780,11 @@ export class RuntimeBridge {
         break;
       }
       case 'tool:blocked': {
-        this.#updateUiToolCard(event.id, (card) => ({
+        this.#updateUiToolCard(event, (card) => ({
           ...card,
+          id: event.id || card.id,
+          name: event.name || card.name,
+          displayName: event.displayName || card.displayName,
           status: 'blocked',
           summary: card.summary || 'Tool blocked'
         }));
@@ -965,7 +1013,11 @@ export class RuntimeBridge {
       default:
         break;
     }
-    return String(event.type).startsWith('assistant:')
+    return (
+      String(event.type).startsWith('assistant:') ||
+      String(event.type).startsWith('tool:') ||
+      String(event.type).startsWith('skill:')
+    )
       ? this.#uiActiveMsgId
       : null;
   }

@@ -77,13 +77,34 @@ function addToolToSegments(segments, toolCard) {
   return [...source, { type: "tools", cards: [toolCard] }];
 }
 
-function updateToolInSegments(segments, toolId, updater) {
+function isStreamToolId(toolId) {
+  return String(toolId || "").startsWith("stream-tool-");
+}
+
+function toolCardMatches(card, tool) {
+  const cardId = String(card?.id || "");
+  const toolId = String(tool?.id || "");
+  if (cardId && cardId === toolId) return true;
+  const cardName = String(card?.name || "");
+  const toolName = String(tool?.name || "");
+  return (
+    isStreamToolId(cardId) &&
+    toolId &&
+    !isStreamToolId(toolId) &&
+    cardName &&
+    cardName === toolName
+  );
+}
+
+function updateToolInSegments(segments, tool, updater) {
   let updated = false;
   const next = (Array.isArray(segments) ? segments : []).map((segment) => {
     if (segment?.type !== "tools" || !Array.isArray(segment.cards)) {
       return segment;
     }
-    const index = segment.cards.findIndex((card) => card.id === toolId);
+    const index = segment.cards.findIndex((card) =>
+      toolCardMatches(card, tool),
+    );
     if (index === -1) return segment;
     updated = true;
     const cards = [...segment.cards];
@@ -99,7 +120,10 @@ function upsertToolCardInSegments(segments, toolCard) {
     if (segment?.type !== "tools" || !Array.isArray(segment.cards)) {
       return segment;
     }
-    const index = segment.cards.findIndex((card) => card.id === toolCard.id);
+    const index = segment.cards.findIndex(
+      (card) =>
+        toolCardMatches(card, toolCard),
+    );
     if (index === -1) return segment;
     found = true;
     const cards = [...segment.cards];
@@ -262,8 +286,20 @@ export function reduceSessionTranscriptEvent(state, event) {
 
   let sessionMessagesById = state.sessionMessagesById;
   const messages = state.sessionMessagesById[sessionId] || [];
-  const messageId =
-    event.messageId || event.operationId || `session-stream-${sessionId}`;
+  const messageId = (() => {
+    if (event.messageId || event.operationId) {
+      return event.messageId || event.operationId;
+    }
+    if (event.type !== "assistant:start") {
+      const liveMessage = [...messages]
+        .reverse()
+        .find((message) => message && message.isComplete !== true);
+      if (liveMessage?.id) return liveMessage.id;
+      const latestMessage = messages.at(-1);
+      if (latestMessage?.id) return latestMessage.id;
+    }
+    return `session-stream-${sessionId}`;
+  })();
   if (event.type === "assistant:start") {
     const existing = messages.some((message) => message.id === messageId);
     if (!existing) {
@@ -439,8 +475,14 @@ export function reduceSessionTranscriptEvent(state, event) {
         if (message.id !== messageId) return message;
         const { segments, updated } = updateToolInSegments(
           message.segments,
-          event.id,
-          (card) => ({ ...card, result: event.content || "" }),
+          event,
+          (card) => ({
+            ...card,
+            id: event.id || card.id,
+            name: event.name || card.name,
+            displayName: event.displayName || card.displayName,
+            result: event.content || "",
+          }),
         );
         return updated ? { ...message, segments } : message;
       }),
@@ -462,11 +504,14 @@ export function reduceSessionTranscriptEvent(state, event) {
         if (message.id !== messageId) return message;
         const { segments, updated } = updateToolInSegments(
           message.segments,
-          event.id,
+          event,
           (card) => {
             if (event.type === "tool:blocked") {
               return {
                 ...card,
+                id: event.id || card.id,
+                name: event.name || card.name,
+                displayName: event.displayName || card.displayName,
                 status: "blocked",
                 summary: event.summary || card.summary || "Tool blocked",
               };
@@ -474,6 +519,9 @@ export function reduceSessionTranscriptEvent(state, event) {
             if (event.type === "tool:error") {
               return {
                 ...card,
+                id: event.id || card.id,
+                name: event.name || card.name,
+                displayName: event.displayName || card.displayName,
                 status: "error",
                 durationMs: event.durationMs,
                 summary: event.summary || card.summary,
@@ -481,6 +529,9 @@ export function reduceSessionTranscriptEvent(state, event) {
             }
             return {
               ...card,
+              id: event.id || card.id,
+              name: event.name || card.name,
+              displayName: event.displayName || card.displayName,
               status: "done",
               durationMs: event.durationMs,
               ...(event.summary ? { summary: event.summary } : {}),
