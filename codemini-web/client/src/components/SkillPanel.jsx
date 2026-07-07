@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   CaretDown,
   CaretRight,
-  DotsThree,
   Download,
   Eye,
   Folder,
@@ -25,11 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Empty, EmptyDescription } from "@/components/ui/empty";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Separator } from "@/components/ui/separator";
 import { SettingsField } from "@/components/settings/SettingsField.jsx";
 import { SettingsSection } from "@/components/settings/SettingsSection.jsx";
 import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmentedControl.jsx";
@@ -48,10 +43,6 @@ import { t } from "../../i18n/index.js";
 
 const FILTERS = ["all", "enabled", "builtin", "custom"];
 const SKILL_MODES = ["always", "agent_requested", "manual"];
-const SKILL_TABS = [
-  { id: "browse", labelKey: "skillBrowseSection" },
-  { id: "install", labelKey: "skillInstallSection" },
-];
 
 function scopeLabel(scope) {
   if (scope === "builtin") return t("builtin");
@@ -376,7 +367,7 @@ function SkillEditorDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[86vh] max-h-[86vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[720px]">
+      <DialogContent className="flex h-[86vh] max-h-[86vh] flex-col gap-4 overflow-hidden p-0 sm:max-w-[720px]">
         <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
           <DialogTitle>{skill ? t("editSkill") : t("newSkill")}</DialogTitle>
         </DialogHeader>
@@ -409,7 +400,7 @@ function ViewDialog({ skill, open, onOpenChange }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[82vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[720px]">
+      <DialogContent className="flex max-h-[82vh] flex-col gap-4 overflow-hidden p-0 sm:max-w-[720px]">
         <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
           <DialogTitle>
             {skill?.name} {t("contentPreview")}
@@ -440,119 +431,207 @@ function ViewDialog({ skill, open, onOpenChange }) {
   );
 }
 
+function InstallDialog({
+  open,
+  onOpenChange,
+  installSource,
+  setInstallSource,
+  installTarget,
+  setInstallTarget,
+  installing,
+  installError,
+  onInstall,
+  projectTargets,
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex flex-col gap-4 overflow-hidden p-0 sm:max-w-[480px]">
+        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
+          <DialogTitle>{t("installSkill")}</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-4 px-4 pb-6 sm:px-6">
+          <SettingsSection description={t("skillInstallHint")} className="gap-4">
+            <SettingsField
+              id="skill-install-source"
+              label={t("skillInstallSource")}
+            >
+              <Input
+                value={installSource}
+                onChange={(e) => setInstallSource(e.target.value)}
+                placeholder={t("skillInstallPlaceholder")}
+                className="h-9 text-[13px]"
+              />
+            </SettingsField>
+            <SettingsField id="skill-install-target" label={t("skillScope")}>
+              <Select
+                value={
+                  installTarget || defaultSkillTarget(projectTargets)
+                }
+                onValueChange={setInstallTarget}
+              >
+                <SelectTrigger className="h-9 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectGroup>
+                    <SelectItem value="global">{t("globalScope")}</SelectItem>
+                    {projectTargets.map((item) => (
+                      <SelectItem
+                        key={item.dir}
+                        value={projectTargetValue(item.dir)}
+                      >
+                        {item.label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </SettingsField>
+          </SettingsSection>
+          {installError && (
+            <div className="text-[11px] text-(--accent-red)">{installError}</div>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              size="sm"
+            >
+              {t("cancel")}
+            </Button>
+            <Button
+              onClick={onInstall}
+              disabled={installing || !installSource.trim()}
+              size="sm"
+            >
+              <Download data-icon="inline-start" />
+              {installing ? t("installing") : t("installSkill")}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function modeBadgeClass(mode) {
+  if (mode === "always") return "bg-(--accent-blue-bg) text-(--accent-blue)";
+  if (mode === "agent_requested") return "bg-(--accent-purple-bg) text-(--accent-purple)";
+  return "bg-(--accent-orange-bg) text-(--accent-orange)";
+}
+
 function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
   const enabled = isEnabled(skill);
   const builtin = isBuiltin(skill);
   const author = skillAuthorLabel(skill);
+  const mode = normalizeSkillMode(skill.mode);
 
   return (
     <div
       className={cn(
-        "relative flex w-full items-stretch overflow-hidden rounded-md border bg-background transition-colors hover:bg-muted/50",
+        "flex flex-col gap-3 rounded-lg border p-4 transition-colors",
         enabled
           ? "border-primary/40 bg-primary/5"
           : "border-border/70 text-muted-foreground",
       )}
     >
-      <div className="flex min-w-0 flex-1 items-start gap-2.5 px-3 py-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="truncate text-[13px] font-medium text-foreground">
-              {skill.name}
-            </span>
-            {author && (
-              <Badge variant="secondary" className="h-4 rounded-md px-1.5 py-0 text-[10px]">
-                {author}
-              </Badge>
+      {/* Header: name + badges */}
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <span className="text-sm font-semibold text-foreground">
+          {skill.name}
+        </span>
+        {skill.version && skill.version !== "0.0.0" && (
+          <Badge variant="outline" className="h-4 rounded-md px-1.5 py-0 text-[11px]">
+            v{skill.version}
+          </Badge>
+        )}
+        {skill.mode && (
+          <span
+            className={cn(
+              "inline-flex h-4 items-center rounded-md px-1.5 py-0 text-[11px] font-medium",
+              modeBadgeClass(mode),
             )}
-            <Badge
-              variant={builtin ? "secondary" : "outline"}
-              className="h-4 rounded-md px-1.5 py-0 text-[10px]"
-            >
-              {scopeLabel(skill.scope)}
-            </Badge>
-            {skill.version && skill.version !== "0.0.0" && (
-              <span className="text-[10px] text-(--text-muted)">
-                v{skill.version}
-              </span>
-            )}
-            {skill.mode && (
-              <Badge
-                variant="outline"
-                className="h-4 rounded-md px-1.5 py-0 text-[10px]"
-              >
-                {t(`skillMode_${normalizeSkillMode(skill.mode)}`)}
-              </Badge>
-            )}
-          </div>
-          <div className="mt-0.5 line-clamp-1 text-[11px] leading-4 text-muted-foreground">
-            {skill.description || t("noDescription")}
-          </div>
-          {skill.triggers?.length > 0 && (
-            <div className="mt-1 truncate text-[10px] text-(--text-muted)">
-              {t("skillTriggers")}: {skill.triggers.join(", ")}
-            </div>
-          )}
-        </div>
+          >
+            {t(`skillMode_${mode}`)}
+          </span>
+        )}
+        {author && (
+          <Badge variant="secondary" className="h-4 rounded-md px-1.5 py-0 text-[11px]">
+            {author}
+          </Badge>
+        )}
+        <Badge
+          variant={builtin ? "secondary" : "outline"}
+          className="h-4 rounded-md px-1.5 py-0 text-[11px]"
+        >
+          {scopeLabel(skill.scope)}
+        </Badge>
       </div>
 
-      <div className="flex shrink-0 items-center gap-1 py-2 pr-2">
-        <Switch
-          checked={enabled}
-          onCheckedChange={(next) => onToggle(skill, next)}
-          aria-label={enabled ? t("disable") : t("enable")}
-        />
-        <Popover>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              className="inline-flex size-7 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
-              aria-label={t("skillActions")}
-            >
-              <DotsThree size={15} />
-            </button>
-          </PopoverTrigger>
-          <PopoverContent align="end" className="w-44 p-1">
-            <button
-              type="button"
-              className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--text-primary) hover:bg-(--bg-hover)"
-              onClick={() => onView(skill)}
-            >
-              <Eye size={14} />
-              {t("view")}
-            </button>
-            <button
-              type="button"
-              className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--text-primary) hover:bg-(--bg-hover)"
-              onClick={() => onEdit(skill)}
-            >
-              {builtin ? (
-                <SlidersHorizontal size={14} />
-              ) : (
-                <PencilSimple size={14} />
-              )}
-              {builtin ? t("skillRoutingSettings") : t("edit")}
-            </button>
-            {!builtin && (
-              <button
-                type="button"
-                className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
-                onClick={() => {
-                  if (
-                    confirm(
-                      t("confirmDeleteSkill").replace("{{name}}", skill.name),
-                    )
-                  ) {
-                    onDelete(skill);
-                  }
-                }}
-              >
-                <Trash size={14} />
-                {t("delete")}
-              </button>
-            )}
-          </PopoverContent>
-        </Popover>
+      {/* Description */}
+      {skill.description ? (
+        <p className="line-clamp-2 text-xs text-muted-foreground">
+          {skill.description}
+        </p>
+      ) : (
+        <p className="text-xs text-muted-foreground/60">{t("noDescription")}</p>
+      )}
+
+      {/* Triggers */}
+      {skill.triggers?.length > 0 && (
+        <p className="text-xs text-muted-foreground">
+          {t("skillTriggers")}: {skill.triggers.join(", ")}
+        </p>
+      )}
+
+      {/* Footer: actions + toggle */}
+      <Separator />
+      <div className="flex items-center gap-0.5">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          onClick={() => onView(skill)}
+          aria-label={t("view")}
+          title={t("view")}
+        >
+          <Eye size={15} />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          onClick={() => onEdit(skill)}
+          aria-label={builtin ? t("skillRoutingSettings") : t("edit")}
+          title={builtin ? t("skillRoutingSettings") : t("edit")}
+        >
+          {builtin ? <SlidersHorizontal size={15} /> : <PencilSimple size={15} />}
+        </Button>
+        {!builtin && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="text-(--accent-red) hover:bg-(--accent-red-bg) hover:text-(--accent-red)"
+            onClick={() => {
+              if (
+                confirm(
+                  t("confirmDeleteSkill").replace("{{name}}", skill.name),
+                )
+              ) {
+                onDelete(skill);
+              }
+            }}
+            aria-label={t("delete")}
+            title={t("delete")}
+          >
+            <Trash size={15} />
+          </Button>
+        )}
+        <div className="ml-auto">
+          <Switch
+            checked={enabled}
+            onCheckedChange={(next) => onToggle(skill, next)}
+            aria-label={enabled ? t("disable") : t("enable")}
+          />
+        </div>
       </div>
     </div>
   );
@@ -603,7 +682,7 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
   const [installTarget, setInstallTarget] = useState("");
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState("");
-  const [activeTab, setActiveTab] = useState("browse");
+  const [installOpen, setInstallOpen] = useState(false);
   const projectKey = projectDirsKey(projectDirs);
   const requestProjectDirs = useMemo(
     () => (projectKey ? projectKey.split("\n") : []),
@@ -619,10 +698,6 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
       setInstallTarget("");
     }
   }, [installTarget, normalizedProjectTargets]);
-
-  useEffect(() => {
-    if (installError) setActiveTab("install");
-  }, [installError]);
 
   const loadSkills = useCallback(async () => {
     setLoading(true);
@@ -691,7 +766,7 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
       });
       if (result?.error) throw new Error(result.message || "Install failed");
       setInstallSource("");
-      setActiveTab("browse");
+      setInstallOpen(false);
       await loadSkills();
     } catch (err) {
       setInstallError(err.message || "Install failed");
@@ -830,126 +905,66 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
   return (
     <>
       <div className="flex min-h-0 flex-1 flex-col gap-4">
-        <SettingsSegmentedControl
-          idPrefix="skill-main-tab"
-          value={activeTab}
-          onValueChange={setActiveTab}
-          options={SKILL_TABS.map((tab) => ({
-            value: tab.id,
-            label: t(tab.labelKey),
-          }))}
-          className="shrink-0"
-        />
-
         <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth pr-3 [scrollbar-gutter:stable]">
-          {activeTab === "browse" ? (
-            <div className="flex flex-col gap-4">
-              <SettingsSection description={t("skillPanelHint")} className="gap-2">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  {skills.length > 0 && (
-                    <p className="text-[12px] text-(--text-muted)">
-                      {enabledCount}/{skills.length} {t("enabled")} · {customCount}{" "}
-                      {t("custom")}
-                    </p>
-                  )}
+          <div className="flex flex-col gap-4">
+            <SettingsSection description={t("skillPanelHint")} className="gap-2">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                {skills.length > 0 && (
+                  <p className="text-[12px] text-(--text-muted)">
+                    {enabledCount}/{skills.length} {t("enabled")} · {customCount}{" "}
+                    {t("custom")}
+                  </p>
+                )}
+                <div className="flex items-center gap-2 sm:ml-auto">
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setInstallError("");
+                      setInstallOpen(true);
+                    }}
+                    size="sm"
+                  >
+                    <Download size={13} />
+                    {t("installSkill")}
+                  </Button>
                   <Button
                     onClick={() => setEditing("new")}
                     size="sm"
-                    className="w-full sm:ml-auto sm:w-auto"
                   >
                     <Plus size={13} />
                     {t("addSkill")}
                   </Button>
                 </div>
-              </SettingsSection>
-
-              <div className="sticky top-0 z-10 flex flex-col gap-2 bg-background pb-2 sm:flex-row sm:items-center">
-                <div className="relative min-w-0 flex-1">
-                  <MagnifyingGlass
-                    size={13}
-                    className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-(--text-muted)"
-                  />
-                  <Input
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    placeholder={t("searchSkills")}
-                    className="h-9 pl-8 text-[13px]"
-                  />
-                </div>
-                <SettingsSegmentedControl
-                  idPrefix="skill-filter"
-                  value={filter}
-                  onValueChange={setFilter}
-                  options={FILTERS.map((item) => ({
-                    value: item,
-                    label: t(`filter_${item}`),
-                  }))}
-                  className="w-full shrink-0 sm:min-w-[240px] sm:w-auto [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
-                />
               </div>
-
-              {renderSkillList()}
-            </div>
-          ) : (
-            <SettingsSection
-              title={t("skillInstallSection")}
-              description={t("skillInstallHint")}
-              className="gap-4"
-            >
-              <SettingsField
-                id="skill-install-source"
-                label={t("skillInstallSource")}
-              >
-                <Input
-                  value={installSource}
-                  onChange={(e) => setInstallSource(e.target.value)}
-                  placeholder={t("skillInstallPlaceholder")}
-                  className="h-9 text-[13px]"
-                />
-              </SettingsField>
-              <SettingsField id="skill-install-target" label={t("skillScope")}>
-                <Select
-                  value={
-                    installTarget || defaultSkillTarget(normalizedProjectTargets)
-                  }
-                  onValueChange={setInstallTarget}
-                >
-                  <SelectTrigger className="h-9 w-full sm:max-w-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent align="start">
-                    <SelectGroup>
-                      <SelectItem value="global">{t("globalScope")}</SelectItem>
-                      {normalizedProjectTargets.map((item) => (
-                        <SelectItem
-                          key={item.dir}
-                          value={projectTargetValue(item.dir)}
-                        >
-                          {item.label}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  </SelectContent>
-                </Select>
-              </SettingsField>
-              <div>
-                <Button
-                  onClick={handleInstall}
-                  disabled={installing || !installSource.trim()}
-                  size="sm"
-                  className="w-full sm:w-auto"
-                >
-                  <Download data-icon="inline-start" />
-                  {installing ? t("installing") : t("installSkill")}
-                </Button>
-              </div>
-              {installError && (
-                <div className="text-[11px] text-(--accent-red)">
-                  {installError}
-                </div>
-              )}
             </SettingsSection>
-          )}
+
+            <div className="sticky top-0 z-10 flex flex-col gap-2 bg-background pb-2 sm:flex-row sm:items-center">
+              <div className="relative min-w-0 flex-1">
+                <MagnifyingGlass
+                  size={13}
+                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-(--text-muted)"
+                />
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={t("searchSkills")}
+                  className="h-9 pl-8 text-[13px]"
+                />
+              </div>
+              <SettingsSegmentedControl
+                idPrefix="skill-filter"
+                value={filter}
+                onValueChange={setFilter}
+                options={FILTERS.map((item) => ({
+                  value: item,
+                  label: t(`filter_${item}`),
+                }))}
+                className="w-full shrink-0 sm:min-w-[240px] sm:w-auto [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
+              />
+            </div>
+
+            {renderSkillList()}
+          </div>
         </div>
       </div>
 
@@ -968,6 +983,18 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
         onOpenChange={(open) => {
           if (!open) setEditing(null);
         }}
+      />
+      <InstallDialog
+        open={installOpen}
+        onOpenChange={setInstallOpen}
+        installSource={installSource}
+        setInstallSource={setInstallSource}
+        installTarget={installTarget}
+        setInstallTarget={setInstallTarget}
+        installing={installing}
+        installError={installError}
+        onInstall={handleInstall}
+        projectTargets={normalizedProjectTargets}
       />
     </>
   );

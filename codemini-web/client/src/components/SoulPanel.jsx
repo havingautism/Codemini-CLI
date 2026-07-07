@@ -1,7 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import {
-  DotsThree,
-  Eye,
   MagnifyingGlass,
   MaskHappy,
   PencilSimple,
@@ -13,14 +11,10 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Empty, EmptyDescription } from "@/components/ui/empty";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import { SettingsField } from "@/components/settings/SettingsField.jsx";
 import { SettingsSection } from "@/components/settings/SettingsSection.jsx";
 import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmentedControl.jsx";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -119,7 +113,7 @@ function SoulEditor({ soul, onSave, onCancel }) {
 function SoulEditorDialog({ soul, open, onSave, onOpenChange }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[86vh] max-h-[86vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[720px]">
+      <DialogContent className="flex h-[86vh] max-h-[86vh] flex-col gap-4 overflow-hidden p-0 sm:max-w-[720px]">
         <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
           <DialogTitle>{soul ? t("editSoul") : t("newSoul")}</DialogTitle>
         </DialogHeader>
@@ -151,7 +145,7 @@ function ViewDialog({ soul, open, onOpenChange }) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[82vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[720px]">
+      <DialogContent className="flex max-h-[82vh] flex-col gap-4 overflow-hidden p-0 sm:max-w-[720px]">
         <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
           <DialogTitle>
             {soul?.name} {t("contentPreview")}
@@ -213,128 +207,97 @@ function SoulChoiceCard({
   const active = !!soul.active;
   const isCustom = soul.scope !== "builtin";
 
-  const handleSelect = () => {
-    if (disabled || active) return;
-    onActivate(soul.name);
+  const handleToggle = (checked) => {
+    if (disabled) return;
+    if (checked && !active) {
+      onActivate(soul.name);
+    }
   };
 
   return (
     <div
       className={cn(
-        "relative flex w-full items-stretch overflow-hidden rounded-lg border transition-colors",
+        "flex flex-col gap-2 rounded-lg border px-3 py-2.5 transition-colors",
         active
           ? "border-primary/40 bg-primary/5"
           : "border-border bg-background hover:bg-muted/50",
       )}
     >
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={handleSelect}
-        aria-pressed={active}
-        aria-label={
-          active
-            ? `${soul.name} (${t("current")})`
-            : `${t("activate")} ${soul.name}`
-        }
-        className={cn(
-          "flex min-w-0 flex-1 items-start gap-2.5 px-3 py-2.5 text-left",
-          disabled && "cursor-not-allowed opacity-60",
-          active ? "cursor-default" : "cursor-pointer",
-        )}
-      >
+      {/* Header: icon + name + badges + switch */}
+      <div className="flex items-center gap-2">
         <MaskHappy
-          size={16}
+          size={15}
           weight={active ? "fill" : "regular"}
           className={cn(
-            "mt-0.5 shrink-0",
+            "shrink-0",
             active ? "text-[var(--input-shell-accent)]" : "text-(--text-muted)",
           )}
         />
-        <span className="min-w-0 flex-1">
-          <span className="flex flex-wrap items-center gap-1.5">
-            <span className="truncate text-[13px] font-medium text-(--text-primary)">
-              {soul.name}
-            </span>
-            <Badge
-              variant="outline"
-              className="h-4 rounded-md px-1.5 py-0 text-[10px]"
-            >
-              {scopeLabel(soul.scope)}
-            </Badge>
-            {active && (
-              <Badge
-                variant="secondary"
-                className="h-4 rounded-md px-1.5 py-0 text-[10px]"
-              >
-                {t("current")}
-              </Badge>
-            )}
-          </span>
-          <span className="mt-0.5 line-clamp-2 text-[11px] font-normal leading-snug text-(--text-muted)">
-            {soul.preview || t("noPreview")}
-          </span>
+        <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground">
+          {soul.name}
         </span>
-      </button>
-      <div className="flex shrink-0 items-start py-1.5 pr-1.5">
-        <Popover>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              className="inline-flex size-7 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
-              aria-label={t("soulActions")}
-              onClick={(event) => event.stopPropagation()}
-            >
-              <DotsThree size={15} />
-            </button>
-          </PopoverTrigger>
-          <PopoverContent
-            align="end"
-            className="w-36 p-1"
-            onClick={(event) => event.stopPropagation()}
+        <Badge
+          variant="outline"
+          className="h-4 shrink-0 rounded-md px-1.5 py-0 text-[11px]"
+        >
+          {scopeLabel(soul.scope)}
+        </Badge>
+        {active && (
+          <Badge
+            variant="secondary"
+            className="h-4 shrink-0 rounded-md px-1.5 py-0 text-[11px]"
           >
-            <button
-              type="button"
-              className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--text-primary) hover:bg-(--bg-hover)"
-              onClick={() => onView(soul)}
-            >
-              <Eye size={14} />
-              {t("view")}
-            </button>
-            {isCustom && (
-              <>
-                <button
-                  type="button"
-                  disabled={disabled}
-                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--text-primary) hover:bg-(--bg-hover) disabled:opacity-50"
-                  onClick={() => onEdit(soul)}
-                >
-                  <PencilSimple size={14} />
-                  {t("edit")}
-                </button>
-                <button
-                  type="button"
-                  disabled={disabled}
-                  className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg) disabled:opacity-50"
-                  onClick={() => {
-                    if (disabled) return;
-                    if (
-                      confirm(
-                        t("confirmDeleteSoul").replace("{{name}}", soul.name),
-                      )
-                    ) {
-                      onDelete(soul.name);
-                    }
-                  }}
-                >
-                  <Trash size={14} />
-                  {t("delete")}
-                </button>
-              </>
-            )}
-          </PopoverContent>
-        </Popover>
+            {t("current")}
+          </Badge>
+        )}
+        <Switch
+          checked={active}
+          onCheckedChange={handleToggle}
+          disabled={disabled}
+          aria-label={active ? `${soul.name} (${t("current")})` : `${t("activate")} ${soul.name}`}
+        />
       </div>
+
+      {/* Preview */}
+      <p className="line-clamp-2 text-xs text-muted-foreground">
+        {soul.preview || t("noPreview")}
+      </p>
+
+      {/* Footer: actions (custom only) */}
+      {isCustom && (
+        <div className="flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            disabled={disabled}
+            onClick={() => onEdit(soul)}
+            aria-label={t("edit")}
+            title={t("edit")}
+          >
+            <PencilSimple size={14} />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            disabled={disabled}
+            className="text-(--accent-red) hover:bg-(--accent-red-bg) hover:text-(--accent-red)"
+            onClick={() => {
+              if (disabled) return;
+              if (
+                confirm(
+                  t("confirmDeleteSoul").replace("{{name}}", soul.name),
+                )
+              ) {
+                onDelete(soul.name);
+              }
+            }}
+            aria-label={t("delete")}
+            title={t("delete")}
+          >
+            <Trash size={14} />
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

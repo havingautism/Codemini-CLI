@@ -3,7 +3,6 @@ import {
   ArrowClockwise,
   CaretDown,
   CaretRight,
-  DotsThree,
   Eye,
   Folder,
   MagnifyingGlass,
@@ -22,12 +21,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Empty, EmptyDescription } from "@/components/ui/empty";
+import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
 import { SettingsSection } from "@/components/settings/SettingsSection.jsx";
 import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmentedControl.jsx";
 import { cn } from "@/lib/utils";
@@ -80,15 +75,18 @@ function memoryDisplayParts(memory) {
 
 function MemoryCardSkeleton() {
   return (
-    <div className="rounded-lg border border-(--border-default) px-3 py-2.5">
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center gap-2">
-          <Skeleton className="h-3.5 w-2/5" />
-          <Skeleton className="h-4 w-10" />
-        </div>
-        <Skeleton className="h-3 w-full" />
-        <Skeleton className="h-3 w-4/5" />
-        <Skeleton className="mt-0.5 h-2.5 w-16" />
+    <div className="flex flex-col gap-3 rounded-lg border border-(--border-default) p-4">
+      <div className="flex items-center gap-2">
+        <Skeleton className="h-4 w-2/5" />
+        <Skeleton className="h-4 w-10 rounded-md" />
+      </div>
+      <Skeleton className="h-3 w-full" />
+      <Skeleton className="h-3 w-4/5" />
+      <Skeleton className="h-px w-full" />
+      <div className="flex items-center gap-1">
+        <Skeleton className="h-3 w-16" />
+        <Skeleton className="ml-auto h-7 w-7 rounded-md" />
+        <Skeleton className="h-7 w-7 rounded-md" />
       </div>
     </div>
   );
@@ -135,7 +133,7 @@ function MemoryViewDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[82vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[720px]">
+      <DialogContent className="flex max-h-[82vh] flex-col gap-4 overflow-hidden p-0 sm:max-w-[720px]">
         <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
           <DialogTitle className="flex flex-wrap items-center gap-1.5 pr-6">
             <span className="truncate">{title}</span>
@@ -250,93 +248,82 @@ function MemoryCard({ memory, deleting, onView, onDelete }) {
   return (
     <div
       className={cn(
-        "group relative flex w-full items-stretch overflow-hidden rounded-lg border transition-colors",
+        "flex flex-col gap-3 rounded-lg border p-4 transition-colors",
         pinned
           ? "border-primary/40 bg-primary/5"
           : "border-border bg-background hover:bg-muted/50",
       )}
     >
-      <button
-        type="button"
-        onClick={handleView}
-        className="flex min-w-0 flex-1 cursor-pointer items-start gap-2.5 px-3 py-2.5 text-left"
-      >
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="truncate text-[13px] font-medium text-(--text-primary)">
-              {title}
-            </span>
-            <Badge
-              variant="outline"
-              className="h-4 rounded-md px-1.5 py-0 text-[10px]"
-            >
-              {memory.kind || "note"}
-            </Badge>
-            {memory.lifecycle && (
-              <Badge
-                variant="secondary"
-                className="h-4 rounded-md px-1.5 py-0 text-[10px]"
-              >
-                {memory.lifecycle}
-              </Badge>
-            )}
-            {pinned && (
-              <Badge
-                variant="secondary"
-                className="h-4 rounded-md px-1.5 py-0 text-[10px]"
-              >
-                {t("pinned")}
-              </Badge>
-            )}
-          </div>
-          {preview ? (
-            <div className="mt-0.5 line-clamp-2 whitespace-pre-wrap break-words text-[11px] font-normal leading-snug text-(--text-muted)">
-              {preview}
-            </div>
-          ) : null}
-          {updatedLabel ? (
-            <div className="mt-1.5 text-[10px] text-(--text-muted)">
-              {updatedLabel}
-            </div>
-          ) : null}
-        </div>
-      </button>
-      <div className="flex shrink-0 items-start py-1.5 pr-1.5">
-        <Popover>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              className="inline-flex size-7 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
-              aria-label={t("memoryActions")}
-              onClick={(event) => event.stopPropagation()}
-            >
-              <DotsThree size={15} />
-            </button>
-          </PopoverTrigger>
-          <PopoverContent
-            align="end"
-            className="w-36 p-1"
-            onClick={(event) => event.stopPropagation()}
+      {/* Header: title + badges */}
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <button
+          type="button"
+          onClick={handleView}
+          className="cursor-pointer text-left text-sm font-semibold text-foreground hover:underline"
+        >
+          {title}
+        </button>
+        <Badge
+          variant="outline"
+          className="h-4 rounded-md px-1.5 py-0 text-[11px]"
+        >
+          {memory.kind || "note"}
+        </Badge>
+        {memory.lifecycle && (
+          <Badge
+            variant="secondary"
+            className="h-4 rounded-md px-1.5 py-0 text-[11px]"
           >
-            <button
-              type="button"
-              className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--text-primary) hover:bg-(--bg-hover)"
-              onClick={handleView}
-            >
-              <Eye size={14} />
-              {t("view")}
-            </button>
-            <button
-              type="button"
-              disabled={deleting}
-              className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg) disabled:opacity-50"
-              onClick={handleDeleteClick}
-            >
-              <Trash size={14} />
-              {deleting ? t("deleting") : t("delete")}
-            </button>
-          </PopoverContent>
-        </Popover>
+            {memory.lifecycle}
+          </Badge>
+        )}
+        {pinned && (
+          <Badge
+            variant="secondary"
+            className="h-4 rounded-md px-1.5 py-0 text-[11px]"
+          >
+            {t("pinned")}
+          </Badge>
+        )}
+      </div>
+
+      {/* Body: preview */}
+      {preview ? (
+        <p className="line-clamp-2 text-xs whitespace-pre-wrap break-words text-muted-foreground">
+          {preview}
+        </p>
+      ) : (
+        <p className="text-xs text-muted-foreground/60">{t("noPreview")}</p>
+      )}
+
+      {/* Footer: time + actions */}
+      <Separator />
+      <div className="flex items-center gap-0.5">
+        {updatedLabel && (
+          <span className="text-xs text-muted-foreground">{updatedLabel}</span>
+        )}
+        <div className="ml-auto flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={handleView}
+            aria-label={t("view")}
+            title={t("view")}
+          >
+            <Eye size={15} />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            disabled={deleting}
+            className="text-(--accent-red) hover:bg-(--accent-red-bg) hover:text-(--accent-red)"
+            onClick={handleDeleteClick}
+            aria-label={t("delete")}
+            title={t("delete")}
+          >
+            <Trash size={15} />
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -457,7 +444,7 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[82vh] max-h-[82vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[720px]">
+      <DialogContent className="flex h-[82vh] max-h-[82vh] flex-col gap-4 overflow-hidden p-0 sm:max-w-[720px]">
         <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
           <DialogTitle>{t("memoryManagement")}</DialogTitle>
         </DialogHeader>
