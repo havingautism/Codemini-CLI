@@ -2,6 +2,11 @@ import { ApprovalManager } from './approval-manager.js';
 import { UserInputManager } from './user-input-manager.js';
 import { summarizeToolResult } from '../../src/core/tool-result-store.js';
 import { formatToolLabel } from '../../src/core/tool-display.js';
+import {
+  hasToolInSegments,
+  updateToolInMessages,
+  upsertToolCardInSegments,
+} from '../shared/tool-segments.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getSessionsDir } from '../../src/core/paths.js';
@@ -104,78 +109,6 @@ function updateSkillInSegments(segments, name, updater) {
 
 function updatePendingSkillSegments(segments, name, updater) {
   return updateSkillInSegments(segments, name, updater);
-}
-
-function addToolToSegments(segments, toolCard) {
-  if (!Array.isArray(segments) || segments.length === 0) return [{ type: 'tools', cards: [toolCard] }];
-  const last = segments[segments.length - 1];
-  if (last.type === 'tools') return [...segments.slice(0, -1), { ...last, cards: [...last.cards, toolCard] }];
-  return [...segments, { type: 'tools', cards: [toolCard] }];
-}
-
-function isStreamToolId(toolId) {
-  return String(toolId || '').startsWith('stream-tool-');
-}
-
-function toolCardMatches(card, tool) {
-  const cardId = String(card?.id || '');
-  const toolId = String(tool && typeof tool === 'object' ? tool.id || '' : tool || '');
-  if (cardId && cardId === toolId) return true;
-  const cardName = String(card?.name || '');
-  const toolName = String(tool && typeof tool === 'object' ? tool.name || '' : '');
-  return (
-    isStreamToolId(cardId) &&
-    toolId &&
-    !isStreamToolId(toolId) &&
-    cardName &&
-    cardName === toolName
-  );
-}
-
-function updateToolInSegments(segments, tool, updater) {
-  return (Array.isArray(segments) ? segments : []).map((seg) => {
-    if (seg.type !== 'tools') return seg;
-    const idx = seg.cards.findIndex((card) => toolCardMatches(card, tool));
-    if (idx === -1) return seg;
-    const cards = [...seg.cards];
-    cards[idx] = updater(cards[idx]);
-    return { ...seg, cards };
-  });
-}
-
-function hasToolInSegments(segments, tool) {
-  return (Array.isArray(segments) ? segments : []).some((seg) =>
-    seg?.type === 'tools' &&
-    Array.isArray(seg.cards) &&
-    seg.cards.some((card) => toolCardMatches(card, tool))
-  );
-}
-
-function updateToolInMessages(messages, tool, updater) {
-  let updated = false;
-  const nextMessages = (Array.isArray(messages) ? messages : []).map((message) => {
-    if (!hasToolInSegments(message.segments, tool)) return message;
-    updated = true;
-    return {
-      ...message,
-      segments: updateToolInSegments(message.segments, tool, updater)
-    };
-  });
-  return { messages: nextMessages, updated };
-}
-
-function upsertToolCardInSegments(segments, toolCard) {
-  let found = false;
-  const source = (Array.isArray(segments) ? segments : []).map((seg) => {
-    if (seg?.type !== 'tools' || !Array.isArray(seg.cards)) return seg;
-    const idx = seg.cards.findIndex((card) => toolCardMatches(card, toolCard));
-    if (idx === -1) return seg;
-    found = true;
-    const cards = [...seg.cards];
-    cards[idx] = { ...cards[idx], ...toolCard };
-    return { ...seg, cards };
-  });
-  return found ? source : addToolToSegments(source, toolCard);
 }
 
 function appendTextSegment(segments, delta, isStreaming = true) {

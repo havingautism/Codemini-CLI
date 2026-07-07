@@ -1,3 +1,8 @@
+import {
+  updateToolInSegments,
+  upsertToolCardInSegments,
+} from "../../../shared/tool-segments.js";
+
 function mergeSessionUsage(current, incoming) {
   if (!incoming || typeof incoming !== "object") return current;
   if (!current || typeof current !== "object") return { ...incoming };
@@ -62,75 +67,6 @@ function updateSkillInSegments(segments, name, updater) {
   return source.map((segment, index) =>
     index === targetIndex ? updater(segment) : segment,
   );
-}
-
-function addToolToSegments(segments, toolCard) {
-  const source = Array.isArray(segments) ? segments : [];
-  if (source.length === 0) return [{ type: "tools", cards: [toolCard] }];
-  const last = source[source.length - 1];
-  if (last?.type === "tools" && Array.isArray(last.cards)) {
-    return [
-      ...source.slice(0, -1),
-      { ...last, cards: [...last.cards, toolCard] },
-    ];
-  }
-  return [...source, { type: "tools", cards: [toolCard] }];
-}
-
-function isStreamToolId(toolId) {
-  return String(toolId || "").startsWith("stream-tool-");
-}
-
-function toolCardMatches(card, tool) {
-  const cardId = String(card?.id || "");
-  const toolId = String(tool?.id || "");
-  if (cardId && cardId === toolId) return true;
-  const cardName = String(card?.name || "");
-  const toolName = String(tool?.name || "");
-  return (
-    isStreamToolId(cardId) &&
-    toolId &&
-    !isStreamToolId(toolId) &&
-    cardName &&
-    cardName === toolName
-  );
-}
-
-function updateToolInSegments(segments, tool, updater) {
-  let updated = false;
-  const next = (Array.isArray(segments) ? segments : []).map((segment) => {
-    if (segment?.type !== "tools" || !Array.isArray(segment.cards)) {
-      return segment;
-    }
-    const index = segment.cards.findIndex((card) =>
-      toolCardMatches(card, tool),
-    );
-    if (index === -1) return segment;
-    updated = true;
-    const cards = [...segment.cards];
-    cards[index] = updater(cards[index]);
-    return { ...segment, cards };
-  });
-  return { segments: next, updated };
-}
-
-function upsertToolCardInSegments(segments, toolCard) {
-  let found = false;
-  const source = (Array.isArray(segments) ? segments : []).map((segment) => {
-    if (segment?.type !== "tools" || !Array.isArray(segment.cards)) {
-      return segment;
-    }
-    const index = segment.cards.findIndex(
-      (card) =>
-        toolCardMatches(card, toolCard),
-    );
-    if (index === -1) return segment;
-    found = true;
-    const cards = [...segment.cards];
-    cards[index] = { ...cards[index], ...toolCard };
-    return { ...segment, cards };
-  });
-  return found ? source : addToolToSegments(source, toolCard);
 }
 
 function appendUniqueFileChanges(current = [], next = []) {

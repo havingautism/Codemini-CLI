@@ -37,6 +37,11 @@ import {
   abortSessionIds,
   projectSessionRuntime,
 } from "../lib/session-ui-state.js";
+import {
+  hasToolInSegments,
+  updateToolInMessages,
+  upsertToolCardInSegments,
+} from "../../../shared/tool-segments.js";
 
 const AppContext = createContext(null);
 
@@ -264,81 +269,19 @@ function collapseRenderedSkillPrompt(content) {
   return prefix;
 }
 
-function isStreamToolId(toolId) {
-  return String(toolId || "").startsWith("stream-tool-");
-}
-
-function toolCardMatches(card, tool) {
-  const cardId = String(card?.id || "");
-  const toolId = String(
-    tool && typeof tool === "object" ? tool.id || "" : tool || "",
-  );
-  if (cardId && cardId === toolId) return true;
-  const cardName = String(card?.name || "");
-  const toolName = String(
-    tool && typeof tool === "object" ? tool.name || "" : "",
-  );
-  return (
-    isStreamToolId(cardId) &&
-    toolId &&
-    !isStreamToolId(toolId) &&
-    cardName &&
-    cardName === toolName
-  );
-}
-
-function updateToolInSegments(segments, tool, updater) {
-  return segments.map((seg) => {
-    if (seg.type !== "tools") return seg;
-    const idx = seg.cards.findIndex((card) => toolCardMatches(card, tool));
-    if (idx === -1) return seg;
-    const newCards = [...seg.cards];
-    newCards[idx] = updater(newCards[idx]);
-    return { ...seg, cards: newCards };
-  });
-}
-
-function hasToolInSegments(segments, tool) {
-  return (Array.isArray(segments) ? segments : []).some(
-    (seg) =>
-      seg?.type === "tools" &&
-      Array.isArray(seg.cards) &&
-      seg.cards.some((card) => toolCardMatches(card, tool)),
-  );
-}
-
-function updateToolCardInMessages(messages, tool, updater) {
-  let updated = false;
-  const nextMessages = messages.map((message) => {
-    if (!hasToolInSegments(message.segments, tool)) return message;
-    updated = true;
+function upsertToolCardInMessage(message, toolCard) {
+  if (hasToolInSegments(message.segments, toolCard)) {
     return {
       ...message,
-      segments: updateToolInSegments(message.segments, tool, updater),
+      segments: upsertToolCardInSegments(message.segments, toolCard),
     };
-  });
-  return { messages: nextMessages, updated };
-}
-
-function upsertToolCardInMessage(message, toolCard) {
-  let found = false;
-  const segments = (
-    Array.isArray(message.segments) ? message.segments : []
-  ).map((seg) => {
-    if (seg?.type !== "tools" || !Array.isArray(seg.cards)) return seg;
-    const idx = seg.cards.findIndex(
-      (card) => toolCardMatches(card, toolCard),
-    );
-    if (idx === -1) return seg;
-    found = true;
-    const cards = [...seg.cards];
-    cards[idx] = { ...cards[idx], ...toolCard };
-    return { ...seg, cards };
-  });
-  if (found) return { ...message, segments };
+  }
   return {
     ...message,
-    segments: addToolToSegments(finishThinkingSegments(segments), toolCard),
+    segments: upsertToolCardInSegments(
+      finishThinkingSegments(message.segments),
+      toolCard,
+    ),
   };
 }
 
@@ -378,17 +321,6 @@ function settleCompletedPlanToolCards(messages) {
       },
     ),
   }));
-}
-
-function addToolToSegments(segments, toolCard) {
-  if (segments.length === 0) return [{ type: "tools", cards: [toolCard] }];
-  const last = segments[segments.length - 1];
-  if (last.type === "tools")
-    return [
-      ...segments.slice(0, -1),
-      { ...last, cards: [...last.cards, toolCard] },
-    ];
-  return [...segments, { type: "tools", cards: [toolCard] }];
 }
 
 function createSkillSegment(event, status = "running") {
@@ -2465,7 +2397,7 @@ export function AppProvider({ children }) {
 
         case "tool:end": {
           setState((prev) => {
-            const { messages, updated } = updateToolCardInMessages(
+            const { messages, updated } = updateToolInMessages(
               prev.messages,
               event,
               (tc) => {
@@ -2520,7 +2452,7 @@ export function AppProvider({ children }) {
 
         case "tool:result": {
           setState((prev) => {
-            const { messages, updated } = updateToolCardInMessages(
+            const { messages, updated } = updateToolInMessages(
               prev.messages,
               event,
               (tc) => ({
@@ -2538,7 +2470,7 @@ export function AppProvider({ children }) {
 
         case "tool:error": {
           setState((prev) => {
-            const { messages, updated } = updateToolCardInMessages(
+            const { messages, updated } = updateToolInMessages(
               prev.messages,
               event,
               (tc) => ({
@@ -2558,7 +2490,7 @@ export function AppProvider({ children }) {
 
         case "tool:blocked": {
           setState((prev) => {
-            const { messages, updated } = updateToolCardInMessages(
+            const { messages, updated } = updateToolInMessages(
               prev.messages,
               event,
               (tc) => ({
