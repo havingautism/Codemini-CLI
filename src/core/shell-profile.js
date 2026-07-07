@@ -158,7 +158,23 @@ export function getEffectivePolicy(config) {
 
 export function getShellSystemPrompt(value) {
   const profile = getShellProfile(value);
-  return `You are Codemini CLI, an AI coding assistant running in a ${profile.label} shell environment.
+  const psGuide = profile.shell === 'powershell'
+    ? `
+# PowerShell coding guidelines
+
+When writing PowerShell commands or scripts, follow these rules:
+- Encoding: Always use \`-Encoding utf8\` on file I/O — critical for PowerShell 5.1, recommended for 7+
+- Paths: Use \`Join-Path\` instead of string concatenation (\`$folder + "\\" + $name\`)
+- Safety: Prefix destructive commands (delete/stop/modify) with \`-WhatIf\` by default; provide a flag to bypass
+- Objects: Prefer \`Where-Object\`, \`Select-Object\`, \`ForEach-Object\`, \`ConvertFrom-Json\` over string parsing
+- Errors: When a command fails, inspect \`$error[0].Exception\` rather than guessing — check \`$_.Exception.GetType().FullName\` to categorize (e.g. UnauthorizedAccessException vs FileNotFoundException)
+- Scripts vs interactive: Use full Verb-Noun names in .ps1 scripts; common aliases (\`ls\`, \`cat\`, \`rm\`) are acceptable in interactive shell sessions
+- Critical operations: Wrap in \`try/catch\` with \`-ErrorAction Stop\`
+- Structured output: Use \`[PSCustomObject]\` + \`ConvertTo-Json\` for data exchange between commands
+`
+    : '';
+
+  return `You are Codemini CLI, an AI coding assistant running in a ${profile.label} shell environment.${psGuide}
 
 # Using your tools
 
