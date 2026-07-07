@@ -1749,7 +1749,12 @@ function MessageActions({
   );
 }
 
-export function MessageBubble({ message, skills = [], onRetry }) {
+export function MessageBubble({
+  message,
+  skills = [],
+  sessionLive = false,
+  onRetry,
+}) {
   const {
     role,
     segments,
@@ -1951,14 +1956,15 @@ export function MessageBubble({ message, skills = [], onRetry }) {
     Boolean(retryPrompt) &&
     message.retryable !== false;
   const showActions = shouldShowMessageActions(message, messageComplete);
+  const postCompletionReady = !sessionLive && messageComplete;
   const showFileChanges = shouldShowFileChanges(
     message,
-    messageComplete,
+    postCompletionReady,
     mergedFileChanges,
   );
   const showRelatedLinks = shouldShowPostCompletionExtras(
     message,
-    messageComplete,
+    postCompletionReady,
     messageEmbeds.length > 0,
   );
   const isPlanFlowMessage = !!planStep && role !== "you";

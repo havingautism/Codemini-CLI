@@ -121,6 +121,7 @@ export function ChatPanel({
   skills = [],
   gitInfo,
   messagesLoading,
+  sessionLive = false,
   isGeneral = false,
   onRetryMessage,
 }) {
@@ -261,6 +262,7 @@ export function ChatPanel({
                   <MessageBubble
                     message={msg}
                     skills={skills}
+                    sessionLive={sessionLive}
                     onRetry={onRetryMessage}
                   />
                 </MessageScrollerItem>
