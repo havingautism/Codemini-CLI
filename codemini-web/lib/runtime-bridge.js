@@ -1092,7 +1092,7 @@ export class RuntimeBridge {
     }
     this.#busy = true;
     this.#publishLifecycle('running');
-    this.#uiPendingSkillBadges = selectedBadges;
+    this.#uiPendingSkillBadges = [];
     this.#uiPendingSkillSegments = [];
     const submitToken = this.#invalidateSubmit();
     const operationId = `chat-${Date.now()}-${++this.#operationSequence}`;
@@ -1102,16 +1102,6 @@ export class RuntimeBridge {
       const messageId = this.#recordUiEvent(event);
       this.#publish(messageId ? { ...event, messageId } : event);
     };
-    for (const name of selectedSkills) {
-      const startedAt = new Date().toISOString();
-      onAgentEvent({ type: 'skill:start', name, startedAt });
-      onAgentEvent({
-        type: 'skill:end',
-        name,
-        startedAt,
-        endedAt: new Date().toISOString()
-      });
-    }
     Promise.resolve().then(() => run(onAgentEvent)).then((result) => {
       if (!this.#isSubmitActive(submitToken)) return;
       if (this.#uiActiveMsgId) {

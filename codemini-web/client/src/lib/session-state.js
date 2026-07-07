@@ -19,6 +19,110 @@ function mergeSessionUsage(current, incoming) {
   return out;
 }
 
+function createSkillSegment(event, status = "running") {
+  const now = new Date().toISOString();
+  return {
+    type: "skill",
+    name: event.name,
+    status,
+    startedAt: event.startedAt || now,
+    ...(status === "done" || status === "error"
+      ? { endedAt: event.endedAt || now }
+      : {}),
+    ...(status === "error" && event.summary ? { summary: event.summary } : {}),
+  };
+}
+
+function addSkillToSegments(segments, event) {
+  const source = Array.isArray(segments) ? segments : [];
+  const existingIndex = source.findIndex(
+    (segment) => segment?.type === "skill" && segment.name === event.name,
+  );
+  if (existingIndex === -1) return [...source, createSkillSegment(event)];
+  return source.map((segment, index) =>
+    index === existingIndex ? createSkillSegment(event) : segment,
+  );
+}
+
+function updateSkillInSegments(segments, name, updater) {
+  const source = Array.isArray(segments) ? segments : [];
+  let targetIndex = -1;
+  for (let i = source.length - 1; i >= 0; i -= 1) {
+    const segment = source[i];
+    if (
+      segment?.type === "skill" &&
+      segment.name === name &&
+      segment.status === "running"
+    ) {
+      targetIndex = i;
+      break;
+    }
+  }
+  if (targetIndex === -1) return source;
+  return source.map((segment, index) =>
+    index === targetIndex ? updater(segment) : segment,
+  );
+}
+
+function addToolToSegments(segments, toolCard) {
+  const source = Array.isArray(segments) ? segments : [];
+  if (source.length === 0) return [{ type: "tools", cards: [toolCard] }];
+  const last = source[source.length - 1];
+  if (last?.type === "tools" && Array.isArray(last.cards)) {
+    return [
+      ...source.slice(0, -1),
+      { ...last, cards: [...last.cards, toolCard] },
+    ];
+  }
+  return [...source, { type: "tools", cards: [toolCard] }];
+}
+
+function updateToolInSegments(segments, toolId, updater) {
+  let updated = false;
+  const next = (Array.isArray(segments) ? segments : []).map((segment) => {
+    if (segment?.type !== "tools" || !Array.isArray(segment.cards)) {
+      return segment;
+    }
+    const index = segment.cards.findIndex((card) => card.id === toolId);
+    if (index === -1) return segment;
+    updated = true;
+    const cards = [...segment.cards];
+    cards[index] = updater(cards[index]);
+    return { ...segment, cards };
+  });
+  return { segments: next, updated };
+}
+
+function upsertToolCardInSegments(segments, toolCard) {
+  let found = false;
+  const source = (Array.isArray(segments) ? segments : []).map((segment) => {
+    if (segment?.type !== "tools" || !Array.isArray(segment.cards)) {
+      return segment;
+    }
+    const index = segment.cards.findIndex((card) => card.id === toolCard.id);
+    if (index === -1) return segment;
+    found = true;
+    const cards = [...segment.cards];
+    cards[index] = { ...cards[index], ...toolCard };
+    return { ...segment, cards };
+  });
+  return found ? source : addToolToSegments(source, toolCard);
+}
+
+function appendUniqueFileChanges(current = [], next = []) {
+  const output = Array.isArray(current) ? [...current] : [];
+  const seen = new Set(
+    output.map((item) => `${item?.path || ""}:${item?.status || ""}`),
+  );
+  for (const item of Array.isArray(next) ? next : []) {
+    const key = `${item?.path || ""}:${item?.status || ""}`;
+    if (!item?.path || seen.has(key)) continue;
+    seen.add(key);
+    output.push(item);
+  }
+  return output;
+}
+
 export function createSessionState(overrides = {}) {
   return {
     currentSessionId: null,
@@ -256,6 +360,146 @@ export function reduceSessionTranscriptEvent(state, event) {
             }
           : message,
       ),
+    };
+  } else if (event.type === "skill:start") {
+    sessionMessagesById = {
+      ...sessionMessagesById,
+      [sessionId]: messages.map((message) =>
+        message.id === messageId
+          ? {
+              ...message,
+              segments: addSkillToSegments(message.segments, event),
+            }
+          : message,
+      ),
+    };
+  } else if (event.type === "skill:end" || event.type === "skill:error") {
+    const status = event.type === "skill:error" ? "error" : "done";
+    sessionMessagesById = {
+      ...sessionMessagesById,
+      [sessionId]: messages.map((message) =>
+        message.id === messageId
+          ? {
+              ...message,
+              segments: updateSkillInSegments(
+                message.segments,
+                event.name,
+                (segment) => ({
+                  ...segment,
+                  status,
+                  ...(event.summary ? { summary: event.summary } : {}),
+                  endedAt: event.endedAt || new Date().toISOString(),
+                }),
+              ),
+            }
+          : message,
+      ),
+    };
+  } else if (event.type === "tool:start" || event.type === "assistant:tool_call_delta") {
+    const toolCall = event.toolCall || {};
+    const toolId =
+      event.type === "assistant:tool_call_delta"
+        ? String(toolCall.id || "").trim() ||
+          `stream-tool-${Number.isFinite(Number(toolCall.index)) ? Number(toolCall.index) : 0}`
+        : event.id;
+    const toolName =
+      event.type === "assistant:tool_call_delta"
+        ? String(toolCall.name || "").trim() || "tool"
+        : event.name;
+    const toolCard = {
+      id: toolId,
+      name: toolName,
+      displayName:
+        event.displayName ||
+        (event.type === "assistant:tool_call_delta" ? toolName : event.name),
+      arguments:
+        event.type === "assistant:tool_call_delta"
+          ? toolCall.arguments || ""
+          : event.arguments,
+      status: "running",
+      durationMs: null,
+      summary: "",
+      result: "",
+    };
+    sessionMessagesById = {
+      ...sessionMessagesById,
+      [sessionId]: messages.map((message) =>
+        message.id === messageId
+          ? {
+              ...message,
+              segments: upsertToolCardInSegments(message.segments, toolCard),
+            }
+          : message,
+      ),
+    };
+  } else if (event.type === "tool:result") {
+    sessionMessagesById = {
+      ...sessionMessagesById,
+      [sessionId]: messages.map((message) => {
+        if (message.id !== messageId) return message;
+        const { segments, updated } = updateToolInSegments(
+          message.segments,
+          event.id,
+          (card) => ({ ...card, result: event.content || "" }),
+        );
+        return updated ? { ...message, segments } : message;
+      }),
+    };
+  } else if (
+    event.type === "tool:end" ||
+    event.type === "tool:error" ||
+    event.type === "tool:blocked"
+  ) {
+    const eventChanges =
+      Array.isArray(event.fileChanges) && event.fileChanges.length
+        ? event.fileChanges
+        : event.fileChange
+          ? [event.fileChange]
+          : [];
+    sessionMessagesById = {
+      ...sessionMessagesById,
+      [sessionId]: messages.map((message) => {
+        if (message.id !== messageId) return message;
+        const { segments, updated } = updateToolInSegments(
+          message.segments,
+          event.id,
+          (card) => {
+            if (event.type === "tool:blocked") {
+              return {
+                ...card,
+                status: "blocked",
+                summary: event.summary || card.summary || "Tool blocked",
+              };
+            }
+            if (event.type === "tool:error") {
+              return {
+                ...card,
+                status: "error",
+                durationMs: event.durationMs,
+                summary: event.summary || card.summary,
+              };
+            }
+            return {
+              ...card,
+              status: "done",
+              durationMs: event.durationMs,
+              ...(event.summary ? { summary: event.summary } : {}),
+              ...(event.resultMeta ? { resultMeta: event.resultMeta } : {}),
+              ...(event.fileChange ? { fileChange: event.fileChange } : {}),
+              ...(eventChanges.length ? { fileChanges: eventChanges } : {}),
+            };
+          },
+        );
+        return updated
+          ? {
+              ...message,
+              segments,
+              fileChanges: eventChanges.length
+                ? appendUniqueFileChanges(message.fileChanges, eventChanges)
+                : message.fileChanges,
+            }
+          : message;
+      }),
     };
   }
 

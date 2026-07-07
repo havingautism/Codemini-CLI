@@ -7400,6 +7400,18 @@ export async function createChatRuntime({
       isEnabled: (command) => isSkillEnabled(config, command.name, command)
     });
     if (composed.error) throw new Error(composed.error);
+    if (typeof onAgentEvent === 'function') {
+      for (const name of composed.skillNames || []) {
+        const startedAt = new Date().toISOString();
+        onAgentEvent({ type: 'skill:start', name, startedAt });
+        onAgentEvent({
+          type: 'skill:end',
+          name,
+          startedAt,
+          endedAt: new Date().toISOString()
+        });
+      }
+    }
     return executeSubmission(composed.text, onAgentEvent, {
       modelText: appendAttachmentContext(composed.modelText, submission?.modelText),
       modelImages: Array.isArray(submission?.modelImages) ? submission.modelImages : [],

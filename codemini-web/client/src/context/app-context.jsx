@@ -29,7 +29,6 @@ import {
   projectVisibleSessionState,
   reconcileSessionMessages,
   reduceSessionEvent,
-  reduceSessionRuntimeEvent,
   runSessionOperation,
 } from "../lib/session-state.js";
 import {
@@ -2203,11 +2202,8 @@ export function AppProvider({ children }) {
         }
       }
       if (event.sessionId) {
-        if (event.sessionId !== s.currentSessionId) {
-          setState((prev) => reduceSessionEvent(prev, event));
-          return;
-        }
-        setState((prev) => reduceSessionRuntimeEvent(prev, event));
+        setState((prev) => reduceSessionEvent(prev, event));
+        if (event.sessionId !== s.currentSessionId) return;
       }
       const activeId = activeMsgRef.current;
 
