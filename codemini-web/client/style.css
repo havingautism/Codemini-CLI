@@ -3,6 +3,71 @@
 
 @import "streamdown/styles.css";
 @source "../node_modules/streamdown/dist/*.js";
+@import "@uiw/react-md-editor/markdown-editor.css";
+@import "@uiw/react-markdown-preview/markdown.css";
+
+.codemini-md-editor {
+  min-height: 0;
+}
+
+.codemini-md-editor .w-md-editor {
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+.codemini-md-editor .w-md-editor-toolbar {
+  border-bottom: 1px solid var(--border-default);
+  background: var(--bg-secondary);
+}
+
+.codemini-md-editor .w-md-editor-toolbar li > button {
+  color: var(--text-secondary);
+}
+
+.codemini-md-editor .w-md-editor-toolbar li > button:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.codemini-md-editor .w-md-editor-text,
+.codemini-md-editor .w-md-editor-text-input,
+.codemini-md-editor .w-md-editor-text-pre {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.codemini-md-editor .w-md-editor-preview,
+.codemini-md-preview .wmde-markdown {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.codemini-md-preview .wmde-markdown,
+.codemini-md-editor .wmde-markdown {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.codemini-md-preview .wmde-markdown {
+  min-height: 100%;
+  padding: 0;
+}
+
+.codemini-md-preview .wmde-markdown > :first-child,
+.codemini-md-editor .wmde-markdown > :first-child {
+  margin-top: 0;
+}
+
+.codemini-md-preview .wmde-markdown > :last-child,
+.codemini-md-editor .wmde-markdown > :last-child {
+  margin-bottom: 0;
+}
 
 .codewiki-layout {
   display: grid;

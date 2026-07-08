@@ -82,6 +82,103 @@ function normalizeSkillMetadataPatch(input = {}) {
   return out;
 }
 
+function parseSkillFrontmatter(raw = '') {
+  const normalized = String(raw || '').replace(/\r\n/g, '\n');
+  if (!normalized.startsWith('---\n')) {
+    const lines = normalized.split('\n');
+    const metadata = {};
+    let index = 0;
+    while (index < lines.length && !lines[index].trim()) index += 1;
+    const start = index;
+    while (index < lines.length) {
+      const trimmed = lines[index].trim();
+      if (!trimmed) break;
+      const inlineNameDescription = trimmed.match(/^name\s*:\s*(.*?)\s+description\s*:\s*(.+)$/i);
+      if (inlineNameDescription) {
+        metadata.name = inlineNameDescription[1].trim().replace(/^["']|["']$/g, '');
+        metadata.description = inlineNameDescription[2].trim().replace(/^["']|["']$/g, '');
+        index += 1;
+        continue;
+      }
+      const match = trimmed.match(/^(name|description|version|mode|triggers|priority|enabled)\s*:\s*(.*)$/i);
+      if (!match) break;
+      const key = match[1].toLowerCase();
+      const value = match[2].trim();
+      metadata[key] = value.startsWith('[') && value.endsWith(']')
+        ? value.slice(1, -1).split(',').map((item) => item.trim().replace(/^["']|["']$/g, '')).filter(Boolean)
+        : value.replace(/^["']|["']$/g, '');
+      index += 1;
+    }
+    if (index > start) {
+      while (index < lines.length && !lines[index].trim()) index += 1;
+      return { metadata, content: lines.slice(index).join('\n') };
+    }
+    return { metadata: {}, content: normalized };
+  }
+  const end = normalized.indexOf('\n---\n', 4);
+  if (end === -1) {
+    return { metadata: {}, content: normalized };
+  }
+
+  const metadata = {};
+  const lines = normalized.slice(4, end).trim().split('\n');
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const idx = line.indexOf(':');
+    if (idx <= 0) continue;
+    const key = line.slice(0, idx).trim();
+    const value = line.slice(idx + 1).trim();
+    if (value.startsWith('[') && value.endsWith(']')) {
+      const inner = value.slice(1, -1).trim();
+      metadata[key] = inner
+        ? inner.split(',').map((item) => item.trim().replace(/^["']|["']$/g, '')).filter(Boolean)
+        : [];
+      continue;
+    }
+    metadata[key] = value.replace(/^["']|["']$/g, '');
+  }
+
+  return {
+    metadata,
+    content: normalized.slice(end + 5).trimStart()
+  };
+}
+
+function formatFrontmatterValue(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => JSON.stringify(String(item))).join(', ')}]`;
+  }
+  if (typeof value === 'boolean' || typeof value === 'number') return String(value);
+  return JSON.stringify(String(value || ''));
+}
+
+function serializeSkillMarkdown(metadata = {}, content = '') {
+  const preferred = ['name', 'description', 'version', 'mode', 'triggers', 'priority', 'enabled'];
+  const keys = [
+    ...preferred.filter((key) => metadata[key] !== undefined && metadata[key] !== ''),
+    ...Object.keys(metadata).filter((key) => !preferred.includes(key) && metadata[key] !== undefined && metadata[key] !== '')
+  ];
+  if (keys.length === 0) return String(content || '').trimStart();
+  const frontmatter = keys.map((key) => `${key}: ${formatFrontmatterValue(metadata[key])}`).join('\n');
+  return `---\n${frontmatter}\n---\n\n${String(content || '').trimStart()}`;
+}
+
+function patchSkillMarkdownMetadata(raw = '', patch = {}, fallbackName = '') {
+  const parsed = parseSkillFrontmatter(raw);
+  const normalizedPatch = normalizeSkillMetadataPatch(patch);
+  const metadata = {
+    ...(parsed.metadata || {}),
+    ...(fallbackName ? { name: parsed.metadata?.name || fallbackName } : {}),
+    ...normalizedPatch
+  };
+  return serializeSkillMarkdown(metadata, parsed.content);
+}
+
+function metadataPatchFromSkillMarkdown(raw = '') {
+  const parsed = parseSkillFrontmatter(raw);
+  return normalizeSkillMetadataPatch(parsed.metadata || {});
+}
+
 async function readProjectSkillCatalog(projectDir) {
   return readSkillCatalogFromDir(getProjectSkillsDir(projectDir));
 }
@@ -2567,6 +2664,25 @@ async function main() {
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
         if (skill.scope === 'builtin') { jsonResponse(res, { error: true, message: 'Cannot edit builtin skill' }, 403); return; }
         await fs.writeFile(skill.path, content, 'utf8');
+        const markdownPatch = metadataPatchFromSkillMarkdown(content);
+        if (Object.keys(markdownPatch).length > 0) {
+          if (skill.scope === 'global') {
+            await upsertSkillRegistryEntry(undefined, {
+              name,
+              ...(markdownPatch.description !== undefined ? { description: markdownPatch.description } : {}),
+              ...(markdownPatch.enabled !== undefined ? { enabled: markdownPatch.enabled } : {}),
+              sha256: await computeFileSha256(skill.path)
+            });
+            await upsertSkillCatalogMetadata(getSkillsDir(), name, markdownPatch);
+          } else if (skill.scope === 'project') {
+            await upsertProjectSkillMetadata(targetProjectDir, name, markdownPatch);
+          }
+        } else if (skill.scope === 'global') {
+          await upsertSkillRegistryEntry(undefined, {
+            name,
+            sha256: await computeFileSha256(skill.path)
+          });
+        }
         await bridge.reloadCommandsAndSkills();
         jsonResponse(res, { ok: true });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
@@ -2670,6 +2786,20 @@ async function main() {
         } else {
           metadata = await upsertProjectSkillMetadata(targetProjectDir, name, body || {});
         }
+        if (nextScope !== 'builtin' && Object.keys(metadataPatch).length > 0) {
+          const skillPath = path.join(skillBaseDirForScope(nextScope, nextProjectDir), name, 'SKILL.md');
+          const currentContent = await fs.readFile(skillPath, 'utf8');
+          const nextContent = patchSkillMarkdownMetadata(currentContent, metadataPatch, name);
+          if (nextContent !== currentContent) {
+            await fs.writeFile(skillPath, nextContent, 'utf8');
+          }
+          if (nextScope === 'global') {
+            await upsertSkillRegistryEntry(undefined, {
+              name,
+              sha256: await computeFileSha256(skillPath)
+            });
+          }
+        }
         if (skill.scope !== 'builtin' && body?.enabled !== undefined) {
           const config = await loadConfig();
           config.skills = config.skills || {};
@@ -2716,6 +2846,25 @@ async function main() {
     // ── Souls management ──
     const _BUNDLED_SOULS_DIR = path.resolve(__dirname, '..', 'souls');
     const _CUSTOM_SOULS_DIR = path.join(getBaseConfigDir(), 'souls');
+    const soulNameEquals = (left, right) =>
+      String(left || '').trim().toLowerCase() === String(right || '').trim().toLowerCase();
+    const resolveSoulFilePath = async (dir, name) => {
+      const requested = String(name || '').trim();
+      if (!requested) return '';
+      const directPath = path.join(dir, `${requested}.md`);
+      try {
+        await fs.access(directPath);
+        return directPath;
+      } catch {}
+      try {
+        const entries = await fs.readdir(dir);
+        const expected = `${requested}.md`.toLowerCase();
+        const match = entries.find(file => file.toLowerCase() === expected);
+        return match ? path.join(dir, match) : '';
+      } catch {
+        return '';
+      }
+    };
 
     if (req.method === 'GET' && url.pathname === '/api/souls') {
       try {
@@ -2727,7 +2876,7 @@ async function main() {
           if (!file.endsWith('.md')) continue;
           const sname = file.slice(0, -3);
           const scontent = await fs.readFile(path.join(_BUNDLED_SOULS_DIR, file), 'utf8');
-          souls.push({ name: sname, scope: 'builtin', preview: scontent.split('\n').slice(0, 3).join('\n').slice(0, 120), active: sname === activePreset });
+          souls.push({ name: sname, scope: 'builtin', preview: scontent.split('\n').slice(0, 3).join('\n').slice(0, 120), active: soulNameEquals(sname, activePreset) });
         }
         try {
           const customEntries = await fs.readdir(_CUSTOM_SOULS_DIR);
@@ -2735,7 +2884,7 @@ async function main() {
             if (!file.endsWith('.md')) continue;
             const sname = file.slice(0, -3);
             const scontent = await fs.readFile(path.join(_CUSTOM_SOULS_DIR, file), 'utf8');
-            souls.push({ name: sname, scope: 'custom', preview: scontent.split('\n').slice(0, 3).join('\n').slice(0, 120), active: sname === activePreset });
+            souls.push({ name: sname, scope: 'custom', preview: scontent.split('\n').slice(0, 3).join('\n').slice(0, 120), active: soulNameEquals(sname, activePreset) });
           }
         } catch {}
         jsonResponse(res, souls);
@@ -2745,9 +2894,13 @@ async function main() {
     if (req.method === 'GET' && url.pathname.startsWith('/api/souls/') && url.pathname.endsWith('/content')) {
       const sname = decodeURIComponent(url.pathname.slice('/api/souls/'.length, -'/content'.length));
       try {
-        const customPath = path.join(_CUSTOM_SOULS_DIR, `${sname}.md`);
-        try { const scontent = await fs.readFile(customPath, 'utf8'); jsonResponse(res, { name: sname, content: scontent, scope: 'custom' }); return; } catch {}
-        const bundledPath = path.join(_BUNDLED_SOULS_DIR, `${sname}.md`);
+        const customPath = await resolveSoulFilePath(_CUSTOM_SOULS_DIR, sname);
+        if (customPath) {
+          const scontent = await fs.readFile(customPath, 'utf8');
+          jsonResponse(res, { name: path.basename(customPath, '.md'), content: scontent, scope: 'custom' });
+          return;
+        }
+        const bundledPath = await resolveSoulFilePath(_BUNDLED_SOULS_DIR, sname);
         const scontent = await fs.readFile(bundledPath, 'utf8');
         jsonResponse(res, { name: sname, content: scontent, scope: 'builtin' });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
@@ -2759,8 +2912,8 @@ async function main() {
       try {
         const safeName = String(rawName).replace(/[^a-zA-Z0-9_-]/g, '');
         if (!safeName) { jsonResponse(res, { error: true, message: 'Invalid name' }, 400); return; }
-        const bundledCheck = path.join(_BUNDLED_SOULS_DIR, `${safeName}.md`);
-        try { await fs.access(bundledCheck); jsonResponse(res, { error: true, message: 'Name conflicts with builtin soul' }, 409); return; } catch {}
+        const bundledCheck = await resolveSoulFilePath(_BUNDLED_SOULS_DIR, safeName);
+        if (bundledCheck) { jsonResponse(res, { error: true, message: 'Name conflicts with builtin soul' }, 409); return; }
         await fs.mkdir(_CUSTOM_SOULS_DIR, { recursive: true });
         await fs.writeFile(path.join(_CUSTOM_SOULS_DIR, `${safeName}.md`), soulContent, 'utf8');
         jsonResponse(res, { ok: true, name: safeName });
@@ -2772,8 +2925,8 @@ async function main() {
       const { content: soulContent } = await readBody(req);
       if (!soulContent) { jsonResponse(res, { error: true, message: 'Missing content' }, 400); return; }
       try {
-        const customPath = path.join(_CUSTOM_SOULS_DIR, `${sname}.md`);
-        try { await fs.access(customPath); } catch { jsonResponse(res, { error: true, message: 'Custom soul not found' }, 404); return; }
+        const customPath = await resolveSoulFilePath(_CUSTOM_SOULS_DIR, sname);
+        if (!customPath) { jsonResponse(res, { error: true, message: 'Custom soul not found' }, 404); return; }
         await fs.writeFile(customPath, soulContent, 'utf8');
         jsonResponse(res, { ok: true });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
@@ -2782,12 +2935,12 @@ async function main() {
     if (req.method === 'DELETE' && url.pathname.startsWith('/api/souls/')) {
       const sname = decodeURIComponent(url.pathname.slice('/api/souls/'.length));
       try {
-        const bundledPath = path.join(_BUNDLED_SOULS_DIR, `${sname}.md`);
-        try { await fs.access(bundledPath); jsonResponse(res, { error: true, message: 'Cannot delete builtin soul' }, 403); return; } catch {}
-        const customPath = path.join(_CUSTOM_SOULS_DIR, `${sname}.md`);
+        const bundledPath = await resolveSoulFilePath(_BUNDLED_SOULS_DIR, sname);
+        if (bundledPath) { jsonResponse(res, { error: true, message: 'Cannot delete builtin soul' }, 403); return; }
+        const customPath = await resolveSoulFilePath(_CUSTOM_SOULS_DIR, sname);
         await fs.unlink(customPath);
         const config = await loadConfig();
-        if (config.soul?.preset === sname) { config.soul.preset = 'default'; await saveConfig(config); }
+        if (soulNameEquals(config.soul?.preset, sname)) { config.soul.preset = 'Default'; await saveConfig(config); }
         jsonResponse(res, { ok: true });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;

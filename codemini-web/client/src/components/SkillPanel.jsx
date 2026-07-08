@@ -1,9 +1,8 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   CaretDown,
   CaretRight,
   Download,
-  Eye,
   Folder,
   MagnifyingGlass,
   PencilSimple,
@@ -24,11 +23,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Empty, EmptyDescription } from "@/components/ui/empty";
-import { Separator } from "@/components/ui/separator";
 import { SettingsField } from "@/components/settings/SettingsField.jsx";
 import { SettingsSection } from "@/components/settings/SettingsSection.jsx";
 import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmentedControl.jsx";
 import { Switch } from "@/components/ui/switch";
+import { MarkdownEditor, MarkdownPreview } from "@/components/MarkdownEditor.jsx";
 import {
   Dialog,
   DialogContent,
@@ -126,7 +125,7 @@ function normalizeSkillMode(value) {
     : value || "agent_requested";
 }
 
-function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
+function SkillEditor({ skill, projectTargets = [], onSave, onValidate }) {
   const [name, setName] = useState(skill?.name || "");
   const [description, setDescription] = useState(skill?.description || "");
   const [target, setTarget] = useState(
@@ -175,7 +174,7 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
       description,
       scope: selectedTarget.scope,
       mode,
-      triggers: triggers
+      triggers: mode === "manual" ? [] : triggers
         .split(",")
         .map((item) => item.trim())
         .filter(Boolean),
@@ -216,9 +215,23 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
     onSave();
   };
 
+  const canSave =
+    !loading && (contentReadOnly || content.trim()) && (!isNew || name.trim());
+  const validateRef = useRef(null);
+  useEffect(() => {
+    if (
+      validateRef.current?.isNew === isNew &&
+      validateRef.current?.canSave === canSave
+    ) {
+      return;
+    }
+    validateRef.current = { isNew, canSave };
+    onValidate?.({ handleSave, isNew, canSave });
+  }, [handleSave, isNew, canSave, onValidate]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth pr-1">
+      <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth px-4 pr-1 sm:px-6">
         <SettingsSection
           description={t("skillEditorHint")}
           className="gap-4"
@@ -285,26 +298,30 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
                   className="[&_button]:text-[11px] sm:[&_button]:text-[12px]"
                 />
               </SettingsField>
-              <SettingsField id="skill-editor-priority" label={t("skillPriority")}>
-                <Input
-                  type="number"
-                  min="0"
-                  max="100"
-                  value={priority}
-                  onChange={(e) => setPriority(e.target.value)}
-                />
-              </SettingsField>
-              <SettingsField
-                id="skill-editor-triggers"
-                label={t("skillTriggers")}
-                className="sm:col-span-2"
-              >
-                <Input
-                  value={triggers}
-                  onChange={(e) => setTriggers(e.target.value)}
-                  placeholder="after_edit, before_final"
-                />
-              </SettingsField>
+              {mode !== "manual" && (
+                <>
+                  <SettingsField id="skill-editor-priority" label={t("skillPriority")}>
+                    <Input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={priority}
+                      onChange={(e) => setPriority(e.target.value)}
+                    />
+                  </SettingsField>
+                  <SettingsField
+                    id="skill-editor-triggers"
+                    label={t("skillTriggers")}
+                    className="sm:col-span-2"
+                  >
+                    <Input
+                      value={triggers}
+                      onChange={(e) => setTriggers(e.target.value)}
+                      placeholder="after_edit, before_final"
+                    />
+                  </SettingsField>
+                </>
+              )}
               <div className="flex items-center justify-between sm:col-span-2">
                 <span className="text-[13px] font-medium text-(--text-primary)">
                   {t("enabled")}
@@ -324,11 +341,11 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
                 <EmptyDescription>{t("loading")}...</EmptyDescription>
               </Empty>
             ) : (
-              <Textarea
+              <MarkdownEditor
                 value={content}
-                onChange={(e) => setContent(e.target.value)}
-                disabled={contentReadOnly}
-                className="min-h-[360px] resize-y font-mono leading-5"
+                onChange={setContent}
+                height={360}
+                preview={contentReadOnly ? "preview" : "live"}
                 placeholder={
                   "---\nname: my-skill\ndescription: ...\n---\n\nSkill instructions..."
                 }
@@ -336,23 +353,6 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
             )}
           </SettingsField>
         </SettingsSection>
-      </div>
-
-      <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-(--border-default) pt-4">
-        <Button variant="outline" onClick={onCancel} size="sm">
-          {t("cancel")}
-        </Button>
-        <Button
-          onClick={handleSave}
-          disabled={
-            loading ||
-            (!contentReadOnly && !content.trim()) ||
-            (isNew && !name.trim())
-          }
-          size="sm"
-        >
-          {isNew ? t("create") : t("save")}
-        </Button>
       </div>
     </div>
   );
@@ -365,69 +365,287 @@ function SkillEditorDialog({
   onSave,
   onOpenChange,
 }) {
+  const [footerState, setFooterState] = useState({ isNew: true, canSave: false });
+  const saveRef = useRef(null);
+
+  const handleValidate = useCallback(
+    ({ handleSave, isNew, canSave }) => {
+      saveRef.current = handleSave;
+      setFooterState((prev) =>
+        prev.isNew === isNew && prev.canSave === canSave ? prev : { isNew, canSave },
+      );
+    },
+    [],
+  );
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[86vh] max-h-[86vh] flex-col gap-4 overflow-hidden p-0 sm:max-w-[720px]">
+      <DialogContent className="flex h-[86vh] max-h-[86vh] flex-col overflow-hidden p-0 sm:max-w-[720px]">
         <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
           <DialogTitle>{skill ? t("editSkill") : t("newSkill")}</DialogTitle>
         </DialogHeader>
-        <div className="flex min-h-0 flex-1 flex-col px-4 pb-4 sm:px-6">
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 sm:px-6">
           <SkillEditor
             skill={skill}
             projectTargets={projectTargets}
             onSave={onSave}
-            onCancel={() => onOpenChange(false)}
+            onValidate={handleValidate}
           />
         </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function ViewDialog({ skill, open, onOpenChange }) {
-  const [content, setContent] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!open || !skill) return;
-    setLoading(true);
-    api
-      .fetchSkillContent(skill.name, skill.projectDir)
-      .then((data) => setContent(data.content || ""))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [open, skill]);
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[82vh] flex-col gap-4 overflow-hidden p-0 sm:max-w-[720px]">
-        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
-          <DialogTitle>
-            {skill?.name} {t("contentPreview")}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth px-4 sm:px-6">
-          {loading ? (
-            <div className="py-8 text-center text-[12px] text-(--text-muted)">
-              {t("loading")}...
-            </div>
-          ) : (
-            <pre className="rounded-lg border border-(--border-default) bg-(--bg-subtle) p-3 text-[13px] whitespace-pre-wrap break-words font-mono leading-5">
-              {content}
-            </pre>
-          )}
-        </div>
-        <DialogFooter className="shrink-0 gap-2 border-t border-(--border-default) px-4 py-4 sm:px-6">
+        <DialogFooter className="shrink-0">
           <Button
             variant="outline"
             onClick={() => onOpenChange(false)}
             size="sm"
           >
-            {t("close")}
+            {t("cancel")}
+          </Button>
+          <Button
+            onClick={() => saveRef.current?.()}
+            disabled={!footerState.canSave}
+            size="sm"
+          >
+            {footerState.isNew ? t("create") : t("save")}
           </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function SkillRoutingForm({ skill, onSave, onCancel }) {
+  const [mode, setMode] = useState(normalizeSkillMode(skill?.mode));
+  const [triggers, setTriggers] = useState((skill?.triggers || []).join(", "));
+  const [priority, setPriority] = useState(skill?.priority ?? 50);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setMode(normalizeSkillMode(skill?.mode));
+    setTriggers((skill?.triggers || []).join(", "));
+    setPriority(skill?.priority ?? 50);
+  }, [skill]);
+
+  const handleSave = async () => {
+    if (!skill) return;
+    setSaving(true);
+    try {
+      await api.updateSkillMetadata(
+        skill.name,
+        {
+          mode,
+          triggers: mode === "manual" ? [] : triggers
+            .split(",")
+            .map((item) => item.trim())
+            .filter(Boolean),
+          priority: Number(priority) || 0,
+        },
+        skill.projectDir,
+      );
+      await onSave?.();
+      onCancel?.();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth pr-1">
+        <SettingsSection description={t("skillModeHint")} className="gap-4">
+          <SettingsField id="skill-routing-mode" label={t("skillMode")}>
+            <SettingsSegmentedControl
+              idPrefix="skill-routing-mode"
+              value={mode}
+              onValueChange={setMode}
+              options={SKILL_MODES.map((item) => ({
+                value: item,
+                label: t(`skillMode_${item}`),
+              }))}
+            />
+          </SettingsField>
+          {mode !== "manual" && (
+            <>
+              <SettingsField id="skill-routing-triggers" label={t("skillTriggers")}>
+                <Input
+                  value={triggers}
+                  onChange={(event) => setTriggers(event.target.value)}
+                  placeholder="react, testing, docs"
+                  className="h-9 text-[13px]"
+                />
+              </SettingsField>
+              <SettingsField id="skill-routing-priority" label={t("skillPriority")}>
+                <Input
+                  type="number"
+                  value={priority}
+                  onChange={(event) => setPriority(event.target.value)}
+                  className="h-9 text-[13px]"
+                />
+              </SettingsField>
+            </>
+          )}
+        </SettingsSection>
+      </div>
+      <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-(--border-default) pt-4">
+        <Button variant="outline" onClick={onCancel} size="sm">
+          {t("cancel")}
+        </Button>
+        <Button onClick={handleSave} disabled={saving} size="sm">
+          {saving ? t("loading") : t("save")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function SkillDetailPane({ skill, onSave, onDelete, onToggle }) {
+  const [content, setContent] = useState("");
+  const [draftContent, setDraftContent] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [modeView, setModeView] = useState("view");
+
+  useEffect(() => {
+    setModeView("view");
+    setContent("");
+    setDraftContent("");
+    if (!skill) return;
+    setLoading(true);
+    api
+      .fetchSkillContent(skill.name, skill.projectDir)
+      .then((data) => {
+        const next = data.content || "";
+        setContent(next);
+        setDraftContent(next);
+      })
+      .catch(() => {
+        setContent("");
+        setDraftContent("");
+      })
+      .finally(() => setLoading(false));
+  }, [skill]);
+
+  if (!skill) {
+    return (
+      <div className="flex h-full items-center justify-center text-[13px] text-(--text-muted)">
+        {t("noSkills")}
+      </div>
+    );
+  }
+
+  const mode = normalizeSkillMode(skill.mode);
+  const author = skillAuthorLabel(skill);
+  const builtin = isBuiltin(skill);
+
+  const handleContentSave = async () => {
+    if (!skill || builtin) return;
+    setSaving(true);
+    try {
+      await api.updateSkillContent(skill.name, draftContent, skill.projectDir);
+      setContent(draftContent);
+      setModeView("view");
+      await onSave?.();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 border-b border-(--border-default) px-5 py-4">
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="min-w-0 truncate text-[17px] font-semibold leading-6 text-(--text-primary)">
+                {skill.name}
+              </h3>
+              <Badge variant={builtin ? "secondary" : "outline"} className="h-5 rounded-md px-2 text-[11px]">
+                {scopeLabel(skill.scope)}
+              </Badge>
+              <span className={cn("inline-flex h-5 items-center rounded-md px-2 text-[11px] font-medium", modeBadgeClass(mode))}>
+                {t(`skillMode_${mode}`)}
+              </span>
+            </div>
+            <p className="mt-1 line-clamp-2 text-[12px] leading-5 text-(--text-muted)">
+              {skill.description || t("noDescription")}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-(--text-muted)">
+              {author ? <span>{author}</span> : null}
+              {skill.packageName ? <span>{skill.packageName}</span> : null}
+              {skill.version && skill.version !== "0.0.0" ? <span>v{skill.version}</span> : null}
+            </div>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+            {modeView === "edit" ? (
+              <>
+                <Button variant="outline" size="sm" onClick={() => { setDraftContent(content); setModeView("view"); }}>
+                  {t("cancel")}
+                </Button>
+                <Button size="sm" onClick={handleContentSave} disabled={saving || loading}>
+                  {saving ? t("loading") : t("save")}
+                </Button>
+              </>
+            ) : modeView === "routing" ? null : (
+              <>
+                {!builtin && (
+                  <Button variant="outline" size="sm" onClick={() => setModeView("edit")}>
+                    <PencilSimple size={13} />
+                    {t("edit")}
+                  </Button>
+                )}
+                <Button variant="outline" size="sm" onClick={() => setModeView("routing")}>
+                  <SlidersHorizontal size={13} />
+                  {t("skillRoutingSettings")}
+                </Button>
+                {!builtin && (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="text-(--accent-red) hover:bg-(--accent-red-bg) hover:text-(--accent-red)"
+                    onClick={() => {
+                      if (confirm(t("confirmDeleteSkill").replace("{{name}}", skill.name))) {
+                        onDelete?.(skill);
+                      }
+                    }}
+                    aria-label={t("delete")}
+                    title={t("delete")}
+                  >
+                    <Trash size={15} />
+                  </Button>
+                )}
+                <Switch
+                  checked={isEnabled(skill)}
+                  onCheckedChange={(next) => onToggle?.(skill, next)}
+                  aria-label={isEnabled(skill) ? t("disable") : t("enable")}
+                />
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-5">
+        {modeView === "routing" ? (
+          <SkillRoutingForm
+            key={skillKey(skill)}
+            skill={skill}
+            onSave={onSave}
+            onCancel={() => setModeView("view")}
+          />
+        ) : loading ? (
+          <div className="py-8 text-center text-[12px] text-(--text-muted)">
+            {t("loading")}...
+          </div>
+        ) : modeView === "edit" ? (
+          <MarkdownEditor
+            value={draftContent}
+            onChange={setDraftContent}
+            height="100%"
+            placeholder={t("skillContent")}
+          />
+        ) : (
+          <MarkdownPreview value={content} className="flex-1" />
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -520,7 +738,7 @@ function modeBadgeClass(mode) {
   return "bg-(--accent-orange-bg) text-(--accent-orange)";
 }
 
-function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
+function SkillCard({ skill, selected, onSelect }) {
   const enabled = isEnabled(skill);
   const builtin = isBuiltin(skill);
   const author = skillAuthorLabel(skill);
@@ -528,124 +746,79 @@ function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onSelect(skill)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") onSelect(skill);
+      }}
       className={cn(
-        "flex flex-col gap-3 rounded-lg border p-4 transition-colors",
-        enabled
-          ? "border-primary/40 bg-primary/5"
-          : "border-border/70 text-muted-foreground",
+        "flex cursor-pointer flex-col gap-2 rounded-md border px-3 py-2.5 text-left transition-colors",
+        selected
+          ? "border-[var(--input-shell-accent)]/45 bg-(--bg-hover)"
+          : enabled
+            ? "border-transparent bg-transparent hover:bg-(--bg-hover)"
+            : "border-transparent bg-transparent text-muted-foreground hover:bg-(--bg-hover)",
       )}
     >
-      {/* Header: name + badges */}
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span className="text-sm font-semibold text-foreground">
-          {skill.name}
-        </span>
-        {skill.version && skill.version !== "0.0.0" && (
-          <Badge variant="outline" className="h-4 rounded-md px-1.5 py-0 text-[11px]">
-            v{skill.version}
-          </Badge>
-        )}
-        {skill.mode && (
-          <span
-            className={cn(
-              "inline-flex h-4 items-center rounded-md px-1.5 py-0 text-[11px] font-medium",
-              modeBadgeClass(mode),
-            )}
-          >
-            {t(`skillMode_${mode}`)}
+      <div className="flex items-start gap-2">
+        <span
+          className={cn(
+            "mt-1.5 size-2 shrink-0 rounded-full",
+            enabled ? "bg-emerald-500 shadow-[0_0_0_2px_rgba(16,185,129,0.14)]" : "bg-(--border-default)",
+          )}
+          aria-hidden
+        />
+        <div className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-semibold text-foreground">
+            {skill.name}
           </span>
-        )}
-        {author && (
-          <Badge variant="secondary" className="h-4 rounded-md px-1.5 py-0 text-[11px]">
-            {author}
-          </Badge>
-        )}
-        <Badge
-          variant={builtin ? "secondary" : "outline"}
-          className="h-4 rounded-md px-1.5 py-0 text-[11px]"
-        >
-          {scopeLabel(skill.scope)}
-        </Badge>
-      </div>
-
-      {/* Description */}
-      {skill.description ? (
-        <p className="line-clamp-2 text-xs text-muted-foreground">
-          {skill.description}
-        </p>
-      ) : (
-        <p className="text-xs text-muted-foreground/60">{t("noDescription")}</p>
-      )}
-
-      {/* Triggers */}
-      {skill.triggers?.length > 0 && (
-        <p className="text-xs text-muted-foreground">
-          {t("skillTriggers")}: {skill.triggers.join(", ")}
-        </p>
-      )}
-
-      {/* Footer: actions + toggle */}
-      <Separator />
-      <div className="flex items-center gap-0.5">
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          onClick={() => onView(skill)}
-          aria-label={t("view")}
-          title={t("view")}
-        >
-          <Eye size={15} />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          onClick={() => onEdit(skill)}
-          aria-label={builtin ? t("skillRoutingSettings") : t("edit")}
-          title={builtin ? t("skillRoutingSettings") : t("edit")}
-        >
-          {builtin ? <SlidersHorizontal size={15} /> : <PencilSimple size={15} />}
-        </Button>
-        {!builtin && (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="text-(--accent-red) hover:bg-(--accent-red-bg) hover:text-(--accent-red)"
-            onClick={() => {
-              if (
-                confirm(
-                  t("confirmDeleteSkill").replace("{{name}}", skill.name),
-                )
-              ) {
-                onDelete(skill);
-              }
-            }}
-            aria-label={t("delete")}
-            title={t("delete")}
+          {skill.triggers?.length > 0 && (
+            <p className="mt-1 truncate text-xs text-muted-foreground">
+              {t("skillTriggers")}: {skill.triggers.join(", ")}
+            </p>
+          )}
+        </div>
+        <div className="ml-auto flex max-w-[58%] shrink-0 flex-wrap justify-end gap-1">
+          {skill.version && skill.version !== "0.0.0" && (
+            <Badge variant="outline" className="h-4 rounded-md px-1.5 py-0 text-[11px]">
+              v{skill.version}
+            </Badge>
+          )}
+          {skill.mode && (
+            <span
+              className={cn(
+                "inline-flex h-4 items-center rounded-md px-1.5 py-0 text-[11px] font-medium",
+                modeBadgeClass(mode),
+              )}
+            >
+              {t(`skillMode_${mode}`)}
+            </span>
+          )}
+          {author && (
+            <Badge variant="secondary" className="h-4 rounded-md px-1.5 py-0 text-[11px]">
+              {author}
+            </Badge>
+          )}
+          <Badge
+            variant={builtin ? "secondary" : "outline"}
+            className="h-4 rounded-md px-1.5 py-0 text-[11px]"
           >
-            <Trash size={15} />
-          </Button>
-        )}
-        <div className="ml-auto">
-          <Switch
-            checked={enabled}
-            onCheckedChange={(next) => onToggle(skill, next)}
-            aria-label={enabled ? t("disable") : t("enable")}
-          />
+            {scopeLabel(skill.scope)}
+          </Badge>
         </div>
       </div>
     </div>
   );
 }
 
-function SkillCards({ items, onView, onToggle, onEdit, onDelete }) {
+function SkillCards({ items, selectedSkill, onSelect }) {
   return items.map((skill) => (
     <SkillCard
       key={skillKey(skill)}
       skill={skill}
-      onView={onView}
-      onToggle={onToggle}
-      onEdit={onEdit}
-      onDelete={onDelete}
+      selected={skillKey(skill) === skillKey(selectedSkill)}
+      onSelect={onSelect}
     />
   ));
 }
@@ -670,10 +843,10 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
-  const [viewSkill, setViewSkill] = useState(null);
+  const [selectedSkill, setSelectedSkill] = useState(null);
   const [collapsedProjects, setCollapsedProjects] = useState(() => new Set());
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState("all");
+  const [filter, setFilter] = useState("custom");
   const [installSource, setInstallSource] = useState("");
   const normalizedProjectTargets = useMemo(
     () => normalizeProjectTargets(projectTargets, projectDirs),
@@ -827,6 +1000,23 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
     };
   }, [filteredSkills]);
 
+  useEffect(() => {
+    if (filteredSkills.length === 0) {
+      setSelectedSkill(null);
+      return;
+    }
+    const refreshedSelection = selectedSkill
+      ? filteredSkills.find((skill) => skillKey(skill) === skillKey(selectedSkill))
+      : null;
+    if (refreshedSelection) {
+      if (refreshedSelection !== selectedSkill) setSelectedSkill(refreshedSelection);
+      return;
+    }
+    if (!selectedSkill) {
+      setSelectedSkill(filteredSkills[0]);
+    }
+  }, [filteredSkills, selectedSkill]);
+
   const toggleProjectGroup = useCallback((key) => {
     setCollapsedProjects((current) => {
       const next = new Set(current);
@@ -859,10 +1049,8 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
         <div className="grid gap-2">
           <SkillCards
             items={groupedSkills.regular}
-            onView={setViewSkill}
-            onToggle={handleToggle}
-            onEdit={setEditing}
-            onDelete={handleDelete}
+            selectedSkill={selectedSkill}
+            onSelect={setSelectedSkill}
           />
           {groupedSkills.projects.map((group) => {
             const collapsed = collapsedProjects.has(group.key);
@@ -879,10 +1067,8 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
                   <div className="grid gap-2 pl-6">
                     <SkillCards
                       items={group.items}
-                      onView={setViewSkill}
-                      onToggle={handleToggle}
-                      onEdit={setEditing}
-                      onDelete={handleDelete}
+                      selectedSkill={selectedSkill}
+                      onSelect={setSelectedSkill}
                     />
                   </div>
                 )}
@@ -904,41 +1090,38 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
 
   return (
     <>
-      <div className="flex min-h-0 flex-1 flex-col gap-4">
-        <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth pr-3 [scrollbar-gutter:stable]">
-          <div className="flex flex-col gap-4">
-            <SettingsSection description={t("skillPanelHint")} className="gap-2">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                {skills.length > 0 && (
-                  <p className="text-[12px] text-(--text-muted)">
-                    {enabledCount}/{skills.length} {t("enabled")} · {customCount}{" "}
-                    {t("custom")}
-                  </p>
-                )}
-                <div className="flex items-center gap-2 sm:ml-auto">
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      setInstallError("");
-                      setInstallOpen(true);
-                    }}
-                    size="sm"
-                  >
-                    <Download size={13} />
-                    {t("installSkill")}
-                  </Button>
-                  <Button
-                    onClick={() => setEditing("new")}
-                    size="sm"
-                  >
-                    <Plus size={13} />
-                    {t("addSkill")}
-                  </Button>
-                </div>
-              </div>
-            </SettingsSection>
+      <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[380px_minmax(0,1fr)]">
+        <div className="flex min-h-0 flex-col gap-3 border-b border-(--border-default) p-3 lg:border-b-0 lg:border-r">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            {skills.length > 0 && (
+              <p className="text-[12px] text-(--text-muted)">
+                {enabledCount}/{skills.length} {t("enabled")} · {customCount}{" "}
+                {t("custom")}
+              </p>
+            )}
+            <div className="flex items-center gap-2 sm:ml-auto">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setInstallError("");
+                  setInstallOpen(true);
+                }}
+                size="sm"
+              >
+                <Download size={13} />
+                {t("installSkill")}
+              </Button>
+              <Button
+                onClick={() => setEditing("new")}
+                size="sm"
+              >
+                <Plus size={13} />
+                {t("addSkill")}
+              </Button>
+            </div>
+          </div>
 
-            <div className="sticky top-0 z-10 flex flex-col gap-2 bg-background pb-2 sm:flex-row sm:items-center">
+            <div className="flex flex-col gap-2">
               <div className="relative min-w-0 flex-1">
                 <MagnifyingGlass
                   size={13}
@@ -959,22 +1142,24 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
                   value: item,
                   label: t(`filter_${item}`),
                 }))}
-                className="w-full shrink-0 sm:min-w-[240px] sm:w-auto [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
+                className="w-full shrink-0 [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
               />
             </div>
 
+          <div className="min-h-[220px] flex-1 overflow-y-auto scroll-smooth pr-2 [scrollbar-gutter:stable]">
             {renderSkillList()}
           </div>
         </div>
+        <div className="hidden min-h-0 bg-(--bg-primary) lg:block">
+          <SkillDetailPane
+            skill={selectedSkill}
+            onSave={handleSave}
+            onDelete={handleDelete}
+            onToggle={handleToggle}
+          />
+        </div>
       </div>
 
-      <ViewDialog
-        skill={viewSkill}
-        open={!!viewSkill}
-        onOpenChange={(open) => {
-          if (!open) setViewSkill(null);
-        }}
-      />
       <SkillEditorDialog
         skill={editing === "new" ? null : editing}
         projectTargets={normalizedProjectTargets}

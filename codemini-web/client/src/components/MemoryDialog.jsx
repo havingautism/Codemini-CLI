@@ -3,28 +3,21 @@ import {
   ArrowClockwise,
   CaretDown,
   CaretRight,
-  Eye,
   Folder,
   MagnifyingGlass,
+  Brain,
   Tray,
   Trash,
   WarningCircle,
 } from "@phosphor-icons/react";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Empty, EmptyDescription } from "@/components/ui/empty";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
-import { SettingsSection } from "@/components/settings/SettingsSection.jsx";
 import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmentedControl.jsx";
+import { ResourceLibraryDialog } from "@/components/ResourceLibraryDialog.jsx";
 import { cn } from "@/lib/utils";
 import * as api from "@/hooks/use-api";
 import { t } from "../../i18n/index.js";
@@ -92,32 +85,14 @@ function MemoryCardSkeleton() {
   );
 }
 
-function MemoryMetaRow({ label, value, mono = false }) {
-  if (!value) return null;
-  return (
-    <div className="flex gap-2 text-[12px]">
-      <span className="w-20 shrink-0 text-(--text-muted)">{label}</span>
-      <span
-        className={cn(
-          "min-w-0 flex-1 break-all text-(--text-primary)",
-          mono && "font-mono text-[11px]",
-        )}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function MemoryViewDialog({
-  memory,
-  scope,
-  open,
-  onOpenChange,
-  onDelete,
-  deleting,
-}) {
-  if (!memory) return null;
+function MemoryDetailPane({ memory, scope }) {
+  if (!memory) {
+    return (
+      <div className="flex h-full items-center justify-center text-[13px] text-(--text-muted)">
+        {t("noMemories")}
+      </div>
+    );
+  }
 
   const { title } = memoryDisplayParts(memory);
   const content = String(memory.content || "").trim() || t("noPreview");
@@ -126,85 +101,35 @@ function MemoryViewDialog({
     ? `${Math.round(Number(memory.confidence) * 100)}%`
     : "";
 
-  const handleDelete = () => {
-    if (deleting) return;
-    onDelete(memory);
-  };
-
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[82vh] flex-col gap-4 overflow-hidden p-0 sm:max-w-[720px]">
-        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
-          <DialogTitle className="flex flex-wrap items-center gap-1.5 pr-6">
-            <span className="truncate">{title}</span>
-            <Badge
-              variant="outline"
-              className="h-4 shrink-0 rounded-md px-1.5 py-0 text-[10px]"
-            >
-              {memory.kind || "note"}
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 border-b border-(--border-default) px-5 py-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="min-w-0 truncate text-[17px] font-semibold leading-6 text-(--text-primary)">
+            {title}
+          </h3>
+          <Badge variant="outline" className="h-5 rounded-md px-2 text-[11px]">
+            {memory.kind || "note"}
+          </Badge>
+          {memory.pinned ? (
+            <Badge variant="secondary" className="h-5 rounded-md px-2 text-[11px]">
+              {t("pinned")}
             </Badge>
-            {memory.pinned && (
-              <Badge
-                variant="secondary"
-                className="h-4 shrink-0 rounded-md px-1.5 py-0 text-[10px]"
-              >
-                {t("pinned")}
-              </Badge>
-            )}
-          </DialogTitle>
-        </DialogHeader>
-
-        <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth px-4 pb-4 sm:px-6">
-          <pre className="rounded-lg border border-(--border-default) bg-(--bg-subtle) p-3 font-sans text-[13px] leading-5 whitespace-pre-wrap break-words text-(--text-primary)">
-            {content}
-          </pre>
-
-          <div className="mt-4 grid gap-2 rounded-lg border border-(--border-default) bg-(--bg-primary) p-3">
-            <MemoryMetaRow label={t("memoryScope")} value={scopeLabel(scope)} />
-            {scope === "project" && memory.projectName ? (
-              <MemoryMetaRow
-                label={t("projectScope")}
-                value={projectDisplayName(memory.projectName)}
-              />
-            ) : null}
-            {memory.lifecycle ? (
-              <MemoryMetaRow label="lifecycle" value={memory.lifecycle} />
-            ) : null}
-            {updatedLabel ? (
-              <MemoryMetaRow label={t("memoryUpdatedAt")} value={updatedLabel} />
-            ) : null}
-            {confidenceLabel ? (
-              <MemoryMetaRow
-                label={t("memoryConfidence")}
-                value={confidenceLabel}
-              />
-            ) : null}
-            {memory.id ? (
-              <MemoryMetaRow label="id" value={memory.id} mono />
-            ) : null}
-          </div>
+          ) : null}
         </div>
-
-        <DialogFooter className="shrink-0 gap-2 border-t border-(--border-default) px-4 py-4 sm:px-6">
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            size="sm"
-          >
-            {t("close")}
-          </Button>
-          <Button
-            variant="destructive"
-            onClick={handleDelete}
-            disabled={deleting}
-            size="sm"
-          >
-            <Trash size={13} />
-            {deleting ? t("deleting") : t("delete")}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-(--text-muted)">
+          <span>{scopeLabel(scope)}</span>
+          {memory.lifecycle ? <span>{memory.lifecycle}</span> : null}
+          {updatedLabel ? <span>{updatedLabel}</span> : null}
+          {confidenceLabel ? <span>{confidenceLabel}</span> : null}
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth p-5">
+        <pre className="min-h-full whitespace-pre-wrap break-words font-sans text-[13px] leading-6 text-(--text-primary)">
+          {content}
+        </pre>
+      </div>
+    </div>
   );
 }
 
@@ -233,12 +158,10 @@ function MemoryGroupHeader({ name, count, collapsed, title, onClick }) {
   );
 }
 
-function MemoryCard({ memory, deleting, onView, onDelete }) {
+function MemoryCard({ memory, selected, deleting, onSelect, onDelete }) {
   const pinned = !!memory.pinned;
-  const { title, preview } = memoryDisplayParts(memory);
+  const { title } = memoryDisplayParts(memory);
   const updatedLabel = formatMemoryTime(memory.updatedAt);
-
-  const handleView = () => onView(memory);
 
   const handleDeleteClick = () => {
     if (deleting) return;
@@ -247,22 +170,26 @@ function MemoryCard({ memory, deleting, onView, onDelete }) {
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onSelect(memory)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") onSelect(memory);
+      }}
       className={cn(
-        "flex flex-col gap-3 rounded-lg border p-4 transition-colors",
-        pinned
-          ? "border-primary/40 bg-primary/5"
-          : "border-border bg-background hover:bg-muted/50",
+        "flex cursor-pointer flex-col gap-2 rounded-md border px-3 py-2.5 text-left transition-colors",
+        selected
+          ? "border-[var(--input-shell-accent)]/45 bg-(--bg-hover)"
+          : pinned
+            ? "border-transparent bg-primary/5"
+            : "border-transparent bg-transparent hover:bg-(--bg-hover)",
       )}
     >
       {/* Header: title + badges */}
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <button
-          type="button"
-          onClick={handleView}
-          className="cursor-pointer text-left text-sm font-semibold text-foreground hover:underline"
-        >
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
           {title}
-        </button>
+        </span>
         <Badge
           variant="outline"
           className="h-4 rounded-md px-1.5 py-0 text-[11px]"
@@ -287,31 +214,13 @@ function MemoryCard({ memory, deleting, onView, onDelete }) {
         )}
       </div>
 
-      {/* Body: preview */}
-      {preview ? (
-        <p className="line-clamp-2 text-xs whitespace-pre-wrap break-words text-muted-foreground">
-          {preview}
-        </p>
-      ) : (
-        <p className="text-xs text-muted-foreground/60">{t("noPreview")}</p>
-      )}
-
       {/* Footer: time + actions */}
       <Separator />
-      <div className="flex items-center gap-0.5">
+      <div className="flex items-center gap-0.5" onClick={(event) => event.stopPropagation()}>
         {updatedLabel && (
           <span className="text-xs text-muted-foreground">{updatedLabel}</span>
         )}
         <div className="ml-auto flex items-center gap-0.5">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            onClick={handleView}
-            aria-label={t("view")}
-            title={t("view")}
-          >
-            <Eye size={15} />
-          </Button>
           <Button
             variant="ghost"
             size="icon-sm"
@@ -336,7 +245,7 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [deletingId, setDeletingId] = useState("");
-  const [viewMemory, setViewMemory] = useState(null);
+  const [selectedMemory, setSelectedMemory] = useState(null);
   const [collapsedProjects, setCollapsedProjects] = useState(() => new Set());
 
   const trimmedQuery = query.trim();
@@ -400,6 +309,16 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
     return { regular: [], projectGroups };
   }, [items, scope]);
 
+  useEffect(() => {
+    if (items.length === 0) {
+      setSelectedMemory(null);
+      return;
+    }
+    if (!selectedMemory || !items.some((item) => memoryKey(item, scope) === memoryKey(selectedMemory, scope))) {
+      setSelectedMemory(items[0]);
+    }
+  }, [items, scope, selectedMemory]);
+
   const toggleProjectGroup = useCallback((key) => {
     setCollapsedProjects((prev) => {
       const next = new Set(prev);
@@ -430,9 +349,6 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
         memory.projectDir,
       );
       if (result?.error) throw new Error(result.message || t("deleteFailed"));
-      setViewMemory((current) =>
-        current?.id === memory.id ? null : current,
-      );
       await loadMemories();
     } catch (err) {
       setError(err.message || t("deleteFailed"));
@@ -443,17 +359,15 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
 
   return (
     <>
-      <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[82vh] max-h-[82vh] flex-col gap-4 overflow-hidden p-0 sm:max-w-[720px]">
-        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
-          <DialogTitle>{t("memoryManagement")}</DialogTitle>
-        </DialogHeader>
-
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 pb-4 sm:px-6">
-          <SettingsSection
-            description={t("memoryPanelHint")}
-            className="shrink-0 gap-2"
-          >
+      <ResourceLibraryDialog
+        open={open}
+        onOpenChange={onOpenChange}
+        icon={Brain}
+        title={t("memoryManagement")}
+        description={t("memoryPanelHint")}
+      >
+        <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[380px_minmax(0,1fr)]">
+          <div className="flex min-h-0 flex-col gap-3 border-b border-(--border-default) p-3 lg:border-b-0 lg:border-r">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                 {items.length > 0 && (
@@ -488,9 +402,8 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
                 />
               </Button>
             </div>
-          </SettingsSection>
 
-          <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center">
+          <div className="flex shrink-0 flex-col gap-2">
             <div className="relative min-w-0 flex-1">
               <MagnifyingGlass
                 size={13}
@@ -511,7 +424,7 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
                 value: item,
                 label: scopeLabel(item),
               }))}
-              className="w-full shrink-0 sm:min-w-[240px] sm:w-auto [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
+              className="w-full shrink-0 [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
             />
           </div>
 
@@ -522,7 +435,7 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
             </div>
           )}
 
-          <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth pr-3 [scrollbar-gutter:stable]">
+          <div className="min-h-[220px] flex-1 overflow-y-auto scroll-smooth pr-2 [scrollbar-gutter:stable]">
             {loading ? (
               <div className="grid gap-2">
                 <MemoryCardSkeleton />
@@ -549,8 +462,9 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
                   <MemoryCard
                     key={memoryKey(memory, scope)}
                     memory={memory}
+                    selected={memoryKey(memory, scope) === memoryKey(selectedMemory, scope)}
                     deleting={deletingId === memoryKey(memory, scope)}
-                    onView={setViewMemory}
+                    onSelect={setSelectedMemory}
                     onDelete={handleDelete}
                   />
                 ))}
@@ -571,10 +485,11 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
                             <MemoryCard
                               key={memoryKey(memory, scope)}
                               memory={memory}
+                              selected={memoryKey(memory, scope) === memoryKey(selectedMemory, scope)}
                               deleting={
                                 deletingId === memoryKey(memory, scope)
                               }
-                              onView={setViewMemory}
+                              onSelect={setSelectedMemory}
                               onDelete={handleDelete}
                             />
                           ))}
@@ -586,22 +501,13 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
               </div>
             )}
           </div>
+          </div>
+          <div className="hidden min-h-0 bg-(--bg-primary) lg:block">
+            <MemoryDetailPane memory={selectedMemory} scope={scope} />
+          </div>
         </div>
-      </DialogContent>
-    </Dialog>
+      </ResourceLibraryDialog>
 
-      <MemoryViewDialog
-        memory={viewMemory}
-        scope={scope}
-        open={!!viewMemory}
-        onOpenChange={(next) => !next && setViewMemory(null)}
-        onDelete={handleDelete}
-        deleting={
-          viewMemory
-            ? deletingId === memoryKey(viewMemory, scope)
-            : false
-        }
-      />
     </>
   );
 }

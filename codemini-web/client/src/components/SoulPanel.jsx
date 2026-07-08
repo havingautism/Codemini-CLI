@@ -8,9 +8,9 @@ import {
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Empty, EmptyDescription } from "@/components/ui/empty";
+import { MarkdownEditor, MarkdownPreview } from "@/components/MarkdownEditor.jsx";
 import { SettingsField } from "@/components/settings/SettingsField.jsx";
 import { SettingsSection } from "@/components/settings/SettingsSection.jsx";
 import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmentedControl.jsx";
@@ -20,7 +20,6 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import * as api from "@/hooks/use-api";
@@ -83,10 +82,10 @@ function SoulEditor({ soul, onSave, onCancel }) {
                 <EmptyDescription>{t("loading")}...</EmptyDescription>
               </Empty>
             ) : (
-              <Textarea
+              <MarkdownEditor
                 value={content}
-                onChange={(e) => setContent(e.target.value)}
-                className="min-h-[220px] resize-y font-mono leading-5"
+                onChange={setContent}
+                height={320}
                 placeholder={t("soulPlaceholder")}
               />
             )}
@@ -95,9 +94,11 @@ function SoulEditor({ soul, onSave, onCancel }) {
       </div>
 
       <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-(--border-default) pt-4">
-        <Button variant="outline" onClick={onCancel} size="sm">
-          {t("cancel")}
-        </Button>
+        {onCancel ? (
+          <Button variant="outline" onClick={onCancel} size="sm">
+            {t("cancel")}
+          </Button>
+        ) : null}
         <Button
           onClick={handleSave}
           disabled={loading || !content.trim() || (isNew && !name.trim())}
@@ -129,50 +130,141 @@ function SoulEditorDialog({ soul, open, onSave, onOpenChange }) {
   );
 }
 
-function ViewDialog({ soul, open, onOpenChange }) {
+function SoulDetailPane({ soul, disabled = false, onSave }) {
   const [content, setContent] = useState("");
+  const [draftContent, setDraftContent] = useState("");
   const [loading, setLoading] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (!open || !soul) return;
+    setEditing(false);
+    if (!soul) {
+      setContent("");
+      setDraftContent("");
+      return;
+    }
     setLoading(true);
     api
       .fetchSoulContent(soul.name)
-      .then((data) => setContent(data.content || ""))
-      .catch(() => {})
+      .then((data) => {
+        const next = data.content || "";
+        setContent(next);
+        setDraftContent(next);
+      })
+      .catch(() => {
+        setContent("");
+        setDraftContent("");
+      })
       .finally(() => setLoading(false));
-  }, [open, soul]);
+  }, [soul]);
+
+  if (!soul) {
+    return (
+      <div className="flex h-full items-center justify-center text-[13px] text-(--text-muted)">
+        {t("noSouls")}
+      </div>
+    );
+  }
+
+  const isCustom = soul.scope !== "builtin";
+
+  const handleSave = async () => {
+    if (!isCustom || disabled) return;
+    setSaving(true);
+    try {
+      await api.updateSoulContent(soul.name, draftContent);
+      setContent(draftContent);
+      setEditing(false);
+      await onSave?.();
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[82vh] flex-col gap-4 overflow-hidden p-0 sm:max-w-[720px]">
-        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
-          <DialogTitle>
-            {soul?.name} {t("contentPreview")}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth px-4 sm:px-6">
-          {loading ? (
-            <div className="py-8 text-center text-[12px] text-(--text-muted)">
-              {t("loading")}...
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 border-b border-(--border-default) px-5 py-4">
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <MaskHappy
+                size={22}
+                weight={soul.active ? "fill" : "regular"}
+                className={soul.active ? "text-[var(--input-shell-accent)]" : "text-(--text-muted)"}
+              />
+              <h3 className="min-w-0 truncate text-[17px] font-semibold leading-6 text-(--text-primary)">
+                {soul.name}
+              </h3>
+              <Badge variant="outline" className="h-5 rounded-md px-2 text-[11px]">
+                {scopeLabel(soul.scope)}
+              </Badge>
+              {soul.active ? (
+                <Badge variant="secondary" className="h-5 rounded-md px-2 text-[11px]">
+                  {t("current")}
+                </Badge>
+              ) : null}
             </div>
-          ) : (
-            <pre className="rounded-lg border border-(--border-default) bg-(--bg-subtle) p-3 text-[13px] whitespace-pre-wrap break-words font-mono leading-5">
-              {content}
-            </pre>
-          )}
+            <p className="mt-1 line-clamp-2 text-[12px] leading-5 text-(--text-muted)">
+              {soul.preview || t("noPreview")}
+            </p>
+          </div>
+          {isCustom && !disabled ? (
+            <div className="flex shrink-0 items-center gap-1.5">
+              {editing ? (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setDraftContent(content);
+                      setEditing(false);
+                    }}
+                  >
+                    {t("cancel")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={handleSave}
+                    disabled={saving || loading || !draftContent.trim()}
+                  >
+                    {saving ? t("loading") : t("save")}
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setDraftContent(content);
+                    setEditing(true);
+                  }}
+                >
+                  <PencilSimple size={14} />
+                  {t("edit")}
+                </Button>
+              )}
+            </div>
+          ) : null}
         </div>
-        <DialogFooter className="shrink-0 gap-2 border-t border-(--border-default) px-4 py-4 sm:px-6">
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            size="sm"
-          >
-            {t("close")}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-5">
+        {loading ? (
+          <div className="py-8 text-center text-[12px] text-(--text-muted)">
+            {t("loading")}...
+          </div>
+        ) : editing ? (
+          <MarkdownEditor
+            value={draftContent}
+            onChange={setDraftContent}
+            height="100%"
+            placeholder={t("soulPlaceholder")}
+          />
+        ) : (
+          <MarkdownPreview value={content} className="flex-1" />
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -198,10 +290,10 @@ function groupFilteredSouls(items, filter) {
 
 function SoulChoiceCard({
   soul,
+  selected,
   disabled,
-  onView,
+  onSelect,
   onActivate,
-  onEdit,
   onDelete,
 }) {
   const active = !!soul.active;
@@ -216,11 +308,19 @@ function SoulChoiceCard({
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onSelect(soul)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") onSelect(soul);
+      }}
       className={cn(
-        "flex flex-col gap-2 rounded-lg border px-3 py-2.5 transition-colors",
-        active
-          ? "border-primary/40 bg-primary/5"
-          : "border-border bg-background hover:bg-muted/50",
+        "flex cursor-pointer flex-col gap-2 rounded-md border px-3 py-2.5 text-left transition-colors",
+        selected
+          ? "border-[var(--input-shell-accent)]/45 bg-(--bg-hover)"
+          : active
+            ? "border-transparent bg-primary/5"
+            : "border-transparent bg-transparent hover:bg-(--bg-hover)",
       )}
     >
       {/* Header: icon + name + badges + switch */}
@@ -253,29 +353,15 @@ function SoulChoiceCard({
         <Switch
           checked={active}
           onCheckedChange={handleToggle}
+          onClick={(event) => event.stopPropagation()}
           disabled={disabled}
           aria-label={active ? `${soul.name} (${t("current")})` : `${t("activate")} ${soul.name}`}
         />
       </div>
 
-      {/* Preview */}
-      <p className="line-clamp-2 text-xs text-muted-foreground">
-        {soul.preview || t("noPreview")}
-      </p>
-
       {/* Footer: actions (custom only) */}
       {isCustom && (
-        <div className="flex items-center gap-0.5">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            disabled={disabled}
-            onClick={() => onEdit(soul)}
-            aria-label={t("edit")}
-            title={t("edit")}
-          >
-            <PencilSimple size={14} />
-          </Button>
+        <div className="flex items-center gap-0.5" onClick={(event) => event.stopPropagation()}>
           <Button
             variant="ghost"
             size="icon-sm"
@@ -307,7 +393,7 @@ export function SoulPanel({ disabled = false }) {
   const [souls, setSouls] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
-  const [viewSoul, setViewSoul] = useState(null);
+  const [selectedSoul, setSelectedSoul] = useState(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
 
@@ -346,6 +432,16 @@ export function SoulPanel({ disabled = false }) {
     [filteredSouls, filter],
   );
 
+  useEffect(() => {
+    if (filteredSouls.length === 0) {
+      setSelectedSoul(null);
+      return;
+    }
+    if (!selectedSoul || !filteredSouls.some((soul) => soulItemKey(soul) === soulItemKey(selectedSoul))) {
+      setSelectedSoul(filteredSouls[0]);
+    }
+  }, [filteredSouls, selectedSoul]);
+
   const handleActivate = async (name) => {
     if (disabled) return;
     await api.activateSoul(name);
@@ -375,11 +471,8 @@ export function SoulPanel({ disabled = false }) {
 
   return (
     <>
-      <div className="flex min-h-0 flex-1 flex-col gap-4">
-        <SettingsSection
-          description={t("soulPanelHint")}
-          className="shrink-0 gap-2"
-        >
+      <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[380px_minmax(0,1fr)]">
+        <div className="flex min-h-0 flex-col gap-3 border-b border-(--border-default) p-3 lg:border-b-0 lg:border-r">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 items-center gap-2">
               <MaskHappy size={14} className="shrink-0 text-(--text-muted)" />
@@ -410,9 +503,8 @@ export function SoulPanel({ disabled = false }) {
               {t("addSoul")}
             </Button>
           </div>
-        </SettingsSection>
 
-        <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="flex shrink-0 flex-col gap-2">
           <div className="relative min-w-0 flex-1">
             <MagnifyingGlass
               size={13}
@@ -433,11 +525,11 @@ export function SoulPanel({ disabled = false }) {
               value: item,
               label: t(`filter_${item}`),
             }))}
-            className="w-full shrink-0 sm:min-w-[200px] sm:w-auto [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
+            className="w-full shrink-0 [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
           />
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth pr-3 [scrollbar-gutter:stable]">
+        <div className="min-h-[220px] flex-1 overflow-y-auto scroll-smooth pr-2 [scrollbar-gutter:stable]">
           {souls.length === 0 && !editing && (
             <Empty className="rounded-lg py-8">
               <EmptyDescription className="text-[13px] text-(--text-primary)">
@@ -468,10 +560,10 @@ export function SoulPanel({ disabled = false }) {
                     <SoulChoiceCard
                       key={soulItemKey(soul)}
                       soul={soul}
+                      selected={soulItemKey(soul) === soulItemKey(selectedSoul)}
                       disabled={disabled}
-                      onView={setViewSoul}
+                      onSelect={setSelectedSoul}
                       onActivate={handleActivate}
-                      onEdit={setEditing}
                       onDelete={handleDelete}
                     />
                   ))}
@@ -480,15 +572,16 @@ export function SoulPanel({ disabled = false }) {
             </div>
           )}
         </div>
+        </div>
+        <div className="hidden min-h-0 bg-(--bg-primary) lg:block">
+          <SoulDetailPane
+            soul={selectedSoul}
+            disabled={disabled}
+            onSave={handleSave}
+          />
+        </div>
       </div>
 
-      <ViewDialog
-        soul={viewSoul}
-        open={!!viewSoul}
-        onOpenChange={(open) => {
-          if (!open) setViewSoul(null);
-        }}
-      />
       <SoulEditorDialog
         soul={editing === "new" ? null : editing}
         open={!!editing}
