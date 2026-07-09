@@ -898,6 +898,7 @@ function createPlanStepMessage(event) {
       total: event.total,
       role: event.role || "general",
       title: event.title || "",
+      model: event.model || "",
       status: "running",
       summary: "",
     },
@@ -2544,13 +2545,29 @@ export function AppProvider({ children }) {
         }
 
         case "plan:progress": {
-          const { step, status } = event;
+          const { step, status, model: progressModel } = event;
           setState((prev) => ({
             ...prev,
             planSteps: prev.planSteps.map((s, i) =>
-              i === step - 1 ? { ...s, status } : s,
+              i === step - 1
+                ? {
+                    ...s,
+                    status,
+                    ...(progressModel ? { model: progressModel } : {}),
+                  }
+                : s,
             ),
             messages: prev.messages.map((m) => {
+              if (m.planStep?.step === step && progressModel) {
+                return {
+                  ...m,
+                  planStep: {
+                    ...(m.planStep || {}),
+                    ...(status ? { status } : {}),
+                    model: progressModel,
+                  },
+                };
+              }
               if (m.id !== planOverviewMsgRef.current || !m.planOverview)
                 return m;
               return {
@@ -2602,7 +2619,11 @@ export function AppProvider({ children }) {
                   return {
                     ...m,
                     isComplete: false,
-                    planStep: { ...(m.planStep || {}), status: "running" },
+                    planStep: {
+                      ...(m.planStep || {}),
+                      status: "running",
+                      ...(event.model ? { model: event.model } : {}),
+                    },
                   };
                 if (m.id === planOverviewMsgRef.current && m.planOverview)
                   return {
@@ -3719,14 +3740,57 @@ export function AppProvider({ children }) {
       },
 
       approve: async (id, actionName, ownerSessionId) => {
+        const sessionId = ownerSessionId || stateRef.current.currentSessionId;
+        const runtime =
+          stateRef.current.sessionRuntimeById?.[sessionId] ||
+          stateRef.current.runtimeState ||
+          {};
+        const before = {
+          sessionId,
+          actionName,
+          requestId: id,
+          clientPoolStatus: runtime.status || null,
+          clientBusy: runtime.busy === true,
+          hasPendingApproval: Boolean(runtime.pendingApproval),
+          pendingApprovalId: runtime.pendingApproval?.id || null,
+        };
+        console.info("[Codemini:approval] click", before);
         try {
           const result = await api.submitChatAction(
-            ownerSessionId,
+            sessionId,
             actionName,
             { requestId: id },
           );
-          if (result?.error) throw new Error(result.message || "Request failed");
+          console.info("[Codemini:approval] response", {
+            path: result?.path || (result?.recovered
+              ? "RECOVERED_FALLBACK"
+              : result?.accepted
+                ? "NORMAL_RESUME"
+                : result?.code === "STALE_INTERACTION"
+                  ? "STALE"
+                  : result?.error
+                    ? "ERROR"
+                    : "OTHER"),
+            poolStatus: result?.poolStatus || null,
+            httpHint:
+              result?.path === "NORMAL_RESUME" || result?.accepted
+                ? "expect 202"
+                : result?.path === "RECOVERED_FALLBACK" || result?.recovered
+                  ? "expect 200 recovered"
+                  : result?.code === "STALE_INTERACTION"
+                    ? "expect 409 STALE"
+                    : "check Network",
+            result,
+          });
+          if (result?.error) {
+            if (result.code === "STALE_INTERACTION") return;
+            throw new Error(result.message || "Request failed");
+          }
         } catch (err) {
+          console.warn("[Codemini:approval] failed", {
+            ...before,
+            error: err?.message || String(err),
+          });
           addMessage({
             role: "error",
             text: `Failed: ${err.message}`,
@@ -3742,8 +3806,21 @@ export function AppProvider({ children }) {
             id,
             response,
           );
-          if (!result?.ok) await loadState();
-        } catch {
+          if (result?.code === "STALE_INTERACTION") return;
+          if (result?.error || result?.ok === false) {
+            addMessage({
+              role: "error",
+              text: `Failed: ${result?.message || "Request failed"}`,
+              timestamp: new Date().toISOString(),
+            });
+            await loadState();
+          }
+        } catch (err) {
+          addMessage({
+            role: "error",
+            text: `Failed: ${err.message}`,
+            timestamp: new Date().toISOString(),
+          });
           await loadState();
         }
       },

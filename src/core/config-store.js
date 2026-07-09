@@ -53,6 +53,7 @@ const DEFAULT_CONFIG = {
   execution: {
     mode: 'normal',
     approval_mode: 'review',
+    plan_execution_model: 'default',
     always_allow_tools: [
       'read',
       'search_code',
@@ -186,6 +187,10 @@ function normalizePolicyLists(config) {
   next.execution.approval_mode = ['review', 'auto', 'full_access'].includes(rawApprovalMode)
     ? rawApprovalMode
     : 'review';
+  const rawPlanExecutionModel = String(next.execution.plan_execution_model || '').toLowerCase();
+  next.execution.plan_execution_model = ['default', 'fast', 'role'].includes(rawPlanExecutionModel)
+    ? rawPlanExecutionModel
+    : 'default';
   const rawTools = Array.isArray(next.execution.always_allow_tools)
     ? next.execution.always_allow_tools
     : [];

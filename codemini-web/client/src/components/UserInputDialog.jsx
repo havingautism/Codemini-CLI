@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -140,10 +140,15 @@ export function UserInputDialog({ request, open, onRespond }) {
   const questions = useMemo(() => request?.questions || [], [request]);
   const [answers, setAnswers] = useState(() => initialAnswers(questions));
   const [otherAnswers, setOtherAnswers] = useState({});
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
 
   useEffect(() => {
+    if (!request?.id) return;
     setAnswers(initialAnswers(questions));
     setOtherAnswers({});
+    submittingRef.current = false;
+    setSubmitting(false);
   }, [request?.id, questions]);
 
   if (!request) return null;
@@ -166,13 +171,24 @@ export function UserInputDialog({ request, open, onRespond }) {
     return Array.isArray(value) ? value.length === 0 : !value;
   });
 
-  const respond = (status) => onRespond(request.id, {
-    status,
-    answers: status === 'skipped' ? {} : normalizedAnswers(),
-  });
+  const respond = (status) => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    onRespond(request.id, {
+      status,
+      answers: status === 'skipped' ? {} : normalizedAnswers(),
+    });
+  };
 
   return (
-    <Dialog open={open} onOpenChange={(next) => { if (!next) respond('skipped'); }}>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        // Ignore programmatic close after Submit/Skip already submitted.
+        if (!next && request?.id && !submittingRef.current) respond('skipped');
+      }}
+    >
       <DialogContent className="max-h-[86vh] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>{request.title || t('userInputTitle')}</DialogTitle>
@@ -191,8 +207,10 @@ export function UserInputDialog({ request, open, onRespond }) {
           ))}
         </FieldGroup>
         <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => respond('skipped')}>{t('userInputSkip')}</Button>
-          <Button disabled={missingRequired} onClick={() => respond('submitted')}>
+          <Button variant="outline" disabled={submitting} onClick={() => respond('skipped')}>
+            {t('userInputSkip')}
+          </Button>
+          <Button disabled={missingRequired || submitting} onClick={() => respond('submitted')}>
             {request.submit_label || t('userInputSubmit')}
           </Button>
         </DialogFooter>

@@ -229,7 +229,7 @@ export const zh = {
   modelNameHelp: "主对话与 Agent 循环使用的默认模型。",
   fastModel: "快速模型",
   fastModelHelp:
-    "用于标题生成、压缩摘要等轻量任务的更快/更便宜模型。留空则回退到默认模型。",
+    "用于标题生成、压缩摘要、Plan 执行步骤（当「Plan 执行模型」为 Fast 或按角色时）等轻量任务的更快/更便宜模型。留空则回退到默认模型。",
   fastModelPlaceholder: "留空则回退到默认模型",
   reasoningEnabled: "思考模式",
   reasoningEnabledHelp:
@@ -264,6 +264,17 @@ export const zh = {
   mode: "模式",
   executionModeHelp:
     "日常：通用对话与轻量任务。编码：面向代码任务，支持 spec/plan 工作流及更完整的编辑工具集。",
+  planExecutionModel: "Plan 执行模型",
+  planExecutionModelHelp:
+    "控制 Plan 子步骤使用哪个模型。Spec/Plan 产出与主对话仍用当前会话默认模型。切换后对下一轮 Plan 生效，不影响进行中的 Plan。未配置快速模型时，Fast / 按角色会回退到规划模型。",
+  planExecutionModelDefault: "Default",
+  planExecutionModelDefaultDesc: "所有 Plan 步骤使用与规划相同的模型（当前行为）。",
+  planExecutionModelFast: "Fast",
+  planExecutionModelFastDesc:
+    "所有 Plan 步骤使用快速模型；失败重试时升为规划模型。",
+  planExecutionModelRole: "按角色",
+  planExecutionModelRoleDesc:
+    "architect/advisor 用规划模型，其余步骤用快速模型；失败重试时升为规划模型。",
   maxSteps: "最大步数",
   webSearch: "联网搜索",
   webSearchEnabled: "启用联网搜索",

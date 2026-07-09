@@ -26,7 +26,12 @@ export class UserInputManager {
   }
 
   has(id) {
+    if (id == null || id === '') return this.#pending.size > 0;
     return this.#pending.has(id);
+  }
+
+  get pendingCount() {
+    return this.#pending.size;
   }
 
   get current() {

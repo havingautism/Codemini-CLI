@@ -295,6 +295,7 @@ function createPlanStepUiMessage(event) {
       total: event.total,
       role: event.role || 'general',
       title: event.title || '',
+      model: event.model || '',
       status: 'running',
       summary: ''
     }
@@ -378,8 +379,9 @@ export class RuntimeBridge {
   #installApprovalHandler() {
     this.#runtime.setRequestToolApproval((request) => {
       const { id, name, displayName, arguments: args, approvalDetails } = request;
+      const pending = this.#approval.create(id);
       this.#publish({ type: 'approval:request', id, toolName: name, displayName, arguments: args, details: approvalDetails });
-      return this.#approval.create(id);
+      return pending;
     });
     this.#runtime.setRequestUserInput?.((form) => {
       const id = `user-input-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -403,6 +405,15 @@ export class RuntimeBridge {
   }
 
   #publishLifecycle(status, requestId = null) {
+    // Never terminal-settle the Pool RUN while an interaction is still open.
+    // Otherwise completed can consume the lifecycle waiter before waiting_*,
+    // and the UI falls into RECOVERED_FALLBACK forever for this turn.
+    if (
+      (status === 'completed' || status === 'failed' || status === 'aborted') &&
+      (this.#approval.pendingCount > 0 || this.#userInput.pendingCount > 0)
+    ) {
+      return;
+    }
     this.#onLifecycle?.({
       sessionId: this.#sessionId,
       status,
@@ -751,7 +762,11 @@ export class RuntimeBridge {
         } else {
           this.#updateUiMessage(msgId, (message) => ({
             ...message,
-            planStep: { ...(message.planStep || {}), status: 'running' }
+            planStep: {
+              ...(message.planStep || {}),
+              status: 'running',
+              ...(event.model ? { model: event.model } : {})
+            }
           }));
         }
         this.#uiActiveMsgId = msgId;
@@ -772,6 +787,19 @@ export class RuntimeBridge {
         break;
       }
       case 'plan:progress': {
+        if (event.model) {
+          const msgId = this.#uiPlanStepIds.get(String(event.step));
+          if (msgId) {
+            this.#updateUiMessage(msgId, (message) => ({
+              ...message,
+              planStep: {
+                ...(message.planStep || {}),
+                ...(event.status ? { status: event.status } : {}),
+                model: event.model
+              }
+            }));
+          }
+        }
         if (this.#uiPlanOverviewId) {
           this.#updateUiMessage(this.#uiPlanOverviewId, (message) => {
             if (!message.planOverview) return message;
@@ -1144,8 +1172,26 @@ export class RuntimeBridge {
   handleAction(action = {}) {
     const isApprovalDecision = action?.name === CHAT_ACTIONS.APPROVAL_APPROVE
       || action?.name === CHAT_ACTIONS.APPROVAL_REJECT;
-    if (this.#busy && this.#activeStructuredOperationId && isApprovalDecision) {
-      return this.#runtime.dispatchAction(action);
+    if (isApprovalDecision) {
+      const requestId = String(action?.payload?.requestId || '').trim();
+      const approved = action?.name === CHAT_ACTIONS.APPROVAL_APPROVE;
+      const resolved = this.resolveApproval(requestId, approved, action?.payload?.reason || '');
+      if (!resolved) {
+        return {
+          accepted: false,
+          error: true,
+          code: 'NO_PENDING_APPROVAL',
+          message: 'No matching approval request is pending'
+        };
+      }
+      return {
+        accepted: true,
+        result: {
+          type: 'approval',
+          approved,
+          requestId
+        }
+      };
     }
     return this.#handleStructuredRun(
       (onAgentEvent) => this.#runtime.dispatchAction(action, { onAgentEvent })
@@ -1265,6 +1311,7 @@ export class RuntimeBridge {
     const operationId = this.#activeStructuredOperationId;
     this.#activeStructuredOperationId = null;
     this.#userInput.resolveAll({ status: 'skipped', answers: {} });
+    this.#approval.resolveAll({ approved: false, reason: 'aborted' });
     if (wasBusy) this.#invalidateSubmit();
     const abortToken = this.#submitToken;
     const aborted = this.#runtime.abort();
@@ -1355,14 +1402,36 @@ export class RuntimeBridge {
     return result || null;
   }
 
+  resolveApproval(id, approved, reason = '') {
+    const requestId = String(id || '').trim();
+    if (!requestId) return false;
+    const bridgeResolved = this.#approval.resolve(requestId, approved, reason);
+    const runtimeResolved = this.#runtime.resolveToolApproval?.(requestId, {
+      approved: Boolean(approved),
+      reason
+    });
+    const resolved = bridgeResolved || runtimeResolved?.ok === true;
+    if (!resolved) return false;
+    this.#publish({ type: 'approval:resolved', id: requestId, approved: Boolean(approved) });
+    this.#publishLifecycle('running', requestId);
+    this.#broadcastRuntimeState();
+    return true;
+  }
+
   handleApproval(id, approved) {
-    const resolved = this.#approval.resolve(id, approved);
-    if (resolved) this.#publishLifecycle('running', id);
-    return resolved;
+    return this.resolveApproval(id, approved);
   }
 
   hasPendingApproval(id) {
-    return this.#approval.has(id);
+    if (id == null || id === '') {
+      return this.#approval.pendingCount > 0
+        || Boolean(this.#runtime.hasPendingToolApproval?.());
+    }
+    return this.#approval.has(id) || Boolean(this.#runtime.hasPendingToolApproval?.(id));
+  }
+
+  get approvalPendingCount() {
+    return this.#approval.pendingCount;
   }
 
   handleUserInput(id, response) {
@@ -1376,7 +1445,12 @@ export class RuntimeBridge {
   }
 
   hasPendingUserInput(id) {
+    if (id == null || id === '') return this.#userInput.pendingCount > 0;
     return this.#userInput.has(id);
+  }
+
+  get hasOpenUserInput() {
+    return this.#userInput.pendingCount > 0;
   }
 
   getState() {

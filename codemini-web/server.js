@@ -479,6 +479,9 @@ const RECOVERABLE_RUNTIME_STATUSES = new Set([
   'queued', 'running', 'waiting_approval', 'waiting_input'
 ]);
 const ACTIVE_RUNTIME_STATUSES = new Set(RECOVERABLE_RUNTIME_STATUSES);
+const TERMINAL_RUNTIME_STATUSES = new Set([
+  'completed', 'failed', 'aborted', 'interrupted', 'idle'
+]);
 const APPROVAL_ACTION_NAMES = new Set(['approval.approve', 'approval.reject']);
 
 function interactionConflict(res, status) {
@@ -498,6 +501,24 @@ function staleInteractionResponse(res) {
     code: 'STALE_INTERACTION',
     message: 'Interaction request is no longer pending'
   }, 409);
+}
+
+function recoveredInteractionResponse(res, extra = {}) {
+  jsonResponse(res, {
+    ok: true,
+    recovered: true,
+    ...extra
+  }, 200);
+}
+
+function clearStaleApprovalInteraction(bridge, requestId, approved) {
+  if (!bridge?.hasPendingApproval?.(requestId)) return false;
+  return bridge.handleApproval?.(requestId, approved) === true;
+}
+
+function clearStaleUserInputInteraction(bridge, requestId) {
+  if (!bridge?.hasPendingUserInput?.(requestId)) return false;
+  return bridge.handleUserInput?.(requestId, { status: 'skipped', answers: {} }) === true;
 }
 
 export function createServerCleanup({
@@ -848,8 +869,9 @@ export function createWebRuntimeApi({
       if (!bridge) return true;
       try {
         const status = pool.getSessionState(body.sessionId)?.status;
+        const requestId = String(body.payload?.requestId || '').trim();
         if (APPROVAL_ACTION_NAMES.has(body.name) && status === 'waiting_approval') {
-          if (!bridge.hasPendingApproval?.(body.payload?.requestId)) {
+          if (!bridge.hasPendingApproval?.(requestId)) {
             staleInteractionResponse(res);
             return true;
           }
@@ -859,10 +881,29 @@ export function createWebRuntimeApi({
               payload: body.payload || {}
             })
           );
-          jsonResponse(res, accepted, accepted.accepted ? 202 : 409);
+          jsonResponse(res, {
+            ...accepted,
+            path: 'NORMAL_RESUME',
+            poolStatus: status
+          }, accepted.accepted ? 202 : 409);
           return true;
         }
         if (APPROVAL_ACTION_NAMES.has(body.name)) {
+          const approved = body.name === 'approval.approve';
+          if (
+            TERMINAL_RUNTIME_STATUSES.has(status) &&
+            clearStaleApprovalInteraction(bridge, requestId, approved)
+          ) {
+            // Pool already settled (waiting freed the slot) but Bridge was still
+            // pending — resolve succeeded; report success instead of a fake 409.
+            recoveredInteractionResponse(res, {
+              requestId,
+              approved,
+              path: 'RECOVERED_FALLBACK',
+              poolStatus: status
+            });
+            return true;
+          }
           interactionConflict(res, status);
           return true;
         }
@@ -957,6 +998,18 @@ export function createWebRuntimeApi({
         return true;
       }
       if (expectedWaitingStatus) {
+        if (TERMINAL_RUNTIME_STATUSES.has(status)) {
+          if (url.pathname === '/api/approval') {
+            const approved = !!body.approved;
+            if (clearStaleApprovalInteraction(bridge, body.id, approved)) {
+              recoveredInteractionResponse(res, { requestId: body.id, approved });
+              return true;
+            }
+          } else if (clearStaleUserInputInteraction(bridge, body.id)) {
+            recoveredInteractionResponse(res, { requestId: body.id, skipped: true });
+            return true;
+          }
+        }
         interactionConflict(res, status);
         return true;
       }
@@ -2022,10 +2075,45 @@ async function main() {
         sessionId,
         onEvent: eventBroker.publish,
         onLifecycle: lifecycle => {
+          const status = lifecycle?.status;
+          if (status === 'running') return;
+
+          // Waiting must win even when the Pool RUN already settled (completed
+          // consumed the waiter). Otherwise approval UI appears while Pool is
+          // terminal and every click falls into RECOVERED_FALLBACK.
+          if (status === 'waiting_approval' || status === 'waiting_input') {
+            const resolve = lifecycleWaiters.get(sessionId);
+            if (resolve) {
+              lifecycleWaiters.delete(sessionId);
+              resolve({ status });
+              return;
+            }
+            try {
+              pool.markWaiting(sessionId, status);
+            } catch {
+              // Session may have been evicted; ignore.
+            }
+            return;
+          }
+
           const resolve = lifecycleWaiters.get(sessionId);
-          if (!resolve || lifecycle.status === 'running') return;
+          if (!resolve) return;
+
+          // Do not terminal-settle while Bridge still has an open interaction.
+          // A premature completed would leave pending approvals stuck off the
+          // waiting_* resume path.
+          if (
+            (status === 'completed' || status === 'failed' || status === 'aborted') &&
+            (
+              sessionBridge.hasPendingApproval?.() ||
+              sessionBridge.hasPendingUserInput?.()
+            )
+          ) {
+            return;
+          }
+
           lifecycleWaiters.delete(sessionId);
-          resolve({ status: lifecycle.status });
+          resolve({ status });
         }
       });
       sessionBridge.abort = () => sessionBridge.handleAbort();
@@ -2033,10 +2121,15 @@ async function main() {
         lifecycleWaiters.set(sessionId, resolve);
         try {
           const accepted = start();
-          if (accepted?.accepted === false || accepted?.error) {
+          Promise.resolve(accepted).then((result) => {
+            if (result?.accepted === false || result?.error) {
+              lifecycleWaiters.delete(sessionId);
+              resolve({ status: 'failed' });
+            }
+          }, (error) => {
             lifecycleWaiters.delete(sessionId);
-            resolve({ status: 'failed' });
-          }
+            reject(error);
+          });
         } catch (error) {
           lifecycleWaiters.delete(sessionId);
           reject(error);

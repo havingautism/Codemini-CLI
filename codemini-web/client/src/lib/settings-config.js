@@ -74,6 +74,14 @@ export function buildSettingsFields() {
     },
     {
       tab: "execution",
+      path: "execution.plan_execution_model",
+      control: "choiceList",
+      optionsKey: "planExecutionModel",
+      label: t("planExecutionModel"),
+      help: t("planExecutionModelHelp"),
+    },
+    {
+      tab: "execution",
       path: "execution.approval_mode",
       control: "choiceList",
       optionsKey: "approvalMode",

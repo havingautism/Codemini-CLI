@@ -84,6 +84,26 @@ export function takePendingApproval(state, requestId) {
   state.current = null;
   return request;
 }
+
+export function peekPendingApproval(state, requestId = null) {
+  const request = state?.current || null;
+  if (!request) return null;
+  if (requestId != null && String(request.id || '') !== String(requestId || '')) return null;
+  return request;
+}
+
+export function resolvePendingApproval(state, requestId, decision = {}) {
+  const request = takePendingApproval(state, requestId);
+  request.resolve({
+    approved: decision?.approved === true,
+    ...(decision?.approved === true ? {} : { reason: String(decision?.reason || '') })
+  });
+  return {
+    type: 'approval',
+    approved: decision?.approved === true,
+    requestId
+  };
+}
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_REQUIREMENTS_TEMPLATE = path.resolve(MODULE_DIR, '..', '..', 'templates', 'project-requirements', 'report-shell.html');
 const PROJECT_REQUIREMENTS_MD_TEMPLATE = path.resolve(MODULE_DIR, '..', '..', 'templates', 'project-requirements', 'report-template.md');
@@ -3657,6 +3677,7 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     model: model || config.model?.name || '',
     mainModel: config.model?.name || '',
     fastModel: config.model?.fast_name || config.model?.name || '',
+    planExecutionModel: normalizePlanExecutionModel(config.execution?.plan_execution_model),
     maxContextTokens,
     alwaysSkillNames: visibleAlwaysSkillNames,
     reasoningEnabled: config.model?.reasoning_enabled !== false,
@@ -3714,6 +3735,35 @@ function resolveDefaultModel(config) {
 
 function resolveFastModel(config) {
   return String(config?.model?.fast_name || config?.model?.lite_name || config?.model?.name || '').trim();
+}
+
+export const PLAN_EXECUTION_DEFAULT_MODEL_ROLES = Object.freeze(['architect', 'advisor']);
+
+export function normalizePlanExecutionModel(value) {
+  const mode = String(value || 'default').toLowerCase();
+  return ['default', 'fast', 'role'].includes(mode) ? mode : 'default';
+}
+
+/**
+ * Resolve which model a plan sub-agent step should use.
+ * "Default" means the same model as planning (planningModel), not necessarily config.model.name.
+ */
+export function resolvePlanExecutionModel(config, {
+  role = 'coder',
+  retryCount = 0,
+  planningModel = ''
+} = {}) {
+  const fallback = String(planningModel || resolveDefaultModel(config) || '').trim();
+  const fast = resolveFastModel(config);
+  const hasDistinctFast = Boolean(fast && fast !== fallback);
+  const mode = normalizePlanExecutionModel(config?.execution?.plan_execution_model);
+
+  if (!hasDistinctFast || mode === 'default') return fallback;
+  if (Number(retryCount) > 0) return fallback;
+  if (mode === 'fast') return fast;
+  return PLAN_EXECUTION_DEFAULT_MODEL_ROLES.includes(String(role || ''))
+    ? fallback
+    : fast;
 }
 
 function normalizeGeneratedSessionTitle(value, fallback = '') {
@@ -5106,13 +5156,24 @@ async function executePlanWithSubAgents({
     const step = steps[i];
     if (signal?.aborted) break;
 
+    const MAX_STEP_RETRIES = 1;
+    const planningModel = model || config.model?.name || '';
+
+    const stepGuidance = buildPipelineStepGuidance({ role: step.role, stepIndex: i, totalSteps: steps.length, isFirst: i === 0, isLast: i === steps.length - 1, priorSteps });
+    const firstModel = resolvePlanExecutionModel(config, {
+      role: step.role,
+      retryCount: 0,
+      planningModel
+    });
+
     emitPlanEvent({
       type: 'plan:step_start',
       planFile: planFilePath,
       step: i + 1,
       total: steps.length,
       role: step.role,
-      title: step.title
+      title: step.title,
+      model: firstModel
     });
 
     emitPlanEvent({
@@ -5122,7 +5183,8 @@ async function executePlanWithSubAgents({
       total: steps.length,
       role: step.role,
       title: step.title,
-      status: 'running'
+      status: 'running',
+      model: firstModel
     });
 
     emitPlanEvent({
@@ -5136,9 +5198,6 @@ async function executePlanWithSubAgents({
       planFileContext = await readPlanFileAsContext(planFilePath);
     }
 
-    const MAX_STEP_RETRIES = 1;
-
-    const stepGuidance = buildPipelineStepGuidance({ role: step.role, stepIndex: i, totalSteps: steps.length, isFirst: i === 0, isLast: i === steps.length - 1, priorSteps });
     let output = await runSubAgentTask({
       role: step.role,
       task: [renderStepContractBlock(step), step.task].filter(Boolean).join('\n\n'),
@@ -5146,7 +5205,7 @@ async function executePlanWithSubAgents({
       priorSteps,
       parentSession,
       config,
-      model,
+      model: firstModel,
       systemPrompt,
       onAgentEvent: emitPlanEvent,
       requestToolApproval,
@@ -5177,9 +5236,24 @@ ${diffReview}`.trim();
 
     while (stepFailed && retryCount < MAX_STEP_RETRIES && shouldRetryStepFailure(failureType, step.role) && !signal?.aborted) {
       retryCount += 1;
+      const retryModel = resolvePlanExecutionModel(config, {
+        role: step.role,
+        retryCount,
+        planningModel
+      });
       emitPlanEvent({
         type: 'assistant:delta',
         text: `\n[plan] Step ${i + 1}/${steps.length} retry ${retryCount}/${MAX_STEP_RETRIES} (previous: ${failureReason})\n`
+      });
+      emitPlanEvent({
+        type: 'plan:progress',
+        planFile: planFilePath,
+        step: i + 1,
+        total: steps.length,
+        role: step.role,
+        title: step.title,
+        status: 'running',
+        model: retryModel
       });
 
       const retryGuidance = buildPipelineStepGuidance({
@@ -5200,7 +5274,7 @@ ${diffReview}`.trim();
         priorSteps,
         parentSession,
         config,
-        model,
+        model: retryModel,
         systemPrompt,
         onAgentEvent: emitPlanEvent,
         requestToolApproval,
@@ -7480,19 +7554,16 @@ export async function createChatRuntime({
       [CHAT_ACTIONS.SPEC_REVISE]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
       [CHAT_ACTIONS.REFLECT_APPROVE]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
       [CHAT_ACTIONS.REFLECT_REVISE]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
-      [CHAT_ACTIONS.APPROVAL_APPROVE]: async () => {
-        const request = takePendingApproval(approvalRequestState, payload.requestId);
-        request.resolve({ approved: true });
-        return { type: 'approval', approved: true, requestId: payload.requestId };
-      },
-      [CHAT_ACTIONS.APPROVAL_REJECT]: async () => {
-        const request = takePendingApproval(approvalRequestState, payload.requestId);
-        request.resolve({
-          approved: false,
-          reason: payload.reason || ''
-        });
-        return { type: 'approval', approved: false, requestId: payload.requestId };
-      }
+      [CHAT_ACTIONS.APPROVAL_APPROVE]: async () => resolvePendingApproval(
+        approvalRequestState,
+        payload.requestId,
+        { approved: true }
+      ),
+      [CHAT_ACTIONS.APPROVAL_REJECT]: async () => resolvePendingApproval(
+        approvalRequestState,
+        payload.requestId,
+        { approved: false, reason: payload.reason || '' }
+      )
     };
     const handler = handlers[normalized.name];
     if (!handler) {
@@ -7554,6 +7625,23 @@ export async function createChatRuntime({
       requestToolApprovalObserver = typeof handler === 'function' ? handler : null;
       return true;
     },
+    resolveToolApproval: (requestId, decision = {}) => {
+      const pending = peekPendingApproval(approvalRequestState, requestId);
+      if (!pending) return { ok: false, code: 'NO_PENDING_APPROVAL' };
+      try {
+        return {
+          ok: true,
+          result: resolvePendingApproval(approvalRequestState, requestId, decision)
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          code: error?.code || 'NO_PENDING_APPROVAL',
+          message: error?.message || 'No matching approval request is pending'
+        };
+      }
+    },
+    hasPendingToolApproval: (requestId) => Boolean(peekPendingApproval(approvalRequestState, requestId)),
     setRequestUserInput: (handler) => {
       activeRequestUserInput = typeof handler === 'function' ? handler : null;
       return true;

@@ -2035,6 +2035,19 @@ export function MessageBubble({
             >
               {style.label}
             </span>
+            {planStep?.title ? (
+              <span className="min-w-0 truncate text-[12px] text-(--text-secondary)">
+                {planStep.title}
+              </span>
+            ) : null}
+            {planStep?.model ? (
+              <span
+                className="shrink-0 font-mono text-[10px] text-(--text-muted)"
+                title={planStep.model}
+              >
+                {planStep.model}
+              </span>
+            ) : null}
             {ts && (
               <span className="text-[11px] text-(--text-muted)">{ts}</span>
             )}

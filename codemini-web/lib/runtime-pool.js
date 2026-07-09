@@ -127,6 +127,30 @@ export class RuntimePool {
     };
   }
 
+  /**
+   * Put a session into waiting_approval / waiting_input even if the Pool RUN
+   * already settled (e.g. completed ate the lifecycle waiter). Frees a running
+   * slot when needed so concurrency stays correct.
+   */
+  markWaiting(sessionId, status = 'waiting_approval') {
+    const entry = this.entries.get(sessionId);
+    if (!entry) throw new Error(`Unknown session: ${sessionId}`);
+    if (!WAITING_STATUSES.has(status)) {
+      throw new RangeError(`Invalid waiting status: ${status}`);
+    }
+    if (entry.status === status) return this.#snapshot(entry);
+
+    this.#removeQueued(sessionId);
+    if (entry.status === 'running') {
+      this.running.delete(sessionId);
+    }
+    // Keep operation only while a live run may still resume via waiter settle.
+    // After terminal settle, operation is already null; waiting is Bridge-backed.
+    this.#setStatus(entry, status);
+    this.#drain();
+    return this.#snapshot(entry);
+  }
+
   async abort(sessionId) {
     const entry = this.entries.get(sessionId);
     if (!entry) return false;

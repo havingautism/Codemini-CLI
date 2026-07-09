@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -181,26 +182,44 @@ function ApprovalBody({ variant, args, details }) {
 }
 
 export function ApprovalDialog({ request, open, onDecision }) {
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+
+  useEffect(() => {
+    // Only reset when a new request arrives. Keep the lock when request clears
+    // so Dialog close/unmount cannot emit a second reject.
+    if (!request?.id) return;
+    submittingRef.current = false;
+    setSubmitting(false);
+  }, [request?.id]);
+
   if (!request) return null;
   const { id, toolName, displayName, arguments: args, details } = request;
   const variant = detectVariant(toolName, details);
   const hasApprovalShortcuts = ['delete', 'run', 'edit', 'create', 'write', 'apply_patch'].includes(variant);
 
+  const decide = (actionName) => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    onDecision(id, actionName);
+  };
+
   const handleKeyDownCapture = (event) => {
-    if (!hasApprovalShortcuts) return;
+    if (!hasApprovalShortcuts || submittingRef.current) return;
     if (event.defaultPrevented || event.repeat) return;
 
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
-      onDecision(id, CHAT_ACTION_NAMES.APPROVAL_REJECT);
+      decide(CHAT_ACTION_NAMES.APPROVAL_REJECT);
       return;
     }
 
     if (event.key === 'Enter' && !event.shiftKey && !isEditableTarget(event.target)) {
       event.preventDefault();
       event.stopPropagation();
-      onDecision(id, CHAT_ACTION_NAMES.APPROVAL_APPROVE);
+      decide(CHAT_ACTION_NAMES.APPROVAL_APPROVE);
     }
   };
 
@@ -217,7 +236,15 @@ export function ApprovalDialog({ request, open, onDecision }) {
   };
 
   return (
-    <Dialog open={open} onOpenChange={(v) => { if (!v) onDecision(id, CHAT_ACTION_NAMES.APPROVAL_REJECT); }}>
+    <Dialog
+      open={open}
+      onOpenChange={(v) => {
+        // Ignore programmatic close after Allow/Deny already submitted.
+        if (!v && request?.id && !submittingRef.current) {
+          decide(CHAT_ACTION_NAMES.APPROVAL_REJECT);
+        }
+      }}
+    >
       <DialogContent
         onKeyDownCapture={handleKeyDownCapture}
         className={cn(
@@ -232,13 +259,20 @@ export function ApprovalDialog({ request, open, onDecision }) {
           <ApprovalBody variant={variant} args={args} details={details} />
         </div>
         <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => onDecision(id, CHAT_ACTION_NAMES.APPROVAL_REJECT)}>
+          <Button
+            variant="outline"
+            disabled={submitting}
+            onClick={() => decide(CHAT_ACTION_NAMES.APPROVAL_REJECT)}
+          >
             {t('deny')}
             {hasApprovalShortcuts && (
               <span className="ml-1.5 text-[11px] font-mono opacity-70">Esc</span>
             )}
           </Button>
-          <Button onClick={() => onDecision(id, CHAT_ACTION_NAMES.APPROVAL_APPROVE)}>
+          <Button
+            disabled={submitting}
+            onClick={() => decide(CHAT_ACTION_NAMES.APPROVAL_APPROVE)}
+          >
             {t('approve')}
             {hasApprovalShortcuts && (
               <span className="ml-1.5 text-[13px] leading-none opacity-80">↩︎</span>
