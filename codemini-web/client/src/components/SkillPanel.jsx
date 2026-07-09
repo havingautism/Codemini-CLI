@@ -33,7 +33,6 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { skillAuthorLabel, sortSkillsByAuthor } from "@/lib/skill-display.js";
@@ -392,7 +391,7 @@ function SkillEditorDialog({
             onValidate={handleValidate}
           />
         </div>
-        <DialogFooter className="shrink-0">
+        <div className="mx-4 flex shrink-0 justify-end gap-2 border-t border-(--border-default) py-4 sm:mx-6">
           <Button
             variant="outline"
             onClick={() => onOpenChange(false)}
@@ -407,7 +406,7 @@ function SkillEditorDialog({
           >
             {footerState.isNew ? t("create") : t("save")}
           </Button>
-        </DialogFooter>
+        </div>
       </DialogContent>
     </Dialog>
   );

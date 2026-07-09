@@ -472,10 +472,22 @@ function SpecQuickSelect({ sessionId, visible, disabled = false, onSelect }) {
   );
 }
 
-function ActionSkillPalette({ query, error, onQueryChange, onSelect, visible, projectDirs = EMPTY_PROJECT_DIRS, defaultSkillNames = [] }) {
+function ActionSkillPalette({ query, error, onQueryChange, onSelect, visible, projectDirs = EMPTY_PROJECT_DIRS, defaultSkillNames = [], onClose }) {
   const [skills, setSkills] = useState([]);
   const [hoveredItem, setHoveredItem] = useState(null);
   const searchRef = useRef(null);
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    if (!visible) return;
+    const handlePointerDown = (e) => {
+      if (containerRef.current && !containerRef.current.contains(e.target)) {
+        onClose?.();
+      }
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [visible, onClose]);
 
   useEffect(() => {
     let cancelled = false;
@@ -614,6 +626,7 @@ function ActionSkillPalette({ query, error, onQueryChange, onSelect, visible, pr
 
   return (
     <div
+      ref={containerRef}
       className="absolute bottom-full left-0 right-0 mb-1.5 max-h-[360px] overflow-y-auto rounded-lg border border-(--border-default) bg-(--bg-primary) shadow-[var(--shadow-default)] z-50 animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
       style={{ scrollbarWidth: "thin" }}
     >
@@ -928,6 +941,7 @@ export function InputBar({
         visible={paletteOpen}
         projectDirs={projectDirs}
         defaultSkillNames={defaultSkillNames}
+        onClose={() => setPaletteOpen(false)}
       />
       <div className="codemini-input-shell flex flex-col gap-2.5 px-2 py-2 sm:px-2.5">
         {(selectedSkills.length > 0 ||
