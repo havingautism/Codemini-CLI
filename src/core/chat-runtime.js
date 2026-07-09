@@ -4119,7 +4119,8 @@ async function askModel({
   backupManager = null,
   projectIsGit = Boolean(config?.runtime?.project_is_git),
   onExecutionModeSync = null,
-  workspaceRoot = process.cwd()
+  workspaceRoot = process.cwd(),
+  selectedSkillNames = []
 }) {
   let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
@@ -4130,6 +4131,11 @@ async function askModel({
   const messagesForEstimate = modelVisibleMessages(compacted ?? session.messages);
   const preflightTokens = estimatePromptTokensForRequest(messagesForEstimate, modelInputText);
   const preflightPct = (preflightTokens / maxContextTokens) * 100;
+  const selectedSkillNamesForUi = [...new Set(
+    (Array.isArray(selectedSkillNames) ? selectedSkillNames : [])
+      .map((name) => String(name || '').trim())
+      .filter(Boolean)
+  )];
 
   if (persistSession && preflightPct >= triggerPct) {
     const compactSource = modelVisibleMessages(compacted ?? session.messages);
@@ -4241,7 +4247,13 @@ async function askModel({
     const imageExtra = Array.isArray(modelImages) && modelImages.length
       ? { model_images: modelImages }
       : {};
-    const userMessage = stampedMessage('user', text, { ...modelExtra, ...imageExtra });
+    const selectedSkillExtra = selectedSkillNamesForUi.length
+      ? {
+          selected_skill_names: selectedSkillNamesForUi,
+          skill_badges: selectedSkillNamesForUi.map((name) => ({ name, status: 'selected' }))
+        }
+      : {};
+    const userMessage = stampedMessage('user', text, { ...modelExtra, ...imageExtra, ...selectedSkillExtra });
     session.messages.push(userMessage);
     if (compacted) {
       compacted.push({ ...userMessage });
@@ -7437,7 +7449,8 @@ export async function createChatRuntime({
       changeTracker,
       backupManager,
       onExecutionModeSync: syncExecutionModeWithSession,
-      workspaceRoot: root
+      workspaceRoot: root,
+      selectedSkillNames: options?.selectedSkillNames
     });
     syncExecutionModeWithSession();
     void Promise.allSettled([
@@ -7490,7 +7503,8 @@ export async function createChatRuntime({
       modelText: appendAttachmentContext(composed.modelText, submission?.modelText),
       modelImages: Array.isArray(submission?.modelImages) ? submission.modelImages : [],
       attachmentIds: normalized.attachmentIds,
-      dismissedAlwaysSkills: normalized.dismissedAlwaysSkills
+      dismissedAlwaysSkills: normalized.dismissedAlwaysSkills,
+      selectedSkillNames: composed.skillNames
     });
   };
 

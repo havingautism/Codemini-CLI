@@ -26,7 +26,7 @@ import { cn } from "@/lib/utils";
 import {
   isManualSkillCommand,
   parseUserSkillPrompt,
-  skillNamesFromBadges,
+  userSkillChipBadges,
 } from "@/lib/user-skill-prompt.js";
 import { formatTimestamp } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
@@ -1318,20 +1318,26 @@ function UserText({ text }) {
   return <StreamdownRenderer text={text} streaming={false} />;
 }
 
-function UserSkillChips({ skillNames = [], skills = [], className }) {
-  const names = (Array.isArray(skillNames) ? skillNames : [skillNames])
-    .map((name) => String(name || "").trim())
-    .filter(Boolean);
-  if (!names.length) return null;
+function UserSkillChips({ badges = [], skills = [], className }) {
+  const items = userSkillChipBadges(badges);
+  if (!items.length) return null;
   return (
     <div className={cn("flex max-w-full flex-wrap gap-1.5", className)}>
-      {names.map((name) => {
+      {items.map(({ name, status }) => {
         const description = skills.find((item) => item.name === name)?.description || "";
+        const always = status === "always";
         return (
           <Tooltip key={name}>
             <TooltipTrigger asChild>
-              <span className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-(--accent-purple)/25 bg-(--accent-purple-bg) px-2 py-1 text-[12px] text-accent-purple">
-                <Hammer size={14} className="shrink-0" />
+              <span
+                className={cn(
+                  "inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-[12px]",
+                  always
+                    ? "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)"
+                    : "border-(--accent-purple)/25 bg-(--accent-purple-bg) text-accent-purple",
+                )}
+              >
+                <Hammer size={14} className={cn("shrink-0", always && "opacity-70")} />
                 <span className="max-w-[220px] truncate">{name}</span>
               </span>
             </TooltipTrigger>
@@ -1889,9 +1895,9 @@ export function MessageBubble({
     if (!isManualSkillCommand(parsed.skillName)) return null;
     return parsed;
   }, [role, youText]);
-  const badgeSkillNames = useMemo(
-    () => skillNamesFromBadges(skillBadges),
-    [skillBadges],
+  const userSkillChips = useMemo(
+    () => userSkillChipBadges(skillBadges, userSkillPrompt?.skillNames || []),
+    [skillBadges, userSkillPrompt?.skillNames],
   );
   const userDisplayText = userSkillPrompt ? userSkillPrompt.prompt : youText;
   const messageText = role === "you" ? youText : rawMessageText;
@@ -1947,16 +1953,16 @@ export function MessageBubble({
             <SpecExecutionCard details={specExecutionDetails} />
           ) : (
             <div className="w-fit max-w-full bg-(--bg-tertiary) rounded-2xl px-4 py-3">
-              {(badgeSkillNames.length > 0 || userSkillPrompt?.skillNames?.length || attachments.length > 0) && (
+              {(userSkillChips.length > 0 || attachments.length > 0) && (
                 <div
                   className={cn(
                     "flex max-w-full flex-col gap-2",
                     userDisplayText && "mb-3",
                   )}
                 >
-                  {(badgeSkillNames.length > 0 || userSkillPrompt?.skillNames?.length > 0) && (
+                  {userSkillChips.length > 0 && (
                     <UserSkillChips
-                      skillNames={[...badgeSkillNames, ...(userSkillPrompt?.skillNames || [])]}
+                      badges={userSkillChips}
                       skills={skills}
                     />
                   )}

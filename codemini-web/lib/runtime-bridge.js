@@ -68,6 +68,38 @@ function appendUniqueSkillBadges(current = [], next = []) {
   return out;
 }
 
+function selectedSkillBadgesFromNames(names = []) {
+  return [...new Set(
+    (Array.isArray(names) ? names : [])
+      .map((name) => String(name || '').trim())
+      .filter(Boolean)
+  )].map((name) => ({ name, status: 'selected' }));
+}
+
+function skillBadgesFromSessionMessage(message = {}) {
+  const explicit = Array.isArray(message.skillBadges)
+    ? message.skillBadges
+    : Array.isArray(message.skill_badges)
+      ? message.skill_badges
+      : [];
+  const normalized = [];
+  for (const badge of explicit) {
+    const status = String(badge?.status || 'selected').trim() || 'selected';
+    if (status !== 'selected' && status !== 'always') continue;
+    for (const rawName of String(badge?.name || '').split(',')) {
+      const name = rawName.trim();
+      if (name) normalized.push({ name, status });
+    }
+  }
+  if (normalized.length) return appendUniqueSkillBadges([], normalized);
+  const names = Array.isArray(message.selectedSkillNames)
+    ? message.selectedSkillNames
+    : Array.isArray(message.selected_skill_names)
+      ? message.selected_skill_names
+      : [];
+  return selectedSkillBadgesFromNames(names);
+}
+
 function createSkillSegment(event, status = 'running') {
   const now = new Date().toISOString();
   return {
@@ -1475,31 +1507,40 @@ export class RuntimeBridge {
     if (!Array.isArray(messages)) return [];
     return messages
       .filter(m => m.role !== 'system')
-      .map(m => ({
-        role: m.role,
-        content: typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(c => c.text || '').join('') : ''),
-        reasoningContent: typeof m.reasoning_content === 'string' ? m.reasoning_content : '',
-        reasoningDetails: Array.isArray(m.reasoning_details) ? m.reasoning_details : [],
-        reasoningStartedAt: m.reasoning_started_at || null,
-        reasoningEndedAt: m.reasoning_ended_at || null,
-        reasoningDurationMs: Number.isFinite(Number(m.reasoning_duration_ms)) ? Number(m.reasoning_duration_ms) : null,
-        toolCalls: m.tool_calls || [],
-        fileChanges: Array.isArray(m.file_changes) ? m.file_changes : [],
-        toolCallId: m.tool_call_id || null,
-        toolSummary: m.role === 'tool' ? summarizeHistoricalToolMessage(m) : null,
-        toolDurationMs: Number.isFinite(Number(m.tool_duration_ms)) ? Number(m.tool_duration_ms) : null,
-        toolStatus: m.tool_status || null,
-        toolResultMeta: m.tool_result_meta || null,
-        toolFileChange: m.tool_file_change || null,
-        toolFileChanges: Array.isArray(m.tool_file_changes) ? m.tool_file_changes : [],
-        planTranscript: Array.isArray(m.plan_transcript) ? m.plan_transcript : null,
-        planGoal: typeof m.plan_goal === 'string' ? m.plan_goal : '',
-        planFile: typeof m.plan_file === 'string' ? m.plan_file : '',
-        usage: normalizeUiUsage(m.usage),
-        responseStatus: typeof m.response_status === 'string' ? m.response_status : '',
-        retryPrompt: typeof m.retry_prompt === 'string' ? m.retry_prompt : '',
-        at: m.at || null
-      }));
+      .map(m => {
+        const selectedSkillNames = Array.isArray(m.selectedSkillNames)
+          ? m.selectedSkillNames
+          : Array.isArray(m.selected_skill_names)
+            ? m.selected_skill_names
+            : [];
+        return {
+          role: m.role,
+          content: typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(c => c.text || '').join('') : ''),
+          reasoningContent: typeof m.reasoning_content === 'string' ? m.reasoning_content : '',
+          reasoningDetails: Array.isArray(m.reasoning_details) ? m.reasoning_details : [],
+          reasoningStartedAt: m.reasoning_started_at || null,
+          reasoningEndedAt: m.reasoning_ended_at || null,
+          reasoningDurationMs: Number.isFinite(Number(m.reasoning_duration_ms)) ? Number(m.reasoning_duration_ms) : null,
+          toolCalls: m.tool_calls || [],
+          fileChanges: Array.isArray(m.file_changes) ? m.file_changes : [],
+          toolCallId: m.tool_call_id || null,
+          toolSummary: m.role === 'tool' ? summarizeHistoricalToolMessage(m) : null,
+          toolDurationMs: Number.isFinite(Number(m.tool_duration_ms)) ? Number(m.tool_duration_ms) : null,
+          toolStatus: m.tool_status || null,
+          toolResultMeta: m.tool_result_meta || null,
+          toolFileChange: m.tool_file_change || null,
+          toolFileChanges: Array.isArray(m.tool_file_changes) ? m.tool_file_changes : [],
+          planTranscript: Array.isArray(m.plan_transcript) ? m.plan_transcript : null,
+          planGoal: typeof m.plan_goal === 'string' ? m.plan_goal : '',
+          planFile: typeof m.plan_file === 'string' ? m.plan_file : '',
+          usage: normalizeUiUsage(m.usage),
+          responseStatus: typeof m.response_status === 'string' ? m.response_status : '',
+          retryPrompt: typeof m.retry_prompt === 'string' ? m.retry_prompt : '',
+          selectedSkillNames,
+          skillBadges: skillBadgesFromSessionMessage(m),
+          at: m.at || null
+        };
+      });
   }
 
   getSessionCompactMeta() {

@@ -42,6 +42,7 @@ import {
   updateToolInMessages,
   upsertToolCardInSegments,
 } from "../../../shared/tool-segments.js";
+import { skillBadgesFromSessionMessage } from "../lib/user-skill-prompt.js";
 
 const AppContext = createContext(null);
 
@@ -1835,7 +1836,7 @@ export function AppProvider({ children }) {
                 { type: "text", text: visibleContent, isStreaming: false },
               ],
               attachments: parseAttachmentsFromModelContent(msg.model_content),
-              skillBadges: [],
+              skillBadges: skillBadgesFromSessionMessage(msg),
               fileChanges: [],
             });
           } else if (msg.role === "assistant") {
