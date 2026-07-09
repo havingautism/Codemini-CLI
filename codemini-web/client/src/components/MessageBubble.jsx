@@ -7,6 +7,7 @@ import {
   MarkdownLightboxImage,
 } from "./MarkdownLightboxImage.jsx";
 import { collectMessageEmbeds } from "@/lib/message-embeds.js";
+import { buildRenderGroups } from "@/lib/message-render-groups.js";
 import { TodoList } from "./TodoList";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
@@ -1281,50 +1282,6 @@ function FileChangesSummary({ changes }) {
   );
 }
 
-// Merge adjacent tool segments (possibly separated by empty text) into merged render groups
-function buildRenderGroups(segments) {
-  const groups = [];
-  let pendingTools = [];
-
-  const flushTools = () => {
-    if (pendingTools.length > 0) {
-      groups.push({ type: "tools", cards: pendingTools });
-      pendingTools = [];
-    }
-  };
-
-  for (const seg of segments) {
-    if (seg.type === "tools") {
-      pendingTools.push(...seg.cards);
-    } else if (seg.type === "text") {
-      if (seg.text || seg.isStreaming) {
-        flushTools();
-        groups.push({
-          type: "text",
-          text: seg.text || "",
-          isStreaming: seg.isStreaming,
-        });
-      }
-      // Empty non-streaming text between tools: skip, keep accumulating
-    } else if (seg.type === "thinking") {
-      if (seg.text) {
-        flushTools();
-        groups.push({ type: "thinking", ...seg });
-      }
-    } else if (seg.type === "handoff") {
-      if (seg.text) {
-        flushTools();
-        groups.push({ type: "handoff", ...seg });
-      }
-    } else if (seg.type === "skill") {
-      flushTools();
-      groups.push({ type: "skill", ...seg });
-    }
-  }
-  flushTools();
-  return groups;
-}
-
 function UserText({ text }) {
   const match = String(text || "").match(/^(\/([A-Za-z0-9_-]+))(\s+[\s\S]*)?$/);
   if (!match) return <StreamdownRenderer text={text} streaming={false} />;
@@ -2108,6 +2065,11 @@ export function MessageBubble({
           {message.manualAborted && (
             <p className="mt-2 text-xs text-(--text-muted)">
               {t("manualStopped")}
+            </p>
+          )}
+          {!message.manualAborted && responseStatus === "aborted" && (
+            <p className="mt-2 text-xs text-(--text-muted)">
+              {t("requestAborted")}
             </p>
           )}
           <MessageActions

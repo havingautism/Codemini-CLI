@@ -447,7 +447,9 @@ function extractToolResultMeta(toolName, result) {
 export const trimInline = _trimInline;
 
 export function shouldDenyHighRiskRunEvaluation(config = {}, evaluation = {}) {
-  return config?.policy?.allow_dangerous_commands !== true && String(evaluation?.risk || '').toLowerCase() === 'high';
+  return config?.policy?.allow_dangerous_commands !== true
+    && evaluation?.failed !== true
+    && String(evaluation?.risk || '').toLowerCase() === 'high';
 }
 
 function normalizeAssistantText(value) {
@@ -866,7 +868,9 @@ export async function runAgentLoop({
             });
             approvalArgs = {
               ...args,
-              _risk: isSafeModePolicyBlocked && evaluation.risk === 'low' ? 'medium' : evaluation.risk,
+              _risk: evaluation.failed
+                ? ''
+                : (isSafeModePolicyBlocked && evaluation.risk === 'low' ? 'medium' : evaluation.risk),
               _evaluation: evaluation,
               _policyBlock: isSafeModePolicyBlocked
                 ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
@@ -892,8 +896,14 @@ export async function runAgentLoop({
           } catch (_) {
             approvalArgs = {
               ...args,
-              _risk: isSafeModePolicyBlocked ? 'medium' : 'high',
-              _evaluation: null,
+              _risk: '',
+              _evaluation: {
+                risk: 'high',
+                description: '',
+                sideEffects: '',
+                recommendation: 'deny',
+                failed: true
+              },
               _policyBlock: isSafeModePolicyBlocked
                 ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
                 : null

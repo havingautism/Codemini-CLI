@@ -65,11 +65,7 @@ function isAbortRelatedResult(result = {}) {
 function isManualAbortDividerMessage(message = {}) {
   return (
     message?.dividerType === "manual-abort" ||
-    message?.dividerType === "abort" ||
-    (message?.role === "divider" &&
-      String(
-        message?.responseStatus || message?.response_status || "",
-      ).toLowerCase() === "aborted")
+    message?.dividerType === "abort"
   );
 }
 
@@ -1846,13 +1842,6 @@ export function AppProvider({ children }) {
             const responseStatus = String(
               msg.responseStatus || msg.response_status || "",
             ).toLowerCase();
-            if (responseStatus === "aborted") {
-              assistantGroup = null;
-              const folded = markPreviousAssistantManualAborted(processed);
-              processed.length = 0;
-              processed.push(...folded);
-              continue;
-            }
             if (responseStatus === "error") {
               assistantGroup = null;
               if (isAbortRelatedText(msg.content || "")) {
@@ -3052,7 +3041,7 @@ export function AppProvider({ children }) {
                       isComplete: true,
                       segments,
                       ...(isAbortRelatedResult(result)
-                        ? { manualAborted: true }
+                        ? { responseStatus: "aborted" }
                         : {}),
                       planStep: shouldSettlePlanStep
                         ? {
@@ -3741,56 +3730,17 @@ export function AppProvider({ children }) {
 
       approve: async (id, actionName, ownerSessionId) => {
         const sessionId = ownerSessionId || stateRef.current.currentSessionId;
-        const runtime =
-          stateRef.current.sessionRuntimeById?.[sessionId] ||
-          stateRef.current.runtimeState ||
-          {};
-        const before = {
-          sessionId,
-          actionName,
-          requestId: id,
-          clientPoolStatus: runtime.status || null,
-          clientBusy: runtime.busy === true,
-          hasPendingApproval: Boolean(runtime.pendingApproval),
-          pendingApprovalId: runtime.pendingApproval?.id || null,
-        };
-        console.info("[Codemini:approval] click", before);
         try {
           const result = await api.submitChatAction(
             sessionId,
             actionName,
             { requestId: id },
           );
-          console.info("[Codemini:approval] response", {
-            path: result?.path || (result?.recovered
-              ? "RECOVERED_FALLBACK"
-              : result?.accepted
-                ? "NORMAL_RESUME"
-                : result?.code === "STALE_INTERACTION"
-                  ? "STALE"
-                  : result?.error
-                    ? "ERROR"
-                    : "OTHER"),
-            poolStatus: result?.poolStatus || null,
-            httpHint:
-              result?.path === "NORMAL_RESUME" || result?.accepted
-                ? "expect 202"
-                : result?.path === "RECOVERED_FALLBACK" || result?.recovered
-                  ? "expect 200 recovered"
-                  : result?.code === "STALE_INTERACTION"
-                    ? "expect 409 STALE"
-                    : "check Network",
-            result,
-          });
           if (result?.error) {
             if (result.code === "STALE_INTERACTION") return;
             throw new Error(result.message || "Request failed");
           }
         } catch (err) {
-          console.warn("[Codemini:approval] failed", {
-            ...before,
-            error: err?.message || String(err),
-          });
           addMessage({
             role: "error",
             text: `Failed: ${err.message}`,

@@ -1177,11 +1177,14 @@ export class RuntimeBridge {
       const approved = action?.name === CHAT_ACTIONS.APPROVAL_APPROVE;
       const resolved = this.resolveApproval(requestId, approved, action?.payload?.reason || '');
       if (!resolved) {
+        const hasOtherPendingApproval = this.hasPendingApproval();
         return {
           accepted: false,
           error: true,
-          code: 'NO_PENDING_APPROVAL',
-          message: 'No matching approval request is pending'
+          code: hasOtherPendingApproval ? 'STALE_ACTION' : 'NO_PENDING_APPROVAL',
+          message: hasOtherPendingApproval
+            ? 'Stale approval request id'
+            : 'No matching approval request is pending'
         };
       }
       return {

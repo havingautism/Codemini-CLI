@@ -5939,12 +5939,17 @@ export function getBuiltinTools({
       });
     },
     run: Object.assign((args) => runCommand(workspaceRoot, config, args), {
-      prepareApproval: async (args) => ({
-        command: args?.command || "",
-        risk: args?._risk || "high",
-        evaluation: args?._evaluation || null,
-        policyBlock: args?._policyBlock || null,
-      }),
+      prepareApproval: async (args) => {
+        const evaluation = args?._evaluation || null;
+        const risk = String(args?._risk || "").trim() ||
+          (evaluation && evaluation.failed !== true ? String(evaluation.risk || "").trim() : "");
+        return {
+          command: args?.command || "",
+          risk,
+          evaluation,
+          policyBlock: args?._policyBlock || null,
+        };
+      },
     }),
     save_memory: async (args = {}) => {
       const rawScope = String(args.scope || "global").toLowerCase();

@@ -366,6 +366,7 @@ export const zh = {
   renderError: "渲染错误",
   retry: "重试",
   manualStopped: "已手动停止",
+  requestAborted: "请求已中断",
   relatedLinks: "相关链接",
   markdownLinkFallback: "链接",
   markdownImageFallback: "图片",

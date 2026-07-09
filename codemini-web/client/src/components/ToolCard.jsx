@@ -16,7 +16,11 @@ import {
 import { LinearStatusDot } from "@/components/ui/spinner";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
 import { cn } from "@/lib/utils";
-import { formatToolLabel, parseToolDisplayName } from "@core/tool-display.js";
+import {
+  extractToolName,
+  getFileToolMeta,
+  resolveToolHeaderParts,
+} from "@/lib/tool-card-display.js";
 import { formatDuration } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
 import { PatchDiff } from "@pierre/diffs/react";
@@ -39,57 +43,6 @@ const TOOL_ICONS = {
   default: Wrench,
 };
 
-function extractToolName(name) {
-  const match = String(name).match(/^(\w+)/);
-  return match ? match[1] : name;
-}
-
-function extractKeyArg(args, toolName) {
-  if (!args) return "";
-  let obj = args;
-  if (typeof args === "string") {
-    try {
-      obj = JSON.parse(args);
-    } catch {
-      return args;
-    }
-  }
-  if (typeof obj !== "object") return String(obj);
-  if (toolName === "apply_patch") {
-    const patchText = String(obj.patch_text || "");
-    const paths = [...patchText.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)]
-      .map((match) => String(match[1] || "").trim())
-      .filter(Boolean);
-    if (paths.length > 1) return `${paths[0]} +${paths.length - 1}`;
-    if (paths.length === 1) return paths[0];
-  }
-  const keyMap = {
-    read: "path",
-    edit: "path",
-    create: "path",
-    write: "path",
-    apply_patch: "patch_text",
-    delete: "path",
-    run: "command",
-    grep: "pattern",
-    glob: "pattern",
-    list: "path",
-    web_fetch: "url",
-    web_search: "query",
-    skill: "name",
-  };
-  const key = keyMap[toolName];
-  if (key && obj[key] != null) return String(obj[key]);
-  if (toolName === "skill") {
-    const query = String(obj?.query || "").trim();
-    if (query) return query;
-  }
-  for (const v of Object.values(obj)) {
-    if (typeof v === "string" && v.length > 0 && v.length < 200) return v;
-  }
-  return "";
-}
-
 function formatDetail(value) {
   if (typeof value !== "string") return JSON.stringify(value, null, 2);
   const text = value.trim();
@@ -98,17 +51,6 @@ function formatDetail(value) {
     return JSON.stringify(JSON.parse(text), null, 2);
   } catch {
     return value;
-  }
-}
-
-function parseMaybeJson(value) {
-  if (!value) return null;
-  if (typeof value === "object") return value;
-  if (typeof value !== "string") return null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
   }
 }
 
@@ -145,79 +87,6 @@ function usePatchThemeType() {
     return () => observer.disconnect();
   }, []);
   return isDark ? "dark" : "light";
-}
-
-function getFileToolMeta(toolName, args, result, summary, fileChange, resultMeta, fileChanges) {
-  if (!["edit", "create", "write", "apply_patch", "delete"].includes(toolName)) return null;
-  const parsedArgs = parseMaybeJson(args) || {};
-  const parsedResult = {
-    ...(parseMaybeJson(result) || {}),
-    ...(resultMeta && typeof resultMeta === "object" ? resultMeta : {}),
-  };
-  const structuredChanges = Array.isArray(fileChanges) && fileChanges.length
-    ? fileChanges
-    : (fileChange ? [fileChange] : []);
-  const structuredChange =
-    structuredChanges.find((change) => change && typeof change === "object") || {};
-  const capturedPatch = structuredChanges
-    .map((change) => String(change?.diffPreview || ""))
-    .filter(Boolean)
-    .join("\n");
-  const pathText =
-    parsedResult.path ||
-    structuredChange.path ||
-    parsedArgs.path ||
-    "";
-  const added = Number(
-    parsedResult.lines_added ??
-      parsedResult.linesAdded ??
-      structuredChange.linesAdded ??
-      0,
-  );
-  const removed = Number(
-    parsedResult.lines_removed ??
-      parsedResult.linesRemoved ??
-      structuredChange.linesRemoved ??
-      0,
-  );
-  const oldText =
-    toolName === "edit"
-      ? parsedArgs.old_text
-      : "";
-  const newText =
-    toolName === "edit"
-      ? (parsedArgs.new_text ?? parsedArgs.new_content ?? parsedArgs.content)
-      : "";
-  const changedLine = Number(
-    parsedResult.changed_line ||
-      structuredChange.changedLine ||
-      parsedArgs.line ||
-      0,
-  );
-  return {
-    path: String(pathText || extractKeyArg(args, toolName) || ""),
-    action: String(
-      parsedResult.action ||
-        structuredChange.action ||
-        (toolName === "create" || toolName === "write" ? parsedResult.action || toolName : toolName),
-    ),
-    added,
-    removed,
-    changedLine,
-    diffPreview: String(
-      capturedPatch || structuredChange.diffPreview || parsedResult.diff_preview || "",
-    ),
-    oldText: typeof oldText === "string" ? oldText : "",
-    newText: typeof newText === "string" ? newText : "",
-    summary: String(summary || ""),
-    backupPath: String(parsedResult.backupPath || ""),
-    backupRelativePath: String(parsedResult.backupRelativePath || ""),
-    backupCreated: parsedResult.backupCreated === true,
-    backupReused: parsedResult.backupReused === true,
-    backupSkipped: parsedResult.backupSkipped === true,
-    backupError: String(parsedResult.backupError || ""),
-    backupReason: String(parsedResult.backupReason || ""),
-  };
 }
 
 function buildPreviewLines(meta) {
@@ -360,27 +229,6 @@ const TOOL_ICON_CLASS =
 const RUN_TOOL_ICON_CLASS =
   "flex h-4 w-5 shrink-0 items-center justify-center rounded-[3px] border border-[color:color-mix(in_srgb,var(--text-process-detail)_45%,transparent)] text-(--text-process-detail)";
 const FILE_PATH_ARG_TOOLS = new Set(["read", "edit", "create", "write", "delete"]);
-
-function resolveToolHeaderParts(card, toolName, fileMeta) {
-  const fallbackLabel = formatToolLabel(toolName);
-  if (fileMeta?.path) {
-    const parsed = parseToolDisplayName(card.displayName || "");
-    return {
-      label: parsed.label || fallbackLabel,
-      arg: fileMeta.path,
-      wrapArg: false,
-    };
-  }
-  const parsed = parseToolDisplayName(card.displayName || "");
-  if (parsed.arg) {
-    return { label: parsed.label, arg: parsed.arg, wrapArg: true };
-  }
-  const keyArg = extractKeyArg(card.arguments, toolName);
-  if (keyArg) {
-    return { label: fallbackLabel, arg: keyArg, wrapArg: true };
-  }
-  return { label: parsed.label || fallbackLabel, arg: "", wrapArg: false };
-}
 
 function FilePathArgument({ path, wrapped = false }) {
   const { dir, name } = splitPathForDisplay(path);

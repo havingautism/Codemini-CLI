@@ -452,48 +452,100 @@ export async function createChatCompletionStream({
   // 合并超时信号与外部中止信号
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const controller = new AbortController();
-  const onAbort = () => controller.abort();
-  timeoutSignal.addEventListener('abort', onAbort, { once: true });
+  const onTimeoutAbort = () => controller.abort(
+    new Error(`Gateway request timed out after ${timeoutMs}ms`)
+  );
+  timeoutSignal.addEventListener('abort', onTimeoutAbort, { once: true });
+  const onExternalAbort = () => controller.abort();
   if (externalSignal) {
     if (externalSignal.aborted) {
       controller.abort();
     } else {
-      externalSignal.addEventListener('abort', onAbort, { once: true });
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
     }
   }
-  const payload = buildPayload({ model, temperature, messages, tools, stream: true, maxTokens, toolChoice, reasoningEffort });
-  const response = await fetch(buildMessagesUrl(baseUrl), {
-    method: 'POST',
-    headers: createHeaders(apiKey),
-    body: JSON.stringify(payload),
-    signal: controller.signal
-  });
+  try {
+    const payload = buildPayload({ model, temperature, messages, tools, stream: true, maxTokens, toolChoice, reasoningEffort });
+    const response = await fetch(buildMessagesUrl(baseUrl), {
+      method: 'POST',
+      headers: createHeaders(apiKey),
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
 
-  if (!response.ok || !response.body) {
-    const text = await response.text().catch(() => '');
-    throw new Error(`Anthropic gateway error ${response.status}: ${text || response.statusText}`);
-  }
+    if (!response.ok || !response.body) {
+      const text = await response.text().catch(() => '');
+      throw new Error(`Anthropic gateway error ${response.status}: ${text || response.statusText}`);
+    }
 
-  let text = '';
-  let usage = null;
-  const toolCallsByIndex = new Map();
-  const thinkingBlocksByIndex = new Map();
+    let text = '';
+    let usage = null;
+    const toolCallsByIndex = new Map();
+    const thinkingBlocksByIndex = new Map();
 
-  for await (const chunk of iterateSseEvents(response.body)) {
-    usage = mergeUsage(usage, chunk?.data?.usage);
-    usage = mergeUsage(usage, chunk?.data?.message?.usage);
+    for await (const chunk of iterateSseEvents(response.body)) {
+      usage = mergeUsage(usage, chunk?.data?.usage);
+      usage = mergeUsage(usage, chunk?.data?.message?.usage);
 
-    if (chunk.event === 'content_block_start') {
+      if (chunk.event === 'content_block_start') {
+        const index = Number(chunk?.data?.index ?? 0);
+        const contentBlock = chunk?.data?.content_block || {};
+        if (contentBlock.type === 'tool_use') {
+          const current = toolCallsByIndex.get(index) || emptyToolCall(index);
+          current.id = String(contentBlock.id || current.id || '');
+          current.name = String(contentBlock.name || current.name || '');
+          const initialInput = contentBlock.input && Object.keys(contentBlock.input).length > 0
+            ? normalizeIncomingToolCallArguments(contentBlock.input)
+            : '';
+          current.arguments = current.arguments || initialInput;
+          toolCallsByIndex.set(index, current);
+          if (onToolCallDelta) {
+            onToolCallDelta({
+              index,
+              id: current.id || `tc-${index + 1}`,
+              name: current.name,
+              arguments: current.arguments || '{}'
+            });
+          }
+        } else if (contentBlock.type === 'thinking' || contentBlock.type === 'redacted_thinking') {
+          const current = cloneAnthropicContentBlock(contentBlock) || { type: contentBlock.type };
+          if (current.type === 'thinking' && current.thinking == null) current.thinking = '';
+          thinkingBlocksByIndex.set(index, current);
+        }
+        continue;
+      }
+
+      if (chunk.event !== 'content_block_delta') {
+        continue;
+      }
+
       const index = Number(chunk?.data?.index ?? 0);
-      const contentBlock = chunk?.data?.content_block || {};
-      if (contentBlock.type === 'tool_use') {
+      const delta = chunk?.data?.delta || {};
+      if (delta.type === 'text_delta' && delta.text) {
+        text += delta.text;
+        if (onTextDelta) onTextDelta(delta.text);
+        continue;
+      }
+
+      if (delta.type === 'thinking_delta') {
+        const current = thinkingBlocksByIndex.get(index) || { type: 'thinking', thinking: '' };
+        const thinkingDelta = String(delta.thinking || '');
+        current.thinking = `${current.thinking || ''}${thinkingDelta}`;
+        thinkingBlocksByIndex.set(index, current);
+        if (thinkingDelta && onReasoningDelta) onReasoningDelta(thinkingDelta);
+        continue;
+      }
+
+      if (delta.type === 'signature_delta') {
+        const current = thinkingBlocksByIndex.get(index) || { type: 'thinking', thinking: '' };
+        current.signature = String(delta.signature || '');
+        thinkingBlocksByIndex.set(index, current);
+        continue;
+      }
+
+      if (delta.type === 'input_json_delta') {
         const current = toolCallsByIndex.get(index) || emptyToolCall(index);
-        current.id = String(contentBlock.id || current.id || '');
-        current.name = String(contentBlock.name || current.name || '');
-        const initialInput = contentBlock.input && Object.keys(contentBlock.input).length > 0
-          ? normalizeIncomingToolCallArguments(contentBlock.input)
-          : '';
-        current.arguments = current.arguments || initialInput;
+        current.arguments = `${current.arguments || ''}${String(delta.partial_json || '')}`;
         toolCallsByIndex.set(index, current);
         if (onToolCallDelta) {
           onToolCallDelta({
@@ -503,61 +555,17 @@ export async function createChatCompletionStream({
             arguments: current.arguments || '{}'
           });
         }
-      } else if (contentBlock.type === 'thinking' || contentBlock.type === 'redacted_thinking') {
-        const current = cloneAnthropicContentBlock(contentBlock) || { type: contentBlock.type };
-        if (current.type === 'thinking' && current.thinking == null) current.thinking = '';
-        thinkingBlocksByIndex.set(index, current);
-      }
-      continue;
-    }
-
-    if (chunk.event !== 'content_block_delta') {
-      continue;
-    }
-
-    const index = Number(chunk?.data?.index ?? 0);
-    const delta = chunk?.data?.delta || {};
-    if (delta.type === 'text_delta' && delta.text) {
-      text += delta.text;
-      if (onTextDelta) onTextDelta(delta.text);
-      continue;
-    }
-
-    if (delta.type === 'thinking_delta') {
-      const current = thinkingBlocksByIndex.get(index) || { type: 'thinking', thinking: '' };
-      const thinkingDelta = String(delta.thinking || '');
-      current.thinking = `${current.thinking || ''}${thinkingDelta}`;
-      thinkingBlocksByIndex.set(index, current);
-      if (thinkingDelta && onReasoningDelta) onReasoningDelta(thinkingDelta);
-      continue;
-    }
-
-    if (delta.type === 'signature_delta') {
-      const current = thinkingBlocksByIndex.get(index) || { type: 'thinking', thinking: '' };
-      current.signature = String(delta.signature || '');
-      thinkingBlocksByIndex.set(index, current);
-      continue;
-    }
-
-    if (delta.type === 'input_json_delta') {
-      const current = toolCallsByIndex.get(index) || emptyToolCall(index);
-      current.arguments = `${current.arguments || ''}${String(delta.partial_json || '')}`;
-      toolCallsByIndex.set(index, current);
-      if (onToolCallDelta) {
-        onToolCallDelta({
-          index,
-          id: current.id || `tc-${index + 1}`,
-          name: current.name,
-          arguments: current.arguments || '{}'
-        });
       }
     }
+
+    const thinkingBlocks = Array.from(thinkingBlocksByIndex.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([, block]) => cloneAnthropicContentBlock(block))
+      .filter(Boolean);
+
+    return buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkingBlocks);
+  } finally {
+    timeoutSignal.removeEventListener('abort', onTimeoutAbort);
+    if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
   }
-
-  const thinkingBlocks = Array.from(thinkingBlocksByIndex.entries())
-    .sort((a, b) => a[0] - b[0])
-    .map(([, block]) => cloneAnthropicContentBlock(block))
-    .filter(Boolean);
-
-  return buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkingBlocks);
 }

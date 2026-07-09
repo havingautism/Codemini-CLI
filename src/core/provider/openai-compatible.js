@@ -455,13 +455,16 @@ export async function createChatCompletionStream({
   // 合并超时信号与外部中止信号，任一触发都会中止请求
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const controller = new AbortController();
-  const onAbort = () => controller.abort();
-  timeoutSignal.addEventListener('abort', onAbort, { once: true });
+  const onTimeoutAbort = () => controller.abort(
+    new Error(`Gateway request timed out after ${timeoutMs}ms`)
+  );
+  timeoutSignal.addEventListener('abort', onTimeoutAbort, { once: true });
+  const onExternalAbort = () => controller.abort();
   if (externalSignal) {
     if (externalSignal.aborted) {
       controller.abort();
     } else {
-      externalSignal.addEventListener('abort', onAbort, { once: true });
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
     }
   }
   const url = buildChatCompletionsUrl(baseUrl);
@@ -547,8 +550,8 @@ export async function createChatCompletionStream({
     }
     }
   } finally {
-    timeoutSignal.removeEventListener('abort', onAbort);
-    if (externalSignal) externalSignal.removeEventListener('abort', onAbort);
+    timeoutSignal.removeEventListener('abort', onTimeoutAbort);
+    if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
   }
 
   const result = buildFinalStreamResult(text, toolCallsByIndex, usage, messages);

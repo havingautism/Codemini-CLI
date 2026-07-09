@@ -373,6 +373,7 @@ export const en = {
   renderError: "Render Error",
   retry: "Retry",
   manualStopped: "Manually stopped",
+  requestAborted: "Request interrupted",
   relatedLinks: "Related links",
   markdownLinkFallback: "Link",
   markdownImageFallback: "Image",

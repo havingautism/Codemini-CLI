@@ -166,16 +166,6 @@ export function reduceSessionRuntimeEvent(state, event) {
   if (event.type === "runtime:state") {
     runtime = { ...previous, ...(event.state || {}), sessionId };
   } else if (event.type === "runtime_pool_state") {
-    const nextStatus = event.state?.status;
-    if (nextStatus && nextStatus !== previous.status) {
-      console.info("[Codemini:approval] pool_status", {
-        sessionId,
-        from: previous.status || null,
-        to: nextStatus,
-        hadPendingApproval: Boolean(previous.pendingApproval),
-        pendingApprovalId: previous.pendingApproval?.id || null,
-      });
-    }
     runtime = {
       ...previous,
       ...(event.state || {}),
@@ -190,20 +180,8 @@ export function reduceSessionRuntimeEvent(state, event) {
       sessionId,
     };
   } else if (event.type === "approval:request") {
-    console.info("[Codemini:approval] request", {
-      sessionId,
-      requestId: event.id,
-      toolName: event.toolName,
-      poolStatusBefore: previous.status || null,
-    });
     runtime = { ...previous, pendingApproval: event, sessionId };
   } else if (event.type === "approval:resolved") {
-    console.info("[Codemini:approval] resolved", {
-      sessionId,
-      requestId: event.id,
-      approved: event.approved,
-      poolStatus: previous.status || null,
-    });
     runtime = { ...previous, pendingApproval: null, sessionId };
   } else if (event.type === "user-input:request") {
     runtime = {
@@ -223,13 +201,6 @@ export function reduceSessionRuntimeEvent(state, event) {
     runtime = { ...previous, status: "running", busy: true, sessionId };
   } else if (event.type === "submit:done") {
     if (previous.pendingApproval || previous.pendingUserInput) {
-      console.warn("[Codemini:approval] submit:done while interaction pending", {
-        sessionId,
-        poolStatusBefore: previous.status || null,
-        pendingApprovalId: previous.pendingApproval?.id || null,
-        pendingUserInputId: previous.pendingUserInput?.id || null,
-        resultType: event.result?.type || null,
-      });
       // Keep the interaction UI open. Pool may still be (or return to)
       // waiting_*; clearing here caused false "completed" + recovered clicks.
       runtime = {
