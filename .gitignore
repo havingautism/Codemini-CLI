@@ -42,9 +42,7 @@ Thumbs.db
 .idea/
 /cli-demo-example/
 # Local scratch docs
-test.md
-测试.md
-新测试.md
+
 
 # Local tests
 tests/
