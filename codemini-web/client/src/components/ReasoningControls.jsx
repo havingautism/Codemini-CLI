@@ -214,7 +214,6 @@ export function ReasoningQuickControl({
             INPUT_PILL_CLASS,
             "px-2.5 hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)",
             (saving || disabled) && "opacity-50 pointer-events-none",
-            reasoningEnabled && "text-[var(--input-shell-accent)]",
           )}
           disabled={disabled}
           title={t("reasoningQuickControl")}

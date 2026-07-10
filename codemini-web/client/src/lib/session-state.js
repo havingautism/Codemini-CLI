@@ -106,10 +106,23 @@ export function hydrateSessionRuntimes(state, runtimes = {}) {
 
 export function activateSession(state, sessionId) {
   if (!sessionId || sessionId === state.currentSessionId) return state;
+  // sessionRuntimeById may contain full runtime state (from SSE runtime:state events)
+  // OR minimal pool state (from /api/runtime/sessions). Only use it as runtimeState
+  // if it has maxContextTokens, which indicates a full runtime snapshot.
+  const runtime = state.sessionRuntimeById?.[sessionId];
+  const hasFullRuntime =
+    runtime && typeof runtime.maxContextTokens === 'number' && runtime.maxContextTokens > 0;
   return {
     ...state,
     currentSessionId: sessionId,
     messages: state.sessionMessagesById?.[sessionId] || [],
+    ...(hasFullRuntime
+      ? {
+          runtimeState: runtime,
+          approvalRequest: runtime.pendingApproval || null,
+          userInputRequest: runtime.pendingUserInput || null,
+        }
+      : {}),
   };
 }
 
@@ -120,6 +133,15 @@ export function projectVisibleSessionState(state) {
     state.currentSessionId,
   );
   if (!runtime && !hasSessionMessages) return state;
+  // sessionRuntimeById may hold full runtime snapshots (from SSE runtime:state)
+  // OR minimal pool state (from /api/runtime/sessions). Only use it as
+  // runtimeState when it has maxContextTokens — a reliable marker of a full
+  // runtime snapshot. Otherwise keep the existing runtimeState so the
+  // StatusBar doesn't flash empty on session switches.
+  const hasFullRuntime =
+    runtime &&
+    typeof runtime.maxContextTokens === 'number' &&
+    runtime.maxContextTokens > 0;
   const busy = runtime
     ? typeof runtime.busy === "boolean"
       ? runtime.busy
@@ -134,7 +156,7 @@ export function projectVisibleSessionState(state) {
     ...(hasSessionMessages
       ? { messages: state.sessionMessagesById[state.currentSessionId] }
       : {}),
-    ...(runtime
+    ...(hasFullRuntime
       ? {
           runtimeState: runtime,
           approvalRequest: runtime.pendingApproval || null,

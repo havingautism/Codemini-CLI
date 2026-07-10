@@ -36,7 +36,7 @@ import {
   buildTranscriptForLLM,
   COMPACT_SUMMARY_PROMPT
 } from './context-compact.js';
-import { getReplyLanguage, getReplyLanguageName } from './reply-language.js';
+import { getReplyLanguage, getReplyLanguageName, stripReplyLanguageDirective, buildSystemPromptWithReplyLanguage } from './reply-language.js';
 import { composeSystemPrompt } from './system-prompt-composer.js';
 import { buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
 import { buildSubAgentShellRulesPrompt } from './shell-profile.js';
@@ -3650,13 +3650,29 @@ function summarizePromptBudgetAudit(audit) {
   return `prompt budget: ${totalTokens}/${maxContextTokens} est tokens (${pct}%)${components ? `; ${components}` : ''}`;
 }
 
+function estimateBaselinePromptOverhead(config, executionMode) {
+  // System prompt overhead: default prompt + soul + reply language directive
+  let overhead = 2800;
+  // Plan mode uses richer tool definitions and plan-specific prompts
+  if (executionMode === 'plan') overhead += 1500;
+  // Project context snippet (file index, AST map)
+  if (config.context?.project_context_enabled !== false) overhead += 1200;
+  // Always-installed skills add prompt content
+  const alwaysCount = Array.isArray(config.skills?.always) ? config.skills.always.length : 0;
+  if (alwaysCount > 0) overhead += alwaysCount * 200;
+  return overhead;
+}
+
 function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [] }) {
   const activeParentMessages = Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
     ? currentSession.compact.view
     : currentSession?.messages || [];
   const parentTokens = estimateMessagesTokens(modelVisibleMessages(activeParentMessages));
   const subTokens = extraSession ? estimateMessagesTokens(modelVisibleMessages(extraSession.messages || [])) : 0;
-  const currentContextTokens = parentTokens + subTokens;
+  const baselineOverhead = activeParentMessages.length > 0
+    ? estimateBaselinePromptOverhead(config, executionMode)
+    : 0;
+  const currentContextTokens = parentTokens + subTokens + baselineOverhead;
   const maxContextTokens = effectiveMaxContextTokens(config);
   const contextUsagePct = maxContextTokens > 0 ? Math.min(100, Math.max(0, (currentContextTokens / maxContextTokens) * 100)) : 0;
   const planState = currentSession?.planState;
@@ -4279,17 +4295,15 @@ async function askModel({
     'Use this project context as lightweight guidance and verify important details with fresh reads when needed.';
   const normalizedExecutionMode = normalizeExecutionMode(executionMode || config.execution?.mode || 'normal');
   const executionModePrompt = buildExecutionModePromptBlock(normalizedExecutionMode);
-  const [projectContextSnippet, effectiveSystemPrompt] = await Promise.all([
-    projectContextPromise,
-    composeSystemPrompt({
-      shellRulesPrompt: systemPrompt,
-      config,
-      workspaceRoot,
-      skillsPrompt: executionModePrompt || undefined,
-      includeSoul: false,
-      includeMemory: false
-    })
-  ]);
+  const projectContextSnippet = await projectContextPromise;
+  // Compose effectiveSystemPrompt without redundant composeSystemPrompt wrapping:
+  // systemPrompt already went through composeSystemPrompt in buildActiveSystemPrompt.
+  // We only need to strip the old replyLanguage, append the execution mode block, and re-append replyLanguage.
+  const strippedSystem = stripReplyLanguageDirective(systemPrompt || '');
+  const effectiveSystemPrompt = buildSystemPromptWithReplyLanguage(
+    [strippedSystem, executionModePrompt].filter(Boolean).join('\n\n'),
+    config
+  );
   const projectContextPrompt = buildTurnUserPrompt({
     turnContextPrefix: buildTurnContextPrefix(config),
     projectContextSnippet,

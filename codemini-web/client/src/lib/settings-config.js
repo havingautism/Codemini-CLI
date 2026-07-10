@@ -89,7 +89,7 @@ export function buildSettingsFields() {
       help: t("approvalModeHelp"),
     },
     {
-      tab: "execution",
+      tab: "model",
       path: "ui.reply_language",
       control: "segmented",
       optionsKey: "replyLanguage",

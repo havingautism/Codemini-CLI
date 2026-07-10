@@ -1561,11 +1561,11 @@ samp {
 }
 .msg-body blockquote {
   margin: 12px 0;
-  padding: 10px 12px;
-  border: 1px solid var(--md-code-border);
+  /* padding: 2px 12px; */
+  /* border: 1px solid var(--md-code-border); */
   border-left: 2px solid color-mix(in srgb, var(--input-shell-accent) 28%, var(--md-code-border));
-  border-radius: var(--radius);
-  background: var(--md-code-bg);
+  /* border-radius: var(--radius); */
+  /* background: var(--md-code-bg); */
   color: var(--text-primary);
   font-style: normal;
 }

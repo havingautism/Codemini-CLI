@@ -1064,6 +1064,23 @@ export function InputBar({
             >
               <Plus size={18} />
             </button>
+            <button
+              type="button"
+              className="border-0 bg-transparent text-(--text-secondary) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
+              title={t("addContext")}
+              disabled={inputLocked}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Paperclip size={18} />
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              accept={ATTACHMENT_ACCEPT}
+              multiple
+              onChange={(event) => handleFiles(event.target.files)}
+            />
             <ModeSelector sessionId={rs.sessionId} current={mode} disabled={inputLocked} />
             <SpecQuickSelect
               sessionId={rs.sessionId}
@@ -1092,23 +1109,6 @@ export function InputBar({
               <span className={cn('truncate', !rs.model && 'opacity-50')}>{rs.model || '加载中'}</span>
               <CaretDown size={11} />
             </button> */}
-            <button
-              type="button"
-              className="border-0 bg-transparent text-(--text-secondary) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
-              title={t("addContext")}
-              disabled={inputLocked}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <Paperclip size={18} />
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              accept={ATTACHMENT_ACCEPT}
-              multiple
-              onChange={(event) => handleFiles(event.target.files)}
-            />
             {busy ? (
               <button
                 type="button"
