@@ -167,7 +167,7 @@ function Shell() {
   const userInputRequest = interactiveRequestForSession(state, "userInput");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const rs = state.runtimeState || {};
-  const currentId = rs.sessionId;
+  const currentId = state.currentSessionId || rs.sessionId;
   const reasoningSyncKey = useMemo(
     () =>
       `${rs.reasoningEnabled !== false ? "1" : "0"}:${rs.reasoningEffort || "auto"}`,

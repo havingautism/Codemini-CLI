@@ -26,6 +26,8 @@ import {
   alignSessionAssistantMessages,
   alignSessionUserMessages,
   hydrateSessionRuntimes,
+  mergeAlignedAssistantSkillContext,
+  mergeAlignedUserContext,
   projectVisibleSessionState,
   reconcileSessionMessages,
   reduceSessionEvent,
@@ -1213,111 +1215,6 @@ function mergeStructuredUiPlans(processedMessages, uiMessages) {
   return merged;
 }
 
-function mergeUserContextFromUiMessages(processedMessages, uiMessages) {
-  const uiUsers = (Array.isArray(uiMessages) ? uiMessages : []).filter(
-    (message) => message?.role === "you" && !message?.transientKey,
-  );
-  if (!uiUsers.length) return processedMessages;
-
-  let uiIndex = 0;
-  return processedMessages.map((message) => {
-    if (message.role !== "you") return message;
-    const uiMessage = uiUsers[uiIndex++];
-    if (!uiMessage) return message;
-
-    const uiAttachments = Array.isArray(uiMessage.attachments)
-      ? uiMessage.attachments.filter(Boolean)
-      : [];
-    if (!uiAttachments.length) return message;
-
-    return { ...message, attachments: uiAttachments };
-  });
-}
-
-function isSkillMergeAssistantMessage(message) {
-  if (!message || message.transientKey) return false;
-  if (["you", "divider", "system"].includes(message.role)) return false;
-  if (message.planStep || message.planOverview) return false;
-  return true;
-}
-
-function hasSkillContext(message) {
-  const badges = Array.isArray(message?.skillBadges) ? message.skillBadges : [];
-  const segments = Array.isArray(message?.segments) ? message.segments : [];
-  return (
-    badges.length > 0 || segments.some((segment) => segment?.type === "skill")
-  );
-}
-
-function mergeSkillSegments(processedSegments, uiSegments) {
-  const uiSkillSegments = (Array.isArray(uiSegments) ? uiSegments : []).filter(
-    (segment) => segment?.type === "skill",
-  );
-  if (!uiSkillSegments.length) return processedSegments;
-
-  const processed = Array.isArray(processedSegments)
-    ? [...processedSegments]
-    : [];
-  const existing = new Set(
-    processed
-      .filter((segment) => segment?.type === "skill")
-      .map(
-        (segment) =>
-          `${segment.name}::${segment.status}::${segment.startedAt || ""}`,
-      ),
-  );
-  const toInsert = uiSkillSegments.filter((segment) => {
-    const key = `${segment.name}::${segment.status}::${segment.startedAt || ""}`;
-    return !existing.has(key);
-  });
-  if (!toInsert.length) return processed;
-
-  const firstContentIndex = processed.findIndex(
-    (segment) => segment?.type !== "skill",
-  );
-  if (firstContentIndex === -1) return [...processed, ...toInsert];
-  return [
-    ...processed.slice(0, firstContentIndex),
-    ...toInsert,
-    ...processed.slice(firstContentIndex),
-  ];
-}
-
-function mergeAssistantSkillContextFromUiMessages(
-  processedMessages,
-  uiMessages,
-) {
-  const uiAssistants = (Array.isArray(uiMessages) ? uiMessages : []).filter(
-    isSkillMergeAssistantMessage,
-  );
-  if (!uiAssistants.length) return processedMessages;
-
-  let uiIndex = 0;
-  return processedMessages.map((message) => {
-    if (!isSkillMergeAssistantMessage(message)) return message;
-    const uiMessage = uiAssistants[uiIndex++];
-    if (!uiMessage || !hasSkillContext(uiMessage)) return message;
-
-    const skillBadges = Array.isArray(uiMessage.skillBadges)
-      ? uiMessage.skillBadges
-      : [];
-    const segments = mergeSkillSegments(message.segments, uiMessage.segments);
-
-    return {
-      ...message,
-      ...(skillBadges.length
-        ? {
-            skillBadges: appendUniqueSkillBadges(
-              message.skillBadges || [],
-              skillBadges,
-            ),
-          }
-        : {}),
-      ...(segments !== message.segments ? { segments } : {}),
-    };
-  });
-}
-
 function normalizeCodeWikiStep(step, index = 0) {
   return {
     index: Number(step?.index || step?.step || index + 1),
@@ -2085,9 +1982,9 @@ export function AppProvider({ children }) {
 
         const restored = sanitizeManualAbortMessages(
           settleCompletedPlanToolCards(
-            mergeAssistantSkillContextFromUiMessages(
+            mergeAlignedAssistantSkillContext(
               alignSessionAssistantMessages(
-                mergeUserContextFromUiMessages(
+                mergeAlignedUserContext(
                   alignSessionUserMessages(
                     mergeStructuredUiPlans(processed, uiMessages),
                     uiMessages,

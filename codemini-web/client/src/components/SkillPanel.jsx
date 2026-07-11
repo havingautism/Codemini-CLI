@@ -574,16 +574,7 @@ function SkillDetailPane({ skill, onSave, onDelete, onToggle }) {
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-            {modeView === "edit" ? (
-              <>
-                <Button variant="outline" size="sm" onClick={() => { setDraftContent(content); setModeView("view"); }}>
-                  {t("cancel")}
-                </Button>
-                <Button size="sm" onClick={handleContentSave} disabled={saving || loading}>
-                  {saving ? t("loading") : t("save")}
-                </Button>
-              </>
-            ) : modeView === "routing" ? null : (
+            {modeView === "edit" || modeView === "routing" ? null : (
               <>
                 {!builtin && (
                   <Button variant="outline" size="sm" onClick={() => setModeView("edit")}>
@@ -621,7 +612,12 @@ function SkillDetailPane({ skill, onSave, onDelete, onToggle }) {
           </div>
         </div>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-5">
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col overflow-hidden",
+          modeView === "view" ? "p-3" : "p-5",
+        )}
+      >
         {modeView === "routing" ? (
           <SkillRoutingForm
             key={skillKey(skill)}
@@ -639,9 +635,27 @@ function SkillDetailPane({ skill, onSave, onDelete, onToggle }) {
             onChange={setDraftContent}
             height="100%"
             placeholder={t("skillContent")}
+            className="min-h-0 flex-1"
           />
         ) : (
-          <MarkdownPreview value={content} className="flex-1" />
+          <MarkdownPreview value={content} className="skill-md-preview flex-1" />
+        )}
+        {modeView === "edit" && (
+          <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-(--border-default) pt-4">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setDraftContent(content);
+                setModeView("view");
+              }}
+            >
+              {t("cancel")}
+            </Button>
+            <Button size="sm" onClick={handleContentSave} disabled={saving || loading}>
+              {saving ? t("loading") : t("save")}
+            </Button>
+          </div>
         )}
       </div>
     </div>

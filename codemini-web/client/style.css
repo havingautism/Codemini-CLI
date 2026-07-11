@@ -59,6 +59,10 @@
   padding: 0;
 }
 
+.skill-md-preview .wmde-markdown {
+  background: transparent;
+}
+
 .codemini-md-preview .wmde-markdown > :first-child,
 .codemini-md-editor .wmde-markdown > :first-child {
   margin-top: 0;

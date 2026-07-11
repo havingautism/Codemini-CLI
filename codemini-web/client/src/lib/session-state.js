@@ -106,17 +106,12 @@ export function hydrateSessionRuntimes(state, runtimes = {}) {
 
 export function activateSession(state, sessionId) {
   if (!sessionId || sessionId === state.currentSessionId) return state;
-  // sessionRuntimeById may contain full runtime state (from SSE runtime:state events)
-  // OR minimal pool state (from /api/runtime/sessions). Only use it as runtimeState
-  // if it has maxContextTokens, which indicates a full runtime snapshot.
   const runtime = state.sessionRuntimeById?.[sessionId];
-  const hasFullRuntime =
-    runtime && typeof runtime.maxContextTokens === 'number' && runtime.maxContextTokens > 0;
   return {
     ...state,
     currentSessionId: sessionId,
     messages: state.sessionMessagesById?.[sessionId] || [],
-    ...(hasFullRuntime
+    ...(runtime
       ? {
           runtimeState: runtime,
           approvalRequest: runtime.pendingApproval || null,
@@ -133,15 +128,6 @@ export function projectVisibleSessionState(state) {
     state.currentSessionId,
   );
   if (!runtime && !hasSessionMessages) return state;
-  // sessionRuntimeById may hold full runtime snapshots (from SSE runtime:state)
-  // OR minimal pool state (from /api/runtime/sessions). Only use it as
-  // runtimeState when it has maxContextTokens — a reliable marker of a full
-  // runtime snapshot. Otherwise keep the existing runtimeState so the
-  // StatusBar doesn't flash empty on session switches.
-  const hasFullRuntime =
-    runtime &&
-    typeof runtime.maxContextTokens === 'number' &&
-    runtime.maxContextTokens > 0;
   const busy = runtime
     ? typeof runtime.busy === "boolean"
       ? runtime.busy
@@ -156,7 +142,7 @@ export function projectVisibleSessionState(state) {
     ...(hasSessionMessages
       ? { messages: state.sessionMessagesById[state.currentSessionId] }
       : {}),
-    ...(hasFullRuntime
+    ...(runtime
       ? {
           runtimeState: runtime,
           approvalRequest: runtime.pendingApproval || null,
@@ -599,6 +585,127 @@ export function alignSessionUserMessages(processed = [], uiMessages = []) {
     uiMessages,
     (message) => message?.role === "you" && !message.transientKey,
   );
+}
+
+function skillBadgeKey(badge = {}) {
+  return `${String(badge.status || "done")}::${String(badge.name || "").trim()}`;
+}
+
+function appendUniqueSkillBadges(current = [], next = []) {
+  const output = Array.isArray(current) ? [...current] : [];
+  const seen = new Set(output.map(skillBadgeKey));
+  for (const badge of Array.isArray(next) ? next : []) {
+    const key = skillBadgeKey(badge);
+    if (!String(badge?.name || "").trim() || seen.has(key)) continue;
+    seen.add(key);
+    output.push(badge);
+  }
+  return output;
+}
+
+function mergeSkillSegments(processedSegments, uiSegments) {
+  const uiSkills = (Array.isArray(uiSegments) ? uiSegments : []).filter(
+    (segment) => segment?.type === "skill",
+  );
+  if (!uiSkills.length) return processedSegments;
+
+  const processed = Array.isArray(processedSegments)
+    ? [...processedSegments]
+    : [];
+  const existing = new Set(
+    processed
+      .filter((segment) => segment?.type === "skill")
+      .map(
+        (segment) =>
+          `${segment.name}::${segment.status}::${segment.startedAt || ""}`,
+      ),
+  );
+  const additions = uiSkills.filter((segment) => {
+    const key = `${segment.name}::${segment.status}::${segment.startedAt || ""}`;
+    return !existing.has(key);
+  });
+  if (!additions.length) return processedSegments;
+
+  const firstContentIndex = processed.findIndex(
+    (segment) => segment?.type !== "skill",
+  );
+  if (firstContentIndex === -1) return [...processed, ...additions];
+  return [
+    ...processed.slice(0, firstContentIndex),
+    ...additions,
+    ...processed.slice(firstContentIndex),
+  ];
+}
+
+export function mergeAlignedUserContext(processed = [], uiMessages = []) {
+  const uiUsersById = new Map(
+    (Array.isArray(uiMessages) ? uiMessages : [])
+      .filter((message) => message?.role === "you" && !message.transientKey)
+      .map((message) => [String(message.id || "").trim(), message])
+      .filter(([id]) => id),
+  );
+  if (!uiUsersById.size) return processed;
+
+  return (Array.isArray(processed) ? processed : []).map((message) => {
+    if (message?.role !== "you") return message;
+    const uiMessage = uiUsersById.get(String(message.id || "").trim());
+    if (!uiMessage) return message;
+    const attachments = Array.isArray(uiMessage.attachments)
+      ? uiMessage.attachments.filter(Boolean)
+      : [];
+    const skillBadges = Array.isArray(uiMessage.skillBadges)
+      ? uiMessage.skillBadges.filter(Boolean)
+      : [];
+    if (!attachments.length && !skillBadges.length) return message;
+    return {
+      ...message,
+      ...(attachments.length ? { attachments } : {}),
+      ...(skillBadges.length
+        ? {
+            skillBadges: appendUniqueSkillBadges(
+              message.skillBadges || [],
+              skillBadges,
+            ),
+          }
+        : {}),
+    };
+  });
+}
+
+export function mergeAlignedAssistantSkillContext(
+  processed = [],
+  uiMessages = [],
+) {
+  const uiAssistantsById = new Map(
+    (Array.isArray(uiMessages) ? uiMessages : [])
+      .filter(isAlignableAssistantMessage)
+      .map((message) => [String(message.id || "").trim(), message])
+      .filter(([id]) => id),
+  );
+  if (!uiAssistantsById.size) return processed;
+
+  return (Array.isArray(processed) ? processed : []).map((message) => {
+    if (!isAlignableAssistantMessage(message)) return message;
+    const uiMessage = uiAssistantsById.get(String(message.id || "").trim());
+    if (!uiMessage) return message;
+    const skillBadges = Array.isArray(uiMessage.skillBadges)
+      ? uiMessage.skillBadges
+      : [];
+    const segments = mergeSkillSegments(message.segments, uiMessage.segments);
+    if (!skillBadges.length && segments === message.segments) return message;
+    return {
+      ...message,
+      ...(skillBadges.length
+        ? {
+            skillBadges: appendUniqueSkillBadges(
+              message.skillBadges || [],
+              skillBadges,
+            ),
+          }
+        : {}),
+      ...(segments !== message.segments ? { segments } : {}),
+    };
+  });
 }
 
 function mergeSnapshotMessage(serverMessage, cachedMessage) {
