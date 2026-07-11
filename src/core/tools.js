@@ -66,6 +66,7 @@ import {
   loadIndexedSkills,
   renderCommandPrompt,
 } from "./command-loader.js";
+import { skillIsEligible } from "./skill-contexts.js";
 import {
   getToolOutputSanitizeOptions,
   sanitizePreviewLines,
@@ -330,10 +331,7 @@ function skillScopeFromSource(source = "") {
 }
 
 function isIndexedSkillEnabled(command, config = {}) {
-  if (command?.metadata?.enabled === false) return false;
-  const scope = skillScopeFromSource(command?.source);
-  if (scope === "builtin") return true;
-  return config?.skills?.enabled?.[command?.name] !== false;
+  return skillIsEligible(config?.skills, command?.name, config?.execution?.mode, command);
 }
 
 function summarizeIndexedSkill(command) {

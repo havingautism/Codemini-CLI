@@ -10,6 +10,7 @@ import { composeSystemPrompt } from '../core/system-prompt-composer.js';
 import { normalizePlanState } from '../core/plan-state.js';
 import { composeSelectedSkills } from '../core/chat-message.js';
 import { loadCommandsAndSkills } from '../core/command-loader.js';
+import { skillIsEligible } from '../core/skill-contexts.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -364,9 +365,7 @@ export async function handleRun(args) {
       text: parsed.task,
       skillNames: parsed.skillNames
     }, {
-      isEnabled: (command) =>
-        command.metadata?.enabled !== false &&
-        (command.source === 'bundled-skill' || config.skills?.enabled?.[command.name] !== false)
+      isEnabled: (command) => skillIsEligible(config.skills, command.name, config.execution?.mode, command)
     });
     if (composed.error) throw new Error(composed.error);
     effectiveTask = composed.modelText;

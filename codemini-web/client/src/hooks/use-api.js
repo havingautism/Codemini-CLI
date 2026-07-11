@@ -425,8 +425,12 @@ export async function updateSkillMetadata(name, metadata, projectDir) {
   return res.json();
 }
 
-export async function deleteSkill(name, projectDir) {
-  const res = await api(withProjectDirQuery(`/api/skills/${encodeURIComponent(name)}`, projectDir), {
+export async function deleteSkill(name, projectDir, projectDirs = []) {
+  const params = new URLSearchParams();
+  if (projectDir) params.set('projectDir', projectDir);
+  if (projectDirs.length > 0) params.set('projects', JSON.stringify(projectDirs));
+  const query = params.toString();
+  const res = await api(`/api/skills/${encodeURIComponent(name)}${query ? `?${query}` : ''}`, {
     method: 'DELETE'
   });
   return res.json();

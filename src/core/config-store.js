@@ -5,6 +5,7 @@ import { normalizeReplyLanguage } from './reply-language.js';
 import { normalizeShellName } from './shell-profile.js';
 import { MEMORY_ALWAYS_ALLOW_TOOLS } from './constants.js';
 import { normalizeReasoningEffort } from './provider/reasoning-effort.js';
+import { normalizeSkillContexts } from './skill-contexts.js';
 
 function normalizeUiLanguage(value) {
   const raw = String(value || '').trim().toLowerCase();
@@ -113,7 +114,8 @@ const DEFAULT_CONFIG = {
     blocked_command_patterns: ['rm -rf /', 'format c:', 'del /f /s /q C:\\\\']
   },
   skills: {
-    enabled: {}
+    enabled: {},
+    contexts: {}
   }
 };
 
@@ -208,6 +210,13 @@ function normalizePolicyLists(config) {
   next.ui = next.ui || {};
   next.ui.language = normalizeUiLanguage(next.ui.language);
   next.ui.reply_language = normalizeReplyLanguage(next.ui.reply_language);
+  next.skills = next.skills || {};
+  next.skills.enabled = isObject(next.skills.enabled) ? next.skills.enabled : {};
+  const rawContexts = isObject(next.skills.contexts) ? next.skills.contexts : {};
+  next.skills.contexts = Object.fromEntries(
+    Object.entries(rawContexts).map(([name, value]) => [name, normalizeSkillContexts(value)])
+  );
+  delete next.skills.applicability;
   next.memory = next.memory || {};
   next.memory.enabled = next.memory.enabled !== false;
   next.memory.auto_write = next.memory.auto_write !== false;

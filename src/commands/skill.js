@@ -6,6 +6,7 @@ import { copyRecursive } from '../core/fs-utils.js';
 import { loadConfig, saveConfig } from '../core/config-store.js';
 import { loadCommandsAndSkills } from '../core/command-loader.js';
 import { getProjectSkillsDir, getSkillsDir } from '../core/paths.js';
+import { normalizeSkillContexts, skillAppliesToExecutionMode } from '../core/skill-contexts.js';
 import {
   computeFileSha256,
   readSkillRegistry,
@@ -233,13 +234,20 @@ export async function listSkillEntries({ scope = 'all', cwd = process.cwd() } = 
       packageSource: command.metadata?.packageSource || command.metadata?.source || '',
       packageName: command.metadata?.packageName || '',
       installedAt: command.metadata?.installedAt || '',
+      contexts: config.skills?.contexts?.[command.name]
+        ? normalizeSkillContexts(config.skills.contexts[command.name])
+        : itemScope === 'project'
+          ? ['coding']
+          : ['coding', 'daily'],
       scope: itemScope,
       path: command.path,
-      enabled: command.metadata?.enabled === false
-        ? false
-        : itemScope === 'builtin'
-          ? true
-          : config.skills?.enabled?.[command.name] !== false
+      enabled: config.skills?.enabled?.[command.name] !== undefined
+        ? config.skills.enabled[command.name] !== false
+        : command.metadata?.enabled !== false,
+      appliesToCurrentMode: skillAppliesToExecutionMode(
+        config.skills?.contexts?.[command.name],
+        config.execution?.mode,
+      )
     });
   }
   return entries.sort((a, b) => `${a.scope}:${a.name}`.localeCompare(`${b.scope}:${b.name}`));
@@ -475,6 +483,16 @@ async function upsertSkillCatalogEntry(baseDir, name, entry) {
   await writeSkillCatalog(baseDir, catalog);
 }
 
+async function ensureSkillContextsConfig(name, scope) {
+  const config = await loadConfig();
+  config.skills = config.skills || {};
+  config.skills.contexts = config.skills.contexts || {};
+  if (!config.skills.contexts[name]) {
+    config.skills.contexts[name] = scope === 'project' ? ['coding'] : ['coding', 'daily'];
+    await saveConfig(config);
+  }
+}
+
 async function removeSkillCatalogEntries(baseDir, names) {
   if (names.length === 0) return;
   const catalog = await readSkillCatalogSafe(baseDir);
@@ -630,6 +648,7 @@ export async function installSkill(sourcePath, { scope = 'project', cwd = proces
     await upsertSkillCatalogEntry(baseDirForScope(scope, cwd), folderName, catalogEntry);
   }
   await setSkillEnabledConfig(folderName, true);
+  await ensureSkillContextsConfig(folderName, scope);
 
   if (resolved.cleanupDir) {
     await fs.rm(resolved.cleanupDir, { recursive: true, force: true });

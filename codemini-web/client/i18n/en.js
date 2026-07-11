@@ -588,6 +588,10 @@ export const en = {
     "Install a skill package from a GitHub repo, URL, or local folder into global or project scope.",
   skillBrowseSection: "Browse Skills",
   skillScope: "Install Scope",
+  skillContext: "Context",
+  skillContextGlobal: "Global",
+  skillContextCoding: "Coding",
+  skillContextDaily: "Daily",
   noSkills: "No skills yet",
   noSkillsHint:
     "Create a project skill to turn reusable workflows into / commands.",
@@ -620,7 +624,7 @@ export const en = {
   filter_custom: "Custom",
   confirmDeleteSkill: 'Delete skill "{{name}}"?',
   deleteSkillConfirm: "Delete skill?",
-  deleteSkillDescription: 'Delete "{{name}}"? This cannot be undone.',
+  deleteSkillDescription: 'Permanently delete "{{name}}"? Its global copy, all known project copies, and routing configuration will be removed. This cannot be undone.',
   confirmDeleteSoul: 'Delete soul "{{name}}"?',
 
   // AboutDialog

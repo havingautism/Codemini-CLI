@@ -126,6 +126,13 @@ function normalizeSkillMode(value) {
     : value || "agent_requested";
 }
 
+function skillContextValue(contexts = []) {
+  const values = new Set(contexts);
+  if (values.has("coding") && !values.has("daily")) return "coding";
+  if (values.has("daily") && !values.has("coding")) return "daily";
+  return "global";
+}
+
 function SkillEditor({ skill, projectTargets = [], onSave, onValidate }) {
   const [name, setName] = useState(skill?.name || "");
   const [description, setDescription] = useState(skill?.description || "");
@@ -418,12 +425,14 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
   const [mode, setMode] = useState(normalizeSkillMode(skill?.mode));
   const [triggers, setTriggers] = useState((skill?.triggers || []).join(", "));
   const [priority, setPriority] = useState(skill?.priority ?? 50);
+  const [context, setContext] = useState(skillContextValue(skill?.contexts));
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setMode(normalizeSkillMode(skill?.mode));
     setTriggers((skill?.triggers || []).join(", "));
     setPriority(skill?.priority ?? 50);
+    setContext(skillContextValue(skill?.contexts));
   }, [skill]);
 
   const handleSave = async () => {
@@ -439,6 +448,7 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
             .map((item) => item.trim())
             .filter(Boolean),
           priority: Number(priority) || 0,
+          contexts: context === "global" ? ["coding", "daily"] : [context],
         },
         skill.projectDir,
       );
@@ -453,6 +463,18 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth pr-1">
         <SettingsSection description={t("skillModeHint")} className="gap-4">
+          <SettingsField id="skill-routing-context" label={t("skillContext")}>
+            <SettingsSegmentedControl
+              idPrefix="skill-routing-context"
+              value={context}
+              onValueChange={setContext}
+              options={[
+                { value: "global", label: t("skillContextGlobal") },
+                { value: "coding", label: t("skillContextCoding") },
+                { value: "daily", label: t("skillContextDaily") },
+              ]}
+            />
+          </SettingsField>
           <SettingsField id="skill-routing-mode" label={t("skillMode")}>
             <SettingsSegmentedControl
               idPrefix="skill-routing-mode"
@@ -464,8 +486,7 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
               }))}
             />
           </SettingsField>
-          {mode !== "manual" && (
-            <>
+          {mode === "agent_requested" && (
               <SettingsField id="skill-routing-triggers" label={t("skillTriggers")}>
                 <Input
                   value={triggers}
@@ -474,6 +495,8 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
                   className="h-9 text-[13px]"
                 />
               </SettingsField>
+          )}
+          {mode === "always" && (
               <SettingsField id="skill-routing-priority" label={t("skillPriority")}>
                 <Input
                   type="number"
@@ -482,7 +505,6 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
                   className="h-9 text-[13px]"
                 />
               </SettingsField>
-            </>
           )}
         </SettingsSection>
       </div>
@@ -490,7 +512,11 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
         <Button variant="outline" onClick={onCancel} size="sm">
           {t("cancel")}
         </Button>
-        <Button onClick={handleSave} disabled={saving} size="sm">
+        <Button
+          onClick={handleSave}
+          disabled={saving}
+          size="sm"
+        >
           {saving ? t("loading") : t("save")}
         </Button>
       </div>
@@ -916,7 +942,7 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
     // 乐观更新：立即翻转本地状态，用户秒切无闪烁
     setSkills((prev) =>
       prev.map((s) =>
-        s.name === skill.name && s.projectDir === skill.projectDir
+        s.name === skill.name
           ? { ...s, enabled }
           : s,
       ),
@@ -927,7 +953,7 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
       // 请求失败时回滚
       setSkills((prev) =>
         prev.map((s) =>
-          s.name === skill.name && s.projectDir === skill.projectDir
+          s.name === skill.name
             ? { ...s, enabled: !enabled }
             : s,
         ),
@@ -949,7 +975,7 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
     const deletedKey = skillKey(pendingDelete);
     setDeleting(true);
     try {
-      await api.deleteSkill(pendingDelete.name, pendingDelete.projectDir);
+      await api.deleteSkill(pendingDelete.name, pendingDelete.projectDir, requestProjectDirs);
       setPendingDelete(null);
       if (selectedSkill && skillKey(selectedSkill) === deletedKey) {
         setSelectedSkill(null);

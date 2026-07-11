@@ -8,6 +8,7 @@ import {
   getSkillsDir
 } from './paths.js';
 import { readSkillRegistry } from './skill-registry.js';
+import { skillIsEligible } from './skill-contexts.js';
 
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const BUNDLED_SKILLS_DIR = path.resolve(MODULE_DIR, '..', '..', 'skills');
@@ -459,17 +460,15 @@ function skillScopeLabel(source = '') {
   return source || 'unknown';
 }
 
-function isIndexedSkillEnabledForPrompt(command, config = {}) {
-  if (command?.metadata?.enabled === false) return false;
-  if (skillScopeLabel(command?.source) === 'builtin') return true;
-  return config?.skills?.enabled?.[command?.name] !== false;
+function isIndexedSkillEnabledForPrompt(command, config = {}, executionMode = config?.execution?.mode) {
+  return skillIsEligible(config?.skills, command?.name, executionMode, command);
 }
 
-export async function buildSkillIndexPromptBlock(cwd = process.cwd(), config = {}) {
+export async function buildSkillIndexPromptBlock(cwd = process.cwd(), config = {}, executionMode = config?.execution?.mode) {
   const indexed = await loadIndexedSkills(cwd);
   const lines = Array.from(indexed.values())
     .filter((command) => isSkillIndexEligible(command))
-    .filter((command) => isIndexedSkillEnabledForPrompt(command, config))
+    .filter((command) => isIndexedSkillEnabledForPrompt(command, config, executionMode))
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((command) => {
       const scope = skillScopeLabel(command.source);

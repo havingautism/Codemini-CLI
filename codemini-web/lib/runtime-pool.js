@@ -206,6 +206,17 @@ export class RuntimePool {
     return [...this.entries.values()].map(entry => this.#snapshot(entry));
   }
 
+  async reloadConfig(options = {}) {
+    const nextModel = String(options.model || '').trim();
+    await Promise.all([...this.entries.values()].map(async entry => {
+      await entry.bridge?.reloadConfig?.(options);
+      if (nextModel) entry.model = nextModel;
+      entry.updatedAt = Date.now();
+      entry.bridge?.broadcastRuntimeState?.();
+      this.#emitState(entry);
+    }));
+  }
+
   async evictIdle(now = Date.now()) {
     const evicted = [];
     const disposals = [];

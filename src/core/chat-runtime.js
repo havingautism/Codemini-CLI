@@ -5,6 +5,7 @@ import {
   isUserInvocableSkill,
   renderCommandPrompt
 } from './command-loader.js';
+import { skillIsEligible } from './skill-contexts.js';
 import { runAgentLoop } from './agent-loop.js';
 import { setResultDir } from './tool-result-store.js';
 import { trimInline, normalizePath } from './string-utils.js';
@@ -1969,10 +1970,8 @@ function isBundledSkillCommand(command) {
   return command?.metadata?.type === 'skill' && command?.source === 'bundled-skill';
 }
 
-function isSkillEnabled(config, name, command = null) {
-  if (command?.metadata?.enabled === false) return false;
-  if (isBundledSkillCommand(command)) return true;
-  return config.skills?.enabled?.[name] !== false;
+function isSkillEnabled(config, name, command = null, executionMode = config?.execution?.mode) {
+  return skillIsEligible(config?.skills, name, executionMode, command);
 }
 
 function selectAutoSkillNames(text = '') {
@@ -2102,12 +2101,12 @@ function buildMediumTaskPromptBlock() {
   ].join('\n');
 }
 
-function getAlwaysSkillCommands(commands, config, dismissedSkills = null) {
+function getAlwaysSkillCommands(commands, config, dismissedSkills = null, activeMode = config?.execution?.mode) {
   return Array.from(commands.values())
     .filter((command) =>
       command?.metadata?.type === 'skill' &&
       command.metadata?.mode === 'always' &&
-      isSkillEnabled(config, command.name, command) &&
+      isSkillEnabled(config, command.name, command, activeMode) &&
       (!dismissedSkills || !dismissedSkills.has(command.name))
     )
     .sort((a, b) => {
@@ -2117,14 +2116,14 @@ function getAlwaysSkillCommands(commands, config, dismissedSkills = null) {
     });
 }
 
-function buildAlwaysSkillPromptBlock(commands, config, dismissedSkills = null) {
-  const selected = getAlwaysSkillCommands(commands, config, dismissedSkills);
+function buildAlwaysSkillPromptBlock(commands, config, dismissedSkills = null, activeMode = config?.execution?.mode) {
+  const selected = getAlwaysSkillCommands(commands, config, dismissedSkills, activeMode);
   if (selected.length === 0) return '';
   return selected.map((skill) => `[Always skill: ${skill.name}]\n${skill.content}`).join('\n\n');
 }
 
 export function shouldInjectAlwaysSkills(executionMode) {
-  return normalizeExecutionMode(executionMode) === 'plan';
+  return ['normal', 'plan'].includes(normalizeExecutionMode(executionMode));
 }
 
 function extractJsonBlock(text) {
@@ -7062,7 +7061,7 @@ export async function createChatRuntime({
   const buildActiveSystemPrompt = async () => {
     const memoryGuide =
       'Persistent memory stores durable preferences and stable workflow knowledge. Verify changeable details from files, and only write memory for future-useful, non-sensitive facts.';
-    const skillIndexPrompt = await buildSkillIndexPromptBlock(root, config);
+    const skillIndexPrompt = await buildSkillIndexPromptBlock(root, config, executionMode);
     return composeSystemPrompt({
       shellRulesPrompt: baseSystemPrompt,
       config,
@@ -7416,14 +7415,14 @@ export async function createChatRuntime({
     const expandedText = await expandFileMentions(inputText, root);
     const autoRoute = classifyAutoRoute(expandedText);
     const injectAlwaysSkills = shouldInjectAlwaysSkills(executionMode);
-    const alwaysSkills = injectAlwaysSkills ? getAlwaysSkillCommands(commands, config, dismissedAlwaysSkills) : [];
+    const alwaysSkills = injectAlwaysSkills ? getAlwaysSkillCommands(commands, config, dismissedAlwaysSkills, executionMode) : [];
     if (alwaysSkills.length > 0 && onAgentEvent) {
       onAgentEvent({
         type: 'skill:always',
         names: alwaysSkills.map((skill) => skill.name)
       });
     }
-    const alwaysSkillPrompt = injectAlwaysSkills ? buildAlwaysSkillPromptBlock(commands, config, dismissedAlwaysSkills) : '';
+    const alwaysSkillPrompt = injectAlwaysSkills ? buildAlwaysSkillPromptBlock(commands, config, dismissedAlwaysSkills, executionMode) : '';
     const skillPrompt = alwaysSkillPrompt
       ? await composeSystemPrompt({
           shellRulesPrompt: activeReplySystemPrompt,
@@ -7476,7 +7475,7 @@ export async function createChatRuntime({
   const getAvailableSkills = () =>
     Array.from(commands.values())
       .filter((command) => isUserInvocableSkill(command))
-      .filter((command) => isSkillEnabled(config, command.name, command))
+      .filter((command) => isSkillEnabled(config, command.name, command, executionMode))
       .map((command) => {
         const source = String(command.source || '');
         const scope = source.startsWith('project-')
@@ -7498,7 +7497,7 @@ export async function createChatRuntime({
     const normalized = normalizeChatSubmission(submission);
     await reloadCommandsAndSkills();
     const composed = composeSelectedSkills(commands, normalized, {
-      isEnabled: (command) => isSkillEnabled(config, command.name, command)
+      isEnabled: (command) => isSkillEnabled(config, command.name, command, executionMode)
     });
     if (composed.error) throw new Error(composed.error);
     if (typeof onAgentEvent === 'function') {
@@ -7542,7 +7541,7 @@ export async function createChatRuntime({
       model,
       executionMode,
       extraSession: activeSubSession,
-      alwaysSkillNames: getAlwaysSkillCommands(commands, config).map((skill) => skill.name)
+      alwaysSkillNames: getAlwaysSkillCommands(commands, config, null, executionMode).map((skill) => skill.name)
     }), approvalRequestState.current));
     const payload = normalized.payload;
     const handlers = {
@@ -7743,7 +7742,7 @@ export async function createChatRuntime({
         executionMode,
         extraSession: activeSubSession,
         workspaceRoot: root,
-        alwaysSkillNames: getAlwaysSkillCommands(commands, config).map((skill) => skill.name)
+        alwaysSkillNames: getAlwaysSkillCommands(commands, config, null, executionMode).map((skill) => skill.name)
       })
   };
 }

@@ -569,6 +569,10 @@ export const zh = {
     "从 GitHub 仓库、URL 或本地目录安装技能包，并选择安装到全局或当前项目。",
   skillBrowseSection: "浏览技能",
   skillScope: "安装范围",
+  skillContext: "适用场景",
+  skillContextGlobal: "全局",
+  skillContextCoding: "编码",
+  skillContextDaily: "日常",
   noSkills: "暂无技能",
   noSkillsHint: "创建项目技能，把可复用工作流沉淀成 / 命令。",
   skillLibrary: "技能库",
@@ -599,7 +603,7 @@ export const zh = {
   filter_custom: "自定义",
   confirmDeleteSkill: '确定删除技能 "{{name}}"？',
   deleteSkillConfirm: "删除技能？",
-  deleteSkillDescription: '确定删除「{{name}}」？此操作不可撤销。',
+  deleteSkillDescription: '确定彻底删除「{{name}}」？其全局副本、所有已知项目副本和路由配置都会被移除，此操作不可撤销。',
   confirmDeleteSoul: '确定删除灵魂 "{{name}}"？',
 
   // AboutDialog
