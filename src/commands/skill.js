@@ -250,14 +250,21 @@ async function readManifestSafe(skillRoot) {
   }
 }
 
-async function readPluginManifestSafe(rootDir) {
-  const p = path.join(rootDir, '.codex-plugin', 'plugin.json');
-  try {
-    const raw = await fs.readFile(p, 'utf8');
-    return JSON.parse(raw);
-  } catch {
-    return null;
+const PLUGIN_MANIFEST_RELATIVE_PATHS = [
+  path.join('.codex-plugin', 'plugin.json'),
+  path.join('.claude-plugin', 'plugin.json'),
+];
+
+export async function readPluginManifestSafe(rootDir) {
+  for (const relativePath of PLUGIN_MANIFEST_RELATIVE_PATHS) {
+    try {
+      const raw = await fs.readFile(path.join(rootDir, relativePath), 'utf8');
+      return JSON.parse(raw);
+    } catch {
+      // Try the next known plugin-manifest location.
+    }
   }
+  return null;
 }
 
 function normalizeRelativePath(value = '') {
@@ -461,7 +468,7 @@ async function findSkillDirs(rootDir) {
   return found;
 }
 
-async function findSkillDirsForPackage(rootDir) {
+export async function findSkillDirsForPackage(rootDir) {
   const plugin = await readPluginManifestSafe(rootDir);
   const skillsPath = normalizeRelativePath(plugin?.skills);
   if (skillsPath) {
