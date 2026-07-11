@@ -18,9 +18,11 @@
 
 .codemini-app-shell {
   /* background: var(--apple-canvas); */
-  background: transparent !important;
+  /* background: #f2f2f2 !important; */
   color: var(--apple-text);
 }
+
+
 
 .codemini-sidebar,
 [data-slot="dialog-content"],

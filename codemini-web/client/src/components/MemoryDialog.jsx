@@ -5,7 +5,6 @@ import {
   CaretRight,
   Folder,
   MagnifyingGlass,
-  Brain,
   Tray,
   Trash,
   WarningCircle,
@@ -362,7 +361,6 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
       <ResourceLibraryDialog
         open={open}
         onOpenChange={onOpenChange}
-        icon={Brain}
         title={t("memoryManagement")}
         description={t("memoryPanelHint")}
       >
