@@ -21,5 +21,10 @@ export function skillIsEligible(skillsConfig = {}, name = '', executionMode = 'n
   const configured = skillsConfig?.enabled?.[name];
   if (configured === false) return false;
   if (configured !== true && command?.metadata?.enabled === false) return false;
-  return skillAppliesToExecutionMode(skillsConfig?.contexts?.[name], executionMode);
+  const configuredContexts = skillsConfig?.contexts?.[name];
+  const source = String(command?.source || '');
+  const defaultContexts = source.startsWith('bundled') || source.startsWith('project')
+    ? ['coding']
+    : ['coding', 'daily'];
+  return skillAppliesToExecutionMode(configuredContexts || defaultContexts, executionMode);
 }

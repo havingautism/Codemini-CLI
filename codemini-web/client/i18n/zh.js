@@ -573,6 +573,8 @@ export const zh = {
   skillContextGlobal: "全局",
   skillContextCoding: "编码",
   skillContextDaily: "日常",
+  skillContextCodingMode: "编码模式",
+  skillContextDailyMode: "日常模式",
   noSkills: "暂无技能",
   noSkillsHint: "创建项目技能，把可复用工作流沉淀成 / 命令。",
   skillLibrary: "技能库",

@@ -236,7 +236,7 @@ export async function listSkillEntries({ scope = 'all', cwd = process.cwd() } = 
       installedAt: command.metadata?.installedAt || '',
       contexts: config.skills?.contexts?.[command.name]
         ? normalizeSkillContexts(config.skills.contexts[command.name])
-        : itemScope === 'project'
+        : ['project', 'builtin'].includes(itemScope)
           ? ['coding']
           : ['coding', 'daily'],
       scope: itemScope,

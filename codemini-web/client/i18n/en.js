@@ -592,6 +592,8 @@ export const en = {
   skillContextGlobal: "Global",
   skillContextCoding: "Coding",
   skillContextDaily: "Daily",
+  skillContextCodingMode: "Coding mode",
+  skillContextDailyMode: "Daily mode",
   noSkills: "No skills yet",
   noSkillsHint:
     "Create a project skill to turn reusable workflows into / commands.",

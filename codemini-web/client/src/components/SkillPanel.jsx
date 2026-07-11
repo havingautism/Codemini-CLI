@@ -67,51 +67,6 @@ function projectDirsKey(projectDirs = []) {
     : "";
 }
 
-function normalizeProjectTargets(projectTargets = [], projectDirs = []) {
-  const byDir = new Map();
-  for (const item of Array.isArray(projectTargets) ? projectTargets : []) {
-    const dir = String(item?.dir || item?.path || item || "").trim();
-    if (!dir || byDir.has(dir)) continue;
-    byDir.set(dir, {
-      dir,
-      label:
-        item?.label ||
-        projectDisplayName(dir.split(/[/\\]/).filter(Boolean).pop() || dir),
-    });
-  }
-  for (const dir of Array.isArray(projectDirs) ? projectDirs : []) {
-    const value = String(dir || "").trim();
-    if (!value || byDir.has(value)) continue;
-    byDir.set(value, {
-      dir: value,
-      label: projectDisplayName(
-        value.split(/[/\\]/).filter(Boolean).pop() || value,
-      ),
-    });
-  }
-  return Array.from(byDir.values());
-}
-
-function projectTargetValue(projectDir) {
-  const dir = String(projectDir || "").trim();
-  return dir ? `project:${dir}` : "";
-}
-
-function parseSkillTarget(value) {
-  const text = String(value || "");
-  if (text === "global") return { scope: "global", projectDir: "" };
-  if (text.startsWith("project:")) {
-    return { scope: "project", projectDir: text.slice("project:".length) };
-  }
-  return { scope: "project", projectDir: "" };
-}
-
-function defaultSkillTarget(projectTargets = []) {
-  return projectTargets[0]?.dir
-    ? projectTargetValue(projectTargets[0].dir)
-    : "global";
-}
-
 function isBuiltin(skill) {
   return skill?.scope === "builtin";
 }
@@ -133,15 +88,10 @@ function skillContextValue(contexts = []) {
   return "global";
 }
 
-function SkillEditor({ skill, projectTargets = [], onSave, onValidate }) {
+function SkillEditor({ skill, onSave, onValidate }) {
   const [name, setName] = useState(skill?.name || "");
   const [description, setDescription] = useState(skill?.description || "");
-  const [target, setTarget] = useState(
-    skill?.scope === "global"
-      ? "global"
-      : projectTargetValue(skill?.projectDir) ||
-          defaultSkillTarget(projectTargets),
-  );
+  const [context, setContext] = useState(skillContextValue(skill?.contexts));
   const [mode, setMode] = useState(normalizeSkillMode(skill?.mode));
   const [triggers, setTriggers] = useState((skill?.triggers || []).join(", "));
   const [priority, setPriority] = useState(skill?.priority ?? 50);
@@ -154,12 +104,7 @@ function SkillEditor({ skill, projectTargets = [], onSave, onValidate }) {
   useEffect(() => {
     setName(skill?.name || "");
     setDescription(skill?.description || "");
-    setTarget(
-      skill?.scope === "global"
-        ? "global"
-        : projectTargetValue(skill?.projectDir) ||
-            defaultSkillTarget(projectTargets),
-    );
+    setContext(skillContextValue(skill?.contexts));
     setMode(normalizeSkillMode(skill?.mode));
     setTriggers((skill?.triggers || []).join(", "));
     setPriority(skill?.priority ?? 50);
@@ -174,13 +119,12 @@ function SkillEditor({ skill, projectTargets = [], onSave, onValidate }) {
       .then((data) => setContent(data.content || ""))
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [skill, projectTargets]);
+  }, [skill]);
 
   const handleSave = async () => {
-    const selectedTarget = parseSkillTarget(target);
     const metadata = {
       description,
-      scope: selectedTarget.scope,
+      contexts: context === "global" ? ["coding", "daily"] : [context],
       mode,
       triggers: mode === "manual" ? [] : triggers
         .split(",")
@@ -194,15 +138,13 @@ function SkillEditor({ skill, projectTargets = [], onSave, onValidate }) {
         name,
         description,
         content,
-        scope: selectedTarget.scope,
-        projectDir: selectedTarget.projectDir,
+        scope: "global",
+        contexts: metadata.contexts,
       });
       await api.updateSkillMetadata(
         name,
         metadata,
-        selectedTarget.scope === "project"
-          ? selectedTarget.projectDir
-          : undefined,
+        undefined,
       );
     } else {
       if (!contentReadOnly) {
@@ -210,13 +152,7 @@ function SkillEditor({ skill, projectTargets = [], onSave, onValidate }) {
       }
       await api.updateSkillMetadata(
         skill.name,
-        {
-          ...metadata,
-          targetProjectDir:
-            selectedTarget.scope === "project"
-              ? selectedTarget.projectDir
-              : undefined,
-        },
+        metadata,
         skill.projectDir,
       );
     }
@@ -245,22 +181,16 @@ function SkillEditor({ skill, projectTargets = [], onSave, onValidate }) {
           className="gap-4"
         >
           {(isNew || !isBuiltin(skill)) && (
-            <SettingsField id="skill-editor-scope" label={t("skillScope")}>
-              <Select value={target} onValueChange={setTarget}>
+            <SettingsField id="skill-editor-context" label={t("skillContext")}>
+              <Select value={context} onValueChange={setContext}>
                 <SelectTrigger className="h-9 w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent align="start">
                   <SelectGroup>
-                    <SelectItem value="global">{t("globalScope")}</SelectItem>
-                    {projectTargets.map((item) => (
-                      <SelectItem
-                        key={item.dir}
-                        value={projectTargetValue(item.dir)}
-                      >
-                        {item.label}
-                      </SelectItem>
-                    ))}
+                    <SelectItem value="global">{t("skillContextGlobal")}</SelectItem>
+                    <SelectItem value="coding">{t("skillContextCoding")}</SelectItem>
+                    <SelectItem value="daily">{t("skillContextDaily")}</SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>
@@ -368,7 +298,6 @@ function SkillEditor({ skill, projectTargets = [], onSave, onValidate }) {
 
 function SkillEditorDialog({
   skill,
-  projectTargets = [],
   open,
   onSave,
   onOpenChange,
@@ -395,7 +324,6 @@ function SkillEditorDialog({
         <div className="min-h-0 flex-1 overflow-y-auto px-4 sm:px-6">
           <SkillEditor
             skill={skill}
-            projectTargets={projectTargets}
             onSave={onSave}
             onValidate={handleValidate}
           />
@@ -708,7 +636,6 @@ function InstallDialog({
   installing,
   installError,
   onInstall,
-  projectTargets,
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -729,11 +656,9 @@ function InstallDialog({
                 className="h-9 text-[13px]"
               />
             </SettingsField>
-            <SettingsField id="skill-install-target" label={t("skillScope")}>
+            <SettingsField id="skill-install-context" label={t("skillContext")}>
               <Select
-                value={
-                  installTarget || defaultSkillTarget(projectTargets)
-                }
+                value={installTarget || "global"}
                 onValueChange={setInstallTarget}
               >
                 <SelectTrigger className="h-9 w-full">
@@ -741,15 +666,9 @@ function InstallDialog({
                 </SelectTrigger>
                 <SelectContent align="start">
                   <SelectGroup>
-                    <SelectItem value="global">{t("globalScope")}</SelectItem>
-                    {projectTargets.map((item) => (
-                      <SelectItem
-                        key={item.dir}
-                        value={projectTargetValue(item.dir)}
-                      >
-                        {item.label}
-                      </SelectItem>
-                    ))}
+                    <SelectItem value="global">{t("skillContextGlobal")}</SelectItem>
+                    <SelectItem value="coding">{t("skillContextCoding")}</SelectItem>
+                    <SelectItem value="daily">{t("skillContextDaily")}</SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>
@@ -789,7 +708,6 @@ function modeBadgeClass(mode) {
 
 function SkillCard({ skill, selected, onSelect }) {
   const enabled = isEnabled(skill);
-  const builtin = isBuiltin(skill);
   const author = skillAuthorLabel(skill);
   const mode = normalizeSkillMode(skill.mode);
 
@@ -849,12 +767,6 @@ function SkillCard({ skill, selected, onSelect }) {
               {author}
             </Badge>
           )}
-          <Badge
-            variant={builtin ? "secondary" : "outline"}
-            className="h-4 rounded-md px-1.5 py-0 text-[11px]"
-          >
-            {scopeLabel(skill.scope)}
-          </Badge>
         </div>
       </div>
     </div>
@@ -888,19 +800,15 @@ function SkillGroupHeader({ name, count, collapsed, title, onClick }) {
   );
 }
 
-export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
+export function SkillPanel({ projectDirs = [] }) {
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
   const [selectedSkill, setSelectedSkill] = useState(null);
-  const [collapsedProjects, setCollapsedProjects] = useState(() => new Set());
+  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("custom");
   const [installSource, setInstallSource] = useState("");
-  const normalizedProjectTargets = useMemo(
-    () => normalizeProjectTargets(projectTargets, projectDirs),
-    [projectTargets, projectDirs],
-  );
   const [installTarget, setInstallTarget] = useState("");
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState("");
@@ -914,16 +822,6 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
     () => (projectKey ? projectKey.split("\n") : []),
     [projectKey],
   );
-
-  useEffect(() => {
-    const allowed = new Set([
-      "global",
-      ...normalizedProjectTargets.map((item) => projectTargetValue(item.dir)),
-    ]);
-    if (installTarget && !allowed.has(installTarget)) {
-      setInstallTarget("");
-    }
-  }, [installTarget, normalizedProjectTargets]);
 
   const loadSkills = useCallback(async () => {
     setLoading(true);
@@ -999,13 +897,11 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
     setInstalling(true);
     setInstallError("");
     try {
-      const selectedTarget = parseSkillTarget(
-        installTarget || defaultSkillTarget(normalizedProjectTargets),
-      );
+      const selectedContext = installTarget || "global";
       const result = await api.installSkill({
         source,
-        scope: selectedTarget.scope,
-        projectDir: selectedTarget.projectDir,
+        scope: "global",
+        contexts: selectedContext === "global" ? ["coding", "daily"] : [selectedContext],
       });
       if (result?.error) throw new Error(result.message || "Install failed");
       setInstallSource("");
@@ -1067,32 +963,17 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
     });
   }, [skills, query, filter]);
   const groupedSkills = useMemo(() => {
-    const regular = [];
-    const projects = new Map();
+    const groups = new Map([
+      ["global", { key: "global", name: t("skillContextGlobal"), items: [] }],
+      ["coding", { key: "coding", name: t("skillContextCodingMode"), items: [] }],
+      ["daily", { key: "daily", name: t("skillContextDailyMode"), items: [] }],
+    ]);
     for (const skill of filteredSkills) {
-      if (skill.scope !== "project") {
-        regular.push(skill);
-        continue;
-      }
-      const key = skill.projectDir || "__current_project__";
-      if (!projects.has(key)) {
-        projects.set(key, {
-          key,
-          name: projectDisplayName(skill.projectName || t("projectScope")),
-          items: [],
-        });
-      }
-      projects.get(key).items.push(skill);
+      groups.get(skillContextValue(skill.contexts)).items.push(skill);
     }
-    return {
-      regular: sortSkillsByAuthor(regular),
-      projects: [...projects.values()]
-        .map((group) => ({
-          ...group,
-          items: sortSkillsByAuthor(group.items),
-        }))
-        .sort((left, right) => left.name.localeCompare(right.name)),
-    };
+    return [...groups.values()]
+      .map((group) => ({ ...group, items: sortSkillsByAuthor(group.items) }))
+      .filter((group) => group.items.length > 0);
   }, [filteredSkills]);
 
   useEffect(() => {
@@ -1110,8 +991,8 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
     setSelectedSkill(filteredSkills[0]);
   }, [filteredSkills, selectedSkill]);
 
-  const toggleProjectGroup = useCallback((key) => {
-    setCollapsedProjects((current) => {
+  const toggleSkillGroup = useCallback((key) => {
+    setCollapsedGroups((current) => {
       const next = new Set(current);
       if (next.has(key)) next.delete(key);
       else next.add(key);
@@ -1140,13 +1021,8 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
 
       {(skills.length > 0 && filteredSkills.length > 0) && (
         <div className="grid gap-2">
-          <SkillCards
-            items={groupedSkills.regular}
-            selectedSkill={selectedSkill}
-            onSelect={setSelectedSkill}
-          />
-          {groupedSkills.projects.map((group) => {
-            const collapsed = collapsedProjects.has(group.key);
+          {groupedSkills.map((group) => {
+            const collapsed = collapsedGroups.has(group.key);
             return (
               <div key={group.key} className="grid gap-1">
                 <SkillGroupHeader
@@ -1154,7 +1030,7 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
                   count={group.items.length}
                   collapsed={collapsed}
                   title={group.key}
-                  onClick={() => toggleProjectGroup(group.key)}
+                  onClick={() => toggleSkillGroup(group.key)}
                 />
                 {!collapsed && (
                   <div className="grid gap-2 pl-6">
@@ -1257,7 +1133,6 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
 
       <SkillEditorDialog
         skill={editing === "new" ? null : editing}
-        projectTargets={normalizedProjectTargets}
         open={!!editing}
         onSave={handleSave}
         onOpenChange={(open) => {
@@ -1274,7 +1149,6 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
         installing={installing}
         installError={installError}
         onInstall={handleInstall}
-        projectTargets={normalizedProjectTargets}
       />
       <ConfirmDialog
         open={!!pendingDelete}

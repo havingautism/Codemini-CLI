@@ -37,6 +37,10 @@ import {
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { USER_ACTION_COMMAND_NAMES } from "@/lib/user-skill-prompt.js";
 import {
+  filterSkillsForExecutionMode,
+  skillIsVisibleInExecutionMode,
+} from "@/lib/skill-visibility.js";
+import {
   beginActionParameter,
   cancelActionParameter,
   createComposerState,
@@ -498,6 +502,7 @@ function ActionSkillPalette({
   visible,
   projectDirs = EMPTY_PROJECT_DIRS,
   defaultSkillNames = [],
+  mode = "normal",
   onClose,
 }) {
   const [skills, setSkills] = useState([]);
@@ -524,15 +529,12 @@ function ActionSkillPalette({
         .then((list) => {
           if (cancelled) return;
           setSkills(
-            Array.isArray(list)
-              ? list.filter(
+            filterSkillsForExecutionMode(list, mode).filter(
                   (s) =>
-                    s.enabled !== false &&
                     !IMPLICIT_SKILLS.has(s.name) &&
                     !INTERNAL_SKILLS.has(s.name) &&
                     !USER_ACTION_COMMAND_NAMES.has(s.name),
-                )
-              : [],
+                ),
           );
         })
         .catch(() => {});
@@ -540,7 +542,7 @@ function ActionSkillPalette({
     return () => {
       cancelled = true;
     };
-  }, [visible, projectDirs]);
+  }, [visible, projectDirs, mode]);
 
   useEffect(() => {
     if (visible) searchRef.current?.focus();
@@ -576,6 +578,7 @@ function ActionSkillPalette({
           name: skill.name,
           icon: Hammer,
           description: skill.description || "Manual skill",
+          contexts: skill.contexts,
           kind: "skill",
           key: `skill-${skill.name}`,
         })),
@@ -759,6 +762,12 @@ export function InputBar({
   const isGeneralChat = projectCwd === "__codemini_general__";
 
   useEffect(() => {
+    setSelectedSkills((current) =>
+      current.filter((skill) => skillIsVisibleInExecutionMode(skill, mode)),
+    );
+  }, [mode]);
+
+  useEffect(() => {
     if (externalHistory && externalHistory.length && history.length === 0) {
       setHistory([...externalHistory].reverse());
     }
@@ -904,7 +913,11 @@ export function InputBar({
           (current) =>
             toggleComposerSkill(
               { selectedSkills: current },
-              { name: item.name, description: item.description || "" },
+              {
+                name: item.name,
+                description: item.description || "",
+                contexts: item.contexts,
+              },
             ).selectedSkills,
         );
         setPaletteOpen(false);
@@ -1002,6 +1015,7 @@ export function InputBar({
         visible={paletteOpen}
         projectDirs={projectDirs}
         defaultSkillNames={defaultSkillNames}
+        mode={mode}
         onClose={() => setPaletteOpen(false)}
       />
       <div className="codemini-input-shell flex flex-col gap-2.5 px-2 py-2 sm:px-2.5">

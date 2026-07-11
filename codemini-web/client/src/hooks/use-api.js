@@ -380,20 +380,20 @@ export async function fetchSkillContent(name, projectDir) {
   return readJsonResponse(res);
 }
 
-export async function createSkill({ name, description, content, scope, projectDir }) {
+export async function createSkill({ name, description, content, scope, projectDir, contexts }) {
   const res = await api('/api/skills/create', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ name, description, content, scope, projectDir })
+    body: JSON.stringify({ name, description, content, scope, projectDir, contexts })
   });
   return readJsonResponse(res);
 }
 
-export async function installSkill({ source, scope, projectDir }) {
+export async function installSkill({ source, scope, projectDir, contexts }) {
   const res = await api('/api/skills/install', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ source, scope, projectDir })
+    body: JSON.stringify({ source, scope, projectDir, contexts })
   });
   return readJsonResponse(res);
 }

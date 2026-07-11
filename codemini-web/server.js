@@ -2685,7 +2685,7 @@ async function main() {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/skills/create') {
-      const { name, description, content, scope: rawScope, projectDir } = await readBody(req);
+      const { name, description, content, scope: rawScope, projectDir, contexts } = await readBody(req);
       if (!name || !content) { jsonResponse(res, { error: true, message: 'Missing name or content' }, 400); return; }
       if (!isSafeSkillName(name)) { jsonResponse(res, { error: true, message: 'Invalid skill name' }, 400); return; }
       try {
@@ -2730,7 +2730,9 @@ async function main() {
         config.skills.enabled = config.skills.enabled || {};
         config.skills.contexts = config.skills.contexts || {};
         config.skills.enabled[name] = true;
-        config.skills.contexts[name] = scope === 'project' ? ['coding'] : ['coding', 'daily'];
+        config.skills.contexts[name] = contexts !== undefined
+          ? normalizeSkillContexts(contexts)
+          : scope === 'project' ? ['coding'] : ['coding', 'daily'];
         await saveConfig(config);
         await bridge.reloadConfig();
         await bridge.reloadCommandsAndSkills();
@@ -2739,7 +2741,7 @@ async function main() {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/skills/install') {
-      const { source, scope: rawScope, projectDir } = await readBody(req);
+      const { source, scope: rawScope, projectDir, contexts } = await readBody(req);
       if (!source) { jsonResponse(res, { error: true, message: 'Missing source' }, 400); return; }
       try {
         const scope = normalizeSkillScope(rawScope);
@@ -2747,6 +2749,14 @@ async function main() {
           ? await resolveRequestProjectDir(projectDir, currentProjectDir)
           : currentProjectDir;
         const installed = await installSkillSource(source, { scope, cwd: targetProjectDir });
+        if (contexts !== undefined) {
+          const config = await loadConfig();
+          config.skills = config.skills || {};
+          config.skills.contexts = config.skills.contexts || {};
+          const normalizedContexts = normalizeSkillContexts(contexts);
+          for (const name of installed) config.skills.contexts[name] = normalizedContexts;
+          await saveConfig(config);
+        }
         await bridge.reloadConfig();
         await bridge.reloadCommandsAndSkills();
         jsonResponse(res, { ok: true, installed, scope, projectDir: scope === 'project' ? targetProjectDir : '' });
