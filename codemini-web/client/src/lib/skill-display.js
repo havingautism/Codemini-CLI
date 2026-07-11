@@ -5,6 +5,53 @@ const LOCAL_SOURCES = new Set([
   "reindex",
 ]);
 
+function packageSourceKey(source = "") {
+  const raw = String(source || "").trim();
+  if (!raw || LOCAL_SOURCES.has(raw)) return "";
+
+  const tree = raw.match(
+    /^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/tree\/(.+?)\/?$/i,
+  );
+  if (tree) {
+    const subPath = tree[3].split("/").slice(1).join("/").toLowerCase();
+    const base = `https://github.com/${tree[1]}/${tree[2]}`.toLowerCase();
+    return subPath ? `${base}#${subPath}` : base;
+  }
+
+  let url = raw;
+  const ssh = url.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i);
+  if (ssh) {
+    url = `https://github.com/${ssh[1]}/${ssh[2]}`;
+  } else if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(url)) {
+    url = `https://github.com/${url}`;
+  } else if (!/^https:\/\/github\.com\//i.test(url)) {
+    return "";
+  }
+
+  url = url
+    .replace(/\/$/, "")
+    .replace(/\.git$/i, "")
+    .toLowerCase();
+  return url;
+}
+
+export function skillPackageIsUpdatable(skill = {}) {
+  if (!skill || skill.scope === "builtin") return false;
+  const source = String(skill.packageSource || skill.source || "").trim();
+  return Boolean(packageSourceKey(source));
+}
+
+export function skillsInSamePackage(skills = [], skill = {}) {
+  if (!skillPackageIsUpdatable(skill)) return [];
+  const key = packageSourceKey(skill.packageSource || skill.source);
+  const projectDir = skill.projectDir || "";
+  return skills.filter((item) => {
+    if (item.scope !== skill.scope) return false;
+    if ((item.projectDir || "") !== projectDir) return false;
+    return packageSourceKey(item.packageSource || item.source) === key;
+  });
+}
+
 export function skillAuthorLabel(skill = {}) {
   const source = String(skill.packageSource || "").trim();
   const localSource = String(skill.source || "").trim();

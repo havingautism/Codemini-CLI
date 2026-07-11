@@ -5,6 +5,21 @@ async function api(path, opts = {}) {
   return res;
 }
 
+async function readJsonResponse(res) {
+  const text = await res.text();
+  if (!text) {
+    return res.ok ? {} : { error: true, message: `Request failed (${res.status})` };
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {
+      error: true,
+      message: text.trim() || `Request failed (${res.status})`,
+    };
+  }
+}
+
 export async function fetchEmbed(url) {
   const target = String(url || '').trim();
   if (!target) return { error: true, message: 'Missing url' };
@@ -362,7 +377,7 @@ export async function fetchSkills(projectDirs = []) {
 
 export async function fetchSkillContent(name, projectDir) {
   const res = await api(withProjectDirQuery(`/api/skills/${encodeURIComponent(name)}/content`, projectDir));
-  return res.json();
+  return readJsonResponse(res);
 }
 
 export async function createSkill({ name, description, content, scope, projectDir }) {
@@ -371,7 +386,7 @@ export async function createSkill({ name, description, content, scope, projectDi
     headers: JSON_HEADERS,
     body: JSON.stringify({ name, description, content, scope, projectDir })
   });
-  return res.json();
+  return readJsonResponse(res);
 }
 
 export async function installSkill({ source, scope, projectDir }) {
@@ -380,7 +395,16 @@ export async function installSkill({ source, scope, projectDir }) {
     headers: JSON_HEADERS,
     body: JSON.stringify({ source, scope, projectDir })
   });
-  return res.json();
+  return readJsonResponse(res);
+}
+
+export async function updateSkillPackage({ name, projectDir }) {
+  const res = await api('/api/skills/update', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ name, projectDir })
+  });
+  return readJsonResponse(res);
 }
 
 export async function updateSkillContent(name, content, projectDir) {

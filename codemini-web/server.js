@@ -25,7 +25,7 @@ import {
   startRuntimeEvictionTimer
 } from './lib/runtime-pool.js';
 import { resolveEmbed } from './lib/embed-resolver.js';
-import { installSkillSource, listSkillEntries } from '../src/commands/skill.js';
+import { installSkillSource, listSkillEntries, updateSkillPackage } from '../src/commands/skill.js';
 import { computeFileSha256, readSkillRegistry, upsertSkillRegistryEntry, writeSkillRegistry } from '../src/core/skill-registry.js';
 import { forgetMemory, listMemories, searchMemories } from '../src/core/memory-store.js';
 import { getReplyLanguage } from '../src/core/reply-language.js';
@@ -2743,6 +2743,25 @@ async function main() {
         const installed = await installSkillSource(source, { scope, cwd: targetProjectDir });
         await bridge.reloadCommandsAndSkills();
         jsonResponse(res, { ok: true, installed, scope, projectDir: scope === 'project' ? targetProjectDir : '' });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/skills/update') {
+      const { name, projectDir } = await readBody(req);
+      if (!name) { jsonResponse(res, { error: true, message: 'Missing skill name' }, 400); return; }
+      try {
+        const targetProjectDir = await resolveRequestProjectDir(projectDir, currentProjectDir);
+        const result = await updateSkillPackage({ name, cwd: targetProjectDir });
+        await bridge.reloadCommandsAndSkills();
+        jsonResponse(res, {
+          ok: true,
+          installed: result.installed,
+          previouslyInstalled: result.previouslyInstalled,
+          packageSource: result.packageSource,
+          packageName: result.packageName,
+          scope: result.scope,
+          projectDir: result.scope === 'project' ? targetProjectDir : '',
+        });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
     }

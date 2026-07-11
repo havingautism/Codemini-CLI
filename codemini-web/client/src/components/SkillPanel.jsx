@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
+  ArrowsClockwise,
   CaretDown,
   CaretRight,
   Download,
@@ -34,8 +35,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { cn } from "@/lib/utils";
-import { skillAuthorLabel, sortSkillsByAuthor } from "@/lib/skill-display.js";
+import { skillAuthorLabel, skillPackageIsUpdatable, sortSkillsByAuthor } from "@/lib/skill-display.js";
 import * as api from "@/hooks/use-api";
 import { t } from "../../i18n/index.js";
 
@@ -496,7 +498,7 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
   );
 }
 
-function SkillDetailPane({ skill, onSave, onDelete, onToggle }) {
+function SkillDetailPane({ skill, onSave, onDelete, onToggle, onUpdate, updating = false }) {
   const [content, setContent] = useState("");
   const [draftContent, setDraftContent] = useState("");
   const [loading, setLoading] = useState(false);
@@ -534,6 +536,7 @@ function SkillDetailPane({ skill, onSave, onDelete, onToggle }) {
   const mode = normalizeSkillMode(skill.mode);
   const author = skillAuthorLabel(skill);
   const builtin = isBuiltin(skill);
+  const updatable = skillPackageIsUpdatable(skill);
 
   const handleContentSave = async () => {
     if (!skill || builtin) return;
@@ -576,6 +579,17 @@ function SkillDetailPane({ skill, onSave, onDelete, onToggle }) {
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
             {modeView === "edit" || modeView === "routing" ? null : (
               <>
+                {updatable && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={updating}
+                    onClick={() => onUpdate?.(skill)}
+                  >
+                    <ArrowsClockwise size={13} className={updating ? "animate-spin" : undefined} />
+                    {updating ? t("updatingSkillPackage") : t("updateSkillPackage")}
+                  </Button>
+                )}
                 {!builtin && (
                   <Button variant="outline" size="sm" onClick={() => setModeView("edit")}>
                     <PencilSimple size={13} />
@@ -591,11 +605,7 @@ function SkillDetailPane({ skill, onSave, onDelete, onToggle }) {
                     variant="ghost"
                     size="icon-sm"
                     className="text-(--accent-red) hover:bg-(--accent-red-bg) hover:text-(--accent-red)"
-                    onClick={() => {
-                      if (confirm(t("confirmDeleteSkill").replace("{{name}}", skill.name))) {
-                        onDelete?.(skill);
-                      }
-                    }}
+                    onClick={() => onDelete?.(skill)}
                     aria-label={t("delete")}
                     title={t("delete")}
                   >
@@ -869,6 +879,10 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState("");
   const [installOpen, setInstallOpen] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [pendingUpdate, setPendingUpdate] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const projectKey = projectDirsKey(projectDirs);
   const requestProjectDirs = useMemo(
     () => (projectKey ? projectKey.split("\n") : []),
@@ -927,8 +941,25 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
   };
 
   const handleDelete = async (skill) => {
-    await api.deleteSkill(skill.name, skill.projectDir);
-    loadSkills();
+    setPendingDelete(skill);
+  };
+
+  const confirmDeleteSkill = async () => {
+    if (!pendingDelete || deleting) return;
+    const deletedKey = skillKey(pendingDelete);
+    setDeleting(true);
+    try {
+      await api.deleteSkill(pendingDelete.name, pendingDelete.projectDir);
+      setPendingDelete(null);
+      if (selectedSkill && skillKey(selectedSkill) === deletedKey) {
+        setSelectedSkill(null);
+      }
+      await loadSkills();
+    } catch (err) {
+      window.alert(err.message || t("deleteFailed"));
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const handleSave = () => {
@@ -958,6 +989,31 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
       setInstallError(err.message || "Install failed");
     } finally {
       setInstalling(false);
+    }
+  };
+
+  const handleUpdatePackage = (skill) => {
+    if (!skill || updating) return;
+    setPendingUpdate(skill);
+  };
+
+  const confirmUpdatePackage = async () => {
+    if (!pendingUpdate || updating) return;
+    setUpdating(true);
+    try {
+      const result = await api.updateSkillPackage({
+        name: pendingUpdate.name,
+        projectDir: pendingUpdate.projectDir,
+      });
+      if (result?.error) {
+        throw new Error(result.message || t("updateSkillPackageFailed"));
+      }
+      setPendingUpdate(null);
+      await loadSkills();
+    } catch (err) {
+      window.alert(err.message || t("updateSkillPackageFailed"));
+    } finally {
+      setUpdating(false);
     }
   };
 
@@ -1025,9 +1081,7 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
       if (refreshedSelection !== selectedSkill) setSelectedSkill(refreshedSelection);
       return;
     }
-    if (!selectedSkill) {
-      setSelectedSkill(filteredSkills[0]);
-    }
+    setSelectedSkill(filteredSkills[0]);
   }, [filteredSkills, selectedSkill]);
 
   const toggleProjectGroup = useCallback((key) => {
@@ -1169,6 +1223,8 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
             onSave={handleSave}
             onDelete={handleDelete}
             onToggle={handleToggle}
+            onUpdate={handleUpdatePackage}
+            updating={updating}
           />
         </div>
       </div>
@@ -1193,6 +1249,38 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
         installError={installError}
         onInstall={handleInstall}
         projectTargets={normalizedProjectTargets}
+      />
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title={t("deleteSkillConfirm")}
+        description={
+          pendingDelete
+            ? t("deleteSkillDescription").replace("{{name}}", pendingDelete.name)
+            : ""
+        }
+        loading={deleting}
+        onOpenChange={(open) => !open && !deleting && setPendingDelete(null)}
+        onConfirm={confirmDeleteSkill}
+      />
+      <ConfirmDialog
+        open={!!pendingUpdate}
+        title={t("updateSkillPackageConfirm")}
+        description={
+          pendingUpdate
+            ? t("updateSkillPackageDescription").replace(
+                "{{package}}",
+                pendingUpdate.packageName ||
+                  pendingUpdate.packageSource ||
+                  pendingUpdate.name,
+              )
+            : ""
+        }
+        confirmLabel={t("updateSkillPackage")}
+        loadingLabel={t("updatingSkillPackage")}
+        confirmVariant="default"
+        loading={updating}
+        onOpenChange={(open) => !open && !updating && setPendingUpdate(null)}
+        onConfirm={confirmUpdatePackage}
       />
     </>
   );

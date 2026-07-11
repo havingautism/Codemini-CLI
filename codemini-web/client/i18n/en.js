@@ -574,6 +574,12 @@ export const en = {
   addSkill: "Add Skill",
   installSkill: "Install",
   installing: "Installing...",
+  updateSkillPackage: "Update package",
+  updatingSkillPackage: "Updating...",
+  updateSkillPackageFailed: "Failed to update skill package",
+  updateSkillPackageConfirm: "Update skill package?",
+  updateSkillPackageDescription:
+    'Reinstall "{{package}}" from its GitHub source in this scope. Skills you deleted from this package may come back, and new skills will be installed.',
   skillInstallPlaceholder:
     "GitHub repo, URL, folder path, or npx skills@latest add owner/repo",
   skillInstallSection: "Install Skill",
@@ -613,6 +619,8 @@ export const en = {
   filter_builtin: "Built-in",
   filter_custom: "Custom",
   confirmDeleteSkill: 'Delete skill "{{name}}"?',
+  deleteSkillConfirm: "Delete skill?",
+  deleteSkillDescription: 'Delete "{{name}}"? This cannot be undone.',
   confirmDeleteSoul: 'Delete soul "{{name}}"?',
 
   // AboutDialog

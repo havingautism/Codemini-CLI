@@ -555,6 +555,12 @@ export const zh = {
   addSkill: "添加技能",
   installSkill: "安装",
   installing: "安装中...",
+  updateSkillPackage: "更新技能包",
+  updatingSkillPackage: "更新中...",
+  updateSkillPackageFailed: "更新技能包失败",
+  updateSkillPackageConfirm: "更新技能包？",
+  updateSkillPackageDescription:
+    '将按 GitHub 源在当前范围内重装「{{package}}」。已删除的包内技能可能被装回，远端新增的技能也会一并安装。',
   skillInstallPlaceholder:
     "GitHub 仓库、URL、目录路径，或 npx skills@latest add owner/repo",
   skillInstallSection: "安装技能",
@@ -592,6 +598,8 @@ export const zh = {
   filter_builtin: "内置",
   filter_custom: "自定义",
   confirmDeleteSkill: '确定删除技能 "{{name}}"？',
+  deleteSkillConfirm: "删除技能？",
+  deleteSkillDescription: '确定删除「{{name}}」？此操作不可撤销。',
   confirmDeleteSoul: '确定删除灵魂 "{{name}}"？',
 
   // AboutDialog
