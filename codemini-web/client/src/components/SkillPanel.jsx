@@ -766,9 +766,9 @@ function SkillCard({ skill, selected, onSelect }) {
         if (event.key === "Enter" || event.key === " ") onSelect(skill);
       }}
       className={cn(
-        "flex cursor-pointer flex-col gap-2 rounded-md border px-3 py-2.5 text-left transition-colors",
+        "flex cursor-pointer flex-col gap-2 rounded-lg border px-3 py-2.5 text-left outline-none transition-[background-color,border-color,box-shadow] focus-visible:shadow-[0_0_0_3px_var(--control-focus-ring)]",
         selected
-          ? "border-[var(--input-shell-accent)]/45 bg-(--bg-hover)"
+          ? "border-(--selected-edge) bg-(--selected-bg)"
           : enabled
             ? "border-transparent bg-transparent hover:bg-(--bg-hover)"
             : "border-transparent bg-transparent text-muted-foreground hover:bg-(--bg-hover)",

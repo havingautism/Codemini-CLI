@@ -906,13 +906,36 @@
     var(--input-shell-accent) 40%,
     var(--border-strong)
   );
+  --surface-edge: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  --surface-shadow:
+    0 1px 2px color-mix(in srgb, black 8%, transparent),
+    0 10px 30px color-mix(in srgb, black 16%, transparent);
+  --control-bg: color-mix(in srgb, var(--bg-primary) 94%, var(--bg-secondary));
+  --control-border: color-mix(in srgb, var(--text-primary) 7%, transparent);
+  --control-border-hover: color-mix(in srgb, var(--text-primary) 13%, transparent);
+  --control-shadow:
+    0 1px 2px color-mix(in srgb, black 8%, transparent),
+    0 3px 10px color-mix(in srgb, black 5%, transparent);
+  --control-focus-ring: color-mix(in srgb, var(--input-shell-accent) 24%, transparent);
+  --interactive-hover: color-mix(in srgb, var(--text-primary) 6%, var(--bg-primary));
+  --selected-bg: color-mix(in srgb, var(--text-primary) 11%, var(--bg-primary));
+  --selected-edge: color-mix(in srgb, var(--text-primary) 10%, transparent);
+  --badge-bg: color-mix(in srgb, var(--text-primary) 6%, var(--bg-primary));
+  --badge-edge: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  --message-surface: color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-primary));
+  --message-edge: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  --message-shadow:
+    0 1px 2px color-mix(in srgb, black 6%, transparent),
+    0 4px 14px color-mix(in srgb, black 5%, transparent);
   --loader-fg: var(--text-secondary);
   --loader-track: color-mix(in srgb, var(--text-muted) 38%, transparent);
   --loader-dot: var(--text-muted);
   --loader-status-running: var(--text-secondary);
   --border: color-mix(in srgb, var(--text-primary) 6%, transparent);
   --input: color-mix(in srgb, var(--text-primary) 8%, transparent);
-  --border-default: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  --bg-hover: var(--interactive-hover);
+  --bg-active: var(--selected-bg);
+  --border-default: var(--surface-edge);
   --border-strong: color-mix(in srgb, var(--text-primary) 14%, transparent);
   --md-code-border: color-mix(in srgb, var(--text-primary) 7%, transparent);
   --separator: color-mix(in srgb, var(--text-primary) 4%, transparent);
@@ -933,6 +956,12 @@
 }
 
 :root[data-theme="light"] {
+  --surface-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 10px 28px rgba(0, 0, 0, 0.07);
+  --control-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 3px 10px rgba(0, 0, 0, 0.035);
   --shadow-default:
     color-mix(in srgb, var(--text-primary) 8%, transparent) 0 0 0 1px,
     rgba(0, 0, 0, 0.08) 0 10px 24px;
@@ -1023,17 +1052,29 @@ body {
 }
 
 /* Linear-style cards for structured spec / plan messages */
+.codemini-message-surface {
+  border: 1px solid var(--message-edge);
+  border-radius: var(--radius-lg);
+  background: var(--message-surface);
+  /* box-shadow: var(--message-shadow); */
+}
+
+.codemini-status-chip {
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: var(--badge-bg);
+  box-shadow: inset 0 0 0 1px var(--badge-edge);
+}
+
+.codemini-user-bubble {
+  border: 0;
+  box-shadow: none;
+}
+
 .codemini-linear-card {
-  border: 1px solid color-mix(in srgb, var(--border-default) 76%, var(--text-primary) 6%);
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--bg-secondary) 78%, var(--bg-primary)) 0%,
-      color-mix(in srgb, var(--bg-secondary) 62%, var(--bg-primary)) 100%
-    );
-  box-shadow:
-    0 1px 1px color-mix(in srgb, black 5%, transparent),
-    inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
+  border: 1px solid var(--message-edge);
+  background: var(--message-surface);
+  box-shadow: var(--message-shadow);
 }
 
 .codemini-linear-icon {
@@ -1109,32 +1150,52 @@ body {
 
 /* Chat input shell — soft elevation + theme glow on hover / focus */
 .codemini-input-shell {
-  border: 1px solid var(--input-shell-border);
-  border-radius: var(--radius-lg);
-  background: var(--input-shell-bg);
-  box-shadow: var(--input-shell-shadow);
+  border: 1px solid var(--surface-edge);
+  border-color: var(--selected-edge);
+  border-radius: var(--radius-xl);
+  background: var(--control-bg);
+  box-shadow:
+    0 1px 2px color-mix(in srgb, black 4%, transparent),
+    0 8px 18px color-mix(in srgb, black 6%, transparent);
   transition:
     border-color var(--transition),
     box-shadow 220ms ease,
     background var(--transition);
 }
 
-.codemini-input-shell:hover:not(:focus-within) {
-  border-color: var(--input-shell-border-hover);
-  box-shadow:
-    var(--input-shell-shadow),
-    0 0 0 1px var(--input-shell-glow-soft),
-    0 0 16px 1px var(--input-shell-glow-soft),
-    0 0 32px 4px color-mix(in srgb, var(--input-shell-accent) 7%, transparent);
+:root[data-theme="dark"],
+:root[data-theme="dark"][data-palette] {
+  --control-bg: color-mix(in srgb, var(--text-primary) 10%, var(--bg-secondary));
+  --control-border: color-mix(in srgb, var(--text-primary) 16%, transparent);
+  --control-border-hover: color-mix(in srgb, var(--text-primary) 24%, transparent);
+  --badge-bg: color-mix(in srgb, var(--text-primary) 8%, var(--bg-secondary));
+  --badge-edge: color-mix(in srgb, var(--text-primary) 13%, transparent);
+  --message-surface: color-mix(in srgb, var(--text-primary) 5%, var(--bg-secondary));
+  --message-edge: color-mix(in srgb, var(--text-primary) 10%, transparent);
 }
 
 .codemini-input-shell:focus-within {
-  border-color: var(--input-shell-border-focus);
+  border-color: var(--selected-edge);
+  background: var(--bg-primary);
   box-shadow:
-    var(--input-shell-shadow),
-    0 0 0 1px var(--input-shell-glow),
-    0 0 20px 2px var(--input-shell-glow-soft),
-    0 0 40px 8px color-mix(in srgb, var(--input-shell-accent) 15%, transparent);
+    0 1px 2px color-mix(in srgb, black 4%, transparent),
+    0 8px 18px color-mix(in srgb, black 6%, transparent);
+}
+
+[data-theme="dark"] .codemini-input-shell:focus-within {
+  background: var(--control-bg);
+}
+
+.codemini-input-chip {
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: var(--interactive-hover);
+  box-shadow: inset 0 0 0 1px var(--surface-edge);
+}
+
+.codemini-input-chip--selected {
+  background: color-mix(in srgb, var(--accent-purple) 12%, var(--selected-bg));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-purple) 18%, transparent);
 }
 
 code,

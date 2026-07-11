@@ -478,7 +478,7 @@ function DreamNotice({ notice }) {
       <div className="max-w-[860px] mx-auto flex justify-center">
         <div
           className={cn(
-            "inline-flex max-w-full items-center gap-2 rounded-lg border px-3 py-2 text-left text-xs shadow-sm",
+            "codemini-message-surface codemini-status-chip inline-flex max-w-full items-center gap-2 px-3 py-2 text-left text-xs",
             notice.status === "error"
               ? "border-(--accent-red)/30 bg-(--accent-red-bg) text-(--accent-red)"
               : "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
@@ -1128,7 +1128,7 @@ function FileChangesSummary({ changes }) {
 
   return (
     <>
-      <div className="mt-6 overflow-hidden rounded-lg border border-(--border-default) bg-(--bg-secondary)">
+      <div className="codemini-message-surface mt-6 overflow-hidden">
         <FileChangesOverviewBar changes={changes} />
         {changes.map((c, i) => {
           const key = `${c.path}-${i}`;
@@ -1331,7 +1331,7 @@ function UserSkillChips({ badges = [], skills = [], className }) {
             <TooltipTrigger asChild>
               <span
                 className={cn(
-                  "inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-1 text-[12px]",
+                  "codemini-status-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px]",
                   always
                     ? "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)"
                     : "border-(--accent-purple)/25 bg-(--accent-purple-bg) text-accent-purple",
@@ -1830,7 +1830,7 @@ export function MessageBubble({
         <div className="flex items-center gap-2 mb-1.5">
           <span
             className={cn(
-              "inline-flex h-5 items-center rounded-md border px-1.5 py-0 text-[10px] font-medium uppercase tracking-[0.04em]",
+              "codemini-status-chip inline-flex h-5 items-center px-1.5 py-0 text-[10px] font-medium uppercase tracking-[0.04em]",
               ROLE_STYLES["plan-overview"].badge,
             )}
           >
@@ -1952,7 +1952,7 @@ export function MessageBubble({
           {specExecutionDetails ? (
             <SpecExecutionCard details={specExecutionDetails} />
           ) : (
-            <div className="w-fit max-w-full bg-(--bg-tertiary) rounded-2xl px-4 py-3">
+            <div className="codemini-message-surface codemini-user-bubble w-fit max-w-full rounded-2xl px-4 py-3">
               {(userSkillChips.length > 0 || attachments.length > 0) && (
                 <div
                   className={cn(

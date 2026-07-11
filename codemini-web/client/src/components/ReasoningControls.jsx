@@ -20,7 +20,7 @@ import * as api from "@/hooks/use-api";
 import { useApp } from "@/context/app-context.jsx";
 
 const INPUT_PILL_CLASS =
-  "border border-(--border-default) bg-transparent text-(--text-secondary) h-7 rounded-md inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[11px] sm:text-[12px] whitespace-nowrap transition-colors hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)";
+  "border border-(--selected-edge) bg-transparent text-(--text-secondary) h-7 rounded-md inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[11px] sm:text-[12px] whitespace-nowrap transition-colors hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)";
 
 export function ReasoningEffortStepper({
   value,
@@ -161,11 +161,7 @@ async function persistReasoningConfig({ enabled, effort }) {
   return latestConfig;
 }
 
-export function ReasoningQuickControl({
-  enabled,
-  effort,
-  disabled = false,
-}) {
+export function ReasoningQuickControl({ enabled, effort, disabled = false }) {
   const { actions } = useApp();
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -222,7 +218,12 @@ export function ReasoningQuickControl({
           <span className="truncate">{triggerLabel}</span>
         </button>
       </PopoverTrigger>
-      <PopoverContent side="top" align="start" sideOffset={6} className="w-72 p-3">
+      <PopoverContent
+        side="top"
+        align="start"
+        sideOffset={6}
+        className="w-72 p-3"
+      >
         <ReasoningControlsPanel
           idPrefix="input-reasoning"
           enabled={reasoningEnabled}

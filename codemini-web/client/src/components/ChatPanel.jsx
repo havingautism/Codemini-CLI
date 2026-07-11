@@ -163,10 +163,15 @@ export function ChatPanel({
       setActiveNavIndex(-1);
       return;
     }
-    const midLine = el.scrollTop + el.clientHeight * 0.4;
+    // Use getBoundingClientRect instead of offsetTop because
+    // MessageScrollerItem has content-visibility:auto which skips
+    // layout for off-screen items, causing offsetTop to return 0
+    // for elements inside skipped containers.
+    const viewportRect = el.getBoundingClientRect();
+    const midLine = viewportRect.top + viewportRect.height * 0.4;
     let last = -1;
     userEls.forEach((uel, i) => {
-      if (uel.offsetTop <= midLine) last = i;
+      if (uel.getBoundingClientRect().top <= midLine) last = i;
     });
     setActiveNavIndex(last);
   }, []);

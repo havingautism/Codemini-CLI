@@ -3856,12 +3856,32 @@ export function AppProvider({ children }) {
             );
 
             if (result.state)
-              update({
+              setState((prev) => ({
+                ...prev,
                 runtimeState: result.state,
+                sessionRuntimeById: {
+                  ...prev.sessionRuntimeById,
+                  [sessionId]: {
+                    ...prev.sessionRuntimeById[sessionId],
+                    ...result.state,
+                  },
+                },
                 projectCwd: projectNameFromRuntimeState(result.state),
                 isGeneral: !!result.state.isGeneral,
+                live: !!result.state.busy,
+                stageLabel: result.state.busy ? t("waitingResponse") : "",
+              }));
+            else {
+              await loadState(sessionId);
+              // loadState uses prev.live as fallback for idle sessions;
+              // after a session switch, prev.live belongs to the old session,
+              // so correct live/stageLabel from the new runtimeState.
+              const rs = stateRef.current.runtimeState;
+              update({
+                live: !!rs?.busy,
+                stageLabel: rs?.busy ? t("waitingResponse") : "",
               });
-            else await loadState(sessionId);
+            }
 
             const msgPromise = loadSessionMessages(
               result.sessionData,
@@ -3918,6 +3938,9 @@ export function AppProvider({ children }) {
               loadSessionMessages(null, { sessionId: replacement.sessionId }),
               loadGitInfo(),
             ]);
+            // Replacement session is always idle; reset live/stageLabel
+            // since loadState may have kept prev.live from the deleted session.
+            update({ live: false, stageLabel: "" });
           }
           loadSessions();
           return result;
@@ -3939,6 +3962,9 @@ export function AppProvider({ children }) {
               updateRoute("chat", result.sessionId);
               activateSessionView(result.sessionId);
               await loadState(result.sessionId);
+              // A new session is always idle; reset live/stageLabel
+              // since loadState falls back to prev.live from the old session.
+              update({ live: false, stageLabel: "" });
             }
             loadSessions();
             update({ messagesLoading: false });
@@ -3989,13 +4015,30 @@ export function AppProvider({ children }) {
               activateSessionView(result.sessionId);
             }
             if (result.state) {
-              update({
+              setState((prev) => ({
+                ...prev,
                 runtimeState: result.state,
+                sessionRuntimeById: {
+                  ...prev.sessionRuntimeById,
+                  [result.sessionId]: {
+                    ...prev.sessionRuntimeById[result.sessionId],
+                    ...result.state,
+                  },
+                },
                 projectCwd: projectNameFromRuntimeState(result.state),
                 isGeneral: !!result.state.isGeneral,
-              });
+                live: !!result.state.busy,
+                stageLabel: result.state.busy ? t("waitingResponse") : "",
+              }));
             } else {
               await loadState(result.sessionId);
+              // loadState falls back to prev.live for idle sessions;
+              // after switching, prev.live belongs to the old session.
+              const rs = stateRef.current.runtimeState;
+              update({
+                live: !!rs?.busy,
+                stageLabel: rs?.busy ? t("waitingResponse") : "",
+              });
             }
             const msgPromise =
               nextView === "chat" && result.sessionData

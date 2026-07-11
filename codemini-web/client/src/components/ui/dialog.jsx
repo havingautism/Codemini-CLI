@@ -60,7 +60,7 @@ function DialogContent({
         onInteractOutside={(e) => e.preventDefault()}
         onPointerDownOutside={(e) => e.preventDefault()}
         className={cn(
-          "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100vw-1rem)] translate-x-[-50%] translate-y-[-50%] gap-2.5 rounded-lg border border-(--border-default) bg-(--bg-primary) text-(--text-primary) p-4 shadow-[var(--shadow-default)] duration-150 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
+          "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100vw-1rem)] translate-x-[-50%] translate-y-[-50%] gap-2.5 rounded-xl border border-(--surface-edge) bg-(--bg-primary) text-(--text-primary) p-4 shadow-[var(--surface-shadow)] duration-150 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
           className
         )}
         {...props}>
@@ -105,7 +105,7 @@ function DialogFooter({
   return (
     <div
       data-slot="dialog-footer"
-      className={cn("flex flex-col-reverse gap-2 border-t border-(--border-default) pt-3 sm:flex-row sm:justify-end", className)}
+      className={cn("flex flex-col-reverse gap-2 border-t border-(--separator) pt-3 sm:flex-row sm:justify-end", className)}
       {...props}>
       {children}
       {showCloseButton && (

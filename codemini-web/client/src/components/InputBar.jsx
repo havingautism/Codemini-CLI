@@ -35,9 +35,7 @@ import {
   PopoverContent,
 } from "@/components/ui/popover";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import {
-  USER_ACTION_COMMAND_NAMES,
-} from "@/lib/user-skill-prompt.js";
+import { USER_ACTION_COMMAND_NAMES } from "@/lib/user-skill-prompt.js";
 import {
   beginActionParameter,
   cancelActionParameter,
@@ -51,7 +49,10 @@ import {
 } from "@/lib/settings-options.js";
 
 const IMPLICIT_SKILLS = new Set(["superpowers-lite"]);
-const INTERNAL_SKILLS = new Set(["project-requirements", "project-requirements-md"]);
+const INTERNAL_SKILLS = new Set([
+  "project-requirements",
+  "project-requirements-md",
+]);
 const EMPTY_PROJECT_DIRS = Object.freeze([]);
 
 const ACTION_COMMANDS = [
@@ -86,7 +87,7 @@ const ACTION_COMMANDS = [
 ];
 
 const INPUT_PILL_CLASS =
-  "border border-(--border-default) bg-transparent text-(--text-secondary) h-7 rounded-md inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[11px] sm:text-[12px] whitespace-nowrap transition-colors hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)";
+  "border border-(--selected-edge) bg-transparent text-(--text-secondary) h-7 rounded-md inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[11px] sm:text-[12px] whitespace-nowrap transition-colors hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)";
 
 const ATTACHMENT_ACCEPT =
   "image/png,image/jpeg,image/webp,image/gif,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.png,.jpg,.jpeg,.webp,.gif,.pdf,.docx";
@@ -113,7 +114,10 @@ function compactBytes(bytes = 0) {
 async function compressImageFile(file) {
   if (!isImageFile(file)) return file;
   const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, IMAGE_MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+  const scale = Math.min(
+    1,
+    IMAGE_MAX_EDGE / Math.max(bitmap.width, bitmap.height),
+  );
   const width = Math.max(1, Math.round(bitmap.width * scale));
   const height = Math.max(1, Math.round(bitmap.height * scale));
   const canvas = document.createElement("canvas");
@@ -174,7 +178,12 @@ function ModeSelector({ sessionId, current, disabled = false }) {
           <CaretDown size={11} />
         </button>
       </PopoverTrigger>
-      <PopoverContent side="top" align="start" sideOffset={6} className="w-88 p-2">
+      <PopoverContent
+        side="top"
+        align="start"
+        sideOffset={6}
+        className="w-88 p-2"
+      >
         <div className="px-0.5 pb-1.5 text-[11px] font-medium text-muted-foreground">
           {t("executionMode")}
         </div>
@@ -249,7 +258,12 @@ function ApprovalModeSelector({ sessionId, current, disabled = false }) {
           <CaretDown size={11} />
         </button>
       </PopoverTrigger>
-      <PopoverContent side="top" align="start" sideOffset={6} className="w-76 p-2">
+      <PopoverContent
+        side="top"
+        align="start"
+        sideOffset={6}
+        className="w-76 p-2"
+      >
         <div className="px-0.5 pb-1.5 text-[11px] font-medium text-muted-foreground">
           {t("approvalMode")}
         </div>
@@ -324,7 +338,11 @@ function SoulQuickSwitch({ disabled = false }) {
       <PopoverTrigger asChild>
         <button
           type="button"
-          className={cn(INPUT_PILL_CLASS, "px-2.5", disabled && "opacity-50 pointer-events-none")}
+          className={cn(
+            INPUT_PILL_CLASS,
+            "px-2.5",
+            disabled && "opacity-50 pointer-events-none",
+          )}
           disabled={disabled}
           title={disabled ? t("inputDisabled") : t("soulSwitch")}
         >
@@ -472,7 +490,16 @@ function SpecQuickSelect({ sessionId, visible, disabled = false, onSelect }) {
   );
 }
 
-function ActionSkillPalette({ query, error, onQueryChange, onSelect, visible, projectDirs = EMPTY_PROJECT_DIRS, defaultSkillNames = [], onClose }) {
+function ActionSkillPalette({
+  query,
+  error,
+  onQueryChange,
+  onSelect,
+  visible,
+  projectDirs = EMPTY_PROJECT_DIRS,
+  defaultSkillNames = [],
+  onClose,
+}) {
   const [skills, setSkills] = useState([]);
   const [hoveredItem, setHoveredItem] = useState(null);
   const searchRef = useRef(null);
@@ -643,7 +670,14 @@ function ActionSkillPalette({ query, error, onQueryChange, onSelect, visible, pr
             className="h-8 min-w-0 flex-1 border-0 bg-transparent text-[12px] outline-none"
           />
         </label>
-        {error ? <div role="alert" className="px-1 pt-1.5 text-[11px] text-(--accent-red)">{error}</div> : null}
+        {error ? (
+          <div
+            role="alert"
+            className="px-1 pt-1.5 text-[11px] text-(--accent-red)"
+          >
+            {error}
+          </div>
+        ) : null}
       </div>
       {/* <div className="px-2.5 py-1.5 text-[11px] text-(--text-muted) font-medium flex items-center gap-1.5 uppercase tracking-[0.45px]">
         Commands
@@ -684,10 +718,14 @@ export function InputBar({
   const [paletteQuery, setPaletteQuery] = useState("");
   const [paletteError, setPaletteError] = useState("");
   const [actionSubmitting, setActionSubmitting] = useState(false);
-  const [actionParameter, setActionParameter] = useState(() => createComposerState());
+  const [actionParameter, setActionParameter] = useState(() =>
+    createComposerState(),
+  );
   const [attachments, setAttachments] = useState([]);
   const [selectedSkills, setSelectedSkills] = useState([]);
-  const [dismissedDefaultSkills, setDismissedDefaultSkills] = useState(new Set());
+  const [dismissedDefaultSkills, setDismissedDefaultSkills] = useState(
+    new Set(),
+  );
   const [attachmentError, setAttachmentError] = useState("");
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const textareaRef = useRef(null);
@@ -763,7 +801,15 @@ export function InputBar({
     setPaletteOpen(false);
     setHistoryIndex(-1);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
-  }, [value, attachments, selectedSkills, selectedSkillNames, dismissedDefaultSkills, inputLocked, onSubmit]);
+  }, [
+    value,
+    attachments,
+    selectedSkills,
+    selectedSkillNames,
+    dismissedDefaultSkills,
+    inputLocked,
+    onSubmit,
+  ]);
 
   const handleKeyDown = useCallback(
     (e) => {
@@ -774,9 +820,15 @@ export function InputBar({
           actionSubmissionRef.current = true;
           setActionSubmitting(true);
           setPaletteError("");
-          runComposerAction(actionParameter.activeAction, onAction, actionParameter.parameterText)
+          runComposerAction(
+            actionParameter.activeAction,
+            onAction,
+            actionParameter.parameterText,
+          )
             .then(() => setActionParameter(createComposerState()))
-            .catch((error) => setPaletteError(error?.message || t("actionFailed")))
+            .catch((error) =>
+              setPaletteError(error?.message || t("actionFailed")),
+            )
             .finally(() => {
               actionSubmissionRef.current = false;
               setActionSubmitting(false);
@@ -837,7 +889,6 @@ export function InputBar({
     setValue(val);
     e.target.style.height = "auto";
     e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
-
   }, []);
 
   const handleCommandSelect = useCallback(
@@ -849,11 +900,12 @@ export function InputBar({
           textareaRef.current?.focus();
           return;
         }
-        setSelectedSkills((current) =>
-          toggleComposerSkill(
-            { selectedSkills: current },
-            { name: item.name, description: item.description || "" },
-          ).selectedSkills,
+        setSelectedSkills(
+          (current) =>
+            toggleComposerSkill(
+              { selectedSkills: current },
+              { name: item.name, description: item.description || "" },
+            ).selectedSkills,
         );
         setPaletteOpen(false);
         textareaRef.current?.focus();
@@ -863,7 +915,9 @@ export function InputBar({
       if (item?.kind === "action") {
         if (inputLocked) return;
         if (item.name === "capture") {
-          setActionParameter((current) => beginActionParameter(current, item.name));
+          setActionParameter((current) =>
+            beginActionParameter(current, item.name),
+          );
           setPaletteOpen(false);
           textareaRef.current?.focus();
           return;
@@ -889,43 +943,50 @@ export function InputBar({
   );
 
   const removeSelectedSkill = useCallback((name) => {
-    setSelectedSkills((current) => current.filter((skill) => skill.name !== name));
+    setSelectedSkills((current) =>
+      current.filter((skill) => skill.name !== name),
+    );
   }, []);
 
-  const handleFiles = useCallback(async (fileList) => {
-    const files = Array.from(fileList || []);
-    if (!files.length || inputLocked) return;
-    setAttachmentError("");
-    setUploadingAttachments(true);
-    try {
-      const prepared = [];
-      for (const file of files.slice(0, 8)) {
-        const ext = extensionFromName(file.name);
-        if (ext === "doc") {
-          throw new Error(t("attachmentDocUnsupported"));
+  const handleFiles = useCallback(
+    async (fileList) => {
+      const files = Array.from(fileList || []);
+      if (!files.length || inputLocked) return;
+      setAttachmentError("");
+      setUploadingAttachments(true);
+      try {
+        const prepared = [];
+        for (const file of files.slice(0, 8)) {
+          const ext = extensionFromName(file.name);
+          if (ext === "doc") {
+            throw new Error(t("attachmentDocUnsupported"));
+          }
+          try {
+            prepared.push(await compressImageFile(file));
+          } catch {
+            prepared.push(file);
+          }
         }
-        try {
-          prepared.push(await compressImageFile(file));
-        } catch {
-          prepared.push(file);
+        const result = await api.uploadAttachments(rs.sessionId, prepared);
+        if (result?.error) {
+          throw new Error(result.message || t("attachmentUploadFailed"));
         }
+        setAttachments((current) =>
+          [
+            ...current,
+            ...(Array.isArray(result.attachments) ? result.attachments : []),
+          ].slice(0, 8),
+        );
+      } catch (error) {
+        setAttachmentError(error?.message || t("attachmentUploadFailed"));
+      } finally {
+        setUploadingAttachments(false);
+        if (fileInputRef.current) fileInputRef.current.value = "";
+        textareaRef.current?.focus();
       }
-      const result = await api.uploadAttachments(rs.sessionId, prepared);
-      if (result?.error) {
-        throw new Error(result.message || t("attachmentUploadFailed"));
-      }
-      setAttachments((current) => [
-        ...current,
-        ...(Array.isArray(result.attachments) ? result.attachments : []),
-      ].slice(0, 8));
-    } catch (error) {
-      setAttachmentError(error?.message || t("attachmentUploadFailed"));
-    } finally {
-      setUploadingAttachments(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      textareaRef.current?.focus();
-    }
-  }, [inputLocked, rs.sessionId]);
+    },
+    [inputLocked, rs.sessionId],
+  );
 
   const removeAttachment = useCallback((id) => {
     setAttachments((current) => current.filter((item) => item.id !== id));
@@ -953,12 +1014,14 @@ export function InputBar({
             {visibleDefaultSkillNames.map((name) => (
               <span
                 key={`default-${name}`}
-                className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-(--accent-purple)/20 bg-(--bg-secondary) px-2 py-1 text-[12px] text-(--text-secondary)"
+                className="codemini-input-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px] text-(--text-secondary)"
                 title={`Always-loaded skill: ${name}`}
               >
                 <Hammer size={14} className="shrink-0" />
                 <span className="max-w-[180px] truncate font-mono">{name}</span>
-                <span className="text-[10px] uppercase text-(--text-muted)">default</span>
+                <span className="text-[10px] uppercase text-(--text-muted)">
+                  default
+                </span>
                 <button
                   type="button"
                   className="ml-0.5 inline-flex size-4 items-center justify-center rounded hover:bg-(--bg-hover) hover:text-(--text-primary)"
@@ -973,7 +1036,7 @@ export function InputBar({
             {selectedSkills.map((selectedSkill) => (
               <span
                 key={selectedSkill.name}
-                className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-(--accent-purple)/25 bg-(--accent-purple-bg) px-2 py-1 text-[12px] text-accent-purple"
+                className="codemini-input-chip codemini-input-chip--selected inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px] text-accent-purple"
                 title={selectedSkill.description || selectedSkill.name}
               >
                 <Hammer size={14} className="shrink-0" />
@@ -996,12 +1059,14 @@ export function InputBar({
               return (
                 <span
                   key={item.id}
-                  className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-(--border-default) bg-(--bg-secondary) px-2 py-1 text-[12px] text-(--text-secondary)"
+                  className="codemini-input-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px] text-(--text-secondary)"
                   title={`${item.name} (${compactBytes(item.size)})`}
                 >
                   <Icon size={14} className="shrink-0" />
                   <span className="max-w-[180px] truncate">{item.name}</span>
-                  <span className="shrink-0 text-(--text-muted)">{compactBytes(item.size)}</span>
+                  <span className="shrink-0 text-(--text-muted)">
+                    {compactBytes(item.size)}
+                  </span>
                   <button
                     type="button"
                     className="ml-0.5 inline-flex size-4 items-center justify-center rounded hover:bg-(--bg-hover) hover:text-(--text-primary)"
@@ -1029,19 +1094,29 @@ export function InputBar({
         <div className="flex min-h-[42px]">
           <textarea
             ref={textareaRef}
-            value={actionParameter.activeAction ? actionParameter.parameterText : value}
-            onChange={actionParameter.activeAction
-              ? (event) => setActionParameter((current) => ({ ...current, parameterText: event.target.value }))
-              : handleInput}
+            value={
+              actionParameter.activeAction
+                ? actionParameter.parameterText
+                : value
+            }
+            onChange={
+              actionParameter.activeAction
+                ? (event) =>
+                    setActionParameter((current) => ({
+                      ...current,
+                      parameterText: event.target.value,
+                    }))
+                : handleInput
+            }
             onKeyDown={handleKeyDown}
             placeholder={
               actionParameter.activeAction === "capture"
                 ? "Capture summary (required; Esc to cancel)"
                 : busy
-                ? t("inputDisabled")
-                : disabled
-                  ? disabledReason || t("inputDisabled")
-                  : t("sendMessageToCodemini")
+                  ? t("inputDisabled")
+                  : disabled
+                    ? disabledReason || t("inputDisabled")
+                    : t("sendMessageToCodemini")
             }
             disabled={inputLocked}
             rows={1}
@@ -1081,7 +1156,11 @@ export function InputBar({
               multiple
               onChange={(event) => handleFiles(event.target.files)}
             />
-            <ModeSelector sessionId={rs.sessionId} current={mode} disabled={inputLocked} />
+            <ModeSelector
+              sessionId={rs.sessionId}
+              current={mode}
+              disabled={inputLocked}
+            />
             <SpecQuickSelect
               sessionId={rs.sessionId}
               visible={!isGeneralChat}
@@ -1123,14 +1202,18 @@ export function InputBar({
                 type="button"
                 className={cn(
                   "border-0 min-w-8 w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-all",
-                  (value.trim() || attachments.length > 0 || selectedSkills.length > 0) &&
-                  !inputLocked
+                  (value.trim() ||
+                    attachments.length > 0 ||
+                    selectedSkills.length > 0) &&
+                    !inputLocked
                     ? "bg-(--text-primary) text-(--bg-primary) hover:opacity-85"
                     : "bg-(--text-muted)/25 text-(--text-muted) cursor-not-allowed",
                 )}
                 onClick={submitCurrent}
                 disabled={
-                  (!value.trim() && attachments.length === 0 && selectedSkills.length === 0) ||
+                  (!value.trim() &&
+                    attachments.length === 0 &&
+                    selectedSkills.length === 0) ||
                   inputLocked
                 }
                 title={t("sending")}

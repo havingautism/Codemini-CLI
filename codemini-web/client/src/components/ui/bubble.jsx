@@ -22,9 +22,9 @@ const bubbleVariants = cva(
     variants: {
       variant: {
         default:
-          "*:data-[slot=bubble-content]:bg-primary *:data-[slot=bubble-content]:text-primary-foreground [&>[data-slot=bubble-content]:is(button,a):hover]:bg-primary/80",
+          "*:data-[slot=bubble-content]:bg-(--message-surface) *:data-[slot=bubble-content]:text-(--text-primary) [&>[data-slot=bubble-content]:is(button,a):hover]:bg-(--bg-hover)",
         secondary:
-          "*:data-[slot=bubble-content]:bg-secondary *:data-[slot=bubble-content]:text-secondary-foreground [&>[data-slot=bubble-content]:is(button,a):hover]:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_5%)]",
+          "*:data-[slot=bubble-content]:bg-(--badge-bg) *:data-[slot=bubble-content]:text-(--text-secondary) [&>[data-slot=bubble-content]:is(button,a):hover]:bg-(--bg-hover)",
         muted:
           "*:data-[slot=bubble-content]:bg-muted [&>[data-slot=bubble-content]:is(button,a):hover]:bg-[color-mix(in_oklch,var(--muted),var(--foreground)_5%)]",
         tinted:
@@ -70,7 +70,7 @@ function BubbleContent({
     <Comp
       data-slot="bubble-content"
       className={cn(
-        "w-fit max-w-full min-w-0 overflow-hidden rounded-xl border border-transparent px-3 py-2 text-sm leading-relaxed wrap-break-word group-data-[align=end]/bubble:self-end [button]:text-left [button,a]:transition-colors [button,a]:outline-none [button,a]:focus-visible:border-ring [button,a]:focus-visible:ring-3 [button,a]:focus-visible:ring-ring/50",
+        "w-fit max-w-full min-w-0 overflow-hidden rounded-xl border border-(--message-edge) bg-(--message-surface) px-3 py-2 text-sm leading-relaxed shadow-[var(--message-shadow)] wrap-break-word group-data-[align=end]/bubble:self-end [button]:text-left [button,a]:transition-[background-color,border-color,box-shadow] [button,a]:outline-none [button,a]:focus-visible:shadow-[inset_0_0_0_1px_var(--control-border-hover)]",
         className
       )}
       {...props} />
