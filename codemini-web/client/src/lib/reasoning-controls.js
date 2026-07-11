@@ -91,6 +91,10 @@ export function getReasoningEffortFromClientX(clientX, trackRect) {
   );
 }
 
+export function clearSettledReasoningGesture(gesture, level) {
+  return gesture?.level === level && gesture.dragging !== true ? null : gesture;
+}
+
 export function normalizeReasoningEnabled(value) {
   return value !== false && value !== "false";
 }

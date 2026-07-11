@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/popover";
 import { t } from "../../i18n/index.js";
 import {
+  clearSettledReasoningGesture,
   REASONING_EFFORT_LEVELS,
   getReasoningEffortAccent,
   getReasoningEffortAccentText,
@@ -100,7 +101,7 @@ export function ReasoningEffortStepper({
     // Snap to stop with transition; keep level until prop syncs.
     setGesture({ ratio: snappedRatio, level: next, dragging: false });
     if (next !== current) {
-      onChange?.(next);
+      commitChange(next);
     }
   };
 
@@ -108,6 +109,14 @@ export function ReasoningEffortStepper({
     if (activePointerRef.current !== event.pointerId) return;
     activePointerRef.current = null;
     setGesture(null);
+  };
+
+  const commitChange = (next) => {
+    const result = onChange?.(next);
+    const clearGesture = () => {
+      setGesture((active) => clearSettledReasoningGesture(active, next));
+    };
+    Promise.resolve(result).then(clearGesture, clearGesture);
   };
 
   const handleLabelClick = (level) => {
@@ -118,7 +127,7 @@ export function ReasoningEffortStepper({
       dragging: false,
     });
     if (level !== current) {
-      onChange?.(level);
+      commitChange(level);
     }
   };
 

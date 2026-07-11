@@ -121,6 +121,37 @@ export function canUpdateSkillPackage(skill = {}) {
   return Boolean(packageSourceKey(source));
 }
 
+export function getSkillPackageUpdateSource(skill = {}) {
+  const source = String(skill.source || '').trim();
+  if (packageSourceKey(source)) return source;
+  return String(skill.packageSource || '').trim();
+}
+
+export function skillBelongsToPackageUpdate(skill = {}, source = '') {
+  return samePackageSource(getSkillPackageUpdateSource(skill), source);
+}
+
+export function getStaleSkillPackageNames(before = [], installed = []) {
+  const installedNames = new Set(installed.map((name) => String(name || '').trim()));
+  return before
+    .map((item) => String(item?.name || '').trim())
+    .filter((name) => name && !installedNames.has(name));
+}
+
+export function getSkillRoutingPreferences(entries = []) {
+  return new Map(
+    entries.map((item) => [
+      item.name,
+      {
+        mode: item.mode || 'agent_requested',
+        triggers: Array.isArray(item.triggers) ? [...item.triggers] : [],
+        ...(item.priority !== undefined ? { priority: item.priority } : {}),
+        enabled: item.enabled !== false,
+      },
+    ])
+  );
+}
+
 async function runGitClone(source, destDir) {
   const normalized = normalizeGitSource(source);
   if (!normalized) {
@@ -444,6 +475,27 @@ async function upsertSkillCatalogEntry(baseDir, name, entry) {
   await writeSkillCatalog(baseDir, catalog);
 }
 
+async function removeSkillCatalogEntries(baseDir, names) {
+  if (names.length === 0) return;
+  const catalog = await readSkillCatalogSafe(baseDir);
+  for (const name of names) delete catalog.skills?.[name];
+  await writeSkillCatalog(baseDir, catalog);
+}
+
+async function removeInstalledSkillEntries(baseDir, names, scope) {
+  if (names.length === 0) return;
+  for (const name of names) {
+    await fs.rm(path.join(baseDir, name), { recursive: true, force: true });
+  }
+  await removeSkillCatalogEntries(baseDir, names);
+  if (scope === 'global') {
+    const staleNames = new Set(names);
+    const registry = await readSkillRegistry();
+    registry.skills = registry.skills.filter((item) => !staleNames.has(item.name));
+    await writeSkillRegistry(undefined, registry);
+  }
+}
+
 async function resolveSkillSourceDir(sourcePath) {
   const absSrc = path.resolve(sourcePath);
   const srcStat = await fs.stat(absSrc);
@@ -665,7 +717,7 @@ export async function updateSkillPackage({
     if (skill.scope === 'builtin') {
       throw new Error(`cannot update builtin skill: ${name}`);
     }
-    source = String(skill.packageSource || skill.source || '').trim();
+    source = getSkillPackageUpdateSource(skill);
     targetScope = skill.scope;
   }
 
@@ -677,23 +729,14 @@ export async function updateSkillPackage({
   }
 
   const scopedEntries = await listSkillEntries({ scope: targetScope, cwd });
-  const before = scopedEntries.filter((item) =>
-    samePackageSource(item.packageSource || item.source, source)
-  );
-  const preferences = new Map(
-    before.map((item) => [
-      item.name,
-      {
-        mode: item.mode || 'agent_requested',
-        triggers: Array.isArray(item.triggers) ? [...item.triggers] : [],
-        ...(item.priority !== undefined ? { priority: item.priority } : {}),
-        enabled: item.enabled !== false,
-      },
-    ])
-  );
+  const before = scopedEntries.filter((item) => skillBelongsToPackageUpdate(item, source));
+  const preferences = getSkillRoutingPreferences(before);
 
   const installed = await installSkillSource(source, { scope: targetScope, cwd });
   const baseDir = baseDirForScope(targetScope, cwd);
+  const stale = getStaleSkillPackageNames(before, installed);
+
+  await removeInstalledSkillEntries(baseDir, stale, targetScope);
 
   for (const skillName of installed) {
     const prior = preferences.get(skillName);
@@ -720,6 +763,7 @@ export async function updateSkillPackage({
     packageName: skill?.packageName || before[0]?.packageName || '',
     scope: targetScope,
     previouslyInstalled: before.map((item) => item.name),
+    removed: stale,
   };
 }
 
