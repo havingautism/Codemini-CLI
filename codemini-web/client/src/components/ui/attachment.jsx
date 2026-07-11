@@ -1,11 +1,11 @@
 import * as React from "react"
-import { cva } from "class-variance-authority";
+import { variants } from "@/lib/variants";
 import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 
-const attachmentVariants = cva(
+const attachmentVariants = variants(
   "group/attachment relative flex w-fit max-w-full min-w-0 shrink-0 flex-wrap rounded-xl border border-(--message-edge) bg-(--message-surface) text-(--text-primary) shadow-[var(--message-shadow)] transition-[background-color,border-color,box-shadow] focus-within:shadow-[inset_0_0_0_1px_var(--control-border-hover)] has-[>a,>button]:hover:bg-(--bg-hover) data-[state=error]:border-(--accent-red) data-[state=idle]:border-dashed",
   {
     variants: {
@@ -41,7 +41,7 @@ function Attachment({
   );
 }
 
-const attachmentMediaVariants = cva(
+const attachmentMediaVariants = variants(
   "relative flex aspect-square w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-muted text-foreground group-data-[orientation=vertical]/attachment:w-full group-data-[size=sm]/attachment:w-8 group-data-[size=xs]/attachment:w-7 group-data-[size=xs]/attachment:rounded-md group-data-[state=error]/attachment:bg-destructive/10 group-data-[state=error]/attachment:text-destructive group-data-[orientation=vertical]/attachment:*:data-[slot=spinner]:size-6! [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 group-data-[orientation=vertical]/attachment:[&_svg:not([class*='size-'])]:size-6 group-data-[size=xs]/attachment:[&_svg:not([class*='size-'])]:size-3.5",
   {
     variants: {

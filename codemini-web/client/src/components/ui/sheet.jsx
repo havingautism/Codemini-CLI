@@ -36,7 +36,7 @@ function SheetOverlay({
     <SheetPrimitive.Overlay
       data-slot="sheet-overlay"
       className={cn(
-        "fixed inset-0 z-50 bg-black/50 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0",
+        "fixed inset-0 z-50 bg-black/35 backdrop-blur-[5px] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0",
         className
       )}
       {...props} />
@@ -58,7 +58,7 @@ function SheetContent({
         onInteractOutside={(e) => e.preventDefault()}
         onPointerDownOutside={(e) => e.preventDefault()}
         className={cn(
-          "fixed z-50 flex flex-col gap-4 border-(--surface-edge) bg-background shadow-[var(--surface-shadow)] transition ease-in-out data-[state=closed]:animate-out data-[state=closed]:duration-300 data-[state=open]:animate-in data-[state=open]:duration-500",
+          "fixed z-50 flex flex-col gap-4 border-(--surface-edge) bg-(--material-elevated) shadow-[var(--surface-shadow)] transition ease-in-out data-[state=closed]:animate-out data-[state=closed]:duration-200 data-[state=open]:animate-in data-[state=open]:duration-300",
           side === "right" &&
             "inset-y-0 right-0 h-full w-3/4 border-l data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right sm:max-w-sm",
           side === "left" &&
@@ -73,7 +73,7 @@ function SheetContent({
         {children}
         {showCloseButton && (
           <SheetPrimitive.Close
-            className="absolute top-4 right-4 rounded-xs opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none data-[state=open]:bg-secondary">
+            className="absolute top-4 right-4 inline-flex size-8 items-center justify-center rounded-full bg-(--bg-hover) text-(--text-secondary) transition-[background-color,color,transform] hover:bg-(--bg-active) hover:text-(--text-primary) active:scale-95 focus:outline-hidden disabled:pointer-events-none">
             <X className="size-4" />
             <span className="sr-only">Close</span>
           </SheetPrimitive.Close>

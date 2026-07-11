@@ -1022,7 +1022,7 @@ body {
 .codemini-workspace-panel {
   border-radius: var(--workspace-panel-radius);
   border: 1px solid var(--workspace-panel-border);
-  background: var(--bg-primary);
+  background: var(--apple-material);
 }
 
 /* Chat session: +1px vs app chrome (14px → 15px base) */
@@ -2245,4 +2245,182 @@ samp {
 }
 [data-theme="dark"] .msg-body [data-streamdown="code-block-body"] span[style*="--shiki-dark"] {
   color: var(--shiki-dark) !important;
+}
+
+/* ── Codemini Apple material system ── */
+:root,
+:root[data-palette] {
+  color-scheme: light;
+  --background: #ffffff;
+  --foreground: #1d1d1f;
+  --card: #ffffff;
+  --card-foreground: #1d1d1f;
+  --popover: rgba(255, 255, 255, 0.88);
+  --popover-foreground: #1d1d1f;
+  --primary: #1d1d1f;
+  --primary-foreground: #ffffff;
+  --secondary: #f5f5f7;
+  --secondary-foreground: #1d1d1f;
+  --muted: #f5f5f7;
+  --muted-foreground: #6e6e73;
+  --accent: #e8e8ed;
+  --accent-foreground: #1d1d1f;
+  --border: rgba(0, 0, 0, 0.1);
+  --input: rgba(0, 0, 0, 0.12);
+  --ring: transparent;
+  --sidebar: rgba(245, 245, 247, 0.72);
+  --sidebar-foreground: #1d1d1f;
+  --bg-primary: #ffffff;
+  --bg-secondary: #f5f5f7;
+  --bg-tertiary: #e8e8ed;
+  --bg-hover: rgba(0, 0, 0, 0.055);
+  --bg-active: rgba(0, 0, 0, 0.09);
+  --bg-input: rgba(255, 255, 255, 0.86);
+  --text-primary: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --text-muted: #86868b;
+  --border-default: rgba(0, 0, 0, 0.1);
+  --border-strong: rgba(0, 0, 0, 0.18);
+  --accent-blue: #0071e3;
+  --accent-blue-bg: rgba(0, 113, 227, 0.1);
+  --accent-hover: #0077ed;
+  --md-link: #0071e3;
+  --md-code-bg: #f5f5f7;
+  --md-code-border: rgba(0, 0, 0, 0.1);
+  --md-inline-code-bg: #f5f5f7;
+  --md-inline-code-text: #1d1d1f;
+  --md-table-header-bg: #f5f5f7;
+  --md-table-row-alt-bg: #fbfbfd;
+  --material-elevated: rgba(255, 255, 255, 0.84);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-default: 0 8px 30px rgba(0, 0, 0, 0.09);
+  --shadow-lg: 0 22px 60px rgba(0, 0, 0, 0.16);
+  --shadow-elevated: 0 10px 34px rgba(0, 0, 0, 0.14);
+  --radius-sm: 0.5rem;
+  --radius: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.25rem;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --transition: 180ms cubic-bezier(0.25, 0.1, 0.25, 1);
+  --input-shell-bg: rgba(255, 255, 255, 0.88);
+  --input-shell-border: rgba(0, 0, 0, 0.08);
+  --input-shell-shadow: 0 10px 38px rgba(0, 0, 0, 0.11);
+}
+
+:root[data-theme="dark"],
+:root[data-theme="dark"][data-palette] {
+  color-scheme: dark;
+  --background: #121214;
+  --foreground: #f5f5f7;
+  --card: #1d1d1f;
+  --card-foreground: #f5f5f7;
+  --popover: rgba(29, 29, 31, 0.88);
+  --popover-foreground: #f5f5f7;
+  --primary: #f5f5f7;
+  --primary-foreground: #1d1d1f;
+  --secondary: #1d1d1f;
+  --secondary-foreground: #f5f5f7;
+  --muted: #1d1d1f;
+  --muted-foreground: #a1a1a6;
+  --accent: #2c2c2e;
+  --accent-foreground: #f5f5f7;
+  --border: rgba(255, 255, 255, 0.12);
+  --input: rgba(255, 255, 255, 0.14);
+  --sidebar: rgba(29, 29, 31, 0.72);
+  --sidebar-foreground: #f5f5f7;
+  --bg-primary: #171719;
+  --bg-secondary: #1f1f22;
+  --bg-tertiary: #2b2b2f;
+  --bg-hover: rgba(255, 255, 255, 0.09);
+  --bg-active: rgba(255, 255, 255, 0.14);
+  --bg-input: rgba(29, 29, 31, 0.9);
+  --text-primary: #f5f5f7;
+  --text-secondary: #a1a1a6;
+  --text-muted: #86868b;
+  --border-default: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(255, 255, 255, 0.22);
+  --accent-blue: #2997ff;
+  --accent-blue-bg: rgba(41, 151, 255, 0.16);
+  --accent-hover: #5ac8fa;
+  --md-link: #2997ff;
+  --md-code-bg: #1d1d1f;
+  --md-code-border: rgba(255, 255, 255, 0.12);
+  --md-inline-code-bg: #2c2c2e;
+  --md-inline-code-text: #f5f5f7;
+  --md-table-header-bg: #1d1d1f;
+  --md-table-row-alt-bg: #1a1a1c;
+  --material-elevated: rgba(29, 29, 31, 0.86);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-default: 0 10px 34px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 24px 70px rgba(0, 0, 0, 0.62);
+  --shadow-elevated: 0 12px 40px rgba(0, 0, 0, 0.5);
+  --input-shell-bg: rgba(29, 29, 31, 0.88);
+  --input-shell-border: rgba(255, 255, 255, 0.1);
+  --input-shell-shadow: 0 12px 42px rgba(0, 0, 0, 0.46);
+}
+
+.codemini-sidebar {
+  background: transparent !important;
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+
+.codemini-app-shell {
+  background:
+    radial-gradient(circle at 78% -18%, color-mix(in srgb, var(--accent-blue) 7%, transparent), transparent 38%),
+    var(--shell-canvas, var(--bg-secondary));
+}
+
+.codemini-workspace-panel {
+  border-color: color-mix(in srgb, var(--border-default) 78%, transparent);
+  background: var(--bg-primary);
+  box-shadow: var(--shadow-sm);
+  /* box-shadow: 0 1px 2px color-mix(in srgb, black 4%, transparent),
+    0 8px 18px color-mix(in srgb, black 6%, transparent); */
+}
+
+:root[data-theme="dark"] .codemini-workspace-panel {
+  background: #19191c;
+}
+
+:root[data-theme="dark"] .codemini-chat-session {
+  background: linear-gradient(180deg, #1a1a1d 0%, #18181b 100%);
+}
+
+[data-slot="dialog-content"],
+[data-slot="sheet-content"],
+[data-slot="popover-content"],
+[data-slot="select-content"] {
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+
+:where(button, a, input, textarea, select, [role="button"], [role="option"]):focus-visible {
+  outline: none;
+  box-shadow: 0 3px 14px color-mix(in srgb, var(--text-primary) 10%, transparent);
+}
+
+:where(input, textarea, select):focus-visible {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 13%, transparent);
+}
+
+.codemini-input-shell textarea:focus-visible {
+  background: transparent;
+  box-shadow: none;
+}
+
+@media (prefers-contrast: more), (forced-colors: active) {
+  :where(button, a, input, textarea, select, [role="button"], [role="option"]):focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }

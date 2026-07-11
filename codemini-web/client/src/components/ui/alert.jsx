@@ -1,9 +1,9 @@
 import * as React from "react"
-import { cva } from "class-variance-authority"
+import { variants } from "@/lib/variants"
 
 import { cn } from "@/lib/utils"
 
-const alertVariants = cva(
+const alertVariants = variants(
   "relative w-full rounded-md border px-3 py-2 text-[13px] leading-6 [&>svg]:absolute [&>svg]:top-2.5 [&>svg]:left-3 [&>svg]:text-foreground [&>svg~*]:pl-7",
   {
     variants: {

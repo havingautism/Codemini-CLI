@@ -1,0 +1,64 @@
+:root {
+  --apple-canvas: #f5f5f7;
+  --apple-text: #1d1d1f;
+  --apple-blue: #0071e3;
+  --apple-material: rgba(255, 255, 255, 0.72);
+  --apple-material-raised: rgba(255, 255, 255, 0.88);
+  --apple-secondary-text: #6e6e73;
+}
+
+:root[data-theme="dark"] {
+  --apple-canvas: #000000;
+  --apple-text: #f5f5f7;
+  --apple-blue: #2997ff;
+  --apple-material: rgba(29, 29, 31, 0.72);
+  --apple-material-raised: rgba(29, 29, 31, 0.88);
+  --apple-secondary-text: #a1a1a6;
+}
+
+.codemini-app-shell {
+  /* background: var(--apple-canvas); */
+  background: transparent !important;
+  color: var(--apple-text);
+}
+
+.codemini-sidebar,
+[data-slot="dialog-content"],
+[data-slot="sheet-content"],
+[data-slot="popover-content"],
+[data-slot="select-content"] {
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+}
+
+.codemini-sidebar {
+  background: transparent !important;
+}
+
+[data-slot="dialog-content"],
+[data-slot="sheet-content"],
+[data-slot="popover-content"],
+[data-slot="select-content"] {
+  background: var(--apple-material-raised);
+}
+
+:where(button, a, input, textarea, select, [role="button"], [role="option"]):focus-visible {
+  outline: none;
+  box-shadow: 0 3px 14px color-mix(in srgb, var(--apple-blue) 14%, transparent);
+}
+
+@media (prefers-contrast: more), (forced-colors: active) {
+  :where(button, a, input, textarea, select, [role="button"], [role="option"]):focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

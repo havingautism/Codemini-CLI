@@ -1,10 +1,10 @@
 import * as React from "react"
-import { cva } from "class-variance-authority";
+import { variants } from "@/lib/variants";
 import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 
-const badgeVariants = cva(
+const badgeVariants = variants(
   "inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-full border-0 bg-(--badge-bg) px-2 py-0.5 text-xs font-medium text-(--text-secondary) shadow-[inset_0_0_0_1px_var(--badge-edge)] whitespace-nowrap transition-[color,background-color,box-shadow] focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--control-border-hover)] aria-invalid:text-(--accent-red) aria-invalid:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--accent-red)_24%,transparent)] [&>svg]:pointer-events-none [&>svg]:size-3",
   {
     variants: {

@@ -1,18 +1,18 @@
 import * as React from "react"
-import { cva } from "class-variance-authority";
+import { variants } from "@/lib/variants";
 import { Slot } from "radix-ui"
 import { cn } from "@/lib/utils"
 
-const buttonVariants = cva(
+const buttonVariants = variants(
   "inline-flex shrink-0 items-center justify-center gap-2 rounded-lg text-sm font-medium whitespace-nowrap transition-[background-color,color,border-color,box-shadow,opacity] outline-none cursor-pointer focus-visible:shadow-[inset_0_0_0_1px_var(--control-border-hover)] disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
-        default: "bg-(--text-primary) text-(--bg-primary) shadow-[var(--control-shadow)] hover:opacity-[0.88]",
+        default: "bg-(--text-primary) text-(--bg-primary) shadow-[0_4px_14px_color-mix(in_srgb,var(--text-primary)_16%,transparent)] hover:opacity-[0.86] active:scale-[0.98]",
         destructive: "bg-(--accent-red-bg) text-(--accent-red) shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--accent-red)_18%,transparent)] hover:bg-[color-mix(in_srgb,var(--accent-red)_16%,var(--accent-red-bg))]",
-        outline: "border border-(--control-border) bg-(--control-bg) shadow-[var(--control-shadow)] hover:border-(--control-border-hover) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+        outline: "border border-(--control-border) bg-(--material-elevated) shadow-[var(--control-shadow)] hover:border-(--control-border-hover) hover:bg-(--bg-hover) hover:text-(--text-primary)",
         secondary: "bg-(--badge-bg) text-(--text-primary) shadow-[inset_0_0_0_1px_var(--badge-edge)] hover:bg-(--bg-hover)",
-        ghost: "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+        ghost: "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) active:scale-[0.97]",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {

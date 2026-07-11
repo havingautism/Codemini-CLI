@@ -16,8 +16,8 @@
           document.documentElement.dataset.theme = resolved;
         }
         applyTheme();
-        const palette = localStorage.getItem('codemini-theme-palette') || 'default';
-        document.documentElement.dataset.palette = palette;
+        localStorage.removeItem('codemini-theme-palette');
+        delete document.documentElement.dataset.palette;
         if (mq) {
           mq.addEventListener('change', () => {
             const stored = localStorage.getItem('codemini-theme');

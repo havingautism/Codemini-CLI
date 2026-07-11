@@ -25,6 +25,7 @@ import { SessionPanel } from "@/components/SessionPanel.jsx";
 import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
 import { DotsThree, GitDiff, List, Terminal } from "@phosphor-icons/react";
 import "../style.css";
+import "./apple-design.css";
 
 const CodeWikiPanel = lazy(() =>
   import("@/components/CodeWikiPanel.jsx").then((module) => ({

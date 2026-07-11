@@ -99,7 +99,7 @@ export function SessionPanel({
               key={session.id}
               className={cn(
                 'flex w-full items-center gap-3 rounded-lg border border-(--border-default) p-3 transition-colors bg-(--bg-primary)',
-                session.id === currentId ? 'border-(--accent-blue)/30 bg-(--accent-blue-bg)' : 'hover:bg-(--bg-hover)'
+                session.id === currentId ? 'border-(--selected-edge) bg-(--selected-bg)' : 'hover:bg-(--bg-hover)'
               )}
             >
               <button

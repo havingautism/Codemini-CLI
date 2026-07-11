@@ -1,5 +1,5 @@
 import * as React from "react"
-import { cva } from "class-variance-authority";
+import { variants } from "@/lib/variants";
 import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
@@ -16,7 +16,7 @@ function BubbleGroup({
   );
 }
 
-const bubbleVariants = cva(
+const bubbleVariants = variants(
   "group/bubble relative flex w-fit max-w-[80%] min-w-0 flex-col gap-1 group-data-[align=end]/message:self-end data-[align=end]:self-end data-[variant=ghost]:max-w-full",
   {
     variants: {
@@ -77,7 +77,7 @@ function BubbleContent({
   );
 }
 
-const bubbleReactionsVariants = cva(
+const bubbleReactionsVariants = variants(
   "absolute z-10 flex w-fit shrink-0 items-center justify-center gap-1 rounded-full bg-muted px-1.5 py-0.5 text-sm ring-3 ring-card has-[button]:p-0",
   {
     variants: {

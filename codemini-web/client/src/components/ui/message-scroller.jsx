@@ -1,111 +1,123 @@
-import * as React from "react"
-import {
-  MessageScroller as MessageScrollerPrimitive,
-  useMessageScroller,
-  useMessageScrollerScrollable,
-  useMessageScrollerVisibility,
-} from "@shadcn/react/message-scroller"
-import { ArrowDown } from "@phosphor-icons/react"
+import * as React from "react";
+import { ArrowDown } from "@phosphor-icons/react";
 
-import { cn } from "@/lib/utils"
-import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 
-function MessageScrollerProvider(
-  props
-) {
-  return <MessageScrollerPrimitive.Provider {...props} />;
+const MessageScrollerContext = React.createContext(null);
+
+function MessageScrollerProvider({ children }) {
+  const [viewport, setViewport] = React.useState(null);
+  const [atStart, setAtStart] = React.useState(true);
+  const [atEnd, setAtEnd] = React.useState(true);
+
+  const measure = React.useCallback((node = viewport) => {
+    if (!node) return;
+    setAtStart(node.scrollTop <= 2);
+    setAtEnd(node.scrollHeight - node.clientHeight - node.scrollTop <= 4);
+  }, [viewport]);
+
+  React.useEffect(() => {
+    if (!viewport) return;
+    measure(viewport);
+    const observer = new ResizeObserver(() => measure(viewport));
+    observer.observe(viewport);
+    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild);
+    return () => observer.disconnect();
+  }, [viewport, measure]);
+
+  const value = React.useMemo(
+    () => ({ viewport, setViewport, atStart, atEnd, measure }),
+    [viewport, atStart, atEnd, measure],
+  );
+
+  return (
+    <MessageScrollerContext.Provider value={value}>
+      {children}
+    </MessageScrollerContext.Provider>
+  );
 }
 
-function MessageScroller({
-  className,
-  ...props
-}) {
+function useMessageScroller() {
+  return React.useContext(MessageScrollerContext);
+}
+
+function useMessageScrollerScrollable() {
+  const context = useMessageScroller();
+  return !!context && (!context.atStart || !context.atEnd);
+}
+
+function useMessageScrollerVisibility(direction = "end") {
+  const context = useMessageScroller();
+  return direction === "start" ? !context?.atStart : !context?.atEnd;
+}
+
+function MessageScroller({ className, ...props }) {
   return (
-    <MessageScrollerPrimitive.Root
+    <div
       data-slot="message-scroller"
-      className={cn(
-        "group/message-scroller relative flex size-full min-h-0 flex-col overflow-hidden",
-        className
-      )}
-      {...props} />
+      className={cn("group/message-scroller relative flex size-full min-h-0 flex-col overflow-hidden", className)}
+      {...props}
+    />
   );
 }
 
-function MessageScrollerViewport({
-  className,
-  ...props
-}) {
+const MessageScrollerViewport = React.forwardRef(function MessageScrollerViewport(
+  { className, onScroll, ...props },
+  forwardedRef,
+) {
+  const context = useMessageScroller();
+  const setRef = React.useCallback((node) => {
+    context?.setViewport(node);
+    if (typeof forwardedRef === "function") forwardedRef(node);
+    else if (forwardedRef) forwardedRef.current = node;
+  }, [context, forwardedRef]);
+
   return (
-    <MessageScrollerPrimitive.Viewport
+    <div
+      ref={setRef}
       data-slot="message-scroller-viewport"
-      className={cn(
-        "size-full min-h-0 min-w-0 scroll-fade-b scrollbar-thin scrollbar-gutter-stable overflow-y-auto overscroll-contain contain-content data-autoscrolling:scrollbar-none",
-        className
-      )}
-      {...props} />
+      className={cn("size-full min-h-0 min-w-0 scroll-fade-b scrollbar-thin scrollbar-gutter-stable overflow-y-auto overscroll-contain contain-content", className)}
+      onScroll={(event) => {
+        context?.measure(event.currentTarget);
+        onScroll?.(event);
+      }}
+      {...props}
+    />
   );
+});
+
+function MessageScrollerContent({ className, ...props }) {
+  return <div data-slot="message-scroller-content" className={cn("flex h-max min-h-full flex-col gap-8", className)} {...props} />;
 }
 
-function MessageScrollerContent({
-  className,
-  ...props
-}) {
+function MessageScrollerItem({ className, scrollAnchor = false, ...props }) {
   return (
-    <MessageScrollerPrimitive.Content
-      data-slot="message-scroller-content"
-      className={cn("flex h-max min-h-full flex-col gap-8", className)}
-      {...props} />
-  );
-}
-
-function MessageScrollerItem({
-  className,
-  scrollAnchor = false,
-  ...props
-}) {
-  return (
-    <MessageScrollerPrimitive.Item
+    <div
       data-slot="message-scroller-item"
-      scrollAnchor={scrollAnchor}
-      className={cn(
-        "min-w-0 shrink-0 [contain-intrinsic-size:auto_10rem] [content-visibility:auto]",
-        className
-      )}
-      {...props} />
+      data-scroll-anchor={scrollAnchor || undefined}
+      className={cn("min-w-0 shrink-0 [contain-intrinsic-size:auto_10rem] [content-visibility:auto]", className)}
+      {...props}
+    />
   );
 }
 
-function MessageScrollerButton({
-  direction = "end",
-  className,
-  children,
-  render,
-  variant = "secondary",
-  size = "icon-sm",
-  ...props
-}) {
+function MessageScrollerButton({ direction = "end", className, children, variant = "secondary", size = "icon-sm", ...props }) {
+  const context = useMessageScroller();
+  const active = direction === "start" ? !context?.atStart : !context?.atEnd;
   return (
-    <MessageScrollerPrimitive.Button
+    <Button
       data-slot="message-scroller-button"
       data-direction={direction}
-      data-variant={variant}
-      data-size={size}
-      direction={direction}
-      className={cn(
-        "absolute inset-s-1/2 -translate-x-1/2 border-border bg-background text-foreground transition-[translate,scale,opacity] duration-200 hover:bg-muted hover:text-foreground data-[active=false]:pointer-events-none data-[active=false]:scale-95 data-[active=false]:opacity-0 data-[active=false]:duration-400 data-[active=false]:ease-[cubic-bezier(0.7,0,0.84,0)] data-[active=true]:translate-y-0 data-[active=true]:scale-100 data-[active=true]:opacity-100 data-[active=true]:ease-[cubic-bezier(0.23,1,0.32,1)] data-[direction=end]:bottom-4 data-[direction=end]:data-[active=false]:translate-y-full data-[direction=start]:top-4 data-[direction=start]:data-[active=false]:-translate-y-full rtl:translate-x-1/2 data-[direction=start]:[&_svg]:rotate-180",
-        className
-      )}
-      render={render ?? <Button variant={variant} size={size} />}
-      {...props}>
-      {children ?? (
-        <>
-      <ArrowDown />
-          <span className="sr-only">
-            {direction === "end" ? "Scroll to end" : "Scroll to start"}
-          </span>
-        </>
-      )}
-    </MessageScrollerPrimitive.Button>
+      data-active={active}
+      variant={variant}
+      size={size}
+      className={cn("absolute inset-s-1/2 -translate-x-1/2 rounded-full border border-(--border-default) bg-(--material-elevated) text-(--text-primary) shadow-(--shadow-elevated) transition-[transform,opacity] duration-200 data-[active=false]:pointer-events-none data-[active=false]:translate-y-2 data-[active=false]:scale-95 data-[active=false]:opacity-0 data-[direction=end]:bottom-4 data-[direction=start]:top-4 data-[direction=start]:[&_svg]:rotate-180", className)}
+      onClick={() => context?.viewport?.scrollTo({ top: direction === "start" ? 0 : context.viewport.scrollHeight, behavior: "smooth" })}
+      {...props}
+    >
+      {children ?? <><ArrowDown /><span className="sr-only">{direction === "end" ? "Scroll to end" : "Scroll to start"}</span></>}
+    </Button>
   );
 }
 
@@ -119,4 +131,4 @@ export {
   useMessageScroller,
   useMessageScrollerScrollable,
   useMessageScrollerVisibility,
-}
+};

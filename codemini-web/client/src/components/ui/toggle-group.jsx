@@ -2,11 +2,11 @@
 
 import * as React from "react"
 import { ToggleGroup as ToggleGroupPrimitive } from "radix-ui"
-import { cva } from "class-variance-authority"
+import { variants } from "@/lib/variants"
 
 import { cn } from "@/lib/utils"
 
-const toggleVariants = cva(
+const toggleVariants = variants(
   "inline-flex items-center justify-center gap-2 rounded-lg border-0 text-[12px] font-medium whitespace-nowrap transition-[background-color,color,box-shadow] outline-none disabled:pointer-events-none disabled:opacity-50 data-[state=on]:bg-(--selected-bg) data-[state=on]:text-(--text-primary) data-[state=on]:shadow-[inset_0_0_0_1px_var(--selected-edge)] hover:bg-(--bg-hover) hover:text-(--text-primary) focus-visible:shadow-[inset_0_0_0_1px_var(--control-border-hover)] text-(--text-secondary) [&_svg]:pointer-events-none [&_svg]:shrink-0",
   {
     variants: {
