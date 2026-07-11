@@ -91,7 +91,7 @@ const ACTION_COMMANDS = [
 ];
 
 const INPUT_PILL_CLASS =
-  "border border-(--selected-edge) bg-transparent text-(--text-secondary) h-7 rounded-md inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[11px] sm:text-[12px] whitespace-nowrap transition-colors hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)";
+  "border-0 bg-(--badge-bg) text-(--text-secondary) h-7 rounded-md inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[11px] sm:text-[12px] whitespace-nowrap transition-all shadow-[0_1px_2px_color-mix(in_srgb,black_5%,transparent)] hover:bg-(--bg-hover) hover:text-(--text-primary) hover:shadow-[0_1px_3px_color-mix(in_srgb,black_10%,transparent)]";
 
 const ATTACHMENT_ACCEPT =
   "image/png,image/jpeg,image/webp,image/gif,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.png,.jpg,.jpeg,.webp,.gif,.pdf,.docx";
@@ -171,7 +171,7 @@ function ModeSelector({ sessionId, current, disabled = false }) {
           type="button"
           className={cn(
             INPUT_PILL_CLASS,
-            "px-2.5 hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+            "px-2.5",
             (switching || disabled) && "opacity-50 pointer-events-none",
           )}
           disabled={disabled}
@@ -204,7 +204,7 @@ function ModeSelector({ sessionId, current, disabled = false }) {
               <ToggleGroupItem
                 key={opt.value}
                 value={opt.value}
-                className="h-auto min-h-8 w-full justify-start px-2 py-1.5 text-left"
+                className="h-auto min-h-8 w-full justify-start px-2 py-1.5 text-left data-[state=on]:shadow-none"
               >
                 <Icon data-icon="inline-start" />
                 <span className="min-w-0 flex-1">
@@ -251,7 +251,7 @@ function ApprovalModeSelector({ sessionId, current, disabled = false }) {
           type="button"
           className={cn(
             INPUT_PILL_CLASS,
-            "px-2.5 hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+            "px-2.5",
             (switching || disabled) && "opacity-50 pointer-events-none",
           )}
           disabled={disabled}
@@ -284,7 +284,7 @@ function ApprovalModeSelector({ sessionId, current, disabled = false }) {
               <ToggleGroupItem
                 key={opt.value}
                 value={opt.value}
-                className="h-auto min-h-8 w-full justify-start px-2 py-1.5 text-left"
+                className="h-auto min-h-8 w-full justify-start px-2 py-1.5 text-left data-[state=on]:shadow-none"
               >
                 <Icon data-icon="inline-start" />
                 <span className="min-w-0 flex-1">
@@ -427,7 +427,7 @@ function SpecQuickSelect({ sessionId, visible, disabled = false, onSelect }) {
           type="button"
           className={cn(
             INPUT_PILL_CLASS,
-            "px-2.5 hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+            "px-2.5",
             disabled && "opacity-50 pointer-events-none",
           )}
           disabled={disabled}
@@ -530,11 +530,11 @@ function ActionSkillPalette({
           if (cancelled) return;
           setSkills(
             filterSkillsForExecutionMode(list, mode).filter(
-                  (s) =>
-                    !IMPLICIT_SKILLS.has(s.name) &&
-                    !INTERNAL_SKILLS.has(s.name) &&
-                    !USER_ACTION_COMMAND_NAMES.has(s.name),
-                ),
+              (s) =>
+                !IMPLICIT_SKILLS.has(s.name) &&
+                !INTERNAL_SKILLS.has(s.name) &&
+                !USER_ACTION_COMMAND_NAMES.has(s.name),
+            ),
           );
         })
         .catch(() => {});

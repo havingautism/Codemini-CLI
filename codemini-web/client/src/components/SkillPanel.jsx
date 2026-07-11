@@ -28,7 +28,10 @@ import { SettingsField } from "@/components/settings/SettingsField.jsx";
 import { SettingsSection } from "@/components/settings/SettingsSection.jsx";
 import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmentedControl.jsx";
 import { Switch } from "@/components/ui/switch";
-import { MarkdownEditor, MarkdownPreview } from "@/components/MarkdownEditor.jsx";
+import {
+  MarkdownEditor,
+  MarkdownPreview,
+} from "@/components/MarkdownEditor.jsx";
 import {
   Dialog,
   DialogContent,
@@ -37,7 +40,11 @@ import {
 } from "@/components/ui/dialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { cn } from "@/lib/utils";
-import { skillAuthorLabel, skillPackageIsUpdatable, sortSkillsByAuthor } from "@/lib/skill-display.js";
+import {
+  skillAuthorLabel,
+  skillPackageIsUpdatable,
+  sortSkillsByAuthor,
+} from "@/lib/skill-display.js";
 import * as api from "@/hooks/use-api";
 import { t } from "../../i18n/index.js";
 
@@ -126,10 +133,13 @@ function SkillEditor({ skill, onSave, onValidate }) {
       description,
       contexts: context === "global" ? ["coding", "daily"] : [context],
       mode,
-      triggers: mode === "manual" ? [] : triggers
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean),
+      triggers:
+        mode === "manual"
+          ? []
+          : triggers
+              .split(",")
+              .map((item) => item.trim())
+              .filter(Boolean),
       enabled,
       priority: Number(priority) || 0,
     };
@@ -141,20 +151,12 @@ function SkillEditor({ skill, onSave, onValidate }) {
         scope: "global",
         contexts: metadata.contexts,
       });
-      await api.updateSkillMetadata(
-        name,
-        metadata,
-        undefined,
-      );
+      await api.updateSkillMetadata(name, metadata, undefined);
     } else {
       if (!contentReadOnly) {
         await api.updateSkillContent(skill.name, content, skill.projectDir);
       }
-      await api.updateSkillMetadata(
-        skill.name,
-        metadata,
-        skill.projectDir,
-      );
+      await api.updateSkillMetadata(skill.name, metadata, skill.projectDir);
     }
     onSave();
   };
@@ -176,10 +178,7 @@ function SkillEditor({ skill, onSave, onValidate }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth px-4 pr-1 sm:px-6">
-        <SettingsSection
-          description={t("skillEditorHint")}
-          className="gap-4"
-        >
+        <SettingsSection description={t("skillEditorHint")} className="gap-4">
           {(isNew || !isBuiltin(skill)) && (
             <SettingsField id="skill-editor-context" label={t("skillContext")}>
               <Select value={context} onValueChange={setContext}>
@@ -188,9 +187,15 @@ function SkillEditor({ skill, onSave, onValidate }) {
                 </SelectTrigger>
                 <SelectContent align="start">
                   <SelectGroup>
-                    <SelectItem value="global">{t("skillContextGlobal")}</SelectItem>
-                    <SelectItem value="coding">{t("skillContextCoding")}</SelectItem>
-                    <SelectItem value="daily">{t("skillContextDaily")}</SelectItem>
+                    <SelectItem value="global">
+                      {t("skillContextGlobal")}
+                    </SelectItem>
+                    <SelectItem value="coding">
+                      {t("skillContextCoding")}
+                    </SelectItem>
+                    <SelectItem value="daily">
+                      {t("skillContextDaily")}
+                    </SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>
@@ -238,7 +243,10 @@ function SkillEditor({ skill, onSave, onValidate }) {
               </SettingsField>
               {mode !== "manual" && (
                 <>
-                  <SettingsField id="skill-editor-priority" label={t("skillPriority")}>
+                  <SettingsField
+                    id="skill-editor-priority"
+                    label={t("skillPriority")}
+                  >
                     <Input
                       type="number"
                       min="0"
@@ -296,24 +304,21 @@ function SkillEditor({ skill, onSave, onValidate }) {
   );
 }
 
-function SkillEditorDialog({
-  skill,
-  open,
-  onSave,
-  onOpenChange,
-}) {
-  const [footerState, setFooterState] = useState({ isNew: true, canSave: false });
+function SkillEditorDialog({ skill, open, onSave, onOpenChange }) {
+  const [footerState, setFooterState] = useState({
+    isNew: true,
+    canSave: false,
+  });
   const saveRef = useRef(null);
 
-  const handleValidate = useCallback(
-    ({ handleSave, isNew, canSave }) => {
-      saveRef.current = handleSave;
-      setFooterState((prev) =>
-        prev.isNew === isNew && prev.canSave === canSave ? prev : { isNew, canSave },
-      );
-    },
-    [],
-  );
+  const handleValidate = useCallback(({ handleSave, isNew, canSave }) => {
+    saveRef.current = handleSave;
+    setFooterState((prev) =>
+      prev.isNew === isNew && prev.canSave === canSave
+        ? prev
+        : { isNew, canSave },
+    );
+  }, []);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -371,10 +376,13 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
         skill.name,
         {
           mode,
-          triggers: mode === "manual" ? [] : triggers
-            .split(",")
-            .map((item) => item.trim())
-            .filter(Boolean),
+          triggers:
+            mode === "manual"
+              ? []
+              : triggers
+                  .split(",")
+                  .map((item) => item.trim())
+                  .filter(Boolean),
           priority: Number(priority) || 0,
           contexts: context === "global" ? ["coding", "daily"] : [context],
         },
@@ -415,24 +423,30 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
             />
           </SettingsField>
           {mode === "agent_requested" && (
-              <SettingsField id="skill-routing-triggers" label={t("skillTriggers")}>
-                <Input
-                  value={triggers}
-                  onChange={(event) => setTriggers(event.target.value)}
-                  placeholder="react, testing, docs"
-                  className="h-9 text-[13px]"
-                />
-              </SettingsField>
+            <SettingsField
+              id="skill-routing-triggers"
+              label={t("skillTriggers")}
+            >
+              <Input
+                value={triggers}
+                onChange={(event) => setTriggers(event.target.value)}
+                placeholder="react, testing, docs"
+                className="h-9 text-[13px]"
+              />
+            </SettingsField>
           )}
           {mode === "always" && (
-              <SettingsField id="skill-routing-priority" label={t("skillPriority")}>
-                <Input
-                  type="number"
-                  value={priority}
-                  onChange={(event) => setPriority(event.target.value)}
-                  className="h-9 text-[13px]"
-                />
-              </SettingsField>
+            <SettingsField
+              id="skill-routing-priority"
+              label={t("skillPriority")}
+            >
+              <Input
+                type="number"
+                value={priority}
+                onChange={(event) => setPriority(event.target.value)}
+                className="h-9 text-[13px]"
+              />
+            </SettingsField>
           )}
         </SettingsSection>
       </div>
@@ -440,11 +454,7 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
         <Button variant="outline" onClick={onCancel} size="sm">
           {t("cancel")}
         </Button>
-        <Button
-          onClick={handleSave}
-          disabled={saving}
-          size="sm"
-        >
+        <Button onClick={handleSave} disabled={saving} size="sm">
           {saving ? t("loading") : t("save")}
         </Button>
       </div>
@@ -452,7 +462,14 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
   );
 }
 
-function SkillDetailPane({ skill, onSave, onDelete, onToggle, onUpdate, updating = false }) {
+function SkillDetailPane({
+  skill,
+  onSave,
+  onDelete,
+  onToggle,
+  onUpdate,
+  updating = false,
+}) {
   const [content, setContent] = useState("");
   const [draftContent, setDraftContent] = useState("");
   const [loading, setLoading] = useState(false);
@@ -514,10 +531,18 @@ function SkillDetailPane({ skill, onSave, onDelete, onToggle, onUpdate, updating
               <h3 className="min-w-0 truncate text-[17px] font-semibold leading-6 text-(--text-primary)">
                 {skill.name}
               </h3>
-              <Badge variant={builtin ? "secondary" : "outline"} className="h-5 rounded-md px-2 text-[11px]">
+              <Badge
+                variant={builtin ? "secondary" : "outline"}
+                className="h-6 rounded-md px-2 text-[11px]"
+              >
                 {scopeLabel(skill.scope)}
               </Badge>
-              <span className={cn("inline-flex h-5 items-center rounded-md px-2 text-[11px] font-medium", modeBadgeClass(mode))}>
+              <span
+                className={cn(
+                  "inline-flex h-6 items-center rounded-md px-2 text-[11px] font-medium",
+                  modeBadgeClass(mode),
+                )}
+              >
                 {t(`skillMode_${mode}`)}
               </span>
             </div>
@@ -527,7 +552,9 @@ function SkillDetailPane({ skill, onSave, onDelete, onToggle, onUpdate, updating
             <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-(--text-muted)">
               {author ? <span>{author}</span> : null}
               {skill.packageName ? <span>{skill.packageName}</span> : null}
-              {skill.version && skill.version !== "0.0.0" ? <span>v{skill.version}</span> : null}
+              {skill.version && skill.version !== "0.0.0" ? (
+                <span>v{skill.version}</span>
+              ) : null}
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
@@ -540,17 +567,30 @@ function SkillDetailPane({ skill, onSave, onDelete, onToggle, onUpdate, updating
                     disabled={updating}
                     onClick={() => onUpdate?.(skill)}
                   >
-                    <ArrowsClockwise size={13} className={updating ? "animate-spin" : undefined} />
-                    {updating ? t("updatingSkillPackage") : t("updateSkillPackage")}
+                    <ArrowsClockwise
+                      size={13}
+                      className={updating ? "animate-spin" : undefined}
+                    />
+                    {updating
+                      ? t("updatingSkillPackage")
+                      : t("updateSkillPackage")}
                   </Button>
                 )}
                 {!builtin && (
-                  <Button variant="outline" size="sm" onClick={() => setModeView("edit")}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setModeView("edit")}
+                  >
                     <PencilSimple size={13} />
                     {t("edit")}
                   </Button>
                 )}
-                <Button variant="outline" size="sm" onClick={() => setModeView("routing")}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setModeView("routing")}
+                >
                   <SlidersHorizontal size={13} />
                   {t("skillRoutingSettings")}
                 </Button>
@@ -579,7 +619,7 @@ function SkillDetailPane({ skill, onSave, onDelete, onToggle, onUpdate, updating
       <div
         className={cn(
           "flex min-h-0 flex-1 flex-col overflow-hidden",
-          modeView === "view" ? "p-3" : "p-5",
+          modeView === "view" ? "px-5 py-4" : "p-5",
         )}
       >
         {modeView === "routing" ? (
@@ -602,7 +642,10 @@ function SkillDetailPane({ skill, onSave, onDelete, onToggle, onUpdate, updating
             className="min-h-0 flex-1"
           />
         ) : (
-          <MarkdownPreview value={content} className="skill-md-preview flex-1" />
+          <MarkdownPreview
+            value={content}
+            className="skill-md-preview flex-1"
+          />
         )}
         {modeView === "edit" && (
           <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-(--border-default) pt-4">
@@ -616,7 +659,11 @@ function SkillDetailPane({ skill, onSave, onDelete, onToggle, onUpdate, updating
             >
               {t("cancel")}
             </Button>
-            <Button size="sm" onClick={handleContentSave} disabled={saving || loading}>
+            <Button
+              size="sm"
+              onClick={handleContentSave}
+              disabled={saving || loading}
+            >
               {saving ? t("loading") : t("save")}
             </Button>
           </div>
@@ -644,7 +691,10 @@ function InstallDialog({
           <DialogTitle>{t("installSkill")}</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-4 px-4 pb-6 sm:px-6">
-          <SettingsSection description={t("skillInstallHint")} className="gap-4">
+          <SettingsSection
+            description={t("skillInstallHint")}
+            className="gap-4"
+          >
             <SettingsField
               id="skill-install-source"
               label={t("skillInstallSource")}
@@ -666,16 +716,24 @@ function InstallDialog({
                 </SelectTrigger>
                 <SelectContent align="start">
                   <SelectGroup>
-                    <SelectItem value="global">{t("skillContextGlobal")}</SelectItem>
-                    <SelectItem value="coding">{t("skillContextCoding")}</SelectItem>
-                    <SelectItem value="daily">{t("skillContextDaily")}</SelectItem>
+                    <SelectItem value="global">
+                      {t("skillContextGlobal")}
+                    </SelectItem>
+                    <SelectItem value="coding">
+                      {t("skillContextCoding")}
+                    </SelectItem>
+                    <SelectItem value="daily">
+                      {t("skillContextDaily")}
+                    </SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>
             </SettingsField>
           </SettingsSection>
           {installError && (
-            <div className="text-[11px] text-(--accent-red)">{installError}</div>
+            <div className="text-[11px] text-(--accent-red)">
+              {installError}
+            </div>
           )}
           <div className="flex justify-end gap-2">
             <Button
@@ -701,9 +759,9 @@ function InstallDialog({
 }
 
 function modeBadgeClass(mode) {
-  if (mode === "always") return "bg-(--accent-blue-bg) text-(--accent-blue)";
-  if (mode === "agent_requested") return "bg-(--accent-purple-bg) text-(--accent-purple)";
-  return "bg-(--accent-orange-bg) text-(--accent-orange)";
+  // Apple-style muted badge: use the same neutral token as the Badge component's
+  // "secondary" variant instead of bright accent colors.
+  return "bg-(--badge-bg) text-(--text-secondary) shadow-[inset_0_0_0_1px_var(--badge-edge)]";
 }
 
 function SkillCard({ skill, selected, onSelect }) {
@@ -722,7 +780,7 @@ function SkillCard({ skill, selected, onSelect }) {
       className={cn(
         "flex cursor-pointer flex-col gap-2 rounded-lg border px-3 py-2.5 text-left outline-none transition-[background-color,border-color,box-shadow] focus-visible:shadow-[0_0_0_3px_var(--control-focus-ring)]",
         selected
-          ? "border-(--selected-edge) bg-(--selected-bg)"
+          ? "border-transparent bg-(--bg-active)"
           : enabled
             ? "border-transparent bg-transparent hover:bg-(--bg-hover)"
             : "border-transparent bg-transparent text-muted-foreground hover:bg-(--bg-hover)",
@@ -732,7 +790,9 @@ function SkillCard({ skill, selected, onSelect }) {
         <span
           className={cn(
             "mt-1.5 size-2 shrink-0 rounded-full",
-            enabled ? "bg-emerald-500 shadow-[0_0_0_2px_rgba(16,185,129,0.14)]" : "bg-(--border-default)",
+            enabled
+              ? "bg-emerald-500 shadow-[0_0_0_2px_rgba(16,185,129,0.14)]"
+              : "bg-(--border-default)",
           )}
           aria-hidden
         />
@@ -748,14 +808,17 @@ function SkillCard({ skill, selected, onSelect }) {
         </div>
         <div className="ml-auto flex max-w-[58%] shrink-0 flex-wrap justify-end gap-1">
           {skill.version && skill.version !== "0.0.0" && (
-            <Badge variant="outline" className="h-4 rounded-md px-1.5 py-0 text-[11px]">
+            <Badge
+              variant="outline"
+              className="h-5 rounded-md px-1.5 text-[11px]"
+            >
               v{skill.version}
             </Badge>
           )}
           {skill.mode && (
             <span
               className={cn(
-                "inline-flex h-4 items-center rounded-md px-1.5 py-0 text-[11px] font-medium",
+                "inline-flex h-5 items-center rounded-md px-1.5 text-[11px] font-medium",
                 modeBadgeClass(mode),
               )}
             >
@@ -763,7 +826,10 @@ function SkillCard({ skill, selected, onSelect }) {
             </span>
           )}
           {author && (
-            <Badge variant="secondary" className="h-4 rounded-md px-1.5 py-0 text-[11px]">
+            <Badge
+              variant="secondary"
+              className="h-5 rounded-md px-1.5 text-[11px]"
+            >
               {author}
             </Badge>
           )}
@@ -839,11 +905,7 @@ export function SkillPanel({ projectDirs = [] }) {
   const handleToggle = async (skill, enabled) => {
     // 乐观更新：立即翻转本地状态，用户秒切无闪烁
     setSkills((prev) =>
-      prev.map((s) =>
-        s.name === skill.name
-          ? { ...s, enabled }
-          : s,
-      ),
+      prev.map((s) => (s.name === skill.name ? { ...s, enabled } : s)),
     );
     try {
       await api.toggleSkill(skill.name, enabled, skill.projectDir);
@@ -851,9 +913,7 @@ export function SkillPanel({ projectDirs = [] }) {
       // 请求失败时回滚
       setSkills((prev) =>
         prev.map((s) =>
-          s.name === skill.name
-            ? { ...s, enabled: !enabled }
-            : s,
+          s.name === skill.name ? { ...s, enabled: !enabled } : s,
         ),
       );
     }
@@ -873,7 +933,11 @@ export function SkillPanel({ projectDirs = [] }) {
     const deletedKey = skillKey(pendingDelete);
     setDeleting(true);
     try {
-      await api.deleteSkill(pendingDelete.name, pendingDelete.projectDir, requestProjectDirs);
+      await api.deleteSkill(
+        pendingDelete.name,
+        pendingDelete.projectDir,
+        requestProjectDirs,
+      );
       setPendingDelete(null);
       if (selectedSkill && skillKey(selectedSkill) === deletedKey) {
         setSelectedSkill(null);
@@ -901,7 +965,10 @@ export function SkillPanel({ projectDirs = [] }) {
       const result = await api.installSkill({
         source,
         scope: "global",
-        contexts: selectedContext === "global" ? ["coding", "daily"] : [selectedContext],
+        contexts:
+          selectedContext === "global"
+            ? ["coding", "daily"]
+            : [selectedContext],
       });
       if (result?.error) throw new Error(result.message || "Install failed");
       setInstallSource("");
@@ -953,9 +1020,7 @@ export function SkillPanel({ projectDirs = [] }) {
         String(skill.packageName || "")
           .toLowerCase()
           .includes(needle) ||
-        String(skillAuthorLabel(skill))
-          .toLowerCase()
-          .includes(needle) ||
+        String(skillAuthorLabel(skill)).toLowerCase().includes(needle) ||
         String(projectDisplayName(skill.projectName || ""))
           .toLowerCase()
           .includes(needle)
@@ -965,7 +1030,10 @@ export function SkillPanel({ projectDirs = [] }) {
   const groupedSkills = useMemo(() => {
     const groups = new Map([
       ["global", { key: "global", name: t("skillContextGlobal"), items: [] }],
-      ["coding", { key: "coding", name: t("skillContextCodingMode"), items: [] }],
+      [
+        "coding",
+        { key: "coding", name: t("skillContextCodingMode"), items: [] },
+      ],
       ["daily", { key: "daily", name: t("skillContextDailyMode"), items: [] }],
     ]);
     for (const skill of filteredSkills) {
@@ -982,10 +1050,13 @@ export function SkillPanel({ projectDirs = [] }) {
       return;
     }
     const refreshedSelection = selectedSkill
-      ? filteredSkills.find((skill) => skillKey(skill) === skillKey(selectedSkill))
+      ? filteredSkills.find(
+          (skill) => skillKey(skill) === skillKey(selectedSkill),
+        )
       : null;
     if (refreshedSelection) {
-      if (refreshedSelection !== selectedSkill) setSelectedSkill(refreshedSelection);
+      if (refreshedSelection !== selectedSkill)
+        setSelectedSkill(refreshedSelection);
       return;
     }
     setSelectedSkill(filteredSkills[0]);
@@ -1019,7 +1090,7 @@ export function SkillPanel({ projectDirs = [] }) {
         </div>
       )}
 
-      {(skills.length > 0 && filteredSkills.length > 0) && (
+      {skills.length > 0 && filteredSkills.length > 0 && (
         <div className="grid gap-2">
           {groupedSkills.map((group) => {
             const collapsed = collapsedGroups.has(group.key);
@@ -1033,7 +1104,7 @@ export function SkillPanel({ projectDirs = [] }) {
                   onClick={() => toggleSkillGroup(group.key)}
                 />
                 {!collapsed && (
-                  <div className="grid gap-2 pl-6">
+                  <div className="grid gap-2">
                     <SkillCards
                       items={group.items}
                       selectedSkill={selectedSkill}
@@ -1080,40 +1151,37 @@ export function SkillPanel({ projectDirs = [] }) {
                 <Download size={13} />
                 {t("installSkill")}
               </Button>
-              <Button
-                onClick={() => setEditing("new")}
-                size="sm"
-              >
+              <Button onClick={() => setEditing("new")} size="sm">
                 <Plus size={13} />
                 {t("addSkill")}
               </Button>
             </div>
           </div>
 
-            <div className="flex flex-col gap-2">
-              <div className="relative min-w-0 flex-1">
-                <MagnifyingGlass
-                  size={13}
-                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-(--text-muted)"
-                />
-                <Input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder={t("searchSkills")}
-                  className="h-9 pl-8 text-[13px]"
-                />
-              </div>
-              <SettingsSegmentedControl
-                idPrefix="skill-filter"
-                value={filter}
-                onValueChange={setFilter}
-                options={FILTERS.map((item) => ({
-                  value: item,
-                  label: t(`filter_${item}`),
-                }))}
-                className="w-full shrink-0 [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
+          <div className="flex flex-col gap-2">
+            <div className="relative min-w-0 flex-1">
+              <MagnifyingGlass
+                size={13}
+                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-(--text-muted)"
+              />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={t("searchSkills")}
+                className="h-9 pl-8 text-[13px]"
               />
             </div>
+            <SettingsSegmentedControl
+              idPrefix="skill-filter"
+              value={filter}
+              onValueChange={setFilter}
+              options={FILTERS.map((item) => ({
+                value: item,
+                label: t(`filter_${item}`),
+              }))}
+              className="w-full shrink-0 [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
+            />
+          </div>
 
           <div className="min-h-[220px] flex-1 overflow-y-auto scroll-smooth pr-2 [scrollbar-gutter:stable]">
             {renderSkillList()}
@@ -1155,7 +1223,10 @@ export function SkillPanel({ projectDirs = [] }) {
         title={t("deleteSkillConfirm")}
         description={
           pendingDelete
-            ? t("deleteSkillDescription").replace("{{name}}", pendingDelete.name)
+            ? t("deleteSkillDescription").replace(
+                "{{name}}",
+                pendingDelete.name,
+              )
             : ""
         }
         loading={deleting}

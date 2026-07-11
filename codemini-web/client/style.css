@@ -43,7 +43,7 @@
 
 .codemini-md-editor .w-md-editor-preview,
 .codemini-md-preview .wmde-markdown {
-  background: var(--bg-primary);
+  background: transparent;
   color: var(--text-primary);
 }
 

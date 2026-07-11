@@ -10,7 +10,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Empty, EmptyDescription } from "@/components/ui/empty";
-import { MarkdownEditor, MarkdownPreview } from "@/components/MarkdownEditor.jsx";
+import {
+  MarkdownEditor,
+  MarkdownPreview,
+} from "@/components/MarkdownEditor.jsx";
 import { SettingsField } from "@/components/settings/SettingsField.jsx";
 import { SettingsSection } from "@/components/settings/SettingsSection.jsx";
 import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmentedControl.jsx";
@@ -64,10 +67,7 @@ function SoulEditor({ soul, onSave, onCancel }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth pr-1">
-        <SettingsSection
-          description={t("soulEditorHint")}
-          className="gap-4"
-        >
+        <SettingsSection description={t("soulEditorHint")} className="gap-4">
           <SettingsField id="soul-editor-name" label={t("name")}>
             <Input
               value={name}
@@ -191,16 +191,26 @@ function SoulDetailPane({ soul, disabled = false, onSave }) {
               <MaskHappy
                 size={22}
                 weight={soul.active ? "fill" : "regular"}
-                className={soul.active ? "text-[var(--input-shell-accent)]" : "text-(--text-muted)"}
+                className={
+                  soul.active
+                    ? "text-[var(--input-shell-accent)]"
+                    : "text-(--text-muted)"
+                }
               />
               <h3 className="min-w-0 truncate text-[17px] font-semibold leading-6 text-(--text-primary)">
                 {soul.name}
               </h3>
-              <Badge variant="outline" className="h-5 rounded-md px-2 text-[11px]">
+              <Badge
+                variant="outline"
+                className="h-6 rounded-md px-2 text-[11px]"
+              >
                 {scopeLabel(soul.scope)}
               </Badge>
               {soul.active ? (
-                <Badge variant="secondary" className="h-5 rounded-md px-2 text-[11px]">
+                <Badge
+                  variant="secondary"
+                  className="h-6 rounded-md px-2 text-[11px]"
+                >
                   {t("current")}
                 </Badge>
               ) : null}
@@ -315,9 +325,9 @@ function SoulChoiceCard({
         if (event.key === "Enter" || event.key === " ") onSelect(soul);
       }}
       className={cn(
-        "flex cursor-pointer flex-col gap-2 rounded-md border px-3 py-2.5 text-left transition-colors",
+        "flex cursor-pointer flex-col gap-2 rounded-lg border px-3 py-2.5 text-left transition-colors",
         selected
-          ? "border-[var(--input-shell-accent)]/45 bg-(--bg-hover)"
+          ? "border-transparent bg-(--bg-active)"
           : active
             ? "border-transparent bg-primary/5"
             : "border-transparent bg-transparent hover:bg-(--bg-hover)",
@@ -338,14 +348,14 @@ function SoulChoiceCard({
         </span>
         <Badge
           variant="outline"
-          className="h-4 shrink-0 rounded-md px-1.5 py-0 text-[11px]"
+          className="h-5 shrink-0 rounded-md px-1.5 text-[11px]"
         >
           {scopeLabel(soul.scope)}
         </Badge>
         {active && (
           <Badge
             variant="secondary"
-            className="h-4 shrink-0 rounded-md px-1.5 py-0 text-[11px]"
+            className="h-5 shrink-0 rounded-md px-1.5 text-[11px]"
           >
             {t("current")}
           </Badge>
@@ -355,13 +365,20 @@ function SoulChoiceCard({
           onCheckedChange={handleToggle}
           onClick={(event) => event.stopPropagation()}
           disabled={disabled}
-          aria-label={active ? `${soul.name} (${t("current")})` : `${t("activate")} ${soul.name}`}
+          aria-label={
+            active
+              ? `${soul.name} (${t("current")})`
+              : `${t("activate")} ${soul.name}`
+          }
         />
       </div>
 
       {/* Footer: actions (custom only) */}
       {isCustom && (
-        <div className="flex items-center gap-0.5" onClick={(event) => event.stopPropagation()}>
+        <div
+          className="flex items-center gap-0.5"
+          onClick={(event) => event.stopPropagation()}
+        >
           <Button
             variant="ghost"
             size="icon-sm"
@@ -370,9 +387,7 @@ function SoulChoiceCard({
             onClick={() => {
               if (disabled) return;
               if (
-                confirm(
-                  t("confirmDeleteSoul").replace("{{name}}", soul.name),
-                )
+                confirm(t("confirmDeleteSoul").replace("{{name}}", soul.name))
               ) {
                 onDelete(soul.name);
               }
@@ -437,7 +452,12 @@ export function SoulPanel({ disabled = false }) {
       setSelectedSoul(null);
       return;
     }
-    if (!selectedSoul || !filteredSouls.some((soul) => soulItemKey(soul) === soulItemKey(selectedSoul))) {
+    if (
+      !selectedSoul ||
+      !filteredSouls.some(
+        (soul) => soulItemKey(soul) === soulItemKey(selectedSoul),
+      )
+    ) {
       setSelectedSoul(filteredSouls[0]);
     }
   }, [filteredSouls, selectedSoul]);
@@ -504,74 +524,76 @@ export function SoulPanel({ disabled = false }) {
             </Button>
           </div>
 
-        <div className="flex shrink-0 flex-col gap-2">
-          <div className="relative min-w-0 flex-1">
-            <MagnifyingGlass
-              size={13}
-              className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-(--text-muted)"
-            />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={t("searchSouls")}
-              className="h-9 pl-8 text-[13px]"
+          <div className="flex shrink-0 flex-col gap-2">
+            <div className="relative min-w-0 flex-1">
+              <MagnifyingGlass
+                size={13}
+                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-(--text-muted)"
+              />
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={t("searchSouls")}
+                className="h-9 pl-8 text-[13px]"
+              />
+            </div>
+            <SettingsSegmentedControl
+              idPrefix="soul-filter"
+              value={filter}
+              onValueChange={setFilter}
+              options={FILTERS.map((item) => ({
+                value: item,
+                label: t(`filter_${item}`),
+              }))}
+              className="w-full shrink-0 [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
             />
           </div>
-          <SettingsSegmentedControl
-            idPrefix="soul-filter"
-            value={filter}
-            onValueChange={setFilter}
-            options={FILTERS.map((item) => ({
-              value: item,
-              label: t(`filter_${item}`),
-            }))}
-            className="w-full shrink-0 [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
-          />
-        </div>
 
-        <div className="min-h-[220px] flex-1 overflow-y-auto scroll-smooth pr-2 [scrollbar-gutter:stable]">
-          {souls.length === 0 && !editing && (
-            <Empty className="rounded-lg py-8">
-              <EmptyDescription className="text-[13px] text-(--text-primary)">
-                {t("noSouls")}
-              </EmptyDescription>
-              <EmptyDescription className="text-[11px]">
-                {t("noSoulsHint")}
-              </EmptyDescription>
-            </Empty>
-          )}
+          <div className="min-h-[220px] flex-1 overflow-y-auto scroll-smooth pr-2 [scrollbar-gutter:stable]">
+            {souls.length === 0 && !editing && (
+              <Empty className="rounded-lg py-8">
+                <EmptyDescription className="text-[13px] text-(--text-primary)">
+                  {t("noSouls")}
+                </EmptyDescription>
+                <EmptyDescription className="text-[11px]">
+                  {t("noSoulsHint")}
+                </EmptyDescription>
+              </Empty>
+            )}
 
-          {souls.length > 0 && filteredSouls.length === 0 && (
-            <div className="py-8 text-center text-[12px] text-(--text-muted)">
-              {t("noMatches")}
-            </div>
-          )}
+            {souls.length > 0 && filteredSouls.length === 0 && (
+              <div className="py-8 text-center text-[12px] text-(--text-muted)">
+                {t("noMatches")}
+              </div>
+            )}
 
-          {filteredSouls.length > 0 && (
-            <div className="flex flex-col gap-3">
-              {groupedSouls.map((group) => (
-                <div key={group.key} className="flex flex-col gap-1.5">
-                  {group.label && (
-                    <div className="px-0.5 text-[12px] font-medium text-(--text-muted)">
-                      {group.label}
-                    </div>
-                  )}
-                  {group.items.map((soul) => (
-                    <SoulChoiceCard
-                      key={soulItemKey(soul)}
-                      soul={soul}
-                      selected={soulItemKey(soul) === soulItemKey(selectedSoul)}
-                      disabled={disabled}
-                      onSelect={setSelectedSoul}
-                      onActivate={handleActivate}
-                      onDelete={handleDelete}
-                    />
-                  ))}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+            {filteredSouls.length > 0 && (
+              <div className="flex flex-col gap-3">
+                {groupedSouls.map((group) => (
+                  <div key={group.key} className="flex flex-col gap-1.5">
+                    {group.label && (
+                      <div className="px-0.5 text-[12px] font-medium text-(--text-muted)">
+                        {group.label}
+                      </div>
+                    )}
+                    {group.items.map((soul) => (
+                      <SoulChoiceCard
+                        key={soulItemKey(soul)}
+                        soul={soul}
+                        selected={
+                          soulItemKey(soul) === soulItemKey(selectedSoul)
+                        }
+                        disabled={disabled}
+                        onSelect={setSelectedSoul}
+                        onActivate={handleActivate}
+                        onDelete={handleDelete}
+                      />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
         <div className="hidden min-h-0 bg-(--bg-primary) lg:block">
           <SoulDetailPane

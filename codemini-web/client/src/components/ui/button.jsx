@@ -10,9 +10,9 @@ const buttonVariants = variants(
       variant: {
         default: "bg-(--text-primary) text-(--bg-primary) shadow-[0_4px_14px_color-mix(in_srgb,var(--text-primary)_16%,transparent)] hover:opacity-[0.86] active:scale-[0.98]",
         destructive: "bg-(--accent-red-bg) text-(--accent-red) shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--accent-red)_18%,transparent)] hover:bg-[color-mix(in_srgb,var(--accent-red)_16%,var(--accent-red-bg))]",
-        outline: "border border-(--control-border) bg-(--material-elevated) shadow-[var(--control-shadow)] hover:border-(--control-border-hover) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+        outline: "border-0 bg-(--badge-bg) shadow-[0_1px_2px_color-mix(in_srgb,black_5%,transparent)] hover:bg-(--bg-hover) hover:text-(--text-primary) hover:shadow-[0_1px_3px_color-mix(in_srgb,black_10%,transparent)]",
         secondary: "bg-(--badge-bg) text-(--text-primary) shadow-[inset_0_0_0_1px_var(--badge-edge)] hover:bg-(--bg-hover)",
-        ghost: "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) active:scale-[0.97]",
+        ghost: "bg-(--badge-bg) text-(--text-secondary) shadow-[0_1px_2px_color-mix(in_srgb,black_5%,transparent)] hover:bg-(--bg-hover) hover:text-(--text-primary) hover:shadow-[0_1px_3px_color-mix(in_srgb,black_10%,transparent)] active:scale-[0.97]",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {

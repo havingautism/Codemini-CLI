@@ -108,11 +108,11 @@ function MemoryDetailPane({ memory, scope }) {
           <h3 className="min-w-0 truncate text-[17px] font-semibold leading-6 text-(--text-primary)">
             {title}
           </h3>
-          <Badge variant="outline" className="h-5 rounded-md px-2 text-[11px]">
+          <Badge variant="outline" className="h-6 rounded-md px-2 text-[11px]">
             {memory.kind || "note"}
           </Badge>
           {memory.pinned ? (
-            <Badge variant="secondary" className="h-5 rounded-md px-2 text-[11px]">
+            <Badge variant="secondary" className="h-6 rounded-md px-2 text-[11px]">
               {t("pinned")}
             </Badge>
           ) : null}
@@ -179,7 +179,7 @@ function MemoryCard({ memory, selected, deleting, onSelect, onDelete }) {
       className={cn(
         "flex cursor-pointer flex-col gap-2 rounded-lg border px-3 py-2.5 text-left outline-none transition-[background-color,border-color,box-shadow] focus-visible:shadow-[0_0_0_3px_var(--control-focus-ring)]",
         selected
-          ? "border-(--selected-edge) bg-(--selected-bg)"
+          ? "border-transparent bg-(--bg-active)"
           : pinned
             ? "border-transparent bg-primary/5"
             : "border-transparent bg-transparent hover:bg-(--bg-hover)",
@@ -192,14 +192,14 @@ function MemoryCard({ memory, selected, deleting, onSelect, onDelete }) {
         </span>
         <Badge
           variant="outline"
-          className="h-4 rounded-md px-1.5 py-0 text-[11px]"
+          className="h-5 rounded-md px-1.5 text-[11px]"
         >
           {memory.kind || "note"}
         </Badge>
         {memory.lifecycle && (
           <Badge
             variant="secondary"
-            className="h-4 rounded-md px-1.5 py-0 text-[11px]"
+            className="h-5 rounded-md px-1.5 text-[11px]"
           >
             {memory.lifecycle}
           </Badge>
@@ -207,7 +207,7 @@ function MemoryCard({ memory, selected, deleting, onSelect, onDelete }) {
         {pinned && (
           <Badge
             variant="secondary"
-            className="h-4 rounded-md px-1.5 py-0 text-[11px]"
+            className="h-5 rounded-md px-1.5 text-[11px]"
           >
             {t("pinned")}
           </Badge>

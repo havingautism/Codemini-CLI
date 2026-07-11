@@ -87,7 +87,7 @@ function DialogHeader({
       {showCloseButton && (
         <DialogPrimitive.Close
           data-slot="dialog-close"
-          className="inline-flex size-8 shrink-0 items-center justify-center rounded-full border-0 bg-(--bg-hover) text-(--text-secondary) transition-[background-color,color,transform] hover:bg-(--bg-active) hover:text-(--text-primary) active:scale-95 focus:outline-hidden disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4">
+          className="inline-flex size-8 shrink-0 items-center justify-center rounded-full border-0 bg-(--badge-bg) text-(--text-secondary) shadow-[0_1px_2px_color-mix(in_srgb,black_5%,transparent)] transition-all hover:bg-(--bg-active) hover:text-(--text-primary) hover:shadow-[0_1px_3px_color-mix(in_srgb,black_10%,transparent)] active:scale-95 focus:outline-hidden disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4">
           <X />
           <span className="sr-only">Close</span>
         </DialogPrimitive.Close>

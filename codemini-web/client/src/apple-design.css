@@ -44,7 +44,7 @@
 
 :where(button, a, input, textarea, select, [role="button"], [role="option"]):focus-visible {
   outline: none;
-  box-shadow: 0 3px 14px color-mix(in srgb, var(--apple-blue) 14%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text-primary) 28%, transparent);
 }
 
 @media (prefers-contrast: more), (forced-colors: active) {

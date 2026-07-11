@@ -301,10 +301,6 @@ export function Sidebar({
     });
   };
 
-  const applyActiveProjects = (next) => {
-    if (Array.isArray(next?.active)) setActiveProjectDirs(next.active);
-  };
-
   const requestRemoveFromActive = (projectKey) => {
     if (!projectKey || projectKey === "unknown") return;
     setOpenProjectMenuKey(null);
@@ -312,12 +308,6 @@ export function Sidebar({
       projectKey,
       label: getProjectName(projectKey),
     });
-  };
-
-  const refreshAfterActiveChange = async () => {
-    const remote = await fetchWebuiActiveProjects().catch(() => null);
-    if (remote) applyActiveProjects(remote);
-    await onRefreshSessions?.({ force: true });
   };
 
   const removeFromActive = async (projectKey) => {
@@ -330,10 +320,12 @@ export function Sidebar({
     });
     try {
       await patchWebuiActiveProject("deactivate", projectKey);
-      await refreshAfterActiveChange();
     } catch {
-      await refreshAfterActiveChange();
+      // Silently ignore API errors — the optimistic local update stands.
     }
+    // Refresh sessions without re-fetching the active-project list,
+    // which could race with the server and undo our optimistic update.
+    await onRefreshSessions?.({ force: true });
   };
 
   const confirmRemoveFromActive = async () => {
