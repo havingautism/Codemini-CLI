@@ -8,6 +8,7 @@ import {
 } from "./MarkdownLightboxImage.jsx";
 import { collectMessageEmbeds } from "@/lib/message-embeds.js";
 import { buildRenderGroups } from "@/lib/message-render-groups.js";
+import { splitAnswerProcessGroups } from "@/lib/answer-process.js";
 import { TodoList } from "./TodoList";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
@@ -158,49 +159,20 @@ function compactBytes(bytes = 0) {
   return `${Math.round(value / 1024 / 102.4) / 10} MB`;
 }
 
-function formatThoughtDuration(ms) {
-  const value = Number(ms);
-  if (!Number.isFinite(value)) return "";
-  const totalSeconds = value > 0 ? Math.max(0.1, value / 1000) : 0;
-  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = Math.floor(totalSeconds % 60);
-  return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
-}
-
 function formatProcessDuration(ms) {
   const value = Number(ms);
   if (!Number.isFinite(value) || value <= 0) return "";
-  return formatThoughtDuration(value);
-}
-
-function getThoughtElapsed(segment, tick) {
-  if (!segment.isStreaming && Number.isFinite(Number(segment.durationMs))) {
-    return Math.max(0, Number(segment.durationMs));
-  }
-  const start = Date.parse(segment.startedAt || "");
-  if (!Number.isFinite(start)) return null;
-  const end = segment.isStreaming ? tick : Date.parse(segment.endedAt || "");
-  if (!Number.isFinite(end)) return null;
-  return Math.max(0, end - start);
+  const totalSeconds = Math.max(1, Math.round(value / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
 function ThoughtBlock({ segment }) {
   const [open, setOpen] = useState(false);
-  const [tick, setTick] = useState(Date.now());
 
-  useEffect(() => {
-    if (!segment.isStreaming) return undefined;
-    const timer = window.setInterval(() => setTick(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [segment.isStreaming]);
-
-  const elapsed = formatThoughtDuration(getThoughtElapsed(segment, tick));
-  const label = segment.isStreaming
-    ? t("thinkingNow")
-    : elapsed
-      ? t("thoughtFor").replace("{{duration}}", elapsed)
-      : t("thought");
+  const label = segment.isStreaming ? t("thinkingNow") : t("thought");
 
   return (
     <div className={cn("my-3", PROCESS_META_CLASS)}>
@@ -224,9 +196,6 @@ function ThoughtBlock({ segment }) {
           {segment.isStreaming ? <LinearRing size="md" /> : <Brain size={15} />}
         </span>
         <span>{label}</span>
-        {segment.isStreaming && elapsed && (
-          <span className="msg-process-meta__detail">{elapsed}</span>
-        )}
       </button>
       {open && (
         <div className="relative ml-4.5 mt-1.5 pl-8 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
@@ -335,19 +304,6 @@ function HandoffBlock({ segment }) {
   );
 }
 
-function getToolDurationMs(cards = []) {
-  return cards.reduce((sum, card) => {
-    const value = Number(card?.durationMs);
-    return Number.isFinite(value) ? sum + Math.max(0, value) : sum;
-  }, 0);
-}
-
-function getThinkingDurationMs(segment) {
-  const value = Number(segment?.durationMs);
-  if (Number.isFinite(value)) return Math.max(0, value);
-  return getThoughtElapsed(segment, Date.now()) || 0;
-}
-
 function isProcessGroup(group) {
   return group?.type === "thinking" || group?.type === "tools";
 }
@@ -363,12 +319,6 @@ function isProcessGroupRunning(group) {
 function getProcessGroupItemCount(group) {
   if (group?.type === "thinking") return 1;
   if (group?.type === "tools") return Math.max(1, group.cards?.length || 0);
-  return 0;
-}
-
-function getProcessGroupDurationMs(group) {
-  if (group?.type === "thinking") return getThinkingDurationMs(group);
-  if (group?.type === "tools") return getToolDurationMs(group.cards || []);
   return 0;
 }
 
@@ -407,10 +357,6 @@ function collapseProcessGroups(groups, { disabled = false } = {}) {
       collapsed.push({
         type: "process",
         groups: pending,
-        durationMs: pending.reduce(
-          (sum, group) => sum + getProcessGroupDurationMs(group),
-          0,
-        ),
       });
     } else {
       collapsed.push(...pending);
@@ -689,15 +635,12 @@ function ProcessGroup({ group }) {
   const thoughtCount = group.groups.filter(
     (item) => item.type === "thinking",
   ).length;
-  const duration = formatProcessDuration(group.durationMs);
   const label =
     thoughtCount === 0 && toolCount > 0
       ? commandCount === toolCount
         ? t("toolGroupCommands").replace("{{count}}", toolCount)
         : t("toolGroupTools").replace("{{count}}", toolCount)
-      : duration
-        ? t("processedFor").replace("{{duration}}", duration)
-        : t("processed");
+      : t("processed");
   const details =
     thoughtCount === 0 && toolCount > 0
       ? ""
@@ -1712,6 +1655,77 @@ function MessageActions({
   );
 }
 
+function renderGroupItem(group, i) {
+  if (group.type === "text") {
+    return (
+      <StreamdownRenderer
+        key={`t-${i}-${group.isStreaming ? "s" : "d"}`}
+        text={group.text}
+        streaming={group.isStreaming}
+        inlineEmbeds={false}
+      />
+    );
+  }
+  if (group.type === "tools") {
+    return <ToolGroup key={`tg-${i}`} cards={group.cards} />;
+  }
+  if (group.type === "thinking") {
+    return <ThoughtBlock key={`th-${i}`} segment={group} />;
+  }
+  if (group.type === "handoff") {
+    return <HandoffBlock key={`ho-${i}`} segment={group} />;
+  }
+  if (group.type === "skill") {
+    return (
+      <SkillActivityRow
+        key={`sk-${i}-${group.name || "skill"}`}
+        badge={group}
+      />
+    );
+  }
+  if (group.type === "process") {
+    return <ProcessGroup key={`pg-${i}`} group={group} />;
+  }
+  return null;
+}
+
+function AnswerProcessFold({ groups, durationMs }) {
+  const [expanded, setExpanded] = useState(false);
+  const duration = formatProcessDuration(durationMs);
+  const label = duration
+    ? t("processedFor").replace("{{duration}}", duration)
+    : t("processed");
+
+  return (
+    <div className="codemini-answer-fold my-3">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className={COLLAPSE_ROW_CLASS}
+        aria-expanded={expanded}
+      >
+        <CaretRight
+          size={14}
+          className={cn(
+            COLLAPSE_CHEVRON_CLASS,
+            "transition-transform",
+            expanded && "rotate-90",
+          )}
+        />
+        <span className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}>
+          <span className="inline-block size-1.5 rounded-full bg-(--accent-blue)" />
+        </span>
+        <span className="font-medium">{label}</span>
+      </button>
+      {expanded && (
+        <div className="relative ml-4.5 mt-2 flex flex-col gap-1 pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
+          {groups.map((group, i) => renderGroupItem(group, i))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function MessageBubble({
   message,
   skills = [],
@@ -1745,6 +1759,22 @@ export function MessageBubble({
       disabled: hasStreamingText || messageInProgress,
     });
   }, [message?.isComplete, message?.planStep, segments]);
+
+  const { preAnswerGroups, answerGroups, preAnswerDuration, hasAnswerFold } =
+    useMemo(() => {
+      const result = splitAnswerProcessGroups(
+        renderGroups,
+        message?.timestamp || message?.createdAt,
+      );
+
+      return {
+        preAnswerGroups: result.processGroups,
+        answerGroups: result.answerGroups,
+        preAnswerDuration: result.durationMs,
+        hasAnswerFold: result.hasFold,
+      };
+    }, [message?.createdAt, message?.timestamp, renderGroups]);
+
   const mergedFileChanges = useMemo(
     () => mergeFileChanges(fileChanges || []),
     [fileChanges],
@@ -2018,39 +2048,19 @@ export function MessageBubble({
 
           <SkillActivityList badges={skillBadges || []} />
 
-          {renderGroups.map((group, i) => {
-            if (group.type === "text") {
-              return (
-                <StreamdownRenderer
-                  key={`t-${i}-${group.isStreaming ? "s" : "d"}`}
-                  text={group.text}
-                  streaming={group.isStreaming}
-                  inlineEmbeds={false}
-                />
-              );
-            }
-            if (group.type === "tools") {
-              return <ToolGroup key={`tg-${i}`} cards={group.cards} />;
-            }
-            if (group.type === "thinking") {
-              return <ThoughtBlock key={`th-${i}`} segment={group} />;
-            }
-            if (group.type === "handoff") {
-              return <HandoffBlock key={`ho-${i}`} segment={group} />;
-            }
-            if (group.type === "skill") {
-              return (
-                <SkillActivityRow
-                  key={`sk-${i}-${group.name || "skill"}`}
-                  badge={group}
-                />
-              );
-            }
-            if (group.type === "process") {
-              return <ProcessGroup key={`pg-${i}`} group={group} />;
-            }
-            return null;
-          })}
+          {messageComplete && hasAnswerFold ? (
+            <>
+              <AnswerProcessFold
+                groups={preAnswerGroups}
+                durationMs={preAnswerDuration}
+              />
+              {answerGroups.map((group, i) =>
+                renderGroupItem(group, i + preAnswerGroups.length),
+              )}
+            </>
+          ) : (
+            renderGroups.map((group, i) => renderGroupItem(group, i))
+          )}
 
           {planStep &&
             renderGroups.length === 0 &&

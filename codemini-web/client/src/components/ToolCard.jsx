@@ -21,7 +21,6 @@ import {
   getFileToolMeta,
   resolveToolHeaderParts,
 } from "@/lib/tool-card-display.js";
-import { formatDuration } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
 import { PatchDiff } from "@pierre/diffs/react";
 
@@ -326,11 +325,6 @@ export function ToolCard({ card }) {
           <span className="inline-flex items-center gap-1 rounded bg-(--accent-blue-bg) px-1.5 py-0.5 text-[10px] font-medium text-(--accent-blue)">
             <Archive size={11} />
             {fileMeta.backupReused ? t("backupReusedShort") : t("backupShort")}
-          </span>
-        )}
-        {card.durationMs != null && (
-          <span className="msg-process-meta__detail text-[11px] font-mono ml-auto shrink-0">
-            {formatDuration(card.durationMs)}
           </span>
         )}
         {card.status === "running" ? (

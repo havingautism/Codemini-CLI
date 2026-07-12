@@ -160,7 +160,7 @@ export const zh = {
   thinkingNow: "正在思考中...",
   thoughtForNow: "已思考 {{duration}}",
   processed: "已处理",
-  processedFor: "已处理 {{duration}}",
+  processedFor: "已处理：{{duration}}",
   processedDetails: "{{thoughts}} 段思考，{{tools}} 个工具",
   usageTokens: "tokens",
   usageCache: "缓存",

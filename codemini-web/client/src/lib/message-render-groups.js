@@ -20,6 +20,8 @@ export function buildRenderGroups(segments) {
           type: "text",
           text: seg.text || "",
           isStreaming: seg.isStreaming,
+          startedAt: seg.startedAt || null,
+          endedAt: seg.endedAt || null,
         });
       }
       // Empty non-streaming text between tools: skip, keep accumulating.

@@ -157,7 +157,7 @@ export const en = {
   thinkingNow: "Thinking...",
   thoughtForNow: "Thinking for {{duration}}",
   processed: "Processed",
-  processedFor: "Processed for {{duration}}",
+  processedFor: "Worked for {{duration}}",
   processedDetails: "{{thoughts}} thoughts, {{tools}} tools",
   usageTokens: "tokens",
   usageCache: "cache",

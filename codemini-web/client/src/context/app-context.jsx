@@ -398,21 +398,42 @@ function ensureTextSegment(segments) {
 function appendDeltaToSegments(segments, delta) {
   const segs = ensureTextSegment(segments);
   const last = segs[segs.length - 1];
+  const now = new Date().toISOString();
   return [
     ...segs.slice(0, -1),
-    { ...last, text: (last.text || "") + delta, isStreaming: true },
+    {
+      ...last,
+      text: (last.text || "") + delta,
+      isStreaming: true,
+      startedAt: last.startedAt || now,
+    },
   ];
 }
 
 function replaceLastTextInSegments(segments, text) {
   const source = Array.isArray(segments) ? segments : [];
-  for (let i = source.length - 1; i >= 0; i -= 1) {
-    if (source[i]?.type !== "text") continue;
+  const i = source.length - 1;
+  if (source[i]?.type === "text") {
     return source.map((seg, index) =>
-      index === i ? { ...seg, text, isStreaming: false } : seg,
+      index === i
+        ? {
+            ...seg,
+            text,
+            isStreaming: false,
+            startedAt: seg.startedAt || new Date().toISOString(),
+          }
+        : seg,
     );
   }
-  return [...source, { type: "text", text, isStreaming: false }];
+  return [
+    ...source,
+    {
+      type: "text",
+      text,
+      isStreaming: false,
+      startedAt: new Date().toISOString(),
+    },
+  ];
 }
 
 function appendThinkingToSegments(segments, delta, isStreaming = true) {
@@ -2189,6 +2210,7 @@ export function AppProvider({ children }) {
               displayName: toolName ? formatToolLabel(toolName) : t("tooling"),
               arguments: toolCall.arguments || "",
               status: "running",
+              startedAt: event.startedAt || new Date().toISOString(),
               durationMs: null,
               summary: "",
               result: "",
@@ -2269,6 +2291,7 @@ export function AppProvider({ children }) {
               displayName: event.displayName || formatToolLabel(event.name),
               arguments: event.arguments,
               status: "running",
+              startedAt: event.startedAt || new Date().toISOString(),
               durationMs: null,
               summary: "",
               result: "",

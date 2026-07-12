@@ -147,23 +147,24 @@ function appendTextSegment(segments, delta, isStreaming = true) {
   const value = String(delta || '');
   if (!value) return segments || [];
   const current = Array.isArray(segments) ? segments : [];
+  const now = new Date().toISOString();
   const last = current[current.length - 1];
   if (last?.type === 'text') {
     return [
       ...current.slice(0, -1),
-      { ...last, text: `${last.text || ''}${value}`, isStreaming }
+      { ...last, text: `${last.text || ''}${value}`, isStreaming, startedAt: last.startedAt || now }
     ];
   }
-  return [...current, { type: 'text', text: value, isStreaming }];
+  return [...current, { type: 'text', text: value, isStreaming, startedAt: now }];
 }
 
 function replaceTextSegment(segments, text, isStreaming = false) {
   const value = String(text || '');
   const current = Array.isArray(segments) ? segments : [];
-  const index = current.findLastIndex((seg) => seg?.type === 'text');
-  if (index === -1) return value ? [...current, { type: 'text', text: value, isStreaming }] : current;
+  const index = current.length - 1;
+  if (current[index]?.type !== 'text') return value ? [...current, { type: 'text', text: value, isStreaming, startedAt: new Date().toISOString() }] : current;
   return current.map((seg, i) => (
-    i === index ? { ...seg, text: value, isStreaming } : seg
+    i === index ? { ...seg, text: value, isStreaming, startedAt: seg.startedAt || new Date().toISOString() } : seg
   ));
 }
 
@@ -695,6 +696,7 @@ export class RuntimeBridge {
             displayName: event.displayName || formatToolLabel(event.name),
             arguments: event.arguments,
             status: 'running',
+            startedAt: event.startedAt || new Date().toISOString(),
             durationMs: null,
             summary: '',
             result: ''

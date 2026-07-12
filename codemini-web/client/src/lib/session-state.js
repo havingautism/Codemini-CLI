@@ -272,6 +272,7 @@ export function reduceSessionTranscriptEvent(state, event) {
             skillBadges: [],
             fileChanges: [],
             isComplete: false,
+            timestamp: event.startedAt || new Date().toISOString(),
           },
         ],
       };
@@ -297,6 +298,7 @@ export function reduceSessionTranscriptEvent(state, event) {
       ...sessionMessagesById,
       [sessionId]: messages.map((message) => {
         if (message.id !== messageId) return message;
+        const now = new Date().toISOString();
         const segments = [...(message.segments || [])];
         const last = segments.at(-1);
         if (last?.type === segmentType) {
@@ -304,12 +306,14 @@ export function reduceSessionTranscriptEvent(state, event) {
             ...last,
             text: `${last.text || ""}${event.text || ""}`,
             isStreaming: true,
+            startedAt: last.startedAt || event.startedAt || now,
           };
         } else {
           segments.push({
             type: segmentType,
             text: event.text || "",
             isStreaming: true,
+            startedAt: event.startedAt || now,
           });
         }
         return { ...message, segments };
@@ -333,20 +337,23 @@ export function reduceSessionTranscriptEvent(state, event) {
                   isStreaming: false,
                 }));
                 if (!event.text) return segments;
-                const textIndex = segments.findLastIndex(
-                  (segment) => segment.type === "text",
-                );
-                if (textIndex === -1) {
+                const textIndex = segments.length - 1;
+                if (segments[textIndex]?.type !== "text") {
                   segments.push({
                     type: "text",
                     text: event.text,
                     isStreaming: false,
+                    startedAt: event.startedAt || new Date().toISOString(),
                   });
                 } else {
                   segments[textIndex] = {
                     ...segments[textIndex],
                     text: event.text,
                     isStreaming: false,
+                    startedAt:
+                      segments[textIndex].startedAt ||
+                      event.startedAt ||
+                      new Date().toISOString(),
                   };
                 }
                 return segments;
@@ -411,6 +418,7 @@ export function reduceSessionTranscriptEvent(state, event) {
           ? toolCall.arguments || ""
           : event.arguments,
       status: "running",
+      startedAt: event.startedAt || new Date().toISOString(),
       durationMs: null,
       summary: "",
       result: "",
