@@ -16,7 +16,7 @@ export function SettingsSegmentedControl({
       onValueChange={(next) => next && onValueChange?.(next)}
       disabled={disabled}
       className={cn(
-        "flex w-full items-stretch rounded-lg border border-(--border-default) bg-(--bg-subtle) p-0.5",
+        "settings-segmented flex w-full items-stretch rounded-xl border border-(--border-default) bg-(--bg-subtle) p-1",
         className,
       )}
     >
@@ -26,7 +26,7 @@ export function SettingsSegmentedControl({
           id={`${idPrefix}-${opt.value}`}
           value={opt.value}
           className={cn(
-            "h-8 flex-1 rounded-md border-0 text-[12px] font-medium transition-shadow",
+            "settings-segmented-item h-8 flex-1 rounded-lg border-0 text-[12px] font-medium transition-[background-color,color]",
             "data-[state=on]:bg-accent data-[state=on]:text-accent-foreground data-[state=on]:shadow-sm",
             "data-[state=off]:text-muted-foreground",
           )}

@@ -467,13 +467,13 @@ export function ConfigDialog({
           >
             <TabsList
               variant="line"
-              className="h-auto w-[148px] shrink-0 flex-col items-stretch justify-start gap-0.5 border-r border-(--border-default) bg-transparent pr-3"
+              className="settings-nav-tabs h-auto w-[148px] shrink-0 flex-col items-stretch justify-start gap-1 border-r border-(--border-default) bg-transparent pr-3"
             >
               {SETTINGS_TABS.map((tab) => (
                 <TabsTrigger
                   key={tab.id}
                   value={tab.id}
-                  className="h-9 justify-start px-2.5 text-[13px] data-[state=active]:font-medium data-[state=active]:after:bg-[var(--input-shell-accent)]"
+                  className="settings-nav-trigger h-9 justify-start px-2.5 text-[13px] data-[state=active]:font-medium"
                 >
                   <span className="truncate">{t(tab.labelKey)}</span>
                   {tabHasChanges(tab.id) && (

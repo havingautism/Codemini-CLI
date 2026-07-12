@@ -29,7 +29,7 @@ export function SettingsChoiceList({
             id={`${idPrefix}-${opt.value}`}
             value={opt.value}
             className={cn(
-              "h-auto min-h-[52px] w-full justify-start rounded-lg border px-3 py-2.5 text-left transition-colors",
+              "settings-choice-item h-auto min-h-[52px] w-full justify-start rounded-lg border px-3 py-2.5 text-left transition-colors",
               selected
                 ? "border-ring bg-accent text-accent-foreground shadow-sm"
                 : "border-(--border-default) bg-transparent hover:border-(--border-strong) hover:bg-(--bg-hover)",
