@@ -3671,9 +3671,10 @@ export function AppProvider({ children }) {
       },
 
       respondToUserInput: async (id, response, ownerSessionId) => {
+        const effectiveSessionId = ownerSessionId || stateRef.current.currentSessionId;
         try {
           const result = await api.submitUserInput(
-            ownerSessionId,
+            effectiveSessionId,
             id,
             response,
           );
