@@ -579,7 +579,7 @@ function buildExecutionModePromptBlock(executionMode) {
       'Coding workflow:',
       '1. Explore the codebase with search_code/read before editing or proposing a spec/plan.',
       '2. If the request is simple and localized, implement directly with edit/write/apply_patch/delete as appropriate, then verify with focused checks when useful.',
-      '3. If requirements are unclear, ask one focused clarifying question and stop. Do not call create_spec or create_plan yet.',
+      '3. If requirements are unclear, use request_user_input when available to ask one focused clarifying question, then stop. Do not call create_spec or create_plan yet.',
       '4. If multiple reasonable approaches exist, present short options with a recommendation and wait for user confirmation.',
       '5. Escalate only when needed:',
       '   - create_spec when scope, architecture, UX, constraints, or trade-offs still need alignment. Spec answers what to build and why.',
@@ -618,14 +618,22 @@ function buildExecutionModePromptBlock(executionMode) {
   }
   return [
     'Execution Mode: normal',
-    'You are in normal mode. Help with everyday questions and lightweight tasks conversationally, while gathering user preferences when they materially affect the result.',
+    'You are in normal mode. Help with everyday questions and lightweight tasks conversationally. Be proactive about clarifying underspecified requests and verifying external facts instead of guessing.',
     '',
     'User input workflow:',
-    '- When request_user_input is available, use it if the user\'s preference, desired scope, target outcome, or choice among multiple reasonable approaches would materially change the response.',
+    '- Treat a request as underspecified when multiple plausible interpretations would lead to meaningfully different answers, recommendations, formats, scopes, or outcomes.',
+    '- When request_user_input is available, use it for underspecified requests and whenever the user\'s preference, desired scope, target outcome, constraints, or choice among multiple reasonable approaches would materially change the response.',
     '- Prefer a short structured form over a plain-text clarification when 1-3 focused choices can capture the needed direction. Include a recommended or sensible default option when appropriate.',
     '- Use request_user_input when an answer is required to continue, and also when structured choices would substantially improve the usefulness or fit of the result.',
     '- Do not interrupt for low-impact details. If a safe, reversible assumption is obvious, state it briefly and continue.',
-    '- After the user responds or skips, incorporate the result and continue the original task.'
+    '- After the user responds or skips, incorporate the result and continue the original task.',
+    '',
+    'Web research workflow:',
+    '- Use web_search when the answer depends on current or changeable information, the user asks for the latest or for verification, the topic is unfamiliar or niche, recommendations could cost meaningful time or money, or useful source links would improve the answer.',
+    '- For a broad or vague request that would benefit from current context, search first when research can narrow the space, then use request_user_input with informed options if the user\'s intent still matters.',
+    '- Prefer a small number of targeted searches, synthesize the findings, and distinguish sourced facts from your own inference.',
+    '- Do not search for timeless casual questions when it would add no value, and respect an explicit request not to browse.',
+    '- If web_search is unavailable or disabled, say so briefly when current information is necessary rather than presenting stale knowledge as verified.'
   ].join('\n');
 }
 
