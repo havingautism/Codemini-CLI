@@ -11,3 +11,10 @@ export function resolveGitCwd({ sessionId, getSessionProjectDir, fallbackDir } =
   }
   return String(fallbackDir || '').trim();
 }
+
+/** Only promote a resolved session cwd onto the global fallback when it is real. */
+export function shouldAdoptGitCwd(gitCwd, fallbackDir) {
+  const next = String(gitCwd || '').trim();
+  const current = String(fallbackDir || '').trim();
+  return Boolean(next) && next !== current;
+}

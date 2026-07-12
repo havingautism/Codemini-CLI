@@ -17,14 +17,14 @@ import {
   sessionMatchesActiveProjects
 } from '../src/core/webui-sidebar-config.js';
 import { createChatRuntime } from '../src/core/chat-runtime.js';
-import { createSession, loadSession, listSessions, resolveSession, deleteSession } from '../src/core/session-store.js';
+import { createSession, loadSession, listSessions, resolveSession, deleteSession, saveSession } from '../src/core/session-store.js';
 import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
 import { RuntimeBridge } from './lib/runtime-bridge.js';
 import {
   RuntimePool,
   startRuntimeEvictionTimer
 } from './lib/runtime-pool.js';
-import { resolveGitCwd } from './lib/git-project.js';
+import { resolveGitCwd, shouldAdoptGitCwd } from './lib/git-project.js';
 import { resolveEmbed } from './lib/embed-resolver.js';
 import { installSkillSource, listSkillEntries, updateSkillPackage } from '../src/commands/skill.js';
 import { computeFileSha256, readSkillRegistry, upsertSkillRegistryEntry, writeSkillRegistry } from '../src/core/skill-registry.js';
@@ -693,7 +693,7 @@ export function createWebRuntimeApi({
     if (req.method === 'POST' && url.pathname === '/api/sessions/new') {
       const body = await readBody(req);
       try {
-        const projectDir = body?.projectDir || getDefaultProjectDir();
+        const projectDir = normalizeProjectPath(body?.projectDir || getDefaultProjectDir()) || getDefaultProjectDir();
         const projectKey = normalizeProjectDirKey(projectDir);
         const all = await listSessions(1000, { includeEmpty: true });
         const reusable = all.find((session) => {
@@ -1042,16 +1042,17 @@ export function createWebRuntimeApi({
       const bridge = await loadBridge(res, body?.sessionId);
       if (!bridge) return true;
       const projectDir = pool.getSessionState(body.sessionId)?.projectDir;
-      if (projectDir) setDefaultProjectDir?.(projectDir);
+      const resolvedProjectDir = normalizeProjectPath(projectDir) || projectDir;
+      if (resolvedProjectDir) setDefaultProjectDir?.(resolvedProjectDir);
       const state = {
         ...bridge.getState(),
-        cwd: projectDir,
-        isGeneral: isGeneralProjectDir(projectDir),
+        cwd: resolvedProjectDir,
+        isGeneral: isGeneralProjectDir(resolvedProjectDir),
       };
       jsonResponse(res, {
         ok: true,
         sessionId: body.sessionId,
-        cwd: projectDir,
+        cwd: resolvedProjectDir,
         state,
         sessionData: {
           messages: bridge.getSessionMessages(),
@@ -2040,6 +2041,7 @@ export async function buildRuntimeForSession({ sessionId, model, projectDir }) {
   session.projectDir = sessionProjectDir;
   const isGeneral = isGeneralProjectDir(sessionProjectDir);
   const systemPrompt = buildDefaultSystemPrompt(config, {
+    workspaceRoot: sessionProjectDir,
     extraPrompts: isGeneral ? [getGeneralChatSystemPromptBlock()] : []
   });
   const runtime = await createChatRuntime({
@@ -2177,9 +2179,19 @@ async function main() {
   const ensurePooledSession = async (sessionId) => {
     const session = await loadSession(sessionId);
     const alreadyLoaded = Boolean(pool.getSessionState(sessionId));
+    const resolvedProjectDir =
+      normalizeProjectPath(session.projectDir) || session.projectDir || currentProjectDir;
+    // Keep the stored session cwd absolute so later pool lookups / git cwd
+    // never fall back to the general workspace by accident.
+    if (resolvedProjectDir && session.projectDir !== resolvedProjectDir) {
+      session.projectDir = resolvedProjectDir;
+      try {
+        await saveSession(session);
+      } catch {}
+    }
     const entry = await pool.ensureSession({
       sessionId,
-      projectDir: session.projectDir,
+      projectDir: resolvedProjectDir,
       model: args.model
     });
     if (!alreadyLoaded && recoveredSessionIds.has(sessionId)) {
@@ -2487,7 +2499,7 @@ async function main() {
           getSessionProjectDir: (id) => pool.getSessionState(id)?.projectDir || '',
           fallbackDir: currentProjectDir
         });
-        if (gitCwd && gitCwd !== currentProjectDir) currentProjectDir = gitCwd;
+        if (shouldAdoptGitCwd(gitCwd, currentProjectDir)) currentProjectDir = gitCwd;
         jsonResponse(res, readGitInfo(gitCwd || currentProjectDir));
       } catch {
         jsonResponse(res, { isGit: false, branch: null, dirty: false, staged: 0, modified: 0, untracked: 0, linesAdded: 0, linesRemoved: 0 });
@@ -2505,7 +2517,7 @@ async function main() {
           getSessionProjectDir: (id) => pool.getSessionState(id)?.projectDir || '',
           fallbackDir: currentProjectDir
         });
-        if (gitCwd && gitCwd !== currentProjectDir) currentProjectDir = gitCwd;
+        if (shouldAdoptGitCwd(gitCwd, currentProjectDir)) currentProjectDir = gitCwd;
         jsonResponse(res, readGitDiffData(gitCwd || currentProjectDir));
       } catch {
         jsonResponse(res, { patch: '', files: [], linesAdded: 0, linesRemoved: 0 });
@@ -2569,7 +2581,15 @@ async function main() {
         }
         const targetBridge = (await ensurePooledSession(session.id)).bridge;
         bridge = targetBridge;
-        currentProjectDir = session.projectDir;
+        currentProjectDir =
+          normalizeProjectPath(session.projectDir) ||
+          (openingGeneral ? GENERAL_PROJECT_DIR : resolved);
+        if (!openingGeneral && session.projectDir !== currentProjectDir) {
+          session.projectDir = currentProjectDir;
+          try {
+            await saveSession(session);
+          } catch {}
+        }
         const isGeneral = isGeneralProjectDir(currentProjectDir);
         jsonResponse(res, {
           ok: true,

@@ -3,15 +3,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getShellSystemPrompt } from './shell-profile.js';
 
-function formatToolPath(...segments) {
-  return JSON.stringify(path.join(process.cwd(), ...segments));
+function resolvePromptCwd(options = {}) {
+  const raw = options.workspaceRoot || options.cwd || process.cwd();
+  try {
+    return path.resolve(raw);
+  } catch {
+    return String(raw || process.cwd());
+  }
 }
 
-function getToolFewShotBlock(config = {}) {
-  const cwd = process.cwd();
-  const authServicePath = formatToolPath('src', 'auth', 'service.ts');
+function formatToolPath(cwd, ...segments) {
+  return JSON.stringify(path.join(cwd, ...segments));
+}
+
+function getToolFewShotBlock(config = {}, cwd = process.cwd()) {
+  const authServicePath = formatToolPath(cwd, 'src', 'auth', 'service.ts');
   const reducerRangePath = JSON.stringify(`${path.join(cwd, 'src', 'store', 'reducer.ts')}:110-150`);
-  const notesPath = formatToolPath('notes.txt');
+  const notesPath = formatToolPath(cwd, 'notes.txt');
   return `# Tool Examples
 
 Use these as style examples for tool calls:
@@ -67,11 +75,10 @@ Prefer these direct tool shapes over multi-step metadata reads or shell fallback
 Prefer explicit absolute path values when the current working directory is known.`;
 }
 
-function getEnvBlock() {
-  const cwd = process.cwd();
+function getEnvBlock(cwd = process.cwd()) {
   let isGitRepo = false;
   try {
-    fs.accessSync(`${cwd}/.git`);
+    fs.accessSync(path.join(cwd, '.git'));
     isGitRepo = true;
   } catch {}
 
@@ -91,10 +98,11 @@ function normalizePromptBlocks(blocks) {
 }
 
 export function buildDefaultSystemPrompt(config = {}, options = {}) {
+  const cwd = resolvePromptCwd(options);
   return [
     getShellSystemPrompt(config?.shell?.default),
-    getToolFewShotBlock(config),
-    getEnvBlock(),
+    getToolFewShotBlock(config, cwd),
+    getEnvBlock(cwd),
     ...normalizePromptBlocks(options.extraPrompts)
   ].filter(Boolean).join('\n\n');
 }

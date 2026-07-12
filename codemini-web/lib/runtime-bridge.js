@@ -10,6 +10,14 @@ import {
   normalizeUsage,
   updateSkillInSegments,
 } from '../shared/transcript-segments.js';
+import {
+  applyPlanEventToMessage,
+  applyStreamEventToPlanRun,
+  findCreatePlanCard,
+  isCreatePlanToolEvent,
+  messageHasActivePlanRun,
+  settleRunningCreatePlanCards,
+} from '../client/src/lib/plan-ui-state.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getSessionsDir } from '../../src/core/paths.js';
@@ -213,6 +221,7 @@ export class RuntimeBridge {
   #aggressivePruneSaved = 0;
   #uiPlanStepIds = new Map();
   #uiPlanOverviewId = null;
+  #uiPlanParentMsgId = null;
   #uiPendingSkillBadges = [];
   #uiPendingSkillSegments = [];
   #uiTranscriptSessionId = '';
@@ -351,9 +360,46 @@ export class RuntimeBridge {
     this.#uiActiveMsgId = null;
     this.#uiPlanStepIds = new Map();
     this.#uiPlanOverviewId = null;
+    this.#uiPlanParentMsgId = null;
     this.#uiPendingSkillBadges = [];
     this.#uiPendingSkillSegments = [];
     this.#aggressivePruneSaved = 0;
+  }
+
+  #settleCreatePlanToolCard(messageId = this.#uiPlanParentMsgId) {
+    const targetId =
+      messageId ||
+      [...this.#uiMessages]
+        .reverse()
+        .find((message) =>
+          (Array.isArray(message?.segments) ? message.segments : []).some(
+            (segment) =>
+              segment?.type === 'tools' &&
+              (Array.isArray(segment.cards) ? segment.cards : []).some(
+                (card) => card?.name === 'create_plan' && card.status === 'running',
+              ),
+          ),
+        )?.id;
+    if (!targetId) return;
+    this.#updateUiMessage(targetId, (message) =>
+      settleRunningCreatePlanCards(message, { reason: 'aborted' })
+    );
+    this.#uiPlanParentMsgId = null;
+  }
+
+  #resolveCreatePlanToolTargetId() {
+    if (this.#uiPlanParentMsgId) return this.#uiPlanParentMsgId;
+    return [...this.#uiMessages]
+      .reverse()
+      .find((message) =>
+        (Array.isArray(message?.segments) ? message.segments : []).some(
+          (segment) =>
+            segment?.type === 'tools' &&
+            (Array.isArray(segment.cards) ? segment.cards : []).some(
+              (card) => card?.name === 'create_plan' && card.status === 'running',
+            ),
+        ),
+      )?.id || null;
   }
 
   #addUiMessage(message) {
@@ -450,6 +496,7 @@ export class RuntimeBridge {
       formatToolLabel,
     };
 
+    let publishedMessageId = null;
     switch (event.type) {
       case 'assistant:start': {
         this.#removeUiTransientWaiting();
@@ -476,6 +523,7 @@ export class RuntimeBridge {
               : message.segments
           }));
         }
+        publishedMessageId = this.#uiActiveMsgId;
         break;
       }
       case 'assistant:delta':
@@ -487,141 +535,95 @@ export class RuntimeBridge {
       case 'tool:result':
       case 'tool:error':
       case 'tool:blocked': {
-        if (!this.#uiActiveMsgId) break;
-        this.#updateUiMessage(this.#uiActiveMsgId, (message) =>
+        const toolName = String(event.name || event.toolName || '').trim();
+        if (event.type === 'tool:start' && toolName === 'create_plan' && this.#uiActiveMsgId) {
+          this.#uiPlanParentMsgId = this.#uiActiveMsgId;
+        }
+        const createPlanTargetId =
+          ['tool:end', 'tool:result', 'tool:error', 'tool:blocked'].includes(event.type) &&
+          toolName === 'create_plan'
+            ? this.#resolveCreatePlanToolTargetId()
+            : null;
+        const targetId = createPlanTargetId || this.#uiActiveMsgId;
+        if (!targetId) break;
+
+        // Nest plan-owned streams into the create_plan card / running step.
+        if (
+          toolName === 'create_plan' ||
+          (this.#uiPlanParentMsgId && targetId === this.#uiPlanParentMsgId)
+        ) {
+          this.#updateUiMessage(targetId, (message) => {
+            if (isCreatePlanToolEvent(event)) {
+              return applyStreamEventToPlanRun(message, event, streamOptions);
+            }
+            const card = findCreatePlanCard(message);
+            const hasRunningStep = (card?.planRun?.steps || []).some(
+              (step) => String(step?.status || '').toLowerCase() === 'running'
+            );
+            const isAssistantEvent =
+              event.type === 'assistant:delta' ||
+              event.type === 'assistant:reasoning_delta' ||
+              event.type === 'assistant:response';
+            // Keep parent preamble before the plan card until a step is running.
+            if (isAssistantEvent && !hasRunningStep) {
+              return applyStreamEventToMessage(message, event, streamOptions);
+            }
+            if (messageHasActivePlanRun(message) && (hasRunningStep || card?.planRun?.steps?.length)) {
+              return applyStreamEventToPlanRun(message, event, streamOptions);
+            }
+            return applyStreamEventToMessage(message, event, streamOptions);
+          });
+          publishedMessageId = targetId;
+          if (
+            ['tool:end', 'tool:error', 'tool:blocked'].includes(event.type) &&
+            toolName === 'create_plan'
+          ) {
+            this.#settleCreatePlanToolCard(createPlanTargetId || targetId);
+            this.#uiPlanParentMsgId = null;
+          }
+          break;
+        }
+
+        this.#updateUiMessage(targetId, (message) =>
           applyStreamEventToMessage(message, event, streamOptions)
         );
+        publishedMessageId = targetId;
         break;
       }
       case 'plan:steps': {
         if (this.#uiActiveMsgId) {
-          this.#uiMessages = this.#uiMessages.filter((message) => {
-            if (message.id !== this.#uiActiveMsgId) return true;
-            return message.planStep || (Array.isArray(message.segments) && message.segments.length > 0);
-          });
-          this.#uiActiveMsgId = null;
-          this.#persistUiTranscriptSoon();
+          this.#uiPlanParentMsgId = this.#uiActiveMsgId;
         }
+        const parentId = this.#uiPlanParentMsgId || this.#uiActiveMsgId;
+        if (parentId) {
+          this.#updateUiMessage(parentId, (message) =>
+            applyPlanEventToMessage(message, event)
+          );
+          publishedMessageId = parentId;
+        }
+        // Keep active on parent so tool:end / later deltas stay on the plan card owner.
+        if (parentId) this.#uiActiveMsgId = parentId;
         this.#uiPlanStepIds = new Map();
-        const overviewMsg = createPlanOverviewUiMessage(event);
-        this.#uiPlanOverviewId = overviewMsg.id;
-        this.#uiMessages = [...this.#uiMessages.filter((message) => message.transientKey !== 'waiting-response'), overviewMsg];
+        this.#uiPlanOverviewId = null;
         this.#persistUiTranscriptSoon();
         break;
       }
-      case 'plan:step_start': {
-        const key = String(event.step);
-        let msgId = this.#uiPlanStepIds.get(key);
-        if (!msgId) {
-          const message = createPlanStepUiMessage(event);
-          msgId = message.id;
-          this.#uiPlanStepIds.set(key, msgId);
-          this.#uiMessages = [...this.#uiMessages.filter((message) => message.transientKey !== 'waiting-response'), message];
-          this.#persistUiTranscriptSoon();
-        } else {
-          this.#updateUiMessage(msgId, (message) => ({
-            ...message,
-            planStep: {
-              ...(message.planStep || {}),
-              status: 'running',
-              ...(event.model ? { model: event.model } : {})
-            }
-          }));
-        }
-        this.#uiActiveMsgId = msgId;
-        if (this.#uiPlanOverviewId) {
-          this.#updateUiMessage(this.#uiPlanOverviewId, (message) => {
-            if (!message.planOverview) return message;
-            return {
-              ...message,
-              planOverview: {
-                ...message.planOverview,
-                steps: message.planOverview.steps.map((s, i) =>
-                  i === event.step - 1 ? { ...s, status: 'running' } : s
-                )
-              }
-            };
-          });
-        }
-        break;
-      }
-      case 'plan:progress': {
-        if (event.model) {
-          const msgId = this.#uiPlanStepIds.get(String(event.step));
-          if (msgId) {
-            this.#updateUiMessage(msgId, (message) => ({
-              ...message,
-              planStep: {
-                ...(message.planStep || {}),
-                ...(event.status ? { status: event.status } : {}),
-                model: event.model
-              }
-            }));
-          }
-        }
-        if (this.#uiPlanOverviewId) {
-          this.#updateUiMessage(this.#uiPlanOverviewId, (message) => {
-            if (!message.planOverview) return message;
-            return {
-              ...message,
-              planOverview: {
-                ...message.planOverview,
-                steps: message.planOverview.steps.map((s, i) =>
-                  i === event.step - 1 ? { ...s, status: event.status || s.status } : s
-                )
-              }
-            };
-          });
-        }
-        break;
-      }
+      case 'plan:step_start':
+      case 'plan:progress':
       case 'plan:step_done': {
-        const msgId = this.#uiPlanStepIds.get(String(event.step));
-        if (msgId) {
-          this.#updateUiMessage(msgId, (message) => ({
-            ...message,
-            usage: normalizeUsage(event.usage) || message.usage || null,
-            segments: (() => {
-              const outputText = String(event.output || '').trim();
-              const finishedSegments = message.segments.map((seg) => (
-                seg.type === 'text' ? { ...seg, isStreaming: false } : seg
-              ));
-              const hasOutputText = outputText && finishedSegments.some((seg) =>
-                (seg.type === 'text' || seg.type === 'handoff') &&
-                String(seg.text || '').trim() === outputText
-              );
-              if (!outputText || hasOutputText) return finishedSegments;
-              return [
-                ...finishedSegments,
-                {
-                  type: String(event.role || message.planStep?.role || '').toLowerCase() === 'summarizer'
-                    ? 'text'
-                    : 'handoff',
-                  text: outputText,
-                  isStreaming: false
-                }
-              ];
-            })(),
-            planStep: {
-              ...(message.planStep || {}),
-              status: event.status || 'done',
-              summary: event.summary || ''
-            }
-          }));
+        const parentId = this.#uiPlanParentMsgId || this.#uiActiveMsgId;
+        if (parentId) {
+          this.#updateUiMessage(parentId, (message) =>
+            applyPlanEventToMessage(message, event)
+          );
+          publishedMessageId = parentId;
+          this.#uiActiveMsgId = parentId;
         }
-        if (this.#uiPlanOverviewId) {
-          this.#updateUiMessage(this.#uiPlanOverviewId, (message) => {
-            if (!message.planOverview) return message;
-            return {
-              ...message,
-              planOverview: {
-                ...message.planOverview,
-                steps: message.planOverview.steps.map((s, i) =>
-                  i === event.step - 1 ? { ...s, status: event.status || 'done' } : s
-                )
-              }
-            };
-          });
+        if (event.type === 'plan:step_done') {
+          const isFinalPlanStep =
+            String(event.role || '').toLowerCase() === 'summarizer' ||
+            (Number(event.total) > 0 && Number(event.step) === Number(event.total));
+          if (isFinalPlanStep) this.#settleCreatePlanToolCard();
         }
         break;
       }
@@ -646,6 +648,7 @@ export class RuntimeBridge {
             ...message,
             segments: addSkillToSegments(finishThinkingSegments(message.segments), event)
           }));
+          publishedMessageId = this.#uiActiveMsgId;
         } else {
           this.#uiPendingSkillSegments = addSkillToSegments(
             this.#uiPendingSkillSegments,
@@ -665,6 +668,7 @@ export class RuntimeBridge {
               endedAt
             }))
           }));
+          publishedMessageId = this.#uiActiveMsgId;
         } else {
           this.#uiPendingSkillSegments = updateSkillInSegments(
             this.#uiPendingSkillSegments,
@@ -686,6 +690,7 @@ export class RuntimeBridge {
               endedAt
             }))
           }));
+          publishedMessageId = this.#uiActiveMsgId;
         } else {
           this.#uiPendingSkillSegments = updateSkillInSegments(
             this.#uiPendingSkillSegments,
@@ -713,6 +718,7 @@ export class RuntimeBridge {
             ...message,
             skillBadges: appendUniqueSkillBadges(message.skillBadges || [], [badge])
           }));
+          publishedMessageId = this.#uiActiveMsgId;
         } else {
           this.#uiPendingSkillBadges = appendUniqueSkillBadges(
             this.#uiPendingSkillBadges,
@@ -733,16 +739,7 @@ export class RuntimeBridge {
       default:
         break;
     }
-    return (
-      String(event.type).startsWith('assistant:') ||
-      String(event.type).startsWith('tool:') ||
-      String(event.type).startsWith('skill:') ||
-      // Clients must reuse this id for plan-step bubbles so later
-      // summarizer assistant:start/delta events do not spawn a parallel general.
-      event.type === 'plan:step_start'
-    )
-      ? this.#uiActiveMsgId
-      : null;
+    return publishedMessageId;
   }
 
   addClient(res) {
@@ -807,6 +804,8 @@ export class RuntimeBridge {
       }
       this.#uiActiveMsgId = null;
       this.#uiPlanStepIds = new Map();
+      this.#settleCreatePlanToolCard();
+      this.#uiPlanParentMsgId = null;
       let suppressDone = false;
       if (result?.aborted) {
         const text = result?.text ? `Aborted: ${result.text}` : 'Aborted: Request aborted.';
@@ -891,6 +890,8 @@ export class RuntimeBridge {
       }
       this.#uiActiveMsgId = null;
       this.#uiPlanStepIds = new Map();
+      this.#settleCreatePlanToolCard();
+      this.#uiPlanParentMsgId = null;
       this.#publish({ type: 'submit:done', operationId, result });
       this.#publishLifecycle(result?.aborted || result?.type === 'aborted' ? 'aborted' : 'completed');
     }).catch(async (err) => {

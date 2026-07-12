@@ -1,3 +1,5 @@
+import { normalizeProjectDirKey } from "../../../shared/project-key.js";
+
 export const ACTIVE_SESSION_STATUSES = new Set([
   "queued",
   "running",
@@ -63,8 +65,9 @@ export function buildConversationStartSidebarEntry({
   if (!entry.isGeneral) {
     const dir = projectDir || projectKey || null;
     if (dir) {
+      const key = normalizeProjectDirKey(projectKey || dir) || dir;
       entry.projectDir = dir;
-      entry.projectKey = projectKey || dir;
+      entry.projectKey = key;
     }
   }
   return entry;

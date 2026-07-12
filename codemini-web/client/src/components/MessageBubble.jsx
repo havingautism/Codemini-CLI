@@ -1,5 +1,9 @@
 import { useEffect, useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
+import { PlanToolCard } from "./PlanToolCard.jsx";
+import {
+  isCreatePlanCard,
+} from "@/lib/plan-ui-state.js";
 import { StreamdownRenderer } from "./StreamdownRenderer";
 import { EmbedBanner } from "./EmbedBanner.jsx";
 import {
@@ -8,7 +12,7 @@ import {
 } from "./MarkdownLightboxImage.jsx";
 import { collectMessageEmbeds } from "@/lib/message-embeds.js";
 import { buildRenderGroups } from "@/lib/message-render-groups.js";
-import { splitAnswerProcessGroups } from "@/lib/answer-process.js";
+import { layoutAnswerProcessWithPlans } from "@/lib/answer-process.js";
 import { TodoList } from "./TodoList";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
@@ -32,6 +36,7 @@ import {
 import { formatTimestamp } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
 import * as api from "@/hooks/use-api.js";
+import { useRotatingLabel } from "@/hooks/use-rotating-label.js";
 import { useApp } from "@/context/app-context.jsx";
 import { ROLE_BADGE_CLASS, ROLE_PILLS } from "./PlanProgress.jsx";
 import { PlanStepStatusGlyph } from "@/components/plan-step-icons.jsx";
@@ -169,10 +174,26 @@ function formatProcessDuration(ms) {
   return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
+function resolveHintPhrases(listKey, fallbackKey) {
+  const hints = t(listKey);
+  if (Array.isArray(hints) && hints.length) return hints;
+  const fallback = t(fallbackKey);
+  return fallback ? [fallback] : [];
+}
+
+function RotatingStatusLabel({ phrases, active }) {
+  const { label, visible } = useRotatingLabel(phrases, { active });
+  return (
+    <span className={cn("msg-process-rotating-label", !visible && "is-fading")}>
+      {label}
+    </span>
+  );
+}
+
 function ThoughtBlock({ segment }) {
   const [open, setOpen] = useState(false);
-
-  const label = segment.isStreaming ? t("thinkingNow") : t("thought");
+  const streaming = Boolean(segment.isStreaming);
+  const thinkingPhrases = resolveHintPhrases("thinkingNowHints", "thinkingNow");
 
   return (
     <div className={cn("my-2", PROCESS_META_CLASS)}>
@@ -193,9 +214,13 @@ function ThoughtBlock({ segment }) {
         <span
           className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}
         >
-          {segment.isStreaming ? <LinearRing size="md" /> : <Brain size={15} />}
+          {streaming ? <LinearRing size="md" /> : <Brain size={15} />}
         </span>
-        <span>{label}</span>
+        {streaming ? (
+          <RotatingStatusLabel phrases={thinkingPhrases} active />
+        ) : (
+          <span>{t("thought")}</span>
+        )}
       </button>
       {open && (
         <div className="relative ml-4.5 mt-1.5 pl-8 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
@@ -459,10 +484,13 @@ function DreamNotice({ notice }) {
 
 function ToolGroup({ cards }) {
   const [expanded, setExpanded] = useState(false);
-  const total = cards.length;
-  const hasRunningTool = cards.some((card) => card.status === "running");
+  const planCards = cards.filter(isCreatePlanCard);
+  const otherCards = cards.filter((card) => !isCreatePlanCard(card));
+  const total = otherCards.length;
+  const hasRunningTool = otherCards.some((card) => card.status === "running");
+  const toolingPhrases = resolveHintPhrases("toolingHints", "tooling");
   const shouldUseSummaryHeader = total > TOOL_COLLAPSE_THRESHOLD;
-  const runCount = cards.filter((card) => {
+  const runCount = otherCards.filter((card) => {
     const name = String(card.name || "").toLowerCase();
     return name === "run" || name.startsWith("run(");
   }).length;
@@ -472,8 +500,11 @@ function ToolGroup({ cards }) {
       : t("toolGroupTools").replace("{{count}}", total);
 
   return (
-    <div className={cn("my-2", PROCESS_META_CLASS)}>
-      {shouldUseSummaryHeader && (
+    <div className={cn("", PROCESS_META_CLASS)}>
+      {planCards.map((card) => (
+        <PlanToolCard key={card.id || "create_plan"} card={card} />
+      ))}
+      {total > 0 && shouldUseSummaryHeader && (
         <button
           type="button"
           className={COLLAPSE_ROW_CLASS}
@@ -493,20 +524,17 @@ function ToolGroup({ cards }) {
             )}
           </span>
           <span>{summaryLabel}</span>
-          {/* {!expanded && (
-            <span className="text-(--text-muted)">{t("toolGroupExpand")}</span>
-          )} */}
         </button>
       )}
-      {(!shouldUseSummaryHeader || expanded) && (
+      {total > 0 && (!shouldUseSummaryHeader || expanded) && (
         <div
           className={cn(
             "flex flex-col gap-2",
             shouldUseSummaryHeader &&
-              "relative ml-4.5 pl-6 mt-2 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)",
+              "ml-4.5 mt-1 border-l border-(--border-default) pl-3",
           )}
         >
-          {cards.map((card) => (
+          {otherCards.map((card) => (
             <ToolCard key={card.id} card={card} />
           ))}
         </div>
@@ -514,7 +542,7 @@ function ToolGroup({ cards }) {
       {hasRunningTool && (
         <div className="msg-process-meta__detail flex items-center gap-2 px-3 py-1.5 text-[11px] my-2">
           <Spinner />
-          <span>{t("tooling")}</span>
+          <RotatingStatusLabel phrases={toolingPhrases} active />
         </div>
       )}
     </div>
@@ -1780,21 +1808,16 @@ export function MessageBubble({
     });
   }, [message?.isComplete, message?.planStep, segments]);
 
-  const { preAnswerGroups, answerGroups, preAnswerDuration, hasAnswerFold } =
-    useMemo(() => {
-      const result = splitAnswerProcessGroups(
+  const answerLayout = useMemo(
+    () =>
+      layoutAnswerProcessWithPlans(
         renderGroups,
         message?.timestamp || message?.createdAt,
-      );
-
-      return {
-        preAnswerGroups: result.processGroups,
-        answerGroups: result.answerGroups,
-        preAnswerDuration: result.durationMs,
-        hasAnswerFold: result.hasFold,
-      };
-    }, [message?.createdAt, message?.timestamp, renderGroups]);
-
+      ),
+    [message?.createdAt, message?.timestamp, renderGroups],
+  );
+  const hasAnswerFold = answerLayout.hasFold;
+  const preAnswerDuration = answerLayout.durationMs;
   const mergedFileChanges = useMemo(
     () => mergeFileChanges(fileChanges || []),
     [fileChanges],
@@ -2068,13 +2091,18 @@ export function MessageBubble({
 
             {messageComplete && hasAnswerFold ? (
               <>
-                <AnswerProcessFold
-                  groups={preAnswerGroups}
-                  durationMs={preAnswerDuration}
-                />
-                {answerGroups.map((group, i) =>
-                  renderGroupItem(group, i + preAnswerGroups.length),
-                )}
+                {answerLayout.items.map((item, i) => {
+                  if (item.type === "fold") {
+                    return (
+                      <AnswerProcessFold
+                        key={`fold-${i}`}
+                        groups={item.groups}
+                        durationMs={i === 0 ? preAnswerDuration : 0}
+                      />
+                    );
+                  }
+                  return renderGroupItem(item.group, i);
+                })}
               </>
             ) : (
               renderGroups.map((group, i) => renderGroupItem(group, i))

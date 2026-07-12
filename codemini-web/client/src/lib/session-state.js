@@ -2,12 +2,56 @@ import {
   applyStreamEventToMessage,
   isTranscriptStreamEvent,
 } from "../../../shared/transcript-segments.js";
+import {
+  applyStreamEventToPlanRun,
+  findActivePlanParentMessage,
+  findCreatePlanCard,
+  isCreatePlanToolEvent,
+  messageHasActivePlanRun,
+} from "./plan-ui-state.js";
 
 function stripPlanProgressText(text) {
   return String(text || "").replace(
     /(?:^|\n)\[plan\]\s+Step\s+\d+\/\d+\s+->[^\n]*\n?/g,
     "",
   );
+}
+
+const PLAN_NESTED_STREAM_EVENTS = new Set([
+  "assistant:delta",
+  "assistant:reasoning_delta",
+  "assistant:response",
+  "assistant:tool_call_delta",
+  "tool:start",
+  "tool:end",
+  "tool:result",
+  "tool:error",
+  "tool:blocked",
+]);
+
+function hasRunningPlanStep(message) {
+  const steps = findCreatePlanCard(message)?.planRun?.steps;
+  return (Array.isArray(steps) ? steps : []).some(
+    (step) => String(step?.status || "").toLowerCase() === "running",
+  );
+}
+
+function shouldNestStreamEventInPlan(message, event) {
+  if (!messageHasActivePlanRun(message)) return false;
+  if (!PLAN_NESTED_STREAM_EVENTS.has(String(event?.type || ""))) return false;
+  // create_plan itself updates the parent card, not a step body.
+  if (isCreatePlanToolEvent(event)) return false;
+  // Parent preamble (thinking/text) often arrives after tool_call_delta.
+  // Only nest into steps once a plan step is actually running.
+  if (
+    event.type === "assistant:delta" ||
+    event.type === "assistant:reasoning_delta" ||
+    event.type === "assistant:response"
+  ) {
+    return hasRunningPlanStep(message);
+  }
+  // Child tool calls during plan execution always belong to the step.
+  return Boolean(findCreatePlanCard(message)?.planRun?.steps?.length);
 }
 
 function planStepNumberFromMessageId(messageId) {
@@ -178,7 +222,12 @@ export function reduceSessionTranscriptEvent(state, event) {
 
   let sessionMessagesById = state.sessionMessagesById;
   const messages = state.sessionMessagesById[sessionId] || [];
+  const activePlanParent = findActivePlanParentMessage(messages);
   const messageId = (() => {
+    // While a plan card is running, keep nested agent streams on that parent.
+    if (activePlanParent?.id && !isCreatePlanToolEvent(event)) {
+      return activePlanParent.id;
+    }
     if (event.messageId || event.operationId) {
       return event.messageId || event.operationId;
     }
@@ -193,73 +242,89 @@ export function reduceSessionTranscriptEvent(state, event) {
     return `session-stream-${sessionId}`;
   })();
   if (event.type === "assistant:start") {
-    const existing = messages.some((message) => message.id === messageId);
-    if (!existing) {
-      // During create_plan, the client may already own a plan-step bubble
-      // under a locally generated id while SSE streams use the server id.
-      // Only adopt when both ids are clearly the same plan step — never steal
-      // a stale plan bubble into a normal chat turn.
-      const messageStep = planStepNumberFromMessageId(messageId);
-      const livePlanStep =
-        messageStep == null
-          ? null
-          : [...messages]
-              .reverse()
-              .find(
-                (message) =>
-                  message?.planStep &&
-                  message.isComplete !== true &&
-                  !message.transientKey &&
-                  Number(message.planStep.step) === messageStep,
-              );
-      if (livePlanStep) {
-        sessionMessagesById = {
-          ...sessionMessagesById,
-          [sessionId]: messages.map((message) =>
-            message.id === livePlanStep.id
-              ? { ...message, id: messageId, isComplete: false }
-              : message,
-          ),
-        };
-      } else {
-        sessionMessagesById = {
-          ...sessionMessagesById,
-          [sessionId]: [
-            ...messages,
-            {
-              id: messageId,
-              role: "general",
-              segments: [],
-              skillBadges: [],
-              fileChanges: [],
-              isComplete: false,
-              timestamp: event.startedAt || new Date().toISOString(),
-            },
-          ],
-        };
-      }
-    } else {
-      // Reset isComplete so that parallel-session switching can
-      // correctly identify this message as still in progress.
+    // Plan-internal assistant turns must not spawn sibling bubbles.
+    if (activePlanParent?.id) {
       sessionMessagesById = {
         ...sessionMessagesById,
         [sessionId]: messages.map((message) =>
-          message.id === messageId
+          message.id === activePlanParent.id
             ? { ...message, isComplete: false }
-            : message
+            : message,
         ),
       };
+    } else {
+      const existing = messages.some((message) => message.id === messageId);
+      if (!existing) {
+        // During create_plan, the client may already own a plan-step bubble
+        // under a locally generated id while SSE streams use the server id.
+        // Only adopt when both ids are clearly the same plan step — never steal
+        // a stale plan bubble into a normal chat turn.
+        const messageStep = planStepNumberFromMessageId(messageId);
+        const livePlanStep =
+          messageStep == null
+            ? null
+            : [...messages]
+                .reverse()
+                .find(
+                  (message) =>
+                    message?.planStep &&
+                    message.isComplete !== true &&
+                    !message.transientKey &&
+                    Number(message.planStep.step) === messageStep,
+                );
+        if (livePlanStep) {
+          sessionMessagesById = {
+            ...sessionMessagesById,
+            [sessionId]: messages.map((message) =>
+              message.id === livePlanStep.id
+                ? { ...message, id: messageId, isComplete: false }
+                : message,
+            ),
+          };
+        } else {
+          sessionMessagesById = {
+            ...sessionMessagesById,
+            [sessionId]: [
+              ...messages,
+              {
+                id: messageId,
+                role: "general",
+                segments: [],
+                skillBadges: [],
+                fileChanges: [],
+                isComplete: false,
+                timestamp: event.startedAt || new Date().toISOString(),
+              },
+            ],
+          };
+        }
+      } else {
+        // Reset isComplete so that parallel-session switching can
+        // correctly identify this message as still in progress.
+        sessionMessagesById = {
+          ...sessionMessagesById,
+          [sessionId]: messages.map((message) =>
+            message.id === messageId
+              ? { ...message, isComplete: false }
+              : message
+          ),
+        };
+      }
     }
   } else if (isTranscriptStreamEvent(event.type)) {
     sessionMessagesById = {
       ...sessionMessagesById,
-      [sessionId]: messages.map((message) =>
-        message.id === messageId
-          ? applyStreamEventToMessage(message, event, {
-              stripText: stripPlanProgressText,
-            })
-          : message,
-      ),
+      [sessionId]: messages.map((message) => {
+        if (message.id !== messageId) return message;
+        if (isCreatePlanToolEvent(event) || shouldNestStreamEventInPlan(message, event)) {
+          return applyStreamEventToPlanRun(message, event, {
+            stripText: stripPlanProgressText,
+          });
+        }
+        return applyStreamEventToMessage(message, event, {
+          stripText: stripPlanProgressText,
+        });
+      }),
     };
   }
 

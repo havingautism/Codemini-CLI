@@ -34,6 +34,7 @@ import {
   patchWebuiActiveProject,
   replaceWebuiActiveProjects,
 } from "@/hooks/use-api.js";
+import { normalizeProjectDirKey } from "../../../shared/project-key.js";
 
 const GENERAL_PROJECT_MARKER = "__codemini_general__";
 const PROJECT_SESSION_PREVIEW_LIMIT = 5;
@@ -69,7 +70,19 @@ function clearLegacyProjectKeys() {
 }
 
 function getProjectKey(session) {
-  return session?.projectKey || session?.projectDir || "unknown";
+  const raw = session?.projectKey || session?.projectDir || "unknown";
+  return normalizeProjectDirKey(raw) || "unknown";
+}
+
+/** Prefer a real filesystem path for open/chdir; key is only for grouping. */
+function getProjectOpenPath(projectKey, projectSessions = []) {
+  const fromSession = (Array.isArray(projectSessions) ? projectSessions : []).find(
+    (session) =>
+      !session?.isGeneral &&
+      String(session?.projectDir || "").trim() &&
+      String(session.projectDir).trim() !== "unknown",
+  )?.projectDir;
+  return String(fromSession || projectKey || "").trim();
 }
 
 function SidebarEmptyPlaceholder({ children, className }) {
@@ -371,23 +384,25 @@ export function Sidebar({
     );
   };
 
-  const openProjectCodeWiki = async (event, projectKey) => {
+  const openProjectCodeWiki = async (event, projectKey, projectSessions = []) => {
     event.stopPropagation();
+    const openPath = getProjectOpenPath(projectKey, projectSessions);
     if (
-      projectKey &&
+      openPath &&
       projectKey !== "unknown" &&
       projectKey !== activeProjectKey &&
       onOpenProject
     ) {
-      await onOpenProject(projectKey, { view: "codewiki" });
+      await onOpenProject(openPath, { view: "codewiki" });
       return;
     }
-    onSwitchView?.("codewiki", { projectPath: projectKey });
+    onSwitchView?.("codewiki", { projectPath: openPath || projectKey });
   };
 
-  const openProjectNewSession = async (event, projectKey) => {
+  const openProjectNewSession = async (event, projectKey, projectSessions = []) => {
     event.stopPropagation();
     if (!projectKey || projectKey === "unknown") return;
+    const openPath = getProjectOpenPath(projectKey, projectSessions);
     setExpandedProjects((prev) => {
       if (prev.has(projectKey)) return prev;
       const next = new Set(prev);
@@ -398,7 +413,7 @@ export function Sidebar({
       await onNewSession?.();
       return;
     }
-    await onOpenProject?.(projectKey, { view: "chat", newSession: true });
+    await onOpenProject?.(openPath, { view: "chat", newSession: true });
   };
 
   const openGeneralNewSession = async () => {
@@ -572,7 +587,7 @@ export function Sidebar({
                       title={t("newSessionInProject")}
                       aria-label={`${t("newSessionInProject")} ${getProjectName(projectKey)}`}
                       onClick={(event) =>
-                        openProjectNewSession(event, projectKey)
+                        openProjectNewSession(event, projectKey, projectSessions)
                       }
                     >
                       <Plus size={13} strokeWidth={2.1} />
@@ -590,7 +605,7 @@ export function Sidebar({
                       title={t("openCodeWiki")}
                       aria-label={`${t("openCodeWiki")} ${getProjectName(projectKey)}`}
                       onClick={(event) =>
-                        openProjectCodeWiki(event, projectKey)
+                        openProjectCodeWiki(event, projectKey, projectSessions)
                       }
                     >
                       <BookOpenText size={13} strokeWidth={1.9} />

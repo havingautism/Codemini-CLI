@@ -572,12 +572,18 @@ export async function createSession(projectDir = process.cwd()) {
   const dir = getSessionsDir();
   await fs.mkdir(dir, { recursive: true });
   const filePath = sessionPathById(sessionId, SESSION_JSONL_EXT);
+  let resolvedProjectDir = String(projectDir || process.cwd()).trim() || process.cwd();
+  try {
+    resolvedProjectDir = path.resolve(resolvedProjectDir);
+  } catch {
+    // Keep the trimmed string if resolve fails.
+  }
   const payload = {
     id: sessionId,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     title: DEFAULT_SESSION_TITLE,
-    projectDir: String(projectDir || process.cwd()),
+    projectDir: resolvedProjectDir,
     messages: []
   };
   await fs.writeFile(filePath, `${JSON.stringify(payload)}\n`, 'utf8');

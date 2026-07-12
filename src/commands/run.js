@@ -92,11 +92,11 @@ function makeCompletionFn(config) {
     });
 }
 
-async function buildSystemPrompt(config) {
+async function buildSystemPrompt(config, workspaceRoot = process.cwd()) {
   return composeSystemPrompt({
-    shellRulesPrompt: buildDefaultSystemPrompt(config),
+    shellRulesPrompt: buildDefaultSystemPrompt(config, { workspaceRoot }),
     config,
-    workspaceRoot: process.cwd()
+    workspaceRoot
   });
 }
 
@@ -357,7 +357,8 @@ export async function handleRun(args) {
 
   const config = await loadConfig();
   const selectedModel = parsed.fast ? (config.model?.fast_name || config.model?.name) : parsed.model;
-  const systemPrompt = await buildSystemPrompt(config);
+  const workspaceRoot = process.cwd();
+  const systemPrompt = await buildSystemPrompt(config, workspaceRoot);
   let effectiveTask = parsed.task;
   if (parsed.skillNames.length > 0) {
     const commands = await loadCommandsAndSkills(process.cwd());

@@ -40,6 +40,16 @@ import {
   projectSessionRuntime,
   upsertSidebarSession,
 } from "../lib/session-ui-state.js";
+import { normalizeProjectDirKey } from "../../../shared/project-key.js";
+import {
+  findPlanStepMessageId,
+  isCompletedStatus,
+  settleCompletedPlanToolCards,
+  settleRunningCreatePlanCards,
+  updatePlanOverviewStepStatus,
+  applyPlanEventToMessage,
+  planRunFromTranscript,
+} from "../lib/plan-ui-state.js";
 import {
   addSkillToSegments,
   finishStreamingTextSegments,
@@ -270,44 +280,6 @@ function collapseRenderedSkillPrompt(content) {
   if (currentQuestion?.[1]?.trim())
     return `${prefix} ${currentQuestion[1].trim()}`;
   return prefix;
-}
-
-function isCompletedStatus(status) {
-  return ["done", "failed", "error", "blocked", "completed"].includes(
-    String(status || "").toLowerCase(),
-  );
-}
-
-function hasCompletedPlanOverview(messages) {
-  return (Array.isArray(messages) ? messages : []).some((message) => {
-    const steps = message?.planOverview?.steps;
-    return (
-      message?.role === "plan-overview" &&
-      Array.isArray(steps) &&
-      steps.length > 0 &&
-      steps.every((step) => isCompletedStatus(step.status))
-    );
-  });
-}
-
-function settleCompletedPlanToolCards(messages) {
-  if (!hasCompletedPlanOverview(messages)) return messages;
-  return (Array.isArray(messages) ? messages : []).map((message) => ({
-    ...message,
-    segments: (Array.isArray(message.segments) ? message.segments : []).map(
-      (seg) => {
-        if (seg?.type !== "tools" || !Array.isArray(seg.cards)) return seg;
-        return {
-          ...seg,
-          cards: seg.cards.map((card) =>
-            card?.name === "create_plan" && card.status === "running"
-              ? { ...card, status: "done" }
-              : card,
-          ),
-        };
-      },
-    ),
-  }));
 }
 
 function getReasoningTextFromDetails(details) {
@@ -1077,6 +1049,7 @@ export function AppProvider({ children }) {
   const aggressivePruneSavedRef = useRef(0);
   const planStepMessagesRef = useRef(new Map());
   const planOverviewMsgRef = useRef(null);
+  const planParentMsgRef = useRef(null);
   const activityTimersRef = useRef(new Map());
   const sseRef = useRef(null);
   const reconnectRef = useRef(null);
@@ -1500,8 +1473,12 @@ export function AppProvider({ children }) {
             .reverse()
             .find((m) => m.role === "plan-overview" && m.planOverview);
           planOverviewMsgRef.current = overview?.id || null;
+          const overviewIndex = overview
+            ? restored.findIndex((message) => message.id === overview.id)
+            : -1;
           planStepMessagesRef.current = new Map(
             restored
+              .slice(overviewIndex >= 0 ? overviewIndex + 1 : 0)
               .filter((m) => m.planStep?.step != null)
               .map((m) => [String(m.planStep.step), m.id]),
           );
@@ -1597,7 +1574,6 @@ export function AppProvider({ children }) {
               Array.isArray(msg.planTranscript) &&
               msg.planTranscript.length
             ) {
-              assistantGroup = null;
               const lastUser = [...processed]
                 .reverse()
                 .find((m) => m.role === "you");
@@ -1611,18 +1587,51 @@ export function AppProvider({ children }) {
                     lastUser.text ||
                     ""
                   : "");
-              const planSteps = msg.planTranscript.map((block, i) => ({
-                index: block.step || i + 1,
-                title: block.title || "",
-                role: block.role || "general",
-                status: block.status || "done",
-              }));
-              processed.push(createPlanOverviewFromSteps(goal, planSteps));
-              for (const block of msg.planTranscript) {
-                processed.push(
-                  createPlanTranscriptMessage(block, processed.length),
-                );
+              const planRun = planRunFromTranscript(goal, msg.planTranscript);
+              planRun.phase = "completed";
+              if (!assistantGroup) {
+                assistantGroup = {
+                  id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-a${processed.length}`,
+                  role: "general",
+                  segments: [],
+                  skillBadges: [],
+                  fileChanges: [],
+                };
+                processed.push(assistantGroup);
               }
+              const existingTools = (assistantGroup.segments || []).find(
+                (segment) => segment.type === "tools",
+              );
+              const planCard = {
+                id: `create_plan-history-${processed.length}`,
+                name: "create_plan",
+                status: "done",
+                displayName: "Plan · 完成",
+                arguments: { goal },
+                planRun,
+              };
+              if (existingTools) {
+                existingTools.cards = [
+                  ...(existingTools.cards || []).filter(
+                    (card) =>
+                      String(card?.name || "").toLowerCase() !== "create_plan",
+                  ),
+                  planCard,
+                ];
+              } else {
+                assistantGroup.segments = [
+                  ...(assistantGroup.segments || []),
+                  { type: "tools", cards: [planCard] },
+                ];
+              }
+              if (msg.content && !isAbortRelatedText(msg.content)) {
+                assistantGroup.segments.push({
+                  type: "text",
+                  text: msg.content,
+                  isStreaming: false,
+                });
+              }
+              assistantGroup.usage = mergeUsage(assistantGroup.usage, msg.usage);
               continue;
             }
 
@@ -2018,236 +2027,75 @@ export function AppProvider({ children }) {
           }));
           planRunPendingRef.current = true;
           planStepMessagesRef.current = new Map();
-          const placeholderId = activeId;
-          setActiveMsg(null);
-          const overviewMsg = createPlanOverviewMessage(event);
-          planOverviewMsgRef.current = overviewMsg.id;
+          planOverviewMsgRef.current = null;
+          const parentId = activeId || planParentMsgRef.current;
+          planParentMsgRef.current = parentId;
+          if (parentId) setActiveMsg(parentId);
           setState((prev) => ({
             ...prev,
             planSteps: steps,
-            messages: [
-              ...withoutEmptyPlanRunPlaceholder(
-                removeTransientMessages(prev.messages, "waiting-response"),
-                placeholderId,
-              ),
-              overviewMsg,
-            ],
-          }));
-          break;
-        }
-
-        case "plan:progress": {
-          const { step, status, model: progressModel } = event;
-          setState((prev) => ({
-            ...prev,
-            planSteps: prev.planSteps.map((s, i) =>
-              i === step - 1
-                ? {
-                    ...s,
-                    status,
-                    ...(progressModel ? { model: progressModel } : {}),
-                  }
-                : s,
+            messages: withoutEmptyPlanRunPlaceholder(
+              removeTransientMessages(prev.messages, "waiting-response"),
+              activeId,
+            ).map((message) =>
+              parentId && message.id === parentId
+                ? applyPlanEventToMessage(message, event)
+                : message,
             ),
-            messages: prev.messages.map((m) => {
-              if (m.planStep?.step === step && progressModel) {
-                return {
-                  ...m,
-                  planStep: {
-                    ...(m.planStep || {}),
-                    ...(status ? { status } : {}),
-                    model: progressModel,
-                  },
-                };
-              }
-              if (m.id !== planOverviewMsgRef.current || !m.planOverview)
-                return m;
-              return {
-                ...m,
-                planOverview: {
-                  ...m.planOverview,
-                  steps: m.planOverview.steps.map((s, i) =>
-                    i === step - 1 ? { ...s, status } : s,
-                  ),
-                },
-              };
-            }),
           }));
           break;
         }
 
-        case "plan:step_start": {
-          planRunPendingRef.current = true;
-          const key = String(event.step);
-          const sharedId = String(event.messageId || "").trim();
-          let msgId = planStepMessagesRef.current.get(key);
-          if (sharedId && msgId && msgId !== sharedId) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === msgId ? { ...m, id: sharedId } : m,
-              ),
-            }));
-            msgId = sharedId;
-            planStepMessagesRef.current.set(key, msgId);
-          }
-          if (!msgId && sharedId) {
-            const existing = stateRef.current.messages.find(
-              (message) => message?.id === sharedId,
-            );
-            if (existing) {
-              msgId = sharedId;
-              planStepMessagesRef.current.set(key, msgId);
-            }
-          }
-          if (!msgId) {
-            const msg = createPlanStepMessage(event);
-            msgId = msg.id;
-            planStepMessagesRef.current.set(key, msgId);
-            setState((prev) => ({
-              ...prev,
-              messages: [
-                ...removeTransientMessages(prev.messages, "waiting-response"),
-                msg,
-              ].map((m) => {
-                if (m.id !== planOverviewMsgRef.current || !m.planOverview)
-                  return m;
-                return {
-                  ...m,
-                  planOverview: {
-                    ...m.planOverview,
-                    steps: m.planOverview.steps.map((s, i) =>
-                      i === event.step - 1 ? { ...s, status: "running" } : s,
-                    ),
-                  },
-                };
-              }),
-            }));
-          } else {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) => {
-                if (m.id === msgId)
-                  return {
-                    ...m,
-                    role: event.role || m.role || "general",
-                    isComplete: false,
-                    planStep: {
-                      ...(m.planStep || {}),
-                      step: event.step,
-                      total: event.total ?? m.planStep?.total,
-                      role: event.role || m.planStep?.role || "general",
-                      title: event.title || m.planStep?.title || "",
-                      status: "running",
-                      ...(event.model ? { model: event.model } : {}),
-                    },
-                  };
-                if (m.id === planOverviewMsgRef.current && m.planOverview)
-                  return {
-                    ...m,
-                    planOverview: {
-                      ...m.planOverview,
-                      steps: m.planOverview.steps.map((s, i) =>
-                        i === event.step - 1 ? { ...s, status: "running" } : s,
-                      ),
-                    },
-                  };
-                return m;
-              }),
-            }));
-          }
-          setActiveMsg(msgId);
-          update({
-            stage: "tooling",
-            busy: true,
-            live: true,
-            stageLabel: `${event.role || "agent"}: ${event.title || ""}`.trim(),
-          });
-          break;
-        }
-
+        case "plan:progress":
+        case "plan:step_start":
         case "plan:step_done": {
-          const stepKey = String(event.step);
-          let msgId = planStepMessagesRef.current.get(stepKey);
-          if (!msgId) {
-            const match = stateRef.current.messages.find(
-              (message) => Number(message?.planStep?.step) === Number(event.step),
-            );
-            if (match?.id) {
-              msgId = match.id;
-              planStepMessagesRef.current.set(stepKey, msgId);
-            }
+          planRunPendingRef.current = true;
+          const parentId =
+            planParentMsgRef.current ||
+            activeMsgRef.current ||
+            String(event.messageId || "").trim();
+          if (parentId) {
+            planParentMsgRef.current = parentId;
+            setActiveMsg(parentId);
           }
-          if (msgId) {
-            setState((prev) => ({
+          const isFinalPlanStep =
+            event.type === "plan:step_done" &&
+            (String(event.role || "").toLowerCase() === "summarizer" ||
+              (Number(event.total) > 0 &&
+                Number(event.step) === Number(event.total)));
+          setState((prev) => {
+            const nextMessages = prev.messages.map((message) =>
+              parentId && message.id === parentId
+                ? applyPlanEventToMessage(message, event)
+                : message,
+            );
+            return {
               ...prev,
-              messages: prev.messages.map((m) => {
-                const isTarget =
-                  m.id === msgId ||
-                  Number(m.planStep?.step) === Number(event.step);
-                if (isTarget) {
-                  const outputText = String(event.output || "").trim();
-                  const finishedSegments = finishThinkingSegments(
-                    m.segments,
-                  ).map((seg) =>
-                    seg.type === "text" ? { ...seg, isStreaming: false } : seg,
-                  );
-                  const hasOutputText =
-                    outputText &&
-                    finishedSegments.some(
-                      (seg) =>
-                        (seg.type === "text" || seg.type === "handoff") &&
-                        String(seg.text || "").trim() === outputText,
-                    );
-                  return {
-                    ...m,
-                    id: msgId,
-                    role: event.role || m.role || m.planStep?.role || "general",
-                    usage: mergeUsage(m.usage, event.usage),
-                    segments:
-                      outputText && !hasOutputText
-                        ? [
-                            ...finishedSegments,
-                            {
-                              type:
-                                String(
-                                  event.role || m.planStep?.role || "",
-                                ).toLowerCase() === "summarizer"
-                                  ? "text"
-                                  : "handoff",
-                              text: outputText,
-                              isStreaming: false,
-                            },
-                          ]
-                        : finishedSegments,
-                    isComplete: true,
-                    planStep: {
-                      ...(m.planStep || {}),
-                      step: event.step,
-                      total: event.total ?? m.planStep?.total,
-                      role: event.role || m.planStep?.role || "general",
-                      title: event.title || m.planStep?.title || "",
-                      status: event.status || "done",
-                      summary: event.summary || "",
-                    },
-                  };
-                }
-                if (m.id === planOverviewMsgRef.current && m.planOverview) {
-                  return {
-                    ...m,
-                    planOverview: {
-                      ...m.planOverview,
-                      steps: m.planOverview.steps.map((s, i) =>
-                        i === event.step - 1
-                          ? { ...s, status: event.status || "done" }
-                          : s,
-                      ),
-                    },
-                  };
-                }
-                return m;
-              }),
-            }));
+              planSteps: prev.planSteps.map((step, index) =>
+                index === event.step - 1
+                  ? {
+                      ...step,
+                      status:
+                        event.status ||
+                        (event.type === "plan:step_start"
+                          ? "running"
+                          : step.status),
+                      ...(event.model ? { model: event.model } : {}),
+                    }
+                  : step,
+              ),
+              messages: isFinalPlanStep
+                ? settleCompletedPlanToolCards(nextMessages)
+                : nextMessages,
+            };
+          });
+          if (event.type === "plan:step_start") {
+            update({
+              stage: "tooling",
+              busy: true,
+              live: true,
+              stageLabel: `${event.role || "agent"}: ${event.title || ""}`.trim(),
+            });
           }
           break;
         }
@@ -2595,6 +2443,7 @@ export function AppProvider({ children }) {
           planRunPendingRef.current = false;
           planStepMessagesRef.current = new Map();
           planOverviewMsgRef.current = null;
+          planParentMsgRef.current = null;
           setState((prev) => ({
             ...prev,
             stage: "idle",
@@ -2741,9 +2590,11 @@ export function AppProvider({ children }) {
           if (event.sessionId && event.title) {
             setState((prev) => {
               const rs = prev.runtimeState || {};
-              const isGeneral = !!(prev.isGeneral || rs.isGeneral);
+              const isGeneral = Boolean(rs.isGeneral);
               const projectDir = isGeneral ? null : rs.cwd || rs.projectDir || null;
-              const projectKey = projectDir || null;
+              const projectKey = projectDir
+                ? normalizeProjectDirKey(projectDir) || projectDir
+                : null;
               return {
                 ...prev,
                 sessions: upsertSidebarSession(prev.sessions, {
@@ -3014,14 +2865,16 @@ export function AppProvider({ children }) {
             };
           }
           const rs = prev.runtimeState || {};
-          const isGeneral = !!(prev.isGeneral || rs.isGeneral);
+          const isGeneral = Boolean(rs.isGeneral);
           const projectDir = isGeneral ? null : rs.cwd || rs.projectDir || null;
           const entry = buildConversationStartSidebarEntry({
             sessionId,
             text: line,
             isGeneral,
             projectDir,
-            projectKey: projectDir,
+            projectKey: projectDir
+              ? normalizeProjectDirKey(projectDir) || projectDir
+              : null,
           });
           if (!entry) return prev;
           return {
@@ -3164,30 +3017,35 @@ export function AppProvider({ children }) {
                 };
               }
               if (message.isComplete === false) {
-                return {
-                  ...message,
-                  isComplete: true,
-                  manualAborted: true,
-                  segments: finishThinkingSegments(message.segments || []).map(
-                    (seg) =>
-                      seg.type === "text"
-                        ? { ...seg, isStreaming: false }
-                        : seg,
-                  ),
-                  planStep: message.planStep
-                    ? {
-                        ...message.planStep,
-                        status: ["done", "failed"].includes(
-                          String(message.planStep.status || ""),
-                        )
-                          ? message.planStep.status
-                          : "failed",
-                        summary: message.planStep.summary || "Aborted",
-                      }
-                    : message.planStep,
-                };
+                const settled = settleRunningCreatePlanCards(
+                  {
+                    ...message,
+                    isComplete: true,
+                    manualAborted: true,
+                    segments: finishThinkingSegments(message.segments || []).map(
+                      (seg) =>
+                        seg.type === "text"
+                          ? { ...seg, isStreaming: false }
+                          : seg,
+                    ),
+                    planStep: message.planStep
+                      ? {
+                          ...message.planStep,
+                          status: ["done", "failed"].includes(
+                            String(message.planStep.status || ""),
+                          )
+                            ? message.planStep.status
+                            : "failed",
+                          summary: message.planStep.summary || "Aborted",
+                        }
+                      : message.planStep,
+                  },
+                  { reason: "aborted" },
+                );
+                return settled;
               }
-              return message;
+              // Completed messages can still own a running create_plan card.
+              return settleRunningCreatePlanCards(message, { reason: "aborted" });
             }),
           };
         });

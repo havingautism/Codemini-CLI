@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { loadConfig, saveConfig } from './config-store.js';
 import { getBaseConfigDir } from './paths.js';
-import { normalizePath } from './string-utils.js';
+import { normalizeProjectDirKey as formatProjectDirKey } from '../../codemini-web/shared/project-key.js';
 
 const GENERAL_WORKSPACE_MARKER = '__codemini_general__';
 
@@ -30,7 +30,7 @@ export function normalizeProjectDirKey(value) {
 
   const win = raw.match(/^([A-Za-z]):[\\/](.*)$/);
   if (win && process.platform !== 'win32') {
-    return normalizePath(path.join('/mnt', win[1].toLowerCase(), win[2]));
+    return formatProjectDirKey(path.join('/mnt', win[1].toLowerCase(), win[2]));
   }
 
   let resolved = raw;
@@ -39,12 +39,7 @@ export function normalizeProjectDirKey(value) {
   } catch {
     resolved = raw;
   }
-
-  let key = normalizePath(resolved);
-  if (process.platform === 'win32') {
-    key = key.replace(/^([A-Za-z]):/, (_, drive) => `${drive.toLowerCase()}:`);
-  }
-  return key;
+  return formatProjectDirKey(resolved);
 }
 
 function uniqueProjectDirs(items = []) {

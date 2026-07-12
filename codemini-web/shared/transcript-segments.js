@@ -89,21 +89,26 @@ export function appendTextSegment(segments, delta, isStreaming = true) {
   if (!value) return Array.isArray(segments) ? segments : [];
   const current = Array.isArray(segments) ? segments : [];
   const now = new Date().toISOString();
-  const last = current[current.length - 1];
+  const insertAt = indexBeforeTrailingCreatePlan(current);
+  const before = insertAt >= 0 ? current.slice(0, insertAt) : current;
+  const after = insertAt >= 0 ? current.slice(insertAt) : [];
+  const last = before[before.length - 1];
   if (last?.type === "text") {
     return [
-      ...current.slice(0, -1),
+      ...before.slice(0, -1),
       {
         ...last,
         text: `${last.text || ""}${value}`,
         isStreaming,
         startedAt: last.startedAt || now,
       },
+      ...after,
     ];
   }
   return [
-    ...current,
+    ...before,
     { type: "text", text: value, isStreaming, startedAt: now },
+    ...after,
   ];
 }
 
@@ -144,11 +149,14 @@ export function appendThinkingSegment(segments, delta, isStreaming = true) {
   const current = Array.isArray(segments) ? segments : [];
   const now = new Date().toISOString();
   const nowMs = Date.parse(now);
-  const last = current[current.length - 1];
+  const insertAt = indexBeforeTrailingCreatePlan(current);
+  const before = insertAt >= 0 ? current.slice(0, insertAt) : current;
+  const after = insertAt >= 0 ? current.slice(insertAt) : [];
+  const last = before[before.length - 1];
   if (last?.type === "thinking") {
     const startedAt = last.startedAt || now;
     return [
-      ...current.slice(0, -1),
+      ...before.slice(0, -1),
       {
         ...last,
         text: `${last.text || ""}${value}`,
@@ -160,10 +168,11 @@ export function appendThinkingSegment(segments, delta, isStreaming = true) {
           nowMs - Date.parse(startedAt),
         ),
       },
+      ...after,
     ];
   }
   return [
-    ...current,
+    ...before,
     {
       type: "thinking",
       text: value,
@@ -172,6 +181,7 @@ export function appendThinkingSegment(segments, delta, isStreaming = true) {
       endedAt: isStreaming ? null : now,
       durationMs: isStreaming ? 0 : null,
     },
+    ...after,
   ];
 }
 
@@ -258,6 +268,51 @@ function defaultStripText(text) {
 
 function defaultFormatToolLabel(name) {
   return String(name || "tool");
+}
+
+function isCreatePlanToolCard(card) {
+  const name = String(card?.name || "")
+    .toLowerCase()
+    .replace(/\(.*$/, "");
+  return name === "create_plan" || Boolean(card?.planRun);
+}
+
+/**
+ * Keep only early preamble (before plan steps exist) above a trailing create_plan
+ * card. Once the plan is executing/settled, later body text must stay below it.
+ */
+function shouldParkPreambleBeforeCreatePlan(card) {
+  if (!isCreatePlanToolCard(card)) return false;
+  const status = String(card?.status || "").toLowerCase();
+  if (status === "done" || status === "error" || status === "blocked") return false;
+  const phase = String(card?.planRun?.phase || "").toLowerCase();
+  if (["executing", "completed", "failed", "aborted"].includes(phase)) {
+    return false;
+  }
+  if (Array.isArray(card?.planRun?.steps) && card.planRun.steps.length > 0) {
+    return false;
+  }
+  return true;
+}
+
+/** Keep preamble text/thinking before a trailing create_plan tool card. */
+function indexBeforeTrailingCreatePlan(segments = []) {
+  const current = Array.isArray(segments) ? segments : [];
+  for (let index = current.length - 1; index >= 0; index -= 1) {
+    const segment = current[index];
+    if (
+      segment?.type === "text" ||
+      segment?.type === "thinking" ||
+      segment?.type === "handoff"
+    ) {
+      continue;
+    }
+    if (segment?.type !== "tools" || !Array.isArray(segment.cards)) break;
+    const planCard = segment.cards.find(isCreatePlanToolCard);
+    if (!planCard || !shouldParkPreambleBeforeCreatePlan(planCard)) break;
+    return index;
+  }
+  return -1;
 }
 
 function buildToolCardFromEvent(event, options = {}) {

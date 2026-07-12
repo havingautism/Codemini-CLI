@@ -1061,6 +1061,14 @@ body {
 .msg-process-meta .msg-process-thought-body :where(p, li, span, em, strong, code) {
   color: inherit;
 }
+.msg-process-rotating-label {
+  display: inline-block;
+  transition: opacity 280ms ease;
+  opacity: 1;
+}
+.msg-process-rotating-label.is-fading {
+  opacity: 0;
+}
 
 /* Linear-style cards for structured spec / plan messages */
 .codemini-message-surface {

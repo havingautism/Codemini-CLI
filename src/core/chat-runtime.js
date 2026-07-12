@@ -4374,10 +4374,18 @@ async function askModel({
           if (persistSession) await saveSession(session);
           return {
             ok: true,
-            workflowComplete: true,
+            workflowComplete: false,
             filePath: auto.filePath,
             summary: execution.sessionText || execution.text || auto.finalSummary || auto.summary,
-            message: execution.text || buildAutoPlanSystemSummary(auto)
+            message: [
+              'Plan execution finished. Give the user a short, friendly summary in plain language:',
+              '- what changed',
+              '- what was skipped or left unverified',
+              '- one suggested next step if useful',
+              'Do not paste the internal pipeline summarizer dump.',
+              '',
+              execution.text || buildAutoPlanSystemSummary(auto)
+            ].join('\n')
           };
         }
       : undefined,
@@ -6859,17 +6867,21 @@ export async function createChatRuntime({
     // Generate a better title asynchronously after saving
     if (shouldGenerateTitle || shouldReplaceSessionTitle(currentSession.title)) {
       const titleSessionId = currentSession.id;
-      generateSessionTitle({
-        userText,
-        assistantText,
-        config
-      }).then(async (generatedTitle) => {
-        if (generatedTitle && generatedTitle !== currentSession.title) {
-          currentSession.title = generatedTitle;
-          await saveSession(currentSession);
-          emitSessionTitleUpdate(titleSessionId, generatedTitle);
-        }
-      }).catch(() => {});
+      const firstUser = (currentSession.messages || []).find((msg) => msg?.role === 'user');
+      const titleUserText = String(userText || '').trim() || resolveTitleUserText(firstUser || {});
+      if (titleUserText) {
+        generateSessionTitle({
+          userText: titleUserText,
+          assistantText,
+          config
+        }).then(async (generatedTitle) => {
+          if (generatedTitle && generatedTitle !== currentSession.title) {
+            currentSession.title = generatedTitle;
+            await saveSession(currentSession);
+            emitSessionTitleUpdate(titleSessionId, generatedTitle);
+          }
+        }).catch(() => {});
+      }
     }
   };
 

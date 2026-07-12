@@ -145,13 +145,16 @@ export async function handleChat(args) {
   const selectedModel = parsed.fast ? (config.model?.fast_name || config.model?.name) : parsed.model;
   const systemPrompt =
     parsed.system ||
-    buildDefaultSystemPrompt(config);
+    buildDefaultSystemPrompt(config, {
+      workspaceRoot: session?.projectDir || process.cwd(),
+    });
 
   const runtime = await createChatRuntime({
     session,
     config,
     model: selectedModel,
-    systemPrompt
+    systemPrompt,
+    workspaceRoot: session?.projectDir || process.cwd(),
   });
 
   try {

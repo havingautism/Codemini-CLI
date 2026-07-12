@@ -48,7 +48,30 @@ export class RuntimePool {
   }
 
   async ensureSession({ sessionId, projectDir, model }) {
-    if (this.entries.has(sessionId)) return this.entries.get(sessionId);
+    if (this.entries.has(sessionId)) {
+      const existing = this.entries.get(sessionId);
+      const nextDir = String(projectDir || '').trim();
+      const prevDir = String(existing.projectDir || '').trim();
+      if (
+        nextDir &&
+        prevDir &&
+        this.#normalizeRoot(nextDir) !== this.#normalizeRoot(prevDir)
+      ) {
+        // Session was bound to the wrong project root (e.g. general workspace).
+        // Recreate when idle so tools/read use the real project path.
+        if (!BUSY_STATUSES.has(existing.status)) {
+          this.entries.delete(sessionId);
+        } else {
+          existing.projectDir = nextDir;
+          return existing;
+        }
+      } else {
+        if (nextDir && existing.projectDir !== nextDir) {
+          existing.projectDir = nextDir;
+        }
+        return existing;
+      }
+    }
     if (this.creating.has(sessionId)) return this.creating.get(sessionId);
 
     const creation = Promise.resolve(
