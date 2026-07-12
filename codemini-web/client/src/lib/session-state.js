@@ -645,6 +645,50 @@ function mergeSkillSegments(processedSegments, uiSegments) {
   ];
 }
 
+function mergeSegmentTiming(processedSegments, uiSegments) {
+  const persisted = Array.isArray(uiSegments) ? uiSegments : [];
+  const nextIndexByType = new Map();
+  let changed = false;
+
+  const segments = (Array.isArray(processedSegments) ? processedSegments : []).map(
+    (segment) => {
+      if (!segment?.type || segment.type === "skill") return segment;
+      const startIndex = nextIndexByType.get(segment.type) || 0;
+      const uiIndex = persisted.findIndex(
+        (candidate, index) => index >= startIndex && candidate?.type === segment.type,
+      );
+      if (uiIndex === -1) return segment;
+      nextIndexByType.set(segment.type, uiIndex + 1);
+      const uiSegment = persisted[uiIndex];
+
+      if (segment.type === "tools") {
+        const uiCards = new Map(
+          (Array.isArray(uiSegment.cards) ? uiSegment.cards : [])
+            .map((card) => [String(card?.id || ""), card])
+            .filter(([id]) => id),
+        );
+        const cards = (Array.isArray(segment.cards) ? segment.cards : []).map((card) => {
+          const uiCard = uiCards.get(String(card?.id || ""));
+          if (!uiCard?.startedAt || card?.startedAt) return card;
+          changed = true;
+          return { ...card, startedAt: uiCard.startedAt };
+        });
+        return changed ? { ...segment, cards } : segment;
+      }
+
+      const timing = {};
+      for (const key of ["startedAt", "endedAt", "durationMs"]) {
+        if (segment[key] == null && uiSegment[key] != null) timing[key] = uiSegment[key];
+      }
+      if (!Object.keys(timing).length) return segment;
+      changed = true;
+      return { ...segment, ...timing };
+    },
+  );
+
+  return changed ? segments : processedSegments;
+}
+
 export function mergeAlignedUserContext(processed = [], uiMessages = []) {
   const uiUsersById = new Map(
     (Array.isArray(uiMessages) ? uiMessages : [])
@@ -699,7 +743,10 @@ export function mergeAlignedAssistantSkillContext(
     const skillBadges = Array.isArray(uiMessage.skillBadges)
       ? uiMessage.skillBadges
       : [];
-    const segments = mergeSkillSegments(message.segments, uiMessage.segments);
+    const segments = mergeSegmentTiming(
+      mergeSkillSegments(message.segments, uiMessage.segments),
+      uiMessage.segments,
+    );
     if (!skillBadges.length && segments === message.segments) return message;
     return {
       ...message,
