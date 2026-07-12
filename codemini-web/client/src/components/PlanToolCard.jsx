@@ -7,10 +7,7 @@ import { ROLE_BADGE_CLASS, ROLE_PILLS } from "@/components/PlanProgress.jsx";
 import { StreamdownRenderer } from "@/components/StreamdownRenderer.jsx";
 import { ToolCard } from "@/components/ToolCard.jsx";
 import { cn } from "@/lib/utils";
-import {
-  planPhaseTitle,
-  shouldExpandPlanStep,
-} from "@/lib/plan-ui-state.js";
+import { planPhaseTitle, shouldExpandPlanStep } from "@/lib/plan-ui-state.js";
 import { t } from "../../i18n/index.js";
 
 const COLLAPSE_ROW_CLASS =
@@ -54,7 +51,9 @@ function StepProcessFold({ segments }) {
       }).length
     );
   }, 0);
-  const thoughtCount = segments.filter((item) => item.type === "thinking").length;
+  const thoughtCount = segments.filter(
+    (item) => item.type === "thinking",
+  ).length;
   const label =
     thoughtCount === 0 && toolCount > 0
       ? commandCount === toolCount
@@ -172,7 +171,11 @@ function StepAnswer({ segment }) {
       </button>
       {open && (
         <div className="relative ml-3.5 mt-1.5 border-l border-(--border-default) pl-3 text-[13px] leading-relaxed text-(--text-secondary)">
-          <StreamdownRenderer text={text} streaming={false} inlineEmbeds={false} />
+          <StreamdownRenderer
+            text={text}
+            streaming={false}
+            inlineEmbeds={false}
+          />
         </div>
       )}
     </div>
@@ -182,7 +185,8 @@ function StepAnswer({ segment }) {
 function StepBody({ step }) {
   const segments = Array.isArray(step?.segments) ? step.segments : [];
   const { process, answers } = splitStepSegments(segments);
-  const hasContent = process.length > 0 || answers.length > 0 || Boolean(step?.summary);
+  const hasContent =
+    process.length > 0 || answers.length > 0 || Boolean(step?.summary);
 
   if (!hasContent) {
     return (
@@ -265,18 +269,22 @@ function PlanStepRow({ step, index }) {
 
 export function PlanToolCard({ card }) {
   const planRun = card?.planRun || null;
-  const phase = planRun?.phase || (card?.status === "done" ? "completed" : "planning");
+  const phase =
+    planRun?.phase || (card?.status === "done" ? "completed" : "planning");
   const title = card?.displayName || planPhaseTitle(phase);
   const goal =
     planRun?.goal ||
     String(card?.arguments?.goal || "").trim() ||
     String(card?.summary || "").trim();
   const steps = Array.isArray(planRun?.steps) ? planRun.steps : [];
-  const running = card?.status === "running" || phase === "executing" || phase === "planning";
-  const current = steps.find((step) => String(step.status).toLowerCase() === "running");
+  const running =
+    card?.status === "running" || phase === "executing" || phase === "planning";
+  const current = steps.find(
+    (step) => String(step.status).toLowerCase() === "running",
+  );
 
   return (
-    <div className="codemini-message-surface codemini-plan-tool-card my-3 w-full max-w-4xl overflow-hidden rounded-xl border border-(--border-default)">
+    <div className="codemini-message-surface codemini-plan-tool-card my-0 w-full max-w-4xl overflow-hidden rounded-xl border border-(--border-default)">
       <div className="flex items-start gap-3 border-b border-(--border-default)/80 px-4 py-3.5">
         <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center text-(--text-secondary)">
           {running ? <LinearStatusDot /> : <ListChecks size={17} />}

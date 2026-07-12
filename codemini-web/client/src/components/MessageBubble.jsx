@@ -1,9 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
 import { PlanToolCard } from "./PlanToolCard.jsx";
-import {
-  isCreatePlanCard,
-} from "@/lib/plan-ui-state.js";
+import { isCreatePlanCard } from "@/lib/plan-ui-state.js";
 import { StreamdownRenderer } from "./StreamdownRenderer";
 import { EmbedBanner } from "./EmbedBanner.jsx";
 import {
@@ -500,7 +498,7 @@ function ToolGroup({ cards }) {
       : t("toolGroupTools").replace("{{count}}", total);
 
   return (
-    <div className={cn("", PROCESS_META_CLASS)}>
+    <div className={cn("my-2", PROCESS_META_CLASS)}>
       {planCards.map((card) => (
         <PlanToolCard key={card.id || "create_plan"} card={card} />
       ))}

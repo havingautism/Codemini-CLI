@@ -10,6 +10,7 @@ import { applyAggressiveToolPruneBeta } from './context-compact.js';
 import { markRunCommandSafeModeApproved } from './tools.js';
 import { formatToolDisplayName } from './tool-display.js';
 import { MEMORY_ALWAYS_ALLOW_TOOLS } from './constants.js';
+import { toolRequiresUserApproval } from './approval-policy.js';
 
 /**
  * 安全解析 JSON 字符串。
@@ -836,12 +837,13 @@ export async function runAgentLoop({
       const isSafeModeRun = toolName === 'run'
         && config?.policy?.safe_mode !== false
         && (isSafeModePolicyBlocked || requiresApprovalEvaluation(args?.command || '', config?.shell?.default));
-      const isFileWriteTool = toolName === 'edit' || toolName === 'create' || toolName === 'write' || toolName === 'apply_patch' || toolName === 'delete';
-      const needsApproval = normalizedApprovalMode === 'full_access'
-        ? false
-        : normalizedApprovalMode === 'auto'
-          ? ((!projectIsGit && isFileWriteTool) || isSafeModeRun)
-          : (toolName === 'delete' || isSafeModeRun || !alwaysAllowSet.has(toolName));
+      const needsApproval = toolRequiresUserApproval({
+        approvalMode: normalizedApprovalMode,
+        projectIsGit,
+        toolName,
+        isSafeModeRun,
+        alwaysAllowTools: [...alwaysAllowSet]
+      });
       if (needsApproval) {
         approved = false;
         const handler = toolHandlers[toolName];

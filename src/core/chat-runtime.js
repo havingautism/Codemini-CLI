@@ -71,6 +71,10 @@ import {
 } from './git-oplog-change-tracker.js';
 import { createNonGitBackupManager } from './non-git-backup.js';
 import {
+  detectWorkspaceIsGit,
+  resolveApprovalProjectIsGit
+} from './approval-policy.js';
+import {
   assertSearchConfig,
   normalizeToolPolicy,
   resolveGatewayPayloadExtras
@@ -646,6 +650,27 @@ export const ROLE_TOOL_POLICY = {
   summarizer: ['read', 'read_plan', 'tool_search', 'skill'],
   codewiki: CODEWIKI_ROLE_TOOLS
 };
+
+/** Approval options for plan pipeline sub-agents (inherit role tool allow-list + workspace git). */
+export function resolvePlanSubAgentApprovalOptions({
+  role,
+  config,
+  projectIsGit = false,
+  changeTrackerEnabled = false,
+  workspaceHasGit = false
+} = {}) {
+  const roleAllowedTools = normalizeToolPolicy(ROLE_TOOL_POLICY[role] || ROLE_TOOL_POLICY.coder, config);
+  return {
+    projectIsGit: resolveApprovalProjectIsGit({
+      projectIsGit,
+      changeTrackerEnabled,
+      workspaceHasGit
+    }),
+    alwaysAllowTools: roleAllowedTools,
+    allowedTools: roleAllowedTools
+  };
+}
+
 const SUB_AGENT_CONTEXT_MAX_MESSAGES = 4;
 const SUB_AGENT_CONTEXT_MAX_CHARS = 1200;
 const SUB_AGENT_EVIDENCE_MAX_ITEMS = 3;
@@ -4362,7 +4387,11 @@ async function askModel({
             signal,
             changeTracker,
             backupManager,
-            projectIsGit,
+            projectIsGit: resolveApprovalProjectIsGit({
+              projectIsGit,
+              changeTrackerEnabled: Boolean(changeTracker?.enabled),
+              workspaceHasGit: Boolean(config?.runtime?.project_is_git)
+            }),
             workspaceRoot
           });
           session.planState = normalizePlanState({
@@ -4737,7 +4766,11 @@ async function askModel({
     onEvent: wrappedAgentEvent,
     executionMode: normalizedExecutionMode,
     approvalMode: config.execution?.approval_mode || 'review',
-    projectIsGit: Boolean(projectIsGit || changeTracker?.enabled),
+    projectIsGit: resolveApprovalProjectIsGit({
+      projectIsGit,
+      changeTrackerEnabled: Boolean(changeTracker?.enabled),
+      workspaceHasGit: Boolean(config?.runtime?.project_is_git)
+    }),
     alwaysAllowTools: effectiveAlwaysAllowTools,
     toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
     toolFormatters: formatters,
@@ -4902,6 +4935,14 @@ async function runSubAgentTask({
     if (onAgentEvent) onAgentEvent(evt);
   };
   const roleAllowedTools = normalizeToolPolicy(ROLE_TOOL_POLICY[role] || ROLE_TOOL_POLICY.coder, config);
+  const workspaceHasGit = Boolean(config?.runtime?.project_is_git) || Boolean(changeTracker?.enabled);
+  const approvalOptions = resolvePlanSubAgentApprovalOptions({
+    role,
+    config,
+    projectIsGit,
+    changeTrackerEnabled: Boolean(changeTracker?.enabled),
+    workspaceHasGit
+  });
   const subShellRulesPrompt = buildSubAgentShellRulesPrompt(roleAllowedTools, {
     shell: config?.shell?.default,
     workspaceRoot,
@@ -4926,13 +4967,14 @@ async function runSubAgentTask({
     requestToolApproval,
     persistSession: false,
     executionMode: 'normal',
-    allowedTools: roleAllowedTools,
+    allowedTools: approvalOptions.allowedTools,
+    alwaysAllowTools: approvalOptions.alwaysAllowTools,
     skipAnalysisNudge: true,
     signal,
     changeTracker,
     backupManager,
     workspaceRoot,
-    projectIsGit
+    projectIsGit: approvalOptions.projectIsGit
   });
   collectSubAgentArtifactsFromMessages(subSession.messages, artifactPaths, seenArtifactPaths);
   const text = subResult.text || '';
@@ -5121,6 +5163,14 @@ async function executePlanWithSubAgents({
   projectIsGit = Boolean(config?.runtime?.project_is_git),
   workspaceRoot = process.cwd()
 }) {
+  const workspaceHasGit = Boolean(config?.runtime?.project_is_git)
+    || Boolean(changeTracker?.enabled)
+    || await detectWorkspaceIsGit(workspaceRoot);
+  const resolvedProjectIsGit = resolveApprovalProjectIsGit({
+    projectIsGit,
+    changeTrackerEnabled: Boolean(changeTracker?.enabled),
+    workspaceHasGit
+  });
   const steps = Array.isArray(planState.steps) ? planState.steps : [];
   const goal = planState.goal || '';
   const planFilePath = planState.filePath || '';
@@ -5212,7 +5262,7 @@ async function executePlanWithSubAgents({
       planFileContext,
       changeTracker,
       backupManager,
-      projectIsGit,
+      projectIsGit: resolvedProjectIsGit,
       workspaceRoot
     });
 
@@ -5281,7 +5331,7 @@ ${diffReview}`.trim();
         planFileContext,
         changeTracker,
         backupManager,
-        projectIsGit,
+        projectIsGit: resolvedProjectIsGit,
         workspaceRoot
       });
 
@@ -6746,6 +6796,10 @@ export async function createChatRuntime({
     workspaceRoot: root,
     sessionId: currentSession.id
   });
+  let workspaceIsGit = Boolean(changeTracker?.enabled);
+  if (!workspaceIsGit) {
+    workspaceIsGit = await detectWorkspaceIsGit(root);
+  }
   let backupManager = changeTracker?.enabled
     ? null
     : await createNonGitBackupManager({
@@ -6756,7 +6810,7 @@ export async function createChatRuntime({
   const attachRuntimeState = (nextConfig) => {
     nextConfig.runtime = {
       ...(nextConfig.runtime || {}),
-      project_is_git: Boolean(changeTracker?.enabled),
+      project_is_git: workspaceIsGit,
       fileObservations
     };
     return nextConfig;
@@ -7205,7 +7259,11 @@ export async function createChatRuntime({
         requestToolApproval: activeRequestToolApproval,
         changeTracker,
         backupManager,
-        projectIsGit: Boolean(changeTracker?.enabled),
+        projectIsGit: resolveApprovalProjectIsGit({
+          projectIsGit: Boolean(changeTracker?.enabled),
+          changeTrackerEnabled: Boolean(changeTracker?.enabled),
+          workspaceHasGit: Boolean(config?.runtime?.project_is_git) || workspaceIsGit
+        }),
         workspaceRoot: root
       });
       activeSubSession = null;

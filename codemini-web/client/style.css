@@ -1670,14 +1670,19 @@ samp {
   border-color: var(--border-default);
 }
 .msg-body :not(pre) > code {
+  display: inline-block;
+  vertical-align: baseline;
   border: 1px solid var(--md-code-border);
   border-radius: var(--radius-sm);
   background: var(--md-inline-code-bg);
   color: var(--md-inline-code-text);
-  padding: 0.12em 0.35em;
+  margin: 0.15em 0;
+  padding: 0.1em 0.35em;
   font-family: var(--font-mono);
   font-size: inherit;
-  line-height: inherit;
+  line-height: 1.35;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 .msg-body [data-streamdown="table-wrapper"] [class*="absolute"][class*="top-full"],
 .msg-body [data-streamdown="mermaid-block"] [class*="absolute"][class*="top-full"] {
