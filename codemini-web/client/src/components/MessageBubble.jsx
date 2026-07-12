@@ -2097,8 +2097,8 @@ export function MessageBubble({
       data-message-id={message.id}
       data-plan-status={isPlanFlowMessage ? planFlowStatus : undefined}
       className={cn(
-        "py-2 mt-[8px] group/message",
-        role === "you" && "flex justify-end",
+        "py-2 group/message",
+        role === "you" && "flex justify-end mt-6",
         isPlanFlowMessage && "codemini-plan-flow",
       )}
     >
