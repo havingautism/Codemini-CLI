@@ -175,7 +175,7 @@ function ThoughtBlock({ segment }) {
   const label = segment.isStreaming ? t("thinkingNow") : t("thought");
 
   return (
-    <div className={cn("my-3", PROCESS_META_CLASS)}>
+    <div className={cn("my-2", PROCESS_META_CLASS)}>
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
@@ -649,7 +649,7 @@ function ProcessGroup({ group }) {
           .replace("{{tools}}", toolCount);
 
   return (
-    <div className={cn("my-3", PROCESS_META_CLASS)}>
+    <div className={cn("my-2", PROCESS_META_CLASS)}>
       <button
         type="button"
         onClick={() => setExpanded((value) => !value)}
@@ -1049,7 +1049,10 @@ function FileChangesSummary({ changes }) {
       const result =
         changeSetIds.length > 1
           ? await api.undoSessionChanges(state.currentSessionId, changeSetIds)
-          : await api.undoSessionChange(state.currentSessionId, changeSetIds[0]);
+          : await api.undoSessionChange(
+              state.currentSessionId,
+              changeSetIds[0],
+            );
       if (result?.error || result?.ok === false)
         throw new Error(result.message || t("undoChangeFailed"));
       setRevertedUndoKeys((prev) => new Set(prev).add(undoKey));
@@ -1248,8 +1251,8 @@ function UserText({ text }) {
             <div className="font-semibold mb-1.5">Dream</div>
             <div className="text-(--text-secondary)">
               Consolidates memory inbox entries and stale memory buckets. It can
-              run from the action palette or automatically when the inbox threshold
-              is reached.
+              run from the action palette or automatically when the inbox
+              threshold is reached.
             </div>
           </TooltipContent>
         </Tooltip>
@@ -1267,7 +1270,8 @@ function UserSkillChips({ badges = [], skills = [], className }) {
   return (
     <div className={cn("flex max-w-full flex-wrap gap-1.5", className)}>
       {items.map(({ name, status }) => {
-        const description = skills.find((item) => item.name === name)?.description || "";
+        const description =
+          skills.find((item) => item.name === name)?.description || "";
         const always = status === "always";
         return (
           <Tooltip key={name}>
@@ -1280,11 +1284,22 @@ function UserSkillChips({ badges = [], skills = [], className }) {
                     : "border-(--accent-purple)/25 bg-(--accent-purple-bg) text-accent-purple",
                 )}
               >
-                <Hammer size={14} className={cn("shrink-0", always && "opacity-70")} />
+                <Hammer
+                  size={14}
+                  className={cn("shrink-0", always && "opacity-70")}
+                />
                 <span className="max-w-[220px] truncate">{name}</span>
               </span>
             </TooltipTrigger>
-            {description ? <TooltipContent side="top" sideOffset={8} className="max-w-75 px-4 py-3 leading-relaxed whitespace-normal">{description}</TooltipContent> : null}
+            {description ? (
+              <TooltipContent
+                side="top"
+                sideOffset={8}
+                className="max-w-75 px-4 py-3 leading-relaxed whitespace-normal"
+              >
+                {description}
+              </TooltipContent>
+            ) : null}
           </Tooltip>
         );
       })}
@@ -1308,7 +1323,9 @@ function UserAttachments({ attachments = [], className }) {
             </AttachmentMedia>
             <AttachmentContent>
               <AttachmentTitle>{item.name}</AttachmentTitle>
-              <AttachmentDescription>{compactBytes(item.size)}</AttachmentDescription>
+              <AttachmentDescription>
+                {compactBytes(item.size)}
+              </AttachmentDescription>
             </AttachmentContent>
           </Attachment>
         ),
@@ -1327,7 +1344,10 @@ function UserImageAttachment({ item }) {
         orientation="vertical"
         className="w-40 border-0 bg-transparent p-0 shadow-none focus-within:ring-0"
       >
-        <AttachmentMedia variant="image" className="aspect-[4/3] w-full rounded-xl p-0">
+        <AttachmentMedia
+          variant="image"
+          className="aspect-[4/3] w-full rounded-xl p-0"
+        >
           <img
             src={item.url}
             alt={label}
@@ -1336,10 +1356,7 @@ function UserImageAttachment({ item }) {
             className="size-full object-cover"
           />
         </AttachmentMedia>
-        <AttachmentTrigger
-          aria-label={label}
-          onClick={() => setOpen(true)}
-        />
+        <AttachmentTrigger aria-label={label} onClick={() => setOpen(true)} />
       </Attachment>
       {open && (
         <ImagePreviewDialog
@@ -1712,7 +1729,9 @@ function AnswerProcessFold({ groups, durationMs }) {
             expanded && "rotate-90",
           )}
         />
-        <span className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}>
+        <span
+          className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}
+        >
           <span className="inline-block size-1.5 rounded-full bg-(--accent-blue)" />
         </span>
         <span className="font-medium">{label}</span>
@@ -1991,10 +2010,7 @@ export function MessageBubble({
                   )}
                 >
                   {userSkillChips.length > 0 && (
-                    <UserSkillChips
-                      badges={userSkillChips}
-                      skills={skills}
-                    />
+                    <UserSkillChips badges={userSkillChips} skills={skills} />
                   )}
                   <UserAttachments attachments={attachments} />
                 </div>
