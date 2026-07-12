@@ -1046,7 +1046,6 @@ export function AppProvider({ children }) {
   const pendingSkillBadgesRef = useRef([]);
   const pendingSkillSegmentsRef = useRef([]);
   const planRunPendingRef = useRef(false);
-  const aggressivePruneSavedRef = useRef(0);
   const planStepMessagesRef = useRef(new Map());
   const planOverviewMsgRef = useRef(null);
   const planParentMsgRef = useRef(null);
@@ -1593,6 +1592,8 @@ export function AppProvider({ children }) {
                 assistantGroup = {
                   id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-a${processed.length}`,
                   role: "general",
+                  sdkProvider: msg.sdkProvider || "",
+                  model: msg.model || "",
                   segments: [],
                   skillBadges: [],
                   fileChanges: [],
@@ -1675,12 +1676,18 @@ export function AppProvider({ children }) {
               assistantGroup = {
                 id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-a${processed.length}`,
                 role: "general",
+                sdkProvider: msg.sdkProvider || "",
+                model: msg.model || "",
                 segments: [],
                 skillBadges: [],
                 fileChanges: [],
               };
               processed.push(assistantGroup);
             }
+            if (!assistantGroup.sdkProvider && msg.sdkProvider)
+              assistantGroup.sdkProvider = msg.sdkProvider;
+            if (!assistantGroup.model && msg.model)
+              assistantGroup.model = msg.model;
             if (Array.isArray(msg.fileChanges) && msg.fileChanges.length) {
               assistantGroup.fileChanges = [
                 ...(assistantGroup.fileChanges || []),
@@ -2239,21 +2246,10 @@ export function AppProvider({ children }) {
           });
           break;
 
-        case "compact:aggressive-prune": {
-          // Beta aggressive prune runs proactively each step; accumulate tokens
-          // saved across the entire session so the activity reflects cumulative
-          // savings rather than a single prune.
-          const saved = Number(event.tokensSaved) || 0;
-          aggressivePruneSavedRef.current += saved;
-          upsertRuntimeActivity({
-            key: "aggressive-prune",
-            status: "done",
-            emoji: "✂️",
-            label: t("runtimeActivityAggressivePrune"),
-            detail: `-${aggressivePruneSavedRef.current} tokens (session)`,
-          });
+        case "compact:aggressive-prune":
+          // Keep the beta prune silent in the activity strip; savings already
+          // show up in the normal compact / usage UI.
           break;
-        }
 
         case "dream:auto":
           {
@@ -3315,7 +3311,6 @@ export function AppProvider({ children }) {
       switchSession: async (sessionId) => {
         const currentSessionId = stateRef.current.currentSessionId;
         if (!sessionId || sessionId === currentSessionId) return;
-        aggressivePruneSavedRef.current = 0;
         update({ currentView: "chat", messagesLoading: true, gitInfo: null });
         try {
           const result = await api.switchSession(sessionId);
@@ -3427,7 +3422,6 @@ export function AppProvider({ children }) {
       },
 
       newSession: async () => {
-        aggressivePruneSavedRef.current = 0;
         update({ currentView: "chat", messagesLoading: true });
         try {
           const result = await api.newSession(

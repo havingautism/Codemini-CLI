@@ -1175,6 +1175,11 @@ export function InputBar({
               current={mode}
               disabled={inputLocked}
             />
+            <ReasoningQuickControl
+              enabled={reasoningEnabled}
+              effort={reasoningEffort}
+              disabled={inputLocked}
+            />
             <SpecQuickSelect
               sessionId={rs.sessionId}
               visible={!isGeneralChat}
@@ -1191,11 +1196,6 @@ export function InputBar({
               disabled={inputLocked}
             />
             <SoulQuickSwitch disabled={inputLocked} />
-            <ReasoningQuickControl
-              enabled={reasoningEnabled}
-              effort={reasoningEffort}
-              disabled={inputLocked}
-            />
           </div>
           <div className="flex items-center gap-1.5 ml-auto shrink-0">
             {/* <button type="button" className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)" title="模型">

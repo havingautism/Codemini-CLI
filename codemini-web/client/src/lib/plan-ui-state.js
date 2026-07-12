@@ -59,6 +59,7 @@ export function createEmptyPlanRun({ goal = "", steps = [] } = {}) {
       summary: step.summary || "",
       segments: Array.isArray(step.segments) ? step.segments : [],
       model: step.model || "",
+      sdkProvider: step.sdkProvider || "",
     })),
   };
 }
@@ -377,6 +378,7 @@ export function applyPlanEventToMessage(message, event) {
         status,
         summary: event.summary ?? existing.summary,
         model: event.model || existing.model,
+        sdkProvider: event.sdkProvider || existing.sdkProvider,
         segments,
       };
 

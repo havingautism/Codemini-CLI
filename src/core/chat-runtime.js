@@ -4621,7 +4621,10 @@ async function askModel({
   const wrappedAgentEvent = (event) => {
     // Always accumulate messages in session (for token tracking), only save when persisting
     if (event?.type === 'assistant:start') {
-      session.messages.push(stampedMessage('assistant', ''));
+      session.messages.push(stampedMessage('assistant', '', {
+        ...(event.sdkProvider ? { sdk_provider: event.sdkProvider } : {}),
+        ...(event.model ? { model: event.model } : {})
+      }));
       activeAssistantIndex = session.messages.length - 1;
       if (persistSession) scheduleSessionSave();
     } else if (event?.type === 'assistant:delta') {
@@ -4790,7 +4793,13 @@ async function askModel({
       const startAssistantStream = () => {
         if (!started) {
           started = true;
-          wrappedAgentEvent({ type: 'assistant:start' });
+          wrappedAgentEvent({
+            type: 'assistant:start',
+            sdkProvider: config.sdk?.provider === 'anthropic'
+              ? 'anthropic'
+              : 'openai-compatible',
+            model: selectedModel
+          });
         }
       };
 
@@ -5175,11 +5184,21 @@ async function executePlanWithSubAgents({
   const goal = planState.goal || '';
   const planFilePath = planState.filePath || '';
   let partialDeltaText = '';
+  const planSdkProvider = config.sdk?.provider === 'anthropic'
+    ? 'anthropic'
+    : 'openai-compatible';
   const emitPlanEvent = (evt) => {
-    if (evt?.type === 'assistant:delta' && evt.text) {
-      partialDeltaText += String(evt.text);
+    const event = evt?.type === 'assistant:start' || String(evt?.type || '').startsWith('plan:')
+      ? {
+          ...evt,
+          sdkProvider: evt.sdkProvider || planSdkProvider,
+          ...(evt.model ? {} : { model: model || config.model?.name || '' })
+        }
+      : evt;
+    if (event?.type === 'assistant:delta' && event.text) {
+      partialDeltaText += String(event.text);
     }
-    if (onAgentEvent) onAgentEvent(evt);
+    if (onAgentEvent) onAgentEvent(event);
   };
   if (steps.length === 0) {
     return { text: '(no steps to execute)', aborted: false };

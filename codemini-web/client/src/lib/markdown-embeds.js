@@ -408,11 +408,44 @@ export function promoteTableCellImageUrls(text) {
     .join('\n');
 }
 
+/**
+ * Convert bare image file URLs (including lines like `👉 https://…/a.jpg`)
+ * into markdown images. Skips URLs already inside markdown links/images and
+ * fenced code blocks.
+ */
+export function promoteBareImageUrls(text) {
+  const source = typeof text === 'string' ? text : String(text || '');
+  if (!source.trim()) return source;
+
+  const lines = source.split('\n');
+  let inFence = false;
+
+  return lines
+    .map((line) => {
+      const trimmed = line.trim();
+      if (/^```/.test(trimmed)) {
+        inFence = !inFence;
+        return line;
+      }
+      if (inFence) return line;
+
+      INLINE_URL_RE.lastIndex = 0;
+      return line.replace(INLINE_URL_RE, (raw, offset) => {
+        if (isMarkdownLinkedUrl(line, offset)) return raw;
+        const url = trimUrlTrailingPunctuation(raw);
+        if (!isImageUrl(url)) return raw;
+        const trailing = raw.slice(url.length);
+        return `![](${url})${trailing}`;
+      });
+    })
+    .join('\n');
+}
+
 export function normalizeMarkdownForDisplay(text, { linkFallback = 'Link', imageFallback = 'Image' } = {}) {
   const source = typeof text === 'string' ? text : String(text || '');
   if (!source.trim()) return '';
 
-  let normalized = promoteTableCellImageUrls(source);
+  let normalized = promoteBareImageUrls(promoteTableCellImageUrls(source));
 
   // Prefer inline images when a markdown link points at an image file.
   normalized = normalized.replace(MARKDOWN_LINK_RE, (_full, label, url) => {

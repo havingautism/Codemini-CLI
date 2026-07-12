@@ -35,7 +35,9 @@ import { formatTimestamp } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
 import * as api from "@/hooks/use-api.js";
 import { useRotatingLabel } from "@/hooks/use-rotating-label.js";
+import { executionModeSkillContext } from "@/lib/skill-visibility.js";
 import { useApp } from "@/context/app-context.jsx";
+import { getMessageModelIdentity } from "@/lib/message-model-identity.js";
 import { ROLE_BADGE_CLASS, ROLE_PILLS } from "./PlanProgress.jsx";
 import { PlanStepStatusGlyph } from "@/components/plan-step-icons.jsx";
 import { PatchDiff } from "@pierre/diffs/react";
@@ -179,6 +181,21 @@ function resolveHintPhrases(listKey, fallbackKey) {
   return fallback ? [fallback] : [];
 }
 
+function resolveModeHintPhrases(kind, mode = "normal") {
+  const context = executionModeSkillContext(mode);
+  const coding = context === "coding";
+  if (kind === "tooling") {
+    return resolveHintPhrases(
+      coding ? "toolingHintsCoding" : "toolingHintsDaily",
+      "tooling",
+    );
+  }
+  return resolveHintPhrases(
+    coding ? "thinkingNowHintsCoding" : "thinkingNowHintsDaily",
+    "thinkingNow",
+  );
+}
+
 function RotatingStatusLabel({ phrases, active }) {
   const { label, visible } = useRotatingLabel(phrases, { active });
   return (
@@ -190,8 +207,12 @@ function RotatingStatusLabel({ phrases, active }) {
 
 function ThoughtBlock({ segment }) {
   const [open, setOpen] = useState(false);
+  const { state } = useApp();
   const streaming = Boolean(segment.isStreaming);
-  const thinkingPhrases = resolveHintPhrases("thinkingNowHints", "thinkingNow");
+  const thinkingPhrases = resolveModeHintPhrases(
+    "thinking",
+    state.runtimeState?.mode,
+  );
 
   return (
     <div className={cn("my-2", PROCESS_META_CLASS)}>
@@ -482,11 +503,15 @@ function DreamNotice({ notice }) {
 
 function ToolGroup({ cards }) {
   const [expanded, setExpanded] = useState(false);
+  const { state } = useApp();
   const planCards = cards.filter(isCreatePlanCard);
   const otherCards = cards.filter((card) => !isCreatePlanCard(card));
   const total = otherCards.length;
   const hasRunningTool = otherCards.some((card) => card.status === "running");
-  const toolingPhrases = resolveHintPhrases("toolingHints", "tooling");
+  const toolingPhrases = resolveModeHintPhrases(
+    "tooling",
+    state.runtimeState?.mode,
+  );
   const shouldUseSummaryHeader = total > TOOL_COLLAPSE_THRESHOLD;
   const runCount = otherCards.filter((card) => {
     const name = String(card.name || "").toLowerCase();
@@ -1599,6 +1624,44 @@ function UsageBadge({ usage }) {
   );
 }
 
+function ModelIdentityBadge({ sdkProvider, model }) {
+  const identity = getMessageModelIdentity({ sdkProvider, model });
+  if (!identity) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex h-8 max-w-full items-center gap-2.5 rounded-md px-1.5 text-[11px] text-(--text-muted)">
+          <span className="inline-flex items-center gap-1 whitespace-nowrap">
+            <img
+              src={identity.logo}
+              alt=""
+              width={13}
+              height={13}
+              className="size-[13px] shrink-0 object-contain"
+            />
+            <span className="uppercase">{identity.sdkLabel}</span>
+          </span>
+          <span className="inline-flex items-center gap-1 whitespace-nowrap">
+            {identity.modelLogo ? (
+              <img
+                src={identity.modelLogo}
+                alt=""
+                width={13}
+                height={13}
+                className="size-[13px] shrink-0 object-contain"
+              />
+            ) : null}
+            <span className="uppercase">{identity.model}</span>
+          </span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>
+        {identity.details}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function isMessageComplete(message, renderGroups = []) {
   if (message?.loading) return false;
   if (message?.isComplete === false) return false;
@@ -1651,6 +1714,8 @@ function shouldShowFileChanges(message, messageComplete, mergedFileChanges) {
 function MessageActions({
   text,
   usage = null,
+  sdkProvider = "",
+  model = "",
   showUsage = true,
   retryPrompt = "",
   canRetry = false,
@@ -1667,14 +1732,8 @@ function MessageActions({
     window.setTimeout(() => setCopied(false), 1200);
   }
 
-  return (
-    <div
-      className={cn(
-        "flex items-center gap-1",
-        align === "right" ? "justify-end" : "justify-start",
-        className,
-      )}
-    >
+  const actionButtons = (
+    <>
       <MessageActionButton
         label={t("copyMessage")}
         copiedLabel={t("copied")}
@@ -1693,7 +1752,30 @@ function MessageActions({
           <ArrowCounterClockwise size={17} />
         </MessageActionButton>
       )}
-      {showUsage && <UsageBadge usage={usage} />}
+    </>
+  );
+
+  return (
+    <div className={cn("flex w-full items-center gap-1", className)}>
+      {align !== "right" && (
+        <div className="flex shrink-0 items-center gap-1">{actionButtons}</div>
+      )}
+      {showUsage && (
+        <div
+          className={cn(
+            "flex min-w-0 items-center justify-end gap-1",
+            align !== "right" && "ml-auto",
+          )}
+        >
+          <ModelIdentityBadge sdkProvider={sdkProvider} model={model} />
+          <UsageBadge usage={usage} />
+        </div>
+      )}
+      {align === "right" && (
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          {actionButtons}
+        </div>
+      )}
     </div>
   );
 }
@@ -1788,6 +1870,8 @@ export function MessageBubble({
     timestamp,
     planStep,
     usage,
+    sdkProvider,
+    model,
     attachments = [],
   } = message;
   const ts = timestamp ? formatTimestamp(timestamp) : "";
@@ -2044,6 +2128,8 @@ export function MessageBubble({
           <MessageActions
             text={messageText}
             usage={usage}
+            sdkProvider={sdkProvider}
+            model={model}
             showUsage={messageComplete}
             retryPrompt={retryPrompt}
             canRetry={canRetry}
@@ -2135,6 +2221,8 @@ export function MessageBubble({
             <MessageActions
               text={messageText}
               usage={usage}
+              sdkProvider={sdkProvider || planStep?.sdkProvider}
+              model={model || planStep?.model}
               showUsage={showActions}
               retryPrompt={retryPrompt}
               canRetry={canRetry}

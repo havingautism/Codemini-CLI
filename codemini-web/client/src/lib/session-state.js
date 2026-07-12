@@ -292,6 +292,8 @@ export function reduceSessionTranscriptEvent(state, event) {
                 segments: [],
                 skillBadges: [],
                 fileChanges: [],
+                sdkProvider: event.sdkProvider || "",
+                model: event.model || "",
                 isComplete: false,
                 timestamp: event.startedAt || new Date().toISOString(),
               },
@@ -305,7 +307,12 @@ export function reduceSessionTranscriptEvent(state, event) {
           ...sessionMessagesById,
           [sessionId]: messages.map((message) =>
             message.id === messageId
-              ? { ...message, isComplete: false }
+              ? {
+                  ...message,
+                  ...(event.sdkProvider ? { sdkProvider: event.sdkProvider } : {}),
+                  ...(event.model ? { model: event.model } : {}),
+                  isComplete: false,
+                }
               : message
           ),
         };

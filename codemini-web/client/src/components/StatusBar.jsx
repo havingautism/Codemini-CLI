@@ -9,39 +9,15 @@ import {
   Sparkle,
 } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
+import { getModelLogo } from "@/lib/message-model-identity.js";
 import { t } from "../../i18n/index.js";
 
 const STAGE_LIVE_CLASS = "linear-status-dot linear-status-dot--sm";
-
-const MODEL_LOGO_MAP = [
-  { pattern: /\bdeepseek\b/i, logo: "/logos/deepseek-color.svg" },
-  { pattern: /\bopenai\b/i, logo: "/logos/openai.svg" },
-  { pattern: /\bgpt\b/i, logo: "/logos/openai.svg" },
-  { pattern: /\bo[134]\b/i, logo: "/logos/openai.svg" },
-  { pattern: /\bgemini\b/i, logo: "/logos/gemini-color.svg" },
-  { pattern: /\bqwen\b/i, logo: "/logos/qwen-color.svg" },
-  { pattern: /\bchatglm\b/i, logo: "/logos/chatglm-color.svg" },
-  { pattern: /\bglm-/i, logo: "/logos/glm-color.svg" },
-  { pattern: /\bkimi\b/i, logo: "/logos/kimi-color.svg" },
-  { pattern: /\bminimax\b/i, logo: "/logos/minimax-color.svg" },
-  { pattern: /\bmoonshot\b/i, logo: "/logos/moonshot.svg" },
-  { pattern: /\bnvidia\b/i, logo: "/logos/nvidia-color.svg" },
-  { pattern: /\bzhipu\b/i, logo: "/logos/zhipu-color.svg" },
-  { pattern: /\bclaude\b/i, logo: "/logos/claude-color.svg" },
-];
 
 const SDK_LOGO_MAP = {
   "openai-compatible": "/logos/openai.svg",
   anthropic: "/logos/claude-color.svg",
 };
-
-function getModelLogo(modelName) {
-  if (!modelName) return null;
-  for (const { pattern, logo } of MODEL_LOGO_MAP) {
-    if (pattern.test(modelName)) return logo;
-  }
-  return null;
-}
 
 function ModelLogo({ src, size = 13 }) {
   if (!src) return null;

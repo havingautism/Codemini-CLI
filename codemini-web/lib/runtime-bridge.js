@@ -19,6 +19,7 @@ import {
   settleRunningCreatePlanCards,
 } from '../client/src/lib/plan-ui-state.js';
 import fs from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { getSessionsDir } from '../../src/core/paths.js';
 import { CHAT_ACTIONS } from '../../src/core/chat-action-dispatcher.js';
@@ -328,13 +329,32 @@ export class RuntimeBridge {
   async #writeUiTranscriptSnapshot() {
     const sessionId = this.getSessionId();
     if (!sessionId) return;
+    // Guard against wiping a persisted transcript with an unhydrated in-memory
+    // buffer (e.g. bridge recreate / HMR / page refresh then first new turn).
+    if (this.#uiMessages.length === 0) {
+      this.#hydrateUiTranscriptFromDiskSync();
+      if (this.#uiMessages.length === 0) return;
+    }
     try {
       const filePath = webTranscriptPath(sessionId);
       await fs.mkdir(path.dirname(filePath), { recursive: true });
+      let messages = this.#uiMessages;
+      try {
+        const raw = await fs.readFile(filePath, 'utf8');
+        const existing = JSON.parse(raw)?.messages;
+        if (Array.isArray(existing) && existing.length > messages.length) {
+          const memIds = new Set(messages.map((message) => message?.id).filter(Boolean));
+          if (existing[0]?.id && !memIds.has(existing[0].id)) {
+            const prefix = existing.filter((message) => message?.id && !memIds.has(message.id));
+            messages = [...prefix, ...messages];
+            this.#uiMessages = messages;
+          }
+        }
+      } catch {}
       await fs.writeFile(filePath, JSON.stringify({
         sessionId,
         updatedAt: new Date().toISOString(),
-        messages: this.#uiMessages
+        messages
       }), 'utf8');
     } catch {}
   }
@@ -352,6 +372,19 @@ export class RuntimeBridge {
     })();
   }
 
+  #hydrateUiTranscriptFromDiskSync() {
+    if (this.#uiMessages.length > 0) return;
+    const sessionId = this.getSessionId();
+    if (!sessionId) return;
+    try {
+      const raw = readFileSync(webTranscriptPath(sessionId), 'utf8');
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed?.messages) && parsed.messages.length > 0) {
+        this.#uiMessages = parsed.messages;
+      }
+    } catch {}
+  }
+
   #resetUiTranscriptIfSessionChanged() {
     const sessionId = this.getSessionId();
     if (sessionId === this.#uiTranscriptSessionId) return;
@@ -364,6 +397,12 @@ export class RuntimeBridge {
     this.#uiPendingSkillBadges = [];
     this.#uiPendingSkillSegments = [];
     this.#aggressivePruneSaved = 0;
+  }
+
+  /** Reset on session change, then reload any persisted UI transcript before mutating. */
+  #ensureUiTranscriptLoaded() {
+    this.#resetUiTranscriptIfSessionChanged();
+    this.#hydrateUiTranscriptFromDiskSync();
   }
 
   #settleCreatePlanToolCard(messageId = this.#uiPlanParentMsgId) {
@@ -489,7 +528,7 @@ export class RuntimeBridge {
 
   #recordUiEvent(event) {
     if (!event?.type) return null;
-    this.#resetUiTranscriptIfSessionChanged();
+    this.#ensureUiTranscriptLoaded();
     const activeId = this.#uiActiveMsgId;
     const streamOptions = {
       stripText: stripPlanProgressText,
@@ -511,12 +550,16 @@ export class RuntimeBridge {
             timestamp: new Date().toISOString(),
             skillBadges: pendingSkillBadges,
             segments: pendingSkillSegments,
+            sdkProvider: event.sdkProvider || '',
+            model: event.model || '',
             isComplete: false
           });
         } else {
           this.#updateUiMessage(activeId, (message) => ({
             ...message,
             isComplete: false,
+            ...(event.sdkProvider ? { sdkProvider: event.sdkProvider } : {}),
+            ...(event.model ? { model: event.model } : {}),
             skillBadges: appendUniqueSkillBadges(message.skillBadges || [], pendingSkillBadges),
             segments: pendingSkillSegments.length
               ? [...pendingSkillSegments, ...(Array.isArray(message.segments) ? message.segments : [])]
@@ -766,7 +809,7 @@ export class RuntimeBridge {
 
   handleSubmit(line, options = {}) {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
-    this.#resetUiTranscriptIfSessionChanged();
+    this.#ensureUiTranscriptLoaded();
     const trimmed = String(line || '').trim();
     if (!options?.readOnlyCodeWiki && trimmed && !isWorkflowControlLine(trimmed, this.getState())) {
       this.#addUiMessage({
@@ -845,7 +888,7 @@ export class RuntimeBridge {
     if (this.#busy) {
       return { accepted: false, error: true, code: 'BUSY', message: 'A request is already in progress' };
     }
-    this.#resetUiTranscriptIfSessionChanged();
+    this.#ensureUiTranscriptLoaded();
     const selectedSkills = [...new Set(
       (Array.isArray(selectedSkillNames) ? selectedSkillNames : [])
         .map((name) => String(name || '').trim())
@@ -1254,6 +1297,8 @@ export class RuntimeBridge {
           reasoningStartedAt: m.reasoning_started_at || null,
           reasoningEndedAt: m.reasoning_ended_at || null,
           reasoningDurationMs: Number.isFinite(Number(m.reasoning_duration_ms)) ? Number(m.reasoning_duration_ms) : null,
+          sdkProvider: typeof m.sdk_provider === 'string' ? m.sdk_provider : '',
+          model: typeof m.model === 'string' ? m.model : '',
           toolCalls: m.tool_calls || [],
           fileChanges: Array.isArray(m.file_changes) ? m.file_changes : [],
           toolCallId: m.tool_call_id || null,
@@ -1312,7 +1357,7 @@ export class RuntimeBridge {
     // only for cross-session reads, which shouldn't happen in the pool
     // architecture (one bridge per session).
     if (!requestedSessionId || requestedSessionId === this.getSessionId()) {
-      this.#resetUiTranscriptIfSessionChanged();
+      this.#ensureUiTranscriptLoaded();
       if (this.#uiMessages.length > 0) return this.#uiMessages;
     }
     const sessionIdToRead = requestedSessionId || this.getSessionId();
