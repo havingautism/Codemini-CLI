@@ -5,6 +5,7 @@ const MARKDOWN_IMAGE_RE = /!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)/gi;
 const STANDALONE_MARKDOWN_IMAGE_RE = /^!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)$/i;
 const STANDALONE_LINKED_MARKDOWN_IMAGE_RE = /^\[!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)\]\((https?:\/\/[^\s)]+)\)$/i;
 const AUTOLINK_RE = /<(https?:\/\/[^>\s]+)>/gi;
+const IMAGE_PATH_EXT_RE = /\.(?:avif|bmp|gif|ico|jpe?g|png|svg|webp)$/i;
 
 function trimUrlTrailingPunctuation(url) {
   return String(url || '').replace(/[.,;:!?)]+$/g, '');
@@ -30,6 +31,20 @@ export function isStandaloneUrl(value) {
   try {
     const parsed = new URL(text);
     return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/** True when a URL's pathname ends with a common image extension (query/hash ignored). */
+export function isImageUrl(value) {
+  const text = trimUrlTrailingPunctuation(String(value || '').trim());
+  if (!text) return false;
+  try {
+    const parsed = new URL(text);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    const pathname = decodeURIComponent(parsed.pathname).replace(/\/+$/, '');
+    return IMAGE_PATH_EXT_RE.test(pathname);
   } catch {
     return false;
   }
@@ -97,10 +112,20 @@ export function splitMarkdownForEmbeds(text, { includeLinks = true } = {}) {
 
   for (const line of lines) {
     const trimmed = line.trim();
-    if (includeLinks && isStandaloneUrl(trimmed)) {
-      flushMarkdown();
-      parts.push({ type: 'embed', url: trimmed });
-      continue;
+    if (isStandaloneUrl(trimmed)) {
+      const url = trimUrlTrailingPunctuation(trimmed);
+      // Image file URLs always become inline images, even when link embeds are off
+      // (chat body uses includeLinks=false and shows non-image links in the banner).
+      if (isImageUrl(url)) {
+        flushMarkdown();
+        parts.push({ type: 'image', alt: '', url });
+        continue;
+      }
+      if (includeLinks) {
+        flushMarkdown();
+        parts.push({ type: 'embed', url });
+        continue;
+      }
     }
     const linkedImageMatch = trimmed.match(STANDALONE_LINKED_MARKDOWN_IMAGE_RE);
     if (linkedImageMatch) {
@@ -139,7 +164,7 @@ export function extractLinksFromMarkdownText(text) {
   const seen = new Set();
   const addItem = (item) => {
     const url = trimUrlTrailingPunctuation(String(item?.url || '').trim());
-    if (!url || seen.has(url)) return;
+    if (!url || seen.has(url) || isImageUrl(url)) return;
     seen.add(url);
     items.push({
       type: item.type || 'link',
@@ -320,21 +345,91 @@ export function createGalleryIndexResolver(images) {
   };
 }
 
+function looksLikeTableRow(line) {
+  const trimmed = String(line || '').trim();
+  if (!trimmed.includes('|')) return false;
+  if (/^```/.test(trimmed)) return false;
+  const cells = trimmed.split('|').length - 1;
+  return cells >= 1 && (trimmed.startsWith('|') || trimmed.endsWith('|') || cells >= 2);
+}
+
+function isTableSeparatorRow(line) {
+  const trimmed = String(line || '').trim();
+  if (!trimmed.includes('|') && !/-{3,}/.test(trimmed)) return false;
+  const body = trimmed.replace(/^\|/, '').replace(/\|$/, '');
+  const cells = body.split('|').map((cell) => cell.trim());
+  if (!cells.length) return false;
+  return cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function promoteImageUrlInTableCell(cell) {
+  const trimmed = String(cell || '').trim();
+  if (!trimmed) return cell;
+
+  if (isStandaloneUrl(trimmed) && isImageUrl(trimmed)) {
+    const url = trimUrlTrailingPunctuation(trimmed);
+    return String(cell).replace(trimmed, `![](${url})`);
+  }
+
+  // Whole-cell markdown link to an image file: [label](https://…/a.jpg)
+  const linkMatch = trimmed.match(/^\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)$/i);
+  if (linkMatch && isImageUrl(linkMatch[2])) {
+    const alt = linkMatch[1] || '';
+    const url = trimUrlTrailingPunctuation(linkMatch[2]);
+    return String(cell).replace(trimmed, `![${alt}](${url})`);
+  }
+
+  return cell;
+}
+
+/** Turn whole-cell bare image URLs inside markdown tables into `![](url)`. */
+export function promoteTableCellImageUrls(text) {
+  const source = typeof text === 'string' ? text : String(text || '');
+  if (!source.includes('|')) return source;
+
+  const lines = source.split('\n');
+  let inFence = false;
+
+  return lines
+    .map((line) => {
+      const trimmed = line.trim();
+      if (/^```/.test(trimmed)) {
+        inFence = !inFence;
+        return line;
+      }
+      if (inFence || !looksLikeTableRow(line) || isTableSeparatorRow(line)) {
+        return line;
+      }
+      return line
+        .split('|')
+        .map((cell) => promoteImageUrlInTableCell(cell))
+        .join('|');
+    })
+    .join('\n');
+}
+
 export function normalizeMarkdownForDisplay(text, { linkFallback = 'Link', imageFallback = 'Image' } = {}) {
   const source = typeof text === 'string' ? text : String(text || '');
   if (!source.trim()) return '';
 
-  let normalized = source.replace(MARKDOWN_IMAGE_RE, (_full, alt, url) => {
-    const nextAlt = normalizeImageAlt(alt, url, imageFallback);
-    return `![${nextAlt}](${url})`;
-  });
-  MARKDOWN_IMAGE_RE.lastIndex = 0;
+  let normalized = promoteTableCellImageUrls(source);
 
+  // Prefer inline images when a markdown link points at an image file.
   normalized = normalized.replace(MARKDOWN_LINK_RE, (_full, label, url) => {
+    if (isImageUrl(url)) {
+      const nextAlt = normalizeImageAlt(label, url, imageFallback);
+      return `![${nextAlt}](${url})`;
+    }
     const nextLabel = normalizeLinkLabel(label, url, linkFallback);
     return `[${nextLabel}](${url})`;
   });
   MARKDOWN_LINK_RE.lastIndex = 0;
+
+  normalized = normalized.replace(MARKDOWN_IMAGE_RE, (_full, alt, url) => {
+    const nextAlt = normalizeImageAlt(alt, url, imageFallback);
+    return `![${nextAlt}](${url})`;
+  });
+  MARKDOWN_IMAGE_RE.lastIndex = 0;
 
   return normalized;
 }

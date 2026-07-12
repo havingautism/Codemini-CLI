@@ -512,7 +512,7 @@ function ToolGroup({ cards }) {
         </div>
       )}
       {hasRunningTool && (
-        <div className="msg-process-meta__detail flex items-center gap-2 px-3 py-1.5 text-[11px]">
+        <div className="msg-process-meta__detail flex items-center gap-2 px-3 py-1.5 text-[11px] my-2">
           <Spinner />
           <span>{t("tooling")}</span>
         </div>

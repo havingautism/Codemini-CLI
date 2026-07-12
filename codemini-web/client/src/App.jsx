@@ -505,6 +505,7 @@ function Shell() {
           <GitDiffDialog
             open={state.gitDiffOpen}
             onOpenChange={actions.setGitDiffOpen}
+            sessionId={state.currentSessionId}
           />
         )}
 

@@ -63,7 +63,7 @@ function formatDiffPath(filePath) {
   return `.../${parts.slice(-2).join("/")}`;
 }
 
-export function GitDiffDialog({ open, onOpenChange }) {
+export function GitDiffDialog({ open, onOpenChange, sessionId }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [selectedFile, setSelectedFile] = useState(null);
@@ -124,12 +124,12 @@ export function GitDiffDialog({ open, onOpenChange }) {
       return;
     }
     setLoading(true);
-    fetchGitDiff()
+    fetchGitDiff(sessionId)
       .then((res) => {
         setData(res);
       })
       .finally(() => setLoading(false));
-  }, [open]);
+  }, [open, sessionId]);
 
   useEffect(() => {
     if (!open) return;

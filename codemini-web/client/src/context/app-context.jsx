@@ -1262,11 +1262,38 @@ export function AppProvider({ children }) {
     [update],
   );
 
-  const loadGitInfo = useCallback(async ({ isAlive = () => true } = {}) => {
+  const gitInfoRequestRef = useRef(0);
+
+  const loadGitInfo = useCallback(async ({ isAlive = () => true, sessionId } = {}) => {
+    const targetSessionId = sessionId || stateRef.current.currentSessionId || null;
+    const requestId = ++gitInfoRequestRef.current;
+    if (isAlive()) update({ gitInfo: null });
     try {
-      const info = await api.fetchGitInfo();
-      if (isAlive()) update({ gitInfo: info });
-    } catch {}
+      const info = await api.fetchGitInfo(targetSessionId);
+      if (!isAlive() || requestId !== gitInfoRequestRef.current) return;
+      if (
+        targetSessionId &&
+        stateRef.current.currentSessionId &&
+        targetSessionId !== stateRef.current.currentSessionId
+      ) {
+        return;
+      }
+      update({ gitInfo: info });
+    } catch {
+      if (!isAlive() || requestId !== gitInfoRequestRef.current) return;
+      update({
+        gitInfo: {
+          isGit: false,
+          branch: null,
+          dirty: false,
+          staged: 0,
+          modified: 0,
+          untracked: 0,
+          linesAdded: 0,
+          linesRemoved: 0,
+        },
+      });
+    }
   }, [update]);
 
   const loadGitBatch = useCallback(
@@ -2523,7 +2550,9 @@ export function AppProvider({ children }) {
           }));
           loadHistory();
           loadSessions({ force: true });
-          loadGitInfo();
+          loadGitInfo({
+            sessionId: stateRef.current.currentSessionId,
+          });
           const rs = stateRef.current.runtimeState;
           if (rs?.sessionId && stateRef.current.currentView === "chat") {
             updateRoute("chat", rs.sessionId, { replace: true });
@@ -2794,7 +2823,7 @@ export function AppProvider({ children }) {
         loadHistory({ isAlive, sessionId: rs?.sessionId }),
         loadSessions({ isAlive }),
         loadSkills({ isAlive }),
-        loadGitInfo({ isAlive }),
+        loadGitInfo({ isAlive, sessionId: rs?.sessionId }),
         api
           .fetchVersion()
           .then((versionInfo) => {
@@ -2825,7 +2854,7 @@ export function AppProvider({ children }) {
             await loadState(route.sessionId);
             await loadSessionMessages(null, { sessionId: route.sessionId });
             loadSessions();
-            loadGitInfo();
+            loadGitInfo({ sessionId: route.sessionId });
           }
         } catch {
           update({ messagesLoading: false });
@@ -2837,7 +2866,7 @@ export function AppProvider({ children }) {
         const projectPath = route.projectPath || rs?.cwd || "";
         update({ currentView: "codewiki", codewikiProjectPath: projectPath });
         loadSessions();
-        loadGitInfo();
+        loadGitInfo({ sessionId: rs?.sessionId });
       }
     };
     window.addEventListener("popstate", handlePopState);
@@ -3369,7 +3398,7 @@ export function AppProvider({ children }) {
         const currentSessionId = stateRef.current.currentSessionId;
         if (!sessionId || sessionId === currentSessionId) return;
         aggressivePruneSavedRef.current = 0;
-        update({ currentView: "chat", messagesLoading: true });
+        update({ currentView: "chat", messagesLoading: true, gitInfo: null });
         try {
           const result = await api.switchSession(sessionId);
           if (result.ok) {
@@ -3418,7 +3447,7 @@ export function AppProvider({ children }) {
               { sessionId, reconcileCached: true },
             );
             loadSessions();
-            loadGitInfo();
+            loadGitInfo({ sessionId });
             await msgPromise;
           } else {
             update({ messagesLoading: false });
@@ -3466,7 +3495,7 @@ export function AppProvider({ children }) {
             await Promise.all([
               loadState(replacement.sessionId),
               loadSessionMessages(null, { sessionId: replacement.sessionId }),
-              loadGitInfo(),
+              loadGitInfo({ sessionId: replacement.sessionId }),
             ]);
             // Replacement session is always idle; reset live/stageLabel
             // since loadState may have kept prev.live from the deleted session.
@@ -3522,6 +3551,7 @@ export function AppProvider({ children }) {
           messagesLoading: nextView === "chat",
           codewikiProjectPath: pendingCodeWikiProjectPath,
           isGeneral: openingGeneral,
+          gitInfo: null,
         });
         try {
           const result = await api.openProject(projectPath, {
@@ -3579,7 +3609,7 @@ export function AppProvider({ children }) {
                 : Promise.resolve();
             await Promise.all([
               loadSessions({ force: true }),
-              loadGitInfo(),
+              loadGitInfo({ sessionId: result.sessionId }),
               msgPromise,
             ]);
             if (nextView === "chat") update({ messagesLoading: false });

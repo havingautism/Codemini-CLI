@@ -2,7 +2,6 @@
 import {
   BookOpenText,
   Brain,
-  Check,
   DotsThree,
   Folder,
   GearSix,
@@ -511,7 +510,15 @@ export function Sidebar({
               0,
               projectSessionLimit,
             );
-            const git = gitBatch?.[projectKey];
+            const sampleSession = projectSessions[0];
+            const git =
+              gitBatch?.[projectKey] ||
+              (sampleSession?.projectDir
+                ? gitBatch?.[sampleSession.projectDir]
+                : null) ||
+              (sampleSession?.projectKey
+                ? gitBatch?.[sampleSession.projectKey]
+                : null);
             const isActive = projectKey === activeProjectKey;
             const canOpenCodeWiki = projectKey !== "unknown";
             return (
@@ -527,7 +534,11 @@ export function Sidebar({
                     className="min-w-0 flex-1 border-0 bg-transparent flex items-center gap-2 text-left text-inherit cursor-pointer"
                     onClick={() => toggleProject(projectKey)}
                   >
-                    <Folder size={13} className="shrink-0" />
+                    {git?.isGit ? (
+                      <GitHubIcon size={13} className="shrink-0" />
+                    ) : (
+                      <Folder size={13} className="shrink-0" />
+                    )}
                     <span
                       className={cn(
                         "truncate flex-1",
@@ -567,12 +578,6 @@ export function Sidebar({
                     >
                       <BookOpenText size={13} strokeWidth={1.9} />
                     </button>
-                  )}
-                  {git?.isGit && (
-                    <GitHubIcon
-                      size={11}
-                      className="shrink-0 text-(--text-muted)"
-                    />
                   )}
                   <span className="text-[11px] px-2">
                     {projectSessions.length}
@@ -874,16 +879,16 @@ export function Sidebar({
             <PopoverContent
               align="center"
               side="top"
-              className="w-30 p-1"
+              className="flex w-30 flex-col gap-1 p-1"
             >
               {["zh", "en"].map((locale) => (
                 <button
                   key={locale}
                   type="button"
                   className={cn(
-                    "w-full rounded-md px-2.5 py-1.5 text-left text-[13px] flex items-center justify-between hover:bg-(--bg-hover)",
+                    "w-full rounded-md px-2.5 py-1.5 text-left text-[13px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
                     getLocale() === locale &&
-                      "text-(--text-primary) font-medium",
+                      "bg-(--selected-bg) font-medium text-(--text-primary) hover:bg-(--selected-bg)",
                   )}
                   onClick={() => {
                     if (getLocale() !== locale) {
@@ -892,8 +897,7 @@ export function Sidebar({
                     }
                   }}
                 >
-                  <span>{locale === "zh" ? "中文" : "English"}</span>
-                  {getLocale() === locale && <Check size={13} />}
+                  {locale === "zh" ? "中文" : "English"}
                 </button>
               ))}
             </PopoverContent>
@@ -915,7 +919,7 @@ export function Sidebar({
             <PopoverContent
               align="center"
               side="top"
-              className="w-40 p-1"
+              className="flex w-40 flex-col gap-1 p-1"
             >
               {[
                 { mode: "light", icon: Sun, label: t("lightMode") },
@@ -926,16 +930,14 @@ export function Sidebar({
                   key={mode}
                   type="button"
                   className={cn(
-                    "w-full rounded-md px-2.5 py-1.5 text-left text-[13px] flex items-center justify-between hover:bg-(--bg-hover)",
-                    themeMode === mode && "text-(--text-primary) font-medium",
+                    "flex w-full items-center gap-1.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+                    themeMode === mode &&
+                      "bg-(--selected-bg) font-medium text-(--text-primary) hover:bg-(--selected-bg)",
                   )}
                   onClick={() => onSetTheme(mode)}
                 >
-                  <span className="flex items-center gap-1.5">
-                    <Icon size={13} strokeWidth={1.8} />
-                    <span>{label}</span>
-                  </span>
-                  {themeMode === mode && <Check size={13} />}
+                  <Icon size={13} strokeWidth={1.8} />
+                  <span>{label}</span>
                 </button>
               ))}
             </PopoverContent>

@@ -65,6 +65,7 @@ export function MarkdownLightboxImage({
       >
         <button
           type="button"
+          data-markdown-lightbox=""
           onClick={handleOpen}
           className={cn(
             "group inline-block max-w-full overflow-hidden rounded-lg text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--text-primary)/20",

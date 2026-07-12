@@ -139,7 +139,6 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
                       key={root.path}
                       value={root.path}
                       textValue={root.path}
-                      className="pr-8"
                     >
                       {formatRootLabel(root)}
                     </SelectItem>

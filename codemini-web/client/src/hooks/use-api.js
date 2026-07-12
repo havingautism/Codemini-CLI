@@ -296,13 +296,15 @@ export async function fetchProject() {
   return res.json();
 }
 
-export async function fetchGitInfo() {
-  const res = await api('/api/git');
+export async function fetchGitInfo(sessionId) {
+  const path = sessionId ? withSessionQuery('/api/git', sessionId) : '/api/git';
+  const res = await api(path);
   return res.json();
 }
 
-export async function fetchGitDiff() {
-  const res = await api('/api/git-diff');
+export async function fetchGitDiff(sessionId) {
+  const path = sessionId ? withSessionQuery('/api/git-diff', sessionId) : '/api/git-diff';
+  const res = await api(path);
   return res.json();
 }
 

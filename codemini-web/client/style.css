@@ -1086,6 +1086,7 @@ body {
   border: 1px solid var(--message-edge);
   background: var(--message-surface);
   box-shadow: var(--message-shadow);
+  margin-top: 16px;
 }
 
 .codemini-linear-icon {
@@ -1541,7 +1542,7 @@ samp {
   box-shadow: none;
   backdrop-filter: none;
 }
-.msg-body [data-streamdown="table-wrapper"] button,
+.msg-body [data-streamdown="table-wrapper"] button:not([data-markdown-lightbox]):not([data-streamdown="link"]),
 .msg-body [data-streamdown="mermaid-block"] button {
   width: 28px !important;
   height: 28px !important;
@@ -1589,7 +1590,7 @@ samp {
   height: 14px !important;
   flex: 0 0 auto !important;
 }
-.msg-body [data-streamdown="table-wrapper"] button:hover,
+.msg-body [data-streamdown="table-wrapper"] button:not([data-markdown-lightbox]):not([data-streamdown="link"]):hover,
 .msg-body [data-streamdown="mermaid-block"] button:hover {
   background: var(--bg-hover) !important;
   color: var(--text-primary) !important;
@@ -1699,11 +1700,25 @@ samp {
 .msg-body [data-streamdown*="fullscreen"],
 .msg-body [title*="fullscreen" i],
 .msg-body [aria-label*="fullscreen" i],
-.msg-body [data-streamdown="image-wrapper"] button {
+.msg-body [data-streamdown="image-wrapper"] button:not([data-markdown-lightbox]) {
   display: none !important;
 }
 .msg-body .markdown-lightbox img {
   display: block;
+  max-width: min(100%, 720px);
+  max-height: 520px;
+}
+.msg-body td .markdown-lightbox,
+.msg-body th .markdown-lightbox {
+  margin: 0;
+  max-width: 100%;
+}
+.msg-body td .markdown-lightbox img,
+.msg-body th .markdown-lightbox img {
+  max-width: min(240px, 100%);
+  max-height: 160px;
+  width: auto;
+  height: auto;
 }
 .msg-body .markdown-lightbox figcaption {
   line-height: 1.4;
@@ -2516,13 +2531,19 @@ samp {
   background: rgba(29, 29, 31, 0.04);
 }
 
+:root:not([data-theme="dark"]) [data-slot="select-item"][data-highlighted],
 :root:not([data-theme="dark"]) [data-slot="select-item"]:hover,
 :root:not([data-theme="dark"]) [data-slot="select-item"]:focus {
-  background: rgba(29, 29, 31, 0.03);
+  background: rgba(29, 29, 31, 0.055);
 }
 
 :root:not([data-theme="dark"]) [data-slot="select-item"][data-state="checked"] {
-  background: rgba(29, 29, 31, 0.045);
+  background: rgba(29, 29, 31, 0.1);
+}
+
+:root:not([data-theme="dark"]) [data-slot="select-item"][data-state="checked"][data-highlighted],
+:root:not([data-theme="dark"]) [data-slot="select-item"][data-state="checked"]:hover {
+  background: rgba(29, 29, 31, 0.12);
 }
 
 :root[data-theme="dark"] .codemini-workspace-panel {

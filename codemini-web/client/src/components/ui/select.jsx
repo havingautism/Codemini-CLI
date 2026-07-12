@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { CaretDown, Check } from "@phosphor-icons/react"
+import { CaretDown } from "@phosphor-icons/react"
 import { Select as SelectPrimitive } from "radix-ui"
 import { cn } from "@/lib/utils"
 
@@ -9,8 +9,14 @@ function Select({ ...props }) {
   return <SelectPrimitive.Root data-slot="select" {...props} />
 }
 
-function SelectGroup({ ...props }) {
-  return <SelectPrimitive.Group data-slot="select-group" {...props} />
+function SelectGroup({ className, ...props }) {
+  return (
+    <SelectPrimitive.Group
+      data-slot="select-group"
+      className={cn("flex flex-col gap-1", className)}
+      {...props}
+    />
+  )
 }
 
 function SelectValue({ ...props }) {
@@ -63,7 +69,7 @@ function SelectContent({
         <SelectScrollUpButton />
         <SelectPrimitive.Viewport
           className={cn(
-            "p-1",
+            "flex flex-col gap-1 p-1",
             position === "popper" &&
               "h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)]"
           )}>
@@ -96,17 +102,10 @@ function SelectItem({
     <SelectPrimitive.Item
       data-slot="select-item"
       className={cn(
-        "relative flex w-full cursor-pointer items-center gap-2 rounded-lg py-2 pr-8 pl-2.5 text-[13px] outline-hidden select-none hover:bg-(--bg-hover) focus:bg-(--bg-hover) data-[state=checked]:bg-(--selected-bg) data-[state=checked]:text-(--text-primary) data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 [&_svg:not([class*='text-'])]:text-(--text-muted) *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2",
+        "relative flex w-full cursor-pointer items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] outline-hidden select-none data-[highlighted]:bg-(--bg-hover) data-[state=checked]:bg-(--selected-bg) data-[state=checked]:text-(--text-primary) data-[state=checked]:data-[highlighted]:bg-(--selected-bg) data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4 [&_svg:not([class*='text-'])]:text-(--text-muted) *:[span]:last:flex *:[span]:last:items-center *:[span]:last:gap-2",
         className
       )}
       {...props}>
-      <span
-        data-slot="select-item-indicator"
-        className="absolute right-2 flex size-3.5 items-center justify-center">
-        <SelectPrimitive.ItemIndicator>
-          <Check className="size-4" />
-        </SelectPrimitive.ItemIndicator>
-      </span>
       <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
     </SelectPrimitive.Item>
   )

@@ -52,7 +52,7 @@ import { t } from "../../i18n/index.js";
 
 const FILTERS = ["all", "custom", "remote"];
 const SKILL_MODES = ["always", "agent_requested", "manual"];
-const BROWSE_MODES = ["context", "package"];
+const BROWSE_MODES = ["package", "context"];
 
 function scopeLabel(scope) {
   if (scope === "builtin") return t("builtin");

@@ -24,6 +24,7 @@ import {
   RuntimePool,
   startRuntimeEvictionTimer
 } from './lib/runtime-pool.js';
+import { resolveGitCwd } from './lib/git-project.js';
 import { resolveEmbed } from './lib/embed-resolver.js';
 import { installSkillSource, listSkillEntries, updateSkillPackage } from '../src/commands/skill.js';
 import { computeFileSha256, readSkillRegistry, upsertSkillRegistryEntry, writeSkillRegistry } from '../src/core/skill-registry.js';
@@ -617,6 +618,7 @@ export function createWebRuntimeApi({
   loadActiveProjects = loadWebuiActiveProjects,
   runtimeStatusStore = null,
   getDefaultProjectDir = () => process.cwd(),
+  setDefaultProjectDir = null,
   loadConfig: loadRuntimeConfig = loadConfig,
   getConfigStatus: getRuntimeConfigStatus = getConfigStatus
 }) {
@@ -1040,6 +1042,7 @@ export function createWebRuntimeApi({
       const bridge = await loadBridge(res, body?.sessionId);
       if (!bridge) return true;
       const projectDir = pool.getSessionState(body.sessionId)?.projectDir;
+      if (projectDir) setDefaultProjectDir?.(projectDir);
       const state = {
         ...bridge.getState(),
         cwd: projectDir,
@@ -1084,6 +1087,7 @@ export function createWebRuntimeApi({
         const sessionId = rawState.sessionId;
         const poolEntry = sessionId ? pool.entries.get(sessionId) : undefined;
         const projectDir = poolEntry?.projectDir || '';
+        if (projectDir) setDefaultProjectDir?.(projectDir);
         return {
           ...rawState,
           cwd: projectDir,
@@ -1471,8 +1475,12 @@ function getGitBranch(cwd) {
   try {
     return execSync('git symbolic-ref --quiet --short HEAD', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
   } catch {
-    const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-    return branch === 'HEAD' ? null : branch;
+    try {
+      const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+      return branch === 'HEAD' ? null : branch;
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -2186,7 +2194,11 @@ async function main() {
     eventBroker,
     ensureSession: ensurePooledSession,
     runtimeStatusStore,
-    getDefaultProjectDir: () => currentProjectDir
+    getDefaultProjectDir: () => currentProjectDir,
+    setDefaultProjectDir: (dir) => {
+      const next = String(dir || '').trim();
+      if (next) currentProjectDir = next;
+    }
   });
 
   const server = http.createServer(async (req, res) => {
@@ -2466,7 +2478,17 @@ async function main() {
     }
     if (req.method === 'GET' && url.pathname === '/api/git') {
       try {
-        jsonResponse(res, readGitInfo(currentProjectDir));
+        const sessionId = String(url.searchParams.get('sessionId') || '').trim();
+        if (sessionId) {
+          try { await ensurePooledSession(sessionId); } catch {}
+        }
+        const gitCwd = resolveGitCwd({
+          sessionId,
+          getSessionProjectDir: (id) => pool.getSessionState(id)?.projectDir || '',
+          fallbackDir: currentProjectDir
+        });
+        if (gitCwd && gitCwd !== currentProjectDir) currentProjectDir = gitCwd;
+        jsonResponse(res, readGitInfo(gitCwd || currentProjectDir));
       } catch {
         jsonResponse(res, { isGit: false, branch: null, dirty: false, staged: 0, modified: 0, untracked: 0, linesAdded: 0, linesRemoved: 0 });
       }
@@ -2474,7 +2496,17 @@ async function main() {
     }
     if (req.method === 'GET' && url.pathname === '/api/git-diff') {
       try {
-        jsonResponse(res, readGitDiffData(currentProjectDir));
+        const sessionId = String(url.searchParams.get('sessionId') || '').trim();
+        if (sessionId) {
+          try { await ensurePooledSession(sessionId); } catch {}
+        }
+        const gitCwd = resolveGitCwd({
+          sessionId,
+          getSessionProjectDir: (id) => pool.getSessionState(id)?.projectDir || '',
+          fallbackDir: currentProjectDir
+        });
+        if (gitCwd && gitCwd !== currentProjectDir) currentProjectDir = gitCwd;
+        jsonResponse(res, readGitDiffData(gitCwd || currentProjectDir));
       } catch {
         jsonResponse(res, { patch: '', files: [], linesAdded: 0, linesRemoved: 0 });
       }
