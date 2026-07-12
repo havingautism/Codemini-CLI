@@ -10,6 +10,13 @@ function stripPlanProgressText(text) {
   );
 }
 
+function planStepNumberFromMessageId(messageId) {
+  const match = String(messageId || "").match(/^plan-step-(\d+)(?:-|$)/);
+  if (!match) return null;
+  const step = Number(match[1]);
+  return Number.isFinite(step) ? step : null;
+}
+
 export function createSessionState(overrides = {}) {
   return {
     currentSessionId: null,
@@ -188,21 +195,49 @@ export function reduceSessionTranscriptEvent(state, event) {
   if (event.type === "assistant:start") {
     const existing = messages.some((message) => message.id === messageId);
     if (!existing) {
-      sessionMessagesById = {
-        ...sessionMessagesById,
-        [sessionId]: [
-          ...messages,
-          {
-            id: messageId,
-            role: "general",
-            segments: [],
-            skillBadges: [],
-            fileChanges: [],
-            isComplete: false,
-            timestamp: event.startedAt || new Date().toISOString(),
-          },
-        ],
-      };
+      // During create_plan, the client may already own a plan-step bubble
+      // under a locally generated id while SSE streams use the server id.
+      // Only adopt when both ids are clearly the same plan step — never steal
+      // a stale plan bubble into a normal chat turn.
+      const messageStep = planStepNumberFromMessageId(messageId);
+      const livePlanStep =
+        messageStep == null
+          ? null
+          : [...messages]
+              .reverse()
+              .find(
+                (message) =>
+                  message?.planStep &&
+                  message.isComplete !== true &&
+                  !message.transientKey &&
+                  Number(message.planStep.step) === messageStep,
+              );
+      if (livePlanStep) {
+        sessionMessagesById = {
+          ...sessionMessagesById,
+          [sessionId]: messages.map((message) =>
+            message.id === livePlanStep.id
+              ? { ...message, id: messageId, isComplete: false }
+              : message,
+          ),
+        };
+      } else {
+        sessionMessagesById = {
+          ...sessionMessagesById,
+          [sessionId]: [
+            ...messages,
+            {
+              id: messageId,
+              role: "general",
+              segments: [],
+              skillBadges: [],
+              fileChanges: [],
+              isComplete: false,
+              timestamp: event.startedAt || new Date().toISOString(),
+            },
+          ],
+        };
+      }
     } else {
       // Reset isComplete so that parallel-session switching can
       // correctly identify this message as still in progress.

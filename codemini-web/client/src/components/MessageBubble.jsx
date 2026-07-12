@@ -1876,7 +1876,7 @@ export function MessageBubble({
     const steps = Array.isArray(overview.steps) ? overview.steps : [];
 
     return (
-      <div data-message-id={message.id} className="py-2 my-[22px]">
+      <div data-message-id={message.id} className="py-2 my-2">
         <div className="flex items-center gap-2 mb-1.5">
           <span
             className={cn(
@@ -1992,7 +1992,7 @@ export function MessageBubble({
       data-message-id={message.id}
       data-plan-status={isPlanFlowMessage ? planFlowStatus : undefined}
       className={cn(
-        "py-2 my-[8px] group/message",
+        "py-2 mt-[8px] group/message",
         role === "you" && "flex justify-end",
         isPlanFlowMessage && "codemini-plan-flow",
       )}

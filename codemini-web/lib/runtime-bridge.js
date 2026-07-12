@@ -736,7 +736,10 @@ export class RuntimeBridge {
     return (
       String(event.type).startsWith('assistant:') ||
       String(event.type).startsWith('tool:') ||
-      String(event.type).startsWith('skill:')
+      String(event.type).startsWith('skill:') ||
+      // Clients must reuse this id for plan-step bubbles so later
+      // summarizer assistant:start/delta events do not spawn a parallel general.
+      event.type === 'plan:step_start'
     )
       ? this.#uiActiveMsgId
       : null;

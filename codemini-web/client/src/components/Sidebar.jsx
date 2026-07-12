@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useMemo } from "react";
+﻿import { useState, useEffect, useMemo, useRef } from "react";
 import {
   BookOpenText,
   Brain,
@@ -167,6 +167,7 @@ export function Sidebar({
   const [openProjectMenuKey, setOpenProjectMenuKey] = useState(null);
   const [pendingRemoveActive, setPendingRemoveActive] = useState(null);
   const [removingFromActive, setRemovingFromActive] = useState(false);
+  const sawSessionsLoadingRef = useRef(false);
   const [resolvedTheme, setResolvedTheme] = useState(() => {
     if (typeof document === "undefined") return "light";
     return document.documentElement.dataset.theme || "light";
@@ -204,9 +205,24 @@ export function Sidebar({
     };
   }, []);
 
+  // sessionsLoading starts as false before the first fetch. Only treat the
+  // sessions snapshot as ready after a real load cycle completes, or once
+  // sessions have already arrived from another startup path.
   useEffect(() => {
-    if (!sessionsLoading) setSessionsSnapshotReady(true);
+    if (sessionsLoading) {
+      sawSessionsLoadingRef.current = true;
+      return;
+    }
+    if (sawSessionsLoadingRef.current) {
+      setSessionsSnapshotReady(true);
+    }
   }, [sessionsLoading]);
+
+  useEffect(() => {
+    if (Array.isArray(sessions) && sessions.length > 0) {
+      setSessionsSnapshotReady(true);
+    }
+  }, [sessions]);
 
   useEffect(() => {
     const mq =
@@ -279,17 +295,18 @@ export function Sidebar({
   }, [sessions, currentSessionId, activeProjectDirs, activeProjectsReady]);
 
   const projectsAreaEmpty = visibleProjectGroupEntries.length === 0;
+  const projectsAreaReady =
+    activeProjectsReady && sessionsSnapshotReady && !sessionsLoading;
 
   useEffect(() => {
-    if (!activeProjectsReady || !sessionsSnapshotReady) return;
-    if (sessionsLoading) return;
+    // Hide the dashed empty hint while projects/sessions are still loading —
+    // an empty list during boot does not mean there are no projects.
+    if (!projectsAreaReady) {
+      setShowActiveProjectsEmpty(false);
+      return;
+    }
     setShowActiveProjectsEmpty(projectsAreaEmpty);
-  }, [
-    activeProjectsReady,
-    sessionsSnapshotReady,
-    sessionsLoading,
-    projectsAreaEmpty,
-  ]);
+  }, [projectsAreaReady, projectsAreaEmpty]);
 
   const toggleProject = (key) => {
     setExpandedProjects((prev) => {

@@ -662,7 +662,9 @@ function buildSpecExecuteDisplayMessage(spec = {}, mode = "direct") {
 }
 
 function createPlanStepMessage(event) {
-  const id = `plan-step-${event.step}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const id =
+    String(event.messageId || "").trim() ||
+    `plan-step-${event.step}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   return {
     id,
     role: event.role || "general",
@@ -1889,6 +1891,20 @@ export function AppProvider({ children }) {
             ),
           }));
           if (planRunPendingRef.current) {
+            const serverId = String(event.messageId || "").trim();
+            if (serverId) {
+              const activePlanId = activeMsgRef.current;
+              if (activePlanId && activePlanId !== serverId) {
+                for (const [step, id] of [
+                  ...planStepMessagesRef.current.entries(),
+                ]) {
+                  if (id === activePlanId) {
+                    planStepMessagesRef.current.set(step, serverId);
+                  }
+                }
+              }
+              setActiveMsg(serverId);
+            }
             update({
               stage: "thinking",
               busy: true,
@@ -2063,7 +2079,27 @@ export function AppProvider({ children }) {
         case "plan:step_start": {
           planRunPendingRef.current = true;
           const key = String(event.step);
+          const sharedId = String(event.messageId || "").trim();
           let msgId = planStepMessagesRef.current.get(key);
+          if (sharedId && msgId && msgId !== sharedId) {
+            setState((prev) => ({
+              ...prev,
+              messages: prev.messages.map((m) =>
+                m.id === msgId ? { ...m, id: sharedId } : m,
+              ),
+            }));
+            msgId = sharedId;
+            planStepMessagesRef.current.set(key, msgId);
+          }
+          if (!msgId && sharedId) {
+            const existing = stateRef.current.messages.find(
+              (message) => message?.id === sharedId,
+            );
+            if (existing) {
+              msgId = sharedId;
+              planStepMessagesRef.current.set(key, msgId);
+            }
+          }
           if (!msgId) {
             const msg = createPlanStepMessage(event);
             msgId = msg.id;
@@ -2094,9 +2130,14 @@ export function AppProvider({ children }) {
                 if (m.id === msgId)
                   return {
                     ...m,
+                    role: event.role || m.role || "general",
                     isComplete: false,
                     planStep: {
                       ...(m.planStep || {}),
+                      step: event.step,
+                      total: event.total ?? m.planStep?.total,
+                      role: event.role || m.planStep?.role || "general",
+                      title: event.title || m.planStep?.title || "",
                       status: "running",
                       ...(event.model ? { model: event.model } : {}),
                     },
@@ -2126,12 +2167,25 @@ export function AppProvider({ children }) {
         }
 
         case "plan:step_done": {
-          const msgId = planStepMessagesRef.current.get(String(event.step));
+          const stepKey = String(event.step);
+          let msgId = planStepMessagesRef.current.get(stepKey);
+          if (!msgId) {
+            const match = stateRef.current.messages.find(
+              (message) => Number(message?.planStep?.step) === Number(event.step),
+            );
+            if (match?.id) {
+              msgId = match.id;
+              planStepMessagesRef.current.set(stepKey, msgId);
+            }
+          }
           if (msgId) {
             setState((prev) => ({
               ...prev,
               messages: prev.messages.map((m) => {
-                if (m.id === msgId) {
+                const isTarget =
+                  m.id === msgId ||
+                  Number(m.planStep?.step) === Number(event.step);
+                if (isTarget) {
                   const outputText = String(event.output || "").trim();
                   const finishedSegments = finishThinkingSegments(
                     m.segments,
@@ -2147,6 +2201,8 @@ export function AppProvider({ children }) {
                     );
                   return {
                     ...m,
+                    id: msgId,
+                    role: event.role || m.role || m.planStep?.role || "general",
                     usage: mergeUsage(m.usage, event.usage),
                     segments:
                       outputText && !hasOutputText
@@ -2167,6 +2223,10 @@ export function AppProvider({ children }) {
                     isComplete: true,
                     planStep: {
                       ...(m.planStep || {}),
+                      step: event.step,
+                      total: event.total ?? m.planStep?.total,
+                      role: event.role || m.planStep?.role || "general",
+                      title: event.title || m.planStep?.title || "",
                       status: event.status || "done",
                       summary: event.summary || "",
                     },
