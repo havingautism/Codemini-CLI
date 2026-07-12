@@ -337,8 +337,16 @@ export function reduceSessionTranscriptEvent(state, event) {
                   isStreaming: false,
                 }));
                 if (!event.text) return segments;
-                const textIndex = segments.length - 1;
-                if (segments[textIndex]?.type !== "text") {
+                // Replace the latest text segment even if tools follow it.
+                // Appending when the tail is a tool card duplicates the body.
+                let textIndex = -1;
+                for (let i = segments.length - 1; i >= 0; i -= 1) {
+                  if (segments[i]?.type === "text") {
+                    textIndex = i;
+                    break;
+                  }
+                }
+                if (textIndex < 0) {
                   segments.push({
                     type: "text",
                     text: event.text,

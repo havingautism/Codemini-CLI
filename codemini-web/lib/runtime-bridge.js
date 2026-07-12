@@ -161,11 +161,15 @@ function appendTextSegment(segments, delta, isStreaming = true) {
 function replaceTextSegment(segments, text, isStreaming = false) {
   const value = String(text || '');
   const current = Array.isArray(segments) ? segments : [];
-  const index = current.length - 1;
-  if (current[index]?.type !== 'text') return value ? [...current, { type: 'text', text: value, isStreaming, startedAt: new Date().toISOString() }] : current;
-  return current.map((seg, i) => (
-    i === index ? { ...seg, text: value, isStreaming, startedAt: seg.startedAt || new Date().toISOString() } : seg
-  ));
+  // Walk backwards so tool cards after streamed text do not cause a duplicate
+  // body when assistant:response finalizes the turn.
+  for (let index = current.length - 1; index >= 0; index -= 1) {
+    if (current[index]?.type !== 'text') continue;
+    return current.map((seg, i) => (
+      i === index ? { ...seg, text: value, isStreaming, startedAt: seg.startedAt || new Date().toISOString() } : seg
+    ));
+  }
+  return value ? [...current, { type: 'text', text: value, isStreaming, startedAt: new Date().toISOString() }] : current;
 }
 
 function appendThinkingSegment(segments, delta, isStreaming = true) {

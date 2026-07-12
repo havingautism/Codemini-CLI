@@ -412,8 +412,10 @@ function appendDeltaToSegments(segments, delta) {
 
 function replaceLastTextInSegments(segments, text) {
   const source = Array.isArray(segments) ? segments : [];
-  const i = source.length - 1;
-  if (source[i]?.type === "text") {
+  // Prefer the latest text segment even when tools/skills follow it.
+  // Otherwise assistant:response appends a duplicate body after tool cards.
+  for (let i = source.length - 1; i >= 0; i -= 1) {
+    if (source[i]?.type !== "text") continue;
     return source.map((seg, index) =>
       index === i
         ? {
