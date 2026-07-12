@@ -88,11 +88,7 @@ const BACKGROUND_TASK_RECENT_OUTPUT_LIMIT = 80;
 const BACKGROUND_TASK_POLL_MS = 150;
 const MAX_AST_ENCLOSING_BYTES = 300_000;
 const MAX_AST_ENCLOSING_LINES = 5_000;
-const SKILL_ALIASES = new Map([
-  ["superpowers-lite", "using-superpowers"],
-  ["superpowers", "using-superpowers"],
-  ["brainstorm", "brainstorming"],
-]);
+const SKILL_ALIASES = new Map();
 const RUN_COMMAND_SAFE_MODE_APPROVED = Symbol("runCommandSafeModeApproved");
 const backgroundTaskRegistry = new Map();
 let backgroundTaskCounter = 0;

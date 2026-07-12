@@ -168,15 +168,7 @@ The `--harness` flag assigns a **role** (`planner`, `advisor`, `coder`, `reviewe
 
 ### Skills
 
-Skills are reusable, reviewable workflow recipes. Built-in:
-
-| Skill | When to use |
-| --- | --- |
-| `using-superpowers` | Default skill router: decide which development workflow applies. |
-| `brainstorming` | Compare options when multiple approaches are reasonable. |
-| `systematic-debugging` | Investigate bugs, failing tests, and unexpected behavior. |
-| `test-driven-development` | Implement behavior changes with focused tests. |
-| `verification-before-completion` | Verify work before claiming it is done. |
+Skills are reusable, reviewable workflow recipes installed by the user or checked into a project. Codemini does not bundle workflow skills; coding fundamentals and tool discipline live in the execution-mode prompt, while specialized workflows remain an explicit user choice.
 
 ```bash
 codemini skill list
@@ -194,9 +186,8 @@ Select enabled skills from the action palette inside a session, or pass an expli
 ```bash
 # Inside an interactive session, press Ctrl+K and choose a skill.
 
-# One-off invocation from your shell
-codemini 'skill:[brainstorming] compare SQLite, Postgres, and DuckDB for local analytics'
-codemini '/project-requirements generate a CodeWiki report for this repository'
+# One-off invocation from your shell after installing a skill
+codemini 'skill:[my-review-skill] review the current changes'
 ```
 
 ### Terminal TUI & Web UI
@@ -453,7 +444,7 @@ codemini run --pipeline "升级版本号、更新 CHANGELOG、创建 GitHub rele
 | --- | --- |
 | **🧠 持久记忆** | Capture 操作 → inbox → dream 整理 → 用户/全局/项目三层记忆。让 agent 记住项目上下文。 |
 | **📂 项目索引** | 自动维护 `.codemini/` 索引，记录语言、符号、导入导出关系。编辑后增量刷新。 |
-| **🛠 技能系统** | 路由元数据与技能体分离。可自行编写 `SKILL.md`，也可使用内置工作流。 |
+| **🛠 技能系统** | 路由元数据与技能体分离。按需安装或在项目中编写 `SKILL.md`，不强制附带工作流。 |
 | **🔄 自我进化** | Reflect 操作把成功工作流转化为可复用的 `SKILL.md`。你的工具箱随项目成长。 |
 | **⚡ 大小模型协同** | 配置轻量模型做路由与简单任务，大模型做复杂推理，系统自动分派。 |
 | **🖥 终端 TUI** | 富交互终端界面——旋转动画、语法高亮代码块、实时命令输出流、自动补全命令面板。 |
@@ -466,15 +457,7 @@ codemini run --pipeline "升级版本号、更新 CHANGELOG、创建 GitHub rele
 
 ### Skills
 
-Skills 是可复用、可审阅的工作流配方。内置：
-
-| Skill | 适用场景 |
-| --- | --- |
-| `using-superpowers` | 默认 skill 路由：判断当前任务应使用哪种开发流程。 |
-| `brainstorming` | 多种方案难以抉择时，先比较选项再行动。 |
-| `systematic-debugging` | 调查 bug、失败测试和异常行为。 |
-| `test-driven-development` | 用聚焦测试驱动行为改动。 |
-| `verification-before-completion` | 在声明完成前执行验证。 |
+Skills 是由用户安装或随项目维护的可复用、可审阅工作流。Codemini 不再捆绑工作流 Skill：基础编码原则与工具纪律由执行模式 Prompt 提供，专项流程由用户自主选择。
 
 ```bash
 codemini skill list
@@ -492,9 +475,8 @@ codemini skill reindex
 ```bash
 # 在交互式会话中按 Ctrl+K，然后选择 skill。
 
-# 从 shell 一次性调用
-codemini 'skill:[brainstorming] 比较 SQLite、Postgres 和 DuckDB 做本地分析的取舍'
-codemini '/project-requirements 为当前仓库生成一份 CodeWiki 报告'
+# 安装 skill 后，从 shell 一次性调用
+codemini 'skill:[my-review-skill] 审查当前改动'
 ```
 
 ### 终端 TUI 与 Web UI

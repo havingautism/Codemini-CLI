@@ -242,7 +242,7 @@ const SUB_AGENT_TOOL_HINTS = {
   read_plan: '- read_plan: recover structured plan state when plan progress was interrupted',
   update_plan: '- update_plan: sync structured plan state during execution',
   tool_search: '- tool_search: load a deferred tool that is in your allowed list. Example: {query:"glob"} or {query:"ast_query"}',
-  skill: '- skill: search/load indexed skills. Browse with {name:"list"}, search with {query:"ts generic"}, load with {name:"systematic-debugging"}. Do not grep/list skills directories.',
+  skill: '- skill: search/load user-installed or project skills. Browse with {name:"list"} and search with {query:"ts generic"}. Do not grep/list skills directories.',
   update_todos: '- update_todos: maintain the session todo checklist; send the full current list each time',
   search_code: '- search_code: default code search. Routes text, symbol, and structure search; follow results with read on the returned file/range or ast_target. Example: {query:"loginUser", mode:"auto", path:"src"}',
   query_project_index: '- query_project_index: low-level indexed symbol search; prefer search_code({mode:"symbol"}) unless raw index details are needed',

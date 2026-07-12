@@ -48,7 +48,7 @@ import {
 import * as api from "@/hooks/use-api";
 import { t } from "../../i18n/index.js";
 
-const FILTERS = ["all", "enabled", "builtin", "custom"];
+const FILTERS = ["all", "enabled", "custom"];
 const SKILL_MODES = ["always", "agent_requested", "manual"];
 
 function scopeLabel(scope) {
@@ -1012,7 +1012,6 @@ export function SkillPanel({ projectDirs = [] }) {
     const needle = query.trim().toLowerCase();
     return skills.filter((skill) => {
       if (filter === "enabled" && !isEnabled(skill)) return false;
-      if (filter === "builtin" && skill.scope !== "builtin") return false;
       if (filter === "custom" && skill.scope === "builtin") return false;
       if (!needle) return true;
       return (

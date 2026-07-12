@@ -34,7 +34,7 @@ Tool: glob({"pattern":"src/**/*.ts"})
 To discover or load Codemini skills, use the skill tool directly against the indexed registry:
 Tool: skill({"query":"fix ts generic error"})
 Tool: skill({"name":"list"})
-Tool: skill({"name":"systematic-debugging"})
+Tool: skill({"query":"debugging workflow"})
 Do not grep or list skills directories to discover skills.
 
 2. Targeted search then exact text edit

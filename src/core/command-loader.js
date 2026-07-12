@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   getCommandsDir,
   getProjectCommandsDir,
@@ -10,11 +9,8 @@ import {
 import { readSkillRegistry } from './skill-registry.js';
 import { skillIsEligible } from './skill-contexts.js';
 
-const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
-const BUNDLED_SKILLS_DIR = path.resolve(MODULE_DIR, '..', '..', 'skills');
 const SKILL_CATALOG_FILE = 'codemini.skills.json';
 const FRONTMATTER_READ_BYTES = 16 * 1024;
-const INTERNAL_SKILL_NAMES = new Set(['project-requirements', 'project-requirements-md']);
 
 function parseArrayText(value) {
   const inner = value.slice(1, -1).trim();
@@ -120,13 +116,11 @@ function resolveSkillIndexMode(metadata = {}, source = '') {
 
 export function isSkillIndexEligible(command) {
   if (command?.metadata?.type !== 'skill') return false;
-  if (INTERNAL_SKILL_NAMES.has(String(command?.name || ''))) return false;
   return resolveSkillIndexMode(command.metadata, command.source) !== 'manual';
 }
 
 export function isUserInvocableSkill(command) {
-  return command?.metadata?.type === 'skill' &&
-    !INTERNAL_SKILL_NAMES.has(String(command?.name || ''));
+  return command?.metadata?.type === 'skill';
 }
 
 function catalogMetadata(catalog, name) {
@@ -290,41 +284,6 @@ function loadLegacySkillsFromDir(baseDir, source, out) {
   }
 }
 
-function loadBundledSkillsFromDir(baseDir, out) {
-  if (!fs.existsSync(baseDir)) return;
-  const catalog = readSkillCatalog(baseDir);
-  const entries = Object.keys(catalog).length > 0 ? Object.keys(catalog) : safeEntries(baseDir);
-  for (const entry of entries) {
-    if (!isSafeEntry(entry)) continue;
-    const full = path.join(baseDir, entry);
-    let stat;
-    try {
-      stat = fs.statSync(full);
-    } catch {
-      continue;
-    }
-    if (!stat.isDirectory()) continue;
-    const catalogMeta = catalogMetadata(catalog, entry);
-    const skillFile = path.join(full, 'SKILL.md');
-    if (!fs.existsSync(skillFile)) continue;
-    const frontmatter = readFrontmatterMetadata(skillFile);
-    setCommand(out, entry, commandWithContent({
-      name: entry,
-      source: 'bundled-skill',
-      path: skillFile,
-      metadata: {
-        ...frontmatter,
-        ...catalogMeta,
-        type: 'skill',
-        rootPath: full,
-        entryFile: 'SKILL.md',
-        version: frontmatter.version || '0.1.0',
-        description: catalogMeta.description || frontmatter.description || 'Bundled skill'
-      }
-    }));
-  }
-}
-
 function loadIndexedSkillsFromCatalog(baseDir, source, out) {
   if (!fs.existsSync(baseDir)) return;
   const catalog = readSkillCatalog(baseDir);
@@ -422,7 +381,6 @@ function substituteVariables(text, args = []) {
 export async function loadCommandsAndSkills(cwd = process.cwd()) {
   const commands = new Map();
 
-  loadBundledSkillsFromDir(BUNDLED_SKILLS_DIR, commands);
   applySkillCatalogPatches(getProjectSkillsDir(cwd), commands);
   loadMarkdownCommandsFromDir(getCommandsDir(), 'global', commands);
   loadMarkdownCommandsFromDir(getProjectCommandsDir(cwd), 'project', commands);
@@ -438,7 +396,6 @@ export async function loadCommandsAndSkills(cwd = process.cwd()) {
 export async function loadIndexedSkills(cwd = process.cwd()) {
   const commands = new Map();
 
-  loadIndexedSkillsFromCatalog(BUNDLED_SKILLS_DIR, 'bundled-skill', commands);
   loadIndexedSkillsFromCatalog(getProjectSkillsDir(cwd), 'project-skill', commands);
   loadIndexedSkillsFromCatalog(getSkillsDir(), 'global-skill', commands);
 
@@ -480,7 +437,7 @@ export async function buildSkillIndexPromptBlock(cwd = process.cwd(), config = {
   if (!lines.length) return '';
   return [
     '# Indexed skills',
-    'Agent-requested and always skills from bundled, project, global, and registry catalogs (manual slash-only skills are omitted). Load full instructions with skill({name:"<name>"}). Search with skill({query:"..."}).',
+    'Agent-requested and always skills installed by the user or project (manual slash-only skills are omitted). Load full instructions with skill({name:"<name>"}). Search with skill({query:"..."}).',
     ...lines
   ].join('\n');
 }

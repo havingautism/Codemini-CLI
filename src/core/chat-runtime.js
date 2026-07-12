@@ -108,7 +108,7 @@ export function resolvePendingApproval(state, requestId, decision = {}) {
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_REQUIREMENTS_TEMPLATE = path.resolve(MODULE_DIR, '..', '..', 'templates', 'project-requirements', 'report-shell.html');
 const PROJECT_REQUIREMENTS_MD_TEMPLATE = path.resolve(MODULE_DIR, '..', '..', 'templates', 'project-requirements', 'report-template.md');
-const PROJECT_REQUIREMENTS_MD_SKILL = path.resolve(MODULE_DIR, '..', '..', 'skills', 'project-requirements-md', 'SKILL.md');
+const PROJECT_REQUIREMENTS_MD_INSTRUCTIONS = path.resolve(MODULE_DIR, '..', '..', 'templates', 'project-requirements', 'markdown-instructions.md');
 const PROJECT_REQUIREMENTS_SECTION_NAMES = [
   'summary',
   'architecture',
@@ -574,51 +574,40 @@ function buildExecutionModePromptBlock(executionMode) {
   if (normalizeExecutionMode(executionMode) === 'plan') {
     return [
       'Execution Mode: coding',
-      'You are in coding mode. Treat the user request as implementation-oriented by default: inspect the repo, make focused changes when the task is clear, and use spec/plan artifacts only when they reduce coordination risk.',
+      'You are in coding mode. Treat implementation requests as authorization to inspect the repository, make focused changes, and verify them. Prefer the smallest complete solution that follows the project\'s existing architecture and conventions.',
       '',
       'Coding workflow:',
-      '1. Explore the codebase with search_code/read before editing or proposing a spec/plan.',
-      '2. If the request is simple and localized, implement directly with edit/write/apply_patch/delete as appropriate, then verify with focused checks when useful.',
-      '3. If requirements are unclear, use request_user_input when available to ask one focused clarifying question, then stop. Do not call create_spec or create_plan yet.',
-      '4. If multiple reasonable approaches exist, present short options with a recommendation and wait for user confirmation.',
-      '5. Escalate only when needed:',
-      '   - create_spec when scope, architecture, UX, constraints, or trade-offs still need alignment. Spec answers what to build and why.',
-      '   - create_plan when the goal is clear but complex enough to benefit from sub-agent execution steps. Plan answers how to implement.',
-      '6. Prefer direct implementation for small fixes and localized edits. Prefer create_plan for multi-file/multi-phase work. Prefer create_spec for large, novel, or cross-cutting work.',
-      '7. create_spec enters user approval before execution. create_plan writes a plan artifact and starts execution automatically; the user can interrupt it with the Stop control.',
+      '1. Read project instructions, then use project-index/search/read tools to inspect only the relevant code, tests, configuration, and callers before editing.',
+      '2. If requirements have materially different interpretations, use request_user_input when available. Do not interrupt for low-impact details with a safe default.',
+      '3. Implement small and localized changes directly. Use create_spec only when product or architecture decisions need approval; use create_plan only when an already-clear task genuinely benefits from coordinated multi-step execution.',
+      '4. Preserve public contracts, local naming, error handling, platform compatibility, and dependency choices unless the request explicitly changes them. Avoid unrelated refactors and speculative abstractions.',
+      '5. For bugs, first reproduce or establish a concrete failing signal, inspect evidence, test a falsifiable cause, apply the smallest root-cause fix, and add a regression check when the repository has an appropriate test seam.',
+      '6. Verify with the narrowest project-native checks that cover the changed behavior, then inspect the diff. Never claim fixed, passing, or complete without fresh evidence; state what was not verified.',
+      '7. Respect task intent: explanation or review requests authorize inspection and reporting, diagnosis requests authorize finding the cause, and explicit build/fix/change requests authorize implementation. Do not turn read-only work into edits without user intent.',
       '',
-      'Quality bar:',
-      '- Ground every recommendation in repository evidence, not assumptions.',
-      '- Name concrete files, modules, APIs, commands, and verification steps — avoid placeholder steps.',
-      '- For multi-step plans, make each task an independently testable unit with explicit consumes/produces handoffs.',
-      '- Fold setup, fixtures, test updates, and docs into the task whose deliverable needs them unless they are independently reviewable deliverables.',
-      '- Self-review for missing requirements, contradictions, inconsistent names, and untestable tasks before calling create_spec or create_plan.',
-      '- Use update_todos to track exploration and planning work when it spans multiple steps.',
+      'Tool discipline:',
+      '- Prefer dedicated project-index, search, read, edit, and patch tools over raw shell equivalents. Load deferred tools with tool_search only when needed.',
+      '- Choose the narrowest relevant project-native verification, and use run for tests, builds, type checks, linters, generators, and version-control inspection—not as the default way to read or search source code.',
+      '- Use edit for precise existing-file changes, apply_patch for coherent multi-file changes, and write only for new files or intentional whole-file output.',
+      '- Search the web for current external documentation, versions, compatibility, or unfamiliar APIs when that information affects correctness; prefer primary sources and link the sources that support material claims.',
       '',
-      'Direct implementation rules:',
+      'Workflow boundaries:',
       '- Do not claim edit/write/apply_patch/delete/run are unavailable in coding mode; they are available for direct simple tasks.',
       '- Do not call create_plan for a simple localized edit that can be implemented and verified in one coherent pass.',
-      '- If the user explicitly asks to start fixing, repair, update, implement, or change files, do not create an advisor-only plan. Either implement directly when simple or create an implementation plan with a coder/refactorer/writer step.',
       '- If you create a spec, do not implement before the user approves it. If you create a plan, execution starts automatically in coding mode.',
-      '- If the request is too unknown to write a reviewable spec, ask one focused question instead of creating a vague spec.',
-      '',
-      'Plan step roles (when the plan will use sub-agents):',
-      '- explorer = read-only inspection and context mapping. Never assign explorer to implement, edit, or deliver code.',
-      '- architect / advisor = design or recommendations only (read-only). Never assign them to write production code.',
-      '- coder / refactorer / writer = scoped code or doc changes.',
-      '- tester = verification commands; reviewer = read-only review; summarizer = final synthesis only.',
-      '- Typical implementation flow: explorer -> coder -> tester -> summarizer.',
-      '',
-      'Step contract for create_plan steps:',
-      '- Each step must name target files/modules when known, inputs it consumes, outputs it produces, expected outcome, out-of-scope boundaries, success criteria, and handoff artifact.',
-      '- Coder/refactorer/writer steps should produce implementation artifacts, not final summaries or broad verification.',
-      '- Tester steps should run or identify concrete verification commands and report evidence.',
-      '- Summarizer must be final and should synthesize prior handoffs without re-analyzing the repo.'
+      '- Preserve unrelated user changes in a dirty worktree. Never discard, overwrite, or reformat work outside the requested scope.',
+      '- If the request is too unknown to act on safely, ask one focused question instead of producing a vague plan or guessing.'
     ].join('\n');
   }
   return [
     'Execution Mode: normal',
     'You are in normal mode. Help with everyday questions and lightweight tasks conversationally. Be proactive about clarifying underspecified requests and verifying external facts instead of guessing.',
+    '',
+    'Task boundaries:',
+    '- Match the action to the request: answer and explain without changing state; review or diagnose by inspecting and reporting; create, edit, run, or send only when the user asks for that outcome.',
+    '- Use the shared workspace for relevant read-only context when helpful, but do not turn an ordinary question into a repository task without a clear connection.',
+    '- Make safe, reversible assumptions for low-impact details and state them briefly. Stop for user direction when different choices would materially change the result or require broader authority.',
+    '- Preserve user data and existing work. Do not overwrite files, broaden scope, or perform external side effects merely because a tool is available.',
     '',
     'User input workflow:',
     '- Treat a request as underspecified when multiple plausible interpretations would lead to meaningfully different answers, recommendations, formats, scopes, or outcomes.',
@@ -631,7 +620,7 @@ function buildExecutionModePromptBlock(executionMode) {
     'Web research workflow:',
     '- Use web_search when the answer depends on current or changeable information, the user asks for the latest or for verification, the topic is unfamiliar or niche, recommendations could cost meaningful time or money, or useful source links would improve the answer.',
     '- For a broad or vague request that would benefit from current context, search first when research can narrow the space, then use request_user_input with informed options if the user\'s intent still matters.',
-    '- Prefer a small number of targeted searches, synthesize the findings, and distinguish sourced facts from your own inference.',
+    '- Prefer a small number of targeted searches, synthesize the findings, distinguish sourced facts from your own inference, and link sources near the material claims they support.',
     '- Do not search for timeless casual questions when it would add no value, and respect an explicit request not to browse.',
     '- If web_search is unavailable or disabled, say so briefly when current information is necessary rather than presenting stale knowledge as verified.'
   ].join('\n');
@@ -1974,17 +1963,13 @@ async function buildTesterVerificationPacket(focusPaths = [], workspaceRoot = pr
   return lines.join('\n');
 }
 
-function isBundledSkillCommand(command) {
-  return command?.metadata?.type === 'skill' && command?.source === 'bundled-skill';
-}
-
 function isSkillEnabled(config, name, command = null, executionMode = config?.execution?.mode) {
   return skillIsEligible(config?.skills, name, executionMode, command);
 }
 
 function selectAutoSkillNames(text = '') {
   const input = String(text || '').toLowerCase();
-  const selected = ['using-superpowers'];
+  const selected = [];
 
   const explicitGrillMe =
     /\bgr+ill\s+me\b|\bpressure[- ]?test\b|\bstress[- ]?test\b|\bchallenge\s+(?:this|my|me)\b|\btear\s+(?:this|my)\s+.*apart\b/i.test(
@@ -2006,11 +1991,9 @@ function selectAutoSkillNames(text = '') {
     );
 
   if (explicitBrainstorm || (ambiguitySignals && featureRequest) || greenfieldBuildRequest) {
-    selected.push('brainstorming');
+    selected.push('discussion');
   }
-  if (explicitGrillMe) {
-    selected.push('requesting-code-review');
-  }
+  if (explicitGrillMe && !selected.includes('discussion')) selected.push('discussion');
   return selected;
 }
 
@@ -2068,7 +2051,7 @@ function classifyTaskComplexity(text = '') {
 
 function classifyAutoRoute(text = '') {
   const selectedSkills = selectAutoSkillNames(text);
-  const hasBrainstorm = selectedSkills.includes('brainstorming');
+  const hasBrainstorm = selectedSkills.includes('discussion');
   if (hasBrainstorm) {
     return {
       mode: 'brainstorm',
@@ -2083,7 +2066,7 @@ function classifyAutoRoute(text = '') {
     return {
       mode: 'direct_complex',
       autoPlan: false,
-      selectedSkills: ['using-superpowers'],
+      selectedSkills: [],
       complexity
     };
   }
@@ -2099,13 +2082,8 @@ function classifyAutoRoute(text = '') {
 function buildMediumTaskPromptBlock() {
   return [
     'Task Mode: medium',
-    'Execution guidance:',
-    '- Give a brief execution outline before coding.',
-    '- Keep the outline concise and focused on touched files/behaviors.',
-    '- For localized coding tasks, act as a direct coder fast path: inspect the target, edit, self-review the diff, and finish without create_plan.',
-    '- Then implement directly instead of entering pending plan approval.',
-    '- Verify the changed behavior before finishing.',
-    '- If major ambiguity appears mid-task, say so clearly and ask for a plan instead of guessing.'
+    '- Give a brief execution outline focused on the affected files and behavior, then proceed directly without create_plan when the task is already clear.',
+    '- If material ambiguity appears during implementation, pause for one focused clarification instead of guessing.'
   ].join('\n');
 }
 
@@ -5785,7 +5763,7 @@ async function renderProjectRequirementsSkillPrompt(custom, options, workspaceRo
   if (options?.outputFormat !== 'md') {
     return expandFileMentions(renderCommandPrompt(custom, options.focusArgs), workspaceRoot);
   }
-  const raw = await fs.readFile(PROJECT_REQUIREMENTS_MD_SKILL, 'utf8');
+  const raw = await fs.readFile(PROJECT_REQUIREMENTS_MD_INSTRUCTIONS, 'utf8');
   const mdSkill = {
     name: 'project-requirements-md',
     metadata: { type: 'skill' },

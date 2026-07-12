@@ -2371,11 +2371,11 @@ samp {
   --input-shell-bg: rgba(255, 255, 255, 0.88);
   --input-shell-border: rgba(0, 0, 0, 0.08);
   --input-shell-shadow: 0 10px 38px rgba(0, 0, 0, 0.11);
-  --badge-bg: color-mix(in srgb, var(--text-primary) 2%, white);
-  --badge-edge: color-mix(in srgb, var(--text-primary) 3%, transparent);
-  --interactive-hover: color-mix(in srgb, var(--text-primary) 1.5%, white);
-  --selected-bg: color-mix(in srgb, var(--text-primary) 4.5%, white);
-  --selected-edge: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  --badge-bg: color-mix(in srgb, var(--text-primary) 3%, white);
+  --badge-edge: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  --interactive-hover: color-mix(in srgb, var(--text-primary) 3.5%, white);
+  --selected-bg: color-mix(in srgb, var(--text-primary) 5.5%, white);
+  --selected-edge: color-mix(in srgb, var(--text-primary) 5%, transparent);
   --bg-hover: var(--interactive-hover);
   --bg-active: var(--selected-bg);
 }
@@ -2478,16 +2478,45 @@ samp {
 }
 
 :root:not([data-theme="dark"]) .codemini-input-chip--selected {
-  background: var(--selected-bg);
-  box-shadow: inset 0 0 0 1px var(--selected-edge);
+  background: rgba(29, 29, 31, 0.035);
+  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.045);
 }
 
 :root:not([data-theme="dark"]) .codemini-input-shell button {
-  --tw-shadow: 0 1px 2px color-mix(in srgb, black 3%, transparent);
+  --tw-shadow: 0 1px 2px color-mix(in srgb, black 2%, transparent);
 }
 
 :root:not([data-theme="dark"]) .codemini-input-shell button:hover {
-  --tw-shadow: 0 1px 2px color-mix(in srgb, black 5%, transparent);
+  --tw-shadow: 0 1px 2px color-mix(in srgb, black 3%, transparent);
+}
+
+/* The light input shell is nearly white, so keep its quick controls visually quiet. */
+:root:not([data-theme="dark"]) .codemini-input-pill {
+  background: rgba(29, 29, 31, 0.025) !important;
+  box-shadow: none !important;
+}
+
+:root:not([data-theme="dark"]) .codemini-input-pill:hover {
+  background: rgba(29, 29, 31, 0.04) !important;
+  box-shadow: none !important;
+}
+
+:root:not([data-theme="dark"]) .codemini-input-chip {
+  background: rgba(29, 29, 31, 0.025);
+  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.04);
+}
+
+:root:not([data-theme="dark"]) .codemini-input-chip:hover {
+  background: rgba(29, 29, 31, 0.04);
+}
+
+:root:not([data-theme="dark"]) [data-slot="select-item"]:hover,
+:root:not([data-theme="dark"]) [data-slot="select-item"]:focus {
+  background: rgba(29, 29, 31, 0.03);
+}
+
+:root:not([data-theme="dark"]) [data-slot="select-item"][data-state="checked"] {
+  background: rgba(29, 29, 31, 0.045);
 }
 
 :root[data-theme="dark"] .codemini-workspace-panel {
