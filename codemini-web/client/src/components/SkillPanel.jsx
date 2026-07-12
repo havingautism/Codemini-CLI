@@ -470,8 +470,6 @@ function SkillDetailPane({
   onSave,
   onDelete,
   onToggle,
-  onUpdate,
-  updating = false,
 }) {
   const [content, setContent] = useState("");
   const [draftContent, setDraftContent] = useState("");
@@ -510,7 +508,6 @@ function SkillDetailPane({
   const mode = normalizeSkillMode(skill.mode);
   const author = skillAuthorLabel(skill);
   const builtin = isBuiltin(skill);
-  const updatable = skillPackageIsUpdatable(skill);
 
   const handleContentSave = async () => {
     if (!skill || builtin) return;
@@ -563,22 +560,6 @@ function SkillDetailPane({
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
             {modeView === "edit" || modeView === "routing" ? null : (
               <>
-                {updatable && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={updating}
-                    onClick={() => onUpdate?.(skill)}
-                  >
-                    <ArrowsClockwise
-                      size={13}
-                      className={updating ? "animate-spin" : undefined}
-                    />
-                    {updating
-                      ? t("updatingSkillPackage")
-                      : t("updateSkillPackage")}
-                  </Button>
-                )}
                 {!builtin && (
                   <Button
                     variant="outline"
@@ -1469,8 +1450,6 @@ export function SkillPanel({ projectDirs = [] }) {
             onSave={handleSave}
             onDelete={handleDelete}
             onToggle={handleToggle}
-            onUpdate={handleUpdatePackage}
-            updating={updating}
           />
         </div>
       </div>
