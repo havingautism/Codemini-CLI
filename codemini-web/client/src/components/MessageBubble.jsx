@@ -145,7 +145,7 @@ const SKILL_DOT_STYLES = {
 const TOOL_COLLAPSE_THRESHOLD = 1;
 const PROCESS_META_CLASS = "msg-process-meta";
 const COLLAPSE_ROW_CLASS =
-  "msg-process-row flex w-full cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent px-3 py-2 text-left text-[12px] hover:bg-(--bg-hover)";
+  "msg-process-row flex w-full cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-3 py-2 text-left text-[12px] hover:bg-(--bg-hover)";
 const COLLAPSE_CHEVRON_CLASS =
   "size-[14px] shrink-0 text-(--text-process-detail)";
 const COLLAPSE_ICON_CLASS =
@@ -268,7 +268,7 @@ function HandoffBlock({ segment }) {
       : firstLine;
 
   return (
-    <div className="my-3 text-(--text-primary)">
+    <div className="my-2 text-(--text-primary)">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
@@ -501,7 +501,7 @@ function ToolGroup({ cards }) {
       {(!shouldUseSummaryHeader || expanded) && (
         <div
           className={cn(
-            "flex flex-col gap-1",
+            "flex flex-col gap-2",
             shouldUseSummaryHeader &&
               "relative ml-4.5 pl-6 mt-2 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)",
           )}
@@ -555,7 +555,7 @@ function SkillActivityList({ badges = [] }) {
   }
   if (!visibleBadges.length) return null;
   return (
-    <div className={cn("my-2 flex flex-col gap-1", PROCESS_META_CLASS)}>
+    <div className={cn("my-2 flex flex-col gap-2", PROCESS_META_CLASS)}>
       {visibleBadges.map((badge, index) => (
         <div
           key={`${badge.name || "skill"}-${badge.status || "done"}-${index}`}
@@ -672,7 +672,7 @@ function ProcessGroup({ group }) {
         )}
       </button>
       {expanded && (
-        <div className="relative ml-4.5 mt-2 flex flex-col gap-1 pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
+        <div className="relative ml-4.5 mt-2 flex flex-col pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
           {group.groups.map((item, index) => {
             if (item.type === "thinking") {
               return <ThoughtBlock key={`p-th-${index}`} segment={item} />;
@@ -1675,12 +1675,13 @@ function MessageActions({
 function renderGroupItem(group, i) {
   if (group.type === "text") {
     return (
-      <StreamdownRenderer
-        key={`t-${i}-${group.isStreaming ? "s" : "d"}`}
-        text={group.text}
-        streaming={group.isStreaming}
-        inlineEmbeds={false}
-      />
+      <div key={`t-${i}-${group.isStreaming ? "s" : "d"}`} className="my-2">
+        <StreamdownRenderer
+          text={group.text}
+          streaming={group.isStreaming}
+          inlineEmbeds={false}
+        />
+      </div>
     );
   }
   if (group.type === "tools") {
@@ -1714,7 +1715,7 @@ function AnswerProcessFold({ groups, durationMs }) {
     : t("processed");
 
   return (
-    <div className="codemini-answer-fold my-3">
+    <div className="codemini-answer-fold my-2">
       <button
         type="button"
         onClick={() => setExpanded((value) => !value)}
@@ -1737,7 +1738,7 @@ function AnswerProcessFold({ groups, durationMs }) {
         <span className="font-medium">{label}</span>
       </button>
       {expanded && (
-        <div className="relative ml-4.5 mt-2 flex flex-col gap-1 pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
+        <div className="relative ml-4.5 mt-2 flex flex-col pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
           {groups.map((group, i) => renderGroupItem(group, i))}
         </div>
       )}
@@ -2062,57 +2063,59 @@ export function MessageBubble({
             )}
           </div>
 
-          <SkillActivityList badges={skillBadges || []} />
+          <div className="flex flex-col">
+            <SkillActivityList badges={skillBadges || []} />
 
-          {messageComplete && hasAnswerFold ? (
-            <>
-              <AnswerProcessFold
-                groups={preAnswerGroups}
-                durationMs={preAnswerDuration}
-              />
-              {answerGroups.map((group, i) =>
-                renderGroupItem(group, i + preAnswerGroups.length),
-              )}
-            </>
-          ) : (
-            renderGroups.map((group, i) => renderGroupItem(group, i))
-          )}
-
-          {planStep &&
-            renderGroups.length === 0 &&
-            planStep.status !== "done" &&
-            planStep.status !== "failed" && (
-              <div
-                className="msg-body streaming-cursor streaming-cursor--pending"
-                role="status"
-                aria-label="等待工具调用或模型输出"
-              />
+            {messageComplete && hasAnswerFold ? (
+              <>
+                <AnswerProcessFold
+                  groups={preAnswerGroups}
+                  durationMs={preAnswerDuration}
+                />
+                {answerGroups.map((group, i) =>
+                  renderGroupItem(group, i + preAnswerGroups.length),
+                )}
+              </>
+            ) : (
+              renderGroups.map((group, i) => renderGroupItem(group, i))
             )}
 
-          {showRelatedLinks && <EmbedBanner items={messageEmbeds} />}
+            {planStep &&
+              renderGroups.length === 0 &&
+              planStep.status !== "done" &&
+              planStep.status !== "failed" && (
+                <div
+                  className="msg-body streaming-cursor streaming-cursor--pending"
+                  role="status"
+                  aria-label="等待工具调用或模型输出"
+                />
+              )}
 
-          {showFileChanges && (
-            <FileChangesSummary changes={mergedFileChanges} />
-          )}
-          {message.manualAborted && (
-            <p className="mt-2 text-xs text-(--text-muted)">
-              {t("manualStopped")}
-            </p>
-          )}
-          {!message.manualAborted && responseStatus === "aborted" && (
-            <p className="mt-2 text-xs text-(--text-muted)">
-              {t("requestAborted")}
-            </p>
-          )}
-          <MessageActions
-            text={messageText}
-            usage={usage}
-            showUsage={showActions}
-            retryPrompt={retryPrompt}
-            canRetry={canRetry}
-            onRetry={onRetry}
-            className={cn("mt-2 min-h-8", !showActions && "hidden")}
-          />
+            {showRelatedLinks && <EmbedBanner items={messageEmbeds} />}
+
+            {showFileChanges && (
+              <FileChangesSummary changes={mergedFileChanges} />
+            )}
+            {message.manualAborted && (
+              <p className="mt-2 text-xs text-(--text-muted)">
+                {t("manualStopped")}
+              </p>
+            )}
+            {!message.manualAborted && responseStatus === "aborted" && (
+              <p className="mt-2 text-xs text-(--text-muted)">
+                {t("requestAborted")}
+              </p>
+            )}
+            <MessageActions
+              text={messageText}
+              usage={usage}
+              showUsage={showActions}
+              retryPrompt={retryPrompt}
+              canRetry={canRetry}
+              onRetry={onRetry}
+              className={cn("mt-2 min-h-8", !showActions && "hidden")}
+            />
+          </div>
         </div>
       )}
     </div>

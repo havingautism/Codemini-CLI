@@ -8,7 +8,6 @@ import React, {
   useState,
 } from "react";
 import { t } from "../../i18n/index.js";
-import { formatToolLabel } from "@core/tool-display.js";
 import * as api from "../hooks/use-api.js";
 import { extractReasoningRuntimePatch } from "../lib/reasoning-controls.js";
 import { parseAttachmentsFromModelContent } from "../lib/message-attachments.js";
@@ -40,10 +39,13 @@ import {
   projectSessionRuntime,
 } from "../lib/session-ui-state.js";
 import {
-  hasToolInSegments,
-  updateToolInMessages,
-  upsertToolCardInSegments,
-} from "../../../shared/tool-segments.js";
+  addSkillToSegments,
+  finishStreamingTextSegments,
+  finishThinkingSegments,
+  mergeUsage,
+  normalizeUsage,
+  updateSkillInSegments,
+} from "../../../shared/transcript-segments.js";
 import { skillBadgesFromSessionMessage } from "../lib/user-skill-prompt.js";
 
 const AppContext = createContext(null);
@@ -268,22 +270,6 @@ function collapseRenderedSkillPrompt(content) {
   return prefix;
 }
 
-function upsertToolCardInMessage(message, toolCard) {
-  if (hasToolInSegments(message.segments, toolCard)) {
-    return {
-      ...message,
-      segments: upsertToolCardInSegments(message.segments, toolCard),
-    };
-  }
-  return {
-    ...message,
-    segments: upsertToolCardInSegments(
-      finishThinkingSegments(message.segments),
-      toolCard,
-    ),
-  };
-}
-
 function isCompletedStatus(status) {
   return ["done", "failed", "error", "blocked", "completed"].includes(
     String(status || "").toLowerCase(),
@@ -322,230 +308,6 @@ function settleCompletedPlanToolCards(messages) {
   }));
 }
 
-function createSkillSegment(event, status = "running") {
-  const now = new Date().toISOString();
-  return {
-    type: "skill",
-    name: event.name,
-    status,
-    startedAt: event.startedAt || now,
-    ...(status === "done" || status === "error"
-      ? { endedAt: event.endedAt || now }
-      : {}),
-    ...(status === "error" && event.summary ? { summary: event.summary } : {}),
-  };
-}
-
-function addSkillToSegments(segments, event) {
-  const source = Array.isArray(segments) ? segments : [];
-  const existingIndex = source.findIndex(
-    (segment) => segment?.type === "skill" && segment.name === event.name,
-  );
-  if (existingIndex === -1) return [...source, createSkillSegment(event)];
-  return source.map((segment, index) =>
-    index === existingIndex ? createSkillSegment(event) : segment,
-  );
-}
-
-function updatePendingSkillSegments(segments, name, updater) {
-  const source = Array.isArray(segments) ? segments : [];
-  let targetIndex = -1;
-  for (let i = source.length - 1; i >= 0; i -= 1) {
-    const segment = source[i];
-    if (
-      segment?.type === "skill" &&
-      segment.name === name &&
-      segment.status === "running"
-    ) {
-      targetIndex = i;
-      break;
-    }
-  }
-  if (targetIndex === -1) return source;
-  return source.map((segment, index) =>
-    index === targetIndex ? updater(segment) : segment,
-  );
-}
-
-function updateSkillInSegments(segments, name, updater) {
-  const source = Array.isArray(segments) ? segments : [];
-  let targetIndex = -1;
-  for (let i = source.length - 1; i >= 0; i -= 1) {
-    const segment = source[i];
-    if (
-      segment?.type === "skill" &&
-      segment.name === name &&
-      segment.status === "running"
-    ) {
-      targetIndex = i;
-      break;
-    }
-  }
-  if (targetIndex === -1) return source;
-  return source.map((segment, index) =>
-    index === targetIndex ? updater(segment) : segment,
-  );
-}
-
-function ensureTextSegment(segments) {
-  if (segments.length === 0)
-    return [{ type: "text", text: "", isStreaming: false }];
-  const last = segments[segments.length - 1];
-  if (last.type === "text") return segments;
-  return [...segments, { type: "text", text: "", isStreaming: false }];
-}
-
-function appendDeltaToSegments(segments, delta) {
-  const segs = ensureTextSegment(segments);
-  const last = segs[segs.length - 1];
-  const now = new Date().toISOString();
-  return [
-    ...segs.slice(0, -1),
-    {
-      ...last,
-      text: (last.text || "") + delta,
-      isStreaming: true,
-      startedAt: last.startedAt || now,
-    },
-  ];
-}
-
-function replaceLastTextInSegments(segments, text) {
-  const source = Array.isArray(segments) ? segments : [];
-  // Prefer the latest text segment even when tools/skills follow it.
-  // Otherwise assistant:response appends a duplicate body after tool cards.
-  for (let i = source.length - 1; i >= 0; i -= 1) {
-    if (source[i]?.type !== "text") continue;
-    return source.map((seg, index) =>
-      index === i
-        ? {
-            ...seg,
-            text,
-            isStreaming: false,
-            startedAt: seg.startedAt || new Date().toISOString(),
-          }
-        : seg,
-    );
-  }
-  return [
-    ...source,
-    {
-      type: "text",
-      text,
-      isStreaming: false,
-      startedAt: new Date().toISOString(),
-    },
-  ];
-}
-
-function appendThinkingToSegments(segments, delta, isStreaming = true) {
-  const value = String(delta || "");
-  if (!value) return segments || [];
-  const segs = Array.isArray(segments) ? segments : [];
-  const now = new Date().toISOString();
-  const nowMs = Date.parse(now);
-  const last = segs[segs.length - 1];
-  if (last?.type === "thinking") {
-    const startedAt = last.startedAt || now;
-    return [
-      ...segs.slice(0, -1),
-      {
-        ...last,
-        text: `${last.text || ""}${value}`,
-        isStreaming,
-        startedAt,
-        endedAt: isStreaming ? null : last.endedAt || now,
-        durationMs: Math.max(
-          Number(last.durationMs || 0),
-          nowMs - Date.parse(startedAt),
-        ),
-      },
-    ];
-  }
-  return [
-    ...segs,
-    {
-      type: "thinking",
-      text: value,
-      isStreaming,
-      startedAt: now,
-      endedAt: isStreaming ? null : now,
-      durationMs: isStreaming ? 0 : null,
-    },
-  ];
-}
-
-function resolveThinkingDurationMs(seg, endedAt) {
-  const explicit = Number(seg?.durationMs);
-  const startMs = Date.parse(seg?.startedAt || "");
-  const endMs = Date.parse(seg?.endedAt || endedAt || "");
-  const measured =
-    Number.isFinite(startMs) && Number.isFinite(endMs)
-      ? Math.max(0, endMs - startMs)
-      : null;
-  if (Number.isFinite(explicit) && measured != null)
-    return Math.max(explicit, measured);
-  if (Number.isFinite(explicit)) return Math.max(0, explicit);
-  return measured;
-}
-
-function finishThinkingSegments(segments) {
-  const endedAt = new Date().toISOString();
-  return (Array.isArray(segments) ? segments : []).map((seg) =>
-    seg.type === "thinking"
-      ? {
-          ...seg,
-          isStreaming: false,
-          endedAt: seg.endedAt || endedAt,
-          durationMs: resolveThinkingDurationMs(seg, endedAt),
-        }
-      : seg,
-  );
-}
-
-function normalizeUsage(usage) {
-  if (!usage || typeof usage !== "object") return null;
-  const out = {};
-  for (const key of [
-    "inputTokens",
-    "outputTokens",
-    "totalTokens",
-    "cachedInputTokens",
-    "cacheMissInputTokens",
-    "cacheWriteInputTokens",
-    "reasoningOutputTokens",
-    "requests",
-  ]) {
-    const value = Number(usage?.[key]);
-    if (Number.isFinite(value)) out[key] = Math.max(0, Math.round(value));
-  }
-  return Object.keys(out).length ? out : null;
-}
-
-function mergeUsage(left, right) {
-  const a = normalizeUsage(left);
-  const b = normalizeUsage(right);
-  if (!a) return b;
-  if (!b) return a;
-  const out = {};
-  for (const key of [
-    "inputTokens",
-    "outputTokens",
-    "totalTokens",
-    "cachedInputTokens",
-    "cacheMissInputTokens",
-    "cacheWriteInputTokens",
-    "reasoningOutputTokens",
-    "requests",
-  ]) {
-    out[key] = Math.max(
-      0,
-      Math.round(Number(a[key] || 0) + Number(b[key] || 0)),
-    );
-  }
-  return out;
-}
-
 function getReasoningTextFromDetails(details) {
   if (!Array.isArray(details)) return "";
   return details
@@ -567,13 +329,6 @@ function getMessageReasoningText(msg) {
     getReasoningTextFromDetails(
       msg?.reasoningDetails || msg?.reasoning_details,
     ).trim()
-  );
-}
-
-function stripPlanProgressText(text) {
-  return String(text || "").replace(
-    /(?:^|\n)\[plan\]\s+Step\s+\d+\/\d+\s+->[^\n]*\n?/g,
-    "",
   );
 }
 
@@ -1699,34 +1454,37 @@ export function AppProvider({ children }) {
             );
           }
         };
-        if (!messages.length) {
-          if (Array.isArray(uiMessages) && uiMessages.length) {
-            const changeSets = sessionData
-              ? []
-              : (await api.fetchSessionChanges(ownerSessionId).catch(() => ({})))?.changes ||
-                [];
-            if (!isAlive()) return;
-            const restored = sanitizeManualAbortMessages(
-              settleCompletedPlanToolCards(uiMessages),
-            );
-            const overview = [...restored]
-              .reverse()
-              .find((m) => m.role === "plan-overview" && m.planOverview);
-            planOverviewMsgRef.current = overview?.id || null;
-            planStepMessagesRef.current = new Map(
-              restored
-                .filter((m) => m.planStep?.step != null)
-                .map((m) => [String(m.planStep.step), m.id]),
-            );
-            commitMessages(
-              enrichMessageChangeStates(restored, changeSets),
-              restoredActivities,
-            );
-          } else {
-            commitMessages([], []);
-          }
+        // Prefer the authoritative Web UI transcript when present.
+        // Core session messages are only used as a legacy fallback.
+        if (Array.isArray(uiMessages) && uiMessages.length) {
+          const changeSets = sessionData
+            ? []
+            : (await api.fetchSessionChanges(ownerSessionId).catch(() => ({})))
+                ?.changes || [];
+          if (!isAlive()) return;
+          const restored = sanitizeManualAbortMessages(
+            settleCompletedPlanToolCards(uiMessages),
+          );
+          const overview = [...restored]
+            .reverse()
+            .find((m) => m.role === "plan-overview" && m.planOverview);
+          planOverviewMsgRef.current = overview?.id || null;
+          planStepMessagesRef.current = new Map(
+            restored
+              .filter((m) => m.planStep?.step != null)
+              .map((m) => [String(m.planStep.step), m.id]),
+          );
+          commitMessages(
+            enrichMessageChangeStates(restored, changeSets),
+            restoredActivities,
+          );
           return;
         }
+        if (!messages.length) {
+          commitMessages([], []);
+          return;
+        }
+        // Legacy fallback: rebuild segments from core session messages.
         const processed = [];
         let assistantGroup = null;
         const compactBoundary = compactMeta?.boundaryIndex;
@@ -2064,7 +1822,21 @@ export function AppProvider({ children }) {
         }
       }
       if (event.sessionId) {
-        setState((prev) => reduceSessionEvent(prev, event));
+        setState((prev) => {
+          const reduced = reduceSessionEvent(prev, event);
+          // Keep raw messages aligned with the transcript cache so later
+          // UI-only mutations do not wipe shared-reducer updates.
+          if (
+            event.sessionId === reduced.currentSessionId &&
+            Array.isArray(reduced.sessionMessagesById?.[event.sessionId])
+          ) {
+            return {
+              ...reduced,
+              messages: reduced.sessionMessagesById[event.sessionId],
+            };
+          }
+          return reduced;
+        });
         if (event.sessionId !== s.currentSessionId) return;
       }
       const activeId = activeMsgRef.current;
@@ -2096,28 +1868,16 @@ export function AppProvider({ children }) {
             });
             break;
           }
-          let msgId = activeId;
-          if (!msgId) {
-            const pendingSkillBadges = pendingSkillBadgesRef.current;
-            pendingSkillBadgesRef.current = [];
-            const pendingSkillSegments = pendingSkillSegmentsRef.current;
-            pendingSkillSegmentsRef.current = [];
-            msgId = addMessage({
-              id: event.messageId,
-              role: "general",
-              timestamp: new Date().toISOString(),
-              text: "",
-              isStreaming: false,
-              isComplete: false,
-              skillBadges: pendingSkillBadges,
-              segments: pendingSkillSegments,
-            });
-            setActiveMsg(msgId);
-          } else {
-            const pendingSkillBadges = pendingSkillBadgesRef.current;
-            pendingSkillBadgesRef.current = [];
-            const pendingSkillSegments = pendingSkillSegmentsRef.current;
-            pendingSkillSegmentsRef.current = [];
+          const msgId = event.messageId || activeId;
+          if (msgId) setActiveMsg(msgId);
+          const pendingSkillBadges = pendingSkillBadgesRef.current;
+          pendingSkillBadgesRef.current = [];
+          const pendingSkillSegments = pendingSkillSegmentsRef.current;
+          pendingSkillSegmentsRef.current = [];
+          if (
+            msgId &&
+            (pendingSkillBadges.length || pendingSkillSegments.length)
+          ) {
             setState((prev) => ({
               ...prev,
               messages: prev.messages.map((m) =>
@@ -2150,23 +1910,6 @@ export function AppProvider({ children }) {
         }
 
         case "assistant:delta": {
-          const delta = stripPlanProgressText(event.text);
-          if (activeId && delta) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === activeId
-                  ? {
-                      ...m,
-                      segments: appendDeltaToSegments(
-                        finishThinkingSegments(m.segments),
-                        delta,
-                      ),
-                    }
-                  : m,
-              ),
-            }));
-          }
           update({
             stage: "streaming",
             live: true,
@@ -2176,247 +1919,39 @@ export function AppProvider({ children }) {
         }
 
         case "assistant:reasoning_delta": {
-          if (activeId && event.text) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === activeId
-                  ? {
-                      ...m,
-                      segments: appendThinkingToSegments(
-                        m.segments,
-                        event.text,
-                        true,
-                      ),
-                    }
-                  : m,
-              ),
-            }));
-          }
           update({ stage: "thinking", live: true, stageLabel: t("thinking") });
           break;
         }
 
-        case "assistant:tool_call_delta": {
-          const toolCall = event.toolCall || {};
-          const toolName = String(toolCall.name || "").trim();
-          const toolId =
-            String(toolCall.id || "").trim() ||
-            `stream-tool-${Number.isFinite(Number(toolCall.index)) ? Number(toolCall.index) : 0}`;
-          if (!toolId) break;
+        case "assistant:tool_call_delta":
+        case "tool:start": {
           update({ stage: "tooling", live: true, stageLabel: t("tooling") });
-          if (activeId) {
-            const toolCard = {
-              id: toolId,
-              name: toolName || "tool",
-              displayName: toolName ? formatToolLabel(toolName) : t("tooling"),
-              arguments: toolCall.arguments || "",
-              status: "running",
-              startedAt: event.startedAt || new Date().toISOString(),
-              durationMs: null,
-              summary: "",
-              result: "",
-            };
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === activeId ? upsertToolCardInMessage(m, toolCard) : m,
-              ),
-            }));
-          }
           break;
         }
 
         case "assistant:response": {
-          if (activeId) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) => {
-                if (m.id !== activeId) return m;
-                const reasoningText = getMessageReasoningText(
-                  event.assistantMessage,
-                );
-                const withReasoning =
-                  reasoningText &&
-                  !(Array.isArray(m.segments) ? m.segments : []).some(
-                    (seg) =>
-                      seg.type === "thinking" && String(seg.text || "").trim(),
-                  )
-                    ? {
-                        ...m,
-                        segments: appendThinkingToSegments(
-                          m.segments,
-                          reasoningText,
-                          false,
-                        ),
-                      }
-                    : m;
-                if (event.text) {
-                  const text = stripPlanProgressText(event.text);
-                  return {
-                    ...withReasoning,
-                    usage: mergeUsage(
-                      withReasoning.usage,
-                      event.usage || event.assistantMessage?.usage,
-                    ),
-                    segments: replaceLastTextInSegments(
-                      finishThinkingSegments(withReasoning.segments),
-                      text,
-                    ),
-                  };
-                }
-                return {
-                  ...withReasoning,
-                  usage: mergeUsage(
-                    withReasoning.usage,
-                    event.usage || event.assistantMessage?.usage,
-                  ),
-                  segments: finishThinkingSegments(withReasoning.segments).map(
-                    (seg) =>
-                      seg.type === "text"
-                        ? { ...seg, isStreaming: false }
-                        : seg,
-                  ),
-                };
-              }),
-            }));
-          }
-          break;
-        }
-
-        case "tool:start": {
-          update({ stage: "tooling", live: true, stageLabel: t("tooling") });
-          if (activeId) {
-            const toolCard = {
-              id: event.id,
-              name: event.name,
-              displayName: event.displayName || formatToolLabel(event.name),
-              arguments: event.arguments,
-              status: "running",
-              startedAt: event.startedAt || new Date().toISOString(),
-              durationMs: null,
-              summary: "",
-              result: "",
-            };
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === activeId ? upsertToolCardInMessage(m, toolCard) : m,
-              ),
-            }));
-          }
           break;
         }
 
         case "tool:end": {
-          setState((prev) => {
-            const { messages, updated } = updateToolInMessages(
-              prev.messages,
-              event,
-              (tc) => {
-                const eventChanges =
-                  Array.isArray(event.fileChanges) && event.fileChanges.length
-                    ? event.fileChanges
-                    : event.fileChange
-                      ? [event.fileChange]
-                      : [];
-                const u = {
-                  ...tc,
-                  id: event.id || tc.id,
-                  name: event.name || tc.name,
-                  displayName: event.displayName || tc.displayName,
-                  status: "done",
-                  durationMs: event.durationMs,
-                };
-                if (event.summary) u.summary = event.summary;
-                if (event.resultMeta) u.resultMeta = event.resultMeta;
-                if (event.fileChange) u.fileChange = event.fileChange;
-                if (eventChanges.length) u.fileChanges = eventChanges;
-                return u;
-              },
-            );
-            if (!updated) return prev;
-            const eventChanges =
-              Array.isArray(event.fileChanges) && event.fileChanges.length
-                ? event.fileChanges
-                : event.fileChange
-                  ? [event.fileChange]
-                  : [];
-            if (eventChanges.length)
-              pendingChangesRef.current = [
-                ...pendingChangesRef.current,
-                ...eventChanges,
-              ];
-            return {
-              ...prev,
-              messages: messages.map((m) => {
-                if (!hasToolInSegments(m.segments, event.id)) return m;
-                return {
-                  ...m,
-                  fileChanges: eventChanges.length
-                    ? appendUniqueFileChanges(m.fileChanges, eventChanges)
-                    : m.fileChanges,
-                };
-              }),
-            };
-          });
+          const eventChanges =
+            Array.isArray(event.fileChanges) && event.fileChanges.length
+              ? event.fileChanges
+              : event.fileChange
+                ? [event.fileChange]
+                : [];
+          if (eventChanges.length) {
+            pendingChangesRef.current = [
+              ...pendingChangesRef.current,
+              ...eventChanges,
+            ];
+          }
           break;
         }
 
-        case "tool:result": {
-          setState((prev) => {
-            const { messages, updated } = updateToolInMessages(
-              prev.messages,
-              event,
-              (tc) => ({
-                ...tc,
-                id: event.id || tc.id,
-                name: event.name || tc.name,
-                displayName: event.displayName || tc.displayName,
-                result: event.content || "",
-              }),
-            );
-            return updated ? { ...prev, messages } : prev;
-          });
-          break;
-        }
-
-        case "tool:error": {
-          setState((prev) => {
-            const { messages, updated } = updateToolInMessages(
-              prev.messages,
-              event,
-              (tc) => ({
-                ...tc,
-                id: event.id || tc.id,
-                name: event.name || tc.name,
-                displayName: event.displayName || tc.displayName,
-                status: "error",
-                durationMs: event.durationMs,
-                summary: event.summary || tc.summary,
-              }),
-            );
-            return updated ? { ...prev, messages } : prev;
-          });
-          break;
-        }
-
+        case "tool:result":
+        case "tool:error":
         case "tool:blocked": {
-          setState((prev) => {
-            const { messages, updated } = updateToolInMessages(
-              prev.messages,
-              event,
-              (tc) => ({
-                ...tc,
-                id: event.id || tc.id,
-                name: event.name || tc.name,
-                displayName: event.displayName || tc.displayName,
-                status: "blocked",
-                summary: t("toolBlocked"),
-              }),
-            );
-            return updated ? { ...prev, messages } : prev;
-          });
           break;
         }
 
@@ -2658,22 +2193,7 @@ export function AppProvider({ children }) {
         }
 
         case "skill:start": {
-          if (activeId) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === activeId
-                  ? {
-                      ...m,
-                      segments: addSkillToSegments(
-                        finishThinkingSegments(m.segments),
-                        event,
-                      ),
-                    }
-                  : m,
-              ),
-            }));
-          } else {
+          if (!activeId) {
             pendingSkillSegmentsRef.current = addSkillToSegments(
               pendingSkillSegmentsRef.current,
               event,
@@ -2682,28 +2202,8 @@ export function AppProvider({ children }) {
           break;
         }
         case "skill:end": {
-          if (activeId) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === activeId
-                  ? {
-                      ...m,
-                      segments: updateSkillInSegments(
-                        m.segments,
-                        event.name,
-                        (segment) => ({
-                          ...segment,
-                          status: "done",
-                          endedAt: event.endedAt || new Date().toISOString(),
-                        }),
-                      ),
-                    }
-                  : m,
-              ),
-            }));
-          } else {
-            pendingSkillSegmentsRef.current = updatePendingSkillSegments(
+          if (!activeId) {
+            pendingSkillSegmentsRef.current = updateSkillInSegments(
               pendingSkillSegmentsRef.current,
               event.name,
               (segment) => ({
@@ -2716,29 +2216,8 @@ export function AppProvider({ children }) {
           break;
         }
         case "skill:error": {
-          if (activeId) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === activeId
-                  ? {
-                      ...m,
-                      segments: updateSkillInSegments(
-                        m.segments,
-                        event.name,
-                        (segment) => ({
-                          ...segment,
-                          status: "error",
-                          summary: event.summary,
-                          endedAt: event.endedAt || new Date().toISOString(),
-                        }),
-                      ),
-                    }
-                  : m,
-              ),
-            }));
-          } else {
-            pendingSkillSegmentsRef.current = updatePendingSkillSegments(
+          if (!activeId) {
+            pendingSkillSegmentsRef.current = updateSkillInSegments(
               pendingSkillSegmentsRef.current,
               event.name,
               (segment) => ({

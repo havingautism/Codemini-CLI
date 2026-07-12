@@ -1038,6 +1038,12 @@ body {
   font-size: 15px;
   line-height: 1.65;
 }
+.codemini-chat-session .msg-body > :first-child {
+  margin-top: 0;
+}
+.codemini-chat-session .msg-body > :last-child {
+  margin-bottom: 0;
+}
 
 /* Process metadata: thinking, tools, processed summaries */
 .msg-process-meta {

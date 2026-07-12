@@ -31,6 +31,12 @@ import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { MessageBubble } from "@/components/MessageBubble.jsx";
 import { StreamdownRenderer } from "@/components/StreamdownRenderer.jsx";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  applyStreamEventToMessage,
+  finishStreamingTextSegments,
+  isTranscriptStreamEvent,
+} from "../../../shared/transcript-segments.js";
+
 const CODEWIKI_QA_WIDTH_KEY = "codemini:codewiki:qa-width";
 const CODEWIKI_QA_MIN_WIDTH = 320;
 const CODEWIKI_QA_MAX_WIDTH = 760;
@@ -338,176 +344,18 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
   );
 }
 
-function addToolToSegments(segments, toolCard) {
-  if (!Array.isArray(segments) || segments.length === 0) {
-    return [{ type: "tools", cards: [toolCard] }];
-  }
-  const last = segments[segments.length - 1];
-  if (last.type === "tools") {
-    return [
-      ...segments.slice(0, -1),
-      { ...last, cards: [...last.cards, toolCard] },
-    ];
-  }
-  return [...segments, { type: "tools", cards: [toolCard] }];
-}
-
-function updateToolInSegments(segments, toolId, updater) {
-  return (Array.isArray(segments) ? segments : []).map((seg) => {
-    if (seg.type !== "tools") return seg;
-    const index = seg.cards.findIndex((card) => card.id === toolId);
-    if (index === -1) return seg;
-    const cards = [...seg.cards];
-    cards[index] = updater(cards[index]);
-    return { ...seg, cards };
-  });
-}
-
-function upsertToolInSegments(segments, toolCard) {
-  let found = false;
-  const next = (Array.isArray(segments) ? segments : []).map((seg) => {
-    if (seg.type !== "tools") return seg;
-    const index = seg.cards.findIndex(
-      (card) =>
-        card.id === toolCard.id ||
-        (String(card.id || "").startsWith("stream-tool-") &&
-          !String(toolCard.id || "").startsWith("stream-tool-") &&
-          String(card.name || "") === String(toolCard.name || "")),
-    );
-    if (index === -1) return seg;
-    found = true;
-    const cards = [...seg.cards];
-    cards[index] = { ...cards[index], ...toolCard };
-    return { ...seg, cards };
-  });
-  return found ? next : addToolToSegments(next, toolCard);
-}
-
-function ensureTextSegment(segments) {
-  const current = Array.isArray(segments) ? segments : [];
-  if (current.length === 0) {
-    return [{ type: "text", text: "", isStreaming: false }];
-  }
-  const last = current[current.length - 1];
-  if (last.type === "text") return current;
-  return [...current, { type: "text", text: "", isStreaming: false }];
-}
-
-function appendDeltaToSegments(segments, delta) {
-  const value = String(delta || "");
-  if (!value) return Array.isArray(segments) ? segments : [];
-  const current = ensureTextSegment(segments);
-  const last = current[current.length - 1];
-  return [
-    ...current.slice(0, -1),
-    { ...last, text: `${last.text || ""}${value}`, isStreaming: true },
-  ];
-}
-
-function replaceLastTextSegment(segments, text) {
-  const current = Array.isArray(segments) ? segments : [];
-  for (let i = current.length - 1; i >= 0; i -= 1) {
-    if (current[i]?.type !== "text") continue;
-    return current.map((seg, index) =>
-      index === i ? { ...seg, text, isStreaming: false } : seg,
-    );
-  }
-  return [...current, { type: "text", text, isStreaming: false }];
-}
-
-function finishStreamingSegments(segments) {
-  return (Array.isArray(segments) ? segments : []).map((seg) =>
-    seg.type === "text" ? { ...seg, isStreaming: false } : seg,
-  );
-}
-
 function applyCodeWikiEventToMessage(message, event) {
+  if (isTranscriptStreamEvent(event?.type)) {
+    return applyStreamEventToMessage(message, event, {
+      finishThinkingBeforeText: false,
+    });
+  }
   switch (event?.type) {
-    case "assistant:delta":
-      return {
-        ...message,
-        segments: appendDeltaToSegments(message.segments, event.text),
-      };
-    case "assistant:response":
-      return {
-        ...message,
-        segments: event.text
-          ? replaceLastTextSegment(message.segments, event.text)
-          : finishStreamingSegments(message.segments),
-      };
-    case "assistant:tool_call_delta": {
-      const toolCall = event.toolCall || {};
-      const id =
-        String(toolCall.id || "").trim() ||
-        `stream-tool-${Number.isFinite(Number(toolCall.index)) ? Number(toolCall.index) : 0}`;
-      return {
-        ...message,
-        segments: upsertToolInSegments(message.segments, {
-          id,
-          name: String(toolCall.name || "").trim() || "tool",
-          arguments: toolCall.arguments || "",
-          status: "running",
-          durationMs: null,
-          summary: "",
-          result: "",
-        }),
-      };
-    }
-    case "tool:start":
-      return {
-        ...message,
-        segments: upsertToolInSegments(message.segments, {
-          id: event.id,
-          name: event.name,
-          arguments: event.arguments,
-          status: "running",
-          durationMs: null,
-          summary: "",
-          result: "",
-        }),
-      };
-    case "tool:result":
-      return {
-        ...message,
-        segments: updateToolInSegments(message.segments, event.id, (card) => ({
-          ...card,
-          result: event.content || card.result || "",
-        })),
-      };
-    case "tool:end":
-      return {
-        ...message,
-        segments: updateToolInSegments(message.segments, event.id, (card) => ({
-          ...card,
-          status: "done",
-          durationMs: event.durationMs,
-          summary: event.summary || card.summary || "",
-        })),
-      };
-    case "tool:error":
-      return {
-        ...message,
-        segments: updateToolInSegments(message.segments, event.id, (card) => ({
-          ...card,
-          status: "error",
-          durationMs: event.durationMs,
-          summary: event.summary || card.summary || "",
-        })),
-      };
-    case "tool:blocked":
-      return {
-        ...message,
-        segments: updateToolInSegments(message.segments, event.id, (card) => ({
-          ...card,
-          status: "blocked",
-          summary: card.summary || "Tool blocked",
-        })),
-      };
     case "codewiki:done":
       return {
         ...message,
         loading: false,
-        segments: finishStreamingSegments(message.segments),
+        segments: finishStreamingTextSegments(message.segments),
       };
     case "codewiki:error":
       return {

@@ -71,18 +71,27 @@ function splitPathForDisplay(pathText) {
 
 function isUnifiedPatch(text) {
   const value = String(text || "");
-  return value.startsWith("diff --git ") || value.includes("\ndiff --git ") || value.includes("\n@@ ");
+  return (
+    value.startsWith("diff --git ") ||
+    value.includes("\ndiff --git ") ||
+    value.includes("\n@@ ")
+  );
 }
 
 function usePatchThemeType() {
   const getIsDark = () =>
     document.documentElement.classList.contains("dark") ||
     document.documentElement.dataset.theme === "dark";
-  const [isDark, setIsDark] = useState(() => (typeof document === "undefined" ? true : getIsDark()));
+  const [isDark, setIsDark] = useState(() =>
+    typeof document === "undefined" ? true : getIsDark(),
+  );
   useEffect(() => {
     if (typeof document === "undefined") return undefined;
     const observer = new MutationObserver(() => setIsDark(getIsDark()));
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme"] });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class", "data-theme"],
+    });
     return () => observer.disconnect();
   }, []);
   return isDark ? "dark" : "light";
@@ -188,7 +197,8 @@ function FilePreview({ meta }) {
 }
 
 function BackupNotice({ meta }) {
-  if (!meta?.backupPath && !meta?.backupSkipped && !meta?.backupError) return null;
+  if (!meta?.backupPath && !meta?.backupSkipped && !meta?.backupError)
+    return null;
   const pathText = meta.backupRelativePath || meta.backupPath;
   const label = meta.backupReused
     ? t("backupReused")
@@ -227,7 +237,13 @@ const TOOL_ICON_CLASS =
   "flex size-[18px] shrink-0 items-center justify-center rounded text-(--text-process-detail)";
 const RUN_TOOL_ICON_CLASS =
   "flex h-4 w-5 shrink-0 items-center justify-center rounded-[3px] border border-[color:color-mix(in_srgb,var(--text-process-detail)_45%,transparent)] text-(--text-process-detail)";
-const FILE_PATH_ARG_TOOLS = new Set(["read", "edit", "create", "write", "delete"]);
+const FILE_PATH_ARG_TOOLS = new Set([
+  "read",
+  "edit",
+  "create",
+  "write",
+  "delete",
+]);
 
 function FilePathArgument({ path, wrapped = false }) {
   const { dir, name } = splitPathForDisplay(path);
@@ -260,11 +276,11 @@ export function ToolCard({ card }) {
     card.resultMeta,
     card.fileChanges,
   );
-  const { label: toolLabel, arg: toolArg, wrapArg } = resolveToolHeaderParts(
-    card,
-    toolName,
-    fileMeta,
-  );
+  const {
+    label: toolLabel,
+    arg: toolArg,
+    wrapArg,
+  } = resolveToolHeaderParts(card, toolName, fileMeta);
   const shouldRenderFileArg =
     Boolean(fileMeta?.path) ||
     (wrapArg && FILE_PATH_ARG_TOOLS.has(toolName) && Boolean(toolArg));
@@ -293,7 +309,9 @@ export function ToolCard({ card }) {
         ) : (
           <CaretRight size={14} className={TOOL_CHEVRON_CLASS} />
         )}
-        <span className={toolName === "run" ? RUN_TOOL_ICON_CLASS : TOOL_ICON_CLASS}>
+        <span
+          className={toolName === "run" ? RUN_TOOL_ICON_CLASS : TOOL_ICON_CLASS}
+        >
           <Icon size={toolName === "run" ? 13 : 14} />
         </span>
         <span className="flex min-w-0 flex-1 items-center overflow-hidden whitespace-nowrap leading-[18px]">
@@ -361,7 +379,7 @@ export function ToolCard({ card }) {
                 <div className="mt-2 mb-1 text-[10px] font-bold uppercase tracking-[0.4px] text-[var(--text-muted)]">
                   {label}
                 </div>
-                <pre className="m-0 p-2 rounded bg-[var(--bg-tertiary)] text-[var(--text-primary)] font-mono text-xs leading-relaxed max-h-100 overflow-x-auto whitespace-pre-wrap break-words">
+                <pre className="m-0 p-2 rounded bg-(--bg-tertiary) dark:bg-(--bg-primary) text-(--text-primary) font-mono text-xs leading-relaxed max-h-100 overflow-x-auto whitespace-pre-wrap break-words">
                   {value}
                 </pre>
               </div>

@@ -26,6 +26,12 @@ import {
   resolveTitleUserText,
   saveSession
 } from './session-store.js';
+import {
+  SESSION_TITLE_SYSTEM_PROMPT,
+  buildSessionTitleInput,
+  normalizeGeneratedSessionTitle,
+  shouldReplaceSessionTitle
+} from './session-title.js';
 import { loadConfig, setConfigValue } from './config-store.js';
 import { evaluateCommandPolicy } from './command-policy.js';
 import { loadInputHistory } from './input-history-store.js';
@@ -3767,21 +3773,6 @@ export function resolvePlanExecutionModel(config, {
     : fast;
 }
 
-function normalizeGeneratedSessionTitle(value, fallback = '') {
-  const cleaned = String(value || '')
-    .replace(/^[\s"'`#：:「『【\[]+|[\s"'`。.!?？！」』】\]]+$/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const title = cleaned || fallback || '';
-  if (!title) return '';
-  return title.length > 48 ? `${title.slice(0, 45).trimEnd()}...` : title;
-}
-
-function shouldReplaceSessionTitle(title) {
-  const value = String(title || '').trim();
-  return !value || value === '新会话' || value === 'New session';
-}
-
 /** @type {((sessionId: string, title: string) => void) | null} */
 let sessionTitleUpdateListener = null;
 
@@ -3798,10 +3789,7 @@ async function generateSessionTitle({ userText, assistantText = '', config, sign
   const effectiveConfig = latestConfig || config;
   const fastModel = resolveFastModel(effectiveConfig);
   if (!fastModel) return fallback;
-  const titleInput = [
-    `User:\n${String(userText || '').slice(0, 1200)}`,
-    assistantText ? `Assistant:\n${String(assistantText || '').slice(0, 1600)}` : ''
-  ].filter(Boolean).join('\n\n');
+  const titleInput = buildSessionTitleInput({ userText, assistantText });
   try {
     const result = await createChatCompletion({
       sdkProvider: effectiveConfig.sdk?.provider,
@@ -3811,17 +3799,7 @@ async function generateSessionTitle({ userText, assistantText = '', config, sign
       messages: [
         {
           role: 'system',
-          content: [
-            'Generate a concise chat session title.',
-            'Base it on the completed user-assistant exchange, not only the user prompt.',
-            'Make it a short noun phrase, not a sentence or summary.',
-            'Return only the title text.',
-            'Use the same language as the user when possible.',
-            'No prefixes like "Title:", no quotes, no markdown, no punctuation at the ends.',
-            'Maximum 18 Chinese characters or 8 English words.',
-            'Bad: "This conversation summarizes how to fix the Web UI title generation."',
-            'Good: "Web UI title generation fix".'
-          ].join(' ')
+          content: SESSION_TITLE_SYSTEM_PROMPT
         },
         { role: 'user', content: titleInput }
       ],

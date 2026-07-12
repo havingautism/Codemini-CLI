@@ -3,10 +3,13 @@ import { UserInputManager } from './user-input-manager.js';
 import { summarizeToolResult } from '../../src/core/tool-result-store.js';
 import { formatToolLabel } from '../../src/core/tool-display.js';
 import {
-  hasToolInSegments,
-  updateToolInMessages,
-  upsertToolCardInSegments,
-} from '../shared/tool-segments.js';
+  applyStreamEventToMessage,
+  addSkillToSegments,
+  finishThinkingSegments,
+  finishStreamingTextSegments,
+  normalizeUsage,
+  updateSkillInSegments,
+} from '../shared/transcript-segments.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getSessionsDir } from '../../src/core/paths.js';
@@ -98,170 +101,6 @@ function skillBadgesFromSessionMessage(message = {}) {
       ? message.selected_skill_names
       : [];
   return selectedSkillBadgesFromNames(names);
-}
-
-function createSkillSegment(event, status = 'running') {
-  const now = new Date().toISOString();
-  return {
-    type: 'skill',
-    name: event.name,
-    status,
-    startedAt: event.startedAt || now,
-    ...(status === 'done' || status === 'error'
-      ? { endedAt: event.endedAt || now }
-      : {}),
-    ...(status === 'error' && event.summary ? { summary: event.summary } : {})
-  };
-}
-
-function addSkillToSegments(segments, event) {
-  const source = Array.isArray(segments) ? segments : [];
-  const existingIndex = source.findIndex(
-    (segment) => segment?.type === 'skill' && segment.name === event.name
-  );
-  if (existingIndex === -1) return [...source, createSkillSegment(event)];
-  return source.map((segment, index) => (
-    index === existingIndex ? createSkillSegment(event) : segment
-  ));
-}
-
-function updateSkillInSegments(segments, name, updater) {
-  const source = Array.isArray(segments) ? segments : [];
-  let targetIndex = -1;
-  for (let i = source.length - 1; i >= 0; i -= 1) {
-    const segment = source[i];
-    if (segment?.type === 'skill' && segment.name === name && segment.status === 'running') {
-      targetIndex = i;
-      break;
-    }
-  }
-  if (targetIndex === -1) return source;
-  return source.map((segment, index) => (index === targetIndex ? updater(segment) : segment));
-}
-
-function updatePendingSkillSegments(segments, name, updater) {
-  return updateSkillInSegments(segments, name, updater);
-}
-
-function appendTextSegment(segments, delta, isStreaming = true) {
-  const value = String(delta || '');
-  if (!value) return segments || [];
-  const current = Array.isArray(segments) ? segments : [];
-  const now = new Date().toISOString();
-  const last = current[current.length - 1];
-  if (last?.type === 'text') {
-    return [
-      ...current.slice(0, -1),
-      { ...last, text: `${last.text || ''}${value}`, isStreaming, startedAt: last.startedAt || now }
-    ];
-  }
-  return [...current, { type: 'text', text: value, isStreaming, startedAt: now }];
-}
-
-function replaceTextSegment(segments, text, isStreaming = false) {
-  const value = String(text || '');
-  const current = Array.isArray(segments) ? segments : [];
-  // Walk backwards so tool cards after streamed text do not cause a duplicate
-  // body when assistant:response finalizes the turn.
-  for (let index = current.length - 1; index >= 0; index -= 1) {
-    if (current[index]?.type !== 'text') continue;
-    return current.map((seg, i) => (
-      i === index ? { ...seg, text: value, isStreaming, startedAt: seg.startedAt || new Date().toISOString() } : seg
-    ));
-  }
-  return value ? [...current, { type: 'text', text: value, isStreaming, startedAt: new Date().toISOString() }] : current;
-}
-
-function appendThinkingSegment(segments, delta, isStreaming = true) {
-  const value = String(delta || '');
-  if (!value) return segments || [];
-  const current = Array.isArray(segments) ? segments : [];
-  const now = new Date().toISOString();
-  const nowMs = Date.parse(now);
-  const last = current[current.length - 1];
-  if (last?.type === 'thinking') {
-    const startedAt = last.startedAt || now;
-    return [
-      ...current.slice(0, -1),
-      {
-        ...last,
-        text: `${last.text || ''}${value}`,
-        isStreaming,
-        startedAt,
-        endedAt: isStreaming ? null : (last.endedAt || now),
-        durationMs: Math.max(Number(last.durationMs || 0), nowMs - Date.parse(startedAt))
-      }
-    ];
-  }
-  return [...current, { type: 'thinking', text: value, isStreaming, startedAt: now, endedAt: isStreaming ? null : now, durationMs: isStreaming ? 0 : null }];
-}
-
-function resolveThinkingDurationMs(seg, endedAt) {
-  const explicit = Number(seg?.durationMs);
-  const startMs = Date.parse(seg?.startedAt || '');
-  const endMs = Date.parse(seg?.endedAt || endedAt || '');
-  const measured = Number.isFinite(startMs) && Number.isFinite(endMs) ? Math.max(0, endMs - startMs) : null;
-  if (Number.isFinite(explicit) && measured != null) return Math.max(explicit, measured);
-  if (Number.isFinite(explicit)) return Math.max(0, explicit);
-  return measured;
-}
-
-function finishThinkingSegments(segments) {
-  const endedAt = new Date().toISOString();
-  return (Array.isArray(segments) ? segments : []).map((seg) => (
-    seg.type === 'thinking'
-      ? {
-          ...seg,
-          isStreaming: false,
-          endedAt: seg.endedAt || endedAt,
-          durationMs: resolveThinkingDurationMs(seg, endedAt)
-        }
-      : seg
-  ));
-}
-
-function getReasoningTextFromAssistantMessage(message = {}) {
-  if (typeof message.reasoning_content === 'string' && message.reasoning_content.trim()) {
-    return message.reasoning_content.trim();
-  }
-  if (!Array.isArray(message.reasoning_details)) return '';
-  return message.reasoning_details
-    .map((block) => {
-      if (!block || typeof block !== 'object') return '';
-      if (block.type === 'thinking') return block.thinking || block.text || '';
-      if (block.type === 'reasoning' || block.type === 'reasoning_content') return block.text || block.reasoning_content || '';
-      if (block.type === 'redacted_thinking') return '[redacted thinking]';
-      return '';
-    })
-    .filter(Boolean)
-    .join('\n\n')
-    .trim();
-}
-
-function hasThinkingSegment(segments) {
-  return (Array.isArray(segments) ? segments : []).some((seg) => seg.type === 'thinking' && String(seg.text || '').trim());
-}
-
-function normalizeUiUsage(usage) {
-  if (!usage || typeof usage !== 'object') return null;
-  const out = {};
-  for (const key of ['inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheMissInputTokens', 'cacheWriteInputTokens', 'reasoningOutputTokens', 'requests']) {
-    const value = Number(usage?.[key]);
-    if (Number.isFinite(value)) out[key] = Math.max(0, Math.round(value));
-  }
-  return Object.keys(out).length ? out : null;
-}
-
-function mergeUiUsage(left, right) {
-  const a = normalizeUiUsage(left);
-  const b = normalizeUiUsage(right);
-  if (!a) return b;
-  if (!b) return a;
-  const out = {};
-  for (const key of ['inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheMissInputTokens', 'cacheWriteInputTokens', 'reasoningOutputTokens', 'requests']) {
-    out[key] = Math.max(0, Math.round(Number(a[key] || 0) + Number(b[key] || 0)));
-  }
-  return out;
 }
 
 function toCodeWikiGenerateProgress(event) {
@@ -538,16 +377,6 @@ export class RuntimeBridge {
     this.#persistUiTranscriptSoon();
   }
 
-  #updateUiToolCard(tool, updater, mapMessage = null) {
-    const result = updateToolInMessages(this.#uiMessages, tool, updater);
-    if (!result.updated) return false;
-    this.#uiMessages = typeof mapMessage === 'function'
-      ? result.messages.map((message) => hasToolInSegments(message.segments, tool) ? mapMessage(message) : message)
-      : result.messages;
-    this.#persistUiTranscriptSoon();
-    return true;
-  }
-
   #removeUiTransientWaiting() {
     this.#uiMessages = this.#uiMessages.filter((message) => message.transientKey !== 'waiting-response');
   }
@@ -616,6 +445,10 @@ export class RuntimeBridge {
     if (!event?.type) return null;
     this.#resetUiTranscriptIfSessionChanged();
     const activeId = this.#uiActiveMsgId;
+    const streamOptions = {
+      stripText: stripPlanProgressText,
+      formatToolLabel,
+    };
 
     switch (event.type) {
       case 'assistant:start': {
@@ -645,131 +478,19 @@ export class RuntimeBridge {
         }
         break;
       }
-      case 'assistant:delta': {
-        const delta = stripPlanProgressText(event.text);
-        if (this.#uiActiveMsgId && delta) {
-          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
-            ...message,
-            segments: appendTextSegment(finishThinkingSegments(message.segments), delta, true)
-          }));
-        }
-        break;
-      }
-      case 'assistant:reasoning_delta': {
-        if (this.#uiActiveMsgId && event.text) {
-          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
-            ...message,
-            segments: appendThinkingSegment(message.segments, event.text, true)
-          }));
-        }
-        break;
-      }
-      case 'assistant:response': {
-        const reasoningText = getReasoningTextFromAssistantMessage(event.assistantMessage);
-        if (this.#uiActiveMsgId && reasoningText) {
-          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
-            ...message,
-            segments: hasThinkingSegment(message.segments)
-              ? message.segments
-              : appendThinkingSegment(message.segments, reasoningText, false)
-          }));
-        }
-        if (this.#uiActiveMsgId && event.text) {
-          const text = stripPlanProgressText(event.text);
-          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
-            ...message,
-            segments: text
-              ? replaceTextSegment(finishThinkingSegments(message.segments), text, false)
-              : message.segments
-          }));
-        }
-        if (this.#uiActiveMsgId) {
-          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
-            ...message,
-            segments: finishThinkingSegments(message.segments),
-            usage: mergeUiUsage(message.usage, event.usage || event.assistantMessage?.usage) || message.usage || null
-          }));
-        }
-        break;
-      }
-      case 'tool:start': {
-        if (this.#uiActiveMsgId) {
-          const toolCard = {
-            id: event.id,
-            name: event.name,
-            displayName: event.displayName || formatToolLabel(event.name),
-            arguments: event.arguments,
-            status: 'running',
-            startedAt: event.startedAt || new Date().toISOString(),
-            durationMs: null,
-            summary: '',
-            result: ''
-          };
-          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
-            ...message,
-            segments: upsertToolCardInSegments(finishThinkingSegments(message.segments), toolCard)
-          }));
-        }
-        break;
-      }
-      case 'tool:end': {
-        const eventChanges = Array.isArray(event.fileChanges) && event.fileChanges.length
-          ? event.fileChanges
-          : (event.fileChange?.path ? [event.fileChange] : []);
-        this.#updateUiToolCard(
-          event,
-          (card) => ({
-            ...card,
-            id: event.id || card.id,
-            name: event.name || card.name,
-            displayName: event.displayName || card.displayName,
-            status: 'done',
-            durationMs: event.durationMs,
-            summary: event.summary || card.summary,
-            ...(event.resultMeta ? { resultMeta: event.resultMeta } : {}),
-            ...(event.fileChange ? { fileChange: event.fileChange } : {}),
-            ...(eventChanges.length ? { fileChanges: eventChanges } : {})
-          }),
-          (message) => ({
-            ...message,
-            fileChanges: eventChanges.length
-              ? [...(Array.isArray(message.fileChanges) ? message.fileChanges : []), ...eventChanges]
-              : (Array.isArray(message.fileChanges) ? message.fileChanges : [])
-          })
-        );
-        break;
-      }
-      case 'tool:result': {
-        this.#updateUiToolCard(event, (card) => ({
-          ...card,
-          id: event.id || card.id,
-          name: event.name || card.name,
-          displayName: event.displayName || card.displayName,
-          result: event.content || ''
-        }));
-        break;
-      }
-      case 'tool:error': {
-        this.#updateUiToolCard(event, (card) => ({
-          ...card,
-          id: event.id || card.id,
-          name: event.name || card.name,
-          displayName: event.displayName || card.displayName,
-          status: 'error',
-          durationMs: event.durationMs,
-          summary: event.summary || card.summary
-        }));
-        break;
-      }
+      case 'assistant:delta':
+      case 'assistant:reasoning_delta':
+      case 'assistant:response':
+      case 'assistant:tool_call_delta':
+      case 'tool:start':
+      case 'tool:end':
+      case 'tool:result':
+      case 'tool:error':
       case 'tool:blocked': {
-        this.#updateUiToolCard(event, (card) => ({
-          ...card,
-          id: event.id || card.id,
-          name: event.name || card.name,
-          displayName: event.displayName || card.displayName,
-          status: 'blocked',
-          summary: card.summary || 'Tool blocked'
-        }));
+        if (!this.#uiActiveMsgId) break;
+        this.#updateUiMessage(this.#uiActiveMsgId, (message) =>
+          applyStreamEventToMessage(message, event, streamOptions)
+        );
         break;
       }
       case 'plan:steps': {
@@ -859,7 +580,7 @@ export class RuntimeBridge {
         if (msgId) {
           this.#updateUiMessage(msgId, (message) => ({
             ...message,
-            usage: normalizeUiUsage(event.usage) || message.usage || null,
+            usage: normalizeUsage(event.usage) || message.usage || null,
             segments: (() => {
               const outputText = String(event.output || '').trim();
               const finishedSegments = message.segments.map((seg) => (
@@ -945,7 +666,7 @@ export class RuntimeBridge {
             }))
           }));
         } else {
-          this.#uiPendingSkillSegments = updatePendingSkillSegments(
+          this.#uiPendingSkillSegments = updateSkillInSegments(
             this.#uiPendingSkillSegments,
             event.name,
             (segment) => ({ ...segment, status: 'done', endedAt })
@@ -966,7 +687,7 @@ export class RuntimeBridge {
             }))
           }));
         } else {
-          this.#uiPendingSkillSegments = updatePendingSkillSegments(
+          this.#uiPendingSkillSegments = updateSkillInSegments(
             this.#uiPendingSkillSegments,
             event.name,
             (segment) => ({
@@ -1076,8 +797,9 @@ export class RuntimeBridge {
         this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
           ...message,
           isComplete: true,
-          segments: finishThinkingSegments(message.segments)
-            .map((seg) => seg.type === 'text' ? { ...seg, isStreaming: false } : seg)
+          segments: finishStreamingTextSegments(
+            finishThinkingSegments(message.segments)
+          )
         }));
       }
       this.#uiActiveMsgId = null;
@@ -1159,8 +881,9 @@ export class RuntimeBridge {
         this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
           ...message,
           isComplete: true,
-          segments: finishThinkingSegments(message.segments)
-            .map((seg) => seg.type === 'text' ? { ...seg, isStreaming: false } : seg)
+          segments: finishStreamingTextSegments(
+            finishThinkingSegments(message.segments)
+          )
         }));
       }
       this.#uiActiveMsgId = null;
@@ -1539,7 +1262,7 @@ export class RuntimeBridge {
           planTranscript: Array.isArray(m.plan_transcript) ? m.plan_transcript : null,
           planGoal: typeof m.plan_goal === 'string' ? m.plan_goal : '',
           planFile: typeof m.plan_file === 'string' ? m.plan_file : '',
-          usage: normalizeUiUsage(m.usage),
+          usage: normalizeUsage(m.usage),
           responseStatus: typeof m.response_status === 'string' ? m.response_status : '',
           retryPrompt: typeof m.retry_prompt === 'string' ? m.retry_prompt : '',
           selectedSkillNames,
