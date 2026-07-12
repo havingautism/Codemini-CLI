@@ -36,7 +36,9 @@ import {
   ACTIVE_SESSION_STATUSES,
   activeSessionIds,
   abortSessionIds,
+  buildConversationStartSidebarEntry,
   projectSessionRuntime,
+  upsertSidebarSession,
 } from "../lib/session-ui-state.js";
 import {
   addSkillToSegments,
@@ -2649,32 +2651,25 @@ export function AppProvider({ children }) {
         case "session:title": {
           if (event.sessionId && event.title) {
             setState((prev) => {
-              const hasSession = prev.sessions.some(
-                (s) => s.id === event.sessionId,
-              );
-              if (hasSession) {
-                return {
-                  ...prev,
-                  sessions: prev.sessions.map((s) =>
-                    s.id === event.sessionId ? { ...s, title: event.title } : s,
-                  ),
-                };
-              }
               const rs = prev.runtimeState || {};
               const isGeneral = !!(prev.isGeneral || rs.isGeneral);
-              const projectDir = isGeneral ? null : rs.cwd || null;
+              const projectDir = isGeneral ? null : rs.cwd || rs.projectDir || null;
+              const projectKey = projectDir || null;
               return {
                 ...prev,
-                sessions: [
-                  {
-                    id: event.sessionId,
-                    title: event.title,
-                    messageCount: 1,
-                    isGeneral,
-                    ...(projectDir ? { projectDir } : {}),
-                  },
-                  ...prev.sessions,
-                ],
+                sessions: upsertSidebarSession(prev.sessions, {
+                  id: event.sessionId,
+                  title: event.title,
+                  messageCount: Math.max(
+                    1,
+                    Number(
+                      prev.sessions.find((s) => s.id === event.sessionId)
+                        ?.messageCount || 0,
+                    ),
+                  ),
+                  isGeneral,
+                  ...(projectDir ? { projectDir, projectKey } : {}),
+                }),
               };
             });
           }
@@ -2914,6 +2909,36 @@ export function AppProvider({ children }) {
               ? message.attachments
               : [],
           timestamp: new Date().toISOString(),
+        });
+        // Sidebar bubbles appear when the conversation starts, not when the
+        // empty draft is created/reused.
+        setState((prev) => {
+          const existing = prev.sessions.find((s) => s.id === sessionId);
+          if (existing && Number(existing.messageCount || 0) > 0) {
+            return {
+              ...prev,
+              sessions: upsertSidebarSession(prev.sessions, {
+                id: sessionId,
+                updatedAt: new Date().toISOString(),
+                messageCount: Number(existing.messageCount || 0) + 1,
+              }),
+            };
+          }
+          const rs = prev.runtimeState || {};
+          const isGeneral = !!(prev.isGeneral || rs.isGeneral);
+          const projectDir = isGeneral ? null : rs.cwd || rs.projectDir || null;
+          const entry = buildConversationStartSidebarEntry({
+            sessionId,
+            text: line,
+            isGeneral,
+            projectDir,
+            projectKey: projectDir,
+          });
+          if (!entry) return prev;
+          return {
+            ...prev,
+            sessions: upsertSidebarSession(prev.sessions, entry),
+          };
         });
         const waitingId = addMessage({
           role: "system",
@@ -3471,7 +3496,8 @@ export function AppProvider({ children }) {
               // since loadState falls back to prev.live from the old session.
               update({ live: false, stageLabel: "" });
             }
-            loadSessions();
+            // Empty drafts stay out of the sidebar until the first message.
+            loadSessions({ force: true });
             update({ messagesLoading: false });
           } else {
             update({ messagesLoading: false });

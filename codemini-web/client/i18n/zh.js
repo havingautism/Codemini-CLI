@@ -561,6 +561,19 @@ export const zh = {
   updateSkillPackageConfirm: "更新技能包？",
   updateSkillPackageDescription:
     '将按 GitHub 源在当前范围内重装「{{package}}」。已删除的包内技能可能被装回，远端新增的技能也会一并安装。',
+  skillBrowse_context: "按场景",
+  skillBrowse_package: "按仓库",
+  skillUngrouped: "未分组",
+  deleteSkillPackage: "删除技能包",
+  deleteSkillPackageConfirm: "删除技能包？",
+  deleteSkillPackageDescription:
+    '确定删除技能包「{{package}}」及其全部技能（{{skills}}）？此操作不可撤销。',
+  skillPackageApplyAll: "应用到全部",
+  skillPackageBatchEdit: "批量设置",
+  skillPackageBatchEditHint:
+    "将以下设置应用到技能包「{{package}}」内的全部技能。单个技能之后仍可单独修改。",
+  skillPackageKeepEnabled: "保持启停",
+  skillPackageApplyFailed: "批量应用失败",
   skillInstallPlaceholder:
     "GitHub 仓库、URL、目录路径，或 npx skills@latest add owner/repo",
   skillInstallSection: "安装技能",
@@ -603,6 +616,7 @@ export const zh = {
   filter_enabled: "启用",
   filter_builtin: "内置",
   filter_custom: "自定义",
+  filter_remote: "远程",
   confirmDeleteSkill: '确定删除技能 "{{name}}"？',
   deleteSkillConfirm: "删除技能？",
   deleteSkillDescription: '确定彻底删除「{{name}}」？其全局副本、所有已知项目副本和路由配置都会被移除，此操作不可撤销。',

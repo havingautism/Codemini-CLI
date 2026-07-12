@@ -5,7 +5,7 @@ const LOCAL_SOURCES = new Set([
   "reindex",
 ]);
 
-function packageSourceKey(source = "") {
+export function packageSourceKey(source = "") {
   const raw = String(source || "").trim();
   if (!raw || LOCAL_SOURCES.has(raw)) return "";
 
@@ -33,6 +33,66 @@ function packageSourceKey(source = "") {
     .replace(/\.git$/i, "")
     .toLowerCase();
   return url;
+}
+
+export function skillPackageGroupKey(skill = {}) {
+  if (!skillPackageIsUpdatable(skill)) return "";
+  const sourceKey = packageSourceKey(skill.packageSource || skill.source);
+  if (!sourceKey) return "";
+  return `${skill.scope || "global"}:${skill.projectDir || ""}:${sourceKey}`;
+}
+
+export function groupSkillsByPackage(skills = []) {
+  const packages = new Map();
+  const ungrouped = [];
+
+  for (const skill of skills) {
+    const key = skillPackageGroupKey(skill);
+    if (!key) {
+      ungrouped.push(skill);
+      continue;
+    }
+    const existing = packages.get(key);
+    if (existing) {
+      existing.items.push(skill);
+      continue;
+    }
+    packages.set(key, {
+      key,
+      packageName:
+        skill.packageName ||
+        skill.packageSource ||
+        skill.source ||
+        skill.name ||
+        key,
+      packageSource: skill.packageSource || skill.source || "",
+      scope: skill.scope,
+      projectDir: skill.projectDir || "",
+      author: skillAuthorLabel(skill),
+      representative: skill,
+      items: [skill],
+    });
+  }
+
+  const packageGroups = [...packages.values()]
+    .map((group) => ({
+      ...group,
+      items: sortSkillsByAuthor(group.items),
+    }))
+    .sort((left, right) => {
+      const authorOrder = String(left.author || "").localeCompare(
+        String(right.author || ""),
+      );
+      if (authorOrder) return authorOrder;
+      return String(left.packageName || "").localeCompare(
+        String(right.packageName || ""),
+      );
+    });
+
+  return {
+    packages: packageGroups,
+    ungrouped: sortSkillsByAuthor(ungrouped),
+  };
 }
 
 export function skillPackageIsUpdatable(skill = {}) {

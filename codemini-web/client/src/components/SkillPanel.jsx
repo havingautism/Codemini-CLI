@@ -41,15 +41,18 @@ import {
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { cn } from "@/lib/utils";
 import {
+  groupSkillsByPackage,
   skillAuthorLabel,
   skillPackageIsUpdatable,
+  skillsInSamePackage,
   sortSkillsByAuthor,
 } from "@/lib/skill-display.js";
 import * as api from "@/hooks/use-api";
 import { t } from "../../i18n/index.js";
 
-const FILTERS = ["all", "enabled", "custom"];
+const FILTERS = ["all", "custom", "remote"];
 const SKILL_MODES = ["always", "agent_requested", "manual"];
+const BROWSE_MODES = ["context", "package"];
 
 function scopeLabel(scope) {
   if (scope === "builtin") return t("builtin");
@@ -850,19 +853,138 @@ function SkillCards({ items, selectedSkill, onSelect }) {
   ));
 }
 
-function SkillGroupHeader({ name, count, collapsed, title, onClick }) {
+function SkillGroupHeader({ name, count, collapsed, title, onClick, actions }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-[12px] font-medium text-foreground hover:bg-muted/50"
-      title={title}
-    >
-      <Folder size={14} className="shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1 truncate">{name}</span>
-      <span className="shrink-0 text-muted-foreground">{count}</span>
-      {collapsed ? <CaretRight size={13} /> : <CaretDown size={13} />}
-    </button>
+    <div className="flex h-8 w-full items-center gap-1 rounded-lg px-1 text-[12px] font-medium text-foreground hover:bg-muted/50">
+      <button
+        type="button"
+        onClick={onClick}
+        className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1 text-left"
+        title={title}
+      >
+        <Folder size={14} className="shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate">{name}</span>
+        <span className="shrink-0 text-muted-foreground">{count}</span>
+        {collapsed ? <CaretRight size={13} /> : <CaretDown size={13} />}
+      </button>
+      {actions ? (
+        <div
+          className="flex shrink-0 items-center gap-0.5 pr-0.5"
+          onClick={(event) => event.stopPropagation()}
+        >
+          {actions}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PackageBatchDialog({ packageGroup, open, applying, onOpenChange, onApply }) {
+  const [mode, setMode] = useState("agent_requested");
+  const [context, setContext] = useState("global");
+  const [enabled, setEnabled] = useState("keep");
+
+  useEffect(() => {
+    if (!open) return;
+    setMode("agent_requested");
+    setContext("global");
+    setEnabled("keep");
+  }, [open, packageGroup?.key]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex flex-col gap-4 overflow-hidden p-0 sm:max-w-[480px]">
+        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
+          <DialogTitle>{t("skillPackageBatchEdit")}</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-4 px-4 pb-6 sm:px-6">
+          <SettingsSection
+            description={t("skillPackageBatchEditHint").replace(
+              "{{package}}",
+              packageGroup?.packageName || "",
+            )}
+            className="gap-4"
+          >
+            <SettingsField id="package-batch-mode" label={t("skillMode")}>
+              <Select value={mode} onValueChange={setMode}>
+                <SelectTrigger className="h-9 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectGroup>
+                    {SKILL_MODES.map((item) => (
+                      <SelectItem key={item} value={item}>
+                        {t(`skillMode_${item}`)}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </SettingsField>
+            <SettingsField id="package-batch-context" label={t("skillContext")}>
+              <Select value={context} onValueChange={setContext}>
+                <SelectTrigger className="h-9 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectGroup>
+                    <SelectItem value="global">
+                      {t("skillContextGlobal")}
+                    </SelectItem>
+                    <SelectItem value="coding">
+                      {t("skillContextCoding")}
+                    </SelectItem>
+                    <SelectItem value="daily">
+                      {t("skillContextDaily")}
+                    </SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </SettingsField>
+            <SettingsField id="package-batch-enabled" label={t("enabled")}>
+              <Select value={enabled} onValueChange={setEnabled}>
+                <SelectTrigger className="h-9 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectGroup>
+                    <SelectItem value="keep">
+                      {t("skillPackageKeepEnabled")}
+                    </SelectItem>
+                    <SelectItem value="true">{t("enable")}</SelectItem>
+                    <SelectItem value="false">{t("disable")}</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </SettingsField>
+          </SettingsSection>
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={applying}
+              onClick={() => onOpenChange?.(false)}
+            >
+              {t("cancel")}
+            </Button>
+            <Button
+              size="sm"
+              disabled={applying || !packageGroup}
+              onClick={() =>
+                onApply?.(packageGroup, {
+                  mode,
+                  contexts:
+                    context === "global" ? ["coding", "daily"] : [context],
+                  enabled: enabled === "keep" ? undefined : enabled === "true",
+                })
+              }
+            >
+              {applying ? t("loading") : t("skillPackageApplyAll")}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -871,9 +993,10 @@ export function SkillPanel({ projectDirs = [] }) {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
   const [selectedSkill, setSelectedSkill] = useState(null);
-  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set());
+  const [browseMode, setBrowseMode] = useState("package");
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState("custom");
+  const [filter, setFilter] = useState("all");
   const [installSource, setInstallSource] = useState("");
   const [installTarget, setInstallTarget] = useState("");
   const [installing, setInstalling] = useState(false);
@@ -882,7 +1005,9 @@ export function SkillPanel({ projectDirs = [] }) {
   const [updating, setUpdating] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [pendingUpdate, setPendingUpdate] = useState(null);
+  const [pendingBatchPackage, setPendingBatchPackage] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [applyingPackageKey, setApplyingPackageKey] = useState("");
   const projectKey = projectDirsKey(projectDirs);
   const requestProjectDirs = useMemo(
     () => (projectKey ? projectKey.split("\n") : []),
@@ -925,21 +1050,43 @@ export function SkillPanel({ projectDirs = [] }) {
   };
 
   const handleDelete = async (skill) => {
-    setPendingDelete(skill);
+    if (!skill) return;
+    const siblings = skillsInSamePackage(skills, skill);
+    if (siblings.length > 1) {
+      setPendingDelete({
+        kind: "package",
+        packageName:
+          skill.packageName || skill.packageSource || skill.source || skill.name,
+        items: siblings,
+        representative: skill,
+      });
+      return;
+    }
+    setPendingDelete({ kind: "skill", skill, items: [skill] });
+  };
+
+  const handleDeletePackage = (packageGroup) => {
+    if (!packageGroup?.items?.length) return;
+    setPendingDelete({
+      kind: "package",
+      packageName: packageGroup.packageName,
+      items: packageGroup.items,
+      representative: packageGroup.representative,
+    });
   };
 
   const confirmDeleteSkill = async () => {
     if (!pendingDelete || deleting) return;
-    const deletedKey = skillKey(pendingDelete);
+    const items = pendingDelete.items || [];
+    if (items.length === 0) return;
+    const deletedKeys = new Set(items.map((skill) => skillKey(skill)));
     setDeleting(true);
     try {
-      await api.deleteSkill(
-        pendingDelete.name,
-        pendingDelete.projectDir,
-        requestProjectDirs,
-      );
+      for (const skill of items) {
+        await api.deleteSkill(skill.name, skill.projectDir, requestProjectDirs);
+      }
       setPendingDelete(null);
-      if (selectedSkill && skillKey(selectedSkill) === deletedKey) {
+      if (selectedSkill && deletedKeys.has(skillKey(selectedSkill))) {
         setSelectedSkill(null);
       }
       await loadSkills();
@@ -1006,13 +1153,38 @@ export function SkillPanel({ projectDirs = [] }) {
     }
   };
 
+  const handleApplyPackage = async (packageGroup, patch = {}) => {
+    if (!packageGroup?.items?.length || applyingPackageKey) return;
+    setApplyingPackageKey(packageGroup.key);
+    try {
+      for (const skill of packageGroup.items) {
+        const metadata = {
+          mode: patch.mode,
+          contexts: patch.contexts,
+        };
+        if (patch.enabled !== undefined) metadata.enabled = patch.enabled;
+        await api.updateSkillMetadata(skill.name, metadata, skill.projectDir);
+      }
+      setPendingBatchPackage(null);
+      await loadSkills();
+    } catch (err) {
+      window.alert(err.message || t("skillPackageApplyFailed"));
+    } finally {
+      setApplyingPackageKey("");
+    }
+  };
+
   const enabledCount = skills.filter(isEnabled).length;
   const customCount = skills.filter((skill) => !isBuiltin(skill)).length;
   const filteredSkills = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return skills.filter((skill) => {
-      if (filter === "enabled" && !isEnabled(skill)) return false;
-      if (filter === "custom" && skill.scope === "builtin") return false;
+      if (filter === "custom") {
+        if (skill.scope === "builtin" || skillPackageIsUpdatable(skill)) {
+          return false;
+        }
+      }
+      if (filter === "remote" && !skillPackageIsUpdatable(skill)) return false;
       if (!needle) return true;
       return (
         skill.name.toLowerCase().includes(needle) ||
@@ -1043,6 +1215,11 @@ export function SkillPanel({ projectDirs = [] }) {
       .filter((group) => group.items.length > 0);
   }, [filteredSkills]);
 
+  const packageGroupedSkills = useMemo(
+    () => groupSkillsByPackage(filteredSkills),
+    [filteredSkills],
+  );
+
   useEffect(() => {
     if (filteredSkills.length === 0) {
       setSelectedSkill(null);
@@ -1062,7 +1239,7 @@ export function SkillPanel({ projectDirs = [] }) {
   }, [filteredSkills, selectedSkill]);
 
   const toggleSkillGroup = useCallback((key) => {
-    setCollapsedGroups((current) => {
+    setExpandedGroups((current) => {
       const next = new Set(current);
       if (next.has(key)) next.delete(key);
       else next.add(key);
@@ -1089,33 +1266,123 @@ export function SkillPanel({ projectDirs = [] }) {
         </div>
       )}
 
-      {skills.length > 0 && filteredSkills.length > 0 && (
-        <div className="grid gap-2">
-          {groupedSkills.map((group) => {
-            const collapsed = collapsedGroups.has(group.key);
-            return (
-              <div key={group.key} className="grid gap-1">
+      {skills.length > 0 &&
+        filteredSkills.length > 0 &&
+        browseMode === "context" && (
+          <div className="grid gap-2">
+            {groupedSkills.map((group) => {
+              const collapsed = !expandedGroups.has(group.key);
+              return (
+                <div key={group.key} className="grid gap-1">
+                  <SkillGroupHeader
+                    name={group.name}
+                    count={group.items.length}
+                    collapsed={collapsed}
+                    title={group.key}
+                    onClick={() => toggleSkillGroup(group.key)}
+                  />
+                  {!collapsed && (
+                    <div className="grid gap-2">
+                      <SkillCards
+                        items={group.items}
+                        selectedSkill={selectedSkill}
+                        onSelect={setSelectedSkill}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+      {skills.length > 0 &&
+        filteredSkills.length > 0 &&
+        browseMode === "package" && (
+          <div className="grid gap-2">
+            {packageGroupedSkills.packages.map((pkg) => {
+              const collapsed = !expandedGroups.has(pkg.key);
+              return (
+                <div key={pkg.key} className="grid gap-1">
+                  <SkillGroupHeader
+                    name={pkg.packageName}
+                    count={pkg.items.length}
+                    collapsed={collapsed}
+                    title={pkg.packageSource || pkg.key}
+                    onClick={() => toggleSkillGroup(pkg.key)}
+                    actions={
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={() => setPendingBatchPackage(pkg)}
+                          aria-label={t("skillPackageBatchEdit")}
+                          title={t("skillPackageBatchEdit")}
+                        >
+                          <PencilSimple size={13} />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          disabled={updating}
+                          onClick={() =>
+                            handleUpdatePackage(pkg.representative)
+                          }
+                          aria-label={t("updateSkillPackage")}
+                          title={t("updateSkillPackage")}
+                        >
+                          <ArrowsClockwise
+                            size={13}
+                            className={updating ? "animate-spin" : undefined}
+                          />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          className="text-(--accent-red) hover:bg-(--accent-red-bg) hover:text-(--accent-red)"
+                          onClick={() => handleDeletePackage(pkg)}
+                          aria-label={t("deleteSkillPackage")}
+                          title={t("deleteSkillPackage")}
+                        >
+                          <Trash size={13} />
+                        </Button>
+                      </>
+                    }
+                  />
+                  {!collapsed && (
+                    <div className="grid gap-2 pl-1">
+                      <SkillCards
+                        items={pkg.items}
+                        selectedSkill={selectedSkill}
+                        onSelect={setSelectedSkill}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {packageGroupedSkills.ungrouped.length > 0 && (
+              <div className="grid gap-1">
                 <SkillGroupHeader
-                  name={group.name}
-                  count={group.items.length}
-                  collapsed={collapsed}
-                  title={group.key}
-                  onClick={() => toggleSkillGroup(group.key)}
+                  name={t("skillUngrouped")}
+                  count={packageGroupedSkills.ungrouped.length}
+                  collapsed={!expandedGroups.has("ungrouped")}
+                  title="ungrouped"
+                  onClick={() => toggleSkillGroup("ungrouped")}
                 />
-                {!collapsed && (
+                {expandedGroups.has("ungrouped") && (
                   <div className="grid gap-2">
                     <SkillCards
-                      items={group.items}
+                      items={packageGroupedSkills.ungrouped}
                       selectedSkill={selectedSkill}
                       onSelect={setSelectedSkill}
                     />
                   </div>
                 )}
               </div>
-            );
-          })}
-        </div>
-      )}
+            )}
+          </div>
+        )}
     </>
   );
 
@@ -1171,6 +1438,16 @@ export function SkillPanel({ projectDirs = [] }) {
               />
             </div>
             <SettingsSegmentedControl
+              idPrefix="skill-browse"
+              value={browseMode}
+              onValueChange={setBrowseMode}
+              options={BROWSE_MODES.map((item) => ({
+                value: item,
+                label: t(`skillBrowse_${item}`),
+              }))}
+              className="w-full shrink-0 [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
+            />
+            <SettingsSegmentedControl
               idPrefix="skill-filter"
               value={filter}
               onValueChange={setFilter}
@@ -1217,16 +1494,44 @@ export function SkillPanel({ projectDirs = [] }) {
         installError={installError}
         onInstall={handleInstall}
       />
+      <PackageBatchDialog
+        packageGroup={pendingBatchPackage}
+        open={!!pendingBatchPackage}
+        applying={
+          !!pendingBatchPackage &&
+          applyingPackageKey === pendingBatchPackage.key
+        }
+        onOpenChange={(open) => {
+          if (!open && !applyingPackageKey) setPendingBatchPackage(null);
+        }}
+        onApply={handleApplyPackage}
+      />
       <ConfirmDialog
         open={!!pendingDelete}
-        title={t("deleteSkillConfirm")}
+        title={
+          pendingDelete?.kind === "package"
+            ? t("deleteSkillPackageConfirm")
+            : t("deleteSkillConfirm")
+        }
         description={
-          pendingDelete
-            ? t("deleteSkillDescription").replace(
-                "{{name}}",
-                pendingDelete.name,
-              )
-            : ""
+          pendingDelete?.kind === "package"
+            ? t("deleteSkillPackageDescription")
+                .replace(
+                  "{{package}}",
+                  pendingDelete.packageName ||
+                    pendingDelete.representative?.name ||
+                    "",
+                )
+                .replace(
+                  "{{skills}}",
+                  (pendingDelete.items || []).map((item) => item.name).join(", "),
+                )
+            : pendingDelete?.skill
+              ? t("deleteSkillDescription").replace(
+                  "{{name}}",
+                  pendingDelete.skill.name,
+                )
+              : ""
         }
         loading={deleting}
         onOpenChange={(open) => !open && !deleting && setPendingDelete(null)}

@@ -580,6 +580,19 @@ export const en = {
   updateSkillPackageConfirm: "Update skill package?",
   updateSkillPackageDescription:
     'Reinstall "{{package}}" from its GitHub source in this scope. Skills you deleted from this package may come back, and new skills will be installed.',
+  skillBrowse_context: "By context",
+  skillBrowse_package: "By package",
+  skillUngrouped: "Ungrouped",
+  deleteSkillPackage: "Delete package",
+  deleteSkillPackageConfirm: "Delete skill package?",
+  deleteSkillPackageDescription:
+    'Delete package "{{package}}" and all of its skills ({{skills}})? This cannot be undone.',
+  skillPackageApplyAll: "Apply to all",
+  skillPackageBatchEdit: "Batch settings",
+  skillPackageBatchEditHint:
+    'Apply these settings to every skill in package "{{package}}". Individual skills can still be changed afterward.',
+  skillPackageKeepEnabled: "Keep enabled state",
+  skillPackageApplyFailed: "Failed to apply package settings",
   skillInstallPlaceholder:
     "GitHub repo, URL, folder path, or npx skills@latest add owner/repo",
   skillInstallSection: "Install Skill",
@@ -624,6 +637,7 @@ export const en = {
   filter_enabled: "Enabled",
   filter_builtin: "Built-in",
   filter_custom: "Custom",
+  filter_remote: "Remote",
   confirmDeleteSkill: 'Delete skill "{{name}}"?',
   deleteSkillConfirm: "Delete skill?",
   deleteSkillDescription: 'Permanently delete "{{name}}"? Its global copy, all known project copies, and routing configuration will be removed. This cannot be undone.',

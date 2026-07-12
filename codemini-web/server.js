@@ -691,13 +691,24 @@ export function createWebRuntimeApi({
     if (req.method === 'POST' && url.pathname === '/api/sessions/new') {
       const body = await readBody(req);
       try {
-        const session = await createStoredSession(body?.projectDir || getDefaultProjectDir());
+        const projectDir = body?.projectDir || getDefaultProjectDir();
+        const projectKey = normalizeProjectDirKey(projectDir);
+        const all = await listSessions(1000, { includeEmpty: true });
+        const reusable = all.find((session) => {
+          if (Number(session.messageCount || 0) > 0) return false;
+          return normalizeProjectDirKey(session.projectDir) === projectKey;
+        });
+        const session = reusable
+          ? await loadSession(reusable.id)
+          : await createStoredSession(projectDir);
         await ensureSession(session.id);
+        const isGeneral = isGeneralProjectDir(session.projectDir);
         jsonResponse(res, {
           ok: true,
           sessionId: session.id,
           cwd: session.projectDir,
-          isGeneral: isGeneralProjectDir(session.projectDir)
+          isGeneral,
+          reusedSession: Boolean(reusable?.id)
         });
       } catch (error) {
         jsonResponse(res, {
@@ -2495,21 +2506,29 @@ async function main() {
         let reusedSessionId = null;
         let session;
         if (openingGeneral) {
-          if (!forceNewSession) {
-            const all = await listSessions(1000, { includeEmpty: true });
-            const reusable = all.find((session) =>
-              isGeneralProjectDir(session.projectDir) &&
-              Number(session.messageCount || 0) === 0
-            );
-            reusedSessionId = reusable?.id || null;
-          }
+          const all = await listSessions(1000, { includeEmpty: true });
+          const reusable = all.find((entry) =>
+            isGeneralProjectDir(entry.projectDir) &&
+            Number(entry.messageCount || 0) === 0
+          );
+          // Always reuse one empty general draft instead of stacking placeholders.
+          reusedSessionId = reusable?.id || null;
           session = reusedSessionId
             ? await loadSession(reusedSessionId)
             : await createSession(GENERAL_PROJECT_DIR);
         } else {
           await patchWebuiActiveProjects({ action: 'activate', projectDir: resolved });
           currentProjectDir = resolved;
-          if (!forceNewSession) {
+          if (forceNewSession) {
+            const all = await listSessions(1000, { includeEmpty: true });
+            const targetKey = normalizeProjectDirKey(currentProjectDir);
+            const reusable = all.find((entry) =>
+              !isGeneralProjectDir(entry.projectDir) &&
+              normalizeProjectDirKey(entry.projectDir) === targetKey &&
+              Number(entry.messageCount || 0) === 0
+            );
+            reusedSessionId = reusable?.id || null;
+          } else {
             reusedSessionId = await findPreferredSessionForProject(currentProjectDir);
           }
           session = reusedSessionId

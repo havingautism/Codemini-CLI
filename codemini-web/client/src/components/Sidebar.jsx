@@ -372,6 +372,12 @@ export function Sidebar({
   const openProjectNewSession = async (event, projectKey) => {
     event.stopPropagation();
     if (!projectKey || projectKey === "unknown") return;
+    setExpandedProjects((prev) => {
+      if (prev.has(projectKey)) return prev;
+      const next = new Set(prev);
+      next.add(projectKey);
+      return next;
+    });
     if (projectKey === activeProjectKey) {
       await onNewSession?.();
       return;
