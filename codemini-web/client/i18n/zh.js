@@ -552,6 +552,8 @@ export const zh = {
   pinned: "已固定",
   deleteFailed: "删除失败",
   confirmDeleteMemory: '确定删除记忆 "{{summary}}"？',
+  deleteMemoryConfirm: "删除记忆？",
+  deleteMemoryDescription: '确定删除「{{summary}}」？此操作不可撤销。',
   addSkill: "添加技能",
   installSkill: "安装",
   installing: "安装中...",
@@ -607,6 +609,8 @@ export const zh = {
   deleteSkillConfirm: "删除技能？",
   deleteSkillDescription: '确定彻底删除「{{name}}」？其全局副本、所有已知项目副本和路由配置都会被移除，此操作不可撤销。',
   confirmDeleteSoul: '确定删除灵魂 "{{name}}"？',
+  deleteSoulConfirm: "删除灵魂？",
+  deleteSoulDescription: '确定删除「{{name}}」？此操作不可撤销。',
 
   // AboutDialog
   aboutTitle: "关于 Codemini",

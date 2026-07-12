@@ -25,6 +25,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import * as api from "@/hooks/use-api";
 import { useApp } from "@/context/app-context.jsx";
 import { t } from "../../i18n/index.js";
@@ -386,11 +387,7 @@ function SoulChoiceCard({
             className="text-(--accent-red) hover:bg-(--accent-red-bg) hover:text-(--accent-red)"
             onClick={() => {
               if (disabled) return;
-              if (
-                confirm(t("confirmDeleteSoul").replace("{{name}}", soul.name))
-              ) {
-                onDelete(soul.name);
-              }
+              onDelete(soul);
             }}
             aria-label={t("delete")}
             title={t("delete")}
@@ -409,6 +406,8 @@ export function SoulPanel({ disabled = false }) {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
   const [selectedSoul, setSelectedSoul] = useState(null);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
 
@@ -469,11 +468,22 @@ export function SoulPanel({ disabled = false }) {
     actions.notifySoulsChanged();
   };
 
-  const handleDelete = async (name) => {
-    if (disabled) return;
-    await api.deleteSoul(name);
-    await loadSouls();
-    actions.notifySoulsChanged();
+  const handleDelete = (soul) => {
+    if (disabled || !soul) return;
+    setPendingDelete(soul);
+  };
+
+  const confirmDeleteSoul = async () => {
+    if (!pendingDelete || deleting || disabled) return;
+    setDeleting(true);
+    try {
+      await api.deleteSoul(pendingDelete.name);
+      setPendingDelete(null);
+      await loadSouls();
+      actions.notifySoulsChanged();
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const handleSave = () => {
@@ -611,6 +621,18 @@ export function SoulPanel({ disabled = false }) {
         onOpenChange={(open) => {
           if (!open) setEditing(null);
         }}
+      />
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title={t("deleteSoulConfirm")}
+        description={
+          pendingDelete
+            ? t("deleteSoulDescription").replace("{{name}}", pendingDelete.name)
+            : ""
+        }
+        loading={deleting}
+        onOpenChange={(open) => !open && !deleting && setPendingDelete(null)}
+        onConfirm={confirmDeleteSoul}
       />
     </>
   );

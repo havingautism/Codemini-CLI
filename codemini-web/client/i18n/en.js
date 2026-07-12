@@ -571,6 +571,9 @@ export const en = {
   pinned: "Pinned",
   deleteFailed: "Delete failed",
   confirmDeleteMemory: 'Delete memory "{{summary}}"?',
+  deleteMemoryConfirm: "Delete memory?",
+  deleteMemoryDescription:
+    'Delete "{{summary}}"? This cannot be undone.',
   addSkill: "Add Skill",
   installSkill: "Install",
   installing: "Installing...",
@@ -628,6 +631,8 @@ export const en = {
   deleteSkillConfirm: "Delete skill?",
   deleteSkillDescription: 'Permanently delete "{{name}}"? Its global copy, all known project copies, and routing configuration will be removed. This cannot be undone.',
   confirmDeleteSoul: 'Delete soul "{{name}}"?',
+  deleteSoulConfirm: "Delete soul?",
+  deleteSoulDescription: 'Delete "{{name}}"? This cannot be undone.',
 
   // AboutDialog
   aboutTitle: "About Codemini",

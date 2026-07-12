@@ -17,6 +17,7 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmentedControl.jsx";
 import { ResourceLibraryDialog } from "@/components/ResourceLibraryDialog.jsx";
+import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { cn } from "@/lib/utils";
 import * as api from "@/hooks/use-api";
 import { t } from "../../i18n/index.js";
@@ -244,6 +245,7 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [deletingId, setDeletingId] = useState("");
+  const [pendingDelete, setPendingDelete] = useState(null);
   const [selectedMemory, setSelectedMemory] = useState(null);
   const [collapsedProjects, setCollapsedProjects] = useState(() => new Set());
 
@@ -327,18 +329,14 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
     });
   }, []);
 
-  const handleDelete = async (memory) => {
-    if (!memory?.id) return;
-    if (
-      !confirm(
-        t("confirmDeleteMemory").replace(
-          "{{summary}}",
-          memory.summary || memory.id,
-        ),
-      )
-    ) {
-      return;
-    }
+  const handleDelete = (memory) => {
+    if (!memory?.id || deletingId) return;
+    setPendingDelete(memory);
+  };
+
+  const confirmDeleteMemory = async () => {
+    if (!pendingDelete?.id || deletingId) return;
+    const memory = pendingDelete;
     setDeletingId(memoryKey(memory, scope));
     setError("");
     try {
@@ -348,6 +346,7 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
         memory.projectDir,
       );
       if (result?.error) throw new Error(result.message || t("deleteFailed"));
+      setPendingDelete(null);
       await loadMemories();
     } catch (err) {
       setError(err.message || t("deleteFailed"));
@@ -506,6 +505,23 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
         </div>
       </ResourceLibraryDialog>
 
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title={t("deleteMemoryConfirm")}
+        description={
+          pendingDelete
+            ? t("deleteMemoryDescription").replace(
+                "{{summary}}",
+                pendingDelete.summary || pendingDelete.id,
+              )
+            : ""
+        }
+        loading={Boolean(deletingId)}
+        onOpenChange={(open) =>
+          !open && !deletingId && setPendingDelete(null)
+        }
+        onConfirm={confirmDeleteMemory}
+      />
     </>
   );
 }
