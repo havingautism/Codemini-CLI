@@ -86,7 +86,17 @@ const DEFAULT_CONFIG = {
     max_user_chars: 1375,
     max_global_chars: 2200,
     max_project_chars: 2200,
-    project_binding: 'path-or-alias'
+    project_binding: 'path-or-alias',
+    background_review: {
+      enabled: true,
+      on_start: true,
+      after_turn: true,
+      max_sessions_per_run: 3,
+      idle_delay_ms: 1500,
+      min_session_idle_ms: 30000,
+      max_input_chars: 12000,
+      lease_ms: 120000
+    }
   },
   soul: {
     preset: 'default',
@@ -231,6 +241,15 @@ function normalizePolicyLists(config) {
   next.memory.project_binding = ['path', 'alias', 'path-or-alias'].includes(String(next.memory.project_binding || ''))
     ? String(next.memory.project_binding)
     : 'path-or-alias';
+  next.memory.background_review = next.memory.background_review || {};
+  next.memory.background_review.enabled = next.memory.background_review.enabled !== false;
+  next.memory.background_review.on_start = next.memory.background_review.on_start !== false;
+  next.memory.background_review.after_turn = next.memory.background_review.after_turn !== false;
+  next.memory.background_review.max_sessions_per_run = Math.max(1, Number(next.memory.background_review.max_sessions_per_run || 3));
+  next.memory.background_review.idle_delay_ms = Math.max(0, Number(next.memory.background_review.idle_delay_ms ?? 1500));
+  next.memory.background_review.min_session_idle_ms = Math.max(0, Number(next.memory.background_review.min_session_idle_ms ?? 30000));
+  next.memory.background_review.max_input_chars = Math.max(2000, Number(next.memory.background_review.max_input_chars || 12000));
+  next.memory.background_review.lease_ms = Math.max(30000, Number(next.memory.background_review.lease_ms || 120000));
   next.context = next.context || {};
   next.context.prompt_budget_audit = next.context.prompt_budget_audit === true;
   next.context.aggressive_tool_prune_beta = next.context.aggressive_tool_prune_beta === true;

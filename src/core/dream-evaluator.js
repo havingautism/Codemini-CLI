@@ -26,6 +26,8 @@ Rules:
 - User interests, hobbies, likes/dislikes, and interaction preferences → scope "user", kind "preference"
 - Project-specific paths, file names, or commands → scope "project", kind "convention" or "lesson"
 - General coding/environment knowledge → scope "global"
+- For source="session-review", discard proposed/brainstormed ideas, durable_score below 5, and candidates without grounded user/verified evidence.
+- Treat session-review items as nominations only; independently confirm they are durable before keeping them.
 - If in doubt, discard. Memory is expensive; only promote what future sessions will genuinely benefit from.`;
 
 const MAINTENANCE_SYSTEM_PROMPT = `You are maintaining an existing persistent memory bucket for a coding assistant.
@@ -39,7 +41,7 @@ Your job:
 6. Use only these kinds: preference | convention | lesson | note.
 
 Respond with valid JSON only, no markdown fences:
-{"items":[{"kind":"preference|convention|lesson|note","content":"durable memory text","summary":"under 80 chars","confidence":0.5,"pinned":false,"lifecycle":"longterm|operational"}],"archives":[{"source_ids":["mem_..."],"reason":"merged|stale|duplicate|noise|contradiction"}]}
+{"items":[{"kind":"preference|convention|lesson|note","content":"durable memory text","summary":"under 80 chars","semantic_key":"stable key when provided","confidence":0.5,"pinned":false,"lifecycle":"longterm|operational"}],"archives":[{"source_ids":["mem_..."],"reason":"merged|stale|duplicate|noise|contradiction"}]}
 
 Rules:
 - Prefer fewer, clearer items, but do not collapse unrelated facts.
@@ -47,6 +49,7 @@ Rules:
 - Project conventions belong in project memory and should not become user preferences.
 - Global memory is only for reusable cross-project/tool/environment knowledge.
 - Keep a newly learned lesson operational unless the input already marks it longterm or clearly records repeated verification.
+- Preserve a supplied semantic_key when retaining the same fact; use one stable key when merging duplicates.
 - If a pinned item is still valid, keep it.
 - Return at least one item if the input has useful durable content.`;
 
@@ -94,7 +97,11 @@ export async function evaluateInboxBatch({ entries, config, workspaceRoot }) {
     type: e.type || '',
     source: e.source || '',
     summary: (e.summary || '').slice(0, 150),
-    details: (e.details || '').slice(0, 400)
+    details: (e.details || '').slice(0, 400),
+    semantic_key: String(e.semanticKey || '').slice(0, 160),
+    decision_state: String(e.evidence?.decisionState || '').slice(0, 40),
+    durable_score: Number(e.evidence?.durableScore || 0),
+    evidence_roles: Array.isArray(e.evidence?.evidenceRoles) ? e.evidence.evidenceRoles.slice(0, 8) : []
   }));
 
   try {
@@ -149,6 +156,7 @@ function parseMaintenanceResult(text) {
           kind: normalizeMemoryKind(item.kind, 'note'),
           content: String(item.content || '').slice(0, 600),
           summary: String(item.summary || item.content || '').slice(0, 120),
+          semanticKey: String(item.semantic_key || item.semanticKey || '').slice(0, 160),
           confidence: Math.min(1, Math.max(0.5, Number(item.confidence) || 0.8)),
           pinned: item.pinned === true,
           lifecycle: ['longterm', 'operational'].includes(String(item.lifecycle || '')) ? String(item.lifecycle) : undefined
@@ -173,6 +181,7 @@ export async function evaluateMemoryMaintenance({ scope, items, config, workspac
     kind: normalizeMemoryKind(item.kind, 'note'),
     content: String(item.content || '').slice(0, 600),
     summary: String(item.summary || '').slice(0, 160),
+    semantic_key: String(item.semanticKey || '').slice(0, 160),
     confidence: item.confidence,
     pinned: item.pinned === true,
     lifecycle: item.lifecycle || ''

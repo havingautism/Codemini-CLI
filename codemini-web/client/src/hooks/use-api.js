@@ -465,6 +465,32 @@ export async function forgetMemory(scope, id, projectDir) {
   return res.json();
 }
 
+export async function fetchInbox({ scope = 'all', query = '', projectDirs = [] } = {}) {
+  const params = new URLSearchParams();
+  if (scope && scope !== 'all') params.set('scope', scope);
+  if (query.trim()) params.set('q', query.trim());
+  appendProjectDirs(params, projectDirs);
+  const queryString = params.toString();
+  const res = await api(`/api/memory/inbox${queryString ? `?${queryString}` : ''}`);
+  return res.json();
+}
+
+export async function discardInboxEntry(id) {
+  const res = await api(`/api/memory/inbox/${encodeURIComponent(id)}`, {
+    method: 'DELETE'
+  });
+  return res.json();
+}
+
+export async function runInboxDream(scope = 'all') {
+  const res = await api('/api/memory/inbox/dream', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ scope: scope === 'all' ? null : scope })
+  });
+  return res.json();
+}
+
 // ── Souls ──
 export async function fetchSouls() {
   const res = await api('/api/souls');

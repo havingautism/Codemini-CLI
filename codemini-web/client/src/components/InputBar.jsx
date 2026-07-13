@@ -21,7 +21,6 @@ import {
   Paperclip,
   Plus,
   Sparkle,
-  Tray,
   X,
 } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
@@ -77,11 +76,6 @@ const ACTION_COMMANDS = [
     icon: Camera,
     description:
       "Capture an explicit note into the memory inbox for later consolidation.",
-  },
-  {
-    name: "inbox",
-    icon: Tray,
-    description: "Review pending memory inbox entries.",
   },
   {
     name: "reflect",

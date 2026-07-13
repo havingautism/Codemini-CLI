@@ -28,7 +28,14 @@ import { resolveGitCwd, shouldAdoptGitCwd } from './lib/git-project.js';
 import { resolveEmbed } from './lib/embed-resolver.js';
 import { installSkillSource, listSkillEntries, updateSkillPackage } from '../src/commands/skill.js';
 import { computeFileSha256, readSkillRegistry, upsertSkillRegistryEntry, writeSkillRegistry } from '../src/core/skill-registry.js';
-import { forgetMemory, listMemories, searchMemories } from '../src/core/memory-store.js';
+import {
+  archiveEntry,
+  forgetMemory,
+  listInbox,
+  listMemories,
+  searchMemories
+} from '../src/core/memory-store.js';
+import { runDreamConsolidation } from '../src/core/dream-consolidate.js';
 import { getReplyLanguage } from '../src/core/reply-language.js';
 import { normalizeSkillContexts } from '../src/core/skill-contexts.js';
 import { getBaseConfigDir, getFileIndexPath, getProjectSkillsDir, getProjectSpecsDir, getSkillsDir } from '../src/core/paths.js';
@@ -1744,6 +1751,46 @@ async function listMemoriesForProjectDirs({ scope, query, projectDirs, fallbackD
   return chunks.flat();
 }
 
+function inboxEntryMatchesQuery(entry, query) {
+  const needle = String(query || '').trim().toLowerCase();
+  if (!needle) return true;
+  return [
+    entry?.summary,
+    entry?.details,
+    entry?.suggestedAction,
+    entry?.source,
+    entry?.type,
+    entry?.evidence?.reason,
+    ...(Array.isArray(entry?.tags) ? entry.tags : [])
+  ].some(value => String(value || '').toLowerCase().includes(needle));
+}
+
+async function listInboxForProjectDirs({ scope, query, projectDirs, fallbackDir }) {
+  const entries = await listInbox(scope ? { scope } : {});
+  const allowedProjects = new Set(
+    (projectDirs.length > 0 ? projectDirs : [fallbackDir])
+      .map(normalizeProjectDirKey)
+      .filter(Boolean)
+  );
+  return entries
+    .filter(entry => {
+      if (scope !== 'project') return true;
+      const entryProject = normalizeProjectDirKey(entry?.projectDir || fallbackDir);
+      return allowedProjects.has(entryProject);
+    })
+    .filter(entry => inboxEntryMatchesQuery(entry, query))
+    .map(entry => {
+      if (entry.scope !== 'project') return entry;
+      const projectDir = entry.projectDir || fallbackDir;
+      return {
+        ...entry,
+        projectDir,
+        projectName: projectNameForDir(projectDir)
+      };
+    })
+    .sort((left, right) => String(right.timestamp || '').localeCompare(String(left.timestamp || '')));
+}
+
 async function resolveCodeWikiProjectDir(url, fallbackDir) {
   const requested = normalizeProjectPath(url.searchParams.get('project') || '');
   if (!requested) return fallbackDir;
@@ -2701,6 +2748,57 @@ async function main() {
     }
 
     // ── Memory management ──
+    if (req.method === 'GET' && url.pathname === '/api/memory/inbox') {
+      const requestedScope = String(url.searchParams.get('scope') || '').trim().toLowerCase();
+      const scope = MEMORY_SCOPES.has(requestedScope) ? requestedScope : null;
+      const query = String(url.searchParams.get('q') || '').trim();
+      try {
+        const projectDirs = await parseProjectDirsParam(url, currentProjectDir);
+        const items = await listInboxForProjectDirs({
+          scope,
+          query,
+          projectDirs,
+          fallbackDir: currentProjectDir
+        });
+        jsonResponse(res, { scope: scope || 'all', query, items });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/memory/inbox/dream') {
+      try {
+        const body = await readBody(req);
+        const requestedScope = String(body?.scope || '').trim().toLowerCase();
+        const scope = MEMORY_SCOPES.has(requestedScope) ? requestedScope : null;
+        const config = await loadConfig();
+        const result = await runDreamConsolidation({
+          scope,
+          workspaceRoot: currentProjectDir,
+          config
+        });
+        jsonResponse(res, result);
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+    }
+    if (req.method === 'DELETE' && url.pathname.startsWith('/api/memory/inbox/')) {
+      const id = decodeURIComponent(url.pathname.slice('/api/memory/inbox/'.length));
+      if (!id) { jsonResponse(res, { error: true, message: 'Missing inbox id' }, 400); return; }
+      try {
+        const entry = (await listInbox()).find(item => item.id === id);
+        if (!entry) {
+          jsonResponse(res, { error: true, message: 'Inbox entry not found' }, 404);
+          return;
+        }
+        const archived = await archiveEntry(entry, 'user-discarded', 'Discarded from Web UI');
+        jsonResponse(res, { ok: true, id, archivedAt: archived.archivedAt });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/api/memory') {
       const scope = normalizeMemoryScope(url.searchParams.get('scope'));
       const query = String(url.searchParams.get('q') || '').trim();

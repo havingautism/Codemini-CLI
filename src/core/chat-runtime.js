@@ -54,6 +54,10 @@ import {
   shouldAutoCaptureUserPrompt as shouldAutoCaptureUserPromptShared
 } from './memory-policy.js';
 import { runDreamConsolidation } from './dream-consolidate.js';
+import {
+  scheduleMemoryReviewBacklog,
+  scheduleSessionMemoryReview
+} from './memory-session-review.js';
 import { normalizePlanState } from './plan-state.js';
 import { normalizeSpecState } from './spec-state.js';
 import { normalizeTodos } from './todo-state.js';
@@ -6783,6 +6787,7 @@ export async function createChatRuntime({
   let currentSession = session;
   let config = initialConfig;
   model = model || currentSession?.model || resolveDefaultModel(config);
+  scheduleMemoryReviewBacklog({ config, currentSessionId: currentSession?.id });
   if (currentSession && typeof currentSession === 'object') {
     currentSession.model = model;
   }
@@ -7036,7 +7041,8 @@ export async function createChatRuntime({
       summary: entrySummary,
       details: normalizedSummary,
       tags: ['compact', 'context-summary'],
-      source: 'auto-compact'
+      source: 'auto-compact',
+      projectDir: root
     }).catch(() => null);
   };
 
@@ -7046,6 +7052,9 @@ export async function createChatRuntime({
   };
 
   const captureUserPromptForDream = async (text) => {
+    // The background reviewer evaluates the completed exchange with evidence and
+    // replaces noisy task-prompt capture. Keep this path only as a fallback.
+    if (config?.memory?.background_review?.enabled !== false) return null;
     if (!shouldAutoCaptureUserPrompt(text)) return null;
     const value = String(text || '').replace(/\s+/g, ' ').trim();
     return captureToInbox({
@@ -7054,7 +7063,8 @@ export async function createChatRuntime({
       summary: `User task: ${value.slice(0, 120)}`,
       details: value,
       tags: ['user-prompt'],
-      source: 'auto-user-prompt'
+      source: 'auto-user-prompt',
+      projectDir: root
     }).catch(() => null);
   };
 
@@ -7513,13 +7523,17 @@ export async function createChatRuntime({
         });
       }
     }
-    return executeSubmission(composed.text, onAgentEvent, {
+    const result = await executeSubmission(composed.text, onAgentEvent, {
       modelText: appendAttachmentContext(composed.modelText, submission?.modelText),
       modelImages: Array.isArray(submission?.modelImages) ? submission.modelImages : [],
       attachmentIds: normalized.attachmentIds,
       dismissedAlwaysSkills: normalized.dismissedAlwaysSkills,
       selectedSkillNames: composed.skillNames
     });
+    if (result?.type === 'assistant' && config?.memory?.background_review?.after_turn !== false) {
+      scheduleSessionMemoryReview({ sessionId: currentSession.id, config });
+    }
+    return result;
   };
 
   const submit = async (line, onAgentEvent) => {
@@ -7551,7 +7565,8 @@ export async function createChatRuntime({
         scope: payload.scope || 'project',
         type: payload.type || 'note',
         details: String(payload.details || '').trim(),
-        source: 'chat-action'
+        source: 'chat-action',
+        projectDir: root
       }),
       [CHAT_ACTIONS.INBOX]: async () => listInbox(),
       [CHAT_ACTIONS.DREAM]: async () => runDreamConsolidation({

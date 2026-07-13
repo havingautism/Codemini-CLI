@@ -123,7 +123,20 @@ export async function runDreamConsolidation({
     listMemories({ scope: 'user', workspaceRoot }),
     listMemories({ scope: 'project', workspaceRoot })
   ]);
-  const knownMemories = [...globalMemories, ...userMemories, ...projectMemories];
+  const projectMemoryCache = new Map([[String(workspaceRoot), projectMemories]]);
+  const knownForEntry = async (entry) => {
+    const entryScope = normalizeMemoryScope(entry?.scope, { fallback: 'project' });
+    if (entryScope === 'user') return userMemories;
+    if (entryScope === 'global') return globalMemories;
+    const entryRoot = String(entry?.projectDir || workspaceRoot);
+    if (!projectMemoryCache.has(entryRoot)) {
+      projectMemoryCache.set(
+        entryRoot,
+        await listMemories({ scope: 'project', workspaceRoot: entryRoot }).catch(() => [])
+      );
+    }
+    return projectMemoryCache.get(entryRoot);
+  };
 
   const promotions = [];
   const rejections = [];
@@ -137,20 +150,25 @@ export async function runDreamConsolidation({
 
   for (const entry of inbox) {
     const summaryKey = normalizeText(entry.summary);
+    const semanticKey = normalizeText(entry.semanticKey);
+    const duplicateKey = semanticKey ? `semantic:${semanticKey}` : `summary:${summaryKey}`;
     if (!summaryKey) {
       if (!dryRun) await archiveEntry(entry, 'invalid-summary', 'Summary is empty after normalization');
       archives.push({ summary: String(entry.summary || ''), reason: 'invalid-summary' });
       continue;
     }
 
-    if (seen.has(summaryKey)) {
-      if (!dryRun) await archiveEntry(entry, 'duplicate', `Duplicate of ${seen.get(summaryKey)}`);
+    if (seen.has(duplicateKey)) {
+      if (!dryRun) await archiveEntry(entry, 'duplicate', `Duplicate of ${seen.get(duplicateKey)}`);
       archives.push({ summary: entry.summary, reason: 'duplicate' });
       continue;
     }
-    seen.set(summaryKey, entry.id);
+    seen.set(duplicateKey, entry.id);
 
-    const alreadyKnown = knownMemories.some((memory) => memoryContainsSummary(memory, summaryKey));
+    const knownMemories = await knownForEntry(entry);
+    const alreadyKnown = knownMemories.some((memory) =>
+      (semanticKey && normalizeText(memory?.semanticKey) === semanticKey) || memoryContainsSummary(memory, summaryKey)
+    );
     if (alreadyKnown) {
       if (!dryRun) await archiveEntry(entry, 'already-known', 'Already present in memory');
       rejections.push({ summary: entry.summary, reason: 'already-known' });
@@ -196,11 +214,14 @@ export async function runDreamConsolidation({
 
       if (!dryRun) {
         try {
+          const promotionWorkspaceRoot = promoteScope === 'project'
+            ? String(entry.projectDir || workspaceRoot)
+            : workspaceRoot;
           await promoteMemory({
             entry: enrichedEntry,
             scope: promoteScope,
             lifecycle,
-            workspaceRoot,
+            workspaceRoot: promotionWorkspaceRoot,
             config,
             confidence: evaluation.confidence || 0.8
           });
