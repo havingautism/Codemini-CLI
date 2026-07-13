@@ -400,7 +400,6 @@ export async function handleRun(args) {
     return;
   }
 
-  const workspaceRoot = process.cwd();
   const { definitions, handlers, formatters, deferredDefinitions, dispose } = getBuiltinTools({
     workspaceRoot,
     config
