@@ -787,9 +787,22 @@ export const en = {
   generalChatDesc: "Chat freely without binding to a project",
   enterGeneral: "Enter General Chat",
   askAnythingGeneral: "How can I help you?",
+  askAnythingGeneralPrompts: [
+    "How can I help you?",
+    "What are you thinking about today?",
+    "Share an idea and we can start.",
+    "I'm here whenever you're ready.",
+    "Want to begin with a small question?",
+  ],
 
   // ChatPanel
   buildInProject: "What do you want to build in {{project}}?",
+  buildInProjectPrompts: [
+    "What do you want to build in {{project}}?",
+    "Which part of {{project}} should we tackle next?",
+    "What should we move forward in {{project}}?",
+    "Where in {{project}} should we start?",
+  ],
   undoChange: "Undo change",
   undoChangeFailed: "Failed to undo change",
   undoChangeConfirm: "Undo this change?",

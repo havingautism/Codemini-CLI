@@ -11,6 +11,8 @@ import {
 } from "@/components/ui/message-scroller";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
+import { HomeEmptyVisual } from "./HomeEmptyVisual.jsx";
+import { HomeEmptyCaption } from "./HomeEmptyCaption.jsx";
 
 const MessageBubble = lazy(() =>
   import("./MessageBubble").then((module) => ({
@@ -23,25 +25,6 @@ function truncate(text, max = 36) {
     .replace(/\n/g, " ")
     .trim();
   return s.length > max ? s.slice(0, max) + "..." : s;
-}
-
-function PrintingPress() {
-  return (
-    <div className="codemini-home-visual codemini-press" aria-hidden="true">
-      <div className="sheet" />
-      <div className="roll" />
-      <div className="sheet" />
-      <div className="roll" />
-      <div className="sheet" />
-      <div className="roll" />
-      <div className="sheet" />
-      <div className="sheet" />
-      <div className="sheet" />
-      <div className="sheet" />
-      <div className="sheet" />
-      <div className="roll" />
-    </div>
-  );
 }
 
 function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
@@ -199,24 +182,21 @@ export function ChatPanel({
         </div>
       )}
       {!messagesLoading && messages.length === 0 && (
-        <div className="absolute left-1/2 top-[34%] -translate-x-1/2 -translate-y-1/2 w-[calc(100%_-_32px)] max-w-[640px] text-center pointer-events-none">
+        <div className="absolute inset-0 pointer-events-none overflow-hidden">
           {isGeneral ? (
-            <div className="flex flex-col items-center">
-              <div className="mb-5 w-[min(440px,100%)] opacity-80">
-                <PrintingPress />
-              </div>
-              <h1 className="mx-auto max-w-[320px] sm:max-w-none text-[20px] sm:text-[26px] font-medium leading-tight tracking-normal text-(--text-primary) break-words">
-                {t("askAnythingGeneral")}
-              </h1>
-            </div>
+            <HomeEmptyVisual mode="general">
+              <HomeEmptyCaption
+                promptKey="askAnythingGeneralPrompts"
+                className="codemini-home-empty-title mx-auto max-w-[320px] sm:max-w-none text-[20px] sm:text-[26px] font-medium leading-tight tracking-normal text-(--text-primary) break-words"
+              />
+            </HomeEmptyVisual>
           ) : (
-            <>
-              <h1 className="mx-auto max-w-[320px] sm:max-w-none text-[20px] sm:text-[26px] font-medium leading-tight tracking-normal text-(--text-primary) break-words">
-                {t("buildInProject").replace(
-                  "{{project}}",
-                  projectCwd || "qurio-coder",
-                )}
-              </h1>
+            <HomeEmptyVisual mode="project">
+              <HomeEmptyCaption
+                promptKey="buildInProjectPrompts"
+                vars={{ project: projectCwd || "qurio-coder" }}
+                className="codemini-home-empty-title mx-auto max-w-[320px] sm:max-w-none text-[20px] sm:text-[26px] font-medium leading-tight tracking-normal text-(--text-primary) break-words"
+              />
               {gitInfo?.isGit && (
                 <div className="mt-3 flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-[12px] text-(--text-muted)">
                   <span className="inline-flex items-center gap-1.5">
@@ -252,7 +232,7 @@ export function ChatPanel({
                   )}
                 </div>
               )}
-            </>
+            </HomeEmptyVisual>
           )}
         </div>
       )}

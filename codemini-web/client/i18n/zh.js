@@ -759,9 +759,22 @@ export const zh = {
   generalChatDesc: "无需绑定项目，自由对话",
   enterGeneral: "进入普通会话",
   askAnythingGeneral: "有什么可以帮你的?",
+  askAnythingGeneralPrompts: [
+    "有什么可以帮你的?",
+    "今天想聊点什么?",
+    "有想法尽管说",
+    "我在这儿，随时开始",
+    "先从一个小问题开始？",
+  ],
 
   // ChatPanel
   buildInProject: "要在 {{project}} 中构建什么?",
+  buildInProjectPrompts: [
+    "要在 {{project}} 中构建什么?",
+    "接下来想改 {{project}} 的哪一块?",
+    "{{project}} 有什么想推进的？",
+    "从 {{project}} 的哪个文件或功能开始？",
+  ],
   undoChange: "撤回变更",
   undoChangeFailed: "撤回变更失败",
   undoChangeConfirm: "确认撤回变更？",

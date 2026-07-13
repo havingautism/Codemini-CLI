@@ -24,6 +24,9 @@ export default defineConfig({
       }
     }
   },
+  optimizeDeps: {
+    include: ['@lottiefiles/dotlottie-react'],
+  },
   server: {
     proxy: {
       '/api': `http://127.0.0.1:${apiPort}`

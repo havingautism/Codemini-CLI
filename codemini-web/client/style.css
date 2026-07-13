@@ -1869,6 +1869,180 @@ samp {
   box-shadow: none;
 }
 
+/* DotLottie empty-state: local ambient glow (stay away from header / input) */
+.codemini-home-empty-stage {
+  --home-empty-glow: rgba(99, 140, 230, 0.22);
+  --home-empty-frame: color-mix(in srgb, var(--border-default) 55%, transparent);
+
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(16px, 3vh, 28px);
+  padding: 24px 16px 22vh;
+  background: transparent;
+}
+
+[data-theme="dark"] .codemini-home-empty-stage {
+  --home-empty-glow: rgba(90, 120, 210, 0.16);
+}
+
+.codemini-home-empty-stage[data-visual="celebration"] {
+  --home-empty-glow: rgba(255, 140, 110, 0.24);
+}
+
+[data-theme="dark"] .codemini-home-empty-stage[data-visual="celebration"] {
+  --home-empty-glow: rgba(255, 120, 150, 0.16);
+}
+
+.codemini-home-empty-stage[data-visual="working-cat"] {
+  --home-empty-glow: rgba(70, 170, 255, 0.22);
+}
+
+[data-theme="dark"] .codemini-home-empty-stage[data-visual="working-cat"] {
+  --home-empty-glow: rgba(56, 180, 255, 0.16);
+}
+
+.codemini-home-empty-stage[data-visual="loader-cat-dark"] {
+  --home-empty-glow: rgba(120, 140, 200, 0.2);
+}
+
+[data-theme="dark"] .codemini-home-empty-stage[data-visual="loader-cat-dark"] {
+  --home-empty-glow: rgba(140, 160, 220, 0.14);
+}
+
+.codemini-home-empty-stage[data-visual="printing-press"] {
+  --home-empty-glow: rgba(100, 140, 250, 0.22);
+}
+
+[data-theme="dark"] .codemini-home-empty-stage[data-visual="printing-press"] {
+  --home-empty-glow: rgba(110, 150, 255, 0.16);
+}
+
+.codemini-home-empty-glow {
+  position: absolute;
+  top: 42%;
+  left: 50%;
+  width: min(380px, 70vw);
+  height: min(260px, 34vh);
+  transform: translate(-50%, -58%);
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, var(--home-empty-glow) 0%, transparent 72%);
+  filter: blur(18px);
+  pointer-events: none;
+  opacity: 0.9;
+}
+
+.codemini-home-empty-media {
+  position: relative;
+  z-index: 1;
+  width: min(440px, calc(100% - 32px));
+  height: clamp(150px, 28vw, 230px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Match each animation's native aspect so it fills the frame */
+.codemini-home-empty-stage[data-visual="celebration"] .codemini-home-empty-media {
+  width: min(440px, calc(100% - 32px));
+  height: auto;
+  aspect-ratio: 1443 / 863;
+}
+
+.codemini-home-empty-stage[data-visual="working-cat"] .codemini-home-empty-media {
+  width: min(440px, calc(100% - 32px));
+  height: auto;
+  aspect-ratio: 16 / 9;
+}
+
+.codemini-home-empty-stage[data-visual="loader-cat-dark"] .codemini-home-empty-media {
+  width: min(360px, calc(100% - 32px));
+  height: auto;
+  aspect-ratio: 280 / 200;
+}
+
+.codemini-home-empty-stage[data-visual="printing-press"] .codemini-home-empty-media {
+  width: min(440px, calc(100% - 32px));
+  height: clamp(150px, 28vw, 230px);
+  aspect-ratio: auto;
+}
+
+.codemini-home-lottie-frame {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 22px;
+  border: 1px solid var(--home-empty-frame);
+  background: transparent;
+  box-shadow: var(--shadow-default);
+}
+
+[data-theme="dark"] .codemini-home-lottie-frame {
+  background: transparent;
+  box-shadow: none;
+}
+
+.codemini-home-lottie-fill {
+  width: 100%;
+  height: 100%;
+}
+
+.codemini-home-lottie-fill .codemini-home-lottie-player,
+.codemini-home-lottie-fill canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+  object-fit: cover;
+}
+
+.codemini-home-empty-press {
+  width: 100%;
+  opacity: 0.8;
+}
+
+.codemini-home-empty-caption {
+  position: relative;
+  z-index: 2;
+  text-align: center;
+  max-width: min(640px, calc(100% - 32px));
+}
+
+.codemini-home-empty-title {
+  transition: opacity 220ms ease;
+}
+
+.codemini-home-empty-title[data-visible="false"] {
+  opacity: 0;
+}
+
+/* legacy small-card lottie styles kept for press shell compatibility */
+.codemini-home-lottie {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 16px;
+  background:
+    radial-gradient(circle at 20% 15%, rgba(255, 255, 255, 0.55), transparent 40%),
+    linear-gradient(145deg, #f4f6fb 0%, #e7ecf8 48%, #d9e2f6 100%);
+  opacity: 1;
+}
+
+[data-theme="dark"] .codemini-home-lottie {
+  background:
+    radial-gradient(circle at 18% 16%, rgba(134, 166, 249, 0.22), transparent 38%),
+    linear-gradient(145deg, #24314f 0%, #17203a 55%, #12182c 100%);
+}
+
+.codemini-home-lottie .codemini-home-lottie-player,
+.codemini-home-lottie canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+
 .codemini-press,
 .codemini-press * {
   box-sizing: border-box;
