@@ -15,6 +15,7 @@ export function SettingsChoiceList({
       value={value}
       onValueChange={(next) => next && onValueChange?.(next)}
       disabled={disabled}
+      size="auto"
       className={cn(
         "flex w-full flex-col items-stretch gap-1.5",
         className,
@@ -29,7 +30,7 @@ export function SettingsChoiceList({
             id={`${idPrefix}-${opt.value}`}
             value={opt.value}
             className={cn(
-              "settings-choice-item h-auto min-h-[52px] w-full justify-start rounded-lg border px-3 py-2.5 text-left transition-colors",
+              "settings-choice-item min-h-[52px] gap-2 rounded-lg border px-3 py-2.5 transition-colors",
               selected
                 ? "border-ring bg-accent text-accent-foreground shadow-sm"
                 : "border-(--border-default) bg-transparent hover:border-(--border-strong) hover:bg-(--bg-hover)",
@@ -41,15 +42,15 @@ export function SettingsChoiceList({
                 size={16}
                 weight={selected ? "fill" : "regular"}
                 className={cn(
-                  "shrink-0",
+                  "mt-0.5 shrink-0",
                   selected ? "text-[var(--input-shell-accent)]" : "text-(--text-muted)",
                 )}
               />
             )}
-            <span className="min-w-0 flex-1">
+            <span className="min-w-0 flex-1 overflow-hidden">
               <span className="block text-[13px] font-medium">{opt.label}</span>
               {opt.description && (
-                <span className="mt-0.5 block text-[11px] font-normal leading-snug text-(--text-muted)">
+                <span className="mt-0.5 block wrap-break-word text-[11px] font-normal leading-snug text-(--text-muted)">
                   {opt.description}
                 </span>
               )}

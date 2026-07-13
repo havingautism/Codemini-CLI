@@ -66,8 +66,8 @@ function SoulEditor({ soul, onSave, onCancel }) {
   };
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth pr-1">
+    <div className="flex flex-col">
+      <div className="max-h-[min(52vh,480px)] overflow-y-auto scroll-smooth pr-1">
         <SettingsSection description={t("soulEditorHint")} className="gap-4">
           <SettingsField id="soul-editor-name" label={t("name")}>
             <Input
@@ -86,7 +86,7 @@ function SoulEditor({ soul, onSave, onCancel }) {
               <MarkdownEditor
                 value={content}
                 onChange={setContent}
-                height={320}
+                height={280}
                 placeholder={t("soulPlaceholder")}
               />
             )}
@@ -114,11 +114,11 @@ function SoulEditor({ soul, onSave, onCancel }) {
 function SoulEditorDialog({ soul, open, onSave, onOpenChange }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[86vh] max-h-[86vh] flex-col gap-4 overflow-hidden p-0 sm:max-w-[720px]">
+      <DialogContent className="flex max-h-[85vh] flex-col gap-4 overflow-hidden p-0 sm:max-w-[720px]">
         <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
           <DialogTitle>{soul ? t("editSoul") : t("newSoul")}</DialogTitle>
         </DialogHeader>
-        <div className="flex min-h-0 flex-1 flex-col px-4 pb-4 sm:px-6">
+        <div className="flex min-h-0 flex-col px-4 pb-4 sm:px-6">
           <SoulEditor
             soul={soul}
             onSave={onSave}

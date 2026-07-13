@@ -182,7 +182,7 @@ function ModeSelector({ sessionId, current, disabled = false }) {
         side="top"
         align="start"
         sideOffset={6}
-        className="w-88 p-2"
+        className="w-72 max-w-[calc(100vw-32px)] p-2"
       >
         <div className="px-0.5 pb-1.5 text-[11px] font-medium text-muted-foreground">
           {t("executionMode")}
@@ -192,6 +192,7 @@ function ModeSelector({ sessionId, current, disabled = false }) {
           value={current}
           onValueChange={handleSelect}
           disabled={disabled || switching}
+          size="auto"
           className="flex w-full flex-col items-stretch gap-0.5"
         >
           {MODE_OPTIONS.map((opt) => {
@@ -200,12 +201,12 @@ function ModeSelector({ sessionId, current, disabled = false }) {
               <ToggleGroupItem
                 key={opt.value}
                 value={opt.value}
-                className="h-auto min-h-8 w-full justify-start px-2 py-1.5 text-left data-[state=on]:shadow-none"
+                className="gap-2 data-[state=on]:shadow-none"
               >
-                <Icon data-icon="inline-start" />
-                <span className="min-w-0 flex-1">
-                  <span className="block">{opt.label}</span>
-                  <span className="block text-[11px] font-normal leading-snug text-muted-foreground">
+                <Icon data-icon="inline-start" className="mt-0.5" />
+                <span className="min-w-0 flex-1 overflow-hidden">
+                  <span className="block truncate">{opt.label}</span>
+                  <span className="block wrap-break-word text-[11px] font-normal leading-snug text-muted-foreground">
                     {opt.description}
                   </span>
                 </span>
@@ -262,7 +263,7 @@ function ApprovalModeSelector({ sessionId, current, disabled = false }) {
         side="top"
         align="start"
         sideOffset={6}
-        className="w-76 p-2"
+        className="w-72 max-w-[calc(100vw-32px)] p-2"
       >
         <div className="px-0.5 pb-1.5 text-[11px] font-medium text-muted-foreground">
           {t("approvalMode")}
@@ -272,6 +273,7 @@ function ApprovalModeSelector({ sessionId, current, disabled = false }) {
           value={current}
           onValueChange={handleSelect}
           disabled={disabled || switching}
+          size="auto"
           className="flex w-full flex-col items-stretch gap-0.5"
         >
           {MODE_OPTIONS.map((opt) => {
@@ -280,12 +282,12 @@ function ApprovalModeSelector({ sessionId, current, disabled = false }) {
               <ToggleGroupItem
                 key={opt.value}
                 value={opt.value}
-                className="h-auto min-h-8 w-full justify-start px-2 py-1.5 text-left data-[state=on]:shadow-none"
+                className="gap-2 data-[state=on]:shadow-none"
               >
-                <Icon data-icon="inline-start" />
-                <span className="min-w-0 flex-1">
-                  <span className="block">{opt.label}</span>
-                  <span className="block text-[11px] font-normal leading-snug text-muted-foreground">
+                <Icon data-icon="inline-start" className="mt-0.5" />
+                <span className="min-w-0 flex-1 overflow-hidden">
+                  <span className="block truncate">{opt.label}</span>
+                  <span className="block wrap-break-word text-[11px] font-normal leading-snug text-muted-foreground">
                     {opt.description}
                   </span>
                 </span>

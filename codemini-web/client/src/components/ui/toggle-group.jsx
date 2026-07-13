@@ -7,7 +7,7 @@ import { variants } from "@/lib/variants";
 import { cn } from "@/lib/utils";
 
 const toggleVariants = variants(
-  "inline-flex items-center justify-center gap-2 rounded-lg border-0 text-[12px] font-medium whitespace-nowrap transition-[background-color,color,box-shadow] outline-none disabled:pointer-events-none disabled:opacity-50 data-[state=on]:bg-(--selected-bg) data-[state=on]:text-(--text-primary) data-[state=on]:shadow-[inset_0_0_0_1px_var(--selected-edge)] hover:bg-(--bg-hover) hover:text-(--text-primary) focus-visible:shadow-[inset_0_0_0_1px_var(--control-border-hover)] text-(--text-secondary) [&_svg]:pointer-events-none [&_svg]:shrink-0",
+  "inline-flex items-center justify-center gap-2 rounded-lg border-0 text-[12px] font-medium transition-[background-color,color,box-shadow] outline-none disabled:pointer-events-none disabled:opacity-50 data-[state=on]:bg-(--selected-bg) data-[state=on]:text-(--text-primary) data-[state=on]:shadow-[inset_0_0_0_1px_var(--selected-edge)] hover:bg-(--bg-hover) hover:text-(--text-primary) focus-visible:shadow-[inset_0_0_0_1px_var(--control-border-hover)] text-(--text-secondary) [&_svg]:pointer-events-none [&_svg]:shrink-0",
   {
     variants: {
       variant: {
@@ -15,9 +15,11 @@ const toggleVariants = variants(
         outline: "border border-(--border-default) bg-transparent shadow-xs",
       },
       size: {
-        default: "h-8 px-2.5",
-        sm: "h-7 px-2 text-xs",
-        lg: "h-10 px-3",
+        default: "h-8 px-2.5 whitespace-nowrap",
+        sm: "h-7 px-2 text-xs whitespace-nowrap",
+        lg: "h-10 px-3 whitespace-nowrap",
+        // Multi-line option rows (Work Mode / Approval / settings choice lists)
+        auto: "h-auto min-h-8 items-start justify-start px-2.5 py-1.5 text-left whitespace-normal",
       },
     },
     defaultVariants: {
@@ -59,6 +61,7 @@ function ToggleGroup({
 
 function ToggleGroupItem({ className, children, variant, size, ...props }) {
   const context = React.useContext(ToggleGroupContext);
+  const resolvedSize = context.size || size;
 
   return (
     <ToggleGroupPrimitive.Item
@@ -66,9 +69,10 @@ function ToggleGroupItem({ className, children, variant, size, ...props }) {
       className={cn(
         toggleVariants({
           variant: context.variant || variant,
-          size: context.size || size,
+          size: resolvedSize,
         }),
         "min-w-0 flex-1",
+        resolvedSize === "auto" && "flex w-full overflow-hidden",
         className,
       )}
       {...props}

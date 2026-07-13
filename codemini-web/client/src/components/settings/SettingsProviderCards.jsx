@@ -44,12 +44,12 @@ export function SettingsProviderCards({
                 className="shrink-0 rounded-sm object-contain"
               />
             )}
-            <span className="min-w-0">
+            <span className="min-w-0 overflow-hidden">
               <span className="block text-[13px] font-medium text-(--text-primary)">
                 {opt.label}
               </span>
               {opt.description && (
-                <span className="mt-0.5 block text-[11px] leading-snug text-(--text-muted)">
+                <span className="mt-0.5 block wrap-break-word text-[11px] leading-snug text-(--text-muted)">
                   {opt.description}
                 </span>
               )}

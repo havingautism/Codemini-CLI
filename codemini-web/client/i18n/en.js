@@ -622,7 +622,7 @@ export const en = {
   save: "Save",
   contentPreview: "- Content Preview",
   close: "Close",
-  addSoul: "Add Soul",
+  addSoul: "Add",
   soulActions: "Soul actions",
   noSouls: "No souls yet",
   noSoulsHint:
@@ -684,7 +684,7 @@ export const en = {
   confirmDeleteMemory: 'Delete memory "{{summary}}"?',
   deleteMemoryConfirm: "Delete memory?",
   deleteMemoryDescription: 'Delete memory "{{summary}}"? This cannot be undone.',
-  addSkill: "Add Skill",
+  addSkill: "Add",
   installSkill: "Install",
   installing: "Installing...",
   updateSkillPackage: "Update package",
