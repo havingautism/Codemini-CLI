@@ -24,12 +24,14 @@ export function ConfirmDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={(next) => !loading && onOpenChange?.(next)}>
-      <DialogContent className="sm:max-w-[380px]">
+      <DialogContent className="sm:max-w-[380px] gap-5">
         <DialogHeader showCloseButton={!loading}>
           <DialogTitle>{title}</DialogTitle>
-          <DialogDescription className="leading-6">
-            {description}
-          </DialogDescription>
+          {description ? (
+            <DialogDescription className="text-[13px] leading-6">
+              {description}
+            </DialogDescription>
+          ) : null}
         </DialogHeader>
         <DialogFooter>
           <Button

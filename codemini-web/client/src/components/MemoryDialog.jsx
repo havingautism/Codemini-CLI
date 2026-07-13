@@ -17,6 +17,7 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmentedControl.jsx";
 import { ResourceLibraryDialog } from "@/components/ResourceLibraryDialog.jsx";
+import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { cn } from "@/lib/utils";
 import * as api from "@/hooks/use-api";
 import { t } from "../../i18n/index.js";
@@ -32,6 +33,39 @@ function formatMemoryTime(value) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function capitalizeLabel(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+const MEMORY_KIND_LABEL_KEYS = {
+  preference: "memoryKindPreference",
+  convention: "memoryKindConvention",
+  lesson: "memoryKindLesson",
+  note: "memoryKindNote",
+};
+
+const MEMORY_LIFECYCLE_LABEL_KEYS = {
+  observed: "memoryLifecycleObserved",
+  operational: "memoryLifecycleOperational",
+  longterm: "memoryLifecycleLongterm",
+  archived: "memoryLifecycleArchived",
+};
+
+function memoryKindLabel(kind) {
+  const normalized = String(kind || "note").trim().toLowerCase() || "note";
+  const key = MEMORY_KIND_LABEL_KEYS[normalized];
+  return key ? t(key) : capitalizeLabel(normalized);
+}
+
+function memoryLifecycleLabel(lifecycle) {
+  const normalized = String(lifecycle || "").trim().toLowerCase();
+  if (!normalized) return "";
+  const key = MEMORY_LIFECYCLE_LABEL_KEYS[normalized];
+  return key ? t(key) : capitalizeLabel(normalized);
 }
 
 function scopeLabel(scope) {
@@ -108,7 +142,7 @@ function MemoryDetailPane({ memory, scope }) {
             {title}
           </h3>
           <Badge variant="outline" className="h-6 rounded-md px-2 text-[11px]">
-            {memory.kind || "note"}
+            {memoryKindLabel(memory.kind || "note")}
           </Badge>
           {memory.pinned ? (
             <Badge variant="secondary" className="h-6 rounded-md px-2 text-[11px]">
@@ -118,7 +152,7 @@ function MemoryDetailPane({ memory, scope }) {
         </div>
         <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-(--text-muted)">
           <span>{scopeLabel(scope)}</span>
-          {memory.lifecycle ? <span>{memory.lifecycle}</span> : null}
+          {memory.lifecycle ? <span>{memoryLifecycleLabel(memory.lifecycle)}</span> : null}
           {updatedLabel ? <span>{updatedLabel}</span> : null}
           {confidenceLabel ? <span>{confidenceLabel}</span> : null}
         </div>
@@ -186,21 +220,21 @@ function MemoryCard({ memory, selected, deleting, onSelect, onDelete }) {
     >
       {/* Header: title + badges */}
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
+        <span className="min-w-0 flex-1 truncate text-[15px] font-semibold leading-5 text-foreground">
           {title}
         </span>
         <Badge
           variant="outline"
           className="h-5 rounded-md px-1.5 text-[11px]"
         >
-          {memory.kind || "note"}
+          {memoryKindLabel(memory.kind || "note")}
         </Badge>
         {memory.lifecycle && (
           <Badge
             variant="secondary"
             className="h-5 rounded-md px-1.5 text-[11px]"
           >
-            {memory.lifecycle}
+            {memoryLifecycleLabel(memory.lifecycle)}
           </Badge>
         )}
         {pinned && (
@@ -215,11 +249,14 @@ function MemoryCard({ memory, selected, deleting, onSelect, onDelete }) {
 
       {/* Footer: time + actions */}
       <Separator />
-      <div className="flex items-center gap-0.5" onClick={(event) => event.stopPropagation()}>
+      <div className="flex items-center gap-0.5">
         {updatedLabel && (
-          <span className="text-xs text-muted-foreground">{updatedLabel}</span>
+          <span className="text-[11px] leading-4 text-muted-foreground">{updatedLabel}</span>
         )}
-        <div className="ml-auto flex items-center gap-0.5">
+        <div
+          className="ml-auto flex items-center gap-0.5"
+          onClick={(event) => event.stopPropagation()}
+        >
           <Button
             variant="ghost"
             size="icon-sm"
@@ -244,6 +281,7 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [deletingId, setDeletingId] = useState("");
+  const [pendingDelete, setPendingDelete] = useState(null);
   const [selectedMemory, setSelectedMemory] = useState(null);
   const [collapsedProjects, setCollapsedProjects] = useState(() => new Set());
 
@@ -327,18 +365,14 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
     });
   }, []);
 
-  const handleDelete = async (memory) => {
+  const handleDelete = (memory) => {
     if (!memory?.id) return;
-    if (
-      !confirm(
-        t("confirmDeleteMemory").replace(
-          "{{summary}}",
-          memory.summary || memory.id,
-        ),
-      )
-    ) {
-      return;
-    }
+    setPendingDelete(memory);
+  };
+
+  const confirmDelete = async () => {
+    const memory = pendingDelete;
+    if (!memory?.id || deletingId) return;
     setDeletingId(memoryKey(memory, scope));
     setError("");
     try {
@@ -348,6 +382,7 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
         memory.projectDir,
       );
       if (result?.error) throw new Error(result.message || t("deleteFailed"));
+      setPendingDelete(null);
       await loadMemories();
     } catch (err) {
       setError(err.message || t("deleteFailed"));
@@ -379,7 +414,7 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
                         variant="outline"
                         className="h-4 rounded-md px-1.5 py-0 text-[10px]"
                       >
-                        {kind} {count}
+                        {memoryKindLabel(kind)} {count}
                       </Badge>
                     ))}
                   </>
@@ -390,7 +425,7 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
                 onClick={loadMemories}
                 disabled={loading}
                 size="icon-sm"
-                className="w-full shrink-0 sm:ml-auto sm:w-auto"
+                className="shrink-0 self-end sm:ml-auto sm:self-center"
                 title={t("refresh")}
                 aria-label={t("refresh")}
               >
@@ -506,6 +541,23 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
         </div>
       </ResourceLibraryDialog>
 
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title={t("deleteMemoryConfirm")}
+        description={
+          pendingDelete
+            ? t("deleteMemoryDescription").replace(
+                "{{summary}}",
+                pendingDelete.summary || pendingDelete.id || "",
+              )
+            : ""
+        }
+        loading={Boolean(deletingId)}
+        onOpenChange={(next) => {
+          if (!next && !deletingId) setPendingDelete(null);
+        }}
+        onConfirm={confirmDelete}
+      />
     </>
   );
 }

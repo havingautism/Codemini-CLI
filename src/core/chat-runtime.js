@@ -43,13 +43,16 @@ import {
   buildTranscriptForLLM,
   COMPACT_SUMMARY_PROMPT
 } from './context-compact.js';
-import { getReplyLanguage, getReplyLanguageName, stripReplyLanguageDirective, buildSystemPromptWithReplyLanguage } from './reply-language.js';
+import { getReplyLanguage, getReplyLanguageName, stripReplyLanguageDirective, buildSystemPromptWithReplyLanguage, appendStructuredOutputLanguageRule } from './reply-language.js';
 import { composeSystemPrompt } from './system-prompt-composer.js';
 import { buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
 import { buildSubAgentShellRulesPrompt } from './shell-profile.js';
 import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
-import { listMemories, rememberMemory, captureToInbox, listInbox } from './memory-store.js';
+import { captureToInbox, listInbox } from './memory-store.js';
+import {
+  shouldAutoCaptureUserPrompt as shouldAutoCaptureUserPromptShared
+} from './memory-policy.js';
 import { runDreamConsolidation } from './dream-consolidate.js';
 import { normalizePlanState } from './plan-state.js';
 import { normalizeSpecState } from './spec-state.js';
@@ -3852,7 +3855,12 @@ function createCompactSummaryGenerator(config, signal) {
       apiKey: effectiveConfig.gateway.api_key,
       model: fastModel,
       messages: [
-        { role: 'system', content: COMPACT_SUMMARY_PROMPT },
+        {
+          role: 'system',
+          content: appendStructuredOutputLanguageRule(COMPACT_SUMMARY_PROMPT, effectiveConfig, {
+            fields: 'the entire summary'
+          })
+        },
         { role: 'user', content: transcript.slice(0, 12000) }
       ],
       tools: [],
@@ -7023,8 +7031,8 @@ export async function createChatRuntime({
     if (!normalizedSummary) return null;
     const entrySummary = `Context compacted (${mode}): ${beforeTokens} -> ${afterTokens} tokens`;
     return captureToInbox({
-      scope: 'repo',
-      type: 'observation',
+      scope: 'project',
+      type: 'note',
       summary: entrySummary,
       details: normalizedSummary,
       tags: ['compact', 'context-summary'],
@@ -7034,72 +7042,15 @@ export async function createChatRuntime({
 
   const shouldAutoCaptureUserPrompt = (text) => {
     if (config?.memory?.enabled === false || config?.memory?.auto_capture === false) return false;
-    const value = String(text || '').replace(/\s+/g, ' ').trim();
-    if (value.length < 12) return false;
-    const actionPattern =
-      /\b(add|build|fix|implement|change|update|refactor|test|debug|remember|capture|continue|review)\b|实现|增加|添加|修复|修改|更新|重构|测试|调试|记住|继续|检查|沉淀|捕获/i;
-    return actionPattern.test(value);
-  };
-
-  const classifyDirectMemoryPrompt = (text) => {
-    if (config?.memory?.enabled === false || config?.memory?.auto_capture === false) return null;
-    const value = String(text || '').replace(/\s+/g, ' ').trim();
-    if (value.length < 6) return null;
-    const userPreferencePattern =
-      /(?:记住|请记住|以后|后续|我偏好|我的偏好|我喜欢|我习惯|不要再|别再|always remember|remember that|i prefer|my preference|don't|do not)/i;
-    if (!userPreferencePattern.test(value)) return null;
-    const projectPattern = /(?:本项目|这个项目|当前项目|这个仓库|当前仓库|repo|repository|project)/i;
-    const isProject = projectPattern.test(value);
-    return {
-      scope: isProject ? 'project' : 'user',
-      kind: isProject ? 'workflow' : 'preference',
-      content: value
-    };
-  };
-
-  const saveDirectMemoryPrompt = async (text) => {
-    const direct = classifyDirectMemoryPrompt(text);
-    if (!direct) return null;
-    const existing = await listMemories({
-      scope: direct.scope,
-      workspaceRoot: root
-    }).catch(() => []);
-    const directText = String(direct.content || '').toLowerCase();
-    const directTokens = new Set(directText.match(/[a-z0-9_\u4e00-\u9fa5]+/g) || []);
-    const directAsciiTokens = new Set(directText.match(/[a-z0-9_]{4,}/g) || []);
-    const overlapsExisting = existing.some((item) => {
-      const existingText = `${item.content || ''} ${item.summary || ''}`.toLowerCase();
-      for (const token of directAsciiTokens) {
-        if (existingText.includes(token)) return true;
-      }
-      let hits = 0;
-      for (const token of directTokens) {
-        if (token.length < 2) continue;
-        if (existingText.includes(token)) hits += 1;
-        if (hits >= 2) return true;
-      }
-      return false;
-    });
-    if (overlapsExisting) return null;
-    return rememberMemory({
-      scope: direct.scope,
-      content: direct.content,
-      kind: direct.kind,
-      summary: direct.content.slice(0, 80),
-      source: 'auto-user-directive',
-      replaceSimilar: true,
-      workspaceRoot: root,
-      config
-    }).catch(() => null);
+    return shouldAutoCaptureUserPromptShared(text);
   };
 
   const captureUserPromptForDream = async (text) => {
-    if (classifyDirectMemoryPrompt(text)) return null;
     if (!shouldAutoCaptureUserPrompt(text)) return null;
     const value = String(text || '').replace(/\s+/g, ' ').trim();
     return captureToInbox({
-      scope: 'repo',
-      type: 'observation',
+      scope: 'project',
+      type: 'note',
       summary: `User task: ${value.slice(0, 120)}`,
       details: value,
       tags: ['user-prompt'],
@@ -7109,7 +7060,7 @@ export async function createChatRuntime({
 
   const buildActiveSystemPrompt = async () => {
     const memoryGuide =
-      'Persistent memory stores durable preferences and stable workflow knowledge. Verify changeable details from files, and only write memory for future-useful, non-sensitive facts.';
+      `Persistent memory is for self-evolution: when the user asks you to remember something lasting, call save_memory. Use scope="user" kind="preference" for tastes/interests, scope="project" kind="convention" for project rules, and kind="lesson" for reusable learnings. Write memory content and summary in ${getReplyLanguageName(config)}. Verify changeable details from files; never store secrets. Do not duplicate an equivalent fact already present in Persistent Memory.`;
     const skillIndexPrompt = await buildSkillIndexPromptBlock(root, config, executionMode);
     return composeSystemPrompt({
       shellRulesPrompt: baseSystemPrompt,
@@ -7519,10 +7470,7 @@ export async function createChatRuntime({
       selectedSkillNames: options?.selectedSkillNames
     });
     syncExecutionModeWithSession();
-    void Promise.allSettled([
-      saveDirectMemoryPrompt(expandedText),
-      captureUserPromptForDream(expandedText)
-    ]);
+    void captureUserPromptForDream(expandedText);
     return { type: 'assistant', text: result.text, aborted: !!result.aborted };
   };
   const getAvailableSkills = () =>
@@ -7600,8 +7548,8 @@ export async function createChatRuntime({
     const handlers = {
       [CHAT_ACTIONS.CAPTURE]: async () => captureToInbox({
         summary: String(payload.summary || '').trim(),
-        scope: payload.scope || 'repo',
-        type: payload.type || 'observation',
+        scope: payload.scope || 'project',
+        type: payload.type || 'note',
         details: String(payload.details || '').trim(),
         source: 'chat-action'
       }),

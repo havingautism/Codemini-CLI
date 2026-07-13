@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getProjectSkillsDir, getSkillsDir } from './paths.js';
 import { createChatCompletion } from './provider/index.js';
+import { appendStructuredOutputLanguageRule } from './reply-language.js';
 
 const REFLECT_TIMEOUT_MS = 45000;
 
@@ -247,7 +248,14 @@ export async function buildReflectSkillDraft({
     apiKey: config?.gateway?.api_key,
     model: model || config?.model?.name,
     messages: [
-      { role: 'system', content: systemPrompt || 'You draft concise, reusable coding workflow skills.' },
+      {
+        role: 'system',
+        content: appendStructuredOutputLanguageRule(
+          systemPrompt || 'You draft concise, reusable coding workflow skills.',
+          config,
+          { fields: 'description, trigger_conditions, workflow, key_decisions, pitfalls, verification, and boundaries' }
+        )
+      },
       { role: 'user', content: prompt }
     ],
     tools: [reflectTool],

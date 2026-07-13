@@ -8,20 +8,12 @@ import {
 } from './memory-store.js';
 import { writeDreamAuditReport } from './dream-audit.js';
 import { evaluateInboxBatch, evaluateMemoryMaintenance } from './dream-evaluator.js';
+import { chooseMemoryLifecycle, normalizeMemoryScope } from './memory-policy.js';
 
-const LONGTERM_TYPES = new Set(['preference', 'pattern', 'win', 'decision']);
-const OPERATIONAL_TYPES = new Set(['correction', 'failure', 'gap', 'observation']);
 let dreamConsolidationRunning = false;
 
 function normalizeText(value) {
   return String(value || '').trim().toLowerCase();
-}
-
-function chooseLifecycle(type) {
-  const value = normalizeText(type);
-  if (LONGTERM_TYPES.has(value)) return 'longterm';
-  if (OPERATIONAL_TYPES.has(value)) return 'operational';
-  return 'operational';
 }
 
 function memoryContainsSummary(memory, summaryKey) {
@@ -33,8 +25,8 @@ function memoryContainsSummary(memory, summaryKey) {
 function maintenanceScopes(scopeFilter) {
   const scope = normalizeText(scopeFilter);
   if (!scope) return ['user', 'global', 'project'];
-  if (scope === 'repo') return ['project'];
-  if (['user', 'global', 'project'].includes(scope)) return [scope];
+  const normalized = normalizeMemoryScope(scope, { fallback: '' });
+  if (['user', 'global', 'project'].includes(normalized)) return [normalized];
   return ['user', 'global', 'project'];
 }
 
@@ -192,8 +184,8 @@ export async function runDreamConsolidation({
         continue;
       }
 
-      const promoteScope = evaluation.scope || 'global';
-      const lifecycle = chooseLifecycle(evaluation.kind);
+      const promoteScope = normalizeMemoryScope(evaluation.scope || 'global', { fallback: 'global' });
+      const lifecycle = chooseMemoryLifecycle(evaluation.kind);
       const enrichedEntry = {
         ...entry,
         /* 用 LLM 提炼后的内容覆盖原始报错 */

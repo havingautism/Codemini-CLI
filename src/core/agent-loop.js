@@ -255,8 +255,8 @@ async function captureToolFailure(toolName, message, args, config = {}) {
     ? `Tool: ${toolName}\nError: ${message}\nArgs: ${JSON.stringify(args).slice(0, 300)}`
     : `Tool: ${toolName}\nError: ${message}`;
   await captureToInbox({
-    scope: 'repo',
-    type: 'failure',
+    scope: 'project',
+    type: 'lesson',
     summary,
     details,
     source: 'auto-capture'

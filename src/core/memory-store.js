@@ -2,7 +2,13 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { sha256 } from './crypto-utils.js';
 import { getMemoryDir, getProjectMemoryDir, getInboxDir, getArchiveDir } from './paths.js';
-import { assertSafeMemoryContent, normalizeMemoryText, summarizeMemoryContent } from './memory-policy.js';
+import {
+  assertSafeMemoryContent,
+  normalizeMemoryKind,
+  normalizeMemoryScope,
+  normalizeMemoryText,
+  summarizeMemoryContent
+} from './memory-policy.js';
 
 const ALLOWED_SCOPES = new Set(['user', 'global', 'project']);
 
@@ -27,7 +33,7 @@ export function getProjectMemoryKey(workspaceRoot = process.cwd(), projectAlias 
 }
 
 function ensureScope(scope) {
-  const value = String(scope || '').trim().toLowerCase();
+  const value = normalizeMemoryScope(scope, { fallback: '' });
   if (!ALLOWED_SCOPES.has(value)) {
     throw new Error(`Unsupported memory scope: ${scope}`);
   }
@@ -136,7 +142,7 @@ function normalizeMemoryItem(item, scope, projectKey = '') {
     id: String(item?.id || `mem_${sha256(`${scope}:${projectKey}:${content}:${now}:${Math.random()}`).slice(0, 12)}`),
     scope,
     projectKey: projectKey || undefined,
-    kind: String(item?.kind || 'note').trim() || 'note',
+    kind: normalizeMemoryKind(item?.kind, 'note'),
     content,
     summary: normalizeMemoryText(item?.summary || summarizeMemoryContent(content)),
     source: String(item?.source || 'tool').trim() || 'tool',
@@ -253,7 +259,14 @@ export async function rememberMemory({
   const filePath = buildFilePath(normalizedScope, workspaceRoot, projectAlias);
   const projectKey = normalizedScope === 'project' ? getProjectMemoryKey(workspaceRoot, projectAlias) : '';
   const existing = await readScopeMemoryItems(normalizedScope, workspaceRoot, projectAlias);
-  const probe = normalizeMemoryItem({ content: normalizedContent, kind, summary, source, confidence, pinned }, normalizedScope, projectKey);
+  const probe = normalizeMemoryItem({
+    content: normalizedContent,
+    kind: normalizeMemoryKind(kind, 'note'),
+    summary,
+    source,
+    confidence,
+    pinned
+  }, normalizedScope, projectKey);
 
   const replaceIndex = replaceSimilar ? existing.findIndex((item) => sameMemory(item, probe)) : -1;
   let saved;
@@ -280,14 +293,30 @@ export async function rememberMemory({
     if (seen.has(key)) continue;
     seen.add(key);
     deduped.push(item);
-    if (deduped.length >= maxItems) break;
   }
-  let totalChars = deduped.reduce((sum, item) => sum + measureMemoryChars(item), 0);
-  while (deduped.length > 1 && totalChars > maxChars) {
-    const removed = deduped.pop();
+  // Prefer pinned items when capping; preserve relative order among survivors.
+  const ranked = deduped.map((item, index) => ({ item, index }));
+  const pinnedRanked = ranked.filter((entry) => entry.item.pinned);
+  const unpinnedRanked = ranked.filter((entry) => !entry.item.pinned);
+  const capped = [...pinnedRanked, ...unpinnedRanked]
+    .slice(0, maxItems)
+    .sort((left, right) => left.index - right.index)
+    .map((entry) => entry.item);
+
+  let totalChars = capped.reduce((sum, item) => sum + measureMemoryChars(item), 0);
+  while (capped.length > 1 && totalChars > maxChars) {
+    let removeIdx = capped.length - 1;
+    while (removeIdx >= 0 && capped[removeIdx].pinned) removeIdx -= 1;
+    if (removeIdx < 0) break;
+    const [removed] = capped.splice(removeIdx, 1);
     totalChars -= measureMemoryChars(removed);
   }
-  await writeMemoryBucket(filePath, deduped);
+  await writeMemoryBucket(filePath, capped);
+  if (!capped.some((item) => item.id === saved.id)) {
+    const error = new Error('Memory was not saved because pinned items occupy the configured capacity');
+    error.code = 'MEMORY_CAPACITY_PINNED';
+    throw error;
+  }
   return saved;
 }
 
@@ -319,19 +348,23 @@ export async function searchMemories({ scope, query, workspaceRoot = process.cwd
 // Dream Loop: inbox capture, lifecycle, archive, promotion
 // ---------------------------------------------------------------------------
 
-const VALID_LIFECYCLE = new Set(['observed', 'candidate', 'operational', 'longterm', 'archived']);
-const VALID_INBOX_SCOPES = new Set(['global', 'repo', 'thread', 'project', 'user']);
+const VALID_LIFECYCLE = new Set(['observed', 'operational', 'longterm', 'archived']);
 
 function validateLifecycle(value) {
   const lc = String(value || '').trim().toLowerCase();
+  // Legacy alias from older dream docs — treat as observed staging.
+  if (lc === 'candidate') return 'observed';
   if (!VALID_LIFECYCLE.has(lc)) throw new Error(`Invalid lifecycle state: ${value}`);
   return lc;
 }
 
 function normalizeInboxScope(value) {
-  const scope = String(value || 'global').trim().toLowerCase();
-  if (!VALID_INBOX_SCOPES.has(scope)) throw new Error(`Unsupported inbox scope: ${value}`);
-  return scope;
+  // Accept legacy repo/thread aliases; persist only user|global|project.
+  const raw = String(value || 'project').trim().toLowerCase();
+  if (raw && !['user', 'global', 'project', 'repo', 'thread'].includes(raw)) {
+    throw new Error(`Unsupported inbox scope: ${value}`);
+  }
+  return normalizeMemoryScope(raw || 'project', { fallback: 'project' });
 }
 
 function todayDir(baseDir) {
@@ -380,7 +413,7 @@ export async function captureToInbox({
     timestamp: now,
     scope: normalizeInboxScope(scope),
     source,
-    type: String(type || 'observation').trim().toLowerCase(),
+    type: normalizeMemoryKind(type, 'note'),
     summary: normalizedSummary,
     details: normalizedDetails,
     suggestedAction: normalizedSuggestedAction,
@@ -412,10 +445,13 @@ export async function listInbox({ since, scope } = {}) {
   for (const day of dayDirs) {
     const indexPath = path.join(inboxBase, day, 'index.json');
     const entries = await readJsonArray(indexPath);
-    all.push(...entries);
+    all.push(...entries.map((entry) => ({
+      ...entry,
+      scope: normalizeMemoryScope(entry?.scope, { fallback: 'project' })
+    })));
   }
   if (scope) {
-    const sc = String(scope).trim().toLowerCase();
+    const sc = normalizeMemoryScope(scope, { fallback: 'project' });
     return all.filter((e) => e.scope === sc);
   }
   return all;
@@ -502,8 +538,8 @@ export async function listArchive({ since, scope } = {}) {
     all.push(...entries);
   }
   if (scope) {
-    const sc = String(scope).trim().toLowerCase();
-    return all.filter((e) => e.scope === sc);
+    const sc = normalizeMemoryScope(scope, { fallback: 'project' });
+    return all.filter((e) => normalizeMemoryScope(e.scope, { fallback: 'project' }) === sc);
   }
   return all;
 }
@@ -521,9 +557,9 @@ export async function promoteMemory({
   const lc = validateLifecycle(lifecycle);
   const content = normalizeMemoryText(entry.details || entry.summary);
   const saved = await rememberMemory({
-    scope,
+    scope: normalizeMemoryScope(scope, { fallback: 'global' }),
     content,
-    kind: entry.type || 'note',
+    kind: normalizeMemoryKind(entry.type || entry.kind, 'note'),
     summary: normalizeMemoryText(entry.summary),
     source: `dream-promote:${entry.id}`,
     confidence: Math.min(1, Math.max(0.5, confidence)),
@@ -533,9 +569,10 @@ export async function promoteMemory({
     config
   });
   // Tag the saved item with lifecycle
-  const filePath = buildFilePath(scope, workspaceRoot, projectAlias);
-  const projectKey = scope === 'project' ? getProjectMemoryKey(workspaceRoot, projectAlias) : '';
-  const items = (await readMemoryBucket(filePath)).map((item) => normalizeMemoryItem(item, scope, projectKey));
+  const normalizedScope = normalizeMemoryScope(scope, { fallback: 'global' });
+  const filePath = buildFilePath(normalizedScope, workspaceRoot, projectAlias);
+  const projectKey = normalizedScope === 'project' ? getProjectMemoryKey(workspaceRoot, projectAlias) : '';
+  const items = (await readMemoryBucket(filePath)).map((item) => normalizeMemoryItem(item, normalizedScope, projectKey));
   const target = items.find((item) => item.id === saved.id);
   if (target) {
     target.lifecycle = lc;

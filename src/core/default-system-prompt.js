@@ -69,7 +69,7 @@ Tool: write({"path":${notesPath},"content":"todo\\n"})
 For a large or multi-file code patch, use apply_patch with one escaped patch_text string:
 Tool: apply_patch({"patch_text":"*** Begin Patch\\n*** Update File: ${path.join('src', 'auth', 'service.ts').replace(/\\/g, '/')}\\n@@\\n-export const enabled = false;\\n+export const enabled = true;\\n*** End Patch"})
 
-Use update_todos for genuinely multi-step work. Save only durable, high-signal preferences or lessons to memory, with user/project/global scope as appropriate. Load web_fetch or web_search through tool_search when current external information is needed.
+Use update_todos for genuinely multi-step work. When the user asks you to remember lasting preferences/interests, call save_memory(scope="user", kind="preference"); for project rules use scope="project" kind="convention"; for reusable learnings use kind="lesson". Do not duplicate an equivalent fact already in Persistent Memory. Load web_fetch or web_search through tool_search when current external information is needed.
 
 Prefer these direct tool shapes over multi-step metadata reads or shell fallbacks.
 Prefer explicit absolute path values when the current working directory is known.`;

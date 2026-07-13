@@ -49,9 +49,10 @@ import {
   listMemories,
   rememberMemory,
   searchMemories,
-  captureToInbox,
 } from "./memory-store.js";
 import { runDreamConsolidation } from "./dream-consolidate.js";
+import { inferMemoryScope, normalizeMemoryKind } from "./memory-policy.js";
+import { getReplyLanguageName } from "./reply-language.js";
 import { normalizePlanState } from "./plan-state.js";
 import { normalizeTodos } from "./todo-state.js";
 import { normalizeAssumptionItems } from "./tool-args-helpers.js";
@@ -3641,6 +3642,7 @@ export function getBuiltinTools({
   backupManager,
 }) {
   workspaceRoot = path.resolve(workspaceRoot);
+  const replyLanguageName = getReplyLanguageName(config);
   const fileObservations = providedFileObservations instanceof Map
     ? providedFileObservations
     : config?.runtime?.fileObservations instanceof Map
@@ -4810,28 +4812,28 @@ export function getBuiltinTools({
       function: {
         name: "save_memory",
         description:
-          "Save a durable observation or knowledge to persistent memory. Use this when you notice a reusable pattern, a user correction, a stable preference, a project convention, or a workflow insight. Do NOT use for casual chatter, trivial typos, one-off noise, or secrets. The memory is saved immediately and available in future sessions.",
+          `Save a durable fact for future sessions. Use for lasting user preferences/interests, project conventions, or reusable lessons. Do NOT store chatter, one-offs, or secrets. Available immediately after save. Write content and summary in ${replyLanguageName}; keep paths, commands, and identifiers exact.`,
         parameters: {
           type: "object",
           properties: {
             content: {
               type: "string",
-              description: "The knowledge or observation to remember",
+              description: `The knowledge or observation to remember, written in ${replyLanguageName}`,
             },
             summary: {
               type: "string",
               description:
-                "Short summary for the memory index (under 80 chars)",
+                `Short summary for the memory index (under 80 chars), written in ${replyLanguageName}`,
             },
             scope: {
               type: "string",
               description:
-                'Where to store this memory. "user" = personal preferences (language, style, interaction habits). "global" = cross-project knowledge useful in ANY repository (environment quirks, general workflows, tool tips). "project" = specific to THIS repository only (architecture conventions, local config, test commands, file locations). Default: "global".',
+                'Where to store this memory. "user" = personal preferences/interests/habits. "project" = this repository only. "global" = cross-project environment/tool knowledge. If omitted: preference → user, otherwise → project.',
             },
             kind: {
               type: "string",
               description:
-                "Memory kind: preference, pattern, correction, observation, decision, failure, win, gap, convention. Default: observation",
+                'One of four kinds: "preference" (user tastes/interests/habits), "convention" (workflows/rules), "lesson" (corrections/learnings), "note" (other durable facts). Default: note.',
             },
             replace_similar: {
               type: "boolean",
@@ -4892,13 +4894,13 @@ export function getBuiltinTools({
       function: {
         name: "dream_consolidate",
         description:
-          "Run a dream loop pass over inbox entries and existing memory buckets. Reads recent inbox items, deduplicates, evaluates lifecycle progression (observed → candidate → operational/longterm), promotes stable patterns into persistent memory, then uses LLM maintenance to merge/summarize/clean stale user/global/project memories when their bucket changed since the last maintenance marker. Writes an audit report. Use during off-hours or explicit maintenance.",
+          "Run a dream loop over inbox entries and memory buckets. Deduplicates inbox items, promotes durable insights into user/global/project memory (preference|convention|lesson|note), then LLM-maintains changed buckets. Writes an audit report. Use during off-hours or explicit maintenance.",
         parameters: {
           type: "object",
           properties: {
             scope: {
               type: "string",
-              description: "Optional scope filter: global, repo, or thread",
+              description: "Optional filter: user, global, or project (repo/thread aliases map to project)",
             },
             dry_run: {
               type: "boolean",
@@ -5946,17 +5948,12 @@ export function getBuiltinTools({
       },
     }),
     save_memory: async (args = {}) => {
-      const rawScope = String(args.scope || "global").toLowerCase();
-      const memoryScope =
-        rawScope === "repo" || rawScope === "project"
-          ? "project"
-          : rawScope === "user"
-            ? "user"
-            : "global";
+      const kind = normalizeMemoryKind(args.kind, "note");
+      const memoryScope = inferMemoryScope({ scope: args.scope, kind });
       const saved = await rememberMemory({
         scope: memoryScope,
         content: args.content,
-        kind: args.kind || "observation",
+        kind,
         summary: args.summary || String(args.content || "").slice(0, 80),
         source: "tool",
         replaceSimilar: args.replace_similar !== false,
@@ -6540,26 +6537,8 @@ export function getBuiltinTools({
       return parts.join("\n");
     },
 
-    remember_user(result) {
-      return result?.memory?.content
-        ? `stored user memory: ${result.memory.content}`
-        : JSON.stringify(result);
-    },
-
-    remember_global(result) {
-      return result?.memory?.content
-        ? `stored global memory: ${result.memory.content}`
-        : JSON.stringify(result);
-    },
-
-    remember_project(result) {
-      return result?.memory?.content
-        ? `stored project memory: ${result.memory.content}`
-        : JSON.stringify(result);
-    },
-
     save_memory(result) {
-      const scope = result?.scope || "global";
+      const scope = result?.scope || "project";
       return result?.memory?.content
         ? `stored ${scope} memory: ${result.memory.content}`
         : JSON.stringify(result);

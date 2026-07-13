@@ -2,20 +2,12 @@ import { listMemories } from './memory-store.js';
 
 function renderScope(title, items = []) {
   if (!Array.isArray(items) || items.length === 0) return '';
-  const lines = items.map((item) =>
-    [
-      `- [${item.kind}] summary=${JSON.stringify(String(item.summary || item.content || ''))}`,
-      `  exact_text=${JSON.stringify(String(item.content || ''))}`
-    ].join('\n')
-  );
-  return `${title}\n${lines.join('\n')}`;
-}
-
-function renderLifecycleGroup(title, items = []) {
-  if (!Array.isArray(items) || items.length === 0) return '';
   const lines = items.map((item) => {
-    const prefix = item.lifecycle ? `[${item.lifecycle}]` : '';
-    return `- ${prefix} ${JSON.stringify(String(item.summary || item.content || ''))}`;
+    const lifecycle = item.lifecycle ? ` lifecycle=${item.lifecycle}` : '';
+    return [
+      `- [${item.kind}]${lifecycle} summary=${JSON.stringify(String(item.summary || item.content || ''))}`,
+      `  exact_text=${JSON.stringify(String(item.content || ''))}`
+    ].join('\n');
   });
   return `${title}\n${lines.join('\n')}`;
 }
@@ -34,24 +26,11 @@ export async function buildMemorySnapshot({
 
   const maxItems = Math.max(1, Number(config?.memory?.max_items_per_scope || 12));
 
-  // Separate lifecycle-tagged items for projections
-  const allItems = [...user, ...globalItems, ...project];
-  const operational = allItems.filter((item) => item.lifecycle === 'operational');
-  const longterm = allItems.filter((item) => item.lifecycle === 'longterm');
-
   const sections = [
-    renderScope('User Memory:', user.slice(0, maxItems)),
-    renderScope('Global Memory:', globalItems.slice(0, maxItems)),
-    renderScope('Project Memory:', project.slice(0, maxItems))
+    renderScope('User Memory (preferences / interests / habits):', user.slice(0, maxItems)),
+    renderScope('Global Memory (cross-project tools / environment):', globalItems.slice(0, maxItems)),
+    renderScope('Project Memory (this repository only):', project.slice(0, maxItems))
   ].filter(Boolean);
-
-  // Add lifecycle projection sections
-  if (operational.length > 0) {
-    sections.push(renderLifecycleGroup('Active Guidance (Operational — temporary but important for current phase):', operational));
-  }
-  if (longterm.length > 0) {
-    sections.push(renderLifecycleGroup('Stable Learnings (LongTerm — proven patterns across tasks):', longterm));
-  }
 
   if (sections.length === 0) return '';
 
@@ -59,6 +38,7 @@ export async function buildMemorySnapshot({
     'Persistent Memory:',
     'Use these durable notes only as stable guidance. Prefer fresh reads when code or files can verify the answer.',
     'When recalling memory, preserve command names, file paths, identifiers, and punctuation exactly. Do not rewrite exact_text values.',
+    'Actively notice lasting user preferences and interests; save them with save_memory(scope="user", kind="preference"). Write new memory content/summary in the active reply language from the system prompt.',
     ...sections
   ].join('\n\n');
 

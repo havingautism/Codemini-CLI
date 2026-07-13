@@ -81,7 +81,7 @@ function DialogHeader({
       data-slot="dialog-header"
       className={cn("flex flex-row items-start justify-between gap-4 text-left", className)}
       {...props}>
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 flex flex-col gap-2.5">
         {children}
       </div>
       {showCloseButton && (

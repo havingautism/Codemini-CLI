@@ -989,6 +989,7 @@ export function SkillPanel({ projectDirs = [] }) {
   const [pendingBatchPackage, setPendingBatchPackage] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [applyingPackageKey, setApplyingPackageKey] = useState("");
+  const [actionError, setActionError] = useState("");
   const projectKey = projectDirsKey(projectDirs);
   const requestProjectDirs = useMemo(
     () => (projectKey ? projectKey.split("\n") : []),
@@ -1062,6 +1063,7 @@ export function SkillPanel({ projectDirs = [] }) {
     if (items.length === 0) return;
     const deletedKeys = new Set(items.map((skill) => skillKey(skill)));
     setDeleting(true);
+    setActionError("");
     try {
       for (const skill of items) {
         await api.deleteSkill(skill.name, skill.projectDir, requestProjectDirs);
@@ -1072,7 +1074,7 @@ export function SkillPanel({ projectDirs = [] }) {
       }
       await loadSkills();
     } catch (err) {
-      window.alert(err.message || t("deleteFailed"));
+      setActionError(err.message || t("deleteFailed"));
     } finally {
       setDeleting(false);
     }
@@ -1117,6 +1119,7 @@ export function SkillPanel({ projectDirs = [] }) {
   const confirmUpdatePackage = async () => {
     if (!pendingUpdate || updating) return;
     setUpdating(true);
+    setActionError("");
     try {
       const result = await api.updateSkillPackage({
         name: pendingUpdate.name,
@@ -1128,7 +1131,7 @@ export function SkillPanel({ projectDirs = [] }) {
       setPendingUpdate(null);
       await loadSkills();
     } catch (err) {
-      window.alert(err.message || t("updateSkillPackageFailed"));
+      setActionError(err.message || t("updateSkillPackageFailed"));
     } finally {
       setUpdating(false);
     }
@@ -1137,6 +1140,7 @@ export function SkillPanel({ projectDirs = [] }) {
   const handleApplyPackage = async (packageGroup, patch = {}) => {
     if (!packageGroup?.items?.length || applyingPackageKey) return;
     setApplyingPackageKey(packageGroup.key);
+    setActionError("");
     try {
       for (const skill of packageGroup.items) {
         const metadata = {
@@ -1149,7 +1153,7 @@ export function SkillPanel({ projectDirs = [] }) {
       setPendingBatchPackage(null);
       await loadSkills();
     } catch (err) {
-      window.alert(err.message || t("skillPackageApplyFailed"));
+      setActionError(err.message || t("skillPackageApplyFailed"));
     } finally {
       setApplyingPackageKey("");
     }
@@ -1439,6 +1443,12 @@ export function SkillPanel({ projectDirs = [] }) {
               className="w-full shrink-0 [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
             />
           </div>
+
+          {actionError ? (
+            <div className="rounded-md border border-(--accent-red) bg-(--accent-red-bg) px-3 py-2 text-[12px] text-(--accent-red)">
+              {actionError}
+            </div>
+          ) : null}
 
           <div className="min-h-[220px] flex-1 overflow-y-auto scroll-smooth pr-2 [scrollbar-gutter:stable]">
             {renderSkillList()}

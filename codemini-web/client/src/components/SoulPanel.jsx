@@ -24,6 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { cn } from "@/lib/utils";
 import * as api from "@/hooks/use-api";
 import { useApp } from "@/context/app-context.jsx";
@@ -386,11 +387,7 @@ function SoulChoiceCard({
             className="text-(--accent-red) hover:bg-(--accent-red-bg) hover:text-(--accent-red)"
             onClick={() => {
               if (disabled) return;
-              if (
-                confirm(t("confirmDeleteSoul").replace("{{name}}", soul.name))
-              ) {
-                onDelete(soul.name);
-              }
+              onDelete(soul);
             }}
             aria-label={t("delete")}
             title={t("delete")}
@@ -411,6 +408,9 @@ export function SoulPanel({ disabled = false }) {
   const [selectedSoul, setSelectedSoul] = useState(null);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   const loadSouls = useCallback(async () => {
     setLoading(true);
@@ -469,11 +469,26 @@ export function SoulPanel({ disabled = false }) {
     actions.notifySoulsChanged();
   };
 
-  const handleDelete = async (name) => {
-    if (disabled) return;
-    await api.deleteSoul(name);
-    await loadSouls();
-    actions.notifySoulsChanged();
+  const handleDelete = (soul) => {
+    if (disabled || !soul?.name) return;
+    setDeleteError("");
+    setPendingDelete(soul);
+  };
+
+  const confirmDelete = async () => {
+    if (disabled || !pendingDelete?.name || deleting) return;
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await api.deleteSoul(pendingDelete.name);
+      setPendingDelete(null);
+      await loadSouls();
+      actions.notifySoulsChanged();
+    } catch (err) {
+      setDeleteError(err.message || t("deleteSoulFailed"));
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const handleSave = () => {
@@ -549,6 +564,12 @@ export function SoulPanel({ disabled = false }) {
             />
           </div>
 
+          {deleteError && (
+            <div className="rounded-md border border-(--accent-red) bg-(--accent-red-bg) px-3 py-2 text-[12px] text-(--accent-red)">
+              {deleteError}
+            </div>
+          )}
+
           <div className="min-h-[220px] flex-1 overflow-y-auto scroll-smooth pr-2 [scrollbar-gutter:stable]">
             {souls.length === 0 && !editing && (
               <Empty className="rounded-lg py-8">
@@ -611,6 +632,23 @@ export function SoulPanel({ disabled = false }) {
         onOpenChange={(open) => {
           if (!open) setEditing(null);
         }}
+      />
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title={t("deleteSoulConfirm")}
+        description={
+          pendingDelete
+            ? t("deleteSoulDescription").replace(
+                "{{name}}",
+                pendingDelete.name || "",
+              )
+            : ""
+        }
+        loading={deleting}
+        onOpenChange={(next) => {
+          if (!next && !deleting) setPendingDelete(null);
+        }}
+        onConfirm={confirmDelete}
       />
     </>
   );
