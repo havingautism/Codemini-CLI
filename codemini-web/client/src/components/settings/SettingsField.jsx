@@ -10,7 +10,6 @@ import {
   FieldDescription,
   FieldLabel,
 } from "@/components/ui/field";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 export function SettingsField({
@@ -42,15 +41,13 @@ export function SettingsField({
           {help && (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Button
+                <button
                   type="button"
-                  variant="close"
-                  size="icon-xs"
-                  className="shadow-none"
+                  className="inline-flex size-4 shrink-0 cursor-pointer items-center justify-center text-(--text-muted) transition-colors hover:text-(--text-secondary)"
                   aria-label={help}
                 >
-                  <Question size={13} />
-                </Button>
+                  <Question size={14} weight="regular" />
+                </button>
               </TooltipTrigger>
               <TooltipContent
                 side="right"
