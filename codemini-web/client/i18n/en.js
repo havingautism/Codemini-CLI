@@ -271,6 +271,8 @@ export const en = {
   activeProjectsEmpty: "Use Open Project to add projects to the active area",
   showMoreSessions: "Show more",
   sessionActions: "Session Actions",
+  regenerateSessionTitle: "Regenerate title",
+  generatingSessionTitle: "Generating session title",
   deleteSession: "Delete",
   noSessions: "No conversations yet",
   about: "About",

@@ -420,14 +420,19 @@ export async function createChatCompletion({
   toolChoice,
   reasoningEffort,
   timeoutMs = 1800000,
-  maxTokens = 4096
+  maxTokens = 4096,
+  signal: externalSignal
 }) {
   const payload = buildPayload({ model, temperature, messages, tools, maxTokens, toolChoice, reasoningEffort });
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const signal = externalSignal
+    ? AbortSignal.any([timeoutSignal, externalSignal])
+    : timeoutSignal;
   const response = await fetch(buildMessagesUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(timeoutMs)
+    signal
   });
   const data = await parseJsonResponse(response);
   return extractAssistantResult(data, messages);

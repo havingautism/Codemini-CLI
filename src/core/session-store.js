@@ -4,6 +4,7 @@ import { getSessionsDir } from './paths.js';
 import { normalizePlanState } from './plan-state.js';
 import { normalizeSpecState } from './spec-state.js';
 import { normalizeTodos } from './todo-state.js';
+import { ensureSessionTitleEmoji } from './session-title.js';
 
 const ALLOWED_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
 const SESSION_LEGACY_EXT = '.json';
@@ -111,6 +112,16 @@ function stripMarkdown(value) {
     .trim();
 }
 
+function formatSkillOnlyTitle(skillTitles = [], skillNames = []) {
+  const labels = (skillTitles.length ? skillTitles : skillNames)
+    .map((value) => normalizeWhitespace(value))
+    .filter(Boolean);
+  if (!labels.length) return '';
+  const hasCjk = labels.some((label) => /[\u3400-\u9fff]/u.test(label));
+  if (hasCjk) return `使用「${labels.join('、')}」技能`;
+  return `Use ${labels.join(' + ')} ${labels.length > 1 ? 'skills' : 'skill'}`;
+}
+
 export function resolveTitleUserText(source = {}) {
   const message = source?.role ? source : null;
   const content = String(message?.content ?? source?.content ?? source?.text ?? '').trim();
@@ -122,6 +133,11 @@ export function resolveTitleUserText(source = {}) {
     ?.split(',')
     .map((name) => name.trim())
     .filter(Boolean) || [];
+  const skillPromptTitles = modelContent
+    ? [...modelContent.matchAll(/^#\s+(.+)$/gm)]
+        .map((match) => normalizeWhitespace(match[1]))
+        .filter(Boolean)
+    : [];
 
   if (modelContent) {
     if (/^\[Explicit skill composition\]\n\n/.test(modelContent)) {
@@ -134,7 +150,8 @@ export function resolveTitleUserText(source = {}) {
         .map((match) => match[1])
         .filter(Boolean);
       const names = composedSkillNames.length ? composedSkillNames : transportSkillNames;
-      if (names.length) return names.join(' + ');
+      const skillOnlyTitle = formatSkillOnlyTitle([...new Set(skillPromptTitles)], names);
+      if (skillOnlyTitle) return skillOnlyTitle;
     }
 
     const isSkillPrompt = /^\[Executing skill: \/[^\]\s]+\]\n\n/.test(modelContent);
@@ -143,12 +160,14 @@ export function resolveTitleUserText(source = {}) {
       if (currentQuestion?.[1]?.trim()) return currentQuestion[1].trim();
       const userTask = modelContent.match(/(?:^|\n)\[User task\]\n([\s\S]+?)(?:\n\n\[|$)/);
       if (userTask?.[1]?.trim()) return userTask[1].trim();
+      const skillOnlyTitle = formatSkillOnlyTitle([...new Set(skillPromptTitles)], transportSkillNames);
+      if (skillOnlyTitle) return skillOnlyTitle;
     }
   }
 
   const slashMatch = content.match(/^\/([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\s+([\s\S]+))?$/);
   if (slashMatch?.[2]?.trim()) return slashMatch[2].trim();
-  if (transportSkillNames.length) return transportSkillNames.join(' + ');
+  if (transportSkillNames.length) return formatSkillOnlyTitle([], transportSkillNames);
 
   return content;
 }
@@ -158,8 +177,28 @@ export function deriveSessionTitle(messages = []) {
     ? messages.find((msg) => msg?.role === 'user' && normalizeWhitespace(msg?.content))
     : null;
   const text = stripMarkdown(resolveTitleUserText(firstUser || {}));
-  if (!text) return DEFAULT_SESSION_TITLE;
-  return text.length > 48 ? `${text.slice(0, 45).trimEnd()}...` : text;
+  if (!text) return `💬 ${DEFAULT_SESSION_TITLE}`;
+  const title = text.length > 48 ? `${text.slice(0, 45).trimEnd()}...` : text;
+  return ensureSessionTitleEmoji(title);
+}
+
+export function resolveLatestTitleExchange(messages = []) {
+  const list = Array.isArray(messages) ? messages : [];
+  for (let assistantIndex = list.length - 1; assistantIndex >= 0; assistantIndex--) {
+    const assistant = list[assistantIndex];
+    if (assistant?.role !== 'assistant') continue;
+    const assistantText = Array.isArray(assistant.content)
+      ? assistant.content.map((part) => part?.text || '').join('')
+      : String(assistant.content || '');
+    if (!assistantText.trim()) continue;
+    for (let userIndex = assistantIndex - 1; userIndex >= 0; userIndex--) {
+      const user = list[userIndex];
+      if (user?.role !== 'user') continue;
+      const userText = resolveTitleUserText(user);
+      if (userText) return { userText, assistantText: assistantText.trim() };
+    }
+  }
+  return null;
 }
 
 function sanitizeMessage(msg) {
@@ -598,11 +637,11 @@ export async function loadSession(sessionId) {
 
 const JSONL_COMPACT_THRESHOLD = 5 * 1024 * 1024; // 5 MB
 
-export async function saveSession(session) {
+export async function saveSession(session, { preserveUpdatedAt = '' } = {}) {
   const dir = getSessionsDir();
   await fs.mkdir(dir, { recursive: true });
   const normalized = sanitizeSession(session);
-  normalized.updatedAt = new Date().toISOString();
+  normalized.updatedAt = String(preserveUpdatedAt || '').trim() || new Date().toISOString();
   const filePath = sessionPathById(normalized.id, SESSION_JSONL_EXT);
   await fs.appendFile(filePath, `${JSON.stringify(normalized)}\n`, 'utf8');
   await upsertSessionIndexEntry(normalized, filePath);

@@ -37,6 +37,8 @@ import {
   activeSessionIds,
   abortSessionIds,
   buildConversationStartSidebarEntry,
+  mergeFetchedSessions,
+  patchSidebarSession,
   projectSessionRuntime,
   upsertSidebarSession,
 } from "../lib/session-ui-state.js";
@@ -1319,17 +1321,28 @@ export function AppProvider({ children }) {
       const isAlive = options?.isAlive || (() => true);
       if (force) sessionsLoadPromiseRef.current = null;
       if (sessionsLoadPromiseRef.current) return sessionsLoadPromiseRef.current;
+      const requestStartedAt = Date.now();
+      const sessionIdsAtRequestStart = new Set(
+        (stateRef.current.sessions || []).map((session) => session?.id).filter(Boolean),
+      );
       if (isAlive()) update({ sessionsLoading: true });
       const promise = (async () => {
         try {
           const sessions = await api.fetchSessions(200);
           if (!isAlive()) return;
           const list = Array.isArray(sessions) ? sessions : [];
-          update({ sessions: list });
+          setState((prev) => ({
+            ...prev,
+            sessions: mergeFetchedSessions(prev.sessions, list, {
+              sessionIdsAtRequestStart,
+              requestStartedAt,
+            }),
+            sessionsLoading: false,
+          }));
           loadGitBatch(list, { isAlive });
         } catch {
-        } finally {
           if (isAlive()) update({ sessionsLoading: false });
+        } finally {
           sessionsLoadPromiseRef.current = null;
         }
       })();
@@ -2578,30 +2591,59 @@ export function AppProvider({ children }) {
           break;
         }
 
+        case "session:title_status": {
+          if (event.sessionId) {
+            setState((prev) => ({
+              ...prev,
+              sessions: prev.sessions.map((session) =>
+                session.id === event.sessionId
+                  ? { ...session, titleGenerating: Boolean(event.generating) }
+                  : session,
+              ),
+            }));
+          }
+          break;
+        }
+
         case "session:title": {
           if (event.sessionId && event.title) {
             setState((prev) => {
               const rs = prev.runtimeState || {};
-              const isGeneral = Boolean(rs.isGeneral);
-              const projectDir = isGeneral ? null : rs.cwd || rs.projectDir || null;
+              const existing = prev.sessions.find((session) => session.id === event.sessionId);
+              const eventIsCurrentSession = rs.sessionId === event.sessionId;
+              const isGeneral =
+                typeof existing?.isGeneral === "boolean"
+                  ? existing.isGeneral
+                  : eventIsCurrentSession
+                    ? Boolean(rs.isGeneral)
+                    : undefined;
+              const projectDir = isGeneral
+                ? null
+                : existing?.projectDir ||
+                  (eventIsCurrentSession ? rs.cwd || rs.projectDir : null) ||
+                  null;
               const projectKey = projectDir
-                ? normalizeProjectDirKey(projectDir) || projectDir
+                ? existing?.projectKey || normalizeProjectDirKey(projectDir) || projectDir
                 : null;
+              const entry = {
+                id: event.sessionId,
+                title: event.title,
+                titleGenerating: false,
+                ...(!event.preserveUpdatedAt
+                  ? { updatedAt: new Date().toISOString() }
+                  : {}),
+                messageCount: Math.max(
+                  1,
+                  Number(existing?.messageCount || 0),
+                ),
+                ...(typeof isGeneral === "boolean" ? { isGeneral } : {}),
+                ...(projectDir ? { projectDir, projectKey } : {}),
+              };
               return {
                 ...prev,
-                sessions: upsertSidebarSession(prev.sessions, {
-                  id: event.sessionId,
-                  title: event.title,
-                  messageCount: Math.max(
-                    1,
-                    Number(
-                      prev.sessions.find((s) => s.id === event.sessionId)
-                        ?.messageCount || 0,
-                    ),
-                  ),
-                  isGeneral,
-                  ...(projectDir ? { projectDir, projectKey } : {}),
-                }),
+                sessions: event.preserveUpdatedAt
+                  ? patchSidebarSession(prev.sessions, entry)
+                  : upsertSidebarSession(prev.sessions, entry),
               };
             });
           }
@@ -3490,6 +3532,40 @@ export function AppProvider({ children }) {
           return result;
         } catch (err) {
           return { error: true, message: err.message };
+        }
+      },
+
+      regenerateSessionTitle: async (sessionId) => {
+        setState((prev) => ({
+          ...prev,
+          sessions: prev.sessions.map((session) =>
+            session.id === sessionId
+              ? { ...session, titleGenerating: true }
+              : session,
+          ),
+        }));
+        try {
+          const result = await api.regenerateSessionTitle(sessionId);
+          if (result?.error || !result?.title) return result;
+          setState((prev) => ({
+            ...prev,
+            sessions: patchSidebarSession(prev.sessions, {
+              id: sessionId,
+              title: result.title,
+            }),
+          }));
+          return result;
+        } catch (err) {
+          return { error: true, message: err.message };
+        } finally {
+          setState((prev) => ({
+            ...prev,
+            sessions: prev.sessions.map((session) =>
+              session.id === sessionId
+                ? { ...session, titleGenerating: false }
+                : session,
+            ),
+          }));
         }
       },
 

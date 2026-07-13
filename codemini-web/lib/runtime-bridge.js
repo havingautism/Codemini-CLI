@@ -257,8 +257,16 @@ export class RuntimeBridge {
     this.#onLifecycle = onLifecycle;
     this.#installApprovalHandler();
     this.#uiTranscriptSessionId = this.getSessionId();
-    runtime.setOnTitleUpdate?.((sessionId, title) => {
-      this.#publish({ type: 'session:title', sessionId, title });
+    runtime.setOnTitleUpdate?.((sessionId, title, metadata = {}) => {
+      this.#publish({
+        type: 'session:title',
+        sessionId,
+        title,
+        preserveUpdatedAt: Boolean(metadata.preserveUpdatedAt)
+      });
+    });
+    runtime.setOnTitleStatus?.((sessionId, generating) => {
+      this.#publish({ type: 'session:title_status', sessionId, generating });
     });
   }
 
@@ -280,7 +288,13 @@ export class RuntimeBridge {
   }
 
   #publish(event) {
-    const tagged = { ...event, sessionId: this.#sessionId };
+    const incomingSessionId = String(event?.sessionId || '').trim();
+    const tagged = {
+      ...event,
+      // Keep explicit session ids (e.g. async session:title) so pooled
+      // runtimes cannot rewrite another session's event onto this bridge.
+      sessionId: incomingSessionId || this.#sessionId
+    };
     this.#onEvent?.(tagged);
     this.#broadcast(tagged);
     if (event?.type === 'approval:request') {
@@ -1319,6 +1333,14 @@ export class RuntimeBridge {
           at: m.at || null
         };
       });
+  }
+
+  async regenerateSessionTitle() {
+    if (this.#busy) return { error: true, message: 'Session is active' };
+    return this.#runtime.regenerateSessionTitle?.() || {
+      error: true,
+      message: 'Title regeneration is unavailable'
+    };
   }
 
   getSessionCompactMeta() {

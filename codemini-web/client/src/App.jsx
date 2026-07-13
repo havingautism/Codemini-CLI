@@ -245,6 +245,7 @@ function Shell() {
         }}
         onOpenProjectSelector={openProjectSelector}
         onRefreshSessions={actions.loadSessions}
+        onRegenerateSessionTitle={actions.regenerateSessionTitle}
         onDeleteSession={actions.deleteSession}
       />
   );

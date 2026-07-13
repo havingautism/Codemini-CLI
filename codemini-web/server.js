@@ -1044,6 +1044,16 @@ export function createWebRuntimeApi({
       return true;
     }
 
+    const regenerateTitleMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/title\/regenerate$/);
+    if (req.method === 'POST' && regenerateTitleMatch) {
+      const sessionId = decodeURIComponent(regenerateTitleMatch[1]);
+      const bridge = await loadBridge(res, sessionId);
+      if (!bridge) return true;
+      const result = await bridge.regenerateSessionTitle();
+      jsonResponse(res, result, result?.error ? 400 : 200);
+      return true;
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/sessions/switch') {
       const body = await readBody(req);
       const bridge = await loadBridge(res, body?.sessionId);
@@ -1080,10 +1090,16 @@ export function createWebRuntimeApi({
         jsonResponse(res, { error: true, message: 'Session is active' }, 409);
         return true;
       }
-      const result = await deleteStoredSession(sessionId);
       const entry = pool.entries.get(sessionId);
-      await entry?.bridge?.dispose?.();
-      pool.entries.delete(sessionId);
+      try {
+        await entry?.bridge?.dispose?.();
+      } catch {}
+      let result;
+      try {
+        result = await deleteStoredSession(sessionId);
+      } finally {
+        pool.entries.delete(sessionId);
+      }
       await runtimeStatusStore?.remove?.(sessionId);
       jsonResponse(res, { ok: true, ...result });
       return true;

@@ -267,6 +267,8 @@ export const zh = {
   activeProjectsEmpty: "通过「打开项目」将项目加入活跃区",
   showMoreSessions: "展开显示",
   sessionActions: "会话操作",
+  regenerateSessionTitle: "重新生成标题",
+  generatingSessionTitle: "正在生成会话标题",
   deleteSession: "删除",
   noSessions: "暂无对话",
   about: "关于",

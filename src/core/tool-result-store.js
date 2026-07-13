@@ -8,21 +8,6 @@ const TOOL_RESULT_DISK_THRESHOLD = 6000;
 const PREVIEW_SIZE_BYTES = 2000;
 const TOOL_RESULTS_SUBDIR = 'tool-results';
 
-let currentResultDir = null;
-let resultDirReady = false;
-
-const storedResults = new BoundedCache({
-  maxSize: 64,
-  ttlMs: 30 * 60 * 1000,
-  onEvict(_key, value) {
-    if (value?.filePath) {
-      fs.unlink(value.filePath).catch(() => {});
-    }
-  }
-});
-
-const readCache = new BoundedCache({ maxSize: 128, ttlMs: 10 * 60 * 1000 });
-
 function generatePreview(content) {
   if (content.length <= PREVIEW_SIZE_BYTES) {
     return { preview: content, hasMore: false };
@@ -38,40 +23,40 @@ function formatFileSize(chars) {
   return `${(chars / 1024).toFixed(1)} KB`;
 }
 
-export function setResultDir(dir) {
-  currentResultDir = dir ? path.join(dir, TOOL_RESULTS_SUBDIR) : null;
-  resultDirReady = false;
-}
-
-async function ensureResultDir() {
-  if (!currentResultDir) return false;
-  if (!resultDirReady) {
-    await fs.mkdir(currentResultDir, { recursive: true });
-    resultDirReady = true;
-  }
-  return true;
-}
-
-export async function storeResultIfNeeded(callId, formattedContent, rawResult) {
-  if (formattedContent.length <= TOOL_RESULT_DISK_THRESHOLD) {
-    return formattedContent;
-  }
-  try {
-    const ready = await ensureResultDir();
-    const dir = ready ? currentResultDir : path.join(os.tmpdir(), 'codemini-results');
-    if (!resultDirReady && dir === currentResultDir) {
-      await fs.mkdir(dir, { recursive: true });
-    } else if (!resultDirReady) {
-      await fs.mkdir(dir, { recursive: true });
+export function createToolResultStore({ resultDir } = {}) {
+  const fallbackId = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const targetDir = resultDir
+    ? path.join(resultDir, TOOL_RESULTS_SUBDIR)
+    : path.join(os.tmpdir(), 'codemini-results', fallbackId);
+  let resultDirReady = false;
+  const storedResults = new BoundedCache({
+    maxSize: 64,
+    ttlMs: 30 * 60 * 1000,
+    onEvict(_key, value) {
+      if (value?.filePath) fs.unlink(value.filePath).catch(() => {});
     }
-    const filePath = path.join(dir, `${callId}.txt`);
-    const payload = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult, null, 2);
-    await fs.writeFile(filePath, payload, 'utf-8');
-    const summary = summarizeToolResult(rawResult);
-    const { preview, hasMore } = generatePreview(payload);
-    storedResults.set(callId, { filePath, summary });
+  });
+  const readCache = new BoundedCache({ maxSize: 128, ttlMs: 10 * 60 * 1000 });
 
-    return `<persisted-output>
+  async function ensureResultDir() {
+    if (!resultDirReady) {
+      await fs.mkdir(targetDir, { recursive: true });
+      resultDirReady = true;
+    }
+  }
+
+  async function storeResultIfNeeded(callId, formattedContent, rawResult) {
+    if (formattedContent.length <= TOOL_RESULT_DISK_THRESHOLD) return formattedContent;
+    try {
+      await ensureResultDir();
+      const filePath = path.join(targetDir, `${callId}.txt`);
+      const payload = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult, null, 2);
+      await fs.writeFile(filePath, payload, 'utf-8');
+      const summary = summarizeToolResult(rawResult);
+      const { preview, hasMore } = generatePreview(payload);
+      storedResults.set(callId, { filePath, summary });
+
+      return `<persisted-output>
 Output too large (${formatFileSize(payload.length)}). Full output saved to: ${filePath}
 
 Preview (first ${formatFileSize(PREVIEW_SIZE_BYTES)}):
@@ -79,28 +64,27 @@ ${preview}${hasMore ? '\n...' : ''}
 
 Summary: ${summary}
 </persisted-output>`;
-  } catch {
-    return formattedContent;
+    } catch {
+      return formattedContent;
+    }
   }
-}
 
-export function clearResultStore() {
-  const files = [];
-  for (const [, val] of storedResults.entries()) {
-    files.push(val.filePath);
+  function clear() {
+    const files = [];
+    for (const [, value] of storedResults.entries()) files.push(value.filePath);
+    storedResults.clear();
+    readCache.clear();
+    return Promise.allSettled(files.map((filePath) => fs.unlink(filePath).catch(() => {})));
   }
-  storedResults.clear();
-  readCache.clear();
-  return Promise.allSettled(files.map((filePath) => fs.unlink(filePath).catch(() => {})));
-}
 
-export function checkReadDedup(filePath, startLine, endLine, mtimeMs) {
-  const key = `${filePath}:${startLine || 0}:${endLine || 0}:${mtimeMs}`;
-  if (readCache.has(key)) {
-    return true;
+  function checkReadDedup(filePath, startLine, endLine, mtimeMs) {
+    const key = `${filePath}:${startLine || 0}:${endLine || 0}:${mtimeMs}`;
+    if (readCache.has(key)) return true;
+    readCache.set(key, true);
+    return false;
   }
-  readCache.set(key, true);
-  return false;
+
+  return { storeResultIfNeeded, checkReadDedup, clear };
 }
 
 export function summarizeToolResult(result) {

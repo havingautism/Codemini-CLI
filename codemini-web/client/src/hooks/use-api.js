@@ -231,6 +231,13 @@ export async function deleteSession(sessionId) {
   return res.json();
 }
 
+export async function regenerateSessionTitle(sessionId) {
+  const res = await api(`/api/sessions/${encodeURIComponent(sessionId)}/title/regenerate`, {
+    method: 'POST'
+  });
+  return res.json();
+}
+
 export async function newSession(projectDir) {
   const res = await api('/api/sessions/new', {
     method: 'POST',

@@ -5,7 +5,7 @@ import { requiresApprovalEvaluation } from './command-risk.js';
 import { evaluateCommandPolicy } from './command-policy.js';
 import { buildRunFailureMessage, getToolOutputSanitizeOptions, sanitizeTextForModel } from './tool-output.js';
 import { normalizeToolArguments } from './tool-args.js';
-import { storeResultIfNeeded, summarizeToolResult } from './tool-result-store.js';
+import { createToolResultStore, summarizeToolResult } from './tool-result-store.js';
 import { applyAggressiveToolPruneBeta } from './context-compact.js';
 import { markRunCommandSafeModeApproved } from './tools.js';
 import { formatToolDisplayName } from './tool-display.js';
@@ -650,11 +650,13 @@ export async function runAgentLoop({
   toolResultMaxChars = 12000,
   toolFormatters = {},
   deferredDefinitions = {},
+  toolResultStore = null,
   signal,
   skipAnalysisNudge = false,
   config = {},
   changeTracker = null
 }) {
+  const activeToolResultStore = toolResultStore || createToolResultStore();
   const messages = [];
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt });
@@ -1071,7 +1073,7 @@ export async function runAgentLoop({
           formatted = `error: ${runFailureMessage}\n\n${formatted}`;
         }
         if (shouldPersistLargeToolResult(toolName)) {
-          formatted = await storeResultIfNeeded(call.id, formatted, toolResult);
+          formatted = await activeToolResultStore.storeResultIfNeeded(call.id, formatted, toolResult);
         }
         return {
           callId: call.id,
@@ -1142,7 +1144,7 @@ export async function runAgentLoop({
 
       // P0: Persist to disk if still large
       if (shouldPersistLargeToolResult(toolName)) {
-        formatted = await storeResultIfNeeded(call.id, formatted, toolResult);
+        formatted = await activeToolResultStore.storeResultIfNeeded(call.id, formatted, toolResult);
       }
 
       return {

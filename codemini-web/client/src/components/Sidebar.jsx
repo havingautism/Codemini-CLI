@@ -1,5 +1,6 @@
 ﻿import { useState, useEffect, useMemo, useRef } from "react";
 import {
+  ArrowClockwise,
   BookOpenText,
   Brain,
   DotsThree,
@@ -26,9 +27,10 @@ import {
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { Empty, EmptyDescription } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { t, setLocale, getLocale } from "../../i18n/index.js";
-import { ACTIVE_SESSION_STATUSES } from "@/lib/session-ui-state.js";
+import { ACTIVE_SESSION_STATUSES, displaySessionTitle } from "@/lib/session-ui-state.js";
 import {
   fetchWebuiActiveProjects,
   patchWebuiActiveProject,
@@ -116,12 +118,67 @@ function GitHubIcon({ size = 14, className, ...props }) {
 }
 
 function getSessionLabel(session) {
-  return (
+  return displaySessionTitle(
     session?.title ||
     session?.preview ||
     (session?.messageCount > 0
       ? `${session.messageCount} ${t("messages")}`
       : t("emptyChat"))
+  );
+}
+
+function SessionTitle({ session, className }) {
+  if (session?.titleGenerating) {
+    return (
+      <span className="flex min-w-0 flex-1 items-center" role="status" aria-label={t("generatingSessionTitle")}>
+        <Skeleton className="h-3 w-[112px] max-w-[78%] rounded-full bg-(--bg-active)" />
+      </span>
+    );
+  }
+  return (
+    <span className={cn("truncate", className)} title={getSessionLabel(session)}>
+      {getSessionLabel(session)}
+    </span>
+  );
+}
+
+function SessionActions({ session, regenerating, onRegenerate, onDelete }) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) opacity-0 hover:bg-(--bg-active) hover:text-(--text-primary) group-hover:opacity-100 focus:opacity-100"
+          onClick={(event) => event.stopPropagation()}
+          aria-label={t("sessionActions")}
+        >
+          <DotsThree size={14} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        className="w-40 p-1"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          disabled={regenerating}
+          className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:cursor-wait disabled:opacity-60"
+          onClick={() => onRegenerate?.(session.id)}
+        >
+          {regenerating ? <Spinner className="size-3.5" /> : <ArrowClockwise size={14} />}
+          <span>{t("regenerateSessionTitle")}</span>
+        </button>
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
+          onClick={() => onDelete(session)}
+        >
+          <X size={14} />
+          <span>{t("deleteSession")}</span>
+        </button>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -164,6 +221,7 @@ export function Sidebar({
   onOpenProject,
   onOpenProjectSelector,
   onRefreshSessions,
+  onRegenerateSessionTitle,
   onDeleteSession,
 }) {
   const [expandedProjects, setExpandedProjects] = useState(new Set());
@@ -677,43 +735,19 @@ export function Sidebar({
                           {ACTIVE_SESSION_STATUSES.has(
                             session.runtimeStatus,
                           ) && <Spinner className="size-3 shrink-0" />}
-                          <span
-                            className="truncate"
-                            title={getSessionLabel(session)}
-                          >
-                            {getSessionLabel(session)}
-                          </span>
+                          <SessionTitle session={session} />
                         </span>
                         {session.updatedAt && (
                           <span className="text-[11px] text-(--text-muted) shrink-0 tabular-nums">
                             {formatRelativeTime(session.updatedAt)}
                           </span>
                         )}
-                        <Popover>
-                          <PopoverTrigger asChild>
-                            <button
-                              type="button"
-                              className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) opacity-0 hover:bg-(--bg-active) hover:text-(--text-primary) group-hover:opacity-100 focus:opacity-100"
-                              onClick={(event) => event.stopPropagation()}
-                              aria-label={t("sessionActions")}
-                            >
-                              <DotsThree size={14} />
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent
-                            align="end"
-                            className="w-36 p-1"
-                            onClick={(event) => event.stopPropagation()}
-                          >
-                            <button
-                              type="button"
-                              className="w-full rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
-                              onClick={() => setPendingDelete(session)}
-                            >
-                              {t("deleteSession")}
-                            </button>
-                          </PopoverContent>
-                        </Popover>
+                        <SessionActions
+                          session={session}
+                          regenerating={Boolean(session.titleGenerating)}
+                          onRegenerate={onRegenerateSessionTitle}
+                          onDelete={setPendingDelete}
+                        />
                       </div>
                     ))}
                     {projectSessionLimit < projectSessions.length && (
@@ -798,43 +832,19 @@ export function Sidebar({
                     {ACTIVE_SESSION_STATUSES.has(
                       session.runtimeStatus,
                     ) && <Spinner className="size-3 shrink-0" />}
-                    <span
-                      className="truncate font-medium"
-                      title={getSessionLabel(session)}
-                    >
-                      {getSessionLabel(session)}
-                    </span>
+                    <SessionTitle session={session} className="font-medium" />
                   </span>
                   {session.updatedAt && (
                     <span className="shrink-0 text-[11px] tabular-nums text-(--text-muted)">
                       {formatRelativeTime(session.updatedAt)}
                     </span>
                   )}
-                  <Popover>
-                    <PopoverTrigger asChild>
-                      <button
-                        type="button"
-                        className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) opacity-0 hover:bg-(--bg-active) hover:text-(--text-primary) group-hover:opacity-100 focus:opacity-100"
-                        onClick={(event) => event.stopPropagation()}
-                        aria-label={t("sessionActions")}
-                      >
-                        <DotsThree size={14} />
-                      </button>
-                    </PopoverTrigger>
-                    <PopoverContent
-                      align="end"
-                      className="w-36 p-1"
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      <button
-                        type="button"
-                        className="w-full rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
-                        onClick={() => setPendingDelete(session)}
-                      >
-                        {t("deleteSession")}
-                      </button>
-                    </PopoverContent>
-                  </Popover>
+                  <SessionActions
+                    session={session}
+                    regenerating={Boolean(session.titleGenerating)}
+                    onRegenerate={onRegenerateSessionTitle}
+                    onDelete={setPendingDelete}
+                  />
                 </div>
               );
             })}

@@ -7,7 +7,7 @@ import {
 } from './command-loader.js';
 import { skillIsEligible } from './skill-contexts.js';
 import { runAgentLoop } from './agent-loop.js';
-import { setResultDir } from './tool-result-store.js';
+import { createToolResultStore } from './tool-result-store.js';
 import { trimInline, normalizePath } from './string-utils.js';
 import { normalizeAssumptionItems } from './tool-args-helpers.js';
 import fs from 'node:fs/promises';
@@ -21,15 +21,17 @@ import { isDangerousCommand, runShellCommand } from './shell.js';
 import { getBuiltinTools } from './tools.js';
 import {
   deriveSessionTitle,
+  loadSession,
   listSessions,
   pruneSessions,
+  resolveLatestTitleExchange,
   resolveTitleUserText,
   saveSession
 } from './session-store.js';
 import {
-  SESSION_TITLE_SYSTEM_PROMPT,
-  buildSessionTitleInput,
+  buildSessionTitleMessages,
   normalizeGeneratedSessionTitle,
+  retrySessionTitleRequest,
   shouldReplaceSessionTitle
 } from './session-title.js';
 import { loadConfig, setConfigValue } from './config-store.js';
@@ -3805,37 +3807,23 @@ export function resolvePlanExecutionModel(config, {
     : fast;
 }
 
-/** @type {((sessionId: string, title: string) => void) | null} */
-let sessionTitleUpdateListener = null;
-
-function emitSessionTitleUpdate(sessionId, title) {
-  const id = String(sessionId || '').trim();
-  const nextTitle = String(title || '').trim();
-  if (!id || !nextTitle) return;
-  sessionTitleUpdateListener?.(id, nextTitle);
-}
-
 async function generateSessionTitle({ userText, assistantText = '', config, signal }) {
-  const TITLE_MAX_OUTPUT_TOKENS = 64;
+  // Some reasoning-capable Anthropic-compatible models consume ~100 output
+  // tokens before emitting the short final label. A 64-token cap can therefore
+  // produce an empty assistant response and silently fall back to raw user text.
+  const TITLE_MAX_OUTPUT_TOKENS = 256;
   const fallback = normalizeGeneratedSessionTitle(deriveSessionTitle([{ role: 'user', content: userText }]));
   const latestConfig = await loadConfig().catch(() => config);
   const effectiveConfig = latestConfig || config;
   const fastModel = resolveFastModel(effectiveConfig);
   if (!fastModel) return fallback;
-  const titleInput = buildSessionTitleInput({ userText, assistantText });
   try {
-    const result = await createChatCompletion({
+    const result = await retrySessionTitleRequest(() => createChatCompletion({
       sdkProvider: effectiveConfig.sdk?.provider,
       baseUrl: effectiveConfig.gateway.base_url,
       apiKey: effectiveConfig.gateway.api_key,
       model: fastModel,
-      messages: [
-        {
-          role: 'system',
-          content: SESSION_TITLE_SYSTEM_PROMPT
-        },
-        { role: 'user', content: titleInput }
-      ],
+      messages: buildSessionTitleMessages({ userText, assistantText }),
       tools: [],
       temperature: 0.1,
       // Keep this completion in "label generation" mode across providers:
@@ -3847,11 +3835,105 @@ async function generateSessionTitle({ userText, assistantText = '', config, sign
       timeoutMs: Math.min(Number(effectiveConfig.gateway?.timeout_ms || 30000), 30000),
       maxRetries: 0,
       signal
-    });
+    }), { retries: 1, signal });
     return normalizeGeneratedSessionTitle(result?.text, fallback) || fallback;
-  } catch {
+  } catch (error) {
+    console.warn(
+      `[session-title] generation failed; using fallback: ${String(error?.message || error || 'unknown error')}`
+    );
     return fallback;
   }
+}
+
+export function createSessionTitleTaskCoordinator({
+  generateTitle = generateSessionTitle,
+  save = saveSession
+} = {}) {
+  const controller = new AbortController();
+  const pending = new Set();
+  const revisions = new Map();
+  let onTitleUpdate = null;
+  let onTitleStatus = null;
+  let disposed = false;
+  let disposePromise = null;
+
+  const emit = (sessionId, title, metadata = {}) => {
+    const id = String(sessionId || '').trim();
+    const nextTitle = String(title || '').trim();
+    if (disposed || !id || !nextTitle) return;
+    onTitleUpdate?.(id, nextTitle, metadata);
+  };
+
+  const emitStatus = (sessionId, generating) => {
+    const id = String(sessionId || '').trim();
+    if (disposed || !id) return;
+    onTitleStatus?.(id, Boolean(generating));
+  };
+
+  const schedule = ({
+    session,
+    userText,
+    assistantText = '',
+    config,
+    preserveUpdatedAt = ''
+  } = {}) => {
+    if (disposed || controller.signal.aborted || !session?.id) return null;
+    const sessionId = String(session.id);
+    const revision = (revisions.get(sessionId) || 0) + 1;
+    revisions.set(sessionId, revision);
+    emitStatus(sessionId, true);
+    let tracked;
+    tracked = (async () => {
+      const generatedTitle = await generateTitle({
+        userText,
+        assistantText,
+        config,
+        signal: controller.signal
+      });
+      if (
+        disposed ||
+        controller.signal.aborted ||
+        revisions.get(sessionId) !== revision
+      ) return null;
+      if (!generatedTitle || generatedTitle === session.title) return generatedTitle || null;
+      session.title = generatedTitle;
+      await save(session, { preserveUpdatedAt });
+      if (!disposed && !controller.signal.aborted) {
+        emit(session.id, generatedTitle, { preserveUpdatedAt: Boolean(preserveUpdatedAt) });
+      }
+      return generatedTitle;
+    })()
+      .catch(() => null)
+      .finally(() => {
+        pending.delete(tracked);
+        if (revisions.get(sessionId) === revision) emitStatus(sessionId, false);
+      });
+    pending.add(tracked);
+    return tracked;
+  };
+
+  return {
+    emit,
+    schedule,
+    setOnTitleUpdate(callback) {
+      onTitleUpdate = typeof callback === 'function' ? callback : null;
+    },
+    setOnTitleStatus(callback) {
+      onTitleStatus = typeof callback === 'function' ? callback : null;
+    },
+    dispose() {
+      if (disposePromise) return disposePromise;
+      disposed = true;
+      onTitleUpdate = null;
+      onTitleStatus = null;
+      controller.abort();
+      disposePromise = Promise.allSettled([...pending]).then(() => {
+        pending.clear();
+        revisions.clear();
+      });
+      return disposePromise;
+    }
+  };
 }
 
 function createCompactSummaryGenerator(config, signal) {
@@ -4141,6 +4223,7 @@ async function askModel({
   onCompactedUpdate = null,
   changeTracker = null,
   backupManager = null,
+  titleCoordinator = null,
   projectIsGit = Boolean(config?.runtime?.project_is_git),
   onExecutionModeSync = null,
   workspaceRoot = process.cwd(),
@@ -4292,7 +4375,7 @@ async function askModel({
     session.mode = executionMode || config.execution?.mode || 'normal';
     if (persistSession) {
       await saveSession(session);
-      if (derivedTitle) emitSessionTitleUpdate(session.id, session.title);
+      if (derivedTitle) titleCoordinator?.emit(session.id, session.title);
     }
   }
 
@@ -4338,6 +4421,9 @@ async function askModel({
       ]
     }
   };
+  const toolResultStore = createToolResultStore({
+    resultDir: path.join(getSessionsDir(), String(session.id))
+  });
 
   const { definitions, handlers, formatters, deferredDefinitions, dispose: disposeTools } = getBuiltinTools({
     workspaceRoot,
@@ -4345,6 +4431,7 @@ async function askModel({
     sessionId: session.id,
     onSystemEvent: onAgentEvent,
     requestUserInput,
+    toolResultStore,
     getTodos: () => normalizeTodos(session.todos),
     onTodosUpdate: (todos) => {
       session.todos = normalizeTodos(todos);
@@ -4798,6 +4885,7 @@ async function askModel({
     toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
     toolFormatters: formatters,
     deferredDefinitions: filteredDeferred,
+    toolResultStore,
     requestToolApproval,
     signal,
     skipAnalysisNudge,
@@ -4873,25 +4961,20 @@ async function askModel({
     session.mode = executionMode || config.execution?.mode || 'normal';
     await flushScheduledSave();
     await saveSession(session);
-    // Generate a better title asynchronously after saving
+    // Generate a better title asynchronously after saving.
+    // Do not tie this to the turn AbortSignal — a later abort/new submit
+    // must not cancel title generation for a completed exchange.
     if (shouldGenerateTitle) {
-      const titleSessionId = session.id;
       const titleUserText = resolveTitleUserText({
         content: text,
         model_content: expectedModelText || undefined
       });
-      generateSessionTitle({
+      titleCoordinator?.schedule({
+        session,
         userText: titleUserText,
         assistantText: loopResult.text || '',
-        config,
-        signal
-      }).then(async (generatedTitle) => {
-        if (generatedTitle && generatedTitle !== session.title) {
-          session.title = generatedTitle;
-          await saveSession(session);
-          emitSessionTitleUpdate(titleSessionId, generatedTitle);
-        }
-      }).catch(() => {});
+        config
+      });
     }
     void pruneSessions(config.sessions || {}).catch(() => {
       // keep chat usable even if pruning fails
@@ -6423,6 +6506,7 @@ async function runProjectRequirementsSingleAgent({
   signal,
   compactedForModel,
   onCompactedUpdate,
+  titleCoordinator = null,
   codeWikiGenerate = false,
   workspaceRoot = process.cwd()
 }) {
@@ -6536,6 +6620,7 @@ async function runProjectRequirementsSingleAgent({
       compactedForModel: codeWikiGenerate ? structuredClone(compactedForModel) : compactedForModel,
       onCompactedUpdate: codeWikiGenerate ? null : onCompactedUpdate,
       persistSession: !codeWikiGenerate,
+      titleCoordinator,
       workspaceRoot
     });
     await updateProjectRequirementsManifest(manifestPath, {
@@ -6760,6 +6845,7 @@ export async function createChatRuntime({
   };
   let activeRequestUserInput = null;
   let onTitleUpdateCallback = null;
+  let onTitleStatusCallback = null;
   const startupEvents = [];
   const initialIndex = await initializeProjectIndex(root).catch(() => null);
   if (initialIndex?.summary) {
@@ -6793,6 +6879,7 @@ export async function createChatRuntime({
     });
   }
   let currentSession = session;
+  const titleCoordinator = createSessionTitleTaskCoordinator();
   let config = initialConfig;
   model = model || currentSession?.model || resolveDefaultModel(config);
   scheduleMemoryReviewBacklog({ config, currentSessionId: currentSession?.id });
@@ -6857,9 +6944,6 @@ export async function createChatRuntime({
   };
   config = attachRuntimeState(config);
 
-  // Set up tool result store under session directory
-  const sessionResultsDir = path.join(getSessionsDir(), String(currentSession.id));
-  setResultDir(sessionResultsDir);
   compactState = {
     backupMessages: null,
     autoEnabled: true,
@@ -6934,7 +7018,7 @@ export async function createChatRuntime({
     currentSession.model = model || config.model.name;
     currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
-    if (derivedTitle) emitSessionTitleUpdate(currentSession.id, currentSession.title);
+    if (derivedTitle) titleCoordinator.emit(currentSession.id, currentSession.title);
   };
 
   const persistAssistantExchange = async (userText, assistantText, { includeUser = true, extra = {} } = {}) => {
@@ -6957,24 +7041,18 @@ export async function createChatRuntime({
     currentSession.model = model || config.model.name;
     currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
-    if (derivedTitle) emitSessionTitleUpdate(currentSession.id, currentSession.title);
+    if (derivedTitle) titleCoordinator.emit(currentSession.id, currentSession.title);
     // Generate a better title asynchronously after saving
     if (shouldGenerateTitle || shouldReplaceSessionTitle(currentSession.title)) {
-      const titleSessionId = currentSession.id;
       const firstUser = (currentSession.messages || []).find((msg) => msg?.role === 'user');
       const titleUserText = String(userText || '').trim() || resolveTitleUserText(firstUser || {});
       if (titleUserText) {
-        generateSessionTitle({
+        titleCoordinator.schedule({
+          session: currentSession,
           userText: titleUserText,
           assistantText,
           config
-        }).then(async (generatedTitle) => {
-          if (generatedTitle && generatedTitle !== currentSession.title) {
-            currentSession.title = generatedTitle;
-            await saveSession(currentSession);
-            emitSessionTitleUpdate(titleSessionId, generatedTitle);
-          }
-        }).catch(() => {});
+        });
       }
     }
   };
@@ -7007,7 +7085,7 @@ export async function createChatRuntime({
     currentSession.model = model || config.model.name;
     currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
-    if (derivedTitle) emitSessionTitleUpdate(currentSession.id, currentSession.title);
+    if (derivedTitle) titleCoordinator.emit(currentSession.id, currentSession.title);
   };
 
   const persistRunStatus = async (userText, statusText, { status = 'error' } = {}) => {
@@ -7035,7 +7113,7 @@ export async function createChatRuntime({
     currentSession.model = model || config.model.name;
     currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
-    if (derivedTitle) emitSessionTitleUpdate(currentSession.id, currentSession.title);
+    if (derivedTitle) titleCoordinator.emit(currentSession.id, currentSession.title);
   };
 
   const captureCompactSummary = async ({ summary, mode, beforeTokens, afterTokens }) => {
@@ -7203,6 +7281,7 @@ export async function createChatRuntime({
           onCompactedUpdate: setCompactedView,
           changeTracker,
           backupManager,
+          titleCoordinator,
           onExecutionModeSync: syncExecutionModeWithSession,
           workspaceRoot: root
         });
@@ -7483,6 +7562,7 @@ export async function createChatRuntime({
       onCompactedUpdate: setCompactedView,
       changeTracker,
       backupManager,
+      titleCoordinator,
       onExecutionModeSync: syncExecutionModeWithSession,
       workspaceRoot: root,
       selectedSkillNames: options?.selectedSkillNames
@@ -7699,7 +7779,26 @@ export async function createChatRuntime({
     },
     setOnTitleUpdate: (cb) => {
       onTitleUpdateCallback = typeof cb === 'function' ? cb : null;
-      sessionTitleUpdateListener = onTitleUpdateCallback;
+      titleCoordinator.setOnTitleUpdate(onTitleUpdateCallback);
+    },
+    setOnTitleStatus: (cb) => {
+      onTitleStatusCallback = typeof cb === 'function' ? cb : null;
+      titleCoordinator.setOnTitleStatus(onTitleStatusCallback);
+    },
+    regenerateSessionTitle: async () => {
+      const exchange = resolveLatestTitleExchange(currentSession.messages);
+      if (!exchange) {
+        return { error: true, message: 'No completed user and assistant exchange found' };
+      }
+      const persisted = await loadSession(currentSession.id).catch(() => currentSession);
+      const title = await titleCoordinator.schedule({
+        session: currentSession,
+        ...exchange,
+        config,
+        preserveUpdatedAt: persisted?.updatedAt || currentSession.updatedAt || ''
+      });
+      if (!title) return { error: true, message: 'Title generation was cancelled' };
+      return { ok: true, title };
     },
     updatePendingReflect: async (patch = {}) => {
       const next = updatePendingReflectState(currentSession, patch, root);
@@ -7753,6 +7852,9 @@ export async function createChatRuntime({
       return { filePath };
     },
     dispose: async () => {
+      await titleCoordinator.dispose();
+      onTitleUpdateCallback = null;
+      onTitleStatusCallback = null;
       if (typeof disposeTools === 'function') {
         await disposeTools();
       }

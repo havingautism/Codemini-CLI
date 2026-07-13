@@ -28,7 +28,7 @@ import {
   queryProjectIndex,
   refreshIndexedFile,
 } from "./project-index.js";
-import { checkReadDedup } from "./tool-result-store.js";
+import { createToolResultStore } from "./tool-result-store.js";
 import {
   TOOL_SKIP_DIRS as SKIP_DIRS,
   TEXT_EXTENSIONS,
@@ -1416,7 +1416,7 @@ async function getFileState(root, relativePath, config = {}) {
   };
 }
 
-async function readFile(root, args, config = {}) {
+async function readFile(root, args, config = {}, toolResultStore = null) {
   const normalizedArgs = normalizeReadArgs(args);
   const target = await resolveInWorkspace(root, normalizedArgs?.path, config);
   const stat = await fs.stat(target);
@@ -1477,7 +1477,7 @@ async function readFile(root, args, config = {}) {
   }
 
   // Read deduplication: if same path+range+mtime was read before, return a short stub
-  const isDuplicate = checkReadDedup(
+  const isDuplicate = toolResultStore?.checkReadDedup(
     target,
     startLine,
     endLine,
@@ -3640,8 +3640,10 @@ export function getBuiltinTools({
   beforeApplyPatchMutation,
   fffAdapter,
   backupManager,
+  toolResultStore,
 }) {
   workspaceRoot = path.resolve(workspaceRoot);
+  const activeToolResultStore = toolResultStore || createToolResultStore();
   const replyLanguageName = getReplyLanguageName(config);
   const fileObservations = providedFileObservations instanceof Map
     ? providedFileObservations
@@ -5513,6 +5515,7 @@ export function getBuiltinTools({
               : (config.context?.read_file_max_chars ?? 12000),
         },
         config,
+        activeToolResultStore,
       );
       const readPath = normalizePath(result?.path || args?.path || "").trim();
       if (readPath && result?.phase !== "directory_listing") {
