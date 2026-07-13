@@ -72,11 +72,11 @@ export function SessionPanel({
         <h2 className="text-[15px] font-semibold text-(--text-primary)">{t('sessions')}</h2>
         <div className="flex items-center gap-2">
           {hasActiveSessions ? (
-            <Button variant="destructive" size="sm" onClick={handleAbortAll}>
+            <Button variant="destructive" onClick={handleAbortAll}>
               {t("abortAllSessions")}
             </Button>
           ) : null}
-          <Button size="sm" onClick={onNew}>+ {t('newChat')}</Button>
+          <Button onClick={onNew}>+ {t('newChat')}</Button>
         </div>
       </div>
       {abortError ? (
@@ -161,7 +161,6 @@ export function SessionPanel({
                   {ACTIVE_SESSION_STATUSES.has(session.runtimeStatus) ? (
                     <Button
                       variant="outline"
-                      size="sm"
                       onClick={async (event) => {
                         event.stopPropagation();
                         await handleAbort(session.id);
@@ -173,14 +172,15 @@ export function SessionPanel({
                   ) : null}
                   <Popover>
                     <PopoverTrigger asChild>
-                      <button
+                      <Button
                         type="button"
-                        className="inline-flex size-7 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                        variant="ghost"
+                        size="icon-sm"
                         onClick={(event) => event.stopPropagation()}
                         aria-label={t('sessionActions')}
                       >
                         <DotsThree size={15} />
-                      </button>
+                      </Button>
                     </PopoverTrigger>
                     <PopoverContent
                       align="end"

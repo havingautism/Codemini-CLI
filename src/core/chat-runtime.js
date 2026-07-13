@@ -3816,6 +3816,7 @@ function emitSessionTitleUpdate(sessionId, title) {
 }
 
 async function generateSessionTitle({ userText, assistantText = '', config, signal }) {
+  const TITLE_MAX_OUTPUT_TOKENS = 64;
   const fallback = normalizeGeneratedSessionTitle(deriveSessionTitle([{ role: 'user', content: userText }]));
   const latestConfig = await loadConfig().catch(() => config);
   const effectiveConfig = latestConfig || config;
@@ -3836,6 +3837,13 @@ async function generateSessionTitle({ userText, assistantText = '', config, sign
         { role: 'user', content: titleInput }
       ],
       tools: [],
+      temperature: 0.1,
+      // Keep this completion in "label generation" mode across providers:
+      // reasoning or a large output budget makes short prompts prone to get a
+      // normal assistant acknowledgement instead of a topic label.
+      reasoningEffort: 'off',
+      maxTokens: TITLE_MAX_OUTPUT_TOKENS,
+      payloadExtras: { max_tokens: TITLE_MAX_OUTPUT_TOKENS },
       timeoutMs: Math.min(Number(effectiveConfig.gateway?.timeout_ms || 30000), 30000),
       maxRetries: 0,
       signal

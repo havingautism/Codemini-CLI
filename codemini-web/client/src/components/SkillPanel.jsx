@@ -340,14 +340,12 @@ function SkillEditorDialog({ skill, open, onSave, onOpenChange }) {
           <Button
             variant="outline"
             onClick={() => onOpenChange(false)}
-            size="sm"
           >
             {t("cancel")}
           </Button>
           <Button
             onClick={() => saveRef.current?.()}
             disabled={!footerState.canSave}
-            size="sm"
           >
             {footerState.isNew ? t("create") : t("save")}
           </Button>
@@ -454,10 +452,10 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
         </SettingsSection>
       </div>
       <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-(--border-default) pt-4">
-        <Button variant="outline" onClick={onCancel} size="sm">
+        <Button variant="outline" onClick={onCancel}>
           {t("cancel")}
         </Button>
-        <Button onClick={handleSave} disabled={saving} size="sm">
+        <Button onClick={handleSave} disabled={saving}>
           {saving ? t("loading") : t("save")}
         </Button>
       </div>
@@ -563,7 +561,6 @@ function SkillDetailPane({
                 {!builtin && (
                   <Button
                     variant="outline"
-                    size="sm"
                     onClick={() => setModeView("edit")}
                   >
                     <PencilSimple size={13} />
@@ -572,7 +569,6 @@ function SkillDetailPane({
                 )}
                 <Button
                   variant="outline"
-                  size="sm"
                   onClick={() => setModeView("routing")}
                 >
                   <SlidersHorizontal size={13} />
@@ -635,7 +631,6 @@ function SkillDetailPane({
           <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-(--border-default) pt-4">
             <Button
               variant="outline"
-              size="sm"
               onClick={() => {
                 setDraftContent(content);
                 setModeView("view");
@@ -644,7 +639,6 @@ function SkillDetailPane({
               {t("cancel")}
             </Button>
             <Button
-              size="sm"
               onClick={handleContentSave}
               disabled={saving || loading}
             >
@@ -723,14 +717,12 @@ function InstallDialog({
             <Button
               variant="outline"
               onClick={() => onOpenChange(false)}
-              size="sm"
             >
               {t("cancel")}
             </Button>
             <Button
               onClick={onInstall}
               disabled={installing || !installSource.trim()}
-              size="sm"
             >
               <Download data-icon="inline-start" />
               {installing ? t("installing") : t("installSkill")}
@@ -942,14 +934,12 @@ function PackageBatchDialog({ packageGroup, open, applying, onOpenChange, onAppl
           <div className="flex justify-end gap-2">
             <Button
               variant="outline"
-              size="sm"
               disabled={applying}
               onClick={() => onOpenChange?.(false)}
             >
               {t("cancel")}
             </Button>
             <Button
-              size="sm"
               disabled={applying || !packageGroup}
               onClick={() =>
                 onApply?.(packageGroup, {
@@ -1397,12 +1387,11 @@ export function SkillPanel({ projectDirs = [] }) {
                   setInstallError("");
                   setInstallOpen(true);
                 }}
-                size="sm"
               >
                 <Download size={13} />
                 {t("installSkill")}
               </Button>
-              <Button onClick={() => setEditing("new")} size="sm">
+              <Button onClick={() => setEditing("new")}>
                 <Plus size={13} />
                 {t("addSkill")}
               </Button>

@@ -26,6 +26,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { MessageBubble } from "@/components/MessageBubble.jsx";
@@ -288,14 +289,15 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
               {graph?.stats?.displayed_edges || 0} edges
             </p>
           </div>
-          <button
+          <Button
             type="button"
-            className="inline-flex size-7 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+            variant="ghost"
+            size="icon-sm"
             onClick={onRefresh}
             aria-label="Refresh graph"
           >
             <ArrowClockwise size={14} />
-          </button>
+          </Button>
         </div>
         {selected && (
           <div className="mt-5">
@@ -881,8 +883,10 @@ export function CodeWikiPanel({
             <span className="text-[12px] font-medium text-(--text-muted)">
               Documents
             </span>
-            <button
-              className="inline-flex size-7 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
               onClick={() => {
                 loadReports({ preferNewest: true });
                 if (CODEWIKI_SYMBOL_GRAPH_ENABLED) loadSymbolGraph();
@@ -891,7 +895,7 @@ export function CodeWikiPanel({
               aria-label="Refresh"
             >
               <ArrowClockwise size={14} />
-            </button>
+            </Button>
           </div>
 
           <div className="flex-1 overflow-y-auto px-2 pb-4">
@@ -966,27 +970,30 @@ export function CodeWikiPanel({
                     </span>
                     <Popover>
                       <PopoverTrigger asChild>
-                        <button
+                        <Button
                           type="button"
-                          className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) opacity-0 hover:bg-(--bg-active) hover:text-(--text-primary) group-hover:opacity-100 focus:opacity-100"
+                          variant="ghost"
+                          size="icon-xs"
+                          className="opacity-0 group-hover:opacity-100 focus:opacity-100"
                           onClick={(event) => event.stopPropagation()}
                           aria-label={t("reportActions")}
                         >
                           <DotsThree size={14} />
-                        </button>
+                        </Button>
                       </PopoverTrigger>
                       <PopoverContent
                         align="end"
                         className="w-36 p-1"
                         onClick={(event) => event.stopPropagation()}
                       >
-                        <button
+                        <Button
                           type="button"
-                          className="w-full rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
+                          variant="ghost"
+                          className="h-auto w-full justify-start rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) shadow-none hover:bg-(--accent-red-bg) hover:text-(--accent-red)"
                           onClick={() => setPendingDelete(report)}
                         >
                           {t("deleteReport")}
-                        </button>
+                        </Button>
                       </PopoverContent>
                     </Popover>
                   </span>

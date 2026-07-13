@@ -3,6 +3,7 @@ import { X } from "@phosphor-icons/react"
 import { Dialog as SheetPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
 
 function Sheet({
   ...props
@@ -72,10 +73,17 @@ function SheetContent({
         {...props}>
         {children}
         {showCloseButton && (
-          <SheetPrimitive.Close
-            className="absolute top-4 right-4 inline-flex size-8 items-center justify-center rounded-full bg-(--bg-hover) text-(--text-secondary) transition-[background-color,color,transform] hover:bg-(--bg-active) hover:text-(--text-primary) active:scale-95 focus:outline-hidden disabled:pointer-events-none">
-            <X className="size-4" />
-            <span className="sr-only">Close</span>
+          <SheetPrimitive.Close asChild>
+            <Button
+              type="button"
+              className="absolute top-4 right-4"
+              variant="close"
+              size="icon"
+              aria-label="Close"
+            >
+              <X />
+              <span className="sr-only">Close</span>
+            </Button>
           </SheetPrimitive.Close>
         )}
       </SheetPrimitive.Content>

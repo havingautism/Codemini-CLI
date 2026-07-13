@@ -202,7 +202,7 @@ function MessageImageGalleryModal({
       <DialogClose asChild>
         <Button
           type="button"
-          variant="secondary"
+          variant="close"
           size="icon"
           className="absolute right-4 top-4"
           aria-label={t('imageGalleryClose')}

@@ -18,7 +18,8 @@ import { InputBar } from "@/components/InputBar.jsx";
 import { StatusBar } from "@/components/StatusBar.jsx";
 import { ApprovalDialog } from "@/components/ApprovalDialog.jsx";
 import { UserInputDialog } from "@/components/UserInputDialog.jsx";
-import { ReflectApprovalCard } from "@/components/ReflectApprovalDialog.jsx";
+import { ReflectApprovalDialog } from "@/components/ReflectApprovalDialog.jsx";
+import { DreamDialog } from "@/components/DreamDialog.jsx";
 import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
 import { SessionPanel } from "@/components/SessionPanel.jsx";
@@ -200,6 +201,13 @@ function Shell() {
     () => sidebarProjectTargets.map((item) => item.dir),
     [sidebarProjectTargets],
   );
+  const hasConversation = useMemo(
+    () =>
+      state.messages.some((message) =>
+        ["you", "user", "agent", "assistant"].includes(message?.role),
+      ),
+    [state.messages],
+  );
 
   const closeMobileSidebar = useCallback(() => {
     setMobileSidebarOpen(false);
@@ -374,20 +382,32 @@ function Shell() {
 
             {/* Plan Review / Input Area */}
             <div className="w-[calc(100%_-_32px)] max-w-[940px] sm:w-[calc(100%_-_48px)] mx-auto mb-2 sm:mb-3 shrink-0 z-30 bg-transparent relative">
-              <RuntimeActivityStrip activities={state.runtimeActivities} />
-              {state.pendingReflectApproval && (
-                <div className="mb-3">
-                  <ReflectApprovalCard
-                    draft={state.pendingReflectApproval}
-                    onAction={actions.approveReflect}
-                    onUpdate={actions.updatePendingReflect}
-                    disabled={state.busy}
-                  />
-                </div>
-              )}
+              <RuntimeActivityStrip
+                activities={state.runtimeActivities}
+              />
+              <ReflectApprovalDialog
+                open={state.reflectDialogOpen}
+                draft={state.pendingReflectApproval}
+                error={state.reflectDialogError}
+                result={state.reflectDialogResult}
+                onOpenChange={actions.setReflectDialogOpen}
+                onRetry={() => actions.runChatAction("reflect")}
+                onAction={actions.approveReflect}
+                onUpdate={actions.updatePendingReflect}
+                disabled={state.busy}
+              />
+              <DreamDialog
+                open={state.dreamDialogOpen}
+                status={state.dreamDialogStatus}
+                result={state.dreamDialogResult}
+                error={state.dreamDialogError}
+                onOpenChange={actions.setDreamDialogOpen}
+                onRetry={() => actions.runChatAction("dream")}
+              />
               <MemoInputBar
                 onSubmit={actions.submit}
                 onAction={actions.runChatAction}
+                onActionStart={actions.prepareChatAction}
                 onAbort={actions.abort}
                 busy={state.busy}
                 disabled={
@@ -406,6 +426,7 @@ function Shell() {
                 onOpenSpec={actions.openSpecReview}
                 projectCwd={state.projectCwd}
                 projectDirs={sidebarProjectDirs}
+                hasConversation={hasConversation}
               />
 
               {/* Meta row */}

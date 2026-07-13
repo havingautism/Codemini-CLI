@@ -22,7 +22,9 @@ const STATUS_STYLES = {
 };
 
 export function RuntimeActivityStrip({ activities = [] }) {
-  const visible = activities.slice(0, 3);
+  const visible = activities
+    .filter((activity) => activity.key !== "reflect" && activity.key !== "dream")
+    .slice(0, 3);
   if (!visible.length) return null;
 
   return (

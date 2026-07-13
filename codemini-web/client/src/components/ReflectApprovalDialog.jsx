@@ -9,6 +9,16 @@ import {
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { LinearRing } from "@/components/ui/spinner";
+import { ArrowClockwise, CheckCircle, WarningCircle } from "@phosphor-icons/react";
 import { t } from "../../i18n/index.js";
 import { CHAT_ACTION_NAMES } from "@/lib/chat-action-names.js";
 
@@ -137,7 +147,6 @@ export function ReflectApprovalCard({
       <div className="flex items-center gap-2 border-t border-(--border-default) pt-3">
         <Button
           variant="destructive"
-          size="xs"
           disabled={disabled}
           onClick={() => onAction(CHAT_ACTION_NAMES.REFLECT_REJECT)}
         >
@@ -145,14 +154,12 @@ export function ReflectApprovalCard({
         </Button>
         <Button
           variant="outline"
-          size="xs"
           disabled={disabled}
           onClick={() => (editMode ? submitEdit() : startEdit())}
         >
           {editMode ? t("reflectSave") : t("reflectEdit")}
         </Button>
         <Button
-          size="xs"
           disabled={disabled || editMode}
           onClick={() => onAction(CHAT_ACTION_NAMES.REFLECT_APPROVE)}
         >
@@ -160,5 +167,88 @@ export function ReflectApprovalCard({
         </Button>
       </div>
     </div>
+  );
+}
+
+export function ReflectApprovalDialog({
+  open,
+  draft,
+  error = "",
+  result = "",
+  onOpenChange,
+  onRetry,
+  onAction,
+  onUpdate,
+  disabled = false,
+}) {
+  const generating = open && !draft && !error && !result;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[min(760px,calc(100vh-2rem))] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader showCloseButton={!generating && !draft}>
+          <DialogTitle>
+            {draft
+              ? t("reflectReviewTitle")
+              : result
+                ? t("reflectNoCandidateTitle")
+                : t("reflectGeneratingTitle")}
+          </DialogTitle>
+          <DialogDescription>
+            {draft
+              ? t("reflectDraftReadyDescription")
+              : result
+                ? t("reflectNoCandidateDescription")
+                : t("reflectGeneratingDescription")}
+          </DialogDescription>
+        </DialogHeader>
+
+        {error ? (
+          <Alert variant="destructive">
+            <WarningCircle />
+            <AlertDescription className="flex flex-col items-start gap-3">
+              <span>{error}</span>
+              <Button variant="outline" onClick={onRetry}>
+                <ArrowClockwise data-icon="inline-start" />
+                {t("retry")}
+              </Button>
+            </AlertDescription>
+          </Alert>
+        ) : result ? (
+          <div className="flex items-start gap-3 rounded-lg border border-(--border-default) bg-(--bg-secondary) p-5">
+            <CheckCircle className="mt-0.5 shrink-0 text-(--accent-green)" size={20} />
+            <p className="text-[13px] leading-6 text-(--text-secondary)">
+              {t("reflectNoCandidateDetail")}
+            </p>
+          </div>
+        ) : generating ? (
+          <div className="flex flex-col gap-4 rounded-lg border border-(--border-default) bg-(--bg-secondary) p-5">
+            <div className="flex items-start gap-3">
+              <LinearRing size="md" />
+              <div className="flex min-w-0 flex-col gap-1">
+                <p className="text-[13px] font-medium text-(--text-primary)">
+                  {t("reflectGeneratingStatus")}
+                </p>
+                <p className="text-[12px] leading-5 text-(--text-secondary)">
+                  {t("reflectGeneratingDetail")}
+                </p>
+              </div>
+            </div>
+            <div className="grid gap-2 text-[12px] text-(--text-muted) sm:grid-cols-3">
+              <span>{t("reflectStepAnalyze")}</span>
+              <span>{t("reflectStepExtract")}</span>
+              <span>{t("reflectStepDraft")}</span>
+            </div>
+          </div>
+        ) : (
+          <ReflectApprovalCard
+            draft={draft}
+            onAction={onAction}
+            onUpdate={onUpdate}
+            disabled={disabled}
+          />
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -6,7 +6,10 @@ const VAGUE_TITLE_USER_RE =
 
 /** Titles that look like the start of an assistant reply, not a topic label. */
 const ASSISTANT_REPLY_TITLE_RE =
-  /^(?:好的|好呀|好嘞|好的呢|没问题|当然(?:可以|了)?|可以的|行啊?|嗯+|ok(?:ay)?|sure|absolutely|of course|no problem|here(?:'s| are| is)|i(?:'d| would)? (?:be happy to|can help)|let me|我会|我来(?:帮你)?|我可以(?:帮你)?|我已经|这就|马上|以下是|这里是|如下|很高兴|已为你)/iu;
+  /^(?:好的|好呀|好嘞|好的呢|没问题|当然(?:可以|了)?|可以的|行啊?|嗯+|收到(?:了)?|明白(?:了)?|了解(?:了)?|谢谢(?:你)?|ok(?:ay)?|sure|absolutely|of course|no problem|got it|understood|here(?:'s| are| is)|i(?:'d| would)? (?:be happy to|can help)|i(?: can| will|'ll| have|'ve)|we(?: can| will|'ll)|you can|please|let me|我会|我来(?:帮你)?|我可以(?:帮你)?|我已经|我能|这就|马上|以下(?:是|为)|这里(?:是|有)|下面(?:是|为)|接下来|可以这样|很高兴|已为你)/iu;
+
+const GENERIC_ACKNOWLEDGEMENT_RE =
+  /^(?:好|好的|好呀|好嘞|没问题|可以|可以的|行|嗯+|收到|明白(?:了)?|了解(?:了)?|ok(?:ay)?|sure|yes|no problem|got it|understood|thanks|thank you)[\s,，:：、.!?！？…]*$/iu;
 
 export const SESSION_TITLE_SYSTEM_PROMPT = [
   'Create a short chat title that names the topic of the user\'s request.',
@@ -45,8 +48,13 @@ export function looksLikeAssistantReplyTitle(value) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   if (!text) return false;
   if (ASSISTANT_REPLY_TITLE_RE.test(text)) return true;
+  if (GENERIC_ACKNOWLEDGEMENT_RE.test(text)) return true;
   // Sentence-like openers with a comma often mean the model started answering.
   if (/^(?:好|行|嗯|ok|sure|yes)[,，]/iu.test(text)) return true;
+  // These markers are useful in a reply but almost never belong in a topic label.
+  if (/^(?:建议|推荐|答案|解决方案|步骤|说明|解释|总结|结论)\s*[:：]/iu.test(text)) return true;
+  if (/^(?:我|我们)(?:会|可以|能|将|已经|已|来|帮你|建议|推荐)/u.test(text)) return true;
+  if (/^(?:first|next|finally|to (?:fix|resolve|debug)|you should)\b/iu.test(text)) return true;
   return false;
 }
 
@@ -75,12 +83,19 @@ function truncateTitle(title) {
 }
 
 export function normalizeGeneratedSessionTitle(value, fallback = '') {
+  const raw = String(value || '').trim();
+  // A title should be one line. Multi-line output is usually a leaked answer,
+  // markdown, or a list; falling back is safer than keeping only its first line.
+  if (/\r?\n|```|^\s*(?:[-*•]|\d+[.)])\s+/u.test(raw)) {
+    return truncateTitle(String(fallback || '').trim());
+  }
+
   const cleaned = stripTitleWrappers(value)
     .replace(/^[\s"'`#：:「『【\[]+|[\s"'`。.!?？！」』】\]]+$/gu, '')
     .replace(/\s+/g, ' ')
     .trim();
 
-  if (!cleaned || looksLikeAssistantReplyTitle(cleaned)) {
+  if (!cleaned || looksLikeAssistantReplyTitle(cleaned) || /[。！？!?]\s*\S/u.test(cleaned)) {
     return truncateTitle(String(fallback || '').trim());
   }
 

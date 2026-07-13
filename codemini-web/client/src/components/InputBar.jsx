@@ -68,6 +68,7 @@ const ACTION_COMMANDS = [
   {
     name: "compact",
     icon: Archive,
+    requiresConversation: true,
     description:
       "Compress the current conversation context while keeping the useful working summary.",
   },
@@ -80,6 +81,7 @@ const ACTION_COMMANDS = [
   {
     name: "reflect",
     icon: Sparkle,
+    requiresConversation: true,
     description: "Draft or update a reusable skill from the current workflow.",
   },
 ];
@@ -497,6 +499,7 @@ function ActionSkillPalette({
   projectDirs = EMPTY_PROJECT_DIRS,
   defaultSkillNames = [],
   mode = "normal",
+  hasConversation = false,
   onClose,
 }) {
   const [skills, setSkills] = useState([]);
@@ -552,10 +555,11 @@ function ActionSkillPalette({
           command.description.toLowerCase().includes(needle),
       ).map((command) => ({
         ...command,
+        disabled: command.requiresConversation && !hasConversation,
         kind: "action",
         key: `action-${command.name}`,
       })),
-    [needle],
+    [needle, hasConversation],
   );
 
   const skillItems = useMemo(
@@ -596,9 +600,14 @@ function ActionSkillPalette({
             return (
               <button
                 key={item.key}
+                type="button"
+                disabled={item.disabled}
+                title={item.disabled ? t("actionRequiresConversation") : undefined}
                 className={cn(
                   "w-full border-0 rounded-md px-2.5 py-2 text-left cursor-pointer grid grid-cols-[22px_minmax(96px,180px)_minmax(0,1fr)_auto] items-start gap-2 text-[12px] transition-colors",
-                  isHovered
+                  item.disabled
+                    ? "cursor-not-allowed bg-transparent text-(--text-muted) opacity-45"
+                    : isHovered
                     ? "bg-(--bg-hover) text-(--text-primary)"
                     : "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
                 )}
@@ -697,6 +706,7 @@ function ActionSkillPalette({
 export function InputBar({
   onSubmit,
   onAction,
+  onActionStart,
   onAbort,
   busy,
   disabled = false,
@@ -706,6 +716,7 @@ export function InputBar({
   onOpenSpec,
   projectCwd,
   projectDirs = EMPTY_PROJECT_DIRS,
+  hasConversation = false,
 }) {
   const [value, setValue] = useState("");
   const [history, setHistory] = useState([]);
@@ -920,7 +931,7 @@ export function InputBar({
       }
 
       if (item?.kind === "action") {
-        if (inputLocked) return;
+        if (inputLocked || item.disabled) return;
         if (item.name === "capture") {
           setActionParameter((current) =>
             beginActionParameter(current, item.name),
@@ -933,9 +944,11 @@ export function InputBar({
         actionSubmissionRef.current = true;
         setPaletteError("");
         setActionSubmitting(true);
+        setPaletteOpen(false);
         try {
+          onActionStart?.(item.name);
+          await new Promise((resolve) => requestAnimationFrame(resolve));
           await runComposerAction(item.name, onAction);
-          setPaletteOpen(false);
         } catch (error) {
           setPaletteError(error?.message || t("actionFailed"));
         } finally {
@@ -946,7 +959,7 @@ export function InputBar({
         return;
       }
     },
-    [defaultSkillNames, inputLocked, onAction],
+    [defaultSkillNames, inputLocked, onAction, onActionStart],
   );
 
   const removeSelectedSkill = useCallback((name) => {
@@ -1010,6 +1023,7 @@ export function InputBar({
         projectDirs={projectDirs}
         defaultSkillNames={defaultSkillNames}
         mode={mode}
+        hasConversation={hasConversation}
         onClose={() => setPaletteOpen(false)}
       />
       <div className="codemini-input-shell flex flex-col gap-2.5 px-2 py-2 sm:px-2.5">

@@ -12,7 +12,7 @@ export function ImagePreviewDialog({ open = true, src, alt, caption, onClose }) 
       <DialogContent className="flex max-h-[96vh] max-w-[96vw] items-center justify-center border-0 bg-transparent p-4 shadow-none sm:max-w-[96vw]">
         <DialogTitle className="sr-only">{caption || t("imageGalleryPreview")}</DialogTitle>
         <DialogClose asChild>
-          <Button type="button" variant="secondary" size="icon" className="absolute right-4 top-4" aria-label={t("imageGalleryClose")}>
+          <Button type="button" variant="close" size="icon" className="absolute right-4 top-4" aria-label={t("imageGalleryClose")}>
             <X />
           </Button>
         </DialogClose>

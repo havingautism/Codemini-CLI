@@ -96,14 +96,13 @@ function SoulEditor({ soul, onSave, onCancel }) {
 
       <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-(--border-default) pt-4">
         {onCancel ? (
-          <Button variant="outline" onClick={onCancel} size="sm">
+          <Button variant="outline" onClick={onCancel}>
             {t("cancel")}
           </Button>
         ) : null}
         <Button
           onClick={handleSave}
           disabled={loading || !content.trim() || (isNew && !name.trim())}
-          size="sm"
         >
           {isNew ? t("create") : t("save")}
         </Button>
@@ -226,7 +225,6 @@ function SoulDetailPane({ soul, disabled = false, onSave }) {
                 <>
                   <Button
                     variant="outline"
-                    size="sm"
                     onClick={() => {
                       setDraftContent(content);
                       setEditing(false);
@@ -235,7 +233,6 @@ function SoulDetailPane({ soul, disabled = false, onSave }) {
                     {t("cancel")}
                   </Button>
                   <Button
-                    size="sm"
                     onClick={handleSave}
                     disabled={saving || loading || !draftContent.trim()}
                   >
@@ -245,7 +242,6 @@ function SoulDetailPane({ soul, disabled = false, onSave }) {
               ) : (
                 <Button
                   variant="outline"
-                  size="sm"
                   onClick={() => {
                     setDraftContent(content);
                     setEditing(true);
@@ -530,7 +526,6 @@ export function SoulPanel({ disabled = false }) {
             </div>
             <Button
               onClick={() => setEditing("new")}
-              size="sm"
               disabled={disabled}
               className="w-full sm:ml-auto sm:w-auto"
             >

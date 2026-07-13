@@ -226,6 +226,13 @@ const initialState = {
   planSteps: [],
   pendingSpecApproval: null,
   pendingReflectApproval: null,
+  reflectDialogOpen: false,
+  reflectDialogError: "",
+  reflectDialogResult: "",
+  dreamDialogOpen: false,
+  dreamDialogStatus: "idle",
+  dreamDialogResult: null,
+  dreamDialogError: "",
   runtimeActivities: [],
   approvalRequest: null,
   userInputRequest: null,
@@ -466,8 +473,14 @@ function isReflectSystemSummaryText(text) {
     value.includes("Reflect skill draft pending.") ||
     value.includes("Reflect skill draft revised.") ||
     value.includes("Reflect skill written and loaded:") ||
-    value.includes("Reflect skill draft discarded.")
+    value.includes("Reflect skill draft discarded.") ||
+    value.includes("Reflect skill draft rejected.") ||
+    value.includes("Reflect found no reusable skill candidate.")
   );
+}
+
+function isDreamSystemSummaryText(text) {
+  return String(text || "").trimStart().startsWith("Dream ");
 }
 
 function getRuntimeActivityFromSystemText(text) {
@@ -1185,6 +1198,13 @@ export function AppProvider({ children }) {
         isGeneral: !!rs.isGeneral,
         pendingSpecApproval: rs?.pendingSpecApproval || null,
         pendingReflectApproval: rs?.pendingReflectSkill || null,
+        reflectDialogOpen: Boolean(rs?.pendingReflectSkill),
+        reflectDialogError: "",
+        reflectDialogResult: "",
+        dreamDialogOpen: false,
+        dreamDialogStatus: "idle",
+        dreamDialogResult: null,
+        dreamDialogError: "",
         userInputRequest: rs?.pendingUserInput || null,
         busy,
         live: busy || prev.live,
@@ -2118,21 +2138,22 @@ export function AppProvider({ children }) {
         }
 
         case "reflect:pending_approval": {
-          upsertRuntimeActivity({
-            key: "reflect",
-            status: "running",
-            emoji: stateRef.current.pendingReflectApproval ? "📝" : "🪞",
-            label: stateRef.current.pendingReflectApproval
-              ? t("runtimeActivityReflectRevised")
-              : t("runtimeActivityReflectPending"),
-            detail: event.draft?.name ? `/${event.draft.name}` : "",
+          update({
+            pendingReflectApproval: event.draft || null,
+            reflectDialogOpen: true,
+            reflectDialogError: "",
+            reflectDialogResult: "",
           });
-          update({ pendingReflectApproval: event.draft || null });
           break;
         }
 
         case "reflect:approval_cleared": {
-          update({ pendingReflectApproval: null });
+          update({
+            pendingReflectApproval: null,
+            reflectDialogOpen: false,
+            reflectDialogError: "",
+            reflectDialogResult: "",
+          });
           break;
         }
 
@@ -2252,36 +2273,8 @@ export function AppProvider({ children }) {
           break;
 
         case "dream:auto":
-          {
-            const currentDream = stateRef.current.runtimeActivities.find(
-              (activity) => activity.key === "dream",
-            );
-            const finishedRecently =
-              currentDream &&
-              currentDream.status !== "running" &&
-              Date.now() - Date.parse(currentDream.timestamp || "") < 10000;
-            if (finishedRecently) break;
-          }
-          upsertRuntimeActivity({
-            key: "dream",
-            status: "running",
-            emoji: "💤",
-            label: t("runtimeActivityDreamRunning"),
-            clearAfterMs: 30 * 60 * 1000,
-          });
-          break;
         case "dream:complete":
-          upsertRuntimeActivity({
-            key: "dream",
-            status: event.report?.ok === false ? "error" : "done",
-            emoji: event.report?.ok === false ? "⚠️" : "🌙",
-            label:
-              event.report?.ok === false
-                ? t("runtimeActivityDreamError")
-                : t("runtimeActivityDreamDone"),
-            detail: event.report?.error || "",
-            clearAfterMs: 2500,
-          });
+          // Automatic dream consolidation stays silent in the Web UI.
           break;
 
         case "change:undone": {
@@ -2406,7 +2399,8 @@ export function AppProvider({ children }) {
               !stateRef.current.pendingSpecApproval &&
               !stateRef.current.pendingReflectApproval &&
               !isPlanSystemSummaryText(result.text) &&
-              !isReflectSystemSummaryText(result.text)
+              !isReflectSystemSummaryText(result.text) &&
+              !isDreamSystemSummaryText(result.text)
             ) {
               addMessage({
                 role: "system",
@@ -2418,7 +2412,9 @@ export function AppProvider({ children }) {
           if (
             result.type === "error" &&
             result.text &&
-            !isAbortRelatedResult(result)
+            !isAbortRelatedResult(result) &&
+            !s.reflectDialogOpen &&
+            !s.dreamDialogOpen
           ) {
             addMessage({
               role: "error",
@@ -2941,30 +2937,86 @@ export function AppProvider({ children }) {
 
       runChatAction: async (actionName, payload = {}) => {
         const sessionId = stateRef.current.currentSessionId;
+        const isReflect = actionName === CHAT_ACTION_NAMES.REFLECT;
+        const isDream = actionName === CHAT_ACTION_NAMES.DREAM;
+        const usesResultDialog = isReflect || isDream;
         return runSessionOperation(sessionOperationsRef.current, sessionId, async () => {
         update({
           busy: true,
           live: true,
           stage: "thinking",
           stageLabel: t("waitingResponse"),
+          ...(isReflect
+            ? {
+                reflectDialogOpen: true,
+                reflectDialogError: "",
+                reflectDialogResult: "",
+              }
+            : {}),
+          ...(isDream
+            ? {
+                dreamDialogOpen: true,
+                dreamDialogStatus: "generating",
+                dreamDialogResult: null,
+                dreamDialogError: "",
+              }
+            : {}),
         });
         try {
           const response = await api.submitChatAction(sessionId, actionName, payload);
           if (response?.error) throw new Error(response.message || t("actionFailed"));
           const accepted = response?.result;
-          return await waitForAcceptedOperation(accepted, {
+          const result = await waitForAcceptedOperation(accepted, {
             sessionId,
             waiters: operationWaitersRef.current,
             earlyResults: earlyOperationResultsRef.current,
             fallbackError: t("actionFailed"),
           });
+          if (isReflect && !String(result?.text || "").includes("draft pending")) {
+            update({
+              reflectDialogOpen: true,
+              reflectDialogError: "",
+              reflectDialogResult: "empty",
+            });
+          }
+          if (isDream) {
+            update({
+              dreamDialogOpen: true,
+              dreamDialogStatus: "complete",
+              dreamDialogResult: result || {},
+              dreamDialogError: "",
+            });
+          }
+          return result;
         } catch (err) {
-          addMessage({
-            role: "error",
-            text: `Failed: ${err.message}`,
-            timestamp: new Date().toISOString(),
+          if (!usesResultDialog) {
+            addMessage({
+              role: "error",
+              text: `Failed: ${err.message}`,
+              timestamp: new Date().toISOString(),
+            });
+          }
+          update({
+            busy: false,
+            live: false,
+            stage: "idle",
+            stageLabel: "",
+            ...(isReflect
+              ? {
+                  reflectDialogOpen: true,
+                  reflectDialogError: err.message,
+                  reflectDialogResult: "",
+                }
+              : {}),
+            ...(isDream
+              ? {
+                  dreamDialogOpen: true,
+                  dreamDialogStatus: "error",
+                  dreamDialogResult: null,
+                  dreamDialogError: err.message,
+                }
+              : {}),
           });
-          update({ busy: false, live: false, stage: "idle", stageLabel: "" });
           throw err;
         }
         });
@@ -3149,50 +3201,70 @@ export function AppProvider({ children }) {
       approveReflect: async (action, feedback) => {
         const draft = stateRef.current.pendingReflectApproval;
         if (!draft) return;
-        upsertRuntimeActivity({
-          key: "reflect",
-          status: "running",
-          emoji:
-            action === CHAT_ACTION_NAMES.REFLECT_APPROVE ? "💾" : action === CHAT_ACTION_NAMES.REFLECT_REJECT ? "🗑️" : "📝",
-          label:
-            action === CHAT_ACTION_NAMES.REFLECT_APPROVE
-              ? t("runtimeActivityReflectSaving")
-              : action === CHAT_ACTION_NAMES.REFLECT_REJECT
-                ? t("runtimeActivityReflectDiscarding")
-                : t("runtimeActivityReflectRevising"),
-          detail: draft.name ? `/${draft.name}` : "",
-        });
+        const actionName =
+          action === CHAT_ACTION_NAMES.REFLECT_APPROVE
+            ? CHAT_ACTION_NAMES.REFLECT_APPROVE
+            : action === CHAT_ACTION_NAMES.REFLECT_REJECT
+              ? CHAT_ACTION_NAMES.REFLECT_REJECT
+              : feedback?.trim()
+                ? CHAT_ACTION_NAMES.REFLECT_REVISE
+                : null;
+        if (!actionName) return;
+        const terminalAction =
+          actionName === CHAT_ACTION_NAMES.REFLECT_APPROVE ||
+          actionName === CHAT_ACTION_NAMES.REFLECT_REJECT;
         update({
           busy: true,
           live: true,
           stage: "thinking",
           stageLabel: t("waitingResponse"),
+          reflectDialogError: "",
+          ...(terminalAction
+            ? {
+                pendingReflectApproval: null,
+                reflectDialogOpen: false,
+                reflectDialogResult: "",
+              }
+            : {}),
         });
         try {
-          const actionName =
-            action === CHAT_ACTION_NAMES.REFLECT_APPROVE
-              ? CHAT_ACTION_NAMES.REFLECT_APPROVE
-              : action === CHAT_ACTION_NAMES.REFLECT_REJECT
-                ? CHAT_ACTION_NAMES.REFLECT_REJECT
-                : feedback?.trim()
-                  ? CHAT_ACTION_NAMES.REFLECT_REVISE
-                  : null;
-          if (!actionName) {
-            update({ busy: false, live: false, stage: "idle", stageLabel: "" });
-            return;
-          }
-          const result = await api.submitChatAction(stateRef.current.currentSessionId, actionName, {
+          const sessionId = stateRef.current.currentSessionId;
+          const response = await api.submitChatAction(sessionId, actionName, {
             ...(feedback?.trim() ? { feedback: feedback.trim() } : {}),
           });
-          if (result?.error)
-            throw new Error(result.message || "Request failed");
-        } catch (err) {
-          addMessage({
-            role: "error",
-            text: `Failed: ${err.message}`,
-            timestamp: new Date().toISOString(),
+          if (response?.error)
+            throw new Error(response.message || "Request failed");
+          await waitForAcceptedOperation(response?.result, {
+            sessionId,
+            waiters: operationWaitersRef.current,
+            earlyResults: earlyOperationResultsRef.current,
+            fallbackError: t("actionFailed"),
           });
-          update({ busy: false, live: false, stage: "idle", stageLabel: "" });
+          update({
+            busy: false,
+            live: false,
+            stage: "idle",
+            stageLabel: "",
+            ...(terminalAction
+              ? {
+                  pendingReflectApproval: null,
+                  reflectDialogOpen: false,
+                  reflectDialogError: "",
+                  reflectDialogResult: "",
+                }
+              : {}),
+          });
+        } catch (err) {
+          update({
+            busy: false,
+            live: false,
+            stage: "idle",
+            stageLabel: "",
+            pendingReflectApproval: draft,
+            reflectDialogOpen: true,
+            reflectDialogError: err.message,
+            reflectDialogResult: "",
+          });
         }
       },
 
@@ -3576,6 +3648,25 @@ export function AppProvider({ children }) {
       setProjectOpen: (open) => update({ projectOpen: open }),
       setSkillsOpen: (open) => update({ skillsOpen: open }),
       setMemoryOpen: (open) => update({ memoryOpen: open }),
+      prepareChatAction: (actionName) => {
+        if (actionName === CHAT_ACTION_NAMES.REFLECT) {
+          update({
+            reflectDialogOpen: true,
+            reflectDialogError: "",
+            reflectDialogResult: "",
+          });
+        }
+        if (actionName === CHAT_ACTION_NAMES.DREAM) {
+          update({
+            dreamDialogOpen: true,
+            dreamDialogStatus: "generating",
+            dreamDialogResult: null,
+            dreamDialogError: "",
+          });
+        }
+      },
+      setReflectDialogOpen: (open) => update({ reflectDialogOpen: open }),
+      setDreamDialogOpen: (open) => update({ dreamDialogOpen: open }),
       setSoulsOpen: (open) => update({ soulsOpen: open }),
       notifySoulsChanged: () =>
         update({

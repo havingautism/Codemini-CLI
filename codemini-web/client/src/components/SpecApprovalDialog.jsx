@@ -77,7 +77,6 @@ export function SpecApprovalDialog({
       leading={
         <Button
           variant="outline"
-          size="sm"
           disabled={disabled || saving}
           onClick={cancelEdit}
         >
@@ -85,7 +84,7 @@ export function SpecApprovalDialog({
         </Button>
       }
       trailing={
-        <Button size="sm" disabled={disabled || saving} onClick={saveEdit}>
+        <Button disabled={disabled || saving} onClick={saveEdit}>
           {saving ? t("planSaving") : t("specSave")}
         </Button>
       }
@@ -96,7 +95,6 @@ export function SpecApprovalDialog({
         <>
           <Button
             variant="destructive"
-            size="sm"
             disabled={disabled}
             onClick={() => onAction(LOCAL_SPEC_REVIEW_ACTIONS.DELETE)}
           >
@@ -104,7 +102,6 @@ export function SpecApprovalDialog({
           </Button>
           <Button
             variant="outline"
-            size="sm"
             disabled={disabled}
             onClick={() => onAction(CHAT_ACTION_NAMES.SPEC_REJECT)}
           >
@@ -116,7 +113,6 @@ export function SpecApprovalDialog({
         <>
           <Button
             variant="outline"
-            size="sm"
             disabled={disabled}
             onClick={startEdit}
           >
@@ -124,7 +120,6 @@ export function SpecApprovalDialog({
           </Button>
           <Button
             variant="outline"
-            size="sm"
             disabled={disabled}
             onClick={() => onAction(CHAT_ACTION_NAMES.SPEC_SAVE)}
           >
@@ -132,14 +127,12 @@ export function SpecApprovalDialog({
           </Button>
           <Button
             variant="outline"
-            size="sm"
             disabled={disabled || incomplete}
             onClick={() => onAction(CHAT_ACTION_NAMES.SPEC_PLAN_AND_EXECUTE)}
           >
             {t("specPlanExecute")}
           </Button>
           <Button
-            size="sm"
             disabled={disabled || incomplete}
             onClick={() => onAction(CHAT_ACTION_NAMES.SPEC_EXECUTE)}
           >

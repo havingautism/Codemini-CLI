@@ -594,7 +594,6 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
                   {inbox ? (
                     <Button
                       variant="outline"
-                      size="sm"
                       onClick={handleDream}
                       disabled={organizing || loading || inboxCount === 0}
                     >

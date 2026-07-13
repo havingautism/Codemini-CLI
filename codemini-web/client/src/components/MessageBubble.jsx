@@ -1939,7 +1939,14 @@ export function MessageBubble({
 
   if (role === "system") {
     const dreamNotice = getDreamNotice(legacyText);
-    if (dreamNotice) return <DreamNotice notice={dreamNotice} />;
+    if (dreamNotice) return null;
+
+    if (
+      String(legacyText || "").startsWith("Reflect skill") ||
+      String(legacyText || "").startsWith("Reflect found no reusable skill candidate.")
+    ) {
+      return null;
+    }
 
     const isWaitingReview =
       legacyText?.includes("等待计划审阅") ||
