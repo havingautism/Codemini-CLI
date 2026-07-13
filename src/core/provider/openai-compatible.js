@@ -1,5 +1,7 @@
-import { isKimiModelName } from './kimi-gateway.js';
-import { resolveOpenAICompatibleReasoning } from './reasoning-effort.js';
+import {
+  modelUsesFixedKimiSampling,
+  resolveOpenAICompatibleReasoning
+} from './reasoning-effort.js';
 
 function extractTextContent(content) {
   if (typeof content === 'string') return content;
@@ -128,7 +130,7 @@ function isMiniMaxModel(model) {
 }
 
 function isKimiModel(model) {
-  return isKimiModelName(model);
+  return modelUsesFixedKimiSampling(model);
 }
 
 function normalizeToolCallArguments(argumentsText) {
