@@ -25,19 +25,33 @@ const FAIL_CLOSED_RESULT = Object.freeze({
   risk: 'high',
   description: '',
   sideEffects: '',
-  recommendation: 'deny'
+  recommendation: 'deny',
+  failed: true
 });
 
-function parseEvaluation(text) {
+function extractJsonObjectText(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return '';
+  if (raw.startsWith('{') && raw.endsWith('}')) return raw;
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1].trim() : raw;
+  const start = candidate.indexOf('{');
+  const end = candidate.lastIndexOf('}');
+  if (start >= 0 && end > start) return candidate.slice(start, end + 1);
+  return candidate;
+}
+
+export function parseEvaluation(text) {
   try {
-    const json = JSON.parse(text);
+    const json = JSON.parse(extractJsonObjectText(text));
     const risk = String(json?.risk || '').toLowerCase();
     const recommendation = String(json?.recommendation || '').toLowerCase();
     return {
       risk: ['low', 'medium', 'high'].includes(risk) ? risk : 'high',
       description: String(json?.description || '').slice(0, 200),
       sideEffects: String(json?.sideEffects || '').slice(0, 200),
-      recommendation: recommendation === 'allow' ? 'allow' : 'deny'
+      recommendation: recommendation === 'allow' ? 'allow' : 'deny',
+      failed: false
     };
   } catch {
     return { ...FAIL_CLOSED_RESULT };

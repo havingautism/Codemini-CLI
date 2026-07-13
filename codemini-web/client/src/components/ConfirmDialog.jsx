@@ -7,6 +7,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { t } from "../../i18n/index.js";
 
 export function ConfirmDialog({
@@ -17,17 +18,20 @@ export function ConfirmDialog({
   cancelLabel,
   loadingLabel,
   loading = false,
+  confirmVariant = "destructive",
   onOpenChange,
   onConfirm,
 }) {
   return (
     <Dialog open={open} onOpenChange={(next) => !loading && onOpenChange?.(next)}>
-      <DialogContent className="sm:max-w-[380px]">
+      <DialogContent className="sm:max-w-[380px] gap-5">
         <DialogHeader showCloseButton={!loading}>
           <DialogTitle>{title}</DialogTitle>
-          <DialogDescription className="leading-6">
-            {description}
-          </DialogDescription>
+          {description ? (
+            <DialogDescription className="text-[13px] leading-6">
+              {description}
+            </DialogDescription>
+          ) : null}
         </DialogHeader>
         <DialogFooter>
           <Button
@@ -40,11 +44,18 @@ export function ConfirmDialog({
           </Button>
           <Button
             type="button"
-            variant="destructive"
+            variant={confirmVariant}
             disabled={loading}
             onClick={onConfirm}
           >
-            {loading ? (loadingLabel || t('deleting')) : (confirmLabel || t('delete'))}
+            {loading ? (
+              <>
+                <Spinner data-icon="inline-start" />
+                {loadingLabel || t("deleting")}
+              </>
+            ) : (
+              confirmLabel || t("delete")
+            )}
           </Button>
         </DialogFooter>
       </DialogContent>

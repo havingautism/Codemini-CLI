@@ -13,8 +13,33 @@ function getCustomSoulsDir() {
 export { BUNDLED_SOULS_DIR, getCustomSoulsDir };
 
 function normalizeSoulName(value) {
-  const name = String(value || '').trim().toLowerCase();
+  const name = String(value || '').trim();
   return name || 'default';
+}
+
+async function resolveSoulFilePath(dir, name) {
+  const requested = String(name || '').trim();
+  if (!requested) return '';
+  const directPath = path.join(dir, `${requested}.md`);
+  try {
+    await fs.access(directPath);
+    return directPath;
+  } catch {}
+  try {
+    const entries = await fs.readdir(dir);
+    const expected = `${requested}.md`.toLowerCase();
+    const match = entries.find((file) => file.toLowerCase() === expected);
+    return match ? path.join(dir, match) : '';
+  } catch {
+    return '';
+  }
+}
+
+async function readSoulPreset(dir, preset) {
+  const filePath = await resolveSoulFilePath(dir, preset);
+  if (!filePath) return '';
+  const content = await fs.readFile(filePath, 'utf8');
+  return String(content || '').trim();
 }
 
 function resolveCustomSoulPath(customPath = '') {
@@ -38,22 +63,18 @@ export async function loadSoulPrompt(config = {}) {
 
   const preset = normalizeSoulName(config?.soul?.preset);
   // Check custom souls dir first, then bundled
-  const customPresetPath = path.join(getCustomSoulsDir(), `${preset}.md`);
   try {
-    const content = await fs.readFile(customPresetPath, 'utf8');
-    const text = String(content || '').trim();
+    const text = await readSoulPreset(getCustomSoulsDir(), preset);
     if (text) return `[Soul preset: ${preset}]\n${text}`;
   } catch {}
-  const presetPath = path.join(BUNDLED_SOULS_DIR, `${preset}.md`);
   try {
-    const content = await fs.readFile(presetPath, 'utf8');
-    const text = String(content || '').trim();
+    const text = await readSoulPreset(BUNDLED_SOULS_DIR, preset);
     if (text) return `[Soul preset: ${preset}]\n${text}`;
   } catch {
     // fall through to default preset
   }
 
-  const defaultContent = await fs.readFile(path.join(BUNDLED_SOULS_DIR, 'default.md'), 'utf8');
+  const defaultContent = await readSoulPreset(BUNDLED_SOULS_DIR, 'default');
   return `[Soul preset: default]\n${String(defaultContent || '').trim()}`;
 }
 

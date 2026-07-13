@@ -3,15 +3,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getShellSystemPrompt } from './shell-profile.js';
 
-function formatToolPath(...segments) {
-  return JSON.stringify(path.join(process.cwd(), ...segments));
+function resolvePromptCwd(options = {}) {
+  const raw = options.workspaceRoot || options.cwd || process.cwd();
+  try {
+    return path.resolve(raw);
+  } catch {
+    return String(raw || process.cwd());
+  }
 }
 
-function getToolFewShotBlock() {
-  const cwd = process.cwd();
-  const authServicePath = formatToolPath('src', 'auth', 'service.ts');
+function formatToolPath(cwd, ...segments) {
+  return JSON.stringify(path.join(cwd, ...segments));
+}
+
+function getToolFewShotBlock(config = {}, cwd = process.cwd()) {
+  const authServicePath = formatToolPath(cwd, 'src', 'auth', 'service.ts');
   const reducerRangePath = JSON.stringify(`${path.join(cwd, 'src', 'store', 'reducer.ts')}:110-150`);
-  const notesPath = formatToolPath('notes.txt');
+  const notesPath = formatToolPath(cwd, 'notes.txt');
   return `# Tool Examples
 
 Use these as style examples for tool calls:
@@ -19,6 +27,7 @@ Use these as style examples for tool calls:
 Current working directory: ${cwd}
 When a tool takes path, build it from the current working directory and prefer absolute paths.
 If the user mentions a project-relative path like src/app.ts, resolve it from ${cwd} instead of guessing parent directories.
+Tool arguments must be valid JSON objects. When a string contains file content, encode newlines as \\n inside the JSON string; never put raw unescaped line breaks inside a JSON string.
 
 1. File discovery then read
 User: compare the auth flow
@@ -26,13 +35,15 @@ Assistant: first narrow the search with the project index
 Tool: query_project_index({"query":"auth flow","path":"src","max_results":3})
 Tool: read({"path":${authServicePath}})
 
-If the visible tool list does not include a needed capability, load it with tool_search instead of assuming it does not exist.
+If the visible tool list does not include a needed deferred capability, load it with tool_search instead of assuming it does not exist.
 Example:
 Tool: tool_search({"query":"glob"})
 Tool: glob({"pattern":"src/**/*.ts"})
-If you need to activate a skill by name, load the skill tool and read the indexed skill through it:
-Tool: tool_search({"query":"skill"})
-Tool: skill({"name":"brainstorming"})
+To discover or load Codemini skills, use the skill tool directly against the indexed registry:
+Tool: skill({"query":"fix ts generic error"})
+Tool: skill({"name":"list"})
+Tool: skill({"query":"debugging workflow"})
+Do not grep or list skills directories to discover skills.
 
 2. Targeted search then exact text edit
 User: rename loginUser to signInUser
@@ -40,58 +51,34 @@ Assistant: first find the exact occurrences
 Tool: grep({"pattern":"loginUser","path":"src"})
 Tool: edit({"path":${authServicePath},"old_text":"loginUser","new_text":"signInUser"})
 
+For an existing file full rewrite, use edit with new_content:
+Tool: edit({"path":${authServicePath},"new_content":"export function signInUser() {\\n  return true;\\n}\\n"})
+If the intent is explicitly whole-file output or overwrite, write is also available:
+Tool: write({"path":${authServicePath},"content":"export function signInUser() {\\n  return true;\\n}\\n","overwrite":true})
+
 3. Read a specific range
 User: inspect the reducer around line 120
 Assistant: read only the needed range
 Tool: read({"path":${reducerRangePath}})
 
-4. Track a complex task with todos
-User: update the login flow and verify it
-Assistant: create a focused todo checklist before starting
-Tool: update_todos({"todos":[{"content":"Inspect the current login flow","activeForm":"Inspecting the current login flow","status":"in_progress"},{"content":"Implement the requested login changes","activeForm":"Implementing the requested login changes","status":"pending"},{"content":"Run focused verification for the login flow","activeForm":"Running focused verification for the login flow","status":"pending"}]})
-Assistant: keep the checklist updated as each phase finishes, and do not give a completion-style wrap-up until the checklist is complete or a blocker is recorded
-
-5. Create a new file
+4. Write a new file
 User: add a notes file
-Assistant: create the file directly
-Tool: create({"path":${notesPath},"content":"todo\\n"})
+Assistant: write the file directly
+Tool: write({"path":${notesPath},"content":"todo\\n"})
 
-6. Save a high-signal observation to memory
-When you notice a reusable pattern, a user correction, a repeated failure, or a stable preference — save it to persistent memory. Choose scope carefully:
-- scope "user" for personal preferences (language, reply style, interaction habits)
-- scope "global" for cross-project lessons (environment quirks, general tool workflows)
-- scope "project" for project-specific knowledge (architecture conventions, local config, test commands, file locations)
+For a large or multi-file code patch, use apply_patch with one escaped patch_text string:
+Tool: apply_patch({"patch_text":"*** Begin Patch\\n*** Update File: ${path.join('src', 'auth', 'service.ts').replace(/\\/g, '/')}\\n@@\\n-export const enabled = false;\\n+export const enabled = true;\\n*** End Patch"})
 
-Examples:
-Tool: save_memory({"content":"User prefers tab size 2 for all JSON files","scope":"user","kind":"preference"})
-Tool: save_memory({"content":"This project uses vitest, not jest — run tests with npx vitest run","scope":"project","kind":"pattern"})
-Tool: save_memory({"content":"WSL2 bash exec prefix does not support cd as a command","scope":"global","kind":"correction"})
-
-7. Run a dream loop consolidation pass
-When you want to review and consolidate inbox entries into long-term memory.
-Tool: dream_consolidate({})
-
-8. Read a live web page by URL
-User: summarize https://example.com/docs
-Assistant: load the web fetch tool and read the page directly
-Tool: tool_search({"query":"web_fetch"})
-Tool: web_fetch({"url":"https://example.com/docs"})
-
-9. Search the web
-User: search the web for latest pnpm release
-Assistant: load the web search tool and run a targeted search
-Tool: tool_search({"query":"web_search"})
-Tool: web_search({"query":"latest pnpm release","max_results":5})
+Use update_todos for genuinely multi-step work. When the user asks you to remember lasting preferences/interests, call save_memory(scope="user", kind="preference"); for project rules use scope="project" kind="convention"; for reusable learnings use kind="lesson". Do not duplicate an equivalent fact already in Persistent Memory. Load web_fetch or web_search through tool_search when current external information is needed.
 
 Prefer these direct tool shapes over multi-step metadata reads or shell fallbacks.
 Prefer explicit absolute path values when the current working directory is known.`;
 }
 
-function getEnvBlock() {
-  const cwd = process.cwd();
+function getEnvBlock(cwd = process.cwd()) {
   let isGitRepo = false;
   try {
-    fs.accessSync(`${cwd}/.git`);
+    fs.accessSync(path.join(cwd, '.git'));
     isGitRepo = true;
   } catch {}
 
@@ -111,10 +98,11 @@ function normalizePromptBlocks(blocks) {
 }
 
 export function buildDefaultSystemPrompt(config = {}, options = {}) {
+  const cwd = resolvePromptCwd(options);
   return [
     getShellSystemPrompt(config?.shell?.default),
-    getToolFewShotBlock(),
-    getEnvBlock(),
+    getToolFewShotBlock(config, cwd),
+    getEnvBlock(cwd),
     ...normalizePromptBlocks(options.extraPrompts)
   ].filter(Boolean).join('\n\n');
 }

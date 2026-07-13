@@ -6,6 +6,7 @@ import { copyRecursive } from '../core/fs-utils.js';
 import { loadConfig, saveConfig } from '../core/config-store.js';
 import { loadCommandsAndSkills } from '../core/command-loader.js';
 import { getProjectSkillsDir, getSkillsDir } from '../core/paths.js';
+import { normalizeSkillContexts, skillAppliesToExecutionMode } from '../core/skill-contexts.js';
 import {
   computeFileSha256,
   readSkillRegistry,
@@ -90,6 +91,68 @@ export function normalizeGitSource(source = '') {
   return null;
 }
 
+export function packageSourceKey(source = '') {
+  const normalized = normalizeGitSource(source);
+  if (!normalized?.url) return '';
+  let url = String(normalized.url || '').trim();
+  const ssh = url.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i);
+  if (ssh) {
+    url = `https://github.com/${ssh[1]}/${ssh[2]}.git`;
+  }
+  url = url
+    .toLowerCase()
+    .replace(/\.git$/i, '')
+    .replace(/\/$/, '');
+  const subPath = String(normalized.subPath || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\/+|\/+$/g, '');
+  return subPath ? `${url}#${subPath}` : url;
+}
+
+export function samePackageSource(left = '', right = '') {
+  const leftKey = packageSourceKey(left);
+  const rightKey = packageSourceKey(right);
+  return Boolean(leftKey && rightKey && leftKey === rightKey);
+}
+
+export function canUpdateSkillPackage(skill = {}) {
+  if (!skill || skill.scope === 'builtin') return false;
+  const source = String(skill.packageSource || skill.source || '').trim();
+  return Boolean(packageSourceKey(source));
+}
+
+export function getSkillPackageUpdateSource(skill = {}) {
+  const source = String(skill.source || '').trim();
+  if (packageSourceKey(source)) return source;
+  return String(skill.packageSource || '').trim();
+}
+
+export function skillBelongsToPackageUpdate(skill = {}, source = '') {
+  return samePackageSource(getSkillPackageUpdateSource(skill), source);
+}
+
+export function getStaleSkillPackageNames(before = [], installed = []) {
+  const installedNames = new Set(installed.map((name) => String(name || '').trim()));
+  return before
+    .map((item) => String(item?.name || '').trim())
+    .filter((name) => name && !installedNames.has(name));
+}
+
+export function getSkillRoutingPreferences(entries = []) {
+  return new Map(
+    entries.map((item) => [
+      item.name,
+      {
+        mode: item.mode || 'agent_requested',
+        triggers: Array.isArray(item.triggers) ? [...item.triggers] : [],
+        ...(item.priority !== undefined ? { priority: item.priority } : {}),
+        enabled: item.enabled !== false,
+      },
+    ])
+  );
+}
+
 async function runGitClone(source, destDir) {
   const normalized = normalizeGitSource(source);
   if (!normalized) {
@@ -164,17 +227,27 @@ export async function listSkillEntries({ scope = 'all', cwd = process.cwd() } = 
       description: command.metadata?.description || '',
       mode: command.metadata?.mode || '',
       triggers: Array.isArray(command.metadata?.triggers) ? command.metadata.triggers : [],
+      priority: Number.isFinite(Number(command.metadata?.priority))
+        ? Number(command.metadata.priority)
+        : undefined,
       source: command.metadata?.source || '',
       packageSource: command.metadata?.packageSource || command.metadata?.source || '',
       packageName: command.metadata?.packageName || '',
       installedAt: command.metadata?.installedAt || '',
+      contexts: config.skills?.contexts?.[command.name]
+        ? normalizeSkillContexts(config.skills.contexts[command.name])
+        : ['project', 'builtin'].includes(itemScope)
+          ? ['coding']
+          : ['coding', 'daily'],
       scope: itemScope,
       path: command.path,
-      enabled: command.metadata?.enabled === false
-        ? false
-        : itemScope === 'builtin'
-          ? true
-          : config.skills?.enabled?.[command.name] !== false
+      enabled: config.skills?.enabled?.[command.name] !== undefined
+        ? config.skills.enabled[command.name] !== false
+        : command.metadata?.enabled !== false,
+      appliesToCurrentMode: skillAppliesToExecutionMode(
+        config.skills?.contexts?.[command.name],
+        config.execution?.mode,
+      )
     });
   }
   return entries.sort((a, b) => `${a.scope}:${a.name}`.localeCompare(`${b.scope}:${b.name}`));
@@ -250,14 +323,21 @@ async function readManifestSafe(skillRoot) {
   }
 }
 
-async function readPluginManifestSafe(rootDir) {
-  const p = path.join(rootDir, '.codex-plugin', 'plugin.json');
-  try {
-    const raw = await fs.readFile(p, 'utf8');
-    return JSON.parse(raw);
-  } catch {
-    return null;
+const PLUGIN_MANIFEST_RELATIVE_PATHS = [
+  path.join('.codex-plugin', 'plugin.json'),
+  path.join('.claude-plugin', 'plugin.json'),
+];
+
+export async function readPluginManifestSafe(rootDir) {
+  for (const relativePath of PLUGIN_MANIFEST_RELATIVE_PATHS) {
+    try {
+      const raw = await fs.readFile(path.join(rootDir, relativePath), 'utf8');
+      return JSON.parse(raw);
+    } catch {
+      // Try the next known plugin-manifest location.
+    }
   }
+  return null;
 }
 
 function normalizeRelativePath(value = '') {
@@ -403,6 +483,37 @@ async function upsertSkillCatalogEntry(baseDir, name, entry) {
   await writeSkillCatalog(baseDir, catalog);
 }
 
+async function ensureSkillContextsConfig(name, scope) {
+  const config = await loadConfig();
+  config.skills = config.skills || {};
+  config.skills.contexts = config.skills.contexts || {};
+  if (!config.skills.contexts[name]) {
+    config.skills.contexts[name] = scope === 'project' ? ['coding'] : ['coding', 'daily'];
+    await saveConfig(config);
+  }
+}
+
+async function removeSkillCatalogEntries(baseDir, names) {
+  if (names.length === 0) return;
+  const catalog = await readSkillCatalogSafe(baseDir);
+  for (const name of names) delete catalog.skills?.[name];
+  await writeSkillCatalog(baseDir, catalog);
+}
+
+async function removeInstalledSkillEntries(baseDir, names, scope) {
+  if (names.length === 0) return;
+  for (const name of names) {
+    await fs.rm(path.join(baseDir, name), { recursive: true, force: true });
+  }
+  await removeSkillCatalogEntries(baseDir, names);
+  if (scope === 'global') {
+    const staleNames = new Set(names);
+    const registry = await readSkillRegistry();
+    registry.skills = registry.skills.filter((item) => !staleNames.has(item.name));
+    await writeSkillRegistry(undefined, registry);
+  }
+}
+
 async function resolveSkillSourceDir(sourcePath) {
   const absSrc = path.resolve(sourcePath);
   const srcStat = await fs.stat(absSrc);
@@ -461,7 +572,7 @@ async function findSkillDirs(rootDir) {
   return found;
 }
 
-async function findSkillDirsForPackage(rootDir) {
+export async function findSkillDirsForPackage(rootDir) {
   const plugin = await readPluginManifestSafe(rootDir);
   const skillsPath = normalizeRelativePath(plugin?.skills);
   if (skillsPath) {
@@ -510,6 +621,15 @@ export async function installSkill(sourcePath, { scope = 'project', cwd = proces
     packageName: '',
     installedAt: new Date().toISOString()
   };
+  const catalogEntry = {
+    description,
+    mode: 'agent_requested',
+    enabled: true,
+    source: sourceLabel,
+    packageSource: packageMetadata.packageSource || sourceLabel,
+    packageName: packageMetadata.packageName || '',
+    installedAt: packageMetadata.installedAt || new Date().toISOString()
+  };
   if (scope === 'global') {
     await upsertSkillRegistryEntry(undefined, {
       name: folderName,
@@ -523,17 +643,12 @@ export async function installSkill(sourcePath, { scope = 'project', cwd = proces
       sha256: hash,
       installedAt: packageMetadata.installedAt || new Date().toISOString()
     });
+    await upsertSkillCatalogEntry(baseDirForScope(scope, cwd), folderName, catalogEntry);
   } else {
-    await upsertSkillCatalogEntry(baseDirForScope(scope, cwd), folderName, {
-      description,
-      enabled: true,
-      source: sourceLabel,
-      packageSource: packageMetadata.packageSource || sourceLabel,
-      packageName: packageMetadata.packageName || '',
-      installedAt: packageMetadata.installedAt || new Date().toISOString()
-    });
+    await upsertSkillCatalogEntry(baseDirForScope(scope, cwd), folderName, catalogEntry);
   }
   await setSkillEnabledConfig(folderName, true);
+  await ensureSkillContextsConfig(folderName, scope);
 
   if (resolved.cleanupDir) {
     await fs.rm(resolved.cleanupDir, { recursive: true, force: true });
@@ -602,6 +717,75 @@ export async function installSkillSource(source, { scope = 'project', cwd = proc
   }
 }
 
+export async function updateSkillPackage({
+  name = '',
+  packageSource = '',
+  scope = '',
+  cwd = process.cwd(),
+} = {}) {
+  const entries = await listSkillEntries({ scope: 'all', cwd });
+  let skill = null;
+  let source = String(packageSource || '').trim();
+  let targetScope = String(scope || '').trim();
+
+  if (name) {
+    skill = entries.find((item) => item.name === name);
+    if (!skill) {
+      throw new Error(`skill not found: ${name}`);
+    }
+    if (skill.scope === 'builtin') {
+      throw new Error(`cannot update builtin skill: ${name}`);
+    }
+    source = getSkillPackageUpdateSource(skill);
+    targetScope = skill.scope;
+  }
+
+  if (!['global', 'project'].includes(targetScope)) {
+    throw new Error('skill package update requires scope=project|global');
+  }
+  if (!packageSourceKey(source)) {
+    throw new Error(`skill package source is not updatable: ${source || '(empty)'}`);
+  }
+
+  const scopedEntries = await listSkillEntries({ scope: targetScope, cwd });
+  const before = scopedEntries.filter((item) => skillBelongsToPackageUpdate(item, source));
+  const preferences = getSkillRoutingPreferences(before);
+
+  const installed = await installSkillSource(source, { scope: targetScope, cwd });
+  const baseDir = baseDirForScope(targetScope, cwd);
+  const stale = getStaleSkillPackageNames(before, installed);
+
+  await removeInstalledSkillEntries(baseDir, stale, targetScope);
+
+  for (const skillName of installed) {
+    const prior = preferences.get(skillName);
+    if (!prior) continue;
+    const patch = {
+      mode: prior.mode,
+      triggers: prior.triggers,
+      enabled: prior.enabled,
+    };
+    if (prior.priority !== undefined) patch.priority = prior.priority;
+    await upsertSkillCatalogEntry(baseDir, skillName, patch);
+    await setSkillEnabledConfig(skillName, prior.enabled);
+    if (targetScope === 'global') {
+      await upsertSkillRegistryEntry(undefined, {
+        name: skillName,
+        enabled: prior.enabled,
+      });
+    }
+  }
+
+  return {
+    installed,
+    packageSource: source,
+    packageName: skill?.packageName || before[0]?.packageName || '',
+    scope: targetScope,
+    previouslyInstalled: before.map((item) => item.name),
+    removed: stale,
+  };
+}
+
 async function setEnabled(name, enabled, { cwd = process.cwd() } = {}) {
   const entries = await listSkillEntries({ scope: 'all', cwd });
   const found = entries.find((item) => item.name === name);
@@ -657,26 +841,28 @@ async function reindexSkills({ scope = 'global', cwd = process.cwd() } = {}) {
     });
   }
 
+  const catalog = await readSkillCatalogSafe(baseDir);
+  catalog.version = catalog.version || 1;
+  catalog.skills = catalog.skills || {};
+  for (const item of rebuilt) {
+    catalog.skills[item.name] = {
+      ...(catalog.skills[item.name] || {}),
+      description: item.description,
+      mode: catalog.skills[item.name]?.mode || 'agent_requested',
+      enabled: item.enabled !== false,
+      ...(item.source ? { source: item.source } : {}),
+      ...(item.packageSource ? { packageSource: item.packageSource } : {}),
+      ...(item.packageName ? { packageName: item.packageName } : {}),
+      triggers: Array.isArray(catalog.skills[item.name]?.triggers) ? catalog.skills[item.name].triggers : []
+    };
+  }
   if (scope === 'global') {
     await writeSkillRegistry(undefined, {
       version: 1,
       skills: rebuilt
     });
+    await writeSkillCatalog(baseDir, catalog);
   } else if (scope === 'project') {
-    const catalog = await readSkillCatalogSafe(baseDir);
-    catalog.version = catalog.version || 1;
-    catalog.skills = catalog.skills || {};
-    for (const item of rebuilt) {
-      catalog.skills[item.name] = {
-        ...(catalog.skills[item.name] || {}),
-        description: item.description,
-        enabled: item.enabled !== false,
-        ...(item.source ? { source: item.source } : {}),
-        ...(item.packageSource ? { packageSource: item.packageSource } : {}),
-        ...(item.packageName ? { packageName: item.packageName } : {}),
-        triggers: Array.isArray(catalog.skills[item.name]?.triggers) ? catalog.skills[item.name].triggers : []
-      };
-    }
     await writeSkillCatalog(baseDir, catalog);
   }
 
@@ -687,6 +873,7 @@ function usage() {
   console.log(`Usage:
   codemini skill list [--scope=all|project|global|builtin]
   codemini skill install [--scope=project|global] <path>
+  codemini skill update <name>
   codemini skill enable <name>
   codemini skill disable <name>
   codemini skill inspect [--scope=all|project|global|builtin] <name>
@@ -722,6 +909,18 @@ export async function handleSkill(args) {
     }
     const installedNames = await installSkillSource(sourcePath, { scope });
     console.log(`Installed skill${installedNames.length === 1 ? '' : 's'}: ${installedNames.join(', ')} (${scope})`);
+    return;
+  }
+
+  if (sub === 'update') {
+    const name = rest[0];
+    if (!name) {
+      throw new Error('skill update requires <name>');
+    }
+    const result = await updateSkillPackage({ name, cwd: process.cwd() });
+    console.log(
+      `Updated skill package${result.packageName ? ` ${result.packageName}` : ''}: ${result.installed.join(', ')} (${result.scope})`
+    );
     return;
   }
 

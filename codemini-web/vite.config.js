@@ -11,11 +11,21 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, 'client/src'),
+      '@core': path.resolve(__dirname, '../src/core'),
     },
   },
   build: {
     outDir: '../dist',
-    emptyOutDir: true
+    emptyOutDir: true,
+    chunkSizeWarningLimit: 1300,
+    rolldownOptions: {
+      output: {
+        codeSplitting: true
+      }
+    }
+  },
+  optimizeDeps: {
+    include: ['@lottiefiles/dotlottie-react'],
   },
   server: {
     proxy: {

@@ -1,6 +1,5 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   getCommandsDir,
   getProjectCommandsDir,
@@ -8,9 +7,8 @@ import {
   getSkillsDir
 } from './paths.js';
 import { readSkillRegistry } from './skill-registry.js';
+import { skillIsEligible } from './skill-contexts.js';
 
-const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
-const BUNDLED_SKILLS_DIR = path.resolve(MODULE_DIR, '..', '..', 'skills');
 const SKILL_CATALOG_FILE = 'codemini.skills.json';
 const FRONTMATTER_READ_BYTES = 16 * 1024;
 
@@ -105,6 +103,24 @@ function normalizeSkillMode(value) {
   const mode = String(value || '').trim();
   if (mode === 'auto_attach') return 'agent_requested';
   return mode;
+}
+
+function resolveSkillIndexMode(metadata = {}, source = '') {
+  const mode = normalizeSkillMode(metadata.mode);
+  if (mode === 'manual' || mode === 'always' || mode === 'agent_requested') return mode;
+  if (source === 'registry-skill' || source === 'global-skill' || source === 'project-skill') {
+    return 'agent_requested';
+  }
+  return mode || 'agent_requested';
+}
+
+export function isSkillIndexEligible(command) {
+  if (command?.metadata?.type !== 'skill') return false;
+  return resolveSkillIndexMode(command.metadata, command.source) !== 'manual';
+}
+
+export function isUserInvocableSkill(command) {
+  return command?.metadata?.type === 'skill';
 }
 
 function catalogMetadata(catalog, name) {
@@ -268,41 +284,6 @@ function loadLegacySkillsFromDir(baseDir, source, out) {
   }
 }
 
-function loadBundledSkillsFromDir(baseDir, out) {
-  if (!fs.existsSync(baseDir)) return;
-  const catalog = readSkillCatalog(baseDir);
-  const entries = Object.keys(catalog).length > 0 ? Object.keys(catalog) : safeEntries(baseDir);
-  for (const entry of entries) {
-    if (!isSafeEntry(entry)) continue;
-    const full = path.join(baseDir, entry);
-    let stat;
-    try {
-      stat = fs.statSync(full);
-    } catch {
-      continue;
-    }
-    if (!stat.isDirectory()) continue;
-    const catalogMeta = catalogMetadata(catalog, entry);
-    const skillFile = path.join(full, 'SKILL.md');
-    if (!fs.existsSync(skillFile)) continue;
-    const frontmatter = readFrontmatterMetadata(skillFile);
-    setCommand(out, entry, commandWithContent({
-      name: entry,
-      source: 'bundled-skill',
-      path: skillFile,
-      metadata: {
-        ...frontmatter,
-        ...catalogMeta,
-        type: 'skill',
-        rootPath: full,
-        entryFile: 'SKILL.md',
-        version: frontmatter.version || '0.1.0',
-        description: catalogMeta.description || frontmatter.description || 'Bundled skill'
-      }
-    }));
-  }
-}
-
 function loadIndexedSkillsFromCatalog(baseDir, source, out) {
   if (!fs.existsSync(baseDir)) return;
   const catalog = readSkillCatalog(baseDir);
@@ -400,7 +381,6 @@ function substituteVariables(text, args = []) {
 export async function loadCommandsAndSkills(cwd = process.cwd()) {
   const commands = new Map();
 
-  loadBundledSkillsFromDir(BUNDLED_SKILLS_DIR, commands);
   applySkillCatalogPatches(getProjectSkillsDir(cwd), commands);
   loadMarkdownCommandsFromDir(getCommandsDir(), 'global', commands);
   loadMarkdownCommandsFromDir(getProjectCommandsDir(cwd), 'project', commands);
@@ -416,14 +396,50 @@ export async function loadCommandsAndSkills(cwd = process.cwd()) {
 export async function loadIndexedSkills(cwd = process.cwd()) {
   const commands = new Map();
 
-  loadIndexedSkillsFromCatalog(BUNDLED_SKILLS_DIR, 'bundled-skill', commands);
   loadIndexedSkillsFromCatalog(getProjectSkillsDir(cwd), 'project-skill', commands);
   loadIndexedSkillsFromCatalog(getSkillsDir(), 'global-skill', commands);
 
   const registry = await readSkillRegistry();
   loadInstalledSkillsFromRegistry(getSkillsDir(), registry, commands);
 
+  for (const command of commands.values()) {
+    if (command.metadata?.type !== 'skill') continue;
+    command.metadata.mode = resolveSkillIndexMode(command.metadata, command.source);
+  }
+
   return commands;
+}
+
+function skillScopeLabel(source = '') {
+  if (source === 'bundled-skill') return 'builtin';
+  if (source === 'project-skill') return 'project';
+  if (source === 'global-skill' || source === 'registry-skill') return 'global';
+  return source || 'unknown';
+}
+
+function isIndexedSkillEnabledForPrompt(command, config = {}, executionMode = config?.execution?.mode) {
+  return skillIsEligible(config?.skills, command?.name, executionMode, command);
+}
+
+export async function buildSkillIndexPromptBlock(cwd = process.cwd(), config = {}, executionMode = config?.execution?.mode) {
+  const indexed = await loadIndexedSkills(cwd);
+  const lines = Array.from(indexed.values())
+    .filter((command) => isSkillIndexEligible(command))
+    .filter((command) => isIndexedSkillEnabledForPrompt(command, config, executionMode))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((command) => {
+      const scope = skillScopeLabel(command.source);
+      const mode = resolveSkillIndexMode(command.metadata, command.source);
+      const desc = String(command.metadata?.description || '').trim().replace(/\s+/g, ' ');
+      const label = mode === 'agent_requested' ? `${scope}|agent_requested` : scope;
+      return desc ? `- /${command.name} [${label}] - ${desc}` : `- /${command.name} [${label}]`;
+    });
+  if (!lines.length) return '';
+  return [
+    '# Indexed skills',
+    'Agent-requested and always skills installed by the user or project (manual slash-only skills are omitted). Load full instructions with skill({name:"<name>"}). Search with skill({query:"..."}).',
+    ...lines
+  ].join('\n');
 }
 
 export function renderCommandPrompt(command, args) {
@@ -433,4 +449,29 @@ export function renderCommandPrompt(command, args) {
     content = `${content}\n\n[User task]\n${args.join(' ')}`;
   }
   return `[Executing ${command.metadata.type === 'skill' ? 'skill' : 'command'}: /${command.name}]\n\n${content}`;
+}
+
+export function composeExplicitSkillPrompt(commands, names, question, { isEnabled } = {}) {
+  const selected = [];
+  for (const name of names || []) {
+    const command = commands?.get?.(name);
+    if (!command || !isUserInvocableSkill(command)) {
+      return { error: `Unknown or unavailable skill: ${name}` };
+    }
+    if (typeof isEnabled === 'function' && !isEnabled(command)) {
+      return { error: `Skill is disabled: ${name}` };
+    }
+    selected.push(command);
+  }
+  const task = String(question || '').trim();
+  if (selected.length === 0) return { error: 'skill:[...] requires at least one skill name.' };
+  const effectiveTask = task ||
+    'Begin the selected skill workflow. If required information is missing, ask the user for it.';
+  const prompt = [
+    '[Explicit skill composition]',
+    'Apply every selected skill. Preserve declaration order. If instructions conflict, explain the conflict instead of silently overriding one skill.',
+    ...selected.map((command) => renderCommandPrompt(command, [])),
+    `[User task]\n${effectiveTask}`
+  ].join('\n\n');
+  return { prompt, selected };
 }

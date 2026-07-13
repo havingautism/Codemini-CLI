@@ -1,12 +1,14 @@
-import React, {
+﻿import React, {
   Component,
   Suspense,
   lazy,
   memo,
   useCallback,
   useMemo,
+  useState,
 } from "react";
 import { createRoot } from "react-dom/client";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppProvider, useApp } from "@/context/app-context.jsx";
 import { t } from "../i18n/index.js";
@@ -15,12 +17,16 @@ import { ChatPanel } from "@/components/ChatPanel.jsx";
 import { InputBar } from "@/components/InputBar.jsx";
 import { StatusBar } from "@/components/StatusBar.jsx";
 import { ApprovalDialog } from "@/components/ApprovalDialog.jsx";
-import { PlanApprovalCard } from "@/components/PlanApprovalDialog.jsx";
-import { ReflectApprovalCard } from "@/components/ReflectApprovalDialog.jsx";
-import { SpecApprovalCard } from "@/components/SpecApprovalDialog.jsx";
+import { UserInputDialog } from "@/components/UserInputDialog.jsx";
+import { ReflectApprovalDialog } from "@/components/ReflectApprovalDialog.jsx";
+import { DreamDialog } from "@/components/DreamDialog.jsx";
+import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
-import { MoreHorizontal, Terminal, GitCompare } from "lucide-react";
+import { SessionPanel } from "@/components/SessionPanel.jsx";
+import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
+import { DotsThree, GitDiff, List, Terminal } from "@phosphor-icons/react";
 import "../style.css";
+import "./apple-design.css";
 
 const CodeWikiPanel = lazy(() =>
   import("@/components/CodeWikiPanel.jsx").then((module) => ({
@@ -159,8 +165,16 @@ class ErrorBoundary extends Component {
 
 function Shell() {
   const { state, actions } = useApp();
+  const approvalRequest = interactiveRequestForSession(state, "approval");
+  const userInputRequest = interactiveRequestForSession(state, "userInput");
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const rs = state.runtimeState || {};
-  const currentId = rs.sessionId;
+  const currentId = state.currentSessionId || rs.sessionId;
+  const reasoningSyncKey = useMemo(
+    () =>
+      `${rs.reasoningEnabled !== false ? "1" : "0"}:${rs.reasoningEffort || "auto"}`,
+    [rs.reasoningEnabled, rs.reasoningEffort],
+  );
   const openSettings = useCallback(
     () => actions.setConfigOpen(true),
     [actions],
@@ -187,15 +201,31 @@ function Shell() {
     () => sidebarProjectTargets.map((item) => item.dir),
     [sidebarProjectTargets],
   );
+  const hasConversation = useMemo(
+    () =>
+      state.messages.some((message) =>
+        ["you", "user", "agent", "assistant"].includes(message?.role),
+      ),
+    [state.messages],
+  );
 
-  return (
-    <div className="flex h-screen bg-(--bg-primary) text-(--text-primary)">
-      <MemoSidebar
+  const closeMobileSidebar = useCallback(() => {
+    setMobileSidebarOpen(false);
+  }, []);
+
+  const sidebar = (
+    <MemoSidebar
         sessions={state.sessions}
         sessionsLoading={state.sessionsLoading}
         currentSessionId={currentId}
-        onNewSession={actions.newSession}
-        onSwitchSession={actions.switchSession}
+        onNewSession={async (...args) => {
+          closeMobileSidebar();
+          return actions.newSession(...args);
+        }}
+        onSwitchSession={async (...args) => {
+          closeMobileSidebar();
+          return actions.switchSession(...args);
+        }}
         onToggleTheme={actions.toggleTheme}
         onSetTheme={actions.setTheme}
         onOpenSettings={openSettings}
@@ -209,35 +239,85 @@ function Shell() {
         updateStatus={state.updateStatus}
         currentView={state.currentView}
         onSwitchView={actions.switchView}
-        onOpenProject={actions.openProject}
+        onOpenProject={async (...args) => {
+          closeMobileSidebar();
+          return actions.openProject(...args);
+        }}
+        onOpenProjectSelector={openProjectSelector}
+        onRefreshSessions={actions.loadSessions}
         onDeleteSession={actions.deleteSession}
       />
+  );
 
-      <div className="flex-1 flex flex-col min-w-0 bg-(--bg-secondary)">
-        {state.currentView === "codewiki" ? (
-          <Suspense fallback={null}>
-            <CodeWikiPanel
-              projectCwd={
-                state.codewikiProjectPath?.split(/[/\\]/).pop() ||
-                state.projectCwd
+  return (
+    <div className="codemini-app-shell flex h-screen overflow-hidden text-(--text-primary)">
+      <div className="hidden md:flex h-full shrink-0 py-2 pl-2 pr-0">
+        {sidebar}
+      </div>
+      <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
+        <SheetContent
+          side="left"
+          className="w-[280px] max-w-[82vw] gap-0 border-r p-0 md:hidden"
+          showCloseButton
+        >
+          <SheetTitle className="sr-only">{t("brand")}</SheetTitle>
+          <div className="codemini-app-shell h-full">{sidebar}</div>
+        </SheetContent>
+      </Sheet>
+
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 p-1.5 sm:p-2">
+        {state.currentView === "sessions" ? (
+          <div className="codemini-workspace-panel flex flex-1 flex-col min-h-0 overflow-hidden">
+            <SessionPanel
+              sessions={state.sessions}
+              sessionsLoading={state.sessionsLoading}
+              currentId={currentId}
+              onSwitch={actions.switchSession}
+              onNew={() =>
+                actions.openProject("__codemini_general__", {
+                  view: "chat",
+                  newSession: true,
+                })
               }
-              projectKey={
-                state.codewikiProjectPath ||
-                state.runtimeState?.cwd ||
-                state.projectCwd ||
-                ""
-              }
-              busy={state.busy}
-              planSteps={state.planSteps}
-              stageLabel={state.stageLabel}
-              generationStatus={state.codewikiGeneration}
+              onDelete={actions.deleteSession}
+              onAbort={actions.abortSession}
+              onAbortAll={actions.abortAllSessions}
             />
-          </Suspense>
+          </div>
+        ) : state.currentView === "codewiki" ? (
+          <div className="codemini-workspace-panel flex flex-1 flex-col min-h-0 overflow-hidden">
+            <Suspense fallback={null}>
+              <CodeWikiPanel
+                projectCwd={
+                  state.codewikiProjectPath?.split(/[/\\]/).pop() ||
+                  state.projectCwd
+                }
+                projectKey={
+                  state.codewikiProjectPath ||
+                  state.runtimeState?.cwd ||
+                  state.projectCwd ||
+                  ""
+                }
+                busy={state.busy}
+                planSteps={state.planSteps}
+                stageLabel={state.stageLabel}
+                generationStatus={state.codewikiGeneration}
+              />
+            </Suspense>
+          </div>
         ) : (
-          <div className="flex-1 flex flex-col min-h-0 bg-(--bg-primary) rounded-[18px] shadow-[inset_0_0_0_1px_var(--panel-edge)] relative overflow-hidden my-1 mx-1">
+          <div className="codemini-workspace-panel flex flex-1 flex-col min-h-0 overflow-hidden">
             {/* Titlebar */}
-            <div className="flex items-center justify-between h-[52px] px-5 shrink-0">
+            <div className="flex items-center justify-between h-12 px-3 sm:px-5 shrink-0 border-b border-(--border-default)">
               <div className="flex items-center gap-2.5 min-w-0">
+                <button
+                  type="button"
+                  className="md:hidden inline-flex size-8 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                  aria-label="Open sidebar"
+                  onClick={() => setMobileSidebarOpen(true)}
+                >
+                  <List size={17} />
+                </button>
                 <span className="font-medium text-[14px] text-(--text-primary) truncate">
                   {state.isGeneral
                     ? t("generalChat")
@@ -246,25 +326,48 @@ function Shell() {
                 {state.gitInfo?.isGit && (
                   <span className="inline-flex items-center gap-1 text-[12px] text-(--text-muted) shrink-0">
                     <GitHubIcon size={13} />
-                    <span>{state.gitInfo.branch}</span>
+                    {state.gitInfo.branch ? (
+                      <span>{state.gitInfo.branch}</span>
+                    ) : null}
                   </span>
                 )}
-                {state.gitInfo?.isGit && state.gitInfo?.dirty && (
+                {state.gitInfo?.isGit &&
+                  (state.gitInfo.dirty ||
+                    Number(state.gitInfo.linesAdded) > 0 ||
+                    Number(state.gitInfo.linesRemoved) > 0) && (
                   <button
+                    type="button"
                     onClick={() => actions.setGitDiffOpen(true)}
-                    className="inline-flex items-center gap-1 text-[12px] text-(--text-muted) shrink-0 border-0 bg-transparent cursor-pointer hover:text-(--text-primary) p-0"
+                    className="inline-flex items-center gap-1.5 text-[12px] shrink-0 border-0 bg-transparent cursor-pointer hover:text-(--text-primary) p-0 text-(--text-muted)"
+                    title={t("gitDiffTitle")}
                   >
-                    <GitCompare size={13} />
+                    <GitDiff size={13} />
+                    {(Number(state.gitInfo.linesAdded) > 0 ||
+                      Number(state.gitInfo.linesRemoved) > 0) && (
+                      <span className="inline-flex items-center gap-1 font-mono text-[11px]">
+                        {Number(state.gitInfo.linesAdded) > 0 && (
+                          <span className="text-(--accent-green)">
+                            +{state.gitInfo.linesAdded}
+                          </span>
+                        )}
+                        {Number(state.gitInfo.linesRemoved) > 0 && (
+                          <span className="text-(--accent-red)">
+                            -{state.gitInfo.linesRemoved}
+                          </span>
+                        )}
+                      </span>
+                    )}
                   </button>
                 )}
               </div>
               {/* <button className="border-0 bg-transparent text-(--text-muted) rounded-md p-1.5 cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) shrink-0">
-                <MoreHorizontal size={16} />
+                <DotsThree size={16} />
               </button> */}
             </div>
 
             {/* Plan Progress (during execution) — now rendered as a chat message via plan-overview */}
 
+            <div className="codemini-chat-session flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden">
             {/* Chat Panel */}
             <ChatPanel
               messages={state.messages}
@@ -272,48 +375,42 @@ function Shell() {
               skills={state.skills}
               gitInfo={state.gitInfo}
               messagesLoading={state.messagesLoading}
+              sessionLive={state.live}
               isGeneral={state.isGeneral}
+              onRetryMessage={(prompt) => actions.submit(prompt)}
             />
 
             {/* Plan Review / Input Area */}
-            <div className="w-[min(980px,calc(100%-64px))] mx-auto mb-4 shrink-0 z-30 bg-transparent relative">
-              <RuntimeActivityStrip activities={state.runtimeActivities} />
-              {state.pendingPlanApproval && (
-                <div className="mb-3">
-                  <PlanApprovalCard
-                    plan={state.pendingPlanApproval}
-                    onAction={actions.approvePlan}
-                    onUpdate={actions.updatePendingPlan}
-                    disabled={state.busy}
-                  />
-                </div>
-              )}
-              {state.pendingSpecApproval && (
-                <div className="mb-3">
-                  <SpecApprovalCard
-                    spec={state.pendingSpecApproval}
-                    onAction={actions.approveSpec}
-                    onUpdate={actions.updatePendingSpec}
-                    disabled={state.busy}
-                  />
-                </div>
-              )}
-              {state.pendingReflectApproval && (
-                <div className="mb-3">
-                  <ReflectApprovalCard
-                    draft={state.pendingReflectApproval}
-                    onAction={actions.approveReflect}
-                    onUpdate={actions.updatePendingReflect}
-                    disabled={state.busy}
-                  />
-                </div>
-              )}
+            <div className="w-[calc(100%_-_32px)] max-w-[940px] sm:w-[calc(100%_-_48px)] mx-auto mb-2 sm:mb-3 shrink-0 z-30 bg-transparent relative">
+              <RuntimeActivityStrip
+                activities={state.runtimeActivities}
+              />
+              <ReflectApprovalDialog
+                open={state.reflectDialogOpen}
+                draft={state.pendingReflectApproval}
+                error={state.reflectDialogError}
+                result={state.reflectDialogResult}
+                onOpenChange={actions.setReflectDialogOpen}
+                onRetry={() => actions.runChatAction("reflect")}
+                onAction={actions.approveReflect}
+                onUpdate={actions.updatePendingReflect}
+                disabled={state.busy}
+              />
+              <DreamDialog
+                open={state.dreamDialogOpen}
+                status={state.dreamDialogStatus}
+                result={state.dreamDialogResult}
+                error={state.dreamDialogError}
+                onOpenChange={actions.setDreamDialogOpen}
+                onRetry={() => actions.runChatAction("dream")}
+              />
               <MemoInputBar
                 onSubmit={actions.submit}
+                onAction={actions.runChatAction}
+                onActionStart={actions.prepareChatAction}
                 onAbort={actions.abort}
                 busy={state.busy}
                 disabled={
-                  !!state.pendingPlanApproval ||
                   !!state.pendingSpecApproval ||
                   !!state.pendingReflectApproval
                 }
@@ -322,20 +419,21 @@ function Shell() {
                     ? t("reflectReviewFirst")
                     : state.pendingSpecApproval
                       ? t("specReviewFirst")
-                      : t("planReviewFirst")
+                      : ""
                 }
                 runtimeState={state.runtimeState}
                 history={state.history}
-                onOpenProject={openProjectSelector}
                 onOpenSpec={actions.openSpecReview}
                 projectCwd={state.projectCwd}
+                projectDirs={sidebarProjectDirs}
+                hasConversation={hasConversation}
               />
 
               {/* Meta row */}
-              <div className="flex items-center gap-3 pt-2 px-3 min-h-[28px] overflow-hidden">
+              <div className="flex items-center gap-3 pt-1.5 px-1 sm:px-2 min-h-[24px] overflow-hidden">
                 {state.versionInfo?.current && (
                   <span className="inline-flex items-center gap-1 text-[11px] text-(--text-muted) shrink-0">
-                    <span className="inline-flex h-3 w-3.5 items-center justify-center rounded-[3px] bg-black text-white dark:bg-white dark:text-black">
+                    <span className="inline-flex size-3.5 items-center justify-center rounded-[3px] bg-foreground text-background">
                       <Terminal size={12} strokeWidth={2.5} />
                     </span>
                     Codemini CLI@{state.versionInfo.current}
@@ -348,14 +446,33 @@ function Shell() {
                 />
               </div>
             </div>
+            </div>
           </div>
         )}
       </div>
 
       <ApprovalDialog
-        request={state.approvalRequest}
-        open={!!state.approvalRequest}
-        onDecision={actions.approve}
+        request={approvalRequest}
+        open={!!approvalRequest}
+        onDecision={(id, actionName) =>
+          actions.approve(id, actionName, approvalRequest?.sessionId)
+        }
+      />
+
+      <UserInputDialog
+        request={userInputRequest}
+        open={!!userInputRequest}
+        onRespond={(id, response) =>
+          actions.respondToUserInput(id, response, userInputRequest?.sessionId)
+        }
+      />
+
+      <SpecApprovalDialog
+        spec={state.pendingSpecApproval}
+        open={!!state.pendingSpecApproval}
+        onAction={actions.approveSpec}
+        onUpdate={actions.updatePendingSpec}
+        disabled={state.busy}
       />
 
       <Suspense fallback={null}>
@@ -364,7 +481,11 @@ function Shell() {
             open={state.configOpen}
             onOpenChange={actions.setConfigOpen}
             status={state.configStatus}
-            onSaved={actions.refreshConfigStatus}
+            reasoningSyncKey={reasoningSyncKey}
+            onSaved={async () => {
+              await actions.refreshConfigStatus();
+              await actions.refreshRuntimeState();
+            }}
           />
         )}
 
@@ -389,6 +510,7 @@ function Shell() {
           <SoulDialog
             open={state.soulsOpen}
             onOpenChange={actions.setSoulsOpen}
+            disabled={state.busy}
           />
         )}
 
@@ -404,6 +526,7 @@ function Shell() {
           <GitDiffDialog
             open={state.gitDiffOpen}
             onOpenChange={actions.setGitDiffOpen}
+            sessionId={state.currentSessionId}
           />
         )}
 

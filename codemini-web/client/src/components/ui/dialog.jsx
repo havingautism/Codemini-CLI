@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { XIcon } from "lucide-react"
+import { X } from "@phosphor-icons/react"
 import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
@@ -39,7 +39,7 @@ function DialogOverlay({
     <DialogPrimitive.Overlay
       data-slot="dialog-overlay"
       className={cn(
-        "fixed top-0 right-0 bottom-0 left-[260px] z-50 bg-black/40 backdrop-blur-[2px] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0",
+        "fixed inset-0 z-50 bg-black/35 backdrop-blur-[6px] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0",
         className
       )}
       {...props} />
@@ -60,7 +60,7 @@ function DialogContent({
         onInteractOutside={(e) => e.preventDefault()}
         onPointerDownOutside={(e) => e.preventDefault()}
         className={cn(
-          "fixed top-[50%] left-[calc(50%+130px)] z-50 grid w-full max-w-[calc(100vw-260px-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-xl border border-(--border-default) bg-(--bg-primary) text-(--text-primary) p-6 shadow-lg duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
+          "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100vw-1.5rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-xl rounded-[20px] border border-(--surface-edge) bg-(--material-elevated) text-(--text-primary) p-5 shadow-[var(--surface-shadow)] duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
           className
         )}
         {...props}>
@@ -79,17 +79,23 @@ function DialogHeader({
   return (
     <div
       data-slot="dialog-header"
-      className={cn("flex flex-row items-center justify-between gap-2 text-center sm:text-left", className)}
+      className={cn("flex flex-row items-start justify-between gap-4 text-left", className)}
       {...props}>
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 flex flex-col gap-2.5">
         {children}
       </div>
       {showCloseButton && (
-        <DialogPrimitive.Close
-          data-slot="dialog-close"
-          className="shrink-0 rounded-xs opacity-70 text-(--text-muted) transition-opacity hover:opacity-100 hover:text-(--text-primary) focus:outline-hidden disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4">
-          <XIcon />
-          <span className="sr-only">Close</span>
+        <DialogPrimitive.Close asChild>
+          <Button
+            type="button"
+            data-slot="dialog-close"
+            variant="close"
+            size="icon"
+            aria-label="Close"
+          >
+            <X />
+            <span className="sr-only">Close</span>
+          </Button>
         </DialogPrimitive.Close>
       )}
     </div>
@@ -105,7 +111,7 @@ function DialogFooter({
   return (
     <div
       data-slot="dialog-footer"
-      className={cn("flex flex-col-reverse gap-2 sm:flex-row sm:justify-end", className)}
+      className={cn("flex flex-col-reverse gap-2 border-t border-(--separator) pt-4 sm:flex-row sm:justify-end", className)}
       {...props}>
       {children}
       {showCloseButton && (
@@ -124,7 +130,7 @@ function DialogTitle({
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
-      className={cn("text-base font-semibold text-(--text-primary)", className)}
+      className={cn("text-[17px] font-semibold leading-6 tracking-[-0.012em] text-(--text-primary)", className)}
       {...props} />
   );
 }
@@ -136,7 +142,7 @@ function DialogDescription({
   return (
     <DialogPrimitive.Description
       data-slot="dialog-description"
-      className={cn("text-sm text-(--text-secondary)", className)}
+      className={cn("text-[12px] leading-5 text-(--text-secondary)", className)}
       {...props} />
   );
 }

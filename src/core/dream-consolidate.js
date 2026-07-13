@@ -8,19 +8,12 @@ import {
 } from './memory-store.js';
 import { writeDreamAuditReport } from './dream-audit.js';
 import { evaluateInboxBatch, evaluateMemoryMaintenance } from './dream-evaluator.js';
+import { chooseMemoryLifecycle, normalizeMemoryScope } from './memory-policy.js';
 
-const LONGTERM_TYPES = new Set(['preference', 'pattern', 'win', 'decision']);
-const OPERATIONAL_TYPES = new Set(['correction', 'failure', 'gap', 'observation']);
+let dreamConsolidationRunning = false;
 
 function normalizeText(value) {
   return String(value || '').trim().toLowerCase();
-}
-
-function chooseLifecycle(type) {
-  const value = normalizeText(type);
-  if (LONGTERM_TYPES.has(value)) return 'longterm';
-  if (OPERATIONAL_TYPES.has(value)) return 'operational';
-  return 'operational';
 }
 
 function memoryContainsSummary(memory, summaryKey) {
@@ -32,8 +25,8 @@ function memoryContainsSummary(memory, summaryKey) {
 function maintenanceScopes(scopeFilter) {
   const scope = normalizeText(scopeFilter);
   if (!scope) return ['user', 'global', 'project'];
-  if (scope === 'repo') return ['project'];
-  if (['user', 'global', 'project'].includes(scope)) return [scope];
+  const normalized = normalizeMemoryScope(scope, { fallback: '' });
+  if (['user', 'global', 'project'].includes(normalized)) return [normalized];
   return ['user', 'global', 'project'];
 }
 
@@ -106,6 +99,22 @@ export async function runDreamConsolidation({
   config = {},
   writeAudit = true
 } = {}) {
+  if (dreamConsolidationRunning) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: 'dream-already-running',
+      dryRun,
+      timestamp: new Date().toISOString(),
+      candidatesGenerated: 0,
+      promotions: [],
+      rejections: [],
+      archives: [],
+      maintenance: []
+    };
+  }
+  dreamConsolidationRunning = true;
+  try {
   const scopeFilter = scope || null;
   const inbox = await listInbox({ scope: scopeFilter });
 
@@ -114,7 +123,20 @@ export async function runDreamConsolidation({
     listMemories({ scope: 'user', workspaceRoot }),
     listMemories({ scope: 'project', workspaceRoot })
   ]);
-  const knownMemories = [...globalMemories, ...userMemories, ...projectMemories];
+  const projectMemoryCache = new Map([[String(workspaceRoot), projectMemories]]);
+  const knownForEntry = async (entry) => {
+    const entryScope = normalizeMemoryScope(entry?.scope, { fallback: 'project' });
+    if (entryScope === 'user') return userMemories;
+    if (entryScope === 'global') return globalMemories;
+    const entryRoot = String(entry?.projectDir || workspaceRoot);
+    if (!projectMemoryCache.has(entryRoot)) {
+      projectMemoryCache.set(
+        entryRoot,
+        await listMemories({ scope: 'project', workspaceRoot: entryRoot }).catch(() => [])
+      );
+    }
+    return projectMemoryCache.get(entryRoot);
+  };
 
   const promotions = [];
   const rejections = [];
@@ -128,20 +150,25 @@ export async function runDreamConsolidation({
 
   for (const entry of inbox) {
     const summaryKey = normalizeText(entry.summary);
+    const semanticKey = normalizeText(entry.semanticKey);
+    const duplicateKey = semanticKey ? `semantic:${semanticKey}` : `summary:${summaryKey}`;
     if (!summaryKey) {
       if (!dryRun) await archiveEntry(entry, 'invalid-summary', 'Summary is empty after normalization');
       archives.push({ summary: String(entry.summary || ''), reason: 'invalid-summary' });
       continue;
     }
 
-    if (seen.has(summaryKey)) {
-      if (!dryRun) await archiveEntry(entry, 'duplicate', `Duplicate of ${seen.get(summaryKey)}`);
+    if (seen.has(duplicateKey)) {
+      if (!dryRun) await archiveEntry(entry, 'duplicate', `Duplicate of ${seen.get(duplicateKey)}`);
       archives.push({ summary: entry.summary, reason: 'duplicate' });
       continue;
     }
-    seen.set(summaryKey, entry.id);
+    seen.set(duplicateKey, entry.id);
 
-    const alreadyKnown = knownMemories.some((memory) => memoryContainsSummary(memory, summaryKey));
+    const knownMemories = await knownForEntry(entry);
+    const alreadyKnown = knownMemories.some((memory) =>
+      (semanticKey && normalizeText(memory?.semanticKey) === semanticKey) || memoryContainsSummary(memory, summaryKey)
+    );
     if (alreadyKnown) {
       if (!dryRun) await archiveEntry(entry, 'already-known', 'Already present in memory');
       rejections.push({ summary: entry.summary, reason: 'already-known' });
@@ -163,6 +190,11 @@ export async function runDreamConsolidation({
     for (const entry of candidates) {
       const evaluation = resultMap.get(entry.id);
 
+      if (evaluation?.action === 'retry') {
+        rejections.push({ summary: entry.summary, reason: evaluation.reason || 'evaluator-unavailable' });
+        continue;
+      }
+
       if (!evaluation || evaluation.action === 'discard') {
         const reason = evaluation?.reason || 'LLM discarded';
         if (!dryRun) await archiveEntry(entry, 'discarded-by-evaluator', reason);
@@ -170,8 +202,8 @@ export async function runDreamConsolidation({
         continue;
       }
 
-      const promoteScope = evaluation.scope || 'global';
-      const lifecycle = chooseLifecycle(evaluation.kind);
+      const promoteScope = normalizeMemoryScope(evaluation.scope || 'global', { fallback: 'global' });
+      const lifecycle = chooseMemoryLifecycle(evaluation.kind);
       const enrichedEntry = {
         ...entry,
         /* 用 LLM 提炼后的内容覆盖原始报错 */
@@ -182,11 +214,14 @@ export async function runDreamConsolidation({
 
       if (!dryRun) {
         try {
+          const promotionWorkspaceRoot = promoteScope === 'project'
+            ? String(entry.projectDir || workspaceRoot)
+            : workspaceRoot;
           await promoteMemory({
             entry: enrichedEntry,
             scope: promoteScope,
             lifecycle,
-            workspaceRoot,
+            workspaceRoot: promotionWorkspaceRoot,
             config,
             confidence: evaluation.confidence || 0.8
           });
@@ -226,4 +261,7 @@ export async function runDreamConsolidation({
   }
 
   return { ok: true, dryRun, ...report };
+  } finally {
+    dreamConsolidationRunning = false;
+  }
 }

@@ -1,24 +1,22 @@
-import { useState, useEffect, useMemo } from "react";
+﻿import { useState, useEffect, useMemo, useRef } from "react";
 import {
+  BookOpenText,
+  Brain,
+  DotsThree,
+  Folder,
+  GearSix,
+  Globe,
+  Hammer,
+  Info,
+  MaskHappy,
+  Monitor,
+  Moon,
+  PencilLine,
   Plus,
   Sun,
-  Moon,
-  Monitor,
-  Settings,
-  Folder,
-  ChevronDown,
-  Hammer,
   User,
-  Info,
-  BookOpenText,
-  MoreHorizontal,
-  Globe,
-  Check,
-  Palette,
-  PencilLine,
-  Drama,
-  Brain,
-} from "lucide-react";
+  X,
+} from "@phosphor-icons/react";
 import { Separator } from "@/components/ui/separator";
 import {
   Popover,
@@ -26,16 +24,73 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
+import { Empty, EmptyDescription } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { t, setLocale, getLocale } from "../../i18n/index.js";
+import { ACTIVE_SESSION_STATUSES } from "@/lib/session-ui-state.js";
+import {
+  fetchWebuiActiveProjects,
+  patchWebuiActiveProject,
+  replaceWebuiActiveProjects,
+} from "@/hooks/use-api.js";
+import { normalizeProjectDirKey } from "../../../shared/project-key.js";
 
 const GENERAL_PROJECT_MARKER = "__codemini_general__";
 const PROJECT_SESSION_PREVIEW_LIMIT = 5;
 const GENERAL_SESSION_PREVIEW_LIMIT = 10;
+const LEGACY_PINNED_PROJECTS_KEY = "codemini-sidebar-pinned-projects";
+const LEGACY_HIDDEN_PROJECTS_KEY = "codemini-sidebar-hidden-projects";
+
+function readLegacySidebarKeys() {
+  const pinned = readLegacyProjectKeys(LEGACY_PINNED_PROJECTS_KEY);
+  const hidden = readLegacyProjectKeys(LEGACY_HIDDEN_PROJECTS_KEY);
+  if (!pinned.length) return [];
+  const hiddenSet = new Set(hidden);
+  return pinned.filter((key) => !hiddenSet.has(key));
+}
+
+function readLegacyProjectKeys(key) {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((item) => typeof item === "string" && item)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function clearLegacyProjectKeys() {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(LEGACY_PINNED_PROJECTS_KEY);
+  localStorage.removeItem(LEGACY_HIDDEN_PROJECTS_KEY);
+}
 
 function getProjectKey(session) {
-  return session?.projectDir || "unknown";
+  const raw = session?.projectKey || session?.projectDir || "unknown";
+  return normalizeProjectDirKey(raw) || "unknown";
+}
+
+/** Prefer a real filesystem path for open/chdir; key is only for grouping. */
+function getProjectOpenPath(projectKey, projectSessions = []) {
+  const fromSession = (Array.isArray(projectSessions) ? projectSessions : []).find(
+    (session) =>
+      !session?.isGeneral &&
+      String(session?.projectDir || "").trim() &&
+      String(session.projectDir).trim() !== "unknown",
+  )?.projectDir;
+  return String(fromSession || projectKey || "").trim();
+}
+
+function SidebarEmptyPlaceholder({ children, className }) {
+  return (
+    <Empty className={cn("rounded-md px-2.5 py-3", className)}>
+      <EmptyDescription className="text-[11px]">{children}</EmptyDescription>
+    </Empty>
+  );
 }
 
 function getProjectName(projectDir, isGeneral) {
@@ -87,39 +142,6 @@ function formatRelativeTime(value) {
   });
 }
 
-const THEME_PALETTES = [
-  {
-    id: "default",
-    labelKey: "themeDefault",
-    swatches: ["#0a0a0a", "#f5f5f5", "#60a5fa"],
-  },
-  {
-    id: "catppuccin",
-    labelKey: "themeCatppuccin",
-    swatches: ["#1e1e2e", "#cba6f7", "#89b4fa"],
-  },
-  {
-    id: "tokyonight",
-    labelKey: "themeTokyoNight",
-    swatches: ["#1a1b26", "#7aa2f7", "#bb9af7"],
-  },
-  {
-    id: "one",
-    labelKey: "themeOne",
-    swatches: ["#282c34", "#61afef", "#c678dd"],
-  },
-  {
-    id: "github",
-    labelKey: "themeGithub",
-    swatches: ["#ffffff", "#0969da", "#24292f"],
-  },
-  {
-    id: "vscode",
-    labelKey: "themeVSCode",
-    swatches: ["#1e1e1e", "#007acc", "#d4d4d4"],
-  },
-];
-
 export function Sidebar({
   sessions,
   sessionsLoading,
@@ -140,6 +162,8 @@ export function Sidebar({
   currentView,
   onSwitchView,
   onOpenProject,
+  onOpenProjectSelector,
+  onRefreshSessions,
   onDeleteSession,
 }) {
   const [expandedProjects, setExpandedProjects] = useState(new Set());
@@ -147,12 +171,16 @@ export function Sidebar({
   const [generalSessionLimit, setGeneralSessionLimit] = useState(
     GENERAL_SESSION_PREVIEW_LIMIT,
   );
+  const [activeProjectDirs, setActiveProjectDirs] = useState([]);
+  const [activeProjectsReady, setActiveProjectsReady] = useState(false);
+  const [sessionsSnapshotReady, setSessionsSnapshotReady] = useState(false);
+  const [showActiveProjectsEmpty, setShowActiveProjectsEmpty] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
-  const [themePalette, setThemePaletteState] = useState(() => {
-    if (typeof document === "undefined") return "default";
-    return document.documentElement.dataset.palette || "default";
-  });
+  const [openProjectMenuKey, setOpenProjectMenuKey] = useState(null);
+  const [pendingRemoveActive, setPendingRemoveActive] = useState(null);
+  const [removingFromActive, setRemovingFromActive] = useState(false);
+  const sawSessionsLoadingRef = useRef(false);
   const [resolvedTheme, setResolvedTheme] = useState(() => {
     if (typeof document === "undefined") return "light";
     return document.documentElement.dataset.theme || "light";
@@ -161,6 +189,54 @@ export function Sidebar({
     if (typeof window === "undefined") return "auto";
     return localStorage.getItem("codemini-theme") || "auto";
   });
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const remote = await fetchWebuiActiveProjects();
+        if (cancelled) return;
+        let active = Array.isArray(remote?.active) ? remote.active : [];
+        const legacyActive = readLegacySidebarKeys();
+        if (!active.length && legacyActive.length) {
+          const migrated = await replaceWebuiActiveProjects(legacyActive);
+          if (!cancelled && Array.isArray(migrated?.active)) {
+            active = migrated.active;
+          } else {
+            active = legacyActive;
+          }
+          clearLegacyProjectKeys();
+        }
+        if (!cancelled) setActiveProjectDirs(active);
+      } catch {
+        if (!cancelled) setActiveProjectDirs([]);
+      } finally {
+        if (!cancelled) setActiveProjectsReady(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // sessionsLoading starts as false before the first fetch. Only treat the
+  // sessions snapshot as ready after a real load cycle completes, or once
+  // sessions have already arrived from another startup path.
+  useEffect(() => {
+    if (sessionsLoading) {
+      sawSessionsLoadingRef.current = true;
+      return;
+    }
+    if (sawSessionsLoadingRef.current) {
+      setSessionsSnapshotReady(true);
+    }
+  }, [sessionsLoading]);
+
+  useEffect(() => {
+    if (Array.isArray(sessions) && sessions.length > 0) {
+      setSessionsSnapshotReady(true);
+    }
+  }, [sessions]);
+
   useEffect(() => {
     const mq =
       window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
@@ -184,12 +260,11 @@ export function Sidebar({
   const {
     allSessions,
     currentSession,
-    activeIsGeneral,
     activeProjectKey,
     generalSessions,
     projectSessionsOnly,
     projectGroups,
-    projectGroupEntries,
+    visibleProjectGroupEntries,
   } = useMemo(() => {
     const all = Array.isArray(sessions) ? sessions : [];
     const current = all.find((s) => s.id === currentSessionId);
@@ -206,17 +281,45 @@ export function Sidebar({
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(session);
     }
+    const entries = Array.from(groups.entries());
+    if (activeProjectsReady && activeProjectDirs.length) {
+      const order = new Map(
+        activeProjectDirs.map((projectKey, index) => [projectKey, index]),
+      );
+      entries.sort((a, b) => {
+        const aIndex = order.has(a[0])
+          ? order.get(a[0])
+          : Number.MAX_SAFE_INTEGER;
+        const bIndex = order.has(b[0])
+          ? order.get(b[0])
+          : Number.MAX_SAFE_INTEGER;
+        return aIndex - bIndex;
+      });
+    }
     return {
       allSessions: all,
       currentSession: current,
-      activeIsGeneral: !!current?.isGeneral,
       activeProjectKey: current ? getProjectKey(current) : null,
       generalSessions: general,
       projectSessionsOnly: projectOnly,
       projectGroups: groups,
-      projectGroupEntries: Array.from(groups.entries()),
+      visibleProjectGroupEntries: entries,
     };
-  }, [sessions, currentSessionId]);
+  }, [sessions, currentSessionId, activeProjectDirs, activeProjectsReady]);
+
+  const projectsAreaEmpty = visibleProjectGroupEntries.length === 0;
+  const projectsAreaReady =
+    activeProjectsReady && sessionsSnapshotReady && !sessionsLoading;
+
+  useEffect(() => {
+    // Hide the dashed empty hint while projects/sessions are still loading —
+    // an empty list during boot does not mean there are no projects.
+    if (!projectsAreaReady) {
+      setShowActiveProjectsEmpty(false);
+      return;
+    }
+    setShowActiveProjectsEmpty(projectsAreaEmpty);
+  }, [projectsAreaReady, projectsAreaEmpty]);
 
   const toggleProject = (key) => {
     setExpandedProjects((prev) => {
@@ -225,6 +328,44 @@ export function Sidebar({
       else next.add(key);
       return next;
     });
+  };
+
+  const requestRemoveFromActive = (projectKey) => {
+    if (!projectKey || projectKey === "unknown") return;
+    setOpenProjectMenuKey(null);
+    setPendingRemoveActive({
+      projectKey,
+      label: getProjectName(projectKey),
+    });
+  };
+
+  const removeFromActive = async (projectKey) => {
+    setActiveProjectDirs((prev) => prev.filter((key) => key !== projectKey));
+    setExpandedProjects((prev) => {
+      if (!prev.has(projectKey)) return prev;
+      const next = new Set(prev);
+      next.delete(projectKey);
+      return next;
+    });
+    try {
+      await patchWebuiActiveProject("deactivate", projectKey);
+    } catch {
+      // Silently ignore API errors — the optimistic local update stands.
+    }
+    // Refresh sessions without re-fetching the active-project list,
+    // which could race with the server and undo our optimistic update.
+    await onRefreshSessions?.({ force: true });
+  };
+
+  const confirmRemoveFromActive = async () => {
+    if (!pendingRemoveActive || removingFromActive) return;
+    setRemovingFromActive(true);
+    try {
+      await removeFromActive(pendingRemoveActive.projectKey);
+      setPendingRemoveActive(null);
+    } finally {
+      setRemovingFromActive(false);
+    }
   };
 
   const loadMoreProjectSessions = (projectKey, total) => {
@@ -243,50 +384,43 @@ export function Sidebar({
     );
   };
 
-  const setThemePalette = (palette) => {
-    const next = THEME_PALETTES.some((item) => item.id === palette)
-      ? palette
-      : "default";
-    document.documentElement.dataset.palette = next;
-    localStorage.setItem("codemini-theme-palette", next);
-    window.dispatchEvent(
-      new CustomEvent("codemini-theme-palette-change", {
-        detail: { palette: next },
-      }),
-    );
-    setThemePaletteState(next);
-  };
-
-  const openProjectCodeWiki = async (event, projectKey) => {
+  const openProjectCodeWiki = async (event, projectKey, projectSessions = []) => {
     event.stopPropagation();
+    const openPath = getProjectOpenPath(projectKey, projectSessions);
     if (
-      projectKey &&
+      openPath &&
       projectKey !== "unknown" &&
       projectKey !== activeProjectKey &&
       onOpenProject
     ) {
-      await onOpenProject(projectKey, { view: "codewiki" });
+      await onOpenProject(openPath, { view: "codewiki" });
       return;
     }
-    onSwitchView?.("codewiki", { projectPath: projectKey });
+    onSwitchView?.("codewiki", { projectPath: openPath || projectKey });
   };
 
-  const openProjectNewSession = async (event, projectKey) => {
+  const openProjectNewSession = async (event, projectKey, projectSessions = []) => {
     event.stopPropagation();
     if (!projectKey || projectKey === "unknown") return;
+    const openPath = getProjectOpenPath(projectKey, projectSessions);
+    setExpandedProjects((prev) => {
+      if (prev.has(projectKey)) return prev;
+      const next = new Set(prev);
+      next.add(projectKey);
+      return next;
+    });
     if (projectKey === activeProjectKey) {
       await onNewSession?.();
       return;
     }
-    await onOpenProject?.(projectKey, { view: "chat" });
+    await onOpenProject?.(openPath, { view: "chat", newSession: true });
   };
 
   const openGeneralNewSession = async () => {
-    if (activeIsGeneral) {
-      await onNewSession?.();
-      return;
-    }
-    await onOpenProject?.(GENERAL_PROJECT_MARKER, { view: "chat" });
+    await onOpenProject?.(GENERAL_PROJECT_MARKER, {
+      view: "chat",
+      newSession: true,
+    });
   };
 
   const confirmDeleteSession = async () => {
@@ -298,23 +432,23 @@ export function Sidebar({
   };
 
   return (
-    <aside className="w-[260px] shrink-0 flex flex-col bg-(--bg-secondary)">
+    <aside className="codemini-sidebar h-full w-[260px] shrink-0 flex flex-col">
       {/* Fixed top action buttons */}
-      <div className="shrink-0 px-2.5 pt-3 flex flex-col gap-0.5">
-        <div className="mb-2 flex h-10 items-center gap-2.5 px-2">
+      <div className="shrink-0 px-2.5 pt-2.5 flex flex-col gap-0.5">
+        <div className="mb-1.5 flex h-9 items-center gap-2 px-2">
           <img
             src="/logos/codemini_logo.png"
             alt=""
-            className="size-6 shrink-0 rounded-md"
+            className="size-5 shrink-0 rounded-[5px]"
             draggable={false}
           />
-          <div className="min-w-0 truncate text-[23px] font-semibold leading-6 text-(--text-primary)">
+          <div className="min-w-0 truncate text-[17px] font-semibold leading-5 text-(--text-primary)">
             {t("brand")}
           </div>
         </div>
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
-          onClick={onNewSession}
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          onClick={openGeneralNewSession}
         >
           <Plus
             size={15}
@@ -337,7 +471,7 @@ export function Sidebar({
         </button> */}
 
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onOpenSkills}
         >
           <Hammer
@@ -349,10 +483,10 @@ export function Sidebar({
         </button>
 
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onOpenSouls}
         >
-          <Drama
+          <MaskHappy
             size={15}
             strokeWidth={2}
             className="text-(--text-secondary) shrink-0"
@@ -360,7 +494,7 @@ export function Sidebar({
           <span className="truncate">{t("souls")}</span>
         </button>
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onOpenMemory}
         >
           <Brain
@@ -370,7 +504,7 @@ export function Sidebar({
           />
           <span className="truncate">{t("memory")}</span>
         </button>
-        <Separator className="my-2 bg-transparent" />
+        <Separator className="my-1.5 bg-transparent" />
       </div>
 
       <div
@@ -378,22 +512,45 @@ export function Sidebar({
         // style={{ scrollbarWidth: "thin" }}
       >
         {/* Scrollable project history */}
-        <div className="flex items-center gap-2 px-4 pb-2.5">
+        <div className="flex items-center gap-1 px-4 pb-1.5">
           <span className="min-w-0 flex-1 text-[12px] font-medium text-(--text-muted)">
             {t("projects")}
           </span>
+          <button
+            type="button"
+            className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)"
+            title={t("openProjectDialog")}
+            aria-label={t("openProjectDialog")}
+            onClick={() => onOpenProjectSelector?.()}
+          >
+            <Plus size={14} strokeWidth={2.1} />
+          </button>
         </div>
         <nav className="flex flex-col px-2.5 pb-1 gap-0.5">
-          {projectGroupEntries.map(([projectKey, projectSessions]) => {
+          {showActiveProjectsEmpty && (
+            <SidebarEmptyPlaceholder className="mb-1">
+              {t("activeProjectsEmpty")}
+            </SidebarEmptyPlaceholder>
+          )}
+          {visibleProjectGroupEntries.map(([projectKey, projectSessions]) => {
             const isExpanded =
-              expandedProjects.has(projectKey) || projectGroups.size === 1;
+              expandedProjects.has(projectKey) ||
+              visibleProjectGroupEntries.length === 1;
             const projectSessionLimit =
               projectSessionLimits[projectKey] || PROJECT_SESSION_PREVIEW_LIMIT;
             const visibleProjectSessions = projectSessions.slice(
               0,
               projectSessionLimit,
             );
-            const git = gitBatch?.[projectKey];
+            const sampleSession = projectSessions[0];
+            const git =
+              gitBatch?.[projectKey] ||
+              (sampleSession?.projectDir
+                ? gitBatch?.[sampleSession.projectDir]
+                : null) ||
+              (sampleSession?.projectKey
+                ? gitBatch?.[sampleSession.projectKey]
+                : null);
             const isActive = projectKey === activeProjectKey;
             const canOpenCodeWiki = projectKey !== "unknown";
             return (
@@ -401,9 +558,7 @@ export function Sidebar({
                 <div
                   className={cn(
                     "w-full border-0 bg-transparent flex items-center gap-1 h-[28px] px-1.5 rounded-md text-left text-[12px] font-medium tracking-[0.2px] hover:bg-(--bg-hover)",
-                    isActive
-                      ? "text-(--text-primary)"
-                      : "text-(--text-muted) hover:text-(--text-secondary)",
+                    "text-(--text-muted) hover:text-(--text-secondary)",
                   )}
                   title={projectKey === "unknown" ? "" : projectKey}
                 >
@@ -411,8 +566,17 @@ export function Sidebar({
                     className="min-w-0 flex-1 border-0 bg-transparent flex items-center gap-2 text-left text-inherit cursor-pointer"
                     onClick={() => toggleProject(projectKey)}
                   >
-                    <Folder size={13} className="shrink-0" />
-                    <span className="truncate flex-1">
+                    {git?.isGit ? (
+                      <GitHubIcon size={13} className="shrink-0" />
+                    ) : (
+                      <Folder size={13} className="shrink-0" />
+                    )}
+                    <span
+                      className={cn(
+                        "truncate flex-1",
+                        isActive && "font-semibold text-(--text-primary)",
+                      )}
+                    >
                       {getProjectName(projectKey)}
                     </span>
                   </button>
@@ -423,7 +587,7 @@ export function Sidebar({
                       title={t("newSessionInProject")}
                       aria-label={`${t("newSessionInProject")} ${getProjectName(projectKey)}`}
                       onClick={(event) =>
-                        openProjectNewSession(event, projectKey)
+                        openProjectNewSession(event, projectKey, projectSessions)
                       }
                     >
                       <Plus size={13} strokeWidth={2.1} />
@@ -441,37 +605,54 @@ export function Sidebar({
                       title={t("openCodeWiki")}
                       aria-label={`${t("openCodeWiki")} ${getProjectName(projectKey)}`}
                       onClick={(event) =>
-                        openProjectCodeWiki(event, projectKey)
+                        openProjectCodeWiki(event, projectKey, projectSessions)
                       }
                     >
                       <BookOpenText size={13} strokeWidth={1.9} />
                     </button>
                   )}
-                  {git?.isGit && (
-                    <GitHubIcon
-                      size={11}
-                      className="shrink-0 text-(--text-muted)"
-                    />
-                  )}
                   <span className="text-[11px] px-2">
                     {projectSessions.length}
                   </span>
-                  <button
-                    type="button"
-                    className="border-0 bg-transparent inline-flex size-5 shrink-0 items-center justify-center rounded-md text-inherit cursor-pointer hover:bg-(--bg-active)"
-                    onClick={() => toggleProject(projectKey)}
-                    aria-label={
-                      isExpanded ? t("collapseProject") : t("expandProject")
+                  <Popover
+                    open={openProjectMenuKey === projectKey}
+                    onOpenChange={(open) =>
+                      setOpenProjectMenuKey(open ? projectKey : null)
                     }
                   >
-                    <ChevronDown
-                      size={13}
-                      className={cn(
-                        "transition-transform",
-                        !isExpanded && "-rotate-90",
-                      )}
-                    />
-                  </button>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-active) hover:text-(--text-primary)"
+                        aria-label={t("projectActions")}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <DotsThree size={14} />
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent
+                      align="end"
+                      className="w-44 p-1"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--text-secondary) transition-colors hover:bg-(--accent-red-bg) hover:text-(--accent-red)"
+                        onPointerDown={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                        }}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          requestRemoveFromActive(projectKey);
+                        }}
+                      >
+                        <X size={14} className="shrink-0" />
+                        <span>{t("removeActiveProject")}</span>
+                      </button>
+                    </PopoverContent>
+                  </Popover>
                 </div>
                 {isExpanded && (
                   <div className="flex flex-col gap-1.5 py-1 pl-2">
@@ -492,11 +673,16 @@ export function Sidebar({
                             : "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
                         )}
                       >
-                        <span
-                          className="truncate flex-1"
-                          title={getSessionLabel(session)}
-                        >
-                          {getSessionLabel(session)}
+                        <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                          {ACTIVE_SESSION_STATUSES.has(
+                            session.runtimeStatus,
+                          ) && <Spinner className="size-3 shrink-0" />}
+                          <span
+                            className="truncate"
+                            title={getSessionLabel(session)}
+                          >
+                            {getSessionLabel(session)}
+                          </span>
                         </span>
                         {session.updatedAt && (
                           <span className="text-[11px] text-(--text-muted) shrink-0 tabular-nums">
@@ -511,12 +697,12 @@ export function Sidebar({
                               onClick={(event) => event.stopPropagation()}
                               aria-label={t("sessionActions")}
                             >
-                              <MoreHorizontal size={14} />
+                              <DotsThree size={14} />
                             </button>
                           </PopoverTrigger>
                           <PopoverContent
                             align="end"
-                            className="w-36 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+                            className="w-36 p-1"
                             onClick={(event) => event.stopPropagation()}
                           >
                             <button
@@ -557,10 +743,11 @@ export function Sidebar({
           )}
           {!sessionsLoading &&
             projectSessionsOnly.length === 0 &&
-            generalSessions.length === 0 && (
-              <div className="px-3 py-4 text-[12px] text-(--text-muted) text-center">
+            generalSessions.length === 0 &&
+            !showActiveProjectsEmpty && (
+              <SidebarEmptyPlaceholder className="mb-1">
                 {t("noSessions")}
-              </div>
+              </SidebarEmptyPlaceholder>
             )}
         </nav>
 
@@ -607,11 +794,16 @@ export function Sidebar({
                       : "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
                   )}
                 >
-                  <span
-                    className="min-w-0 flex-1 truncate font-medium"
-                    title={getSessionLabel(session)}
-                  >
-                    {getSessionLabel(session)}
+                  <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                    {ACTIVE_SESSION_STATUSES.has(
+                      session.runtimeStatus,
+                    ) && <Spinner className="size-3 shrink-0" />}
+                    <span
+                      className="truncate font-medium"
+                      title={getSessionLabel(session)}
+                    >
+                      {getSessionLabel(session)}
+                    </span>
                   </span>
                   {session.updatedAt && (
                     <span className="shrink-0 text-[11px] tabular-nums text-(--text-muted)">
@@ -626,12 +818,12 @@ export function Sidebar({
                         onClick={(event) => event.stopPropagation()}
                         aria-label={t("sessionActions")}
                       >
-                        <MoreHorizontal size={14} />
+                        <DotsThree size={14} />
                       </button>
                     </PopoverTrigger>
                     <PopoverContent
                       align="end"
-                      className="w-36 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+                      className="w-36 p-1"
                       onClick={(event) => event.stopPropagation()}
                     >
                       <button
@@ -710,49 +902,6 @@ export function Sidebar({
             <PopoverTrigger asChild>
               <button
                 className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
-                title={t("switchThemePalette")}
-                aria-label={t("switchThemePalette")}
-              >
-                <Palette size={15} strokeWidth={1.8} />
-              </button>
-            </PopoverTrigger>
-            <PopoverContent
-              align="center"
-              side="top"
-              className="w-44 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
-            >
-              {THEME_PALETTES.map((palette) => (
-                <button
-                  key={palette.id}
-                  type="button"
-                  className={cn(
-                    "w-full rounded-md px-2.5 py-2 text-left text-[13px] flex items-center gap-2 hover:bg-(--bg-hover)",
-                    themePalette === palette.id &&
-                      "text-(--text-primary) font-medium",
-                  )}
-                  onClick={() => setThemePalette(palette.id)}
-                >
-                  <span className="flex shrink-0 -space-x-1">
-                    {palette.swatches.map((color) => (
-                      <span
-                        key={color}
-                        className="size-3 rounded-full border border-(--border-default)"
-                        style={{ backgroundColor: color }}
-                      />
-                    ))}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate">
-                    {t(palette.labelKey)}
-                  </span>
-                  {themePalette === palette.id && <Check size={13} />}
-                </button>
-              ))}
-            </PopoverContent>
-          </Popover>
-          <Popover>
-            <PopoverTrigger asChild>
-              <button
-                className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
                 title={t("switchLanguage")}
                 aria-label={t("switchLanguage")}
               >
@@ -762,16 +911,16 @@ export function Sidebar({
             <PopoverContent
               align="center"
               side="top"
-              className="w-30 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+              className="flex w-30 flex-col gap-1 p-1"
             >
               {["zh", "en"].map((locale) => (
                 <button
                   key={locale}
                   type="button"
                   className={cn(
-                    "w-full rounded-md px-2.5 py-1.5 text-left text-[13px] flex items-center justify-between hover:bg-(--bg-hover)",
+                    "w-full rounded-md px-2.5 py-1.5 text-left text-[13px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
                     getLocale() === locale &&
-                      "text-(--text-primary) font-medium",
+                      "bg-(--selected-bg) font-medium text-(--text-primary) hover:bg-(--selected-bg)",
                   )}
                   onClick={() => {
                     if (getLocale() !== locale) {
@@ -780,8 +929,7 @@ export function Sidebar({
                     }
                   }}
                 >
-                  <span>{locale === "zh" ? "中文" : "English"}</span>
-                  {getLocale() === locale && <Check size={13} />}
+                  {locale === "zh" ? "中文" : "English"}
                 </button>
               ))}
             </PopoverContent>
@@ -803,7 +951,7 @@ export function Sidebar({
             <PopoverContent
               align="center"
               side="top"
-              className="w-30 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+              className="flex w-40 flex-col gap-1 p-1"
             >
               {[
                 { mode: "light", icon: Sun, label: t("lightMode") },
@@ -814,16 +962,14 @@ export function Sidebar({
                   key={mode}
                   type="button"
                   className={cn(
-                    "w-full rounded-md px-2.5 py-1.5 text-left text-[13px] flex items-center justify-between hover:bg-(--bg-hover)",
-                    themeMode === mode && "text-(--text-primary) font-medium",
+                    "flex w-full items-center gap-1.5 rounded-md px-2.5 py-1.5 text-left text-[13px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+                    themeMode === mode &&
+                      "bg-(--selected-bg) font-medium text-(--text-primary) hover:bg-(--selected-bg)",
                   )}
                   onClick={() => onSetTheme(mode)}
                 >
-                  <span className="flex items-center gap-1.5">
-                    <Icon size={13} strokeWidth={1.8} />
-                    <span>{label}</span>
-                  </span>
-                  {themeMode === mode && <Check size={13} />}
+                  <Icon size={13} strokeWidth={1.8} />
+                  <span>{label}</span>
                 </button>
               ))}
             </PopoverContent>
@@ -834,7 +980,7 @@ export function Sidebar({
             title={t("settings")}
             aria-label={t("settings")}
           >
-            <Settings size={15} strokeWidth={1.8} />
+            <GearSix size={15} />
           </button>
         </div>
       </div>
@@ -855,6 +1001,25 @@ export function Sidebar({
         loading={deleting}
         onOpenChange={(open) => !open && setPendingDelete(null)}
         onConfirm={confirmDeleteSession}
+      />
+      <ConfirmDialog
+        open={!!pendingRemoveActive}
+        title={t("removeActiveProjectConfirm")}
+        description={
+          pendingRemoveActive
+            ? t("removeActiveProjectDescription").replace(
+                "{{project}}",
+                pendingRemoveActive.label || pendingRemoveActive.projectKey,
+              )
+            : ""
+        }
+        confirmLabel={t("removeActiveProject")}
+        loadingLabel={t("removingFromActive")}
+        loading={removingFromActive}
+        onOpenChange={(open) =>
+          !open && !removingFromActive && setPendingRemoveActive(null)
+        }
+        onConfirm={confirmRemoveFromActive}
       />
     </aside>
   );

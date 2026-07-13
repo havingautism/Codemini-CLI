@@ -1,67 +1,58 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
-  ChevronDown,
-  ChevronRight,
+  ArrowsClockwise,
+  CaretDown,
+  CaretRight,
   Download,
-  Eye,
-  FileCode2,
   Folder,
-  Pencil,
+  MagnifyingGlass,
+  PencilSimple,
   Plus,
-  Search,
   SlidersHorizontal,
-  Trash2,
-} from "lucide-react";
+  Trash,
+} from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Empty, EmptyDescription } from "@/components/ui/empty";
+import { SettingsField } from "@/components/settings/SettingsField.jsx";
+import { SettingsSection } from "@/components/settings/SettingsSection.jsx";
+import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmentedControl.jsx";
+import { Switch } from "@/components/ui/switch";
+import {
+  MarkdownEditor,
+  MarkdownPreview,
+} from "@/components/MarkdownEditor.jsx";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
 } from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { cn } from "@/lib/utils";
+import {
+  groupSkillsByPackage,
+  skillAuthorLabel,
+  skillPackageIsUpdatable,
+  skillsInSamePackage,
+  sortSkillsByAuthor,
+} from "@/lib/skill-display.js";
 import * as api from "@/hooks/use-api";
 import { t } from "../../i18n/index.js";
 
-const FILTERS = ["all", "enabled", "builtin", "custom"];
+const FILTERS = ["all", "custom", "remote"];
 const SKILL_MODES = ["always", "agent_requested", "manual"];
-
-function SwitchControl({ checked, onClick, title }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      aria-pressed={checked}
-      className={cn(
-        "relative h-5 w-9 rounded-full border shadow-inner transition-colors",
-        checked
-          ? "border-(--text-primary) bg-(--text-primary)"
-          : "border-(--border-strong) bg-(--bg-hover)",
-      )}
-    >
-      <span
-        className={cn(
-          "absolute left-0.5 top-0.5 size-3.5 rounded-full transition-transform",
-          checked ? "bg-(--bg-primary)" : "bg-(--text-muted)",
-          checked ? "translate-x-4" : "translate-x-0",
-        )}
-      />
-    </button>
-  );
-}
+const BROWSE_MODES = ["package", "context"];
 
 function scopeLabel(scope) {
   if (scope === "builtin") return t("builtin");
@@ -71,41 +62,6 @@ function scopeLabel(scope) {
 
 function skillKey(skill) {
   return `${skill?.scope || "unknown"}:${skill?.projectDir || ""}:${skill?.name || ""}`;
-}
-
-function compactSourceLabel(value) {
-  const text = String(value || "").trim();
-  const github = text.match(/github\.com[/:]([^/\s]+)\/([^/\s]+?)(?:\.git)?(?:\/|$)/i);
-  if (github) return `${github[1]}/${github[2]}`;
-  const ownerRepo = text.match(/^([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)(?:\s|$)/);
-  if (ownerRepo) return ownerRepo[1];
-  return text.replace(/\\/g, "/").split("/").filter(Boolean).pop() || text;
-}
-
-function isPackagedSkill(skill) {
-  if (isBuiltin(skill)) return false;
-  const source = String(skill?.source || "").trim();
-  const packageSource = String(skill?.packageSource || "").trim();
-  const packageName = String(skill?.packageName || "").trim();
-  if (!packageSource && !packageName) return false;
-  return !["web-create", "web-move", "reindex"].includes(source);
-}
-
-function skillPackageKey(skill) {
-  if (!isPackagedSkill(skill)) return "";
-  return [
-    skill?.scope || "unknown",
-    skill?.projectDir || "",
-    skill?.packageSource || skill?.source || skill?.packageName || "",
-  ].join(":");
-}
-
-function skillPackageName(skill) {
-  return (
-    String(skill?.packageName || "").trim() ||
-    compactSourceLabel(skill?.packageSource || skill?.source) ||
-    t("skillPackage")
-  );
 }
 
 function projectDisplayName(value) {
@@ -121,45 +77,6 @@ function projectDirsKey(projectDirs = []) {
     : "";
 }
 
-function normalizeProjectTargets(projectTargets = [], projectDirs = []) {
-  const byDir = new Map();
-  for (const item of Array.isArray(projectTargets) ? projectTargets : []) {
-    const dir = String(item?.dir || item?.path || item || "").trim();
-    if (!dir || byDir.has(dir)) continue;
-    byDir.set(dir, {
-      dir,
-      label: item?.label || projectDisplayName(dir.split(/[/\\]/).filter(Boolean).pop() || dir),
-    });
-  }
-  for (const dir of Array.isArray(projectDirs) ? projectDirs : []) {
-    const value = String(dir || "").trim();
-    if (!value || byDir.has(value)) continue;
-    byDir.set(value, {
-      dir: value,
-      label: projectDisplayName(value.split(/[/\\]/).filter(Boolean).pop() || value),
-    });
-  }
-  return Array.from(byDir.values());
-}
-
-function projectTargetValue(projectDir) {
-  const dir = String(projectDir || "").trim();
-  return dir ? `project:${dir}` : "";
-}
-
-function parseSkillTarget(value) {
-  const text = String(value || "");
-  if (text === "global") return { scope: "global", projectDir: "" };
-  if (text.startsWith("project:")) {
-    return { scope: "project", projectDir: text.slice("project:".length) };
-  }
-  return { scope: "project", projectDir: "" };
-}
-
-function defaultSkillTarget(projectTargets = []) {
-  return projectTargets[0]?.dir ? projectTargetValue(projectTargets[0].dir) : "global";
-}
-
 function isBuiltin(skill) {
   return skill?.scope === "builtin";
 }
@@ -169,40 +86,22 @@ function isEnabled(skill) {
 }
 
 function normalizeSkillMode(value) {
-  return value === "auto_attach" ? "agent_requested" : value || "agent_requested";
+  return value === "auto_attach"
+    ? "agent_requested"
+    : value || "agent_requested";
 }
 
-function skillSortValue(skill) {
-  const modeRank = normalizeSkillMode(skill?.mode) === "always" ? 0 : 1;
-  const enabledRank = isEnabled(skill) ? 0 : 1;
-  const priority = Number(skill?.priority);
-  return {
-    modeRank,
-    enabledRank,
-    priority: Number.isFinite(priority) ? priority : 0,
-    name: String(skill?.name || "").toLowerCase(),
-  };
+function skillContextValue(contexts = []) {
+  const values = new Set(contexts);
+  if (values.has("coding") && !values.has("daily")) return "coding";
+  if (values.has("daily") && !values.has("coding")) return "daily";
+  return "global";
 }
 
-function compareSkills(a, b) {
-  const left = skillSortValue(a);
-  const right = skillSortValue(b);
-  return (
-    left.modeRank - right.modeRank ||
-    left.enabledRank - right.enabledRank ||
-    right.priority - left.priority ||
-    left.name.localeCompare(right.name)
-  );
-}
-
-function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
+function SkillEditor({ skill, onSave, onValidate }) {
   const [name, setName] = useState(skill?.name || "");
   const [description, setDescription] = useState(skill?.description || "");
-  const [target, setTarget] = useState(
-    skill?.scope === "global"
-      ? "global"
-      : projectTargetValue(skill?.projectDir) || defaultSkillTarget(projectTargets),
-  );
+  const [context, setContext] = useState(skillContextValue(skill?.contexts));
   const [mode, setMode] = useState(normalizeSkillMode(skill?.mode));
   const [triggers, setTriggers] = useState((skill?.triggers || []).join(", "));
   const [priority, setPriority] = useState(skill?.priority ?? 50);
@@ -215,11 +114,7 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
   useEffect(() => {
     setName(skill?.name || "");
     setDescription(skill?.description || "");
-    setTarget(
-      skill?.scope === "global"
-        ? "global"
-        : projectTargetValue(skill?.projectDir) || defaultSkillTarget(projectTargets),
-    );
+    setContext(skillContextValue(skill?.contexts));
     setMode(normalizeSkillMode(skill?.mode));
     setTriggers((skill?.triggers || []).join(", "));
     setPriority(skill?.priority ?? 50);
@@ -234,18 +129,20 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
       .then((data) => setContent(data.content || ""))
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [skill, projectTargets]);
+  }, [skill]);
 
   const handleSave = async () => {
-    const selectedTarget = parseSkillTarget(target);
     const metadata = {
       description,
-      scope: selectedTarget.scope,
+      contexts: context === "global" ? ["coding", "daily"] : [context],
       mode,
-      triggers: triggers
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean),
+      triggers:
+        mode === "manual"
+          ? []
+          : triggers
+              .split(",")
+              .map((item) => item.trim())
+              .filter(Boolean),
       enabled,
       priority: Number(priority) || 0,
     };
@@ -254,360 +151,663 @@ function SkillEditor({ skill, projectTargets = [], onSave, onCancel }) {
         name,
         description,
         content,
-        scope: selectedTarget.scope,
-        projectDir: selectedTarget.projectDir,
+        scope: "global",
+        contexts: metadata.contexts,
       });
-      await api.updateSkillMetadata(
-        name,
-        metadata,
-        selectedTarget.scope === "project" ? selectedTarget.projectDir : undefined,
-      );
+      await api.updateSkillMetadata(name, metadata, undefined);
     } else {
       if (!contentReadOnly) {
         await api.updateSkillContent(skill.name, content, skill.projectDir);
       }
-      await api.updateSkillMetadata(
-        skill.name,
-        {
-          ...metadata,
-          targetProjectDir: selectedTarget.scope === "project" ? selectedTarget.projectDir : undefined,
-        },
-        skill.projectDir,
-      );
+      await api.updateSkillMetadata(skill.name, metadata, skill.projectDir);
     }
     onSave();
   };
 
+  const canSave =
+    !loading && (contentReadOnly || content.trim()) && (!isNew || name.trim());
+  const validateRef = useRef(null);
+  useEffect(() => {
+    if (
+      validateRef.current?.isNew === isNew &&
+      validateRef.current?.canSave === canSave
+    ) {
+      return;
+    }
+    validateRef.current = { isNew, canSave };
+    onValidate?.({ handleSave, isNew, canSave });
+  }, [handleSave, isNew, canSave, onValidate]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-        <div className="mb-3 flex items-start justify-between gap-3">
-          <div>
-            <div className="text-[13px] font-medium text-(--text-primary)">
-              {isNew ? t("newSkill") : t("editSkill")}
-            </div>
-            <div className="mt-0.5 text-[11px] text-(--text-muted)">
-              {t("skillEditorHint")}
-            </div>
-          </div>
-          <Badge
-            variant="outline"
-            className="rounded-md px-1.5 py-0 text-[10px]"
-          >
-            {scopeLabel(parseSkillTarget(target).scope)}
-          </Badge>
-        </div>
-
-        <div className="grid gap-3">
+      <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth px-4 pr-1 sm:px-6">
+        <SettingsSection description={t("skillEditorHint")} className="gap-4">
           {(isNew || !isBuiltin(skill)) && (
-            <div className="grid gap-1.5">
-              <label className="text-[12px] text-(--text-muted)">
-                {t("skillScope")}
-              </label>
-              <Select value={target} onValueChange={setTarget}>
-                <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px]">
+            <SettingsField id="skill-editor-context" label={t("skillContext")}>
+              <Select value={context} onValueChange={setContext}>
+                <SelectTrigger className="h-9 w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent align="start">
-                  <SelectItem value="global">{t("globalScope")}</SelectItem>
-                  {projectTargets.map((item) => (
-                    <SelectItem key={item.dir} value={projectTargetValue(item.dir)}>
-                      {item.label}
+                  <SelectGroup>
+                    <SelectItem value="global">
+                      {t("skillContextGlobal")}
                     </SelectItem>
-                  ))}
+                    <SelectItem value="coding">
+                      {t("skillContextCoding")}
+                    </SelectItem>
+                    <SelectItem value="daily">
+                      {t("skillContextDaily")}
+                    </SelectItem>
+                  </SelectGroup>
                 </SelectContent>
               </Select>
-            </div>
+            </SettingsField>
           )}
-          <div className="grid gap-1.5">
-            <label className="text-[12px] text-(--text-muted)">
-              {t("name")}
-            </label>
+          <SettingsField id="skill-editor-name" label={t("name")}>
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
               disabled={!isNew}
               placeholder="my-skill"
-              className="h-8 text-[13px]"
             />
-          </div>
-          <div className="grid gap-1.5">
-            <label className="text-[12px] text-(--text-muted)">
-              {t("description")}
-            </label>
-            <Input
+          </SettingsField>
+          <SettingsField id="skill-editor-description" label={t("description")}>
+            <Textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder={t("skillDescriptionPlaceholder")}
-              className="h-8 text-[13px]"
+              className="min-h-[72px] resize-none leading-5"
             />
-          </div>
+          </SettingsField>
 
-          <div className="rounded-md border border-(--border-default) bg-(--bg-secondary) p-3">
-            <div className="mb-2 flex items-center gap-2 text-[12px] font-medium text-(--text-primary)">
-              <SlidersHorizontal size={13} />
+          <div className="rounded-lg border border-(--border-default) bg-(--bg-subtle) p-4">
+            <div className="mb-3 flex items-center gap-2 text-[13px] font-medium text-(--text-primary)">
+              <SlidersHorizontal size={14} className="text-(--text-muted)" />
               {t("skillRoutingSettings")}
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="grid gap-1.5">
-                <label className="text-[12px] text-(--text-muted)">
-                  {t("skillMode")}
-                </label>
-                <Select value={mode} onValueChange={setMode}>
-                  <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent align="start">
-                    {SKILL_MODES.map((item) => (
-                      <SelectItem key={item} value={item}>
-                        {t(`skillMode_${item}`)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="grid gap-1.5">
-                <label className="text-[12px] text-(--text-muted)">
-                  {t("skillPriority")}
-                </label>
-                <Input
-                  type="number"
-                  min="0"
-                  max="100"
-                  value={priority}
-                  onChange={(e) => setPriority(e.target.value)}
-                  className="h-8 text-[13px]"
+            <div className="grid gap-4 sm:grid-cols-2">
+              <SettingsField
+                id="skill-editor-mode"
+                label={t("skillMode")}
+                description={t("skillModeHint")}
+                className="sm:col-span-2"
+              >
+                <SettingsSegmentedControl
+                  idPrefix="skill-editor-mode"
+                  value={mode}
+                  onValueChange={setMode}
+                  options={SKILL_MODES.map((item) => ({
+                    value: item,
+                    label: t(`skillMode_${item}`),
+                  }))}
+                  className="[&_button]:text-[11px] sm:[&_button]:text-[12px]"
                 />
-              </div>
-              <div className="grid gap-1.5 sm:col-span-2">
-                <label className="text-[12px] text-(--text-muted)">
-                  {t("skillTriggers")}
-                </label>
-                <Input
-                  value={triggers}
-                  onChange={(e) => setTriggers(e.target.value)}
-                  placeholder="after_edit, before_final"
-                  className="h-8 text-[13px]"
-                />
-              </div>
-              <div className="flex items-center justify-between rounded-md border border-(--border-default) bg-(--bg-primary) px-2 py-1.5 sm:col-span-2">
-                <span className="text-[12px] text-(--text-muted)">
-                  {enabled ? t("enabled") : t("disabled")}
+              </SettingsField>
+              {mode !== "manual" && (
+                <>
+                  <SettingsField
+                    id="skill-editor-priority"
+                    label={t("skillPriority")}
+                  >
+                    <Input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={priority}
+                      onChange={(e) => setPriority(e.target.value)}
+                    />
+                  </SettingsField>
+                  <SettingsField
+                    id="skill-editor-triggers"
+                    label={t("skillTriggers")}
+                    className="sm:col-span-2"
+                  >
+                    <Input
+                      value={triggers}
+                      onChange={(e) => setTriggers(e.target.value)}
+                      placeholder="after_edit, before_final"
+                    />
+                  </SettingsField>
+                </>
+              )}
+              <div className="flex items-center justify-between sm:col-span-2">
+                <span className="text-[13px] font-medium text-(--text-primary)">
+                  {t("enabled")}
                 </span>
-                <SwitchControl
+                <Switch
                   checked={enabled}
-                  onClick={() => setEnabled((value) => !value)}
-                  title={enabled ? t("disable") : t("enable")}
+                  onCheckedChange={setEnabled}
+                  aria-label={enabled ? t("disable") : t("enable")}
                 />
               </div>
             </div>
           </div>
 
-          <div className="grid gap-1.5">
-            <label className="text-[12px] text-(--text-muted)">
-              {t("skillContent")}
-            </label>
+          <SettingsField id="skill-editor-content" label={t("skillContent")}>
             {loading ? (
-              <div className="rounded-md border border-(--border-default) py-8 text-center text-[12px] text-(--text-muted)">
-                {t("loading")}...
-              </div>
+              <Empty className="rounded-lg border border-(--border-default) py-8">
+                <EmptyDescription>{t("loading")}...</EmptyDescription>
+              </Empty>
             ) : (
-              <Textarea
+              <MarkdownEditor
                 value={content}
-                onChange={(e) => setContent(e.target.value)}
-                disabled={contentReadOnly}
-                className="min-h-[360px] resize-y text-[13px] font-mono leading-5"
+                onChange={setContent}
+                height={360}
+                preview={contentReadOnly ? "preview" : "live"}
                 placeholder={
                   "---\nname: my-skill\ndescription: ...\n---\n\nSkill instructions..."
                 }
               />
             )}
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-(--border-default) bg-(--bg-primary) pt-3">
-        <Button variant="outline" onClick={onCancel} size="sm">
-          {t("cancel")}
-        </Button>
-        <Button
-          onClick={handleSave}
-          disabled={
-            loading ||
-            (!contentReadOnly && !content.trim()) ||
-            (isNew && !name.trim())
-          }
-          size="sm"
-        >
-          {isNew ? t("create") : t("save")}
-        </Button>
+          </SettingsField>
+        </SettingsSection>
       </div>
     </div>
   );
 }
 
-function SkillEditorDialog({ skill, projectTargets = [], open, onSave, onOpenChange }) {
+function SkillEditorDialog({ skill, open, onSave, onOpenChange }) {
+  const [footerState, setFooterState] = useState({
+    isNew: true,
+    canSave: false,
+  });
+  const saveRef = useRef(null);
+
+  const handleValidate = useCallback(({ handleSave, isNew, canSave }) => {
+    saveRef.current = handleSave;
+    setFooterState((prev) =>
+      prev.isNew === isNew && prev.canSave === canSave
+        ? prev
+        : { isNew, canSave },
+    );
+  }, []);
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[760px] h-[86vh] max-h-[86vh] flex flex-col overflow-hidden">
-        <DialogHeader className="shrink-0">
+      <DialogContent className="flex h-[86vh] max-h-[86vh] flex-col overflow-hidden p-0 sm:max-w-[720px]">
+        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
           <DialogTitle>{skill ? t("editSkill") : t("newSkill")}</DialogTitle>
         </DialogHeader>
-        <SkillEditor
-          skill={skill}
-          projectTargets={projectTargets}
-          onSave={onSave}
-          onCancel={() => onOpenChange(false)}
-        />
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function ViewDialog({ skill, open, onOpenChange }) {
-  const [content, setContent] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!open || !skill) return;
-    setLoading(true);
-    api
-      .fetchSkillContent(skill.name, skill.projectDir)
-      .then((data) => setContent(data.content || ""))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [open, skill]);
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[720px] max-h-[82vh] flex flex-col overflow-hidden">
-        <DialogHeader className="shrink-0">
-          <DialogTitle>
-            {skill?.name} {t("contentPreview")}
-          </DialogTitle>
-        </DialogHeader>
-        <div className="flex-1 overflow-y-auto min-h-0 pr-1">
-          {loading ? (
-            <div className="py-8 text-center text-[12px] text-(--text-muted)">
-              {t("loading")}...
-            </div>
-          ) : (
-            <pre className="rounded-lg bg-(--bg-secondary) p-3 text-[13px] whitespace-pre-wrap break-words font-mono leading-5">
-              {content}
-            </pre>
-          )}
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 sm:px-6">
+          <SkillEditor
+            skill={skill}
+            onSave={onSave}
+            onValidate={handleValidate}
+          />
         </div>
-        <DialogFooter className="shrink-0">
+        <div className="mx-4 flex shrink-0 justify-end gap-2 border-t border-(--border-default) py-4 sm:mx-6">
           <Button
             variant="outline"
             onClick={() => onOpenChange(false)}
-            size="sm"
           >
-            {t("close")}
+            {t("cancel")}
           </Button>
-        </DialogFooter>
+          <Button
+            onClick={() => saveRef.current?.()}
+            disabled={!footerState.canSave}
+          >
+            {footerState.isNew ? t("create") : t("save")}
+          </Button>
+        </div>
       </DialogContent>
     </Dialog>
   );
 }
 
-function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
-  const enabled = isEnabled(skill);
+function SkillRoutingForm({ skill, onSave, onCancel }) {
+  const [mode, setMode] = useState(normalizeSkillMode(skill?.mode));
+  const [triggers, setTriggers] = useState((skill?.triggers || []).join(", "));
+  const [priority, setPriority] = useState(skill?.priority ?? 50);
+  const [context, setContext] = useState(skillContextValue(skill?.contexts));
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setMode(normalizeSkillMode(skill?.mode));
+    setTriggers((skill?.triggers || []).join(", "));
+    setPriority(skill?.priority ?? 50);
+    setContext(skillContextValue(skill?.contexts));
+  }, [skill]);
+
+  const handleSave = async () => {
+    if (!skill) return;
+    setSaving(true);
+    try {
+      await api.updateSkillMetadata(
+        skill.name,
+        {
+          mode,
+          triggers:
+            mode === "manual"
+              ? []
+              : triggers
+                  .split(",")
+                  .map((item) => item.trim())
+                  .filter(Boolean),
+          priority: Number(priority) || 0,
+          contexts: context === "global" ? ["coding", "daily"] : [context],
+        },
+        skill.projectDir,
+      );
+      await onSave?.();
+      onCancel?.();
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
-    <div
-      className={cn(
-        "rounded-lg border p-3 transition-colors",
-        enabled
-          ? "border-(--border-default) bg-(--bg-primary) hover:bg-(--bg-hover)"
-          : "border-(--border-default) bg-(--bg-secondary) opacity-75",
-      )}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="truncate text-[13px] font-medium text-(--text-primary)">
-              {skill.name}
-            </span>
-            <Badge
-              variant={isBuiltin(skill) ? "secondary" : "outline"}
-              className="h-4 rounded-md px-1.5 py-0 text-[10px]"
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth pr-1">
+        <SettingsSection description={t("skillModeHint")} className="gap-4">
+          <SettingsField id="skill-routing-context" label={t("skillContext")}>
+            <SettingsSegmentedControl
+              idPrefix="skill-routing-context"
+              value={context}
+              onValueChange={setContext}
+              options={[
+                { value: "global", label: t("skillContextGlobal") },
+                { value: "coding", label: t("skillContextCoding") },
+                { value: "daily", label: t("skillContextDaily") },
+              ]}
+            />
+          </SettingsField>
+          <SettingsField id="skill-routing-mode" label={t("skillMode")}>
+            <SettingsSegmentedControl
+              idPrefix="skill-routing-mode"
+              value={mode}
+              onValueChange={setMode}
+              options={SKILL_MODES.map((item) => ({
+                value: item,
+                label: t(`skillMode_${item}`),
+              }))}
+            />
+          </SettingsField>
+          {mode === "agent_requested" && (
+            <SettingsField
+              id="skill-routing-triggers"
+              label={t("skillTriggers")}
             >
-              {scopeLabel(skill.scope)}
-            </Badge>
-            <Badge
-              variant={enabled ? "outline" : "secondary"}
-              className="h-4 rounded-md px-1.5 py-0 text-[10px]"
+              <Input
+                value={triggers}
+                onChange={(event) => setTriggers(event.target.value)}
+                placeholder="react, testing, docs"
+                className="h-9 text-[13px]"
+              />
+            </SettingsField>
+          )}
+          {mode === "always" && (
+            <SettingsField
+              id="skill-routing-priority"
+              label={t("skillPriority")}
             >
-              {enabled ? t("enabled") : t("disabled")}
-            </Badge>
-            {skill.version && skill.version !== "0.0.0" && (
-              <span className="text-[10px] text-(--text-muted)">
-                v{skill.version}
-              </span>
-            )}
-            {skill.mode && (
+              <Input
+                type="number"
+                value={priority}
+                onChange={(event) => setPriority(event.target.value)}
+                className="h-9 text-[13px]"
+              />
+            </SettingsField>
+          )}
+        </SettingsSection>
+      </div>
+      <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-(--border-default) pt-4">
+        <Button variant="outline" onClick={onCancel}>
+          {t("cancel")}
+        </Button>
+        <Button onClick={handleSave} disabled={saving}>
+          {saving ? t("loading") : t("save")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function SkillDetailPane({
+  skill,
+  onSave,
+  onDelete,
+  onToggle,
+}) {
+  const [content, setContent] = useState("");
+  const [draftContent, setDraftContent] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [modeView, setModeView] = useState("view");
+
+  useEffect(() => {
+    setModeView("view");
+    setContent("");
+    setDraftContent("");
+    if (!skill) return;
+    setLoading(true);
+    api
+      .fetchSkillContent(skill.name, skill.projectDir)
+      .then((data) => {
+        const next = data.content || "";
+        setContent(next);
+        setDraftContent(next);
+      })
+      .catch(() => {
+        setContent("");
+        setDraftContent("");
+      })
+      .finally(() => setLoading(false));
+  }, [skill]);
+
+  if (!skill) {
+    return (
+      <div className="flex h-full items-center justify-center text-[13px] text-(--text-muted)">
+        {t("noSkills")}
+      </div>
+    );
+  }
+
+  const mode = normalizeSkillMode(skill.mode);
+  const author = skillAuthorLabel(skill);
+  const builtin = isBuiltin(skill);
+
+  const handleContentSave = async () => {
+    if (!skill || builtin) return;
+    setSaving(true);
+    try {
+      await api.updateSkillContent(skill.name, draftContent, skill.projectDir);
+      setContent(draftContent);
+      setModeView("view");
+      await onSave?.();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="shrink-0 border-b border-(--border-default) px-5 py-4">
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="min-w-0 truncate text-[17px] font-semibold leading-6 text-(--text-primary)">
+                {skill.name}
+              </h3>
               <Badge
-                variant="outline"
-                className="h-4 rounded-md px-1.5 py-0 text-[10px]"
+                variant={builtin ? "secondary" : "outline"}
+                className="h-6 rounded-md px-2 text-[11px]"
               >
-                {t(`skillMode_${normalizeSkillMode(skill.mode)}`)}
+                {scopeLabel(skill.scope)}
               </Badge>
+              <span
+                className={cn(
+                  "inline-flex h-6 items-center rounded-md px-2 text-[11px] font-medium",
+                  modeBadgeClass(mode),
+                )}
+              >
+                {t(`skillMode_${mode}`)}
+              </span>
+            </div>
+            <p className="mt-1 line-clamp-2 text-[12px] leading-5 text-(--text-muted)">
+              {skill.description || t("noDescription")}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-(--text-muted)">
+              {author ? <span>{author}</span> : null}
+              {skill.packageName ? <span>{skill.packageName}</span> : null}
+              {skill.version && skill.version !== "0.0.0" ? (
+                <span>v{skill.version}</span>
+              ) : null}
+            </div>
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+            {modeView === "edit" || modeView === "routing" ? null : (
+              <>
+                {!builtin && (
+                  <Button
+                    variant="outline"
+                    onClick={() => setModeView("edit")}
+                  >
+                    <PencilSimple size={13} />
+                    {t("edit")}
+                  </Button>
+                )}
+                <Button
+                  variant="outline"
+                  onClick={() => setModeView("routing")}
+                >
+                  <SlidersHorizontal size={13} />
+                  {t("skillRoutingSettings")}
+                </Button>
+                {!builtin && (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="text-(--accent-red) hover:bg-(--accent-red-bg) hover:text-(--accent-red)"
+                    onClick={() => onDelete?.(skill)}
+                    aria-label={t("delete")}
+                    title={t("delete")}
+                  >
+                    <Trash size={15} />
+                  </Button>
+                )}
+                <Switch
+                  checked={isEnabled(skill)}
+                  onCheckedChange={(next) => onToggle?.(skill, next)}
+                  aria-label={isEnabled(skill) ? t("disable") : t("enable")}
+                />
+              </>
             )}
           </div>
-          <div className="mt-1 line-clamp-2 text-[11px] leading-4 text-(--text-muted)">
-            {skill.description || t("noDescription")}
+        </div>
+      </div>
+      <div
+        className={cn(
+          "flex min-h-0 flex-1 flex-col overflow-hidden",
+          modeView === "view" ? "px-5 py-4" : "p-5",
+        )}
+      >
+        {modeView === "routing" ? (
+          <SkillRoutingForm
+            key={skillKey(skill)}
+            skill={skill}
+            onSave={onSave}
+            onCancel={() => setModeView("view")}
+          />
+        ) : loading ? (
+          <div className="py-8 text-center text-[12px] text-(--text-muted)">
+            {t("loading")}...
           </div>
-          {skill.triggers?.length > 0 && (
-            <div className="mt-1 truncate text-[10px] text-(--text-muted)">
-              {t("skillTriggers")}: {skill.triggers.join(", ")}
+        ) : modeView === "edit" ? (
+          <MarkdownEditor
+            value={draftContent}
+            onChange={setDraftContent}
+            height="100%"
+            placeholder={t("skillContent")}
+            className="min-h-0 flex-1"
+          />
+        ) : (
+          <MarkdownPreview
+            value={content}
+            className="skill-md-preview flex-1"
+          />
+        )}
+        {modeView === "edit" && (
+          <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-(--border-default) pt-4">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDraftContent(content);
+                setModeView("view");
+              }}
+            >
+              {t("cancel")}
+            </Button>
+            <Button
+              onClick={handleContentSave}
+              disabled={saving || loading}
+            >
+              {saving ? t("loading") : t("save")}
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function InstallDialog({
+  open,
+  onOpenChange,
+  installSource,
+  setInstallSource,
+  installTarget,
+  setInstallTarget,
+  installing,
+  installError,
+  onInstall,
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex flex-col gap-4 overflow-hidden p-0 sm:max-w-[480px]">
+        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
+          <DialogTitle>{t("installSkill")}</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-4 px-4 pb-6 sm:px-6">
+          <SettingsSection
+            description={t("skillInstallHint")}
+            className="gap-4"
+          >
+            <SettingsField
+              id="skill-install-source"
+              label={t("skillInstallSource")}
+            >
+              <Input
+                value={installSource}
+                onChange={(e) => setInstallSource(e.target.value)}
+                placeholder={t("skillInstallPlaceholder")}
+                className="h-9 text-[13px]"
+              />
+            </SettingsField>
+            <SettingsField id="skill-install-context" label={t("skillContext")}>
+              <Select
+                value={installTarget || "global"}
+                onValueChange={setInstallTarget}
+              >
+                <SelectTrigger className="h-9 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectGroup>
+                    <SelectItem value="global">
+                      {t("skillContextGlobal")}
+                    </SelectItem>
+                    <SelectItem value="coding">
+                      {t("skillContextCoding")}
+                    </SelectItem>
+                    <SelectItem value="daily">
+                      {t("skillContextDaily")}
+                    </SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </SettingsField>
+          </SettingsSection>
+          {installError && (
+            <div className="text-[11px] text-(--accent-red)">
+              {installError}
             </div>
           )}
-        </div>
-
-        <div className="flex shrink-0 items-center gap-1">
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={() => onView(skill)}
-            title={t("view")}
-          >
-            <Eye size={13} />
-          </Button>
-          <SwitchControl
-            checked={enabled}
-            onClick={() => onToggle(skill, !enabled)}
-            title={enabled ? t("disable") : t("enable")}
-          />
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={() => onEdit(skill)}
-            title={isBuiltin(skill) ? t("skillRoutingSettings") : t("edit")}
-          >
-            {isBuiltin(skill) ? (
-              <SlidersHorizontal size={13} />
-            ) : (
-              <Pencil size={13} />
-            )}
-          </Button>
-          {!isBuiltin(skill) && (
+          <div className="flex justify-end gap-2">
             <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => {
-                if (
-                  confirm(
-                    t("confirmDeleteSkill").replace("{{name}}", skill.name),
-                  )
-                ) {
-                  onDelete(skill);
-                }
-              }}
-              title={t("delete")}
-              className="text-(--accent-red) hover:text-(--accent-red)"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
             >
-              <Trash2 size={13} />
+              {t("cancel")}
             </Button>
+            <Button
+              onClick={onInstall}
+              disabled={installing || !installSource.trim()}
+            >
+              <Download data-icon="inline-start" />
+              {installing ? t("installing") : t("installSkill")}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function modeBadgeClass(mode) {
+  // Apple-style muted badge: use the same neutral token as the Badge component's
+  // "secondary" variant instead of bright accent colors.
+  return "bg-(--badge-bg) text-(--text-secondary) shadow-[inset_0_0_0_1px_var(--badge-edge)]";
+}
+
+function SkillCard({ skill, selected, onSelect }) {
+  const enabled = isEnabled(skill);
+  const author = skillAuthorLabel(skill);
+  const mode = normalizeSkillMode(skill.mode);
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onSelect(skill)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") onSelect(skill);
+      }}
+      className={cn(
+        "flex cursor-pointer flex-col gap-2 rounded-lg border px-3 py-2.5 text-left outline-none transition-[background-color,border-color,box-shadow] focus-visible:shadow-[0_0_0_3px_var(--control-focus-ring)]",
+        selected
+          ? "border-transparent bg-(--bg-active)"
+          : enabled
+            ? "border-transparent bg-transparent hover:bg-(--bg-hover)"
+            : "border-transparent bg-transparent text-muted-foreground hover:bg-(--bg-hover)",
+      )}
+    >
+      <div className="flex items-start gap-2">
+        <span
+          className={cn(
+            "mt-1.5 size-2 shrink-0 rounded-full",
+            enabled
+              ? "bg-emerald-500 shadow-[0_0_0_2px_rgba(16,185,129,0.14)]"
+              : "bg-(--border-default)",
+          )}
+          aria-hidden
+        />
+        <div className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-semibold text-foreground">
+            {skill.name}
+          </span>
+          {skill.triggers?.length > 0 && (
+            <p className="mt-1 truncate text-xs text-muted-foreground">
+              {t("skillTriggers")}: {skill.triggers.join(", ")}
+            </p>
+          )}
+        </div>
+        <div className="ml-auto flex max-w-[58%] shrink-0 flex-wrap justify-end gap-1">
+          {skill.version && skill.version !== "0.0.0" && (
+            <Badge
+              variant="outline"
+              className="h-5 rounded-md px-1.5 text-[11px]"
+            >
+              v{skill.version}
+            </Badge>
+          )}
+          {skill.mode && (
+            <span
+              className={cn(
+                "inline-flex h-5 items-center rounded-md px-1.5 text-[11px] font-medium",
+                modeBadgeClass(mode),
+              )}
+            >
+              {t(`skillMode_${mode}`)}
+            </span>
+          )}
+          {author && (
+            <Badge
+              variant="secondary"
+              className="h-5 rounded-md px-1.5 text-[11px]"
+            >
+              {author}
+            </Badge>
           )}
         </div>
       </div>
@@ -615,74 +815,176 @@ function SkillCard({ skill, onView, onToggle, onEdit, onDelete }) {
   );
 }
 
-function SkillGroupHeader({ icon = "folder", name, count, collapsed, title, onClick }) {
-  const Icon = icon === "package" ? FileCode2 : Folder;
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex h-8 w-full items-center gap-2 rounded-md border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-primary) hover:bg-(--bg-hover)"
-      title={title}
-    >
-      <Icon size={14} className="shrink-0 text-(--text-muted)" />
-      <span className="min-w-0 flex-1 truncate">{name}</span>
-      <span className="shrink-0 text-[12px] font-medium text-(--text-accent)">
-        {count}
-      </span>
-      {collapsed ? (
-        <ChevronRight size={13} className="shrink-0 text-(--text-muted)" />
-      ) : (
-        <ChevronDown size={13} className="shrink-0 text-(--text-muted)" />
-      )}
-    </button>
-  );
-}
-
-function SkillCards({ items, onView, onToggle, onEdit, onDelete }) {
+function SkillCards({ items, selectedSkill, onSelect }) {
   return items.map((skill) => (
     <SkillCard
       key={skillKey(skill)}
       skill={skill}
-      onView={onView}
-      onToggle={onToggle}
-      onEdit={onEdit}
-      onDelete={onDelete}
+      selected={skillKey(skill) === skillKey(selectedSkill)}
+      onSelect={onSelect}
     />
   ));
 }
 
-export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
+function SkillGroupHeader({ name, count, collapsed, title, onClick, actions }) {
+  return (
+    <div className="flex h-8 w-full items-center gap-1 rounded-lg px-1 text-[12px] font-medium text-foreground hover:bg-muted/50">
+      <button
+        type="button"
+        onClick={onClick}
+        className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1 text-left"
+        title={title}
+      >
+        <Folder size={14} className="shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate">{name}</span>
+        <span className="shrink-0 text-muted-foreground">{count}</span>
+        {collapsed ? <CaretRight size={13} /> : <CaretDown size={13} />}
+      </button>
+      {actions ? (
+        <div
+          className="flex shrink-0 items-center gap-0.5 pr-0.5"
+          onClick={(event) => event.stopPropagation()}
+        >
+          {actions}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function PackageBatchDialog({ packageGroup, open, applying, onOpenChange, onApply }) {
+  const [mode, setMode] = useState("agent_requested");
+  const [context, setContext] = useState("global");
+  const [enabled, setEnabled] = useState("keep");
+
+  useEffect(() => {
+    if (!open) return;
+    setMode("agent_requested");
+    setContext("global");
+    setEnabled("keep");
+  }, [open, packageGroup?.key]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex flex-col gap-4 overflow-hidden p-0 sm:max-w-[480px]">
+        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
+          <DialogTitle>{t("skillPackageBatchEdit")}</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-4 px-4 pb-6 sm:px-6">
+          <SettingsSection
+            description={t("skillPackageBatchEditHint").replace(
+              "{{package}}",
+              packageGroup?.packageName || "",
+            )}
+            className="gap-4"
+          >
+            <SettingsField id="package-batch-mode" label={t("skillMode")}>
+              <Select value={mode} onValueChange={setMode}>
+                <SelectTrigger className="h-9 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectGroup>
+                    {SKILL_MODES.map((item) => (
+                      <SelectItem key={item} value={item}>
+                        {t(`skillMode_${item}`)}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </SettingsField>
+            <SettingsField id="package-batch-context" label={t("skillContext")}>
+              <Select value={context} onValueChange={setContext}>
+                <SelectTrigger className="h-9 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectGroup>
+                    <SelectItem value="global">
+                      {t("skillContextGlobal")}
+                    </SelectItem>
+                    <SelectItem value="coding">
+                      {t("skillContextCoding")}
+                    </SelectItem>
+                    <SelectItem value="daily">
+                      {t("skillContextDaily")}
+                    </SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </SettingsField>
+            <SettingsField id="package-batch-enabled" label={t("enabled")}>
+              <Select value={enabled} onValueChange={setEnabled}>
+                <SelectTrigger className="h-9 w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectGroup>
+                    <SelectItem value="keep">
+                      {t("skillPackageKeepEnabled")}
+                    </SelectItem>
+                    <SelectItem value="true">{t("enable")}</SelectItem>
+                    <SelectItem value="false">{t("disable")}</SelectItem>
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </SettingsField>
+          </SettingsSection>
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="outline"
+              disabled={applying}
+              onClick={() => onOpenChange?.(false)}
+            >
+              {t("cancel")}
+            </Button>
+            <Button
+              disabled={applying || !packageGroup}
+              onClick={() =>
+                onApply?.(packageGroup, {
+                  mode,
+                  contexts:
+                    context === "global" ? ["coding", "daily"] : [context],
+                  enabled: enabled === "keep" ? undefined : enabled === "true",
+                })
+              }
+            >
+              {applying ? t("loading") : t("skillPackageApplyAll")}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function SkillPanel({ projectDirs = [] }) {
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
-  const [viewSkill, setViewSkill] = useState(null);
-  const [collapsedProjects, setCollapsedProjects] = useState(() => new Set());
-  const [collapsedPackages, setCollapsedPackages] = useState(() => new Set());
+  const [selectedSkill, setSelectedSkill] = useState(null);
+  const [expandedGroups, setExpandedGroups] = useState(() => new Set());
+  const [browseMode, setBrowseMode] = useState("package");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [installSource, setInstallSource] = useState("");
-  const normalizedProjectTargets = useMemo(
-    () => normalizeProjectTargets(projectTargets, projectDirs),
-    [projectTargets, projectDirs],
-  );
   const [installTarget, setInstallTarget] = useState("");
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState("");
+  const [installOpen, setInstallOpen] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [pendingUpdate, setPendingUpdate] = useState(null);
+  const [pendingBatchPackage, setPendingBatchPackage] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [applyingPackageKey, setApplyingPackageKey] = useState("");
+  const [actionError, setActionError] = useState("");
   const projectKey = projectDirsKey(projectDirs);
   const requestProjectDirs = useMemo(
     () => (projectKey ? projectKey.split("\n") : []),
     [projectKey],
   );
-
-  useEffect(() => {
-    const allowed = new Set([
-      "global",
-      ...normalizedProjectTargets.map((item) => projectTargetValue(item.dir)),
-    ]);
-    if (installTarget && !allowed.has(installTarget)) {
-      setInstallTarget("");
-    }
-  }, [installTarget, normalizedProjectTargets]);
 
   const loadSkills = useCallback(async () => {
     setLoading(true);
@@ -700,11 +1002,7 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
   const handleToggle = async (skill, enabled) => {
     // 乐观更新：立即翻转本地状态，用户秒切无闪烁
     setSkills((prev) =>
-      prev.map((s) =>
-        s.name === skill.name && s.projectDir === skill.projectDir
-          ? { ...s, enabled }
-          : s,
-      ),
+      prev.map((s) => (s.name === skill.name ? { ...s, enabled } : s)),
     );
     try {
       await api.toggleSkill(skill.name, enabled, skill.projectDir);
@@ -712,13 +1010,11 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
       // 请求失败时回滚
       setSkills((prev) =>
         prev.map((s) =>
-          s.name === skill.name && s.projectDir === skill.projectDir
-            ? { ...s, enabled: !enabled }
-            : s,
+          s.name === skill.name ? { ...s, enabled: !enabled } : s,
         ),
       );
     }
-    // 静默后台刷新，不触发 loading
+    // 闈欓粯鍚庡彴鍒锋柊锛屼笉瑙﹀彂 loading
     try {
       const list = await api.fetchSkills(requestProjectDirs);
       setSkills(Array.isArray(list) ? list : []);
@@ -726,8 +1022,52 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
   };
 
   const handleDelete = async (skill) => {
-    await api.deleteSkill(skill.name, skill.projectDir);
-    loadSkills();
+    if (!skill) return;
+    const siblings = skillsInSamePackage(skills, skill);
+    if (siblings.length > 1) {
+      setPendingDelete({
+        kind: "package",
+        packageName:
+          skill.packageName || skill.packageSource || skill.source || skill.name,
+        items: siblings,
+        representative: skill,
+      });
+      return;
+    }
+    setPendingDelete({ kind: "skill", skill, items: [skill] });
+  };
+
+  const handleDeletePackage = (packageGroup) => {
+    if (!packageGroup?.items?.length) return;
+    setPendingDelete({
+      kind: "package",
+      packageName: packageGroup.packageName,
+      items: packageGroup.items,
+      representative: packageGroup.representative,
+    });
+  };
+
+  const confirmDeleteSkill = async () => {
+    if (!pendingDelete || deleting) return;
+    const items = pendingDelete.items || [];
+    if (items.length === 0) return;
+    const deletedKeys = new Set(items.map((skill) => skillKey(skill)));
+    setDeleting(true);
+    setActionError("");
+    try {
+      for (const skill of items) {
+        await api.deleteSkill(skill.name, skill.projectDir, requestProjectDirs);
+      }
+      setPendingDelete(null);
+      if (selectedSkill && deletedKeys.has(skillKey(selectedSkill))) {
+        setSelectedSkill(null);
+      }
+      await loadSkills();
+    } catch (err) {
+      setActionError(err.message || t("deleteFailed"));
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const handleSave = () => {
@@ -741,16 +1081,18 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
     setInstalling(true);
     setInstallError("");
     try {
-      const selectedTarget = parseSkillTarget(
-        installTarget || defaultSkillTarget(normalizedProjectTargets),
-      );
+      const selectedContext = installTarget || "global";
       const result = await api.installSkill({
         source,
-        scope: selectedTarget.scope,
-        projectDir: selectedTarget.projectDir,
+        scope: "global",
+        contexts:
+          selectedContext === "global"
+            ? ["coding", "daily"]
+            : [selectedContext],
       });
       if (result?.error) throw new Error(result.message || "Install failed");
       setInstallSource("");
+      setInstallOpen(false);
       await loadSkills();
     } catch (err) {
       setInstallError(err.message || "Install failed");
@@ -759,21 +1101,72 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
     }
   };
 
+  const handleUpdatePackage = (skill) => {
+    if (!skill || updating) return;
+    setPendingUpdate(skill);
+  };
+
+  const confirmUpdatePackage = async () => {
+    if (!pendingUpdate || updating) return;
+    setUpdating(true);
+    setActionError("");
+    try {
+      const result = await api.updateSkillPackage({
+        name: pendingUpdate.name,
+        projectDir: pendingUpdate.projectDir,
+      });
+      if (result?.error) {
+        throw new Error(result.message || t("updateSkillPackageFailed"));
+      }
+      setPendingUpdate(null);
+      await loadSkills();
+    } catch (err) {
+      setActionError(err.message || t("updateSkillPackageFailed"));
+    } finally {
+      setUpdating(false);
+    }
+  };
+
+  const handleApplyPackage = async (packageGroup, patch = {}) => {
+    if (!packageGroup?.items?.length || applyingPackageKey) return;
+    setApplyingPackageKey(packageGroup.key);
+    setActionError("");
+    try {
+      for (const skill of packageGroup.items) {
+        const metadata = {
+          mode: patch.mode,
+          contexts: patch.contexts,
+        };
+        if (patch.enabled !== undefined) metadata.enabled = patch.enabled;
+        await api.updateSkillMetadata(skill.name, metadata, skill.projectDir);
+      }
+      setPendingBatchPackage(null);
+      await loadSkills();
+    } catch (err) {
+      setActionError(err.message || t("skillPackageApplyFailed"));
+    } finally {
+      setApplyingPackageKey("");
+    }
+  };
+
   const enabledCount = skills.filter(isEnabled).length;
   const customCount = skills.filter((skill) => !isBuiltin(skill)).length;
   const filteredSkills = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return skills.filter((skill) => {
-      if (filter === "enabled" && !isEnabled(skill)) return false;
-      if (filter === "builtin" && skill.scope !== "builtin") return false;
-      if (filter === "custom" && skill.scope === "builtin") return false;
+      if (filter === "custom") {
+        if (skill.scope === "builtin" || skillPackageIsUpdatable(skill)) {
+          return false;
+        }
+      }
+      if (filter === "remote" && !skillPackageIsUpdatable(skill)) return false;
       if (!needle) return true;
       return (
         skill.name.toLowerCase().includes(needle) ||
-        String(skill.packageName || "").toLowerCase().includes(needle) ||
-        String(compactSourceLabel(skill.packageSource || skill.source))
+        String(skill.packageName || "")
           .toLowerCase()
           .includes(needle) ||
+        String(skillAuthorLabel(skill)).toLowerCase().includes(needle) ||
         String(projectDisplayName(skill.projectName || ""))
           .toLowerCase()
           .includes(needle)
@@ -781,117 +1174,192 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
     });
   }, [skills, query, filter]);
   const groupedSkills = useMemo(() => {
-    const regular = [];
-    const packageGroups = [];
-    const projectGroups = [];
-    const packageIndex = new Map();
-    const projectIndex = new Map();
-    const addToPackage = (groups, index, skill) => {
-      const key = skillPackageKey(skill);
-      if (!key) return false;
-      if (!index.has(key)) {
-        const group = {
-          key,
-          name: skillPackageName(skill),
-          source: skill.packageSource || skill.source || "",
-          items: [],
-        };
-        index.set(key, group);
-        groups.push(group);
-      }
-      index.get(key).items.push(skill);
-      return true;
-    };
-
+    const groups = new Map([
+      ["global", { key: "global", name: t("skillContextGlobal"), items: [] }],
+      [
+        "coding",
+        { key: "coding", name: t("skillContextCodingMode"), items: [] },
+      ],
+      ["daily", { key: "daily", name: t("skillContextDailyMode"), items: [] }],
+    ]);
     for (const skill of filteredSkills) {
-      if (skill.scope !== "project") {
-        if (!addToPackage(packageGroups, packageIndex, skill)) {
-          regular.push(skill);
-        }
-        continue;
-      }
-      const key = skill.projectDir || "__current_project__";
-      if (!projectIndex.has(key)) {
-        const group = {
-          key,
-          name: projectDisplayName(skill.projectName || t("projectScope")),
-          items: [],
-          packageGroups: [],
-          packageIndex: new Map(),
-          total: 0,
-        };
-        projectIndex.set(key, group);
-        projectGroups.push(group);
-      }
-      const group = projectIndex.get(key);
-      group.total += 1;
-      if (!addToPackage(group.packageGroups, group.packageIndex, skill)) {
-        group.items.push(skill);
-      }
+      groups.get(skillContextValue(skill.contexts)).items.push(skill);
     }
-    for (const group of projectGroups) {
-      delete group.packageIndex;
-    }
-    regular.sort(compareSkills);
-    packageGroups.sort((a, b) => a.name.localeCompare(b.name));
-    for (const group of packageGroups) {
-      group.items.sort(compareSkills);
-    }
-    projectGroups.sort((a, b) => a.name.localeCompare(b.name));
-    for (const group of projectGroups) {
-      group.items.sort(compareSkills);
-      group.packageGroups.sort((a, b) => a.name.localeCompare(b.name));
-      for (const packageGroup of group.packageGroups) {
-        packageGroup.items.sort(compareSkills);
-      }
-    }
-    return { regular, packageGroups, projectGroups };
+    return [...groups.values()]
+      .map((group) => ({ ...group, items: sortSkillsByAuthor(group.items) }))
+      .filter((group) => group.items.length > 0);
   }, [filteredSkills]);
 
-  const togglePackageGroup = useCallback((key) => {
-    setCollapsedPackages((prev) => {
-      const next = new Set(prev);
+  const packageGroupedSkills = useMemo(
+    () => groupSkillsByPackage(filteredSkills),
+    [filteredSkills],
+  );
+
+  useEffect(() => {
+    if (filteredSkills.length === 0) {
+      setSelectedSkill(null);
+      return;
+    }
+    const refreshedSelection = selectedSkill
+      ? filteredSkills.find(
+          (skill) => skillKey(skill) === skillKey(selectedSkill),
+        )
+      : null;
+    if (refreshedSelection) {
+      if (refreshedSelection !== selectedSkill)
+        setSelectedSkill(refreshedSelection);
+      return;
+    }
+    setSelectedSkill(filteredSkills[0]);
+  }, [filteredSkills, selectedSkill]);
+
+  const toggleSkillGroup = useCallback((key) => {
+    setExpandedGroups((current) => {
+      const next = new Set(current);
       if (next.has(key)) next.delete(key);
       else next.add(key);
       return next;
     });
   }, []);
 
-  const toggleProjectGroup = useCallback((key) => {
-    setCollapsedProjects((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }, []);
+  const renderSkillList = () => (
+    <>
+      {skills.length === 0 && !editing && (
+        <Empty className="rounded-lg py-8">
+          <EmptyDescription className="text-[13px] text-(--text-primary)">
+            {t("noSkills")}
+          </EmptyDescription>
+          <EmptyDescription className="text-[11px]">
+            {t("noSkillsHint")}
+          </EmptyDescription>
+        </Empty>
+      )}
 
-  const renderPackageGroup = (group, indentClass = "pl-6") => {
-    const collapsed = collapsedPackages.has(group.key);
-    return (
-      <div key={group.key} className="grid gap-1">
-        <SkillGroupHeader
-          icon="package"
-          name={group.name}
-          count={group.items.length}
-          collapsed={collapsed}
-          title={group.source || group.key}
-          onClick={() => togglePackageGroup(group.key)}
-        />
-        {!collapsed && (
-          <div className={cn("grid gap-2", indentClass)}>
-            <SkillCards
-              items={group.items}
-              onView={setViewSkill}
-              onToggle={handleToggle}
-              onEdit={setEditing}
-              onDelete={handleDelete}
-            />
+      {skills.length > 0 && filteredSkills.length === 0 && (
+        <div className="py-8 text-center text-[12px] text-(--text-muted)">
+          {t("noMatches")}
+        </div>
+      )}
+
+      {skills.length > 0 &&
+        filteredSkills.length > 0 &&
+        browseMode === "context" && (
+          <div className="grid gap-2">
+            {groupedSkills.map((group) => {
+              const collapsed = !expandedGroups.has(group.key);
+              return (
+                <div key={group.key} className="grid gap-1">
+                  <SkillGroupHeader
+                    name={group.name}
+                    count={group.items.length}
+                    collapsed={collapsed}
+                    title={group.key}
+                    onClick={() => toggleSkillGroup(group.key)}
+                  />
+                  {!collapsed && (
+                    <div className="grid gap-2">
+                      <SkillCards
+                        items={group.items}
+                        selectedSkill={selectedSkill}
+                        onSelect={setSelectedSkill}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
-      </div>
-    );
-  };
+
+      {skills.length > 0 &&
+        filteredSkills.length > 0 &&
+        browseMode === "package" && (
+          <div className="grid gap-2">
+            {packageGroupedSkills.packages.map((pkg) => {
+              const collapsed = !expandedGroups.has(pkg.key);
+              return (
+                <div key={pkg.key} className="grid gap-1">
+                  <SkillGroupHeader
+                    name={pkg.packageName}
+                    count={pkg.items.length}
+                    collapsed={collapsed}
+                    title={pkg.packageSource || pkg.key}
+                    onClick={() => toggleSkillGroup(pkg.key)}
+                    actions={
+                      <>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={() => setPendingBatchPackage(pkg)}
+                          aria-label={t("skillPackageBatchEdit")}
+                          title={t("skillPackageBatchEdit")}
+                        >
+                          <PencilSimple size={13} />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          disabled={updating}
+                          onClick={() =>
+                            handleUpdatePackage(pkg.representative)
+                          }
+                          aria-label={t("updateSkillPackage")}
+                          title={t("updateSkillPackage")}
+                        >
+                          <ArrowsClockwise
+                            size={13}
+                            className={updating ? "animate-spin" : undefined}
+                          />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          className="text-(--accent-red) hover:bg-(--accent-red-bg) hover:text-(--accent-red)"
+                          onClick={() => handleDeletePackage(pkg)}
+                          aria-label={t("deleteSkillPackage")}
+                          title={t("deleteSkillPackage")}
+                        >
+                          <Trash size={13} />
+                        </Button>
+                      </>
+                    }
+                  />
+                  {!collapsed && (
+                    <div className="grid gap-2 pl-1">
+                      <SkillCards
+                        items={pkg.items}
+                        selectedSkill={selectedSkill}
+                        onSelect={setSelectedSkill}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {packageGroupedSkills.ungrouped.length > 0 && (
+              <div className="grid gap-1">
+                <SkillGroupHeader
+                  name={t("skillUngrouped")}
+                  count={packageGroupedSkills.ungrouped.length}
+                  collapsed={!expandedGroups.has("ungrouped")}
+                  title="ungrouped"
+                  onClick={() => toggleSkillGroup("ungrouped")}
+                />
+                {expandedGroups.has("ungrouped") && (
+                  <div className="grid gap-2">
+                    <SkillCards
+                      items={packageGroupedSkills.ungrouped}
+                      selectedSkill={selectedSkill}
+                      onSelect={setSelectedSkill}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+    </>
+  );
 
   if (loading) {
     return (
@@ -902,174 +1370,171 @@ export function SkillPanel({ projectDirs = [], projectTargets = [] }) {
   }
 
   return (
-    <div className="space-y-3">
-      <div className="rounded-lg border border-(--border-default) bg-(--bg-secondary) p-3">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <FileCode2 size={14} className="text-(--text-muted)" />
-              <span className="text-[13px] font-medium text-(--text-primary)">
-                {t("skillLibrary")}
-              </span>
+    <>
+      <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[380px_minmax(0,1fr)]">
+        <div className="flex min-h-0 flex-col gap-3 border-b border-(--border-default) p-3 lg:border-b-0 lg:border-r">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            {skills.length > 0 && (
+              <p className="text-[12px] text-(--text-muted)">
+                {enabledCount}/{skills.length} {t("enabled")} · {customCount}{" "}
+                {t("custom")}
+              </p>
+            )}
+            <div className="flex items-center gap-2 sm:ml-auto">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setInstallError("");
+                  setInstallOpen(true);
+                }}
+              >
+                <Download size={13} />
+                {t("installSkill")}
+              </Button>
+              <Button onClick={() => setEditing("new")}>
+                <Plus size={13} />
+                {t("addSkill")}
+              </Button>
             </div>
-            <div className="mt-1 text-[11px] text-(--text-muted)">
-              {t("skillPanelHint")}
-            </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {/* <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px]">
-              {enabledCount}/{skills.length} {t("enabled")}
-            </Badge>
-            <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px]">
-              {customCount} {t("custom")}
-            </Badge> */}
-            <Button onClick={() => setEditing("new")} size="sm">
-              <Plus size={13} />
-              {t("addSkill")}
-            </Button>
-          </div>
-        </div>
-      </div>
 
-      <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto] sm:items-center">
-        <Input
-          value={installSource}
-          onChange={(e) => setInstallSource(e.target.value)}
-          placeholder={t("skillInstallPlaceholder")}
-          className="h-8 text-[13px]"
-        />
-        <Select
-          value={installTarget || defaultSkillTarget(normalizedProjectTargets)}
-          onValueChange={setInstallTarget}
-        >
-          <SelectTrigger className="h-8 w-full bg-(--bg-primary) text-[13px] sm:w-[150px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent align="start">
-            <SelectItem value="global">{t("globalScope")}</SelectItem>
-            {normalizedProjectTargets.map((item) => (
-              <SelectItem key={item.dir} value={projectTargetValue(item.dir)}>
-                {item.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Button
-          onClick={handleInstall}
-          disabled={installing || !installSource.trim()}
-          size="sm"
-        >
-          <Download size={13} />
-          {installing ? t("installing") : t("installSkill")}
-        </Button>
-      </div>
-      {installError && (
-        <div className="mt-2 text-[11px] text-(--accent-red)">
-          {installError}
-        </div>
-      )}
-
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-        <div className="relative flex-1">
-          <Search
-            size={13}
-            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-(--text-muted)"
-          />
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={t("searchSkills")}
-            className="h-8 pl-8 text-[13px]"
-          />
-        </div>
-        <div className="flex shrink-0 rounded-md border border-(--border-default) p-0.5 gap-0.5">
-          {FILTERS.map((item) => (
-            <Button
-              key={item}
-              type="button"
-              variant={filter === item ? "secondary" : "ghost"}
-              size="xs"
-              onClick={() => setFilter(item)}
-              className="px-2"
-            >
-              {t(`filter_${item}`)}
-            </Button>
-          ))}
-        </div>
-      </div>
-
-      <Separator className="bg-(--border-default)" />
-
-      {skills.length === 0 && !editing && (
-        <div className="rounded-lg border border-dashed border-(--border-default) py-8 text-center">
-          <div className="text-[13px] text-(--text-primary)">
-            {t("noSkills")}
-          </div>
-          <div className="mt-1 text-[11px] text-(--text-muted)">
-            {t("noSkillsHint")}
-          </div>
-        </div>
-      )}
-
-      {skills.length > 0 && filteredSkills.length === 0 && (
-        <div className="py-8 text-center text-[12px] text-(--text-muted)">
-          {t("noMatches")}
-        </div>
-      )}
-
-      <div className="grid max-h-[420px] gap-2 overflow-y-auto pr-1">
-        <SkillCards
-          items={groupedSkills.regular}
-          onView={setViewSkill}
-          onToggle={handleToggle}
-          onEdit={setEditing}
-          onDelete={handleDelete}
-        />
-        {groupedSkills.packageGroups.map((group) => renderPackageGroup(group))}
-        {groupedSkills.projectGroups.map((group) => {
-          const collapsed = collapsedProjects.has(group.key);
-          return (
-            <div key={group.key} className="grid gap-1">
-              <SkillGroupHeader
-                name={group.name}
-                count={group.total}
-                collapsed={collapsed}
-                title={group.key}
-                onClick={() => toggleProjectGroup(group.key)}
+          <div className="flex flex-col gap-2">
+            <div className="relative min-w-0 flex-1">
+              <MagnifyingGlass
+                size={13}
+                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-(--text-muted)"
               />
-              {!collapsed && (
-                <div className="grid gap-2 pl-6">
-                  <SkillCards
-                    items={group.items}
-                    onView={setViewSkill}
-                    onToggle={handleToggle}
-                    onEdit={setEditing}
-                    onDelete={handleDelete}
-                  />
-                  {group.packageGroups.map((pkg) => renderPackageGroup(pkg))}
-                </div>
-              )}
+              <Input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder={t("searchSkills")}
+                className="h-9 pl-8 text-[13px]"
+              />
             </div>
-          );
-        })}
+            <SettingsSegmentedControl
+              idPrefix="skill-browse"
+              value={browseMode}
+              onValueChange={setBrowseMode}
+              options={BROWSE_MODES.map((item) => ({
+                value: item,
+                label: t(`skillBrowse_${item}`),
+              }))}
+              className="w-full shrink-0 [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
+            />
+            <SettingsSegmentedControl
+              idPrefix="skill-filter"
+              value={filter}
+              onValueChange={setFilter}
+              options={FILTERS.map((item) => ({
+                value: item,
+                label: t(`filter_${item}`),
+              }))}
+              className="w-full shrink-0 [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
+            />
+          </div>
+
+          {actionError ? (
+            <div className="rounded-md border border-(--accent-red) bg-(--accent-red-bg) px-3 py-2 text-[12px] text-(--accent-red)">
+              {actionError}
+            </div>
+          ) : null}
+
+          <div className="min-h-[220px] flex-1 overflow-y-auto scroll-smooth pr-2 [scrollbar-gutter:stable]">
+            {renderSkillList()}
+          </div>
+        </div>
+        <div className="hidden min-h-0 bg-(--bg-primary) lg:block">
+          <SkillDetailPane
+            skill={selectedSkill}
+            onSave={handleSave}
+            onDelete={handleDelete}
+            onToggle={handleToggle}
+          />
+        </div>
       </div>
 
-      <ViewDialog
-        skill={viewSkill}
-        open={!!viewSkill}
-        onOpenChange={(open) => {
-          if (!open) setViewSkill(null);
-        }}
-      />
       <SkillEditorDialog
         skill={editing === "new" ? null : editing}
-        projectTargets={normalizedProjectTargets}
         open={!!editing}
         onSave={handleSave}
         onOpenChange={(open) => {
           if (!open) setEditing(null);
         }}
       />
-    </div>
+      <InstallDialog
+        open={installOpen}
+        onOpenChange={setInstallOpen}
+        installSource={installSource}
+        setInstallSource={setInstallSource}
+        installTarget={installTarget}
+        setInstallTarget={setInstallTarget}
+        installing={installing}
+        installError={installError}
+        onInstall={handleInstall}
+      />
+      <PackageBatchDialog
+        packageGroup={pendingBatchPackage}
+        open={!!pendingBatchPackage}
+        applying={
+          !!pendingBatchPackage &&
+          applyingPackageKey === pendingBatchPackage.key
+        }
+        onOpenChange={(open) => {
+          if (!open && !applyingPackageKey) setPendingBatchPackage(null);
+        }}
+        onApply={handleApplyPackage}
+      />
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title={
+          pendingDelete?.kind === "package"
+            ? t("deleteSkillPackageConfirm")
+            : t("deleteSkillConfirm")
+        }
+        description={
+          pendingDelete?.kind === "package"
+            ? t("deleteSkillPackageDescription")
+                .replace(
+                  "{{package}}",
+                  pendingDelete.packageName ||
+                    pendingDelete.representative?.name ||
+                    "",
+                )
+                .replace(
+                  "{{skills}}",
+                  (pendingDelete.items || []).map((item) => item.name).join(", "),
+                )
+            : pendingDelete?.skill
+              ? t("deleteSkillDescription").replace(
+                  "{{name}}",
+                  pendingDelete.skill.name,
+                )
+              : ""
+        }
+        loading={deleting}
+        onOpenChange={(open) => !open && !deleting && setPendingDelete(null)}
+        onConfirm={confirmDeleteSkill}
+      />
+      <ConfirmDialog
+        open={!!pendingUpdate}
+        title={t("updateSkillPackageConfirm")}
+        description={
+          pendingUpdate
+            ? t("updateSkillPackageDescription").replace(
+                "{{package}}",
+                pendingUpdate.packageName ||
+                  pendingUpdate.packageSource ||
+                  pendingUpdate.name,
+              )
+            : ""
+        }
+        confirmLabel={t("updateSkillPackage")}
+        loadingLabel={t("updatingSkillPackage")}
+        confirmVariant="default"
+        loading={updating}
+        onOpenChange={(open) => !open && !updating && setPendingUpdate(null)}
+        onConfirm={confirmUpdatePackage}
+      />
+    </>
   );
 }

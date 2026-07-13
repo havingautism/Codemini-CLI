@@ -63,7 +63,9 @@ export async function submitAndPrint(runtime, line, { output: out = process.stdo
     if (!atLineStart) write('\n');
     write(`[${label}] ${name}${summary ? ` - ${summary}` : ''}\n`);
   };
-  const result = await runtime.submit(line, (event) => {
+  const result = await runtime.submitMessage(
+    typeof line === 'string' ? { text: line } : line,
+    (event) => {
     if (event?.type === 'assistant:delta' && event.text) {
       streamed = true;
       write(event.text);
@@ -106,7 +108,8 @@ export async function submitAndPrint(runtime, line, { output: out = process.stdo
       streamed = true;
       writeActivity(event, 'system:error');
     }
-  });
+    }
+  );
   if (result.type === 'exit' || result.type === 'noop') return result;
   if (streamed) {
     if (!atLineStart) write('\n');
@@ -117,7 +120,7 @@ export async function submitAndPrint(runtime, line, { output: out = process.stdo
 }
 
 async function runPlainLoop(runtime) {
-  console.log('Codemini CLI plain mode. Use /help and /exit.');
+  console.log('Codemini CLI plain mode. Press Ctrl+C or send EOF to exit.');
   const rl = readline.createInterface({ input, output });
   try {
     while (true) {
@@ -142,13 +145,16 @@ export async function handleChat(args) {
   const selectedModel = parsed.fast ? (config.model?.fast_name || config.model?.name) : parsed.model;
   const systemPrompt =
     parsed.system ||
-    buildDefaultSystemPrompt(config);
+    buildDefaultSystemPrompt(config, {
+      workspaceRoot: session?.projectDir || process.cwd(),
+    });
 
   const runtime = await createChatRuntime({
     session,
     config,
     model: selectedModel,
-    systemPrompt
+    systemPrompt,
+    workspaceRoot: session?.projectDir || process.cwd(),
   });
 
   try {

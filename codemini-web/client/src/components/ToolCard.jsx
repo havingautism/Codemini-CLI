@@ -1,73 +1,46 @@
 import { useEffect, useState } from "react";
 import {
   Archive,
-  ChevronDown,
-  ChevronRight,
-  FilePenLine,
+  CaretDown,
+  CaretRight,
   FileText,
   Folder,
   Globe,
-  Search,
+  ListChecks,
+  MagnifyingGlass,
+  PencilLine,
   Terminal,
-  Trash2,
+  Trash,
   Wrench,
-} from "lucide-react";
+} from "@phosphor-icons/react";
+import { LinearStatusDot } from "@/components/ui/spinner";
+import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
 import { cn } from "@/lib/utils";
-import { formatDuration } from "../../utils/time.js";
+import {
+  extractToolName,
+  getFileToolMeta,
+  resolveToolHeaderParts,
+} from "@/lib/tool-card-display.js";
 import { t } from "../../i18n/index.js";
 import { PatchDiff } from "@pierre/diffs/react";
 
 const TOOL_ICONS = {
   read: FileText,
-  edit: FilePenLine,
-  create: FilePenLine,
-  write: FilePenLine,
-  delete: Trash2,
+  edit: PencilLine,
+  create: PencilLine,
+  write: PencilLine,
+  apply_patch: PencilLine,
+  create_plan: ListChecks,
+  create_spec: FileText,
+  delete: Trash,
   run: Terminal,
-  grep: Search,
+  grep: MagnifyingGlass,
   glob: Folder,
   list: Folder,
   web_fetch: Globe,
-  web_search: Search,
+  web_search: MagnifyingGlass,
   default: Wrench,
 };
-
-function extractToolName(name) {
-  const match = String(name).match(/^(\w+)/);
-  return match ? match[1] : name;
-}
-
-function extractKeyArg(args, toolName) {
-  if (!args) return "";
-  let obj = args;
-  if (typeof args === "string") {
-    try {
-      obj = JSON.parse(args);
-    } catch {
-      return args;
-    }
-  }
-  if (typeof obj !== "object") return String(obj);
-  const keyMap = {
-    read: "path",
-    edit: "path",
-    create: "path",
-    write: "path",
-    delete: "path",
-    run: "command",
-    grep: "pattern",
-    glob: "pattern",
-    list: "path",
-    web_fetch: "url",
-    web_search: "query",
-  };
-  const key = keyMap[toolName];
-  if (key && obj[key] != null) return String(obj[key]);
-  for (const v of Object.values(obj)) {
-    if (typeof v === "string" && v.length > 0 && v.length < 200) return v;
-  }
-  return "";
-}
 
 function formatDetail(value) {
   if (typeof value !== "string") return JSON.stringify(value, null, 2);
@@ -80,124 +53,48 @@ function formatDetail(value) {
   }
 }
 
-function parseMaybeJson(value) {
-  if (!value) return null;
-  if (typeof value === "object") return value;
-  if (typeof value !== "string") return null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
-}
-
 function basename(pathText) {
   const value = String(pathText || "").replace(/\\/g, "/");
   return value.split("/").filter(Boolean).pop() || value;
 }
 
-function getNestedEdit(args) {
-  if (!args || typeof args !== "object") return {};
-  return args.edit && typeof args.edit === "object" ? args.edit : args;
+function splitPathForDisplay(pathText) {
+  const value = String(pathText || "");
+  const normalized = value.replace(/\\/g, "/");
+  const slashIndex = normalized.lastIndexOf("/");
+  if (slashIndex < 0) return { dir: "", name: value };
+  return {
+    dir: normalized.slice(0, slashIndex + 1),
+    name: normalized.slice(slashIndex + 1) || value,
+  };
 }
 
 function isUnifiedPatch(text) {
   const value = String(text || "");
-  return value.startsWith("diff --git ") || value.includes("\ndiff --git ") || value.includes("\n@@ ");
+  return (
+    value.startsWith("diff --git ") ||
+    value.includes("\ndiff --git ") ||
+    value.includes("\n@@ ")
+  );
 }
 
 function usePatchThemeType() {
   const getIsDark = () =>
     document.documentElement.classList.contains("dark") ||
     document.documentElement.dataset.theme === "dark";
-  const [isDark, setIsDark] = useState(() => (typeof document === "undefined" ? true : getIsDark()));
+  const [isDark, setIsDark] = useState(() =>
+    typeof document === "undefined" ? true : getIsDark(),
+  );
   useEffect(() => {
     if (typeof document === "undefined") return undefined;
     const observer = new MutationObserver(() => setIsDark(getIsDark()));
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme"] });
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class", "data-theme"],
+    });
     return () => observer.disconnect();
   }, []);
   return isDark ? "dark" : "light";
-}
-
-function getFileToolMeta(toolName, args, result, summary, fileChange, resultMeta, fileChanges) {
-  if (!["edit", "create", "delete"].includes(toolName)) return null;
-  const parsedArgs = parseMaybeJson(args) || {};
-  const parsedResult = {
-    ...(parseMaybeJson(result) || {}),
-    ...(resultMeta && typeof resultMeta === "object" ? resultMeta : {}),
-  };
-  const structuredChanges = Array.isArray(fileChanges) && fileChanges.length
-    ? fileChanges
-    : (fileChange ? [fileChange] : []);
-  const structuredChange =
-    structuredChanges.find((change) => change && typeof change === "object") || {};
-  const capturedPatch = structuredChanges
-    .map((change) => String(change?.diffPreview || ""))
-    .filter(Boolean)
-    .join("\n");
-  const edit = getNestedEdit(parsedArgs);
-  const pathText =
-    parsedResult.path ||
-    structuredChange.path ||
-    parsedArgs.path ||
-    parsedArgs.file ||
-    parsedArgs.file_path ||
-    "";
-  const added = Number(
-    parsedResult.lines_added ??
-      parsedResult.linesAdded ??
-      structuredChange.linesAdded ??
-      0,
-  );
-  const removed = Number(
-    parsedResult.lines_removed ??
-      parsedResult.linesRemoved ??
-      structuredChange.linesRemoved ??
-      0,
-  );
-  const oldText =
-    toolName === "edit"
-      ? (edit.old_text ?? edit.old_string ?? parsedArgs.old_text)
-      : "";
-  const newText =
-    toolName === "edit"
-      ? (edit.new_text ??
-        edit.new_string ??
-        edit.new_content ??
-        edit.content ??
-        parsedArgs.new_text)
-      : "";
-  const changedLine = Number(
-    parsedResult.changed_line ||
-      structuredChange.changedLine ||
-      parsedArgs.line ||
-      0,
-  );
-  return {
-    path: String(pathText || extractKeyArg(args, toolName) || ""),
-    action: String(
-      parsedResult.action ||
-        structuredChange.action ||
-        (toolName === "create" ? "create" : toolName),
-    ),
-    added,
-    removed,
-    changedLine,
-    diffPreview: String(
-      capturedPatch || structuredChange.diffPreview || parsedResult.diff_preview || "",
-    ),
-    oldText: typeof oldText === "string" ? oldText : "",
-    newText: typeof newText === "string" ? newText : "",
-    summary: String(summary || ""),
-    backupPath: String(parsedResult.backupPath || ""),
-    backupRelativePath: String(parsedResult.backupRelativePath || ""),
-    backupCreated: parsedResult.backupCreated === true,
-    backupReused: parsedResult.backupReused === true,
-    backupSkipped: parsedResult.backupSkipped === true,
-    backupError: String(parsedResult.backupError || ""),
-    backupReason: String(parsedResult.backupReason || ""),
-  };
 }
 
 function buildPreviewLines(meta) {
@@ -300,7 +197,8 @@ function FilePreview({ meta }) {
 }
 
 function BackupNotice({ meta }) {
-  if (!meta?.backupPath && !meta?.backupSkipped && !meta?.backupError) return null;
+  if (!meta?.backupPath && !meta?.backupSkipped && !meta?.backupError)
+    return null;
   const pathText = meta.backupRelativePath || meta.backupPath;
   const label = meta.backupReused
     ? t("backupReused")
@@ -328,22 +226,47 @@ function BackupNotice({ meta }) {
 }
 
 const STATUS_STYLES = {
-  running: "bg-[var(--accent-blue)] animate-pulse",
   done: "bg-[var(--accent-green)]",
   error: "bg-[var(--accent-red)]",
   blocked: "bg-[var(--accent-orange)]",
 };
 const TOOL_ROW_CLASS =
-  "flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-[13px] hover:bg-[var(--bg-hover)]";
-const TOOL_CHEVRON_CLASS = "size-[14px] shrink-0 text-(--text-muted)";
+  "msg-process-row flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-[13px] hover:bg-[var(--bg-hover)]";
+const TOOL_CHEVRON_CLASS = "size-[14px] shrink-0 text-(--text-process-detail)";
 const TOOL_ICON_CLASS =
-  "flex size-[18px] shrink-0 items-center justify-center rounded text-(--text-muted)";
+  "flex size-[18px] shrink-0 items-center justify-center rounded text-(--text-process-detail)";
+const RUN_TOOL_ICON_CLASS =
+  "flex h-4 w-5 shrink-0 items-center justify-center rounded-[3px] border border-[color:color-mix(in_srgb,var(--text-process-detail)_45%,transparent)] text-(--text-process-detail)";
+const FILE_PATH_ARG_TOOLS = new Set([
+  "read",
+  "edit",
+  "create",
+  "write",
+  "delete",
+]);
+
+function FilePathArgument({ path, wrapped = false }) {
+  const { dir, name } = splitPathForDisplay(path);
+  return (
+    <span
+      className="msg-process-meta__detail ml-1 flex min-w-0 items-center font-mono text-xs font-normal leading-[18px]"
+      title={path}
+    >
+      {wrapped ? "(" : null}
+      {dir && <span className="min-w-0 truncate">{dir}</span>}
+      <span className="flex shrink-0 items-center gap-1.5">
+        <FileTypeIcon path={path} size="sm" />
+        <span>{name}</span>
+      </span>
+      {wrapped ? ")" : null}
+    </span>
+  );
+}
 
 export function ToolCard({ card }) {
   const [open, setOpen] = useState(false);
   const toolName = extractToolName(card.name);
   const Icon = TOOL_ICONS[toolName] || TOOL_ICONS.default;
-  const keyArg = extractKeyArg(card.arguments, toolName);
   const fileMeta = getFileToolMeta(
     toolName,
     card.arguments,
@@ -353,7 +276,14 @@ export function ToolCard({ card }) {
     card.resultMeta,
     card.fileChanges,
   );
-  const nameText = fileMeta?.path || keyArg || card.name;
+  const {
+    label: toolLabel,
+    arg: toolArg,
+    wrapArg,
+  } = resolveToolHeaderParts(card, toolName, fileMeta);
+  const shouldRenderFileArg =
+    Boolean(fileMeta?.path) ||
+    (wrapArg && FILE_PATH_ARG_TOOLS.has(toolName) && Boolean(toolArg));
 
   const sections = [];
   if (card.arguments != null && card.arguments !== "")
@@ -366,27 +296,38 @@ export function ToolCard({ card }) {
   return (
     <div
       className={cn(
-        "overflow-hidden bg-transparent",
+        "codemini-message-surface msg-process-meta relative overflow-hidden after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:border after:border-transparent after:content-['']",
         card.status === "error" &&
-          "rounded-md ring-1 ring-[var(--accent-red)]/25",
+          "after:border-[color:color-mix(in_srgb,var(--accent-red)_32%,transparent)]",
         card.status === "blocked" &&
-          "rounded-md ring-1 ring-[var(--accent-orange)]/25",
+          "after:border-[color:color-mix(in_srgb,var(--accent-orange)_32%,transparent)]",
       )}
     >
       <div className={TOOL_ROW_CLASS} onClick={() => setOpen(!open)}>
         {open ? (
-          <ChevronDown size={14} className={TOOL_CHEVRON_CLASS} />
+          <CaretDown size={14} className={TOOL_CHEVRON_CLASS} />
         ) : (
-          <ChevronRight size={14} className={TOOL_CHEVRON_CLASS} />
+          <CaretRight size={14} className={TOOL_CHEVRON_CLASS} />
         )}
-        <span className={TOOL_ICON_CLASS}>
-          <Icon size={14} />
+        <span
+          className={toolName === "run" ? RUN_TOOL_ICON_CLASS : TOOL_ICON_CLASS}
+        >
+          <Icon size={toolName === "run" ? 13 : 14} />
         </span>
-        <span className="font-medium capitalize text-(--text-secondary)">
-          {toolName}
-        </span>
-        <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono text-xs font-normal text-(--text-muted)">
-          {nameText}
+        <span className="flex min-w-0 flex-1 items-center overflow-hidden whitespace-nowrap leading-[18px]">
+          <span className="shrink-0">{toolLabel}</span>
+          {toolArg ? (
+            shouldRenderFileArg ? (
+              <FilePathArgument
+                path={fileMeta?.path || toolArg}
+                wrapped={wrapArg || Boolean(fileMeta?.path)}
+              />
+            ) : wrapArg ? (
+              <span className="msg-process-meta__detail ml-1 flex min-w-0 items-center overflow-hidden text-ellipsis font-mono text-xs font-normal leading-[18px]">
+                ({toolArg})
+              </span>
+            ) : null
+          ) : null}
         </span>
         {fileMeta?.added > 0 && (
           <span className="font-mono text-xs text-(--accent-green)">
@@ -404,17 +345,16 @@ export function ToolCard({ card }) {
             {fileMeta.backupReused ? t("backupReusedShort") : t("backupShort")}
           </span>
         )}
-        {card.durationMs != null && (
-          <span className="text-[11px] text-[var(--text-muted)] font-mono ml-auto shrink-0">
-            {formatDuration(card.durationMs)}
-          </span>
+        {card.status === "running" ? (
+          <LinearStatusDot className="shrink-0" />
+        ) : (
+          <span
+            className={cn(
+              "w-1.5 h-1.5 rounded-full shrink-0",
+              STATUS_STYLES[card.status] || "bg-[var(--muted)]",
+            )}
+          />
         )}
-        <span
-          className={cn(
-            "w-1.5 h-1.5 rounded-full shrink-0",
-            STATUS_STYLES[card.status] || "bg-[var(--muted)]",
-          )}
-        />
       </div>
 
       {open && (
@@ -439,7 +379,7 @@ export function ToolCard({ card }) {
                 <div className="mt-2 mb-1 text-[10px] font-bold uppercase tracking-[0.4px] text-[var(--text-muted)]">
                   {label}
                 </div>
-                <pre className="m-0 p-2 rounded bg-[var(--bg-tertiary)] text-[var(--text-primary)] font-mono text-xs leading-relaxed max-h-100 overflow-x-auto whitespace-pre-wrap break-words">
+                <pre className="m-0 p-2 rounded bg-(--bg-tertiary) dark:bg-(--bg-primary) text-(--text-primary) font-mono text-xs leading-relaxed max-h-100 overflow-x-auto whitespace-pre-wrap break-words">
                   {value}
                 </pre>
               </div>

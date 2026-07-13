@@ -1,8 +1,15 @@
-import { parseInput } from './input-parser.js';
-import { formatLocalDate, loadCommandsAndSkills, renderCommandPrompt } from './command-loader.js';
+import {
+  formatLocalDate,
+  loadCommandsAndSkills,
+  buildSkillIndexPromptBlock,
+  isUserInvocableSkill,
+  renderCommandPrompt
+} from './command-loader.js';
+import { skillIsEligible } from './skill-contexts.js';
 import { runAgentLoop } from './agent-loop.js';
-import { setResultDir, clearResultStore } from './tool-result-store.js';
+import { setResultDir } from './tool-result-store.js';
 import { trimInline, normalizePath } from './string-utils.js';
+import { normalizeAssumptionItems } from './tool-args-helpers.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,11 +19,22 @@ import {
 } from './provider/index.js';
 import { isDangerousCommand, runShellCommand } from './shell.js';
 import { getBuiltinTools } from './tools.js';
-import { createSession, deriveSessionTitle, listSessions, loadSession, pruneSessions, saveSession } from './session-store.js';
-import { getConfigValue, loadConfig, resetConfig, setConfigValue } from './config-store.js';
+import {
+  deriveSessionTitle,
+  listSessions,
+  pruneSessions,
+  resolveTitleUserText,
+  saveSession
+} from './session-store.js';
+import {
+  SESSION_TITLE_SYSTEM_PROMPT,
+  buildSessionTitleInput,
+  normalizeGeneratedSessionTitle,
+  shouldReplaceSessionTitle
+} from './session-title.js';
+import { loadConfig, setConfigValue } from './config-store.js';
 import { evaluateCommandPolicy } from './command-policy.js';
-import { appendInputHistory, loadInputHistory } from './input-history-store.js';
-import { createCheckpoint, listCheckpoints, loadCheckpoint } from './checkpoint-store.js';
+import { loadInputHistory } from './input-history-store.js';
 import {
   compactMessagesLocally,
   estimateMessagesTokens,
@@ -25,19 +43,28 @@ import {
   buildTranscriptForLLM,
   COMPACT_SUMMARY_PROMPT
 } from './context-compact.js';
-import { getReplyLanguage, getReplyLanguageName } from './reply-language.js';
+import { getReplyLanguage, getReplyLanguageName, stripReplyLanguageDirective, buildSystemPromptWithReplyLanguage, appendStructuredOutputLanguageRule } from './reply-language.js';
 import { composeSystemPrompt } from './system-prompt-composer.js';
+import { buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
+import { buildSubAgentShellRulesPrompt } from './shell-profile.js';
 import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
-import { forgetMemory, listMemories, rememberMemory, searchMemories, captureToInbox, listInbox } from './memory-store.js';
+import { captureToInbox, listInbox } from './memory-store.js';
+import {
+  shouldAutoCaptureUserPrompt as shouldAutoCaptureUserPromptShared
+} from './memory-policy.js';
 import { runDreamConsolidation } from './dream-consolidate.js';
+import {
+  scheduleMemoryReviewBacklog,
+  scheduleSessionMemoryReview
+} from './memory-session-review.js';
 import { normalizePlanState } from './plan-state.js';
-import { countActiveTodos, normalizeTodos } from './todo-state.js';
+import { normalizeSpecState } from './spec-state.js';
+import { normalizeTodos } from './todo-state.js';
 import {
   attachReflectTargets,
   buildReflectSkillDraft,
   normalizeReflectDraft,
-  parseReflectScope,
   writeReflectSkillDraft
 } from './reflect-skill.js';
 import {
@@ -50,12 +77,55 @@ import {
   undoGitOplogChanges
 } from './git-oplog-change-tracker.js';
 import { createNonGitBackupManager } from './non-git-backup.js';
+import {
+  detectWorkspaceIsGit,
+  resolveApprovalProjectIsGit
+} from './approval-policy.js';
+import {
+  assertSearchConfig,
+  normalizeToolPolicy,
+  resolveGatewayPayloadExtras
+} from './provider/search-tool-registry.js';
+import { normalizeReasoningEffort, resolveConfiguredReasoningEffort } from './provider/reasoning-effort.js';
+import { appendAttachmentContext, composeSelectedSkills, normalizeChatSubmission } from './chat-message.js';
+import { CHAT_ACTIONS, validateChatAction } from './chat-action-dispatcher.js';
 
 const STREAM_SAVE_DEBOUNCE_MS = 120;
+
+export function takePendingApproval(state, requestId) {
+  const request = state?.current;
+  if (!request || String(request.id || '') !== String(requestId || '')) {
+    const error = new Error('No matching approval request is pending');
+    error.code = request ? 'STALE_ACTION' : 'NO_PENDING_APPROVAL';
+    throw error;
+  }
+  state.current = null;
+  return request;
+}
+
+export function peekPendingApproval(state, requestId = null) {
+  const request = state?.current || null;
+  if (!request) return null;
+  if (requestId != null && String(request.id || '') !== String(requestId || '')) return null;
+  return request;
+}
+
+export function resolvePendingApproval(state, requestId, decision = {}) {
+  const request = takePendingApproval(state, requestId);
+  request.resolve({
+    approved: decision?.approved === true,
+    ...(decision?.approved === true ? {} : { reason: String(decision?.reason || '') })
+  });
+  return {
+    type: 'approval',
+    approved: decision?.approved === true,
+    requestId
+  };
+}
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_REQUIREMENTS_TEMPLATE = path.resolve(MODULE_DIR, '..', '..', 'templates', 'project-requirements', 'report-shell.html');
 const PROJECT_REQUIREMENTS_MD_TEMPLATE = path.resolve(MODULE_DIR, '..', '..', 'templates', 'project-requirements', 'report-template.md');
-const PROJECT_REQUIREMENTS_MD_SKILL = path.resolve(MODULE_DIR, '..', '..', 'skills', 'project-requirements-md', 'SKILL.md');
+const PROJECT_REQUIREMENTS_MD_INSTRUCTIONS = path.resolve(MODULE_DIR, '..', '..', 'templates', 'project-requirements', 'markdown-instructions.md');
 const PROJECT_REQUIREMENTS_SECTION_NAMES = [
   'summary',
   'architecture',
@@ -78,6 +148,21 @@ function modelContentForMessage(message, index, { currentTurnUserIndex = -1 } = 
   const modelContent = typeof message?.model_content === 'string' && message.model_content
     ? message.model_content
     : '';
+  const baseContent = modelContent || message?.content;
+  const images = index === currentTurnUserIndex && Array.isArray(message?.model_images)
+    ? message.model_images
+    : [];
+  if (images.length) {
+    return [
+      { type: 'text', text: String(baseContent || '') },
+      ...images.map((image) => ({
+        type: 'image_url',
+        image_url: {
+          url: `data:${image.mime || 'image/jpeg'};base64,${image.data}`
+        }
+      }))
+    ];
+  }
   if (!modelContent) return message?.content;
   if (message?.model_content_scope === 'current_turn' && index !== currentTurnUserIndex) {
     return message?.content;
@@ -97,6 +182,15 @@ function findCurrentTurnUserIndex(messages = [], text = '', modelText = '') {
     if (message.content === text && message.model_content === modelText) return index;
   }
   return -1;
+}
+
+export function mergeCurrentTurnModelText(primary = '', extra = '', label = 'Additional current-turn context') {
+  const base = String(primary || '').trim();
+  const addition = String(extra || '').trim();
+  if (!base) return addition;
+  if (!addition) return base;
+  if (base.includes(addition)) return base;
+  return [base, `<${label}>`, addition, `</${label}>`].join('\n\n');
 }
 
 export function toOpenAIMessages(sessionMessages, options = {}) {
@@ -452,264 +546,138 @@ function formatLocalDateTimeSlug(date = new Date()) {
   return `${year}-${month}-${day}-${hour}-${minute}-${second}`;
 }
 
-function getCompletionCopy(language = 'zh') {
-  const lang = normalizeUiLocale(language);
-  return {
-    zh: {
-      configLabels: {
-        'gateway.base_url': '网关基础 URL',
-        'gateway.api_key': '网关 API Key',
-        'sdk.provider': 'SDK provider',
-        'gateway.timeout_ms': '网关超时时间（毫秒）',
-        'gateway.max_retries': '网关重试次数',
-        'model.name': '当前模型名称',
-        'model.fast_name': '快速模型名称',
-        'model.max_context_tokens': '模型上下文 token 上限',
-        'ui.language': '界面语言',
-        'ui.reply_language': '回复语言',
-        'execution.mode': '执行模式',
-        'execution.always_allow_tools': '始终允许的工具列表',
-
-        'context.preflight_trigger_pct': '预压缩阈值',
-        'context.hard_limit_pct': '硬压缩阈值',
-        'context.tool_result_max_chars': '工具结果字符上限',
-        'context.read_file_default_lines': 'read_file 默认行数窗口',
-        'context.read_file_max_chars': 'read_file 字符上限',
-        'context.prompt_budget_audit': 'Prompt 预算审计开关',
-        'context.microcompact_enabled': '微压缩(micro-compact)开关',
-        'context.microcompact_keep_recent': '微压缩保留最近工具结果数',
-        'context.project_instructions_enabled': '项目 AGENTS.md 注入开关',
-        'context.project_instructions_max_chars': '项目 AGENTS.md 字符上限',
-        'sessions.max_sessions': '会话保留上限',
-        'sessions.retention_days': '会话保留天数',
-        'shell.default': '默认 shell',
-        'shell.timeout_ms': 'shell 超时时间（毫秒）',
-        'context.max_tokens': '上下文 token 预算',
-        'soul.preset': 'soul 预设',
-        'soul.custom_path': '自定义 soul 路径',
-        'policy.safe_mode': '安全模式开关',
-        'policy.allowed_paths': '安全模式目录白名单',
-        'policy.allow_dangerous_commands': '危险命令开关'
-      },
-      optionHints: {
-        'sdk.provider': '可选：openai-compatible | anthropic',
-        'ui.language': '可选：zh | en',
-        'ui.reply_language': '可选：zh | en',
-        'execution.mode': '可选：normal | plan',
-        'execution.approval_mode': '可选：review | auto | full_access',
-        'shell.default': '常用：bash | powershell',
-        'policy.safe_mode': '可选：true | false',
-        'policy.allowed_paths': 'JSON 数组，例如 ["D:\\\\shared"]',
-        'policy.allow_dangerous_commands': '可选：true | false',
-        'context.prompt_budget_audit': '可选：true | false',
-        'context.project_instructions_enabled': '可选：true | false',
-        'context.project_instructions_max_chars': '建议：8000-12000'
-      },
-      describeSet: (label, hint) => `设置${label}${hint ? `（${hint}）` : ''}`,
-      describeGet: (label, hint) => `查看${label}${hint ? `（${hint}）` : ''}`,
-      configSubcommands: {
-        '/config set': '设置配置项',
-        '/config get': '查看配置项',
-        '/config list': '查看完整配置',
-        '/config reset': '重置为默认配置'
-      },
-      planSubcommands: {
-        '/plan <goal>': '创建一个人工审阅的实施计划',
-        '/plan auto <goal>': '自动生成计划并等待你确认执行',
-        '/plan approve': '批准当前待确认的计划并开始执行',
-        '/yes': '确认并执行当前待确认计划',
-        '/edit <feedback>': '根据你的反馈修改当前待确认计划',
-        '/reject': '拒绝并清空当前待确认计划',
-        '/plan from-spec <spec-path?>': '从 spec 文件生成实施计划'
-      },
-      commands: {
-        help: '显示聊天帮助',
-        exit: '退出聊天',
-        commands: '列出 slash/自定义命令',
-        status: '查看运行状态（mode/model/session）',
-        model: '查看或切换模型',
-        mode: '设置工作模式：normal|plan',
-        approval: '设置审阅权限：review|auto|full_access',
-        compact: '压缩消息上下文',
-        checkpoint: '创建/查看/加载检查点',
-        spec: '在 .codemini/specs 中创建 spec',
-        plan: '在 .codemini/plans 中创建实施计划',
-        agents: '列出/运行子代理角色',
-        config: '设置/读取/列出/重置配置',
-        memory: '查看/搜索/删除持久记忆',
-        dream: '整理记忆收件箱（dream consolidation）',
-        reflect: '复盘成功链路并生成可审阅 skill 草稿',
-        history: '查看/恢复会话',
-        debug: '运行时调试开关',
-        stop: '中止当前回答',
-        new: '开始新会话',
-        yes: '确认当前待审批计划并开始执行',
-        no: '放弃当前待审批事项',
-        edit: '修改当前待审批计划',
-        reject: '拒绝当前待审批计划'
-      },
-      generic: {
-        configCommand: '配置命令',
-        historyCommand: '历史会话命令',
-        modeCommand: '切换工作模式',
-        approvalCommand: '切换审阅权限',
-        checkpointCommand: '检查点命令',
-        specCommand: '创建 spec 文件',
-        planCommand: '规划命令',
-        agentCommand: '子代理命令',
-        memoryCommand: '记忆命令',
-        dreamCommand: '记忆整理命令',
-        reflectCommand: '复盘生成 skill 草稿',
-        debugCommand: '调试命令',
-        keyboardDebugCommand: '键盘调试命令',
-        compactCommand: '上下文压缩命令',
-        stopCommand: '中止当前回答',
-        statusCommand: '查看运行状态',
-        modelCommand: '查看或切换模型',
-        resumeSession: '恢复一个已保存的会话'
-      }
-    },
-    en: {
-      configLabels: {
-        'gateway.base_url': 'gateway base URL',
-        'gateway.api_key': 'gateway API key',
-        'sdk.provider': 'SDK provider',
-        'gateway.timeout_ms': 'gateway timeout in milliseconds',
-        'gateway.max_retries': 'gateway retry count',
-        'model.name': 'active model name',
-        'model.fast_name': 'fast model name',
-        'model.max_context_tokens': 'model context token limit',
-        'ui.language': 'UI language',
-        'ui.reply_language': 'reply language',
-        'execution.mode': 'execution mode',
-        'execution.always_allow_tools': 'always-allowed tools',
-
-        'context.preflight_trigger_pct': 'preflight compact threshold',
-        'context.hard_limit_pct': 'hard compact threshold',
-        'context.tool_result_max_chars': 'tool result character limit',
-        'context.read_file_default_lines': 'default read_file line window',
-        'context.read_file_max_chars': 'read_file character limit',
-        'context.prompt_budget_audit': 'prompt budget audit switch',
-        'context.microcompact_enabled': 'micro-compact enabled',
-        'context.microcompact_keep_recent': 'micro-compact keep recent tool results',
-        'context.project_instructions_enabled': 'project AGENTS.md injection switch',
-        'context.project_instructions_max_chars': 'project AGENTS.md character limit',
-        'sessions.max_sessions': 'stored session limit',
-        'sessions.retention_days': 'session retention days',
-        'shell.default': 'default shell',
-        'shell.timeout_ms': 'shell timeout in milliseconds',
-        'context.max_tokens': 'context token budget',
-        'soul.preset': 'soul preset',
-        'soul.custom_path': 'custom soul prompt path',
-        'policy.safe_mode': 'safe mode switch',
-        'policy.allowed_paths': 'safe-mode allowed path roots',
-        'policy.allow_dangerous_commands': 'dangerous command allowance'
-      },
-      optionHints: {
-        'sdk.provider': 'options: openai-compatible | anthropic',
-        'ui.language': 'options: zh | en',
-        'ui.reply_language': 'options: zh | en',
-        'execution.mode': 'options: normal | plan',
-        'execution.approval_mode': 'options: review | auto | full_access',
-        'shell.default': 'common: bash | powershell',
-        'policy.safe_mode': 'options: true | false',
-        'policy.allowed_paths': 'JSON array, for example ["D:\\\\shared"]',
-        'policy.allow_dangerous_commands': 'options: true | false',
-        'context.prompt_budget_audit': 'options: true | false',
-        'context.project_instructions_enabled': 'options: true | false',
-        'context.project_instructions_max_chars': 'recommended: 8000-12000'
-      },
-      describeSet: (label, hint) => `set the ${label}${hint ? ` (${hint})` : ''}`,
-      describeGet: (label, hint) => `show the ${label}${hint ? ` (${hint})` : ''}`,
-      configSubcommands: {
-        '/config set': 'update a config value',
-        '/config get': 'show a config value',
-        '/config list': 'print the full config',
-        '/config reset': 'reset config to defaults'
-      },
-      planSubcommands: {
-        '/plan <goal>': 'create an implementation plan for manual review',
-        '/plan auto <goal>': 'generate a plan and wait for your approval',
-        '/plan approve': 'approve the pending plan and start execution',
-        '/yes': 'approve and execute the pending plan',
-        '/edit <feedback>': 'revise the pending plan based on your feedback',
-        '/reject': 'reject and clear the pending plan',
-        '/plan from-spec <spec-path?>': 'generate an implementation plan from a spec file'
-      },
-      commands: {
-        help: 'show chat help',
-        exit: 'exit chat',
-        commands: 'list slash/custom commands',
-        status: 'show runtime status (mode/model/session)',
-        model: 'show or switch model',
-        mode: 'set work mode: normal|plan',
-        approval: 'set approval mode: review|auto|full_access',
-        compact: 'compress message context',
-        checkpoint: 'create/list/load conversation checkpoints',
-        spec: 'create a spec markdown file in .codemini/specs',
-        plan: 'create an implementation plan markdown file in .codemini/plans',
-        agents: 'run/list sub-agent roles',
-        config: 'set/get/list/reset config values',
-        memory: 'list/search/delete persistent memories',
-        dream: 'consolidate memory inbox (dream)',
-        reflect: 'reflect on a successful workflow and draft a reusable skill',
-        history: 'list/resume sessions',
-        debug: 'runtime debug switches',
-        stop: 'stop the current response',
-        new: 'start a new session',
-        yes: 'approve the pending plan and start execution',
-        no: 'discard the pending item',
-        edit: 'revise the pending plan',
-        reject: 'reject the pending plan'
-      },
-      generic: {
-        configCommand: 'config command',
-        historyCommand: 'history command',
-        modeCommand: 'switch work mode',
-        approvalCommand: 'switch approval mode',
-        checkpointCommand: 'checkpoint command',
-        specCommand: 'create a spec file',
-        planCommand: 'planning command',
-        agentCommand: 'sub-agent command',
-        memoryCommand: 'memory command',
-        dreamCommand: 'dream consolidation command',
-        reflectCommand: 'reflect skill draft command',
-        debugCommand: 'debug command',
-        keyboardDebugCommand: 'keyboard debug command',
-        compactCommand: 'context compaction command',
-        stopCommand: 'stop the current response',
-        statusCommand: 'show runtime status',
-        modelCommand: 'show or switch model',
-        resumeSession: 'resume a saved session'
-      }
-    }
-  }[lang];
-}
-
-function describeConfigKey(key, mode = 'set', language = 'zh') {
-  const copy = getCompletionCopy(language);
-  const label = copy.configLabels[key] || key;
-  const hint = copy.optionHints[key] || '';
-  return mode === 'get' ? copy.describeGet(label, hint) : copy.describeSet(label, hint);
-}
 
 const SUB_AGENT_ROLES = ['planner', 'explorer', 'architect', 'advisor', 'coder', 'refactorer', 'reviewer', 'tester', 'debugger', 'writer', 'summarizer', 'codewiki'];
-const CODEWIKI_ROLE_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'add_code_comment', 'update_code_comment'];
-export const CODEWIKI_GENERATE_TOOLS = ['read', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'skill', 'edit', 'create'];
+const EXECUTOR_AGENT_ROLES = SUB_AGENT_ROLES.filter((role) => !['planner', 'codewiki'].includes(role));
+const CODEWIKI_ROLE_TOOLS = ['read', 'search_code', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'add_code_comment', 'update_code_comment'];
+export const CODEWIKI_GENERATE_TOOLS = ['read', 'search_code', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'skill', 'edit', 'write', 'apply_patch'];
+export const EXECUTION_MODE_TOOL_POLICY = {
+  plan: [
+    'read', 'search_code', 'grep', 'ast_grep', 'list', 'glob', 'ast_query', 'read_ast_node',
+    'query_project_index', 'tool_search', 'skill', 'web_fetch', 'web_search',
+    'read_plan', 'update_plan', 'update_todos',
+    'edit', 'write', 'apply_patch', 'delete', 'run',
+    'create_spec', 'create_plan', 'request_user_input'
+  ]
+};
+
+export function normalizeExecutionMode(mode) {
+  const normalized = String(mode || 'normal').toLowerCase();
+  if (['spec', 'plan', 'code', 'coding'].includes(normalized)) return 'plan';
+  if (['normal', 'daily'].includes(normalized)) return 'normal';
+  return 'normal';
+}
+
+function isExecutionModeInput(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return ['normal', 'daily', 'plan', 'code', 'coding', 'spec'].includes(normalized);
+}
+
+function displayExecutionMode(mode) {
+  return normalizeExecutionMode(mode) === 'plan' ? 'code' : 'normal';
+}
+
+function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools, config) {
+  const mode = normalizeExecutionMode(executionMode);
+  const modePolicy = normalizeToolPolicy(EXECUTION_MODE_TOOL_POLICY[mode] || [], config);
+  if (!modePolicy.length) return callerAllowedTools;
+  if (Array.isArray(callerAllowedTools)) {
+    return normalizeToolPolicy(callerAllowedTools, config).filter((name) => modePolicy.includes(name));
+  }
+  return modePolicy;
+}
+
+function buildExecutionModePromptBlock(executionMode) {
+  if (normalizeExecutionMode(executionMode) === 'plan') {
+    return [
+      'Execution Mode: coding',
+      'You are in coding mode. Treat implementation requests as authorization to inspect the repository, make focused changes, and verify them. Prefer the smallest complete solution that follows the project\'s existing architecture and conventions.',
+      '',
+      'Coding workflow:',
+      '1. Read project instructions, then use project-index/search/read tools to inspect only the relevant code, tests, configuration, and callers before editing.',
+      '2. If requirements have materially different interpretations, use request_user_input when available. Do not interrupt for low-impact details with a safe default.',
+      '3. Implement small and localized changes directly. Use create_spec only when product or architecture decisions need approval; use create_plan only when an already-clear task genuinely benefits from coordinated multi-step execution.',
+      '4. Preserve public contracts, local naming, error handling, platform compatibility, and dependency choices unless the request explicitly changes them. Avoid unrelated refactors and speculative abstractions.',
+      '5. For bugs, first reproduce or establish a concrete failing signal, inspect evidence, test a falsifiable cause, apply the smallest root-cause fix, and add a regression check when the repository has an appropriate test seam.',
+      '6. Verify with the narrowest project-native checks that cover the changed behavior, then inspect the diff. Never claim fixed, passing, or complete without fresh evidence; state what was not verified.',
+      '7. Respect task intent: explanation or review requests authorize inspection and reporting, diagnosis requests authorize finding the cause, and explicit build/fix/change requests authorize implementation. Do not turn read-only work into edits without user intent.',
+      '',
+      'Tool discipline:',
+      '- Prefer dedicated project-index, search, read, edit, and patch tools over raw shell equivalents. Load deferred tools with tool_search only when needed.',
+      '- Choose the narrowest relevant project-native verification, and use run for tests, builds, type checks, linters, generators, and version-control inspection—not as the default way to read or search source code.',
+      '- Use edit for precise existing-file changes, apply_patch for coherent multi-file changes, and write only for new files or intentional whole-file output.',
+      '- Search the web for current external documentation, versions, compatibility, or unfamiliar APIs when that information affects correctness; prefer primary sources and link the sources that support material claims.',
+      '',
+      'Workflow boundaries:',
+      '- Do not claim edit/write/apply_patch/delete/run are unavailable in coding mode; they are available for direct simple tasks.',
+      '- Do not call create_plan for a simple localized edit that can be implemented and verified in one coherent pass.',
+      '- If you create a spec, do not implement before the user approves it. If you create a plan, execution starts automatically in coding mode.',
+      '- Preserve unrelated user changes in a dirty worktree. Never discard, overwrite, or reformat work outside the requested scope.',
+      '- If the request is too unknown to act on safely, ask one focused question instead of producing a vague plan or guessing.'
+    ].join('\n');
+  }
+  return [
+    'Execution Mode: normal',
+    'You are in normal mode. Help with everyday questions and lightweight tasks conversationally. Be proactive about clarifying underspecified requests and verifying external facts instead of guessing.',
+    '',
+    'Task boundaries:',
+    '- Match the action to the request: answer and explain without changing state; review or diagnose by inspecting and reporting; create, edit, run, or send only when the user asks for that outcome.',
+    '- Use the shared workspace for relevant read-only context when helpful, but do not turn an ordinary question into a repository task without a clear connection.',
+    '- Make safe, reversible assumptions for low-impact details and state them briefly. Stop for user direction when different choices would materially change the result or require broader authority.',
+    '- Preserve user data and existing work. Do not overwrite files, broaden scope, or perform external side effects merely because a tool is available.',
+    '',
+    'User input workflow:',
+    '- Treat a request as underspecified when multiple plausible interpretations would lead to meaningfully different answers, recommendations, formats, scopes, or outcomes.',
+    '- When request_user_input is available, use it for underspecified requests and whenever the user\'s preference, desired scope, target outcome, constraints, or choice among multiple reasonable approaches would materially change the response.',
+    '- Prefer a short structured form over a plain-text clarification when 1-3 focused choices can capture the needed direction. Include a recommended or sensible default option when appropriate.',
+    '- Use request_user_input when an answer is required to continue, and also when structured choices would substantially improve the usefulness or fit of the result.',
+    '- Do not interrupt for low-impact details. If a safe, reversible assumption is obvious, state it briefly and continue.',
+    '- After the user responds or skips, incorporate the result and continue the original task.',
+    '',
+    'Web research workflow:',
+    '- Use web_search when the answer depends on current or changeable information, the user asks for the latest or for verification, the topic is unfamiliar or niche, recommendations could cost meaningful time or money, or useful source links would improve the answer.',
+    '- For a broad or vague request that would benefit from current context, search first when research can narrow the space, then use request_user_input with informed options if the user\'s intent still matters.',
+    '- Prefer a small number of targeted searches, synthesize the findings, distinguish sourced facts from your own inference, and link sources near the material claims they support.',
+    '- Do not search for timeless casual questions when it would add no value, and respect an explicit request not to browse.',
+    '- If web_search is unavailable or disabled, say so briefly when current information is necessary rather than presenting stale knowledge as verified.'
+  ].join('\n');
+}
+
 export const ROLE_TOOL_POLICY = {
   planner: ['read', 'read_plan', 'tool_search', 'skill', 'update_plan', 'update_todos'],
-  explorer: ['read', 'grep', 'list', 'glob', 'ast_query', 'read_ast_node', 'query_project_index', 'tool_search', 'skill', 'web_fetch', 'web_search', 'read_plan'],
-  architect: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
-  advisor: ['read', 'grep', 'list', 'query_project_index', 'tool_search', 'skill', 'read_plan'],
-  coder: ['read', 'grep', 'list', 'edit', 'create', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
-  refactorer: ['read', 'grep', 'list', 'edit', 'create', 'delete', 'run', 'ast_query', 'read_ast_node', 'glob', 'tool_search', 'skill', 'read_plan'],
-  reviewer: ['read', 'grep', 'list', 'glob', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'read_plan'],
-  tester: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'skill', 'read_plan'],
-  debugger: ['read', 'grep', 'list', 'run', 'glob', 'tool_search', 'skill', 'ast_query', 'read_ast_node', 'web_search', 'read_plan'],
-  writer: ['read', 'grep', 'list', 'glob', 'tool_search', 'skill', 'web_search', 'web_fetch', 'read_plan'],
+  explorer: ['read', 'search_code', 'tool_search', 'skill', 'web_fetch', 'web_search', 'read_plan'],
+  architect: ['read', 'search_code', 'tool_search', 'skill', 'web_search', 'read_plan'],
+  advisor: ['read', 'search_code', 'tool_search', 'skill', 'read_plan'],
+  coder: ['read', 'search_code', 'edit', 'write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
+  refactorer: ['read', 'search_code', 'edit', 'write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill', 'read_plan'],
+  reviewer: ['read', 'search_code', 'tool_search', 'skill', 'read_plan'],
+  tester: ['read', 'search_code', 'run', 'tool_search', 'skill', 'read_plan'],
+  debugger: ['read', 'search_code', 'run', 'tool_search', 'skill', 'web_search', 'read_plan'],
+  writer: ['read', 'search_code', 'tool_search', 'skill', 'web_search', 'web_fetch', 'read_plan'],
   summarizer: ['read', 'read_plan', 'tool_search', 'skill'],
   codewiki: CODEWIKI_ROLE_TOOLS
 };
+
+/** Approval options for plan pipeline sub-agents (inherit role tool allow-list + workspace git). */
+export function resolvePlanSubAgentApprovalOptions({
+  role,
+  config,
+  projectIsGit = false,
+  changeTrackerEnabled = false,
+  workspaceHasGit = false
+} = {}) {
+  const roleAllowedTools = normalizeToolPolicy(ROLE_TOOL_POLICY[role] || ROLE_TOOL_POLICY.coder, config);
+  return {
+    projectIsGit: resolveApprovalProjectIsGit({
+      projectIsGit,
+      changeTrackerEnabled,
+      workspaceHasGit
+    }),
+    alwaysAllowTools: roleAllowedTools,
+    allowedTools: roleAllowedTools
+  };
+}
+
 const SUB_AGENT_CONTEXT_MAX_MESSAGES = 4;
 const SUB_AGENT_CONTEXT_MAX_CHARS = 1200;
 const SUB_AGENT_EVIDENCE_MAX_ITEMS = 3;
@@ -851,7 +819,7 @@ export function getSubAgentRolePrompt(role) {
       'You are the explorer in a multi-step agent pipeline.',
       'Your job: inspect the codebase to gather context, map the target area, and identify constraints and dependencies for downstream steps.',
       'The high-level plan is already defined — your role is to ground it with real codebase evidence.',
-      'Do not write implementation code, make architectural decisions, or offer recommendations beyond what you directly observe.',
+      'You are read-only in this harness: use read/search tools only. Do not edit, write, apply_patch, delete, or run commands, and do not write implementation code even if the step title sounds like implementation.',
       'Output format — keep it short and direct:',
       'Findings:',
       '- <important constraint, dependency, file layout, or "none">',
@@ -861,6 +829,8 @@ export function getSubAgentRolePrompt(role) {
       '- <key files, entry points, dependency graph or "none">',
       'Open Issues:',
       '- <blocking uncertainty or "none">',
+      'Handoff:',
+      '- <evidence, paths, and constraints downstream steps should use>',
       'Do not summarize your own work or add closing remarks — just deliver the structured handoff and stop.',
       'IMPORTANT: Stop as soon as you have enough context. Do NOT keep exploring — deliver it immediately.'
     ].join('\n');
@@ -881,6 +851,8 @@ export function getSubAgentRolePrompt(role) {
       '- <architectural risks, migration path concerns or "none">',
       'Constraints:',
       '- <non-negotiable limits or "none">',
+      'Handoff:',
+      '- <design decision and constraints downstream steps should follow>',
       'Do not summarize your own work or add closing remarks — just deliver the design decision and stop.'
     ].join('\n');
   }
@@ -891,7 +863,9 @@ export function getSubAgentRolePrompt(role) {
       'You may touch many files, but every change must preserve existing behavior. Do not add features or fix bugs unless explicitly asked.',
       'Before starting, verify you understand the current behavior so you can prove nothing changed.',
       'Output format — keep it short and direct:',
+      'Under Actions Taken, the first bullet MUST be a one-sentence overview suitable for collapsed handoff preview; follow with concrete file/action bullets.',
       'Actions Taken:',
+      '- <one-sentence overview of the refactor completed>',
       '- <files restructured, patterns applied>',
       'Findings:',
       '- <important structural issue addressed or "none">',
@@ -901,6 +875,8 @@ export function getSubAgentRolePrompt(role) {
       '- <remaining structural debt or "none">',
       'Artifacts:',
       '- <changed file paths>',
+      'Handoff:',
+      '- <what the next step should use from this work>',
       'Do not summarize your own work or add closing remarks — just deliver the structured handoff and stop.'
     ].join('\n');
   }
@@ -910,10 +886,14 @@ export function getSubAgentRolePrompt(role) {
       'Your job: generate documentation, README files, API docs, changelogs, or code comments.',
       'Do not modify implementation code. Only write documentation files and comments.',
       'Output format — keep it short and direct:',
+      'Under Actions Taken, the first bullet MUST be a one-sentence overview suitable for collapsed handoff preview; follow with concrete file/action bullets.',
       'Actions Taken:',
+      '- <one-sentence overview of the documentation change>',
       '- <what documentation was written or updated>',
       'Artifacts:',
       '- <created or changed file paths>',
+      'Handoff:',
+      '- <what downstream steps should use from this documentation work>',
       'Coverage:',
       '- <what is documented and what gaps remain>',
       'Do not add a closing summary — the pipeline handles what comes next.'
@@ -931,6 +911,8 @@ export function getSubAgentRolePrompt(role) {
       '- <what you checked>',
       'Not Verified:',
       '- <what remains uncertain>',
+      'Handoff:',
+      '- <findings and files the next step should act on>',
       'Do not add a closing summary or "Next Action" — the pipeline handles what comes next.'
     ].join('\n');
   }
@@ -950,6 +932,8 @@ export function getSubAgentRolePrompt(role) {
       '- <files, docs, or observations checked>',
       'Open Questions:',
       '- <blocking uncertainty or "none">',
+      'Handoff:',
+      '- <recommendation, evidence, and constraints downstream steps should use>',
       'Do not summarize your own work or add closing remarks — just deliver the structured advisory handoff and stop.'
     ].join('\n');
   }
@@ -965,6 +949,8 @@ export function getSubAgentRolePrompt(role) {
       '- <what could not be validated>',
       'Failures:',
       '- <failed command or "none">',
+      'Handoff:',
+      '- <verification evidence, failures, and unverified items for the summarizer>',
       'Do not add a closing summary or "Next Action" — the pipeline handles what comes next.'
     ].join('\n');
   }
@@ -985,6 +971,8 @@ export function getSubAgentRolePrompt(role) {
       '- <suggested fix approach, risk level, or "none">',
       'Open Questions:',
       '- <remaining uncertainty or "none">',
+      'Handoff:',
+      '- <root cause evidence, narrowed scope, and recommended fix path>',
       'Do not add a closing summary or "Next Action" — the pipeline handles what comes next.'
     ].join('\n');
   }
@@ -992,12 +980,16 @@ export function getSubAgentRolePrompt(role) {
     return [
       'You are the summarizer in a multi-step agent pipeline.',
       'Your job is to synthesize the results of all prior steps into a concise, actionable final summary.',
-      'Do NOT re-analyze the codebase or make new tool calls unless the handed-off evidence is clearly insufficient.',
-      'You may read handed-off artifact files, such as generated reports, when needed to summarize or verify their existence.',
-      'Instead, read the accumulated step results in the plan file context provided to you.',
+      'Primary input: the accumulated plan file context and handoff packets already included in your task.',
+      'Do NOT browse the codebase. Your only tools are read, read_plan, tool_search, and skill.',
+      'Do NOT call list, grep, run, edit, write, apply_patch, delete, or any other tool — they are unavailable and will fail.',
+      'Use read ONLY when you have a specific artifact path from handoff/context that is not already covered in the plan file.',
+      'If the plan file and handoff evidence are sufficient, produce the summary without any tool calls.',
       'Output format — keep it short and direct:',
       'Summary:',
       '- <overall result in 2-4 sentences>',
+      'Step Recap:',
+      '- [<role>] <step title>: <1 short sentence covering the agent action and outcome>',
       'Key Findings:',
       '- <most important findings from all steps>',
       'Actions Taken:',
@@ -1012,19 +1004,25 @@ export function getSubAgentRolePrompt(role) {
   return [
     'You are the coder in a multi-step agent pipeline.',
     'Produce practical code changes with minimal explanation.',
+    'Your step owns implementation only. Do NOT run tests, builds, installs, or dev servers to verify your work — the tester step or user handles verification unless this step task explicitly requires a command to complete the edit.',
+    'When code edits are done, finish immediately with the handoff below. Do not loop on blocked or declined run commands.',
     'Output format — keep it short and direct:',
+    'Under Actions Taken, the first bullet MUST be a one-sentence overview suitable for collapsed handoff preview; follow with concrete file/action bullets.',
     'Actions Taken:',
+    '- <one-sentence overview of what was changed>',
     '- <file changes, commands, or "none">',
     'Findings:',
     '- <important implementation note, regression risk, or "none">',
     'Verified:',
-    '- <test/check evidence or "none">',
+    '- none (verification deferred to tester/user)',
     'Open Issues:',
     '- <remaining gap or "none">',
     'Artifacts:',
     '- <changed file path or "none">',
+    'Handoff:',
+    '- <what the next step should use from this implementation>',
     'Next Action:',
-    '- <the best next step for the following role or "none">',
+    '- hand off to tester or user for verification',
     'Do not summarize the goal, recap the plan, or add closing remarks.'
   ].join('\n');
 }
@@ -1038,6 +1036,17 @@ function buildPipelineStepGuidance({ role, stepIndex, totalSteps, isFirst, isLas
       lines.push(`Previous failure: ${previousError}`);
     }
     lines.push('Focus narrowly on fixing the specific issue that caused the failure. Do not start over from scratch.');
+    if (role === 'coder' || role === 'refactorer' || role === 'writer') {
+      lines.push('Your final message MUST use this exact handoff format. Under Actions Taken, the first bullet MUST be a one-sentence overview suitable for collapsed handoff preview; follow with concrete file/action bullets:');
+      lines.push('Actions Taken:');
+      lines.push('- <one-sentence overview of what changed>');
+      lines.push('- <concrete edits, commands, or file operations performed>');
+      lines.push('Artifacts:');
+      lines.push('- <each created or changed file path>');
+      lines.push('Handoff:');
+      lines.push('- <what the next step should use from this work>');
+      lines.push('End with this structured handoff even if work is already done; do not finish with todos-only updates or a prose summary.');
+    }
   }
   if (isFirst && !isRetry) {
     if (role === 'explorer') {
@@ -1069,8 +1078,12 @@ function buildPipelineStepGuidance({ role, stepIndex, totalSteps, isFirst, isLas
   if (role !== 'summarizer') {
     lines.push('- Do not produce a final overall summary; the final summarizer step owns synthesis.');
   }
+  if (role === 'coder' || role === 'refactorer' || role === 'writer') {
+    lines.push('- Do not treat missing runtime verification as unfinished implementation. Finish once edits are done and defer checks to tester/user.');
+  }
   if (isLast && role === 'summarizer') {
     lines.push('- Since you are the final step, give a concise overall verdict the user can act on.');
+    lines.push('- Include a Step Recap section with one short bullet per completed sub-agent step so future normal chat has compact plan context.');
   }
   return lines.join('\n');
 }
@@ -1187,6 +1200,70 @@ function buildSubAgentEvidencePacket(session) {
   }
   if (lines.length === 0) return '';
   return ['Scoped file evidence (recent tool outputs only):', ...lines].join('\n');
+}
+
+function registerSubAgentArtifactPath(pathValue, out, seen) {
+  const value = String(pathValue || '').trim().replace(/\\/g, '/');
+  if (!value || seen.has(value)) return;
+  seen.add(value);
+  out.push(value);
+}
+
+function extractPathFromToolArguments(toolName, args = {}) {
+  const name = String(toolName || '').toLowerCase();
+  if (!['edit', 'create', 'write', 'apply_patch', 'delete'].includes(name)) return '';
+  return String(
+    args.path ||
+    ''
+  ).trim();
+}
+
+function normalizeArtifactFileChanges(changes) {
+  if (!changes) return [];
+  return (Array.isArray(changes) ? changes : [changes]).filter((item) => item && typeof item === 'object');
+}
+
+function collectSubAgentArtifactsFromEvent(evt, out, seen) {
+  const type = String(evt?.type || '');
+  if (type === 'tool:end') {
+    registerSubAgentArtifactPath(evt?.fileChange?.path, out, seen);
+    for (const change of normalizeArtifactFileChanges(evt?.fileChanges)) {
+      registerSubAgentArtifactPath(change?.path, out, seen);
+    }
+    return;
+  }
+  if (type !== 'tool:result' || evt?.error || evt?.blocked) return;
+
+  const content = String(evt.content || '');
+  if (!content) return;
+
+  try {
+    const parsed = JSON.parse(content);
+    registerSubAgentArtifactPath(parsed?.path, out, seen);
+    if (typeof parsed?.stdout === 'string') {
+      extractLikelyPathsFromText(parsed.stdout, out, seen);
+    }
+  } catch {
+    extractLikelyPathsFromText(content, out, seen);
+  }
+
+  registerSubAgentArtifactPath(
+    extractPathFromToolArguments(evt?.name, evt?.arguments),
+    out,
+    seen
+  );
+}
+
+function collectSubAgentArtifactsFromMessages(messages, out, seen) {
+  for (const msg of Array.isArray(messages) ? messages : []) {
+    if (msg?.role !== 'tool') continue;
+    if (msg.tool_status === 'error' || msg.tool_status === 'blocked') continue;
+    registerSubAgentArtifactPath(msg?.tool_file_change?.path, out, seen);
+    for (const change of normalizeArtifactFileChanges(msg?.tool_file_changes)) {
+      registerSubAgentArtifactPath(change?.path, out, seen);
+    }
+    extractLikelyPathsFromText(msg?.content, out, seen);
+  }
 }
 
 function extractLikelyPathsFromText(rawText, out, seen) {
@@ -1359,7 +1436,7 @@ function isLightweightAutoPlanGoal(goal, requirements = []) {
   return /\b(add|update|fix|rename|trim|export|create|remove|change|implement)\b/i.test(text);
 }
 
-function classifyPlanTaskClass(goal = '') {
+export function classifyPlanTaskClass(goal = '') {
   const text = String(goal || '').trim();
   const lowerGoal = text.toLowerCase();
   const advisory =
@@ -1368,6 +1445,9 @@ function classifyPlanTaskClass(goal = '') {
   const implementation =
     /\b(add|build|create|implement|support|introduce|refactor|rewrite|rework|migrate|change|update|fix)\b/i.test(lowerGoal) ||
     /(新增|增加|实现|支持|重构|重写|改造|迁移|修改|更新|修复)/.test(text);
+  const explicitFixIntent =
+    /\b(start\s+(?:fixing|repairing)|fix(?:\s+it|\s+them|\s+this|\s+these)?|repair|resolve|address)\b/i.test(lowerGoal) ||
+    /(开始修复|修复|修一下|改一下|改掉|处理掉|解决)/.test(text);
   const verificationHeavy =
     /\b(test|verify|validation|validate|prove|confirm|reproduce|check coverage)\b/i.test(lowerGoal) ||
     /(测试|验证|校验|确认|复现|覆盖率)/.test(text);
@@ -1378,9 +1458,15 @@ function classifyPlanTaskClass(goal = '') {
   if (debugging && verificationHeavy) return 'verification-heavy';
   if (debugging) return 'debugging';
   if (verificationHeavy) return 'verification-heavy';
-  if (advisory && implementation) return 'implementation-advisory';
+  if (advisory && implementation) {
+    const explicitHybrid =
+      /\b(analyze\s+and|review\s+and|audit\s+and|assess\s+and|investigate\s+and\s+(fix|implement)|fix\s+after\s+(analysis|review))\b/i.test(lowerGoal) ||
+      /(先分析.*再|分析.*并.*(实现|修复|改)|审查.*并.*(改|修|实现)|评估.*后.*(实现|改))/.test(text);
+    if (explicitHybrid || explicitFixIntent) return 'implementation-advisory';
+    return 'implementation-advisory';
+  }
+  if (implementation) return verificationHeavy ? 'implementation-verification' : 'implementation';
   if (advisory) return 'advisory';
-  if (implementation && verificationHeavy) return 'implementation-verification';
   return 'implementation';
 }
 
@@ -1418,25 +1504,36 @@ function buildAutoPlanPlannerGuidance() {
     'Auto-plan planning rules:',
     '- Start with an explorer (codebase inspection) or architect (design) step when the target area is not yet clear.',
     '- Before defining execution steps, map the files/modules likely to be touched and what each step is responsible for.',
+    '- Before writing steps, classify task_size (trivial|small|medium|large), task_type (advisory|implementation|debugging|verification|refactor|documentation|hybrid), and target_confidence (known|likely|unknown).',
     '- If the goal still leaves room for multiple approaches, choose one practical direction before planning execution.',
     '- Prefer the smallest local approach that satisfies the goal.',
     '- Do not output multiple alternative branches in the final plan.',
     '- Do not assume implementation should begin before the plan is coherent.',
     '- Make steps concrete enough to execute without guessing: include target files, expected behavior, and verification intent when known.',
+    '- Each step must satisfy this contract: target files/modules when known, inputs it consumes, outputs it produces, expected outcome, out-of-scope boundaries, success criteria, verification intent, and handoff artifact.',
+    '- Prefer filling structured fields consumes, produces, target_files, success_criteria, verification, and handoff when returning JSON.',
+    '- Fold setup, fixtures, test updates, and documentation into the task whose deliverable needs them unless they are independently reviewable deliverables.',
+    '- Do not create standalone "write tests", "update docs", or "setup fixtures" steps when they only support another implementation task.',
     '- Do not create placeholder steps such as "add validation", "handle edge cases", "write tests", or "finish implementation" unless they name the exact behavior or command.',
     '- Decompose work into independently understandable tasks; each task should have a clear responsibility and produce testable progress.',
+    '- Each task should be small enough that a reviewer can accept or reject it independently.',
     '- Prefer small, focused file boundaries when the plan creates or reorganizes code, while respecting existing project patterns.',
     '- If a step changes behavior, include how that behavior should be tested or manually verified.',
     '- Keep type names, function names, command names, and file paths consistent across all steps.',
-    '- Before returning the plan, self-review it for requirement coverage, placeholders, contradictions, and inconsistent API/type names.',
+    '- Before returning the plan, self-review it for requirement coverage, placeholders, contradictions, untestable tasks, missing consumes/produces handoffs, and inconsistent API/type names.',
     '- If the plan has critical gaps or unclear requirements, create an explorer/advisor step to resolve them before implementation.',
+    '- If target_confidence is known, do not add explorer unless code context is genuinely missing.',
+    '- If task_size is trivial or small and target_confidence is known, prefer a single coder step plus summarizer, or direct implementation without create_plan when possible.',
+    '- Add reviewer only when there is meaningful regression or edge-case risk.',
+    '- Add tester only when there is a concrete command or user-visible behavior to verify.',
+    '- Never add roles just to fill a template.',
     '- Available sub-agent roles: explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer, and summarizer. Use only the roles the task actually needs.',
     '- Always include a summarizer as the final step. The summarizer reads accumulated step results and synthesizes the final summary. It does NOT re-analyze or run tools.',
     '- Do not ask executor steps (explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer) to produce the final summary. They write detailed step results for the summarizer.',
     '- Role quick-guide:',
-    '  • explorer = inspect codebase, map files, gather context before implementation.',
-    '  • architect = make design decisions, choose patterns, define component boundaries.',
-    '  • advisor = analyze and recommend (read-only).',
+    '  • explorer = inspect codebase, map files, gather context before implementation. Never assign explorer to edit files, implement features, or write production code.',
+    '  • architect = make design decisions, choose patterns, define component boundaries. Never assign architect to implement code.',
+    '  • advisor = analyze and recommend (read-only). Never assign advisor to implement code.',
     '  • coder = implement scoped code changes.',
     '  • refactorer = restructure code without changing behavior (broader scope than coder).',
     '  • reviewer = check for bugs, regressions, edge cases.',
@@ -1450,7 +1547,8 @@ function buildAutoPlanPlannerGuidance() {
     '- For documentation: explorer -> writer -> summarizer.',
     '- For advisory: explorer -> advisor -> summarizer.',
     '- Prefer 3-5 steps total unless the task needs more.',
-    '- Keep the plan ordered, task-oriented, and easy for small sub-agents to follow.'
+    '- Keep the plan ordered, task-oriented, and easy for small sub-agents to follow.',
+    '- Step task text should be a complete sub-agent work order: Inputs from prior steps, Scope, Out of scope, Success evidence, Verification intent, Produced outputs, and Handoff to next step.'
   ].join('\n');
 }
 
@@ -1475,8 +1573,10 @@ function buildAutoPlanExecutionGuidance(role) {
   } else if (role === 'coder') {
     common.push('- Keep edits tightly scoped to the chosen plan direction.');
     common.push('- Avoid speculative cleanup or unrelated improvements.');
+    common.push('- Do not run tests, builds, or dev servers to finish your step. Verification belongs to the tester step or the user.');
+    common.push('- If a run command is blocked or declined, treat implementation as complete and note verification was deferred.');
   } else if (role === 'refactorer') {
-    common.push('- Preserve external behavior exactly. If in doubt, run tests before and after.');
+    common.push('- Preserve external behavior exactly. Prefer static reasoning and targeted reads over broad test runs.');
     common.push('- Prefer safe transformations: extract function, rename, move, simplify conditionals.');
     common.push('- Do not add features or fix bugs unless the goal explicitly asks for it.');
   } else if (role === 'advisor') {
@@ -1539,6 +1639,118 @@ function replaceManagedPlanSection(content = '', key = 'findings', nextSection =
     return String(content || '').replace(pattern, sectionBody);
   }
   return `${String(content || '').trimEnd()}\n\n${sectionBody}\n`;
+}
+
+function buildPlanReviewApprovalText(action, { feedback = '', via = 'coding mode' } = {}) {
+  const stamp = new Date().toISOString();
+  switch (action) {
+    case 'approved':
+      return `Execution ready at ${stamp} via ${via}.`;
+    case 'executing':
+      return `Execution started at ${stamp} via ${via}.`;
+    case 'executed':
+      return `Execution completed at ${stamp} via ${via}.`;
+    case 'aborted':
+      return `Execution aborted at ${stamp} via ${via}.`;
+    case 'rejected':
+      return `Rejected at ${stamp} via ${via}.`;
+    case 'revised':
+      return feedback
+        ? `Revision requested at ${stamp} via ${via}: ${feedback}\nStatus: ready.`
+        : `Revision requested at ${stamp} via ${via}.\nStatus: ready.`;
+    case 'edited':
+      return `Manually edited at ${stamp} via ${via}.\nStatus: ready.`;
+    default:
+      return `Review updated at ${stamp}.`;
+  }
+}
+
+function buildPlanReviewProgressLine(action, { feedback = '' } = {}) {
+  switch (action) {
+    case 'approved':
+      return '- Plan marked ready for execution.';
+    case 'executing':
+      return '- Plan execution started.';
+    case 'executed':
+      return '- Plan execution completed.';
+    case 'aborted':
+      return '- Plan execution aborted before completion.';
+    case 'rejected':
+      return '- Plan discarded.';
+    case 'revised':
+      return feedback
+        ? `- User requested plan revisions: ${feedback}`
+        : '- User requested plan revisions.';
+    case 'edited':
+      return '- User manually edited the plan.';
+    default:
+      return '';
+  }
+}
+
+function replacePlanApprovalSection(content = '', approvalText = '') {
+  const text = String(content || '');
+  const header = '## Approval';
+  const start = text.indexOf(header);
+  if (start === -1) {
+    return `${text.trimEnd()}\n\n${header}\n${String(approvalText || '').trim()}\n`;
+  }
+  const afterHeader = start + header.length;
+  const rest = text.slice(afterHeader);
+  const nextHeading = rest.search(/\n## /);
+  const end = nextHeading === -1 ? text.length : afterHeader + nextHeading;
+  return `${text.slice(0, afterHeader)}\n${String(approvalText || '').trim()}\n${text.slice(end)}`.replace(/\n{3,}/g, '\n\n');
+}
+
+async function readPlanApprovalSection(planFilePath) {
+  const filePath = String(planFilePath || '').trim();
+  if (!filePath) return '';
+  try {
+    const content = await fs.readFile(filePath, 'utf8');
+    const start = content.indexOf('## Approval');
+    if (start === -1) return '';
+    const rest = content.slice(start);
+    const nextHeading = rest.search(/\n## /);
+    return (nextHeading === -1 ? rest : rest.slice(0, nextHeading)).trim();
+  } catch {
+    return '';
+  }
+}
+
+async function writePlanReviewStatusToFile(planFilePath, action, { feedback = '', via = 'coding mode' } = {}) {
+  const filePath = String(planFilePath || '').trim();
+  if (!filePath || !action) return;
+  try {
+    let content = await fs.readFile(filePath, 'utf8');
+    content = replacePlanApprovalSection(content, buildPlanReviewApprovalText(action, { feedback, via }));
+    const progressLine = buildPlanReviewProgressLine(action, { feedback });
+    if (progressLine) {
+      const progressBlock = [
+        ...extractManagedPlanSection(content, 'progress')
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean),
+        progressLine
+      ];
+      content = replaceManagedPlanSection(
+        content,
+        'progress',
+        normalizeLedgerItems(trimLedger(progressBlock, 12)).join('\n')
+      );
+    }
+    await fs.writeFile(filePath, `${content.trimEnd()}\n`, 'utf8');
+  } catch {
+    // Non-fatal: plan file review status is best-effort
+  }
+}
+
+async function recordPlanReviewStatus(planState, action, options = {}) {
+  await writePlanReviewStatusToFile(planState?.filePath, action, options);
+}
+
+async function finalizeApprovedPlanFile(planState, result = {}) {
+  const action = result?.aborted ? 'aborted' : 'executed';
+  await writePlanReviewStatusToFile(planState?.filePath, action, { via: 'coding mode' });
 }
 
 function normalizeLedgerItems(items = [], fallback = '- None recorded yet.') {
@@ -1707,8 +1919,8 @@ async function readPlanFileAsContext(planFilePath, maxChars = 6000) {
   }
 }
 
-async function buildTesterVerificationPacket(focusPaths = []) {
-  const cwd = process.cwd();
+async function buildTesterVerificationPacket(focusPaths = [], workspaceRoot = process.cwd()) {
+  const cwd = path.resolve(workspaceRoot);
   const primary = [];
   const secondary = [];
   const fallback = [];
@@ -1789,19 +2001,13 @@ async function buildTesterVerificationPacket(focusPaths = []) {
   return lines.join('\n');
 }
 
-function isBundledSkillCommand(command) {
-  return command?.metadata?.type === 'skill' && command?.source === 'bundled-skill';
-}
-
-function isSkillEnabled(config, name, command = null) {
-  if (command?.metadata?.enabled === false) return false;
-  if (isBundledSkillCommand(command)) return true;
-  return config.skills?.enabled?.[name] !== false;
+function isSkillEnabled(config, name, command = null, executionMode = config?.execution?.mode) {
+  return skillIsEligible(config?.skills, name, executionMode, command);
 }
 
 function selectAutoSkillNames(text = '') {
   const input = String(text || '').toLowerCase();
-  const selected = ['using-superpowers'];
+  const selected = [];
 
   const explicitGrillMe =
     /\bgr+ill\s+me\b|\bpressure[- ]?test\b|\bstress[- ]?test\b|\bchallenge\s+(?:this|my|me)\b|\btear\s+(?:this|my)\s+.*apart\b/i.test(
@@ -1823,11 +2029,9 @@ function selectAutoSkillNames(text = '') {
     );
 
   if (explicitBrainstorm || (ambiguitySignals && featureRequest) || greenfieldBuildRequest) {
-    selected.push('brainstorming');
+    selected.push('discussion');
   }
-  if (explicitGrillMe) {
-    selected.push('requesting-code-review');
-  }
+  if (explicitGrillMe && !selected.includes('discussion')) selected.push('discussion');
   return selected;
 }
 
@@ -1837,7 +2041,7 @@ function classifyTaskComplexity(text = '') {
 
   const lower = input.toLowerCase();
   const explicitPlanning =
-    /(\/plan\b|plan first|make a plan|implementation plan|先做计划|先出方案|先规划|先计划)/i.test(lower);
+    /(plan first|make a plan|implementation plan|先做计划|先出方案|先规划|先计划)/i.test(lower);
   if (explicitPlanning) return 'complex';
 
   const simpleSkip =
@@ -1885,7 +2089,7 @@ function classifyTaskComplexity(text = '') {
 
 function classifyAutoRoute(text = '') {
   const selectedSkills = selectAutoSkillNames(text);
-  const hasBrainstorm = selectedSkills.includes('brainstorming');
+  const hasBrainstorm = selectedSkills.includes('discussion');
   if (hasBrainstorm) {
     return {
       mode: 'brainstorm',
@@ -1898,9 +2102,9 @@ function classifyAutoRoute(text = '') {
   const complexity = classifyTaskComplexity(text);
   if (complexity === 'complex') {
     return {
-      mode: 'auto_plan',
-      autoPlan: true,
-      selectedSkills: ['using-superpowers'],
+      mode: 'direct_complex',
+      autoPlan: false,
+      selectedSkills: [],
       complexity
     };
   }
@@ -1916,21 +2120,18 @@ function classifyAutoRoute(text = '') {
 function buildMediumTaskPromptBlock() {
   return [
     'Task Mode: medium',
-    'Execution guidance:',
-    '- Give a brief execution outline before coding.',
-    '- Keep the outline concise and focused on touched files/behaviors.',
-    '- Then implement directly instead of entering pending plan approval.',
-    '- Verify the changed behavior before finishing.',
-    '- If major ambiguity appears mid-task, say so clearly and ask for a plan instead of guessing.'
+    '- Give a brief execution outline focused on the affected files and behavior, then proceed directly without create_plan when the task is already clear.',
+    '- If material ambiguity appears during implementation, pause for one focused clarification instead of guessing.'
   ].join('\n');
 }
 
-function getAlwaysSkillCommands(commands, config) {
+function getAlwaysSkillCommands(commands, config, dismissedSkills = null, activeMode = config?.execution?.mode) {
   return Array.from(commands.values())
     .filter((command) =>
       command?.metadata?.type === 'skill' &&
       command.metadata?.mode === 'always' &&
-      isSkillEnabled(config, command.name, command)
+      isSkillEnabled(config, command.name, command, activeMode) &&
+      (!dismissedSkills || !dismissedSkills.has(command.name))
     )
     .sort((a, b) => {
       const left = Number(a.metadata?.priority || 0);
@@ -1939,10 +2140,14 @@ function getAlwaysSkillCommands(commands, config) {
     });
 }
 
-function buildAlwaysSkillPromptBlock(commands, config) {
-  const selected = getAlwaysSkillCommands(commands, config);
+function buildAlwaysSkillPromptBlock(commands, config, dismissedSkills = null, activeMode = config?.execution?.mode) {
+  const selected = getAlwaysSkillCommands(commands, config, dismissedSkills, activeMode);
   if (selected.length === 0) return '';
   return selected.map((skill) => `[Always skill: ${skill.name}]\n${skill.content}`).join('\n\n');
+}
+
+export function shouldInjectAlwaysSkills(executionMode) {
+  return ['normal', 'plan'].includes(normalizeExecutionMode(executionMode));
 }
 
 function extractJsonBlock(text) {
@@ -1969,20 +2174,134 @@ function extractJsonBlock(text) {
   return null;
 }
 
-function normalizeAutoPlan(parsed, goal) {
-  const steps = Array.isArray(parsed?.steps) ? parsed.steps : [];
-  const cleaned = steps
-    .map((s) => ({
-      title: String(s?.title || '').trim(),
-      role: String(s?.role || '').trim().toLowerCase(),
-      task: String(s?.task || '').trim()
+function normalizePlanStepRoles(steps = []) {
+  return (Array.isArray(steps) ? steps : []).map((step) => {
+    const titleTask = `${step?.title || ''} ${step?.task || ''}`.toLowerCase();
+    const role = String(step?.role || '').trim().toLowerCase();
+    if (role === 'summarizer') return step;
+    if (/\b(summarize|summary|synthesis|final status|汇总|总结|归纳)\b/i.test(titleTask)) {
+      return { ...step, role: 'summarizer' };
+    }
+    if (role === 'tester') return step;
+    if (/\b(test|verify|verification|validate|validation|验收|验证|测试)\b/i.test(titleTask) && role === 'coder') {
+      return { ...step, role: 'tester' };
+    }
+    if (role === 'reviewer') return step;
+    if (/\b(review|audit|regression|审查|复核|回归)\b/i.test(titleTask) && role === 'coder') {
+      return { ...step, role: 'reviewer' };
+    }
+    if (role === 'explorer' || role === 'architect' || role === 'advisor' || role === 'debugger') return step;
+    if (/\b(explore|inspect|map|discover|调研|探索|梳理|摸清)\b/i.test(titleTask) && role === 'coder') {
+      return { ...step, role: 'explorer' };
+    }
+    return step;
+  });
+}
+
+function normalizeStepStringArray(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean);
+  }
+  const single = String(value || '').trim();
+  return single ? [single] : [];
+}
+
+function normalizePlannerChoice(value, allowed, fallback) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  return allowed.includes(normalized) ? normalized : fallback;
+}
+
+function normalizePlannerMetadata(parsed = {}, goal = '') {
+  const taskClass = classifyPlanTaskClass(goal);
+  const taskType = normalizePlannerChoice(
+    parsed?.task_type || parsed?.taskType || parsed?.classification?.task_type || parsed?.classification?.taskType,
+    ['advisory', 'implementation', 'debugging', 'verification', 'refactor', 'documentation', 'hybrid'],
+    taskClass === 'implementation-verification'
+      ? 'implementation'
+      : taskClass === 'implementation-advisory'
+        ? 'hybrid'
+        : taskClass
+  );
+  return {
+    task_size: normalizePlannerChoice(
+      parsed?.task_size || parsed?.taskSize || parsed?.classification?.task_size || parsed?.classification?.taskSize,
+      ['trivial', 'small', 'medium', 'large'],
+      ''
+    ),
+    task_type: taskType,
+    target_confidence: normalizePlannerChoice(
+      parsed?.target_confidence || parsed?.targetConfidence || parsed?.classification?.target_confidence || parsed?.classification?.targetConfidence,
+      ['known', 'likely', 'unknown'],
+      ''
+    ),
+    rationale: String(parsed?.rationale || parsed?.classification?.rationale || '').trim()
+  };
+}
+
+function normalizeStructuredPlanSteps(steps = []) {
+  return (Array.isArray(steps) ? steps : [])
+    .map((step) => ({
+      title: String(step?.title || '').trim(),
+      role: String(step?.role || '').trim().toLowerCase(),
+      task: String(step?.task || '').trim(),
+      consumes: String(step?.consumes || step?.inputs || '').trim(),
+      produces: String(step?.produces || step?.outputs || '').trim(),
+      target_files: normalizeStepStringArray(step?.target_files || step?.targets || step?.files),
+      success_criteria: String(step?.success_criteria || step?.success || '').trim(),
+      verification: String(step?.verification || step?.verify || '').trim(),
+      handoff: String(step?.handoff || step?.handoff_artifact || '').trim()
     }))
-    .filter((s) => s.title && s.task && SUB_AGENT_ROLES.includes(s.role));
+    .filter((step) => step.title && step.task && EXECUTOR_AGENT_ROLES.includes(step.role));
+}
+
+function buildStepContractTask(step) {
+  const lines = [String(step?.task || '').trim()];
+  if (step?.consumes) lines.push(`Consumes: ${step.consumes}`);
+  if (step?.produces) lines.push(`Produces: ${step.produces}`);
+  if (Array.isArray(step?.target_files) && step.target_files.length > 0) {
+    lines.push(`Targets: ${step.target_files.join(', ')}`);
+  }
+  if (step?.success_criteria) lines.push(`Success criteria: ${step.success_criteria}`);
+  if (step?.verification) lines.push(`Verification intent: ${step.verification}`);
+  if (step?.handoff) lines.push(`Handoff artifact: ${step.handoff}`);
+  return lines.filter(Boolean).join('\n');
+}
+
+function withStepContractTasks(steps = []) {
+  return (Array.isArray(steps) ? steps : []).map((step) => ({
+    title: step.title,
+    role: step.role,
+    task: step.task,
+    ...(step.consumes ? { consumes: step.consumes } : {}),
+    ...(step.produces ? { produces: step.produces } : {}),
+    ...(Array.isArray(step.target_files) && step.target_files.length > 0 ? { target_files: step.target_files } : {}),
+    ...(step.success_criteria ? { success_criteria: step.success_criteria } : {}),
+    ...(step.verification ? { verification: step.verification } : {}),
+    ...(step.handoff ? { handoff: step.handoff } : {})
+  }));
+}
+
+function renderStepContractBlock(step = {}) {
+  const lines = ['Step Contract:'];
+  if (step.consumes) lines.push(`- Consumes: ${step.consumes}`);
+  if (step.produces) lines.push(`- Produces: ${step.produces}`);
+  if (Array.isArray(step.target_files) && step.target_files.length > 0) lines.push(`- Targets: ${step.target_files.join(', ')}`);
+  if (step.success_criteria) lines.push(`- Success criteria: ${step.success_criteria}`);
+  if (step.verification) lines.push(`- Verification intent: ${step.verification}`);
+  if (step.handoff) lines.push(`- Handoff artifact: ${step.handoff}`);
+  return lines.length > 1 ? lines.join('\n') : '';
+}
+
+export function normalizeAutoPlan(parsed, goal) {
+  const steps = Array.isArray(parsed?.steps) ? parsed.steps : [];
+  const cleaned = withStepContractTasks(normalizePlanStepRoles(normalizeStructuredPlanSteps(steps)));
+  const planner = normalizePlannerMetadata(parsed, goal);
 
   const basePlan =
     cleaned.length === 0
       ? {
           summary: `Auto plan for: ${goal}`,
+          planner,
           steps: [
             {
               title: 'Initial exploration',
@@ -1993,6 +2312,7 @@ function normalizeAutoPlan(parsed, goal) {
         }
       : {
           summary: String(parsed?.summary || `Auto plan for: ${goal}`).trim(),
+          planner,
           steps: cleaned
         };
 
@@ -2124,9 +2444,9 @@ function buildFallbackAutoPlan(goal) {
         task: `Implement the requested changes for: ${goal}. Keep the behavior aligned with the acceptance checklist and preserve existing external behavior unless the goal explicitly changes it.`
       },
       {
-        title: 'Update or add focused verification',
+        title: 'Add focused test coverage',
         role: 'coder',
-        task: `Add or update the most relevant tests and focused verification coverage for: ${goal}. Prefer narrow checks tied to the changed files and flows.`
+        task: `Add or update focused tests or test fixtures for: ${goal}. Do not run broad verification here; hand the relevant commands to the tester step.`
       },
       {
         title: 'Review for regressions and gaps',
@@ -2172,12 +2492,88 @@ function buildDefaultSummarizerStep(goal, source = []) {
   };
 }
 
+function buildDefaultTesterStep(goal) {
+  return {
+    title: 'Test and verify',
+    role: 'tester',
+    task: `Test and verify the completed work for: ${goal}. Run the most relevant checks available, report concrete evidence, and call out anything still unverified.`
+  };
+}
+
+function buildDefaultReviewerStep(goal) {
+  return {
+    title: 'Review implementation',
+    role: 'reviewer',
+    task: `Review the completed work for: ${goal}. Check bugs, regressions, risky assumptions, edge cases, and missing tests in the changed areas.`
+  };
+}
+
+function buildDefaultExplorerStep(goal) {
+  return {
+    title: 'Inspect the target area',
+    role: 'explorer',
+    task: `Inspect the relevant code paths, affected files, and current behavior for: ${goal}. Identify constraints, dependencies, and risks before implementation.`
+  };
+}
+
+function testerStepHasConcreteVerification(step = {}) {
+  const text = [
+    step.title,
+    step.task,
+    step.verification,
+    step.success_criteria
+  ].filter(Boolean).join('\n').toLowerCase();
+  if (!text) return false;
+  if (/\b(npm|pnpm|yarn|node --test|vitest|jest|playwright|pytest|cargo test|go test|mvn|gradle|npm run|npm test)\b/.test(text)) {
+    return true;
+  }
+  if (/\b(manual|browser|smoke|screenshot|api|endpoint)\b/.test(text) && /\b(verify|validate|test|check|confirm)\b/.test(text)) {
+    return true;
+  }
+  return false;
+}
+
+function finalizePlanWithTerminalRoles(steps, goal, {
+  includeTester = true,
+  includeReviewer = false,
+  includeSummarizer = true
+} = {}) {
+  const source = Array.isArray(steps) ? steps : [];
+  const body = [];
+  const seen = new Set();
+  let hasTester = false;
+  let hasReviewer = false;
+  for (const step of source) {
+    if (!step?.title || !step?.task) continue;
+    if (step.role === 'summarizer') continue;
+    if (step.role === 'tester') hasTester = true;
+    if (step.role === 'reviewer') hasReviewer = true;
+    const key = `${step.role}|${step.title}|${step.task}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    body.push(step);
+  }
+  if (includeReviewer && !hasReviewer) body.push(buildDefaultReviewerStep(goal));
+  if (includeTester && !hasTester) body.push(buildDefaultTesterStep(goal));
+  if (includeSummarizer) body.push(buildDefaultSummarizerStep(goal, source));
+  return body;
+}
+
 function enforceAutoPlanGuardrailSteps(plan, goal) {
   const source = Array.isArray(plan?.steps) ? plan.steps : [];
   const requirements = deriveGoalRequirements(goal);
   const lightweightGoal = isLightweightAutoPlanGoal(goal, requirements);
   const taskClass = classifyPlanTaskClass(goal);
-  const implementationSteps = source.filter((step) => step.role !== 'advisor' && step.role !== 'reviewer' && step.role !== 'tester' && step.role !== 'debugger' && step.role !== 'summarizer');
+  const planner = plan?.planner && typeof plan.planner === 'object' ? plan.planner : {};
+  const taskSize = String(planner.task_size || '').toLowerCase();
+  const taskType = String(planner.task_type || '').toLowerCase();
+  const targetConfidence = String(planner.target_confidence || '').toLowerCase();
+  const plannerSaysSmall = taskSize === 'trivial' || taskSize === 'small';
+  const plannerSaysKnownTarget = targetConfidence === 'known';
+  const plannerSaysAdvisory = taskType === 'advisory';
+  const plannerSaysVerification = taskType === 'verification';
+  const summary = String(plan?.summary || `Auto plan for: ${goal}`).trim();
+  const implementationSteps = source.filter((step) => ['coder', 'refactorer', 'writer'].includes(step.role));
   const primaryImplementationStep =
     implementationSteps.find((step) => step.role === 'coder') ||
     implementationSteps[0] || {
@@ -2185,29 +2581,20 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
       role: 'coder',
       task: `Implement the requested change for: ${goal}`
     };
-  const reviewerStep = source.find((step) => step.role === 'reviewer') || {
-    title: 'Review implementation',
-    role: 'reviewer',
-    task: `Review the completed work for: ${goal}. Start with the files and directories produced by earlier implementation steps, then check bugs, regressions, risky assumptions, edge cases, and missing tests.`
-  };
-  const testerStep = source.find((step) => step.role === 'tester') || {
-    title: 'Test and verify',
-    role: 'tester',
-    task: `Test and verify the completed work for: ${goal}. Start with the artifacts produced by earlier implementation steps, run the most relevant checks available, report concrete evidence, and call out anything still unverified.`
-  };
   const debuggerStep = source.find((step) => step.role === 'debugger') || {
     title: 'Investigate the issue',
     role: 'debugger',
     task: `Investigate the reported issue: ${goal}. Reproduce the problem, trace root causes, narrow down culprit code, and recommend a fix approach without implementing it.`
   };
-  const summarizerStep = buildDefaultSummarizerStep(goal, source);
-  const hasReviewer = source.some((step) => step.role === 'reviewer');
-  const hasTester = source.some((step) => step.role === 'tester');
   const hasDebugger = source.some((step) => step.role === 'debugger');
 
   if (taskClass === 'advisory') {
+    const allowedAdvisoryRoles =
+      plannerSaysSmall || plannerSaysKnownTarget || plannerSaysAdvisory
+        ? new Set(['advisor', 'architect'])
+        : new Set(['explorer', 'advisor', 'architect']);
     const advisorySteps = source
-      .filter((step) => step.role === 'explorer' || step.role === 'advisor' || step.role === 'architect')
+      .filter((step) => allowedAdvisoryRoles.has(step.role))
       .map((step) =>
         step.role === 'coder'
           ? {
@@ -2239,8 +2626,12 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
           }
         ];
     return {
-      summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
-      steps: [...finalSteps, summarizerStep]
+      summary,
+      steps: finalizePlanWithTerminalRoles(finalSteps, goal, {
+        includeTester: false,
+        includeReviewer: false,
+        includeSummarizer: true
+      })
     };
   }
 
@@ -2251,57 +2642,93 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
       role: 'coder',
       task: `Fix the root cause identified by the debugger for: ${goal}. Keep the fix narrowly scoped and preserve existing behavior except where intentionally changed.`
     };
-    const steps = hasDebugger
-      ? [...nonDebugRoles.slice(0, 3), debuggerStep, coderStep]
-      : [...nonDebugRoles.slice(0, 3), debuggerStep, coderStep];
-    const finalSteps = hasTester ? [...steps, testerStep] : steps;
+    const steps = [
+      ...(nonDebugRoles.some((step) => step.role === 'explorer') ? [] : [buildDefaultExplorerStep(goal)]),
+      ...nonDebugRoles.slice(0, 3),
+      ...(hasDebugger ? [] : [debuggerStep]),
+      coderStep
+    ];
     return {
-      summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
-      steps: [...finalSteps, summarizerStep]
+      summary,
+      steps: finalizePlanWithTerminalRoles(steps, goal, {
+        includeTester: true,
+        includeReviewer: false,
+        includeSummarizer: true
+      })
     };
   }
 
   if (taskClass === 'implementation-advisory') {
+    const explorerStep =
+      source.find((step) => step.role === 'explorer' || step.role === 'architect') || buildDefaultExplorerStep(goal);
     const advisoryStep = source.find((step) => step.role === 'advisor') || {
       title: 'Analyze requirements and constraints',
       role: 'advisor',
-      task: `Analyze: ${goal}. Identify constraints, dependencies, risks, tradeoffs, and recommend the best implementation approach. Do not implement changes.`
+      task: `Analyze: ${goal}. Identify constraints, dependencies, risks, tradeoffs, and recommend the best implementation approach before coding.`
     };
-    const baseSteps = [primaryImplementationStep, advisoryStep];
+    const coderSteps = source.filter((step) => ['coder', 'refactorer', 'writer'].includes(step.role));
+    const executionSteps = coderSteps.length > 0 ? coderSteps.slice(0, 4) : [primaryImplementationStep];
     return {
-      summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
-      steps: [...baseSteps, summarizerStep]
+      summary,
+      steps: finalizePlanWithTerminalRoles([explorerStep, advisoryStep, ...executionSteps], goal, {
+        includeTester: true,
+        includeReviewer: false,
+        includeSummarizer: true
+      })
     };
   }
 
   if (taskClass === 'implementation-verification') {
     const executionSteps = [
-      ...implementationSteps.slice(0, 5),
-      ...(hasReviewer ? [reviewerStep] : []),
-      testerStep
+      ...(source.some((step) => step.role === 'explorer') ? [] : [buildDefaultExplorerStep(goal)]),
+      ...implementationSteps.slice(0, 5)
     ];
     return {
-      summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
-      steps: [...executionSteps, summarizerStep]
+      summary,
+      steps: finalizePlanWithTerminalRoles(executionSteps, goal, {
+        includeTester: true,
+        includeReviewer: true,
+        includeSummarizer: true
+      })
     };
   }
 
   if (lightweightGoal) {
-    const baseSteps = hasTester ? [primaryImplementationStep, testerStep] : [primaryImplementationStep];
+    const sourceHasTester = source.some((step) => step.role === 'tester' && testerStepHasConcreteVerification(step));
+    const includeTester = !plannerSaysSmall || plannerSaysVerification || sourceHasTester;
     return {
-      summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
-      steps: [...baseSteps, summarizerStep]
+      summary,
+      steps: finalizePlanWithTerminalRoles([primaryImplementationStep], goal, {
+        includeTester,
+        includeReviewer: false,
+        includeSummarizer: true
+      })
+    };
+  }
+
+  if (plannerSaysSmall && plannerSaysKnownTarget && implementationSteps.length > 0) {
+    const includeTester = plannerSaysVerification || source.some((step) => step.role === 'tester' && testerStepHasConcreteVerification(step));
+    return {
+      summary,
+      steps: finalizePlanWithTerminalRoles([primaryImplementationStep], goal, {
+        includeTester,
+        includeReviewer: false,
+        includeSummarizer: true
+      })
     };
   }
 
   const executionSteps = [
-    ...implementationSteps.slice(0, 6),
-    ...(hasReviewer ? [reviewerStep] : []),
-    ...(testerStep ? [testerStep] : [])
+    ...(source.some((step) => step.role === 'explorer' || step.role === 'architect') ? [] : [buildDefaultExplorerStep(goal)]),
+    ...implementationSteps.slice(0, 6)
   ];
   return {
-    summary: String(plan?.summary || `Auto plan for: ${goal}`).trim(),
-    steps: [...executionSteps, summarizerStep]
+    summary,
+    steps: finalizePlanWithTerminalRoles(executionSteps, goal, {
+      includeTester: true,
+      includeReviewer: source.some((step) => step.role === 'reviewer'),
+      includeSummarizer: true
+    })
   };
 }
 
@@ -2319,9 +2746,21 @@ function looksLikeSuccessfulStepOutput(text = '') {
   return true;
 }
 
-function stepOutputHasFailureSignals(role, text = '') {
+const IMPLEMENTATION_EVIDENCE_ROLES = new Set(['coder', 'refactorer', 'writer']);
+
+function implementationRoleHasToolEvidence(role, artifactPaths = []) {
+  return IMPLEMENTATION_EVIDENCE_ROLES.has(role) && Array.isArray(artifactPaths) && artifactPaths.some(Boolean);
+}
+
+function roleOutputLacksImplementationEvidence(role, actionsTaken = '', artifacts = '', artifactPaths = []) {
+  if (implementationRoleHasToolEvidence(role, artifactPaths)) return false;
+  return coderOutputLacksImplementationEvidence(actionsTaken, artifacts);
+}
+
+function stepOutputHasFailureSignals(role, text = '', options = {}) {
+  const artifactPaths = Array.isArray(options.artifactPaths) ? options.artifactPaths : [];
   const value = String(text || '').trim();
-  if (!value) return true;
+  if (!value) return !implementationRoleHasToolEvidence(role, artifactPaths);
   const errorBullet = extractSectionFirstBullet(value, 'Error');
   const failureBullet = extractSectionFirstBullet(value, 'Failures');
   const findingsBullet = extractSectionFirstBullet(value, 'Findings');
@@ -2351,12 +2790,11 @@ function stepOutputHasFailureSignals(role, text = '') {
     }
   }
   if (role === 'architect' && architectOutputLacksDecision(designBullet)) return true;
-  if (role === 'coder' && coderOutputLacksImplementationEvidence(actionsTakenBullet, artifactsBullet)) return true;
-  if (role === 'refactorer' && refactorerOutputLacksEvidence(actionsTakenBullet, artifactsBullet)) return true;
+  if (role === 'coder' && roleOutputLacksImplementationEvidence(role, actionsTakenBullet, artifactsBullet, artifactPaths)) return true;
+  if (role === 'refactorer' && roleOutputLacksImplementationEvidence(role, actionsTakenBullet, artifactsBullet, artifactPaths)) return true;
   if (role === 'reviewer' && reviewerFindingNeedsAction(findingsBullet)) return true;
-  if (role === 'writer' && writerOutputLacksEvidence(actionsTakenBullet, artifactsBullet)) return true;
-  if ((role === 'tester' || role === 'summarizer') && notVerifiedBullet && !/^none\b/i.test(notVerifiedBullet)) return true;
-  if (role === 'summarizer' && remainingIssuesBullet && !/^none\b/i.test(remainingIssuesBullet)) return true;
+  if (role === 'writer' && roleOutputLacksImplementationEvidence(role, actionsTakenBullet, artifactsBullet, artifactPaths)) return true;
+  if (role === 'tester' && notVerifiedBullet && !/^none\b/i.test(notVerifiedBullet)) return true;
   if (role === 'debugger' && debuggerOutputLacksTracedCause(findingsBullet, narrowedScopeBullet, evidenceBullet)) return true;
   if (nextActionBullet && /^(fix|retry|correct|repair)\b/i.test(nextActionBullet)) return true;
   return false;
@@ -2420,9 +2858,13 @@ function reviewerFindingNeedsAction(text = '') {
   return false;
 }
 
-function buildExitCriteriaFailureReason(role, text = '') {
+function buildExitCriteriaFailureReason(role, text = '', options = {}) {
+  const artifactPaths = Array.isArray(options.artifactPaths) ? options.artifactPaths : [];
   const value = String(text || '').trim();
-  if (!value) return 'no structured step output was produced';
+  if (!value) {
+    if (implementationRoleHasToolEvidence(role, artifactPaths)) return 'step output did not satisfy exit criteria';
+    return 'no structured step output was produced';
+  }
   const errorBullet = extractSectionFirstBullet(value, 'Error');
   if (errorBullet && !/^none\b/i.test(errorBullet)) return `error: ${errorBullet}`;
   const failureBullet = extractSectionFirstBullet(value, 'Failures');
@@ -2447,13 +2889,13 @@ function buildExitCriteriaFailureReason(role, text = '') {
   if (role === 'architect' && architectOutputLacksDecision(designBullet)) {
     return 'architect output did not include a design decision';
   }
-  if (role === 'coder' && coderOutputLacksImplementationEvidence(actionsTakenBullet, artifactsBullet)) {
+  if (role === 'coder' && roleOutputLacksImplementationEvidence(role, actionsTakenBullet, artifactsBullet, artifactPaths)) {
     return 'coder output did not include implementation evidence';
   }
-  if (role === 'refactorer' && coderOutputLacksImplementationEvidence(actionsTakenBullet, artifactsBullet)) {
+  if (role === 'refactorer' && roleOutputLacksImplementationEvidence(role, actionsTakenBullet, artifactsBullet, artifactPaths)) {
     return 'refactorer output did not include refactoring evidence';
   }
-  if (role === 'writer' && coderOutputLacksImplementationEvidence(actionsTakenBullet, artifactsBullet)) {
+  if (role === 'writer' && roleOutputLacksImplementationEvidence(role, actionsTakenBullet, artifactsBullet, artifactPaths)) {
     return 'writer output did not include documentation evidence';
   }
   if (role === 'reviewer' && reviewerFindingNeedsAction(findingsBullet)) return `review findings: ${findingsBullet}`;
@@ -2469,12 +2911,8 @@ function buildExitCriteriaFailureReason(role, text = '') {
   const acceptanceFailure = extractAcceptanceStatusItems(value).find((item) => item.status !== 'met');
   if (acceptanceFailure) return `acceptance ${acceptanceFailure.status}: ${acceptanceFailure.label}`;
   const notVerifiedBullet = extractSectionFirstBullet(value, 'Not Verified');
-  if ((role === 'tester' || role === 'summarizer') && notVerifiedBullet && !/^none\b/i.test(notVerifiedBullet)) {
+  if (role === 'tester' && notVerifiedBullet && !/^none\b/i.test(notVerifiedBullet)) {
     return `not verified: ${notVerifiedBullet}`;
-  }
-  const remainingIssuesBullet = extractSectionFirstBullet(value, 'Remaining Issues');
-  if (role === 'summarizer' && remainingIssuesBullet && !/^none\b/i.test(remainingIssuesBullet)) {
-    return `remaining issues: ${remainingIssuesBullet}`;
   }
   return 'step output did not satisfy exit criteria';
 }
@@ -2531,21 +2969,17 @@ function extractAcceptanceStatusItems(text = '') {
 function buildAutoPlanSystemSummary(auto) {
   const baseStatusTitle =
     auto.failedCount > 0 ? 'Auto plan finished with failures' : auto.warningCount > 0 ? 'Auto plan finished with warnings' : 'Auto plan finished';
-  const statusTitle =
-    auto.approvalStatus === 'pending' ? `${baseStatusTitle} (waiting for /yes)` : baseStatusTitle;
   const lines = [
-    statusTitle,
+    baseStatusTitle,
     `Plan File: ${auto.filePath}`,
     `Plan Summary: ${auto.summary || '-'}`,
     `Final Summary: ${auto.finalSummary || auto.summary || '-'}`,
-    `Approval: ${auto.approvalStatus || 'not_required'}`
+    `Execution: ${auto.executionPolicy || 'automatic'}`
   ];
-  if (auto.approvalStatus !== 'pending') {
-    lines.push(`Steps: ${auto.steps.length} total`);
-    lines.push(`Completed: ${auto.completedCount}`);
-    lines.push(`Warnings: ${auto.warningCount}`);
-    lines.push(`Failed: ${auto.failedCount}`);
-  }
+  lines.push(`Steps: ${auto.steps.length} total`);
+  lines.push(`Completed: ${auto.completedCount}`);
+  lines.push(`Warnings: ${auto.warningCount}`);
+  lines.push(`Failed: ${auto.failedCount}`);
   if (auto.warningTitles?.length) {
     lines.push(`Warning steps: ${auto.warningTitles.slice(0, 5).join(', ')}`);
   }
@@ -2561,9 +2995,6 @@ function buildAutoPlanSystemSummary(auto) {
         lines.push(`     - task: ${String(s.task).trim()}`);
       }
     });
-  }
-  if (auto.approvalStatus === 'pending') {
-    lines.push('Next: review the plan summary, then use /yes to execute, /edit <feedback> to revise this plan, or /reject to discard it.');
   }
   return lines.join('\n');
 }
@@ -2669,31 +3100,19 @@ async function buildAutoPlanFinalSummary({
   }
 }
 
-async function writeMarkdownInProjectDir(subDir, title, body, fallbackName, sessionId) {
+async function writeMarkdownInProjectDir(subDir, title, body, fallbackName, sessionId, workspaceRoot = process.cwd()) {
   const dir =
     subDir === 'specs'
-      ? getProjectSpecsDir(process.cwd(), sessionId)
+      ? getProjectSpecsDir(workspaceRoot, sessionId)
       : subDir === 'plans'
-        ? getProjectPlansDir(process.cwd(), sessionId)
-        : path.join(getProjectWorkspaceDir(process.cwd()), subDir, ...(sessionId ? [String(sessionId)] : []));
+        ? getProjectPlansDir(workspaceRoot, sessionId)
+        : path.join(getProjectWorkspaceDir(workspaceRoot), subDir, ...(sessionId ? [String(sessionId)] : []));
   await fs.mkdir(dir, { recursive: true });
   const slug = slugify(title).slice(0, 64);
   const fileName = `${nowStamp()}-${slug || fallbackName}.md`;
   const filePath = path.join(dir, fileName);
   await fs.writeFile(filePath, `${body.trim()}\n`, 'utf8');
   return filePath;
-}
-
-async function removePlanFileIfPresent(planState) {
-  const filePath = String(planState?.filePath || '').trim();
-  if (!filePath) return;
-  try {
-    await fs.unlink(filePath);
-  } catch (error) {
-    if (error?.code !== 'ENOENT') {
-      // Best-effort cleanup: keep the main approval flow moving.
-    }
-  }
 }
 
 function buildSpecTemplate(topic) {
@@ -2748,6 +3167,154 @@ function buildSpecTemplate(topic) {
 `;
 }
 
+const SPEC_SECTION_DEFINITIONS = [
+  ['summary', 'Summary'],
+  ['goals', 'Goals'],
+  ['non_goals', 'Non-Goals'],
+  ['user_experience', 'User Experience / Command Behavior'],
+  ['architecture', 'Architecture'],
+  ['data_state_model', 'Data / State Model'],
+  ['safety_rules', 'Safety Rules'],
+  ['requirements', 'Requirements'],
+  ['risks_mitigations', 'Risks and Mitigations'],
+  ['testing_validation', 'Testing / Validation']
+];
+const REQUIRED_SPEC_HEADINGS = SPEC_SECTION_DEFINITIONS.map(([, heading]) => heading);
+
+function normalizeHeadingText(value = '') {
+  return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+export function analyzeSpecCompleteness(specText = '') {
+  const text = String(specText || '');
+  const found = new Set();
+  for (const match of text.matchAll(/^##\s+(.+?)\s*#*\s*$/gm)) {
+    found.add(normalizeHeadingText(match[1]));
+  }
+  const missingHeadings = REQUIRED_SPEC_HEADINGS.filter((heading) => !found.has(normalizeHeadingText(heading)));
+  return {
+    complete: /^#\s+\S.+$/m.test(text) && missingHeadings.length === 0,
+    missingHeadings
+  };
+}
+
+export function normalizeGeneratedSpecText(specText = '', topic = 'spec') {
+  const raw = String(specText || '').trim();
+  const firstHeading = raw.search(/^#\s+\S.+$/m);
+  const candidate = firstHeading >= 0 ? raw.slice(firstHeading).trim() : raw;
+  return analyzeSpecCompleteness(candidate).complete
+    ? candidate
+    : buildFallbackStructuredSpec(topic);
+}
+
+function parseJsonObject(raw) {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  const text = String(raw || '').trim();
+  if (!text) return null;
+  const unfenced = text
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  try {
+    const parsed = JSON.parse(unfenced);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+  } catch {}
+  const start = unfenced.indexOf('{');
+  const end = unfenced.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try {
+      const parsed = JSON.parse(unfenced.slice(start, end + 1));
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {}
+  }
+  return null;
+}
+
+function normalizeSpecList(value, fallback = '') {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const out = [];
+    const goal = String(value.goal || '').trim();
+    const summary = String(value.summary || '').trim();
+    const requirements = normalizeSpecList(value.requirements);
+    const acceptance = normalizeSpecList(value.acceptance_criteria || value.acceptanceCriteria || value.acceptance);
+    const notes = normalizeSpecList(value.notes || value.details || value.considerations);
+    if (goal) out.push(`目标：${goal}`);
+    if (summary) out.push(`概述：${summary}`);
+    if (requirements.length > 0) out.push(['需求：', ...requirements.map((item) => `  - ${item}`)].join('\n'));
+    if (acceptance.length > 0) out.push(['验收：', ...acceptance.map((item) => `  - ${item}`)].join('\n'));
+    if (notes.length > 0) out.push(['备注：', ...notes.map((item) => `  - ${item}`)].join('\n'));
+    return out;
+  }
+  const source = Array.isArray(value)
+    ? value
+    : String(value || fallback)
+      .split(/\r?\n/)
+      .map((line) => line.replace(/^\s*[-*]\s+/, '').trim());
+  return source
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
+}
+
+function normalizeSpecTitle(value, topic) {
+  const raw = extractSpecTopicTitle(value || topic || 'Spec');
+  const withoutHash = raw.replace(/^#\s+/, '').trim();
+  return /design$/i.test(withoutHash) ? withoutHash : `${withoutHash} Design`;
+}
+
+function extractSpecTopicTitle(topic = 'spec') {
+  return String(topic || 'spec')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean) || 'spec';
+}
+
+function extractSpecTopicContext(topic = '') {
+  const text = String(topic || '');
+  const context = text.match(/Exploration context:\s*([\s\S]*?)(?:\n\nAssumptions:|\nAssumptions:|$)/i)?.[1]?.trim() || '';
+  const assumptionsText = text.match(/Assumptions:\s*([\s\S]*)$/i)?.[1] || '';
+  const assumptions = assumptionsText
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*[-*]\s+/, '').trim())
+    .filter(Boolean);
+  return { context, assumptions };
+}
+
+function buildFallbackStructuredSpec(topic = 'spec') {
+  const title = extractSpecTopicTitle(topic);
+  const { context, assumptions } = extractSpecTopicContext(topic);
+  return renderStructuredSpec({
+    title,
+    summary: [
+      context,
+      ...assumptions.map((item) => `假设：${item}`)
+    ].filter(Boolean)
+  }, title);
+}
+
+export function renderStructuredSpec(spec = {}, topic = 'spec') {
+  const title = normalizeSpecTitle(spec.title, extractSpecTopicTitle(topic));
+  const lines = [`# ${title}`, ''];
+  for (const [key, heading] of SPEC_SECTION_DEFINITIONS) {
+    const items = normalizeSpecList(spec[key]);
+    lines.push(`## ${heading}`);
+    for (const item of items.length > 0 ? items : ['无']) {
+      lines.push(`- ${item}`);
+    }
+    lines.push('');
+  }
+  return lines.join('\n').trim();
+}
+
+function structuredSpecFromToolCalls(toolCalls = []) {
+  const call = (Array.isArray(toolCalls) ? toolCalls : []).find((tc) => tc?.name === 'render_spec');
+  return call ? parseJsonObject(call.arguments) : null;
+}
+
+function hasStructuredSpecSections(sections = {}) {
+  if (!sections || typeof sections !== 'object' || Array.isArray(sections)) return false;
+  return SPEC_SECTION_DEFINITIONS.some(([key]) => normalizeSpecList(sections[key]).length > 0);
+}
+
 function extractSpecTitle(specText, fallback = 'spec') {
   const raw = String(specText || '');
   const heading = raw.match(/^#\s+Spec:\s+(.+)$/m) || raw.match(/^#\s+(.+)$/m);
@@ -2760,24 +3327,47 @@ async function buildSpecWithModel({
   model,
   systemPrompt
 }) {
+  const sectionSchema = (heading) => ({
+    type: 'object',
+    properties: {
+      goal: { type: 'string', description: `One-sentence goal for the "${heading}" section` },
+      summary: { type: 'string', description: `Concrete summary for the "${heading}" section` },
+      requirements: { type: 'array', items: { type: 'string' }, description: `Implementation-ready requirements for "${heading}"` },
+      acceptance_criteria: { type: 'array', items: { type: 'string' }, description: `Acceptance checks for "${heading}"` },
+      notes: { type: 'array', items: { type: 'string' }, description: `Optional notes, constraints, file names, or evidence for "${heading}"` }
+    },
+    required: []
+  });
+  const sectionProperties = Object.fromEntries(
+    SPEC_SECTION_DEFINITIONS.map(([key, heading]) => [
+      key,
+      sectionSchema(heading)
+    ])
+  );
+  const renderSpecTool = {
+    type: 'function',
+    function: {
+      name: 'render_spec',
+      description: 'Submit structured engineering spec fields for local Markdown rendering.',
+      parameters: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Short feature title without a leading markdown heading marker' },
+          ...sectionProperties
+        },
+        required: ['title']
+      }
+    }
+  };
   const prompt = [
-    'Write a practical engineering spec in markdown, like an implementation-ready design document.',
-    'Return the full spec only. Do not greet, chat, ask clarifying questions, or offer a menu of possible directions.',
-    'If the request is broad or underspecified, choose reasonable assumptions, write them into the spec, and put unresolved items under Requirements or Risks.',
-    'Use these sections exactly:',
-    '# <Feature> Design',
-    '## Summary',
-    '## Goals',
-    '## Non-Goals',
-    '## User Experience / Command Behavior',
-    '## Architecture',
-    '## Data / State Model',
-    '## Safety Rules',
-    '## Requirements',
-    '## Risks and Mitigations',
-    '## Testing / Validation',
+    'Create a practical engineering spec, like an implementation-ready design document.',
+    'You must call the render_spec tool exactly once with structured fields. Do not write markdown prose directly.',
+    'Incorporate explicit assumptions provided by the caller.',
+    'Each section may be an object with goal, summary, requirements, acceptance_criteria, and optional notes.',
+    'Fill only sections that are supported by the provided context. Omit empty or unknown sections; the local renderer will display "无".',
+    'Avoid placeholders like TBD, TODO, Problem statement, Desired outcome, implement later, or made-up filler.',
     'Make it concrete, scoped, and suitable for turning into a sub-agent implementation plan.',
-    'Every listed section must be present as a level-2 heading.'
+    'Use concise engineering language. Include exact files/modules when known from the provided context.'
   ].join('\n');
   const specSystemPrompt = await composeSystemPrompt({
     shellRulesPrompt: systemPrompt,
@@ -2796,10 +3386,16 @@ async function buildSpecWithModel({
       { role: 'system', content: specSystemPrompt },
       { role: 'user', content: `Topic: ${topic}` }
     ],
+    tools: [renderSpecTool],
+    toolChoice: { type: 'function', function: { name: 'render_spec' } },
     timeoutMs: config.gateway.timeout_ms || 1800000,
     maxRetries: config.gateway.max_retries ?? 2
   });
-  return String(result.text || '').trim();
+  const structured = structuredSpecFromToolCalls(result.toolCalls) || parseJsonObject(result.text);
+  if (structured) {
+    return renderStructuredSpec(structured, topic);
+  }
+  return buildFallbackStructuredSpec(topic);
 }
 
 function buildPlanTemplate(goal) {
@@ -2833,17 +3429,14 @@ async function buildPlanFromSpecWithModel({
   specPath,
   config,
   model,
-  systemPrompt
+  systemPrompt,
+  workspaceRoot = process.cwd()
 }) {
-  const projectConstraints = await inferProjectImplementationConstraints(process.cwd());
+  const projectConstraints = await inferProjectImplementationConstraints(workspaceRoot);
   const prompt = [
-    'Convert the provided engineering spec into an implementation plan in markdown.',
-    'Use this structure exactly:',
-    '# Plan: <title>',
-    '## Phase 1: Discovery',
-    '## Phase 2: Implementation',
-    '## Phase 3: Verification',
-    '## Task Breakdown',
+    buildAutoPlanPlannerGuidance(),
+    'Convert the provided engineering spec into an implementation plan.',
+    `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${EXECUTOR_AGENT_ROLES.join('|')}","task":"...","consumes":"...","produces":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
     'Make the plan concrete and ordered for a coding agent.',
     'Before defining tasks, map the files/modules likely to be touched and what each is responsible for.',
     'Each task should name exact files where known, expected behavior, and verification commands or evidence.',
@@ -2851,7 +3444,7 @@ async function buildPlanFromSpecWithModel({
     'Break work into independently understandable tasks with clear responsibility and testable progress.',
     'Prefer small, focused file boundaries where the plan creates or reorganizes code, while respecting existing project patterns.',
     'Keep type names, function names, command names, and file paths consistent across all phases.',
-    'Include a self-review checklist for spec coverage, placeholder scan, contradictions, and type/API consistency.'
+    'Always include a summarizer as the final step.'
   ].join('\n');
   const planSystemPrompt = await composeSystemPrompt({
     shellRulesPrompt: systemPrompt,
@@ -2876,7 +3469,16 @@ async function buildPlanFromSpecWithModel({
     timeoutMs: config.gateway.timeout_ms || 1800000,
     maxRetries: config.gateway.max_retries ?? 2
   });
-  return String(result.text || '').trim();
+  const parsed = extractJsonBlock(result.text || '');
+  const goal = `approved spec ${specPath || '(inline)'}`;
+  const autoPlan = normalizeAutoPlan(parsed, goal);
+  return renderAutoPlanMarkdown({
+    goal,
+    autoPlan,
+    finalSummary: 'Plan generated from approved spec.',
+    approvalText: buildPlanReviewApprovalText('created'),
+    progressLine: buildPlanReviewProgressLine('created')
+  });
 }
 
 async function collectLikelyImplementationFiles(cwd) {
@@ -3027,16 +3629,15 @@ function buildPromptBudgetAudit({
 export function buildProjectContextUserPrompt({
   projectContextSnippet = '',
   projectContextGuidance = '',
-  userText = ''
+  userText = '',
+  turnContextPrefix = ''
 } = {}) {
-  const snippet = String(projectContextSnippet || '').trim();
-  const request = String(userText || '').trim();
-  if (!snippet) return request;
-  return [
-    snippet,
-    String(projectContextGuidance || '').trim(),
-    request ? `User request:\n${request}` : ''
-  ].filter(Boolean).join('\n\n');
+  return buildTurnUserPrompt({
+    turnContextPrefix,
+    projectContextSnippet,
+    projectContextGuidance,
+    userText
+  });
 }
 
 export function injectProjectContextIntoLastUserMessage(messages = [], projectContextPrompt = '') {
@@ -3046,9 +3647,15 @@ export function injectProjectContextIntoLastUserMessage(messages = [], projectCo
   const next = source.map((message) => ({ ...message }));
   for (let index = next.length - 1; index >= 0; index -= 1) {
     if (next[index]?.role !== 'user') continue;
+    const content = next[index].content;
     next[index] = {
       ...next[index],
-      content: contextPrompt
+      content: Array.isArray(content)
+        ? [
+            { type: 'text', text: contextPrompt },
+            ...content.filter((block) => block?.type !== 'text')
+          ]
+        : contextPrompt
     };
     return next;
   }
@@ -3066,33 +3673,57 @@ function summarizePromptBudgetAudit(audit) {
   return `prompt budget: ${totalTokens}/${maxContextTokens} est tokens (${pct}%)${components ? `; ${components}` : ''}`;
 }
 
-function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession }) {
+function estimateBaselinePromptOverhead(config, executionMode) {
+  // System prompt overhead: default prompt + soul + reply language directive
+  let overhead = 2800;
+  // Plan mode uses richer tool definitions and plan-specific prompts
+  if (executionMode === 'plan') overhead += 1500;
+  // Project context snippet (file index, AST map)
+  if (config.context?.project_context_enabled !== false) overhead += 1200;
+  // Always-installed skills add prompt content
+  const alwaysCount = Array.isArray(config.skills?.always) ? config.skills.always.length : 0;
+  if (alwaysCount > 0) overhead += alwaysCount * 200;
+  return overhead;
+}
+
+function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [] }) {
   const activeParentMessages = Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
     ? currentSession.compact.view
     : currentSession?.messages || [];
   const parentTokens = estimateMessagesTokens(modelVisibleMessages(activeParentMessages));
   const subTokens = extraSession ? estimateMessagesTokens(modelVisibleMessages(extraSession.messages || [])) : 0;
-  const currentContextTokens = parentTokens + subTokens;
+  const baselineOverhead = activeParentMessages.length > 0
+    ? estimateBaselinePromptOverhead(config, executionMode)
+    : 0;
+  const currentContextTokens = parentTokens + subTokens + baselineOverhead;
   const maxContextTokens = effectiveMaxContextTokens(config);
   const contextUsagePct = maxContextTokens > 0 ? Math.min(100, Math.max(0, (currentContextTokens / maxContextTokens) * 100)) : 0;
   const planState = currentSession?.planState;
+  const specState = getPendingSpecState(currentSession);
+  const resolvedMode = resolveRuntimeExecutionMode(executionMode, config, currentSession);
+  const visibleAlwaysSkillNames = shouldInjectAlwaysSkills(resolvedMode)
+    ? (Array.isArray(alwaysSkillNames) ? alwaysSkillNames : []).map((name) => String(name || '').trim()).filter(Boolean)
+    : [];
   const snapshot = {
+    workspaceRoot,
     sessionId: currentSession?.id || '',
     sessionTitle: currentSession?.title || '',
     messageCount: Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0,
-    mode: executionMode || config.execution?.mode || 'normal',
+    mode: resolvedMode,
     approvalMode: config.execution?.approval_mode || 'review',
     sdkProvider: config.sdk?.provider || 'openai-compatible',
     agentRole: 'general',
     model: model || config.model?.name || '',
     mainModel: config.model?.name || '',
     fastModel: config.model?.fast_name || config.model?.name || '',
+    planExecutionModel: normalizePlanExecutionModel(config.execution?.plan_execution_model),
     maxContextTokens,
-    pendingPlanApproval: planState?.status === 'pending_approval'
-      ? { goal: planState.goal, summary: planState.finalSummary || planState.summary, filePath: planState.filePath, steps: planState.steps || [] }
-      : null,
-    pendingSpecApproval: planState?.status === 'pending_spec_approval'
-      ? buildPendingSpecSnapshot(planState)
+    alwaysSkillNames: visibleAlwaysSkillNames,
+    reasoningEnabled: config.model?.reasoning_enabled !== false,
+    reasoningEffort: normalizeReasoningEffort(config.model?.reasoning_effort),
+    pendingPlanApproval: null,
+    pendingSpecApproval: specState
+      ? buildPendingSpecSnapshot(specState)
       : null,
     pendingReflectSkill: planState?.status === 'pending_reflect_skill'
       ? buildPendingReflectSkillSnapshot(planState)
@@ -3128,6 +3759,15 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
   return snapshot;
 }
 
+export function buildChatActionValidationState(runtimeState = {}, activeApproval = null) {
+  const { resolve: _resolve, ...pendingApproval } = activeApproval || {};
+  return {
+    ...runtimeState,
+    pendingReflectApproval: runtimeState.pendingReflectSkill || null,
+    pendingApproval: activeApproval ? pendingApproval : null
+  };
+}
+
 function resolveDefaultModel(config) {
   return String(config?.model?.name || '').trim();
 }
@@ -3136,31 +3776,53 @@ function resolveFastModel(config) {
   return String(config?.model?.fast_name || config?.model?.lite_name || config?.model?.name || '').trim();
 }
 
-function normalizeGeneratedSessionTitle(value, fallback = '') {
-  const cleaned = String(value || '')
-    .replace(/^[\s"'`#：:「『【\[]+|[\s"'`。.!?？！」』】\]]+$/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const title = cleaned || fallback || '';
-  if (!title) return '';
-  return title.length > 48 ? `${title.slice(0, 45).trimEnd()}...` : title;
+export const PLAN_EXECUTION_DEFAULT_MODEL_ROLES = Object.freeze(['architect', 'advisor']);
+
+export function normalizePlanExecutionModel(value) {
+  const mode = String(value || 'default').toLowerCase();
+  return ['default', 'fast', 'role'].includes(mode) ? mode : 'default';
 }
 
-function shouldReplaceSessionTitle(title) {
-  const value = String(title || '').trim();
-  return !value || value === '新会话' || value === 'New session';
+/**
+ * Resolve which model a plan sub-agent step should use.
+ * "Default" means the same model as planning (planningModel), not necessarily config.model.name.
+ */
+export function resolvePlanExecutionModel(config, {
+  role = 'coder',
+  retryCount = 0,
+  planningModel = ''
+} = {}) {
+  const fallback = String(planningModel || resolveDefaultModel(config) || '').trim();
+  const fast = resolveFastModel(config);
+  const hasDistinctFast = Boolean(fast && fast !== fallback);
+  const mode = normalizePlanExecutionModel(config?.execution?.plan_execution_model);
+
+  if (!hasDistinctFast || mode === 'default') return fallback;
+  if (Number(retryCount) > 0) return fallback;
+  if (mode === 'fast') return fast;
+  return PLAN_EXECUTION_DEFAULT_MODEL_ROLES.includes(String(role || ''))
+    ? fallback
+    : fast;
+}
+
+/** @type {((sessionId: string, title: string) => void) | null} */
+let sessionTitleUpdateListener = null;
+
+function emitSessionTitleUpdate(sessionId, title) {
+  const id = String(sessionId || '').trim();
+  const nextTitle = String(title || '').trim();
+  if (!id || !nextTitle) return;
+  sessionTitleUpdateListener?.(id, nextTitle);
 }
 
 async function generateSessionTitle({ userText, assistantText = '', config, signal }) {
+  const TITLE_MAX_OUTPUT_TOKENS = 64;
   const fallback = normalizeGeneratedSessionTitle(deriveSessionTitle([{ role: 'user', content: userText }]));
   const latestConfig = await loadConfig().catch(() => config);
   const effectiveConfig = latestConfig || config;
   const fastModel = resolveFastModel(effectiveConfig);
   if (!fastModel) return fallback;
-  const titleInput = [
-    `User:\n${String(userText || '').slice(0, 1200)}`,
-    assistantText ? `Assistant:\n${String(assistantText || '').slice(0, 1600)}` : ''
-  ].filter(Boolean).join('\n\n');
+  const titleInput = buildSessionTitleInput({ userText, assistantText });
   try {
     const result = await createChatCompletion({
       sdkProvider: effectiveConfig.sdk?.provider,
@@ -3170,21 +3832,18 @@ async function generateSessionTitle({ userText, assistantText = '', config, sign
       messages: [
         {
           role: 'system',
-          content: [
-            'Generate a concise chat session title.',
-            'Base it on the completed user-assistant exchange, not only the user prompt.',
-            'Make it a short noun phrase, not a sentence or summary.',
-            'Return only the title text.',
-            'Use the same language as the user when possible.',
-            'No prefixes like "Title:", no quotes, no markdown, no punctuation at the ends.',
-            'Maximum 18 Chinese characters or 8 English words.',
-            'Bad: "This conversation summarizes how to fix the Web UI title generation."',
-            'Good: "Web UI title generation fix".'
-          ].join(' ')
+          content: SESSION_TITLE_SYSTEM_PROMPT
         },
         { role: 'user', content: titleInput }
       ],
       tools: [],
+      temperature: 0.1,
+      // Keep this completion in "label generation" mode across providers:
+      // reasoning or a large output budget makes short prompts prone to get a
+      // normal assistant acknowledgement instead of a topic label.
+      reasoningEffort: 'off',
+      maxTokens: TITLE_MAX_OUTPUT_TOKENS,
+      payloadExtras: { max_tokens: TITLE_MAX_OUTPUT_TOKENS },
       timeoutMs: Math.min(Number(effectiveConfig.gateway?.timeout_ms || 30000), 30000),
       maxRetries: 0,
       signal
@@ -3208,7 +3867,12 @@ function createCompactSummaryGenerator(config, signal) {
       apiKey: effectiveConfig.gateway.api_key,
       model: fastModel,
       messages: [
-        { role: 'system', content: COMPACT_SUMMARY_PROMPT },
+        {
+          role: 'system',
+          content: appendStructuredOutputLanguageRule(COMPACT_SUMMARY_PROMPT, effectiveConfig, {
+            fields: 'the entire summary'
+          })
+        },
         { role: 'user', content: transcript.slice(0, 12000) }
       ],
       tools: [],
@@ -3239,99 +3903,31 @@ function stampedMessage(role, content, extra = {}) {
   };
 }
 
-function hasPendingPlanApproval(session) {
-  return session?.planState?.status === 'pending_approval';
+function getPendingSpecState(session) {
+  const specState = normalizeSpecState(session?.specState);
+  if (specState?.status === 'pending_approval') return specState;
+  const legacyPlanState = session?.planState;
+  if (legacyPlanState?.status === 'pending_spec_approval') {
+    return normalizeSpecState(legacyPlanState);
+  }
+  return null;
 }
 
 function hasPendingSpecApproval(session) {
-  return session?.planState?.status === 'pending_spec_approval';
+  return Boolean(getPendingSpecState(session));
 }
 
 function hasPendingReflectSkill(session) {
   return session?.planState?.status === 'pending_reflect_skill';
 }
 
-function isApprovalText(text = '') {
-  const value = String(text || '').trim().toLowerCase();
-  if (!value) return false;
-  return /^(yes|\/yes|y|ok|okay|approve|approved|continue|proceed|go ahead|start|开始|继续|可以|同意|批准|通过|按这个做)$/.test(value);
+export function isEngineeringWorkflowPending(session) {
+  return hasPendingSpecApproval(session);
 }
 
-function isStayInPlanText(text = '') {
-  const value = String(text || '').trim().toLowerCase();
-  if (!value) return false;
-  return /^(stay|\/stay|keep planning|keep in plan mode|not yet|wait|先别|先等等|继续计划|继续讨论|继续规划|暂不批准)$/.test(value);
-}
-
-function isRejectPlanText(text = '') {
-  const value = String(text || '').trim().toLowerCase();
-  if (!value) return false;
-  return /^(\/reject|reject|no|discard|cancel|否决|拒绝|不要了|取消计划)$/.test(value);
-}
-
-function shouldPersistInputHistory(parsedInput) {
-  if (!parsedInput || parsedInput.type !== 'slash') return true;
-  const command = String(parsedInput.command || '').trim().toLowerCase();
-  // Keep workflow/control commands out of input history (↑/↓ should focus on real task prompts).
-  return !['yes', 'no', 'edit', 'reject', 'plan', 'spec', 'reflect'].includes(command);
-}
-
-const NO_ARG_SLASH_COMMANDS = new Set(['exit', 'new', 'help', 'status', 'commands']);
-const APPROVAL_NO_ARG_SLASH_COMMANDS = new Set(['yes', 'no', 'reject']);
-const COMPACT_FLAGS_WITH_VALUE = new Set(['--threshold']);
-const COMPACT_FLAGS = new Set([
-  '--preview',
-  '--restore',
-  '--micro',
-  '--aggressive',
-  '--conservative',
-  '--default',
-  '--auto-on',
-  '--auto-off',
-  ...COMPACT_FLAGS_WITH_VALUE
-]);
-
-function validateBuiltinSlashArgs(parsedInput) {
-  if (!parsedInput || parsedInput.type !== 'slash') return '';
-  const command = String(parsedInput.command || '').trim().toLowerCase();
-  const args = Array.isArray(parsedInput.args) ? parsedInput.args : [];
-  if ((NO_ARG_SLASH_COMMANDS.has(command) || APPROVAL_NO_ARG_SLASH_COMMANDS.has(command)) && args.length > 0) {
-    return `/${command} does not accept extra text. Use /${command} by itself.`;
-  }
-  if (command === 'compact') {
-    for (let index = 0; index < args.length; index += 1) {
-      const arg = String(args[index] || '');
-      if (!COMPACT_FLAGS.has(arg)) {
-        return `Unknown /compact option: ${arg}\nUsage: /compact [--preview|--restore|--micro|--aggressive|--conservative|--default|--auto-on|--auto-off|--threshold N]`;
-      }
-      if (COMPACT_FLAGS_WITH_VALUE.has(arg)) {
-        const value = args[index + 1];
-        if (value === undefined || Number.isNaN(Number(value))) {
-          return 'Usage: /compact --threshold <50-95>';
-        }
-        index += 1;
-      }
-    }
-  }
-  if (command === 'dream') {
-    for (const arg of args) {
-      if (arg === '--dry-run') continue;
-      if (String(arg || '').startsWith('--scope=')) continue;
-      return `Unknown /dream option: ${arg}\nUsage: /dream [--dry-run] [--scope=user|global|project]`;
-    }
-  }
-  return '';
-}
-
-function buildPendingPlanApprovalMessage(planState) {
-  const lines = [
-    'Plan approval is still pending.',
-    `Goal: ${planState?.goal || '-'}`,
-    `Plan File: ${planState?.filePath || '-'}`,
-    `Summary: ${planState?.finalSummary || planState?.summary || '-'}`,
-    'Use /yes to execute this plan, /edit <feedback> to revise it, or /reject to discard it.'
-  ];
-  return lines.join('\n');
+export function resolveRuntimeExecutionMode(executionMode, config, session) {
+  if (isEngineeringWorkflowPending(session)) return 'plan';
+  return normalizeExecutionMode(executionMode || config?.execution?.mode || 'normal');
 }
 
 function buildPendingReflectSkillMessage(reflectState) {
@@ -3352,7 +3948,7 @@ function buildPendingReflectSkillMessage(reflectState) {
     lines.push(String(candidate.content || '').trim());
   }
   lines.push('');
-  lines.push('Use /yes to write this skill, /edit <feedback> to revise it, or /no to discard it.');
+  lines.push('Choose Write, Revise, or Discard in the review controls.');
   return lines.join('\n');
 }
 
@@ -3372,38 +3968,16 @@ function buildPendingReflectSkillSnapshot(reflectState) {
 }
 
 function buildPendingSpecSnapshot(specState) {
-  if (!specState || specState.status !== 'pending_spec_approval') return null;
+  const normalized = normalizeSpecState(specState);
+  if (!normalized || normalized.status !== 'pending_approval') return null;
+  const completeness = analyzeSpecCompleteness(normalized.specText || '');
   return {
-    goal: specState.goal || '',
-    summary: specState.summary || '',
-    specText: specState.specText || '',
-    filePath: specState.specPath || specState.filePath || '',
-    complete: true,
-    missingHeadings: []
-  };
-}
-
-function updatePendingPlanState(session, patch = {}) {
-  if (!hasPendingPlanApproval(session)) return null;
-  const steps = Array.isArray(patch.steps)
-    ? patch.steps.map((step) => ({
-        title: String(step?.title || '').trim(),
-        role: String(step?.role || '').trim(),
-        task: String(step?.task || '').trim()
-      })).filter((step) => step.title || step.role || step.task)
-    : session.planState.steps || [];
-  session.planState = {
-    ...session.planState,
-    goal: String(patch.goal ?? session.planState.goal ?? '').trim(),
-    summary: String(patch.summary ?? session.planState.summary ?? '').trim(),
-    finalSummary: String(patch.finalSummary ?? patch.summary ?? session.planState.finalSummary ?? session.planState.summary ?? '').trim(),
-    steps
-  };
-  return {
-    goal: session.planState.goal,
-    summary: session.planState.finalSummary || session.planState.summary,
-    filePath: session.planState.filePath,
-    steps: session.planState.steps
+    goal: normalized.goal || '',
+    summary: normalized.summary || '',
+    specText: normalized.specText || '',
+    filePath: normalized.specPath || '',
+    complete: completeness.complete,
+    missingHeadings: completeness.missingHeadings
   };
 }
 
@@ -3424,40 +3998,49 @@ function updatePendingReflectState(session, patch = {}, workspaceRoot = process.
 
 function updatePendingSpecState(session, patch = {}) {
   if (!hasPendingSpecApproval(session)) return null;
-  session.planState = {
-    ...session.planState,
-    goal: String(patch.goal ?? session.planState.goal ?? '').trim(),
-    summary: String(patch.summary ?? session.planState.summary ?? '').trim(),
-    specText: String(patch.specText ?? session.planState.specText ?? '').trim()
+  const current = getPendingSpecState(session);
+  session.specState = {
+    ...current,
+    goal: String(patch.goal ?? current.goal ?? '').trim(),
+    summary: String(patch.summary ?? current.summary ?? '').trim(),
+    specText: String(patch.specText ?? current.specText ?? '').trim()
   };
-  return buildPendingSpecSnapshot(session.planState);
+  if (session.planState?.status === 'pending_spec_approval') session.planState = null;
+  return buildPendingSpecSnapshot(session.specState);
 }
 
 function buildApprovedPlanExecutionPrompt(planState, approvalText = '') {
   const requirementPacket = buildGoalRequirementPacket(planState?.goal || '', 'coder');
+  const planSteps = Array.isArray(planState?.steps) ? planState.steps : [];
+  const renderedSteps = planSteps.map((step, index) => `${index + 1}. [${step.role}] ${step.title} :: ${step.task}`);
+  const stepLines = renderedSteps.length <= 16
+    ? renderedSteps
+    : [
+        ...renderedSteps.slice(0, 12),
+        `... ${renderedSteps.length - 16} middle step(s) omitted from this overview; executePlanWithSubAgents still receives the complete planState.steps list.`,
+        ...renderedSteps.slice(-4)
+      ];
   const lines = [
-    'Approved implementation plan:',
+    'Implementation plan:',
     `Original goal: ${planState?.goal || '-'}`,
     `Plan file: ${planState?.filePath || '-'}`,
     `Plan summary: ${planState?.summary || '-'}`,
     `Final planning summary: ${planState?.finalSummary || planState?.summary || '-'}`,
-    `User approval: ${String(approvalText || '').trim() || 'approved'}`,
+    `Execution trigger: ${String(approvalText || '').trim() || 'automatic coding-mode plan execution'}`,
     requirementPacket,
-    Array.isArray(planState?.steps) && planState.steps.length > 0 ? 'Planned steps:' : '',
-    ...(Array.isArray(planState?.steps)
-      ? planState.steps.slice(0, 8).map((step, index) => `${index + 1}. [${step.role}] ${step.title} :: ${step.task}`)
-      : []),
+    planSteps.length > 0 ? `Planned steps (${planSteps.length} total):` : '',
+    ...stepLines,
     'Proceed with implementation now.',
-    'Follow the approved direction unless a blocking contradiction appears.',
-    'Before changing files, critically review the approved plan. If it has critical gaps, impossible steps, or unclear requirements, stop and ask for clarification.',
-    'During execution, complete steps in order, keep scope tight, and do not skip planned verification.',
-    'If a step is blocked by missing dependencies, unclear instructions, or repeated verification failures, stop and report the blocker rather than guessing.',
+    'Follow the plan direction unless a blocking contradiction appears.',
+    'Before changing files, critically review the plan. If it has critical gaps, impossible steps, or unclear requirements, stop and ask for clarification.',
+    'During execution, complete steps in order, keep scope tight, and leave runtime verification to tester steps or the user when the environment is not ready.',
+    'If a step is blocked by missing dependencies, unclear instructions, repeated verification failures, or the user declining run commands, stop and report the blocker rather than guessing or retrying the same command.',
     'Output rules for this implementation phase:',
     '- Be concise and practical.',
     '- Do not celebrate, praise, or use emojis.',
     '- Do not restate the full plan back to the user.',
-    '- If the work is already done, say so briefly and cite the verification evidence.',
-    '- Do not claim success without concrete verification evidence. If verification could not run, say exactly why.',
+    '- If the work is already done, say so briefly and cite any available evidence.',
+    '- If verification could not run or the user declined a run command, say verification was deferred instead of treating implementation as incomplete.',
     '- After implementation or verification, prefer a short result summary in 3-6 lines.',
     '- If the work is complete, use this exact structure:',
     'Status: <done|partial|blocked>',
@@ -3467,15 +4050,15 @@ function buildApprovedPlanExecutionPrompt(planState, approvalText = '') {
   return lines.join('\n');
 }
 
-async function resolveSpecPath(rawArg = '', sessionId = '') {
+async function resolveSpecPath(rawArg = '', sessionId = '', workspaceRoot = process.cwd()) {
   const input = String(rawArg || '').trim();
   const roots = [
-    getProjectSpecsDir(process.cwd(), String(sessionId || '')),
-    getProjectSpecsDir(process.cwd())
+    getProjectSpecsDir(workspaceRoot, String(sessionId || '')),
+    getProjectSpecsDir(workspaceRoot)
   ];
 
   if (input) {
-    const direct = path.resolve(process.cwd(), input);
+    const direct = path.resolve(workspaceRoot, input);
     try {
       await fs.access(direct);
       return direct;
@@ -3540,6 +4123,7 @@ async function expandFileMentions(rawText, workspaceRoot = process.cwd()) {
 async function askModel({
   text,
   modelText,
+  modelImages = [],
   session,
   config,
   model,
@@ -3551,12 +4135,16 @@ async function askModel({
   alwaysAllowTools,
   signal,
   allowedTools,
+  requestUserInput,
   skipAnalysisNudge = false,
   compactedForModel: compactedInput = null,
   onCompactedUpdate = null,
   changeTracker = null,
   backupManager = null,
-  projectIsGit = Boolean(config?.runtime?.project_is_git)
+  projectIsGit = Boolean(config?.runtime?.project_is_git),
+  onExecutionModeSync = null,
+  workspaceRoot = process.cwd(),
+  selectedSkillNames = []
 }) {
   let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
@@ -3567,6 +4155,11 @@ async function askModel({
   const messagesForEstimate = modelVisibleMessages(compacted ?? session.messages);
   const preflightTokens = estimatePromptTokensForRequest(messagesForEstimate, modelInputText);
   const preflightPct = (preflightTokens / maxContextTokens) * 100;
+  const selectedSkillNamesForUi = [...new Set(
+    (Array.isArray(selectedSkillNames) ? selectedSkillNames : [])
+      .map((name) => String(name || '').trim())
+      .filter(Boolean)
+  )];
 
   if (persistSession && preflightPct >= triggerPct) {
     const compactSource = modelVisibleMessages(compacted ?? session.messages);
@@ -3675,31 +4268,52 @@ async function askModel({
       typeof modelText === 'string' && modelText && modelText !== text
         ? { model_content: modelText, model_content_scope: 'current_turn' }
         : {};
-    const userMessage = stampedMessage('user', text, modelExtra);
+    const imageExtra = Array.isArray(modelImages) && modelImages.length
+      ? { model_images: modelImages }
+      : {};
+    const selectedSkillExtra = selectedSkillNamesForUi.length
+      ? {
+          selected_skill_names: selectedSkillNamesForUi,
+          skill_badges: selectedSkillNamesForUi.map((name) => ({ name, status: 'selected' }))
+        }
+      : {};
+    const userMessage = stampedMessage('user', text, { ...modelExtra, ...imageExtra, ...selectedSkillExtra });
     session.messages.push(userMessage);
     if (compacted) {
       compacted.push({ ...userMessage });
       if (onCompactedUpdate) onCompactedUpdate(compacted);
     }
+    let derivedTitle = false;
     if (shouldReplaceSessionTitle(session.title)) {
       session.title = deriveSessionTitle(session.messages);
+      derivedTitle = true;
     }
     session.model = model || config.model.name;
     session.mode = executionMode || config.execution?.mode || 'normal';
-    if (persistSession) await saveSession(session);
+    if (persistSession) {
+      await saveSession(session);
+      if (derivedTitle) emitSessionTitleUpdate(session.id, session.title);
+    }
   }
 
-  const projectContextSnippet = await buildProjectContextSnippet(process.cwd(), modelInputText).catch(() => '');
+  const projectContextPromise = (config.context?.project_context_enabled !== false)
+    ? buildProjectContextSnippet(workspaceRoot, modelInputText).catch(() => '')
+    : Promise.resolve('');
   const projectContextGuidance =
     'Use this project context as lightweight guidance and verify important details with fresh reads when needed.';
-  const effectiveSystemPrompt = await composeSystemPrompt({
-    shellRulesPrompt: systemPrompt,
-    config,
-    workspaceRoot: process.cwd(),
-    includeSoul: false,
-    includeMemory: false
-  });
-  const projectContextPrompt = buildProjectContextUserPrompt({
+  const normalizedExecutionMode = normalizeExecutionMode(executionMode || config.execution?.mode || 'normal');
+  const executionModePrompt = buildExecutionModePromptBlock(normalizedExecutionMode);
+  const projectContextSnippet = await projectContextPromise;
+  // Compose effectiveSystemPrompt without redundant composeSystemPrompt wrapping:
+  // systemPrompt already went through composeSystemPrompt in buildActiveSystemPrompt.
+  // We only need to strip the old replyLanguage, append the execution mode block, and re-append replyLanguage.
+  const strippedSystem = stripReplyLanguageDirective(systemPrompt || '');
+  const effectiveSystemPrompt = buildSystemPromptWithReplyLanguage(
+    [strippedSystem, executionModePrompt].filter(Boolean).join('\n\n'),
+    config
+  );
+  const projectContextPrompt = buildTurnUserPrompt({
+    turnContextPrefix: buildTurnContextPrefix(config),
     projectContextSnippet,
     projectContextGuidance,
     userText: modelInputText
@@ -3714,7 +4328,7 @@ async function askModel({
         allowedTools.includes('update_code_comment')
       )
     },
-    workspaceRoot: process.cwd(),
+    workspaceRoot,
     policy: {
       ...(config.policy || {}),
       allowed_paths: [
@@ -3726,10 +4340,11 @@ async function askModel({
   };
 
   const { definitions, handlers, formatters, deferredDefinitions, dispose: disposeTools } = getBuiltinTools({
-    workspaceRoot: process.cwd(),
+    workspaceRoot,
     config: toolConfig,
     sessionId: session.id,
     onSystemEvent: onAgentEvent,
+    requestUserInput,
     getTodos: () => normalizeTodos(session.todos),
     onTodosUpdate: (todos) => {
       session.todos = normalizeTodos(todos);
@@ -3740,34 +4355,204 @@ async function askModel({
       session.planState = normalizePlanState(planState);
       scheduleSessionSave();
     },
+    onCreatePlan: normalizedExecutionMode === 'plan'
+      ? async ({ goal, assumptions = [], contextSummary = '', steps = [] }) => {
+          let enrichedGoal = String(goal || '').trim();
+          if (contextSummary) {
+            enrichedGoal += `\n\nExploration context:\n${contextSummary}`;
+          }
+          if (assumptions.length > 0) {
+            enrichedGoal += `\n\nAssumptions:\n${normalizeAssumptionItems(assumptions).map((item) => `- ${item}`).join('\n')}`;
+          }
+          const explicitSteps = normalizeStructuredPlanSteps(steps);
+          const auto = explicitSteps.length > 0
+            ? await writeExplicitAutoPlan({
+                goal: enrichedGoal,
+                steps: explicitSteps,
+                sessionId: session.id,
+                workspaceRoot
+              })
+            : await buildAutoPlanArtifact({
+                goal: enrichedGoal,
+                session,
+                config,
+                model,
+                systemPrompt: effectiveSystemPrompt,
+                onAgentEvent,
+                sessionId: session.id,
+                taskClass: classifyPlanTaskClass(goal),
+                workspaceRoot
+              });
+          const planState = {
+            status: 'running',
+            source: 'auto',
+            goal: enrichedGoal,
+            filePath: auto.filePath,
+            summary: auto.summary || '',
+            finalSummary: auto.finalSummary || auto.summary || '',
+            steps: Array.isArray(auto.steps) ? auto.steps : []
+          };
+          session.planState = normalizePlanState(planState);
+          if (typeof onExecutionModeSync === 'function') onExecutionModeSync();
+          if (persistSession) await saveSession(session);
+          await recordPlanReviewStatus(session.planState, 'executing');
+          const execution = await executePlanWithSubAgents({
+            planState: session.planState,
+            parentSession: session,
+            config,
+            model,
+            systemPrompt,
+            onAgentEvent,
+            requestToolApproval,
+            signal,
+            changeTracker,
+            backupManager,
+            projectIsGit: resolveApprovalProjectIsGit({
+              projectIsGit,
+              changeTrackerEnabled: Boolean(changeTracker?.enabled),
+              workspaceHasGit: Boolean(config?.runtime?.project_is_git)
+            }),
+            workspaceRoot
+          });
+          session.planState = normalizePlanState({
+            ...session.planState,
+            status: execution.aborted ? 'failed' : 'completed',
+            finalSummary: execution.sessionText || execution.text || session.planState.finalSummary
+          });
+          await finalizeApprovedPlanFile(session.planState, execution);
+          if (persistSession) await saveSession(session);
+          return {
+            ok: true,
+            workflowComplete: false,
+            filePath: auto.filePath,
+            summary: execution.sessionText || execution.text || auto.finalSummary || auto.summary,
+            message: [
+              'Plan execution finished. Give the user a short, friendly summary in plain language:',
+              '- what changed',
+              '- what was skipped or left unverified',
+              '- one suggested next step if useful',
+              'Do not paste the internal pipeline summarizer dump.',
+              '',
+              execution.text || buildAutoPlanSystemSummary(auto)
+            ].join('\n')
+          };
+        }
+      : undefined,
+    onCreateSpec: normalizedExecutionMode === 'plan'
+      ? async ({ topic, assumptions = [], contextSummary = '', sections = {} }) => {
+          let enrichedTopic = String(topic || '').trim();
+          if (contextSummary) {
+            enrichedTopic += `\n\nExploration context:\n${contextSummary}`;
+          }
+          if (assumptions.length > 0) {
+            enrichedTopic += `\n\nAssumptions:\n${normalizeAssumptionItems(assumptions).map((item) => `- ${item}`).join('\n')}`;
+          }
+          let content = '';
+          if (hasStructuredSpecSections(sections)) {
+            content = renderStructuredSpec({
+              title: topic,
+              ...(contextSummary && !sections.summary ? { summary: [contextSummary] } : {}),
+              ...sections
+            }, enrichedTopic);
+          } else {
+            try {
+              content = await buildSpecWithModel({
+                topic: enrichedTopic,
+                config,
+                model,
+                systemPrompt: effectiveSystemPrompt
+              });
+            } catch {
+              content = buildFallbackStructuredSpec(enrichedTopic);
+            }
+          }
+          const specTitle = extractSpecTitle(content, enrichedTopic);
+          const specPath = await writeMarkdownInProjectDir(
+            'specs',
+            specTitle,
+            content,
+            'spec',
+            session.id,
+            workspaceRoot
+          );
+          session.specState = {
+            status: 'pending_approval',
+            source: 'spec',
+            goal: enrichedTopic,
+            summary: specTitle,
+            specPath,
+            specText: content
+          };
+          if (session.planState?.status === 'pending_spec_approval') session.planState = null;
+          if (onAgentEvent) {
+            onAgentEvent({
+              type: 'spec:pending_approval',
+              spec: buildPendingSpecSnapshot(session.specState)
+            });
+          }
+          if (typeof onExecutionModeSync === 'function') onExecutionModeSync();
+          if (persistSession) await saveSession(session);
+          return {
+            ok: true,
+            workflowComplete: true,
+            filePath: specPath,
+            summary: specTitle,
+            message: `Spec draft created: ${specPath}\nReview and approve it to generate an implementation plan.`
+          };
+        }
+      : undefined,
     backupManager
   });
 
-  const filteredDefinitions = Array.isArray(allowedTools)
-    ? definitions.filter((t) => allowedTools.includes(t.function?.name || t.name))
-    : definitions;
-  const filteredHandlers = Array.isArray(allowedTools)
-    ? Object.fromEntries(Object.entries(handlers).filter(([name]) => allowedTools.includes(name)))
-    : handlers;
-  const filteredDeferred = Array.isArray(allowedTools)
-    ? Object.fromEntries(Object.entries(deferredDefinitions).filter(([name]) => allowedTools.includes(name)))
-    : deferredDefinitions;
+  const currentPlanStateForTools = normalizePlanState(session?.planState);
+  const exposeUpdatePlan = normalizedExecutionMode === 'plan' || Boolean(currentPlanStateForTools);
+  const baseDefinitions = exposeUpdatePlan
+    ? definitions
+    : definitions.filter((t) => (t.function?.name || t.name) !== 'update_plan');
+  const baseHandlers = exposeUpdatePlan
+    ? handlers
+    : Object.fromEntries(Object.entries(handlers).filter(([name]) => name !== 'update_plan'));
+  const baseDeferredDefinitions = exposeUpdatePlan
+    ? deferredDefinitions
+    : Object.fromEntries(Object.entries(deferredDefinitions).filter(([name]) => name !== 'update_plan'));
+  const modeAllowedTools = resolveExecutionModeAllowedTools(normalizedExecutionMode, allowedTools, config);
+  const filteredDefinitions = Array.isArray(modeAllowedTools)
+    ? baseDefinitions.filter((t) => modeAllowedTools.includes(t.function?.name || t.name))
+    : baseDefinitions;
+  const filteredHandlers = Array.isArray(modeAllowedTools)
+    ? Object.fromEntries(Object.entries(baseHandlers).filter(([name]) => modeAllowedTools.includes(name)))
+    : baseHandlers;
+  const filteredDeferred = Array.isArray(modeAllowedTools)
+    ? Object.fromEntries(Object.entries(baseDeferredDefinitions).filter(([name]) => modeAllowedTools.includes(name)))
+    : baseDeferredDefinitions;
+  const modePolicyTools = EXECUTION_MODE_TOOL_POLICY[normalizedExecutionMode];
+  const effectiveAlwaysAllowTools = Array.isArray(modePolicyTools)
+    ? [
+        ...modePolicyTools,
+        ...(typeof requestUserInput === 'function' ? ['request_user_input'] : [])
+      ]
+    : [
+        ...(alwaysAllowTools || config.execution?.always_allow_tools || ['run', 'read']),
+        ...(typeof requestUserInput === 'function' ? ['request_user_input'] : [])
+      ];
 
   const modelSourceMessages = compacted ?? session.messages;
   const currentTurnUserIndex = findCurrentTurnUserIndex(modelSourceMessages, text, expectedModelText);
   const baseInitialMessages = toOpenAIMessages(modelSourceMessages, { currentTurnUserIndex });
-  const initialMessagesForModel = persistSession && projectContextSnippet
+  const initialMessagesForModel = persistSession
     ? injectProjectContextIntoLastUserMessage(baseInitialMessages, projectContextPrompt)
     : baseInitialMessages;
   const loopUserPrompt = persistSession
     ? ''
-    : (projectContextSnippet ? projectContextPrompt : modelInputText);
+    : projectContextPrompt;
 
   if (config.context?.prompt_budget_audit === true && onAgentEvent) {
     const auditId = `prompt-budget-${Date.now()}`;
     const audit = buildPromptBudgetAudit({
       systemPrompt: effectiveSystemPrompt,
-      projectContextPrompt: projectContextSnippet ? projectContextPrompt : '',
+      projectContextPrompt: projectContextSnippet || buildTurnContextPrefix(config)
+        ? projectContextPrompt
+        : '',
       messages: [
         ...initialMessagesForModel.filter((m) => m.role !== 'system'),
         ...(loopUserPrompt ? [{ role: 'user', content: loopUserPrompt }] : [])
@@ -3856,7 +4641,10 @@ async function askModel({
   const wrappedAgentEvent = (event) => {
     // Always accumulate messages in session (for token tracking), only save when persisting
     if (event?.type === 'assistant:start') {
-      session.messages.push(stampedMessage('assistant', ''));
+      session.messages.push(stampedMessage('assistant', '', {
+        ...(event.sdkProvider ? { sdk_provider: event.sdkProvider } : {}),
+        ...(event.model ? { model: event.model } : {})
+      }));
       activeAssistantIndex = session.messages.length - 1;
       if (persistSession) scheduleSessionSave();
     } else if (event?.type === 'assistant:delta') {
@@ -3999,11 +4787,14 @@ async function askModel({
     toolHandlers: filteredHandlers,
     initialMessages: initialMessagesForModel,
     onEvent: wrappedAgentEvent,
-    executionMode: executionMode || config.execution?.mode || 'normal',
+    executionMode: normalizedExecutionMode,
     approvalMode: config.execution?.approval_mode || 'review',
-    projectIsGit: Boolean(projectIsGit || changeTracker?.enabled),
-    alwaysAllowTools:
-      alwaysAllowTools || config.execution?.always_allow_tools || ['run', 'read', 'create'],
+    projectIsGit: resolveApprovalProjectIsGit({
+      projectIsGit,
+      changeTrackerEnabled: Boolean(changeTracker?.enabled),
+      workspaceHasGit: Boolean(config?.runtime?.project_is_git)
+    }),
+    alwaysAllowTools: effectiveAlwaysAllowTools,
     toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
     toolFormatters: formatters,
     deferredDefinitions: filteredDeferred,
@@ -4022,7 +4813,13 @@ async function askModel({
       const startAssistantStream = () => {
         if (!started) {
           started = true;
-          wrappedAgentEvent({ type: 'assistant:start' });
+          wrappedAgentEvent({
+            type: 'assistant:start',
+            sdkProvider: config.sdk?.provider === 'anthropic'
+              ? 'anthropic'
+              : 'openai-compatible',
+            model: selectedModel
+          });
         }
       };
 
@@ -4033,6 +4830,11 @@ async function askModel({
         model: selectedModel,
         messages,
         tools,
+        reasoningEffort: resolveConfiguredReasoningEffort({
+          enabled: config.model?.reasoning_enabled,
+          effort: config.model?.reasoning_effort
+        }),
+        payloadExtras: resolveGatewayPayloadExtras(config, { tools }),
         timeoutMs: config.gateway.timeout_ms || 1800000,
         maxRetries: config.gateway.max_retries ?? 2,
         signal,
@@ -4074,8 +4876,12 @@ async function askModel({
     // Generate a better title asynchronously after saving
     if (shouldGenerateTitle) {
       const titleSessionId = session.id;
+      const titleUserText = resolveTitleUserText({
+        content: text,
+        model_content: expectedModelText || undefined
+      });
       generateSessionTitle({
-        userText: text,
+        userText: titleUserText,
         assistantText: loopResult.text || '',
         config,
         signal
@@ -4083,7 +4889,7 @@ async function askModel({
         if (generatedTitle && generatedTitle !== session.title) {
           session.title = generatedTitle;
           await saveSession(session);
-          onTitleUpdateCallback?.(titleSessionId, generatedTitle);
+          emitSessionTitleUpdate(titleSessionId, generatedTitle);
         }
       }).catch(() => {});
     }
@@ -4111,7 +4917,8 @@ async function runSubAgentTask({
   planFileContext = '',
   changeTracker = null,
   backupManager = null,
-  projectIsGit = Boolean(config?.runtime?.project_is_git)
+  projectIsGit = Boolean(config?.runtime?.project_is_git),
+  workspaceRoot = process.cwd()
 }) {
   const subSession = { id: `sub-${Date.now()}`, messages: [] };
   const rolePrompt = getSubAgentRolePrompt(role);
@@ -4121,7 +4928,9 @@ async function runSubAgentTask({
   const handoffFocusPaths = collectStepArtifacts(priorSteps, role)?.focusPaths || [];
   const focusedTaskNote = buildFocusedTaskNote(role, handoffFocusPaths);
   const goalRequirementPacket = buildGoalRequirementPacket(goal, role);
-  const verificationPacket = role === 'tester' ? await buildTesterVerificationPacket(handoffFocusPaths) : '';
+  const verificationPacket = role === 'tester'
+    ? await buildTesterVerificationPacket(handoffFocusPaths, workspaceRoot)
+    : '';
   const planFileSection = planFileContext
     ? `Accumulated plan file context (results from prior steps):\n${planFileContext}`
     : '';
@@ -4145,21 +4954,7 @@ async function runSubAgentTask({
   const wrappedOnAgentEvent = (evt) => {
     if (evt?.type === 'tool:blocked') blockedCount += 1;
     if (evt?.type === 'tool:error') toolErrorCount += 1;
-    if (evt?.type === 'tool:result' && evt.content) {
-      try {
-        const parsed = JSON.parse(String(evt.content));
-        if (parsed?.path) {
-          const artifactPath = String(parsed.path);
-          if (!seenArtifactPaths.has(artifactPath)) {
-            seenArtifactPaths.add(artifactPath);
-            artifactPaths.push(artifactPath);
-          }
-        }
-        if (typeof parsed?.stdout === 'string') {
-          extractLikelyPathsFromText(parsed.stdout, artifactPaths, seenArtifactPaths);
-        }
-      } catch {}
-    }
+    collectSubAgentArtifactsFromEvent(evt, artifactPaths, seenArtifactPaths);
     if (
       role !== 'summarizer' &&
       ['assistant:start', 'assistant:delta', 'assistant:reasoning_delta', 'assistant:response', 'assistant:tool_call_delta'].includes(String(evt?.type || ''))
@@ -4168,10 +4963,24 @@ async function runSubAgentTask({
     }
     if (onAgentEvent) onAgentEvent(evt);
   };
-  const roleAllowedTools = ROLE_TOOL_POLICY[role];
+  const roleAllowedTools = normalizeToolPolicy(ROLE_TOOL_POLICY[role] || ROLE_TOOL_POLICY.coder, config);
+  const workspaceHasGit = Boolean(config?.runtime?.project_is_git) || Boolean(changeTracker?.enabled);
+  const approvalOptions = resolvePlanSubAgentApprovalOptions({
+    role,
+    config,
+    projectIsGit,
+    changeTrackerEnabled: Boolean(changeTracker?.enabled),
+    workspaceHasGit
+  });
+  const subShellRulesPrompt = buildSubAgentShellRulesPrompt(roleAllowedTools, {
+    shell: config?.shell?.default,
+    workspaceRoot,
+    role,
+    config
+  });
   if (onSessionActive) onSessionActive(subSession);
   const subSystemPrompt = await composeSystemPrompt({
-    shellRulesPrompt: systemPrompt,
+    shellRulesPrompt: subShellRulesPrompt,
     config,
     skillsPrompt: [rolePrompt, extraRolePrompt].filter(Boolean).join('\n\n'),
     includeSoul: false,
@@ -4187,13 +4996,16 @@ async function runSubAgentTask({
     requestToolApproval,
     persistSession: false,
     executionMode: 'normal',
-    allowedTools: roleAllowedTools,
+    allowedTools: approvalOptions.allowedTools,
+    alwaysAllowTools: approvalOptions.alwaysAllowTools,
     skipAnalysisNudge: true,
     signal,
     changeTracker,
     backupManager,
-    projectIsGit
+    workspaceRoot,
+    projectIsGit: approvalOptions.projectIsGit
   });
+  collectSubAgentArtifactsFromMessages(subSession.messages, artifactPaths, seenArtifactPaths);
   const text = subResult.text || '';
   const hasErrorLine = /(^|\n)\s*error\s*:/i.test(text);
   return {
@@ -4206,7 +5018,27 @@ async function runSubAgentTask({
   };
 }
 
-function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }) {
+export function collectPlanImplementationFileChanges(priorSteps = []) {
+  const changes = [];
+  const seen = new Set();
+  for (const step of Array.isArray(priorSteps) ? priorSteps : []) {
+    if (!['coder', 'refactorer', 'writer'].includes(String(step?.role || ''))) continue;
+    for (const msg of Array.isArray(step?.messages) ? step.messages : []) {
+      const items = [msg?.tool_file_change, ...(Array.isArray(msg?.tool_file_changes) ? msg.tool_file_changes : [])].filter(Boolean);
+      for (const item of items) {
+        const change = normalizeStepDiffChange(item);
+        if (!change) continue;
+        const key = `${change.path}:${change.action}:${change.changedLine}:${change.linesAdded}:${change.linesRemoved}:${change.changeSetId || ''}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        changes.push(change);
+      }
+    }
+  }
+  return changes;
+}
+
+export function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages, extraFileChanges = [] }) {
   const toolCardsById = new Map();
   const toolCards = [];
   const source = Array.isArray(messages) ? messages : [];
@@ -4243,8 +5075,26 @@ function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }
   if (toolCards.length > 0) {
     segments.push({ type: 'tools', cards: toolCards });
   }
-  if (stepRecord.role === 'summarizer' && stepRecord.output) {
-    segments.push({ type: 'text', text: stepRecord.output, isStreaming: false });
+  const displayOutput = formatPlanStepOutputForDisplay(stepRecord.output || '');
+  if (displayOutput) {
+    segments.push({
+      type: stepRecord.role === 'summarizer' ? 'text' : 'handoff',
+      text: displayOutput,
+      isStreaming: false
+    });
+  }
+  const fileChanges = (Array.isArray(extraFileChanges) ? extraFileChanges : [])
+    .map(normalizeStepDiffChange)
+    .filter(Boolean);
+  if (stepRecord.role === 'summarizer' && fileChanges.length > 0) {
+    for (const change of fileChanges) {
+      segments.push({
+        type: 'handoff',
+        text: '',
+        isStreaming: false,
+        fileChange: change
+      });
+    }
   }
 
   return {
@@ -4255,8 +5105,76 @@ function buildPlanStepTranscript({ stepRecord, stepIndex, totalSteps, messages }
     status: stepRecord.failed ? 'failed' : 'done',
     summary: stepRecord.failed ? stepRecord.failureReason : trimInline(stepRecord.output || '', 160),
     segments,
+    ...(fileChanges.length > 0 ? { fileChanges } : {}),
     ...(stepRecord.usage ? { usage: stepRecord.usage } : {})
   };
+}
+
+
+function normalizeStepDiffChange(change = {}) {
+  const pathText = String(change?.path || '').trim();
+  if (!pathText) return null;
+  return {
+    ...change,
+    path: pathText,
+    action: String(change.action || 'edit').trim() || 'edit',
+    changedLine: Number(change.changedLine ?? change.changed_line ?? 0),
+    linesAdded: Number(change.linesAdded ?? change.lines_added ?? 0),
+    linesRemoved: Number(change.linesRemoved ?? change.lines_removed ?? 0),
+    diffPreview: String(change.diffPreview ?? change.diff_preview ?? '')
+  };
+}
+
+function summarizeStepDiffEvidence(messages = []) {
+  const changes = [];
+  const seen = new Set();
+  for (const msg of Array.isArray(messages) ? messages : []) {
+    const items = [msg?.tool_file_change, ...(Array.isArray(msg?.tool_file_changes) ? msg.tool_file_changes : [])].filter(Boolean);
+    for (const item of items) {
+      const change = normalizeStepDiffChange(item);
+      if (!change) continue;
+      const key = `${change.path}:${change.action}:${change.changedLine}:${change.linesAdded}:${change.linesRemoved}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      changes.push(change);
+    }
+  }
+  if (changes.length === 0) return '';
+  const lines = ['## Diff Self-Review', 'Changed files from tool results:'];
+  for (const change of changes.slice(0, 8)) {
+    const added = Number(change.linesAdded || 0);
+    const removed = Number(change.linesRemoved || 0);
+    const risky = removed > 40 || added > 120 || change.action === 'delete';
+    lines.push(`- ${change.action || 'edit'} ${change.path}:${change.changedLine || 1} (+${added}/-${removed})${risky ? ' [review broad change]' : ''}`);
+    const preview = String(change.diffPreview || '').trim();
+    if (preview) lines.push(`  ${preview.split('\n').slice(0, 3).join('\n  ')}`);
+  }
+  lines.push('Self-check: confirm these changes are intentional, scoped to the step contract, and handed to reviewer/tester when needed.');
+  return lines.join('\n');
+}
+
+function classifyStepFailureType(role, text = '', output = {}) {
+  const body = String(text || '');
+  if (output.blockedCount > 0 || /declined|denied|User declined|requires approval|approval/i.test(body)) return 'approval_declined';
+  if (/old_text not found|old_hash mismatch|not unique|anchor not found|anchor not unique|edit requires/i.test(body)) return 'edit_mismatch';
+  if (/command not found|missing dependenc|ENOENT|Cannot find module|No such file|environment|not installed/i.test(body)) return 'env_missing';
+  if (role === 'tester') return 'verification_failed';
+  if (/\b(?:verification|verify|test(?:s|ing)?)\b[^\n]{0,80}\b(?:failed|failure|error|did not pass|not passing)\b/i.test(body)) return 'verification_failed';
+  if (/\b(?:failed|failure|error|did not pass|not passing)\b[^\n]{0,80}\b(?:verification|verify|test(?:s|ing)?)\b/i.test(body)) return 'verification_failed';
+  return 'unknown';
+}
+
+function shouldRetryStepFailure(failureType, role) {
+  if (['approval_declined', 'env_missing', 'verification_failed'].includes(failureType)) return false;
+  if (failureType === 'edit_mismatch') return ['coder', 'refactorer', 'writer'].includes(role);
+  return role !== 'summarizer';
+}
+
+function formatPlanStepOutputForDisplay(output, maxChars = 6000) {
+  const text = String(output || '').trim();
+  if (!text) return '';
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars).trimEnd()}\n\n... [step handoff truncated for display]`;
 }
 
 async function executePlanWithSubAgents({
@@ -4271,17 +5189,36 @@ async function executePlanWithSubAgents({
   onSubSessionActive,
   changeTracker = null,
   backupManager = null,
-  projectIsGit = Boolean(config?.runtime?.project_is_git)
+  projectIsGit = Boolean(config?.runtime?.project_is_git),
+  workspaceRoot = process.cwd()
 }) {
+  const workspaceHasGit = Boolean(config?.runtime?.project_is_git)
+    || Boolean(changeTracker?.enabled)
+    || await detectWorkspaceIsGit(workspaceRoot);
+  const resolvedProjectIsGit = resolveApprovalProjectIsGit({
+    projectIsGit,
+    changeTrackerEnabled: Boolean(changeTracker?.enabled),
+    workspaceHasGit
+  });
   const steps = Array.isArray(planState.steps) ? planState.steps : [];
   const goal = planState.goal || '';
   const planFilePath = planState.filePath || '';
   let partialDeltaText = '';
+  const planSdkProvider = config.sdk?.provider === 'anthropic'
+    ? 'anthropic'
+    : 'openai-compatible';
   const emitPlanEvent = (evt) => {
-    if (evt?.type === 'assistant:delta' && evt.text) {
-      partialDeltaText += String(evt.text);
+    const event = evt?.type === 'assistant:start' || String(evt?.type || '').startsWith('plan:')
+      ? {
+          ...evt,
+          sdkProvider: evt.sdkProvider || planSdkProvider,
+          ...(evt.model ? {} : { model: model || config.model?.name || '' })
+        }
+      : evt;
+    if (event?.type === 'assistant:delta' && event.text) {
+      partialDeltaText += String(event.text);
     }
-    if (onAgentEvent) onAgentEvent(evt);
+    if (onAgentEvent) onAgentEvent(event);
   };
   if (steps.length === 0) {
     return { text: '(no steps to execute)', aborted: false };
@@ -4305,13 +5242,24 @@ async function executePlanWithSubAgents({
     const step = steps[i];
     if (signal?.aborted) break;
 
+    const MAX_STEP_RETRIES = 1;
+    const planningModel = model || config.model?.name || '';
+
+    const stepGuidance = buildPipelineStepGuidance({ role: step.role, stepIndex: i, totalSteps: steps.length, isFirst: i === 0, isLast: i === steps.length - 1, priorSteps });
+    const firstModel = resolvePlanExecutionModel(config, {
+      role: step.role,
+      retryCount: 0,
+      planningModel
+    });
+
     emitPlanEvent({
       type: 'plan:step_start',
       planFile: planFilePath,
       step: i + 1,
       total: steps.length,
       role: step.role,
-      title: step.title
+      title: step.title,
+      model: firstModel
     });
 
     emitPlanEvent({
@@ -4321,7 +5269,8 @@ async function executePlanWithSubAgents({
       total: steps.length,
       role: step.role,
       title: step.title,
-      status: 'running'
+      status: 'running',
+      model: firstModel
     });
 
     emitPlanEvent({
@@ -4335,17 +5284,14 @@ async function executePlanWithSubAgents({
       planFileContext = await readPlanFileAsContext(planFilePath);
     }
 
-    const MAX_STEP_RETRIES = 1;
-
-    const stepGuidance = buildPipelineStepGuidance({ role: step.role, stepIndex: i, totalSteps: steps.length, isFirst: i === 0, isLast: i === steps.length - 1, priorSteps });
     let output = await runSubAgentTask({
       role: step.role,
-      task: step.task,
+      task: [renderStepContractBlock(step), step.task].filter(Boolean).join('\n\n'),
       goal,
       priorSteps,
       parentSession,
       config,
-      model,
+      model: firstModel,
       systemPrompt,
       onAgentEvent: emitPlanEvent,
       requestToolApproval,
@@ -4355,18 +5301,45 @@ async function executePlanWithSubAgents({
       planFileContext,
       changeTracker,
       backupManager,
-      projectIsGit
+      projectIsGit: resolvedProjectIsGit,
+      workspaceRoot
     });
 
-    let stepFailed = stepOutputHasFailureSignals(step.role, output.text || '');
-    let failureReason = stepFailed ? buildExitCriteriaFailureReason(step.role, output.text || '') : '';
+    if (['coder', 'refactorer', 'writer'].includes(step.role)) {
+      const diffReview = summarizeStepDiffEvidence(output.messages || []);
+      if (diffReview && !String(output.text || '').includes('## Diff Self-Review')) {
+        output.text = `${String(output.text || '').trim()}
+
+${diffReview}`.trim();
+      }
+    }
+
+    const stepOutputOptions = { artifactPaths: output.artifactPaths || [] };
+    let stepFailed = stepOutputHasFailureSignals(step.role, output.text || '', stepOutputOptions);
+    let failureReason = stepFailed ? buildExitCriteriaFailureReason(step.role, output.text || '', stepOutputOptions) : '';
+    let failureType = stepFailed ? classifyStepFailureType(step.role, output.text || '', output) : '';
     let retryCount = 0;
 
-    while (stepFailed && retryCount < MAX_STEP_RETRIES && step.role !== 'summarizer' && !signal?.aborted) {
+    while (stepFailed && retryCount < MAX_STEP_RETRIES && shouldRetryStepFailure(failureType, step.role) && !signal?.aborted) {
       retryCount += 1;
+      const retryModel = resolvePlanExecutionModel(config, {
+        role: step.role,
+        retryCount,
+        planningModel
+      });
       emitPlanEvent({
         type: 'assistant:delta',
         text: `\n[plan] Step ${i + 1}/${steps.length} retry ${retryCount}/${MAX_STEP_RETRIES} (previous: ${failureReason})\n`
+      });
+      emitPlanEvent({
+        type: 'plan:progress',
+        planFile: planFilePath,
+        step: i + 1,
+        total: steps.length,
+        role: step.role,
+        title: step.title,
+        status: 'running',
+        model: retryModel
       });
 
       const retryGuidance = buildPipelineStepGuidance({
@@ -4377,17 +5350,17 @@ async function executePlanWithSubAgents({
         isLast: i === steps.length - 1,
         priorSteps,
         isRetry: true,
-        previousError: failureReason
+        previousError: `${failureType}: ${failureReason}`
       });
 
       output = await runSubAgentTask({
         role: step.role,
-        task: step.task,
+        task: [renderStepContractBlock(step), step.task].filter(Boolean).join('\n\n'),
         goal,
         priorSteps,
         parentSession,
         config,
-        model,
+        model: retryModel,
         systemPrompt,
         onAgentEvent: emitPlanEvent,
         requestToolApproval,
@@ -4397,11 +5370,22 @@ async function executePlanWithSubAgents({
         planFileContext,
         changeTracker,
         backupManager,
-        projectIsGit
+        projectIsGit: resolvedProjectIsGit,
+        workspaceRoot
       });
 
-      stepFailed = stepOutputHasFailureSignals(step.role, output.text || '');
-      failureReason = stepFailed ? buildExitCriteriaFailureReason(step.role, output.text || '') : '';
+      if (['coder', 'refactorer', 'writer'].includes(step.role)) {
+        const diffReview = summarizeStepDiffEvidence(output.messages || []);
+        if (diffReview && !String(output.text || '').includes('## Diff Self-Review')) {
+          output.text = `${String(output.text || '').trim()}
+
+${diffReview}`.trim();
+        }
+      }
+      stepOutputOptions.artifactPaths = output.artifactPaths || [];
+      stepFailed = stepOutputHasFailureSignals(step.role, output.text || '', stepOutputOptions);
+      failureType = stepFailed ? classifyStepFailureType(step.role, output.text || '', output) : '';
+      failureReason = stepFailed ? buildExitCriteriaFailureReason(step.role, output.text || '', stepOutputOptions) : '';
     }
 
     const stepUsage = collectAssistantUsage(output.messages || []);
@@ -4423,6 +5407,7 @@ async function executePlanWithSubAgents({
       usage: displayUsage,
       retryCount,
       failed: stepFailed,
+      failureType,
       failureReason
     };
     priorSteps.push(stepRecord);
@@ -4431,7 +5416,10 @@ async function executePlanWithSubAgents({
       stepRecord,
       stepIndex: i,
       totalSteps: steps.length,
-      messages: output.messages || []
+      messages: output.messages || [],
+      extraFileChanges: step.role === 'summarizer'
+        ? collectPlanImplementationFileChanges(priorSteps)
+        : []
     }));
 
     // Write step result to plan file for subsequent steps to read
@@ -4455,7 +5443,7 @@ async function executePlanWithSubAgents({
       title: step.title,
       status: stepRecord.failed ? 'failed' : 'done',
       summary: stepRecord.failed
-        ? `[${stepRecord.retryCount > 0 ? `retried ${stepRecord.retryCount}x] ` : ''}${stepRecord.failureReason}`
+        ? `[${stepRecord.retryCount > 0 ? `retried ${stepRecord.retryCount}x] ` : ''}${stepRecord.failureType ? `${stepRecord.failureType}: ` : ''}${stepRecord.failureReason}`
         : trimInline(stepRecord.output, 160),
       ...(stepRecord.retryCount > 0 ? { retryCount: stepRecord.retryCount } : {}),
       ...(displayUsage ? { usage: displayUsage } : {})
@@ -4470,8 +5458,9 @@ async function executePlanWithSubAgents({
       title: step.title,
       status: stepRecord.failed ? 'failed' : 'done',
       summary: stepRecord.failed
-        ? `[${stepRecord.retryCount > 0 ? `retried ${stepRecord.retryCount}x] ` : ''}${stepRecord.failureReason}`
+        ? `[${stepRecord.retryCount > 0 ? `retried ${stepRecord.retryCount}x] ` : ''}${stepRecord.failureType ? `${stepRecord.failureType}: ` : ''}${stepRecord.failureReason}`
         : trimInline(stepRecord.output, 160),
+      output: formatPlanStepOutputForDisplay(stepRecord.output),
       ...(stepRecord.retryCount > 0 ? { retryCount: stepRecord.retryCount } : {}),
       ...(displayUsage ? { usage: displayUsage } : {})
     });
@@ -4523,14 +5512,15 @@ async function executePlanWithSubAgents({
   };
 }
 
-async function buildAutoPlanAndRun({
+async function buildAutoPlanArtifact({
   goal,
   config,
   model,
   systemPrompt,
   onAgentEvent,
   sessionId,
-  taskClass
+  taskClass,
+  workspaceRoot = process.cwd()
 }) {
   const normalizedTaskClass = taskClass || classifyPlanTaskClass(goal);
   const requirementPacket = buildGoalRequirementPacket(goal, 'explorer');
@@ -4543,6 +5533,7 @@ async function buildAutoPlanAndRun({
     '- verification-heavy = the user explicitly asks to run tests, verify findings, reproduce a bug, prove a claim, or validate a result.',
     '- debugging = investigate bugs, crashes, errors, diagnose root causes, or trace unexpected behavior.',
     '- implementation-advisory = analyze AND implement (e.g. "analyze this and fix it").',
+    '- Explicit repair requests such as "start fixing", "fix the review findings", "开始修复", or "修复发现的问题" are implementation or implementation-advisory, never advisory-only.',
     '- For debugging goals, prefer: explorer -> debugger -> coder -> tester -> summarizer.',
     '- For implementation-advisory hybrid goals, prefer: explorer -> advisor -> coder -> summarizer.',
     '- For advisory goals, prefer explorer and advisor roles. Do not use coder unless the plan will actually modify code or files.',
@@ -4554,7 +5545,7 @@ async function buildAutoPlanAndRun({
     '- Example advisory roles: explorer -> inspect project shape, advisor -> synthesize findings and prioritized recommendations.',
     '- Example implementation roles: explorer -> inspect target area, coder -> implement change, tester -> verify changed behavior.',
     '- Example debugging roles: explorer -> inspect failing area, debugger -> trace root cause, coder -> fix, tester -> verify fix.',
-    `Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|')}","task":"..."}]}. No markdown.`
+    `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${EXECUTOR_AGENT_ROLES.join('|')}","task":"...","consumes":"...","produces":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`
   ].join('\n');
   let autoPlan = {
     summary: `Auto plan for: ${goal}`,
@@ -4571,6 +5562,7 @@ async function buildAutoPlanAndRun({
     const plannerSystemPrompt = await composeSystemPrompt({
       shellRulesPrompt: systemPrompt,
       config,
+      workspaceRoot,
       skillsPrompt: plannerPrompt,
       includeSoul: false,
       includeMemory: false
@@ -4586,22 +5578,31 @@ async function buildAutoPlanAndRun({
           role: 'user',
           content: [
             'Create an execution plan and assign best sub-agent role for each step.',
-            `Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|')}","task":"..."}]}. No markdown.`,
-            `The available roles are ${SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join(', ')}. Use only the roles the task actually needs.`,
+            `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${EXECUTOR_AGENT_ROLES.join('|')}","task":"...","consumes":"...","produces":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
+            `The available roles are ${EXECUTOR_AGENT_ROLES.join(', ')}. Use only the roles the task actually needs.`,
             'Always include a summarizer as the final step. The summarizer synthesizes prior step results without re-analyzing.',
             'All executor steps (explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer) should write detailed step results, not final summaries.',
             `Task class: ${normalizedTaskClass}`,
             'Before choosing roles, decide whether the request is advisory, implementation, verification-heavy, debugging, or a hybrid.',
+            'Set task_size, task_type, target_confidence, and rationale before listing steps. Use these fields to justify why each role is necessary.',
             requirementPacket,
             'The first step should usually be an explorer to inspect the target area before implementation.',
             'For debugging goals: explorer -> debugger (trace cause) -> coder (fix) -> tester (verify).',
             'For implementation-advisory goals: explorer -> advisor -> coder.',
+            'If the user explicitly asks to fix/repair/update/implement/change files, include a coder/refactorer/writer step. Do not return advisor-only plans for repair requests.',
             'For refactoring goals: explorer -> refactorer -> tester.',
             'For documentation goals: explorer -> writer.',
             'For analysis, recommendation, optimization, audit, or project-review goals, keep the plan lean and usually limit it to explorer/advisor.',
             'Do not include reviewer/tester for advisory goals unless the user explicitly asks to validate, verify, or independently review the findings.',
             'Avoid template-only titles like "Initial analysis", "Review recommendations", or "Test and verify" for advisory goals.',
             'For implementation-heavy changes, prefer review and/or testing steps near the end only when they materially improve confidence.',
+            'If target_confidence is known, skip explorer unless the implementation still needs fresh code context.',
+            'If task_size is small or trivial, keep the plan to the minimum useful executor steps plus summarizer.',
+            'Do not add reviewer or tester unless their specific success evidence is clear.',
+            'Never assign every step to coder. Use explorer for inspection, coder for implementation, tester for verification, and summarizer as the final synthesis step.',
+            'Never assign explorer, architect, or advisor to implementation, coding, editing, or feature-delivery tasks. Those roles are read-only.',
+            'Each step task must include enough handoff detail to execute without guessing: targets, consumed inputs, produced outputs, expected outcome, out-of-scope boundaries, success criteria, verification intent, and handoff artifact.',
+            'Fold setup, fixtures, tests, and docs into the task whose deliverable needs them unless they are independently reviewable deliverables.',
             'Prefer 3-5 steps total.'
           ]
             .filter(Boolean)
@@ -4620,7 +5621,7 @@ async function buildAutoPlanAndRun({
 
   const finalSummary = planningError
     ? `Plan created with fallback guidance because planning hit an error: ${planningError}`
-    : 'Plan created and waiting for approval before implementation.';
+    : 'Plan created for engineering-mode execution.';
 
   const filePath = await writeMarkdownInProjectDir(
     'plans',
@@ -4630,17 +5631,18 @@ async function buildAutoPlanAndRun({
       autoPlan,
       finalSummary,
       planningError,
-      approvalText: 'Pending user approval before implementation.',
-      progressLine: '- Plan created and waiting for execution.'
+      approvalText: 'Plan does not require approval; execution is controlled by coding mode and the Stop control.',
+      progressLine: '- Plan created for execution.'
     }),
     'plan-auto',
-    sessionId
+    sessionId,
+    workspaceRoot
   );
   return {
     filePath,
     summary: autoPlan.summary,
     finalSummary,
-    approvalStatus: 'pending',
+    executionPolicy: 'automatic',
     steps: autoPlan.steps,
     completedCount: 0,
     warningCount: planningError ? 1 : 0,
@@ -4650,13 +5652,52 @@ async function buildAutoPlanAndRun({
   };
 }
 
+export async function writeExplicitAutoPlan({
+  goal,
+  steps = [],
+  sessionId,
+  workspaceRoot = process.cwd()
+}) {
+  const autoPlan = normalizeAutoPlan({
+    summary: `Structured plan for: ${goal}`,
+    steps
+  }, goal);
+  const finalSummary = 'Structured plan created for engineering-mode execution.';
+  const filePath = await writeMarkdownInProjectDir(
+    'plans',
+    `${goal}-auto`,
+    renderAutoPlanMarkdown({
+      goal,
+      autoPlan,
+      finalSummary,
+      approvalText: 'Plan does not require approval; execution is controlled by coding mode and the Stop control.',
+      progressLine: '- Structured plan created for execution.'
+    }),
+    'plan-auto',
+    sessionId,
+    workspaceRoot
+  );
+  return {
+    filePath,
+    summary: autoPlan.summary,
+    finalSummary,
+    executionPolicy: 'automatic',
+    steps: autoPlan.steps,
+    completedCount: 0,
+    warningCount: 0,
+    failedCount: 0,
+    warningTitles: [],
+    failedTitles: []
+  };
+}
+
 function renderAutoPlanMarkdown({
   goal,
   autoPlan,
   finalSummary,
   planningError = '',
-  approvalText = 'Pending user approval before implementation.',
-  progressLine = '- Plan created and waiting for execution.'
+  approvalText = 'Plan does not require approval; execution is controlled by coding mode and the Stop control.',
+  progressLine = '- Plan created for execution.'
 }) {
   const lines = [];
   lines.push(`# Auto Plan: ${goal}`);
@@ -4675,6 +5716,12 @@ function renderAutoPlanMarkdown({
   (Array.isArray(autoPlan?.steps) ? autoPlan.steps : []).forEach((s, idx) => {
     lines.push(`${idx + 1}. [${s.role}] ${s.title}`);
     lines.push(`   - task: ${s.task}`);
+    if (Array.isArray(s.target_files) && s.target_files.length > 0) {
+      lines.push(`   - targets: ${s.target_files.join(', ')}`);
+    }
+    if (s.success_criteria) lines.push(`   - success: ${s.success_criteria}`);
+    if (s.verification) lines.push(`   - verification: ${s.verification}`);
+    if (s.handoff) lines.push(`   - handoff: ${s.handoff}`);
   });
   lines.push('');
   lines.push('## Approval');
@@ -4787,17 +5834,17 @@ function stripFrontmatter(raw = '') {
   return text.slice(end + 5).trim();
 }
 
-async function renderProjectRequirementsSkillPrompt(custom, options) {
+async function renderProjectRequirementsSkillPrompt(custom, options, workspaceRoot = process.cwd()) {
   if (options?.outputFormat !== 'md') {
-    return expandFileMentions(renderCommandPrompt(custom, options.focusArgs), process.cwd());
+    return expandFileMentions(renderCommandPrompt(custom, options.focusArgs), workspaceRoot);
   }
-  const raw = await fs.readFile(PROJECT_REQUIREMENTS_MD_SKILL, 'utf8');
+  const raw = await fs.readFile(PROJECT_REQUIREMENTS_MD_INSTRUCTIONS, 'utf8');
   const mdSkill = {
     name: 'project-requirements-md',
     metadata: { type: 'skill' },
     content: stripFrontmatter(raw)
   };
-  return expandFileMentions(renderCommandPrompt(mdSkill, options.focusArgs), process.cwd());
+  return expandFileMentions(renderCommandPrompt(mdSkill, options.focusArgs), workspaceRoot);
 }
 
 function getProjectRequirementsDefaultOutputFormat(custom) {
@@ -4808,7 +5855,7 @@ function validateProjectRequirementsFormat(skillName, outputFormat) {
   if (skillName === 'project-requirements-md' && outputFormat !== 'md') {
     return [
       'project-requirements-md always outputs Markdown CodeWiki.',
-      'Use /project-requirements --html for the same CodeWiki report in HTML format instead of passing --html here.'
+      'Use the HTML project-requirements workflow for a CodeWiki report instead of passing --html here.'
     ].join(' ');
   }
   return null;
@@ -5071,7 +6118,7 @@ function renderProjectRequirementsPlanMarkdown({ goal, steps, reportPath, compan
       goal,
       autoPlan,
       finalSummary: 'Project requirements pipeline created and will execute immediately.',
-      approvalText: 'No approval required. Triggered explicitly by /project-requirements.',
+      approvalText: 'No approval required. Triggered explicitly by the project-requirements workflow.',
       progressLine: progressLines
     })
   ].join('\n');
@@ -5086,6 +6133,7 @@ function replaceTemplateVariables(template, variables) {
 }
 
 async function createProjectRequirementsShell({
+  workspaceRoot = process.cwd(),
   reportPath,
   companionPath,
   manifestPath,
@@ -5096,7 +6144,7 @@ async function createProjectRequirementsShell({
   outputFormat = 'html',
   config = {}
 }) {
-  const workspaceRoot = process.cwd();
+  workspaceRoot = path.resolve(workspaceRoot);
   const absoluteReportPath = path.resolve(workspaceRoot, reportPath);
   const absoluteManifestPath = path.resolve(workspaceRoot, manifestPath);
   await fs.mkdir(path.dirname(absoluteReportPath), { recursive: true });
@@ -5147,10 +6195,10 @@ async function createProjectRequirementsShell({
   return manifest;
 }
 
-async function updateProjectRequirementsManifest(manifestPath, updates = {}) {
+async function updateProjectRequirementsManifest(manifestPath, updates = {}, workspaceRoot = process.cwd()) {
   if (!manifestPath) return;
   try {
-    const absoluteManifestPath = path.resolve(process.cwd(), manifestPath);
+    const absoluteManifestPath = path.resolve(workspaceRoot, manifestPath);
     const current = JSON.parse(await fs.readFile(absoluteManifestPath, 'utf8'));
     const next = {
       ...current,
@@ -5184,8 +6232,8 @@ function buildProjectRequirementsTerminalManifestPatch(status = 'completed', ext
   };
 }
 
-async function readProjectRequirementsReportState(reportPath, outputFormat = 'html') {
-  const absoluteReportPath = path.resolve(process.cwd(), reportPath);
+async function readProjectRequirementsReportState(reportPath, outputFormat = 'html', workspaceRoot = process.cwd()) {
+  const absoluteReportPath = path.resolve(workspaceRoot, reportPath);
   const text = await fs.readFile(absoluteReportPath, 'utf8');
   const stat = await fs.stat(absoluteReportPath);
   const normalizedFormat = outputFormat === 'md' ? 'md' : 'html';
@@ -5223,11 +6271,12 @@ async function runProjectRequirementsPipeline({
   systemPrompt,
   onAgentEvent,
   signal,
-  onSubSessionActive
+  onSubSessionActive,
+  workspaceRoot = process.cwd()
 }) {
   const defaultOutputFormat = getProjectRequirementsDefaultOutputFormat(custom);
   const options = parseProjectRequirementsOptions(parsedInput.args, { defaultOutputFormat });
-  const renderedSkillPrompt = await renderProjectRequirementsSkillPrompt(custom, options);
+  const renderedSkillPrompt = await renderProjectRequirementsSkillPrompt(custom, options, workspaceRoot);
   const userFocus = options.raw;
   const goal = userFocus ? `project requirements report: ${userFocus}` : 'project requirements report';
   const reportSlug = formatLocalDateTimeSlug();
@@ -5239,9 +6288,11 @@ async function runProjectRequirementsPipeline({
     'project-requirements-pipeline',
     renderProjectRequirementsPlanMarkdown({ goal, steps, reportPath, companionPath }),
     'project-requirements',
-    currentSession.id
+    currentSession.id,
+    workspaceRoot
   );
   await createProjectRequirementsShell({
+    workspaceRoot,
     reportPath,
     companionPath,
     manifestPath,
@@ -5253,7 +6304,7 @@ async function runProjectRequirementsPipeline({
     config
   });
   const planState = {
-    status: 'approved',
+    status: 'running',
     source: 'project-requirements',
     depth: options.depth,
     outputFormat,
@@ -5286,7 +6337,8 @@ async function runProjectRequirementsPipeline({
       systemPrompt,
       onAgentEvent,
       signal,
-      onSubSessionActive
+      onSubSessionActive,
+      workspaceRoot
     });
   } catch (error) {
     if (onAgentEvent) {
@@ -5302,7 +6354,7 @@ async function runProjectRequirementsPipeline({
         status: 'failed',
         failedCount: steps.length,
         error: error instanceof Error ? error.message : String(error)
-      }).catch(() => {});
+      }, workspaceRoot).catch(() => {});
     }
     return {
       type: 'assistant',
@@ -5335,7 +6387,7 @@ async function runProjectRequirementsPipeline({
       : failedCount > 0
         ? buildProjectRequirementsTerminalManifestPatch('failed', { failedCount })
         : buildProjectRequirementsTerminalManifestPatch('completed'))
-  });
+  }, workspaceRoot);
   const text = [
     execution.text || '',
     '',
@@ -5371,11 +6423,12 @@ async function runProjectRequirementsSingleAgent({
   signal,
   compactedForModel,
   onCompactedUpdate,
-  codeWikiGenerate = false
+  codeWikiGenerate = false,
+  workspaceRoot = process.cwd()
 }) {
   const defaultOutputFormat = getProjectRequirementsDefaultOutputFormat(custom);
   const options = parseProjectRequirementsOptions(parsedInput.args, { defaultOutputFormat });
-  const renderedSkillPrompt = await renderProjectRequirementsSkillPrompt(custom, options);
+  const renderedSkillPrompt = await renderProjectRequirementsSkillPrompt(custom, options, workspaceRoot);
   const userFocus = options.raw;
   const goal = userFocus ? `project requirements report: ${userFocus}` : 'project requirements report';
   const reportSlug = formatLocalDateTimeSlug();
@@ -5395,10 +6448,12 @@ async function runProjectRequirementsSingleAgent({
       `Output Format: ${outputFormat}`
     ].join('\n'),
     'project-requirements',
-    currentSession.id
+    currentSession.id,
+    workspaceRoot
   );
   const steps = [{ title: 'Generate project requirements report', role: 'coder', task: goal }];
   await createProjectRequirementsShell({
+    workspaceRoot,
     reportPath,
     companionPath,
     manifestPath,
@@ -5480,13 +6535,14 @@ async function runProjectRequirementsSingleAgent({
       signal,
       compactedForModel: codeWikiGenerate ? structuredClone(compactedForModel) : compactedForModel,
       onCompactedUpdate: codeWikiGenerate ? null : onCompactedUpdate,
-      persistSession: !codeWikiGenerate
+      persistSession: !codeWikiGenerate,
+      workspaceRoot
     });
     await updateProjectRequirementsManifest(manifestPath, {
       ...(result?.aborted
         ? buildProjectRequirementsTerminalManifestPatch('aborted', { failedCount: 1 })
         : buildProjectRequirementsTerminalManifestPatch('completed'))
-    });
+    }, workspaceRoot);
     if (onAgentEvent) {
       onAgentEvent({
         type: 'plan:progress',
@@ -5520,7 +6576,7 @@ async function runProjectRequirementsSingleAgent({
         failedCount: 1,
         error: message
       })
-    }).catch(() => {});
+    }, workspaceRoot).catch(() => {});
     if (onAgentEvent) {
       onAgentEvent({ type: 'skill:error', name: custom.name, summary: message });
       onAgentEvent({ type: 'skill:end', name: custom.name });
@@ -5552,7 +6608,7 @@ async function revisePendingPlanWithModel({
   const prompt = [
     buildAutoPlanPlannerGuidance(),
     'You are revising an existing plan based on explicit user feedback.',
-    'Return strict JSON only with shape {"summary":"...","steps":[{"title":"...","role":"' + SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join('|') + '","task":"..."}]}. No markdown.',
+    'Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"' + EXECUTOR_AGENT_ROLES.join('|') + '","task":"...","consumes":"...","produces":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.',
     'Keep roles minimal and only include steps that materially help the goal.',
     'Always keep a summarizer as the final step.'
   ].join('\n');
@@ -5595,13 +6651,13 @@ async function revisePendingPlanWithModel({
       goal,
       autoPlan: revised,
       finalSummary: revisedFinalSummary,
-      approvalText: 'Pending user approval before implementation (revised).',
-      progressLine: `- Plan revised with user feedback: ${feedback}`
+      approvalText: buildPlanReviewApprovalText('revised', { feedback }),
+      progressLine: buildPlanReviewProgressLine('revised', { feedback })
     });
     await fs.writeFile(planFilePath, `${content.trim()}\n`, 'utf8');
   }
   return {
-    status: 'pending_approval',
+    status: 'ready',
     source: String(planState?.source || 'auto'),
     goal,
     filePath: planFilePath,
@@ -5611,7 +6667,7 @@ async function revisePendingPlanWithModel({
   };
 }
 
-async function handleShellInput(shellText, config) {
+async function handleShellInput(shellText, config, workspaceRoot = process.cwd()) {
   if (!shellText) return { text: '' };
   if (
     !config.policy.allow_dangerous_commands &&
@@ -5619,7 +6675,7 @@ async function handleShellInput(shellText, config) {
   ) {
     return { text: 'Blocked by policy: dangerous command pattern detected' };
   }
-  const check = evaluateCommandPolicy(shellText, config, process.cwd());
+  const check = evaluateCommandPolicy(shellText, config, workspaceRoot);
   if (!check.allowed) {
     return { text: `Blocked by safe mode: ${check.reason}${check.suggestion ? ` | ${check.suggestion}` : ''}` };
   }
@@ -5667,11 +6723,10 @@ function formatHistoryList({ currentSession, sessions }) {
       `   id=${session.id}`,
       `   ${count} ${count === 1 ? 'msg' : 'msgs'}  |  ${formatHistoryTimestamp(session.updatedAt)}${session.model ? `  |  ${session.model}` : ''}`,
       `   ${compactHistoryPreview(session.preview)}`,
-      `   resume: /history resume ${session.id}`
+      `   session: ${session.id}`
     );
   }
 
-  lines.push('', 'Tip: use /history resume <session_id>');
   return lines.join('\n');
 }
 
@@ -5680,15 +6735,33 @@ export async function createChatRuntime({
   config: initialConfig,
   model,
   systemPrompt,
-  requestToolApproval
+  requestToolApproval,
+  workspaceRoot
 }) {
-  if (session && typeof session === 'object' && !session.projectDir) {
-    session.projectDir = process.cwd();
-  }
-  let activeRequestToolApproval = typeof requestToolApproval === 'function' ? requestToolApproval : null;
+  assertSearchConfig(initialConfig);
+  const root = path.resolve(workspaceRoot || session?.projectDir || process.cwd());
+  if (session && typeof session === 'object') session.projectDir = root;
+  let requestToolApprovalObserver = typeof requestToolApproval === 'function' ? requestToolApproval : null;
+  const approvalRequestState = { current: null };
+  const activeRequestToolApproval = async (request) => {
+    let resolveStructuredApproval;
+    const structuredDecision = new Promise((resolve) => {
+      resolveStructuredApproval = resolve;
+    });
+    approvalRequestState.current = { ...request, resolve: resolveStructuredApproval };
+    try {
+      const observerDecision = requestToolApprovalObserver
+        ? Promise.resolve(requestToolApprovalObserver(request))
+        : new Promise(() => {});
+      return await Promise.race([structuredDecision, observerDecision]);
+    } finally {
+      approvalRequestState.current = null;
+    }
+  };
+  let activeRequestUserInput = null;
   let onTitleUpdateCallback = null;
   const startupEvents = [];
-  const initialIndex = await initializeProjectIndex(process.cwd()).catch(() => null);
+  const initialIndex = await initializeProjectIndex(root).catch(() => null);
   if (initialIndex?.summary) {
     startupEvents.push({
       type: 'system_tool',
@@ -5722,14 +6795,12 @@ export async function createChatRuntime({
   let currentSession = session;
   let config = initialConfig;
   model = model || currentSession?.model || resolveDefaultModel(config);
+  scheduleMemoryReviewBacklog({ config, currentSessionId: currentSession?.id });
   if (currentSession && typeof currentSession === 'object') {
     currentSession.model = model;
   }
   const baseSystemPrompt = systemPrompt;
-  let executionMode = config.execution?.mode || 'normal';
-  if (hasPendingPlanApproval(currentSession)) {
-    executionMode = 'plan';
-  }
+  let executionMode = resolveRuntimeExecutionMode(config.execution?.mode || 'normal', config, currentSession);
   let compactState = null;
   const normalizeCompactThreshold = (value, fallback = 60) => {
     const num = Number(value);
@@ -5741,10 +6812,7 @@ export async function createChatRuntime({
     compactState.threshold = normalizeCompactThreshold(config.context?.preflight_trigger_pct, 60);
   };
   const syncRuntimeFromConfig = async ({ model: nextModel } = {}) => {
-    const configuredMode = String(config.execution?.mode || 'normal');
-    executionMode = hasPendingPlanApproval(currentSession)
-      ? 'plan'
-      : (['normal', 'plan', 'spec'].includes(configuredMode) ? configuredMode : 'normal');
+    executionMode = resolveRuntimeExecutionMode(config.execution?.mode || 'normal', config, currentSession);
     syncCompactStateFromConfig();
 
     const resolvedModel = String(nextModel || '').trim();
@@ -5756,28 +6824,38 @@ export async function createChatRuntime({
       }
     }
   };
-  const commands = await loadCommandsAndSkills();
+  const commands = await loadCommandsAndSkills(root);
   const reloadCommandsAndSkills = async () => {
-    const next = await loadCommandsAndSkills();
+    const next = await loadCommandsAndSkills(root);
     commands.clear();
     for (const [name, command] of next.entries()) {
       commands.set(name, command);
     }
   };
   let changeTracker = await createGitOplogChangeTracker({
-    workspaceRoot: process.cwd(),
+    workspaceRoot: root,
     sessionId: currentSession.id
   });
+  let workspaceIsGit = Boolean(changeTracker?.enabled);
+  if (!workspaceIsGit) {
+    workspaceIsGit = await detectWorkspaceIsGit(root);
+  }
   let backupManager = changeTracker?.enabled
     ? null
     : await createNonGitBackupManager({
-        workspaceRoot: process.cwd(),
+        workspaceRoot: root,
         sessionId: currentSession.id
       }).catch(() => null);
-  config.runtime = {
-    ...(config.runtime || {}),
-    project_is_git: Boolean(changeTracker?.enabled)
+  const fileObservations = new Map();
+  const attachRuntimeState = (nextConfig) => {
+    nextConfig.runtime = {
+      ...(nextConfig.runtime || {}),
+      project_is_git: workspaceIsGit,
+      fileObservations
+    };
+    return nextConfig;
   };
+  config = attachRuntimeState(config);
 
   // Set up tool result store under session directory
   const sessionResultsDir = path.join(getSessionsDir(), String(currentSession.id));
@@ -5840,451 +6918,6 @@ export async function createChatRuntime({
     // keep startup resilient even if historical sessions cannot be listed
   }
 
-  const configKeyHints = [
-    'gateway.base_url',
-    'gateway.api_key',
-    'model.name',
-    'model.fast_name',
-    'ui.language',
-    'ui.reply_language',
-    'execution.mode',
-    'execution.approval_mode',
-    'shell.default',
-    'sdk.provider',
-    'gateway.timeout_ms',
-    'gateway.max_retries',
-    'model.max_context_tokens',
-    'execution.always_allow_tools',
-        'context.preflight_trigger_pct',
-    'context.hard_limit_pct',
-    'context.tool_result_max_chars',
-    'context.read_file_default_lines',
-    'context.read_file_max_chars',
-    'context.microcompact_enabled',
-    'context.microcompact_keep_recent',
-    'context.project_instructions_enabled',
-    'context.project_instructions_max_chars',
-    'sessions.max_sessions',
-    'sessions.retention_days',
-    'shell.timeout_ms',
-    'context.max_tokens',
-    'soul.preset',
-    'soul.custom_path',
-    'policy.safe_mode',
-    'policy.allowed_paths',
-    'policy.allow_dangerous_commands'
-  ];
-
-  const commandPriorityOrder = [
-    '/help',
-    '/status',
-    '/model',
-    '/config',
-    '/memory',
-    '/capture',
-    '/inbox',
-    '/dream',
-    '/mode',
-    '/approval',
-    '/plan',
-    '/history',
-    '/checkpoint',
-    '/agents',
-    '/compact',
-    '/debug',
-    '/new'
-  ];
-  const configSubcommandPriority = ['/config set', '/config get', '/config list', '/config reset'];
-
-  const listCommandNames = () => {
-    const completionCopy = getCompletionCopy(config.ui?.language);
-    const builtins = [
-      { name: 'help', description: completionCopy.commands.help },
-      { name: 'exit', description: completionCopy.commands.exit },
-      { name: 'commands', description: completionCopy.commands.commands },
-      { name: 'status', description: completionCopy.commands.status },
-      { name: 'model', description: completionCopy.commands.model },
-      { name: 'mode', description: completionCopy.commands.mode },
-      { name: 'approval', description: completionCopy.commands.approval },
-      { name: 'compact', description: completionCopy.commands.compact },
-      { name: 'checkpoint', description: completionCopy.commands.checkpoint },
-      { name: 'spec', description: completionCopy.commands.spec },
-      { name: 'plan', description: completionCopy.commands.plan },
-      { name: 'agents', description: completionCopy.commands.agents },
-      { name: 'config', description: completionCopy.commands.config },
-      { name: 'memory', description: completionCopy.commands.memory },
-      { name: 'dream', description: completionCopy.commands.dream },
-      { name: 'reflect', description: completionCopy.commands.reflect },
-      { name: 'history', description: completionCopy.commands.history },
-      { name: 'debug', description: completionCopy.commands.debug },
-      { name: 'stop', description: completionCopy.commands.stop },
-      { name: 'new', description: completionCopy.commands.new }
-    ];
-    const out = [];
-    for (const cmd of commands.values()) {
-      if (cmd.metadata.type === 'skill' && !isSkillEnabled(config, cmd.name, cmd)) {
-        continue;
-      }
-      out.push({
-        name: cmd.name,
-        description: cmd.metadata.description || ''
-      });
-    }
-    return [...builtins, ...out].sort((a, b) => a.name.localeCompare(b.name));
-  };
-
-  const compactOptions = [
-    '--preview',
-    '--restore',
-    '--micro',
-    '--aggressive',
-    '--conservative',
-    '--default',
-    '--auto-on',
-    '--auto-off',
-    '--threshold 60'
-  ];
-
-  const configTemplates = [
-    '/config list',
-    '/config get <key>',
-    '/config set <key> <value>',
-    '/config reset'
-  ];
-
-  const historyTemplates = ['/history list', '/history current', '/history resume <session_id>'];
-  const memoryTemplates = ['/memory list <scope>', '/memory search <scope> <query>', '/memory forget <scope> <id>'];
-  const modeTemplates = ['/mode normal', '/mode plan'];
-  const approvalTemplates = ['/approval review', '/approval auto', '/approval full_access'];
-  const modelTemplates = ['/model current', '/model main', '/model fast', '/model set <name>'];
-  const checkpointTemplates = [
-    '/checkpoint create <name>',
-    '/checkpoint list',
-    '/checkpoint list --all',
-    '/checkpoint load <id>'
-  ];
-  const specTemplates = ['/spec <topic>'];
-  const planTemplates = ['/plan <goal>', '/plan auto <goal>', '/plan approve', '/plan from-spec <spec-path?>'];
-  const agentTemplates = ['/agents list', '/agents run explorer <task>', '/agents run architect <task>', '/agents run advisor <task>', '/agents run coder <task>', '/agents run refactorer <task>', '/agents run reviewer <task>', '/agents run tester <task>', '/agents run debugger <task>', '/agents run writer <task>', '/agents run summarizer <task>'];
-  const debugTemplates = ['/debug keys on', '/debug keys off', '/debug keys status'];
-  const dreamTemplates = ['/dream', '/dream --dry-run', '/dream --scope=project', '/dream --scope=global'];
-  const reflectTemplates = ['/reflect', '/reflect --scope=global <request>', '/reflect <request>'];
-  const compactTemplates = compactOptions.map((opt) => `/compact ${opt}`);
-  const slashTemplates = [
-    ...configTemplates,
-    ...memoryTemplates,
-    ...historyTemplates,
-    ...modeTemplates,
-    ...approvalTemplates,
-    ...modelTemplates,
-    ...checkpointTemplates,
-    ...specTemplates,
-    ...planTemplates,
-    ...agentTemplates,
-    ...debugTemplates,
-    ...dreamTemplates,
-    ...reflectTemplates,
-    ...compactTemplates,
-    '/status'
-  ];
-  const compactKey = (value) => String(value || '').toLowerCase().replace(/[\/\s<>?]/g, '');
-  const commandDescriptions = new Map();
-  const registerSuggestion = (value, description = '') => {
-    commandDescriptions.set(value, description);
-    return { value, description };
-  };
-  const materializeSuggestions = (items) =>
-    (Array.isArray(items) ? items : []).map((item) => {
-      if (item && typeof item === 'object' && 'value' in item) return item;
-      const value = String(item || '');
-      return { value, description: commandDescriptions.get(value) || '' };
-    });
-  const matchCompactTemplates = (value) => {
-    const needle = compactKey(value);
-    if (!needle) return [];
-    return materializeSuggestions(
-      slashTemplates.filter((template) => compactKey(template).startsWith(needle))
-    );
-  };
-
-  const getCompletionOptions = (rawInput) => {
-    const input = String(rawInput || '');
-    if (!input.startsWith('/')) return [];
-    const completionCopy = getCompletionCopy(config.ui?.language);
-    const configSubcommandDescriptions = completionCopy.configSubcommands;
-    const planSubcommandDescriptions = completionCopy.planSubcommands || {};
-
-    const hasTrailingSpace = /\s$/.test(input);
-    const body = input.slice(1);
-    const tokens = body.trim().split(/\s+/).filter(Boolean);
-    const commandPart = tokens[0] || '';
-    const commandHasSubcommands = new Set([
-      'config',
-      'memory',
-      'compact',
-      'mode',
-      'approval',
-      'model',
-      'checkpoint',
-      'plan',
-      'agents',
-      'history',
-      'debug'
-    ]);
-
-    const allCommandEntries = listCommandNames();
-    const allCommands = allCommandEntries.map((c) => c.name);
-    const exactCommand = Boolean(commandPart) && allCommands.includes(commandPart);
-    for (const entry of allCommandEntries) {
-      registerSuggestion(`/${entry.name}`, entry.description || '');
-    }
-    for (const template of configTemplates) {
-      registerSuggestion(template, configSubcommandDescriptions[template] || completionCopy.generic.configCommand);
-    }
-    for (const template of memoryTemplates) registerSuggestion(template, completionCopy.generic.memoryCommand);
-    for (const template of historyTemplates) registerSuggestion(template, completionCopy.generic.historyCommand);
-    for (const template of modeTemplates) registerSuggestion(template, completionCopy.generic.modeCommand);
-    for (const template of approvalTemplates) registerSuggestion(template, completionCopy.generic.approvalCommand);
-    for (const template of modelTemplates) registerSuggestion(template, completionCopy.generic.modelCommand || completionCopy.commands.model);
-    for (const template of checkpointTemplates) registerSuggestion(template, completionCopy.generic.checkpointCommand);
-    for (const template of specTemplates) registerSuggestion(template, completionCopy.generic.specCommand);
-    for (const template of planTemplates) {
-      registerSuggestion(template, planSubcommandDescriptions[template] || completionCopy.generic.planCommand);
-    }
-    for (const template of agentTemplates) registerSuggestion(template, completionCopy.generic.agentCommand);
-    for (const template of debugTemplates) registerSuggestion(template, completionCopy.generic.debugCommand);
-    for (const template of dreamTemplates) registerSuggestion(template, completionCopy.generic.dreamCommand);
-    for (const template of reflectTemplates) registerSuggestion(template, completionCopy.generic.reflectCommand);
-    for (const template of compactTemplates) registerSuggestion(template, completionCopy.generic.compactCommand);
-    registerSuggestion('/status', completionCopy.generic.statusCommand);
-
-    if (!commandPart) {
-      return materializeSuggestions(prioritizeByPreferredOrder(
-        allCommands.map((name) => `/${name}`),
-        commandPriorityOrder
-      ));
-    }
-
-    if (tokens.length === 1 && !hasTrailingSpace && !(exactCommand && commandHasSubcommands.has(commandPart))) {
-      const direct = prioritizeByPreferredOrder(
-        allCommands
-          .filter((name) => name.startsWith(commandPart))
-          .map((name) => `/${name}`),
-        commandPriorityOrder
-      );
-      if (direct.length > 0) return materializeSuggestions(direct);
-      return matchCompactTemplates(input);
-    }
-
-    if (commandPart === 'config') {
-      const subcommand = tokens[1] || '';
-      const subcommandIsExact = ['set', 'get', 'list', 'reset'].includes(subcommand);
-
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace && !subcommandIsExact)) {
-        return materializeSuggestions(prioritizeByPreferredOrder(
-          ['set', 'get', 'list', 'reset']
-            .filter((s) => s.startsWith(subcommand))
-            .map((s) => registerSuggestion(`/config ${s}`, configSubcommandDescriptions[`/config ${s}`] || completionCopy.generic.configCommand).value),
-          configSubcommandPriority
-        ));
-      }
-
-      if (subcommand === 'get') {
-        const keyPrefix = tokens.length >= 3 ? tokens[2] || '' : '';
-        return configKeyHints
-          .filter((k) => k.startsWith(keyPrefix))
-          .map((k) => registerSuggestion(`/config get ${k}`, describeConfigKey(k, 'get', config.ui?.language)));
-      }
-      if (subcommand === 'set') {
-        const keyPrefix = tokens.length >= 3 ? tokens[2] || '' : '';
-        return configKeyHints
-          .filter((k) => k.startsWith(keyPrefix))
-          .map((k) => registerSuggestion(`/config set ${k} `, describeConfigKey(k, 'set', config.ui?.language)));
-      }
-
-      return materializeSuggestions(configTemplates);
-    }
-
-    if (commandPart === 'memory') {
-      const sub = tokens[1] || '';
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        return ['list', 'search', 'forget']
-          .filter((item) => item.startsWith(sub))
-          .map((item) => registerSuggestion(`/memory ${item}`, completionCopy.generic.memoryCommand));
-      }
-      const scope = tokens[2] || '';
-      if (['list', 'search', 'forget'].includes(sub) && (tokens.length === 2 || (tokens.length === 3 && !hasTrailingSpace))) {
-        return ['user', 'global', 'project']
-          .filter((item) => item.startsWith(scope))
-          .map((item) => registerSuggestion(`/memory ${sub} ${item}${sub === 'list' ? '' : ' '}`, completionCopy.generic.memoryCommand));
-      }
-      return materializeSuggestions(memoryTemplates);
-    }
-
-    if (commandPart === 'compact') {
-      const joined = tokens.slice(1).join(' ');
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        return compactOptions
-          .filter((opt) => opt.startsWith(joined) || joined === '')
-          .map((opt) => registerSuggestion(`/compact ${opt}`, completionCopy.generic.compactCommand));
-      }
-      return compactOptions
-        .filter((opt) => opt.includes(joined) || joined === '')
-        .map((opt) => registerSuggestion(`/compact ${opt}`, completionCopy.generic.compactCommand));
-    }
-
-    if (commandPart === 'status') {
-      return [registerSuggestion('/status', completionCopy.generic.statusCommand)];
-    }
-    if (commandPart === 'model') {
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        const sub = tokens[1] || '';
-        return ['current', 'main', 'fast', 'set']
-          .filter((m) => m.startsWith(sub))
-          .map((m) => registerSuggestion(`/model ${m}${m === 'set' ? ' ' : ''}`, completionCopy.generic.modelCommand));
-      }
-      return materializeSuggestions(modelTemplates);
-    }
-    if (commandPart === 'mode') {
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        const sub = tokens[1] || '';
-        return ['normal', 'plan', 'spec']
-          .filter((m) => m.startsWith(sub))
-          .map((m) => registerSuggestion(`/mode ${m}`, completionCopy.generic.modeCommand));
-      }
-      return materializeSuggestions(modeTemplates);
-    }
-    if (commandPart === 'approval') {
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        const sub = tokens[1] || '';
-        return ['review', 'auto', 'full_access']
-          .filter((m) => m.startsWith(sub))
-          .map((m) => registerSuggestion(`/approval ${m}`, completionCopy.generic.approvalCommand));
-      }
-      return materializeSuggestions(approvalTemplates);
-    }
-    if (commandPart === 'checkpoint') {
-      if (tokens.length <= 2 && !hasTrailingSpace) {
-        const sub = tokens[1] || '';
-        if (sub === 'list') {
-          return ['--all']
-            .map((v) => registerSuggestion(`/checkpoint list ${v}`, completionCopy.generic.checkpointCommand));
-        }
-        return ['create', 'list', 'load']
-          .filter((s) => s.startsWith(sub))
-          .map((s) => registerSuggestion(`/checkpoint ${s}`, completionCopy.generic.checkpointCommand));
-      }
-      if (tokens[1] === 'list') {
-        const hint = tokens[2] || '';
-        return ['--all']
-          .filter((v) => v.startsWith(hint))
-          .map((v) => registerSuggestion(`/checkpoint list ${v}`, completionCopy.generic.checkpointCommand));
-      }
-      if (tokens[1] === 'load') {
-        if (tokens.length >= 3) {
-          const hint = tokens[3] || '';
-          return ['--all']
-            .filter((v) => v.startsWith(hint))
-            .map((v) => registerSuggestion(`/checkpoint load ${tokens[2]} ${v}`, completionCopy.generic.checkpointCommand));
-        }
-      }
-      return materializeSuggestions(checkpointTemplates);
-    }
-    if (commandPart === 'spec') {
-      return materializeSuggestions(specTemplates);
-    }
-    if (commandPart === 'plan') {
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        const sub = tokens[1] || '';
-        return ['auto', 'approve', 'from-spec']
-          .filter((s) => s.startsWith(sub))
-          .map((s) =>
-            registerSuggestion(
-              `/plan ${s}`,
-              planSubcommandDescriptions[`/plan ${s}`] ||
-                planSubcommandDescriptions[`/plan ${s} <goal>`] ||
-                planSubcommandDescriptions[`/plan ${s} <spec-path?>`] ||
-                completionCopy.generic.planCommand
-            )
-          );
-      }
-      return materializeSuggestions(planTemplates);
-    }
-    if (commandPart === 'agents') {
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        const sub = tokens[1] || '';
-        if (sub === 'run') {
-          return SUB_AGENT_ROLES
-            .map((r) => registerSuggestion(`/agents run ${r} `, completionCopy.generic.agentCommand));
-        }
-        return ['list', 'run']
-          .filter((s) => s.startsWith(sub))
-          .map((s) => registerSuggestion(`/agents ${s}`, completionCopy.generic.agentCommand));
-      }
-      if (tokens[1] === 'run') {
-        const rolePrefix = tokens[2] || '';
-        return SUB_AGENT_ROLES
-          .filter((r) => r.startsWith(rolePrefix))
-          .map((r) => registerSuggestion(`/agents run ${r} `, completionCopy.generic.agentCommand));
-      }
-      return materializeSuggestions(agentTemplates);
-    }
-
-    if (commandPart === 'history') {
-      const sub = tokens[1] || '';
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        if (sub === 'resume') {
-          const dynamic = historySessionCache
-            .filter((session) => String(session.id || '').startsWith(''))
-            .map((session) => ({
-              value: `/history resume ${session.id}`,
-              display: `/history resume ${session.id}  ·  ${session.title || 'untitled'}  ·  ${Number(session.messageCount || 0)} msgs`,
-              description: completionCopy.generic.resumeSession
-            }));
-          if (dynamic.length > 0) return dynamic;
-        }
-        return ['list', 'current', 'resume']
-          .filter((s) => s.startsWith(sub))
-          .map((s) => registerSuggestion(`/history ${s}`, completionCopy.generic.historyCommand));
-      }
-      if (sub === 'resume') {
-        const idPrefix = tokens[2] || '';
-        const dynamic = historySessionCache
-          .filter((session) => String(session.id || '').startsWith(idPrefix))
-          .map((session) => ({
-            value: `/history resume ${session.id}`,
-            display: `/history resume ${session.id}  ·  ${session.title || 'untitled'}  ·  ${Number(session.messageCount || 0)} msgs`,
-            description: completionCopy.generic.resumeSession
-          }));
-        if (dynamic.length > 0) return dynamic;
-        return materializeSuggestions(historyTemplates);
-      }
-      return materializeSuggestions(historyTemplates);
-    }
-
-    if (commandPart === 'debug') {
-      const sub = tokens[1] || '';
-      if (tokens.length === 1 || (tokens.length === 2 && !hasTrailingSpace)) {
-        if (sub === 'keys') {
-          return ['on', 'off', 'status']
-            .map((v) => registerSuggestion(`/debug keys ${v}`, completionCopy.generic.keyboardDebugCommand));
-        }
-        return ['keys']
-          .filter((s) => s.startsWith(sub))
-          .map((s) => registerSuggestion(`/debug ${s}`, completionCopy.generic.debugCommand));
-      }
-      if (sub === 'keys') {
-        const action = tokens[2] || '';
-        return ['on', 'off', 'status']
-          .filter((v) => v.startsWith(action))
-          .map((v) => registerSuggestion(`/debug keys ${v}`, completionCopy.generic.keyboardDebugCommand));
-      }
-      return materializeSuggestions(debugTemplates);
-    }
-
-    return [];
-  };
-
   const persistLocalExchange = async (userText, systemText, { includeUser = true, modelVisible = false } = {}) => {
     const localMeta = modelVisible ? {} : { model_visible: false, local_only: true };
     if (includeUser && userText) {
@@ -6293,12 +6926,15 @@ export async function createChatRuntime({
     if (systemText) {
       appendSessionMessage(stampedMessage('system', systemText, localMeta));
     }
+    let derivedTitle = false;
     if (shouldReplaceSessionTitle(currentSession.title)) {
       currentSession.title = deriveSessionTitle(currentSession.messages);
+      derivedTitle = true;
     }
     currentSession.model = model || config.model.name;
     currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
+    if (derivedTitle) emitSessionTitleUpdate(currentSession.id, currentSession.title);
   };
 
   const persistAssistantExchange = async (userText, assistantText, { includeUser = true, extra = {} } = {}) => {
@@ -6313,35 +6949,93 @@ export async function createChatRuntime({
     if (assistantText) {
       appendSessionMessage(stampedMessage('assistant', assistantText, extra));
     }
+    let derivedTitle = false;
+    if (shouldReplaceSessionTitle(currentSession.title)) {
+      currentSession.title = deriveSessionTitle(currentSession.messages);
+      derivedTitle = true;
+    }
     currentSession.model = model || config.model.name;
     currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
+    if (derivedTitle) emitSessionTitleUpdate(currentSession.id, currentSession.title);
     // Generate a better title asynchronously after saving
     if (shouldGenerateTitle || shouldReplaceSessionTitle(currentSession.title)) {
       const titleSessionId = currentSession.id;
-      generateSessionTitle({
-        userText,
-        assistantText,
-        config
-      }).then(async (generatedTitle) => {
-        if (generatedTitle && generatedTitle !== currentSession.title) {
-          currentSession.title = generatedTitle;
-          await saveSession(currentSession);
-          onTitleUpdateCallback?.(titleSessionId, generatedTitle);
-        }
-      }).catch(() => {});
+      const firstUser = (currentSession.messages || []).find((msg) => msg?.role === 'user');
+      const titleUserText = String(userText || '').trim() || resolveTitleUserText(firstUser || {});
+      if (titleUserText) {
+        generateSessionTitle({
+          userText: titleUserText,
+          assistantText,
+          config
+        }).then(async (generatedTitle) => {
+          if (generatedTitle && generatedTitle !== currentSession.title) {
+            currentSession.title = generatedTitle;
+            await saveSession(currentSession);
+            emitSessionTitleUpdate(titleSessionId, generatedTitle);
+          }
+        }).catch(() => {});
+      }
     }
+  };
+
+  const persistApprovedPlanExecution = async (planState, result) => {
+    const executionText = result.sessionText || result.text || '';
+    const planFilePath = String(planState?.filePath || '').trim();
+    await finalizeApprovedPlanFile(planState, result);
+    const approvalNote = planFilePath ? await readPlanApprovalSection(planFilePath) : '';
+    const modelContent = [approvalNote, executionText].filter(Boolean).join('\n\n');
+    await persistAssistantExchange('', executionText, {
+      includeUser: false,
+      extra: {
+        ...(modelContent ? { model_content: modelContent } : {}),
+        plan_goal: planState?.goal || '',
+        ...(planFilePath ? { plan_file: planFilePath } : {}),
+        ...(Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {})
+      }
+    });
   };
 
   const persistUserExchange = async (userText) => {
     if (!userText) return;
     appendSessionMessage(stampedMessage('user', userText));
+    let derivedTitle = false;
     if (shouldReplaceSessionTitle(currentSession.title)) {
       currentSession.title = deriveSessionTitle(currentSession.messages);
+      derivedTitle = true;
     }
     currentSession.model = model || config.model.name;
     currentSession.mode = executionMode || config.execution?.mode || 'normal';
     await saveSession(currentSession);
+    if (derivedTitle) emitSessionTitleUpdate(currentSession.id, currentSession.title);
+  };
+
+  const persistRunStatus = async (userText, statusText, { status = 'error' } = {}) => {
+    const prompt = String(userText || '').trim();
+    const text = String(statusText || '').trim();
+    if (!prompt && !text) return;
+    const messages = Array.isArray(currentSession.messages) ? currentSession.messages : [];
+    const lastUser = [...messages].reverse().find((msg) => msg?.role === 'user');
+    if (prompt && String(lastUser?.content || '').trim() !== prompt) {
+      appendSessionMessage(stampedMessage('user', userText));
+    }
+    if (text || status === 'aborted') {
+      appendSessionMessage(stampedMessage('assistant', status === 'aborted' ? '' : text, {
+        model_visible: false,
+        local_only: true,
+        response_status: status,
+        ...(prompt ? { retry_prompt: userText } : {})
+      }));
+    }
+    let derivedTitle = false;
+    if (shouldReplaceSessionTitle(currentSession.title)) {
+      currentSession.title = deriveSessionTitle(currentSession.messages);
+      derivedTitle = true;
+    }
+    currentSession.model = model || config.model.name;
+    currentSession.mode = executionMode || config.execution?.mode || 'normal';
+    await saveSession(currentSession);
+    if (derivedTitle) emitSessionTitleUpdate(currentSession.id, currentSession.title);
   };
 
   const captureCompactSummary = async ({ summary, mode, beforeTokens, afterTokens }) => {
@@ -6350,138 +7044,75 @@ export async function createChatRuntime({
     if (!normalizedSummary) return null;
     const entrySummary = `Context compacted (${mode}): ${beforeTokens} -> ${afterTokens} tokens`;
     return captureToInbox({
-      scope: 'repo',
-      type: 'observation',
+      scope: 'project',
+      type: 'note',
       summary: entrySummary,
       details: normalizedSummary,
       tags: ['compact', 'context-summary'],
-      source: 'auto-compact'
+      source: 'auto-compact',
+      projectDir: root
     }).catch(() => null);
   };
 
   const shouldAutoCaptureUserPrompt = (text) => {
     if (config?.memory?.enabled === false || config?.memory?.auto_capture === false) return false;
-    const value = String(text || '').replace(/\s+/g, ' ').trim();
-    if (value.length < 12) return false;
-    const actionPattern =
-      /\b(add|build|fix|implement|change|update|refactor|test|debug|remember|capture|continue|review)\b|实现|增加|添加|修复|修改|更新|重构|测试|调试|记住|继续|检查|沉淀|捕获/i;
-    return actionPattern.test(value);
-  };
-
-  const classifyDirectMemoryPrompt = (text) => {
-    if (config?.memory?.enabled === false || config?.memory?.auto_capture === false) return null;
-    const value = String(text || '').replace(/\s+/g, ' ').trim();
-    if (value.length < 6) return null;
-    const userPreferencePattern =
-      /(?:记住|请记住|以后|后续|我偏好|我的偏好|我喜欢|我习惯|不要再|别再|always remember|remember that|i prefer|my preference|don't|do not)/i;
-    if (!userPreferencePattern.test(value)) return null;
-    const projectPattern = /(?:本项目|这个项目|当前项目|这个仓库|当前仓库|repo|repository|project)/i;
-    const isProject = projectPattern.test(value);
-    return {
-      scope: isProject ? 'project' : 'user',
-      kind: isProject ? 'workflow' : 'preference',
-      content: value
-    };
-  };
-
-  const saveDirectMemoryPrompt = async (text) => {
-    const direct = classifyDirectMemoryPrompt(text);
-    if (!direct) return null;
-    const existing = await listMemories({
-      scope: direct.scope,
-      workspaceRoot: process.cwd()
-    }).catch(() => []);
-    const directText = String(direct.content || '').toLowerCase();
-    const directTokens = new Set(directText.match(/[a-z0-9_\u4e00-\u9fa5]+/g) || []);
-    const directAsciiTokens = new Set(directText.match(/[a-z0-9_]{4,}/g) || []);
-    const overlapsExisting = existing.some((item) => {
-      const existingText = `${item.content || ''} ${item.summary || ''}`.toLowerCase();
-      for (const token of directAsciiTokens) {
-        if (existingText.includes(token)) return true;
-      }
-      let hits = 0;
-      for (const token of directTokens) {
-        if (token.length < 2) continue;
-        if (existingText.includes(token)) hits += 1;
-        if (hits >= 2) return true;
-      }
-      return false;
-    });
-    if (overlapsExisting) return null;
-    return rememberMemory({
-      scope: direct.scope,
-      content: direct.content,
-      kind: direct.kind,
-      summary: direct.content.slice(0, 80),
-      source: 'auto-user-directive',
-      replaceSimilar: true,
-      workspaceRoot: process.cwd(),
-      config
-    }).catch(() => null);
+    return shouldAutoCaptureUserPromptShared(text);
   };
 
   const captureUserPromptForDream = async (text) => {
-    if (classifyDirectMemoryPrompt(text)) return null;
+    // The background reviewer evaluates the completed exchange with evidence and
+    // replaces noisy task-prompt capture. Keep this path only as a fallback.
+    if (config?.memory?.background_review?.enabled !== false) return null;
     if (!shouldAutoCaptureUserPrompt(text)) return null;
     const value = String(text || '').replace(/\s+/g, ' ').trim();
     return captureToInbox({
-      scope: 'repo',
-      type: 'observation',
+      scope: 'project',
+      type: 'note',
       summary: `User task: ${value.slice(0, 120)}`,
       details: value,
       tags: ['user-prompt'],
-      source: 'auto-user-prompt'
+      source: 'auto-user-prompt',
+      projectDir: root
     }).catch(() => null);
   };
 
   const buildActiveSystemPrompt = async () => {
     const memoryGuide =
-      'Persistent memory stores durable preferences and stable workflow knowledge. Verify changeable details from files, and only write memory for future-useful, non-sensitive facts.';
+      `Persistent memory is for self-evolution: when the user asks you to remember something lasting, call save_memory. Use scope="user" kind="preference" for tastes/interests, scope="project" kind="convention" for project rules, and kind="lesson" for reusable learnings. Write memory content and summary in ${getReplyLanguageName(config)}. Verify changeable details from files; never store secrets. Do not duplicate an equivalent fact already present in Persistent Memory.`;
+    const skillIndexPrompt = await buildSkillIndexPromptBlock(root, config, executionMode);
     return composeSystemPrompt({
       shellRulesPrompt: baseSystemPrompt,
       config,
-      workspaceRoot: process.cwd(),
+      workspaceRoot: root,
+      skillsPrompt: skillIndexPrompt,
       extraPrompts: [memoryGuide]
     });
-  };
-
-  const isImmediateLocalInput = (line) => {
-    const parsedInput = parseInput(line);
-    if (parsedInput.type !== 'slash') return false;
-    const command = String(parsedInput.command || '').trim().toLowerCase();
-    if (!command) return false;
-    if (command === 'agents') {
-      const sub = String(parsedInput.args?.[0] || 'list').trim().toLowerCase();
-      return sub === 'list';
-    }
-    const localCommands = new Set([
-      'exit',
-      'help',
-      'commands',
-      'status',
-      'mode',
-      'checkpoint',
-      'history',
-      'memory',
-      'config',
-      'compact',
-      'debug'
-    ]);
-    return localCommands.has(command);
   };
 
   // 当前的 AbortController 引用，用于中止正在进行的回答
   let activeAbortController = null;
   let activeSubSession = null;
+  const restoreConfiguredExecutionMode = () => {
+    executionMode = normalizeExecutionMode(config.execution?.mode || 'normal');
+  };
+  const syncExecutionModeWithSession = () => {
+    executionMode = resolveRuntimeExecutionMode(executionMode, config, currentSession);
+  };
 
-  const submit = async (line, onAgentEvent, options = {}) => {
+  const executeSubmission = async (line, onAgentEvent, options = {}) => {
     // 每次提交创建新的 AbortController，替代旧的
     activeAbortController = new AbortController();
     const { signal } = activeAbortController;
     const activeReplySystemPrompt = await buildActiveSystemPrompt();
-    const parsedInput = parseInput(line);
+    const inputText = String(line || '');
+    const optionModelText = typeof options?.modelText === 'string' && options.modelText.trim()
+      ? await expandFileMentions(options.modelText, root)
+      : '';
     const readOnlyCodeWiki = options?.readOnlyCodeWiki === true;
     const codeWikiGenerate = options?.codeWikiGenerate === true;
+    const dismissedAlwaysSkills = Array.isArray(options?.dismissedAlwaysSkills)
+      ? new Set(options.dismissedAlwaysSkills.map((s) => String(s || '').trim()).filter(Boolean))
+      : null;
     const maybeAutoDreamFromRuntime = async () => {
       const threshold = Number(config?.memory?.auto_dream_threshold ?? 10);
       if (!(threshold > 0)) return null;
@@ -6496,7 +7127,7 @@ export async function createChatRuntime({
       try {
         const report = await runDreamConsolidation({
           dryRun: false,
-          workspaceRoot: process.cwd(),
+          workspaceRoot: root,
           config,
           writeAudit: true
         });
@@ -6518,20 +7149,22 @@ export async function createChatRuntime({
       if (!hasPendingSpecApproval(currentSession)) {
         return { type: 'system', text: 'No pending spec approval.' };
       }
-      const specState = { ...currentSession.planState };
-      const specText = String(specState.specText || '').trim() || buildSpecTemplate(specState.goal || 'spec');
+      const specState = getPendingSpecState(currentSession);
+      const specText = String(specState.specText || '').trim() || buildFallbackStructuredSpec(specState.goal || 'spec');
       const specTitle = extractSpecTitle(specText, specState.goal || 'spec');
       const specPath = String(specState.specPath || '').trim() || await writeMarkdownInProjectDir(
         'specs',
         specTitle,
         specText,
         'spec',
-        currentSession.id
+        currentSession.id,
+        root
       );
       await fs.writeFile(specPath, `${specText.trim()}\n`, 'utf8');
       if (saveOnly) {
-        currentSession.planState = null;
-        executionMode = 'normal';
+        currentSession.specState = null;
+        if (currentSession.planState?.status === 'pending_spec_approval') currentSession.planState = null;
+        restoreConfiguredExecutionMode();
         if (onAgentEvent) onAgentEvent({ type: 'spec:approval_cleared' });
         const text = `Spec saved: ${specPath}`;
         await persistLocalExchange('', text, { includeUser: false });
@@ -6544,7 +7177,39 @@ export async function createChatRuntime({
         '',
         specText
       ].join('\n');
-      const auto = await buildAutoPlanAndRun({
+      if (executeImmediately) {
+        currentSession.specState = null;
+        if (currentSession.planState?.status === 'pending_spec_approval') {
+          currentSession.planState = null;
+        }
+        restoreConfiguredExecutionMode();
+        const displayGoal = [
+          `Execute approved spec: ${specTitle}`,
+          `Spec path: ${specPath}`
+        ].join('\n');
+        const result = await askModel({
+          text: displayGoal,
+          modelText: planGoal,
+          session: currentSession,
+          config,
+          model,
+          systemPrompt: activeReplySystemPrompt,
+          onAgentEvent,
+          requestToolApproval: activeRequestToolApproval,
+          requestUserInput: activeRequestUserInput,
+          executionMode,
+          signal,
+          compactedForModel,
+          onCompactedUpdate: setCompactedView,
+          changeTracker,
+          backupManager,
+          onExecutionModeSync: syncExecutionModeWithSession,
+          workspaceRoot: root
+        });
+        syncExecutionModeWithSession();
+        return { type: 'assistant', text: result.text, aborted: !!result.aborted };
+      }
+      const auto = await buildAutoPlanArtifact({
         goal: planGoal,
         session: currentSession,
         config,
@@ -6552,34 +7217,24 @@ export async function createChatRuntime({
         systemPrompt: activeReplySystemPrompt,
         onAgentEvent,
         sessionId: currentSession.id,
-        taskClass: classifyPlanTaskClass(planGoal)
+        taskClass: classifyPlanTaskClass(planGoal),
+        workspaceRoot: root
       });
       currentSession.planState = {
-        status: 'pending_approval',
+        status: 'running',
         source: 'spec',
         goal: specTitle,
-        specPath,
+        specRef: specPath,
         filePath: auto.filePath,
         summary: auto.summary || '',
         finalSummary: auto.finalSummary || auto.summary || '',
         steps: Array.isArray(auto.steps) ? auto.steps : []
       };
       executionMode = 'plan';
-      if (!executeImmediately) {
-        if (onAgentEvent) {
-          onAgentEvent({
-            type: 'plan:pending_approval',
-            goal: currentSession.planState.goal,
-            summary: currentSession.planState.finalSummary || currentSession.planState.summary,
-            filePath: currentSession.planState.filePath,
-            steps: currentSession.planState.steps
-          });
-        }
-        const text = `Spec approved: ${specPath}\n\n${buildAutoPlanSystemSummary(auto)}`;
-        await persistLocalExchange('', text, { includeUser: false });
-        return { type: 'system', text };
-      }
+      currentSession.specState = null;
+      if (currentSession.planState?.status === 'pending_spec_approval') currentSession.planState = null;
       const planState = { ...currentSession.planState };
+      await recordPlanReviewStatus(planState, 'executing');
       const result = await executePlanWithSubAgents({
         planState,
         parentSession: currentSession,
@@ -6592,31 +7247,149 @@ export async function createChatRuntime({
         requestToolApproval: activeRequestToolApproval,
         changeTracker,
         backupManager,
-        projectIsGit: Boolean(changeTracker?.enabled)
+        projectIsGit: resolveApprovalProjectIsGit({
+          projectIsGit: Boolean(changeTracker?.enabled),
+          changeTrackerEnabled: Boolean(changeTracker?.enabled),
+          workspaceHasGit: Boolean(config?.runtime?.project_is_git) || workspaceIsGit
+        }),
+        workspaceRoot: root
       });
       activeSubSession = null;
-      currentSession.planState = null;
-      if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
-      await removePlanFileIfPresent(planState);
-      executionMode = 'normal';
-      await persistAssistantExchange('', result.sessionText || result.text || '', {
-        includeUser: false,
-        extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
+      currentSession.planState = normalizePlanState({
+        ...planState,
+        status: result.aborted ? 'failed' : 'completed',
+        finalSummary: result.sessionText || result.text || planState.finalSummary
       });
+      restoreConfiguredExecutionMode();
+      await persistApprovedPlanExecution(planState, result);
       return { type: 'assistant', text: result.text, aborted: !!result.aborted };
     };
-    try {
-      if (!readOnlyCodeWiki && !codeWikiGenerate && shouldPersistInputHistory(parsedInput)) {
-        await appendInputHistory(line);
+    const structuredAction = options?.structuredAction;
+    if (structuredAction) {
+      const { name, payload = {} } = structuredAction;
+      if (name === CHAT_ACTIONS.SPEC_SAVE) return approvePendingSpec({ saveOnly: true });
+      if (name === CHAT_ACTIONS.SPEC_EXECUTE) return approvePendingSpec({ executeImmediately: true });
+      if (name === CHAT_ACTIONS.SPEC_PLAN_AND_EXECUTE) return approvePendingSpec();
+      if (name === CHAT_ACTIONS.SPEC_REVISE) {
+        const state = getPendingSpecState(currentSession);
+        const revised = await buildSpecWithModel({
+          topic: [
+            state.goal || state.summary || 'spec',
+            `Revise the pending spec using this feedback: ${payload.feedback}`,
+            '',
+            state.specText || ''
+          ].join('\n'),
+          config,
+          model,
+          systemPrompt: activeReplySystemPrompt
+        });
+        currentSession.specState = { ...state, specText: revised };
+        if (state.specPath) await fs.writeFile(state.specPath, `${revised.trim()}\n`, 'utf8');
+        await saveSession(currentSession);
+        return { type: 'system', text: 'Spec draft revised.' };
       }
-    } catch {
-      // Non-fatal: history persistence should not block chat flow.
+      if (name === CHAT_ACTIONS.REFLECT) {
+        const scope = payload.scope || 'project';
+        const request = String(payload.request || '').trim();
+        const drafts = await buildReflectSkillDraft({
+          request,
+          scope,
+          session: currentSession,
+          config,
+          model,
+          systemPrompt: activeReplySystemPrompt
+        });
+        const candidates = attachReflectTargets({ candidates: drafts, scope, workspaceRoot: root });
+        if (candidates.length === 0) return { type: 'system', text: 'Reflect found no reusable skill candidate.' };
+        currentSession.planState = {
+          status: 'pending_reflect_skill',
+          source: 'reflect',
+          targetScope: scope,
+          request,
+          candidates
+        };
+        await saveSession(currentSession);
+        return { type: 'system', text: buildPendingReflectSkillMessage(currentSession.planState) };
+      }
+      if (name === CHAT_ACTIONS.REFLECT_APPROVE) {
+        const state = { ...currentSession.planState };
+        const candidate = Array.isArray(state.candidates) ? state.candidates[0] : null;
+        if (!candidate) throw new Error('No reflect skill draft to write');
+        const written = await writeReflectSkillDraft({
+          draft: candidate,
+          scope: state.targetScope || 'project',
+          workspaceRoot: root
+        });
+        currentSession.planState = null;
+        restoreConfiguredExecutionMode();
+        await saveSession(currentSession);
+        await reloadCommandsAndSkills();
+        return { type: 'system', text: `Reflect skill written and loaded: /${written.draft.name}\nPath: ${written.filePath}` };
+      }
+      if (name === CHAT_ACTIONS.REFLECT_REVISE) {
+        const state = { ...currentSession.planState };
+        const previousDraft = Array.isArray(state.candidates) ? state.candidates[0] : null;
+        const drafts = await buildReflectSkillDraft({
+          request: state.request || '',
+          scope: state.targetScope || 'project',
+          session: currentSession,
+          config,
+          model,
+          systemPrompt: activeReplySystemPrompt,
+          previousDraft,
+          feedback: payload.feedback
+        });
+        currentSession.planState = {
+          ...state,
+          candidates: attachReflectTargets({
+            candidates: drafts,
+            scope: state.targetScope || 'project',
+            workspaceRoot: root
+          })
+        };
+        await saveSession(currentSession);
+        return { type: 'system', text: `Reflect skill draft revised.\n${buildPendingReflectSkillMessage(currentSession.planState)}` };
+      }
+      if (name === CHAT_ACTIONS.COMPACT) {
+        const args = Array.isArray(payload.args) ? payload.args : [];
+        const cargs = parseCompactArgs(args);
+        if (cargs.restore) {
+          setCompactedView(null);
+          return { type: 'system', text: 'Context restored to full view' };
+        }
+        const source = modelVisibleMessages(compactedForModel ?? currentSession.messages);
+        const beforeTokens = estimateMessagesTokens(source);
+        const result = cargs.micro
+          ? (() => {
+              const micro = microCompactMessages(source, {
+                keepRecent: Number(config.context?.microcompact_keep_recent || 5),
+                enabled: true
+              });
+              return { changed: micro.changed, compacted: micro.messages, summary: '', tokensSaved: micro.tokensSaved };
+            })()
+          : await compactMessagesLocally(source, {
+              mode: cargs.mode || compactState.mode,
+              force: true,
+              generateSummary: createCompactSummaryGenerator(config, null)
+            });
+        if (!result.changed) return { type: 'system', text: 'Nothing to compact yet' };
+        const afterTokens = estimateMessagesTokens(result.compacted);
+        const report = `Compact ${cargs.preview ? 'preview' : 'applied'}: ${beforeTokens} -> ${afterTokens} tokens`;
+        if (!cargs.preview) {
+          setCompactedView(result.compacted.map((message) => ({ ...message, at: new Date().toISOString() })));
+          await saveSession(currentSession);
+        }
+        return { type: 'system', text: report };
+      }
+      throw new Error(`Chat action handler is not available: ${name}`);
     }
-    if (parsedInput.type === 'empty') {
-      return { type: 'noop' };
+    if (!inputText.trim()) return { type: 'noop' };
+    if (inputText.trimStart().startsWith('!')) {
+      const shell = await handleShellInput(inputText.trimStart().slice(1), config, root);
+      return { type: 'shell', text: shell.text };
     }
     if (readOnlyCodeWiki) {
-      const expandedText = await expandFileMentions(line, process.cwd());
+      const expandedText = await expandFileMentions(line, root);
       const codeWikiConfig = {
         ...config,
         soul: {
@@ -6627,7 +7400,7 @@ export async function createChatRuntime({
       const codeWikiBasePrompt = await composeSystemPrompt({
         shellRulesPrompt: baseSystemPrompt,
         config: codeWikiConfig,
-        workspaceRoot: process.cwd(),
+        workspaceRoot: root,
         includeMemory: false,
         includeProjectInstructions: true,
         includeSoul: true
@@ -6639,7 +7412,7 @@ export async function createChatRuntime({
         '- Use the CodeWiki role regardless of the user-selected global soul. Tone is the default Codemini tone: clear, concise, and technical.',
         '- Use read-only project inspection tools when evidence is needed.',
         '- You may modify files only when the user explicitly asks you to add or edit code comments. In that case, use add_code_comment or update_code_comment only, and never change executable code.',
-        '- Do not use shell commands, edit/create/delete tools, update plans, generate reports, or write memories.',
+        '- Do not use shell commands, edit/write/apply_patch/delete tools, update plans, generate reports, or write memories.',
         '- Be concise and cite relevant files or report sections when useful.'
       ].join('\n\n');
       const transientSession = structuredClone(currentSession);
@@ -6655,1209 +7428,28 @@ export async function createChatRuntime({
         alwaysAllowTools: CODEWIKI_ROLE_TOOLS,
         allowedTools: CODEWIKI_ROLE_TOOLS,
         persistSession: false,
-                skipAnalysisNudge: true,
-        signal
+        skipAnalysisNudge: true,
+        signal,
+        workspaceRoot: root
       });
       return { type: 'assistant', text: result.text, aborted: !!result.aborted };
     }
-    if (parsedInput.type === 'shell') {
-      const shell = await handleShellInput(parsedInput.command, config);
-      return { type: 'shell', text: shell.text };
-    }
-    if (parsedInput.type === 'slash') {
-      const argError = validateBuiltinSlashArgs(parsedInput);
-      if (argError) return { type: 'system', text: argError };
-      if (parsedInput.command === 'exit') return { type: 'exit' };
-      if (parsedInput.command === 'new') {
-        const fresh = await createSession();
-        currentSession = fresh;
-        executionMode = config.execution?.mode || 'normal';
-        compactState.backupMessages = null;
-        setResultDir(path.join(getSessionsDir(), String(fresh.id)));
-        historyIdCache = [fresh.id, ...historyIdCache.filter((id) => id !== fresh.id)];
-        historySessionCache = [
-          { id: fresh.id, title: fresh.title || '', messageCount: 0 },
-          ...historySessionCache.filter((s) => s.id !== fresh.id)
-        ];
-        return {
-          type: 'system',
-          text: `New session started: ${fresh.id}`,
-          restoredMessages: []
-        };
-      }
-      if (parsedInput.command === 'help') {
-        return {
-          type: 'system',
-          text: 'Commands: /help /exit /new /stop /commands /status /model /mode /compact /checkpoint /spec /plan /yes /no /edit /reject /agents /config /memory /capture /inbox /dream /reflect /history /debug /<custom> !<shell>'
-        };
-      }
-      if (parsedInput.command === 'status') {
-        const todoCount = countActiveTodos(currentSession.todos);
-        return {
-          type: 'system',
-          text: `mode=${executionMode} | approval=${config.execution?.approval_mode || 'review'} | role=general | model=${model || config.model.name} | max_ctx=${effectiveMaxContextTokens(config)} | session=${currentSession.id} | todos=${todoCount}`
-        };
-      }
-      if (parsedInput.command === 'model') {
-        const sub = String(parsedInput.args[0] || 'current').trim().toLowerCase();
-        const mainModel = resolveDefaultModel(config);
-        const fastModel = resolveFastModel(config);
-        if (sub === 'current' || sub === 'status') {
-          return {
-            type: 'system',
-            text: `Current model: ${model || mainModel}\nDefault model: ${mainModel}\nFast model: ${fastModel}${config.model?.fast_name ? '' : ' (fallback to default; set /config set model.fast_name <name>)'}`
-          };
-        }
-        if (sub === 'main' || sub === 'default') {
-          model = mainModel;
-        } else if (sub === 'fast') {
-          model = fastModel;
-        } else if (sub === 'set') {
-          const next = parsedInput.args.slice(1).join(' ').trim();
-          if (!next) return { type: 'system', text: 'Usage: /model set <name>' };
-          model = next;
-        } else {
-          return { type: 'system', text: 'Usage: /model current | /model main | /model fast | /model set <name>' };
-        }
-        currentSession.model = model;
-        await saveSession(currentSession);
-        return { type: 'system', text: `Model switched to: ${model}` };
-      }
-      if (parsedInput.command === 'mode') {
-        const next = (parsedInput.args[0] || '').trim().toLowerCase();
-        if (!next) {
-          return { type: 'system', text: `Current work mode: ${executionMode} (available: normal|plan|spec)` };
-        }
-        if (!['normal', 'plan', 'spec'].includes(next)) {
-          return { type: 'system', text: 'Usage: /mode <normal|plan|spec>' };
-        }
-        executionMode = next;
-        await setConfigValue('execution.mode', next);
-        config = await loadConfig();
-        const text = `Work mode set to: ${next}`;
-        await persistLocalExchange(line, text);
-        return { type: 'system', text };
-      }
-      if (parsedInput.command === 'approval') {
-        const raw = (parsedInput.args[0] || '').trim().toLowerCase().replace(/-/g, '_');
-        const next = raw === 'full' ? 'full_access' : raw;
-        if (!next) {
-          return { type: 'system', text: `Current approval mode: ${config.execution?.approval_mode || 'review'} (available: review|auto|full_access)` };
-        }
-        if (!['review', 'auto', 'full_access'].includes(next)) {
-          return { type: 'system', text: 'Usage: /approval <review|auto|full_access>' };
-        }
-        await setConfigValue('execution.approval_mode', next);
-        config = await loadConfig();
-        const text = `Approval mode set to: ${next}`;
-        await persistLocalExchange(line, text);
-        return { type: 'system', text };
-      }
-      if (parsedInput.command === 'yes') {
-        if (hasPendingSpecApproval(currentSession)) {
-          return approvePendingSpec();
-        }
-        if (hasPendingReflectSkill(currentSession)) {
-          const state = { ...currentSession.planState };
-          const candidate = Array.isArray(state.candidates) ? state.candidates[0] : null;
-          if (!candidate) {
-            currentSession.planState = null;
-            const text = 'No reflect skill draft to write.';
-            await persistLocalExchange(line, text, { includeUser: false });
-            return { type: 'system', text };
-          }
-          const written = await writeReflectSkillDraft({
-            draft: candidate,
-            scope: state.targetScope || 'project',
-            workspaceRoot: process.cwd()
-          });
-          currentSession.planState = null;
-          executionMode = 'normal';
-          if (onAgentEvent) onAgentEvent({ type: 'reflect:approval_cleared' });
-          await reloadCommandsAndSkills();
-          const text = `Reflect skill written and loaded: /${written.draft.name}\nPath: ${written.filePath}`;
-          await persistLocalExchange(line, text, { includeUser: false });
-          return { type: 'system', text };
-        }
-        if (!hasPendingPlanApproval(currentSession)) {
-          return { type: 'system', text: 'No pending plan approval. Use /plan auto <goal> first.' };
-        }
-        const planState = { ...currentSession.planState };
-        const result = await executePlanWithSubAgents({
-          planState,
-          parentSession: currentSession,
-          config,
-          model,
-          systemPrompt: baseSystemPrompt,
-          onAgentEvent,
-          signal,
-          onSubSessionActive: (sub) => { activeSubSession = sub; },
-          requestToolApproval: activeRequestToolApproval,
-          changeTracker,
-          backupManager,
-          projectIsGit: Boolean(changeTracker?.enabled)
-        });
-        activeSubSession = null;
-        currentSession.planState = null;
-        if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
-        await removePlanFileIfPresent(planState);
-        executionMode = 'normal';
-        await persistAssistantExchange(line, result.sessionText || result.text || '', {
-          includeUser: false,
-          extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
-        });
-        return { type: 'assistant', text: result.text, aborted: !!result.aborted };
-      }
-      if (parsedInput.command === 'edit') {
-        if (hasPendingReflectSkill(currentSession)) {
-          const feedback = parsedInput.args.join(' ').trim();
-          if (!feedback) {
-            return { type: 'system', text: 'Usage: /edit <feedback>' };
-          }
-          const state = { ...currentSession.planState };
-          const previousDraft = Array.isArray(state.candidates) ? state.candidates[0] : null;
-          const drafts = await buildReflectSkillDraft({
-            request: state.request || '',
-            scope: state.targetScope || 'project',
-            session: currentSession,
-            config,
-            model,
-            systemPrompt: activeReplySystemPrompt,
-            previousDraft,
-            feedback
-          });
-          currentSession.planState = {
-            ...state,
-            candidates: attachReflectTargets({
-              candidates: drafts,
-              scope: state.targetScope || 'project',
-              workspaceRoot: process.cwd()
-            })
-          };
-          if (onAgentEvent) {
-            onAgentEvent({
-              type: 'reflect:pending_approval',
-              draft: buildPendingReflectSkillSnapshot(currentSession.planState)
-            });
-          }
-          const text = `Reflect skill draft revised.\n${buildPendingReflectSkillMessage(currentSession.planState)}`;
-          await persistLocalExchange('', text, { includeUser: false });
-          return { type: 'system', text };
-        }
-        if (!hasPendingPlanApproval(currentSession)) {
-          return { type: 'system', text: 'No pending plan approval. Use /plan auto <goal> first.' };
-        }
-        const feedback = parsedInput.args.join(' ').trim();
-        if (!feedback) {
-          return { type: 'system', text: 'Usage: /edit <feedback>' };
-        }
-        const revised = await revisePendingPlanWithModel({
-          planState: currentSession.planState,
-          feedback,
-          config,
-          model,
-          systemPrompt: activeReplySystemPrompt
-        });
-        currentSession.planState = revised;
-        executionMode = 'plan';
-        if (onAgentEvent) {
-          onAgentEvent({
-            type: 'plan:pending_approval',
-            goal: currentSession.planState.goal,
-            summary: currentSession.planState.finalSummary || currentSession.planState.summary,
-            filePath: currentSession.planState.filePath,
-            steps: currentSession.planState.steps
-          });
-        }
-        const text = `Plan revised.\n${buildPendingPlanApprovalMessage(currentSession.planState)}`;
-        await persistLocalExchange('', text, { includeUser: false });
-        return { type: 'system', text };
-      }
-      if (parsedInput.command === 'no') {
-        if (hasPendingSpecApproval(currentSession)) {
-          currentSession.planState = null;
-          executionMode = 'normal';
-          if (onAgentEvent) onAgentEvent({ type: 'spec:approval_cleared' });
-          const text = 'Spec draft discarded.';
-          await persistLocalExchange(line, text, { includeUser: false });
-          return { type: 'system', text };
-        }
-        if (hasPendingReflectSkill(currentSession)) {
-          currentSession.planState = null;
-          executionMode = 'normal';
-          if (onAgentEvent) onAgentEvent({ type: 'reflect:approval_cleared' });
-          const text = 'Reflect skill draft discarded.';
-          await persistLocalExchange(line, text, { includeUser: false });
-          return { type: 'system', text };
-        }
-        if (hasPendingPlanApproval(currentSession)) {
-          currentSession.planState = null;
-          if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
-          executionMode = 'normal';
-          const text = 'Pending plan rejected and cleared.';
-          await persistLocalExchange(line, text, { includeUser: false });
-          return { type: 'system', text };
-        }
-        return { type: 'system', text: 'No pending reflect skill draft.' };
-      }
-      if (parsedInput.command === 'reject') {
-        if (hasPendingSpecApproval(currentSession)) {
-          currentSession.planState = null;
-          executionMode = 'normal';
-          if (onAgentEvent) onAgentEvent({ type: 'spec:approval_cleared' });
-          const text = 'Pending spec rejected and cleared.';
-          await persistLocalExchange('', text, { includeUser: false });
-          return { type: 'system', text };
-        }
-        if (!hasPendingPlanApproval(currentSession)) {
-          return { type: 'system', text: 'No pending plan approval.' };
-        }
-        const planState = { ...currentSession.planState };
-        currentSession.planState = null;
-        if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
-        await removePlanFileIfPresent(planState);
-        executionMode = 'normal';
-        const text = 'Pending plan rejected and cleared.';
-        await persistLocalExchange('', text, { includeUser: false });
-        return { type: 'system', text };
-      }
-      if (parsedInput.command === 'checkpoint') {
-        const sub = (parsedInput.args[0] || 'list').trim().toLowerCase();
-        if (sub === 'create') {
-          const name = parsedInput.args.slice(1).join(' ').trim();
-          const cp = await createCheckpoint(
-            {
-              name,
-              session: currentSession,
-              config
-            },
-            process.cwd()
-          );
-          const text = `Checkpoint created: ${cp.id}`;
-          await persistLocalExchange(line, text);
-          return { type: 'system', text };
-        }
-        if (sub === 'list') {
-          const showAll = parsedInput.args.includes('--all');
-          const checkpoints = (await listCheckpoints(process.cwd())).filter((c) =>
-            showAll ? true : c.sessionId === currentSession.id
-          );
-          if (checkpoints.length === 0) return { type: 'system', text: 'No checkpoints found' };
-          const rows = checkpoints.map(
-            (c, idx) =>
-              `${idx + 1}. ${c.id} | session:${c.sessionId || '-'} | ${c.createdAt} | ${c.name || '-'}`
-          );
-          return { type: 'system', text: rows.join('\n') };
-        }
-        if (sub === 'load') {
-          const id = parsedInput.args[1];
-          if (!id) return { type: 'system', text: 'Usage: /checkpoint load <id>' };
-          const cp = await loadCheckpoint(id, process.cwd());
-          if (cp?.session?.id && cp.session.id !== currentSession.id && !parsedInput.args.includes('--all')) {
-            return {
-              type: 'system',
-              text: `Checkpoint belongs to session ${cp.session.id}. Use /checkpoint load ${id} --all to force load.`
-            };
-          }
-          if (cp?.session?.id) currentSession = cp.session;
-          if (cp?.config) {
-            config = cp.config;
-            executionMode = config.execution?.mode || executionMode;
-          }
-          const text = `Checkpoint loaded: ${id}`;
-          await persistLocalExchange(line, text, { includeUser: false });
-          return { type: 'system', text };
-        }
-        return { type: 'system', text: 'Usage: /checkpoint create <name> | /checkpoint list | /checkpoint load <id>' };
-      }
-      if (parsedInput.command === 'spec') {
-        const specSub = String(parsedInput.args[0] || '').trim().toLowerCase();
-        if (hasPendingSpecApproval(currentSession) && ['save', 'plan', 'execute', 'run'].includes(specSub)) {
-          if (specSub === 'save') return approvePendingSpec({ saveOnly: true });
-          if (specSub === 'execute' || specSub === 'run') return approvePendingSpec({ executeImmediately: true });
-          return approvePendingSpec();
-        }
-        const topic = parsedInput.args.join(' ').trim();
-        if (!topic) return { type: 'system', text: 'Usage: /spec <topic> | /spec save | /spec plan | /spec execute' };
-        let content = '';
-        let buildNote = '';
-        try {
-          content = await buildSpecWithModel({
-            topic,
-            config,
-            model,
-            systemPrompt: activeReplySystemPrompt
-          });
-        } catch (err) {
-          content = buildSpecTemplate(topic);
-          buildNote = `\nGenerated with fallback template because model spec generation failed: ${String(err?.message || err)}`;
-        }
-        const filePath = await writeMarkdownInProjectDir(
-          'specs',
-          topic,
-          content,
-          'spec',
-          currentSession.id
-        );
-        const text = `Spec created: ${filePath}${buildNote}`;
-        await persistLocalExchange('', text, { includeUser: false });
-        return { type: 'system', text };
-      }
-      if (parsedInput.command === 'plan') {
-        const sub = (parsedInput.args[0] || '').trim().toLowerCase();
-        if (sub === 'auto') {
-          const deprecatedRun = (parsedInput.args[1] || '').trim().toLowerCase() === 'run';
-          if (deprecatedRun) {
-            return {
-              type: 'system',
-              text: 'Usage: /plan auto <goal>\n`/plan auto run` was removed. Review the generated plan first, then use /yes to execute, /edit <feedback> to revise, or /reject to discard.'
-            };
-          }
-          const goal = parsedInput.args.slice(1).join(' ').trim();
-          if (!goal) return { type: 'system', text: 'Usage: /plan auto <goal>' };
-          await maybeAutoDreamFromRuntime();
-          const auto = await buildAutoPlanAndRun({
-            goal,
-            session: currentSession,
-            config,
-            model,
-            systemPrompt: activeReplySystemPrompt,
-            onAgentEvent,
-            sessionId: currentSession.id,
-            taskClass: classifyPlanTaskClass(goal)
-          });
-          currentSession.planState = {
-            status: 'pending_approval',
-            source: 'auto',
-            goal,
-            filePath: auto.filePath,
-            summary: auto.summary || '',
-            finalSummary: auto.finalSummary || auto.summary || '',
-            steps: Array.isArray(auto.steps) ? auto.steps : []
-          };
-          executionMode = 'plan';
-          if (onAgentEvent) {
-            onAgentEvent({
-              type: 'plan:pending_approval',
-              goal: currentSession.planState.goal,
-              summary: currentSession.planState.finalSummary || currentSession.planState.summary,
-              filePath: currentSession.planState.filePath,
-              steps: currentSession.planState.steps
-            });
-          }
-          const text = buildAutoPlanSystemSummary(auto);
-          await persistLocalExchange('', text, { includeUser: false });
-          return {
-            type: 'system',
-            text
-          };
-        }
-        if (sub === 'approve') {
-          if (!hasPendingPlanApproval(currentSession)) {
-            return { type: 'system', text: 'No pending plan approval. Use /plan auto <goal> first.' };
-          }
-          const planState = { ...currentSession.planState };
-          const result = await executePlanWithSubAgents({
-            planState,
-            parentSession: currentSession,
-            config,
-            model,
-            systemPrompt: baseSystemPrompt,
-            onAgentEvent,
-            signal,
-            onSubSessionActive: (sub) => { activeSubSession = sub; },
-            requestToolApproval: activeRequestToolApproval,
-            changeTracker,
-            backupManager,
-            projectIsGit: Boolean(changeTracker?.enabled)
-          });
-          activeSubSession = null;
-          currentSession.planState = null;
-          if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
-          await removePlanFileIfPresent(planState);
-          executionMode = 'normal';
-          await persistAssistantExchange(line, result.sessionText || result.text || '', {
-            includeUser: false,
-            extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
-          });
-          return { type: 'assistant', text: result.text, aborted: !!result.aborted };
-        }
-        if (sub === 'stay') {
-          if (!hasPendingPlanApproval(currentSession)) {
-            return { type: 'system', text: 'No pending plan approval.' };
-          }
-          const text = buildPendingPlanApprovalMessage(currentSession.planState);
-          await persistLocalExchange('', text, { includeUser: false });
-          return { type: 'system', text };
-        }
-        if (sub === 'from-spec') {
-          const specArg = parsedInput.args.slice(1).join(' ').trim();
-          const specPath = await resolveSpecPath(specArg, currentSession.id);
-          if (!specPath) {
-            return { type: 'system', text: 'Usage: /plan from-spec <spec-path-or-fragment>\nNo spec file found.' };
-          }
-          const specText = await fs.readFile(specPath, 'utf8');
-          const specTitle = extractSpecTitle(specText, path.basename(specPath, '.md'));
-          let planContent = '';
-          let buildNote = '';
-          try {
-            planContent = await buildPlanFromSpecWithModel({
-              specText,
-              specPath,
-              config,
-              model,
-              systemPrompt: activeReplySystemPrompt
-            });
-          } catch (err) {
-            planContent = buildPlanTemplate(specTitle);
-            buildNote = `\nGenerated with fallback template because model plan generation failed: ${String(err?.message || err)}`;
-          }
-          const filePath = await writeMarkdownInProjectDir(
-            'plans',
-            `${specTitle}-from-spec`,
-            planContent,
-            'plan-from-spec',
-            currentSession.id
-          );
-          const text = `Plan created from spec: ${filePath}\nSpec: ${specPath}${buildNote}`;
-          await persistLocalExchange('', text, { includeUser: false });
-          return { type: 'system', text };
-        }
-
-        const goal = parsedInput.args.join(' ').trim();
-        if (!goal) return { type: 'system', text: 'Usage: /plan <goal> | /plan auto <goal> | /plan from-spec <spec-path?>' };
-        const content = buildPlanTemplate(goal);
-        const filePath = await writeMarkdownInProjectDir(
-          'plans',
-          goal,
-          content,
-          'plan',
-          currentSession.id
-        );
-        const text = `Plan created: ${filePath}`;
-        await persistLocalExchange('', text, { includeUser: false });
-        return { type: 'system', text };
-      }
-      if (parsedInput.command === 'agents') {
-        const sub = parsedInput.args[0] || 'list';
-        if (sub === 'list') {
-          return {
-            type: 'system',
-            text: 'Sub-agent roles: ' + SUB_AGENT_ROLES.filter(r => r !== 'codewiki').join(', ') + '\nUse: /agents run <role> <task>'
-          };
-        }
-        if (sub === 'run') {
-          const role = (parsedInput.args[1] || '').trim().toLowerCase();
-          const task = parsedInput.args.slice(2).join(' ').trim();
-          if (!role || !task) return { type: 'system', text: 'Usage: /agents run <role> <task>' };
-          if (!SUB_AGENT_ROLES.includes(role)) {
-            return { type: 'system', text: 'Unknown role. Allowed: ' + SUB_AGENT_ROLES.join('|') };
-          }
-          const output = await runSubAgentTask({
-            role,
-            task,
-            parentSession: currentSession,
-            config,
-            model,
-            systemPrompt: activeReplySystemPrompt,
-            onAgentEvent,
-            requestToolApproval: activeRequestToolApproval,
-            changeTracker,
-            backupManager,
-            projectIsGit: Boolean(changeTracker?.enabled)
-          });
-          const text = `[sub-agent:${role}]\n${output.text || output}`;
-          await persistLocalExchange(line, text);
-          return { type: 'assistant', text };
-        }
-        return { type: 'system', text: `Unknown /agents subcommand: ${sub}` };
-      }
-      if (parsedInput.command === 'debug') {
-        const sub = parsedInput.args[0] || '';
-        const action = parsedInput.args[1] || '';
-        if (sub === 'keys') {
-          if (action === 'on') return { type: 'system', text: '[debug:keys:on]' };
-          if (action === 'off') return { type: 'system', text: '[debug:keys:off]' };
-          if (action === 'status') return { type: 'system', text: '[debug:keys:status]' };
-          return { type: 'system', text: 'Usage: /debug keys on|off|status' };
-        }
-        return { type: 'system', text: 'Usage: /debug keys on|off|status' };
-      }
-      if (parsedInput.command === 'history') {
-        const sub = parsedInput.args[0] || 'list';
-        if (sub === 'list') {
-          const sessions = await listSessions(20);
-          historyIdCache = sessions.map((s) => s.id);
-          historySessionCache = sessions.map((s) => ({
-            id: s.id,
-            title: s.title || '',
-            messageCount: Number(s.messageCount || 0)
-          }));
-          if (sessions.length === 0) return { type: 'system', text: 'No sessions found' };
-          return {
-            type: 'system',
-            text: formatHistoryList({ currentSession, sessions })
-          };
-        }
-        if (sub === 'current') {
-          return {
-            type: 'system',
-            text: `Current session: ${currentSession.id} (${currentSession.messages.length} messages)`
-          };
-        }
-        if (sub === 'resume') {
-          const targetId = parsedInput.args[1];
-          if (!targetId) return { type: 'system', text: 'Usage: /history resume <session_id>' };
-          const loaded = await loadSession(targetId);
-          currentSession = loaded;
-          setResultDir(path.join(getSessionsDir(), String(targetId)));
-          if (hasPendingPlanApproval(currentSession)) {
-            executionMode = 'plan';
-          }
-          if (!historyIdCache.includes(targetId)) historyIdCache.unshift(targetId);
-          historySessionCache = [
-            { id: targetId, title: loaded.title || deriveSessionTitle(loaded.messages || []), messageCount: Array.isArray(loaded.messages) ? loaded.messages.length : 0 },
-            ...historySessionCache.filter((s) => s.id !== targetId)
-          ];
-          return {
-            type: 'system',
-            text: `Switched to session: ${targetId} (${loaded.messages.length} messages)`,
-            restoredMessages: structuredClone(loaded.messages || [])
-          };
-        }
-        return { type: 'system', text: `Unknown /history subcommand: ${sub}` };
-      }
-      if (parsedInput.command === 'memory') {
-        const sub = String(parsedInput.args[0] || '').trim().toLowerCase();
-        if (!sub) {
-          return { type: 'system', text: 'Usage: /memory list <user|global|project> | /memory search <scope> <query> | /memory forget <scope> <id>' };
-        }
-        if (sub === 'list') {
-          const scope = String(parsedInput.args[1] || '').trim().toLowerCase();
-          if (!['user', 'global', 'project'].includes(scope)) {
-            return { type: 'system', text: 'Usage: /memory list <user|global|project>' };
-          }
-          const items = await listMemories({ scope, workspaceRoot: process.cwd() });
-          if (items.length === 0) return { type: 'system', text: `No ${scope} memories found.` };
-          return {
-            type: 'system',
-            text: items.map((item) => `${item.id} | ${item.kind} | ${item.content}`).join('\n')
-          };
-        }
-        if (sub === 'search') {
-          const scope = String(parsedInput.args[1] || '').trim().toLowerCase();
-          const query = parsedInput.args.slice(2).join(' ').trim();
-          if (!['user', 'global', 'project'].includes(scope) || !query) {
-            return { type: 'system', text: 'Usage: /memory search <user|global|project> <query>' };
-          }
-          const items = await searchMemories({ scope, query, workspaceRoot: process.cwd() });
-          if (items.length === 0) return { type: 'system', text: `No ${scope} memories matched: ${query}` };
-          return {
-            type: 'system',
-            text: items.map((item) => `${item.id} | ${item.kind} | ${item.content}`).join('\n')
-          };
-        }
-        if (sub === 'forget') {
-          const scope = String(parsedInput.args[1] || '').trim().toLowerCase();
-          const id = String(parsedInput.args[2] || '').trim();
-          if (!['user', 'global', 'project'].includes(scope) || !id) {
-            return { type: 'system', text: 'Usage: /memory forget <user|global|project> <id>' };
-          }
-          const result = await forgetMemory({ scope, id, workspaceRoot: process.cwd() });
-          const text = `Removed ${Number(result.removed || 0)} ${scope} memory item(s)`;
-          await persistLocalExchange(line, text, { includeUser: false });
-          return { type: 'system', text };
-        }
-        return { type: 'system', text: `Unknown /memory subcommand: ${sub}` };
-      }
-      if (parsedInput.command === 'capture') {
-        const summary = parsedInput.args.join(' ').trim();
-        if (!summary) return { type: 'system', text: 'Usage: /capture <summary> [--scope global|repo|thread] [--type observation|correction|failure|preference|pattern|win|gap|decision]' };
-        let scope = 'global';
-        let capType = 'observation';
-        const filtered = [];
-        for (const arg of parsedInput.args) {
-          if (arg.startsWith('--scope=')) { scope = arg.slice(7); continue; }
-          if (arg.startsWith('--type=')) { capType = arg.slice(7); continue; }
-          if (arg === '--scope') { scope = ''; continue; }
-          if (arg === '--type') { capType = ''; continue; }
-          filtered.push(arg);
-        }
-        const capSummary = filtered.join(' ').trim();
-        if (!capSummary) return { type: 'system', text: 'Usage: /capture <summary>' };
-        try {
-          const entry = await captureToInbox({ summary: capSummary, scope, type: capType, source: 'slash' });
-          const text = `Captured to inbox: ${entry.id} [${entry.lifecycle}] ${entry.summary}`;
-          return { type: 'system', text };
-        } catch (err) {
-          return { type: 'system', text: `Capture failed: ${err.message}` };
-        }
-      }
-      if (parsedInput.command === 'inbox') {
-        const since = parsedInput.args[0] || '';
-        try {
-          const entries = await listInbox({ since: since || undefined });
-          if (entries.length === 0) return { type: 'system', text: 'Inbox is empty.' };
-          const rows = entries.map((e) => `[${e.lifecycle}] ${e.scope}/${e.type}: ${e.summary} (${e.id})`);
-          return { type: 'system', text: `Inbox (${entries.length}):\n${rows.join('\n')}` };
-        } catch (err) {
-          return { type: 'system', text: `Failed to list inbox: ${err.message}` };
-        }
-      }
-      if (parsedInput.command === 'dream') {
-        let dryRun = false;
-        let scope = null;
-        for (const arg of parsedInput.args) {
-          if (arg === '--dry-run') {
-            dryRun = true;
-            continue;
-          }
-          if (arg.startsWith('--scope=')) {
-            scope = arg.slice(8) || null;
-          }
-        }
-        try {
-          const report = await runDreamConsolidation({
-            dryRun,
-            scope,
-            workspaceRoot: process.cwd(),
-            config,
-            writeAudit: true
-          });
-          const summary = [
-            `Dream done${dryRun ? ' (dry-run)' : ''}.`,
-            `Candidates: ${Number(report.candidatesGenerated || 0)}`,
-            `Promotions: ${Array.isArray(report.promotions) ? report.promotions.length : 0}`,
-            `Rejections: ${Array.isArray(report.rejections) ? report.rejections.length : 0}`,
-            `Archives: ${Array.isArray(report.archives) ? report.archives.length : 0}`,
-            report.auditReport ? `Audit: ${report.auditReport}` : ''
-          ]
-            .filter(Boolean)
-            .join('\n');
-          return { type: 'system', text: summary };
-        } catch (err) {
-          return { type: 'system', text: `Dream failed: ${err.message}` };
-        }
-      }
-      if (parsedInput.command === 'reflect') {
-        const parsedReflect = parseReflectScope(parsedInput.args);
-        const drafts = await buildReflectSkillDraft({
-          request: parsedReflect.request,
-          scope: parsedReflect.scope,
-          session: currentSession,
-          config,
-          model,
-          systemPrompt: activeReplySystemPrompt
-        });
-        const candidates = attachReflectTargets({
-          candidates: drafts,
-          scope: parsedReflect.scope,
-          workspaceRoot: process.cwd()
-        });
-        if (candidates.length === 0) {
-          const text = 'Reflect found no reusable skill candidate.';
-          await persistLocalExchange('', text, { includeUser: false });
-          return { type: 'system', text };
-        }
-        currentSession.planState = {
-          status: 'pending_reflect_skill',
-          source: 'reflect',
-          targetScope: parsedReflect.scope,
-          request: parsedReflect.request,
-          candidates
-        };
-        if (onAgentEvent) {
-          onAgentEvent({
-            type: 'reflect:pending_approval',
-            draft: buildPendingReflectSkillSnapshot(currentSession.planState)
-          });
-        }
-        const text = buildPendingReflectSkillMessage(currentSession.planState);
-        await persistLocalExchange('', text, { includeUser: false });
-        return { type: 'system', text };
-      }
-      if (parsedInput.command === 'config') {
-        const sub = parsedInput.args[0];
-        if (!sub || sub === 'help') {
-          return {
-            type: 'system',
-            text: 'Usage:\n/config list\n/config get <key>\n/config set <key> <value>\n/config reset'
-          };
-        }
-
-        if (sub === 'list') {
-          config = await loadConfig();
-          return { type: 'system', text: JSON.stringify(config, null, 2) };
-        }
-
-        if (sub === 'get') {
-          const key = parsedInput.args[1];
-          if (!key) return { type: 'system', text: 'Usage: /config get <key>' };
-          const value = await getConfigValue(key);
-          if (value === undefined) return { type: 'system', text: 'undefined' };
-          return {
-            type: 'system',
-            text: typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)
-          };
-        }
-
-        if (sub === 'set') {
-          const key = parsedInput.args[1];
-          const value = parsedInput.args.slice(2).join(' ');
-          if (!key || !value) return { type: 'system', text: 'Usage: /config set <key> <value>' };
-          await setConfigValue(key, value);
-          config = await loadConfig();
-          await syncRuntimeFromConfig(
-            key === 'model.name' ? { model: config.model?.name } : {}
-          );
-          const text = `Set ${key}=${value}`;
-          await persistLocalExchange(line, text);
-          return { type: 'system', text };
-        }
-
-        if (sub === 'reset') {
-          await resetConfig();
-          config = await loadConfig();
-          await syncRuntimeFromConfig({ model: resolveDefaultModel(config) });
-          syncCompactStateFromConfig();
-          compactState.mode = 'conservative';
-          compactState.autoEnabled = true;
-          const text = 'Config reset complete';
-          await persistLocalExchange(line, text);
-          return { type: 'system', text };
-        }
-
-        return { type: 'system', text: `Unknown /config subcommand: ${sub}` };
-      }
-      if (parsedInput.command === 'compact') {
-        const cargs = parseCompactArgs(parsedInput.args);
-
-        if (cargs.auto === 'on') compactState.autoEnabled = true;
-        if (cargs.auto === 'off') compactState.autoEnabled = false;
-        if (typeof cargs.threshold === 'number' && cargs.threshold >= 50 && cargs.threshold <= 95) {
-          compactState.threshold = cargs.threshold;
-        }
-        if (cargs.mode) compactState.mode = cargs.mode;
-
-        if (cargs.restore) {
-          setCompactedView(null);
-          const text = 'Context restored to full view';
-          await persistLocalExchange(line, text, { includeUser: false });
-          return { type: 'system', text };
-        }
-
-        const compactSource = modelVisibleMessages(compactedForModel ?? currentSession.messages);
-        const beforeTokens = estimateMessagesTokens(compactSource);
-
-        // --micro: only do micro-compact (in-place tool result clearing)
-        if (cargs.micro) {
-          const microKeep = Number(config.context?.microcompact_keep_recent || 5);
-          const micro = microCompactMessages(compactSource, { keepRecent: microKeep, enabled: true });
-          if (!micro.changed) {
-            return { type: 'system', text: 'Micro-compact: nothing to clear' };
-          }
-          const afterTokens = estimateMessagesTokens(micro.messages);
-          const report = `Micro-compact ${cargs.preview ? 'preview' : 'applied'}: ${beforeTokens} -> ${afterTokens} tokens (saved ${micro.tokensSaved})`;
-
-          if (cargs.preview) {
-            return { type: 'system', text: report };
-          }
-
-          setCompactedView(micro.messages.map((m) => ({ ...m, at: new Date().toISOString() })));
-          await persistLocalExchange(line, report, { includeUser: false });
-          return { type: 'system', text: report };
-        }
-
-        const sourceIsCompacted = Boolean(compactedForModel);
-        const macroSource = modelVisibleMessages(compactedForModel ?? currentSession.messages);
-        const result = await compactMessagesLocally(macroSource, { mode: compactState.mode, force: true, generateSummary: createCompactSummaryGenerator(config, null) });
-        if (!result.changed) {
-          return { type: 'system', text: 'Nothing to compact yet' };
-        }
-        const afterTokens = estimateMessagesTokens(result.compacted);
-        const report = `Compact ${cargs.preview ? 'preview' : 'applied'} (${compactState.mode}): ${beforeTokens} -> ${afterTokens} tokens`;
-
-        if (cargs.preview) {
-          return { type: 'system', text: `${report}\n\n${result.summary}` };
-        }
-
-        setCompactedView(
-          result.compacted.map((m) => ({ ...m, at: new Date().toISOString() })),
-          {
-            boundaryIndex: translateCompactBoundaryToOriginal(sourceIsCompacted, currentSession.compact, result.boundaryIndex),
-            mode: compactState.mode
-          }
-        );
-        await captureCompactSummary({
-          summary: result.summary,
-          mode: compactState.mode,
-          beforeTokens,
-          afterTokens
-        });
-        await persistLocalExchange(line, report, { includeUser: false });
-        return { type: 'system', text: report };
-      }
-      if (parsedInput.command === 'commands') {
-        const all = listCommandNames();
-        if (all.length === 0) {
-          return { type: 'system', text: 'No commands/skills available' };
-        }
-        const rows = all.map((c) => `/${c.name}${c.description ? ` - ${c.description}` : ''}`);
-        return { type: 'system', text: rows.join('\n') };
-      }
-
-      let custom = commands.get(parsedInput.command);
-      if (!custom) {
-        await reloadCommandsAndSkills();
-        custom = commands.get(parsedInput.command);
-        if (!custom) {
-          return { type: 'system', text: `Unknown slash command: /${parsedInput.command}` };
-        }
-      }
-      if (custom.metadata.type === 'skill' && !isSkillEnabled(config, custom.name, custom)) {
-        return { type: 'system', text: `Skill is disabled: ${custom.name}` };
-      }
-      if (custom.metadata.type === 'skill' && (custom.name === 'project-requirements' || custom.name === 'project-requirements-md')) {
-        const defaultOutputFormat = getProjectRequirementsDefaultOutputFormat(custom);
-        const projectRequirementsOptions = parseProjectRequirementsOptions(parsedInput.args, { defaultOutputFormat });
-        const formatError = validateProjectRequirementsFormat(custom.name, projectRequirementsOptions.outputFormat);
-        if (formatError) {
-          return { type: 'system', text: formatError };
-        }
-        if (codeWikiGenerate || projectRequirementsOptions.runner === 'agent') {
-          return await runProjectRequirementsSingleAgent({
-            custom,
-            parsedInput,
-            currentSession,
-            config,
-            model,
-            systemPrompt: activeReplySystemPrompt,
-            onAgentEvent,
-            // CodeWiki generation uses scoped full-access inside runProjectRequirementsSingleAgent.
-            requestToolApproval: codeWikiGenerate ? null : activeRequestToolApproval,
-            signal,
-            compactedForModel,
-            onCompactedUpdate: setCompactedView,
-            codeWikiGenerate
-          });
-        }
-        try {
-          return await runProjectRequirementsPipeline({
-            custom,
-            parsedInput,
-            currentSession,
-            config,
-            model,
-            systemPrompt: activeReplySystemPrompt,
-            onAgentEvent,
-            signal,
-            onSubSessionActive: (sub) => { activeSubSession = sub; }
-          });
-        } finally {
-          activeSubSession = null;
-        }
-      }
-
-      const customPrompt =
-        custom.name === 'brainstorming'
-          ? [
-              renderCommandPrompt(custom, []),
-              'Explicit brainstorm mode:',
-              '- Ask exactly one clarifying question first if any important uncertainty remains.',
-              '- Stop after the question and wait for the user\'s answer before continuing.',
-              '- Do not inspect the repo or generate code unless the user explicitly asks for that.',
-              '- If you recommend an option, present it as a suggested decision rather than a final choice for the user.',
-              parsedInput.args.length > 0 ? `Current question:\n${parsedInput.args.join(' ')}` : ''
-            ]
-              .filter(Boolean)
-              .join('\n\n')
-          : renderCommandPrompt(custom, parsedInput.args);
-      const rendered = await expandFileMentions(customPrompt, process.cwd());
-      if (custom.metadata.type === 'skill' && onAgentEvent) {
-        onAgentEvent({ type: 'skill:start', name: custom.name });
-      }
-      let result;
-      try {
-        result = await askModel({
-          text: custom.metadata.type === 'skill' ? line : rendered,
-          modelText: custom.metadata.type === 'skill' ? rendered : undefined,
-          session: currentSession,
-          config,
-          model,
-          systemPrompt: activeReplySystemPrompt,
-          onAgentEvent,
-          requestToolApproval: activeRequestToolApproval,
-          executionMode,
-          signal,
-          compactedForModel,
-          onCompactedUpdate: setCompactedView
-        });
-      } catch (error) {
-        if (custom.metadata.type === 'skill' && onAgentEvent) {
-          onAgentEvent({
-            type: 'skill:error',
-            name: custom.name,
-            summary: error instanceof Error ? error.message : String(error)
-          });
-          onAgentEvent({ type: 'skill:end', name: custom.name });
-        }
-        return {
-          type: 'system',
-          text: `Skill "${custom.name}" failed: ${error instanceof Error ? error.message : String(error)}`
-        };
-      }
-      if (custom.metadata.type === 'skill' && onAgentEvent) {
-        onAgentEvent({ type: 'skill:end', name: custom.name });
-      }
-      return { type: 'assistant', text: result.text };
-    }
-
-    if (hasPendingPlanApproval(currentSession)) {
-      if (isApprovalText(parsedInput.text)) {
-        const planState = { ...currentSession.planState };
-        const result = await executePlanWithSubAgents({
-          planState,
-          parentSession: currentSession,
-          config,
-          model,
-          systemPrompt: baseSystemPrompt,
-          onAgentEvent,
-          signal,
-          onSubSessionActive: (sub) => { activeSubSession = sub; },
-          requestToolApproval: activeRequestToolApproval,
-          changeTracker,
-          backupManager,
-          projectIsGit: Boolean(changeTracker?.enabled)
-        });
-        activeSubSession = null;
-        currentSession.planState = null;
-        if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
-        executionMode = 'normal';
-        await persistAssistantExchange(line, result.sessionText || result.text || '', {
-          includeUser: false,
-          extra: Array.isArray(result.transcript) ? { plan_transcript: result.transcript } : {}
-        });
-        return { type: 'assistant', text: result.text, aborted: !!result.aborted };
-      }
-      if (isStayInPlanText(parsedInput.text)) {
-        const text = buildPendingPlanApprovalMessage(currentSession.planState);
-        await persistLocalExchange('', text, { includeUser: false });
-        return { type: 'system', text };
-      }
-      if (isRejectPlanText(parsedInput.text)) {
-        currentSession.planState = null;
-        if (onAgentEvent) onAgentEvent({ type: 'plan:approval_cleared' });
-        executionMode = 'normal';
-        const text = 'Pending plan rejected and cleared.';
-        await persistLocalExchange('', text, { includeUser: false });
-        return { type: 'system', text };
-      }
-      return {
-        type: 'system',
-        text: buildPendingPlanApprovalMessage(currentSession.planState)
-      };
-    }
-
-    // Spec mode with no pending spec -> create a file-backed editable spec draft.
-    if (executionMode === 'spec') {
-      const expandedSpecText = await expandFileMentions(parsedInput.text, process.cwd());
-      let content = '';
-      try {
-        content = await buildSpecWithModel({
-          topic: expandedSpecText,
-          config,
-          model,
-          systemPrompt: activeReplySystemPrompt
-        });
-      } catch {
-        content = buildSpecTemplate(expandedSpecText);
-      }
-      const specTitle = extractSpecTitle(content, expandedSpecText);
-      const specPath = await writeMarkdownInProjectDir(
-        'specs',
-        specTitle,
-        content,
-        'spec',
-        currentSession.id
-      );
-      currentSession.planState = {
-        status: 'pending_spec_approval',
-        source: 'spec',
-        goal: expandedSpecText,
-        summary: specTitle,
-        specPath,
-        specText: content
-      };
-      if (onAgentEvent) {
-        onAgentEvent({
-          type: 'spec:pending_approval',
-          spec: buildPendingSpecSnapshot(currentSession.planState)
-        });
-      }
-      const text = `Spec draft created: ${specPath}\nReview and approve it to generate an implementation plan.`;
-      await persistLocalExchange('', text, { includeUser: false });
-      return { type: 'system', text };
-    }
-
-    // Plan mode with no pending plan → auto-generate structured plan
-    if (executionMode === 'plan') {
-      const expandedPlanText = await expandFileMentions(parsedInput.text, process.cwd());
-      await maybeAutoDreamFromRuntime();
-      const auto = await buildAutoPlanAndRun({
-        goal: expandedPlanText,
-        session: currentSession,
-        config,
-        model,
-        systemPrompt: activeReplySystemPrompt,
-        onAgentEvent,
-        sessionId: currentSession.id,
-        taskClass: classifyPlanTaskClass(expandedPlanText)
-      });
-      currentSession.planState = {
-        status: 'pending_approval',
-        source: 'auto',
-        goal: expandedPlanText,
-        filePath: auto.filePath,
-        summary: auto.summary || '',
-        finalSummary: auto.finalSummary || auto.summary || '',
-        steps: Array.isArray(auto.steps) ? auto.steps : []
-      };
-      if (onAgentEvent) {
-        onAgentEvent({
-          type: 'plan:pending_approval',
-          goal: currentSession.planState.goal,
-          summary: currentSession.planState.finalSummary || currentSession.planState.summary,
-          filePath: currentSession.planState.filePath,
-          steps: currentSession.planState.steps
-        });
-      }
-      const text = buildAutoPlanSystemSummary(auto);
-      await persistLocalExchange('', text, { includeUser: false });
-      return { type: 'system', text };
-    }
-
-    if (compactState.autoEnabled) {
-      const compactSource = modelVisibleMessages(compactedForModel ?? currentSession.messages);
-      const currentTokens = estimateMessagesTokens(compactSource);
-      const maxTokens = effectiveMaxContextTokens(config);
-      const usagePct = (currentTokens / maxTokens) * 100;
-      if (usagePct >= compactState.threshold) {
-        // Phase 0: try micro-compact first
-        const microEnabled = config.context?.microcompact_enabled !== false;
-        const microKeep = Number(config.context?.microcompact_keep_recent || 5);
-        let needsMacro = true;
-        if (microEnabled) {
-          const micro = microCompactMessages(compactSource, { keepRecent: microKeep, enabled: true });
-          if (micro.changed) {
-            setCompactedView(micro.messages.map((m) => ({
-              ...m,
-              at: new Date().toISOString()
-            })));
-            const afterMicroTokens = estimateMessagesTokens(compactedForModel);
-            const afterMicroPct = (afterMicroTokens / maxTokens) * 100;
-            if (onAgentEvent) {
-              onAgentEvent({
-                type: 'compact:auto',
-                mode: 'micro',
-                threshold: compactState.threshold,
-                tokensSaved: micro.tokensSaved
-              });
-            }
-            if (afterMicroPct < compactState.threshold) {
-              needsMacro = false;
-              await captureCompactSummary({
-                summary: `Micro-compact saved ${micro.tokensSaved} tokens`,
-                mode: 'micro',
-                beforeTokens: currentTokens,
-                afterTokens: afterMicroTokens
-              });
-            }
-          }
-        }
-        // Phase 1: macro compact if still over threshold
-        if (needsMacro) {
-          const sourceIsCompacted = Boolean(compactedForModel);
-          const macroSource = modelVisibleMessages(compactedForModel ?? currentSession.messages);
-          const autoResult = await compactMessagesLocally(macroSource, {
-            mode: compactState.mode,
-            force: true,
-            generateSummary: createCompactSummaryGenerator(config, null)
-          });
-          if (autoResult.changed) {
-            setCompactedView(
-              autoResult.compacted.map((m) => ({
-                ...m,
-                at: new Date().toISOString()
-              })),
-              {
-                boundaryIndex: translateCompactBoundaryToOriginal(
-                  sourceIsCompacted,
-                  currentSession.compact,
-                  autoResult.boundaryIndex
-                ),
-                mode: compactState.mode
-              }
-            );
-            await captureCompactSummary({
-              summary: autoResult.summary,
-              mode: compactState.mode,
-              beforeTokens: currentTokens,
-              afterTokens: estimateMessagesTokens(compactedForModel)
-            });
-            if (onAgentEvent) {
-              onAgentEvent({
-                type: 'compact:auto',
-                mode: compactState.mode,
-                threshold: compactState.threshold
-              });
-            }
-          }
-        }
-      }
-    }
-
-    const expandedText = await expandFileMentions(parsedInput.text, process.cwd());
+    const expandedText = await expandFileMentions(inputText, root);
     const autoRoute = classifyAutoRoute(expandedText);
-    if (autoRoute.autoPlan) {
-      await maybeAutoDreamFromRuntime();
-      const auto = await buildAutoPlanAndRun({
-        goal: expandedText,
-        session: currentSession,
-        config,
-        model,
-        systemPrompt: activeReplySystemPrompt,
-        onAgentEvent,
-        sessionId: currentSession.id,
-        taskClass: classifyPlanTaskClass(expandedText)
-      });
-      currentSession.planState = {
-        status: 'pending_approval',
-        source: 'auto',
-        goal: expandedText,
-        filePath: auto.filePath,
-        summary: auto.summary || '',
-        finalSummary: auto.finalSummary || auto.summary || '',
-        steps: Array.isArray(auto.steps) ? auto.steps : []
-      };
-      executionMode = 'plan';
-      const text = buildAutoPlanSystemSummary(auto);
-      await persistLocalExchange('', text, { includeUser: false });
-      return { type: 'system', text };
-    }
-
-    const alwaysSkills = getAlwaysSkillCommands(commands, config);
+    const injectAlwaysSkills = shouldInjectAlwaysSkills(executionMode);
+    const alwaysSkills = injectAlwaysSkills ? getAlwaysSkillCommands(commands, config, dismissedAlwaysSkills, executionMode) : [];
     if (alwaysSkills.length > 0 && onAgentEvent) {
       onAgentEvent({
         type: 'skill:always',
         names: alwaysSkills.map((skill) => skill.name)
       });
     }
-    const alwaysSkillPrompt = buildAlwaysSkillPromptBlock(commands, config);
+    const alwaysSkillPrompt = injectAlwaysSkills ? buildAlwaysSkillPromptBlock(commands, config, dismissedAlwaysSkills, executionMode) : '';
     const skillPrompt = alwaysSkillPrompt
       ? await composeSystemPrompt({
           shellRulesPrompt: activeReplySystemPrompt,
           config,
-          workspaceRoot: process.cwd(),
+          workspaceRoot: root,
           skillsPrompt: alwaysSkillPrompt,
           includeSoul: false,
           includeMemory: false
@@ -7868,7 +7460,7 @@ export async function createChatRuntime({
         ? await composeSystemPrompt({
             shellRulesPrompt: skillPrompt,
             config,
-            workspaceRoot: process.cwd(),
+            workspaceRoot: root,
             skillsPrompt: buildMediumTaskPromptBlock(),
             includeSoul: false,
             includeMemory: false
@@ -7876,31 +7468,167 @@ export async function createChatRuntime({
         : skillPrompt;
     const result = await askModel({
       text: expandedText,
+      ...(optionModelText ? { modelText: optionModelText } : {}),
+      modelImages: Array.isArray(options?.modelImages) ? options.modelImages : [],
       session: currentSession,
       config,
       model,
       systemPrompt: routedSystemPrompt,
       onAgentEvent,
       requestToolApproval: activeRequestToolApproval,
+      requestUserInput: activeRequestUserInput,
       executionMode,
       signal,
       compactedForModel,
       onCompactedUpdate: setCompactedView,
       changeTracker,
-      backupManager
+      backupManager,
+      onExecutionModeSync: syncExecutionModeWithSession,
+      workspaceRoot: root,
+      selectedSkillNames: options?.selectedSkillNames
     });
-    void Promise.allSettled([
-      saveDirectMemoryPrompt(expandedText),
-      captureUserPromptForDream(expandedText)
-    ]);
+    syncExecutionModeWithSession();
+    void captureUserPromptForDream(expandedText);
     return { type: 'assistant', text: result.text, aborted: !!result.aborted };
+  };
+  const getAvailableSkills = () =>
+    Array.from(commands.values())
+      .filter((command) => isUserInvocableSkill(command))
+      .filter((command) => isSkillEnabled(config, command.name, command, executionMode))
+      .map((command) => {
+        const source = String(command.source || '');
+        const scope = source.startsWith('project-')
+          ? 'project'
+          : source.startsWith('global-') || source.startsWith('registry-')
+            ? 'global'
+            : source.startsWith('bundled-')
+              ? 'builtin'
+              : '';
+        return {
+          name: String(command.name || ''),
+          description: String(command.metadata?.description || '').trim(),
+          ...(scope ? { scope } : {})
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+  const submitMessage = async (submission, onAgentEvent) => {
+    const normalized = normalizeChatSubmission(submission);
+    await reloadCommandsAndSkills();
+    const composed = composeSelectedSkills(commands, normalized, {
+      isEnabled: (command) => isSkillEnabled(config, command.name, command, executionMode)
+    });
+    if (composed.error) throw new Error(composed.error);
+    if (typeof onAgentEvent === 'function') {
+      for (const name of composed.skillNames || []) {
+        const startedAt = new Date().toISOString();
+        onAgentEvent({ type: 'skill:start', name, startedAt });
+        onAgentEvent({
+          type: 'skill:end',
+          name,
+          startedAt,
+          endedAt: new Date().toISOString()
+        });
+      }
+    }
+    const result = await executeSubmission(composed.text, onAgentEvent, {
+      modelText: appendAttachmentContext(composed.modelText, submission?.modelText),
+      modelImages: Array.isArray(submission?.modelImages) ? submission.modelImages : [],
+      attachmentIds: normalized.attachmentIds,
+      dismissedAlwaysSkills: normalized.dismissedAlwaysSkills,
+      selectedSkillNames: composed.skillNames
+    });
+    if (result?.type === 'assistant' && config?.memory?.background_review?.after_turn !== false) {
+      scheduleSessionMemoryReview({ sessionId: currentSession.id, config });
+    }
+    return result;
+  };
+
+  const submit = async (line, onAgentEvent) => {
+    const text = String(line || '');
+    if (!text.trim()) return { type: 'noop' };
+    if (text.trimStart().startsWith('!')) {
+      const shell = await handleShellInput(text.trimStart().slice(1), config, root);
+      return { type: 'shell', text: shell.text };
+    }
+    return submitMessage({ text }, onAgentEvent);
+  };
+
+  const dispatchAction = async (action, options = {}) => {
+    const onAgentEvent = typeof options.onAgentEvent === 'function'
+      ? options.onAgentEvent
+      : undefined;
+    const normalized = validateChatAction(action, buildChatActionValidationState(buildRuntimeStateSnapshot({
+      currentSession,
+      config,
+      model,
+      executionMode,
+      extraSession: activeSubSession,
+      alwaysSkillNames: getAlwaysSkillCommands(commands, config, null, executionMode).map((skill) => skill.name)
+    }), approvalRequestState.current));
+    const payload = normalized.payload;
+    const handlers = {
+      [CHAT_ACTIONS.CAPTURE]: async () => captureToInbox({
+        summary: String(payload.summary || '').trim(),
+        scope: payload.scope || 'project',
+        type: payload.type || 'note',
+        details: String(payload.details || '').trim(),
+        source: 'chat-action',
+        projectDir: root
+      }),
+      [CHAT_ACTIONS.INBOX]: async () => listInbox(),
+      [CHAT_ACTIONS.DREAM]: async () => runDreamConsolidation({
+        dryRun: payload.dryRun === true,
+        scope: payload.scope || null,
+        workspaceRoot: root,
+        config,
+        writeAudit: true
+      }),
+      [CHAT_ACTIONS.SPEC_REJECT]: async () => {
+        currentSession.specState = null;
+        if (currentSession.planState?.status === 'pending_spec_approval') currentSession.planState = null;
+        restoreConfiguredExecutionMode();
+        await saveSession(currentSession);
+        return { type: 'system', text: 'Spec rejected.' };
+      },
+      [CHAT_ACTIONS.REFLECT_REJECT]: async () => {
+        currentSession.planState = null;
+        restoreConfiguredExecutionMode();
+        await saveSession(currentSession);
+        return { type: 'system', text: 'Reflect skill draft rejected.' };
+      },
+      [CHAT_ACTIONS.COMPACT]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
+      [CHAT_ACTIONS.REFLECT]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
+      [CHAT_ACTIONS.SPEC_PLAN_AND_EXECUTE]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
+      [CHAT_ACTIONS.SPEC_EXECUTE]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
+      [CHAT_ACTIONS.SPEC_SAVE]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
+      [CHAT_ACTIONS.SPEC_REVISE]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
+      [CHAT_ACTIONS.REFLECT_APPROVE]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
+      [CHAT_ACTIONS.REFLECT_REVISE]: async () => executeSubmission('', onAgentEvent, { structuredAction: normalized }),
+      [CHAT_ACTIONS.APPROVAL_APPROVE]: async () => resolvePendingApproval(
+        approvalRequestState,
+        payload.requestId,
+        { approved: true }
+      ),
+      [CHAT_ACTIONS.APPROVAL_REJECT]: async () => resolvePendingApproval(
+        approvalRequestState,
+        payload.requestId,
+        { approved: false, reason: payload.reason || '' }
+      )
+    };
+    const handler = handlers[normalized.name];
+    if (!handler) {
+      throw new Error(`Chat action handler is not available: ${normalized.name}`);
+    }
+    return handler();
   };
 
   return {
-    listCommandNames,
-    getCompletionOptions,
-    isImmediateLocalInput,
     submit,
+    submitMessage,
+    submitCodeWiki: (line, onAgentEvent, options = {}) => executeSubmission(line, onAgentEvent, options),
+    dispatchAction,
+    getSession: () => currentSession,
     abort: () => {
       if (activeAbortController && !activeAbortController.signal.aborted) {
         activeAbortController.abort();
@@ -7913,16 +7641,14 @@ export async function createChatRuntime({
     getCurrentSessionId: () => currentSession.id,
     getSessionMessages: () => currentSession.messages || [],
     getSessionCompact: () => currentSession.compact || null,
+    getAvailableSkills,
+    persistRunStatus,
     getChangeSets: () => listGitOplogChanges(changeTracker),
     getChangeSetPatch: (id) => readGitOplogPatch(changeTracker, id),
     undoChangeSet: (id) => undoGitOplogChange(changeTracker, id),
     undoChangeSets: (ids) => undoGitOplogChanges(changeTracker, ids),
     reloadConfig: async (options = {}) => {
-      config = await loadConfig();
-      config.runtime = {
-        ...(config.runtime || {}),
-        project_is_git: Boolean(changeTracker?.enabled)
-      };
+      config = attachRuntimeState(await loadConfig());
       await syncRuntimeFromConfig(options);
       return config;
     },
@@ -7931,47 +7657,52 @@ export async function createChatRuntime({
       return true;
     },
     setExecutionMode: async (next) => {
-      if (!['normal', 'plan', 'spec'].includes(next)) return false;
-      executionMode = next;
-      await setConfigValue('execution.mode', next);
-      config = await loadConfig();
+      if (!isExecutionModeInput(next)) return false;
+      const normalized = normalizeExecutionMode(next);
+      if (!['normal', 'plan'].includes(normalized)) return false;
+      executionMode = normalized;
+      await setConfigValue('execution.mode', normalized);
+      config = attachRuntimeState(await loadConfig());
       return true;
     },
     setApprovalMode: async (next) => {
       const normalized = String(next || '').toLowerCase().replace(/-/g, '_');
       if (!['review', 'auto', 'full_access'].includes(normalized)) return false;
       await setConfigValue('execution.approval_mode', normalized);
-      config = await loadConfig();
+      config = attachRuntimeState(await loadConfig());
       return true;
     },
     setRequestToolApproval: (handler) => {
-      activeRequestToolApproval = typeof handler === 'function' ? handler : null;
+      requestToolApprovalObserver = typeof handler === 'function' ? handler : null;
+      return true;
+    },
+    resolveToolApproval: (requestId, decision = {}) => {
+      const pending = peekPendingApproval(approvalRequestState, requestId);
+      if (!pending) return { ok: false, code: 'NO_PENDING_APPROVAL' };
+      try {
+        return {
+          ok: true,
+          result: resolvePendingApproval(approvalRequestState, requestId, decision)
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          code: error?.code || 'NO_PENDING_APPROVAL',
+          message: error?.message || 'No matching approval request is pending'
+        };
+      }
+    },
+    hasPendingToolApproval: (requestId) => Boolean(peekPendingApproval(approvalRequestState, requestId)),
+    setRequestUserInput: (handler) => {
+      activeRequestUserInput = typeof handler === 'function' ? handler : null;
       return true;
     },
     setOnTitleUpdate: (cb) => {
       onTitleUpdateCallback = typeof cb === 'function' ? cb : null;
-    },
-    updatePendingPlan: async (patch = {}) => {
-      const next = updatePendingPlanState(currentSession, patch);
-      if (!next) return null;
-      if (currentSession.planState.filePath) {
-        await fs.writeFile(
-          currentSession.planState.filePath,
-          `${renderAutoPlanMarkdown({
-            goal: currentSession.planState.goal,
-            autoPlan: { summary: currentSession.planState.summary, steps: currentSession.planState.steps || [] },
-            finalSummary: currentSession.planState.finalSummary || currentSession.planState.summary,
-            approvalText: 'Pending user approval before implementation.',
-            progressLine: '- Plan edited in Web UI and waiting for execution.'
-          })}\n`,
-          'utf8'
-        ).catch(() => {});
-      }
-      await saveSession(currentSession);
-      return next;
+      sessionTitleUpdateListener = onTitleUpdateCallback;
     },
     updatePendingReflect: async (patch = {}) => {
-      const next = updatePendingReflectState(currentSession, patch, process.cwd());
+      const next = updatePendingReflectState(currentSession, patch, root);
       if (!next) return null;
       await saveSession(currentSession);
       return next;
@@ -7979,38 +7710,45 @@ export async function createChatRuntime({
     updatePendingSpec: async (patch = {}) => {
       const next = updatePendingSpecState(currentSession, patch);
       if (!next) return null;
-      const filePath = String(currentSession.planState.specPath || currentSession.planState.filePath || '').trim();
+      const filePath = String(currentSession.specState?.specPath || '').trim();
       if (filePath) {
-        await fs.writeFile(filePath, `${String(currentSession.planState.specText || '').trim()}\n`, 'utf8').catch(() => {});
+        await fs.writeFile(filePath, `${String(currentSession.specState?.specText || '').trim()}\n`, 'utf8').catch(() => {});
       }
       await saveSession(currentSession);
-      return buildPendingSpecSnapshot(currentSession.planState);
+      return buildPendingSpecSnapshot(currentSession.specState);
     },
     setPendingSpecFromFile: async ({ filePath = '', specText = '', goal = '', summary = '' } = {}) => {
       const resolvedPath = String(filePath || '').trim();
       const text = String(specText || '').trim();
       if (!resolvedPath || !text) return null;
+      const existing = getPendingSpecState(currentSession);
+      const existingPath = String(existing?.specPath || '').trim();
+      const samePendingSpec =
+        existingPath && path.resolve(existingPath) === path.resolve(resolvedPath);
       const title = summary || extractSpecTitle(text, path.basename(resolvedPath, '.md'));
-      currentSession.planState = {
-        status: 'pending_spec_approval',
+      currentSession.specState = {
+        status: 'pending_approval',
         source: 'spec-file',
-        goal: goal || title,
-        summary: title,
+        goal: goal || (samePendingSpec ? existing.goal : '') || title,
+        summary: summary || (samePendingSpec ? existing.summary : '') || title,
         specPath: resolvedPath,
         specText: text
       };
-      executionMode = 'spec';
+      if (currentSession.planState?.status === 'pending_spec_approval') currentSession.planState = null;
+      syncExecutionModeWithSession();
       await saveSession(currentSession);
-      return buildPendingSpecSnapshot(currentSession.planState);
+      return buildPendingSpecSnapshot(currentSession.specState);
     },
     deletePendingSpec: async () => {
       if (!hasPendingSpecApproval(currentSession)) return null;
-      const filePath = String(currentSession.planState.specPath || currentSession.planState.filePath || '').trim();
+      const pendingSpec = getPendingSpecState(currentSession);
+      const filePath = String(pendingSpec?.specPath || '').trim();
       if (filePath) {
         await fs.unlink(filePath).catch(() => {});
       }
-      currentSession.planState = null;
-      executionMode = 'normal';
+      currentSession.specState = null;
+      if (currentSession.planState?.status === 'pending_spec_approval') currentSession.planState = null;
+      restoreConfiguredExecutionMode();
       await saveSession(currentSession);
       return { filePath };
     },
@@ -8026,7 +7764,9 @@ export async function createChatRuntime({
         config,
         model,
         executionMode,
-        extraSession: activeSubSession
+        extraSession: activeSubSession,
+        workspaceRoot: root,
+        alwaysSkillNames: getAlwaysSkillCommands(commands, config, null, executionMode).map((skill) => skill.name)
       })
   };
 }

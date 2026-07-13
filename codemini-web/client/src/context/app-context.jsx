@@ -9,8 +9,150 @@ import React, {
 } from "react";
 import { t } from "../../i18n/index.js";
 import * as api from "../hooks/use-api.js";
+import { extractReasoningRuntimePatch } from "../lib/reasoning-controls.js";
+import { parseAttachmentsFromModelContent } from "../lib/message-attachments.js";
+import { CHAT_ACTION_NAMES, LOCAL_SPEC_REVIEW_ACTIONS } from "../lib/chat-action-names.js";
+import {
+  operationKey,
+  waitForAcceptedOperation,
+} from "../lib/chat-operation-waiter.js";
+import {
+  finishInitialization,
+  hydrateBeforeConnect,
+} from "../lib/async-lifecycle.js";
+import {
+  activateSession,
+  alignSessionAssistantMessages,
+  alignSessionUserMessages,
+  hydrateSessionRuntimes,
+  mergeAlignedAssistantSkillContext,
+  mergeAlignedUserContext,
+  projectVisibleSessionState,
+  reconcileSessionMessages,
+  reduceSessionEvent,
+  runSessionOperation,
+} from "../lib/session-state.js";
+import {
+  ACTIVE_SESSION_STATUSES,
+  activeSessionIds,
+  abortSessionIds,
+  buildConversationStartSidebarEntry,
+  projectSessionRuntime,
+  upsertSidebarSession,
+} from "../lib/session-ui-state.js";
+import { normalizeProjectDirKey } from "../../../shared/project-key.js";
+import {
+  findPlanStepMessageId,
+  isCompletedStatus,
+  settleCompletedPlanToolCards,
+  settleRunningCreatePlanCards,
+  updatePlanOverviewStepStatus,
+  applyPlanEventToMessage,
+  planRunFromTranscript,
+} from "../lib/plan-ui-state.js";
+import {
+  addSkillToSegments,
+  finishStreamingTextSegments,
+  finishThinkingSegments,
+  mergeUsage,
+  normalizeUsage,
+  updateSkillInSegments,
+} from "../../../shared/transcript-segments.js";
+import { skillBadgesFromSessionMessage } from "../lib/user-skill-prompt.js";
 
 const AppContext = createContext(null);
+
+function isAbortRelatedText(text = "") {
+  const trimmed = String(text || "").trim();
+  return (
+    /^Aborted:/i.test(trimmed) ||
+    /^Failed:\s*This operation was aborted\.?$/i.test(trimmed) ||
+    /operation was aborted/i.test(trimmed)
+  );
+}
+
+function isAbortRelatedResult(result = {}) {
+  return (
+    !!result.aborted ||
+    result.type === "aborted" ||
+    (result.type === "error" && isAbortRelatedText(result.text))
+  );
+}
+
+function isManualAbortDividerMessage(message = {}) {
+  return (
+    message?.dividerType === "manual-abort" ||
+    message?.dividerType === "abort"
+  );
+}
+
+function markPreviousAssistantManualAborted(messages = [], fromIndex = -1) {
+  const list = Array.isArray(messages) ? [...messages] : [];
+  const start = fromIndex < 0 ? list.length + fromIndex : fromIndex;
+  for (let i = start; i >= 0; i--) {
+    const prev = list[i];
+    if (
+      !prev ||
+      prev.role === "you" ||
+      prev.role === "divider" ||
+      prev.role === "system"
+    ) {
+      continue;
+    }
+    list[i] = { ...prev, manualAborted: true, isComplete: true };
+    break;
+  }
+  return list;
+}
+
+function stripAbortTextSegments(segments = []) {
+  return (Array.isArray(segments) ? segments : []).filter(
+    (seg) => !(seg?.type === "text" && isAbortRelatedText(seg.text || "")),
+  );
+}
+
+function sanitizeManualAbortMessages(messages = []) {
+  const list = Array.isArray(messages) ? messages : [];
+  const result = [];
+  for (const message of list) {
+    if (isManualAbortDividerMessage(message)) {
+      const folded = markPreviousAssistantManualAborted(result);
+      result.length = 0;
+      result.push(...folded);
+      continue;
+    }
+    const text = String(message?.text || message?.content || "").trim();
+    if (message?.role === "error" && isAbortRelatedText(text)) {
+      const folded = markPreviousAssistantManualAborted(result);
+      result.length = 0;
+      result.push(...folded);
+      continue;
+    }
+    result.push(message);
+  }
+  return result.map((message) => {
+    const segments = stripAbortTextSegments(message.segments || []);
+    const plainText = String(message?.text || "").trim();
+    const hadAbortText =
+      message?.manualAborted ||
+      isAbortRelatedText(plainText) ||
+      (Array.isArray(message.segments) &&
+        message.segments.some(
+          (seg) => seg?.type === "text" && isAbortRelatedText(seg.text || ""),
+        ));
+    if (!hadAbortText) return message;
+    const next = {
+      ...message,
+      manualAborted: true,
+      isComplete: true,
+      segments,
+    };
+    if (isAbortRelatedText(plainText)) {
+      delete next.text;
+    }
+    return next;
+  });
+}
 
 function isProjectIndexEvent(event) {
   const name = String(event?.name || "").toLowerCase();
@@ -29,12 +171,14 @@ function parseRoute() {
   const chatMatch = path.match(/^\/chat\/([^/]+)$/);
   if (chatMatch)
     return { view: "chat", sessionId: decodeURIComponent(chatMatch[1]) };
+  if (path === "/sessions") return { view: "sessions" };
   if (path === "/codewiki")
     return { view: "codewiki", projectPath: params.get("project") || "" };
   return { view: "chat" };
 }
 
 function routeFor(view, sessionId, options = {}) {
+  if (view === "sessions") return "/sessions";
   if (view === "codewiki") {
     const projectPath = String(options.projectPath || "").trim();
     return projectPath
@@ -62,7 +206,8 @@ function updateRoute(
 
 function projectNameFromRuntimeState(rs = {}) {
   if (rs.isGeneral) return "__codemini_general__";
-  return rs.cwd?.split(/[/\\]/).pop() || rs.cwd || "...";
+  const dir = rs.cwd || rs.projectDir || "";
+  return dir.split(/[/\\]/).pop() || dir || "...";
 }
 
 const initialState = {
@@ -70,17 +215,27 @@ const initialState = {
   busy: false,
   currentView: "chat",
   runtimeState: null,
+  currentSessionId: null,
+  sessionRuntimeById: {},
+  sessionMessagesById: {},
   live: false,
   stageLabel: "",
   messages: [],
   activeMsgId: null,
   pendingToolChanges: [],
   planSteps: [],
-  pendingPlanApproval: null,
   pendingSpecApproval: null,
   pendingReflectApproval: null,
+  reflectDialogOpen: false,
+  reflectDialogError: "",
+  reflectDialogResult: "",
+  dreamDialogOpen: false,
+  dreamDialogStatus: "idle",
+  dreamDialogResult: null,
+  dreamDialogError: "",
   runtimeActivities: [],
   approvalRequest: null,
+  userInputRequest: null,
   config: null,
   configStatus: null,
   configOpen: false,
@@ -88,6 +243,7 @@ const initialState = {
   skillsOpen: false,
   memoryOpen: false,
   soulsOpen: false,
+  soulsRevision: 0,
   aboutOpen: false,
   gitDiffOpen: false,
   sessions: [],
@@ -133,180 +289,6 @@ function collapseRenderedSkillPrompt(content) {
   return prefix;
 }
 
-function updateToolInSegments(segments, toolId, updater) {
-  return segments.map((seg) => {
-    if (seg.type !== "tools") return seg;
-    const idx = seg.cards.findIndex((c) => c.id === toolId);
-    if (idx === -1) return seg;
-    const newCards = [...seg.cards];
-    newCards[idx] = updater(newCards[idx]);
-    return { ...seg, cards: newCards };
-  });
-}
-
-function addToolToSegments(segments, toolCard) {
-  if (segments.length === 0) return [{ type: "tools", cards: [toolCard] }];
-  const last = segments[segments.length - 1];
-  if (last.type === "tools")
-    return [
-      ...segments.slice(0, -1),
-      { ...last, cards: [...last.cards, toolCard] },
-    ];
-  return [...segments, { type: "tools", cards: [toolCard] }];
-}
-
-function addSkillToSegments(segments, event) {
-  const now = new Date().toISOString();
-  return [
-    ...(Array.isArray(segments) ? segments : []),
-    {
-      type: "skill",
-      name: event.name,
-      status: "running",
-      startedAt: event.startedAt || now,
-    },
-  ];
-}
-
-function updateSkillInSegments(segments, name, updater) {
-  const source = Array.isArray(segments) ? segments : [];
-  let targetIndex = -1;
-  for (let i = source.length - 1; i >= 0; i -= 1) {
-    const segment = source[i];
-    if (segment?.type === "skill" && segment.name === name && segment.status === "running") {
-      targetIndex = i;
-      break;
-    }
-  }
-  if (targetIndex === -1) return source;
-  return source.map((segment, index) => (index === targetIndex ? updater(segment) : segment));
-}
-
-function ensureTextSegment(segments) {
-  if (segments.length === 0)
-    return [{ type: "text", text: "", isStreaming: false }];
-  const last = segments[segments.length - 1];
-  if (last.type === "text") return segments;
-  return [...segments, { type: "text", text: "", isStreaming: false }];
-}
-
-function appendDeltaToSegments(segments, delta) {
-  const segs = ensureTextSegment(segments);
-  const last = segs[segs.length - 1];
-  return [
-    ...segs.slice(0, -1),
-    { ...last, text: (last.text || "") + delta, isStreaming: true },
-  ];
-}
-
-function appendThinkingToSegments(segments, delta, isStreaming = true) {
-  const value = String(delta || "");
-  if (!value) return segments || [];
-  const segs = Array.isArray(segments) ? segments : [];
-  const now = new Date().toISOString();
-  const nowMs = Date.parse(now);
-  const last = segs[segs.length - 1];
-  if (last?.type === "thinking") {
-    const startedAt = last.startedAt || now;
-    return [
-      ...segs.slice(0, -1),
-      {
-        ...last,
-        text: `${last.text || ""}${value}`,
-        isStreaming,
-        startedAt,
-        endedAt: isStreaming ? null : last.endedAt || now,
-        durationMs: Math.max(
-          Number(last.durationMs || 0),
-          nowMs - Date.parse(startedAt),
-        ),
-      },
-    ];
-  }
-  return [
-    ...segs,
-    {
-      type: "thinking",
-      text: value,
-      isStreaming,
-      startedAt: now,
-      endedAt: isStreaming ? null : now,
-      durationMs: isStreaming ? 0 : null,
-    },
-  ];
-}
-
-function resolveThinkingDurationMs(seg, endedAt) {
-  const explicit = Number(seg?.durationMs);
-  const startMs = Date.parse(seg?.startedAt || "");
-  const endMs = Date.parse(seg?.endedAt || endedAt || "");
-  const measured =
-    Number.isFinite(startMs) && Number.isFinite(endMs)
-      ? Math.max(0, endMs - startMs)
-      : null;
-  if (Number.isFinite(explicit) && measured != null)
-    return Math.max(explicit, measured);
-  if (Number.isFinite(explicit)) return Math.max(0, explicit);
-  return measured;
-}
-
-function finishThinkingSegments(segments) {
-  const endedAt = new Date().toISOString();
-  return (Array.isArray(segments) ? segments : []).map((seg) =>
-    seg.type === "thinking"
-      ? {
-          ...seg,
-          isStreaming: false,
-          endedAt: seg.endedAt || endedAt,
-          durationMs: resolveThinkingDurationMs(seg, endedAt),
-        }
-      : seg,
-  );
-}
-
-function normalizeUsage(usage) {
-  if (!usage || typeof usage !== "object") return null;
-  const out = {};
-  for (const key of [
-    "inputTokens",
-    "outputTokens",
-    "totalTokens",
-    "cachedInputTokens",
-    "cacheMissInputTokens",
-    "cacheWriteInputTokens",
-    "reasoningOutputTokens",
-    "requests",
-  ]) {
-    const value = Number(usage?.[key]);
-    if (Number.isFinite(value)) out[key] = Math.max(0, Math.round(value));
-  }
-  return Object.keys(out).length ? out : null;
-}
-
-function mergeUsage(left, right) {
-  const a = normalizeUsage(left);
-  const b = normalizeUsage(right);
-  if (!a) return b;
-  if (!b) return a;
-  const out = {};
-  for (const key of [
-    "inputTokens",
-    "outputTokens",
-    "totalTokens",
-    "cachedInputTokens",
-    "cacheMissInputTokens",
-    "cacheWriteInputTokens",
-    "reasoningOutputTokens",
-    "requests",
-  ]) {
-    out[key] = Math.max(
-      0,
-      Math.round(Number(a[key] || 0) + Number(b[key] || 0)),
-    );
-  }
-  return out;
-}
-
 function getReasoningTextFromDetails(details) {
   if (!Array.isArray(details)) return "";
   return details
@@ -328,13 +310,6 @@ function getMessageReasoningText(msg) {
     getReasoningTextFromDetails(
       msg?.reasoningDetails || msg?.reasoning_details,
     ).trim()
-  );
-}
-
-function stripPlanProgressText(text) {
-  return String(text || "").replace(
-    /(?:^|\n)\[plan\]\s+Step\s+\d+\/\d+\s+->[^\n]*\n?/g,
-    "",
   );
 }
 
@@ -485,9 +460,10 @@ function isPlanSystemSummaryText(text) {
   const value = String(text || "");
   return (
     value.includes("Auto plan finished") ||
+    value.includes("Plan created for engineering-mode execution") ||
     value.includes("Plan created and waiting for approval") ||
     value.includes("Pending plan approval") ||
-    (value.includes("Plan File:") && value.includes("/yes"))
+    value.includes("Pending plan approval")
   );
 }
 
@@ -497,8 +473,14 @@ function isReflectSystemSummaryText(text) {
     value.includes("Reflect skill draft pending.") ||
     value.includes("Reflect skill draft revised.") ||
     value.includes("Reflect skill written and loaded:") ||
-    value.includes("Reflect skill draft discarded.")
+    value.includes("Reflect skill draft discarded.") ||
+    value.includes("Reflect skill draft rejected.") ||
+    value.includes("Reflect found no reusable skill candidate.")
   );
+}
+
+function isDreamSystemSummaryText(text) {
+  return String(text || "").trimStart().startsWith("Dream ");
 }
 
 function getRuntimeActivityFromSystemText(text) {
@@ -629,58 +611,45 @@ function restoreRuntimeActivitiesFromMessages(messages) {
     .slice(0, 3);
 }
 
-function isPlanApprovalLine(line) {
-  const value = String(line || "")
-    .trim()
-    .toLowerCase();
+function getSpecDisplayTitle(spec = {}) {
   return (
-    [
-      "yes",
-      "y",
-      "/yes",
-      "/plan approve",
-      "approve",
-      "approved",
-      "no",
-      "n",
-      "/no",
-      "/reject",
-    ].includes(value) || value.startsWith("/edit ")
+    String(spec.summary || "").trim() ||
+    String(spec.goal || "")
+      .trim()
+      .split(/\r?\n/)[0] ||
+    "spec"
   );
 }
 
-function isPlanApprovalCommandLine(line) {
-  const value = String(line || "")
-    .trim()
-    .toLowerCase();
-  return (
-    ["/yes", "/plan approve", "/no", "/reject"].includes(value) ||
-    value.startsWith("/edit ")
-  );
+function buildSpecExecuteDisplayText(spec = {}, mode = "direct") {
+  const title = getSpecDisplayTitle(spec);
+  const filePath = String(spec.filePath || "").trim();
+  const actionLabel =
+    mode === "plan" ? t("specPlanApproved") : t("specExecuteApproved");
+  return [
+    `${actionLabel}: ${title}`,
+    filePath ? `${t("specPathLabel")}: ${filePath}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
-function isWorkflowCommandLine(line) {
-  const value = String(line || "").trim();
-  return (
-    isPlanApprovalCommandLine(value) ||
-    /^\/(?:plan|spec|reflect)(?:\s|$)/i.test(value)
-  );
-}
-
-function isWorkflowControlLine(line, state = {}) {
-  const trimmed = String(line || "").trim();
-  const value = trimmed.toLowerCase();
-  if (!trimmed) return false;
-  if (isPlanApprovalLine(trimmed)) return true;
-  if (/^\/(?:plan|spec|reflect)(?:\s|$)/i.test(trimmed)) return true;
-  const mode = String(state.runtimeState?.mode || "").toLowerCase();
-  if ((mode === "plan" || mode === "spec") && !trimmed.startsWith("/"))
-    return true;
-  return false;
+function buildSpecExecuteDisplayMessage(spec = {}, mode = "direct") {
+  const text = buildSpecExecuteDisplayText(spec, mode);
+  return {
+    text,
+    specExecution: {
+      title: getSpecDisplayTitle(spec),
+      filePath: String(spec.filePath || "").trim(),
+      mode,
+    },
+  };
 }
 
 function createPlanStepMessage(event) {
-  const id = `plan-step-${event.step}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const id =
+    String(event.messageId || "").trim() ||
+    `plan-step-${event.step}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   return {
     id,
     role: event.role || "general",
@@ -695,6 +664,7 @@ function createPlanStepMessage(event) {
       total: event.total,
       role: event.role || "general",
       title: event.title || "",
+      model: event.model || "",
       status: "running",
       summary: "",
     },
@@ -813,6 +783,205 @@ function createPlanTranscriptMessage(block, suffix) {
   };
 }
 
+function hasVisiblePlanStepOutput(message) {
+  return (Array.isArray(message?.segments) ? message.segments : []).some(
+    (segment) =>
+      (segment?.type === "text" || segment?.type === "handoff") &&
+      String(segment.text || "").trim(),
+  );
+}
+
+function enrichPlanRunMessagesFromSection(runMessages, sectionMessages) {
+  const sourcesByStep = new Map(
+    (Array.isArray(sectionMessages) ? sectionMessages : [])
+      .filter((message) => message?.planStep?.step != null)
+      .map((message) => [String(message.planStep.step), message]),
+  );
+  if (!sourcesByStep.size) return runMessages;
+  return (Array.isArray(runMessages) ? runMessages : []).map((message) => {
+    const step = message?.planStep?.step;
+    if (step == null) return message;
+    const source = sourcesByStep.get(String(step));
+    if (!source) return message;
+    const messageFiles = Array.isArray(message.fileChanges)
+      ? message.fileChanges
+      : [];
+    const sourceFiles = Array.isArray(source.fileChanges)
+      ? source.fileChanges
+      : [];
+    return {
+      ...message,
+      segments: hasVisiblePlanStepOutput(message)
+        ? message.segments
+        : Array.isArray(source.segments)
+          ? source.segments
+          : message.segments,
+      fileChanges: sourceFiles.length ? sourceFiles : messageFiles,
+      usage: source.usage || message.usage || null,
+      planStep: {
+        ...(message.planStep || {}),
+        ...(source.planStep || {}),
+        status: source.planStep?.status || message.planStep?.status || "done",
+        summary: source.planStep?.summary || message.planStep?.summary || "",
+      },
+    };
+  });
+}
+
+function messagePlainText(message) {
+  const direct = String(message?.text || message?.content || "").trim();
+  if (direct) return direct;
+  return (Array.isArray(message?.segments) ? message.segments : [])
+    .filter(
+      (segment) => segment?.type === "text" || segment?.type === "handoff",
+    )
+    .map((segment) => String(segment.text || ""))
+    .join("")
+    .trim();
+}
+
+function skillBadgeKey(badge = {}) {
+  return `${String(badge.status || "done")}::${String(badge.name || "").trim()}`;
+}
+
+function appendUniqueSkillBadges(current = [], next = []) {
+  const out = Array.isArray(current) ? [...current] : [];
+  const seen = new Set(out.map(skillBadgeKey));
+  for (const badge of Array.isArray(next) ? next : []) {
+    const key = skillBadgeKey(badge);
+    if (!String(badge?.name || "").trim() || seen.has(key)) continue;
+    seen.add(key);
+    out.push(badge);
+  }
+  return out;
+}
+
+function isStructuredPlanUiMessage(message) {
+  return message?.role === "plan-overview" || !!message?.planStep;
+}
+
+function isEmptyPlanRunPlaceholderMessage(message) {
+  if (!message || message.planStep || message.planOverview) return false;
+  const role = String(message.role || "").toLowerCase();
+  if (!["general", "agent", "coder", "pending"].includes(role)) return false;
+  if (String(message.text || "").trim()) return false;
+  if (Array.isArray(message.segments) && message.segments.length > 0)
+    return false;
+  if (Array.isArray(message.skillBadges) && message.skillBadges.length > 0)
+    return false;
+  return true;
+}
+
+function withoutEmptyPlanRunPlaceholder(messages, activeId) {
+  if (!activeId) return messages;
+  return (Array.isArray(messages) ? messages : []).filter(
+    (message) =>
+      message.id !== activeId || !isEmptyPlanRunPlaceholderMessage(message),
+  );
+}
+
+function getAbortedPlanStepIndexes(messages) {
+  return new Set(
+    (Array.isArray(messages) ? messages : [])
+      .filter(
+        (message) =>
+          message.isComplete === false && message.planStep?.step != null,
+      )
+      .map((message) => Number(message.planStep.step) - 1),
+  );
+}
+
+function collectUiPlanRuns(uiMessages = []) {
+  const runs = [];
+  let current = null;
+  let lastUserText = "";
+  for (const message of Array.isArray(uiMessages) ? uiMessages : []) {
+    if (message?.role === "you") {
+      lastUserText = messagePlainText(message);
+      if (current) {
+        runs.push(current);
+        current = null;
+      }
+      continue;
+    }
+    if (message?.role === "plan-overview") {
+      if (current) runs.push(current);
+      current = { anchorText: lastUserText, messages: [message] };
+      continue;
+    }
+    if (message?.planStep) {
+      if (!current) current = { anchorText: lastUserText, messages: [] };
+      current.messages.push(message);
+      continue;
+    }
+    if (current) {
+      runs.push(current);
+      current = null;
+    }
+  }
+  if (current) runs.push(current);
+  return runs.filter((run) => run.messages.some(isStructuredPlanUiMessage));
+}
+
+function mergeStructuredUiPlans(processedMessages, uiMessages) {
+  const runs = collectUiPlanRuns(uiMessages);
+  if (!runs.length) return processedMessages;
+  let merged = [...processedMessages];
+  let searchFrom = 0;
+  for (const run of runs) {
+    const anchor = String(run.anchorText || "").trim();
+    let userIndex = -1;
+    if (anchor) {
+      userIndex = merged.findIndex((message, index) => {
+        if (index < searchFrom || message.role !== "you") return false;
+        const text = messagePlainText(message);
+        return (
+          text === anchor || text.includes(anchor) || anchor.includes(text)
+        );
+      });
+    }
+    if (userIndex === -1) {
+      userIndex = merged.findIndex(
+        (message, index) => index >= searchFrom && message.role === "you",
+      );
+    }
+    if (userIndex === -1) {
+      merged = [...merged, ...run.messages];
+      searchFrom = merged.length;
+      continue;
+    }
+
+    const nextUserIndex = merged.findIndex(
+      (message, index) => index > userIndex && message.role === "you",
+    );
+    const sectionEnd = nextUserIndex === -1 ? merged.length : nextUserIndex;
+    const section = merged.slice(userIndex + 1, sectionEnd);
+    const firstExistingPlanIndex = section.findIndex(isStructuredPlanUiMessage);
+    const insertAt =
+      firstExistingPlanIndex === -1
+        ? sectionEnd
+        : userIndex + 1 + firstExistingPlanIndex;
+    const planMessages = enrichPlanRunMessagesFromSection(
+      run.messages,
+      section,
+    );
+    const before = merged.slice(0, userIndex + 1);
+    const afterUserSection = merged
+      .slice(userIndex + 1, sectionEnd)
+      .filter((message) => !isStructuredPlanUiMessage(message));
+    const nextSection = merged.slice(sectionEnd);
+    const relativeInsert = Math.max(0, insertAt - (userIndex + 1));
+    const rebuiltSection = [
+      ...afterUserSection.slice(0, relativeInsert),
+      ...planMessages,
+      ...afterUserSection.slice(relativeInsert),
+    ];
+    merged = [...before, ...rebuiltSection, ...nextSection];
+    searchFrom = userIndex + rebuiltSection.length + 1;
+  }
+  return merged;
+}
+
 function normalizeCodeWikiStep(step, index = 0) {
   return {
     index: Number(step?.index || step?.step || index + 1),
@@ -859,21 +1028,56 @@ function applyCodeWikiProgressToSteps(steps, event) {
 }
 
 export function AppProvider({ children }) {
-  const [state, setState] = useState(initialState);
+  const [state, rawSetState] = useState(initialState);
+  const setState = useCallback((updater) => {
+    rawSetState((previous) => {
+      const next =
+        typeof updater === "function" ? updater(previous) : updater;
+      if (
+        next &&
+        next.currentSessionId === previous.currentSessionId &&
+        next.currentSessionId &&
+        next.messages !== previous.messages
+      ) {
+        return {
+          ...next,
+          sessionMessagesById: {
+            ...next.sessionMessagesById,
+            [next.currentSessionId]: next.messages,
+          },
+        };
+      }
+      return next;
+    });
+  }, []);
   const stateRef = useRef(state);
   stateRef.current = state;
 
   const activeMsgRef = useRef(null);
   const pendingChangesRef = useRef([]);
-  const skipSwitchedReloadRef = useRef(false);
   const sessionsLoadPromiseRef = useRef(null);
   const pendingSkillBadgesRef = useRef([]);
+  const pendingSkillSegmentsRef = useRef([]);
   const planRunPendingRef = useRef(false);
   const planStepMessagesRef = useRef(new Map());
   const planOverviewMsgRef = useRef(null);
+  const planParentMsgRef = useRef(null);
   const activityTimersRef = useRef(new Map());
   const sseRef = useRef(null);
   const reconnectRef = useRef(null);
+  const operationWaitersRef = useRef(new Map());
+  const earlyOperationResultsRef = useRef(new Map());
+  const sessionOperationsRef = useRef(new Set());
+
+  const activateSessionView = useCallback((sessionId) => {
+    activeMsgRef.current = null;
+    pendingChangesRef.current = [];
+    pendingSkillBadgesRef.current = [];
+    pendingSkillSegmentsRef.current = [];
+    planStepMessagesRef.current = new Map();
+    planOverviewMsgRef.current = null;
+    setState((prev) => activateSession(prev, sessionId));
+  }, [setState]);
 
   const update = useCallback((updates) => {
     setState((prev) => ({ ...prev, ...updates }));
@@ -882,13 +1086,18 @@ export function AppProvider({ children }) {
   const addMessage = useCallback((msg) => {
     const id =
       msg.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const segments = [];
-    if (msg.text)
-      segments.push({
-        type: "text",
-        text: msg.text,
-        isStreaming: msg.isStreaming || false,
-      });
+    const segments =
+      Array.isArray(msg.segments) && msg.segments.length > 0
+        ? [...msg.segments]
+        : msg.text
+          ? [
+              {
+                type: "text",
+                text: msg.text,
+                isStreaming: msg.isStreaming || false,
+              },
+            ]
+          : [];
     const newMsg = {
       ...msg,
       id,
@@ -963,40 +1172,75 @@ export function AppProvider({ children }) {
     [update],
   );
 
-  const loadState = useCallback(async () => {
+  const loadState = useCallback(async (sessionId, { isAlive = () => true } = {}) => {
     try {
-      const rs = await api.fetchState();
+      const [rs, cfg] = await Promise.all([
+        api.fetchState(sessionId || stateRef.current.currentSessionId),
+        api.fetchConfig().catch(() => null),
+      ]);
+      if (!isAlive()) return null;
+      const reasoningPatch = cfg ? extractReasoningRuntimePatch(cfg) : {};
       const busy = !!rs.busy;
       const codeWikiGenerating = !!rs.codeWikiGenerating;
       setState((prev) => ({
         ...prev,
-        runtimeState: rs,
+        runtimeState: { ...prev.runtimeState, ...rs, ...reasoningPatch },
+        currentSessionId: rs.sessionId || sessionId || prev.currentSessionId,
+        sessionRuntimeById: {
+          ...prev.sessionRuntimeById,
+          [rs.sessionId || sessionId]: {
+            ...prev.sessionRuntimeById[rs.sessionId || sessionId],
+            ...rs,
+            ...reasoningPatch,
+          },
+        },
         projectCwd: projectNameFromRuntimeState(rs),
         isGeneral: !!rs.isGeneral,
-        pendingPlanApproval: rs?.pendingPlanApproval || null,
         pendingSpecApproval: rs?.pendingSpecApproval || null,
         pendingReflectApproval: rs?.pendingReflectSkill || null,
+        reflectDialogOpen: Boolean(rs?.pendingReflectSkill),
+        reflectDialogError: "",
+        reflectDialogResult: "",
+        dreamDialogOpen: false,
+        dreamDialogStatus: "idle",
+        dreamDialogResult: null,
+        dreamDialogError: "",
+        userInputRequest: rs?.pendingUserInput || null,
         busy,
         live: busy || prev.live,
         stage: busy ? "thinking" : prev.stage,
         stageLabel: busy ? t("waitingResponse") : prev.stageLabel,
         codewikiGeneration: codeWikiGenerating
-          ? { status: "running", updatedAt: new Date().toISOString(), error: "" }
+          ? {
+              status: "running",
+              updatedAt: new Date().toISOString(),
+              error: "",
+            }
           : prev.codewikiGeneration,
-        messages: rs?.pendingPlanApproval
-          ? prev.messages
-          : removeTransientMessages(prev.messages, "plan-waiting-review"),
+        messages: removeTransientMessages(prev.messages, "plan-waiting-review"),
       }));
-      return rs;
+      return { ...rs, ...reasoningPatch };
     } catch {
       return null;
     }
   }, [update]);
 
+  const loadRuntimeSessions = useCallback(async ({ isAlive = () => true } = {}) => {
+    try {
+      const result = await api.fetchRuntimeSessions();
+      if (!isAlive()) return null;
+      setState((prev) => hydrateSessionRuntimes(prev, result?.sessions));
+      return result?.sessions || {};
+    } catch {
+      return null;
+    }
+  }, []);
+
   const loadConfigStatus = useCallback(
-    async ({ openIfRequired = false } = {}) => {
+    async ({ openIfRequired = false, isAlive = () => true } = {}) => {
       try {
         const configStatus = await api.fetchConfigStatus();
+        if (!isAlive()) return null;
         update({
           configStatus,
           configOpen:
@@ -1012,57 +1256,93 @@ export function AppProvider({ children }) {
     [update],
   );
 
-  const loadGitInfo = useCallback(async () => {
+  const gitInfoRequestRef = useRef(0);
+
+  const loadGitInfo = useCallback(async ({ isAlive = () => true, sessionId } = {}) => {
+    const targetSessionId = sessionId || stateRef.current.currentSessionId || null;
+    const requestId = ++gitInfoRequestRef.current;
+    if (isAlive()) update({ gitInfo: null });
     try {
-      const info = await api.fetchGitInfo();
+      const info = await api.fetchGitInfo(targetSessionId);
+      if (!isAlive() || requestId !== gitInfoRequestRef.current) return;
+      if (
+        targetSessionId &&
+        stateRef.current.currentSessionId &&
+        targetSessionId !== stateRef.current.currentSessionId
+      ) {
+        return;
+      }
       update({ gitInfo: info });
-    } catch {}
+    } catch {
+      if (!isAlive() || requestId !== gitInfoRequestRef.current) return;
+      update({
+        gitInfo: {
+          isGit: false,
+          branch: null,
+          dirty: false,
+          staged: 0,
+          modified: 0,
+          untracked: 0,
+          linesAdded: 0,
+          linesRemoved: 0,
+        },
+      });
+    }
   }, [update]);
 
   const loadGitBatch = useCallback(
-    async (sessions) => {
+    async (sessions, { isAlive = () => true } = {}) => {
       const dirs = [
         ...new Set((sessions || []).map((s) => s.projectDir).filter(Boolean)),
       ];
       if (!dirs.length) return;
       try {
         const batch = await api.fetchGitBatch(dirs);
-        update({ gitBatch: batch });
+        if (isAlive()) update({ gitBatch: batch });
       } catch {}
     },
     [update],
   );
 
-  const loadHistory = useCallback(async () => {
+  const loadHistory = useCallback(async ({ isAlive = () => true, sessionId } = {}) => {
     try {
-      const history = await api.fetchHistory();
-      update({ history: Array.isArray(history) ? history : [] });
+      const history = await api.fetchHistory(
+        sessionId || stateRef.current.currentSessionId,
+      );
+      if (isAlive()) update({ history: Array.isArray(history) ? history : [] });
     } catch {}
   }, [update]);
 
-  const loadSessions = useCallback(async () => {
-    if (sessionsLoadPromiseRef.current) return sessionsLoadPromiseRef.current;
-    update({ sessionsLoading: true });
-    const promise = (async () => {
-      try {
-        const sessions = await api.fetchSessions(200);
-        const list = Array.isArray(sessions) ? sessions : [];
-        update({ sessions: list });
-        loadGitBatch(list);
-      } catch {
-      } finally {
-        update({ sessionsLoading: false });
-        sessionsLoadPromiseRef.current = null;
-      }
-    })();
-    sessionsLoadPromiseRef.current = promise;
-    return promise;
-  }, [update, loadGitBatch]);
+  const loadSessions = useCallback(
+    async (options = {}) => {
+      const force = options?.force === true;
+      const isAlive = options?.isAlive || (() => true);
+      if (force) sessionsLoadPromiseRef.current = null;
+      if (sessionsLoadPromiseRef.current) return sessionsLoadPromiseRef.current;
+      if (isAlive()) update({ sessionsLoading: true });
+      const promise = (async () => {
+        try {
+          const sessions = await api.fetchSessions(200);
+          if (!isAlive()) return;
+          const list = Array.isArray(sessions) ? sessions : [];
+          update({ sessions: list });
+          loadGitBatch(list, { isAlive });
+        } catch {
+        } finally {
+          if (isAlive()) update({ sessionsLoading: false });
+          sessionsLoadPromiseRef.current = null;
+        }
+      })();
+      sessionsLoadPromiseRef.current = promise;
+      return promise;
+    },
+    [update, loadGitBatch],
+  );
 
   const openCodeWikiProjectFromRoute = useCallback(async (projectPath) => {
     if (!projectPath) return null;
     try {
-      const currentState = await api.fetchState();
+      const currentState = await api.fetchState(stateRef.current.currentSessionId);
       if (currentState?.cwd === projectPath) return currentState;
       const result = await api.openProject(projectPath);
       if (result?.error) return null;
@@ -1072,45 +1352,166 @@ export function AppProvider({ children }) {
     }
   }, []);
 
-  const loadSkills = useCallback(async () => {
+  const loadSkills = useCallback(async ({ isAlive = () => true } = {}) => {
     try {
       const skills = await api.fetchSkills();
-      update({ skills: Array.isArray(skills) ? skills : [] });
+      if (isAlive()) update({ skills: Array.isArray(skills) ? skills : [] });
     } catch {}
   }, [update]);
 
+  // Restore the active-message ref to the last incomplete assistant/plan
+  // message so that SSE deltas arriving after a session switch continue
+  // the existing bubble instead of creating a new one.
+  //
+  // When the session is still active (busy status) we also fall back to
+  // the last assistant message even when it looks "complete" — agentic
+  // loops pause between model calls (isComplete=true, no streaming, no
+  // running tools) and the next assistant:start must land on the same
+  // bubble.
+  function restoreActiveMsgRef(messages, sessionActive = false) {
+    const list = Array.isArray(messages) ? messages : [];
+    for (let i = list.length - 1; i >= 0; i--) {
+      const m = list[i];
+      if (
+        m.role === "you" ||
+        m.role === "divider" ||
+        m.role === "system" ||
+        m.transientKey
+      )
+        continue;
+      if (m.isComplete === false) {
+        activeMsgRef.current = m.id;
+        return;
+      }
+      if (
+        (m.segments || []).some(
+          (seg) =>
+            seg.isStreaming ||
+            (seg.type === "tools" &&
+              (seg.cards || []).some((c) => c.status === "running")),
+        )
+      ) {
+        activeMsgRef.current = m.id;
+        return;
+      }
+      if (
+        m.planStep &&
+        !["done", "failed"].includes(String(m.planStep.status || ""))
+      ) {
+        activeMsgRef.current = m.id;
+        return;
+      }
+      // Fallback for active sessions: use the last assistant message
+      // even if it appears complete (between model calls).
+      if (sessionActive && !activeMsgRef.current) {
+        activeMsgRef.current = m.id;
+        return;
+      }
+    }
+  }
+
   const loadSessionMessages = useCallback(
-    async (sessionData = null) => {
-      update({ messagesLoading: true });
+    async (
+      sessionData = null,
+      {
+        isAlive = () => true,
+        sessionId,
+        reconcileCached = false,
+      } = {},
+    ) => {
+      const ownerSessionId = sessionId || stateRef.current.currentSessionId;
+      if (isAlive()) update({ messagesLoading: true });
       try {
-        const data = sessionData || (await api.fetchSessionMessages());
+        const data = sessionData || (await api.fetchSessionMessages(ownerSessionId));
+        if (!isAlive()) return;
         const messages = Array.isArray(data) ? data : data.messages || [];
         const compactMeta = data?.compact || null;
         const restoredActivities =
           restoreRuntimeActivitiesFromMessages(messages);
 
         const uiData = sessionData
-          ? { messages: [] }
-          : await api.fetchSessionUiMessages().catch(() => []);
+          ? sessionData.uiMessages || { messages: [] }
+          : await api.fetchSessionUiMessages(ownerSessionId).catch(() => []);
+        if (!isAlive()) return;
         const uiMessages = Array.isArray(uiData)
           ? uiData
           : Array.isArray(uiData?.messages)
             ? uiData.messages
             : [];
-        if (!messages.length) {
-          if (Array.isArray(uiMessages) && uiMessages.length) {
-            const changeSets = sessionData
-              ? []
-              : (await api.fetchSessionChanges().catch(() => ({})))?.changes ||
-                [];
-            update({
-              messages: enrichMessageChangeStates(uiMessages, changeSets),
-            });
-          } else {
-            update({ messages: [], runtimeActivities: [] });
+        const commitMessages = (loadedMessages, runtimeActivities) => {
+          const cachedMessages =
+            stateRef.current.sessionMessagesById?.[ownerSessionId] || [];
+          const previewMessages = reconcileCached
+            ? reconcileSessionMessages(loadedMessages, cachedMessages)
+            : loadedMessages;
+          setState((prev) => {
+            const latestCachedMessages =
+              prev.sessionMessagesById?.[ownerSessionId] || [];
+            const nextMessages = reconcileCached
+              ? reconcileSessionMessages(
+                  loadedMessages,
+                  latestCachedMessages,
+                )
+              : loadedMessages;
+            const isVisible = prev.currentSessionId === ownerSessionId;
+            return {
+              ...prev,
+              ...(isVisible
+                ? {
+                    messages: nextMessages,
+                    runtimeActivities,
+                  }
+                : {}),
+              sessionMessagesById: {
+                ...prev.sessionMessagesById,
+                [ownerSessionId]: nextMessages,
+              },
+            };
+          });
+          if (stateRef.current.currentSessionId === ownerSessionId) {
+            restoreActiveMsgRef(
+              previewMessages,
+              ACTIVE_SESSION_STATUSES.has(
+                stateRef.current.sessionRuntimeById?.[ownerSessionId]?.status,
+              ),
+            );
           }
+        };
+        // Prefer the authoritative Web UI transcript when present.
+        // Core session messages are only used as a legacy fallback.
+        if (Array.isArray(uiMessages) && uiMessages.length) {
+          const changeSets = sessionData
+            ? []
+            : (await api.fetchSessionChanges(ownerSessionId).catch(() => ({})))
+                ?.changes || [];
+          if (!isAlive()) return;
+          const restored = sanitizeManualAbortMessages(
+            settleCompletedPlanToolCards(uiMessages),
+          );
+          const overview = [...restored]
+            .reverse()
+            .find((m) => m.role === "plan-overview" && m.planOverview);
+          planOverviewMsgRef.current = overview?.id || null;
+          const overviewIndex = overview
+            ? restored.findIndex((message) => message.id === overview.id)
+            : -1;
+          planStepMessagesRef.current = new Map(
+            restored
+              .slice(overviewIndex >= 0 ? overviewIndex + 1 : 0)
+              .filter((m) => m.planStep?.step != null)
+              .map((m) => [String(m.planStep.step), m.id]),
+          );
+          commitMessages(
+            enrichMessageChangeStates(restored, changeSets),
+            restoredActivities,
+          );
           return;
         }
+        if (!messages.length) {
+          commitMessages([], []);
+          return;
+        }
+        // Legacy fallback: rebuild segments from core session messages.
         const processed = [];
         let assistantGroup = null;
         const compactBoundary = compactMeta?.boundaryIndex;
@@ -1129,7 +1530,6 @@ export function AppProvider({ children }) {
             dividerInserted = true;
           }
           if (msg.role === "user") {
-            if (isWorkflowCommandLine(msg.content)) continue;
             assistantGroup = null;
             const visibleContent = collapseRenderedSkillPrompt(
               msg.content || "",
@@ -1140,10 +1540,47 @@ export function AppProvider({ children }) {
               segments: [
                 { type: "text", text: visibleContent, isStreaming: false },
               ],
-              skillBadges: [],
+              attachments: parseAttachmentsFromModelContent(msg.model_content),
+              skillBadges: skillBadgesFromSessionMessage(msg),
               fileChanges: [],
             });
           } else if (msg.role === "assistant") {
+            const responseStatus = String(
+              msg.responseStatus || msg.response_status || "",
+            ).toLowerCase();
+            if (responseStatus === "error") {
+              assistantGroup = null;
+              if (isAbortRelatedText(msg.content || "")) {
+                const folded = markPreviousAssistantManualAborted(processed);
+                processed.length = 0;
+                processed.push(...folded);
+                continue;
+              }
+              processed.push({
+                id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-e${processed.length}`,
+                role: "error",
+                text: msg.content || "",
+                segments: [
+                  {
+                    type: "text",
+                    text: msg.content || "",
+                    isStreaming: false,
+                  },
+                ],
+                skillBadges: [],
+                fileChanges: [],
+                timestamp: msg.at || new Date().toISOString(),
+                responseStatus,
+                retryPrompt: msg.retryPrompt || msg.retry_prompt || "",
+                retryable:
+                  responseStatus === "error" &&
+                  Boolean(
+                    String(msg.retryPrompt || msg.retry_prompt || "").trim(),
+                  ),
+              });
+              continue;
+            }
+
             const hiddenActivity = getRuntimeActivityFromSystemText(
               msg.content,
             );
@@ -1156,30 +1593,66 @@ export function AppProvider({ children }) {
               Array.isArray(msg.planTranscript) &&
               msg.planTranscript.length
             ) {
-              assistantGroup = null;
               const lastUser = [...processed]
                 .reverse()
                 .find((m) => m.role === "you");
-              const goal = lastUser
-                ? (lastUser.segments || [])
-                    .filter((s) => s.type === "text")
-                    .map((s) => s.text)
-                    .join(" ") ||
-                  lastUser.text ||
-                  ""
-                : "";
-              const planSteps = msg.planTranscript.map((block, i) => ({
-                index: block.step || i + 1,
-                title: block.title || "",
-                role: block.role || "general",
-                status: block.status || "done",
-              }));
-              processed.push(createPlanOverviewFromSteps(goal, planSteps));
-              for (const block of msg.planTranscript) {
-                processed.push(
-                  createPlanTranscriptMessage(block, processed.length),
-                );
+              const goal =
+                msg.planGoal ||
+                (lastUser
+                  ? (lastUser.segments || [])
+                      .filter((s) => s.type === "text")
+                      .map((s) => s.text)
+                      .join(" ") ||
+                    lastUser.text ||
+                    ""
+                  : "");
+              const planRun = planRunFromTranscript(goal, msg.planTranscript);
+              planRun.phase = "completed";
+              if (!assistantGroup) {
+                assistantGroup = {
+                  id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-a${processed.length}`,
+                  role: "general",
+                  sdkProvider: msg.sdkProvider || "",
+                  model: msg.model || "",
+                  segments: [],
+                  skillBadges: [],
+                  fileChanges: [],
+                };
+                processed.push(assistantGroup);
               }
+              const existingTools = (assistantGroup.segments || []).find(
+                (segment) => segment.type === "tools",
+              );
+              const planCard = {
+                id: `create_plan-history-${processed.length}`,
+                name: "create_plan",
+                status: "done",
+                displayName: "Plan · 完成",
+                arguments: { goal },
+                planRun,
+              };
+              if (existingTools) {
+                existingTools.cards = [
+                  ...(existingTools.cards || []).filter(
+                    (card) =>
+                      String(card?.name || "").toLowerCase() !== "create_plan",
+                  ),
+                  planCard,
+                ];
+              } else {
+                assistantGroup.segments = [
+                  ...(assistantGroup.segments || []),
+                  { type: "tools", cards: [planCard] },
+                ];
+              }
+              if (msg.content && !isAbortRelatedText(msg.content)) {
+                assistantGroup.segments.push({
+                  type: "text",
+                  text: msg.content,
+                  isStreaming: false,
+                });
+              }
+              assistantGroup.usage = mergeUsage(assistantGroup.usage, msg.usage);
               continue;
             }
 
@@ -1189,14 +1662,16 @@ export function AppProvider({ children }) {
               const lastUser = [...processed]
                 .reverse()
                 .find((m) => m.role === "you");
-              const goal = lastUser
-                ? (lastUser.segments || [])
-                    .filter((s) => s.type === "text")
-                    .map((s) => s.text)
-                    .join(" ") ||
-                  lastUser.text ||
-                  ""
-                : "";
+              const goal =
+                msg.planGoal ||
+                (lastUser
+                  ? (lastUser.segments || [])
+                      .filter((s) => s.type === "text")
+                      .map((s) => s.text)
+                      .join(" ") ||
+                    lastUser.text ||
+                    ""
+                  : "");
               processed.push(createPlanOverviewFromSteps(goal, planBlocks));
               const summaryBlock =
                 [...planBlocks]
@@ -1221,12 +1696,18 @@ export function AppProvider({ children }) {
               assistantGroup = {
                 id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-a${processed.length}`,
                 role: "general",
+                sdkProvider: msg.sdkProvider || "",
+                model: msg.model || "",
                 segments: [],
                 skillBadges: [],
                 fileChanges: [],
               };
               processed.push(assistantGroup);
             }
+            if (!assistantGroup.sdkProvider && msg.sdkProvider)
+              assistantGroup.sdkProvider = msg.sdkProvider;
+            if (!assistantGroup.model && msg.model)
+              assistantGroup.model = msg.model;
             if (Array.isArray(msg.fileChanges) && msg.fileChanges.length) {
               assistantGroup.fileChanges = [
                 ...(assistantGroup.fileChanges || []),
@@ -1247,7 +1728,7 @@ export function AppProvider({ children }) {
                   : null,
               });
             }
-            if (msg.content)
+            if (msg.content && !isAbortRelatedText(msg.content))
               assistantGroup.segments.push({
                 type: "text",
                 text: msg.content,
@@ -1314,7 +1795,8 @@ export function AppProvider({ children }) {
         }
         const changeSets = sessionData
           ? []
-          : (await api.fetchSessionChanges().catch(() => ({})))?.changes || [];
+          : (await api.fetchSessionChanges(ownerSessionId).catch(() => ({})))?.changes || [];
+        if (!isAlive()) return;
 
         const uiPlanOverview = uiMessages.find(
           (m) => m.role === "plan-overview" && m.planOverview?.goal,
@@ -1346,13 +1828,38 @@ export function AppProvider({ children }) {
           }
         }
 
-        update({
-          messages: enrichMessageChangeStates(processed, changeSets),
-          runtimeActivities: restoredActivities,
-        });
+        const restored = sanitizeManualAbortMessages(
+          settleCompletedPlanToolCards(
+            mergeAlignedAssistantSkillContext(
+              alignSessionAssistantMessages(
+                mergeAlignedUserContext(
+                  alignSessionUserMessages(
+                    mergeStructuredUiPlans(processed, uiMessages),
+                    uiMessages,
+                  ),
+                  uiMessages,
+                ),
+                uiMessages,
+              ),
+              uiMessages,
+            ),
+          ),
+        );
+        const overview = [...restored]
+          .reverse()
+          .find((m) => m.role === "plan-overview" && m.planOverview);
+        planOverviewMsgRef.current = overview?.id || null;
+        planStepMessagesRef.current = new Map(
+          restored
+            .filter((m) => m.planStep?.step != null)
+            .map((m) => [String(m.planStep.step), m.id]),
+        );
+
+        const enrichedMessages = enrichMessageChangeStates(restored, changeSets);
+        commitMessages(enrichedMessages, restoredActivities);
       } catch {
       } finally {
-        update({ messagesLoading: false });
+        if (isAlive()) update({ messagesLoading: false });
       }
     },
     [update],
@@ -1363,6 +1870,42 @@ export function AppProvider({ children }) {
       if (!event?.type) return;
       if (isProjectIndexEvent(event)) return;
       const s = stateRef.current;
+      if (event.type === "submit:done" && event.operationId) {
+        const result = event.result || {};
+        const key = operationKey(event.sessionId, event.operationId);
+        const waiter = operationWaitersRef.current.get(key);
+        if (waiter) {
+          operationWaitersRef.current.delete(key);
+          if (result.type === "error") {
+            waiter.reject(new Error(result.text || t("actionFailed")));
+          } else {
+            waiter.resolve(result);
+          }
+        } else {
+          earlyOperationResultsRef.current.set(key, result);
+          setTimeout(() => {
+            earlyOperationResultsRef.current.delete(key);
+          }, 30000);
+        }
+      }
+      if (event.sessionId) {
+        setState((prev) => {
+          const reduced = reduceSessionEvent(prev, event);
+          // Keep raw messages aligned with the transcript cache so later
+          // UI-only mutations do not wipe shared-reducer updates.
+          if (
+            event.sessionId === reduced.currentSessionId &&
+            Array.isArray(reduced.sessionMessagesById?.[event.sessionId])
+          ) {
+            return {
+              ...reduced,
+              messages: reduced.sessionMessagesById[event.sessionId],
+            };
+          }
+          return reduced;
+        });
+        if (event.sessionId !== s.currentSessionId) return;
+      }
       const activeId = activeMsgRef.current;
 
       switch (event.type) {
@@ -1370,7 +1913,11 @@ export function AppProvider({ children }) {
           break;
 
         case "assistant:start": {
-          if (s.currentView !== "chat" && s.currentView !== "codewiki")
+          if (
+            s.currentView !== "chat" &&
+            s.currentView !== "codewiki" &&
+            s.currentView !== "sessions"
+          )
             update({ currentView: "chat" });
           setState((prev) => ({
             ...prev,
@@ -1380,6 +1927,20 @@ export function AppProvider({ children }) {
             ),
           }));
           if (planRunPendingRef.current) {
+            const serverId = String(event.messageId || "").trim();
+            if (serverId) {
+              const activePlanId = activeMsgRef.current;
+              if (activePlanId && activePlanId !== serverId) {
+                for (const [step, id] of [
+                  ...planStepMessagesRef.current.entries(),
+                ]) {
+                  if (id === activePlanId) {
+                    planStepMessagesRef.current.set(step, serverId);
+                  }
+                }
+              }
+              setActiveMsg(serverId);
+            }
             update({
               stage: "thinking",
               busy: true,
@@ -1388,20 +1949,16 @@ export function AppProvider({ children }) {
             });
             break;
           }
-          let msgId = activeId;
-          if (!msgId) {
-            const pendingSkillBadges = pendingSkillBadgesRef.current;
-            pendingSkillBadgesRef.current = [];
-            msgId = addMessage({
-              role: "general",
-              timestamp: new Date().toISOString(),
-              text: "",
-              isStreaming: false,
-              isComplete: false,
-              skillBadges: pendingSkillBadges,
-            });
-            setActiveMsg(msgId);
-          } else {
+          const msgId = event.messageId || activeId;
+          if (msgId) setActiveMsg(msgId);
+          const pendingSkillBadges = pendingSkillBadgesRef.current;
+          pendingSkillBadgesRef.current = [];
+          const pendingSkillSegments = pendingSkillSegmentsRef.current;
+          pendingSkillSegmentsRef.current = [];
+          if (
+            msgId &&
+            (pendingSkillBadges.length || pendingSkillSegments.length)
+          ) {
             setState((prev) => ({
               ...prev,
               messages: prev.messages.map((m) =>
@@ -1409,15 +1966,20 @@ export function AppProvider({ children }) {
                   ? {
                       ...m,
                       isComplete: false,
-                      skillBadges: [
-                        ...(m.skillBadges || []),
-                        ...pendingSkillBadgesRef.current,
-                      ],
+                      skillBadges: appendUniqueSkillBadges(
+                        m.skillBadges || [],
+                        pendingSkillBadges,
+                      ),
+                      segments: pendingSkillSegments.length
+                        ? [
+                            ...pendingSkillSegments,
+                            ...(Array.isArray(m.segments) ? m.segments : []),
+                          ]
+                        : m.segments,
                     }
                   : m,
               ),
             }));
-            pendingSkillBadgesRef.current = [];
           }
           update({
             stage: "thinking",
@@ -1429,23 +1991,6 @@ export function AppProvider({ children }) {
         }
 
         case "assistant:delta": {
-          const delta = stripPlanProgressText(event.text);
-          if (activeId && delta) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === activeId
-                  ? {
-                      ...m,
-                      segments: appendDeltaToSegments(
-                        finishThinkingSegments(m.segments),
-                        delta,
-                      ),
-                    }
-                  : m,
-              ),
-            }));
-          }
           update({
             stage: "streaming",
             live: true,
@@ -1455,230 +2000,39 @@ export function AppProvider({ children }) {
         }
 
         case "assistant:reasoning_delta": {
-          if (activeId && event.text) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === activeId
-                  ? {
-                      ...m,
-                      segments: appendThinkingToSegments(
-                        m.segments,
-                        event.text,
-                        true,
-                      ),
-                    }
-                  : m,
-              ),
-            }));
-          }
           update({ stage: "thinking", live: true, stageLabel: t("thinking") });
           break;
         }
 
         case "assistant:tool_call_delta":
-          break;
-
-        case "assistant:response": {
-          if (activeId) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) => {
-                if (m.id !== activeId) return m;
-                const reasoningText = getMessageReasoningText(
-                  event.assistantMessage,
-                );
-                const withReasoning =
-                  reasoningText &&
-                  !(Array.isArray(m.segments) ? m.segments : []).some(
-                    (seg) =>
-                      seg.type === "thinking" && String(seg.text || "").trim(),
-                  )
-                    ? {
-                        ...m,
-                        segments: appendThinkingToSegments(
-                          m.segments,
-                          reasoningText,
-                          false,
-                        ),
-                      }
-                    : m;
-                if (event.text) {
-                  const text = stripPlanProgressText(event.text);
-                  const segs = ensureTextSegment(withReasoning.segments);
-                  const lastIdx = segs.length - 1;
-                  return {
-                    ...withReasoning,
-                    usage: mergeUsage(
-                      withReasoning.usage,
-                      event.usage || event.assistantMessage?.usage,
-                    ),
-                    segments: finishThinkingSegments(segs).map((seg, i) =>
-                      i === lastIdx && seg.type === "text"
-                        ? { ...seg, text, isStreaming: false }
-                        : seg,
-                    ),
-                  };
-                }
-                return {
-                  ...withReasoning,
-                  usage: mergeUsage(
-                    withReasoning.usage,
-                    event.usage || event.assistantMessage?.usage,
-                  ),
-                  segments: finishThinkingSegments(withReasoning.segments).map(
-                    (seg) =>
-                      seg.type === "text"
-                        ? { ...seg, isStreaming: false }
-                        : seg,
-                  ),
-                };
-              }),
-            }));
-          }
+        case "tool:start": {
+          update({ stage: "tooling", live: true, stageLabel: t("tooling") });
           break;
         }
 
-        case "tool:start": {
-          update({ stage: "tooling", live: true, stageLabel: t("tooling") });
-          if (activeId) {
-            const toolCard = {
-              id: event.id,
-              name: event.name,
-              arguments: event.arguments,
-              status: "running",
-              durationMs: null,
-              summary: "",
-              result: "",
-            };
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === activeId
-                  ? {
-                      ...m,
-                      segments: addToolToSegments(
-                        finishThinkingSegments(m.segments),
-                        toolCard,
-                      ),
-                    }
-                  : m,
-              ),
-            }));
-          }
+        case "assistant:response": {
           break;
         }
 
         case "tool:end": {
-          if (activeId) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) => {
-                if (m.id !== activeId) return m;
-                const eventChanges =
-                  Array.isArray(event.fileChanges) && event.fileChanges.length
-                    ? event.fileChanges
-                    : event.fileChange
-                      ? [event.fileChange]
-                      : [];
-                if (eventChanges.length)
-                  pendingChangesRef.current = [
-                    ...pendingChangesRef.current,
-                    ...eventChanges,
-                  ];
-                return {
-                  ...m,
-                  fileChanges: eventChanges.length
-                    ? appendUniqueFileChanges(m.fileChanges, eventChanges)
-                    : m.fileChanges,
-                  segments: updateToolInSegments(m.segments, event.id, (tc) => {
-                    const u = {
-                      ...tc,
-                      status: "done",
-                      durationMs: event.durationMs,
-                    };
-                    if (event.summary) u.summary = event.summary;
-                    if (event.resultMeta) u.resultMeta = event.resultMeta;
-                    if (event.fileChange) u.fileChange = event.fileChange;
-                    if (eventChanges.length) u.fileChanges = eventChanges;
-                    return u;
-                  }),
-                };
-              }),
-            }));
+          const eventChanges =
+            Array.isArray(event.fileChanges) && event.fileChanges.length
+              ? event.fileChanges
+              : event.fileChange
+                ? [event.fileChange]
+                : [];
+          if (eventChanges.length) {
+            pendingChangesRef.current = [
+              ...pendingChangesRef.current,
+              ...eventChanges,
+            ];
           }
           break;
         }
 
-        case "tool:result": {
-          if (activeId) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id !== activeId
-                  ? m
-                  : {
-                      ...m,
-                      segments: updateToolInSegments(
-                        m.segments,
-                        event.id,
-                        (tc) => ({ ...tc, result: event.content || "" }),
-                      ),
-                    },
-              ),
-            }));
-          }
-          break;
-        }
-
-        case "tool:error": {
-          if (activeId) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id !== activeId
-                  ? m
-                  : {
-                      ...m,
-                      segments: updateToolInSegments(
-                        m.segments,
-                        event.id,
-                        (tc) => ({
-                          ...tc,
-                          status: "error",
-                          durationMs: event.durationMs,
-                          summary: event.summary || tc.summary,
-                        }),
-                      ),
-                    },
-              ),
-            }));
-          }
-          break;
-        }
-
+        case "tool:result":
+        case "tool:error":
         case "tool:blocked": {
-          if (activeId) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id !== activeId
-                  ? m
-                  : {
-                      ...m,
-                      segments: updateToolInSegments(
-                        m.segments,
-                        event.id,
-                        (tc) => ({
-                          ...tc,
-                          status: "blocked",
-                          summary: t("toolBlocked"),
-                        }),
-                      ),
-                    },
-              ),
-            }));
-          }
           break;
         }
 
@@ -1700,194 +2054,76 @@ export function AppProvider({ children }) {
           }));
           planRunPendingRef.current = true;
           planStepMessagesRef.current = new Map();
-          setActiveMsg(null);
-          const overviewMsg = createPlanOverviewMessage(event);
-          planOverviewMsgRef.current = overviewMsg.id;
+          planOverviewMsgRef.current = null;
+          const parentId = activeId || planParentMsgRef.current;
+          planParentMsgRef.current = parentId;
+          if (parentId) setActiveMsg(parentId);
           setState((prev) => ({
             ...prev,
             planSteps: steps,
-            pendingPlanApproval: null,
-            messages: [
-              ...removeTransientMessages(prev.messages, "waiting-response"),
-              overviewMsg,
-            ],
-          }));
-          break;
-        }
-
-        case "plan:progress": {
-          const { step, status } = event;
-          setState((prev) => ({
-            ...prev,
-            planSteps: prev.planSteps.map((s, i) =>
-              i === step - 1 ? { ...s, status } : s,
+            messages: withoutEmptyPlanRunPlaceholder(
+              removeTransientMessages(prev.messages, "waiting-response"),
+              activeId,
+            ).map((message) =>
+              parentId && message.id === parentId
+                ? applyPlanEventToMessage(message, event)
+                : message,
             ),
-            messages: prev.messages.map((m) => {
-              if (m.id !== planOverviewMsgRef.current || !m.planOverview)
-                return m;
-              return {
-                ...m,
-                planOverview: {
-                  ...m.planOverview,
-                  steps: m.planOverview.steps.map((s, i) =>
-                    i === step - 1 ? { ...s, status } : s,
-                  ),
-                },
-              };
-            }),
           }));
           break;
         }
 
-        case "plan:step_start": {
-          planRunPendingRef.current = true;
-          if (stateRef.current.pendingPlanApproval)
-            update({ pendingPlanApproval: null });
-          const key = String(event.step);
-          let msgId = planStepMessagesRef.current.get(key);
-          if (!msgId) {
-            const msg = createPlanStepMessage(event);
-            msgId = msg.id;
-            planStepMessagesRef.current.set(key, msgId);
-            setState((prev) => ({
-              ...prev,
-              messages: [
-                ...removeTransientMessages(prev.messages, "waiting-response"),
-                msg,
-              ].map((m) => {
-                if (m.id !== planOverviewMsgRef.current || !m.planOverview)
-                  return m;
-                return {
-                  ...m,
-                  planOverview: {
-                    ...m.planOverview,
-                    steps: m.planOverview.steps.map((s, i) =>
-                      i === event.step - 1 ? { ...s, status: "running" } : s,
-                    ),
-                  },
-                };
-              }),
-            }));
-          } else {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) => {
-                if (m.id === msgId)
-                  return {
-                    ...m,
-                    isComplete: false,
-                    planStep: { ...(m.planStep || {}), status: "running" },
-                  };
-                if (m.id === planOverviewMsgRef.current && m.planOverview)
-                  return {
-                    ...m,
-                    planOverview: {
-                      ...m.planOverview,
-                      steps: m.planOverview.steps.map((s, i) =>
-                        i === event.step - 1 ? { ...s, status: "running" } : s,
-                      ),
-                    },
-                  };
-                return m;
-              }),
-            }));
-          }
-          setActiveMsg(msgId);
-          update({
-            stage: "tooling",
-            busy: true,
-            live: true,
-            stageLabel: `${event.role || "agent"}: ${event.title || ""}`.trim(),
-          });
-          break;
-        }
-
+        case "plan:progress":
+        case "plan:step_start":
         case "plan:step_done": {
-          const msgId = planStepMessagesRef.current.get(String(event.step));
-          if (msgId) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) => {
-                if (m.id === msgId) {
-                  return {
-                    ...m,
-                    usage: mergeUsage(m.usage, event.usage),
-                    segments: finishThinkingSegments(m.segments).map((seg) =>
-                      seg.type === "text"
-                        ? { ...seg, isStreaming: false }
-                        : seg,
-                    ),
-                    isComplete: true,
-                    planStep: {
-                      ...(m.planStep || {}),
-                      status: event.status || "done",
-                      summary: event.summary || "",
-                    },
-                  };
-                }
-                if (m.id === planOverviewMsgRef.current && m.planOverview) {
-                  return {
-                    ...m,
-                    planOverview: {
-                      ...m.planOverview,
-                      steps: m.planOverview.steps.map((s, i) =>
-                        i === event.step - 1
-                          ? { ...s, status: event.status || "done" }
-                          : s,
-                      ),
-                    },
-                  };
-                }
-                return m;
-              }),
-            }));
+          planRunPendingRef.current = true;
+          const parentId =
+            planParentMsgRef.current ||
+            activeMsgRef.current ||
+            String(event.messageId || "").trim();
+          if (parentId) {
+            planParentMsgRef.current = parentId;
+            setActiveMsg(parentId);
           }
-          break;
-        }
-
-        case "plan:pending_approval": {
-          setState((prev) => ({
-            ...prev,
-            messages: [
-              ...removeTransientMessages(prev.messages, [
-                "plan-waiting-review",
-                "waiting-response",
-              ]).filter((m) => !isPlanSystemSummaryText(m.text)),
-              {
-                id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                role: "system",
-                text: t("planWaitingReview"),
-                segments: [
-                  {
-                    type: "text",
-                    text: t("planWaitingReview"),
-                    isStreaming: false,
-                  },
-                ],
-                skillBadges: [],
-                fileChanges: [],
-                transientKey: "plan-waiting-review",
-                timestamp: new Date().toISOString(),
-              },
-            ],
-            pendingPlanApproval: {
-              goal: event.goal,
-              summary: event.summary,
-              filePath: event.filePath,
-              steps: event.steps || [],
-            },
-          }));
-          break;
-        }
-        case "plan:approval_cleared": {
-          setState((prev) => ({
-            ...prev,
-            pendingPlanApproval: null,
-            messages: removeTransientMessages(
-              prev.messages,
-              "plan-waiting-review",
-            ),
-          }));
+          const isFinalPlanStep =
+            event.type === "plan:step_done" &&
+            (String(event.role || "").toLowerCase() === "summarizer" ||
+              (Number(event.total) > 0 &&
+                Number(event.step) === Number(event.total)));
+          setState((prev) => {
+            const nextMessages = prev.messages.map((message) =>
+              parentId && message.id === parentId
+                ? applyPlanEventToMessage(message, event)
+                : message,
+            );
+            return {
+              ...prev,
+              planSteps: prev.planSteps.map((step, index) =>
+                index === event.step - 1
+                  ? {
+                      ...step,
+                      status:
+                        event.status ||
+                        (event.type === "plan:step_start"
+                          ? "running"
+                          : step.status),
+                      ...(event.model ? { model: event.model } : {}),
+                    }
+                  : step,
+              ),
+              messages: isFinalPlanStep
+                ? settleCompletedPlanToolCards(nextMessages)
+                : nextMessages,
+            };
+          });
+          if (event.type === "plan:step_start") {
+            update({
+              stage: "tooling",
+              busy: true,
+              live: true,
+              stageLabel: `${event.role || "agent"}: ${event.title || ""}`.trim(),
+            });
+          }
           break;
         }
 
@@ -1902,79 +2138,61 @@ export function AppProvider({ children }) {
         }
 
         case "reflect:pending_approval": {
-          upsertRuntimeActivity({
-            key: "reflect",
-            status: "running",
-            emoji: stateRef.current.pendingReflectApproval ? "📝" : "🪞",
-            label: stateRef.current.pendingReflectApproval
-              ? t("runtimeActivityReflectRevised")
-              : t("runtimeActivityReflectPending"),
-            detail: event.draft?.name ? `/${event.draft.name}` : "",
+          update({
+            pendingReflectApproval: event.draft || null,
+            reflectDialogOpen: true,
+            reflectDialogError: "",
+            reflectDialogResult: "",
           });
-          update({ pendingReflectApproval: event.draft || null });
           break;
         }
 
         case "reflect:approval_cleared": {
-          update({ pendingReflectApproval: null });
+          update({
+            pendingReflectApproval: null,
+            reflectDialogOpen: false,
+            reflectDialogError: "",
+            reflectDialogResult: "",
+          });
           break;
         }
 
         case "skill:start": {
-          if (activeId)
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === activeId
-                  ? {
-                      ...m,
-                      segments: addSkillToSegments(
-                        finishThinkingSegments(m.segments),
-                        event,
-                      ),
-                    }
-                  : m,
-              ),
-            }));
+          if (!activeId) {
+            pendingSkillSegmentsRef.current = addSkillToSegments(
+              pendingSkillSegmentsRef.current,
+              event,
+            );
+          }
           break;
         }
         case "skill:end": {
-          if (activeId)
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === activeId
-                  ? {
-                      ...m,
-                      segments: updateSkillInSegments(m.segments, event.name, (segment) => ({
-                        ...segment,
-                        status: "done",
-                        endedAt: event.endedAt || new Date().toISOString(),
-                      })),
-                    }
-                  : m,
-              ),
-            }));
+          if (!activeId) {
+            pendingSkillSegmentsRef.current = updateSkillInSegments(
+              pendingSkillSegmentsRef.current,
+              event.name,
+              (segment) => ({
+                ...segment,
+                status: "done",
+                endedAt: event.endedAt || new Date().toISOString(),
+              }),
+            );
+          }
           break;
         }
         case "skill:error": {
-          if (activeId)
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === activeId
-                  ? {
-                      ...m,
-                      segments: updateSkillInSegments(m.segments, event.name, (segment) => ({
-                        ...segment,
-                        status: "error",
-                        summary: event.summary,
-                        endedAt: event.endedAt || new Date().toISOString(),
-                      })),
-                    }
-                  : m,
-              ),
-            }));
+          if (!activeId) {
+            pendingSkillSegmentsRef.current = updateSkillInSegments(
+              pendingSkillSegmentsRef.current,
+              event.name,
+              (segment) => ({
+                ...segment,
+                status: "error",
+                summary: event.summary,
+                endedAt: event.endedAt || new Date().toISOString(),
+              }),
+            );
+          }
           break;
         }
         case "skill:always": {
@@ -1986,25 +2204,49 @@ export function AppProvider({ children }) {
           };
           if (!names) break;
           if (!activeId) {
-            pendingSkillBadgesRef.current = [
-              ...pendingSkillBadgesRef.current,
-              badge,
-            ];
-            break;
-          }
-          if (activeId) {
+            pendingSkillBadgesRef.current = appendUniqueSkillBadges(
+              pendingSkillBadgesRef.current,
+              [badge],
+            );
+          } else {
             setState((prev) => ({
               ...prev,
               messages: prev.messages.map((m) =>
                 m.id === activeId
                   ? {
                       ...m,
-                      skillBadges: [...m.skillBadges, badge],
+                      skillBadges: appendUniqueSkillBadges(
+                        m.skillBadges || [],
+                        [badge],
+                      ),
                     }
                   : m,
               ),
             }));
           }
+          // Also attach to the last user message so the badge appears on
+          // the user's own bubble alongside the assistant response.
+          setState((prev) => {
+            let lastUserIdx = -1;
+            for (let i = prev.messages.length - 1; i >= 0; i--) {
+              if (prev.messages[i].role === "you") { lastUserIdx = i; break; }
+            }
+            if (lastUserIdx === -1) return prev;
+            return {
+              ...prev,
+              messages: prev.messages.map((m, i) =>
+                i === lastUserIdx
+                  ? {
+                      ...m,
+                      skillBadges: appendUniqueSkillBadges(
+                        m.skillBadges || [],
+                        [badge],
+                      ),
+                    }
+                  : m,
+              ),
+            };
+          });
           break;
         }
 
@@ -2025,41 +2267,14 @@ export function AppProvider({ children }) {
           });
           break;
 
-        case "dream:auto":
-          {
-            const currentDream = stateRef.current.runtimeActivities.find(
-              (activity) => activity.key === "dream",
-            );
-            const finishedRecently =
-              currentDream &&
-              currentDream.status !== "running" &&
-              Date.now() - Date.parse(currentDream.timestamp || "") < 10000;
-            if (finishedRecently) break;
-          }
-          upsertRuntimeActivity({
-            key: "dream",
-            status: "running",
-            emoji: "💤",
-            label: t("runtimeActivityDreamRunning"),
-            clearAfterMs: 30 * 60 * 1000,
-          });
-          break;
-        case "dream:complete":
-          upsertRuntimeActivity({
-            key: "dream",
-            status: event.report?.ok === false ? "error" : "done",
-            emoji: event.report?.ok === false ? "⚠️" : "🌙",
-            label:
-              event.report?.ok === false
-                ? t("runtimeActivityDreamError")
-                : t("runtimeActivityDreamDone"),
-            detail: event.report?.error || "",
-            clearAfterMs: 2500,
-          });
+        case "compact:aggressive-prune":
+          // Keep the beta prune silent in the activity strip; savings already
+          // show up in the normal compact / usage UI.
           break;
 
-        case "approval:request":
-          update({ approvalRequest: event });
+        case "dream:auto":
+        case "dream:complete":
+          // Automatic dream consolidation stays silent in the Web UI.
           break;
 
         case "change:undone": {
@@ -2101,30 +2316,91 @@ export function AppProvider({ children }) {
           if (activeId) {
             setState((prev) => ({
               ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === activeId
-                  ? {
+              ...(() => {
+                const activeMessage = prev.messages.find(
+                  (m) => m.id === activeId,
+                );
+                const activePlanStep = activeMessage?.planStep;
+                const activeStepNumber = Number(activePlanStep?.step);
+                const shouldSettlePlanStep =
+                  activePlanStep &&
+                  Number.isFinite(activeStepNumber) &&
+                  !isCompletedStatus(activePlanStep.status);
+                const settledStatus =
+                  result.type === "error" ? "failed" : "done";
+                return {
+                  planSteps: shouldSettlePlanStep
+                    ? prev.planSteps.map((step, index) =>
+                        index === activeStepNumber - 1 &&
+                        !isCompletedStatus(step.status)
+                          ? { ...step, status: settledStatus }
+                          : step,
+                      )
+                    : prev.planSteps,
+                  messages: prev.messages.map((m) => {
+                    if (
+                      shouldSettlePlanStep &&
+                      m.id === planOverviewMsgRef.current &&
+                      m.planOverview
+                    ) {
+                      return {
+                        ...m,
+                        planOverview: {
+                          ...m.planOverview,
+                          steps: m.planOverview.steps.map((step, index) =>
+                            index === activeStepNumber - 1 &&
+                            !isCompletedStatus(step.status)
+                              ? { ...step, status: settledStatus }
+                              : step,
+                          ),
+                        },
+                      };
+                    }
+                    if (m.id !== activeId) return m;
+                    const segments = finishThinkingSegments(
+                      m.segments || [],
+                    ).map((seg) =>
+                      seg.type === "text"
+                        ? { ...seg, isStreaming: false }
+                        : seg,
+                    );
+                    return {
                       ...m,
                       isComplete: true,
-                      segments: finishThinkingSegments(m.segments).map((seg) =>
-                        seg.type === "text"
-                          ? { ...seg, isStreaming: false }
-                          : seg,
-                      ),
-                    }
-                  : m,
-              ),
+                      segments,
+                      ...(isAbortRelatedResult(result)
+                        ? { responseStatus: "aborted" }
+                        : {}),
+                      planStep: shouldSettlePlanStep
+                        ? {
+                            ...(m.planStep || {}),
+                            status: settledStatus,
+                            summary:
+                              m.planStep?.summary ||
+                              (settledStatus === "failed" ? "Failed" : ""),
+                          }
+                        : m.planStep,
+                    };
+                  }),
+                };
+              })(),
             }));
           }
           if (result.type === "system" && result.text) {
             const activity = getRuntimeActivityFromSystemText(result.text);
             if (activity) upsertRuntimeActivity(activity);
-            if (
-              !stateRef.current.pendingPlanApproval &&
+            if (/^Plan revised\./i.test(result.text)) {
+              addMessage({
+                role: "agent",
+                text: t("planReviewRevisedAssistant"),
+                timestamp: new Date().toISOString(),
+              });
+            } else if (
               !stateRef.current.pendingSpecApproval &&
               !stateRef.current.pendingReflectApproval &&
               !isPlanSystemSummaryText(result.text) &&
-              !isReflectSystemSummaryText(result.text)
+              !isReflectSystemSummaryText(result.text) &&
+              !isDreamSystemSummaryText(result.text)
             ) {
               addMessage({
                 role: "system",
@@ -2133,17 +2409,33 @@ export function AppProvider({ children }) {
               });
             }
           }
-          if (result.type === "error" && result.text) {
+          if (
+            result.type === "error" &&
+            result.text &&
+            !isAbortRelatedResult(result) &&
+            !s.reflectDialogOpen &&
+            !s.dreamDialogOpen
+          ) {
             addMessage({
               role: "error",
               text: `Failed: ${result.text}`,
               timestamp: new Date().toISOString(),
+              responseStatus: "error",
+              retryPrompt: result.retryPrompt || "",
+              retryable: Boolean(String(result.retryPrompt || "").trim()),
             });
+          }
+          if (isAbortRelatedResult(result) && result.text && !activeId) {
+            setState((prev) => ({
+              ...prev,
+              messages: markPreviousAssistantManualAborted(prev.messages),
+            }));
           }
           setActiveMsg(null);
           planRunPendingRef.current = false;
           planStepMessagesRef.current = new Map();
           planOverviewMsgRef.current = null;
+          planParentMsgRef.current = null;
           setState((prev) => ({
             ...prev,
             stage: "idle",
@@ -2152,15 +2444,16 @@ export function AppProvider({ children }) {
             stageLabel: "",
             messages: removeTransientMessages(
               prev.messages,
-              stateRef.current.pendingPlanApproval ||
-                stateRef.current.pendingSpecApproval
+              stateRef.current.pendingSpecApproval
                 ? "waiting-response"
                 : ["waiting-response", "plan-waiting-review"],
             ),
           }));
           loadHistory();
-          loadSessions();
-          loadGitInfo();
+          loadSessions({ force: true });
+          loadGitInfo({
+            sessionId: stateRef.current.currentSessionId,
+          });
           const rs = stateRef.current.runtimeState;
           if (rs?.sessionId && stateRef.current.currentView === "chat") {
             updateRoute("chat", rs.sessionId, { replace: true });
@@ -2194,11 +2487,20 @@ export function AppProvider({ children }) {
 
         case "runtime:state": {
           const rs = event.state || {};
+          const runtimeState = { ...stateRef.current.runtimeState, ...rs };
+          if (rs.reasoningEffort == null) {
+            runtimeState.reasoningEffort =
+              stateRef.current.runtimeState?.reasoningEffort;
+          }
+          if (rs.reasoningEnabled == null) {
+            runtimeState.reasoningEnabled =
+              stateRef.current.runtimeState?.reasoningEnabled;
+          }
           update({
-            runtimeState: { ...stateRef.current.runtimeState, ...rs },
-            pendingPlanApproval: rs?.pendingPlanApproval || null,
+            runtimeState,
             pendingSpecApproval: rs?.pendingSpecApproval || null,
             pendingReflectApproval: rs?.pendingReflectSkill || null,
+            userInputRequest: rs?.pendingUserInput || null,
             busy: !!rs.busy,
             live: !!rs.busy,
             stage: rs.busy ? stateRef.current.stage : "idle",
@@ -2226,12 +2528,16 @@ export function AppProvider({ children }) {
             planSteps: applyCodeWikiProgressToSteps(prev.planSteps, event),
             codewikiGeneration: {
               status: terminalStatus
-                ? (String(event.status).toLowerCase() === "failed" ? "error" : "done")
+                ? String(event.status).toLowerCase() === "failed"
+                  ? "error"
+                  : "done"
                 : "running",
               updatedAt: event.timestamp || new Date().toISOString(),
-              error: terminalStatus && String(event.status).toLowerCase() === "failed"
-                ? label
-                : "",
+              error:
+                terminalStatus &&
+                String(event.status).toLowerCase() === "failed"
+                  ? label
+                  : "",
             },
           }));
           break;
@@ -2272,41 +2578,32 @@ export function AppProvider({ children }) {
           break;
         }
 
-        case "runtime:switched": {
-          if (skipSwitchedReloadRef.current) {
-            skipSwitchedReloadRef.current = false;
-            break;
-          }
-          setState((prev) => ({
-            ...prev,
-            messages: [],
-            planSteps: [],
-            pendingPlanApproval: null,
-            pendingSpecApproval: null,
-            pendingReflectApproval: null,
-            runtimeActivities: [],
-            codewikiGeneration: { status: "idle", updatedAt: null, error: "" },
-          }));
-          activeMsgRef.current = null;
-          pendingChangesRef.current = [];
-          loadState();
-          loadGitInfo();
-          loadHistory();
-          loadSessionMessages();
-          loadSessions();
-          if (stateRef.current.currentView !== "codewiki")
-            updateRoute("chat", event.sessionId);
-          break;
-        }
-
         case "session:title": {
           if (event.sessionId && event.title) {
-            setState((prev) => ({
-              ...prev,
-              sessions: prev.sessions.map((s) =>
-                s.id === event.sessionId ? { ...s, title: event.title } : s,
-              ),
-            }));
+            setState((prev) => {
+              const rs = prev.runtimeState || {};
+              const isGeneral = Boolean(rs.isGeneral);
+              const projectDir = isGeneral ? null : rs.cwd || rs.projectDir || null;
+              const projectKey = projectDir
+                ? normalizeProjectDirKey(projectDir) || projectDir
+                : null;
+              return {
+                ...prev,
+                sessions: upsertSidebarSession(prev.sessions, {
+                  id: event.sessionId,
+                  title: event.title,
+                  messageCount: Math.max(
+                    1,
+                    Number(
+                      prev.sessions.find((s) => s.id === event.sessionId)
+                        ?.messageCount || 0,
+                    ),
+                  ),
+                  isGeneral,
+                  ...(projectDir ? { projectDir, projectKey } : {}),
+                }),
+              };
+            });
           }
           break;
         }
@@ -2337,16 +2634,26 @@ export function AppProvider({ children }) {
     es.onerror = () => {
       es.close();
       clearTimeout(reconnectRef.current);
-      reconnectRef.current = setTimeout(connectSSE, 3000);
+      reconnectRef.current = setTimeout(() => {
+        hydrateBeforeConnect({
+          hydrate: loadRuntimeSessions,
+          connect: connectSSE,
+        }).catch(() => {});
+      }, 3000);
     };
     sseRef.current = es;
-  }, [handleEvent]);
+  }, [handleEvent, loadRuntimeSessions]);
 
   useEffect(() => {
+    let alive = true;
     (async () => {
+      const isAlive = () => alive;
       const route = parseRoute();
-      const configStatusPromise = loadConfigStatus({ openIfRequired: true });
-      const startupEventsPromise = api.fetchStartupEvents().catch(() => []);
+      const configStatusPromise = loadConfigStatus({
+        openIfRequired: true,
+        isAlive,
+      });
+      if (!alive) return;
       update({
         currentView: route.view,
         codewikiProjectPath:
@@ -2354,21 +2661,42 @@ export function AppProvider({ children }) {
             ? route.projectPath || ""
             : stateRef.current.codewikiProjectPath,
       });
-      if (route.sessionId) {
-        try {
-          const currentState = await api.fetchState();
-          if (currentState.sessionId !== route.sessionId) {
-            await api.switchSession(route.sessionId);
-          }
-        } catch {}
-      } else if (route.view === "codewiki" && route.projectPath) {
+      if (route.view === "codewiki" && route.projectPath) {
         await openCodeWikiProjectFromRoute(route.projectPath);
+        if (!alive) return;
       }
 
       await configStatusPromise;
+      if (!alive) return;
 
+      const runtimeSessions = await loadRuntimeSessions({ isAlive });
+      if (!alive) return;
+      let preferredSessionId = route.sessionId || stateRef.current.currentSessionId;
+      if (!preferredSessionId) {
+        preferredSessionId = Object.keys(runtimeSessions || {})[0] || null;
+      }
+      let rs = preferredSessionId
+        ? await loadState(preferredSessionId, { isAlive })
+        : null;
+      if (!alive) return;
+      if (!rs) {
+        const sessions = await api.fetchSessions(200).catch(() => []);
+        if (!alive) return;
+        preferredSessionId =
+          Object.keys(runtimeSessions || {}).find((id) => id !== preferredSessionId) ||
+          sessions?.[0]?.id ||
+          null;
+        update({ sessions, currentSessionId: preferredSessionId });
+        rs = preferredSessionId
+          ? await loadState(preferredSessionId, { isAlive })
+          : null;
+      }
+      if (!alive) return;
       try {
-        const startupEvents = await startupEventsPromise;
+        const startupEvents = rs?.sessionId
+          ? await api.fetchStartupEvents(rs.sessionId)
+          : [];
+        if (!alive) return;
         for (const ev of startupEvents) {
           if (!ev || isProjectIndexEvent(ev)) continue;
           if (ev.type === "system_tool" || ev.type === "tool") {
@@ -2384,8 +2712,6 @@ export function AppProvider({ children }) {
           }
         }
       } catch {}
-
-      const rs = await loadState();
       if (route.view === "chat" && rs?.sessionId) {
         updateRoute("chat", rs.sessionId, { replace: true });
       } else if (route.view === "codewiki") {
@@ -2394,19 +2720,24 @@ export function AppProvider({ children }) {
         if (projectPath)
           updateRoute("codewiki", null, { replace: true, projectPath });
       }
-      await Promise.all([
-        loadSessionMessages(),
-        loadHistory(),
-        loadSessions(),
-        loadSkills(),
-        loadGitInfo(),
+      await finishInitialization({
+        tasks: [
+        loadSessionMessages(null, { isAlive, sessionId: rs?.sessionId }),
+        loadHistory({ isAlive, sessionId: rs?.sessionId }),
+        loadSessions({ isAlive }),
+        loadSkills({ isAlive }),
+        loadGitInfo({ isAlive, sessionId: rs?.sessionId }),
         api
           .fetchVersion()
-          .then((versionInfo) => update({ versionInfo }))
+          .then((versionInfo) => {
+            if (isAlive()) update({ versionInfo });
+          })
           .catch(() => {}),
-      ]);
-      update({ initialLoading: false });
-      connectSSE();
+        ],
+        isAlive,
+        update,
+        connect: connectSSE,
+      });
     })();
 
     const handlePopState = async () => {
@@ -2420,15 +2751,13 @@ export function AppProvider({ children }) {
       });
       if (route.sessionId) {
         try {
-          const currentState = await api.fetchState();
-          if (currentState.sessionId !== route.sessionId) {
+          if (stateRef.current.currentSessionId !== route.sessionId) {
             update({ messagesLoading: true });
-            setState((prev) => ({ ...prev, messages: [] }));
-            await api.switchSession(route.sessionId);
-            await loadState();
-            await loadSessionMessages();
+            activateSessionView(route.sessionId);
+            await loadState(route.sessionId);
+            await loadSessionMessages(null, { sessionId: route.sessionId });
             loadSessions();
-            loadGitInfo();
+            loadGitInfo({ sessionId: route.sessionId });
           }
         } catch {
           update({ messagesLoading: false });
@@ -2440,20 +2769,26 @@ export function AppProvider({ children }) {
         const projectPath = route.projectPath || rs?.cwd || "";
         update({ currentView: "codewiki", codewikiProjectPath: projectPath });
         loadSessions();
-        loadGitInfo();
+        loadGitInfo({ sessionId: rs?.sessionId });
       }
     };
     window.addEventListener("popstate", handlePopState);
 
     return () => {
+      alive = false;
       if (sseRef.current) sseRef.current.close();
       clearTimeout(reconnectRef.current);
       for (const timer of activityTimersRef.current.values())
         clearTimeout(timer);
       activityTimersRef.current.clear();
+      for (const waiter of operationWaitersRef.current.values())
+        waiter.reject(new Error("Chat connection closed"));
+      operationWaitersRef.current.clear();
+      earlyOperationResultsRef.current.clear();
       window.removeEventListener("popstate", handlePopState);
     };
   }, [
+    activateSessionView,
     addMessage,
     connectSSE,
     loadConfigStatus,
@@ -2461,6 +2796,7 @@ export function AppProvider({ children }) {
     loadHistory,
     loadSessionMessages,
     loadSessions,
+    loadRuntimeSessions,
     loadSkills,
     loadState,
     openCodeWikiProjectFromRoute,
@@ -2478,28 +2814,72 @@ export function AppProvider({ children }) {
 
   const actions = useMemo(
     () => ({
-      submit: async (line, options = {}) => {
-        if (!line.trim()) return;
+      submit: async (input, options = {}) => {
+        const sessionId = stateRef.current.currentSessionId;
+        return runSessionOperation(sessionOperationsRef.current, sessionId, async () => {
+        const message = typeof input === "string"
+          ? { text: input, skillNames: [], attachmentIds: [], dismissedAlwaysSkills: [] }
+          : input || {};
+        const line = String(message.text || "");
+        if (!line.trim() && !(message.attachmentIds || []).length && !(message.skillNames || []).length) return;
+        const selectedSkillBadges = [
+          ...new Set(
+            (Array.isArray(message.skillNames) ? message.skillNames : [])
+              .map((name) => String(name || "").trim())
+              .filter(Boolean),
+          ),
+        ].map((name) => ({ name, status: "selected" }));
         if (stateRef.current.currentView !== "chat" && !options.stayInView)
           update({ currentView: "chat" });
-        const approvingPlan =
-          !!stateRef.current.pendingPlanApproval && isPlanApprovalLine(line);
-        const workflowControl = isWorkflowControlLine(line, stateRef.current);
-        if (approvingPlan) planRunPendingRef.current = true;
-        if (!workflowControl)
-          addMessage({
-            role: "you",
+        const userMessageId = addMessage({
+          role: "you",
+          text: line,
+          skillBadges: selectedSkillBadges,
+          attachments: Array.isArray(options.attachments)
+            ? options.attachments
+            : Array.isArray(message.attachments)
+              ? message.attachments
+              : [],
+          timestamp: new Date().toISOString(),
+        });
+        // Sidebar bubbles appear when the conversation starts, not when the
+        // empty draft is created/reused.
+        setState((prev) => {
+          const existing = prev.sessions.find((s) => s.id === sessionId);
+          if (existing && Number(existing.messageCount || 0) > 0) {
+            return {
+              ...prev,
+              sessions: upsertSidebarSession(prev.sessions, {
+                id: sessionId,
+                updatedAt: new Date().toISOString(),
+                messageCount: Number(existing.messageCount || 0) + 1,
+              }),
+            };
+          }
+          const rs = prev.runtimeState || {};
+          const isGeneral = Boolean(rs.isGeneral);
+          const projectDir = isGeneral ? null : rs.cwd || rs.projectDir || null;
+          const entry = buildConversationStartSidebarEntry({
+            sessionId,
             text: line,
-            timestamp: new Date().toISOString(),
+            isGeneral,
+            projectDir,
+            projectKey: projectDir
+              ? normalizeProjectDirKey(projectDir) || projectDir
+              : null,
           });
-        const waitingId = workflowControl
-          ? null
-          : addMessage({
-              role: "system",
-              text: t("waitingResponse"),
-              timestamp: new Date().toISOString(),
-              transientKey: "waiting-response",
-            });
+          if (!entry) return prev;
+          return {
+            ...prev,
+            sessions: upsertSidebarSession(prev.sessions, entry),
+          };
+        });
+        const waitingId = addMessage({
+          role: "system",
+          text: t("waitingResponse"),
+          timestamp: new Date().toISOString(),
+          transientKey: "waiting-response",
+        });
         update({
           busy: true,
           live: true,
@@ -2507,8 +2887,16 @@ export function AppProvider({ children }) {
           stageLabel: t("waitingResponse"),
         });
         try {
-          const res = await api.submitLine(line, {
-            readOnlyCodeWiki: options.readOnlyCodeWiki === true,
+          const res = await api.submitMessage(sessionId, {
+            text: line,
+            messageId: userMessageId,
+            skillNames: Array.isArray(message.skillNames) ? message.skillNames : [],
+            attachmentIds: Array.isArray(message.attachmentIds)
+              ? message.attachmentIds
+              : [],
+            dismissedAlwaysSkills: Array.isArray(message.dismissedAlwaysSkills)
+              ? message.dismissedAlwaysSkills
+              : [],
           });
           const result = await res.json().catch(() => ({}));
           if (result?.code === "CONFIG_REQUIRED") {
@@ -2521,8 +2909,13 @@ export function AppProvider({ children }) {
           }
           if (result?.error)
             throw new Error(result.message || "Request failed");
+          await waitForAcceptedOperation(result, {
+            sessionId,
+            waiters: operationWaitersRef.current,
+            earlyResults: earlyOperationResultsRef.current,
+            fallbackError: t("actionFailed"),
+          });
         } catch (err) {
-          if (approvingPlan) planRunPendingRef.current = false;
           if (waitingId)
             setState((prev) => ({
               ...prev,
@@ -2532,137 +2925,355 @@ export function AppProvider({ children }) {
             role: "error",
             text: `Failed: ${err.message}`,
             timestamp: new Date().toISOString(),
+            responseStatus: "error",
+            retryPrompt: line,
+            retryable: Boolean(line.trim()),
           });
           update({ busy: false, live: false });
+          throw err;
         }
+        });
       },
 
-      abort: async () => {
-        try {
-          await api.abortRequest();
-        } catch {}
-      },
-
-      approve: async (id, approved) => {
-        update({ approvalRequest: null });
-        try {
-          await api.submitApproval(id, approved);
-        } catch {}
-      },
-
-      approvePlan: async (action, feedback) => {
-        const plan = stateRef.current.pendingPlanApproval;
-        if (!plan) return;
-        planRunPendingRef.current = action === "approve";
-        if (action === "reject") {
-          update({ pendingPlanApproval: null });
-        }
+      runChatAction: async (actionName, payload = {}) => {
+        const sessionId = stateRef.current.currentSessionId;
+        const isReflect = actionName === CHAT_ACTION_NAMES.REFLECT;
+        const isDream = actionName === CHAT_ACTION_NAMES.DREAM;
+        const usesResultDialog = isReflect || isDream;
+        return runSessionOperation(sessionOperationsRef.current, sessionId, async () => {
         update({
           busy: true,
           live: true,
           stage: "thinking",
           stageLabel: t("waitingResponse"),
+          ...(isReflect
+            ? {
+                reflectDialogOpen: true,
+                reflectDialogError: "",
+                reflectDialogResult: "",
+              }
+            : {}),
+          ...(isDream
+            ? {
+                dreamDialogOpen: true,
+                dreamDialogStatus: "generating",
+                dreamDialogResult: null,
+                dreamDialogError: "",
+              }
+            : {}),
         });
         try {
-          const command =
-            action === "approve"
-              ? "/yes"
-              : action === "reject"
-                ? "/reject"
-                : feedback?.trim()
-                  ? `/edit ${feedback.trim()}`
-                  : "";
-          if (!command) {
-            update({ busy: false, live: false, stage: "idle", stageLabel: "" });
-            return;
-          }
-          const res = await api.submitLine(command);
-          const result = await res.json().catch(() => ({}));
-          if (result?.error)
-            throw new Error(result.message || "Request failed");
-        } catch (err) {
-          planRunPendingRef.current = false;
-          addMessage({
-            role: "error",
-            text: `Failed: ${err.message}`,
-            timestamp: new Date().toISOString(),
+          const response = await api.submitChatAction(sessionId, actionName, payload);
+          if (response?.error) throw new Error(response.message || t("actionFailed"));
+          const accepted = response?.result;
+          const result = await waitForAcceptedOperation(accepted, {
+            sessionId,
+            waiters: operationWaitersRef.current,
+            earlyResults: earlyOperationResultsRef.current,
+            fallbackError: t("actionFailed"),
           });
-          update({ busy: false, live: false, stage: "idle", stageLabel: "" });
+          if (isReflect && !String(result?.text || "").includes("draft pending")) {
+            update({
+              reflectDialogOpen: true,
+              reflectDialogError: "",
+              reflectDialogResult: "empty",
+            });
+          }
+          if (isDream) {
+            update({
+              dreamDialogOpen: true,
+              dreamDialogStatus: "complete",
+              dreamDialogResult: result || {},
+              dreamDialogError: "",
+            });
+          }
+          return result;
+        } catch (err) {
+          if (!usesResultDialog) {
+            addMessage({
+              role: "error",
+              text: `Failed: ${err.message}`,
+              timestamp: new Date().toISOString(),
+            });
+          }
+          update({
+            busy: false,
+            live: false,
+            stage: "idle",
+            stageLabel: "",
+            ...(isReflect
+              ? {
+                  reflectDialogOpen: true,
+                  reflectDialogError: err.message,
+                  reflectDialogResult: "",
+                }
+              : {}),
+            ...(isDream
+              ? {
+                  dreamDialogOpen: true,
+                  dreamDialogStatus: "error",
+                  dreamDialogResult: null,
+                  dreamDialogError: err.message,
+                }
+              : {}),
+          });
+          throw err;
+        }
+        });
+      },
+
+      abort: async () => {
+        try {
+          await api.abortRequest(stateRef.current.currentSessionId);
+        } catch {}
+        planRunPendingRef.current = false;
+        update({
+          busy: false,
+          live: false,
+          stage: "idle",
+          stageLabel: "",
+        });
+        setState((prev) => {
+          const abortedSteps = getAbortedPlanStepIndexes(prev.messages);
+          return {
+            ...prev,
+            planSteps: abortedSteps.size
+              ? prev.planSteps.map((step, index) =>
+                  abortedSteps.has(index) &&
+                  !["done", "failed"].includes(String(step.status || ""))
+                    ? { ...step, status: "failed" }
+                    : step,
+                )
+              : prev.planSteps,
+            messages: prev.messages.map((message) => {
+              if (
+                message.id === planOverviewMsgRef.current &&
+                message.planOverview
+              ) {
+                if (!abortedSteps.size) return message;
+                return {
+                  ...message,
+                  planOverview: {
+                    ...message.planOverview,
+                    steps: message.planOverview.steps.map((step, index) =>
+                      abortedSteps.has(index) &&
+                      !["done", "failed"].includes(String(step.status || ""))
+                        ? { ...step, status: "failed" }
+                        : step,
+                    ),
+                  },
+                };
+              }
+              if (message.isComplete === false) {
+                const settled = settleRunningCreatePlanCards(
+                  {
+                    ...message,
+                    isComplete: true,
+                    manualAborted: true,
+                    segments: finishThinkingSegments(message.segments || []).map(
+                      (seg) =>
+                        seg.type === "text"
+                          ? { ...seg, isStreaming: false }
+                          : seg,
+                    ),
+                    planStep: message.planStep
+                      ? {
+                          ...message.planStep,
+                          status: ["done", "failed"].includes(
+                            String(message.planStep.status || ""),
+                          )
+                            ? message.planStep.status
+                            : "failed",
+                          summary: message.planStep.summary || "Aborted",
+                        }
+                      : message.planStep,
+                  },
+                  { reason: "aborted" },
+                );
+                return settled;
+              }
+              // Completed messages can still own a running create_plan card.
+              return settleRunningCreatePlanCards(message, { reason: "aborted" });
+            }),
+          };
+        });
+      },
+
+      abortSession: async (sessionId) => {
+        if (!sessionId) return;
+        await abortSessionIds([sessionId], api.abortRequest);
+        setState((prev) => ({
+          ...prev,
+          sessionRuntimeById: {
+            ...prev.sessionRuntimeById,
+            [sessionId]: {
+              ...prev.sessionRuntimeById[sessionId],
+              sessionId,
+              status: "interrupted",
+              busy: false,
+              needsAttention: false,
+            },
+          },
+        }));
+      },
+
+      abortAllSessions: async () => {
+        const sessionIds = activeSessionIds(
+          stateRef.current.sessionRuntimeById,
+        );
+        const result = await abortSessionIds(
+          sessionIds,
+          api.abortRequest,
+          { allowPartial: true },
+        );
+        setState((prev) => {
+          const sessionRuntimeById = { ...prev.sessionRuntimeById };
+          for (const sessionId of result.succeeded) {
+            sessionRuntimeById[sessionId] = {
+              ...sessionRuntimeById[sessionId],
+              sessionId,
+              status: "interrupted",
+              busy: false,
+              needsAttention: false,
+            };
+          }
+          return { ...prev, sessionRuntimeById };
+        });
+        if (result.failed.length) {
+          throw new AggregateError(
+            result.failed.map((failure) => failure.reason),
+            t("abortSessionsFailed").replace(
+              "{{count}}",
+              String(result.failed.length),
+            ),
+          );
         }
       },
 
-      updatePendingPlan: async (plan) => {
+      approve: async (id, actionName, ownerSessionId) => {
+        const sessionId = ownerSessionId || stateRef.current.currentSessionId;
         try {
-          const result = await api.updatePendingPlan(plan);
-          if (result?.error)
-            throw new Error(result.message || "Failed to update plan");
-          if (result?.plan) update({ pendingPlanApproval: result.plan });
-          return result?.plan || null;
+          const result = await api.submitChatAction(
+            sessionId,
+            actionName,
+            { requestId: id },
+          );
+          if (result?.error) {
+            if (result.code === "STALE_INTERACTION") return;
+            throw new Error(result.message || "Request failed");
+          }
         } catch (err) {
           addMessage({
             role: "error",
             text: `Failed: ${err.message}`,
             timestamp: new Date().toISOString(),
           });
-          return null;
+        }
+      },
+
+      respondToUserInput: async (id, response, ownerSessionId) => {
+        const effectiveSessionId = ownerSessionId || stateRef.current.currentSessionId;
+        try {
+          const result = await api.submitUserInput(
+            effectiveSessionId,
+            id,
+            response,
+          );
+          if (result?.code === "STALE_INTERACTION") return;
+          if (result?.error || result?.ok === false) {
+            addMessage({
+              role: "error",
+              text: `Failed: ${result?.message || "Request failed"}`,
+              timestamp: new Date().toISOString(),
+            });
+            await loadState();
+          }
+        } catch (err) {
+          addMessage({
+            role: "error",
+            text: `Failed: ${err.message}`,
+            timestamp: new Date().toISOString(),
+          });
+          await loadState();
         }
       },
 
       approveReflect: async (action, feedback) => {
         const draft = stateRef.current.pendingReflectApproval;
         if (!draft) return;
-        upsertRuntimeActivity({
-          key: "reflect",
-          status: "running",
-          emoji:
-            action === "approve" ? "💾" : action === "reject" ? "🗑️" : "📝",
-          label:
-            action === "approve"
-              ? t("runtimeActivityReflectSaving")
-              : action === "reject"
-                ? t("runtimeActivityReflectDiscarding")
-                : t("runtimeActivityReflectRevising"),
-          detail: draft.name ? `/${draft.name}` : "",
-        });
-        if (action === "reject") {
-          update({ pendingReflectApproval: null });
-        }
+        const actionName =
+          action === CHAT_ACTION_NAMES.REFLECT_APPROVE
+            ? CHAT_ACTION_NAMES.REFLECT_APPROVE
+            : action === CHAT_ACTION_NAMES.REFLECT_REJECT
+              ? CHAT_ACTION_NAMES.REFLECT_REJECT
+              : feedback?.trim()
+                ? CHAT_ACTION_NAMES.REFLECT_REVISE
+                : null;
+        if (!actionName) return;
+        const terminalAction =
+          actionName === CHAT_ACTION_NAMES.REFLECT_APPROVE ||
+          actionName === CHAT_ACTION_NAMES.REFLECT_REJECT;
         update({
           busy: true,
           live: true,
           stage: "thinking",
           stageLabel: t("waitingResponse"),
+          reflectDialogError: "",
+          ...(terminalAction
+            ? {
+                pendingReflectApproval: null,
+                reflectDialogOpen: false,
+                reflectDialogResult: "",
+              }
+            : {}),
         });
         try {
-          const command =
-            action === "approve"
-              ? "/yes"
-              : action === "reject"
-                ? "/no"
-                : feedback?.trim()
-                  ? `/edit ${feedback.trim()}`
-                  : "";
-          if (!command) {
-            update({ busy: false, live: false, stage: "idle", stageLabel: "" });
-            return;
-          }
-          const res = await api.submitLine(command);
-          const result = await res.json().catch(() => ({}));
-          if (result?.error)
-            throw new Error(result.message || "Request failed");
-        } catch (err) {
-          addMessage({
-            role: "error",
-            text: `Failed: ${err.message}`,
-            timestamp: new Date().toISOString(),
+          const sessionId = stateRef.current.currentSessionId;
+          const response = await api.submitChatAction(sessionId, actionName, {
+            ...(feedback?.trim() ? { feedback: feedback.trim() } : {}),
           });
-          update({ busy: false, live: false, stage: "idle", stageLabel: "" });
+          if (response?.error)
+            throw new Error(response.message || "Request failed");
+          await waitForAcceptedOperation(response?.result, {
+            sessionId,
+            waiters: operationWaitersRef.current,
+            earlyResults: earlyOperationResultsRef.current,
+            fallbackError: t("actionFailed"),
+          });
+          update({
+            busy: false,
+            live: false,
+            stage: "idle",
+            stageLabel: "",
+            ...(terminalAction
+              ? {
+                  pendingReflectApproval: null,
+                  reflectDialogOpen: false,
+                  reflectDialogError: "",
+                  reflectDialogResult: "",
+                }
+              : {}),
+          });
+        } catch (err) {
+          update({
+            busy: false,
+            live: false,
+            stage: "idle",
+            stageLabel: "",
+            pendingReflectApproval: draft,
+            reflectDialogOpen: true,
+            reflectDialogError: err.message,
+            reflectDialogResult: "",
+          });
         }
       },
 
       updatePendingReflect: async (draft) => {
         try {
-          const result = await api.updatePendingReflect(draft);
+          const result = await api.updatePendingReflect(
+            stateRef.current.currentSessionId,
+            draft,
+          );
           if (result?.error)
             throw new Error(result.message || "Failed to update reflect draft");
           if (result?.draft) update({ pendingReflectApproval: result.draft });
@@ -2680,8 +3291,17 @@ export function AppProvider({ children }) {
       approveSpec: async (action) => {
         const spec = stateRef.current.pendingSpecApproval;
         if (!spec) return;
-        if (action === "reject" || action === "save" || action === "delete") {
-          update({ pendingSpecApproval: null });
+        if (action === CHAT_ACTION_NAMES.SPEC_EXECUTE || action === CHAT_ACTION_NAMES.SPEC_PLAN_AND_EXECUTE) {
+          const display = buildSpecExecuteDisplayMessage(
+            spec,
+            action === CHAT_ACTION_NAMES.SPEC_PLAN_AND_EXECUTE ? "plan" : "direct",
+          );
+          addMessage({
+            role: "you",
+            text: display.text,
+            specExecution: display.specExecution,
+            timestamp: new Date().toISOString(),
+          });
         }
         update({
           busy: true,
@@ -2690,26 +3310,24 @@ export function AppProvider({ children }) {
           stageLabel: t("waitingResponse"),
         });
         try {
-          if (action === "delete") {
-            const result = await api.deletePendingSpec();
+          if (action === LOCAL_SPEC_REVIEW_ACTIONS.DELETE) {
+            const result = await api.deletePendingSpec(
+              stateRef.current.currentSessionId,
+            );
             if (result?.error)
               throw new Error(result.message || "Failed to delete spec");
             update({ busy: false, live: false, stage: "idle", stageLabel: "" });
             return;
           }
-          const command =
-            action === "save"
-              ? "/spec save"
-              : action === "execute"
-                ? "/spec execute"
-                : action === "approve"
-                  ? "/spec plan"
-                  : "/reject";
-          const res = await api.submitLine(command);
-          const result = await res.json().catch(() => ({}));
+          if (action === CHAT_ACTION_NAMES.SPEC_PLAN_AND_EXECUTE) planRunPendingRef.current = true;
+          const result = await api.submitChatAction(
+            stateRef.current.currentSessionId,
+            action,
+          );
           if (result?.error)
             throw new Error(result.message || "Request failed");
         } catch (err) {
+          planRunPendingRef.current = false;
           addMessage({
             role: "error",
             text: `Failed: ${err.message}`,
@@ -2721,7 +3339,10 @@ export function AppProvider({ children }) {
 
       updatePendingSpec: async (spec) => {
         try {
-          const result = await api.updatePendingSpec(spec);
+          const result = await api.updatePendingSpec(
+            stateRef.current.currentSessionId,
+            spec,
+          );
           if (result?.error)
             throw new Error(result.message || "Failed to update spec");
           if (result?.spec) update({ pendingSpecApproval: result.spec });
@@ -2739,7 +3360,10 @@ export function AppProvider({ children }) {
       openSpecReview: async (spec) => {
         if (!spec?.path) return null;
         try {
-          const result = await api.openSpecReview(spec.path);
+          const result = await api.openSpecReview(
+            stateRef.current.currentSessionId,
+            spec.path,
+          );
           if (result?.error)
             throw new Error(result.message || "Failed to open spec");
           if (result?.spec) update({ pendingSpecApproval: result.spec });
@@ -2757,31 +3381,63 @@ export function AppProvider({ children }) {
       dismissPlanProgress: () => update({ planSteps: [] }),
 
       switchSession: async (sessionId) => {
-        const currentSessionId = stateRef.current.runtimeState?.sessionId;
+        const currentSessionId = stateRef.current.currentSessionId;
         if (!sessionId || sessionId === currentSessionId) return;
-        update({ currentView: "chat", messagesLoading: true });
-        setState((prev) => ({ ...prev, messages: [] }));
-        skipSwitchedReloadRef.current = true;
+        update({ currentView: "chat", messagesLoading: true, gitInfo: null });
         try {
           const result = await api.switchSession(sessionId);
           if (result.ok) {
+            const cachedTargetMessages =
+              stateRef.current.sessionMessagesById?.[sessionId] || [];
             updateRoute("chat", sessionId);
+            activateSessionView(sessionId);
+            restoreActiveMsgRef(
+              cachedTargetMessages,
+              result.state?.busy === true ||
+                ACTIVE_SESSION_STATUSES.has(
+                  stateRef.current.sessionRuntimeById?.[sessionId]?.status,
+                ),
+            );
+
             if (result.state)
-              update({
+              setState((prev) => ({
+                ...prev,
                 runtimeState: result.state,
+                sessionRuntimeById: {
+                  ...prev.sessionRuntimeById,
+                  [sessionId]: {
+                    ...prev.sessionRuntimeById[sessionId],
+                    ...result.state,
+                  },
+                },
                 projectCwd: projectNameFromRuntimeState(result.state),
                 isGeneral: !!result.state.isGeneral,
+                live: !!result.state.busy,
+                stageLabel: result.state.busy ? t("waitingResponse") : "",
+              }));
+            else {
+              await loadState(sessionId);
+              // loadState uses prev.live as fallback for idle sessions;
+              // after a session switch, prev.live belongs to the old session,
+              // so correct live/stageLabel from the new runtimeState.
+              const rs = stateRef.current.runtimeState;
+              update({
+                live: !!rs?.busy,
+                stageLabel: rs?.busy ? t("waitingResponse") : "",
               });
-            else await loadState();
-            const msgPromise = loadSessionMessages(result.sessionData);
+            }
+
+            const msgPromise = loadSessionMessages(
+              result.sessionData,
+              { sessionId, reconcileCached: true },
+            );
             loadSessions();
-            loadGitInfo();
+            loadGitInfo({ sessionId });
             await msgPromise;
           } else {
             update({ messagesLoading: false });
           }
         } catch {
-          skipSwitchedReloadRef.current = false;
           update({ messagesLoading: false });
         }
       },
@@ -2790,7 +3446,6 @@ export function AppProvider({ children }) {
         try {
           const deletingCurrent =
             sessionId === stateRef.current.runtimeState?.sessionId;
-          if (deletingCurrent) skipSwitchedReloadRef.current = true;
           const result = await api.deleteSession(sessionId);
           if (result?.error) return result;
           setState((prev) => ({
@@ -2798,40 +3453,64 @@ export function AppProvider({ children }) {
             sessions: prev.sessions.filter(
               (session) => session.id !== sessionId,
             ),
+            sessionRuntimeById: Object.fromEntries(
+              Object.entries(prev.sessionRuntimeById).filter(
+                ([id]) => id !== sessionId,
+              ),
+            ),
+            sessionMessagesById: Object.fromEntries(
+              Object.entries(prev.sessionMessagesById).filter(
+                ([id]) => id !== sessionId,
+              ),
+            ),
           }));
           if (deletingCurrent) {
             update({ currentView: "chat", messagesLoading: true });
-            if (result.sessionId)
-              updateRoute("chat", result.sessionId, { replace: true });
-            if (result.state)
-              update({
-                runtimeState: result.state,
-                projectCwd: projectNameFromRuntimeState(result.state),
-                isGeneral: !!result.state.isGeneral,
-              });
-            else await loadState();
-            setState((prev) => ({ ...prev, messages: [] }));
-            const msgPromise = loadSessionMessages(result.sessionData);
-            loadGitInfo();
-            await msgPromise;
+            const replacement = await api.newSession(
+              stateRef.current.runtimeState?.cwd ||
+                stateRef.current.runtimeState?.projectDir,
+            );
+            if (!replacement?.ok || !replacement.sessionId) {
+              throw new Error(
+                replacement?.message || "Failed to create replacement session",
+              );
+            }
+            updateRoute("chat", replacement.sessionId, { replace: true });
+            activateSessionView(replacement.sessionId);
+            await Promise.all([
+              loadState(replacement.sessionId),
+              loadSessionMessages(null, { sessionId: replacement.sessionId }),
+              loadGitInfo({ sessionId: replacement.sessionId }),
+            ]);
+            // Replacement session is always idle; reset live/stageLabel
+            // since loadState may have kept prev.live from the deleted session.
+            update({ live: false, stageLabel: "" });
           }
           loadSessions();
           return result;
         } catch (err) {
-          if (deletingCurrent) skipSwitchedReloadRef.current = false;
           return { error: true, message: err.message };
         }
       },
 
       newSession: async () => {
         update({ currentView: "chat", messagesLoading: true });
-        setState((prev) => ({ ...prev, messages: [] }));
         try {
-          const result = await api.newSession();
+          const result = await api.newSession(
+            stateRef.current.runtimeState?.cwd ||
+              stateRef.current.runtimeState?.projectDir,
+          );
           if (result.ok) {
-            if (result.sessionId) updateRoute("chat", result.sessionId);
-            await loadState();
-            loadSessions();
+            if (result.sessionId) {
+              updateRoute("chat", result.sessionId);
+              activateSessionView(result.sessionId);
+              await loadState(result.sessionId);
+              // A new session is always idle; reset live/stageLabel
+              // since loadState falls back to prev.live from the old session.
+              update({ live: false, stageLabel: "" });
+            }
+            // Empty drafts stay out of the sidebar until the first message.
+            loadSessions({ force: true });
             update({ messagesLoading: false });
           } else {
             update({ messagesLoading: false });
@@ -2843,6 +3522,9 @@ export function AppProvider({ children }) {
 
       openProject: async (projectPath, options = {}) => {
         const nextView = options.view || "chat";
+        const openingGeneral =
+          projectPath === "__codemini_general__" ||
+          String(projectPath || "").trim() === "";
         const pendingCodeWikiProjectPath =
           nextView === "codewiki"
             ? projectPath
@@ -2852,11 +3534,13 @@ export function AppProvider({ children }) {
           projectOpen: false,
           messagesLoading: nextView === "chat",
           codewikiProjectPath: pendingCodeWikiProjectPath,
+          isGeneral: openingGeneral,
+          gitInfo: null,
         });
-        if (nextView === "chat")
-          setState((prev) => ({ ...prev, messages: [] }));
         try {
-          const result = await api.openProject(projectPath);
+          const result = await api.openProject(projectPath, {
+            newSession: Boolean(options.newSession),
+          });
           if (result.ok) {
             const nextCodeWikiProjectPath =
               nextView === "codewiki"
@@ -2871,10 +3555,47 @@ export function AppProvider({ children }) {
               updateRoute("codewiki", null, {
                 projectPath: nextCodeWikiProjectPath,
               });
-            else if (result.sessionId) updateRoute("chat", result.sessionId);
-            await loadState();
-            loadSessions();
-            loadGitInfo();
+            else if (result.sessionId) {
+              updateRoute("chat", result.sessionId);
+              activateSessionView(result.sessionId);
+            }
+            if (result.state) {
+              setState((prev) => ({
+                ...prev,
+                runtimeState: result.state,
+                sessionRuntimeById: {
+                  ...prev.sessionRuntimeById,
+                  [result.sessionId]: {
+                    ...prev.sessionRuntimeById[result.sessionId],
+                    ...result.state,
+                  },
+                },
+                projectCwd: projectNameFromRuntimeState(result.state),
+                isGeneral: !!result.state.isGeneral,
+                live: !!result.state.busy,
+                stageLabel: result.state.busy ? t("waitingResponse") : "",
+              }));
+            } else {
+              await loadState(result.sessionId);
+              // loadState falls back to prev.live for idle sessions;
+              // after switching, prev.live belongs to the old session.
+              const rs = stateRef.current.runtimeState;
+              update({
+                live: !!rs?.busy,
+                stageLabel: rs?.busy ? t("waitingResponse") : "",
+              });
+            }
+            const msgPromise =
+              nextView === "chat" && result.sessionData
+                ? loadSessionMessages(result.sessionData, {
+                    sessionId: result.sessionId,
+                  })
+                : Promise.resolve();
+            await Promise.all([
+              loadSessions({ force: true }),
+              loadGitInfo({ sessionId: result.sessionId }),
+              msgPromise,
+            ]);
             if (nextView === "chat") update({ messagesLoading: false });
           } else if (nextView === "chat") {
             update({ messagesLoading: false });
@@ -2896,6 +3617,7 @@ export function AppProvider({ children }) {
         if (view === "codewiki") {
           updateRoute(view, null, { projectPath: codewikiProjectPath });
         }
+        if (view === "sessions") updateRoute(view, null);
         if (view === "chat") {
           const rs = stateRef.current.runtimeState;
           updateRoute("chat", rs?.sessionId);
@@ -2913,10 +3635,43 @@ export function AppProvider({ children }) {
 
       setConfigOpen: (open) => update({ configOpen: open }),
       refreshConfigStatus: () => loadConfigStatus(),
+      refreshRuntimeState: () => loadState(),
+      patchRuntimeReasoning: (config) => {
+        const patch = extractReasoningRuntimePatch(config);
+        update({
+          runtimeState: {
+            ...stateRef.current.runtimeState,
+            ...patch,
+          },
+        });
+      },
       setProjectOpen: (open) => update({ projectOpen: open }),
       setSkillsOpen: (open) => update({ skillsOpen: open }),
       setMemoryOpen: (open) => update({ memoryOpen: open }),
+      prepareChatAction: (actionName) => {
+        if (actionName === CHAT_ACTION_NAMES.REFLECT) {
+          update({
+            reflectDialogOpen: true,
+            reflectDialogError: "",
+            reflectDialogResult: "",
+          });
+        }
+        if (actionName === CHAT_ACTION_NAMES.DREAM) {
+          update({
+            dreamDialogOpen: true,
+            dreamDialogStatus: "generating",
+            dreamDialogResult: null,
+            dreamDialogError: "",
+          });
+        }
+      },
+      setReflectDialogOpen: (open) => update({ reflectDialogOpen: open }),
+      setDreamDialogOpen: (open) => update({ dreamDialogOpen: open }),
       setSoulsOpen: (open) => update({ soulsOpen: open }),
+      notifySoulsChanged: () =>
+        update({
+          soulsRevision: (stateRef.current.soulsRevision || 0) + 1,
+        }),
       setAboutOpen: (open) => update({ aboutOpen: open }),
       setGitDiffOpen: (open) => update({ gitDiffOpen: open }),
 
@@ -2942,6 +3697,7 @@ export function AppProvider({ children }) {
       },
     }),
     [
+      activateSessionView,
       addMessage,
       applyTheme,
       loadConfigStatus,
@@ -2955,7 +3711,23 @@ export function AppProvider({ children }) {
     ],
   );
 
-  const value = useMemo(() => ({ state, actions }), [state, actions]);
+  const projectedSessions = useMemo(
+    () => projectSessionRuntime(state.sessions, state.sessionRuntimeById),
+    [state.sessions, state.sessionRuntimeById],
+  );
+  const projectedState = useMemo(
+    () =>
+      projectVisibleSessionState({
+        ...state,
+        sessions: projectedSessions,
+      }),
+    [state, projectedSessions],
+  );
+
+  const value = useMemo(
+    () => ({ state: projectedState, actions }),
+    [projectedState, actions],
+  );
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 

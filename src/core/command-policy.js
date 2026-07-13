@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { getEffectivePolicy } from './shell-profile.js';
+import { getBaseConfigDir } from './paths.js';
 
 const SHELL_KEYWORDS = new Set([
   'if',
@@ -199,6 +200,7 @@ function suggestionForToken(token, config) {
 function allowedPathRoots(workspaceRoot, config = {}) {
   return [
     workspaceRoot,
+    path.join(getBaseConfigDir(), 'workspace'),
     ...(Array.isArray(config?.policy?.allowed_paths) ? config.policy.allowed_paths : [])
   ]
     .map((item) => String(item || '').trim())

@@ -3,6 +3,125 @@
 
 @import "streamdown/styles.css";
 @source "../node_modules/streamdown/dist/*.js";
+@import "@uiw/react-md-editor/markdown-editor.css";
+@import "@uiw/react-markdown-preview/markdown.css";
+
+.codemini-md-editor {
+  min-height: 0;
+}
+
+.codemini-md-editor .w-md-editor {
+  --md-editor-font-family: var(--font-mono);
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  box-shadow: none;
+}
+
+.codemini-md-editor .w-md-editor-toolbar {
+  border-bottom: 1px solid var(--border-default);
+  background: var(--bg-secondary);
+}
+
+.codemini-md-editor .w-md-editor-toolbar li > button {
+  color: var(--text-secondary);
+}
+
+.codemini-md-editor .w-md-editor-toolbar li > button:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/*
+ * Keep textarea + highlighted pre/code on identical metrics.
+ * Mismatched font/size/line-height shifts the caret and blocks reaching line start.
+ */
+.codemini-md-editor .w-md-editor-text {
+  box-sizing: border-box;
+  padding: 12px 14px;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 13px !important;
+  line-height: 20px !important;
+  letter-spacing: normal;
+  tab-size: 2;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+.codemini-md-editor .w-md-editor-text-pre,
+.codemini-md-editor .w-md-editor-text-input,
+.codemini-md-editor .w-md-editor-text-pre > code {
+  box-sizing: border-box;
+  margin: 0 !important;
+  border: 0;
+  padding: 0 !important;
+  font-family: var(--font-mono) !important;
+  font-size: 13px !important;
+  font-weight: 400 !important;
+  font-style: normal !important;
+  font-variant-ligatures: none;
+  line-height: 20px !important;
+  letter-spacing: normal !important;
+  tab-size: 2;
+  text-indent: 0;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+  overflow-wrap: break-word !important;
+}
+
+.codemini-md-editor .w-md-editor-text-input {
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  padding: inherit !important;
+  caret-color: var(--text-primary);
+  -webkit-text-fill-color: transparent;
+}
+
+.codemini-md-editor .w-md-editor-text-input:empty {
+  -webkit-text-fill-color: var(--text-muted) !important;
+}
+
+.codemini-md-editor .w-md-editor-preview {
+  padding: 12px 14px;
+}
+
+.codemini-md-editor .w-md-editor-preview,
+.codemini-md-preview .wmde-markdown {
+  background: transparent;
+  color: var(--text-primary);
+}
+
+.codemini-md-preview .wmde-markdown,
+.codemini-md-editor .wmde-markdown {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.codemini-md-preview .wmde-markdown {
+  min-height: 100%;
+  padding: 0;
+}
+
+.skill-md-preview .wmde-markdown {
+  background: transparent;
+}
+
+.codemini-md-preview .wmde-markdown > :first-child,
+.codemini-md-editor .wmde-markdown > :first-child {
+  margin-top: 0;
+}
+
+.codemini-md-preview .wmde-markdown > :last-child,
+.codemini-md-editor .wmde-markdown > :last-child {
+  margin-bottom: 0;
+}
 
 .codewiki-layout {
   display: grid;
@@ -199,12 +318,18 @@
   --shadow-sm: rgba(0, 0, 0, 0.05) 0 1px 2px;
   --shadow-default: rgba(0, 0, 0, 0.05) 0 0 0 1px, rgba(0, 0, 0, 0.08) 0 8px 24px;
   --shadow-lg: rgba(0, 0, 0, 0.08) 0 0 0 1px, rgba(0, 0, 0, 0.16) 0 16px 46px;
+  --input-shell-border: color-mix(in srgb, var(--text-primary) 4.5%, transparent);
+  --input-shell-bg: color-mix(in srgb, var(--bg-primary) 82%, white);
+  --input-shell-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.035),
+    0 1px 2px rgba(0, 0, 0, 0.045),
+    0 6px 16px rgba(0, 0, 0, 0.065);
   --radius-sm: 0.25rem;
   --radius: 0.5rem;
   --radius-lg: 0.75rem;
   --radius-xl: 1rem;
-  --font-sans: "Geist", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --font-sans: "Geist", "Inter", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", "SF Mono", "Cascadia Code", "Cascadia Mono", Consolas, "Liberation Mono", ui-monospace, monospace;
   --transition: 140ms ease;
 }
 
@@ -269,6 +394,11 @@
   --shadow-sm: rgba(0, 0, 0, 0.3) 0 1px 2px;
   --shadow-default: rgba(0, 0, 0, 0.4) 0 0 0 1px, rgba(0, 0, 0, 0.4) 0 10px 28px;
   --shadow-lg: rgba(0, 0, 0, 0.5) 0 0 0 1px, rgba(0, 0, 0, 0.6) 0 18px 60px;
+  --input-shell-border: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  --input-shell-bg: color-mix(in srgb, var(--bg-secondary) 92%, var(--bg-primary));
+  --input-shell-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.14),
+    0 8px 18px rgba(0, 0, 0, 0.12);
 }
 
 :root[data-palette="catppuccin"] {
@@ -806,58 +936,516 @@
 :root[data-theme],
 :root[data-palette],
 :root[data-theme][data-palette] {
+  /* Thinking / tool / processed rows — dimmer than msg-body primary */
+  --text-process: color-mix(in srgb, var(--text-primary) 38%, var(--text-muted));
+  --text-process-detail: color-mix(in srgb, var(--text-primary) 22%, var(--text-muted) 78%);
+  --shell-canvas: var(--bg-secondary);
+  --workspace-panel-radius: 0.75rem;
+  --workspace-panel-border: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  /* Focus glow follows palette ring (shadcn) — set per palette below when needed */
+  --input-shell-accent: var(--ring);
+  --input-shell-glow: color-mix(in srgb, var(--input-shell-accent) 26%, transparent);
+  --input-shell-glow-soft: color-mix(in srgb, var(--input-shell-accent) 12%, transparent);
+  --input-shell-border-hover: color-mix(
+    in srgb,
+    var(--input-shell-accent) 22%,
+    var(--input-shell-border)
+  );
+  --input-shell-border-focus: color-mix(
+    in srgb,
+    var(--input-shell-accent) 40%,
+    var(--border-strong)
+  );
+  --surface-edge: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  --surface-shadow:
+    0 1px 2px color-mix(in srgb, black 8%, transparent),
+    0 10px 30px color-mix(in srgb, black 16%, transparent);
+  --control-bg: color-mix(in srgb, var(--bg-primary) 94%, var(--bg-secondary));
+  --control-border: color-mix(in srgb, var(--text-primary) 7%, transparent);
+  --control-border-hover: color-mix(in srgb, var(--text-primary) 13%, transparent);
+  --control-shadow:
+    0 1px 2px color-mix(in srgb, black 8%, transparent),
+    0 3px 10px color-mix(in srgb, black 5%, transparent);
+  --control-focus-ring: color-mix(in srgb, var(--input-shell-accent) 24%, transparent);
+  --interactive-hover: color-mix(in srgb, var(--text-primary) 6%, var(--bg-primary));
+  --selected-bg: color-mix(in srgb, var(--text-primary) 11%, var(--bg-primary));
+  --selected-edge: color-mix(in srgb, var(--text-primary) 10%, transparent);
+  --badge-bg: color-mix(in srgb, var(--text-primary) 6%, var(--bg-primary));
+  --badge-edge: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  --message-surface: color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-primary));
+  --message-edge: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  --message-shadow:
+    0 1px 2px color-mix(in srgb, black 6%, transparent),
+    0 4px 14px color-mix(in srgb, black 5%, transparent);
+  --loader-fg: var(--text-secondary);
+  --loader-track: color-mix(in srgb, var(--text-muted) 38%, transparent);
+  --loader-dot: var(--text-muted);
+  --loader-status-running: var(--text-secondary);
   --border: color-mix(in srgb, var(--text-primary) 6%, transparent);
   --input: color-mix(in srgb, var(--text-primary) 8%, transparent);
-  --border-default: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  --bg-hover: var(--interactive-hover);
+  --bg-active: var(--selected-bg);
+  --border-default: var(--surface-edge);
   --border-strong: color-mix(in srgb, var(--text-primary) 14%, transparent);
   --md-code-border: color-mix(in srgb, var(--text-primary) 7%, transparent);
   --separator: color-mix(in srgb, var(--text-primary) 4%, transparent);
   --panel-edge: color-mix(in srgb, var(--text-primary) 3%, transparent);
-  --shadow-default: color-mix(in srgb, var(--text-primary) 6%, transparent) 0 18px 46px;
-  --shadow-lg: color-mix(in srgb, var(--text-primary) 8%, transparent) 0 22px 64px;
+  --shadow-default:
+    color-mix(in srgb, var(--text-primary) 8%, transparent) 0 0 0 1px,
+    rgba(0, 0, 0, 0.22) 0 12px 28px;
+  --shadow-lg:
+    color-mix(in srgb, var(--text-primary) 9%, transparent) 0 0 0 1px,
+    rgba(0, 0, 0, 0.28) 0 16px 36px;
+}
+
+/* Default palette: use primary (near-black / near-white), not neutral ring gray */
+:root:not([data-palette]),
+:root[data-palette="default"],
+:root[data-theme][data-palette="default"] {
+  --input-shell-accent: var(--primary);
+}
+
+:root[data-theme="light"] {
+  --surface-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 10px 28px rgba(0, 0, 0, 0.07);
+  --control-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 3px 10px rgba(0, 0, 0, 0.035);
+  --shadow-default:
+    color-mix(in srgb, var(--text-primary) 8%, transparent) 0 0 0 1px,
+    rgba(0, 0, 0, 0.08) 0 10px 24px;
+  --shadow-lg:
+    color-mix(in srgb, var(--text-primary) 10%, transparent) 0 0 0 1px,
+    rgba(0, 0, 0, 0.12) 0 14px 32px;
+  --input-shell-border: color-mix(in srgb, var(--text-primary) 4.5%, transparent);
+  --input-shell-bg: color-mix(in srgb, var(--bg-primary) 82%, white);
+  --input-shell-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.035),
+    0 1px 2px rgba(0, 0, 0, 0.045),
+    0 6px 16px rgba(0, 0, 0, 0.065);
+}
+
+/* Dashed empty placeholders — follow data-theme + data-palette tokens */
+.codemini-empty-dashed {
+  border-radius: var(--radius-lg, 0.5rem);
+  border: 1px dashed color-mix(in srgb, var(--text-muted) 52%, var(--border-default));
+  background: color-mix(in srgb, var(--muted) 72%, var(--bg-primary));
+  color: var(--text-muted);
+  text-align: center;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+[data-theme="dark"] .codemini-empty-dashed {
+  border-color: color-mix(in srgb, var(--text-muted) 62%, var(--border-strong));
+  background: color-mix(
+    in srgb,
+    var(--muted) 48%,
+    color-mix(in srgb, var(--bg-secondary) 70%, var(--bg-primary))
+  );
+  color: color-mix(in srgb, var(--text-muted) 92%, var(--text-secondary));
 }
 
 /* ── Thin themed scrollbars ── */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--text-muted) 50%, transparent) transparent;
+html {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  text-rendering: optimizeLegibility;
 }
-*::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
 }
-*::-webkit-scrollbar-track {
-  background: transparent;
+
+/* Linear-style shell: gray canvas + inset rounded workspace panel */
+.codemini-app-shell {
+  background: #f2f2f2;
 }
-*::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--text-muted) 50%, transparent);
-  border-radius: 3px;
-}
-*::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--text-muted) 70%, transparent);
-}
-*::-webkit-scrollbar-corner {
+
+[data-theme="dark"] .codemini-app-shell {
   background: transparent;
 }
 
-/* ── Loading dots ── */
+.codemini-sidebar {
+  background: transparent;
+}
+.codemini-workspace-panel {
+  border-radius: var(--workspace-panel-radius);
+  border: 1px solid var(--workspace-panel-border);
+  background: var(--apple-material);
+}
+
+/* Chat session: +1px vs app chrome (14px → 15px base) */
+.codemini-chat-session {
+  font-size: 15px;
+}
+.codemini-chat-session .msg-body {
+  font-size: 15px;
+  line-height: 1.65;
+}
+.codemini-chat-session .msg-body > :first-child {
+  margin-top: 0;
+}
+.codemini-chat-session .msg-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* Process metadata: thinking, tools, processed summaries */
+.msg-process-meta {
+  color: var(--text-process);
+}
+.msg-process-meta .msg-process-meta__detail {
+  color: var(--text-process-detail);
+}
+.msg-process-meta .msg-process-row:hover {
+  color: color-mix(in srgb, var(--text-process) 50%, var(--text-secondary) 50%);
+}
+.msg-process-meta .msg-process-thought-body {
+  color: var(--text-process);
+}
+.msg-process-meta .msg-process-thought-body :where(p, li, span, em, strong, code) {
+  color: inherit;
+}
+.msg-process-rotating-label {
+  display: inline-block;
+  transition: opacity 280ms ease;
+  opacity: 1;
+}
+.msg-process-rotating-label.is-fading {
+  opacity: 0;
+}
+
+/* Linear-style cards for structured spec / plan messages */
+.codemini-message-surface {
+  border: 1px solid var(--message-edge);
+  border-radius: var(--radius-lg);
+  background: var(--message-surface);
+  /* box-shadow: var(--message-shadow); */
+}
+
+.codemini-status-chip {
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: var(--badge-bg);
+  box-shadow: inset 0 0 0 1px var(--badge-edge);
+}
+
+.codemini-user-bubble {
+  border: 0;
+  box-shadow: none;
+}
+
+.codemini-linear-card {
+  border: 1px solid var(--message-edge);
+  background: var(--message-surface);
+  box-shadow: var(--message-shadow);
+  margin-top: 16px;
+}
+
+.codemini-linear-icon {
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 24%, var(--border-default));
+  background: color-mix(in srgb, var(--accent-blue-bg) 26%, transparent);
+  color: var(--accent-blue);
+}
+
+.codemini-linear-pill {
+  border-color: color-mix(in srgb, var(--accent-blue) 24%, var(--border-default));
+  background: color-mix(in srgb, var(--accent-blue-bg) 24%, transparent);
+  color: color-mix(in srgb, var(--accent-blue) 82%, var(--text-primary));
+}
+
+.codemini-linear-step {
+  border-color: color-mix(in srgb, var(--border-default) 82%, var(--text-primary) 7%);
+  background: color-mix(in srgb, var(--bg-primary) 74%, var(--bg-secondary));
+  color: var(--text-muted);
+}
+
+.codemini-linear-step--done {
+  border-color: color-mix(in srgb, var(--accent-green) 28%, var(--border-default));
+  background: color-mix(in srgb, var(--accent-green-bg) 24%, transparent);
+  color: var(--accent-green);
+}
+
+.codemini-linear-step--failed {
+  border-color: color-mix(in srgb, var(--accent-red) 28%, var(--border-default));
+  background: color-mix(in srgb, var(--accent-red-bg) 24%, transparent);
+  color: var(--accent-red);
+}
+
+.codemini-linear-step--running {
+  border-color: color-mix(in srgb, var(--accent-blue) 30%, var(--border-default));
+  background: color-mix(in srgb, var(--accent-blue-bg) 24%, transparent);
+  color: var(--accent-blue);
+}
+
+.codemini-chat-session .text-\[10px\] {
+  font-size: 11px !important;
+}
+.codemini-chat-session .text-\[11px\] {
+  font-size: 12px !important;
+}
+.codemini-chat-session .text-\[12px\] {
+  font-size: 13px !important;
+}
+.codemini-chat-session .text-\[13px\] {
+  font-size: 14px !important;
+}
+.codemini-chat-session .text-\[14px\] {
+  font-size: 15px !important;
+}
+.codemini-chat-session .text-xs {
+  font-size: 13px !important;
+}
+.codemini-chat-session .text-sm {
+  font-size: 15px !important;
+}
+.codemini-chat-session .msg-body th,
+.codemini-chat-session .msg-body td,
+.codemini-chat-session .msg-body [data-streamdown="table-header-cell"],
+.codemini-chat-session .msg-body [data-streamdown="table-cell"] {
+  font-size: 14px !important;
+}
+.codemini-chat-session .msg-body [data-streamdown="table-wrapper"] [class*="top-full"] button,
+.codemini-chat-session .msg-body [data-streamdown="mermaid-block"] [class*="top-full"] button {
+  font-size: 14px !important;
+}
+.codemini-chat-session .msg-body [data-streamdown="code-block-header"] span {
+  font-size: 12px !important;
+}
+
+/* Chat input shell — soft elevation + theme glow on hover / focus */
+.codemini-input-shell {
+  border: 1px solid var(--surface-edge);
+  border-color: var(--selected-edge);
+  border-radius: var(--radius-xl);
+  background: var(--control-bg);
+  box-shadow:
+    0 1px 2px color-mix(in srgb, black 4%, transparent),
+    0 8px 18px color-mix(in srgb, black 6%, transparent);
+  transition:
+    border-color var(--transition),
+    box-shadow 220ms ease,
+    background var(--transition);
+}
+
+:root[data-theme="dark"],
+:root[data-theme="dark"][data-palette] {
+  --control-bg: color-mix(in srgb, var(--text-primary) 10%, var(--bg-secondary));
+  --control-border: color-mix(in srgb, var(--text-primary) 16%, transparent);
+  --control-border-hover: color-mix(in srgb, var(--text-primary) 24%, transparent);
+  --badge-bg: color-mix(in srgb, var(--text-primary) 8%, var(--bg-secondary));
+  --badge-edge: color-mix(in srgb, var(--text-primary) 13%, transparent);
+  --message-surface: color-mix(in srgb, var(--text-primary) 5%, var(--bg-secondary));
+  --message-edge: color-mix(in srgb, var(--text-primary) 10%, transparent);
+}
+
+.codemini-input-shell:focus-within {
+  border-color: var(--selected-edge);
+  background: var(--bg-primary);
+  box-shadow:
+    0 1px 2px color-mix(in srgb, black 4%, transparent),
+    0 8px 18px color-mix(in srgb, black 6%, transparent);
+}
+
+[data-theme="dark"] .codemini-input-shell:focus-within {
+  background: var(--control-bg);
+}
+
+.codemini-input-chip {
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: var(--interactive-hover);
+  box-shadow: inset 0 0 0 1px var(--surface-edge);
+}
+
+.codemini-input-chip--selected {
+  background: color-mix(in srgb, var(--accent-purple) 12%, var(--selected-bg));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-purple) 18%, transparent);
+}
+
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--font-mono);
+  font-feature-settings: "liga" 0, "calt" 0;
+}
+
+*,
+*::before,
+*::after {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:root {
+  --scrollbar-size: 6px;
+  --scrollbar-thumb: color-mix(in srgb, var(--text-muted) 55%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--text-muted) 75%, transparent);
+  --scrollbar-track: color-mix(in srgb, var(--text-muted) 16%, var(--bg-secondary));
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+*::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+  height: var(--scrollbar-size);
+}
+*::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+*::-webkit-scrollbar-corner {
+  background: var(--scrollbar-track);
+}
+
+/* Chat horizontal scroll (native fallback for markdown tables / code blocks) */
+.codemini-embed-banner-scroll {
+  --scrollbar-thumb: color-mix(in srgb, var(--text-muted) 68%, transparent);
+  --scrollbar-track: color-mix(in srgb, var(--text-muted) 30%, var(--bg-secondary));
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  padding-bottom: 18px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+.codemini-embed-banner-scroll::-webkit-scrollbar,
+.msg-body [data-streamdown="table-wrapper"] > div:nth-child(2)::-webkit-scrollbar,
+.msg-body [data-streamdown="code-block-body"]::-webkit-scrollbar {
+  -webkit-appearance: none;
+  width: 8px;
+  height: 8px;
+}
+
+.codemini-embed-banner-scroll::-webkit-scrollbar-track,
+.msg-body [data-streamdown="table-wrapper"] > div:nth-child(2)::-webkit-scrollbar-track,
+.msg-body [data-streamdown="code-block-body"]::-webkit-scrollbar-track {
+  border-radius: 4px;
+  background: var(--scrollbar-track, color-mix(in srgb, var(--text-muted) 16%, var(--bg-secondary)));
+}
+
+.codemini-embed-banner-scroll::-webkit-scrollbar-thumb,
+.msg-body [data-streamdown="table-wrapper"] > div:nth-child(2)::-webkit-scrollbar-thumb,
+.msg-body [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: var(--scrollbar-thumb, color-mix(in srgb, var(--text-muted) 55%, transparent));
+}
+
+.codemini-embed-banner-scroll::-webkit-scrollbar-thumb:hover,
+.msg-body [data-streamdown="table-wrapper"] > div:nth-child(2)::-webkit-scrollbar-thumb:hover,
+.msg-body [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover, color-mix(in srgb, var(--text-muted) 75%, transparent));
+}
+
+.codemini-embed-banner-scroll::-webkit-scrollbar {
+  height: 8px;
+}
+
+.msg-body [data-streamdown="table-wrapper"] > div:nth-child(2),
+.msg-body [data-streamdown="code-block-body"] {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  overscroll-behavior-x: contain;
+}
+
+/* Custom horizontal scroll strip (related links, image gallery) */
+.codemini-horizontal-scroll-strip__viewport {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.codemini-horizontal-scroll-strip__viewport::-webkit-scrollbar {
+  display: none;
+}
+
+.codemini-horizontal-scroll-strip__track {
+  position: relative;
+  background: color-mix(in srgb, var(--text-muted) 22%, var(--bg-secondary));
+}
+
+.codemini-horizontal-scroll-strip__thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  background: color-mix(in srgb, var(--text-muted) 62%, transparent);
+}
+
+.codemini-horizontal-scroll-strip__thumb:hover {
+  background: color-mix(in srgb, var(--text-muted) 78%, transparent);
+}
+
+/* ── Linear loaders (theme + palette aware) ── */
 .loading-dots {
   display: inline-flex;
-  gap: 4px;
+  gap: 3px;
   align-items: center;
+  color: var(--loader-dot);
 }
 .loading-dots span {
-  width: 4px;
-  height: 4px;
+  width: 3px;
+  height: 3px;
   border-radius: 50%;
   background: currentColor;
-  animation: dot-bounce 1.2s ease-in-out infinite;
+  opacity: 0.28;
+  animation: linear-dot-pulse 1.35s ease-in-out infinite;
 }
-.loading-dots span:nth-child(2) { animation-delay: 0.15s; }
-.loading-dots span:nth-child(3) { animation-delay: 0.3s; }
-@keyframes dot-bounce {
-  0%, 60%, 100% { opacity: 0.25; transform: translateY(0); }
-  30% { opacity: 1; transform: translateY(-4px); }
+.loading-dots span:nth-child(2) { animation-delay: 0.18s; }
+.loading-dots span:nth-child(3) { animation-delay: 0.36s; }
+@keyframes linear-dot-pulse {
+  0%, 72%, 100% { opacity: 0.22; transform: scale(0.92); }
+  36% { opacity: 1; transform: scale(1); }
+}
+
+.linear-loader-ring {
+  display: inline-block;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--loader-track);
+  border-top-color: var(--loader-fg);
+  animation: linear-ring-spin 0.9s linear infinite;
+}
+.linear-loader-ring--sm {
+  width: 12px;
+  height: 12px;
+  border-width: 1.25px;
+}
+.linear-loader-ring--md {
+  width: 14px;
+  height: 14px;
+}
+.linear-loader-ring--lg {
+  width: 16px;
+  height: 16px;
+}
+@keyframes linear-ring-spin {
+  to { transform: rotate(360deg); }
+}
+
+.linear-status-dot {
+  display: inline-block;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--loader-status-running);
+  animation: linear-status-pulse 1.35s ease-in-out infinite;
+}
+.linear-status-dot--sm {
+  width: 6px;
+  height: 6px;
 }
 
 /* ── Prevent I-beam cursor on non-editable text ── */
@@ -903,18 +1491,74 @@
   cursor: not-allowed;
 }
 
-/* ── Streaming Cursor ── */
+.codemini-plan-flow {
+  position: relative;
+  padding-left: 44px;
+}
+
+.codemini-plan-flow::before {
+  content: "";
+  position: absolute;
+  left: 15px;
+  top: -8px;
+  bottom: -0px;
+  width: 1px;
+  background: color-mix(in srgb, var(--text-muted) 30%, transparent);
+}
+
+.codemini-plan-flow::after {
+  content: "";
+  position: absolute;
+  left: 11px;
+  top: 12px;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--text-muted) 44%, transparent);
+  background: var(--bg-primary);
+  box-shadow: 0 0 0 3px var(--bg-primary);
+}
+
+.codemini-plan-flow[data-plan-status="running"]::after {
+  border-color: var(--accent-blue);
+  background: var(--accent-blue);
+}
+
+.codemini-plan-flow[data-plan-status="done"]::after {
+  border-color: var(--accent-green);
+  background: var(--accent-green);
+}
+
+.codemini-plan-flow[data-plan-status="failed"]::after {
+  border-color: var(--accent-red);
+  background: var(--accent-red);
+}
+
+/* ── Streaming cursor (Linear-style soft caret) ── */
 .streaming-cursor::after {
   content: "";
   display: inline-block;
   width: 2px;
-  height: 16px;
-  background: var(--accent-blue);
+  height: 1.05em;
+  max-height: 18px;
   margin-left: 2px;
+  border-radius: 1px;
   vertical-align: text-bottom;
-  animation: blink 1s step-end infinite;
+  background: color-mix(in srgb, var(--text-secondary) 78%, transparent);
+  animation: stream-caret-pulse 1.15s ease-in-out infinite;
 }
-@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+.streaming-cursor--pending {
+  display: inline-flex;
+  align-items: baseline;
+  min-height: 1.625rem;
+}
+.streaming-cursor--pending::after {
+  margin-left: 0;
+}
+@keyframes stream-caret-pulse {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 1; }
+}
 
 /* ── Streamdown (markdown renderer) overrides ── */
 .msg-body [data-streamdown="table-wrapper"],
@@ -938,9 +1582,10 @@
 }
 .msg-body [data-streamdown="table-wrapper"] > div:nth-child(2) {
   border: 1px solid var(--md-code-border) !important;
-  border-radius: var(--radius-lg) !important;
+  border-radius: var(--radius) !important;
   background: var(--bg-primary) !important;
   overflow: auto !important;
+  overscroll-behavior-x: contain;
 }
 .msg-body [data-streamdown="code-block-actions"],
 .msg-body [data-streamdown="mermaid-block-actions"] {
@@ -955,7 +1600,7 @@
   box-shadow: none;
   backdrop-filter: none;
 }
-.msg-body [data-streamdown="table-wrapper"] button,
+.msg-body [data-streamdown="table-wrapper"] button:not([data-markdown-lightbox]):not([data-streamdown="link"]),
 .msg-body [data-streamdown="mermaid-block"] button {
   width: 28px !important;
   height: 28px !important;
@@ -1003,7 +1648,7 @@
   height: 14px !important;
   flex: 0 0 auto !important;
 }
-.msg-body [data-streamdown="table-wrapper"] button:hover,
+.msg-body [data-streamdown="table-wrapper"] button:not([data-markdown-lightbox]):not([data-streamdown="link"]):hover,
 .msg-body [data-streamdown="mermaid-block"] button:hover {
   background: var(--bg-hover) !important;
   color: var(--text-primary) !important;
@@ -1013,7 +1658,8 @@
   color: var(--text-primary) !important;
 }
 .msg-body table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: separate;
   border-spacing: 0;
   background: var(--bg-primary);
@@ -1049,23 +1695,44 @@
   text-decoration-color: color-mix(in srgb, var(--md-link) 45%, transparent);
 }
 .msg-body blockquote {
-  border-left: 3px solid var(--accent-purple);
-  background: var(--md-table-row-alt-bg);
-  color: var(--text-secondary);
   margin: 12px 0;
-  padding: 8px 12px;
+  /* padding: 2px 12px; */
+  /* border: 1px solid var(--md-code-border); */
+  border-left: 2px solid color-mix(in srgb, var(--input-shell-accent) 28%, var(--md-code-border));
+  /* border-radius: var(--radius); */
+  /* background: var(--md-code-bg); */
+  color: var(--text-primary);
+  font-style: normal;
+}
+.msg-body blockquote :where(p, li, span, em, strong) {
+  font-style: normal;
+}
+.msg-body blockquote > :first-child {
+  margin-top: 0;
+}
+.msg-body blockquote > :last-child {
+  margin-bottom: 0;
+}
+.msg-body blockquote [data-streamdown="code-block"] {
+  margin: 10px 0 0 !important;
 }
 .msg-body hr {
   border-color: var(--border-default);
 }
 .msg-body :not(pre) > code {
+  display: inline-block;
+  vertical-align: baseline;
   border: 1px solid var(--md-code-border);
   border-radius: var(--radius-sm);
   background: var(--md-inline-code-bg);
   color: var(--md-inline-code-text);
-  padding: 0.12em 0.35em;
+  margin: 0.15em 0;
+  padding: 0.1em 0.35em;
   font-family: var(--font-mono);
-  font-size: 0.92em;
+  font-size: inherit;
+  line-height: 1.35;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 .msg-body [data-streamdown="table-wrapper"] [class*="absolute"][class*="top-full"],
 .msg-body [data-streamdown="mermaid-block"] [class*="absolute"][class*="top-full"] {
@@ -1096,8 +1763,28 @@
 .msg-body [data-streamdown*="fullscreen"],
 .msg-body [title*="fullscreen" i],
 .msg-body [aria-label*="fullscreen" i],
-.msg-body [data-streamdown="image-wrapper"] button {
+.msg-body [data-streamdown="image-wrapper"] button:not([data-markdown-lightbox]) {
   display: none !important;
+}
+.msg-body .markdown-lightbox img {
+  display: block;
+  max-width: min(100%, 720px);
+  max-height: 520px;
+}
+.msg-body td .markdown-lightbox,
+.msg-body th .markdown-lightbox {
+  margin: 0;
+  max-width: 100%;
+}
+.msg-body td .markdown-lightbox img,
+.msg-body th .markdown-lightbox img {
+  max-width: min(240px, 100%);
+  max-height: 160px;
+  width: auto;
+  height: auto;
+}
+.msg-body .markdown-lightbox figcaption {
+  line-height: 1.4;
 }
 /* Hide download button except in table-wrapper */
 .msg-body [data-streamdown="code-block-actions"] [title*="download" i],
@@ -1123,15 +1810,15 @@
   display: flex !important;
   align-items: center;
   justify-content: space-between;
-  min-height: 34px !important;
-  padding: 0 12px !important;
+  min-height: 30px !important;
+  padding: 0 10px !important;
   background: var(--md-code-header-bg, color-mix(in srgb, var(--md-code-bg) 85%, var(--text-muted) 8%)) !important;
   border-bottom: 1px solid var(--md-code-border) !important;
   color: var(--text-muted) !important;
 }
 .msg-body [data-streamdown="code-block-header"] span {
   font-family: var(--font-mono) !important;
-  font-size: 12px !important;
+  font-size: 11px !important;
   text-transform: lowercase;
   color: var(--text-muted);
 }
@@ -1162,12 +1849,12 @@
 }
 .msg-body [data-streamdown="code-block-body"] pre {
   margin: 0 !important;
-  padding: 12px 14px !important;
+  padding: 10px 12px !important;
   background: transparent !important;
   color: var(--text-primary) !important;
   font-family: var(--font-mono) !important;
-  font-size: 14px !important;
-  line-height: 1.6 !important;
+  font-size: 13px !important;
+  line-height: 1.55 !important;
 }
 .msg-body [data-streamdown="code-block-body"] code {
   display: block !important;
@@ -1230,6 +1917,180 @@
     radial-gradient(circle at 18% 16%, rgba(134, 166, 249, 0.2), transparent 34%),
     linear-gradient(135deg, #202b4a, var(--press-bg));
   box-shadow: none;
+}
+
+/* DotLottie empty-state: local ambient glow (stay away from header / input) */
+.codemini-home-empty-stage {
+  --home-empty-glow: rgba(99, 140, 230, 0.22);
+  --home-empty-frame: color-mix(in srgb, var(--border-default) 55%, transparent);
+
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(16px, 3vh, 28px);
+  padding: 24px 16px 22vh;
+  background: transparent;
+}
+
+[data-theme="dark"] .codemini-home-empty-stage {
+  --home-empty-glow: rgba(90, 120, 210, 0.16);
+}
+
+.codemini-home-empty-stage[data-visual="celebration"] {
+  --home-empty-glow: rgba(255, 140, 110, 0.24);
+}
+
+[data-theme="dark"] .codemini-home-empty-stage[data-visual="celebration"] {
+  --home-empty-glow: rgba(255, 120, 150, 0.16);
+}
+
+.codemini-home-empty-stage[data-visual="working-cat"] {
+  --home-empty-glow: rgba(70, 170, 255, 0.22);
+}
+
+[data-theme="dark"] .codemini-home-empty-stage[data-visual="working-cat"] {
+  --home-empty-glow: rgba(56, 180, 255, 0.16);
+}
+
+.codemini-home-empty-stage[data-visual="loader-cat-dark"] {
+  --home-empty-glow: rgba(120, 140, 200, 0.2);
+}
+
+[data-theme="dark"] .codemini-home-empty-stage[data-visual="loader-cat-dark"] {
+  --home-empty-glow: rgba(140, 160, 220, 0.14);
+}
+
+.codemini-home-empty-stage[data-visual="printing-press"] {
+  --home-empty-glow: rgba(100, 140, 250, 0.22);
+}
+
+[data-theme="dark"] .codemini-home-empty-stage[data-visual="printing-press"] {
+  --home-empty-glow: rgba(110, 150, 255, 0.16);
+}
+
+.codemini-home-empty-glow {
+  position: absolute;
+  top: 42%;
+  left: 50%;
+  width: min(380px, 70vw);
+  height: min(260px, 34vh);
+  transform: translate(-50%, -58%);
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, var(--home-empty-glow) 0%, transparent 72%);
+  filter: blur(18px);
+  pointer-events: none;
+  opacity: 0.9;
+}
+
+.codemini-home-empty-media {
+  position: relative;
+  z-index: 1;
+  width: min(440px, calc(100% - 32px));
+  height: clamp(150px, 28vw, 230px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Match each animation's native aspect so it fills the frame */
+.codemini-home-empty-stage[data-visual="celebration"] .codemini-home-empty-media {
+  width: min(440px, calc(100% - 32px));
+  height: auto;
+  aspect-ratio: 1443 / 863;
+}
+
+.codemini-home-empty-stage[data-visual="working-cat"] .codemini-home-empty-media {
+  width: min(440px, calc(100% - 32px));
+  height: auto;
+  aspect-ratio: 16 / 9;
+}
+
+.codemini-home-empty-stage[data-visual="loader-cat-dark"] .codemini-home-empty-media {
+  width: min(360px, calc(100% - 32px));
+  height: auto;
+  aspect-ratio: 280 / 200;
+}
+
+.codemini-home-empty-stage[data-visual="printing-press"] .codemini-home-empty-media {
+  width: min(440px, calc(100% - 32px));
+  height: clamp(150px, 28vw, 230px);
+  aspect-ratio: auto;
+}
+
+.codemini-home-lottie-frame {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: 22px;
+  border: 1px solid var(--home-empty-frame);
+  background: transparent;
+  box-shadow: var(--shadow-default);
+}
+
+[data-theme="dark"] .codemini-home-lottie-frame {
+  background: transparent;
+  box-shadow: none;
+}
+
+.codemini-home-lottie-fill {
+  width: 100%;
+  height: 100%;
+}
+
+.codemini-home-lottie-fill .codemini-home-lottie-player,
+.codemini-home-lottie-fill canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+  object-fit: cover;
+}
+
+.codemini-home-empty-press {
+  width: 100%;
+  opacity: 0.8;
+}
+
+.codemini-home-empty-caption {
+  position: relative;
+  z-index: 2;
+  text-align: center;
+  max-width: min(640px, calc(100% - 32px));
+}
+
+.codemini-home-empty-title {
+  transition: opacity 220ms ease;
+}
+
+.codemini-home-empty-title[data-visible="false"] {
+  opacity: 0;
+}
+
+/* legacy small-card lottie styles kept for press shell compatibility */
+.codemini-home-lottie {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 16px;
+  background:
+    radial-gradient(circle at 20% 15%, rgba(255, 255, 255, 0.55), transparent 40%),
+    linear-gradient(145deg, #f4f6fb 0%, #e7ecf8 48%, #d9e2f6 100%);
+  opacity: 1;
+}
+
+[data-theme="dark"] .codemini-home-lottie {
+  background:
+    radial-gradient(circle at 18% 16%, rgba(134, 166, 249, 0.22), transparent 38%),
+    linear-gradient(145deg, #24314f 0%, #17203a 55%, #12182c 100%);
+}
+
+.codemini-home-lottie .codemini-home-lottie-player,
+.codemini-home-lottie canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
 }
 
 .codemini-press,
@@ -1530,11 +2391,176 @@
   }
 }
 
+/* Reasoning effort track — flowing fill (shimmer + soft particles) */
+.codemini-reasoning-flow {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.codemini-reasoning-flow__shimmer {
+  position: absolute;
+  inset: -10% -40%;
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    transparent 42%,
+    color-mix(in srgb, white 55%, transparent) 50%,
+    transparent 58%,
+    transparent 100%
+  );
+  animation: codemini-reasoning-shimmer var(--reasoning-flow-duration, 2.1s) linear
+    infinite;
+}
+
+.codemini-reasoning-flow__particles {
+  position: absolute;
+  inset: 0;
+  opacity: 0.95;
+  background-image:
+    radial-gradient(
+      circle,
+      color-mix(in srgb, white 90%, transparent) 0 1.4px,
+      transparent 2.2px
+    ),
+    radial-gradient(
+      circle,
+      color-mix(in srgb, white 70%, transparent) 0 1px,
+      transparent 1.8px
+    ),
+    radial-gradient(
+      circle,
+      color-mix(in srgb, white 55%, transparent) 0 0.8px,
+      transparent 1.5px
+    ),
+    radial-gradient(
+      circle,
+      color-mix(in srgb, white 80%, transparent) 0 1.2px,
+      transparent 2px
+    );
+  background-size:
+    42px 100%,
+    58px 100%,
+    36px 100%,
+    50px 100%;
+  background-position:
+    0% 55%,
+    18% 30%,
+    55% 70%,
+    78% 40%;
+  background-repeat: repeat-x;
+  animation: codemini-reasoning-particles var(--reasoning-flow-duration, 2.1s) linear
+    infinite;
+}
+
+@keyframes codemini-reasoning-shimmer {
+  from {
+    transform: translateX(-30%);
+  }
+  to {
+    transform: translateX(30%);
+  }
+}
+
+@keyframes codemini-reasoning-particles {
+  from {
+    background-position:
+      0% 55%,
+      18% 30%,
+      55% 70%,
+      78% 40%;
+  }
+  to {
+    background-position:
+      42px 55%,
+      calc(18% + 58px) 30%,
+      calc(55% + 36px) 70%,
+      calc(78% + 50px) 40%;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .codemini-press .sheet::before,
   .codemini-home-visual * {
     animation: none;
   }
+
+  .codemini-reasoning-flow__shimmer,
+  .codemini-reasoning-flow__particles {
+    animation: none;
+  }
+
+  .codemini-reasoning-flow__shimmer {
+    opacity: 0.35;
+    transform: none;
+  }
+
+  .codemini-reasoning-flow__particles {
+    opacity: 0.45;
+  }
+}
+
+/* Light settings selections: flat, quiet, and consistent with the Soul picker. */
+:root:not([data-theme="dark"]) .settings-nav-trigger {
+  border-radius: 8px;
+  color: var(--text-secondary);
+  box-shadow: none !important;
+}
+
+:root:not([data-theme="dark"]) .settings-nav-trigger:hover {
+  background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+  color: var(--text-primary);
+}
+
+:root:not([data-theme="dark"]) .settings-nav-trigger[data-state="active"] {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent) !important;
+  color: var(--text-primary);
+  box-shadow: none !important;
+}
+
+:root:not([data-theme="dark"]) .settings-nav-trigger::after {
+  display: none !important;
+}
+
+:root:not([data-theme="dark"]) .settings-choice-item {
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+:root:not([data-theme="dark"]) .settings-choice-item:hover {
+  border-color: transparent !important;
+  background: color-mix(in srgb, var(--text-primary) 3%, transparent) !important;
+}
+
+:root:not([data-theme="dark"]) .settings-choice-item[data-state="on"] {
+  border-color: transparent !important;
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent) !important;
+  color: var(--text-primary);
+  box-shadow: none !important;
+}
+
+:root:not([data-theme="dark"]) .settings-segmented {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+  box-shadow: none;
+}
+
+:root:not([data-theme="dark"]) .settings-segmented-item {
+  border-radius: 8px;
+  box-shadow: none !important;
+}
+
+:root:not([data-theme="dark"]) .settings-segmented-item:hover {
+  background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+}
+
+:root:not([data-theme="dark"]) .settings-segmented-item[data-state="on"] {
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent) !important;
+  color: var(--text-primary);
+  box-shadow: none !important;
 }
 
 /* Shiki dual-theme syntax highlighting */
@@ -1543,4 +2569,262 @@
 }
 [data-theme="dark"] .msg-body [data-streamdown="code-block-body"] span[style*="--shiki-dark"] {
   color: var(--shiki-dark) !important;
+}
+
+/* ── Codemini Apple material system ── */
+:root,
+:root[data-palette] {
+  color-scheme: light;
+  --background: #ffffff;
+  --foreground: #1d1d1f;
+  --card: #ffffff;
+  --card-foreground: #1d1d1f;
+  --popover: rgba(255, 255, 255, 0.88);
+  --popover-foreground: #1d1d1f;
+  --primary: #1d1d1f;
+  --primary-foreground: #ffffff;
+  --secondary: #f5f5f7;
+  --secondary-foreground: #1d1d1f;
+  --muted: #f5f5f7;
+  --muted-foreground: #6e6e73;
+  --accent: #e8e8ed;
+  --accent-foreground: #1d1d1f;
+  --border: rgba(0, 0, 0, 0.1);
+  --input: rgba(0, 0, 0, 0.12);
+  --ring: transparent;
+  --sidebar: rgba(245, 245, 247, 0.72);
+  --sidebar-foreground: #1d1d1f;
+  --bg-primary: #f3f3f3;
+  --bg-secondary: #f5f5f7;
+  --bg-tertiary: #e8e8ed;
+  --bg-hover: rgba(0, 0, 0, 0.055);
+  --bg-active: rgba(0, 0, 0, 0.09);
+  --bg-input: rgba(255, 255, 255, 0.86);
+  --text-primary: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --text-muted: #86868b;
+  --border-default: rgba(0, 0, 0, 0.1);
+  --border-strong: rgba(0, 0, 0, 0.18);
+  --accent-blue: #0071e3;
+  --accent-blue-bg: rgba(0, 113, 227, 0.1);
+  --accent-hover: #0077ed;
+  --md-link: #0071e3;
+  --md-code-bg: #f5f5f7;
+  --md-code-border: rgba(0, 0, 0, 0.1);
+  --md-inline-code-bg: #f5f5f7;
+  --md-inline-code-text: #1d1d1f;
+  --md-table-header-bg: #f5f5f7;
+  --md-table-row-alt-bg: #fbfbfd;
+  --material-elevated: rgba(255, 255, 255, 0.84);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-default: 0 8px 30px rgba(0, 0, 0, 0.09);
+  --shadow-lg: 0 22px 60px rgba(0, 0, 0, 0.16);
+  --shadow-elevated: 0 10px 34px rgba(0, 0, 0, 0.14);
+  --radius-sm: 0.5rem;
+  --radius: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.25rem;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+  --transition: 180ms cubic-bezier(0.25, 0.1, 0.25, 1);
+  --input-shell-bg: rgba(255, 255, 255, 0.88);
+  --input-shell-border: rgba(0, 0, 0, 0.08);
+  --input-shell-shadow: 0 10px 38px rgba(0, 0, 0, 0.11);
+  --badge-bg: color-mix(in srgb, var(--text-primary) 3%, white);
+  --badge-edge: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  --interactive-hover: color-mix(in srgb, var(--text-primary) 3.5%, white);
+  --selected-bg: color-mix(in srgb, var(--text-primary) 5.5%, white);
+  --selected-edge: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  --bg-hover: var(--interactive-hover);
+  --bg-active: var(--selected-bg);
+}
+
+:root:not([data-theme="dark"]) .settings-provider-card {
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+:root:not([data-theme="dark"]) .settings-provider-card:hover {
+  border-color: transparent !important;
+  background: var(--bg-hover) !important;
+}
+
+:root:not([data-theme="dark"]) .settings-provider-card[aria-pressed="true"] {
+  border-color: transparent !important;
+  background: var(--selected-bg) !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme="dark"],
+:root[data-theme="dark"][data-palette] {
+  color-scheme: dark;
+  --background: #121214;
+  --foreground: #f5f5f7;
+  --card: #1d1d1f;
+  --card-foreground: #f5f5f7;
+  --popover: rgba(29, 29, 31, 0.88);
+  --popover-foreground: #f5f5f7;
+  --primary: #f5f5f7;
+  --primary-foreground: #1d1d1f;
+  --secondary: #1d1d1f;
+  --secondary-foreground: #f5f5f7;
+  --muted: #1d1d1f;
+  --muted-foreground: #a1a1a6;
+  --accent: #2c2c2e;
+  --accent-foreground: #f5f5f7;
+  --border: rgba(255, 255, 255, 0.12);
+  --input: rgba(255, 255, 255, 0.14);
+  --sidebar: rgba(29, 29, 31, 0.72);
+  --sidebar-foreground: #f5f5f7;
+  --bg-primary: #171719;
+  --bg-secondary: #1f1f22;
+  --bg-tertiary: #2b2b2f;
+  --bg-hover: rgba(255, 255, 255, 0.09);
+  --bg-active: rgba(255, 255, 255, 0.14);
+  --bg-input: rgba(29, 29, 31, 0.9);
+  --text-primary: #f5f5f7;
+  --text-secondary: #a1a1a6;
+  --text-muted: #86868b;
+  --border-default: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(255, 255, 255, 0.22);
+  --accent-blue: #2997ff;
+  --accent-blue-bg: rgba(41, 151, 255, 0.16);
+  --accent-hover: #5ac8fa;
+  --md-link: #2997ff;
+  --md-code-bg: #1d1d1f;
+  --md-code-border: rgba(255, 255, 255, 0.12);
+  --md-inline-code-bg: #2c2c2e;
+  --md-inline-code-text: #f5f5f7;
+  --md-table-header-bg: #1d1d1f;
+  --md-table-row-alt-bg: #1a1a1c;
+  --material-elevated: rgba(29, 29, 31, 0.86);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-default: 0 10px 34px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 24px 70px rgba(0, 0, 0, 0.62);
+  --shadow-elevated: 0 12px 40px rgba(0, 0, 0, 0.5);
+  --input-shell-bg: rgba(29, 29, 31, 0.88);
+  --input-shell-border: rgba(255, 255, 255, 0.1);
+  --input-shell-shadow: 0 12px 42px rgba(0, 0, 0, 0.46);
+}
+
+.codemini-sidebar {
+  background: transparent !important;
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+
+/* .codemini-app-shell {
+  background:
+    radial-gradient(circle at 78% -18%, color-mix(in srgb, var(--accent-blue) 7%, transparent), transparent 38%),
+    var(--shell-canvas, var(--bg-secondary));
+} */
+
+.codemini-workspace-panel {
+  border-color: color-mix(in srgb, var(--border-default) 78%, transparent);
+  background: var(--bg-primary);
+  box-shadow: var(--shadow-sm);
+  /* box-shadow: 0 1px 2px color-mix(in srgb, black 4%, transparent),
+    0 8px 18px color-mix(in srgb, black 6%, transparent); */
+}
+
+:root:not([data-theme="dark"]) .codemini-workspace-panel {
+  background: #fcfcfd;
+}
+
+:root:not([data-theme="dark"]) .codemini-input-shell,
+:root:not([data-theme="dark"]) .codemini-input-shell:focus-within {
+  background: rgba(255, 255, 255, 0.96);
+}
+
+:root:not([data-theme="dark"]) .codemini-input-chip--selected {
+  background: rgba(29, 29, 31, 0.035);
+  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.045);
+}
+
+:root:not([data-theme="dark"]) .codemini-input-shell button {
+  --tw-shadow: 0 1px 2px color-mix(in srgb, black 2%, transparent);
+}
+
+:root:not([data-theme="dark"]) .codemini-input-shell button:hover {
+  --tw-shadow: 0 1px 2px color-mix(in srgb, black 3%, transparent);
+}
+
+/* The light input shell is nearly white, so keep its quick controls visually quiet. */
+:root:not([data-theme="dark"]) .codemini-input-pill {
+  background: rgba(29, 29, 31, 0.025) !important;
+  box-shadow: none !important;
+}
+
+:root:not([data-theme="dark"]) .codemini-input-pill:hover {
+  background: rgba(29, 29, 31, 0.04) !important;
+  box-shadow: none !important;
+}
+
+:root:not([data-theme="dark"]) .codemini-input-chip {
+  background: rgba(29, 29, 31, 0.025);
+  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.04);
+}
+
+:root:not([data-theme="dark"]) .codemini-input-chip:hover {
+  background: rgba(29, 29, 31, 0.04);
+}
+
+:root:not([data-theme="dark"]) [data-slot="select-item"][data-highlighted],
+:root:not([data-theme="dark"]) [data-slot="select-item"]:hover,
+:root:not([data-theme="dark"]) [data-slot="select-item"]:focus {
+  background: rgba(29, 29, 31, 0.055);
+}
+
+:root:not([data-theme="dark"]) [data-slot="select-item"][data-state="checked"] {
+  background: rgba(29, 29, 31, 0.1);
+}
+
+:root:not([data-theme="dark"]) [data-slot="select-item"][data-state="checked"][data-highlighted],
+:root:not([data-theme="dark"]) [data-slot="select-item"][data-state="checked"]:hover {
+  background: rgba(29, 29, 31, 0.12);
+}
+
+:root[data-theme="dark"] .codemini-workspace-panel {
+  background: #19191c;
+}
+
+:root[data-theme="dark"] .codemini-chat-session {
+  background: linear-gradient(180deg, #1a1a1d 0%, #18181b 100%);
+}
+
+[data-slot="dialog-content"],
+[data-slot="sheet-content"],
+[data-slot="popover-content"],
+[data-slot="select-content"] {
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+
+:where(button, a, input, textarea, select, [role="button"], [role="option"]):focus-visible {
+  outline: none;
+  box-shadow: 0 3px 14px color-mix(in srgb, var(--text-primary) 10%, transparent);
+}
+
+:where(input, textarea, select):focus-visible {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 13%, transparent);
+}
+
+.codemini-input-shell textarea:focus-visible {
+  background: transparent;
+  box-shadow: none;
+}
+
+@media (prefers-contrast: more), (forced-colors: active) {
+  :where(button, a, input, textarea, select, [role="button"], [role="option"]):focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }

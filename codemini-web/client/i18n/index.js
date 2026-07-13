@@ -21,6 +21,13 @@ export function t(key) {
   return locales[current][key] || locales.en[key] || key;
 }
 
+export function tList(key) {
+  const value = locales[current]?.[key] ?? locales.en?.[key];
+  if (Array.isArray(value)) return value.map(String);
+  if (value == null) return [];
+  return [String(value)];
+}
+
 export function getLocale() {
   return current;
 }

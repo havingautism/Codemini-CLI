@@ -1,15 +1,45 @@
 import { useEffect, useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
+import { PlanToolCard } from "./PlanToolCard.jsx";
+import { isCreatePlanCard } from "@/lib/plan-ui-state.js";
 import { StreamdownRenderer } from "./StreamdownRenderer";
+import { EmbedBanner } from "./EmbedBanner.jsx";
+import {
+  ImagePreviewDialog,
+  MarkdownLightboxImage,
+} from "./MarkdownLightboxImage.jsx";
+import { collectMessageEmbeds } from "@/lib/message-embeds.js";
+import { buildRenderGroups } from "@/lib/message-render-groups.js";
+import { layoutAnswerProcessWithPlans } from "@/lib/answer-process.js";
 import { TodoList } from "./TodoList";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
-import { Spinner } from "@/components/ui/spinner";
+import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
+import { LinearRing, LinearStatusDot, Spinner } from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
+import {
+  Attachment,
+  AttachmentContent,
+  AttachmentDescription,
+  AttachmentGroup,
+  AttachmentMedia,
+  AttachmentTitle,
+  AttachmentTrigger,
+} from "@/components/ui/attachment";
 import { cn } from "@/lib/utils";
+import {
+  isManualSkillCommand,
+  parseUserSkillPrompt,
+  userSkillChipBadges,
+} from "@/lib/user-skill-prompt.js";
 import { formatTimestamp } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
 import * as api from "@/hooks/use-api.js";
-import { ROLE_PILLS } from "./PlanProgress.jsx";
+import { useRotatingLabel } from "@/hooks/use-rotating-label.js";
+import { executionModeSkillContext } from "@/lib/skill-visibility.js";
+import { useApp } from "@/context/app-context.jsx";
+import { getMessageModelIdentity } from "@/lib/message-model-identity.js";
+import { ROLE_BADGE_CLASS, ROLE_PILLS } from "./PlanProgress.jsx";
+import { PlanStepStatusGlyph } from "@/components/plan-step-icons.jsx";
 import { PatchDiff } from "@pierre/diffs/react";
 import {
   Tooltip,
@@ -17,152 +47,279 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  Check,
-  CheckCircle2,
-  ChevronDown,
-  ChevronRight,
-  Copy,
+  ArrowCounterClockwise,
   Brain,
-  Loader2,
+  CaretDown,
+  CaretRight,
+  Check,
+  CheckCircle,
+  Copy,
+  FileText,
+  Hammer,
   Moon,
-  RotateCcw,
+  Play,
   Wrench,
   XCircle,
-} from "lucide-react";
+} from "@phosphor-icons/react";
+
+const NEUTRAL_ROLE_BADGE =
+  "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)";
 
 const ROLE_STYLES = {
-  you: { badge: "bg-(--accent-blue-bg) text-(--accent-blue)", label: "You" },
+  you: {
+    badge: NEUTRAL_ROLE_BADGE,
+    label: "You",
+  },
   general: {
-    badge: "bg-(--accent-green-bg) text-(--accent-green)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "General",
   },
   coder: {
-    badge: "bg-(--accent-green-bg) text-(--accent-green)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Coder",
   },
   explorer: {
-    badge: "bg-(--accent-amber-bg) text-(--accent-amber)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Explorer",
   },
   architect: {
-    badge: "bg-(--accent-purple-bg) text-(--accent-purple)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Architect",
   },
   refactorer: {
-    badge: "bg-(--accent-teal-bg) text-(--accent-teal)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Refactorer",
   },
   writer: {
-    badge: "bg-(--accent-cyan-bg) text-(--accent-cyan)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Writer",
   },
   advisor: {
-    badge: "bg-(--accent-blue-bg) text-(--accent-blue)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Advisor",
   },
   planner: {
-    badge: "bg-(--accent-purple-bg) text-(--accent-purple)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Planner",
   },
   reviewer: {
-    badge: "bg-(--accent-orange-bg) text-(--accent-orange)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Reviewer",
   },
   tester: {
-    badge: "bg-(--accent-blue-bg) text-(--accent-blue)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Tester",
   },
   debugger: {
-    badge: "bg-(--accent-red-bg) text-(--accent-red)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Debugger",
   },
   summarizer: {
-    badge: "bg-(--accent-cyan-bg) text-(--accent-cyan)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Summarizer",
   },
   "plan-overview": {
-    badge: "bg-(--accent-purple-bg) text-(--accent-purple)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Plan",
   },
   codewiki: {
-    badge: "bg-(--accent-green-bg) text-(--accent-green)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "CodeWiki",
   },
-  system: { badge: "bg-(--muted) text-(--muted-foreground)", label: "System" },
-  error: { badge: "bg-(--accent-red-bg) text-(--accent-red)", label: "Error" },
+  system: {
+    badge: NEUTRAL_ROLE_BADGE,
+    label: "System",
+  },
+  error: {
+    badge:
+      "border-[color-mix(in_srgb,var(--accent-red)_28%,transparent)] bg-[color-mix(in_srgb,var(--accent-red-bg)_55%,transparent)] text-(--accent-red)",
+    label: "Error",
+  },
   pending: {
-    badge: "bg-(--accent-cyan-bg) text-(--accent-cyan)",
+    badge: NEUTRAL_ROLE_BADGE,
     label: "Pending",
   },
 };
 
 const SKILL_DOT_STYLES = {
-  running: "animate-pulse bg-(--accent-blue)",
   done: "bg-(--accent-green)",
   error: "bg-(--accent-red)",
   always: "bg-(--accent-purple)",
 };
 
 const TOOL_COLLAPSE_THRESHOLD = 1;
+const PROCESS_META_CLASS = "msg-process-meta";
 const COLLAPSE_ROW_CLASS =
-  "flex w-full cursor-pointer items-center gap-2 rounded-md border-0 bg-transparent px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover)";
-const COLLAPSE_CHEVRON_CLASS = "size-[14px] shrink-0 text-(--text-muted)";
+  "msg-process-row flex w-full cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-3 py-2 text-left text-[12px] hover:bg-(--bg-hover)";
+const COLLAPSE_CHEVRON_CLASS =
+  "size-[14px] shrink-0 text-(--text-process-detail)";
 const COLLAPSE_ICON_CLASS =
   "flex size-[18px] shrink-0 items-center justify-center";
 
-function formatThoughtDuration(ms) {
-  const value = Number(ms);
-  if (!Number.isFinite(value)) return "";
-  const totalSeconds = value > 0 ? Math.max(0.1, value / 1000) : 0;
-  if (totalSeconds < 60) return `${totalSeconds.toFixed(1)}s`;
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = Math.floor(totalSeconds % 60);
-  return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+function compactBytes(bytes = 0) {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  if (value < 1024) return `${Math.round(value)} B`;
+  if (value < 1024 * 1024) return `${Math.round(value / 102.4) / 10} KB`;
+  return `${Math.round(value / 1024 / 102.4) / 10} MB`;
 }
 
 function formatProcessDuration(ms) {
   const value = Number(ms);
   if (!Number.isFinite(value) || value <= 0) return "";
-  return formatThoughtDuration(value);
+  const totalSeconds = Math.max(1, Math.round(value / 1000));
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
 }
 
-function getThoughtElapsed(segment, tick) {
-  if (!segment.isStreaming && Number.isFinite(Number(segment.durationMs))) {
-    return Math.max(0, Number(segment.durationMs));
+function resolveHintPhrases(listKey, fallbackKey) {
+  const hints = t(listKey);
+  if (Array.isArray(hints) && hints.length) return hints;
+  const fallback = t(fallbackKey);
+  return fallback ? [fallback] : [];
+}
+
+function resolveModeHintPhrases(kind, mode = "normal") {
+  const context = executionModeSkillContext(mode);
+  const coding = context === "coding";
+  if (kind === "tooling") {
+    return resolveHintPhrases(
+      coding ? "toolingHintsCoding" : "toolingHintsDaily",
+      "tooling",
+    );
   }
-  const start = Date.parse(segment.startedAt || "");
-  if (!Number.isFinite(start)) return null;
-  const end = segment.isStreaming ? tick : Date.parse(segment.endedAt || "");
-  if (!Number.isFinite(end)) return null;
-  return Math.max(0, end - start);
+  return resolveHintPhrases(
+    coding ? "thinkingNowHintsCoding" : "thinkingNowHintsDaily",
+    "thinkingNow",
+  );
+}
+
+function RotatingStatusLabel({ phrases, active }) {
+  const { label, visible } = useRotatingLabel(phrases, { active });
+  return (
+    <span className={cn("msg-process-rotating-label", !visible && "is-fading")}>
+      {label}
+    </span>
+  );
 }
 
 function ThoughtBlock({ segment }) {
   const [open, setOpen] = useState(false);
-  const [tick, setTick] = useState(Date.now());
-
-  useEffect(() => {
-    if (!segment.isStreaming) return undefined;
-    const timer = window.setInterval(() => setTick(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [segment.isStreaming]);
-
-  const elapsed = formatThoughtDuration(getThoughtElapsed(segment, tick));
-  const label = segment.isStreaming
-    ? t("thinkingNow")
-    : elapsed
-      ? t("thoughtFor").replace("{{duration}}", elapsed)
-      : t("thought");
+  const { state } = useApp();
+  const streaming = Boolean(segment.isStreaming);
+  const thinkingPhrases = resolveModeHintPhrases(
+    "thinking",
+    state.runtimeState?.mode,
+  );
 
   return (
-    <div className="my-3 text-(--text-primary)">
+    <div className={cn("my-2", PROCESS_META_CLASS)}>
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className={cn(COLLAPSE_ROW_CLASS, "font-medium")}
+        className={COLLAPSE_ROW_CLASS}
         aria-expanded={open}
       >
-        <ChevronRight
+        <CaretRight
+          size={14}
+          className={cn(
+            COLLAPSE_CHEVRON_CLASS,
+            "transition-transform",
+            open && "rotate-90",
+          )}
+        />
+        <span
+          className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}
+        >
+          {streaming ? <LinearRing size="md" /> : <Brain size={15} />}
+        </span>
+        {streaming ? (
+          <RotatingStatusLabel phrases={thinkingPhrases} active />
+        ) : (
+          <span>{t("thought")}</span>
+        )}
+      </button>
+      {open && (
+        <div className="relative ml-4.5 mt-1.5 pl-8 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
+          <StreamdownRenderer
+            text={segment.text}
+            streaming={segment.isStreaming}
+            className="msg-process-thought-body pl-5 text-[13px] italic leading-5"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function renderInlineMarkdownPreview(text) {
+  const value = String(text || "")
+    .replace(/^\s{0,3}#{1,6}\s+/, "")
+    .replace(/^\s*[-*+]\s+/, "")
+    .trim();
+  const parts = [];
+  const pattern = /(\*\*([^*]+)\*\*|`([^`]+)`)/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = pattern.exec(value))) {
+    if (match.index > lastIndex) {
+      parts.push(value.slice(lastIndex, match.index));
+    }
+    if (match[2]) {
+      parts.push(
+        <strong
+          key={`strong-${match.index}`}
+          className="font-semibold text-current"
+        >
+          {match[2]}
+        </strong>,
+      );
+    } else if (match[3]) {
+      parts.push(
+        <code
+          key={`code-${match.index}`}
+          className="rounded bg-(--bg-tertiary) px-1 py-0.5 font-mono text-[0.92em] text-current"
+        >
+          {match[3]}
+        </code>,
+      );
+    }
+    lastIndex = pattern.lastIndex;
+  }
+  if (lastIndex < value.length) {
+    parts.push(value.slice(lastIndex));
+  }
+  return parts.length ? parts : value;
+}
+
+function HandoffBlock({ segment }) {
+  const [open, setOpen] = useState(false);
+  const text = String(segment?.text || "").trim();
+  if (!text) return null;
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const firstLine =
+    lines.find((line) => !/^(#{1,6}\s*)?[\w\s]+:\s*$/i.test(line)) ||
+    lines[0] ||
+    "";
+  const preview =
+    firstLine.length > 120
+      ? `${firstLine.slice(0, 117).trimEnd()}...`
+      : firstLine;
+
+  return (
+    <div className="my-2 text-(--text-primary)">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className={COLLAPSE_ROW_CLASS}
+        aria-expanded={open}
+      >
+        <CaretRight
           size={14}
           className={cn(
             COLLAPSE_CHEVRON_CLASS,
@@ -171,39 +328,24 @@ function ThoughtBlock({ segment }) {
           )}
         />
         <span className={COLLAPSE_ICON_CLASS}>
-          {segment.isStreaming ? (
-            <Loader2 size={14} className="animate-spin text-(--accent-cyan)" />
-          ) : (
-            <Brain size={15} />
-          )}
+          <span className="inline-block size-1.5 rounded-full bg-(--accent-blue)" />
         </span>
-        <span>{label}</span>
-        {segment.isStreaming && elapsed && <span>{elapsed}</span>}
+        <span className="font-medium">Handoff</span>
+        <span className="min-w-0 flex-1 truncate text-(--text-muted)">
+          {renderInlineMarkdownPreview(preview)}
+        </span>
       </button>
       {open && (
         <div className="relative ml-4.5 mt-1.5 pl-8 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
           <StreamdownRenderer
-            text={segment.text}
-            streaming={segment.isStreaming}
-            className="pl-5 text-[13px] italic leading-5 text-(--text-secondary)"
+            text={text}
+            streaming={false}
+            className="pl-5 text-[13px] leading-5 text-(--text-secondary)"
           />
         </div>
       )}
     </div>
   );
-}
-
-function getToolDurationMs(cards = []) {
-  return cards.reduce((sum, card) => {
-    const value = Number(card?.durationMs);
-    return Number.isFinite(value) ? sum + Math.max(0, value) : sum;
-  }, 0);
-}
-
-function getThinkingDurationMs(segment) {
-  const value = Number(segment?.durationMs);
-  if (Number.isFinite(value)) return Math.max(0, value);
-  return getThoughtElapsed(segment, Date.now()) || 0;
 }
 
 function isProcessGroup(group) {
@@ -221,12 +363,6 @@ function isProcessGroupRunning(group) {
 function getProcessGroupItemCount(group) {
   if (group?.type === "thinking") return 1;
   if (group?.type === "tools") return Math.max(1, group.cards?.length || 0);
-  return 0;
-}
-
-function getProcessGroupDurationMs(group) {
-  if (group?.type === "thinking") return getThinkingDurationMs(group);
-  if (group?.type === "tools") return getToolDurationMs(group.cards || []);
   return 0;
 }
 
@@ -253,14 +389,18 @@ function collapseProcessGroups(groups, { disabled = false } = {}) {
 
   const flush = () => {
     if (!pending.length) return;
+    if (pending.every((group) => group.type === "tools")) {
+      collapsed.push({
+        type: "tools",
+        cards: pending.flatMap((group) => group.cards || []),
+      });
+      pending = [];
+      return;
+    }
     if (shouldCollapseProcessGroups(pending)) {
       collapsed.push({
         type: "process",
         groups: pending,
-        durationMs: pending.reduce(
-          (sum, group) => sum + getProcessGroupDurationMs(group),
-          0,
-        ),
       });
     } else {
       collapsed.push(...pending);
@@ -315,33 +455,36 @@ function getDreamNotice(text) {
 }
 
 function DreamNotice({ notice }) {
+  const showRing = notice.status === "running";
   const Icon =
-    notice.status === "running"
-      ? Loader2
-      : notice.status === "error"
-        ? XCircle
-        : CheckCircle2;
+    notice.status === "error"
+      ? XCircle
+      : notice.status === "done"
+        ? CheckCircle
+        : null;
 
   return (
     <div className="py-2 px-6">
       <div className="max-w-[860px] mx-auto flex justify-center">
         <div
           className={cn(
-            "inline-flex max-w-full items-center gap-2 rounded-lg border px-3 py-2 text-left text-xs shadow-sm",
+            "codemini-message-surface codemini-status-chip inline-flex max-w-full items-center gap-2 px-3 py-2 text-left text-xs",
             notice.status === "error"
               ? "border-(--accent-red)/30 bg-(--accent-red-bg) text-(--accent-red)"
               : "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)",
           )}
         >
-          <Icon
-            size={14}
-            className={cn(
-              "shrink-0",
-              notice.status === "running" &&
-                "animate-spin text-(--accent-cyan)",
-              notice.status === "done" && "text-(--accent-green)",
-            )}
-          />
+          {showRing ? (
+            <LinearRing size="md" />
+          ) : (
+            <Icon
+              size={14}
+              className={cn(
+                "shrink-0",
+                notice.status === "done" && "text-(--accent-green)",
+              )}
+            />
+          )}
           <div className="min-w-0">
             <div className="font-medium text-(--text-primary) truncate">
               {notice.title}
@@ -360,10 +503,17 @@ function DreamNotice({ notice }) {
 
 function ToolGroup({ cards }) {
   const [expanded, setExpanded] = useState(false);
-  const total = cards.length;
-  const hasRunningTool = cards.some((card) => card.status === "running");
+  const { state } = useApp();
+  const planCards = cards.filter(isCreatePlanCard);
+  const otherCards = cards.filter((card) => !isCreatePlanCard(card));
+  const total = otherCards.length;
+  const hasRunningTool = otherCards.some((card) => card.status === "running");
+  const toolingPhrases = resolveModeHintPhrases(
+    "tooling",
+    state.runtimeState?.mode,
+  );
   const shouldUseSummaryHeader = total > TOOL_COLLAPSE_THRESHOLD;
-  const runCount = cards.filter((card) => {
+  const runCount = otherCards.filter((card) => {
     const name = String(card.name || "").toLowerCase();
     return name === "run" || name.startsWith("run(");
   }).length;
@@ -373,8 +523,11 @@ function ToolGroup({ cards }) {
       : t("toolGroupTools").replace("{{count}}", total);
 
   return (
-    <div className="my-2">
-      {shouldUseSummaryHeader && (
+    <div className={cn("my-2", PROCESS_META_CLASS)}>
+      {planCards.map((card) => (
+        <PlanToolCard key={card.id || "create_plan"} card={card} />
+      ))}
+      {total > 0 && shouldUseSummaryHeader && (
         <button
           type="button"
           className={COLLAPSE_ROW_CLASS}
@@ -382,43 +535,37 @@ function ToolGroup({ cards }) {
           aria-expanded={expanded}
         >
           {expanded ? (
-            <ChevronDown size={14} className={COLLAPSE_CHEVRON_CLASS} />
+            <CaretDown size={14} className={COLLAPSE_CHEVRON_CLASS} />
           ) : (
-            <ChevronRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
+            <CaretRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
           )}
           <span className={COLLAPSE_ICON_CLASS}>
-            <span
-              className={cn(
-                "inline-block size-1.5 rounded-full",
-                hasRunningTool
-                  ? "animate-pulse bg-(--accent-blue)"
-                  : "bg-(--accent-green)",
-              )}
-            />
+            {hasRunningTool ? (
+              <LinearStatusDot />
+            ) : (
+              <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
+            )}
           </span>
-          <span className="font-medium">{summaryLabel}</span>
-          {/* {!expanded && (
-            <span className="text-(--text-muted)">{t("toolGroupExpand")}</span>
-          )} */}
+          <span>{summaryLabel}</span>
         </button>
       )}
-      {(!shouldUseSummaryHeader || expanded) && (
+      {total > 0 && (!shouldUseSummaryHeader || expanded) && (
         <div
           className={cn(
-            "space-y-1",
+            "flex flex-col gap-2",
             shouldUseSummaryHeader &&
-              "relative ml-4.5 pl-6 mt-2 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)",
+              "ml-4.5 mt-1 border-l border-(--border-default) pl-3",
           )}
         >
-          {cards.map((card) => (
+          {otherCards.map((card) => (
             <ToolCard key={card.id} card={card} />
           ))}
         </div>
       )}
       {hasRunningTool && (
-        <div className="flex items-center gap-2 px-3 py-1.5 text-[11px] text-(--text-muted)">
-          <Spinner className="text-(--accent-cyan)" />
-          <span>{t("tooling")}</span>
+        <div className="msg-process-meta__detail flex items-center gap-2 px-3 py-1.5 text-[11px] my-2">
+          <Spinner />
+          <RotatingStatusLabel phrases={toolingPhrases} active />
         </div>
       )}
     </div>
@@ -449,27 +596,41 @@ function skillActivityLabel(badge) {
 }
 
 function SkillActivityList({ badges = [] }) {
-  if (!badges.length) return null;
+  const visibleBadges = [];
+  const seen = new Set();
+  for (const badge of Array.isArray(badges) ? badges : []) {
+    const key = `${String(badge?.status || "done")}::${String(badge?.name || "").trim()}`;
+    if (!String(badge?.name || "").trim() || seen.has(key)) continue;
+    seen.add(key);
+    visibleBadges.push(badge);
+  }
+  if (!visibleBadges.length) return null;
   return (
-    <div className="my-2 space-y-1">
-      {badges.map((badge, index) => (
+    <div className={cn("my-2 flex flex-col gap-2", PROCESS_META_CLASS)}>
+      {visibleBadges.map((badge, index) => (
         <div
           key={`${badge.name || "skill"}-${badge.status || "done"}-${index}`}
-          className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-(--text-secondary) hover:bg-(--bg-hover)"
+          className={cn(COLLAPSE_ROW_CLASS, "text-[13px]")}
         >
-          <span className={COLLAPSE_ICON_CLASS}>
-            <Wrench size={14} className="text-(--text-muted)" />
+          <span
+            className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}
+          >
+            <Wrench size={14} />
           </span>
-          <span className="font-medium">{t("skillActivity")}</span>
-          <span className="min-w-0 flex-1 truncate font-mono text-xs text-(--text-muted)">
+          <span>{t("skillActivity")}</span>
+          <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
             {skillActivityLabel(badge)}
           </span>
-          <span
-            className={cn(
-              "size-1.5 shrink-0 rounded-full",
-              SKILL_DOT_STYLES[badge.status] || SKILL_DOT_STYLES.done,
-            )}
-          />
+          {badge.status === "running" ? (
+            <LinearStatusDot className="shrink-0" />
+          ) : (
+            <span
+              className={cn(
+                "size-1.5 shrink-0 rounded-full",
+                SKILL_DOT_STYLES[badge.status] || SKILL_DOT_STYLES.done,
+              )}
+            />
+          )}
         </div>
       ))}
     </div>
@@ -479,21 +640,27 @@ function SkillActivityList({ badges = [] }) {
 function SkillActivityRow({ badge }) {
   if (!badge?.name) return null;
   return (
-    <div className="my-2">
-      <div className="flex items-center gap-2 rounded-md px-3 py-2 text-[13px] text-(--text-secondary) hover:bg-(--bg-hover)">
-        <span className={COLLAPSE_ICON_CLASS}>
-          <Wrench size={14} className="text-(--text-muted)" />
+    <div className={cn("my-2", PROCESS_META_CLASS)}>
+      <div className={cn(COLLAPSE_ROW_CLASS, "text-[13px]")}>
+        <span
+          className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}
+        >
+          <Wrench size={14} />
         </span>
-        <span className="font-medium">{t("skillActivity")}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-xs text-(--text-muted)">
+        <span>{t("skillActivity")}</span>
+        <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
           {skillActivityLabel(badge)}
         </span>
-        <span
-          className={cn(
-            "size-1.5 shrink-0 rounded-full",
-            SKILL_DOT_STYLES[badge.status] || SKILL_DOT_STYLES.done,
-          )}
-        />
+        {badge.status === "running" ? (
+          <LinearStatusDot className="shrink-0" />
+        ) : (
+          <span
+            className={cn(
+              "size-1.5 shrink-0 rounded-full",
+              SKILL_DOT_STYLES[badge.status] || SKILL_DOT_STYLES.done,
+            )}
+          />
+        )}
       </div>
     </div>
   );
@@ -501,21 +668,39 @@ function SkillActivityRow({ badge }) {
 
 function ProcessGroup({ group }) {
   const [expanded, setExpanded] = useState(false);
-  const duration = formatProcessDuration(group.durationMs);
-  const label = duration
-    ? t("processedFor").replace("{{duration}}", duration)
-    : t("processed");
   const toolCount = group.groups.reduce(
     (sum, item) =>
       item.type === "tools" ? sum + Math.max(1, item.cards?.length || 0) : sum,
     0,
   );
+  const commandCount = group.groups.reduce((sum, item) => {
+    if (item.type !== "tools") return sum;
+    return (
+      sum +
+      (item.cards || []).filter((card) => {
+        const name = String(card?.name || "").toLowerCase();
+        return name === "run" || name.startsWith("run(");
+      }).length
+    );
+  }, 0);
   const thoughtCount = group.groups.filter(
     (item) => item.type === "thinking",
   ).length;
+  const label =
+    thoughtCount === 0 && toolCount > 0
+      ? commandCount === toolCount
+        ? t("toolGroupCommands").replace("{{count}}", toolCount)
+        : t("toolGroupTools").replace("{{count}}", toolCount)
+      : t("processed");
+  const details =
+    thoughtCount === 0 && toolCount > 0
+      ? ""
+      : t("processedDetails")
+          .replace("{{thoughts}}", thoughtCount)
+          .replace("{{tools}}", toolCount);
 
   return (
-    <div className="my-3">
+    <div className={cn("my-2", PROCESS_META_CLASS)}>
       <button
         type="button"
         onClick={() => setExpanded((value) => !value)}
@@ -523,22 +708,22 @@ function ProcessGroup({ group }) {
         aria-expanded={expanded}
       >
         {expanded ? (
-          <ChevronDown size={14} className={COLLAPSE_CHEVRON_CLASS} />
+          <CaretDown size={14} className={COLLAPSE_CHEVRON_CLASS} />
         ) : (
-          <ChevronRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
+          <CaretRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
         )}
         <span className={COLLAPSE_ICON_CLASS}>
           <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
         </span>
-        <span className="font-medium">{label}</span>
-        <span className="min-w-0 truncate text-(--text-muted)">
-          {t("processedDetails")
-            .replace("{{thoughts}}", thoughtCount)
-            .replace("{{tools}}", toolCount)}
-        </span>
+        <span>{label}</span>
+        {details && (
+          <span className="msg-process-meta__detail min-w-0 truncate">
+            {details}
+          </span>
+        )}
       </button>
       {expanded && (
-        <div className="relative ml-4.5 mt-2 space-y-1 pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
+        <div className="relative ml-4.5 mt-2 flex flex-col pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
           {group.groups.map((item, index) => {
             if (item.type === "thinking") {
               return <ThoughtBlock key={`p-th-${index}`} segment={item} />;
@@ -793,7 +978,105 @@ function FileChangePreview({ change }) {
   );
 }
 
+function summarizeFileChanges(changes = []) {
+  let totalAdded = 0;
+  let totalRemoved = 0;
+  let edits = 0;
+  let creates = 0;
+  let deletes = 0;
+
+  for (const change of changes) {
+    totalAdded += Number(change?.linesAdded || 0);
+    totalRemoved += Number(change?.linesRemoved || 0);
+    if (change?.action === "create") creates += 1;
+    else if (change?.action === "delete") deletes += 1;
+    else edits += 1;
+  }
+
+  return {
+    fileCount: changes.length,
+    totalAdded,
+    totalRemoved,
+    edits,
+    creates,
+    deletes,
+  };
+}
+
+function FileChangesOverviewBar({ changes }) {
+  const stats = summarizeFileChanges(changes);
+  if (!stats.fileCount) return null;
+
+  const actionColors = {
+    edit: "bg-(--accent-blue-bg) text-(--accent-blue)",
+    create: "bg-(--accent-green-bg) text-(--accent-green)",
+    delete: "bg-(--accent-red-bg) text-(--accent-red)",
+  };
+
+  const breakdown = [
+    stats.edits > 0
+      ? {
+          key: "edit",
+          label: t("fileChangesOverviewEdits").replace(
+            "{{count}}",
+            stats.edits,
+          ),
+        }
+      : null,
+    stats.creates > 0
+      ? {
+          key: "create",
+          label: t("fileChangesOverviewCreates").replace(
+            "{{count}}",
+            stats.creates,
+          ),
+        }
+      : null,
+    stats.deletes > 0
+      ? {
+          key: "delete",
+          label: t("fileChangesOverviewDeletes").replace(
+            "{{count}}",
+            stats.deletes,
+          ),
+        }
+      : null,
+  ].filter(Boolean);
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-(--border-default) bg-(--bg-tertiary) px-3 py-2.5">
+      <span className="text-xs font-medium text-(--text-primary)">
+        {t("fileChangesOverview").replace("{{count}}", stats.fileCount)}
+      </span>
+      <span className="flex items-center gap-2 font-mono text-[11px]">
+        {stats.totalAdded > 0 && (
+          <span className="text-(--accent-green)">+{stats.totalAdded}</span>
+        )}
+        {stats.totalRemoved > 0 && (
+          <span className="text-(--accent-red)">−{stats.totalRemoved}</span>
+        )}
+      </span>
+      {/* {breakdown.length > 0 && (
+        <div className="ml-auto flex flex-wrap items-center gap-1.5">
+          {breakdown.map((item) => (
+            <span
+              key={item.key}
+              className={cn(
+                "rounded px-[5px] py-px text-[10px] font-semibold",
+                actionColors[item.key],
+              )}
+            >
+              {item.label}
+            </span>
+          ))}
+        </div>
+      )} */}
+    </div>
+  );
+}
+
 function FileChangesSummary({ changes }) {
+  const { state } = useApp();
   const [openFiles, setOpenFiles] = useState(() => new Set());
   const [undoing, setUndoing] = useState(() => new Set());
   const [revertedUndoKeys, setRevertedUndoKeys] = useState(() => new Set());
@@ -816,8 +1099,11 @@ function FileChangesSummary({ changes }) {
     try {
       const result =
         changeSetIds.length > 1
-          ? await api.undoSessionChanges(changeSetIds)
-          : await api.undoSessionChange(changeSetIds[0]);
+          ? await api.undoSessionChanges(state.currentSessionId, changeSetIds)
+          : await api.undoSessionChange(
+              state.currentSessionId,
+              changeSetIds[0],
+            );
       if (result?.error || result?.ok === false)
         throw new Error(result.message || t("undoChangeFailed"));
       setRevertedUndoKeys((prev) => new Set(prev).add(undoKey));
@@ -839,7 +1125,8 @@ function FileChangesSummary({ changes }) {
 
   return (
     <>
-      <div className="mt-6 overflow-hidden rounded-lg border border-(--border-default) bg-(--bg-secondary)">
+      <div className="codemini-message-surface mt-6 overflow-hidden">
+        <FileChangesOverviewBar changes={changes} />
         {changes.map((c, i) => {
           const key = `${c.path}-${i}`;
           const fileOpen = openFiles.has(key);
@@ -876,12 +1163,12 @@ function FileChangesSummary({ changes }) {
               >
                 {hasPreview ? (
                   fileOpen ? (
-                    <ChevronDown
+                    <CaretDown
                       size={13}
                       className="shrink-0 text-(--text-muted)"
                     />
                   ) : (
-                    <ChevronRight
+                    <CaretRight
                       size={13}
                       className="shrink-0 text-(--text-muted)"
                     />
@@ -898,6 +1185,7 @@ function FileChangesSummary({ changes }) {
                 >
                   {c.action?.toUpperCase()}
                 </span>
+                <FileTypeIcon path={c.path} size="sm" />
                 <span className="min-w-0 flex-1 truncate text-(--text-primary)">
                   {c.path}
                 </span>
@@ -940,14 +1228,14 @@ function FileChangesSummary({ changes }) {
                     )}
                   >
                     {undoing.has(undoKey) ? (
-                      <Loader2 size={13} className="animate-spin" />
+                      <LinearRing size="sm" />
                     ) : isReverted ? (
                       <>
                         <Check size={13} />
                         <span>{t("undoChangeReverted")}</span>
                       </>
                     ) : (
-                      <RotateCcw size={13} />
+                      <ArrowCounterClockwise size={13} />
                     )}
                   </span>
                 )}
@@ -991,47 +1279,7 @@ function FileChangesSummary({ changes }) {
   );
 }
 
-// Merge adjacent tool segments (possibly separated by empty text) into merged render groups
-function buildRenderGroups(segments) {
-  const groups = [];
-  let pendingTools = [];
-
-  const flushTools = () => {
-    if (pendingTools.length > 0) {
-      groups.push({ type: "tools", cards: pendingTools });
-      pendingTools = [];
-    }
-  };
-
-  for (const seg of segments) {
-    if (seg.type === "tools") {
-      pendingTools.push(...seg.cards);
-    } else if (seg.type === "text") {
-      if (seg.text) {
-        // Non-empty text breaks the tool group
-        flushTools();
-        groups.push({
-          type: "text",
-          text: seg.text,
-          isStreaming: seg.isStreaming,
-        });
-      }
-      // Empty text between tools: skip, keep accumulating
-    } else if (seg.type === "thinking") {
-      if (seg.text) {
-        flushTools();
-        groups.push({ type: "thinking", ...seg });
-      }
-    } else if (seg.type === "skill") {
-      flushTools();
-      groups.push({ type: "skill", ...seg });
-    }
-  }
-  flushTools();
-  return groups;
-}
-
-function UserText({ text, skills = [] }) {
+function UserText({ text }) {
   const match = String(text || "").match(/^(\/([A-Za-z0-9_-]+))(\s+[\s\S]*)?$/);
   if (!match) return <StreamdownRenderer text={text} streaming={false} />;
 
@@ -1054,8 +1302,8 @@ function UserText({ text, skills = [] }) {
             <div className="font-semibold mb-1.5">Dream</div>
             <div className="text-(--text-secondary)">
               Consolidates memory inbox entries and stale memory buckets. It can
-              run manually with /dream or automatically when the inbox threshold
-              is reached.
+              run from the action palette or automatically when the inbox
+              threshold is reached.
             </div>
           </TooltipContent>
         </Tooltip>
@@ -1064,29 +1312,178 @@ function UserText({ text, skills = [] }) {
     );
   }
 
-  const skill = skills.find((s) => s.name === skillName);
-  if (!skill) return <StreamdownRenderer text={text} streaming={false} />;
+  return <StreamdownRenderer text={text} streaming={false} />;
+}
+
+function UserSkillChips({ badges = [], skills = [], className }) {
+  const items = userSkillChipBadges(badges);
+  if (!items.length) return null;
+  return (
+    <div className={cn("flex max-w-full flex-wrap gap-1.5", className)}>
+      {items.map(({ name, status }) => {
+        const description =
+          skills.find((item) => item.name === name)?.description || "";
+        const always = status === "always";
+        return (
+          <Tooltip key={name}>
+            <TooltipTrigger asChild>
+              <span
+                className={cn(
+                  "codemini-status-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px]",
+                  always
+                    ? "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)"
+                    : "border-(--accent-purple)/25 bg-(--accent-purple-bg) text-accent-purple",
+                )}
+              >
+                <Hammer
+                  size={14}
+                  className={cn("shrink-0", always && "opacity-70")}
+                />
+                <span className="max-w-[220px] truncate">{name}</span>
+              </span>
+            </TooltipTrigger>
+            {description ? (
+              <TooltipContent
+                side="top"
+                sideOffset={8}
+                className="max-w-75 px-4 py-3 leading-relaxed whitespace-normal"
+              >
+                {description}
+              </TooltipContent>
+            ) : null}
+          </Tooltip>
+        );
+      })}
+    </div>
+  );
+}
+
+function UserAttachments({ attachments = [], className }) {
+  const items = Array.isArray(attachments) ? attachments : [];
+  if (!items.length) return null;
 
   return (
-    <div className="msg-body whitespace-pre-wrap text-(--text-primary)">
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="inline-flex items-center rounded-md bg-(--accent-purple-bg) px-1.5 py-0.5 text-accent-purple font-mono text-[0.92em] cursor-help align-baseline">
-            {token}
-          </span>
-        </TooltipTrigger>
-        <TooltipContent
-          side="top"
-          sideOffset={8}
-          className="max-w-75 px-4 py-3 leading-relaxed whitespace-normal"
+    <AttachmentGroup className={cn("max-w-full", className)}>
+      {items.map((item) =>
+        item?.kind === "image" && item.url ? (
+          <UserImageAttachment key={item.id || item.url} item={item} />
+        ) : (
+          <Attachment key={item.id || item.name} size="sm">
+            <AttachmentMedia>
+              <FileText />
+            </AttachmentMedia>
+            <AttachmentContent>
+              <AttachmentTitle>{item.name}</AttachmentTitle>
+              <AttachmentDescription>
+                {compactBytes(item.size)}
+              </AttachmentDescription>
+            </AttachmentContent>
+          </Attachment>
+        ),
+      )}
+    </AttachmentGroup>
+  );
+}
+
+function UserImageAttachment({ item }) {
+  const [open, setOpen] = useState(false);
+  const label = item.name || t("attachmentImage");
+
+  return (
+    <>
+      <Attachment
+        orientation="vertical"
+        className="w-40 border-0 bg-transparent p-0 shadow-none focus-within:ring-0"
+      >
+        <AttachmentMedia
+          variant="image"
+          className="aspect-[4/3] w-full rounded-xl p-0"
         >
-          <div className="font-semibold mb-1.5">{skill.name}</div>
-          <div className="text-(--text-secondary)">
-            {skill.description || "No description"}
+          <img
+            src={item.url}
+            alt={label}
+            loading="lazy"
+            decoding="async"
+            className="size-full object-cover"
+          />
+        </AttachmentMedia>
+        <AttachmentTrigger aria-label={label} onClick={() => setOpen(true)} />
+      </Attachment>
+      {open && (
+        <ImagePreviewDialog
+          src={item.url}
+          alt={label}
+          caption={label}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
+function parseSpecExecutionText(text = "") {
+  const value = String(text || "").trim();
+  const match = value.match(
+    /^(Execute approved spec|执行已批准的 spec|Plan execute approved spec|计划执行已批准的 spec):\s*(.+?)(?:\r?\n|$)/,
+  );
+  if (!match) return null;
+  const pathMatch = value.match(/(?:^|\r?\n)(?:Spec path|Spec 路径):\s*(.+)$/);
+  return {
+    title: match[2].trim() || "spec",
+    filePath: pathMatch?.[1]?.trim() || "",
+    mode:
+      match[1] === "Plan execute approved spec" ||
+      match[1] === "计划执行已批准的 spec"
+        ? "plan"
+        : "direct",
+  };
+}
+
+function SpecExecutionCard({ details = {} }) {
+  const title = String(details.title || "spec").trim();
+  const filePath = String(details.filePath || "").trim();
+  const mode = details.mode === "plan" ? "plan" : "direct";
+  const modeLabel = mode === "plan" ? t("specPlanMode") : t("specDirectMode");
+  return (
+    <div className="codemini-linear-card w-full max-w-2xl rounded-lg p-3 text-left">
+      <div className="flex items-start gap-3">
+        {/* <span className="codemini-linear-icon mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md">
+          <FileText size={16} weight="regular" />
+        </span> */}
+        <div className="min-w-0 flex-1 flex flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge
+              variant="outline"
+              className={cn(
+                ROLE_BADGE_CLASS,
+                "border-(--border-default) bg-(--bg-primary) text-(--text-secondary)",
+              )}
+            >
+              SPEC
+            </Badge>
+            <Badge
+              variant="outline"
+              className="codemini-linear-pill h-5 rounded-md px-1.5 py-0 text-[10px] font-medium uppercase tracking-[0.04em] shadow-none"
+            >
+              <span className="inline-flex items-center gap-1">
+                <Play size={9} weight="fill" />
+                {modeLabel}
+              </span>
+            </Badge>
           </div>
-        </TooltipContent>
-      </Tooltip>
-      {rest}
+          <div className="truncate text-[13px] font-medium leading-5 text-(--text-primary)">
+            {title}
+          </div>
+          {filePath ? (
+            <div
+              className="truncate font-mono text-[10px] leading-5 text-(--text-muted)"
+              title={filePath}
+            >
+              {filePath}
+            </div>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1095,7 +1492,7 @@ function getMessageText(message) {
   const text = String(message?.text || "");
   if (text) return text;
   return (message?.segments || [])
-    .filter((segment) => segment.type === "text")
+    .filter((segment) => segment.type === "text" || segment.type === "handoff")
     .map((segment) => String(segment.text || ""))
     .join("");
 }
@@ -1227,6 +1624,44 @@ function UsageBadge({ usage }) {
   );
 }
 
+function ModelIdentityBadge({ sdkProvider, model }) {
+  const identity = getMessageModelIdentity({ sdkProvider, model });
+  if (!identity) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex h-8 max-w-full items-center gap-2.5 rounded-md px-1.5 text-[11px] text-(--text-muted)">
+          <span className="inline-flex items-center gap-1 whitespace-nowrap">
+            <img
+              src={identity.logo}
+              alt=""
+              width={13}
+              height={13}
+              className="size-[13px] shrink-0 object-contain"
+            />
+            <span className="uppercase">{identity.sdkLabel}</span>
+          </span>
+          <span className="inline-flex items-center gap-1 whitespace-nowrap">
+            {identity.modelLogo ? (
+              <img
+                src={identity.modelLogo}
+                alt=""
+                width={13}
+                height={13}
+                className="size-[13px] shrink-0 object-contain"
+              />
+            ) : null}
+            <span className="uppercase">{identity.model}</span>
+          </span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" sideOffset={6}>
+        {identity.details}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function isMessageComplete(message, renderGroups = []) {
   if (message?.loading) return false;
   if (message?.isComplete === false) return false;
@@ -1261,10 +1696,30 @@ function shouldShowMessageActions(message, messageComplete) {
   );
 }
 
+function shouldShowPostCompletionExtras(message, messageComplete, hasContent) {
+  if (!messageComplete || !hasContent) return false;
+  const planStep = message?.planStep;
+  if (!planStep) return true;
+  return String(planStep.role || "").toLowerCase() === "summarizer";
+}
+
+function shouldShowFileChanges(message, messageComplete, mergedFileChanges) {
+  return shouldShowPostCompletionExtras(
+    message,
+    messageComplete,
+    mergedFileChanges.length > 0,
+  );
+}
+
 function MessageActions({
   text,
   usage = null,
+  sdkProvider = "",
+  model = "",
   showUsage = true,
+  retryPrompt = "",
+  canRetry = false,
+  onRetry,
   align = "left",
   className,
 }) {
@@ -1277,14 +1732,8 @@ function MessageActions({
     window.setTimeout(() => setCopied(false), 1200);
   }
 
-  return (
-    <div
-      className={cn(
-        "flex items-center gap-1",
-        align === "right" ? "justify-end" : "justify-start",
-        className,
-      )}
-    >
+  const actionButtons = (
+    <>
       <MessageActionButton
         label={t("copyMessage")}
         copiedLabel={t("copied")}
@@ -1294,12 +1743,123 @@ function MessageActions({
       >
         <Copy size={17} />
       </MessageActionButton>
-      {showUsage && <UsageBadge usage={usage} />}
+      {canRetry && (
+        <MessageActionButton
+          label={t("retry")}
+          disabled={!retryPrompt}
+          onClick={() => onRetry?.(retryPrompt)}
+        >
+          <ArrowCounterClockwise size={17} />
+        </MessageActionButton>
+      )}
+    </>
+  );
+
+  return (
+    <div className={cn("flex w-full items-center gap-1", className)}>
+      {align !== "right" && (
+        <div className="flex shrink-0 items-center gap-1">{actionButtons}</div>
+      )}
+      {showUsage && (
+        <div
+          className={cn(
+            "flex min-w-0 items-center justify-end gap-1",
+            align !== "right" && "ml-auto",
+          )}
+        >
+          <ModelIdentityBadge sdkProvider={sdkProvider} model={model} />
+          <UsageBadge usage={usage} />
+        </div>
+      )}
+      {align === "right" && (
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          {actionButtons}
+        </div>
+      )}
     </div>
   );
 }
 
-export function MessageBubble({ message, skills = [] }) {
+function renderGroupItem(group, i) {
+  if (group.type === "text") {
+    return (
+      <div key={`t-${i}-${group.isStreaming ? "s" : "d"}`} className="my-2">
+        <StreamdownRenderer
+          text={group.text}
+          streaming={group.isStreaming}
+          inlineEmbeds={false}
+        />
+      </div>
+    );
+  }
+  if (group.type === "tools") {
+    return <ToolGroup key={`tg-${i}`} cards={group.cards} />;
+  }
+  if (group.type === "thinking") {
+    return <ThoughtBlock key={`th-${i}`} segment={group} />;
+  }
+  if (group.type === "handoff") {
+    return <HandoffBlock key={`ho-${i}`} segment={group} />;
+  }
+  if (group.type === "skill") {
+    return (
+      <SkillActivityRow
+        key={`sk-${i}-${group.name || "skill"}`}
+        badge={group}
+      />
+    );
+  }
+  if (group.type === "process") {
+    return <ProcessGroup key={`pg-${i}`} group={group} />;
+  }
+  return null;
+}
+
+function AnswerProcessFold({ groups, durationMs }) {
+  const [expanded, setExpanded] = useState(false);
+  const duration = formatProcessDuration(durationMs);
+  const label = duration
+    ? t("processedFor").replace("{{duration}}", duration)
+    : t("processed");
+
+  return (
+    <div className="codemini-answer-fold my-2">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className={COLLAPSE_ROW_CLASS}
+        aria-expanded={expanded}
+      >
+        <CaretRight
+          size={14}
+          className={cn(
+            COLLAPSE_CHEVRON_CLASS,
+            "transition-transform",
+            expanded && "rotate-90",
+          )}
+        />
+        <span
+          className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}
+        >
+          <span className="inline-block size-1.5 rounded-full bg-(--accent-blue)" />
+        </span>
+        <span className="font-medium">{label}</span>
+      </button>
+      {expanded && (
+        <div className="relative ml-4.5 mt-2 flex flex-col pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
+          {groups.map((group, i) => renderGroupItem(group, i))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function MessageBubble({
+  message,
+  skills = [],
+  sessionLive = false,
+  onRetry,
+}) {
   const {
     role,
     segments,
@@ -1310,8 +1870,10 @@ export function MessageBubble({ message, skills = [] }) {
     timestamp,
     planStep,
     usage,
+    sdkProvider,
+    model,
+    attachments = [],
   } = message;
-  const style = ROLE_STYLES[role] || ROLE_STYLES.general;
   const ts = timestamp ? formatTimestamp(timestamp) : "";
 
   const renderGroups = useMemo(() => {
@@ -1327,33 +1889,84 @@ export function MessageBubble({ message, skills = [] }) {
       disabled: hasStreamingText || messageInProgress,
     });
   }, [message?.isComplete, message?.planStep, segments]);
+
+  const answerLayout = useMemo(
+    () =>
+      layoutAnswerProcessWithPlans(
+        renderGroups,
+        message?.timestamp || message?.createdAt,
+      ),
+    [message?.createdAt, message?.timestamp, renderGroups],
+  );
+  const hasAnswerFold = answerLayout.hasFold;
+  const preAnswerDuration = answerLayout.durationMs;
   const mergedFileChanges = useMemo(
     () => mergeFileChanges(fileChanges || []),
     [fileChanges],
   );
+  const messageEmbeds = useMemo(
+    () => collectMessageEmbeds(segments || []),
+    [segments],
+  );
+
+  const rawMessageText = getMessageText(message) || legacyText || "";
+  const rawResponseStatus = String(
+    message.responseStatus || message.response_status || "",
+  ).toLowerCase();
+  const isStandaloneManualAbortDivider =
+    role === "divider" &&
+    (message.dividerType === "manual-abort" ||
+      message.dividerType === "abort" ||
+      rawResponseStatus === "aborted");
+  const renderDivider = (label) => (
+    <div data-message-id={message.id} className="py-3 px-6 text-center">
+      <div className="max-w-[860px] mx-auto relative">
+        <div className="border-t border-border" />
+        <span className="text-xs text-(--text-muted) bg-(--bg-primary) px-2 absolute -top-2.5 left-1/2 -translate-x-1/2 whitespace-nowrap">
+          {label}
+        </span>
+      </div>
+    </div>
+  );
+
+  if (isStandaloneManualAbortDivider) {
+    return null;
+  }
 
   if (role === "divider") {
-    return (
-      <div data-message-id={message.id} className="py-3 px-6 text-center">
-        <div className="max-w-[860px] mx-auto relative">
-          <div className="border-t border-border" />
-          <span className="text-xs text-(--text-muted) bg-(--bg-primary) px-2 absolute -top-2.5 left-1/2 -translate-x-1/2 whitespace-nowrap">
-            {legacyText || "以上内容已压缩"}
-          </span>
-        </div>
-      </div>
-    );
+    return renderDivider(legacyText || "以上内容已压缩");
   }
 
   if (role === "system") {
     const dreamNotice = getDreamNotice(legacyText);
-    if (dreamNotice) return <DreamNotice notice={dreamNotice} />;
+    if (dreamNotice) return null;
+
+    if (
+      String(legacyText || "").startsWith("Reflect skill") ||
+      String(legacyText || "").startsWith("Reflect found no reusable skill candidate.")
+    ) {
+      return null;
+    }
 
     const isWaitingReview =
       legacyText?.includes("等待计划审阅") ||
       legacyText?.includes("Waiting for plan review");
     if (isWaitingReview) {
       return null;
+    }
+
+    if (message.transientKey === "waiting-response") {
+      return (
+        <div data-message-id={message.id} className="py-2 my-[8px] px-6">
+          <div className="max-w-[860px] mx-auto">
+            <div
+              className="msg-body streaming-cursor streaming-cursor--pending"
+              role="status"
+              aria-label={legacyText || t("waitingResponse")}
+            />
+          </div>
+        </div>
+      );
     }
 
     return (
@@ -1375,11 +1988,11 @@ export function MessageBubble({ message, skills = [] }) {
     const steps = Array.isArray(overview.steps) ? overview.steps : [];
 
     return (
-      <div data-message-id={message.id} className="py-2 my-[22px]">
+      <div data-message-id={message.id} className="py-2 my-2">
         <div className="flex items-center gap-2 mb-1.5">
           <span
             className={cn(
-              "inline-flex items-center px-2 py-px rounded-full text-[11px] font-semibold uppercase tracking-[0.3px]",
+              "codemini-status-chip inline-flex h-5 items-center px-1.5 py-0 text-[10px] font-medium uppercase tracking-[0.04em]",
               ROLE_STYLES["plan-overview"].badge,
             )}
           >
@@ -1387,42 +2000,33 @@ export function MessageBubble({ message, skills = [] }) {
           </span>
           {ts && <span className="text-[11px] text-(--text-muted)">{ts}</span>}
         </div>
-        <div className="border border-(--border-default) rounded-lg p-3 max-w-3xl bg-(--bg-secondary) space-y-2.5">
+        <div className="codemini-linear-card max-w-3xl flex flex-col gap-2.5 rounded-lg p-3">
           {overview.goal && (
             <p className="text-[13px] text-(--text-primary) leading-relaxed font-medium">
               {overview.goal}
             </p>
           )}
-          <div className="space-y-1.5">
+          <div className="flex flex-col gap-1.5">
             {steps.map((step, i) => (
               <div key={i} className="flex items-center gap-2 text-[13px]">
                 <span
                   className={cn(
-                    "w-5 h-5 rounded-full flex items-center justify-center text-[11px] font-medium shrink-0",
-                    step.status === "done" &&
-                      "bg-(--accent-green-bg) text-(--accent-green)",
-                    step.status === "failed" &&
-                      "bg-(--accent-red-bg) text-(--accent-red)",
+                    "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[11px] font-medium",
+                    "codemini-linear-step",
+                    step.status === "done" && "codemini-linear-step--done",
+                    step.status === "failed" && "codemini-linear-step--failed",
                     step.status === "running" &&
-                      "bg-(--accent-blue-bg) text-(--accent-blue)",
-                    step.status === "pending" &&
-                      "bg-(--muted) text-(--muted-foreground)",
+                      "codemini-linear-step--running",
                   )}
                 >
-                  {step.status === "done"
-                    ? "\u2713"
-                    : step.status === "failed"
-                      ? "\u2717"
-                      : step.status === "running"
-                        ? "\u25B6"
-                        : i + 1}
+                  <PlanStepStatusGlyph step={step} index={i} />
                 </span>
                 <Badge
                   variant="outline"
                   className={cn(
-                    "text-[11px] px-1.5 py-0",
+                    ROLE_BADGE_CLASS,
                     ROLE_PILLS[step.role] ||
-                      "bg-(--muted) text-(--muted-foreground)",
+                      "border-(--border-default) bg-(--bg-primary) text-(--text-muted)",
                   )}
                 >
                   {String(step.role || "step").toUpperCase()}
@@ -1447,29 +2051,96 @@ export function MessageBubble({ message, skills = [] }) {
           .join("") ||
         ""
       : "";
-  const messageText = role === "you" ? youText : getMessageText(message);
+  const userSkillPrompt = useMemo(() => {
+    if (role !== "you" || !youText) return null;
+    const parsed = parseUserSkillPrompt(youText);
+    if (!isManualSkillCommand(parsed.skillName)) return null;
+    return parsed;
+  }, [role, youText]);
+  const userSkillChips = useMemo(
+    () => userSkillChipBadges(skillBadges, userSkillPrompt?.skillNames || []),
+    [skillBadges, userSkillPrompt?.skillNames],
+  );
+  const userDisplayText = userSkillPrompt ? userSkillPrompt.prompt : youText;
+  const messageText = role === "you" ? youText : rawMessageText;
   const messageComplete =
     role === "you" || isMessageComplete(message, renderGroups);
+  const responseStatus = rawResponseStatus;
+  const statusLooksLikeError =
+    !message.manualAborted &&
+    (responseStatus === "error" ||
+      /^(Failed|Aborted):/i.test(messageText.trim()));
+  const displayRole = statusLooksLikeError && role !== "you" ? "error" : role;
+  const style = ROLE_STYLES[displayRole] || ROLE_STYLES.general;
+  const retryPrompt = String(
+    message.retryPrompt || message.retry_prompt || "",
+  ).trim();
+  const canRetry =
+    displayRole === "error" &&
+    responseStatus === "error" &&
+    Boolean(retryPrompt) &&
+    message.retryable !== false;
   const showActions = shouldShowMessageActions(message, messageComplete);
+  const postCompletionReady = !sessionLive && messageComplete;
+  const showFileChanges = shouldShowFileChanges(
+    message,
+    postCompletionReady,
+    mergedFileChanges,
+  );
+  const showRelatedLinks = shouldShowPostCompletionExtras(
+    message,
+    postCompletionReady,
+    messageEmbeds.length > 0,
+  );
+  const isPlanFlowMessage = !!planStep && role !== "you";
+  const planFlowStatus = String(planStep?.status || "").toLowerCase();
+  const specExecutionDetails =
+    role === "you"
+      ? message.specExecution || parseSpecExecutionText(youText)
+      : null;
 
   return (
     <div
       data-message-id={message.id}
+      data-plan-status={isPlanFlowMessage ? planFlowStatus : undefined}
       className={cn(
-        "py-2 my-[22px] group/message",
-        role === "you" && "flex justify-end",
+        "py-2 group/message",
+        role === "you" && "flex justify-end mt-6",
+        isPlanFlowMessage && "codemini-plan-flow",
       )}
     >
       {role === "you" ? (
         <div className="flex w-fit max-w-full flex-col items-end">
-          <div className="w-fit max-w-full bg-(--bg-tertiary) rounded-2xl px-4 py-3">
-            {youText && <UserText text={youText} skills={skills} />}
-            {startupTodos && <TodoList todos={startupTodos} />}
-          </div>
+          {specExecutionDetails ? (
+            <SpecExecutionCard details={specExecutionDetails} />
+          ) : (
+            <div className="codemini-message-surface codemini-user-bubble w-fit max-w-full rounded-2xl px-4 py-3">
+              {(userSkillChips.length > 0 || attachments.length > 0) && (
+                <div
+                  className={cn(
+                    "flex max-w-full flex-col gap-2",
+                    userDisplayText && "mb-3",
+                  )}
+                >
+                  {userSkillChips.length > 0 && (
+                    <UserSkillChips badges={userSkillChips} skills={skills} />
+                  )}
+                  <UserAttachments attachments={attachments} />
+                </div>
+              )}
+              {userDisplayText && <UserText text={userDisplayText} />}
+              {startupTodos && <TodoList todos={startupTodos} />}
+            </div>
+          )}
           <MessageActions
             text={messageText}
             usage={usage}
+            sdkProvider={sdkProvider}
+            model={model}
             showUsage={messageComplete}
+            retryPrompt={retryPrompt}
+            canRetry={canRetry}
+            onRetry={onRetry}
             align="right"
             className={cn(
               "mt-1 min-h-8 opacity-0 pointer-events-none transition-opacity group-hover/message:pointer-events-auto group-hover/message:opacity-100 group-focus-within/message:pointer-events-auto group-focus-within/message:opacity-100",
@@ -1482,63 +2153,90 @@ export function MessageBubble({ message, skills = [] }) {
           <div className="flex items-center gap-2 mb-1.5">
             <span
               className={cn(
-                "inline-flex items-center px-2 py-px rounded-full text-[11px] font-semibold uppercase tracking-[0.3px]",
+                "inline-flex h-5 items-center rounded-md border px-1.5 py-0 text-[10px] font-medium uppercase tracking-[0.04em]",
                 style.badge,
               )}
             >
               {style.label}
             </span>
+            {planStep?.title ? (
+              <span className="min-w-0 truncate text-[12px] text-(--text-secondary)">
+                {planStep.title}
+              </span>
+            ) : null}
+            {planStep?.model ? (
+              <span
+                className="shrink-0 font-mono text-[10px] text-(--text-muted)"
+                title={planStep.model}
+              >
+                {planStep.model}
+              </span>
+            ) : null}
             {ts && (
               <span className="text-[11px] text-(--text-muted)">{ts}</span>
             )}
           </div>
 
-          <SkillActivityList badges={skillBadges || []} />
+          <div className="flex flex-col">
+            <SkillActivityList badges={skillBadges || []} />
 
-          {renderGroups.map((group, i) => {
-            if (group.type === "text") {
-              return (
-                <StreamdownRenderer
-                  key={`t-${i}-${group.isStreaming ? "s" : "d"}`}
-                  text={group.text}
-                  streaming={group.isStreaming}
-                />
-              );
-            }
-            if (group.type === "tools") {
-              return <ToolGroup key={`tg-${i}`} cards={group.cards} />;
-            }
-            if (group.type === "thinking") {
-              return <ThoughtBlock key={`th-${i}`} segment={group} />;
-            }
-            if (group.type === "skill") {
-              return <SkillActivityRow key={`sk-${i}-${group.name || "skill"}`} badge={group} />;
-            }
-            if (group.type === "process") {
-              return <ProcessGroup key={`pg-${i}`} group={group} />;
-            }
-            return null;
-          })}
-
-          {planStep &&
-            renderGroups.length === 0 &&
-            planStep.status !== "done" &&
-            planStep.status !== "failed" && (
-              <div className="text-[12px] text-(--text-muted) inline-flex items-center gap-1.5">
-                <span className="inline-block size-1 rounded-full bg-(--accent-blue) animate-pulse" />
-                <span>等待工具调用或模型输出…</span>
-              </div>
+            {messageComplete && hasAnswerFold ? (
+              <>
+                {answerLayout.items.map((item, i) => {
+                  if (item.type === "fold") {
+                    return (
+                      <AnswerProcessFold
+                        key={`fold-${i}`}
+                        groups={item.groups}
+                        durationMs={i === 0 ? preAnswerDuration : 0}
+                      />
+                    );
+                  }
+                  return renderGroupItem(item.group, i);
+                })}
+              </>
+            ) : (
+              renderGroups.map((group, i) => renderGroupItem(group, i))
             )}
 
-          {messageComplete && mergedFileChanges.length > 0 && (
-            <FileChangesSummary changes={mergedFileChanges} />
-          )}
-          <MessageActions
-            text={messageText}
-            usage={usage}
-            showUsage={showActions}
-            className={cn("mt-2 min-h-8", !showActions && "hidden")}
-          />
+            {planStep &&
+              renderGroups.length === 0 &&
+              planStep.status !== "done" &&
+              planStep.status !== "failed" && (
+                <div
+                  className="msg-body streaming-cursor streaming-cursor--pending"
+                  role="status"
+                  aria-label="等待工具调用或模型输出"
+                />
+              )}
+
+            {showRelatedLinks && <EmbedBanner items={messageEmbeds} />}
+
+            {showFileChanges && (
+              <FileChangesSummary changes={mergedFileChanges} />
+            )}
+            {message.manualAborted && (
+              <p className="mt-2 text-xs text-(--text-muted)">
+                {t("manualStopped")}
+              </p>
+            )}
+            {!message.manualAborted && responseStatus === "aborted" && (
+              <p className="mt-2 text-xs text-(--text-muted)">
+                {t("requestAborted")}
+              </p>
+            )}
+            <MessageActions
+              text={messageText}
+              usage={usage}
+              sdkProvider={sdkProvider || planStep?.sdkProvider}
+              model={model || planStep?.model}
+              showUsage={showActions}
+              retryPrompt={retryPrompt}
+              canRetry={canRetry}
+              onRetry={onRetry}
+              className={cn("mt-2 min-h-8", !showActions && "hidden")}
+            />
+          </div>
         </div>
       )}
     </div>

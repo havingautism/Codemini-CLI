@@ -1,8 +1,18 @@
-import { Suspense, lazy, useRef, useEffect, useState, useMemo, useCallback } from "react";
-import { ArrowDown, GitBranch } from "lucide-react";
+﻿import { Suspense, lazy, useRef, useEffect, useState, useMemo, useCallback } from "react";
+import { GitBranch } from "@phosphor-icons/react";
 import { Spinner } from "@/components/ui/spinner";
+import {
+  MessageScroller,
+  MessageScrollerButton,
+  MessageScrollerContent,
+  MessageScrollerItem,
+  MessageScrollerProvider,
+  MessageScrollerViewport,
+} from "@/components/ui/message-scroller";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
+import { HomeEmptyVisual } from "./HomeEmptyVisual.jsx";
+import { HomeEmptyCaption } from "./HomeEmptyCaption.jsx";
 
 const MessageBubble = lazy(() =>
   import("./MessageBubble").then((module) => ({
@@ -15,25 +25,6 @@ function truncate(text, max = 36) {
     .replace(/\n/g, " ")
     .trim();
   return s.length > max ? s.slice(0, max) + "..." : s;
-}
-
-function PrintingPress() {
-  return (
-    <div className="codemini-home-visual codemini-press" aria-hidden="true">
-      <div className="sheet" />
-      <div className="roll" />
-      <div className="sheet" />
-      <div className="roll" />
-      <div className="sheet" />
-      <div className="roll" />
-      <div className="sheet" />
-      <div className="sheet" />
-      <div className="sheet" />
-      <div className="sheet" />
-      <div className="sheet" />
-      <div className="roll" />
-    </div>
-  );
 }
 
 function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
@@ -67,7 +58,7 @@ function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
     >
       {/* Expanded card */}
       {expanded && (
-        <div className="flex flex-col gap-px rounded-lg bg-(--bg-primary) border border-(--border-default) p-1.5 max-w-[180px] max-h-[60vh] overflow-y-auto shadow-lg">
+        <div className="flex flex-col gap-px rounded-lg bg-(--bg-primary) border border-(--border-default) p-1.5 max-w-[180px] max-h-[60vh] overflow-y-auto shadow-[var(--shadow-default)]">
           {userMessages.map((um, i) => (
             <button
               key={um.id}
@@ -113,11 +104,11 @@ export function ChatPanel({
   skills = [],
   gitInfo,
   messagesLoading,
+  sessionLive = false,
   isGeneral = false,
+  onRetryMessage,
 }) {
   const scrollRef = useRef(null);
-  const [autoScroll, setAutoScroll] = useState(true);
-  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [activeNavIndex, setActiveNavIndex] = useState(-1);
 
   const userMessages = useMemo(
@@ -145,41 +136,43 @@ export function ChatPanel({
     }
   }, []);
 
-  useEffect(() => {
+  const updateScrollState = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const handleScroll = () => {
-      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-      setAutoScroll(atBottom);
-      setShowScrollToBottom(!atBottom && el.scrollTop > 100);
-
-      // Update active nav index based on visible position
-      const userEls = el.querySelectorAll(
-        '[data-message-id][class*="justify-end"]',
-      );
-      if (userEls.length === 0) {
-        setActiveNavIndex(-1);
-        return;
-      }
-      const midLine = el.scrollTop + el.clientHeight * 0.4;
-      let last = -1;
-      userEls.forEach((uel, i) => {
-        if (uel.offsetTop <= midLine) last = i;
-      });
-      setActiveNavIndex(last);
-    };
-    el.addEventListener("scroll", handleScroll);
-    return () => el.removeEventListener("scroll", handleScroll);
+    const userEls = el.querySelectorAll(
+      '[data-message-id][class*="justify-end"]',
+    );
+    if (userEls.length === 0) {
+      setActiveNavIndex(-1);
+      return;
+    }
+    // Use getBoundingClientRect instead of offsetTop because
+    // MessageScrollerItem has content-visibility:auto which skips
+    // layout for off-screen items, causing offsetTop to return 0
+    // for elements inside skipped containers.
+    const viewportRect = el.getBoundingClientRect();
+    const midLine = viewportRect.top + viewportRect.height * 0.4;
+    let last = -1;
+    userEls.forEach((uel, i) => {
+      if (uel.getBoundingClientRect().top <= midLine) last = i;
+    });
+    setActiveNavIndex(last);
   }, []);
 
   useEffect(() => {
-    if (autoScroll && scrollRef.current) {
-      requestAnimationFrame(() => {
-        if (scrollRef.current)
-          scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-      });
-    }
-  }, [messages, autoScroll]);
+    const el = scrollRef.current;
+    if (!el) return;
+    el.addEventListener("scroll", updateScrollState, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", updateScrollState);
+    };
+  }, [updateScrollState]);
+
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(updateScrollState);
+    });
+  }, [messages, messagesLoading, updateScrollState]);
 
   return (
     <div className="flex-1 relative overflow-hidden">
@@ -189,26 +182,23 @@ export function ChatPanel({
         </div>
       )}
       {!messagesLoading && messages.length === 0 && (
-        <div className="absolute left-1/2 top-[38%] -translate-x-1/2 -translate-y-1/2 w-[min(760px,calc(100%-48px))] text-center pointer-events-none">
+        <div className="absolute inset-0 pointer-events-none overflow-hidden">
           {isGeneral ? (
-            <div className="flex flex-col items-center">
-              <div className="mb-7 w-[min(560px,100%)]">
-                <PrintingPress />
-              </div>
-              <h1 className="text-[clamp(24px,2.4vw,36px)] font-medium leading-tight tracking-normal">
-                {t("askAnythingGeneral")}
-              </h1>
-            </div>
+            <HomeEmptyVisual mode="general">
+              <HomeEmptyCaption
+                promptKey="askAnythingGeneralPrompts"
+                className="codemini-home-empty-title mx-auto max-w-[320px] sm:max-w-none text-[20px] sm:text-[26px] font-medium leading-tight tracking-normal text-(--text-primary) break-words"
+              />
+            </HomeEmptyVisual>
           ) : (
-            <>
-              <h1 className="text-[clamp(24px,2.4vw,36px)] font-medium leading-tight tracking-normal">
-                {t("buildInProject").replace(
-                  "{{project}}",
-                  projectCwd || "qurio-coder",
-                )}
-              </h1>
+            <HomeEmptyVisual mode="project">
+              <HomeEmptyCaption
+                promptKey="buildInProjectPrompts"
+                vars={{ project: projectCwd || "qurio-coder" }}
+                className="codemini-home-empty-title mx-auto max-w-[320px] sm:max-w-none text-[20px] sm:text-[26px] font-medium leading-tight tracking-normal text-(--text-primary) break-words"
+              />
               {gitInfo?.isGit && (
-                <div className="mt-4 flex items-center justify-center gap-3 text-[13px] text-(--text-muted)">
+                <div className="mt-3 flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-[12px] text-(--text-muted)">
                   <span className="inline-flex items-center gap-1.5">
                     <GitBranch size={13} />
                     <span>{gitInfo.branch}</span>
@@ -216,73 +206,64 @@ export function ChatPanel({
                   {gitInfo.dirty ? (
                     <>
                       {gitInfo.staged > 0 && (
-                        <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
-                          <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                        <span className="inline-flex items-center gap-1 text-(--accent-green)">
+                          <span className="size-1.5 rounded-full bg-current" />
                           {t("gitStaged")} {gitInfo.staged}
                         </span>
                       )}
                       {gitInfo.modified > 0 && (
-                        <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
-                          <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                        <span className="inline-flex items-center gap-1 text-(--accent-orange)">
+                          <span className="size-1.5 rounded-full bg-current" />
                           {t("gitModified")} {gitInfo.modified}
                         </span>
                       )}
                       {gitInfo.untracked > 0 && (
                         <span className="inline-flex items-center gap-1">
-                          <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                          <span className="size-1.5 rounded-full bg-current" />
                           {t("gitUntracked")} {gitInfo.untracked}
                         </span>
                       )}
                     </>
                   ) : (
                     <span className="inline-flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                      <span className="size-1.5 rounded-full bg-(--accent-green)" />
                       {t("gitClean")}
                     </span>
                   )}
                 </div>
               )}
-            </>
+            </HomeEmptyVisual>
           )}
         </div>
       )}
-      <div
-        ref={scrollRef}
-        className="h-full overflow-y-auto py-[44px_0_28px] scroll-smooth"
-        style={{ scrollbarWidth: "thin" }}
-      >
-        <div className="relative">
-          <div className="w-[min(960px,calc(100%-96px))] mx-auto">
+      <MessageScrollerProvider>
+        <MessageScroller>
+          <MessageScrollerViewport ref={scrollRef} className="scroll-smooth">
+            <MessageScrollerContent className="gap-0 py-[32px_0_24px]">
+              <div className="w-[calc(100%_-_32px)] max-w-[920px] sm:w-[calc(100%_-_64px)] mx-auto">
             <Suspense fallback={null}>
               {messages.map((msg) => (
-                <MessageBubble key={msg.id} message={msg} skills={skills} />
+                <MessageScrollerItem key={msg.id}>
+                  <MessageBubble
+                    message={msg}
+                    skills={skills}
+                    sessionLive={sessionLive}
+                    onRetry={onRetryMessage}
+                  />
+                </MessageScrollerItem>
               ))}
             </Suspense>
-          </div>
-        </div>
-      </div>
+              </div>
+            </MessageScrollerContent>
+          </MessageScrollerViewport>
+          <MessageScrollerButton className="bottom-2" />
+        </MessageScroller>
+      </MessageScrollerProvider>
       <UserMessageNav
         userMessages={userMessages}
         activeNavIndex={activeNavIndex}
         scrollToMessage={scrollToMessage}
       />
-      <div className="absolute right-7 bottom-0 flex flex-col gap-2 z-20">
-        {showScrollToBottom && (
-          <button
-            className="w-9 h-9 rounded-full bg-(--bg-primary) dark:bg-(--bg-secondary) border border-(--border-default) cursor-pointer flex items-center justify-center text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) animate-in fade-in-0 zoom-in-95"
-            // style={{ boxShadow: "var(--shadow-default)" }}
-            onClick={() => {
-              setAutoScroll(true);
-              scrollRef.current?.scrollTo({
-                top: scrollRef.current.scrollHeight,
-                behavior: "smooth",
-              });
-            }}
-          >
-            <ArrowDown size={16} />
-          </button>
-        )}
-      </div>
     </div>
   );
 }

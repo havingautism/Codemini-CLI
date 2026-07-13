@@ -1,10 +1,30 @@
-import { t } from '../../i18n/index.js';
-
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 async function api(path, opts = {}) {
   const res = await fetch(path, opts);
   return res;
+}
+
+async function readJsonResponse(res) {
+  const text = await res.text();
+  if (!text) {
+    return res.ok ? {} : { error: true, message: `Request failed (${res.status})` };
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {
+      error: true,
+      message: text.trim() || `Request failed (${res.status})`,
+    };
+  }
+}
+
+export async function fetchEmbed(url) {
+  const target = String(url || '').trim();
+  if (!target) return { error: true, message: 'Missing url' };
+  const res = await api(`/api/embed?url=${encodeURIComponent(target)}`);
+  return res.json();
 }
 
 export async function fetchVersion() {
@@ -17,18 +37,28 @@ export async function runUpdate() {
   return res.json();
 }
 
-export async function fetchState() {
-  const res = await api('/api/state');
+function withSessionQuery(path, sessionId) {
+  const params = new URLSearchParams({ sessionId });
+  return `${path}?${params.toString()}`;
+}
+
+export async function fetchRuntimeSessions() {
+  const res = await api('/api/runtime/sessions');
   return res.json();
 }
 
-export async function fetchStartupEvents() {
-  const res = await api('/api/startup-events');
+export async function fetchState(sessionId) {
+  const res = await api(withSessionQuery('/api/state', sessionId));
   return res.json();
 }
 
-export async function fetchHistory() {
-  const res = await api('/api/history');
+export async function fetchStartupEvents(sessionId) {
+  const res = await api(withSessionQuery('/api/startup-events', sessionId));
+  return res.json();
+}
+
+export async function fetchHistory(sessionId) {
+  const res = await api(withSessionQuery('/api/history', sessionId));
   return res.json();
 }
 
@@ -40,107 +70,151 @@ export async function fetchSessions(limit = 200) {
   return res.json();
 }
 
-export async function fetchSessionMessages() {
-  const res = await api('/api/session/messages');
+export async function fetchSessionMessages(sessionId) {
+  const res = await api(withSessionQuery('/api/session/messages', sessionId));
   return res.json();
 }
 
-export async function fetchSessionUiMessages() {
-  const res = await api('/api/session/ui-messages');
+export async function fetchSessionUiMessages(sessionId) {
+  const res = await api(withSessionQuery('/api/session/ui-messages', sessionId));
   return res.json();
 }
 
-export async function fetchSpecs() {
-  const res = await api('/api/specs');
+export async function fetchSpecs(sessionId) {
+  const res = await api(withSessionQuery('/api/specs', sessionId));
   return res.json();
 }
 
-export async function openSpecReview(path) {
+export async function openSpecReview(sessionId, path) {
   const res = await api('/api/specs/open', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ path })
+    body: JSON.stringify({ sessionId, path })
   });
   return res.json();
 }
 
-export async function submitLine(line, options = {}) {
+export async function submitLine(sessionId, line, options = {}) {
   const res = await api('/api/submit', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({
+      sessionId,
       line,
-      ...(options.readOnlyCodeWiki ? { readOnlyCodeWiki: true } : {})
+      ...(options.readOnlyCodeWiki ? { readOnlyCodeWiki: true } : {}),
+      ...(Array.isArray(options.attachmentIds) && options.attachmentIds.length
+        ? { attachmentIds: options.attachmentIds }
+        : {})
     })
   });
   return res;
 }
 
-export async function abortRequest() {
-  await api('/api/abort', { method: 'POST' });
+export async function submitMessage(sessionId, body = {}) {
+  return api('/api/chat/message', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, ...body })
+  });
 }
 
-export async function setExecutionMode(mode) {
+export async function submitChatAction(sessionId, name, payload = {}) {
+  const res = await api('/api/chat/action', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, name, payload })
+  });
+  return res.json();
+}
+
+export async function uploadAttachments(sessionId, files = []) {
+  const form = new FormData();
+  for (const file of files) {
+    form.append('files', file);
+  }
+  const res = await api(withSessionQuery('/api/attachments', sessionId), {
+    method: 'POST',
+    body: form
+  });
+  return res.json();
+}
+
+export async function abortRequest(sessionId) {
+  const res = await api('/api/abort', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId })
+  });
+  if (res.ok) return;
+
+  let message = '';
+  try {
+    const body = await res.clone().json();
+    message = String(body?.message || body?.error || '').trim();
+  } catch {
+    try {
+      message = String(await res.text()).trim();
+    } catch {}
+  }
+  throw new Error(message || `Abort request failed (${res.status})`);
+}
+
+export async function setExecutionMode(sessionId, mode) {
   const res = await api('/api/execution-mode', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ mode })
+    body: JSON.stringify({ sessionId, mode })
   });
   return res.json();
 }
 
-export async function setApprovalMode(mode) {
+export async function setApprovalMode(sessionId, mode) {
   const res = await api('/api/approval-mode', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ mode })
+    body: JSON.stringify({ sessionId, mode })
   });
   return res.json();
 }
 
-export async function updatePendingPlan(plan) {
-  const res = await api('/api/pending-plan', {
-    method: 'POST',
-    headers: JSON_HEADERS,
-    body: JSON.stringify(plan || {})
-  });
-  return res.json();
-}
-
-export async function updatePendingReflect(draft) {
+export async function updatePendingReflect(sessionId, draft) {
   const res = await api('/api/pending-reflect', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify(draft || {})
+    body: JSON.stringify({ sessionId, ...(draft || {}) })
   });
   return res.json();
 }
 
-export async function updatePendingSpec(spec) {
+export async function updatePendingSpec(sessionId, spec) {
   const res = await api('/api/pending-spec', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify(spec || {})
+    body: JSON.stringify({ sessionId, ...(spec || {}) })
   });
   return res.json();
 }
 
-export async function deletePendingSpec() {
-  const res = await api('/api/pending-spec', { method: 'DELETE' });
+export async function deletePendingSpec(sessionId) {
+  const res = await api(withSessionQuery('/api/pending-spec', sessionId), { method: 'DELETE' });
   return res.json();
 }
 
-export async function submitApproval(id, approved) {
+export async function submitApproval(sessionId, id, approved) {
   await api('/api/approval', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ id, approved })
+    body: JSON.stringify({ sessionId, id, approved })
   });
 }
 
-export async function fetchCompletions(query) {
-  const res = await api(`/api/completions?q=${encodeURIComponent(query)}`);
-  return res.json();
+export async function submitUserInput(sessionId, id, response = {}) {
+  const res = await api('/api/user-input', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, id, ...response })
+  });
+  return res.json().catch(() => ({}));
 }
 
 export async function switchSession(sessionId) {
@@ -157,8 +231,12 @@ export async function deleteSession(sessionId) {
   return res.json();
 }
 
-export async function newSession() {
-  const res = await api('/api/sessions/new', { method: 'POST' });
+export async function newSession(projectDir) {
+  const res = await api('/api/sessions/new', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ projectDir })
+  });
   return res.json();
 }
 
@@ -172,13 +250,45 @@ export async function fetchConfigStatus() {
   return res.json();
 }
 
+export async function fetchPlaywrightStatus() {
+  const res = await api('/api/playwright/status');
+  return res.json();
+}
+
 export async function setConfig(key, value) {
   const res = await api('/api/config/set', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ key, value })
   });
-  return res.json().catch(() => ({}));
+  const result = await res.json().catch(() => ({}));
+  if (result?.error) {
+    throw new Error(result.message || `Failed to save config: ${key}`);
+  }
+  return result;
+}
+
+export async function fetchWebuiActiveProjects() {
+  const res = await api('/api/webui/active-projects');
+  return res.json();
+}
+
+export async function patchWebuiActiveProject(action, projectDir) {
+  const res = await api('/api/webui/active-projects', {
+    method: 'PATCH',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ action, projectDir })
+  });
+  return res.json();
+}
+
+export async function replaceWebuiActiveProjects(active) {
+  const res = await api('/api/webui/active-projects', {
+    method: 'PATCH',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ active })
+  });
+  return res.json();
 }
 
 export async function fetchProject() {
@@ -186,31 +296,33 @@ export async function fetchProject() {
   return res.json();
 }
 
-export async function fetchGitInfo() {
-  const res = await api('/api/git');
+export async function fetchGitInfo(sessionId) {
+  const path = sessionId ? withSessionQuery('/api/git', sessionId) : '/api/git';
+  const res = await api(path);
   return res.json();
 }
 
-export async function fetchGitDiff() {
-  const res = await api('/api/git-diff');
+export async function fetchGitDiff(sessionId) {
+  const path = sessionId ? withSessionQuery('/api/git-diff', sessionId) : '/api/git-diff';
+  const res = await api(path);
   return res.json();
 }
 
-export async function undoSessionChange(id) {
-  const res = await api(`/api/session-changes/${encodeURIComponent(id)}/undo`, { method: 'POST' });
+export async function undoSessionChange(sessionId, id) {
+  const res = await api(withSessionQuery(`/api/session-changes/${encodeURIComponent(id)}/undo`, sessionId), { method: 'POST' });
   return res.json();
 }
 
-export async function fetchSessionChanges() {
-  const res = await api('/api/session-changes');
+export async function fetchSessionChanges(sessionId) {
+  const res = await api(withSessionQuery('/api/session-changes', sessionId));
   return res.json();
 }
 
-export async function undoSessionChanges(ids) {
+export async function undoSessionChanges(sessionId, ids) {
   const res = await api('/api/session-changes/undo', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ ids })
+    body: JSON.stringify({ sessionId, ids })
   });
   return res.json();
 }
@@ -224,11 +336,11 @@ export async function fetchGitBatch(dirs) {
   return res.json();
 }
 
-export async function openProject(path) {
+export async function openProject(path, { newSession = false } = {}) {
   const res = await api('/api/project/open', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ path })
+    body: JSON.stringify({ path, newSession: Boolean(newSession) })
   });
   return res.json();
 }
@@ -267,25 +379,34 @@ export async function fetchSkills(projectDirs = []) {
 
 export async function fetchSkillContent(name, projectDir) {
   const res = await api(withProjectDirQuery(`/api/skills/${encodeURIComponent(name)}/content`, projectDir));
-  return res.json();
+  return readJsonResponse(res);
 }
 
-export async function createSkill({ name, description, content, scope, projectDir }) {
+export async function createSkill({ name, description, content, scope, projectDir, contexts }) {
   const res = await api('/api/skills/create', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ name, description, content, scope, projectDir })
+    body: JSON.stringify({ name, description, content, scope, projectDir, contexts })
   });
-  return res.json();
+  return readJsonResponse(res);
 }
 
-export async function installSkill({ source, scope, projectDir }) {
+export async function installSkill({ source, scope, projectDir, contexts }) {
   const res = await api('/api/skills/install', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ source, scope, projectDir })
+    body: JSON.stringify({ source, scope, projectDir, contexts })
   });
-  return res.json();
+  return readJsonResponse(res);
+}
+
+export async function updateSkillPackage({ name, projectDir }) {
+  const res = await api('/api/skills/update', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ name, projectDir })
+  });
+  return readJsonResponse(res);
 }
 
 export async function updateSkillContent(name, content, projectDir) {
@@ -306,8 +427,12 @@ export async function updateSkillMetadata(name, metadata, projectDir) {
   return res.json();
 }
 
-export async function deleteSkill(name, projectDir) {
-  const res = await api(withProjectDirQuery(`/api/skills/${encodeURIComponent(name)}`, projectDir), {
+export async function deleteSkill(name, projectDir, projectDirs = []) {
+  const params = new URLSearchParams();
+  if (projectDir) params.set('projectDir', projectDir);
+  if (projectDirs.length > 0) params.set('projects', JSON.stringify(projectDirs));
+  const query = params.toString();
+  const res = await api(`/api/skills/${encodeURIComponent(name)}${query ? `?${query}` : ''}`, {
     method: 'DELETE'
   });
   return res.json();
@@ -336,6 +461,32 @@ export async function forgetMemory(scope, id, projectDir) {
   if (projectDir) params.set('projectDir', projectDir);
   const res = await api(`/api/memory/${encodeURIComponent(id)}?${params.toString()}`, {
     method: 'DELETE'
+  });
+  return res.json();
+}
+
+export async function fetchInbox({ scope = 'all', query = '', projectDirs = [] } = {}) {
+  const params = new URLSearchParams();
+  if (scope && scope !== 'all') params.set('scope', scope);
+  if (query.trim()) params.set('q', query.trim());
+  appendProjectDirs(params, projectDirs);
+  const queryString = params.toString();
+  const res = await api(`/api/memory/inbox${queryString ? `?${queryString}` : ''}`);
+  return res.json();
+}
+
+export async function discardInboxEntry(id) {
+  const res = await api(`/api/memory/inbox/${encodeURIComponent(id)}`, {
+    method: 'DELETE'
+  });
+  return res.json();
+}
+
+export async function runInboxDream(scope = 'all') {
+  const res = await api('/api/memory/inbox/dream', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ scope: scope === 'all' ? null : scope })
   });
   return res.json();
 }

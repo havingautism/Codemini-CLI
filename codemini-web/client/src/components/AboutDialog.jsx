@@ -6,32 +6,32 @@ import {
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import {
-  BrainCircuit,
-  CheckCircle2,
-  Settings2,
+  Circuitry,
+  CheckCircle,
+  FlowArrow,
+  GearSix,
   Terminal,
-  Workflow,
-} from "lucide-react";
+} from "@phosphor-icons/react";
 import { t } from "../../i18n/index.js";
 
 const FEATURES = [
   {
-    icon: Workflow,
+    icon: FlowArrow,
     title: "aboutFeatureRuntime",
     text: "aboutFeatureRuntimeDesc",
   },
   {
-    icon: CheckCircle2,
+    icon: CheckCircle,
     title: "aboutFeatureApprovals",
     text: "aboutFeatureApprovalsDesc",
   },
   {
-    icon: BrainCircuit,
+    icon: Circuitry,
     title: "aboutFeatureMemory",
     text: "aboutFeatureMemoryDesc",
   },
   {
-    icon: Settings2,
+    icon: GearSix,
     title: "aboutFeatureConfig",
     text: "aboutFeatureConfigDesc",
   },
@@ -45,7 +45,7 @@ export function AboutDialog({ open, onOpenChange, version }) {
           <DialogTitle className="sr-only">{t("aboutTitle")}</DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-5">
+        <div className="flex flex-col gap-5">
           <div className="flex items-start gap-4">
             <img
               src="/logos/codemini_logo.png"

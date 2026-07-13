@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getSessionsDir } from './paths.js';
 import { normalizePlanState } from './plan-state.js';
+import { normalizeSpecState } from './spec-state.js';
 import { normalizeTodos } from './todo-state.js';
 
 const ALLOWED_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
@@ -10,6 +11,17 @@ const SESSION_JSONL_EXT = '.jsonl';
 const SESSION_INDEX_FILE = 'index.json';
 const SESSION_INDEX_VERSION = 1;
 const DEFAULT_SESSION_TITLE = '新会话';
+const SESSION_INDEX_WRITE_RETRY_MS = [25, 75, 150];
+let sessionIndexWriteChain = Promise.resolve();
+
+function isRetryableWindowsRenameError(error) {
+  const code = String(error?.code || '').toUpperCase();
+  return code === 'EPERM' || code === 'EBUSY' || code === 'EACCES';
+}
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function createSessionId() {
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
@@ -99,11 +111,53 @@ function stripMarkdown(value) {
     .trim();
 }
 
+export function resolveTitleUserText(source = {}) {
+  const message = source?.role ? source : null;
+  const content = String(message?.content ?? source?.content ?? source?.text ?? '').trim();
+  const modelContent = typeof (message?.model_content ?? source?.model_content ?? source?.modelText) === 'string'
+    ? (message?.model_content ?? source?.model_content ?? source?.modelText).trim()
+    : '';
+  const skillTransport = content.match(/^skill:\[([^\]]+)\]$/i);
+  const transportSkillNames = skillTransport?.[1]
+    ?.split(',')
+    .map((name) => name.trim())
+    .filter(Boolean) || [];
+
+  if (modelContent) {
+    if (/^\[Explicit skill composition\]\n\n/.test(modelContent)) {
+      const userTask = modelContent.match(/(?:^|\n)\[User task\]\n([\s\S]+)$/);
+      const task = userTask?.[1]?.trim() || '';
+      const generatedTask =
+        'Begin the selected skill workflow. If required information is missing, ask the user for it.';
+      if (task && task !== generatedTask) return task;
+      const composedSkillNames = [...modelContent.matchAll(/\[Executing skill: \/([^\]\s]+)\]/g)]
+        .map((match) => match[1])
+        .filter(Boolean);
+      const names = composedSkillNames.length ? composedSkillNames : transportSkillNames;
+      if (names.length) return names.join(' + ');
+    }
+
+    const isSkillPrompt = /^\[Executing skill: \/[^\]\s]+\]\n\n/.test(modelContent);
+    if (isSkillPrompt) {
+      const currentQuestion = modelContent.match(/\nCurrent question:\n([\s\S]+)$/);
+      if (currentQuestion?.[1]?.trim()) return currentQuestion[1].trim();
+      const userTask = modelContent.match(/(?:^|\n)\[User task\]\n([\s\S]+?)(?:\n\n\[|$)/);
+      if (userTask?.[1]?.trim()) return userTask[1].trim();
+    }
+  }
+
+  const slashMatch = content.match(/^\/([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\s+([\s\S]+))?$/);
+  if (slashMatch?.[2]?.trim()) return slashMatch[2].trim();
+  if (transportSkillNames.length) return transportSkillNames.join(' + ');
+
+  return content;
+}
+
 export function deriveSessionTitle(messages = []) {
   const firstUser = Array.isArray(messages)
     ? messages.find((msg) => msg?.role === 'user' && normalizeWhitespace(msg?.content))
     : null;
-  const text = stripMarkdown(firstUser?.content || '');
+  const text = stripMarkdown(resolveTitleUserText(firstUser || {}));
   if (!text) return DEFAULT_SESSION_TITLE;
   return text.length > 48 ? `${text.slice(0, 45).trimEnd()}...` : text;
 }
@@ -123,6 +177,12 @@ function sanitizeMessage(msg) {
   if (msg?.model_content_scope === 'current_turn') out.model_content_scope = 'current_turn';
   if (msg?.model_visible === false) out.model_visible = false;
   if (msg?.local_only === true) out.local_only = true;
+  if (typeof msg?.response_status === 'string' && msg.response_status.trim()) {
+    out.response_status = msg.response_status.trim();
+  }
+  if (typeof msg?.retry_prompt === 'string' && msg.retry_prompt.trim()) {
+    out.retry_prompt = msg.retry_prompt;
+  }
   if (msg?.tool_call_id) out.tool_call_id = String(msg.tool_call_id);
   if (Number.isFinite(Number(msg?.tool_duration_ms))) out.tool_duration_ms = Number(msg.tool_duration_ms);
   if (typeof msg?.tool_summary === 'string' && msg.tool_summary.trim()) out.tool_summary = msg.tool_summary.trim();
@@ -167,6 +227,13 @@ function sanitizeMessage(msg) {
   const usage = sanitizeUsage(msg?.usage);
   if (usage) out.usage = usage;
 
+  if (typeof msg?.plan_goal === 'string' && msg.plan_goal.trim()) {
+    out.plan_goal = msg.plan_goal.trim();
+  }
+  if (typeof msg?.plan_file === 'string' && msg.plan_file.trim()) {
+    out.plan_file = msg.plan_file.trim();
+  }
+
   if (Array.isArray(msg?.plan_transcript)) {
     out.plan_transcript = msg.plan_transcript
       .filter((entry) => entry && typeof entry === 'object')
@@ -208,8 +275,15 @@ function sanitizeSession(session, fallbackId = '') {
   }
   if (session?.model) out.model = String(session.model);
   if (session?.mode) out.mode = String(session.mode);
-  const normalizedPlan = normalizePlanState(session?.planState);
+  const legacySpecState = session?.planState?.status === 'pending_spec_approval'
+    ? normalizeSpecState(session.planState)
+    : null;
+  const normalizedPlan = session?.planState?.status === 'pending_spec_approval'
+    ? null
+    : normalizePlanState(session?.planState);
   if (normalizedPlan) out.planState = normalizedPlan;
+  const normalizedSpec = normalizeSpecState(session?.specState) || legacySpecState;
+  if (normalizedSpec) out.specState = normalizedSpec;
 
   const todos = normalizeTodos(session?.todos);
   if (todos.length > 0) out.todos = todos;
@@ -324,18 +398,40 @@ async function readSessionIndex() {
 }
 
 async function writeSessionIndex(index) {
-  const dir = getSessionsDir();
-  await fs.mkdir(dir, { recursive: true });
-  const filePath = sessionIndexPath();
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  const payload = {
-    version: SESSION_INDEX_VERSION,
-    updatedAt: new Date().toISOString(),
-    files: Array.isArray(index?.files) ? index.files : [],
-    sessions: Array.isArray(index?.sessions) ? index.sessions : []
-  };
-  await fs.writeFile(tempPath, `${JSON.stringify(payload)}\n`, 'utf8');
-  await fs.rename(tempPath, filePath);
+  sessionIndexWriteChain = sessionIndexWriteChain.then(async () => {
+    const dir = getSessionsDir();
+    await fs.mkdir(dir, { recursive: true });
+    const filePath = sessionIndexPath();
+    const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    const payload = {
+      version: SESSION_INDEX_VERSION,
+      updatedAt: new Date().toISOString(),
+      files: Array.isArray(index?.files) ? index.files : [],
+      sessions: Array.isArray(index?.sessions) ? index.sessions : []
+    };
+    const content = `${JSON.stringify(payload)}\n`;
+    await fs.writeFile(tempPath, content, 'utf8');
+    let lastError = null;
+    for (let i = 0; i <= SESSION_INDEX_WRITE_RETRY_MS.length; i += 1) {
+      try {
+        await fs.rename(tempPath, filePath);
+        return;
+      } catch (error) {
+        lastError = error;
+        if (!isRetryableWindowsRenameError(error)) break;
+        if (i >= SESSION_INDEX_WRITE_RETRY_MS.length) break;
+        await sleep(SESSION_INDEX_WRITE_RETRY_MS[i]);
+      }
+    }
+    if (isRetryableWindowsRenameError(lastError)) {
+      await fs.writeFile(filePath, content, 'utf8');
+      await fs.unlink(tempPath).catch(() => {});
+      return;
+    }
+    await fs.unlink(tempPath).catch(() => {});
+    throw lastError;
+  });
+  await sessionIndexWriteChain;
 }
 
 async function removeSessionIndexEntry(sessionId, removedFileNames = []) {
@@ -476,12 +572,18 @@ export async function createSession(projectDir = process.cwd()) {
   const dir = getSessionsDir();
   await fs.mkdir(dir, { recursive: true });
   const filePath = sessionPathById(sessionId, SESSION_JSONL_EXT);
+  let resolvedProjectDir = String(projectDir || process.cwd()).trim() || process.cwd();
+  try {
+    resolvedProjectDir = path.resolve(resolvedProjectDir);
+  } catch {
+    // Keep the trimmed string if resolve fails.
+  }
   const payload = {
     id: sessionId,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     title: DEFAULT_SESSION_TITLE,
-    projectDir: String(projectDir || process.cwd()),
+    projectDir: resolvedProjectDir,
     messages: []
   };
   await fs.writeFile(filePath, `${JSON.stringify(payload)}\n`, 'utf8');

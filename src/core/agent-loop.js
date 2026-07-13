@@ -3,10 +3,14 @@ import { trimInline as _trimInline, normalizePath } from './string-utils.js';
 import { captureToInbox, listInbox } from './memory-store.js';
 import { requiresApprovalEvaluation } from './command-risk.js';
 import { evaluateCommandPolicy } from './command-policy.js';
-import { getToolOutputSanitizeOptions, sanitizeTextForModel } from './tool-output.js';
+import { buildRunFailureMessage, getToolOutputSanitizeOptions, sanitizeTextForModel } from './tool-output.js';
 import { normalizeToolArguments } from './tool-args.js';
 import { storeResultIfNeeded, summarizeToolResult } from './tool-result-store.js';
+import { applyAggressiveToolPruneBeta } from './context-compact.js';
 import { markRunCommandSafeModeApproved } from './tools.js';
+import { formatToolDisplayName } from './tool-display.js';
+import { MEMORY_ALWAYS_ALLOW_TOOLS } from './constants.js';
+import { toolRequiresUserApproval } from './approval-policy.js';
 
 /**
  * 安全解析 JSON 字符串。
@@ -58,6 +62,38 @@ function buildDeleteCancellationResult(args) {
     deleted: false,
     cancelled: true,
     reason: 'User denied deletion approval'
+  };
+}
+
+function buildApprovalBlockedResult(toolName, args = {}) {
+  if (toolName === 'delete') {
+    return buildDeleteCancellationResult(args);
+  }
+  if (toolName === 'run') {
+    const command = String(args?.command || args?.cmd || '').trim();
+    return {
+      blocked: true,
+      cancelled: true,
+      reason: 'User declined this run command.',
+      ...(command ? { command } : {}),
+      guidance:
+        'Do not retry this command or similar test/build/dev-server verification commands unless the user explicitly asks. If code edits are already complete, treat the implementation task as done: summarize the changes, set Verified to none or deferred, and hand off verification to the user or a later tester step instead of looping on run.'
+    };
+  }
+  return {
+    blocked: true,
+    reason: 'Tool call requires approval in daily mode'
+  };
+}
+
+function buildInvalidToolArgumentsResult(toolName, args = {}) {
+  const parseError = String(args?._parseError || '').trim();
+  return {
+    error: `Invalid JSON arguments for ${toolName}`,
+    reason: parseError
+      ? `Tool arguments could not be parsed as JSON: ${parseError}`
+      : 'Tool arguments could not be parsed as JSON',
+    raw: String(args?._raw || '')
   };
 }
 
@@ -162,21 +198,22 @@ function compactToolResult(result, toolName, args, maxChars = 12000) {
   return clipToolResult(obj, Math.min(maxChars, 4000));
 }
 
-// ─── P1a: Read-only tool classification ──────────────────────────────
+// ─── P1a: Parallel-safe tool classification ─────────────────────────
 
-const READ_ONLY_TOOLS = new Set([
-  'read', 'grep', 'glob', 'list',
+const PARALLEL_SAFE_TOOLS = new Set([
+  'read', 'search_code', 'grep', 'ast_grep', 'glob', 'list',
   'ast_query', 'read_ast_node',
   'web_fetch', 'web_search',
   'list_background_tasks', 'get_background_task',
   'read_plan',
+  'query_project_index', 'tool_search',
   'skill'
 ]);
 
 // ─── Auto-capture tool errors to dream loop inbox ────────────────────
 
 const DREAM_AUTO_CAPTURE_TOOLS = new Set([
-  'edit', 'create', 'run', 'delete'
+  'edit', 'create', 'write', 'apply_patch', 'run', 'delete'
 ]);
 
 const DREAM_AUTO_CAPTURE_COOLDOWN_MS = 60_000;
@@ -218,12 +255,33 @@ async function captureToolFailure(toolName, message, args, config = {}) {
     ? `Tool: ${toolName}\nError: ${message}\nArgs: ${JSON.stringify(args).slice(0, 300)}`
     : `Tool: ${toolName}\nError: ${message}`;
   await captureToInbox({
-    scope: 'repo',
-    type: 'failure',
+    scope: 'project',
+    type: 'lesson',
     summary,
     details,
     source: 'auto-capture'
   });
+}
+
+function shouldAutoCaptureRunFailure(message) {
+  const value = String(message || '').trim();
+  if (!value) return false;
+  if (/blocked by (?:safe mode|policy|dangerous command)/i.test(value)) return false;
+  const now = Date.now();
+  const lastTime = lastAutoCaptureByTool.get('run') || 0;
+  if (now - lastTime < DREAM_AUTO_CAPTURE_COOLDOWN_MS) return false;
+  lastAutoCaptureByTool.set('run', now);
+  return true;
+}
+
+function resolveRunToolFailure(toolName, toolResult) {
+  if (toolName !== 'run' || !toolResult || typeof toolResult !== 'object' || toolResult.background) {
+    return '';
+  }
+  if (typeof toolResult.error === 'string' && toolResult.error.trim()) {
+    return toolResult.error.trim();
+  }
+  return buildRunFailureMessage(toolResult);
 }
 
 async function checkAutoDreamThreshold(config) {
@@ -241,7 +299,7 @@ async function checkAutoDreamThreshold(config) {
 
 function extractFileChange(toolName, result) {
   if (!result || typeof result !== 'object') return null;
-  const FILE_TOOLS = new Set(['edit', 'create', 'delete']);
+  const FILE_TOOLS = new Set(['edit', 'create', 'write', 'apply_patch', 'delete']);
   if (!FILE_TOOLS.has(toolName)) return null;
 
   /* delete */
@@ -252,6 +310,19 @@ function extractFileChange(toolName, result) {
   /* edit / write */
   if ('path' in result && 'action' in result) {
     const action = String(result.action || '');
+    if (action === 'apply_patch' && Array.isArray(result.files)) {
+      return result.files
+        .map((filePath) => String(filePath || '').trim())
+        .filter(Boolean)
+        .map((filePath) => ({
+          path: filePath,
+          action: 'edit',
+          linesAdded: Number(result.lines_added || 0),
+          linesRemoved: Number(result.lines_removed || 0),
+          changedLine: Number(result.changed_line || 0),
+          diffPreview: String(result.diff_preview || '')
+        }));
+    }
     const isCreate = action === 'create';
     const added = Number(result.lines_added || 0);
     const removed = Number(result.lines_removed || 0);
@@ -316,7 +387,43 @@ function normalizeFileChanges(changes) {
 
 function extractToolResultMeta(toolName, result) {
   if (!result || typeof result !== 'object') return null;
-  if (!['edit', 'create', 'delete'].includes(String(toolName || ''))) return null;
+  const name = String(toolName || '');
+
+  if (name === 'web_search' && Array.isArray(result.results) && result.results.length) {
+    const results = Array.isArray(result.results) ? result.results : [];
+    const items = results
+      .slice(0, 8)
+      .map((item) => ({
+        type: 'link',
+        url: String(item?.url || '').trim(),
+        title: String(item?.title || '').trim(),
+        description: String(item?.description || '').trim(),
+        siteName: String(item?.hostname || '').trim()
+      }))
+      .filter((item) => item.url);
+    if (!items.length) return null;
+    return {
+      embedType: 'search_results',
+      query: String(result.query || '').trim(),
+      items
+    };
+  }
+
+  if (name === 'web_fetch') {
+    const targetUrl = String(result.final_url || result.url || '').trim();
+    if (!targetUrl) return null;
+    return {
+      embedType: 'link',
+      items: [{
+        type: 'link',
+        url: targetUrl,
+        title: String(result.title || targetUrl).trim(),
+        description: String(result.description || '').trim()
+      }]
+    };
+  }
+
+  if (!['edit', 'create', 'write', 'apply_patch', 'delete'].includes(name)) return null;
   const meta = {};
   for (const key of [
     'path',
@@ -341,7 +448,9 @@ function extractToolResultMeta(toolName, result) {
 export const trimInline = _trimInline;
 
 export function shouldDenyHighRiskRunEvaluation(config = {}, evaluation = {}) {
-  return config?.policy?.allow_dangerous_commands !== true && String(evaluation?.risk || '').toLowerCase() === 'high';
+  return config?.policy?.allow_dangerous_commands !== true
+    && evaluation?.failed !== true
+    && String(evaluation?.risk || '').toLowerCase() === 'high';
 }
 
 function normalizeAssistantText(value) {
@@ -500,68 +609,10 @@ function normalizeToolCallName(name) {
   return String(name || '').trim();
 }
 
-function formatToolDisplayName(name, args) {
-  if (name === 'grep') {
-    const query = trimInline(args?.pattern || args?.query || args?.symbol || '', 96);
-    return query ? `grep("${query}")` : 'grep';
-  }
-  if (name === 'glob') {
-    const pattern = trimInline(args?.pattern || '', 96);
-    return pattern ? `glob("${pattern}")` : 'glob';
-  }
-  if (name === 'list') {
-    const target = trimInline(args?.path || '.', 96) || '.';
-    return `list(${target})`;
-  }
-  if (name === 'read' || name === 'create') {
-    const target = trimInline(args?.path || '.', 96) || '.';
-    if (name === 'read') {
-      const start = Number(args?.start_line);
-      const end = Number(args?.end_line);
-      const hasRange = Number.isFinite(start) && start > 0;
-      const suffix = hasRange ? `:${start}-${Number.isFinite(end) && end >= start ? end : start}` : '';
-      return `read(${target}${suffix})`;
-    }
-    return `create(${target})`;
-  }
-  if (name === 'run') {
-    const command = trimInline(args?.command || '', 96);
-    return command ? `run(${command})` : name;
-  }
-  if (name === 'web_fetch') {
-    const url = trimInline(args?.url || args?.href || '', 96);
-    return url ? `web_fetch(${url})` : name;
-  }
-  if (name === 'web_search') {
-    const query = trimInline(args?.query || args?.q || '', 96);
-    return query ? `web_search(${query})` : name;
-  }
-  if (name === 'skill') {
-    const target = trimInline(args?.name || args?.skill || args?.query || '', 96);
-    return target ? `skill(${target.replace(/^\/+/, '')})` : name;
-  }
-  if (name === 'edit') {
-    const target = trimInline(args?.path || args?.file || '.', 96) || '.';
-    return `edit(${target})`;
-  }
-  if (name === 'delete') {
-    const target = trimInline(args?.path || args?.target || '.', 96) || '.';
-    return `delete(${target})`;
-  }
-  if (name === 'update_todos') {
-    return 'update_todos';
-  }
-  if (name === 'read_plan' || name === 'update_plan') {
-    return name;
-  }
-  if (name === 'list_background_tasks') {
-    return name;
-  }
-  if (name === 'get_background_task' || name === 'stop_background_task') {
-    const taskId = trimInline(args?.task_id || args?.taskId || '', 96);
-    return taskId ? `${name}(${taskId})` : name;
-  }
-  return name;
+const FULL_CONTEXT_TOOL_RESULTS = new Set(['skill', 'update_todos', 'web_search']);
+
+function shouldPersistLargeToolResult(toolName) {
+  return !FULL_CONTEXT_TOOL_RESULTS.has(normalizeToolCallName(toolName));
 }
 
 // ─── Format a single tool result using per-tool formatter or fallback ──
@@ -619,14 +670,16 @@ export async function runAgentLoop({
   let lastAssistantText = '';
   let pendingSummaryNudges = 0;
   const analysisGuard = createAnalysisGuardState(userPrompt);
-  const alwaysAllowSet = new Set((Array.isArray(alwaysAllowTools) ? alwaysAllowTools : []).map((t) => String(t)));
+  const alwaysAllowSet = new Set([
+    ...MEMORY_ALWAYS_ALLOW_TOOLS,
+    ...(Array.isArray(alwaysAllowTools) ? alwaysAllowTools : []).map((t) => String(t))
+  ]);
   let lastAutoDreamCheckStep = 0;
 
   // Mutable tool list — grows as tool_search loads deferred tools
   const activeTools = [...toolDefinitions];
 
   async function maybeRunAutoDream(stepNumber = 0, { force = false } = {}) {
-    if (executionMode === 'plan') return;
     const interval = Math.max(1, Number(config?.memory?.auto_dream_check_interval_steps || 20));
     const normalizedStep = Math.max(1, Number(stepNumber || 1));
     if (!force && lastAutoDreamCheckStep > 0 && normalizedStep - lastAutoDreamCheckStep < interval) return;
@@ -663,6 +716,16 @@ export async function runAgentLoop({
     }
     if (onEvent) onEvent({ type: 'step:start', step });
     await maybeRunAutoDream(step);
+    const pruneResult = applyAggressiveToolPruneBeta(messages, config);
+    if (pruneResult.changed) {
+      messages.splice(0, messages.length, ...pruneResult.messages);
+      if (onEvent) {
+        onEvent({
+          type: 'compact:aggressive-prune',
+          tokensSaved: pruneResult.tokensSaved
+        });
+      }
+    }
     const completion = await requestCompletion({
       model,
       messages,
@@ -740,29 +803,14 @@ export async function runAgentLoop({
       ? String(approvalMode || '').toLowerCase()
       : 'review';
 
-    if (executionMode === 'plan') {
-      const plannedLines = callsToPlanSummary(toolCalls);
-      finalText = [
-        assistantText || '',
-        '',
-        `[plan mode] ${toolCalls.length} tool call(s) were planned but not executed.`,
-        plannedLines.length > 0 ? 'Planned exploration:' : '',
-        ...plannedLines
-      ]
-        .filter(Boolean)
-        .join('\n');
-      await maybeRunAutoDream(step, { force: true });
-      return { text: finalText.trim(), messages, steps: step };
-    }
-
-    // ─── P1a: Partition into read-only (parallel) and write (serial) ──
+    // ─── P1a: Partition into parallel-safe and serial tool calls ─────
 
     const callsWithMeta = toolCalls.map((call) => {
       const toolName = normalizeToolCallName(call.name);
       const args = normalizeToolArguments(toolName, safeJsonParse(call.arguments), call.arguments);
       const displayName = formatToolDisplayName(toolName, args);
-      const isReadOnly = READ_ONLY_TOOLS.has(toolName);
-      return { call, args, toolName, displayName, isReadOnly };
+      const isParallelSafe = PARALLEL_SAFE_TOOLS.has(toolName);
+      return { call, args, toolName, displayName, isParallelSafe };
     });
 
     // Approval checks first — must be done synchronously before any execution
@@ -771,6 +819,14 @@ export async function runAgentLoop({
       let approved = true;
       let approvalArgs = args;
       let preflightErrorContent = '';
+      if (args?._invalid_json && ['create', 'write', 'edit', 'apply_patch', 'delete'].includes(toolName)) {
+        approvalResults.set(call.id, {
+          approved: false,
+          args: approvalArgs,
+          errorContent: clipToolResult(buildInvalidToolArgumentsResult(toolName, args), toolResultMaxChars)
+        });
+        continue;
+      }
       const runPolicyCheck = toolName === 'run'
         ? evaluateCommandPolicy(args?.command || '', config, config?.workspaceRoot || process.cwd())
         : { allowed: true };
@@ -781,12 +837,13 @@ export async function runAgentLoop({
       const isSafeModeRun = toolName === 'run'
         && config?.policy?.safe_mode !== false
         && (isSafeModePolicyBlocked || requiresApprovalEvaluation(args?.command || '', config?.shell?.default));
-      const isFileWriteTool = toolName === 'edit' || toolName === 'create' || toolName === 'delete';
-      const needsApproval = normalizedApprovalMode === 'full_access'
-        ? false
-        : normalizedApprovalMode === 'auto'
-          ? ((!projectIsGit && isFileWriteTool) || isSafeModeRun)
-          : (toolName === 'delete' || isSafeModeRun || !alwaysAllowSet.has(toolName));
+      const needsApproval = toolRequiresUserApproval({
+        approvalMode: normalizedApprovalMode,
+        projectIsGit,
+        toolName,
+        isSafeModeRun,
+        alwaysAllowTools: [...alwaysAllowSet]
+      });
       if (needsApproval) {
         approved = false;
         const handler = toolHandlers[toolName];
@@ -813,7 +870,9 @@ export async function runAgentLoop({
             });
             approvalArgs = {
               ...args,
-              _risk: isSafeModePolicyBlocked && evaluation.risk === 'low' ? 'medium' : evaluation.risk,
+              _risk: evaluation.failed
+                ? ''
+                : (isSafeModePolicyBlocked && evaluation.risk === 'low' ? 'medium' : evaluation.risk),
               _evaluation: evaluation,
               _policyBlock: isSafeModePolicyBlocked
                 ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
@@ -839,8 +898,14 @@ export async function runAgentLoop({
           } catch (_) {
             approvalArgs = {
               ...args,
-              _risk: isSafeModePolicyBlocked ? 'medium' : 'high',
-              _evaluation: null,
+              _risk: '',
+              _evaluation: {
+                risk: 'high',
+                description: '',
+                sideEffects: '',
+                recommendation: 'deny',
+                failed: true
+              },
               _policyBlock: isSafeModePolicyBlocked
                 ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
                 : null
@@ -883,7 +948,7 @@ export async function runAgentLoop({
     const resultEntries = new Map(); // call.id -> { content, error? }
 
     // Helper to execute a single tool call
-    async function executeOne({ call, args, toolName, displayName, isReadOnly }) {
+    async function executeOne({ call, args, toolName, displayName, isParallelSafe }) {
       const startedAt = Date.now();
       const approvalState = approvalResults.get(call.id) || { approved: true, args };
       const effectiveArgs = approvalState.args || args;
@@ -891,7 +956,7 @@ export async function runAgentLoop({
       if (approvalState.errorContent) {
         const summary = trimInline(approvalState.errorContent, 120);
         if (onEvent) {
-          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary });
+          onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary });
         }
         return {
           callId: call.id,
@@ -904,28 +969,25 @@ export async function runAgentLoop({
       }
 
       if (!approvalState.approved) {
-        if (onEvent) onEvent({ type: 'tool:blocked', name: displayName, id: call.id, arguments: effectiveArgs });
-        const blockedPayload =
-          toolName === 'delete'
-            ? buildDeleteCancellationResult(effectiveArgs)
-            : { blocked: true, reason: 'Tool call requires approval in normal mode' };
+        if (onEvent) onEvent({ type: 'tool:blocked', name: toolName, displayName, id: call.id, arguments: effectiveArgs });
+        const blockedPayload = buildApprovalBlockedResult(toolName, effectiveArgs);
         return {
           callId: call.id,
           content: JSON.stringify(blockedPayload),
           blocked: true,
-          summary: 'Tool call requires approval',
+          summary: blockedPayload.reason || 'Tool call requires approval',
           status: 'blocked'
         };
       }
 
-      if (onEvent) onEvent({ type: 'tool:start', name: displayName, id: call.id, arguments: effectiveArgs });
+      if (onEvent) onEvent({ type: 'tool:start', name: toolName, displayName, id: call.id, arguments: effectiveArgs });
       const handler = toolHandlers[toolName];
       if (!handler) {
         const available = Object.keys(toolHandlers).join(', ');
         const msg = `Unknown tool: "${toolName}". Available tools: ${available || '(none)'}`;
         const summary = trimInline(msg, 200);
         if (onEvent) {
-          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary });
+          onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary });
         }
         return {
           callId: call.id,
@@ -943,7 +1005,7 @@ export async function runAgentLoop({
         const content = clipToolResult({ error: blockedReason }, toolResultMaxChars);
         const summary = trimInline(blockedReason, 120);
         if (onEvent) {
-          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary });
+          onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary });
         }
         return {
           callId: call.id,
@@ -956,7 +1018,7 @@ export async function runAgentLoop({
       }
 
       let captureScope = null;
-      if (!isReadOnly && changeTracker && typeof changeTracker.begin === 'function') {
+      if (!isParallelSafe && changeTracker && typeof changeTracker.begin === 'function') {
         try {
           captureScope = await changeTracker.begin({ toolName, args: effectiveArgs });
         } catch {}
@@ -964,13 +1026,13 @@ export async function runAgentLoop({
 
       let toolResult;
       try {
-        toolResult = await handler(effectiveArgs);
+        toolResult = await handler(effectiveArgs, { rawArguments: call.arguments });
       } catch (error) {
         const durationMs = Date.now() - startedAt;
         const message = error instanceof Error ? error.message : String(error);
         const summary = trimInline(message, 120);
         if (onEvent) {
-          onEvent({ type: 'tool:error', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary });
+          onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs, summary });
         }
         if (isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, message)) {
           await captureToolFailure(toolName, message, effectiveArgs, config).catch(() => {});
@@ -986,13 +1048,48 @@ export async function runAgentLoop({
       }
 
       const durationMs = Date.now() - startedAt;
+      const runFailureMessage = resolveRunToolFailure(toolName, toolResult);
+      if (runFailureMessage) {
+        const summary = trimInline(runFailureMessage, 120);
+        if (onEvent) {
+          onEvent({
+            type: 'tool:error',
+            name: toolName, displayName,
+            id: call.id,
+            arguments: effectiveArgs,
+            durationMs,
+            summary
+          });
+        }
+        if (isAutoCaptureEnabled(config) && shouldAutoCaptureRunFailure(runFailureMessage)) {
+          await captureToolFailure(toolName, runFailureMessage, effectiveArgs, config).catch(() => {});
+        }
+        let formatted = formatToolResult(toolResult, toolName, effectiveArgs, toolFormatters, toolResultMaxChars);
+        if (!String(formatted || '').trim() || formatted === emptyToolResultMarker(toolName)) {
+          formatted = runFailureMessage;
+        } else if (!/^error:/im.test(formatted)) {
+          formatted = `error: ${runFailureMessage}\n\n${formatted}`;
+        }
+        if (shouldPersistLargeToolResult(toolName)) {
+          formatted = await storeResultIfNeeded(call.id, formatted, toolResult);
+        }
+        return {
+          callId: call.id,
+          content: formatted,
+          error: true,
+          durationMs,
+          summary,
+          status: 'error'
+        };
+      }
+
       const summary = summarizeToolResult(toolResult);
       const resultMeta = extractToolResultMeta(toolName, toolResult);
       /* 提取文件改动统计 */
       const declaredFileChange = extractFileChange(toolName, toolResult);
       let fileChanges = [];
       let fileChange = null;
-      if (!isReadOnly && changeTracker && typeof changeTracker.capture === 'function' && captureScope) {
+      if (!isParallelSafe && changeTracker && typeof changeTracker.capture === 'function' && captureScope) {
         try {
           const captured = await changeTracker.capture(captureScope, {
             toolName,
@@ -1019,24 +1116,13 @@ export async function runAgentLoop({
         }
       }
       if (onEvent) {
-        onEvent({ type: 'tool:end', name: displayName, id: call.id, arguments: effectiveArgs, durationMs, summary, fileChange, fileChanges, resultMeta });
+        onEvent({ type: 'tool:end', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs, summary, fileChange, fileChanges, resultMeta });
       }
 
-      // Auto-capture non-throwing tool failures (e.g. shell non-zero exit)
-      if (toolResult && typeof toolResult === 'object') {
-        const exitCode = toolResult.code ?? toolResult.exitCode;
-        const stderr = String(toolResult.stderr || '');
-        if (typeof exitCode === 'number' && exitCode !== 0 && stderr) {
-          const failMsg = `exit ${exitCode}: ${stderr.slice(0, 120)}`;
-          if (isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, failMsg)) {
-            await captureToolFailure(toolName, failMsg, effectiveArgs, config).catch(() => {});
-          }
-        }
-        if (toolResult.error) {
-          const errMsg = String(toolResult.error).slice(0, 120);
-          if (isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, errMsg)) {
-            await captureToolFailure(toolName, errMsg, effectiveArgs, config).catch(() => {});
-          }
+      if (toolResult && typeof toolResult === 'object' && toolResult.error) {
+        const errMsg = String(toolResult.error).slice(0, 120);
+        if (isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, errMsg)) {
+          await captureToolFailure(toolName, errMsg, effectiveArgs, config).catch(() => {});
         }
       }
 
@@ -1055,31 +1141,51 @@ export async function runAgentLoop({
       }
 
       // P0: Persist to disk if still large
-      formatted = await storeResultIfNeeded(call.id, formatted, toolResult);
+      if (shouldPersistLargeToolResult(toolName)) {
+        formatted = await storeResultIfNeeded(call.id, formatted, toolResult);
+      }
 
-      return { callId: call.id, content: formatted, durationMs, summary, status: 'done', fileChange, fileChanges, resultMeta };
+      return {
+        callId: call.id,
+        content: formatted,
+        durationMs,
+        summary,
+        status: 'done',
+        fileChange,
+        fileChanges,
+        resultMeta,
+        toolWireName: toolResult?.toolWireName,
+        workflowComplete: Boolean(toolResult?.workflowComplete),
+        workflowMessage: String(toolResult?.message || toolResult?.summary || '').trim()
+      };
     }
 
-    // Separate read-only and write calls, preserving order
-    const readOnlyCalls = callsWithMeta.filter((c) => c.isReadOnly && approvalResults.get(c.call.id)?.approved);
-    const writeCalls = callsWithMeta.filter((c) => !c.isReadOnly || !approvalResults.get(c.call.id)?.approved);
-
-    // Execute read-only calls in parallel
-    if (readOnlyCalls.length > 0) {
-      const readOnlyResults = await Promise.all(readOnlyCalls.map((c) => executeOne(c)));
-      for (const r of readOnlyResults) {
+    // Execute consecutive read-only batches in parallel, but never move them
+    // across state-changing or approval-blocked calls.
+    let parallelBatch = [];
+    const flushParallelBatch = async () => {
+      if (parallelBatch.length === 0) return;
+      const results = await Promise.all(parallelBatch.map((c) => executeOne(c)));
+      for (const r of results) {
         resultEntries.set(r.callId, r);
       }
-    }
+      parallelBatch = [];
+    };
 
-    // Execute write calls serially
-    for (const c of writeCalls) {
+    for (const c of callsWithMeta) {
+      const canRunInCurrentParallelBatch = c.isParallelSafe && approvalResults.get(c.call.id)?.approved;
+      if (canRunInCurrentParallelBatch) {
+        parallelBatch.push(c);
+        continue;
+      }
+      await flushParallelBatch();
       const r = await executeOne(c);
       resultEntries.set(r.callId, r);
     }
+    await flushParallelBatch();
 
     // Write results to messages in original tool call order
-    for (const { call, displayName, args } of callsWithMeta) {
+    for (const { call, toolName, displayName, args } of callsWithMeta) {
       const entry = resultEntries.get(call.id);
       if (!entry) continue;
 
@@ -1087,7 +1193,7 @@ export async function runAgentLoop({
         attachToolCallSessionMeta(assistantMessage, call.id, { summary: entry.summary || '', status: entry.status || 'blocked' });
         messages.push({ role: 'tool', tool_call_id: call.id, content: entry.content, tool_summary: entry.summary || '', tool_status: entry.status || 'blocked' });
         if (onEvent) {
-          onEvent({ type: 'tool:result', name: displayName, id: call.id, arguments: args, content: entry.content, blocked: true });
+          onEvent({ type: 'tool:result', name: toolName, displayName, id: call.id, arguments: args, content: entry.content, blocked: true });
         }
         continue;
       }
@@ -1096,7 +1202,7 @@ export async function runAgentLoop({
         attachToolCallSessionMeta(assistantMessage, call.id, { durationMs: entry.durationMs, summary: entry.summary || '', status: entry.status || 'error' });
         messages.push({ role: 'tool', tool_call_id: call.id, content: entry.content, tool_duration_ms: entry.durationMs, tool_summary: entry.summary || '', tool_status: entry.status || 'error' });
         if (onEvent) {
-          onEvent({ type: 'tool:result', name: displayName, id: call.id, arguments: args, content: entry.content, error: true });
+          onEvent({ type: 'tool:result', name: toolName, displayName, id: call.id, arguments: args, content: entry.content, error: true });
         }
         continue;
       }
@@ -1109,13 +1215,27 @@ export async function runAgentLoop({
         tool_duration_ms: entry.durationMs,
         tool_summary: entry.summary || '',
         tool_status: entry.status || 'done',
+        ...(entry.toolWireName ? { name: entry.toolWireName } : {}),
         ...(entry.resultMeta ? { tool_result_meta: entry.resultMeta } : {}),
         ...(entry.fileChange ? { tool_file_change: entry.fileChange } : {}),
         ...(Array.isArray(entry.fileChanges) && entry.fileChanges.length > 0 ? { tool_file_changes: entry.fileChanges } : {})
       });
       if (onEvent) {
-        onEvent({ type: 'tool:result', name: displayName, id: call.id, arguments: args, content: entry.content });
+        onEvent({ type: 'tool:result', name: toolName, displayName, id: call.id, arguments: args, content: entry.content });
       }
+    }
+
+    let workflowCompleteText = '';
+    for (const { call } of callsWithMeta) {
+      const entry = resultEntries.get(call.id);
+      if (entry?.workflowComplete) {
+        workflowCompleteText = entry.workflowMessage || entry.summary || 'Draft created. Waiting for approval.';
+        break;
+      }
+    }
+    if (workflowCompleteText) {
+      await maybeRunAutoDream(step, { force: true });
+      return { text: workflowCompleteText, messages, steps: step, workflowComplete: true };
     }
   }
 

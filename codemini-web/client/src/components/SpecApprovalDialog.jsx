@@ -1,14 +1,49 @@
-import { useState } from "react";
-import { Badge } from "@/components/ui/badge";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  ReviewFooter,
+  ReviewMarkdown,
+  ReviewNotice,
+  ReviewSection,
+  WorkflowReviewDialog,
+} from "@/components/WorkflowReviewDialog.jsx";
 import { t } from "../../i18n/index.js";
+import { CHAT_ACTION_NAMES, LOCAL_SPEC_REVIEW_ACTIONS } from "@/lib/chat-action-names.js";
 
-export function SpecApprovalCard({ spec, onAction, onUpdate, disabled = false }) {
+export function SpecApprovalDialog({
+  spec,
+  open = false,
+  onAction,
+  onUpdate,
+  disabled = false,
+}) {
   const [editMode, setEditMode] = useState(false);
   const [content, setContent] = useState("");
+  const [saving, setSaving] = useState(false);
+  const specSignature = spec
+    ? `${spec.goal || ""}|${spec.filePath || ""}|${spec.specText || ""}|${(spec.missingHeadings || []).join(",")}`
+    : "";
+
+  useEffect(() => {
+    if (!open) {
+      setEditMode(false);
+      setContent("");
+      setSaving(false);
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    setEditMode(false);
+    setContent("");
+  }, [open, specSignature]);
+
   if (!spec) return null;
-  const missingHeadings = Array.isArray(spec.missingHeadings) ? spec.missingHeadings : [];
+
+  const missingHeadings = Array.isArray(spec.missingHeadings)
+    ? spec.missingHeadings
+    : [];
   const incomplete = spec.complete === false || missingHeadings.length > 0;
 
   const startEdit = () => {
@@ -16,109 +51,140 @@ export function SpecApprovalCard({ spec, onAction, onUpdate, disabled = false })
     setEditMode(true);
   };
 
-  const saveEdit = async () => {
-    const next = { ...spec, specText: content };
-    if (onUpdate) await onUpdate(next);
+  const cancelEdit = () => {
     setEditMode(false);
+    setContent("");
   };
 
-  return (
-    <div className="border border-(--border-default) rounded-lg p-3 max-w-3xl mx-auto bg-(--bg-secondary) space-y-3 shadow-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="text-[13px] font-medium text-(--text-primary)">
-              {t("specReviewTitle")}
-            </span>
-            <Badge className="text-[11px] bg-(--accent-blue-bg) text-(--accent-blue)">
-              {incomplete ? t("specIncompleteStatus") : t("specReviewStatus")}
-            </Badge>
-          </div>
-          {spec.filePath && (
-            <div className="mt-1 text-[11px] font-mono text-(--text-muted) break-all">
-              {spec.filePath}
-            </div>
-          )}
-        </div>
-      </div>
+  const saveEdit = async () => {
+    const next = { ...spec, specText: content };
+    setSaving(true);
+    try {
+      if (onUpdate) await onUpdate(next);
+      setEditMode(false);
+    } finally {
+      setSaving(false);
+    }
+  };
 
-      {spec.goal && (
-        <p className="text-[13px] leading-relaxed text-(--text-secondary)">
-          {spec.goal}
-        </p>
-      )}
+  const handleOpenChange = (nextOpen) => {
+    if (nextOpen) return;
+    if (editMode) cancelEdit();
+  };
 
-      {incomplete && (
-        <div className="rounded-md border border-(--accent-orange)/35 bg-(--accent-orange-bg) px-3 py-2 text-[12px] leading-relaxed text-(--accent-orange)">
-          {t("specIncompleteMessage")}
-          {missingHeadings.length > 0 && (
-            <div className="mt-1 font-mono text-[11px]">
-              {missingHeadings.join(", ")}
-            </div>
-          )}
-        </div>
-      )}
-
-      {editMode ? (
-        <Textarea
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          className="min-h-[260px] font-mono text-[12px]"
-          autoFocus
-        />
-      ) : (
-        <pre className="max-h-72 overflow-auto rounded-md border border-(--border-default) bg-(--bg-primary) p-3 text-[12px] leading-relaxed text-(--text-secondary) whitespace-pre-wrap">
-          {spec.specText || ""}
-        </pre>
-      )}
-
-      <div className="flex items-center gap-2 pt-1">
-        <Button
-          variant="destructive"
-          size="xs"
-          disabled={disabled}
-          onClick={() => onAction("delete")}
-        >
-          {t("specDelete")}
-        </Button>
+  const footer = editMode ? (
+    <ReviewFooter
+      leading={
         <Button
           variant="outline"
-          size="xs"
-          disabled={disabled}
-          onClick={() => onAction("reject")}
+          disabled={disabled || saving}
+          onClick={cancelEdit}
         >
-          {t("specReject")}
+          {t("cancel")}
         </Button>
-        <Button
-          variant="outline"
-          size="xs"
-          disabled={disabled}
-          onClick={() => (editMode ? saveEdit() : startEdit())}
-        >
-          {editMode ? t("specSave") : t("specEdit")}
+      }
+      trailing={
+        <Button disabled={disabled || saving} onClick={saveEdit}>
+          {saving ? t("planSaving") : t("specSave")}
         </Button>
-        {!editMode && (
+      }
+    />
+  ) : (
+    <ReviewFooter
+      leading={
+        <>
+          <Button
+            variant="destructive"
+            disabled={disabled}
+            onClick={() => onAction(LOCAL_SPEC_REVIEW_ACTIONS.DELETE)}
+          >
+            {t("specDelete")}
+          </Button>
           <Button
             variant="outline"
-            size="xs"
             disabled={disabled}
-            onClick={() => onAction("save")}
+            onClick={() => onAction(CHAT_ACTION_NAMES.SPEC_REJECT)}
+          >
+            {t("specReject")}
+          </Button>
+        </>
+      }
+      trailing={
+        <>
+          <Button
+            variant="outline"
+            disabled={disabled}
+            onClick={startEdit}
+          >
+            {t("specEdit")}
+          </Button>
+          <Button
+            variant="outline"
+            disabled={disabled}
+            onClick={() => onAction(CHAT_ACTION_NAMES.SPEC_SAVE)}
           >
             {t("specSaveOnly")}
           </Button>
+          <Button
+            variant="outline"
+            disabled={disabled || incomplete}
+            onClick={() => onAction(CHAT_ACTION_NAMES.SPEC_PLAN_AND_EXECUTE)}
+          >
+            {t("specPlanExecute")}
+          </Button>
+          <Button
+            disabled={disabled || incomplete}
+            onClick={() => onAction(CHAT_ACTION_NAMES.SPEC_EXECUTE)}
+          >
+            {t("specExecuteNow")}
+          </Button>
+        </>
+      }
+    />
+  );
+
+  return (
+    <WorkflowReviewDialog
+      open={open}
+      onOpenChange={handleOpenChange}
+      title={t("specReviewTitle")}
+      description={spec.filePath || undefined}
+      badge={incomplete ? t("specIncompleteStatus") : t("specReviewStatus")}
+      badgeVariant={incomplete ? "destructive" : "secondary"}
+      footer={footer}
+    >
+      {spec.goal ? (
+        <ReviewSection label={t("planReviewGoal")}>
+          <ReviewMarkdown>{spec.goal}</ReviewMarkdown>
+        </ReviewSection>
+      ) : null}
+
+      {incomplete && (
+        <ReviewNotice variant="destructive">
+          {t("specIncompleteMessage")}
+          {missingHeadings.length > 0 && (
+            <div className="mt-1.5 font-mono text-xs opacity-90">
+              {missingHeadings.join(", ")}
+            </div>
+          )}
+        </ReviewNotice>
+      )}
+
+      <ReviewSection label={t("specDocumentBody")}>
+        {editMode ? (
+          <Textarea
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            className="min-h-[320px] font-mono text-xs"
+            autoFocus
+          />
+        ) : (
+          <ReviewMarkdown>{spec.specText || ""}</ReviewMarkdown>
         )}
-        <Button
-          size="xs"
-          variant="outline"
-          disabled={disabled || incomplete || editMode}
-          onClick={() => onAction("approve")}
-        >
-          {t("specPlanExecute")}
-        </Button>
-        <Button size="xs" disabled={disabled || incomplete || editMode} onClick={() => onAction("execute")}>
-          {t("specExecuteNow")}
-        </Button>
-      </div>
-    </div>
+      </ReviewSection>
+    </WorkflowReviewDialog>
   );
 }
+
+/** @deprecated Use SpecApprovalDialog */
+export const SpecApprovalCard = SpecApprovalDialog;

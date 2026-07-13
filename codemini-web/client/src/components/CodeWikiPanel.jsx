@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { t } from "../../i18n/index.js";
 import {
-  AlertCircle,
+  ArrowClockwise,
   BookOpenText,
+  ChatText,
+  CircleNotch,
+  DotsSixVertical,
+  DotsThree,
   FileText,
-  GripVertical,
-  Loader2,
-  MessageSquareText,
-  MoreHorizontal,
   Network,
-  RefreshCw,
-  SendHorizontal,
-  Sparkles,
-} from "lucide-react";
+  PaperPlaneRight,
+  Sparkle,
+  WarningCircle,
+} from "@phosphor-icons/react";
 import {
   deleteCodeWikiReport,
   fetchCodeWikiReportText,
@@ -26,10 +26,18 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { MessageBubble } from "@/components/MessageBubble.jsx";
 import { StreamdownRenderer } from "@/components/StreamdownRenderer.jsx";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import {
+  applyStreamEventToMessage,
+  finishStreamingTextSegments,
+  isTranscriptStreamEvent,
+} from "../../../shared/transcript-segments.js";
+
 const CODEWIKI_QA_WIDTH_KEY = "codemini:codewiki:qa-width";
 const CODEWIKI_QA_MIN_WIDTH = 320;
 const CODEWIKI_QA_MAX_WIDTH = 760;
@@ -141,7 +149,7 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
   if (loading) {
     return (
       <div className="h-full flex items-center justify-center text-[13px] text-(--text-muted)">
-        <Loader2 size={16} className="mr-2 animate-spin" />
+        <CircleNotch size={16} className="mr-2 animate-spin" />
         Loading code graph
       </div>
     );
@@ -150,7 +158,7 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
   if (error) {
     return (
       <div className="h-full flex flex-col items-center justify-center px-8 text-center">
-        <AlertCircle size={28} className="text-(--text-muted)" />
+        <WarningCircle size={28} className="text-(--text-muted)" />
         <p className="mt-3 text-[13px] text-(--text-secondary)">{error}</p>
         <button
           className="mt-4 h-8 rounded-md border border-(--border-default) px-3 text-[12px] text-(--text-primary) hover:bg-(--bg-hover)"
@@ -260,7 +268,7 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
                 </text>
                 <text x="12" y="42" fill="var(--text-muted)" fontSize="10">
                   {String(
-                    `${node.type} · ${String(node.file || "")
+                    `${node.type} 路 ${String(node.file || "")
                       .split("/")
                       .pop()}`,
                   ).slice(0, 28)}
@@ -277,18 +285,19 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
               Code Graph
             </p>
             <p className="mt-1 text-[11px] text-(--text-muted)">
-              {graph?.stats?.displayed_nodes || 0} nodes ·{" "}
+              {graph?.stats?.displayed_nodes || 0} nodes 路{" "}
               {graph?.stats?.displayed_edges || 0} edges
             </p>
           </div>
-          <button
+          <Button
             type="button"
-            className="inline-flex size-7 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+            variant="ghost"
+            size="icon-sm"
             onClick={onRefresh}
             aria-label="Refresh graph"
           >
-            <RefreshCw size={14} />
-          </button>
+            <ArrowClockwise size={14} />
+          </Button>
         </div>
         {selected && (
           <div className="mt-5">
@@ -337,137 +346,18 @@ function SymbolGraphView({ graph, loading, error, onRefresh }) {
   );
 }
 
-function addToolToSegments(segments, toolCard) {
-  if (!Array.isArray(segments) || segments.length === 0) {
-    return [{ type: "tools", cards: [toolCard] }];
-  }
-  const last = segments[segments.length - 1];
-  if (last.type === "tools") {
-    return [
-      ...segments.slice(0, -1),
-      { ...last, cards: [...last.cards, toolCard] },
-    ];
-  }
-  return [...segments, { type: "tools", cards: [toolCard] }];
-}
-
-function updateToolInSegments(segments, toolId, updater) {
-  return (Array.isArray(segments) ? segments : []).map((seg) => {
-    if (seg.type !== "tools") return seg;
-    const index = seg.cards.findIndex((card) => card.id === toolId);
-    if (index === -1) return seg;
-    const cards = [...seg.cards];
-    cards[index] = updater(cards[index]);
-    return { ...seg, cards };
-  });
-}
-
-function ensureTextSegment(segments) {
-  const current = Array.isArray(segments) ? segments : [];
-  if (current.length === 0) {
-    return [{ type: "text", text: "", isStreaming: false }];
-  }
-  const last = current[current.length - 1];
-  if (last.type === "text") return current;
-  return [...current, { type: "text", text: "", isStreaming: false }];
-}
-
-function appendDeltaToSegments(segments, delta) {
-  const value = String(delta || "");
-  if (!value) return Array.isArray(segments) ? segments : [];
-  const current = ensureTextSegment(segments);
-  const last = current[current.length - 1];
-  return [
-    ...current.slice(0, -1),
-    { ...last, text: `${last.text || ""}${value}`, isStreaming: true },
-  ];
-}
-
-function replaceLastTextSegment(segments, text) {
-  const current = ensureTextSegment(segments);
-  const lastIndex = current.length - 1;
-  return current.map((seg, index) =>
-    index === lastIndex && seg.type === "text"
-      ? { ...seg, text, isStreaming: false }
-      : seg,
-  );
-}
-
-function finishStreamingSegments(segments) {
-  return (Array.isArray(segments) ? segments : []).map((seg) =>
-    seg.type === "text" ? { ...seg, isStreaming: false } : seg,
-  );
-}
-
 function applyCodeWikiEventToMessage(message, event) {
+  if (isTranscriptStreamEvent(event?.type)) {
+    return applyStreamEventToMessage(message, event, {
+      finishThinkingBeforeText: false,
+    });
+  }
   switch (event?.type) {
-    case "assistant:delta":
-      return {
-        ...message,
-        segments: appendDeltaToSegments(message.segments, event.text),
-      };
-    case "assistant:response":
-      return {
-        ...message,
-        segments: event.text
-          ? replaceLastTextSegment(message.segments, event.text)
-          : finishStreamingSegments(message.segments),
-      };
-    case "tool:start":
-      return {
-        ...message,
-        segments: addToolToSegments(message.segments, {
-          id: event.id,
-          name: event.name,
-          arguments: event.arguments,
-          status: "running",
-          durationMs: null,
-          summary: "",
-          result: "",
-        }),
-      };
-    case "tool:result":
-      return {
-        ...message,
-        segments: updateToolInSegments(message.segments, event.id, (card) => ({
-          ...card,
-          result: event.content || card.result || "",
-        })),
-      };
-    case "tool:end":
-      return {
-        ...message,
-        segments: updateToolInSegments(message.segments, event.id, (card) => ({
-          ...card,
-          status: "done",
-          durationMs: event.durationMs,
-          summary: event.summary || card.summary || "",
-        })),
-      };
-    case "tool:error":
-      return {
-        ...message,
-        segments: updateToolInSegments(message.segments, event.id, (card) => ({
-          ...card,
-          status: "error",
-          durationMs: event.durationMs,
-          summary: event.summary || card.summary || "",
-        })),
-      };
-    case "tool:blocked":
-      return {
-        ...message,
-        segments: updateToolInSegments(message.segments, event.id, (card) => ({
-          ...card,
-          status: "blocked",
-          summary: card.summary || "Tool blocked",
-        })),
-      };
     case "codewiki:done":
       return {
         ...message,
         loading: false,
-        segments: finishStreamingSegments(message.segments),
+        segments: finishStreamingTextSegments(message.segments),
       };
     case "codewiki:error":
       return {
@@ -973,15 +863,15 @@ export function CodeWikiPanel({
               disabled={isWorking}
             >
               {generating ? (
-                <Loader2 size={15} className="animate-spin" />
+                <CircleNotch size={15} className="animate-spin" />
               ) : (
-                <Sparkles size={15} />
+                <Sparkle size={15} />
               )}
               {generating ? t("generating") : t("generateNew")}
             </button>
             {/* {generating && (
               <div className="mt-3 flex items-center gap-2 rounded-lg border border-(--border-default) bg-(--bg-primary) px-3 py-2.5">
-                <Loader2 size={14} className="animate-spin shrink-0 text-(--text-muted)" />
+                <CircleNotch size={14} className="animate-spin shrink-0 text-(--text-muted)" />
                 <span className="text-[12px] text-(--text-secondary) truncate">
                   {t("generatingCodeWiki")}
                 </span>
@@ -993,8 +883,10 @@ export function CodeWikiPanel({
             <span className="text-[12px] font-medium text-(--text-muted)">
               Documents
             </span>
-            <button
-              className="inline-flex size-7 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
               onClick={() => {
                 loadReports({ preferNewest: true });
                 if (CODEWIKI_SYMBOL_GRAPH_ENABLED) loadSymbolGraph();
@@ -1002,8 +894,8 @@ export function CodeWikiPanel({
               title="Refresh"
               aria-label="Refresh"
             >
-              <RefreshCw size={14} />
-            </button>
+              <ArrowClockwise size={14} />
+            </Button>
           </div>
 
           <div className="flex-1 overflow-y-auto px-2 pb-4">
@@ -1023,9 +915,9 @@ export function CodeWikiPanel({
                     size={14}
                     className="shrink-0 mt-0.5 text-(--text-muted)"
                   />
-                  <span className="min-w-0 flex-1">代码关系</span>
+                  <span className="min-w-0 flex-1">浠ｇ爜鍏崇郴</span>
                   {graphLoading && (
-                    <Loader2
+                    <CircleNotch
                       size={13}
                       className="mt-0.5 shrink-0 animate-spin text-(--text-muted)"
                     />
@@ -1033,7 +925,7 @@ export function CodeWikiPanel({
                 </span>
                 <span className="mt-1 block truncate pl-6 text-[11px] text-(--text-muted)">
                   {symbolGraph?.stats
-                    ? `${symbolGraph.stats.displayed_nodes || 0} nodes · ${symbolGraph.stats.displayed_edges || 0} edges`
+                    ? `${symbolGraph.stats.displayed_nodes || 0} nodes 路 ${symbolGraph.stats.displayed_edges || 0} edges`
                     : "Symbol Graph"}
                 </span>
               </div>
@@ -1041,7 +933,7 @@ export function CodeWikiPanel({
 
             {loading && (
               <div className="px-3 py-6 text-[12px] text-(--text-muted) inline-flex items-center gap-2">
-                <Loader2 size={14} className="animate-spin" />
+                <CircleNotch size={14} className="animate-spin" />
                 {t("loadingReport")}
               </div>
             )}
@@ -1078,34 +970,37 @@ export function CodeWikiPanel({
                     </span>
                     <Popover>
                       <PopoverTrigger asChild>
-                        <button
+                        <Button
                           type="button"
-                          className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) opacity-0 hover:bg-(--bg-active) hover:text-(--text-primary) group-hover:opacity-100 focus:opacity-100"
+                          variant="ghost"
+                          size="icon-xs"
+                          className="opacity-0 group-hover:opacity-100 focus:opacity-100"
                           onClick={(event) => event.stopPropagation()}
                           aria-label={t("reportActions")}
                         >
-                          <MoreHorizontal size={14} />
-                        </button>
+                          <DotsThree size={14} />
+                        </Button>
                       </PopoverTrigger>
                       <PopoverContent
                         align="end"
-                        className="w-36 border-(--border-default) bg-(--bg-primary) p-1 text-(--text-primary)"
+                        className="w-36 p-1"
                         onClick={(event) => event.stopPropagation()}
                       >
-                        <button
+                        <Button
                           type="button"
-                          className="w-full rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
+                          variant="ghost"
+                          className="h-auto w-full justify-start rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) shadow-none hover:bg-(--accent-red-bg) hover:text-(--accent-red)"
                           onClick={() => setPendingDelete(report)}
                         >
                           {t("deleteReport")}
-                        </button>
+                        </Button>
                       </PopoverContent>
                     </Popover>
                   </span>
                   <span className="mt-1 block truncate text-[11px] text-(--text-muted)">
                     {formatReportDate(report.mtime)}
                     {formatFileSize(report.size)
-                      ? ` · ${formatFileSize(report.size)}`
+                      ? ` 路 ${formatFileSize(report.size)}`
                       : ""}
                   </span>
                 </div>
@@ -1129,16 +1024,16 @@ export function CodeWikiPanel({
               onClick={handleGenerate}
               disabled={isWorking}
             >
-              {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+              {generating ? <CircleNotch size={14} className="animate-spin" /> : <Sparkle size={14} />}
               {t("generate")}
             </button>
           </div> */}
 
           {error && (
-            <div className="mx-5 mt-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-[12px] text-red-400 inline-flex items-center gap-2">
-              <AlertCircle size={14} />
-              {error}
-            </div>
+            <Alert variant="destructive" className="mx-5 mt-4">
+              <WarningCircle />
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
           )}
 
           <div className="flex-1 min-h-0 p-4">
@@ -1166,9 +1061,9 @@ export function CodeWikiPanel({
                   disabled={isWorking}
                 >
                   {generating ? (
-                    <Loader2 size={16} className="animate-spin" />
+                    <CircleNotch size={16} className="animate-spin" />
                   ) : (
-                    <Sparkles size={16} />
+                    <Sparkle size={16} />
                   )}
                   {generating ? t("generating") : t("generateNew")}
                 </button>
@@ -1210,7 +1105,7 @@ export function CodeWikiPanel({
                 </div>
                 {/* {generating && (
                   <div className="mt-5 flex items-center justify-center gap-2 rounded-lg border border-(--border-default) bg-(--bg-primary) px-4 py-4 w-full max-w-md">
-                    <Loader2
+                    <CircleNotch
                       size={16}
                       className="animate-spin shrink-0 text-(--text-muted)"
                     />
@@ -1224,7 +1119,7 @@ export function CodeWikiPanel({
               <div className="h-full min-h-[420px] overflow-hidden rounded-xl border border-(--border-default) bg-(--bg-secondary)">
                 {frameError ? (
                   <div className="h-full flex flex-col items-center justify-center px-8 text-center">
-                    <AlertCircle size={28} className="text-(--text-muted)" />
+                    <WarningCircle size={28} className="text-(--text-muted)" />
                     <p className="mt-3 text-[13px] text-(--text-secondary)">
                       {t("reportLoadFailed")}
                     </p>
@@ -1241,12 +1136,12 @@ export function CodeWikiPanel({
                       {markdownReport.loading ||
                       markdownReport.file !== selected.file ? (
                         <div className="flex h-full items-center justify-center text-[13px] text-(--text-muted)">
-                          <Loader2 size={16} className="mr-2 animate-spin" />
+                          <CircleNotch size={16} className="mr-2 animate-spin" />
                           {t("loadingReport")}
                         </div>
                       ) : markdownReport.error ? (
                         <div className="flex h-full flex-col items-center justify-center px-8 text-center">
-                          <AlertCircle
+                          <WarningCircle
                             size={28}
                             className="text-(--text-muted)"
                           />
@@ -1277,7 +1172,7 @@ export function CodeWikiPanel({
                   )
                 ) : (
                   <div className="h-full flex items-center justify-center text-[13px] text-(--text-muted)">
-                    <Loader2 size={16} className="mr-2 animate-spin" />
+                    <CircleNotch size={16} className="mr-2 animate-spin" />
                     {t("loading")}
                   </div>
                 )}
@@ -1295,14 +1190,14 @@ export function CodeWikiPanel({
           onMouseDown={handleQaResizeStart}
         >
           <span className="codewiki-resizer-handle">
-            <GripVertical size={14} aria-hidden="true" />
+            <DotsSixVertical size={14} aria-hidden="true" />
           </span>
         </div>
 
         <aside className="bg-(--bg-secondary) min-h-0 flex flex-col max-xl:hidden">
           <div className="p-4 border-b border-(--border-default)">
             {/* <div className="flex items-center gap-2 text-(--text-primary)">
-              <MessageSquareText size={17} />
+              <ChatText size={17} />
               <span className="font-medium text-[14px]">
                 Ask this repository
               </span>
@@ -1331,7 +1226,7 @@ export function CodeWikiPanel({
           >
             {chatMessages.length === 0 ? (
               <div className="rounded-xl border border-(--border-default) bg-(--bg-primary) p-4">
-                {/* <Sparkles size={22} className="text-(--text-muted)" /> */}
+                {/* <Sparkle size={22} className="text-(--text-muted)" /> */}
                 <p className="text-[13px] font-medium text-(--text-primary)">
                   {generating
                     ? t("generatingCodeWiki")
@@ -1358,7 +1253,7 @@ export function CodeWikiPanel({
                     {message.loading &&
                       (!message.segments || message.segments.length === 0) && (
                         <div className="mt-[-12px] mb-3 ml-1 inline-flex items-center gap-2 rounded-xl border border-(--border-default) bg-(--bg-primary) px-3 py-2 text-[12px] text-(--text-muted)">
-                          <Loader2 size={14} className="animate-spin" />
+                          <CircleNotch size={14} className="animate-spin" />
                           {t("answering")}
                         </div>
                       )}
@@ -1395,9 +1290,9 @@ export function CodeWikiPanel({
                 aria-label={t("sendingQuestion")}
               >
                 {asking ? (
-                  <Loader2 size={15} className="animate-spin" />
+                  <CircleNotch size={15} className="animate-spin" />
                 ) : (
-                  <SendHorizontal size={15} />
+                  <PaperPlaneRight size={15} />
                 )}
               </button>
             </div>

@@ -1,3 +1,6 @@
+import { isKimiModelName } from './kimi-gateway.js';
+import { resolveOpenAICompatibleReasoning } from './reasoning-effort.js';
+
 function extractTextContent(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) {
@@ -124,6 +127,10 @@ function isMiniMaxModel(model) {
   return String(model || '').toLowerCase().includes('minimax');
 }
 
+function isKimiModel(model) {
+  return isKimiModelName(model);
+}
+
 function normalizeToolCallArguments(argumentsText) {
   const raw = typeof argumentsText === 'string' ? argumentsText : JSON.stringify(argumentsText ?? {});
   try {
@@ -157,6 +164,7 @@ function extractUsageObject(data) {
     || data.meta?.billedUnits
     || data.response?.usage
     || data.response?.usage_metadata
+    || data.choices?.[0]?.usage
     || null;
 }
 
@@ -229,23 +237,41 @@ function sanitizeMiniMaxMessages(messages) {
   return out;
 }
 
-function buildPayload({ model, temperature, messages, tools, stream = false }) {
+function normalizeToolChoice(toolChoice) {
+  if (!toolChoice) return 'auto';
+  if (typeof toolChoice === 'string') {
+    if (toolChoice === 'auto' || toolChoice === 'none' || toolChoice === 'required') return toolChoice;
+    return { type: 'function', function: { name: toolChoice } };
+  }
+  if (toolChoice && typeof toolChoice === 'object') return toolChoice;
+  return 'auto';
+}
+
+function buildPayload({ model, temperature, messages, tools, stream = false, toolChoice, payloadExtras, reasoningEffort }) {
   const sanitizedMessages = sanitizeGatewayMessages(messages);
   const payload = {
     model,
-    temperature,
     messages: isMiniMaxModel(model) ? sanitizeMiniMaxMessages(sanitizedMessages) : sanitizedMessages
   };
+  if (isKimiModel(model)) {
+    // K2.x locks sampling params to server defaults by thinking mode — omit temperature.
+  } else {
+    payload.temperature = temperature;
+  }
   if (stream) {
     payload.stream = true;
     payload.stream_options = { include_usage: true };
   }
   if (Array.isArray(tools) && tools.length > 0) {
     payload.tools = tools;
-    payload.tool_choice = 'auto';
+    payload.tool_choice = normalizeToolChoice(toolChoice);
   }
   if (isMiniMaxModel(model)) {
     payload.extra_body = { reasoning_split: true };
+  }
+  Object.assign(payload, resolveOpenAICompatibleReasoning({ model, effort: reasoningEffort }));
+  if (payloadExtras && typeof payloadExtras === 'object') {
+    Object.assign(payload, payloadExtras);
   }
   return payload;
 }
@@ -360,10 +386,13 @@ export async function createChatCompletion({
   messages,
   temperature = 0.2,
   tools,
+  toolChoice,
+  payloadExtras,
+  reasoningEffort,
   timeoutMs = 1800000,
   maxRetries = 2
 }) {
-  const payload = buildPayload({ model, temperature, messages, tools });
+  const payload = buildPayload({ model, temperature, messages, tools, toolChoice, payloadExtras, reasoningEffort });
   const response = await fetchWithRetry(buildChatCompletionsUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
@@ -413,6 +442,9 @@ export async function createChatCompletionStream({
   messages,
   temperature = 0.2,
   tools,
+  toolChoice,
+  payloadExtras,
+  reasoningEffort,
   onTextDelta,
   onReasoningDelta,
   onToolCallDelta,
@@ -423,17 +455,20 @@ export async function createChatCompletionStream({
   // 合并超时信号与外部中止信号，任一触发都会中止请求
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const controller = new AbortController();
-  const onAbort = () => controller.abort();
-  timeoutSignal.addEventListener('abort', onAbort, { once: true });
+  const onTimeoutAbort = () => controller.abort(
+    new Error(`Gateway request timed out after ${timeoutMs}ms`)
+  );
+  timeoutSignal.addEventListener('abort', onTimeoutAbort, { once: true });
+  const onExternalAbort = () => controller.abort();
   if (externalSignal) {
     if (externalSignal.aborted) {
       controller.abort();
     } else {
-      externalSignal.addEventListener('abort', onAbort, { once: true });
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
     }
   }
   const url = buildChatCompletionsUrl(baseUrl);
-  const payload = buildPayload({ model, temperature, messages, tools, stream: true });
+  const payload = buildPayload({ model, temperature, messages, tools, stream: true, toolChoice, payloadExtras, reasoningEffort });
   const buildRequest = (bodyPayload) => ({
     method: 'POST',
     headers: createHeaders(apiKey),
@@ -515,8 +550,8 @@ export async function createChatCompletionStream({
     }
     }
   } finally {
-    timeoutSignal.removeEventListener('abort', onAbort);
-    if (externalSignal) externalSignal.removeEventListener('abort', onAbort);
+    timeoutSignal.removeEventListener('abort', onTimeoutAbort);
+    if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
   }
 
   const result = buildFinalStreamResult(text, toolCallsByIndex, usage, messages);

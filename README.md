@@ -45,7 +45,7 @@ It runs on Windows, macOS, or Linux — in any terminal (PowerShell, bash, zsh, 
 
 Codemini can use **two models in one session**: a lightweight model for routing and simple tasks, and a larger model for complex reasoning. Configure both, and the system dispatches work to the right one.
 
-Other built-in capabilities include project indexing, persistent memory with self-evolution via `/reflect`, skill-based workflows, planning mode, approvals, and soul presets that change its tone without changing its behavior.
+Other built-in capabilities include project indexing, persistent memory with self-evolution via the Reflect action, skill-based workflows, coding mode for implementation-heavy work, approvals, and soul presets that change its tone without changing its behavior.
 
 No SaaS. No telemetry. No mandatory registration.
 
@@ -58,7 +58,7 @@ Many coding agents pursue an ever-expanding surface — more tools, more context
 - **Dual-model dispatch.** Configure a lightweight model (for routing and simple tasks) alongside a frontier model (for complex reasoning). Work reaches the right model automatically.
 - **Proportional approvals.** Commands are classified by intent. Read-only operations pass through; destructive actions prompt for confirmation. You control the threshold.
 - **Lazy-loaded skills.** A catalog of 1,000 skills costs the same as 1. Only the invoked skill contributes to the prompt.
-- **Curated memory with self-evolution.** Inbox is temporary by design. The dream loop curates it, and `/reflect` converts successful patterns into reusable skills.
+- **Curated memory with self-evolution.** Inbox is temporary by design. The dream loop curates it, and the Reflect action converts successful patterns into reusable skills.
 
 It is not about delivering less capability. It is about eliminating what you should not have to carry.
 
@@ -105,6 +105,21 @@ codemini
 
 Three commands, and you are in an interactive session.
 
+### Web Search Provider
+
+`web_search` defaults to `bing_rss`, which does not require an API key. To use an API-backed search provider:
+
+```bash
+codemini config set web.search_provider tavily
+codemini config set web.tavily_api_key your_tavily_api_key
+
+# or
+codemini config set web.search_provider exa
+codemini config set web.exa_api_key your_exa_api_key
+```
+
+You can also use `TAVILY_API_KEY` or `EXA_API_KEY` environment variables instead of saving the key in config.
+
 ### Beyond Code: Automated Tasks
 
 Codemini's `codemini run` command turns any natural-language task into an automated workflow — no coding required.
@@ -138,10 +153,10 @@ The `--harness` flag assigns a **role** (`planner`, `advisor`, `coder`, `reviewe
 
 | What | Why it matters |
 | --- | --- |
-| **🧠 Persistent Memory** | `/capture` → inbox → dream consolidation → user, global, and project memory tiers. Your agent learns from your project. |
+| **🧠 Persistent Memory** | Capture action → inbox → dream consolidation → user, global, and project memory tiers. Your agent learns from your project. |
 | **📂 Project Index** | Automatic `.codemini/` index with languages, symbols, imports, and exports. Refreshed incrementally after every edit. |
 | **🛠 Skills System** | Decoupled routing metadata with lazy-loaded `SKILL.md` bodies. Bring your own workflow or choose from built-in presets. |
-| **🔄 Self-Evolution** | `/reflect` converts successful workflows into reusable, reviewable `SKILL.md` files. Your toolset grows with your project. |
+| **🔄 Self-Evolution** | The Reflect action converts successful workflows into reusable, reviewable `SKILL.md` files. Your toolset grows with your project. |
 | **⚡ Dual-Model Dispatch** | Configure a fast, lightweight model alongside a capable frontier model. The system routes each task to the appropriate one. |
 | **🖥 Terminal TUI** | Rich, interactive terminal UI with spinner animations, syntax-highlighted code blocks, live command output, and real-time status. |
 | **🕸 Web UI** | Full browser interface — same engine, shared sessions. Switch between terminal and browser freely. |
@@ -153,15 +168,7 @@ The `--harness` flag assigns a **role** (`planner`, `advisor`, `coder`, `reviewe
 
 ### Skills
 
-Skills are reusable, reviewable workflow recipes. Built-in:
-
-| Skill | When to use |
-| --- | --- |
-| `using-superpowers` | Default skill router: decide which development workflow applies. |
-| `brainstorming` | Compare options when multiple approaches are reasonable. |
-| `systematic-debugging` | Investigate bugs, failing tests, and unexpected behavior. |
-| `test-driven-development` | Implement behavior changes with focused tests. |
-| `verification-before-completion` | Verify work before claiming it is done. |
+Skills are reusable, reviewable workflow recipes installed by the user or checked into a project. Codemini does not bundle workflow skills; coding fundamentals and tool discipline live in the execution-mode prompt, while specialized workflows remain an explicit user choice.
 
 ```bash
 codemini skill list
@@ -174,16 +181,13 @@ codemini skill reindex
 
 Skills use a flat catalog (`codemini.skills.json`) with lightweight routing metadata — `description`, `mode`, `triggers`, `enabled`, `priority`. Codemini reads only this metadata at startup; the full `SKILL.md` is loaded only when a skill is selected or invoked. If the catalog is missing, the system falls back to `SKILL.md` frontmatter.
 
-Invoke any enabled skill as a slash command inside a session, or pass the slash command as a one-off prompt:
+Select enabled skills from the action palette inside a session, or pass an explicit skill prompt from your shell:
 
 ```bash
-# Inside an interactive session
-/requesting-code-review review this release plan before I tag it
-/plan auto add OAuth refresh-token rotation
+# Inside an interactive session, press Ctrl+K and choose a skill.
 
-# One-off invocation from your shell
-codemini '/brainstorming compare SQLite, Postgres, and DuckDB for local analytics'
-codemini '/project-requirements generate a CodeWiki report for this repository'
+# One-off invocation from your shell after installing a skill
+codemini 'skill:[my-review-skill] review the current changes'
 ```
 
 ### Terminal TUI & Web UI
@@ -202,33 +206,38 @@ Sessions are shared between terminal and browser — switch freely. From an acti
 
 Additional Web UI options (port, project directory, session, model) are available via flags like `--port`, `--project`, `--session`, `--model`, `--no-open`.
 
+### Concurrent Web sessions
+
+The Web UI can run up to three sessions at once. Additional sessions queue automatically, and switching conversations does not stop background work. Approval and user-input requests pause only their owning session.
+
+Sessions may share a project directory. Codemini detects stale writes made through its managed file tools, but arbitrary shell commands can still conflict; the session list shows a warning while same-project tasks overlap. Interrupted work is not replayed after a server restart.
+
 **Souls** — change the agent's tone without changing behavior. Built-in presets: `default`, `professional`, `ceo`, `playful`, `anime`, `caveman`, `pirate`. Configure with `codemini config set soul.preset professional`.
 
 ### Memory, Self-Evolution & Dream Loop
 
 Codemini's memory system is designed to **learn from your work**, not just store facts.
 
-| Command | Purpose |
+| Action | Purpose |
 | --- | --- |
-| `/capture <summary>` | Record a signal into the inbox. |
-| `/inbox` | Review pending memory evidence. |
-| `/dream [--dry-run]` | Consolidate inbox entries into durable user/global/project memory. |
-| `/reflect` | Convert a successful workflow pattern into a reviewable `SKILL.md` — your toolset evolves as you work. |
+| Capture | Record a signal into the inbox. |
+| Inbox | Review pending memory evidence. |
+| Dream | Consolidate inbox entries into durable user/global/project memory. |
+| Reflect | Convert a successful workflow pattern into a reviewable `SKILL.md` — your toolset evolves as you work. |
 
-The inbox is intentionally noisy. The dream loop determines what deserves promotion into longer-term storage. And `/reflect` closes the loop: a pattern you've repeated successfully becomes a reusable skill, reviewed and versioned alongside your project.
+The inbox is intentionally noisy. The dream loop determines what deserves promotion into longer-term storage. And the Reflect action closes the loop: a pattern you've repeated successfully becomes a reusable skill, reviewed and versioned alongside your project.
 
 Typical reflect loop:
 
 ```bash
 # 1. Finish a workflow that worked well, then ask Codemini to extract the pattern.
-/reflect preserve the provider tool-call recovery workflow from the last task
+Choose Reflect and describe the provider tool-call recovery workflow.
 
 # 2. Review the generated draft in the TUI/Web UI.
-/yes
+Choose Write in the review controls.
 
 # 3. Codemini writes .codemini/skills/provider-tool-call-recovery/SKILL.md
-#    and immediately exposes it as a slash skill.
-/provider-tool-call-recovery fix the same issue in the Anthropic adapter
+#    and makes it available in the action palette.
 
 # 4. The same skill can also be launched directly from the shell.
 codemini '/provider-tool-call-recovery audit provider message conversion'
@@ -237,7 +246,7 @@ codemini '/provider-tool-call-recovery audit provider message conversion'
 Use `--scope=global` when the workflow should follow you across repositories:
 
 ```bash
-/reflect --scope=global turn the release checklist I just used into a reusable skill
+codemini '/reflect --scope=global turn the release checklist I just used into a reusable skill'
 codemini '/release-checklist prepare a patch release'
 ```
 
@@ -323,7 +332,7 @@ npm run build:web
 
 支持**大小模型协同工作**：配置一个轻量模型处理路由和简单任务，一个大模型负责复杂推理，系统自动调度。
 
-其他内置能力包括项目索引、持久记忆与 `/reflect` 自我进化、技能工作流、计划模式、审批机制，以及仅改变语气不改变行为的人格预设（Souls）。
+其他内置能力包括项目索引、持久记忆与 Reflect 操作驱动的自我进化、技能工作流、计划模式、审批机制，以及仅改变语气不改变行为的人格预设（Souls）。
 
 无需 SaaS、无需遥测、无需注册。
 
@@ -336,7 +345,7 @@ npm run build:web
 - **大小模型协同。** 配置一个轻量模型处理路由和简单任务，一个大模型负责复杂推理，系统自动分派。
 - **审批有度。** 命令按意图分级：只读操作直接放行，破坏性操作暂停确认。阈值由你设定。
 - **技能懒加载。** 注册 1,000 个技能与注册 1 个的开销相同。只有被实际调用的技能才会进入提示上下文。
-- **记忆择优而存，自我进化。** Inbox 本质上是临时草稿箱，Dream 循环决定晋升内容，`/reflect` 把成功工作流沉淀为可复用的 skill。
+- **记忆择优而存，自我进化。** Inbox 本质上是临时草稿箱，Dream 循环决定晋升内容，Reflect 操作把成功工作流沉淀为可复用的 skill。
 
 并非功能更少，而是不背负不必要的负担。
 
@@ -383,6 +392,21 @@ codemini
 
 三步完成配置，进入交互式会话。
 
+### 联网搜索提供方
+
+`web_search` 默认使用无需 API Key 的 `bing_rss`。如需切换到 API 搜索服务：
+
+```bash
+codemini config set web.search_provider tavily
+codemini config set web.tavily_api_key 你的_tavily_api_key
+
+# 或
+codemini config set web.search_provider exa
+codemini config set web.exa_api_key 你的_exa_api_key
+```
+
+也可以使用 `TAVILY_API_KEY` 或 `EXA_API_KEY` 环境变量，避免把 key 写入配置文件。
+
 ### 不止写代码：自动化任务
 
 `codemini run` 可以把任何自然语言任务变成自动化工作流——不需要写脚本。
@@ -418,10 +442,10 @@ codemini run --pipeline "升级版本号、更新 CHANGELOG、创建 GitHub rele
 
 | 功能 | 说明 |
 | --- | --- |
-| **🧠 持久记忆** | `/capture` → inbox → dream 整理 → 用户/全局/项目三层记忆。让 agent 记住项目上下文。 |
+| **🧠 持久记忆** | Capture 操作 → inbox → dream 整理 → 用户/全局/项目三层记忆。让 agent 记住项目上下文。 |
 | **📂 项目索引** | 自动维护 `.codemini/` 索引，记录语言、符号、导入导出关系。编辑后增量刷新。 |
-| **🛠 技能系统** | 路由元数据与技能体分离。可自行编写 `SKILL.md`，也可使用内置工作流。 |
-| **🔄 自我进化** | `/reflect` 把成功工作流转化为可复用的 `SKILL.md`。你的工具箱随项目成长。 |
+| **🛠 技能系统** | 路由元数据与技能体分离。按需安装或在项目中编写 `SKILL.md`，不强制附带工作流。 |
+| **🔄 自我进化** | Reflect 操作把成功工作流转化为可复用的 `SKILL.md`。你的工具箱随项目成长。 |
 | **⚡ 大小模型协同** | 配置轻量模型做路由与简单任务，大模型做复杂推理，系统自动分派。 |
 | **🖥 终端 TUI** | 富交互终端界面——旋转动画、语法高亮代码块、实时命令输出流、自动补全命令面板。 |
 | **🕸 Web UI** | 浏览器界面，同一引擎。终端与浏览器共享会话，可随时切换。 |
@@ -433,15 +457,7 @@ codemini run --pipeline "升级版本号、更新 CHANGELOG、创建 GitHub rele
 
 ### Skills
 
-Skills 是可复用、可审阅的工作流配方。内置：
-
-| Skill | 适用场景 |
-| --- | --- |
-| `using-superpowers` | 默认 skill 路由：判断当前任务应使用哪种开发流程。 |
-| `brainstorming` | 多种方案难以抉择时，先比较选项再行动。 |
-| `systematic-debugging` | 调查 bug、失败测试和异常行为。 |
-| `test-driven-development` | 用聚焦测试驱动行为改动。 |
-| `verification-before-completion` | 在声明完成前执行验证。 |
+Skills 是由用户安装或随项目维护的可复用、可审阅工作流。Codemini 不再捆绑工作流 Skill：基础编码原则与工具纪律由执行模式 Prompt 提供，专项流程由用户自主选择。
 
 ```bash
 codemini skill list
@@ -454,16 +470,13 @@ codemini skill reindex
 
 路由元数据集中在顶层 catalog（`codemini.skills.json`），仅存储 `description`、`mode`、`triggers`、`enabled`、`priority` 等轻量字段。启动时不读取完整 `SKILL.md`，仅在被命中或显式调用时才加载。catalog 缺失时回退到目录和 frontmatter。
 
-任何启用的 skill 都可以在会话里当作 slash command 调用，也可以作为一次性 prompt 从 shell 直接启动：
+任何启用的 skill 都可以在会话的操作面板中选择，也可以从 shell 通过显式 skill prompt 一次性启动：
 
 ```bash
-# 在交互式会话中
-/requesting-code-review 帮我审一遍这个发布方案再打 tag
-/plan auto 设计 OAuth refresh-token 轮换方案
+# 在交互式会话中按 Ctrl+K，然后选择 skill。
 
-# 从 shell 一次性调用
-codemini '/brainstorming 比较 SQLite、Postgres 和 DuckDB 做本地分析的取舍'
-codemini '/project-requirements 为当前仓库生成一份 CodeWiki 报告'
+# 安装 skill 后，从 shell 一次性调用
+codemini 'skill:[my-review-skill] 审查当前改动'
 ```
 
 ### 终端 TUI 与 Web UI
@@ -488,27 +501,26 @@ codemini --web
 
 Codemini 的记忆系统设计为**从你的工作中学习**，而不仅仅是存储事实。
 
-| 命令 | 作用 |
+| 操作 | 作用 |
 | --- | --- |
-| `/capture <summary>` | 将高信号观察记录到 inbox。 |
-| `/inbox` | 查看待整理的记忆素材。 |
-| `/dream [--dry-run]` | 将 inbox 整理到用户/全局/项目三层长期记忆。 |
-| `/reflect` | 将成功的工作流模式沉淀为可审阅的 `SKILL.md`——你的工具箱随工作进化。 |
+| Capture | 将高信号观察记录到 inbox。 |
+| Inbox | 查看待整理的记忆素材。 |
+| Dream | 将 inbox 整理到用户/全局/项目三层长期记忆。 |
+| Reflect | 将成功的工作流模式沉淀为可审阅的 `SKILL.md`——你的工具箱随工作进化。 |
 
-Inbox 本质上是临时噪声层。Dream 循环决定哪些内容值得晋升。而 `/reflect` 完成了闭环：一个被你反复验证成功的工作模式，变成可复用的 skill，跟项目一起版本化管理。
+Inbox 本质上是临时噪声层。Dream 循环决定哪些内容值得晋升。而 Reflect 操作完成了闭环：一个被你反复验证成功的工作模式，变成可复用的 skill，跟项目一起版本化管理。
 
 典型的 reflect 闭环：
 
 ```bash
 # 1. 完成一次效果很好的工作流后，让 Codemini 提炼可复用模式。
-/reflect 把刚才 provider tool-call 修复成功的链路沉淀成 skill
+选择 Reflect，并描述刚才 provider tool-call 修复成功的链路。
 
 # 2. 在 TUI/Web UI 中审阅生成的草稿。
-/yes
+在审阅控件中选择“写入”。
 
 # 3. Codemini 写入 .codemini/skills/provider-tool-call-recovery/SKILL.md
-#    并立即暴露为 slash skill。
-/provider-tool-call-recovery 把同类问题修到 Anthropic adapter
+#    并立即在操作面板中提供。
 
 # 4. 也可以从 shell 直接一次性启动这个 skill。
 codemini '/provider-tool-call-recovery 审计 provider message conversion'
@@ -517,7 +529,7 @@ codemini '/provider-tool-call-recovery 审计 provider message conversion'
 如果这个工作流应该跨项目复用，可以写成全局 skill：
 
 ```bash
-/reflect --scope=global 把刚才的发布检查流程沉淀成可复用 skill
+codemini '/reflect --scope=global 把刚才的发布检查流程沉淀成可复用 skill'
 codemini '/release-checklist 准备一次 patch release'
 ```
 

@@ -2,6 +2,7 @@ import { trimInline } from './string-utils.js';
 import { summarizeToolResult } from './tool-result-store.js';
 
 const MICRO_CLEAR_MARKER = '[Old tool result cleared by micro-compact]';
+export const AGGRESSIVE_PRUNE_MARKER = '[Tool result pruned — summary only]';
 
 function textFromContent(content) {
   if (typeof content === 'string') return content;
@@ -15,6 +16,11 @@ function textFromContent(content) {
       .join('');
   }
   return '';
+}
+
+function finiteNumber(value, fallback, minimum = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(minimum, parsed) : fallback;
 }
 
 export function estimateMessagesTokens(messages) {
@@ -48,15 +54,102 @@ function getMessageToolCallIds(message) {
   return message.tool_calls.map(getToolCallId).filter(Boolean);
 }
 
-function toolResultNote(message) {
-  const text = textFromContent(message?.content);
+function getToolCallName(call) {
+  return String(call?.function?.name || call?.name || '').trim();
+}
+
+function mapToolCallNames(messages) {
+  const names = new Map();
+  for (const message of messages || []) {
+    if (!Array.isArray(message?.tool_calls)) continue;
+    for (const call of message.tool_calls) {
+      const id = getToolCallId(call);
+      const name = getToolCallName(call);
+      if (id && name) names.set(id, name);
+    }
+  }
+  return names;
+}
+
+function summarizeToolResultText(text, options = {}) {
+  const maxSummaryChars = Number(options.maxSummaryChars ?? 600);
+  const summaryTailChars = Number(options.summaryTailChars ?? Math.floor(maxSummaryChars * 0.2));
+  const raw = String(text || '').trim();
+  if (!raw) return 'No content';
+  if (raw === MICRO_CLEAR_MARKER || raw.startsWith(AGGRESSIVE_PRUNE_MARKER)) {
+    return raw.startsWith(AGGRESSIVE_PRUNE_MARKER)
+      ? raw.slice(AGGRESSIVE_PRUNE_MARKER.length).trim() || 'No content'
+      : 'cleared';
+  }
   let parsed;
-  try { parsed = JSON.parse(text); } catch { parsed = null; }
-  const summary = parsed && typeof parsed === 'object'
-    ? summarizeToolResult(parsed)
-    : text.replace(/\s+/g, ' ').trim();
-  const clipped = summary.length > 600 ? `${summary.slice(0, 597)}...` : summary;
-  return `[Compacted orphan tool result]\n${clipped || 'No content'}`;
+  try { parsed = JSON.parse(raw); } catch { parsed = null; }
+  if (parsed && typeof parsed === 'object') {
+    return summarizeObjectToolResult(parsed, { maxSummaryChars, summaryTailChars });
+  }
+  // Plain-text tool results (e.g. update_todos, read_plan, update_plan) are
+  // already structured summaries. Preserve newlines so the model can still
+  // read the structure; only clip by length.
+  if (raw.length <= maxSummaryChars) return raw;
+  return clipWithTail(raw, maxSummaryChars, summaryTailChars);
+}
+
+function clipWithTail(text, maxChars, tailChars = Math.floor(maxChars * 0.25)) {
+  const value = String(text || '');
+  if (value.length <= maxChars) return value;
+  const markerBudget = 40;
+  const tail = Math.max(0, Math.min(Number(tailChars) || 0, maxChars - markerBudget));
+  const head = Math.max(0, maxChars - tail - markerBudget);
+  const tailText = tail > 0 ? `\n${value.slice(-tail)}` : '';
+  return `${value.slice(0, head)}\n... [omitted ${value.length - head - tail} chars] ...${tailText}`;
+}
+
+function extractPersistedFilePath(text) {
+  const match = String(text || '').match(/Full output saved to:[ \t]*([^\r\n<]+)/);
+  return match ? match[1].trim() : null;
+}
+
+function summarizeObjectToolResult(obj, {
+  maxSummaryChars = 600,
+  summaryTailChars = Math.floor(maxSummaryChars * 0.25)
+} = {}) {
+  const base = summarizeToolResult(obj);
+  const parts = [base];
+
+  // Content-bearing results: keep head + tail of the actual content for semantic recall.
+  if (typeof obj.content === 'string' && obj.content.length > 0) {
+    const contentClip = clipWithTail(obj.content, maxSummaryChars, summaryTailChars);
+    parts.push(`content:\n${contentClip}`);
+  } else if (typeof obj.text === 'string' && obj.text.length > 0) {
+    const textClip = clipWithTail(obj.text, maxSummaryChars, summaryTailChars);
+    parts.push(`text:\n${textClip}`);
+  } else if (typeof obj.stdout === 'string' && obj.stdout.length > 0) {
+    const stdoutBudget = Math.min(maxSummaryChars, 400);
+    const stdoutClip = clipWithTail(obj.stdout, stdoutBudget, Math.min(summaryTailChars, Math.floor(stdoutBudget / 2)));
+    parts.push(`stdout:\n${stdoutClip}`);
+  } else if (typeof obj.stderr === 'string' && obj.stderr.length > 0) {
+    const stderrBudget = Math.min(maxSummaryChars, 400);
+    const stderrClip = clipWithTail(obj.stderr, stderrBudget, Math.min(summaryTailChars, Math.floor(stderrBudget / 2)));
+    parts.push(`stderr:\n${stderrClip}`);
+  } else if (typeof obj.diff === 'string' && obj.diff.length > 0) {
+    const diffBudget = Math.min(maxSummaryChars, 400);
+    parts.push(`diff:\n${clipWithTail(obj.diff, diffBudget, Math.min(summaryTailChars, Math.floor(diffBudget / 2)))}`);
+  }
+
+  return parts.join('\n');
+}
+
+function buildPrunedToolResultContent(text, options = {}) {
+  const maxSummaryChars = Number(options.maxSummaryChars ?? 600);
+  const summaryTailChars = Number(options.summaryTailChars ?? Math.floor(maxSummaryChars * 0.2));
+  const summary = summarizeToolResultText(text, { maxSummaryChars, summaryTailChars });
+  const persisted = extractPersistedFilePath(text);
+  const persistedLine = persisted ? `\n<persisted full output: ${persisted}>` : '';
+  return `${AGGRESSIVE_PRUNE_MARKER}${persistedLine}\n${summary}`;
+}
+
+function toolResultNote(message) {
+  const summary = summarizeToolResultText(textFromContent(message?.content));
+  return `[Compacted orphan tool result]\n${summary}`;
 }
 
 function expandRecentStartToToolBoundary(messages, start) {
@@ -245,14 +338,90 @@ Include:
 Write in the same language as the conversation. Be concise but do not omit important details.`;
 
 /**
+ * Group tool results by their parent assistant message (step boundary).
+ * Returns the Set of tool-result indices to KEEP, or null if pruning
+ * shouldn't trigger yet (not enough steps).
+ *
+ * Each assistant message with tool_calls defines a "step". All tool results
+ * belonging to the same step are kept or pruned together as a group, so
+ * parallel tool calls within the same step are preserved atomically.
+ */
+function computeStepKeepSet(messages, toolIndices, keepRecent, triggerExtra) {
+  // Map tool_call_id → step number (1-based, by assistant message position)
+  const toolCallStep = new Map();
+  let stepNum = 0;
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+      stepNum++;
+      for (const call of msg.tool_calls) {
+        const id = String(call?.id || '').trim();
+        if (id) toolCallStep.set(id, stepNum);
+      }
+    }
+  }
+
+  // Assign each tool result to its step group
+  // Also track orphans (no matching assistant) — always keep those
+  const stepIndices = new Map(); // stepNum → [tool message indices]
+  const orphans = [];
+  for (const idx of toolIndices) {
+    const id = String(messages[idx]?.tool_call_id || '').trim();
+    const step = toolCallStep.get(id);
+    if (step) {
+      if (!stepIndices.has(step)) stepIndices.set(step, []);
+      stepIndices.get(step).push(idx);
+    } else {
+      orphans.push(idx);
+    }
+  }
+
+  const totalSteps = stepIndices.size;
+
+  // Trigger: prune only when step count exceeds keepRecent + triggerExtra
+  if (totalSteps <= keepRecent + Math.max(0, Number(triggerExtra || 0))) {
+    return null;
+  }
+
+  // Keep the last keepRecent steps — all their tool results stay intact
+  const sortedSteps = [...stepIndices.keys()].sort((a, b) => a - b);
+  const keepSteps = new Set(sortedSteps.slice(-keepRecent));
+
+  const keepSet = new Set();
+  for (const [step, indices] of stepIndices) {
+    if (keepSteps.has(step)) {
+      for (const idx of indices) keepSet.add(idx);
+    }
+  }
+  // Always keep orphans (tool results without a matching assistant message)
+  for (const idx of orphans) keepSet.add(idx);
+
+  return keepSet;
+}
+
+/**
  * Micro-compact: in-place clearing of old tool result content.
  * Does NOT change message count or order — only replaces tool result text
  * with a lightweight marker, preserving conversation structure.
  *
  * Strategy inspired by Claude Code's Phase 0 micro-compact:
  * keep recent N tool results intact, clear the rest.
+ *
+ * When groupByStep is true, tool results are grouped by their parent
+ * assistant message (step boundary). All tool results within the same
+ * step are kept or pruned together, so parallel tool calls are preserved
+ * atomically.
  */
-export function microCompactMessages(messages, { keepRecent = 5, enabled = true } = {}) {
+export function microCompactMessages(messages, {
+  keepRecent = 5,
+  enabled = true,
+  replaceWith = 'clear',
+  maxSummaryChars = 600,
+  summaryTailChars,
+  protectedToolNames = [],
+  triggerExtra = 0,
+  groupByStep = false
+} = {}) {
   if (!enabled || !Array.isArray(messages)) {
     return { messages: [...messages], changed: false, tokensSaved: 0 };
   }
@@ -263,13 +432,34 @@ export function microCompactMessages(messages, { keepRecent = 5, enabled = true 
     if (messages[i].role === 'tool') toolIndices.push(i);
   }
 
-  if (toolIndices.length <= keepRecent) {
-    return { messages: [...messages], changed: false, tokensSaved: 0 };
+  const protectedNames = new Set(
+    (Array.isArray(protectedToolNames) ? protectedToolNames : [])
+      .map((name) => String(name || '').trim())
+      .filter(Boolean)
+  );
+  const toolCallNames = protectedNames.size > 0 ? mapToolCallNames(messages) : new Map();
+
+  let keepSet;
+  if (groupByStep) {
+    keepSet = computeStepKeepSet(messages, toolIndices, keepRecent, triggerExtra);
+    if (!keepSet) return { messages: [...messages], changed: false, tokensSaved: 0 };
+  } else {
+    // Triggered: only prune once the number of tool results exceeds keepRecent
+    // plus a configurable buffer (triggerExtra). This avoids rewriting tool
+    // payloads on every step, which would invalidate cached prefixes downstream.
+    if (toolIndices.length <= keepRecent + Math.max(0, Number(triggerExtra || 0))) {
+      return { messages: [...messages], changed: false, tokensSaved: 0 };
+    }
+    // Indices to keep = last keepRecent tool results
+    keepSet = new Set(toolIndices.slice(-keepRecent));
   }
 
-  // Indices to clear = all except the last keepRecent
-  const keepSet = new Set(toolIndices.slice(-keepRecent));
-  const clearSet = new Set(toolIndices.filter((idx) => !keepSet.has(idx)));
+  const clearSet = new Set(toolIndices.filter((idx) => {
+    if (keepSet.has(idx)) return false;
+    const message = messages[idx];
+    const toolName = toolCallNames.get(String(message?.tool_call_id || '').trim()) || '';
+    return !protectedNames.has(toolName);
+  }));
 
   if (clearSet.size === 0) {
     return { messages: [...messages], changed: false, tokensSaved: 0 };
@@ -279,8 +469,11 @@ export function microCompactMessages(messages, { keepRecent = 5, enabled = true 
   const result = messages.map((msg, i) => {
     if (!clearSet.has(i)) return msg;
     const text = textFromContent(msg.content);
-    if (!text || text === MICRO_CLEAR_MARKER) return msg;
-    return { ...msg, content: MICRO_CLEAR_MARKER };
+    if (!text || text === MICRO_CLEAR_MARKER || text.startsWith(AGGRESSIVE_PRUNE_MARKER)) return msg;
+    const content = replaceWith === 'summary'
+      ? buildPrunedToolResultContent(text, { maxSummaryChars, summaryTailChars })
+      : MICRO_CLEAR_MARKER;
+    return { ...msg, content };
   });
   const afterTokens = estimateMessagesTokens(result);
   const tokensSaved = beforeTokens - afterTokens;
@@ -290,6 +483,38 @@ export function microCompactMessages(messages, { keepRecent = 5, enabled = true 
   }
 
   return { messages: result, changed: true, tokensSaved };
+}
+
+export function isAggressiveToolPruneBetaEnabled(config = {}) {
+  return config.context?.aggressive_tool_prune_beta === true;
+}
+
+/**
+ * Beta: proactively replace older tool results with structured summaries.
+ * Keeps only the most recent N steps intact for exact recall (parallel tool
+ * calls within a step are grouped together), and only triggers when the
+ * step count exceeds keepRecent + triggerExtra so cached prefixes are not
+ * invalidated on every step.
+ */
+export function applyAggressiveToolPruneBeta(messages, config = {}) {
+  if (!isAggressiveToolPruneBetaEnabled(config)) {
+    return { messages: [...(messages || [])], changed: false, tokensSaved: 0 };
+  }
+  const ctx = config.context || {};
+  const keepRecent = Math.floor(finiteNumber(ctx.aggressive_tool_prune_keep_recent, 3, 1));
+  const triggerExtra = Math.floor(finiteNumber(ctx.aggressive_tool_prune_trigger_extra, 2, 0));
+  const summaryHeadChars = Math.floor(finiteNumber(ctx.aggressive_tool_prune_summary_head, 600, 80));
+  const summaryTailChars = Math.floor(finiteNumber(ctx.aggressive_tool_prune_summary_tail, 240, 0));
+  return microCompactMessages(messages, {
+    keepRecent,
+    enabled: true,
+    replaceWith: 'summary',
+    maxSummaryChars: summaryHeadChars + summaryTailChars,
+    summaryTailChars,
+    protectedToolNames: ['skill', 'update_todos'],
+    triggerExtra,
+    groupByStep: true
+  });
 }
 
 export async function compactMessagesLocally(messages, { mode = 'default', force = false, generateSummary = null } = {}) {

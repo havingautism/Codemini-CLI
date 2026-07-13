@@ -122,12 +122,15 @@ export function summarizeToolResult(result) {
       const p = String(obj.path || '');
       const action = String(obj.action || 'write');
       const line = Number(obj.changed_line || 1);
+      if (action === 'apply_patch' && !p && Array.isArray(obj.files)) {
+        return `patched ${obj.files.length} file(s)`;
+      }
       const suffix =
         action === 'delete'
           ? 'deleted'
           : action === 'create'
             ? 'created'
-            : action === 'patch'
+            : action === 'patch' || action === 'apply_patch'
               ? 'patched'
               : action === 'replace_block' || action === 'replace_text'
                 ? 'edited'

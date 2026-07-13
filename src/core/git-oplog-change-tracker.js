@@ -1,47 +1,16 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn } from 'node:child_process';
 import { normalizePath } from './string-utils.js';
+import { runGit } from './process-run.js';
 
 const CHANGE_OPLOG_VERSION = 1;
-const FILE_TOOLS = new Set(['edit', 'create', 'delete']);
+const FILE_TOOLS = new Set(['edit', 'create', 'write', 'apply_patch', 'delete']);
 
-function runGit(args, { cwd, input = null, allowFailure = false, timeoutMs = 120_000 } = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn('git', args, {
-      cwd,
-      windowsHide: true,
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-    const stdoutChunks = [];
-    const stderrChunks = [];
-    const timer = setTimeout(() => {
-      try { child.kill(); } catch {}
-    }, timeoutMs);
-    child.stdout.on('data', (chunk) => stdoutChunks.push(Buffer.from(chunk)));
-    child.stderr.on('data', (chunk) => stderrChunks.push(Buffer.from(chunk)));
-    child.on('error', (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      const stdoutBuffer = Buffer.concat(stdoutChunks);
-      const stderrBuffer = Buffer.concat(stderrChunks);
-      const result = {
-        code,
-        stdout: stdoutBuffer.toString('utf8'),
-        stderr: stderrBuffer.toString('utf8'),
-        stdoutBuffer,
-        stderrBuffer
-      };
-      if (code === 0 || allowFailure) resolve(result);
-      else reject(new Error(result.stderr.trim() || result.stdout.trim() || `git exited with code ${code}`));
-    });
-    if (input != null) child.stdin.end(input);
-    else child.stdin.end();
-  });
+function ensurePatchNewline(patch) {
+  const text = String(patch || '');
+  if (!text) return text;
+  return text.endsWith('\n') ? text : `${text}\n`;
 }
 
 function changeId(prefix = 'op') {
@@ -72,15 +41,18 @@ function extractPathCandidates(args = {}, declaredChanges = [], options = {}) {
   }
   for (const value of [
     args?.path,
-    args?.file,
-    args?.file_path,
     args?.target,
-    args?.edit?.path,
-    args?.edit?.file,
-    args?.edit?.file_path,
-    args?.edit?.target?.path
   ]) {
     if (typeof value === 'string') candidates.push(value);
+  }
+  const patchText = String(args?.patch_text || '');
+  if (patchText) {
+    for (const match of patchText.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)) {
+      candidates.push(match[1]);
+    }
+    for (const match of patchText.matchAll(/^\*\*\* Move to: (.+)$/gm)) {
+      candidates.push(match[1]);
+    }
   }
   const out = [];
   const seen = new Set();
@@ -208,7 +180,7 @@ async function buildPatchForFile(root, relativePath, before, after) {
         `$1\ndeleted file mode 100644`
       );
     }
-    return patch;
+    return ensurePatchNewline(patch);
   } finally {
     await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
   }

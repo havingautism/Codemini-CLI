@@ -201,7 +201,7 @@ or revise/discard before execution:
 
 ```powershell
 codemini skill list
-codemini skill inspect superpowers-lite
+codemini skill inspect my-skill
 codemini skill install .\my-skill
 codemini skill install --scope=global .\my-skill
 codemini skill enable my-skill

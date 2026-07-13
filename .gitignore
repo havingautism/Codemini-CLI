@@ -2,13 +2,15 @@ node_modules/
 .npm-cache/
 
 # Local runtime/state
+.env
+codemini-web/.env
 
 .codemini/
 .npm-pack-cache/
 .codemini-global/
 .codemini-project/
 storage/
-
+audit.md
 # Local AI assistant/editor state
 .agents/
 skills-lock.json
@@ -40,9 +42,4 @@ Thumbs.db
 .idea/
 /cli-demo-example/
 # Local scratch docs
-test.md
-测试.md
-新测试.md
 
-# Local tests
-tests/

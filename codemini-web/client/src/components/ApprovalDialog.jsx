@@ -1,12 +1,26 @@
+import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
+import { ReviewCommandBlock, ReviewSection } from '@/components/WorkflowReviewDialog.jsx';
 import { t } from '../../i18n/index.js';
+import { CHAT_ACTION_NAMES } from '@/lib/chat-action-names.js';
+
+function riskDotClass(risk) {
+  const level = String(risk || '').trim().toLowerCase();
+  if (level === 'low') return 'bg-(--accent-green)';
+  if (level === 'medium') return 'bg-(--accent-amber)';
+  if (level === 'high') return 'bg-(--accent-red)';
+  return 'bg-(--text-muted)';
+}
 
 function detectVariant(toolName, details) {
   if (toolName === 'delete') return 'delete';
   if (toolName === 'run') return 'run';
   if (toolName === 'edit') return 'edit';
   if (toolName === 'create') return 'create';
+  if (toolName === 'write') return 'write';
+  if (toolName === 'apply_patch') return 'apply_patch';
   if (details?.planApproval) return 'plan';
   if (details?.reflectApproval) return 'reflect';
   return 'generic';
@@ -20,11 +34,38 @@ function parseArgs(args) {
   } catch { return { _raw: String(args) }; }
 }
 
+function isEditableTarget(target) {
+  if (!(target instanceof HTMLElement)) return false;
+  const tagName = target.tagName.toLowerCase();
+  return (
+    tagName === 'input' ||
+    tagName === 'textarea' ||
+    tagName === 'select' ||
+    target.isContentEditable
+  );
+}
+
 function DetailRow({ label, value }) {
   return (
-    <div className="flex gap-3 py-1.5 min-w-0">
-      <span className="text-[13px] font-medium text-(--text-muted) w-20 shrink-0">{label}</span>
-      <span className="text-[13px] font-mono min-w-0 break-words text-(--text-primary)">{String(value)}</span>
+    <div className="flex gap-3 py-1 min-w-0">
+      <span className="text-[11px] font-medium text-(--text-muted) w-20 shrink-0">{label}</span>
+      <span className="text-[12px] font-mono min-w-0 break-words text-(--text-primary)">{String(value)}</span>
+    </div>
+  );
+}
+
+function RiskDetailRow({ label, risk }) {
+  if (!risk) return null;
+  return (
+    <div className="flex gap-3 py-1 min-w-0">
+      <span className="text-[11px] font-medium text-(--text-muted) w-20 shrink-0">{label}</span>
+      <span className="text-[12px] min-w-0 break-words text-(--text-primary) inline-flex items-center gap-2">
+        <span
+          className={cn('inline-block size-2 rounded-full shrink-0', riskDotClass(risk))}
+          aria-hidden
+        />
+        <span className="font-mono capitalize">{String(risk)}</span>
+      </span>
     </div>
   );
 }
@@ -33,8 +74,8 @@ function PreviewRow({ label, value }) {
   if (value == null || value === '') return null;
   return (
     <div className="py-1.5 min-w-0">
-      <div className="mb-1 text-[13px] font-medium text-(--text-muted)">{label}</div>
-      <pre className="max-h-40 overflow-auto rounded-md border border-(--border-default) bg-(--bg-secondary) px-2.5 py-2 text-[12px] leading-5 text-(--text-primary) whitespace-pre-wrap break-words">
+      <div className="mb-1 text-[11px] font-medium text-(--text-muted)">{label}</div>
+      <pre className="max-h-40 overflow-auto rounded-md border border-(--border-default) bg-(--bg-secondary) px-2.5 py-2 font-mono text-[12px] leading-5 text-(--text-primary) whitespace-pre-wrap break-words">
         {String(value)}
       </pre>
     </div>
@@ -54,8 +95,13 @@ function ApprovalBody({ variant, args, details }) {
   if (variant === 'run') {
     return (
       <>
-        <DetailRow label={t('approvalFieldCommand')} value={parsed.command || '-'} />
-        {details?.risk && <DetailRow label={t('approvalFieldRisk')} value={details.risk} />}
+        <ReviewSection label={t('approvalFieldCommand')}>
+          <ReviewCommandBlock
+            command={parsed.command || '-'}
+            className="max-h-[min(42vh,24rem)] overflow-auto overscroll-contain"
+          />
+        </ReviewSection>
+        {details?.risk && <RiskDetailRow label={t('approvalFieldRisk')} risk={details.risk} />}
         {details?.evaluation?.recommendation && <DetailRow label={t('approvalFieldRecommend')} value={details.evaluation.recommendation} />}
         {details?.policyBlock?.reason && <DetailRow label={t('approvalFieldPolicy')} value={details.policyBlock.reason} />}
         {(details?.description || details?.evaluation?.description) && (
@@ -66,15 +112,14 @@ function ApprovalBody({ variant, args, details }) {
     );
   }
   if (variant === 'edit') {
-    const edit = parsed.edit && typeof parsed.edit === 'object' ? parsed.edit : {};
-    const kind = parsed.kind || edit.kind || parsed.mode || 'edit';
+    const kind = parsed.kind || parsed.mode || 'edit';
     return (
       <>
         <DetailRow label={t('approvalFieldTool')} value="edit" />
-        <DetailRow label={t('approvalFieldFile')} value={parsed.file || parsed.path || '-'} />
+        <DetailRow label={t('approvalFieldFile')} value={parsed.path || '-'} />
         <DetailRow label={t('approvalFieldAction')} value={kind} />
-        <PreviewRow label={t('approvalFieldOld')} value={parsed.old_text || parsed.old_string || edit.old_text || edit.old_string} />
-        <PreviewRow label={t('approvalFieldNew')} value={parsed.new_text || parsed.new_string || edit.new_text || edit.new_string || edit.new_content || parsed.content} />
+        <PreviewRow label={t('approvalFieldOld')} value={parsed.old_text} />
+        <PreviewRow label={t('approvalFieldNew')} value={parsed.new_text || parsed.new_content || parsed.content} />
       </>
     );
   }
@@ -82,19 +127,42 @@ function ApprovalBody({ variant, args, details }) {
     return (
       <>
         <DetailRow label={t('approvalFieldTool')} value="create" />
-        <DetailRow label={t('approvalFieldFile')} value={parsed.file || parsed.path || '-'} />
-        <PreviewRow label={t('approvalFieldContent')} value={parsed.content || parsed.text || parsed.body} />
+        <DetailRow label={t('approvalFieldFile')} value={parsed.path || '-'} />
+        <PreviewRow label={t('approvalFieldContent')} value={parsed.content} />
+      </>
+    );
+  }
+  if (variant === 'write') {
+    return (
+      <>
+        <DetailRow label={t('approvalFieldTool')} value="write" />
+        <DetailRow label={t('approvalFieldFile')} value={parsed.path || '-'} />
+        <DetailRow label={t('approvalFieldAction')} value={parsed.overwrite ? 'overwrite' : 'write'} />
+        <PreviewRow label={t('approvalFieldContent')} value={parsed.content} />
+      </>
+    );
+  }
+  if (variant === 'apply_patch') {
+    const patchText = String(parsed.patch_text || '');
+    const files = [...patchText.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)]
+      .map((match) => match[1])
+      .filter(Boolean);
+    return (
+      <>
+        <DetailRow label={t('approvalFieldTool')} value="apply_patch" />
+        {files.length > 0 && <DetailRow label={t('approvalFieldFile')} value={files.join(', ')} />}
+        <PreviewRow label={t('approvalFieldContent')} value={patchText} />
       </>
     );
   }
   if (variant === 'plan') {
     return (
       <>
-        {details?.title && <p className="text-sm mb-2">{details.title}</p>}
+        {details?.title && <p className="mb-2 text-[13px] leading-6 text-(--text-secondary)">{details.title}</p>}
         {details?.steps && (
-          <ol className="list-decimal list-inside space-y-1">
+          <ol className="list-decimal list-inside flex flex-col gap-1">
             {details.steps.map((step, i) => (
-              <li key={i} className="text-sm">{step.role || ''}: {step.title || ''}</li>
+              <li key={i} className="text-[13px] leading-6 text-(--text-secondary)">{step.role || ''}: {step.title || ''}</li>
             ))}
           </ol>
         )}
@@ -114,9 +182,46 @@ function ApprovalBody({ variant, args, details }) {
 }
 
 export function ApprovalDialog({ request, open, onDecision }) {
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
+
+  useEffect(() => {
+    // Only reset when a new request arrives. Keep the lock when request clears
+    // so Dialog close/unmount cannot emit a second reject.
+    if (!request?.id) return;
+    submittingRef.current = false;
+    setSubmitting(false);
+  }, [request?.id]);
+
   if (!request) return null;
   const { id, toolName, displayName, arguments: args, details } = request;
   const variant = detectVariant(toolName, details);
+  const hasApprovalShortcuts = ['delete', 'run', 'edit', 'create', 'write', 'apply_patch'].includes(variant);
+
+  const decide = (actionName) => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setSubmitting(true);
+    onDecision(id, actionName);
+  };
+
+  const handleKeyDownCapture = (event) => {
+    if (!hasApprovalShortcuts || submittingRef.current) return;
+    if (event.defaultPrevented || event.repeat) return;
+
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      decide(CHAT_ACTION_NAMES.APPROVAL_REJECT);
+      return;
+    }
+
+    if (event.key === 'Enter' && !event.shiftKey && !isEditableTarget(event.target)) {
+      event.preventDefault();
+      event.stopPropagation();
+      decide(CHAT_ACTION_NAMES.APPROVAL_APPROVE);
+    }
+  };
 
   const titles = {
     delete: t('deleteApproval'),
@@ -124,14 +229,29 @@ export function ApprovalDialog({ request, open, onDecision }) {
     edit: t('editApproval'),
     create: t('createApproval'),
     write: t('writeApproval'),
+    apply_patch: t('writeApproval'),
     plan: t('planApproval'),
     reflect: t('reflectApproval'),
     generic: t('approveTitle')
   };
 
   return (
-    <Dialog open={open} onOpenChange={(v) => { if (!v) onDecision(id, false); }}>
-      <DialogContent className="sm:max-w-xl max-h-[82vh] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
+    <Dialog
+      open={open}
+      onOpenChange={(v) => {
+        // Ignore programmatic close after Allow/Deny already submitted.
+        if (!v && request?.id && !submittingRef.current) {
+          decide(CHAT_ACTION_NAMES.APPROVAL_REJECT);
+        }
+      }}
+    >
+      <DialogContent
+        onKeyDownCapture={handleKeyDownCapture}
+        className={cn(
+          'max-h-[82vh] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden',
+          variant === 'run' ? 'sm:max-w-2xl' : 'sm:max-w-xl',
+        )}
+      >
         <DialogHeader>
           <DialogTitle>{titles[variant] || t('approveTitle')}</DialogTitle>
         </DialogHeader>
@@ -139,8 +259,25 @@ export function ApprovalDialog({ request, open, onDecision }) {
           <ApprovalBody variant={variant} args={args} details={details} />
         </div>
         <DialogFooter className="gap-2">
-          <Button variant="outline" onClick={() => onDecision(id, false)}>{t('deny')}</Button>
-          <Button onClick={() => onDecision(id, true)}>{t('approve')}</Button>
+          <Button
+            variant="outline"
+            disabled={submitting}
+            onClick={() => decide(CHAT_ACTION_NAMES.APPROVAL_REJECT)}
+          >
+            {t('deny')}
+            {hasApprovalShortcuts && (
+              <span className="ml-1.5 text-[11px] font-mono opacity-70">Esc</span>
+            )}
+          </Button>
+          <Button
+            disabled={submitting}
+            onClick={() => decide(CHAT_ACTION_NAMES.APPROVAL_APPROVE)}
+          >
+            {t('approve')}
+            {hasApprovalShortcuts && (
+              <span className="ml-1.5 text-[13px] leading-none opacity-80">↩︎</span>
+            )}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

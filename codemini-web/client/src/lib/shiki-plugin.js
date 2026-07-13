@@ -1,18 +1,6 @@
 import { createHighlighter } from "shiki";
 
-const themes = [
-  "github-light",
-  "github-dark",
-  "catppuccin-latte",
-  "catppuccin-mocha",
-  "tokyo-night",
-  "one-light",
-  "one-dark-pro",
-  "github-light-default",
-  "github-dark-default",
-  "light-plus",
-  "dark-plus",
-];
+const themes = ["github-light", "github-dark"];
 let highlighterPromise = null;
 let highlighterInstance = null;
 
@@ -28,14 +16,6 @@ function getHighlighter() {
 }
 
 const loadedLangs = new Set();
-if (typeof window !== "undefined") {
-  window.addEventListener("codemini-theme-palette-change", () => {
-    highlighterPromise = null;
-    highlighterInstance = null;
-    loadedLangs.clear();
-  });
-}
-
 async function ensureLang(lang) {
   if (!lang) return;
   if (loadedLangs.has(lang)) return;
@@ -116,24 +96,5 @@ function doHighlight(code, language) {
 }
 
 function getActiveSyntaxThemes() {
-  if (typeof document === "undefined") {
-    return { light: "github-light", dark: "github-dark" };
-  }
-  const palette = document.documentElement.dataset.palette || "default";
-  if (palette === "catppuccin") {
-    return { light: "catppuccin-latte", dark: "catppuccin-mocha" };
-  }
-  if (palette === "tokyonight") {
-    return { light: "github-light", dark: "tokyo-night" };
-  }
-  if (palette === "one") {
-    return { light: "one-light", dark: "one-dark-pro" };
-  }
-  if (palette === "github") {
-    return { light: "github-light-default", dark: "github-dark-default" };
-  }
-  if (palette === "vscode") {
-    return { light: "light-plus", dark: "dark-plus" };
-  }
   return { light: "github-light", dark: "github-dark" };
 }
