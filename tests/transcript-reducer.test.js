@@ -39,6 +39,44 @@ test('applyStreamEventToMessage persists hook start/end as skill segments', () =
   assert.equal(message.segments[0].event, 'UserPromptSubmit');
 });
 
+test('PreToolUse hook end matches start when toolName is present', () => {
+  let message = {
+    id: 'msg-pretool',
+    role: 'general',
+    segments: [],
+  };
+
+  message = applyStreamEventToMessage(message, {
+    type: 'assistant:tool_call_delta',
+    toolCall: { id: 'call-1', name: 'run', arguments: '{}' },
+  });
+  message = applyStreamEventToMessage(message, {
+    type: 'hook:start',
+    event: 'PreToolUse',
+    name: 'package-hooks-smoke',
+    source: 'package',
+    toolName: 'run',
+    command: 'node -e "..."',
+  });
+
+  assert.equal(message.segments[0].type, 'skill');
+  assert.equal(message.segments[0].event, 'PreToolUse');
+  assert.equal(message.segments[0].status, 'running');
+  assert.equal(message.segments[1].type, 'tools');
+
+  message = applyStreamEventToMessage(message, {
+    type: 'hook:end',
+    event: 'PreToolUse',
+    name: 'package-hooks-smoke',
+    source: 'package',
+    toolName: 'run',
+    decision: 'allow',
+  });
+
+  assert.equal(message.segments[0].status, 'done');
+  assert.equal(message.segments[0].event, 'PreToolUse');
+});
+
 test('replaceLastTextSegment does not duplicate text after a tool card', () => {
   const segments = replaceLastTextSegment(
     [

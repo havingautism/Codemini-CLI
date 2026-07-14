@@ -64,15 +64,46 @@ export function createSkillSegment(event, status = "running") {
   return segment;
 }
 
+/** Insert PreToolUse before the tools segment that already shows that tool. */
+function findPreToolUseInsertIndex(segments, toolName) {
+  const name = String(toolName || "").trim();
+  const list = Array.isArray(segments) ? segments : [];
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const segment = list[index];
+    if (segment?.type !== "tools" || !Array.isArray(segment.cards)) continue;
+    if (!name) return index;
+    if (segment.cards.some((card) => String(card?.name || "").trim() === name)) {
+      return index;
+    }
+  }
+  return -1;
+}
+
 export function addSkillToSegments(segments, event) {
   const source = Array.isArray(segments) ? segments : [];
   const existingIndex = source.findIndex(
     (segment) => segment?.type === "skill" && segment.name === event.name,
   );
-  if (existingIndex === -1) return [...source, createSkillSegment(event)];
-  return source.map((segment, index) =>
-    index === existingIndex ? createSkillSegment(event) : segment,
-  );
+  if (existingIndex !== -1) {
+    return source.map((segment, index) =>
+      index === existingIndex ? createSkillSegment(event) : segment,
+    );
+  }
+
+  const nextSegment = createSkillSegment(event);
+  // Tool cards appear during assistant:tool_call_delta, before PreToolUse runs.
+  // Place PreToolUse above the matching tools group so the UI order matches lifecycle.
+  if (event?.kind === "hook" && event?.event === "PreToolUse") {
+    const insertAt = findPreToolUseInsertIndex(source, event.toolName);
+    if (insertAt >= 0) {
+      return [
+        ...source.slice(0, insertAt),
+        nextSegment,
+        ...source.slice(insertAt),
+      ];
+    }
+  }
+  return [...source, nextSegment];
 }
 
 export function updateSkillInSegments(segments, name, updater) {

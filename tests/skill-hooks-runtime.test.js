@@ -65,6 +65,43 @@ test('fireSkillHookEvent runs UserPromptSubmit handlers and aggregates additiona
   assert.ok(endEvents.every((event) => event.decision === 'allow'));
 });
 
+test('fireSkillHookEvent PreToolUse start/end share toolName for UI matching', async () => {
+  const session = createSkillHooksSession();
+  armSkillHooks(session, {
+    name: 'guard',
+    hooks: {
+      PreToolUse: [{
+        matcher: 'run',
+        hooks: [{ type: 'command', command: 'guard.sh', timeout: 5, failClosed: false }],
+      }],
+    },
+    pluginRoot: '/plugins/guard',
+  });
+
+  const events = [];
+  await fireSkillHookEvent({
+    session,
+    eventName: 'PreToolUse',
+    toolName: 'run',
+    input: { tool_name: 'run', tool_input: {} },
+    workspaceRoot: '/workspace',
+    runCommandHookFn: async () => ({ ok: true, decision: 'allow' }),
+    onAgentEvent: (event) => events.push(event),
+  });
+
+  const start = events.find((event) => event.type === 'hook:start');
+  const end = events.find((event) => event.type === 'hook:end');
+  assert.ok(start && end);
+  assert.equal(start.toolName, 'run');
+  assert.equal(end.toolName, 'run');
+  assert.equal(start.command, 'guard.sh');
+  assert.equal(end.command, 'guard.sh');
+  assert.equal(start.matcher, 'run');
+  assert.equal(end.matcher, 'run');
+  assert.equal(start.source, end.source);
+  assert.equal(start.name, end.name);
+});
+
 test('fireSkillHookEvent denies and short-circuits when a handler returns deny', async () => {
   const session = createSkillHooksSession();
   armUserPromptSkill(session, 'alpha', 'alpha.sh');

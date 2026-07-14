@@ -85,19 +85,20 @@ export async function fireSkillHookEvent({
     if (toolName) summaryParts.push(String(toolName));
     else if (matcher) summaryParts.push(String(matcher));
     const summary = `${summaryParts.join(' · ')} ← ${displayName}`;
+    // Keep start/end/error fields aligned so UI match keys (event::label::tool) stay stable.
+    const hookEventBase = {
+      event: eventName,
+      skillName,
+      source: resolvedSource,
+      name: displayName,
+      command,
+      matcher: matcher || '',
+      toolName: toolName || '',
+      summary,
+    };
 
     if (typeof onAgentEvent === 'function') {
-      onAgentEvent({
-        type: 'hook:start',
-        event: eventName,
-        skillName,
-        source: resolvedSource,
-        name: displayName,
-        command,
-        matcher: matcher || '',
-        toolName: toolName || '',
-        summary,
-      });
+      onAgentEvent({ type: 'hook:start', ...hookEventBase });
     }
 
     let result;
@@ -114,10 +115,7 @@ export async function fireSkillHookEvent({
       if (typeof onAgentEvent === 'function') {
         onAgentEvent({
           type: 'hook:error',
-          event: eventName,
-          skillName,
-          name: displayName,
-          summary,
+          ...hookEventBase,
           error: String(error?.message || error || 'Hook command failed'),
         });
       }
@@ -128,10 +126,7 @@ export async function fireSkillHookEvent({
       if (typeof onAgentEvent === 'function') {
         onAgentEvent({
           type: 'hook:end',
-          event: eventName,
-          skillName,
-          name: displayName,
-          summary,
+          ...hookEventBase,
           ok: false,
           decision: 'deny',
           reason: result.reason,
@@ -151,10 +146,7 @@ export async function fireSkillHookEvent({
       if (typeof onAgentEvent === 'function') {
         onAgentEvent({
           type: 'hook:end',
-          event: eventName,
-          skillName,
-          name: displayName,
-          summary,
+          ...hookEventBase,
           ok: false,
         });
       }
@@ -178,10 +170,7 @@ export async function fireSkillHookEvent({
       if (typeof onAgentEvent === 'function') {
         onAgentEvent({
           type: 'hook:end',
-          event: eventName,
-          skillName,
-          name: displayName,
-          summary,
+          ...hookEventBase,
           decision: result.decision === 'block' ? 'block' : 'deny',
         });
       }
@@ -199,10 +188,7 @@ export async function fireSkillHookEvent({
     if (typeof onAgentEvent === 'function') {
       onAgentEvent({
         type: 'hook:end',
-        event: eventName,
-        skillName,
-        name: displayName,
-        summary,
+        ...hookEventBase,
         decision: result.decision || 'allow',
       });
     }
