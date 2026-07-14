@@ -7,6 +7,33 @@ import {
 } from '../codemini-web/shared/transcript-segments.js';
 import { reduceSessionTranscriptEvent } from '../codemini-web/client/src/lib/session-state.js';
 
+test('applyStreamEventToMessage persists hook start/end as skill segments', () => {
+  let message = {
+    id: 'msg-hook',
+    role: 'general',
+    segments: [],
+  };
+
+  message = applyStreamEventToMessage(message, {
+    type: 'hook:start',
+    summary: 'UserPromptSubmit ← package-hooks-smoke',
+    name: 'package-hooks-smoke',
+    command: 'node -e "..."',
+  });
+  assert.equal(message.segments.length, 1);
+  assert.equal(message.segments[0].type, 'skill');
+  assert.equal(message.segments[0].name, 'UserPromptSubmit ← package-hooks-smoke');
+  assert.equal(message.segments[0].status, 'running');
+
+  message = applyStreamEventToMessage(message, {
+    type: 'hook:end',
+    summary: 'UserPromptSubmit ← package-hooks-smoke',
+    name: 'package-hooks-smoke',
+    ok: true,
+  });
+  assert.equal(message.segments[0].status, 'done');
+});
+
 test('replaceLastTextSegment does not duplicate text after a tool card', () => {
   const segments = replaceLastTextSegment(
     [

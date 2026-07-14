@@ -181,12 +181,33 @@ test('fireSkillHookEvent emits hook:error and continues when runCommandHookFn th
   assert.equal(events.some((event) => event.type === 'hook:error' && event.error === 'spawn failed'), true);
 });
 
-test('fireSkillHookEvent is a no-op when no session or eventName is provided', async () => {
-  const noSession = await fireSkillHookEvent({ eventName: 'UserPromptSubmit' });
-  assert.deepEqual(noSession, { ok: true, denied: false, contexts: [] });
+test('fireSkillHookEvent can target a single package arm by skillName', async () => {
+  const session = createSkillHooksSession();
+  armSkillHooks(session, {
+    name: '__package__:demo',
+    hooks: {
+      SessionStart: [{ hooks: [{ type: 'command', command: 'pkg.sh', timeout: 5 }] }],
+    },
+    provenance: { SessionStart: { source: 'package', packageName: 'Demo Package' } },
+  });
+  armUserPromptSkill(session, 'other-skill', 'skill.sh');
 
-  const noEventName = await fireSkillHookEvent({ session: createSkillHooksSession() });
-  assert.deepEqual(noEventName, { ok: true, denied: false, contexts: [] });
+  const events = [];
+  const result = await fireSkillHookEvent({
+    session,
+    eventName: 'SessionStart',
+    skillName: '__package__:demo',
+    runCommandHookFn: async () => ({
+      ok: true,
+      decision: 'allow',
+      additionalContext: 'from-package',
+    }),
+    onAgentEvent: (event) => events.push(event),
+  });
+
+  assert.deepEqual(result.contexts, ['from-package']);
+  assert.equal(events[0]?.name, 'Demo Package');
+  assert.equal(events[0]?.source, 'package');
 });
 
 test('resolveSkillRoot prefers metadata.rootPath then falls back to path dirname', () => {

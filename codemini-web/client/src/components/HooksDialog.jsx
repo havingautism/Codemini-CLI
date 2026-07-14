@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowClockwise,
   CaretDown,
+  CaretRight,
   FloppyDisk,
+  Folder,
   Lightning,
   MagnifyingGlass,
   Package,
@@ -17,11 +19,6 @@ import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Empty, EmptyDescription } from '@/components/ui/empty';
 import { Switch } from '@/components/ui/switch';
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible';
 import {
   Select,
   SelectContent,
@@ -825,11 +822,19 @@ function SkillHooksPane({ projectDirs = [], onDirtyChange }) {
 }
 
 const HOOK_PROFILE_SCOPES = [
-  { id: 'always', labelKey: 'globalScope' },
+  { id: 'always', labelKey: 'hooksProfileAlways' },
   { id: 'coding', labelKey: 'skillContextCoding' },
   { id: 'daily', labelKey: 'skillContextDaily' },
 ];
 
+function profileListSubtitle(profile) {
+  if (profile.kind === 'skill') {
+    return `${t('hooksProfileSkillActivation')} · ${scopeLabel(profile.scope)}`;
+  }
+  if (profile.kind === 'workspace') return t('hooksLegacyProfile');
+  if (profile.kind === 'package') return t('hooksProfilePackageHint');
+  return t('hooksProfileCustom');
+}
 function HookProfilesPane({ onDirtyChange }) {
   const [profiles, setProfiles] = useState([]);
   const [selectedId, setSelectedId] = useState('');
@@ -841,7 +846,18 @@ function HookProfilesPane({ onDirtyChange }) {
   const [savedAt, setSavedAt] = useState('');
   const [pendingSelection, setPendingSelection] = useState('');
   const [pendingDelete, setPendingDelete] = useState(null);
-  const [openScopes, setOpenScopes] = useState({ always: true, coding: true, daily: true });
+  const [expandedScopes, setExpandedScopes] = useState(
+    () => new Set(HOOK_PROFILE_SCOPES.map((scope) => scope.id)),
+  );
+
+  const toggleScope = useCallback((scopeId) => {
+    setExpandedScopes((current) => {
+      const next = new Set(current);
+      if (next.has(scopeId)) next.delete(scopeId);
+      else next.add(scopeId);
+      return next;
+    });
+  }, []);
 
   const selected = profiles.find((profile) => profile.id === selectedId) || null;
   const isNew = draft?._isNew === true;
@@ -962,84 +978,105 @@ function HookProfilesPane({ onDirtyChange }) {
             <ArrowClockwise className={cn(loading && 'animate-spin')} />
           </Button>
         </div>
-        <div className="min-h-[160px] flex-1 space-y-2 overflow-y-auto">
-          {HOOK_PROFILE_SCOPES.map((scope) => {
-            const scopedProfiles = profiles.filter((profile) => profile.activation === scope.id);
-            const open = openScopes[scope.id] !== false;
-            return (
-              <Collapsible
-                key={scope.id}
-                open={open}
-                onOpenChange={(next) => setOpenScopes((current) => ({ ...current, [scope.id]: next }))}
-                className="rounded-lg border border-(--border-default) bg-(--bg-primary)"
-              >
-                <div className="flex items-center gap-1 px-2 py-1.5">
-                  <CollapsibleTrigger asChild>
-                    <button type="button" className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1 text-left hover:bg-(--bg-subtle)">
-                      <CaretDown size={13} className={cn('shrink-0 transition-transform', !open && '-rotate-90')} />
-                      <span className="truncate text-[12px] font-semibold text-(--text-primary)">{t(scope.labelKey)}</span>
-                      <Badge variant="secondary" className="ml-auto h-5 px-1.5 text-[10px]">{scopedProfiles.length}</Badge>
-                    </button>
-                  </CollapsibleTrigger>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => createProfile(scope.id)}
-                    disabled={saving}
-                    aria-label={`${t('hooksNewProfile')} · ${t(scope.labelKey)}`}
-                    title={t('hooksNewProfile')}
-                  >
-                    <Plus size={14} />
-                  </Button>
-                </div>
-                <CollapsibleContent className="space-y-1 border-t border-(--border-default) p-1.5">
-                  {scopedProfiles.length === 0 ? (
-                    <p className="px-2 py-2 text-[11px] text-(--text-muted)">{t('hooksNoProfilesInScope')}</p>
-                  ) : scopedProfiles.map((profile) => (
-                    <div
-                      key={profile.id}
-                      className={cn(
-                        'group flex items-center gap-1 rounded-md border transition-colors',
-                        selectedId === profile.id
-                          ? 'border-(--border-strong) bg-(--bg-subtle)'
-                          : 'border-transparent hover:border-(--border-default) hover:bg-(--bg-subtle)/60',
-                      )}
+        <div className="min-h-[160px] flex-1 overflow-y-auto">
+          <div className="grid gap-2">
+            {HOOK_PROFILE_SCOPES.map((scope) => {
+              const scopedProfiles = profiles.filter((profile) => profile.activation === scope.id);
+              const collapsed = !expandedScopes.has(scope.id);
+              return (
+                <div key={scope.id} className="grid gap-1">
+                  <div className="flex h-8 w-full items-center gap-1 rounded-lg px-1 text-[12px] font-medium text-foreground hover:bg-muted/50">
+                    <button
+                      type="button"
+                      onClick={() => toggleScope(scope.id)}
+                      className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1 text-left"
+                      title={t(scope.labelKey)}
+                      aria-expanded={!collapsed}
                     >
-                      <button type="button" onClick={() => selectProfile(profile.id)} className="min-w-0 flex-1 px-2.5 py-2 text-left">
-                        <span className="flex items-center gap-2">
-                          <span className="truncate text-[13px] font-medium text-(--text-primary)">{profile.nameKey ? t(profile.nameKey) : profile.name}</span>
-                          {profile.kind === 'skill' ? <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-[10px]">{t('hooksProfileSkill')}</Badge> : null}
-                          {profile.kind === 'package' ? <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-[10px]">{t('hooksProfilePackage')}</Badge> : null}
-                        </span>
-                        <span className="mt-0.5 block truncate text-[10px] text-(--text-muted)">
-                          {profile.kind === 'skill'
-                            ? scopeLabel(profile.scope)
-                            : profile.kind === 'workspace'
-                              ? t('hooksLegacyProfile')
-                              : profile.kind === 'package'
-                                ? t('hooksProfilePackageHint')
-                                : t('hooksProfileCustom')}
-                        </span>
-                      </button>
-                      {profile.editable !== false || profile.kind === 'package' ? (
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          className="mr-1 text-(--accent-red) opacity-70 hover:bg-(--accent-red-bg) hover:text-(--accent-red) group-hover:opacity-100"
-                          onClick={() => setPendingDelete(profile)}
-                          disabled={saving}
-                          aria-label={`${t('delete')} ${profile.name}`}
-                          title={t('delete')}
-                        >
-                          <Trash size={13} />
-                        </Button>
-                      ) : null}
+                      <Folder size={14} className="shrink-0 text-muted-foreground" />
+                      <span className="min-w-0 flex-1 truncate">{t(scope.labelKey)}</span>
+                      <span className="shrink-0 text-muted-foreground">{scopedProfiles.length}</span>
+                      {collapsed ? <CaretRight size={13} /> : <CaretDown size={13} />}
+                    </button>
+                    <div
+                      className="flex shrink-0 items-center gap-0.5 pr-0.5"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={() => createProfile(scope.id)}
+                        disabled={saving}
+                        aria-label={`${t('hooksNewProfile')} · ${t(scope.labelKey)}`}
+                        title={t('hooksNewProfile')}
+                      >
+                        <Plus size={13} />
+                      </Button>
                     </div>
-                  ))}
-                </CollapsibleContent>
-              </Collapsible>
-            );
-          })}
+                  </div>
+                  {!collapsed ? (
+                    <div className="grid gap-1 pl-1">
+                      {scopedProfiles.length === 0 ? (
+                        <p className="px-2 py-2 text-[11px] text-(--text-muted)">
+                          {t('hooksNoProfilesInScope')}
+                        </p>
+                      ) : (
+                        scopedProfiles.map((profile) => (
+                          <div
+                            key={profile.id}
+                            className={cn(
+                              'group flex items-center gap-1 rounded-lg border px-1 transition-[background-color,border-color,box-shadow]',
+                              selectedId === profile.id
+                                ? 'border-transparent bg-(--bg-active)'
+                                : 'border-transparent bg-transparent hover:bg-(--bg-hover)',
+                            )}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => selectProfile(profile.id)}
+                              className="min-w-0 flex-1 px-2 py-2 text-left outline-none focus-visible:shadow-[0_0_0_3px_var(--control-focus-ring)]"
+                            >
+                              <span className="flex items-center gap-2">
+                                <span className="truncate text-sm font-semibold text-foreground">
+                                  {profile.nameKey ? t(profile.nameKey) : profile.name}
+                                </span>
+                                {profile.kind === 'skill' ? (
+                                  <Badge variant="outline" className="h-5 shrink-0 rounded-md px-1.5 text-[11px]">
+                                    {t('hooksProfileSkill')}
+                                  </Badge>
+                                ) : null}
+                                {profile.kind === 'package' ? (
+                                  <Badge variant="outline" className="h-5 shrink-0 rounded-md px-1.5 text-[11px]">
+                                    {t('hooksProfilePackage')}
+                                  </Badge>
+                                ) : null}
+                              </span>
+                              <span className="mt-0.5 block truncate text-xs text-muted-foreground">
+                                {profileListSubtitle(profile)}
+                              </span>
+                            </button>
+                            {profile.editable !== false || profile.kind === 'package' ? (
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                className="mr-0.5 text-(--accent-red) opacity-70 hover:bg-(--accent-red-bg) hover:text-(--accent-red) group-hover:opacity-100"
+                                onClick={() => setPendingDelete(profile)}
+                                disabled={saving}
+                                aria-label={`${t('delete')} ${profile.name}`}
+                                title={t('delete')}
+                              >
+                                <Trash size={13} />
+                              </Button>
+                            ) : null}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
         </div>
       </aside>
 
@@ -1058,7 +1095,7 @@ function HookProfilesPane({ onDirtyChange }) {
                 <Select value={draft.activation} disabled={draft.kind !== 'custom'} onValueChange={(activation) => setDraft((current) => ({ ...current, activation }))}>
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="always">{t('globalScope')}</SelectItem>
+                    <SelectItem value="always">{t('hooksProfileAlways')}</SelectItem>
                     <SelectItem value="coding">{t('skillContextCoding')}</SelectItem>
                     <SelectItem value="daily">{t('skillContextDaily')}</SelectItem>
                   </SelectContent>
@@ -1150,7 +1187,6 @@ export function HooksDialog({ open, onOpenChange, projectDirs = [] }) {
     <ResourceLibraryDialog
       open={open}
       onOpenChange={handleOpenChange}
-      icon={Lightning}
       title={t('hooks')}
       description={t('hooksDialogHint')}
     >

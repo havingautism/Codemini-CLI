@@ -101,9 +101,13 @@ test('skill routing remains independent from the unified Hook Profiles dialog', 
 
 test('Hook Profiles are grouped by collapsible execution scope with add and delete actions', () => {
   assert.match(hooksDialogSource, /HOOK_PROFILE_SCOPES/);
-  assert.match(hooksDialogSource, /<Collapsible/);
+  assert.match(hooksDialogSource, /toggleScope/);
+  assert.match(hooksDialogSource, /expandedScopes/);
+  assert.match(hooksDialogSource, /bg-\(--bg-active\)/);
   assert.match(hooksDialogSource, /createProfile\(scope\.id\)/);
   assert.match(hooksDialogSource, /setPendingDelete\(profile\)/);
+  assert.doesNotMatch(hooksDialogSource, /icon=\{Lightning\}/);
+  assert.doesNotMatch(hooksDialogSource, /<Collapsible/);
   assert.doesNotMatch(hooksDialogSource, /name: 'Global', nameKey: 'globalScope'/);
 });
 

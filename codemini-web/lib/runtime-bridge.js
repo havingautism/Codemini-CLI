@@ -762,6 +762,64 @@ export class RuntimeBridge {
         }
         break;
       }
+      case 'hook:start': {
+        const hookName =
+          event.summary || event.name || event.skillName || event.event || 'hook';
+        const hookEvent = {
+          name: hookName,
+          summary: event.command ? `${hookName} · ${event.command}` : hookName,
+          startedAt: event.startedAt || new Date().toISOString(),
+        };
+        if (this.#uiActiveMsgId) {
+          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
+            ...message,
+            segments: addSkillToSegments(
+              finishThinkingSegments(message.segments),
+              hookEvent,
+            ),
+          }));
+          publishedMessageId = this.#uiActiveMsgId;
+        } else {
+          this.#uiPendingSkillSegments = addSkillToSegments(
+            this.#uiPendingSkillSegments,
+            hookEvent,
+          );
+        }
+        break;
+      }
+      case 'hook:end':
+      case 'hook:error': {
+        const hookName =
+          event.summary || event.name || event.skillName || event.event || 'hook';
+        const endedAt = event.endedAt || new Date().toISOString();
+        const status =
+          event.type === 'hook:error' ||
+          event.decision === 'deny' ||
+          event.ok === false
+            ? 'error'
+            : 'done';
+        const updater = (segment) => ({
+          ...segment,
+          status,
+          summary:
+            event.reason || event.summary || event.command || segment.summary,
+          endedAt,
+        });
+        if (this.#uiActiveMsgId) {
+          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
+            ...message,
+            segments: updateSkillInSegments(message.segments, hookName, updater),
+          }));
+          publishedMessageId = this.#uiActiveMsgId;
+        } else {
+          this.#uiPendingSkillSegments = updateSkillInSegments(
+            this.#uiPendingSkillSegments,
+            hookName,
+            updater,
+          );
+        }
+        break;
+      }
       case 'skill:always': {
         const names = (event.names || []).join(', ');
         if (!names) break;

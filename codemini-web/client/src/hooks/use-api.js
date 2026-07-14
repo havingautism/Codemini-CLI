@@ -398,20 +398,38 @@ export async function createSkill({ name, description, content, scope, projectDi
   return readJsonResponse(res);
 }
 
-export async function installSkill({ source, scope, projectDir, contexts, includeHooks = true }) {
-  const res = await api('/api/skills/install', {
+export async function previewSkillSource(source) {
+  const res = await api('/api/skills/preview', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ source, scope, projectDir, contexts, includeHooks })
+    body: JSON.stringify({ source })
   });
   return readJsonResponse(res);
 }
 
-export async function updateSkillPackage({ name, projectDir }) {
-  const res = await api('/api/skills/update', {
+export async function installSkill({ source, scope, projectDir, contexts, includeHooks = false, skillNames = null }) {
+  const res = await api('/api/skills/install', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ source, scope, projectDir, contexts, includeHooks, skillNames })
+  });
+  return readJsonResponse(res);
+}
+
+export async function previewSkillPackageUpdate({ name, projectDir }) {
+  const res = await api('/api/skills/update/preview', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ name, projectDir })
+  });
+  return readJsonResponse(res);
+}
+
+export async function updateSkillPackage({ name, projectDir, skillNames = null, includeHooks }) {
+  const res = await api('/api/skills/update', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ name, projectDir, skillNames, includeHooks })
   });
   return readJsonResponse(res);
 }

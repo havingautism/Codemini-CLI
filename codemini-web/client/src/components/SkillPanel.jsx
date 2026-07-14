@@ -641,11 +641,9 @@ function InstallDialog({
   setInstallSource,
   installTarget,
   setInstallTarget,
-  installHooks,
-  setInstallHooks,
   installing,
   installError,
-  onInstall,
+  onContinue,
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -692,21 +690,6 @@ function InstallDialog({
                 </SelectContent>
               </Select>
             </SettingsField>
-            <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-(--border-default) bg-(--bg-subtle) px-3 py-2.5">
-              <Checkbox
-                className="mt-0.5"
-                checked={installHooks}
-                onCheckedChange={(checked) => setInstallHooks(checked === true)}
-              />
-              <span className="min-w-0">
-                <span className="block text-[13px] font-medium text-(--text-primary)">
-                  {t("skillInstallHooks")}
-                </span>
-                <span className="mt-0.5 block text-[11px] leading-4 text-(--text-muted)">
-                  {t("skillInstallHooksHint")}
-                </span>
-              </span>
-            </label>
           </SettingsSection>
           {installError && (
             <div className="text-[11px] text-(--accent-red)">
@@ -717,15 +700,154 @@ function InstallDialog({
             <Button
               variant="outline"
               onClick={() => onOpenChange(false)}
+              disabled={installing}
             >
               {t("cancel")}
             </Button>
             <Button
-              onClick={onInstall}
+              onClick={onContinue}
               disabled={installing || !installSource.trim()}
             >
               <Download data-icon="inline-start" />
-              {installing ? t("installing") : t("installSkill")}
+              {installing ? t("skillDetecting") : t("skillDetectAndContinue")}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function SkillPackageSelectDialog({
+  open,
+  mode = "install",
+  packageName = "",
+  skills = [],
+  selectedNames,
+  setSelectedNames,
+  includeHooks,
+  setIncludeHooks,
+  loading = false,
+  confirming = false,
+  error = "",
+  onOpenChange,
+  onConfirm,
+}) {
+  const selectedCount = skills.filter((skill) => selectedNames.has(skill.name)).length;
+  const toggleName = (name, checked) => {
+    setSelectedNames((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(name);
+      else next.delete(name);
+      return next;
+    });
+  };
+  const setAll = (checked) => {
+    setSelectedNames(checked ? new Set(skills.map((skill) => skill.name)) : new Set());
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(next) => !confirming && onOpenChange?.(next)}>
+      <DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[520px]">
+        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
+          <DialogTitle>
+            {mode === "update" ? t("updateSkillPackage") : t("installSkill")}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="flex min-h-0 flex-1 flex-col gap-3 px-4 pb-6 sm:px-6">
+          <p className="text-[12px] leading-5 text-(--text-muted)">
+            {mode === "update"
+              ? t("skillSelectUpdateHint").replace("{{package}}", packageName || t("skillPackage"))
+              : t("skillSelectInstallHint").replace("{{package}}", packageName || t("skillPackage"))}
+          </p>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[12px] text-(--text-muted)">
+              {t("skillSelectCount")
+                .replace("{{selected}}", String(selectedCount))
+                .replace("{{total}}", String(skills.length))}
+            </span>
+            <div className="flex gap-2">
+              <Button type="button" variant="ghost" size="sm" disabled={confirming || loading} onClick={() => setAll(true)}>
+                {t("skillSelectAll")}
+              </Button>
+              <Button type="button" variant="ghost" size="sm" disabled={confirming || loading} onClick={() => setAll(false)}>
+                {t("skillSelectNone")}
+              </Button>
+            </div>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-(--border-default)">
+            {loading ? (
+              <div className="px-3 py-8 text-center text-[12px] text-(--text-muted)">{t("skillDetecting")}</div>
+            ) : skills.length === 0 ? (
+              <div className="px-3 py-8 text-center text-[12px] text-(--text-muted)">{t("skillSelectEmpty")}</div>
+            ) : (
+              <div className="divide-y divide-(--border-default)">
+                {skills.map((skill) => {
+                  const checked = selectedNames.has(skill.name);
+                  return (
+                    <label
+                      key={skill.name}
+                      className="flex cursor-pointer items-start gap-3 px-3 py-2.5 hover:bg-(--bg-subtle)"
+                    >
+                      <Checkbox
+                        className="mt-0.5"
+                        checked={checked}
+                        disabled={confirming}
+                        onCheckedChange={(value) => toggleName(skill.name, value === true)}
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex flex-wrap items-center gap-2">
+                          <span className="text-[13px] font-medium text-(--text-primary)">{skill.name}</span>
+                          {mode === "update" ? (
+                            <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
+                              {skill.installed ? t("skillSelectInstalled") : t("skillSelectNew")}
+                            </Badge>
+                          ) : null}
+                        </span>
+                        {skill.description ? (
+                          <span className="mt-0.5 block text-[11px] leading-4 text-(--text-muted)">
+                            {skill.description}
+                          </span>
+                        ) : null}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-(--border-default) bg-(--bg-subtle) px-3 py-2.5">
+            <Checkbox
+              className="mt-0.5"
+              checked={includeHooks}
+              disabled={confirming}
+              onCheckedChange={(checked) => setIncludeHooks(checked === true)}
+            />
+            <span className="min-w-0">
+              <span className="block text-[13px] font-medium text-(--text-primary)">
+                {t("skillInstallHooks")}
+              </span>
+              <span className="mt-0.5 block text-[11px] leading-4 text-(--text-muted)">
+                {t("skillInstallHooksHint")}
+              </span>
+            </span>
+          </label>
+          {error ? <div className="text-[11px] text-(--accent-red)">{error}</div> : null}
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" disabled={confirming} onClick={() => onOpenChange?.(false)}>
+              {t("cancel")}
+            </Button>
+            <Button
+              disabled={confirming || loading || selectedCount === 0}
+              onClick={onConfirm}
+            >
+              {confirming
+                ? mode === "update"
+                  ? t("updatingSkillPackage")
+                  : t("installing")
+                : mode === "update"
+                  ? t("updateSkillPackage")
+                  : t("installSkill")}
             </Button>
           </div>
         </div>
@@ -966,13 +1088,14 @@ export function SkillPanel({ projectDirs = [] }) {
   const [filter, setFilter] = useState("all");
   const [installSource, setInstallSource] = useState("");
   const [installTarget, setInstallTarget] = useState("");
-  const [installHooks, setInstallHooks] = useState(true);
+  const [installHooks, setInstallHooks] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState("");
   const [installOpen, setInstallOpen] = useState(false);
+  const [skillSelect, setSkillSelect] = useState(null);
+  const [selectedSkillNames, setSelectedSkillNames] = useState(() => new Set());
   const [updating, setUpdating] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
-  const [pendingUpdate, setPendingUpdate] = useState(null);
   const [pendingBatchPackage, setPendingBatchPackage] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [applyingPackageKey, setApplyingPackageKey] = useState("");
@@ -1072,26 +1195,29 @@ export function SkillPanel({ projectDirs = [] }) {
     loadSkills();
   };
 
-  const handleInstall = async () => {
+  const handleInstallContinue = async () => {
     const source = installSource.trim();
     if (!source) return;
     setInstalling(true);
     setInstallError("");
     try {
-      const selectedContext = installTarget || "global";
-      const result = await api.installSkill({
+      const preview = await api.previewSkillSource(source);
+      if (preview?.error) throw new Error(preview.message || "Preview failed");
+      const skills = Array.isArray(preview?.skills) ? preview.skills : [];
+      if (skills.length === 0) throw new Error(t("skillSelectEmpty"));
+      setSelectedSkillNames(new Set(skills.map((skill) => skill.name)));
+      setInstallHooks(false);
+      setSkillSelect({
+        mode: "install",
         source,
-        scope: "global",
-        includeHooks: installHooks,
+        packageName: preview.packageName || preview.packageSource || source,
+        skills,
         contexts:
-          selectedContext === "global"
+          (installTarget || "global") === "global"
             ? ["coding", "daily"]
-            : [selectedContext],
+            : [installTarget || "coding"],
       });
-      if (result?.error) throw new Error(result.message || "Install failed");
-      setInstallSource("");
       setInstallOpen(false);
-      await loadSkills();
     } catch (err) {
       setInstallError(err.message || "Install failed");
     } finally {
@@ -1099,25 +1225,78 @@ export function SkillPanel({ projectDirs = [] }) {
     }
   };
 
-  const handleUpdatePackage = (skill) => {
-    if (!skill || updating) return;
-    setPendingUpdate(skill);
+  const handleConfirmSkillSelect = async () => {
+    if (!skillSelect || selectedSkillNames.size === 0) return;
+    const skillNames = [...selectedSkillNames];
+    setUpdating(true);
+    setInstalling(true);
+    setActionError("");
+    setInstallError("");
+    try {
+      if (skillSelect.mode === "update") {
+        const result = await api.updateSkillPackage({
+          name: skillSelect.name,
+          projectDir: skillSelect.projectDir,
+          skillNames,
+          includeHooks: installHooks,
+        });
+        if (result?.error) {
+          throw new Error(result.message || t("updateSkillPackageFailed"));
+        }
+      } else {
+        const result = await api.installSkill({
+          source: skillSelect.source,
+          scope: "global",
+          includeHooks: installHooks,
+          skillNames,
+          contexts: skillSelect.contexts,
+        });
+        if (result?.error) throw new Error(result.message || "Install failed");
+        setInstallSource("");
+      }
+      setSkillSelect(null);
+      await loadSkills();
+    } catch (err) {
+      if (skillSelect.mode === "update") {
+        setActionError(err.message || t("updateSkillPackageFailed"));
+      } else {
+        setInstallError(err.message || "Install failed");
+      }
+    } finally {
+      setUpdating(false);
+      setInstalling(false);
+    }
   };
 
-  const confirmUpdatePackage = async () => {
-    if (!pendingUpdate || updating) return;
+  const handleUpdatePackage = async (skill) => {
+    if (!skill || updating || installing) return;
     setUpdating(true);
     setActionError("");
     try {
-      const result = await api.updateSkillPackage({
-        name: pendingUpdate.name,
-        projectDir: pendingUpdate.projectDir,
+      const preview = await api.previewSkillPackageUpdate({
+        name: skill.name,
+        projectDir: skill.projectDir,
       });
-      if (result?.error) {
-        throw new Error(result.message || t("updateSkillPackageFailed"));
+      if (preview?.error) {
+        throw new Error(preview.message || t("updateSkillPackageFailed"));
       }
-      setPendingUpdate(null);
-      await loadSkills();
+      const skills = Array.isArray(preview?.skills) ? preview.skills : [];
+      if (skills.length === 0) throw new Error(t("skillSelectEmpty"));
+      setSelectedSkillNames(
+        new Set(skills.filter((item) => item.installed).map((item) => item.name)),
+      );
+      setInstallHooks(false);
+      setSkillSelect({
+        mode: "update",
+        name: skill.name,
+        projectDir: skill.projectDir,
+        packageName:
+          preview.packageName ||
+          skill.packageName ||
+          skill.packageSource ||
+          skill.name,
+        skills,
+      });
     } catch (err) {
       setActionError(err.message || t("updateSkillPackageFailed"));
     } finally {
@@ -1431,11 +1610,30 @@ export function SkillPanel({ projectDirs = [] }) {
         setInstallSource={setInstallSource}
         installTarget={installTarget}
         setInstallTarget={setInstallTarget}
-        installHooks={installHooks}
-        setInstallHooks={setInstallHooks}
         installing={installing}
         installError={installError}
-        onInstall={handleInstall}
+        onContinue={handleInstallContinue}
+      />
+      <SkillPackageSelectDialog
+        open={!!skillSelect}
+        mode={skillSelect?.mode || "install"}
+        packageName={skillSelect?.packageName || ""}
+        skills={skillSelect?.skills || []}
+        selectedNames={selectedSkillNames}
+        setSelectedNames={setSelectedSkillNames}
+        includeHooks={installHooks}
+        setIncludeHooks={setInstallHooks}
+        loading={false}
+        confirming={installing || updating}
+        error={skillSelect?.mode === "update" ? actionError : installError}
+        onOpenChange={(open) => {
+          if (!open && !installing && !updating) {
+            setSkillSelect(null);
+            setInstallError("");
+            setActionError("");
+          }
+        }}
+        onConfirm={handleConfirmSkillSelect}
       />
       <PackageBatchDialog
         packageGroup={pendingBatchPackage}
@@ -1479,26 +1677,6 @@ export function SkillPanel({ projectDirs = [] }) {
         loading={deleting}
         onOpenChange={(open) => !open && !deleting && setPendingDelete(null)}
         onConfirm={confirmDeleteSkill}
-      />
-      <ConfirmDialog
-        open={!!pendingUpdate}
-        title={t("updateSkillPackageConfirm")}
-        description={
-          pendingUpdate
-            ? t("updateSkillPackageDescription").replace(
-                "{{package}}",
-                pendingUpdate.packageName ||
-                  pendingUpdate.packageSource ||
-                  pendingUpdate.name,
-              )
-            : ""
-        }
-        confirmLabel={t("updateSkillPackage")}
-        loadingLabel={t("updatingSkillPackage")}
-        confirmVariant="default"
-        loading={updating}
-        onOpenChange={(open) => !open && !updating && setPendingUpdate(null)}
-        onConfirm={confirmUpdatePackage}
       />
     </>
   );

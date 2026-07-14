@@ -26,7 +26,7 @@ import {
 } from './lib/runtime-pool.js';
 import { resolveGitCwd, shouldAdoptGitCwd } from './lib/git-project.js';
 import { resolveEmbed } from './lib/embed-resolver.js';
-import { installSkillSource, listSkillEntries, updateSkillPackage } from '../src/commands/skill.js';
+import { installSkillSource, listSkillEntries, previewSkillPackageUpdate, previewSkillSource, updateSkillPackage } from '../src/commands/skill.js';
 import { computeFileSha256, readSkillRegistry, upsertSkillRegistryEntry, writeSkillRegistry } from '../src/core/skill-registry.js';
 import {
   archiveEntry,
@@ -2967,8 +2967,24 @@ async function main() {
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
     }
+    if (req.method === 'POST' && url.pathname === '/api/skills/preview') {
+      const { source } = await readBody(req);
+      if (!source) { jsonResponse(res, { error: true, message: 'Missing source' }, 400); return; }
+      try {
+        const preview = await previewSkillSource(source, { cwd: currentProjectDir || process.cwd() });
+        jsonResponse(res, { ok: true, ...preview });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/api/skills/install') {
-      const { source, scope: rawScope, projectDir, contexts, includeHooks = true } = await readBody(req);
+      const {
+        source,
+        scope: rawScope,
+        projectDir,
+        contexts,
+        includeHooks = false,
+        skillNames = null,
+      } = await readBody(req);
       if (!source) { jsonResponse(res, { error: true, message: 'Missing source' }, 400); return; }
       try {
         const scope = normalizeSkillScope(rawScope);
@@ -2978,7 +2994,8 @@ async function main() {
         const installed = await installSkillSource(source, {
           scope,
           cwd: targetProjectDir,
-          includeHooks: includeHooks !== false,
+          includeHooks: includeHooks === true,
+          skillNames: Array.isArray(skillNames) ? skillNames : null,
         });
         if (contexts !== undefined) {
           const config = await loadConfig();
@@ -2994,12 +3011,27 @@ async function main() {
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
     }
-    if (req.method === 'POST' && url.pathname === '/api/skills/update') {
+    if (req.method === 'POST' && url.pathname === '/api/skills/update/preview') {
       const { name, projectDir } = await readBody(req);
       if (!name) { jsonResponse(res, { error: true, message: 'Missing skill name' }, 400); return; }
       try {
         const targetProjectDir = await resolveRequestProjectDir(projectDir, currentProjectDir);
-        const result = await updateSkillPackage({ name, cwd: targetProjectDir });
+        const preview = await previewSkillPackageUpdate({ name, cwd: targetProjectDir });
+        jsonResponse(res, { ok: true, ...preview });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/skills/update') {
+      const { name, projectDir, skillNames = null, includeHooks } = await readBody(req);
+      if (!name) { jsonResponse(res, { error: true, message: 'Missing skill name' }, 400); return; }
+      try {
+        const targetProjectDir = await resolveRequestProjectDir(projectDir, currentProjectDir);
+        const result = await updateSkillPackage({
+          name,
+          cwd: targetProjectDir,
+          skillNames: Array.isArray(skillNames) ? skillNames : null,
+          includeHooks,
+        });
         await bridge.reloadConfig();
         await bridge.reloadCommandsAndSkills();
         jsonResponse(res, {

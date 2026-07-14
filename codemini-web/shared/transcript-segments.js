@@ -541,6 +541,43 @@ export function applyStreamEventToMessage(message, event, options = {}) {
         ),
       };
     }
+    case "hook:start": {
+      const hookName =
+        event.summary || event.name || event.skillName || event.event || "hook";
+      const baseSegments = finishThinkingBeforeText
+        ? finishThinkingSegments(message.segments)
+        : message.segments;
+      return {
+        ...message,
+        segments: addSkillToSegments(baseSegments, {
+          name: hookName,
+          summary: event.command ? `${hookName} · ${event.command}` : hookName,
+          startedAt: event.startedAt,
+        }),
+      };
+    }
+    case "hook:end":
+    case "hook:error": {
+      const hookName =
+        event.summary || event.name || event.skillName || event.event || "hook";
+      const endedAt = event.endedAt || new Date().toISOString();
+      const status =
+        event.type === "hook:error" ||
+        event.decision === "deny" ||
+        event.ok === false
+          ? "error"
+          : "done";
+      return {
+        ...message,
+        segments: updateSkillInSegments(message.segments, hookName, (segment) => ({
+          ...segment,
+          status,
+          summary:
+            event.reason || event.summary || event.command || segment.summary,
+          endedAt,
+        })),
+      };
+    }
     default:
       return message;
   }
@@ -560,6 +597,9 @@ export function isTranscriptStreamEvent(type) {
     value === "tool:blocked" ||
     value === "skill:start" ||
     value === "skill:end" ||
-    value === "skill:error"
+    value === "skill:error" ||
+    value === "hook:start" ||
+    value === "hook:end" ||
+    value === "hook:error"
   );
 }

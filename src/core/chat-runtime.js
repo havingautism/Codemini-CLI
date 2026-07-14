@@ -7021,7 +7021,9 @@ export async function createChatRuntime({
       return started;
     };
   })();
-  await runSessionStartHooksOnce();
+  await runSessionStartHooksOnce((event) => {
+    startupEvents.push(event);
+  });
   // Arms hooks for a skill by name, looking it up first in the manual-selection
   // command map, then falling back to the agent-facing indexed skill catalog
   // (covers skills the model loaded itself via the `skill` tool).
@@ -7669,6 +7671,32 @@ export async function createChatRuntime({
       return { type: 'assistant', text: result.text, aborted: !!result.aborted };
     }
     const expandedText = await expandFileMentions(inputText, root);
+
+    // Refresh workspace + package profiles every turn so installs/toggles take
+    // effect without restarting the runtime. SessionStart only re-fires for
+    // package arms that were not present when this session first started.
+    const previouslyArmedPackages = new Set(
+      [...skillHooksSession.activeSkills.keys()].filter(isPackageHooksArmName),
+    );
+    await reloadWorkspaceHooks();
+    if (sessionStartCompleted) {
+      const newlyArmedPackages = [...skillHooksSession.activeSkills.keys()]
+        .filter(isPackageHooksArmName)
+        .filter((name) => !previouslyArmedPackages.has(name));
+      for (const packageArmName of newlyArmedPackages) {
+        const startResult = await fireSkillHookEvent({
+          session: skillHooksSession,
+          eventName: 'SessionStart',
+          input: { source: 'package-arm' },
+          workspaceRoot: root,
+          skillName: packageArmName,
+          onAgentEvent,
+        }).catch(() => null);
+        if (Array.isArray(startResult?.contexts) && startResult.contexts.length > 0) {
+          skillHooksSession.sessionStartContexts.push(...startResult.contexts);
+        }
+      }
+    }
 
     const selectedSkillNamesForHooks = [...new Set(
       (Array.isArray(options?.selectedSkillNames) ? options.selectedSkillNames : [])

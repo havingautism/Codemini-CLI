@@ -136,7 +136,7 @@ description: A bare skill with no hooks of its own.
       'utf8'
     );
 
-    const installedNames = await installSkillSource(packageRoot, { scope: 'project', cwd });
+    const installedNames = await installSkillSource(packageRoot, { scope: 'project', cwd, includeHooks: true });
     assert.deepEqual(installedNames, ['bare-skill']);
 
     const installedDir = path.join(getProjectSkillsDir(cwd), 'bare-skill');
@@ -192,7 +192,7 @@ description: Already has its own hooks.
       'utf8'
     );
 
-    await installSkillSource(packageRoot, { scope: 'project', cwd });
+    await installSkillSource(packageRoot, { scope: 'project', cwd, includeHooks: true });
 
     const installedHooksPath = path.join(getProjectSkillsDir(cwd), 'self-contained-skill', 'hooks', 'hooks.json');
     const installedHooks = JSON.parse(await fs.readFile(installedHooksPath, 'utf8'));

@@ -76,7 +76,9 @@ export async function fireSkillHookEvent({
     const displayName =
       source === 'project' || skillName === '__project__'
         ? 'workspace'
-        : skillName;
+        : source === 'package'
+          ? String(entry.provenance?.packageName || 'package').trim() || 'package'
+          : skillName;
     const summaryParts = [eventName];
     if (toolName) summaryParts.push(String(toolName));
     else if (matcher) summaryParts.push(String(matcher));

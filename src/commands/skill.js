@@ -611,6 +611,207 @@ async function pathExists(targetPath) {
   }
 }
 
+async function summarizeSkillDir(skillDir) {
+  const manifest = await readManifestSafe(skillDir);
+  const entryFile = manifest?.entry || 'SKILL.md';
+  const documentMeta = await readSkillDocumentMeta(skillDir, entryFile);
+  const name =
+    normalizeSkillName(manifest?.name) ||
+    documentMeta.name ||
+    normalizeSkillName(path.basename(skillDir));
+  return {
+    name,
+    description: String(manifest?.description || documentMeta.description || '').trim(),
+    version: String(manifest?.version || documentMeta.version || '0.0.0').trim() || '0.0.0',
+    dir: skillDir,
+  };
+}
+
+function normalizeSkillNameFilter(skillNames) {
+  if (!Array.isArray(skillNames)) return null;
+  const allow = new Set(
+    skillNames.map((name) => normalizeSkillName(name) || String(name || '').trim()).filter(Boolean),
+  );
+  return allow.size > 0 ? allow : null;
+}
+
+async function filterSkillDirsByNames(skillDirs, skillNames) {
+  const allow = normalizeSkillNameFilter(skillNames);
+  if (!allow) return skillDirs;
+  const matched = [];
+  for (const dir of skillDirs) {
+    const summary = await summarizeSkillDir(dir);
+    if (allow.has(summary.name)) matched.push(dir);
+  }
+  if (matched.length === 0) {
+    throw new Error(`No matching skills found for: ${[...allow].join(', ')}`);
+  }
+  return matched;
+}
+
+async function withResolvedSkillPackage(source, fn) {
+  const normalizedSource = normalizeNpxSkillSource(source);
+  const tmp = isGitLikeSource(normalizedSource)
+    ? await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-skill-preview-'))
+    : null;
+  try {
+    if (tmp) {
+      await runGitClone(normalizedSource, tmp);
+      const normalized = normalizeGitSource(normalizedSource);
+      const packageRoot = normalized?.subPath
+        ? path.join(tmp, normalizeRelativePath(normalized.subPath))
+        : tmp;
+      const skillDirs = await findSkillDirsForPackage(packageRoot);
+      if (skillDirs.length === 0) {
+        throw new Error('No SKILL.md found in git repository');
+      }
+      const packageInfo = await readSkillPackageInfo(packageRoot, normalizedSource);
+      return await fn({
+        kind: skillDirs.length > 1 || path.basename(skillDirs[0]) !== path.basename(packageRoot)
+          ? 'package'
+          : 'package',
+        source: normalizedSource,
+        packageRoot,
+        packageInfo,
+        skillDirs,
+      });
+    }
+
+    try {
+      const resolved = await resolveSkillSourceDir(normalizedSource);
+      const skillDir = resolved.dir;
+      if (resolved.cleanupDir) {
+        // Keep temp extract alive for the callback, then clean up.
+        try {
+          const packageInfo = await readSkillPackageInfo(skillDir, normalizedSource);
+          return await fn({
+            kind: 'skill',
+            source: normalizedSource,
+            packageRoot: skillDir,
+            packageInfo,
+            skillDirs: [skillDir],
+          });
+        } finally {
+          await fs.rm(resolved.cleanupDir, { recursive: true, force: true });
+        }
+      }
+      // Local single-skill path: may still be a package directory.
+      try {
+        const skillDirs = await findSkillDirsForPackage(skillDir);
+        if (skillDirs.length > 1 || (skillDirs.length === 1 && skillDirs[0] !== skillDir)) {
+          const packageInfo = await readSkillPackageInfo(skillDir, normalizedSource);
+          return await fn({
+            kind: 'package',
+            source: normalizedSource,
+            packageRoot: skillDir,
+            packageInfo,
+            skillDirs,
+          });
+        }
+      } catch {
+        // Fall through to single-skill summary.
+      }
+      const packageInfo = await readSkillPackageInfo(skillDir, normalizedSource);
+      return await fn({
+        kind: 'skill',
+        source: normalizedSource,
+        packageRoot: skillDir,
+        packageInfo,
+        skillDirs: [skillDir],
+      });
+    } catch (err) {
+      const absSrc = path.resolve(normalizedSource);
+      let stat;
+      try {
+        stat = await fs.stat(absSrc);
+      } catch {
+        throw err;
+      }
+      if (!stat.isDirectory()) throw err;
+      const skillDirs = await findSkillDirsForPackage(absSrc);
+      if (skillDirs.length === 0) throw err;
+      const packageInfo = await readSkillPackageInfo(absSrc, normalizedSource);
+      return await fn({
+        kind: skillDirs.length > 1 ? 'package' : 'package',
+        source: normalizedSource,
+        packageRoot: absSrc,
+        packageInfo,
+        skillDirs,
+      });
+    }
+  } finally {
+    if (tmp) {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  }
+}
+
+export async function previewSkillSource(source, { cwd = process.cwd() } = {}) {
+  void cwd;
+  return withResolvedSkillPackage(source, async ({ kind, source: sourceLabel, packageInfo, skillDirs }) => {
+    const skills = [];
+    for (const dir of skillDirs) {
+      const summary = await summarizeSkillDir(dir);
+      skills.push({
+        name: summary.name,
+        description: summary.description,
+        version: summary.version,
+      });
+    }
+    skills.sort((a, b) => a.name.localeCompare(b.name));
+    return {
+      kind: skills.length > 1 ? 'package' : kind,
+      source: sourceLabel,
+      packageName: packageInfo?.packageName || '',
+      packageSource: packageInfo?.packageSource || sourceLabel,
+      skills,
+    };
+  });
+}
+
+export async function previewSkillPackageUpdate({
+  name = '',
+  packageSource = '',
+  scope = '',
+  cwd = process.cwd(),
+} = {}) {
+  const entries = await listSkillEntries({ scope: 'all', cwd });
+  let skill = null;
+  let source = String(packageSource || '').trim();
+  let targetScope = String(scope || '').trim();
+
+  if (name) {
+    skill = entries.find((item) => item.name === name);
+    if (!skill) throw new Error(`skill not found: ${name}`);
+    if (skill.scope === 'builtin') throw new Error(`cannot update builtin skill: ${name}`);
+    source = getSkillPackageUpdateSource(skill);
+    targetScope = skill.scope;
+  }
+  if (!['global', 'project'].includes(targetScope)) {
+    throw new Error('skill package update requires scope=project|global');
+  }
+  if (!packageSourceKey(source)) {
+    throw new Error(`skill package source is not updatable: ${source || '(empty)'}`);
+  }
+
+  const preview = await previewSkillSource(source, { cwd });
+  const installedNames = new Set(
+    entries
+      .filter((item) => item.scope === targetScope && skillBelongsToPackageUpdate(item, source))
+      .map((item) => item.name),
+  );
+
+  return {
+    ...preview,
+    scope: targetScope,
+    packageName: skill?.packageName || preview.packageName || '',
+    skills: preview.skills.map((item) => ({
+      ...item,
+      installed: installedNames.has(item.name),
+    })),
+  };
+}
+
 // Skill hooks stay on the skill. Package-level hooks/hooks.json is persisted as a
 // separate package hook profile (session-scoped), not copied into each skill.
 async function reconcileSkillHooksOnInstall(targetDir, { includeHooks = true } = {}) {
@@ -757,10 +958,19 @@ export async function installSkill(sourcePath, {
   return folderName;
 }
 
-async function installSkillDirs(skillDirs, { scope, cwd, sourceLabel, packageInfo, packageRoot, includeHooks }) {
+async function installSkillDirs(skillDirs, {
+  scope,
+  cwd,
+  sourceLabel,
+  packageInfo,
+  packageRoot,
+  includeHooks,
+  skillNames,
+}) {
+  const selectedDirs = await filterSkillDirsByNames(skillDirs, skillNames);
   const installed = [];
   const skipped = [];
-  for (const dir of skillDirs) {
+  for (const dir of selectedDirs) {
     try {
       installed.push(await installSkill(dir, {
         scope,
@@ -794,49 +1004,44 @@ async function installSkillDirs(skillDirs, { scope, cwd, sourceLabel, packageInf
 export async function installSkillSource(source, {
   scope = 'project',
   cwd = process.cwd(),
-  includeHooks = true,
+  includeHooks = false,
+  skillNames = null,
 } = {}) {
-  const normalizedSource = normalizeNpxSkillSource(source);
-  const tmp = isGitLikeSource(normalizedSource)
-    ? await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-skill-git-'))
-    : null;
-  try {
-    if (tmp) {
-      await runGitClone(normalizedSource, tmp);
-      const normalized = normalizeGitSource(normalizedSource);
-      const packageRoot = normalized?.subPath ? path.join(tmp, normalizeRelativePath(normalized.subPath)) : tmp;
-      const skillDirs = await findSkillDirsForPackage(packageRoot);
-      if (skillDirs.length === 0) {
-        throw new Error('No SKILL.md found in git repository');
+  return withResolvedSkillPackage(source, async ({ packageRoot, packageInfo, skillDirs, source: sourceLabel }) => {
+    // Single local skill path that resolveSkillSourceDir handled as one dir:
+    // installSkillSource historically called installSkill(path) directly for
+    // non-package dirs. withResolvedSkillPackage always returns skillDirs.
+    if (
+      skillDirs.length === 1 &&
+      path.resolve(skillDirs[0]) === path.resolve(packageRoot) &&
+      !(await pathExists(path.join(packageRoot, 'skills')))
+    ) {
+      const allow = normalizeSkillNameFilter(skillNames);
+      if (allow) {
+        const summary = await summarizeSkillDir(skillDirs[0]);
+        if (!allow.has(summary.name)) {
+          throw new Error(`No matching skills found for: ${[...allow].join(', ')}`);
+        }
       }
-      const packageInfo = await readSkillPackageInfo(packageRoot, normalizedSource);
-      return await installSkillDirs(skillDirs, {
-        scope, cwd, sourceLabel: normalizedSource, packageInfo, packageRoot, includeHooks,
-      });
+      return [await installSkill(skillDirs[0], {
+        scope,
+        cwd,
+        sourceLabel,
+        packageInfo,
+        packageRoot: null,
+        includeHooks,
+      })];
     }
-
-    try {
-      const resolved = await resolveSkillSourceDir(normalizedSource);
-      if (resolved.cleanupDir) {
-        await fs.rm(resolved.cleanupDir, { recursive: true, force: true });
-      }
-      return [await installSkill(normalizedSource, { scope, cwd, includeHooks })];
-    } catch (err) {
-      const absSrc = path.resolve(normalizedSource);
-      const stat = await fs.stat(absSrc);
-      if (!stat.isDirectory()) throw err;
-      const skillDirs = await findSkillDirsForPackage(absSrc);
-      if (skillDirs.length === 0) throw err;
-      const packageInfo = await readSkillPackageInfo(absSrc, normalizedSource);
-      return await installSkillDirs(skillDirs, {
-        scope, cwd, sourceLabel: normalizedSource, packageInfo, packageRoot: absSrc, includeHooks,
-      });
-    }
-  } finally {
-    if (tmp) {
-      await fs.rm(tmp, { recursive: true, force: true });
-    }
-  }
+    return installSkillDirs(skillDirs, {
+      scope,
+      cwd,
+      sourceLabel,
+      packageInfo,
+      packageRoot,
+      includeHooks,
+      skillNames,
+    });
+  });
 }
 
 export async function updateSkillPackage({
@@ -845,6 +1050,8 @@ export async function updateSkillPackage({
   scope = '',
   cwd = process.cwd(),
   resetHooks = false,
+  includeHooks,
+  skillNames = null,
 } = {}) {
   const entries = await listSkillEntries({ scope: 'all', cwd });
   let skill = null;
@@ -874,21 +1081,35 @@ export async function updateSkillPackage({
   const scopedEntries = await listSkillEntries({ scope: targetScope, cwd });
   const before = scopedEntries.filter((item) => skillBelongsToPackageUpdate(item, source));
   const preferences = getSkillRoutingPreferences(before);
+  const selectedNames = normalizeSkillNameFilter(skillNames);
+  // Default includeHooks: preserve prior import preference when omitted.
+  const resolvedIncludeHooks = includeHooks === undefined
+    ? before.some((item) => item.hooksImported !== false)
+    : includeHooks === true;
 
   const preserveHooks = resetHooks !== true;
   const hooksSnapshots = new Map();
   if (preserveHooks) {
     for (const item of before) {
+      if (selectedNames && !selectedNames.has(item.name)) continue;
       const snapshot = await snapshotSkillHooksDir(path.join(baseDir, item.name));
       if (snapshot) hooksSnapshots.set(item.name, snapshot);
     }
   }
 
   try {
-    const installed = await installSkillSource(source, { scope: targetScope, cwd });
-    const stale = getStaleSkillPackageNames(before, installed);
-
-    await removeInstalledSkillEntries(baseDir, stale, targetScope);
+    const installed = await installSkillSource(source, {
+      scope: targetScope,
+      cwd,
+      includeHooks: resolvedIncludeHooks,
+      skillNames: selectedNames ? [...selectedNames] : null,
+    });
+    // Only remove stale skills when updating the full package without an
+    // explicit selection. Partial selection leaves unchecked locals untouched.
+    if (!selectedNames) {
+      const stale = getStaleSkillPackageNames(before, installed);
+      await removeInstalledSkillEntries(baseDir, stale, targetScope);
+    }
 
     for (const skillName of installed) {
       const skillDir = path.join(baseDir, skillName);
@@ -938,7 +1159,7 @@ export async function updateSkillPackage({
       packageName: skill?.packageName || before[0]?.packageName || '',
       scope: targetScope,
       previouslyInstalled: before.map((item) => item.name),
-      removed: stale,
+      removed: selectedNames ? [] : getStaleSkillPackageNames(before, installed),
     };
   } finally {
     await Promise.all(
