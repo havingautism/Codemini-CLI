@@ -33,6 +33,12 @@ import {
 } from "@/lib/user-skill-prompt.js";
 import { formatTimestamp } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
+import {
+  hookEventI18nKey,
+  isHookSegment,
+  parseLegacyHookSegmentName,
+} from "../../../shared/hook-ui.js";
+
 import * as api from "@/hooks/use-api.js";
 import { useRotatingLabel } from "@/hooks/use-rotating-label.js";
 import { executionModeSkillContext } from "@/lib/skill-visibility.js";
@@ -581,22 +587,59 @@ function formatSkillNames(name = "") {
     .join(", ");
 }
 
-function skillActivityLabel(badge) {
-  const names = formatSkillNames(badge?.name);
-  const looksLikeHook =
-    String(badge?.name || "").includes(" · ") ||
-    /^(SessionStart|UserPromptSubmit|PreToolUse|PostToolUse|Stop)\b/.test(
-      String(badge?.name || ""),
-    );
-  if (looksLikeHook) {
-    if (badge?.status === "running") {
-      return `${t("hookActivity")}: ${names}`;
-    }
-    if (badge?.status === "error") {
-      return `${t("hookActivity")} ✗ ${names}`;
-    }
-    return `${t("hookActivity")}: ${names}`;
+function localizeHookEventName(eventName = "") {
+  const raw = String(eventName || "").trim();
+  if (!raw) return "";
+  const key = hookEventI18nKey(raw);
+  const translated = t(key);
+  return translated === key ? raw : translated;
+}
+
+function resolveHookDisplayFields(badge = {}) {
+  if (badge?.event || badge?.sourceLabel) {
+    return {
+      event: String(badge.event || "").trim(),
+      sourceLabel: String(badge.sourceLabel || badge.name || "").trim(),
+      toolName: String(badge.toolName || badge.matcher || "").trim(),
+    };
   }
+  const legacy = parseLegacyHookSegmentName(badge?.name);
+  if (legacy) return legacy;
+  return {
+    event: "",
+    sourceLabel: String(badge?.name || "").trim(),
+    toolName: "",
+  };
+}
+
+function formatHookActivityLabel(badge = {}) {
+  const fields = resolveHookDisplayFields(badge);
+  const eventLabel = localizeHookEventName(fields.event) || fields.event || t("hookActivity");
+  const source = fields.sourceLabel || "hook";
+  const tool = fields.toolName;
+  const detail = tool
+    ? t("hookActivityDetailTool")
+        .replace("{{event}}", eventLabel)
+        .replace("{{tool}}", tool)
+        .replace("{{source}}", source)
+    : t("hookActivityDetail")
+        .replace("{{event}}", eventLabel)
+        .replace("{{source}}", source);
+
+  if (badge?.status === "running") {
+    return t("hookActivityRunning").replace("{{detail}}", detail);
+  }
+  if (badge?.status === "error") {
+    return t("hookActivityFailed").replace("{{detail}}", detail);
+  }
+  return t("hookActivityDone").replace("{{detail}}", detail);
+}
+
+function skillActivityLabel(badge) {
+  if (isHookSegment(badge)) {
+    return formatHookActivityLabel(badge);
+  }
+  const names = formatSkillNames(badge?.name);
   if (badge?.status === "running") {
     return t("skillUsing").replace("{{name}}", names);
   }
@@ -607,6 +650,10 @@ function skillActivityLabel(badge) {
     return t("skillAlwaysLoaded").replace("{{names}}", names);
   }
   return t("skillUsed").replace("{{name}}", names);
+}
+
+function activityKindLabel(badge) {
+  return isHookSegment(badge) ? t("hookActivity") : t("skillActivity");
 }
 
 function SkillActivityList({ badges = [] }) {
@@ -631,7 +678,7 @@ function SkillActivityList({ badges = [] }) {
           >
             <Wrench size={14} />
           </span>
-          <span>{t("skillActivity")}</span>
+          <span>{activityKindLabel(badge)}</span>
           <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
             {skillActivityLabel(badge)}
           </span>
@@ -661,7 +708,7 @@ function SkillActivityRow({ badge }) {
         >
           <Wrench size={14} />
         </span>
-        <span>{t("skillActivity")}</span>
+        <span>{activityKindLabel(badge)}</span>
         <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
           {skillActivityLabel(badge)}
         </span>

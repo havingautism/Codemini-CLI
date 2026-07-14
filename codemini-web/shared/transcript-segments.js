@@ -2,6 +2,7 @@ import {
   updateToolInSegments,
   upsertToolCardInSegments,
 } from "./tool-segments.js";
+import { buildHookSegmentEvent } from "./hook-ui.js";
 
 const USAGE_KEYS = [
   "inputTokens",
@@ -41,7 +42,7 @@ export function mergeUsage(current, incoming) {
 
 export function createSkillSegment(event, status = "running") {
   const now = new Date().toISOString();
-  return {
+  const segment = {
     type: "skill",
     name: event.name,
     status,
@@ -51,6 +52,16 @@ export function createSkillSegment(event, status = "running") {
       : {}),
     ...(status === "error" && event.summary ? { summary: event.summary } : {}),
   };
+  if (event.kind) segment.kind = event.kind;
+  if (event.event) segment.event = event.event;
+  if (event.source) segment.source = event.source;
+  if (event.sourceLabel) segment.sourceLabel = event.sourceLabel;
+  if (event.toolName) segment.toolName = event.toolName;
+  if (event.matcher) segment.matcher = event.matcher;
+  if (event.command) segment.command = event.command;
+  if (event.summary && status !== "error") segment.summary = event.summary;
+  if (event.reason) segment.reason = event.reason;
+  return segment;
 }
 
 export function addSkillToSegments(segments, event) {
@@ -542,24 +553,21 @@ export function applyStreamEventToMessage(message, event, options = {}) {
       };
     }
     case "hook:start": {
-      const hookName =
-        event.summary || event.name || event.skillName || event.event || "hook";
+      const hookEvent = buildHookSegmentEvent(event);
       const baseSegments = finishThinkingBeforeText
         ? finishThinkingSegments(message.segments)
         : message.segments;
       return {
         ...message,
         segments: addSkillToSegments(baseSegments, {
-          name: hookName,
-          summary: event.command ? `${hookName} · ${event.command}` : hookName,
-          startedAt: event.startedAt,
+          ...hookEvent,
+          startedAt: event.startedAt || hookEvent.startedAt,
         }),
       };
     }
     case "hook:end":
     case "hook:error": {
-      const hookName =
-        event.summary || event.name || event.skillName || event.event || "hook";
+      const hookEvent = buildHookSegmentEvent(event);
       const endedAt = event.endedAt || new Date().toISOString();
       const status =
         event.type === "hook:error" ||
@@ -569,13 +577,28 @@ export function applyStreamEventToMessage(message, event, options = {}) {
           : "done";
       return {
         ...message,
-        segments: updateSkillInSegments(message.segments, hookName, (segment) => ({
-          ...segment,
-          status,
-          summary:
-            event.reason || event.summary || event.command || segment.summary,
-          endedAt,
-        })),
+        segments: updateSkillInSegments(
+          message.segments,
+          hookEvent.name,
+          (segment) => ({
+            ...segment,
+            kind: "hook",
+            event: hookEvent.event || segment.event,
+            source: hookEvent.source || segment.source,
+            sourceLabel: hookEvent.sourceLabel || segment.sourceLabel,
+            toolName: hookEvent.toolName || segment.toolName,
+            matcher: hookEvent.matcher || segment.matcher,
+            command: hookEvent.command || segment.command,
+            status,
+            summary:
+              event.reason ||
+              event.summary ||
+              event.command ||
+              segment.summary,
+            reason: event.reason || segment.reason,
+            endedAt,
+          }),
+        ),
       };
     }
     default:

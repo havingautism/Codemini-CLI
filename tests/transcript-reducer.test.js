@@ -16,22 +16,27 @@ test('applyStreamEventToMessage persists hook start/end as skill segments', () =
 
   message = applyStreamEventToMessage(message, {
     type: 'hook:start',
-    summary: 'UserPromptSubmit ← package-hooks-smoke',
+    event: 'UserPromptSubmit',
     name: 'package-hooks-smoke',
+    source: 'package',
     command: 'node -e "..."',
   });
   assert.equal(message.segments.length, 1);
   assert.equal(message.segments[0].type, 'skill');
-  assert.equal(message.segments[0].name, 'UserPromptSubmit ← package-hooks-smoke');
+  assert.equal(message.segments[0].kind, 'hook');
+  assert.equal(message.segments[0].event, 'UserPromptSubmit');
+  assert.equal(message.segments[0].sourceLabel, 'package-hooks-smoke');
   assert.equal(message.segments[0].status, 'running');
 
   message = applyStreamEventToMessage(message, {
     type: 'hook:end',
-    summary: 'UserPromptSubmit ← package-hooks-smoke',
+    event: 'UserPromptSubmit',
     name: 'package-hooks-smoke',
+    source: 'package',
     ok: true,
   });
   assert.equal(message.segments[0].status, 'done');
+  assert.equal(message.segments[0].event, 'UserPromptSubmit');
 });
 
 test('replaceLastTextSegment does not duplicate text after a tool card', () => {

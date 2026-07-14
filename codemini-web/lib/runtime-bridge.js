@@ -10,6 +10,7 @@ import {
   normalizeUsage,
   updateSkillInSegments,
 } from '../shared/transcript-segments.js';
+import { buildHookSegmentEvent } from '../shared/hook-ui.js';
 import {
   applyPlanEventToMessage,
   applyStreamEventToPlanRun,
@@ -763,11 +764,8 @@ export class RuntimeBridge {
         break;
       }
       case 'hook:start': {
-        const hookName =
-          event.summary || event.name || event.skillName || event.event || 'hook';
         const hookEvent = {
-          name: hookName,
-          summary: event.command ? `${hookName} · ${event.command}` : hookName,
+          ...buildHookSegmentEvent(event),
           startedAt: event.startedAt || new Date().toISOString(),
         };
         if (this.#uiActiveMsgId) {
@@ -789,8 +787,7 @@ export class RuntimeBridge {
       }
       case 'hook:end':
       case 'hook:error': {
-        const hookName =
-          event.summary || event.name || event.skillName || event.event || 'hook';
+        const hookEvent = buildHookSegmentEvent(event);
         const endedAt = event.endedAt || new Date().toISOString();
         const status =
           event.type === 'hook:error' ||
@@ -800,21 +797,29 @@ export class RuntimeBridge {
             : 'done';
         const updater = (segment) => ({
           ...segment,
+          kind: 'hook',
+          event: hookEvent.event || segment.event,
+          source: hookEvent.source || segment.source,
+          sourceLabel: hookEvent.sourceLabel || segment.sourceLabel,
+          toolName: hookEvent.toolName || segment.toolName,
+          matcher: hookEvent.matcher || segment.matcher,
+          command: hookEvent.command || segment.command,
           status,
           summary:
             event.reason || event.summary || event.command || segment.summary,
+          reason: event.reason || segment.reason,
           endedAt,
         });
         if (this.#uiActiveMsgId) {
           this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
             ...message,
-            segments: updateSkillInSegments(message.segments, hookName, updater),
+            segments: updateSkillInSegments(message.segments, hookEvent.name, updater),
           }));
           publishedMessageId = this.#uiActiveMsgId;
         } else {
           this.#uiPendingSkillSegments = updateSkillInSegments(
             this.#uiPendingSkillSegments,
-            hookName,
+            hookEvent.name,
             updater,
           );
         }
