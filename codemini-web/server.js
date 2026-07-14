@@ -45,6 +45,7 @@ import { VERSION } from '../src/core/version.js';
 import { detectPlaywrightStatus } from '../src/core/tools.js';
 import {
   discoverSkillHooks,
+  disableSkillHooks,
   readHooksJsonRaw,
   writeSkillHooksJson,
 } from '../src/core/skill-hooks-discover.js';
@@ -55,6 +56,12 @@ import {
   saveGlobalHooks,
   saveProjectHooks,
 } from '../src/core/project-hooks.js';
+import {
+  deleteCustomHookProfile,
+  listCustomHookProfiles,
+  saveCustomHookProfile,
+  savePackageHookProfile,
+} from '../src/core/hook-profiles.js';
 
 const GENERAL_PROJECT_DIR = (() => {
   const base = getBaseConfigDir();
@@ -105,11 +112,6 @@ export function normalizeSkillMetadataPatch(input = {}) {
   }
   if (input.disableModelInvocation !== undefined) {
     out.disableModelInvocation = input.disableModelInvocation === true;
-  }
-  // Legacy migration convenience: `mode: 'manual'` implies the skill should
-  // no longer be model-invocable, so mirror it onto the new flag on write.
-  if (out.mode === 'manual') {
-    out.disableModelInvocation = true;
   }
   return out;
 }
@@ -2966,14 +2968,18 @@ async function main() {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/skills/install') {
-      const { source, scope: rawScope, projectDir, contexts } = await readBody(req);
+      const { source, scope: rawScope, projectDir, contexts, includeHooks = true } = await readBody(req);
       if (!source) { jsonResponse(res, { error: true, message: 'Missing source' }, 400); return; }
       try {
         const scope = normalizeSkillScope(rawScope);
         const targetProjectDir = scope === 'project'
           ? await resolveRequestProjectDir(projectDir, currentProjectDir)
           : currentProjectDir;
-        const installed = await installSkillSource(source, { scope, cwd: targetProjectDir });
+        const installed = await installSkillSource(source, {
+          scope,
+          cwd: targetProjectDir,
+          includeHooks: includeHooks !== false,
+        });
         if (contexts !== undefined) {
           const config = await loadConfig();
           config.skills = config.skills || {};
@@ -3227,6 +3233,143 @@ async function main() {
         });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/hook-profiles') {
+      try {
+        const cwd = currentProjectDir || process.cwd();
+        const [globalLayer, codingLayer, dailyLayer, customProfiles, skills] = await Promise.all([
+          loadGlobalHooks({ rewriteMatchers: false }),
+          loadProjectHooks(cwd, { rewriteMatchers: false, context: 'coding' }),
+          loadProjectHooks(cwd, { rewriteMatchers: false, context: 'daily' }),
+          listCustomHookProfiles(cwd),
+          listSkillEntries({ scope: 'all', cwd }),
+        ]);
+        const legacyProfiles = [];
+        for (const layer of [
+          { id: 'legacy-global', activation: 'always', scope: 'global', filePath: globalLayer.filePath },
+          { id: 'legacy-coding', activation: 'coding', scope: 'project', filePath: codingLayer.filePath },
+          { id: 'legacy-daily', activation: 'daily', scope: 'project', filePath: dailyLayer.filePath },
+        ]) {
+          const hooks = await readWorkspaceHooksFile(layer.filePath);
+          // Old workspace hook files remain editable, but empty scope layers are
+          // headings rather than fake profiles in the new profile library.
+          if (Object.keys(hooks).length === 0) continue;
+          legacyProfiles.push({
+            ...layer,
+            name: 'Legacy hooks',
+            nameKey: 'hooksLegacyProfile',
+            kind: 'workspace',
+            enabled: true,
+            editable: true,
+            hooks,
+          });
+        }
+        const profiles = [...legacyProfiles, ...customProfiles];
+        for (const skill of skills) {
+          const skillRoot = path.dirname(skill.path);
+          const discovered = await discoverSkillHooks({ skillRoot });
+          if (discovered.disabled) continue;
+          const raw = await readHooksJsonRaw(path.join(skillRoot, 'hooks', 'hooks.json'));
+          const hooks = Object.keys(raw).length > 0 ? raw : discovered.hooks;
+          if (Object.keys(hooks).length === 0) continue;
+          const skillContexts = Array.isArray(skill.contexts) ? skill.contexts : [];
+          const activation = skillContexts.includes('coding') && skillContexts.includes('daily')
+            ? 'always'
+            : skillContexts.includes('daily') ? 'daily' : 'coding';
+          profiles.push({
+            id: `skill:${skill.scope}:${skill.name}:${skill.projectDir || ''}`,
+            name: skill.name,
+            kind: 'skill',
+            scope: skill.scope,
+            activation,
+            enabled: skill.enabled !== false,
+            editable: skill.scope !== 'builtin',
+            hooks,
+            skillName: skill.name,
+            projectDir: skill.projectDir || '',
+            provenance: discovered.provenance || {},
+          });
+        }
+        jsonResponse(res, { profiles });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/hook-profiles') {
+      try {
+        const body = await readBody(req);
+        const saved = await saveCustomHookProfile(body, currentProjectDir || process.cwd());
+        await bridge.reloadCommandsAndSkills().catch(() => null);
+        jsonResponse(res, { ok: true, profile: saved });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 400);
+      }
+      return;
+    }
+    if (req.method === 'PUT' && url.pathname === '/api/hook-profiles') {
+      try {
+        const profile = await readBody(req);
+        const cwd = currentProjectDir || process.cwd();
+        let saved = null;
+        if (profile?.kind === 'workspace') {
+          if (profile.activation === 'always') await saveGlobalHooks(profile.hooks || {});
+          else await saveProjectHooks(cwd, profile.hooks || {}, profile.activation);
+          saved = profile;
+        } else if (profile?.kind === 'skill') {
+          const entries = await listSkillEntries({ scope: 'all', cwd });
+          const skill = entries.find((item) =>
+            item.name === profile.skillName &&
+            (!profile.projectDir || item.projectDir === profile.projectDir));
+          if (!skill || skill.scope === 'builtin') throw new Error('Skill hook profile is not editable');
+          await writeSkillHooksJson(path.dirname(skill.path), profile.hooks || {});
+          saved = profile;
+        } else if (profile?.kind === 'package') {
+          const existing = (await listCustomHookProfiles(cwd)).find(
+            (item) => item.id === profile.id && item.kind === 'package',
+          );
+          if (!existing) throw new Error('Package hook profile not found');
+          saved = await savePackageHookProfile({
+            ...existing,
+            enabled: profile.enabled !== false,
+            activation: profile.activation || existing.activation,
+          }, cwd);
+        } else {
+          if (profile?.originalScope && profile.originalScope !== profile.scope) {
+            await deleteCustomHookProfile({ id: profile.id, scope: profile.originalScope }, cwd);
+          }
+          saved = await saveCustomHookProfile(profile, cwd);
+        }
+        await bridge.reloadCommandsAndSkills().catch(() => null);
+        jsonResponse(res, { ok: true, profile: saved });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 400);
+      }
+      return;
+    }
+    if (req.method === 'DELETE' && url.pathname === '/api/hook-profiles') {
+      try {
+        const body = await readBody(req);
+        const cwd = currentProjectDir || process.cwd();
+        if (body?.kind === 'workspace') {
+          if (body.activation === 'always') await saveGlobalHooks({});
+          else await saveProjectHooks(cwd, {}, body.activation);
+        } else if (body?.kind === 'skill') {
+          const entries = await listSkillEntries({ scope: 'all', cwd });
+          const skill = entries.find((item) =>
+            item.name === body.skillName &&
+            (!body.projectDir || item.projectDir === body.projectDir));
+          if (!skill || skill.scope === 'builtin') throw new Error('Skill hook profile is not deletable');
+          await disableSkillHooks(path.dirname(skill.path));
+        } else {
+          await deleteCustomHookProfile(body || {}, cwd);
+        }
+        await bridge.reloadCommandsAndSkills().catch(() => null);
+        jsonResponse(res, { ok: true });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 400);
       }
       return;
     }

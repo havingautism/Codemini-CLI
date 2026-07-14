@@ -76,7 +76,7 @@ hooks:
   });
 });
 
-test('package hooks used when skill has no hooks', async () => {
+test('package hooks are not merged into skill discovery', async () => {
   await withFixture(async (root) => {
     const skillRoot = path.join(root, 'skill');
     const packageRoot = path.join(root, 'package');
@@ -92,8 +92,8 @@ test('package hooks used when skill has no hooks', async () => {
     );
 
     const result = await discoverSkillHooks({ skillRoot, packageRoot });
-    assert.equal(result.hooks.PreToolUse[0].hooks[0].command, 'pkg.sh');
-    assert.equal(result.provenance.PreToolUse.source, 'package');
+    assert.deepEqual(result.hooks, {});
+    assert.deepEqual(result.provenance, {});
   });
 });
 

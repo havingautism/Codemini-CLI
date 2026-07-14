@@ -4,6 +4,7 @@ import {
   SESSION_TITLE_SYSTEM_PROMPT,
   buildSessionTitleInput,
   buildSessionTitleMessages,
+  buildSessionTitleSystemPrompt,
   ensureSessionTitleEmoji,
   normalizeGeneratedSessionTitle,
   retrySessionTitleRequest,
@@ -75,6 +76,27 @@ test('title messages use few-shot labels before the real first exchange', () => 
   assert.ok(messages.filter((message) => message.role === 'assistant').every((message) => /^\S+\s/u.test(message.content)));
   assert.match(messages.at(-1).content, /User request:\n帮我看看/);
   assert.match(messages.at(-1).content, /Assistant final answer:\n修复了 OAuth 回调地址/);
+});
+
+test('title system prompt follows configured reply language', () => {
+  const zhPrompt = buildSessionTitleSystemPrompt({ ui: { reply_language: 'zh' } });
+  const enPrompt = buildSessionTitleSystemPrompt({ ui: { reply_language: 'en' } });
+  assert.match(zhPrompt, /Simplified Chinese/);
+  assert.match(enPrompt, /English/);
+  assert.match(zhPrompt, /Do not switch to the user\/assistant message language/);
+
+  const zhMessages = buildSessionTitleMessages(
+    { userText: 'hi', assistantText: '안녕하세요' },
+    { ui: { reply_language: 'zh' } },
+  );
+  const enMessages = buildSessionTitleMessages(
+    { userText: 'hi', assistantText: 'Hello' },
+    { ui: { reply_language: 'en' } },
+  );
+  assert.match(zhMessages[0].content, /Simplified Chinese/);
+  assert.match(enMessages[0].content, /English/);
+  assert.match(zhMessages[2].content, /订单列表筛选|OAuth 回调修复|打招呼/);
+  assert.match(enMessages[2].content, /Order list filters|OAuth callback fix|Prepare 2\.4\.0 release/);
 });
 
 test('retrySessionTitleRequest retries once after a failed title request', async () => {

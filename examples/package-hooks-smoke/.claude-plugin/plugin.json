@@ -1,0 +1,6 @@
+{
+  "name": "package-hooks-smoke",
+  "version": "0.0.1",
+  "description": "Local smoke package for Codemini package-level hooks",
+  "skills": "./skills"
+}

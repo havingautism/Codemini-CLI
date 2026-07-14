@@ -17,7 +17,7 @@ This repo is Codemini CLI, a local-first coding agent with a CLI, Web UI, projec
 - Project map and file index behavior: start in `src/core/project-index.js`.
 - Skill discovery, routing, and rendering: start in `src/core/command-loader.js`, then `src/core/skill-registry.js`.
 - Skill hooks (Claude-compatible discover/run/session): start in `src/core/skill-hooks-*.js`, wired from `src/core/chat-runtime.js` and `src/core/agent-loop.js`.
-- Workspace hooks (project/global, not skill-scoped): `src/core/project-hooks.js`; Web UI entry under Skills in the sidebar.
+- Hook Profiles (custom/global/project plus skill-backed profiles): `src/core/hook-profiles.js` and `src/core/project-hooks.js`; Web UI entry under Skills in the sidebar.
 - Tool matcher aliases (Claude Bash→run etc.): `src/core/skill-hooks-tool-aliases.js`.
 - Reflect-to-skill behavior: start in `src/core/reflect-skill.js`.
 - Built-in tool behavior: start in `src/core/tools.js`.

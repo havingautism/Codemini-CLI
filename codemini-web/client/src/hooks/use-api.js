@@ -398,11 +398,11 @@ export async function createSkill({ name, description, content, scope, projectDi
   return readJsonResponse(res);
 }
 
-export async function installSkill({ source, scope, projectDir, contexts }) {
+export async function installSkill({ source, scope, projectDir, contexts, includeHooks = true }) {
   const res = await api('/api/skills/install', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ source, scope, projectDir, contexts })
+    body: JSON.stringify({ source, scope, projectDir, contexts, includeHooks })
   });
   return readJsonResponse(res);
 }
@@ -479,6 +479,45 @@ export async function updateWorkspaceHooks(scope = 'global', hooks = {}) {
     method: 'PUT',
     headers: JSON_HEADERS,
     body: JSON.stringify({ scope, hooks })
+  });
+  return readJsonResponse(res);
+}
+
+export async function fetchHookProfiles() {
+  const res = await api('/api/hook-profiles');
+  return readJsonResponse(res);
+}
+
+export async function createHookProfile(profile) {
+  const res = await api('/api/hook-profiles', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(profile || {}),
+  });
+  return readJsonResponse(res);
+}
+
+export async function updateHookProfile(profile) {
+  const res = await api('/api/hook-profiles', {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(profile || {}),
+  });
+  return readJsonResponse(res);
+}
+
+export async function deleteHookProfile(profile) {
+  const res = await api('/api/hook-profiles', {
+    method: 'DELETE',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({
+      id: profile?.id,
+      scope: profile?.scope,
+      kind: profile?.kind,
+      activation: profile?.activation,
+      skillName: profile?.skillName,
+      projectDir: profile?.projectDir,
+    }),
   });
   return readJsonResponse(res);
 }

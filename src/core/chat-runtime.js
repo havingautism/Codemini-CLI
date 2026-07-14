@@ -20,6 +20,13 @@ import {
   mergeWorkspaceHookLayers,
   workspaceHooksArmEntry,
 } from './project-hooks.js';
+import {
+  hookProfileIsActive,
+  isPackageHooksArmName,
+  listCustomHookProfiles,
+  mergeHookProfileHooks,
+  packageProfileArmEntry,
+} from './hook-profiles.js';
 import { runAgentLoop } from './agent-loop.js';
 import { createToolResultStore } from './tool-result-store.js';
 import { trimInline, normalizePath } from './string-utils.js';
@@ -2156,8 +2163,10 @@ function getAlwaysSkillCommands(commands, config, dismissedSkills = null, active
     });
 }
 
-export function buildAlwaysSkillPromptBlock() {
-  return '';
+export function buildAlwaysSkillPromptBlock(commands, config, dismissedSkills = null, activeMode = config?.execution?.mode) {
+  const selected = getAlwaysSkillCommands(commands, config, dismissedSkills, activeMode);
+  if (selected.length === 0) return '';
+  return selected.map((skill) => `[Always skill: ${skill.name}]\n${skill.content}`).join('\n\n');
 }
 
 export function shouldInjectAlwaysSkills(executionMode) {
@@ -3835,7 +3844,7 @@ async function generateSessionTitle({ userText, assistantText = '', config, sign
       baseUrl: effectiveConfig.gateway.base_url,
       apiKey: effectiveConfig.gateway.api_key,
       model: fastModel,
-      messages: buildSessionTitleMessages({ userText, assistantText }),
+      messages: buildSessionTitleMessages({ userText, assistantText }, effectiveConfig),
       tools: [],
       temperature: 0.1,
       // Keep this completion in "label generation" mode across providers:
@@ -6943,15 +6952,39 @@ export async function createChatRuntime({
   const skillHooksSession = createSkillHooksSession();
   const reloadWorkspaceHooks = async () => {
     const hookContext = normalizeExecutionMode(executionMode) === 'plan' ? 'coding' : 'daily';
-    const [projectLayer, globalLayer] = await Promise.all([
+    const [projectLayer, globalLayer, customProfiles] = await Promise.all([
       loadProjectHooks(root, { context: hookContext }).catch(() => ({ hooks: {} })),
       loadGlobalHooks().catch(() => ({ hooks: {} })),
+      listCustomHookProfiles(root).catch(() => []),
     ]);
-    const merged = mergeWorkspaceHookLayers(globalLayer.hooks, projectLayer.hooks);
+
+    for (const name of [...skillHooksSession.activeSkills.keys()]) {
+      if (isPackageHooksArmName(name)) {
+        disarmSkillHooks(skillHooksSession, name);
+      }
+    }
+
+    const legacyMerged = mergeWorkspaceHookLayers(globalLayer.hooks, projectLayer.hooks);
+    // Package profiles arm as their own layer; only custom profiles merge into workspace.
+    const activeCustomHooks = mergeHookProfileHooks(
+      customProfiles.filter(
+        (profile) =>
+          profile.kind !== 'package' && hookProfileIsActive(profile, executionMode),
+      ),
+    );
+    const merged = mergeWorkspaceHookLayers(legacyMerged, activeCustomHooks);
     if (Object.keys(merged).length > 0) {
       armSkillHooks(skillHooksSession, workspaceHooksArmEntry(merged, root));
     } else {
       disarmSkillHooks(skillHooksSession, PROJECT_HOOKS_SKILL_NAME);
+    }
+
+    for (const profile of customProfiles) {
+      if (profile.kind !== 'package' || !hookProfileIsActive(profile, executionMode)) continue;
+      const entry = packageProfileArmEntry(profile, root);
+      if (Object.keys(entry.hooks).length > 0) {
+        armSkillHooks(skillHooksSession, entry);
+      }
     }
   };
   try {
@@ -7030,7 +7063,7 @@ export async function createChatRuntime({
   const reloadArmedHooks = async () => {
     await reloadWorkspaceHooks();
     const activeNames = [...skillHooksSession.activeSkills.keys()]
-      .filter((name) => name !== PROJECT_HOOKS_SKILL_NAME);
+      .filter((name) => name !== PROJECT_HOOKS_SKILL_NAME && !isPackageHooksArmName(name));
     for (const name of activeNames) {
       disarmSkillHooks(skillHooksSession, name);
       await armSkillHooksByName(name, { fireSessionStart: false });
@@ -7305,6 +7338,11 @@ export async function createChatRuntime({
       : '';
     const readOnlyCodeWiki = options?.readOnlyCodeWiki === true;
     const codeWikiGenerate = options?.codeWikiGenerate === true;
+    const dismissedAlwaysSkills = new Set(
+      (Array.isArray(options?.dismissedAlwaysSkills) ? options.dismissedAlwaysSkills : [])
+        .map((name) => String(name || '').trim())
+        .filter(Boolean)
+    );
     const maybeAutoDreamFromRuntime = async () => {
       const threshold = Number(config?.memory?.auto_dream_threshold ?? 10);
       if (!(threshold > 0)) return null;
@@ -7658,9 +7696,29 @@ export async function createChatRuntime({
     ];
 
     const autoRoute = classifyAutoRoute(expandedText);
-    // Always-mode skills are no longer force-injected into every prompt; the model
-    // discovers them through the indexed skill list and loads them via the skill tool.
-    const skillPrompt = activeReplySystemPrompt;
+    const injectAlwaysSkills = shouldInjectAlwaysSkills(executionMode);
+    const alwaysSkills = injectAlwaysSkills
+      ? getAlwaysSkillCommands(commands, config, dismissedAlwaysSkills, executionMode)
+      : [];
+    if (alwaysSkills.length > 0) {
+      onAgentEvent?.({ type: 'skill:always', names: alwaysSkills.map((skill) => skill.name) });
+      await Promise.all(
+        alwaysSkills.map((skill) => armSkillHooksByName(skill.name, { onAgentEvent })),
+      );
+    }
+    const alwaysSkillPrompt = injectAlwaysSkills
+      ? buildAlwaysSkillPromptBlock(commands, config, dismissedAlwaysSkills, executionMode)
+      : '';
+    const skillPrompt = alwaysSkillPrompt
+      ? await composeSystemPrompt({
+          shellRulesPrompt: activeReplySystemPrompt,
+          config,
+          workspaceRoot: root,
+          skillsPrompt: alwaysSkillPrompt,
+          includeSoul: false,
+          includeMemory: false,
+        })
+      : activeReplySystemPrompt;
     const routedSystemPrompt =
       autoRoute.mode === 'direct_medium'
         ? await composeSystemPrompt({

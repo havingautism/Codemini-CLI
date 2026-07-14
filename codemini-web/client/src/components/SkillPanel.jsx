@@ -8,6 +8,7 @@ import {
   MagnifyingGlass,
   PencilSimple,
   Plus,
+  SlidersHorizontal,
   Trash,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
@@ -27,6 +28,7 @@ import { SettingsField } from "@/components/settings/SettingsField.jsx";
 import { SettingsSection } from "@/components/settings/SettingsSection.jsx";
 import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmentedControl.jsx";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   MarkdownEditor,
@@ -51,6 +53,7 @@ import { t } from "../../i18n/index.js";
 
 const FILTERS = ["all", "custom", "remote"];
 const SKILL_TABS = ["coding", "daily"];
+const SKILL_MODES = ["always", "agent_requested", "manual"];
 
 function scopeLabel(scope) {
   if (scope === "builtin") return t("builtin");
@@ -106,6 +109,9 @@ function SkillEditor({ skill, onSave, onValidate }) {
   const [name, setName] = useState(skill?.name || "");
   const [description, setDescription] = useState(skill?.description || "");
   const [context, setContext] = useState(skillContextValue(skill?.contexts));
+  const [mode, setMode] = useState(normalizeSkillMode(skill?.mode));
+  const [triggers, setTriggers] = useState((skill?.triggers || []).join(", "));
+  const [priority, setPriority] = useState(skill?.priority ?? 50);
   const [enabled, setEnabled] = useState(isEnabled(skill));
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(false);
@@ -116,6 +122,9 @@ function SkillEditor({ skill, onSave, onValidate }) {
     setName(skill?.name || "");
     setDescription(skill?.description || "");
     setContext(skillContextValue(skill?.contexts));
+    setMode(normalizeSkillMode(skill?.mode));
+    setTriggers((skill?.triggers || []).join(", "));
+    setPriority(skill?.priority ?? 50);
     setEnabled(isEnabled(skill));
     if (!skill) {
       setContent("");
@@ -136,6 +145,13 @@ function SkillEditor({ skill, onSave, onValidate }) {
       description,
       contexts: context === "global" ? ["coding", "daily"] : [context],
       enabled,
+      mode,
+      triggers:
+        mode === "agent_requested"
+          ? triggers.split(",").map((item) => item.trim()).filter(Boolean)
+          : [],
+      priority: Number(priority) || 0,
+      disableModelInvocation: false,
     };
     if (isNew) {
       await api.createSkill({
@@ -193,6 +209,44 @@ function SkillEditor({ skill, onSave, onValidate }) {
                   </SelectGroup>
                 </SelectContent>
               </Select>
+            </SettingsField>
+          )}
+          {(isNew || !isBuiltin(skill)) && (
+            <SettingsField
+              id="skill-editor-mode"
+              label={t("skillMode")}
+              description={t("skillModeHint")}
+            >
+              <SettingsSegmentedControl
+                idPrefix="skill-editor-mode"
+                value={mode}
+                onValueChange={setMode}
+                options={SKILL_MODES.map((item) => ({
+                  value: item,
+                  label: t(`skillMode_${item}`),
+                }))}
+                className="[&_button]:text-[11px] sm:[&_button]:text-[12px]"
+              />
+            </SettingsField>
+          )}
+          {mode === "agent_requested" && (isNew || !isBuiltin(skill)) && (
+            <SettingsField id="skill-editor-triggers" label={t("skillTriggers")}>
+              <Input
+                value={triggers}
+                onChange={(event) => setTriggers(event.target.value)}
+                placeholder="react, testing, docs"
+              />
+            </SettingsField>
+          )}
+          {mode === "always" && (isNew || !isBuiltin(skill)) && (
+            <SettingsField id="skill-editor-priority" label={t("skillPriority")}>
+              <Input
+                type="number"
+                min="0"
+                max="100"
+                value={priority}
+                onChange={(event) => setPriority(event.target.value)}
+              />
             </SettingsField>
           )}
           <SettingsField id="skill-editor-name" label={t("name")}>
@@ -294,6 +348,104 @@ function SkillEditorDialog({ skill, open, onSave, onOpenChange }) {
   );
 }
 
+function SkillRoutingForm({ skill, onSave, onCancel }) {
+  const [routeMode, setRouteMode] = useState(normalizeSkillMode(skill?.mode));
+  const [routeTriggers, setRouteTriggers] = useState(
+    (skill?.triggers || []).join(", "),
+  );
+  const [routePriority, setRoutePriority] = useState(skill?.priority ?? 50);
+  const [saving, setSaving] = useState(false);
+  const builtin = isBuiltin(skill);
+
+  useEffect(() => {
+    setRouteMode(normalizeSkillMode(skill?.mode));
+    setRouteTriggers((skill?.triggers || []).join(", "));
+    setRoutePriority(skill?.priority ?? 50);
+  }, [skill]);
+
+  const handleSave = async () => {
+    if (!skill || builtin) return;
+    setSaving(true);
+    try {
+      await api.updateSkillMetadata(
+        skill.name,
+        {
+          mode: routeMode,
+          triggers:
+            routeMode === "agent_requested"
+              ? routeTriggers
+                  .split(",")
+                  .map((item) => item.trim())
+                  .filter(Boolean)
+              : [],
+          priority: Number(routePriority) || 0,
+        },
+        skill.projectDir,
+      );
+      await onSave?.();
+      onCancel?.();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth pr-1">
+        <SettingsSection description={t("skillModeHint")} className="gap-4">
+          <SettingsField
+            id="skill-detail-mode"
+            label={t("skillMode")}
+            description={t("skillModeHint")}
+          >
+            <SettingsSegmentedControl
+              idPrefix="skill-detail-mode"
+              value={routeMode}
+              onValueChange={setRouteMode}
+              disabled={builtin}
+              options={SKILL_MODES.map((item) => ({
+                value: item,
+                label: t(`skillMode_${item}`),
+              }))}
+              className="w-full max-w-xl [&_button]:text-[11px] sm:[&_button]:text-[12px]"
+            />
+          </SettingsField>
+          {routeMode === "agent_requested" ? (
+            <SettingsField id="skill-detail-triggers" label={t("skillTriggers")}>
+              <Input
+                value={routeTriggers}
+                onChange={(event) => setRouteTriggers(event.target.value)}
+                placeholder="react, testing, docs"
+                disabled={builtin}
+              />
+            </SettingsField>
+          ) : null}
+          {routeMode === "always" ? (
+            <SettingsField id="skill-detail-priority" label={t("skillPriority")}>
+              <Input
+                type="number"
+                min="0"
+                max="100"
+                value={routePriority}
+                onChange={(event) => setRoutePriority(event.target.value)}
+                disabled={builtin}
+              />
+            </SettingsField>
+          ) : null}
+        </SettingsSection>
+      </div>
+      <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-(--border-default) pt-4">
+        <Button variant="outline" onClick={onCancel}>
+          {t("cancel")}
+        </Button>
+        <Button onClick={handleSave} disabled={saving || builtin}>
+          {saving ? t("loading") : t("save")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function SkillDetailPane({
   skill,
   onSave,
@@ -387,7 +539,7 @@ function SkillDetailPane({
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-            {modeView === "edit" ? null : (
+            {modeView === "edit" || modeView === "routing" ? null : (
               <>
                 {!builtin && (
                   <Button
@@ -398,6 +550,13 @@ function SkillDetailPane({
                     {t("edit")}
                   </Button>
                 )}
+                <Button
+                  variant="outline"
+                  onClick={() => setModeView("routing")}
+                >
+                  <SlidersHorizontal size={13} />
+                  {t("skillRoutingSettings")}
+                </Button>
                 {!builtin && (
                   <Button
                     variant="ghost"
@@ -426,7 +585,14 @@ function SkillDetailPane({
           modeView === "view" ? "px-5 py-4" : "p-5",
         )}
       >
-        {loading ? (
+        {modeView === "routing" ? (
+          <SkillRoutingForm
+            key={skillKey(skill)}
+            skill={skill}
+            onSave={onSave}
+            onCancel={() => setModeView("view")}
+          />
+        ) : loading ? (
           <div className="py-8 text-center text-[12px] text-(--text-muted)">
             {t("loading")}...
           </div>
@@ -475,6 +641,8 @@ function InstallDialog({
   setInstallSource,
   installTarget,
   setInstallTarget,
+  installHooks,
+  setInstallHooks,
   installing,
   installError,
   onInstall,
@@ -524,6 +692,21 @@ function InstallDialog({
                 </SelectContent>
               </Select>
             </SettingsField>
+            <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-(--border-default) bg-(--bg-subtle) px-3 py-2.5">
+              <Checkbox
+                className="mt-0.5"
+                checked={installHooks}
+                onCheckedChange={(checked) => setInstallHooks(checked === true)}
+              />
+              <span className="min-w-0">
+                <span className="block text-[13px] font-medium text-(--text-primary)">
+                  {t("skillInstallHooks")}
+                </span>
+                <span className="mt-0.5 block text-[11px] leading-4 text-(--text-muted)">
+                  {t("skillInstallHooksHint")}
+                </span>
+              </span>
+            </label>
           </SettingsSection>
           {installError && (
             <div className="text-[11px] text-(--accent-red)">
@@ -670,11 +853,13 @@ function SkillGroupHeader({ name, count, collapsed, title, onClick, actions }) {
 }
 
 function PackageBatchDialog({ packageGroup, open, applying, onOpenChange, onApply }) {
+  const [mode, setMode] = useState("agent_requested");
   const [context, setContext] = useState("global");
   const [enabled, setEnabled] = useState("keep");
 
   useEffect(() => {
     if (!open) return;
+    setMode("agent_requested");
     setContext("global");
     setEnabled("keep");
   }, [open, packageGroup?.key]);
@@ -693,9 +878,18 @@ function PackageBatchDialog({ packageGroup, open, applying, onOpenChange, onAppl
             )}
             className="gap-4"
           >
-            <div className="rounded-md border border-(--border-default) bg-(--bg-subtle) px-3 py-2 text-[12px] text-(--text-muted)">
-              {t("skillPackageBatchHooksNote")}
-            </div>
+            <SettingsField id="package-batch-mode" label={t("skillMode")}>
+              <Select value={mode} onValueChange={setMode}>
+                <SelectTrigger className="h-9 w-full"><SelectValue /></SelectTrigger>
+                <SelectContent align="start">
+                  <SelectGroup>
+                    {SKILL_MODES.map((item) => (
+                      <SelectItem key={item} value={item}>{t(`skillMode_${item}`)}</SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+            </SettingsField>
             <SettingsField id="package-batch-context" label={t("skillContext")}>
               <Select value={context} onValueChange={setContext}>
                 <SelectTrigger className="h-9 w-full">
@@ -745,6 +939,7 @@ function PackageBatchDialog({ packageGroup, open, applying, onOpenChange, onAppl
               disabled={applying || !packageGroup}
               onClick={() =>
                 onApply?.(packageGroup, {
+                  mode,
                   contexts:
                     context === "global" ? ["coding", "daily"] : [context],
                   enabled: enabled === "keep" ? undefined : enabled === "true",
@@ -771,6 +966,7 @@ export function SkillPanel({ projectDirs = [] }) {
   const [filter, setFilter] = useState("all");
   const [installSource, setInstallSource] = useState("");
   const [installTarget, setInstallTarget] = useState("");
+  const [installHooks, setInstallHooks] = useState(true);
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState("");
   const [installOpen, setInstallOpen] = useState(false);
@@ -886,6 +1082,7 @@ export function SkillPanel({ projectDirs = [] }) {
       const result = await api.installSkill({
         source,
         scope: "global",
+        includeHooks: installHooks,
         contexts:
           selectedContext === "global"
             ? ["coding", "daily"]
@@ -936,6 +1133,8 @@ export function SkillPanel({ projectDirs = [] }) {
       for (const skill of packageGroup.items) {
         const metadata = {
           contexts: patch.contexts,
+          mode: patch.mode,
+          disableModelInvocation: false,
         };
         if (patch.enabled !== undefined) metadata.enabled = patch.enabled;
         await api.updateSkillMetadata(skill.name, metadata, skill.projectDir);
@@ -1232,6 +1431,8 @@ export function SkillPanel({ projectDirs = [] }) {
         setInstallSource={setInstallSource}
         installTarget={installTarget}
         setInstallTarget={setInstallTarget}
+        installHooks={installHooks}
+        setInstallHooks={setInstallHooks}
         installing={installing}
         installError={installError}
         onInstall={handleInstall}

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { writeSkillHooksJson, discoverSkillHooks } from '../src/core/skill-hooks-discover.js';
+import { disableSkillHooks, writeSkillHooksJson, discoverSkillHooks } from '../src/core/skill-hooks-discover.js';
 import { normalizeSkillMetadataPatch } from '../codemini-web/server.js';
 
 async function withFixture(fn) {
@@ -92,17 +92,35 @@ test('normalizeSkillMetadataPatch still accepts legacy mode for read/compat', ()
   assert.equal(patch.disableModelInvocation, undefined);
 });
 
-test('normalizeSkillMetadataPatch mode:manual implies disableModelInvocation:true', () => {
+test('normalizeSkillMetadataPatch keeps manual routing separate from hook metadata', () => {
   const patch = normalizeSkillMetadataPatch({ mode: 'manual' });
   assert.equal(patch.mode, 'manual');
-  assert.equal(patch.disableModelInvocation, true);
+  assert.equal(patch.disableModelInvocation, undefined);
 });
 
-test('normalizeSkillMetadataPatch explicit disableModelInvocation:false overrides manual default before mode check', () => {
-  // mode:'manual' always forces disableModelInvocation true, matching the
-  // migration convenience described for write paths.
+test('deleting a skill hook profile disables bundled JSON and frontmatter hooks', async () => {
+  await withFixture(async (root) => {
+    const skillRoot = path.join(root, 'skill');
+    await fs.mkdir(path.join(skillRoot, 'hooks'), { recursive: true });
+    await fs.writeFile(
+      path.join(skillRoot, 'SKILL.md'),
+      '---\nhooks:\n  Stop:\n    - hooks:\n        - type: command\n          command: from-frontmatter\n---\n',
+      'utf8',
+    );
+    await writeSkillHooksJson(skillRoot, {
+      Stop: [{ hooks: [{ type: 'command', command: 'from-json' }] }],
+    });
+
+    await disableSkillHooks(skillRoot);
+    const discovered = await discoverSkillHooks({ skillRoot });
+    assert.equal(discovered.disabled, true);
+    assert.deepEqual(discovered.hooks, {});
+  });
+});
+
+test('normalizeSkillMetadataPatch preserves an explicit hook compatibility flag independently', () => {
   const patch = normalizeSkillMetadataPatch({ mode: 'manual', disableModelInvocation: false });
-  assert.equal(patch.disableModelInvocation, true);
+  assert.equal(patch.disableModelInvocation, false);
 });
 
 test('normalizeSkillMetadataPatch ignores unrelated fields and keeps contexts/triggers behavior', () => {

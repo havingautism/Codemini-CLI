@@ -1,9 +1,14 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import yaml from 'yaml';
-import { normalizeHooksObject, resolveHooksByPriority } from './skill-hooks-normalize.js';
+import {
+  normalizeHooksObject,
+  resolveHooksByPriority,
+  unwrapHooksContainer,
+} from './skill-hooks-normalize.js';
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
+const HOOKS_DISABLED_MARKER = '.codemini-hooks-disabled';
 
 function parseDisableModelInvocation(parsed) {
   if (!parsed || typeof parsed !== 'object') return false;
@@ -14,7 +19,8 @@ export async function readHooksJson(filePath) {
   try {
     const raw = await fs.readFile(filePath, 'utf8');
     const parsed = JSON.parse(raw);
-    return normalizeHooksObject(parsed && typeof parsed === 'object' ? parsed : {});
+    const body = unwrapHooksContainer(parsed && typeof parsed === 'object' ? parsed : {});
+    return normalizeHooksObject(body);
   } catch (err) {
     if (err && typeof err === 'object' && err.code === 'ENOENT') {
       return {};
@@ -27,7 +33,9 @@ export async function readHooksJsonRaw(filePath) {
   try {
     const raw = await fs.readFile(filePath, 'utf8');
     const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    return unwrapHooksContainer(
+      parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {},
+    );
   } catch (err) {
     if (err && typeof err === 'object' && err.code === 'ENOENT') return {};
     throw err;
@@ -45,7 +53,7 @@ export async function readFrontmatterHooks(skillMdPath) {
     throw err;
   }
 
-  const normalized = raw.replace(/\r\n/g, '\n');
+  const normalized = raw.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
   const match = normalized.match(FRONTMATTER_RE);
   if (!match) {
     return { hooks: {}, disableModelInvocation: false };
@@ -86,11 +94,21 @@ async function readSettingsHooks(filePath) {
   }
 }
 
+/**
+ * Skill hooks come only from the skill itself (frontmatter + skill hooks.json).
+ * Package-level hooks/hooks.json is a separate session-scoped profile layer.
+ */
 export async function discoverSkillHooks({
   skillRoot,
   packageRoot = null,
   adoptSettings = false,
 } = {}) {
+  try {
+    await fs.access(path.join(skillRoot, HOOKS_DISABLED_MARKER));
+    return { hooks: {}, provenance: {}, disableModelInvocation: false, disabled: true };
+  } catch {
+    // No install-time opt-out marker; discover bundled hook definitions normally.
+  }
   const candidates = [];
   const skillMdPath = path.join(skillRoot, 'SKILL.md');
   const frontmatter = await readFrontmatterHooks(skillMdPath);
@@ -104,19 +122,14 @@ export async function discoverSkillHooks({
     candidates.push({ source: 'skill-json', hooks: skillJsonHooks });
   }
 
-  if (packageRoot) {
-    const packageHooks = await readHooksJson(path.join(packageRoot, 'hooks', 'hooks.json'));
-    if (Object.keys(packageHooks).length > 0) {
-      candidates.push({ source: 'package', hooks: packageHooks });
-    }
-
-    if (adoptSettings) {
-      const settingsHooks = await readSettingsHooks(
-        path.join(packageRoot, '.claude', 'settings.json'),
-      );
-      if (Object.keys(settingsHooks).length > 0) {
-        candidates.push({ source: 'settings', hooks: settingsHooks });
-      }
+  // Optional legacy: adopt .claude/settings.json hooks into a skill only when
+  // explicitly requested. Package hooks.json is never merged into skill hooks.
+  if (packageRoot && adoptSettings) {
+    const settingsHooks = await readSettingsHooks(
+      path.join(packageRoot, '.claude', 'settings.json'),
+    );
+    if (Object.keys(settingsHooks).length > 0) {
+      candidates.push({ source: 'settings', hooks: settingsHooks });
     }
   }
 
@@ -125,7 +138,12 @@ export async function discoverSkillHooks({
     hooks: resolved.hooks,
     provenance: resolved.provenance,
     disableModelInvocation: frontmatter.disableModelInvocation,
+    disabled: false,
   };
+}
+
+export async function disableSkillHooks(skillRoot) {
+  await fs.writeFile(path.join(skillRoot, HOOKS_DISABLED_MARKER), '', 'utf8');
 }
 
 export async function writeSkillHooksJson(skillRoot, hooksObject) {
@@ -133,6 +151,7 @@ export async function writeSkillHooksJson(skillRoot, hooksObject) {
     ? hooksObject
     : {};
   await fs.mkdir(path.join(skillRoot, 'hooks'), { recursive: true });
+  await fs.rm(path.join(skillRoot, HOOKS_DISABLED_MARKER), { force: true });
   await fs.writeFile(
     path.join(skillRoot, 'hooks', 'hooks.json'),
     `${JSON.stringify(stored, null, 2)}\n`,

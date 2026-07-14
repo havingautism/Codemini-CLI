@@ -23,13 +23,31 @@ const zhSource = readFileSync(
   'utf8',
 );
 
+test('skill routing settings use a separate detail button from content edit', () => {
+  assert.match(skillPanelSource, /SKILL_MODES/);
+  assert.match(skillPanelSource, /skill-editor-mode/);
+  assert.match(skillPanelSource, /skill-detail-mode/);
+  assert.match(skillPanelSource, /SkillRoutingForm/);
+  assert.match(skillPanelSource, /setModeView\("routing"\)/);
+  assert.match(skillPanelSource, /t\("skillRoutingSettings"\)/);
+  assert.match(skillPanelSource, /routeMode === "agent_requested"/);
+  assert.match(skillPanelSource, /routeMode === "always"/);
+  assert.doesNotMatch(
+    skillPanelSource,
+    /modeView === "edit" \? \([\s\S]*?skill-detail-mode[\s\S]*?MarkdownEditor/,
+  );
+});
+
 test('skill content editing uses the same bottom action bar as routing', () => {
   assert.match(
     skillPanelSource,
     /modeView === "edit" && \([\s\S]*?border-t border-\(--border-default\)[\s\S]*?t\("cancel"\)[\s\S]*?handleContentSave[\s\S]*?t\("save"\)/,
   );
+  assert.match(
+    skillPanelSource,
+    /modeView === "routing"/,
+  );
 });
-
 test('skill Markdown preview is tighter and has a scoped transparent surface', () => {
   assert.match(
     skillPanelSource,
@@ -68,25 +86,30 @@ test('SkillPanel renders coding/daily Tabs and always folds skills by package', 
   assert.doesNotMatch(skillPanelSource, /skillContextDailyMode/);
 });
 
-test('legacy skill mode routing controls are replaced by the dedicated Hooks dialog', () => {
-  assert.doesNotMatch(skillPanelSource, /SKILL_MODES/);
-  assert.doesNotMatch(skillPanelSource, /SkillRoutingForm/);
+test('skill routing remains independent from the unified Hook Profiles dialog', () => {
   assert.match(hooksDialogSource, /HooksEventEditor/);
-  assert.match(hooksDialogSource, /skillDisableModelInvocation/);
-  assert.match(hooksDialogSource, /disableModelInvocation/);
+  assert.match(hooksDialogSource, /HookProfilesPane/);
+  assert.match(hooksDialogSource, /fetchHookProfiles/);
+  assert.doesNotMatch(hooksDialogSource, /<TabsTrigger value="workspace"/);
+  assert.doesNotMatch(hooksDialogSource, /<TabsTrigger value="skills"/);
   assert.match(hooksDialogSource, /from '@\/lib\/hooks-editor\.js'/);
-  assert.match(hooksDialogSource, /\.fetchSkillHooks\(/);
-  assert.match(hooksDialogSource, /api\.updateSkillHooks\(/);
-  assert.match(hooksDialogSource, /value: 'global'/);
-  assert.match(hooksDialogSource, /value: 'coding'/);
-  assert.match(hooksDialogSource, /value: 'daily'/);
   assert.match(hooksDialogSource, /ConfirmDialog/);
   assert.doesNotMatch(hooksDialogSource, /window\.confirm/);
+  assert.match(skillPanelSource, /skillInstallHooks/);
+  assert.match(skillPanelSource, /includeHooks: installHooks/);
 });
 
-test('package batch dialog drops the mode selector for a hooks-are-per-skill note', () => {
-  assert.doesNotMatch(skillPanelSource, /package-batch-mode/);
-  assert.match(skillPanelSource, /skillPackageBatchHooksNote/);
+test('Hook Profiles are grouped by collapsible execution scope with add and delete actions', () => {
+  assert.match(hooksDialogSource, /HOOK_PROFILE_SCOPES/);
+  assert.match(hooksDialogSource, /<Collapsible/);
+  assert.match(hooksDialogSource, /createProfile\(scope\.id\)/);
+  assert.match(hooksDialogSource, /setPendingDelete\(profile\)/);
+  assert.doesNotMatch(hooksDialogSource, /name: 'Global', nameKey: 'globalScope'/);
+});
+
+test('package batch dialog can restore routing mode for every skill in a package', () => {
+  assert.match(skillPanelSource, /package-batch-mode/);
+  assert.match(skillPanelSource, /mode: patch\.mode/);
 });
 
 test('hooks i18n keys exist in English and Chinese locales', () => {

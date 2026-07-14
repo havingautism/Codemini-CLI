@@ -25,9 +25,25 @@ function normalizeMatcherGroup(entry) {
   };
 }
 
+/** Unwrap Claude/plugin `{ hooks: { SessionStart: ... } }` when present. */
+export function unwrapHooksContainer(parsed) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+  const nested = parsed.hooks;
+  if (
+    nested &&
+    typeof nested === 'object' &&
+    !Array.isArray(nested) &&
+    Object.keys(nested).some((key) => HOOK_EVENTS.has(key))
+  ) {
+    return nested;
+  }
+  return parsed;
+}
+
 export function normalizeHooksObject(raw = {}) {
+  const body = unwrapHooksContainer(raw);
   const out = {};
-  for (const [eventName, groups] of Object.entries(raw || {})) {
+  for (const [eventName, groups] of Object.entries(body || {})) {
     if (!HOOK_EVENTS.has(eventName)) continue;
     const list = (Array.isArray(groups) ? groups : [])
       .map(normalizeMatcherGroup)

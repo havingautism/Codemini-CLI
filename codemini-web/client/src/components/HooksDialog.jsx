@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ArrowClockwise,
+  CaretDown,
   FloppyDisk,
   Lightning,
   MagnifyingGlass,
   Package,
+  Plus,
+  Trash,
   WarningCircle,
 } from '@phosphor-icons/react';
 import { Button } from '@/components/ui/button';
@@ -15,6 +18,11 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Empty, EmptyDescription } from '@/components/ui/empty';
 import { Switch } from '@/components/ui/switch';
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
+import {
   Select,
   SelectContent,
   SelectGroup,
@@ -22,7 +30,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { SettingsField } from '@/components/settings/SettingsField.jsx';
 import { SettingsSegmentedControl } from '@/components/settings/SettingsSegmentedControl.jsx';
 import { ResourceLibraryDialog } from '@/components/ResourceLibraryDialog.jsx';
@@ -817,26 +824,321 @@ function SkillHooksPane({ projectDirs = [], onDirtyChange }) {
   );
 }
 
-/** @deprecated Prefer WorkspaceHooksPane via HooksDialog tabs */
+const HOOK_PROFILE_SCOPES = [
+  { id: 'always', labelKey: 'globalScope' },
+  { id: 'coding', labelKey: 'skillContextCoding' },
+  { id: 'daily', labelKey: 'skillContextDaily' },
+];
+
+function HookProfilesPane({ onDirtyChange }) {
+  const [profiles, setProfiles] = useState([]);
+  const [selectedId, setSelectedId] = useState('');
+  const [draft, setDraft] = useState(null);
+  const [hooksState, setHooksState] = useState(() => emptyHooksState());
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [savedAt, setSavedAt] = useState('');
+  const [pendingSelection, setPendingSelection] = useState('');
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [openScopes, setOpenScopes] = useState({ always: true, coding: true, daily: true });
+
+  const selected = profiles.find((profile) => profile.id === selectedId) || null;
+  const isNew = draft?._isNew === true;
+  const metadataDirty = !!draft && !!selected && (
+    draft.name !== selected.name ||
+    draft.scope !== selected.scope ||
+    draft.activation !== selected.activation ||
+    draft.enabled !== selected.enabled
+  );
+  const dirty = hooksStateIsDirty(hooksState) || metadataDirty || isNew;
+  const invalid = hooksStateHasInvalidCommand(hooksState);
+
+  useEffect(() => onDirtyChange?.(dirty), [dirty, onDirtyChange]);
+
+  const applyProfile = useCallback((profile) => {
+    setSelectedId(profile?.id || '');
+    setDraft(profile ? { ...profile } : null);
+    setHooksState(hooksObjectToState(profile?.hooks || {}));
+    setSavedAt('');
+    setError('');
+  }, []);
+
+  const load = useCallback(async (preferredId = '') => {
+    setLoading(true);
+    setError('');
+    try {
+      const data = await api.fetchHookProfiles();
+      const next = Array.isArray(data?.profiles) ? data.profiles : [];
+      setProfiles(next);
+      applyProfile(
+        next.find((profile) => profile.id === preferredId)
+          || next.find((profile) => profile.id === selectedId)
+          || next[0]
+          || null,
+      );
+    } catch (err) {
+      setError(err?.message || t('hooksLoadFailed'));
+    } finally {
+      setLoading(false);
+    }
+  }, [applyProfile, selectedId]);
+
+  useEffect(() => { load(); }, []);
+
+  const selectProfile = (id) => {
+    if (id === selectedId) return;
+    if (dirty) {
+      setPendingSelection(id);
+      return;
+    }
+    applyProfile(profiles.find((profile) => profile.id === id) || null);
+  };
+
+  const createProfile = (activation = 'always') => {
+    const profile = {
+      id: `profile-${Date.now()}`,
+      name: t('hooksNewProfile'),
+      kind: 'custom',
+      scope: 'project',
+      activation,
+      enabled: true,
+      editable: true,
+      hooks: {},
+      _isNew: true,
+    };
+    if (dirty) {
+      setPendingSelection(`__new__:${activation}`);
+      return;
+    }
+    applyProfile(profile);
+  };
+
+  const save = async () => {
+    if (!draft || invalid) return;
+    setSaving(true);
+    setError('');
+    try {
+      const payload = {
+        ...draft,
+        originalScope: selected?.scope,
+        hooks: hooksStateToObject(hooksState),
+      };
+      const result = isNew
+        ? await api.createHookProfile(payload)
+        : await api.updateHookProfile(payload);
+      await load(result?.profile?.id || payload.id);
+      setSavedAt(new Date().toLocaleTimeString());
+    } catch (err) {
+      setError(err?.message || t('hooksSaveFailed'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!pendingDelete) return;
+    setSaving(true);
+    try {
+      await api.deleteHookProfile(pendingDelete);
+      setPendingDelete(null);
+      await load();
+    } catch (err) {
+      setError(err?.message || t('hooksDeleteFailed'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)]">
+      <aside className="flex min-h-0 flex-col border-b border-(--border-default) p-3 lg:border-b-0 lg:border-r">
+        <div className="mb-3 flex items-start justify-between gap-2">
+          <div>
+            <div className="text-[13px] font-medium text-(--text-primary)">{t('hooksProfiles')}</div>
+            <p className="text-[11px] leading-4 text-(--text-muted)">{t('hooksProfilesHint')}</p>
+          </div>
+          <Button variant="ghost" size="icon-sm" onClick={() => load()} disabled={loading || saving} aria-label={t('refresh')}>
+            <ArrowClockwise className={cn(loading && 'animate-spin')} />
+          </Button>
+        </div>
+        <div className="min-h-[160px] flex-1 space-y-2 overflow-y-auto">
+          {HOOK_PROFILE_SCOPES.map((scope) => {
+            const scopedProfiles = profiles.filter((profile) => profile.activation === scope.id);
+            const open = openScopes[scope.id] !== false;
+            return (
+              <Collapsible
+                key={scope.id}
+                open={open}
+                onOpenChange={(next) => setOpenScopes((current) => ({ ...current, [scope.id]: next }))}
+                className="rounded-lg border border-(--border-default) bg-(--bg-primary)"
+              >
+                <div className="flex items-center gap-1 px-2 py-1.5">
+                  <CollapsibleTrigger asChild>
+                    <button type="button" className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1 text-left hover:bg-(--bg-subtle)">
+                      <CaretDown size={13} className={cn('shrink-0 transition-transform', !open && '-rotate-90')} />
+                      <span className="truncate text-[12px] font-semibold text-(--text-primary)">{t(scope.labelKey)}</span>
+                      <Badge variant="secondary" className="ml-auto h-5 px-1.5 text-[10px]">{scopedProfiles.length}</Badge>
+                    </button>
+                  </CollapsibleTrigger>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => createProfile(scope.id)}
+                    disabled={saving}
+                    aria-label={`${t('hooksNewProfile')} · ${t(scope.labelKey)}`}
+                    title={t('hooksNewProfile')}
+                  >
+                    <Plus size={14} />
+                  </Button>
+                </div>
+                <CollapsibleContent className="space-y-1 border-t border-(--border-default) p-1.5">
+                  {scopedProfiles.length === 0 ? (
+                    <p className="px-2 py-2 text-[11px] text-(--text-muted)">{t('hooksNoProfilesInScope')}</p>
+                  ) : scopedProfiles.map((profile) => (
+                    <div
+                      key={profile.id}
+                      className={cn(
+                        'group flex items-center gap-1 rounded-md border transition-colors',
+                        selectedId === profile.id
+                          ? 'border-(--border-strong) bg-(--bg-subtle)'
+                          : 'border-transparent hover:border-(--border-default) hover:bg-(--bg-subtle)/60',
+                      )}
+                    >
+                      <button type="button" onClick={() => selectProfile(profile.id)} className="min-w-0 flex-1 px-2.5 py-2 text-left">
+                        <span className="flex items-center gap-2">
+                          <span className="truncate text-[13px] font-medium text-(--text-primary)">{profile.nameKey ? t(profile.nameKey) : profile.name}</span>
+                          {profile.kind === 'skill' ? <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-[10px]">{t('hooksProfileSkill')}</Badge> : null}
+                          {profile.kind === 'package' ? <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-[10px]">{t('hooksProfilePackage')}</Badge> : null}
+                        </span>
+                        <span className="mt-0.5 block truncate text-[10px] text-(--text-muted)">
+                          {profile.kind === 'skill'
+                            ? scopeLabel(profile.scope)
+                            : profile.kind === 'workspace'
+                              ? t('hooksLegacyProfile')
+                              : profile.kind === 'package'
+                                ? t('hooksProfilePackageHint')
+                                : t('hooksProfileCustom')}
+                        </span>
+                      </button>
+                      {profile.editable !== false || profile.kind === 'package' ? (
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          className="mr-1 text-(--accent-red) opacity-70 hover:bg-(--accent-red-bg) hover:text-(--accent-red) group-hover:opacity-100"
+                          onClick={() => setPendingDelete(profile)}
+                          disabled={saving}
+                          aria-label={`${t('delete')} ${profile.name}`}
+                          title={t('delete')}
+                        >
+                          <Trash size={13} />
+                        </Button>
+                      ) : null}
+                    </div>
+                  ))}
+                </CollapsibleContent>
+              </Collapsible>
+            );
+          })}
+        </div>
+      </aside>
+
+      <section className="flex min-h-0 flex-col">
+        {!draft ? (
+          <Empty className="m-4 flex-1 rounded-lg border border-dashed border-(--border-default)">
+            <EmptyDescription>{t('hooksSelectProfile')}</EmptyDescription>
+          </Empty>
+        ) : (
+          <>
+            <div className="grid shrink-0 gap-3 border-b border-(--border-default) px-4 py-3 sm:grid-cols-2 sm:px-5">
+              <SettingsField id="hook-profile-name" label={t('name')}>
+                <Input value={draft.nameKey ? t(draft.nameKey) : draft.name} disabled={draft.kind !== 'custom'} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} />
+              </SettingsField>
+              <SettingsField id="hook-profile-activation" label={t('hooksProfileScope')}>
+                <Select value={draft.activation} disabled={draft.kind !== 'custom'} onValueChange={(activation) => setDraft((current) => ({ ...current, activation }))}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="always">{t('globalScope')}</SelectItem>
+                    <SelectItem value="coding">{t('skillContextCoding')}</SelectItem>
+                    <SelectItem value="daily">{t('skillContextDaily')}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </SettingsField>
+              <div className="flex items-center justify-between rounded-lg border border-(--border-default) bg-(--bg-subtle) px-3 py-2">
+                <span className="text-[13px] font-medium text-(--text-primary)">{t('enabled')}</span>
+                <Switch checked={draft.enabled !== false} disabled={draft.kind !== 'custom' && draft.kind !== 'package'} onCheckedChange={(enabled) => setDraft((current) => ({ ...current, enabled }))} />
+              </div>
+              <Alert className="sm:col-span-2"><AlertDescription>{t('hooksCommandOnlyHint')}</AlertDescription></Alert>
+              {error ? <Alert variant="destructive" className="sm:col-span-2"><WarningCircle /><AlertDescription>{error}</AlertDescription></Alert> : null}
+              {invalid ? <Alert variant="destructive" className="sm:col-span-2"><WarningCircle /><AlertDescription>{t('hooksCommandRequired')}</AlertDescription></Alert> : null}
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 sm:px-5">
+              <HooksEventEditor hooksState={hooksState} onHooksStateChange={setHooksState} disabled={saving || draft.editable === false || draft.kind === 'package'} />
+            </div>
+            <div className="flex items-center border-t border-(--border-default)">
+              {(draft.editable !== false || draft.kind === 'package') && !isNew ? (
+                <Button variant="ghost" className="ml-4 text-(--accent-red)" onClick={() => setPendingDelete(draft)} disabled={saving}>
+                  <Trash />{t('delete')}
+                </Button>
+              ) : null}
+              <div className="ml-auto">
+                <HooksEditorFooter savedAt={savedAt} loading={loading} saving={saving} disabled={draft.editable === false && draft.kind !== 'package'} dirty={dirty} invalid={invalid} onSave={save} />
+              </div>
+            </div>
+          </>
+        )}
+      </section>
+      <ConfirmDialog
+        open={!!pendingSelection}
+        title={t('hooksDiscardChanges')}
+        description={t('hooksDiscardChangesHint')}
+        confirmLabel={t('discard')}
+        onOpenChange={(open) => !open && setPendingSelection('')}
+        onConfirm={() => {
+          if (pendingSelection.startsWith('__new__:')) {
+            const activation = pendingSelection.slice('__new__:'.length);
+            setPendingSelection('');
+            applyProfile({
+              id: `profile-${Date.now()}`,
+              name: t('hooksNewProfile'),
+              kind: 'custom',
+              scope: 'project',
+              activation,
+              enabled: true,
+              editable: true,
+              hooks: {},
+              _isNew: true,
+            });
+            return;
+          }
+          const next = profiles.find((profile) => profile.id === pendingSelection) || null;
+          setPendingSelection('');
+          applyProfile(next);
+        }}
+      />
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title={t('hooksDeleteProfile')}
+        description={t('hooksDeleteProfileHint')}
+        confirmLabel={t('delete')}
+        loading={saving}
+        onOpenChange={(open) => !open && setPendingDelete(null)}
+        onConfirm={remove}
+      />
+    </div>
+  );
+}
+
+/** @deprecated Prefer HookProfilesPane via HooksDialog */
 export function HooksPanel() {
-  return <WorkspaceHooksPane />;
+  return <HookProfilesPane />;
 }
 
 export function HooksDialog({ open, onOpenChange, projectDirs = [] }) {
-  const [tab, setTab] = useState('workspace');
-  const [visitedSkills, setVisitedSkills] = useState(false);
-  const [dirtyTabs, setDirtyTabs] = useState({ workspace: false, skills: false });
+  const [dirty, setDirty] = useState(false);
   const [confirmClose, setConfirmClose] = useState(false);
-  const setWorkspaceDirty = useCallback(
-    (dirty) => setDirtyTabs((current) => current.workspace === dirty ? current : { ...current, workspace: dirty }),
-    [],
-  );
-  const setSkillsDirty = useCallback(
-    (dirty) => setDirtyTabs((current) => current.skills === dirty ? current : { ...current, skills: dirty }),
-    [],
-  );
   const handleOpenChange = (nextOpen) => {
-    if (!nextOpen && (dirtyTabs.workspace || dirtyTabs.skills)) {
+    if (!nextOpen && dirty) {
       setConfirmClose(true);
       return;
     }
@@ -852,29 +1154,7 @@ export function HooksDialog({ open, onOpenChange, projectDirs = [] }) {
       title={t('hooks')}
       description={t('hooksDialogHint')}
     >
-      <Tabs
-        value={tab}
-        onValueChange={(nextTab) => {
-          if (nextTab === 'skills') setVisitedSkills(true);
-          setTab(nextTab);
-        }}
-        className="flex h-full min-h-0 flex-col gap-0"
-      >
-        <div className="flex shrink-0 items-center border-b border-(--border-default) px-3 py-2">
-          <TabsList variant="line" className="h-8">
-            <TabsTrigger value="workspace">{t('hooksTabWorkspace')}</TabsTrigger>
-            <TabsTrigger value="skills">{t('hooksTabSkills')}</TabsTrigger>
-          </TabsList>
-        </div>
-        <TabsContent forceMount value="workspace" className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
-          <WorkspaceHooksPane onDirtyChange={setWorkspaceDirty} />
-        </TabsContent>
-        <TabsContent forceMount value="skills" className="min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden">
-          {visitedSkills ? (
-            <SkillHooksPane projectDirs={projectDirs} onDirtyChange={setSkillsDirty} />
-          ) : null}
-        </TabsContent>
-      </Tabs>
+      <HookProfilesPane projectDirs={projectDirs} onDirtyChange={setDirty} />
     </ResourceLibraryDialog>
     <ConfirmDialog
       open={confirmClose}

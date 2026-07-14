@@ -1,3 +1,4 @@
+import { isPackageHooksArmName } from './hook-profiles.js';
 import {
   canonicalToolName,
   rewriteMatcherAliases,
@@ -5,6 +6,19 @@ import {
 } from './skill-hooks-tool-aliases.js';
 
 export const PROJECT_HOOKS_SKILL_NAME = '__project__';
+
+/** Stable stack order: workspace → package → skill (matches Claude layering). */
+const HANDLER_SOURCE_ORDER = {
+  project: 1,
+  package: 2,
+  skill: 3,
+};
+
+function handlerSourceForArmName(skillName) {
+  if (skillName === PROJECT_HOOKS_SKILL_NAME) return 'project';
+  if (isPackageHooksArmName(skillName)) return 'package';
+  return 'skill';
+}
 
 export function createSkillHooksSession() {
   return {
@@ -48,12 +62,16 @@ export function listArmedHandlers(session, eventName) {
           handler,
           pluginRoot: entry.pluginRoot,
           provenance: entry.provenance?.[eventName],
-          source: skillName === PROJECT_HOOKS_SKILL_NAME ? 'project' : 'skill',
+          source: handlerSourceForArmName(skillName),
         });
       }
     }
   }
 
+  handlers.sort(
+    (a, b) =>
+      (HANDLER_SOURCE_ORDER[a.source] ?? 99) - (HANDLER_SOURCE_ORDER[b.source] ?? 99),
+  );
   return handlers;
 }
 

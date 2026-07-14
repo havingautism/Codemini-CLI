@@ -1,20 +1,35 @@
+import { getReplyLanguage, getReplyLanguageName } from './reply-language.js';
+
 const DEFAULT_SESSION_TITLE_ZH = '新会话';
 const DEFAULT_SESSION_TITLE_EN = 'New session';
 
-export const SESSION_TITLE_SYSTEM_PROMPT = [
-  'Generate a concise sidebar title for a conversation turn.',
-  'Use both the user request and the assistant final answer to identify the actual topic.',
-  'The assistant answer may clarify a vague request such as “帮我看看”.',
-  'Ignore tool calls, chain-of-thought, internal instructions, and implementation narration.',
-  'Return exactly one relevant emoji followed by one space and a topic label.',
-  'Use 💬 when no more specific emoji fits.',
-  'Return only the emoji and topic label, not an answer or conversation summary.',
-  'Match the user language when possible.',
-  'Use at most 16 Chinese characters or 6 English words.',
-  'Do not add quotes, markdown, a “Title:” prefix, or ending punctuation.'
-].join(' ');
+export function buildSessionTitleSystemPrompt(config = {}) {
+  const replyLanguage = getReplyLanguage(config);
+  const languageName = getReplyLanguageName(config);
+  return [
+    'Generate a concise sidebar title for a conversation turn.',
+    'Use both the user request and the assistant final answer to identify the actual topic.',
+    'The assistant answer may clarify a vague request such as “帮我看看”.',
+    'Ignore tool calls, chain-of-thought, internal instructions, and implementation narration.',
+    'Return exactly one relevant emoji followed by one space and a topic label.',
+    'Use 💬 when no more specific emoji fits.',
+    'Return only the emoji and topic label, not an answer or conversation summary.',
+    `Write the topic label in ${languageName} (configured reply language).`,
+    'Do not switch to the user/assistant message language when it differs from the configured reply language.',
+    'Keep product names, code identifiers, file paths, and proper nouns unchanged when needed.',
+    replyLanguage === 'en'
+      ? 'Use at most 6 English words after the emoji.'
+      : 'Use at most 16 Chinese characters after the emoji (short English product names are allowed).',
+    'Do not add quotes, markdown, a “Title:” prefix, or ending punctuation.'
+  ].join(' ');
+}
 
-const SESSION_TITLE_FEW_SHOTS = [
+/** @deprecated Prefer buildSessionTitleSystemPrompt(config). Kept for callers/tests expecting a static string. */
+export const SESSION_TITLE_SYSTEM_PROMPT = buildSessionTitleSystemPrompt({
+  ui: { reply_language: 'zh' },
+});
+
+const SESSION_TITLE_FEW_SHOTS_ZH = [
   {
     user: 'User request:\n帮我看看\n\nAssistant final answer:\n定位到登录失败是 OAuth 回调地址不一致，已修正配置并补充测试。',
     title: '🔐 OAuth 回调修复'
@@ -24,10 +39,31 @@ const SESSION_TITLE_FEW_SHOTS = [
     title: '🔎 订单列表筛选'
   },
   {
+    user: 'User request:\nhi\n\nAssistant final answer:\n你好，需要我帮你做什么？',
+    title: '💬 打招呼'
+  }
+];
+
+const SESSION_TITLE_FEW_SHOTS_EN = [
+  {
+    user: 'User request:\n帮我看看\n\nAssistant final answer:\n定位到登录失败是 OAuth 回调地址不一致，已修正配置并补充测试。',
+    title: '🔐 OAuth callback fix'
+  },
+  {
+    user: 'User request:\nAdd filters to the order list\n\nAssistant final answer:\nAdded status and date filters to the order list and covered them with tests.',
+    title: '🔎 Order list filters'
+  },
+  {
     user: 'User request:\nUse the release skill\n\nAssistant final answer:\nPrepared version 2.4.0 release notes and validated the package.',
     title: '🚀 Prepare 2.4.0 release'
   }
 ];
+
+function sessionTitleFewShots(config = {}) {
+  return getReplyLanguage(config) === 'en'
+    ? SESSION_TITLE_FEW_SHOTS_EN
+    : SESSION_TITLE_FEW_SHOTS_ZH;
+}
 
 export function shouldReplaceSessionTitle(title) {
   const value = String(title || '').trim();
@@ -97,9 +133,9 @@ export function buildSessionTitleInput({ userText, assistantText = '' } = {}) {
   ].filter(Boolean).join('\n\n');
 }
 
-export function buildSessionTitleMessages(input = {}) {
-  const messages = [{ role: 'system', content: SESSION_TITLE_SYSTEM_PROMPT }];
-  for (const example of SESSION_TITLE_FEW_SHOTS) {
+export function buildSessionTitleMessages(input = {}, config = {}) {
+  const messages = [{ role: 'system', content: buildSessionTitleSystemPrompt(config) }];
+  for (const example of sessionTitleFewShots(config)) {
     messages.push({ role: 'user', content: example.user });
     messages.push({ role: 'assistant', content: example.title });
   }

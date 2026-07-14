@@ -10,6 +10,7 @@ import {
   restoreSkillHooksDir
 } from '../src/commands/skill.js';
 import { getProjectSkillsDir } from '../src/core/paths.js';
+import { discoverSkillHooks } from '../src/core/skill-hooks-discover.js';
 
 const SKILL_CATALOG_FILE = 'codemini.skills.json';
 
@@ -68,7 +69,49 @@ hooks:
   });
 });
 
-test('installing a package with bare skill copies package hooks.json into the skill', async () => {
+test('installSkill can exclude bundled and frontmatter hooks', async () => {
+  await withTempCwd(async ({ cwd, fixtures }) => {
+    const skillDir = path.join(fixtures, 'no-hooks-skill');
+    await fs.mkdir(path.join(skillDir, 'hooks'), { recursive: true });
+    await fs.writeFile(
+      path.join(skillDir, 'SKILL.md'),
+      `---
+name: no-hooks-skill
+description: Hooks should be excluded.
+hooks:
+  Stop:
+    - hooks:
+        - type: command
+          command: frontmatter-stop.sh
+---
+# No Hooks Skill
+`,
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(skillDir, 'hooks', 'hooks.json'),
+      JSON.stringify({ PreToolUse: [{ hooks: [{ type: 'command', command: 'bundled.sh' }] }] }),
+      'utf8',
+    );
+
+    await installSkill(skillDir, {
+      scope: 'project',
+      cwd,
+      sourceLabel: skillDir,
+      includeHooks: false,
+    });
+
+    const installedDir = path.join(getProjectSkillsDir(cwd), 'no-hooks-skill');
+    await assert.rejects(fs.access(path.join(installedDir, 'hooks', 'hooks.json')));
+    await fs.access(path.join(installedDir, '.codemini-hooks-disabled'));
+    const discovered = await discoverSkillHooks({ skillRoot: installedDir });
+    assert.deepEqual(discovered.hooks, {});
+    const catalog = await readCatalog(cwd);
+    assert.equal(catalog.skills['no-hooks-skill'].hooksImported, false);
+  });
+});
+
+test('installing a package saves package hooks as a profile, not into the skill', async () => {
   await withTempCwd(async ({ cwd, fixtures }) => {
     const packageRoot = path.join(fixtures, 'package');
     const skillDir = path.join(packageRoot, 'skills', 'bare-skill');
@@ -96,15 +139,24 @@ description: A bare skill with no hooks of its own.
     const installedNames = await installSkillSource(packageRoot, { scope: 'project', cwd });
     assert.deepEqual(installedNames, ['bare-skill']);
 
-    const installedHooksPath = path.join(getProjectSkillsDir(cwd), 'bare-skill', 'hooks', 'hooks.json');
-    const copiedHooks = JSON.parse(await fs.readFile(installedHooksPath, 'utf8'));
-    assert.equal(copiedHooks.PreToolUse[0].hooks[0].command, 'pkg.sh');
+    const installedDir = path.join(getProjectSkillsDir(cwd), 'bare-skill');
+    await assert.rejects(fs.access(path.join(installedDir, 'hooks', 'hooks.json')));
+
+    const discovered = await discoverSkillHooks({ skillRoot: installedDir });
+    assert.deepEqual(discovered.hooks, {});
 
     const catalog = await readCatalog(cwd);
     const entry = catalog.skills['bare-skill'];
     assert.ok(entry, 'catalog entry should exist');
     assert.equal(entry.disableModelInvocation, false);
-    assert.equal(entry.hooksProvenance.PreToolUse.source, 'skill-json');
+    assert.deepEqual(entry.hooksProvenance || {}, {});
+
+    const { listPackageHookProfiles } = await import('../src/core/hook-profiles.js');
+    const packages = await listPackageHookProfiles(cwd);
+    assert.equal(packages.length, 1);
+    assert.equal(packages[0].kind, 'package');
+    assert.equal(packages[0].hooks.PreToolUse[0].hooks[0].command, 'pkg.sh');
+    assert.equal(packages[0].enabled, true);
   });
 });
 
@@ -148,6 +200,11 @@ description: Already has its own hooks.
 
     const catalog = await readCatalog(cwd);
     assert.equal(catalog.skills['self-contained-skill'].hooksProvenance.Stop.source, 'skill-json');
+
+    const { listPackageHookProfiles } = await import('../src/core/hook-profiles.js');
+    const packages = await listPackageHookProfiles(cwd);
+    assert.equal(packages.length, 1);
+    assert.equal(packages[0].hooks.PreToolUse[0].hooks[0].command, 'pkg.sh');
   });
 });
 
@@ -208,8 +265,14 @@ description: Has local hooks that the update flow should preserve.
     await installSkillSource(packageRoot, { scope: 'project', cwd });
 
     const reinstalledHooksPath = path.join(installedDir, 'hooks', 'hooks.json');
-    const reinstalledHooks = JSON.parse(await fs.readFile(reinstalledHooksPath, 'utf8'));
-    assert.equal(reinstalledHooks.PreToolUse[0].hooks[0].command, 'pkg-replacement.sh');
+    await assert.rejects(
+      fs.access(reinstalledHooksPath),
+      'package hooks must not be copied into the skill on reinstall',
+    );
+
+    const { listPackageHookProfiles } = await import('../src/core/hook-profiles.js');
+    const packages = await listPackageHookProfiles(cwd);
+    assert.equal(packages[0].hooks.PreToolUse[0].hooks[0].command, 'pkg-replacement.sh');
 
     // Restore the snapshot, as updateSkillPackage does after reinstall when
     // resetHooks !== true, and confirm the local customization survives.

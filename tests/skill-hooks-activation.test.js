@@ -46,11 +46,11 @@ async function writeProjectSkill(cwd, name, { catalogEntry = {}, frontmatter = '
   await fs.writeFile(catalogPath, JSON.stringify(catalog, null, 2), 'utf8');
 }
 
-test('isSkillIndexEligible now includes manual-mode skills', () => {
+test('skill index omits manual skills but includes agent-requested and always skills', () => {
   const manualSkill = { metadata: { type: 'skill', mode: 'manual' } };
   const alwaysSkill = { metadata: { type: 'skill', mode: 'always' } };
   const notASkill = { metadata: { type: 'command', mode: 'manual' } };
-  assert.equal(isSkillIndexEligible(manualSkill), true);
+  assert.equal(isSkillIndexEligible(manualSkill), false);
   assert.equal(isSkillIndexEligible(alwaysSkill), true);
   assert.equal(isSkillIndexEligible(notASkill), false);
 });
@@ -65,7 +65,7 @@ test('isSkillModelInvocationDisabled recognizes camelCase and kebab-case, boolea
   assert.equal(isSkillModelInvocationDisabled(null), false);
 });
 
-test('buildAlwaysSkillPromptBlock never injects always-mode skill bodies', () => {
+test('buildAlwaysSkillPromptBlock injects enabled always-mode skill bodies', () => {
   const commands = new Map([
     [
       'my-always-skill',
@@ -77,8 +77,8 @@ test('buildAlwaysSkillPromptBlock never injects always-mode skill bodies', () =>
     ]
   ]);
   const block = buildAlwaysSkillPromptBlock(commands, {}, null, 'normal');
-  assert.equal(block, '');
-  assert.doesNotMatch(String(block), /SECRET ALWAYS SKILL BODY/);
+  assert.match(block, /\[Always skill: my-always-skill\]/);
+  assert.match(block, /SECRET ALWAYS SKILL BODY/);
 });
 
 test('composeSelectedSkills still composes a manually-selected skill even when disableModelInvocation is true', () => {

@@ -115,7 +115,8 @@ function resolveSkillIndexMode(metadata = {}, source = '') {
 }
 
 export function isSkillIndexEligible(command) {
-  return command?.metadata?.type === 'skill';
+  if (command?.metadata?.type !== 'skill') return false;
+  return resolveSkillIndexMode(command.metadata, command.source) !== 'manual';
 }
 
 export function isUserInvocableSkill(command) {
@@ -146,6 +147,7 @@ function catalogMetadata(catalog, name) {
     ...(entry.disableModelInvocation !== undefined
       ? { disableModelInvocation: normalizeBooleanFlag(entry.disableModelInvocation) }
       : {}),
+    ...(entry.hooksImported !== undefined ? { hooksImported: entry.hooksImported !== false } : {}),
     ...(entry.priority !== undefined ? { priority: Number(entry.priority) } : {}),
     ...(entry.source ? { source: String(entry.source) } : {}),
     ...(entry.packageSource ? { packageSource: String(entry.packageSource) } : {}),
@@ -453,7 +455,7 @@ export async function buildSkillIndexPromptBlock(cwd = process.cwd(), config = {
   if (!lines.length) return '';
   return [
     '# Indexed skills',
-    'All skills installed by the user or project, including legacy manual and always skills. Load full instructions with skill({name:"<name>"}). Search with skill({query:"..."}).',
+    'Agent-requested and always skills installed by the user or project (manual slash-only skills are omitted). Load full instructions with skill({name:"<name>"}). Search with skill({query:"..."}).',
     ...lines
   ].join('\n');
 }
