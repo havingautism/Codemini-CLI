@@ -1,11 +1,25 @@
 import {
   formatLocalDate,
   loadCommandsAndSkills,
+  loadIndexedSkills,
   buildSkillIndexPromptBlock,
   isUserInvocableSkill,
   renderCommandPrompt
 } from './command-loader.js';
 import { skillIsEligible } from './skill-contexts.js';
+import {
+  createSkillHooksSession,
+  armSkillHooks,
+  disarmSkillHooks,
+  PROJECT_HOOKS_SKILL_NAME,
+} from './skill-hooks-session.js';
+import { armSkillFromCommand, fireSkillHookEvent } from './skill-hooks-runtime.js';
+import {
+  loadGlobalHooks,
+  loadProjectHooks,
+  mergeWorkspaceHookLayers,
+  workspaceHooksArmEntry,
+} from './project-hooks.js';
 import { runAgentLoop } from './agent-loop.js';
 import { createToolResultStore } from './tool-result-store.js';
 import { trimInline, normalizePath } from './string-utils.js';
@@ -2142,10 +2156,8 @@ function getAlwaysSkillCommands(commands, config, dismissedSkills = null, active
     });
 }
 
-function buildAlwaysSkillPromptBlock(commands, config, dismissedSkills = null, activeMode = config?.execution?.mode) {
-  const selected = getAlwaysSkillCommands(commands, config, dismissedSkills, activeMode);
-  if (selected.length === 0) return '';
-  return selected.map((skill) => `[Always skill: ${skill.name}]\n${skill.content}`).join('\n\n');
+export function buildAlwaysSkillPromptBlock() {
+  return '';
 }
 
 export function shouldInjectAlwaysSkills(executionMode) {
@@ -4227,7 +4239,9 @@ async function askModel({
   projectIsGit = Boolean(config?.runtime?.project_is_git),
   onExecutionModeSync = null,
   workspaceRoot = process.cwd(),
-  selectedSkillNames = []
+  selectedSkillNames = [],
+  skillHooksSession = null,
+  onSkillLoaded = null
 }) {
   let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
@@ -4890,6 +4904,9 @@ async function askModel({
     signal,
     skipAnalysisNudge,
     config: toolConfig,
+    skillHooksSession,
+    onSkillLoaded,
+    workspaceRoot,
     changeTracker: changeTracker?.enabled
       ? {
           begin: (meta) => beginGitOplogCapture(changeTracker, meta),
@@ -6910,6 +6927,7 @@ export async function createChatRuntime({
         await saveSession(currentSession).catch(() => {});
       }
     }
+    await reloadWorkspaceHooks();
   };
   const commands = await loadCommandsAndSkills(root);
   const reloadCommandsAndSkills = async () => {
@@ -6917,6 +6935,105 @@ export async function createChatRuntime({
     commands.clear();
     for (const [name, command] of next.entries()) {
       commands.set(name, command);
+    }
+  };
+  // Skill hooks (SessionStart/UserPromptSubmit/PreToolUse/...) are armed per skill
+  // as skills get selected or loaded, then fired against this session's active set.
+  // Workspace (project/global) hooks are always armed for this runtime.
+  const skillHooksSession = createSkillHooksSession();
+  const reloadWorkspaceHooks = async () => {
+    const hookContext = normalizeExecutionMode(executionMode) === 'plan' ? 'coding' : 'daily';
+    const [projectLayer, globalLayer] = await Promise.all([
+      loadProjectHooks(root, { context: hookContext }).catch(() => ({ hooks: {} })),
+      loadGlobalHooks().catch(() => ({ hooks: {} })),
+    ]);
+    const merged = mergeWorkspaceHookLayers(globalLayer.hooks, projectLayer.hooks);
+    if (Object.keys(merged).length > 0) {
+      armSkillHooks(skillHooksSession, workspaceHooksArmEntry(merged, root));
+    } else {
+      disarmSkillHooks(skillHooksSession, PROJECT_HOOKS_SKILL_NAME);
+    }
+  };
+  try {
+    await reloadWorkspaceHooks();
+  } catch {
+    // Workspace hooks are best-effort at startup.
+  }
+  // Legacy `always` mode no longer injects prompt content, but an already installed
+  // skill may still carry hooks. Only explicitly selected/model-loaded skills arm
+  // their hooks under the new lifecycle.
+  let sessionStartCompleted = false;
+  const runSessionStartHooksOnce = (() => {
+    let started = null;
+    return (onAgentEvent) => {
+      if (!started) {
+        started = fireSkillHookEvent({
+          session: skillHooksSession,
+          eventName: 'SessionStart',
+          input: { source: 'startup' },
+          workspaceRoot: root,
+          onAgentEvent
+        })
+          .then((result) => {
+            skillHooksSession.sessionStartContexts = Array.isArray(result?.contexts) ? result.contexts : [];
+            sessionStartCompleted = true;
+            return result;
+          })
+          .catch(() => {
+            skillHooksSession.sessionStartContexts = [];
+            sessionStartCompleted = true;
+            return { ok: false, denied: false, contexts: [] };
+          });
+      }
+      return started;
+    };
+  })();
+  await runSessionStartHooksOnce();
+  // Arms hooks for a skill by name, looking it up first in the manual-selection
+  // command map, then falling back to the agent-facing indexed skill catalog
+  // (covers skills the model loaded itself via the `skill` tool).
+  const armSkillHooksByName = async (
+    skillName,
+    { fireSessionStart = true, onAgentEvent = null } = {},
+  ) => {
+    const name = String(skillName || '').trim();
+    if (!name) return null;
+    if (skillHooksSession.activeSkills.has(name)) {
+      return { alreadyArmed: true };
+    }
+    let command = commands.get(name);
+    if (!command) {
+      try {
+        const indexed = await loadIndexedSkills(root);
+        command = indexed.get(name);
+      } catch {
+        command = null;
+      }
+    }
+    if (!command) return null;
+    const armed = await armSkillFromCommand(skillHooksSession, command).catch(() => null);
+    if (armed && sessionStartCompleted && fireSessionStart) {
+      const startResult = await fireSkillHookEvent({
+        session: skillHooksSession,
+        eventName: 'SessionStart',
+        skillName: name,
+        input: { source: 'skill_activation' },
+        workspaceRoot: root,
+        onAgentEvent,
+      }).catch(() => null);
+      if (Array.isArray(startResult?.contexts) && startResult.contexts.length > 0) {
+        skillHooksSession.sessionStartContexts.push(...startResult.contexts);
+      }
+    }
+    return armed;
+  };
+  const reloadArmedHooks = async () => {
+    await reloadWorkspaceHooks();
+    const activeNames = [...skillHooksSession.activeSkills.keys()]
+      .filter((name) => name !== PROJECT_HOOKS_SKILL_NAME);
+    for (const name of activeNames) {
+      disarmSkillHooks(skillHooksSession, name);
+      await armSkillHooksByName(name, { fireSessionStart: false });
     }
   };
   let changeTracker = await createGitOplogChangeTracker({
@@ -7188,9 +7305,6 @@ export async function createChatRuntime({
       : '';
     const readOnlyCodeWiki = options?.readOnlyCodeWiki === true;
     const codeWikiGenerate = options?.codeWikiGenerate === true;
-    const dismissedAlwaysSkills = Array.isArray(options?.dismissedAlwaysSkills)
-      ? new Set(options.dismissedAlwaysSkills.map((s) => String(s || '').trim()).filter(Boolean))
-      : null;
     const maybeAutoDreamFromRuntime = async () => {
       const threshold = Number(config?.memory?.auto_dream_threshold ?? 10);
       if (!(threshold > 0)) return null;
@@ -7283,7 +7397,8 @@ export async function createChatRuntime({
           backupManager,
           titleCoordinator,
           onExecutionModeSync: syncExecutionModeWithSession,
-          workspaceRoot: root
+          workspaceRoot: root,
+          skillHooksSession
         });
         syncExecutionModeWithSession();
         return { type: 'assistant', text: result.text, aborted: !!result.aborted };
@@ -7310,6 +7425,7 @@ export async function createChatRuntime({
         steps: Array.isArray(auto.steps) ? auto.steps : []
       };
       executionMode = 'plan';
+      await reloadWorkspaceHooks();
       currentSession.specState = null;
       if (currentSession.planState?.status === 'pending_spec_approval') currentSession.planState = null;
       const planState = { ...currentSession.planState };
@@ -7509,31 +7625,42 @@ export async function createChatRuntime({
         persistSession: false,
         skipAnalysisNudge: true,
         signal,
-        workspaceRoot: root
+        workspaceRoot: root,
+        skillHooksSession
       });
       return { type: 'assistant', text: result.text, aborted: !!result.aborted };
     }
     const expandedText = await expandFileMentions(inputText, root);
-    const autoRoute = classifyAutoRoute(expandedText);
-    const injectAlwaysSkills = shouldInjectAlwaysSkills(executionMode);
-    const alwaysSkills = injectAlwaysSkills ? getAlwaysSkillCommands(commands, config, dismissedAlwaysSkills, executionMode) : [];
-    if (alwaysSkills.length > 0 && onAgentEvent) {
-      onAgentEvent({
-        type: 'skill:always',
-        names: alwaysSkills.map((skill) => skill.name)
-      });
+
+    const selectedSkillNamesForHooks = [...new Set(
+      (Array.isArray(options?.selectedSkillNames) ? options.selectedSkillNames : [])
+        .map((name) => String(name || '').trim())
+        .filter(Boolean)
+    )];
+    for (const skillName of selectedSkillNamesForHooks) {
+      await armSkillHooksByName(skillName, { onAgentEvent });
     }
-    const alwaysSkillPrompt = injectAlwaysSkills ? buildAlwaysSkillPromptBlock(commands, config, dismissedAlwaysSkills, executionMode) : '';
-    const skillPrompt = alwaysSkillPrompt
-      ? await composeSystemPrompt({
-          shellRulesPrompt: activeReplySystemPrompt,
-          config,
-          workspaceRoot: root,
-          skillsPrompt: alwaysSkillPrompt,
-          includeSoul: false,
-          includeMemory: false
-          })
-        : activeReplySystemPrompt;
+    const userPromptHookResult = await fireSkillHookEvent({
+      session: skillHooksSession,
+      eventName: 'UserPromptSubmit',
+      input: { prompt: expandedText },
+      workspaceRoot: root,
+      onAgentEvent
+    });
+    if (userPromptHookResult.denied) {
+      const denyText = userPromptHookResult.reason || 'This turn was blocked by a skill hook.';
+      await persistLocalExchange(inputText, denyText, { includeUser: true });
+      return { type: 'system', text: denyText };
+    }
+    const hookContexts = [
+      ...(Array.isArray(skillHooksSession.sessionStartContexts) ? skillHooksSession.sessionStartContexts : []),
+      ...userPromptHookResult.contexts
+    ];
+
+    const autoRoute = classifyAutoRoute(expandedText);
+    // Always-mode skills are no longer force-injected into every prompt; the model
+    // discovers them through the indexed skill list and loads them via the skill tool.
+    const skillPrompt = activeReplySystemPrompt;
     const routedSystemPrompt =
       autoRoute.mode === 'direct_medium'
         ? await composeSystemPrompt({
@@ -7545,6 +7672,16 @@ export async function createChatRuntime({
             includeMemory: false
           })
         : skillPrompt;
+    const systemPromptWithHookContext = hookContexts.length > 0
+      ? await composeSystemPrompt({
+          shellRulesPrompt: routedSystemPrompt,
+          config,
+          workspaceRoot: root,
+          extraPrompts: hookContexts,
+          includeSoul: false,
+          includeMemory: false
+        })
+      : routedSystemPrompt;
     const result = await askModel({
       text: expandedText,
       ...(optionModelText ? { modelText: optionModelText } : {}),
@@ -7552,7 +7689,7 @@ export async function createChatRuntime({
       session: currentSession,
       config,
       model,
-      systemPrompt: routedSystemPrompt,
+      systemPrompt: systemPromptWithHookContext,
       onAgentEvent,
       requestToolApproval: activeRequestToolApproval,
       requestUserInput: activeRequestUserInput,
@@ -7565,7 +7702,9 @@ export async function createChatRuntime({
       titleCoordinator,
       onExecutionModeSync: syncExecutionModeWithSession,
       workspaceRoot: root,
-      selectedSkillNames: options?.selectedSkillNames
+      selectedSkillNames: options?.selectedSkillNames,
+      skillHooksSession,
+      onSkillLoaded: (skillName) => armSkillHooksByName(skillName, { onAgentEvent })
     });
     syncExecutionModeWithSession();
     void captureUserPromptForDream(expandedText);
@@ -7734,6 +7873,7 @@ export async function createChatRuntime({
     },
     reloadCommandsAndSkills: async () => {
       await reloadCommandsAndSkills();
+      await reloadArmedHooks();
       return true;
     },
     setExecutionMode: async (next) => {
@@ -7743,6 +7883,7 @@ export async function createChatRuntime({
       executionMode = normalized;
       await setConfigValue('execution.mode', normalized);
       config = attachRuntimeState(await loadConfig());
+      await reloadWorkspaceHooks();
       return true;
     },
     setApprovalMode: async (next) => {

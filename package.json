@@ -72,6 +72,7 @@
     "sharp": "^0.35.3",
     "strip-ansi": "^7.2.0",
     "web-tree-sitter": "^0.26.8",
+    "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "license": "MIT",

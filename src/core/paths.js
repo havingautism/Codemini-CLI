@@ -70,6 +70,25 @@ export function getProjectSkillsDir(cwd = process.cwd()) {
   return path.join(getProjectWorkspaceDir(cwd), 'skills');
 }
 
+export function getProjectHooksDir(cwd = process.cwd()) {
+  return path.join(getProjectWorkspaceDir(cwd), 'hooks');
+}
+
+export function getProjectHooksFilePath(cwd = process.cwd(), context = 'coding') {
+  return path.join(
+    getProjectHooksDir(cwd),
+    context === 'daily' ? 'hooks.daily.json' : 'hooks.json',
+  );
+}
+
+export function getGlobalHooksDir() {
+  return path.join(getBaseConfigDir(), 'hooks');
+}
+
+export function getGlobalHooksFilePath() {
+  return path.join(getGlobalHooksDir(), 'hooks.json');
+}
+
 export function getProjectSpecsDir(cwd = process.cwd(), sessionId = '') {
   return sessionId
     ? path.join(getProjectWorkspaceDir(cwd), 'specs', String(sessionId))

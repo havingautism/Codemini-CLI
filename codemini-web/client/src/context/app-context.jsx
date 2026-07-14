@@ -243,6 +243,7 @@ const initialState = {
   configOpen: false,
   projectOpen: false,
   skillsOpen: false,
+  hooksOpen: false,
   memoryOpen: false,
   soulsOpen: false,
   soulsRevision: 0,
@@ -2263,6 +2264,90 @@ export function AppProvider({ children }) {
           break;
         }
 
+        case "hook:start": {
+          const hookName =
+            event.summary ||
+            event.name ||
+            event.skillName ||
+            event.event ||
+            "hook";
+          const hookEvent = {
+            name: hookName,
+            summary: event.command
+              ? `${hookName} · ${event.command}`
+              : hookName,
+            startedAt: event.startedAt || new Date().toISOString(),
+          };
+          if (!activeId) {
+            pendingSkillSegmentsRef.current = addSkillToSegments(
+              pendingSkillSegmentsRef.current,
+              hookEvent,
+            );
+          } else {
+            setState((prev) => ({
+              ...prev,
+              messages: prev.messages.map((m) =>
+                m.id === activeId
+                  ? {
+                      ...m,
+                      segments: addSkillToSegments(m.segments || [], hookEvent),
+                    }
+                  : m,
+              ),
+            }));
+          }
+          break;
+        }
+        case "hook:end":
+        case "hook:error": {
+          const hookName =
+            event.summary ||
+            event.name ||
+            event.skillName ||
+            event.event ||
+            "hook";
+          const status =
+            event.type === "hook:error" ||
+            event.decision === "deny" ||
+            event.ok === false
+              ? "error"
+              : "done";
+          const updater = (segment) => ({
+            ...segment,
+            status,
+            summary:
+              event.reason ||
+              event.summary ||
+              event.command ||
+              segment.summary,
+            endedAt: event.endedAt || new Date().toISOString(),
+          });
+          if (!activeId) {
+            pendingSkillSegmentsRef.current = updateSkillInSegments(
+              pendingSkillSegmentsRef.current,
+              hookName,
+              updater,
+            );
+          } else {
+            setState((prev) => ({
+              ...prev,
+              messages: prev.messages.map((m) =>
+                m.id === activeId
+                  ? {
+                      ...m,
+                      segments: updateSkillInSegments(
+                        m.segments || [],
+                        hookName,
+                        updater,
+                      ),
+                    }
+                  : m,
+              ),
+            }));
+          }
+          break;
+        }
+
         case "compact:auto":
           upsertRuntimeActivity({
             key: "compact",
@@ -3723,6 +3808,7 @@ export function AppProvider({ children }) {
       },
       setProjectOpen: (open) => update({ projectOpen: open }),
       setSkillsOpen: (open) => update({ skillsOpen: open }),
+      setHooksOpen: (open) => update({ hooksOpen: open }),
       setMemoryOpen: (open) => update({ memoryOpen: open }),
       prepareChatAction: (actionName) => {
         if (actionName === CHAT_ACTION_NAMES.REFLECT) {

@@ -8,7 +8,6 @@ import {
   MagnifyingGlass,
   PencilSimple,
   Plus,
-  SlidersHorizontal,
   Trash,
 } from "@phosphor-icons/react";
 import { Button } from "@/components/ui/button";
@@ -28,6 +27,7 @@ import { SettingsField } from "@/components/settings/SettingsField.jsx";
 import { SettingsSection } from "@/components/settings/SettingsSection.jsx";
 import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmentedControl.jsx";
 import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   MarkdownEditor,
   MarkdownPreview,
@@ -45,14 +45,12 @@ import {
   skillAuthorLabel,
   skillPackageIsUpdatable,
   skillsInSamePackage,
-  sortSkillsByAuthor,
 } from "@/lib/skill-display.js";
 import * as api from "@/hooks/use-api";
 import { t } from "../../i18n/index.js";
 
 const FILTERS = ["all", "custom", "remote"];
-const SKILL_MODES = ["always", "agent_requested", "manual"];
-const BROWSE_MODES = ["package", "context"];
+const SKILL_TABS = ["coding", "daily"];
 
 function scopeLabel(scope) {
   if (scope === "builtin") return t("builtin");
@@ -98,13 +96,16 @@ function skillContextValue(contexts = []) {
   return "global";
 }
 
+function skillMatchesTab(skill, tab) {
+  const contexts = Array.isArray(skill?.contexts) ? skill.contexts : [];
+  if (contexts.length === 0) return true;
+  return contexts.includes(tab);
+}
+
 function SkillEditor({ skill, onSave, onValidate }) {
   const [name, setName] = useState(skill?.name || "");
   const [description, setDescription] = useState(skill?.description || "");
   const [context, setContext] = useState(skillContextValue(skill?.contexts));
-  const [mode, setMode] = useState(normalizeSkillMode(skill?.mode));
-  const [triggers, setTriggers] = useState((skill?.triggers || []).join(", "));
-  const [priority, setPriority] = useState(skill?.priority ?? 50);
   const [enabled, setEnabled] = useState(isEnabled(skill));
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(false);
@@ -115,9 +116,6 @@ function SkillEditor({ skill, onSave, onValidate }) {
     setName(skill?.name || "");
     setDescription(skill?.description || "");
     setContext(skillContextValue(skill?.contexts));
-    setMode(normalizeSkillMode(skill?.mode));
-    setTriggers((skill?.triggers || []).join(", "));
-    setPriority(skill?.priority ?? 50);
     setEnabled(isEnabled(skill));
     if (!skill) {
       setContent("");
@@ -126,7 +124,9 @@ function SkillEditor({ skill, onSave, onValidate }) {
     setLoading(true);
     api
       .fetchSkillContent(skill.name, skill.projectDir)
-      .then((data) => setContent(data.content || ""))
+      .then((contentData) => {
+        setContent(contentData?.content || "");
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [skill]);
@@ -135,16 +135,7 @@ function SkillEditor({ skill, onSave, onValidate }) {
     const metadata = {
       description,
       contexts: context === "global" ? ["coding", "daily"] : [context],
-      mode,
-      triggers:
-        mode === "manual"
-          ? []
-          : triggers
-              .split(",")
-              .map((item) => item.trim())
-              .filter(Boolean),
       enabled,
-      priority: Number(priority) || 0,
     };
     if (isNew) {
       await api.createSkill({
@@ -221,67 +212,15 @@ function SkillEditor({ skill, onSave, onValidate }) {
             />
           </SettingsField>
 
-          <div className="rounded-lg border border-(--border-default) bg-(--bg-subtle) p-4">
-            <div className="mb-3 flex items-center gap-2 text-[13px] font-medium text-(--text-primary)">
-              <SlidersHorizontal size={14} className="text-(--text-muted)" />
-              {t("skillRoutingSettings")}
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <SettingsField
-                id="skill-editor-mode"
-                label={t("skillMode")}
-                description={t("skillModeHint")}
-                className="sm:col-span-2"
-              >
-                <SettingsSegmentedControl
-                  idPrefix="skill-editor-mode"
-                  value={mode}
-                  onValueChange={setMode}
-                  options={SKILL_MODES.map((item) => ({
-                    value: item,
-                    label: t(`skillMode_${item}`),
-                  }))}
-                  className="[&_button]:text-[11px] sm:[&_button]:text-[12px]"
-                />
-              </SettingsField>
-              {mode !== "manual" && (
-                <>
-                  <SettingsField
-                    id="skill-editor-priority"
-                    label={t("skillPriority")}
-                  >
-                    <Input
-                      type="number"
-                      min="0"
-                      max="100"
-                      value={priority}
-                      onChange={(e) => setPriority(e.target.value)}
-                    />
-                  </SettingsField>
-                  <SettingsField
-                    id="skill-editor-triggers"
-                    label={t("skillTriggers")}
-                    className="sm:col-span-2"
-                  >
-                    <Input
-                      value={triggers}
-                      onChange={(e) => setTriggers(e.target.value)}
-                      placeholder="after_edit, before_final"
-                    />
-                  </SettingsField>
-                </>
-              )}
-              <div className="flex items-center justify-between sm:col-span-2">
-                <span className="text-[13px] font-medium text-(--text-primary)">
-                  {t("enabled")}
-                </span>
-                <Switch
-                  checked={enabled}
-                  onCheckedChange={setEnabled}
-                  aria-label={enabled ? t("disable") : t("enable")}
-                />
-              </div>
-            </div>
+          <div className="flex items-center justify-between rounded-lg border border-(--border-default) bg-(--bg-subtle) px-4 py-3">
+            <span className="text-[13px] font-medium text-(--text-primary)">
+              {t("enabled")}
+            </span>
+            <Switch
+              checked={enabled}
+              onCheckedChange={setEnabled}
+              aria-label={enabled ? t("disable") : t("enable")}
+            />
           </div>
 
           <SettingsField id="skill-editor-content" label={t("skillContent")}>
@@ -352,114 +291,6 @@ function SkillEditorDialog({ skill, open, onSave, onOpenChange }) {
         </div>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function SkillRoutingForm({ skill, onSave, onCancel }) {
-  const [mode, setMode] = useState(normalizeSkillMode(skill?.mode));
-  const [triggers, setTriggers] = useState((skill?.triggers || []).join(", "));
-  const [priority, setPriority] = useState(skill?.priority ?? 50);
-  const [context, setContext] = useState(skillContextValue(skill?.contexts));
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    setMode(normalizeSkillMode(skill?.mode));
-    setTriggers((skill?.triggers || []).join(", "));
-    setPriority(skill?.priority ?? 50);
-    setContext(skillContextValue(skill?.contexts));
-  }, [skill]);
-
-  const handleSave = async () => {
-    if (!skill) return;
-    setSaving(true);
-    try {
-      await api.updateSkillMetadata(
-        skill.name,
-        {
-          mode,
-          triggers:
-            mode === "manual"
-              ? []
-              : triggers
-                  .split(",")
-                  .map((item) => item.trim())
-                  .filter(Boolean),
-          priority: Number(priority) || 0,
-          contexts: context === "global" ? ["coding", "daily"] : [context],
-        },
-        skill.projectDir,
-      );
-      await onSave?.();
-      onCancel?.();
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth pr-1">
-        <SettingsSection description={t("skillModeHint")} className="gap-4">
-          <SettingsField id="skill-routing-context" label={t("skillContext")}>
-            <SettingsSegmentedControl
-              idPrefix="skill-routing-context"
-              value={context}
-              onValueChange={setContext}
-              options={[
-                { value: "global", label: t("skillContextGlobal") },
-                { value: "coding", label: t("skillContextCoding") },
-                { value: "daily", label: t("skillContextDaily") },
-              ]}
-            />
-          </SettingsField>
-          <SettingsField id="skill-routing-mode" label={t("skillMode")}>
-            <SettingsSegmentedControl
-              idPrefix="skill-routing-mode"
-              value={mode}
-              onValueChange={setMode}
-              options={SKILL_MODES.map((item) => ({
-                value: item,
-                label: t(`skillMode_${item}`),
-              }))}
-            />
-          </SettingsField>
-          {mode === "agent_requested" && (
-            <SettingsField
-              id="skill-routing-triggers"
-              label={t("skillTriggers")}
-            >
-              <Input
-                value={triggers}
-                onChange={(event) => setTriggers(event.target.value)}
-                placeholder="react, testing, docs"
-                className="h-9 text-[13px]"
-              />
-            </SettingsField>
-          )}
-          {mode === "always" && (
-            <SettingsField
-              id="skill-routing-priority"
-              label={t("skillPriority")}
-            >
-              <Input
-                type="number"
-                value={priority}
-                onChange={(event) => setPriority(event.target.value)}
-                className="h-9 text-[13px]"
-              />
-            </SettingsField>
-          )}
-        </SettingsSection>
-      </div>
-      <div className="mt-3 flex shrink-0 justify-end gap-2 border-t border-(--border-default) pt-4">
-        <Button variant="outline" onClick={onCancel}>
-          {t("cancel")}
-        </Button>
-        <Button onClick={handleSave} disabled={saving}>
-          {saving ? t("loading") : t("save")}
-        </Button>
-      </div>
-    </div>
   );
 }
 
@@ -556,7 +387,7 @@ function SkillDetailPane({
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
-            {modeView === "edit" || modeView === "routing" ? null : (
+            {modeView === "edit" ? null : (
               <>
                 {!builtin && (
                   <Button
@@ -567,13 +398,6 @@ function SkillDetailPane({
                     {t("edit")}
                   </Button>
                 )}
-                <Button
-                  variant="outline"
-                  onClick={() => setModeView("routing")}
-                >
-                  <SlidersHorizontal size={13} />
-                  {t("skillRoutingSettings")}
-                </Button>
                 {!builtin && (
                   <Button
                     variant="ghost"
@@ -602,14 +426,7 @@ function SkillDetailPane({
           modeView === "view" ? "px-5 py-4" : "p-5",
         )}
       >
-        {modeView === "routing" ? (
-          <SkillRoutingForm
-            key={skillKey(skill)}
-            skill={skill}
-            onSave={onSave}
-            onCancel={() => setModeView("view")}
-          />
-        ) : loading ? (
+        {loading ? (
           <div className="py-8 text-center text-[12px] text-(--text-muted)">
             {t("loading")}...
           </div>
@@ -853,13 +670,11 @@ function SkillGroupHeader({ name, count, collapsed, title, onClick, actions }) {
 }
 
 function PackageBatchDialog({ packageGroup, open, applying, onOpenChange, onApply }) {
-  const [mode, setMode] = useState("agent_requested");
   const [context, setContext] = useState("global");
   const [enabled, setEnabled] = useState("keep");
 
   useEffect(() => {
     if (!open) return;
-    setMode("agent_requested");
     setContext("global");
     setEnabled("keep");
   }, [open, packageGroup?.key]);
@@ -878,22 +693,9 @@ function PackageBatchDialog({ packageGroup, open, applying, onOpenChange, onAppl
             )}
             className="gap-4"
           >
-            <SettingsField id="package-batch-mode" label={t("skillMode")}>
-              <Select value={mode} onValueChange={setMode}>
-                <SelectTrigger className="h-9 w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent align="start">
-                  <SelectGroup>
-                    {SKILL_MODES.map((item) => (
-                      <SelectItem key={item} value={item}>
-                        {t(`skillMode_${item}`)}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            </SettingsField>
+            <div className="rounded-md border border-(--border-default) bg-(--bg-subtle) px-3 py-2 text-[12px] text-(--text-muted)">
+              {t("skillPackageBatchHooksNote")}
+            </div>
             <SettingsField id="package-batch-context" label={t("skillContext")}>
               <Select value={context} onValueChange={setContext}>
                 <SelectTrigger className="h-9 w-full">
@@ -943,7 +745,6 @@ function PackageBatchDialog({ packageGroup, open, applying, onOpenChange, onAppl
               disabled={applying || !packageGroup}
               onClick={() =>
                 onApply?.(packageGroup, {
-                  mode,
                   contexts:
                     context === "global" ? ["coding", "daily"] : [context],
                   enabled: enabled === "keep" ? undefined : enabled === "true",
@@ -965,7 +766,7 @@ export function SkillPanel({ projectDirs = [] }) {
   const [editing, setEditing] = useState(null);
   const [selectedSkill, setSelectedSkill] = useState(null);
   const [expandedGroups, setExpandedGroups] = useState(() => new Set());
-  const [browseMode, setBrowseMode] = useState("package");
+  const [activeTab, setActiveTab] = useState("coding");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [installSource, setInstallSource] = useState("");
@@ -1134,7 +935,6 @@ export function SkillPanel({ projectDirs = [] }) {
     try {
       for (const skill of packageGroup.items) {
         const metadata = {
-          mode: patch.mode,
           contexts: patch.contexts,
         };
         if (patch.enabled !== undefined) metadata.enabled = patch.enabled;
@@ -1154,6 +954,7 @@ export function SkillPanel({ projectDirs = [] }) {
   const filteredSkills = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return skills.filter((skill) => {
+      if (!skillMatchesTab(skill, activeTab)) return false;
       if (filter === "custom") {
         if (skill.scope === "builtin" || skillPackageIsUpdatable(skill)) {
           return false;
@@ -1172,23 +973,7 @@ export function SkillPanel({ projectDirs = [] }) {
           .includes(needle)
       );
     });
-  }, [skills, query, filter]);
-  const groupedSkills = useMemo(() => {
-    const groups = new Map([
-      ["global", { key: "global", name: t("skillContextGlobal"), items: [] }],
-      [
-        "coding",
-        { key: "coding", name: t("skillContextCodingMode"), items: [] },
-      ],
-      ["daily", { key: "daily", name: t("skillContextDailyMode"), items: [] }],
-    ]);
-    for (const skill of filteredSkills) {
-      groups.get(skillContextValue(skill.contexts)).items.push(skill);
-    }
-    return [...groups.values()]
-      .map((group) => ({ ...group, items: sortSkillsByAuthor(group.items) }))
-      .filter((group) => group.items.length > 0);
-  }, [filteredSkills]);
+  }, [skills, query, filter, activeTab]);
 
   const packageGroupedSkills = useMemo(
     () => groupSkillsByPackage(filteredSkills),
@@ -1241,40 +1026,8 @@ export function SkillPanel({ projectDirs = [] }) {
         </div>
       )}
 
-      {skills.length > 0 &&
-        filteredSkills.length > 0 &&
-        browseMode === "context" && (
-          <div className="grid gap-2">
-            {groupedSkills.map((group) => {
-              const collapsed = !expandedGroups.has(group.key);
-              return (
-                <div key={group.key} className="grid gap-1">
-                  <SkillGroupHeader
-                    name={group.name}
-                    count={group.items.length}
-                    collapsed={collapsed}
-                    title={group.key}
-                    onClick={() => toggleSkillGroup(group.key)}
-                  />
-                  {!collapsed && (
-                    <div className="grid gap-2">
-                      <SkillCards
-                        items={group.items}
-                        selectedSkill={selectedSkill}
-                        onSelect={setSelectedSkill}
-                      />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-      {skills.length > 0 &&
-        filteredSkills.length > 0 &&
-        browseMode === "package" && (
-          <div className="grid gap-2">
+      {skills.length > 0 && filteredSkills.length > 0 && (
+        <div className="grid gap-2">
             {packageGroupedSkills.packages.map((pkg) => {
               const collapsed = !expandedGroups.has(pkg.key);
               return (
@@ -1371,6 +1124,25 @@ export function SkillPanel({ projectDirs = [] }) {
 
   return (
     <>
+      <Tabs
+        value={activeTab}
+        onValueChange={setActiveTab}
+        className="h-full min-h-0 gap-0"
+      >
+        <div className="flex shrink-0 items-center border-b border-(--border-default) px-3 py-2">
+          <TabsList variant="line" className="h-8">
+            {SKILL_TABS.map((tabValue) => (
+              <TabsTrigger key={tabValue} value={tabValue}>
+                {t(
+                  tabValue === "coding"
+                    ? "skillContextCoding"
+                    : "skillContextDaily",
+                )}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </div>
+        <TabsContent value={activeTab} className="min-h-0 flex-1">
       <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[380px_minmax(0,1fr)]">
         <div className="flex min-h-0 flex-col gap-3 border-b border-(--border-default) p-3 lg:border-b-0 lg:border-r">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1412,16 +1184,6 @@ export function SkillPanel({ projectDirs = [] }) {
               />
             </div>
             <SettingsSegmentedControl
-              idPrefix="skill-browse"
-              value={browseMode}
-              onValueChange={setBrowseMode}
-              options={BROWSE_MODES.map((item) => ({
-                value: item,
-                label: t(`skillBrowse_${item}`),
-              }))}
-              className="w-full shrink-0 [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
-            />
-            <SettingsSegmentedControl
               idPrefix="skill-filter"
               value={filter}
               onValueChange={setFilter}
@@ -1452,6 +1214,8 @@ export function SkillPanel({ projectDirs = [] }) {
           />
         </div>
       </div>
+        </TabsContent>
+      </Tabs>
 
       <SkillEditorDialog
         skill={editing === "new" ? null : editing}

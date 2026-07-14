@@ -48,6 +48,11 @@ const SkillDialog = lazy(() =>
     default: module.SkillDialog,
   })),
 );
+const HooksDialog = lazy(() =>
+  import("@/components/HooksDialog.jsx").then((module) => ({
+    default: module.HooksDialog,
+  })),
+);
 const MemoryDialog = lazy(() =>
   import("@/components/MemoryDialog.jsx").then((module) => ({
     default: module.MemoryDialog,
@@ -180,6 +185,7 @@ function Shell() {
     [actions],
   );
   const openSkills = useCallback(() => actions.setSkillsOpen(true), [actions]);
+  const openHooks = useCallback(() => actions.setHooksOpen(true), [actions]);
   const openMemory = useCallback(() => actions.setMemoryOpen(true), [actions]);
   const openSouls = useCallback(() => actions.setSoulsOpen(true), [actions]);
   const openAbout = useCallback(() => actions.setAboutOpen(true), [actions]);
@@ -230,6 +236,7 @@ function Shell() {
         onSetTheme={actions.setTheme}
         onOpenSettings={openSettings}
         onOpenSkills={openSkills}
+        onOpenHooks={openHooks}
         onOpenMemory={openMemory}
         onOpenSouls={openSouls}
         onOpenAbout={openAbout}
@@ -496,6 +503,14 @@ function Shell() {
             onOpenChange={actions.setSkillsOpen}
             projectDirs={sidebarProjectDirs}
             projectTargets={sidebarProjectTargets}
+          />
+        )}
+
+        {state.hooksOpen && (
+          <HooksDialog
+            open={state.hooksOpen}
+            onOpenChange={actions.setHooksOpen}
+            projectDirs={sidebarProjectDirs}
           />
         )}
 

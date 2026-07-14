@@ -583,6 +583,20 @@ function formatSkillNames(name = "") {
 
 function skillActivityLabel(badge) {
   const names = formatSkillNames(badge?.name);
+  const looksLikeHook =
+    String(badge?.name || "").includes(" · ") ||
+    /^(SessionStart|UserPromptSubmit|PreToolUse|PostToolUse|Stop)\b/.test(
+      String(badge?.name || ""),
+    );
+  if (looksLikeHook) {
+    if (badge?.status === "running") {
+      return `${t("hookActivity")}: ${names}`;
+    }
+    if (badge?.status === "error") {
+      return `${t("hookActivity")} ✗ ${names}`;
+    }
+    return `${t("hookActivity")}: ${names}`;
+  }
   if (badge?.status === "running") {
     return t("skillUsing").replace("{{name}}", names);
   }

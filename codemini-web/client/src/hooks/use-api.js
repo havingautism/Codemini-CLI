@@ -454,6 +454,35 @@ export async function toggleSkill(name, enabled, projectDir) {
   return res.json();
 }
 
+export async function fetchSkillHooks(name, projectDir) {
+  const res = await api(withProjectDirQuery(`/api/skills/${encodeURIComponent(name)}/hooks`, projectDir));
+  return readJsonResponse(res);
+}
+
+export async function updateSkillHooks(name, hooks, projectDir) {
+  const res = await api(`/api/skills/${encodeURIComponent(name)}/hooks`, {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ hooks, projectDir })
+  });
+  return readJsonResponse(res);
+}
+
+export async function fetchWorkspaceHooks(scope = 'global') {
+  const params = new URLSearchParams({ scope });
+  const res = await api(`/api/hooks?${params.toString()}`);
+  return readJsonResponse(res);
+}
+
+export async function updateWorkspaceHooks(scope = 'global', hooks = {}) {
+  const res = await api('/api/hooks', {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ scope, hooks })
+  });
+  return readJsonResponse(res);
+}
+
 // ── Memory ──
 export async function fetchMemories({ scope = 'user', query = '', projectDirs = [] } = {}) {
   const params = new URLSearchParams({ scope });

@@ -43,6 +43,18 @@ import { initializeProjectIndex } from '../src/core/project-index.js';
 import { INDEX_SKIP_DIRS } from '../src/core/constants.js';
 import { VERSION } from '../src/core/version.js';
 import { detectPlaywrightStatus } from '../src/core/tools.js';
+import {
+  discoverSkillHooks,
+  readHooksJsonRaw,
+  writeSkillHooksJson,
+} from '../src/core/skill-hooks-discover.js';
+import {
+  loadGlobalHooks,
+  loadProjectHooks,
+  readWorkspaceHooksFile,
+  saveGlobalHooks,
+  saveProjectHooks,
+} from '../src/core/project-hooks.js';
 
 const GENERAL_PROJECT_DIR = (() => {
   const base = getBaseConfigDir();
@@ -71,7 +83,7 @@ function skillBaseDirForScope(scope, projectDir) {
   return scope === 'global' ? getSkillsDir() : getProjectSkillsDir(projectDir);
 }
 
-function normalizeSkillMetadataPatch(input = {}) {
+export function normalizeSkillMetadataPatch(input = {}) {
   const out = {};
   if (typeof input.description === 'string') out.description = input.description.trim();
   if (typeof input.mode === 'string') {
@@ -90,6 +102,14 @@ function normalizeSkillMetadataPatch(input = {}) {
   }
   if (input.contexts !== undefined) {
     out.contexts = normalizeSkillContexts(input.contexts);
+  }
+  if (input.disableModelInvocation !== undefined) {
+    out.disableModelInvocation = input.disableModelInvocation === true;
+  }
+  // Legacy migration convenience: `mode: 'manual'` implies the skill should
+  // no longer be model-invocable, so mirror it onto the new flag on write.
+  if (out.mode === 'manual') {
+    out.disableModelInvocation = true;
   }
   return out;
 }
@@ -1714,6 +1734,27 @@ async function parseProjectDirsParam(url, fallbackDir) {
   return dirs;
 }
 
+async function enrichSkillWithHookMetadata(entry) {
+  try {
+    const skillRoot = entry.path ? path.dirname(entry.path) : '';
+    if (!skillRoot) throw new Error('missing skill path');
+    const discovered = await discoverSkillHooks({ skillRoot });
+    return {
+      ...entry,
+      disableModelInvocation: discovered.disableModelInvocation === true,
+      hooksProvenance: discovered.provenance || {},
+      hookEvents: Object.keys(discovered.hooks || {})
+    };
+  } catch {
+    return {
+      ...entry,
+      disableModelInvocation: entry.disableModelInvocation === true,
+      hooksProvenance: {},
+      hookEvents: []
+    };
+  }
+}
+
 async function listSkillsForProjectDirs(projectDirs, fallbackDir) {
   const dirs = projectDirs.length > 0 ? projectDirs : [fallbackDir];
   const seen = new Set();
@@ -1739,7 +1780,8 @@ async function listSkillsForProjectDirs(projectDirs, fallbackDir) {
       });
     }
   }
-  return results.sort((a, b) => {
+  const enriched = await Promise.all(results.map(enrichSkillWithHookMetadata));
+  return enriched.sort((a, b) => {
     const left = `${a.scope}:${a.projectName || ''}:${a.name}`;
     const right = `${b.scope}:${b.projectName || ''}:${b.name}`;
     return left.localeCompare(right);
@@ -2896,7 +2938,6 @@ async function main() {
           });
           await upsertSkillCatalogMetadata(getSkillsDir(), name, {
             description: description || '',
-            mode: 'agent_requested',
             triggers: [],
             enabled: true,
             priority: 50
@@ -2904,7 +2945,6 @@ async function main() {
         } else {
           await upsertProjectSkillMetadata(targetProjectDir, name, {
             description: description || '',
-            mode: 'agent_requested',
             triggers: [],
             enabled: true,
             priority: 50
@@ -3164,6 +3204,84 @@ async function main() {
         await bridge.reloadConfig();
         await bridge.reloadCommandsAndSkills();
         jsonResponse(res, { ok: true });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/hooks') {
+      try {
+        const requestedScope = url.searchParams.get('scope');
+        const scope = requestedScope === 'global'
+          ? 'global'
+          : requestedScope === 'daily' ? 'daily' : 'coding';
+        const loaded = scope === 'global'
+          ? await loadGlobalHooks({ rewriteMatchers: false })
+          : await loadProjectHooks(currentProjectDir || process.cwd(), {
+              rewriteMatchers: false,
+              context: scope,
+            });
+        const rawHooks = await readWorkspaceHooksFile(loaded.filePath);
+        jsonResponse(res, {
+          scope,
+          filePath: loaded.filePath,
+          hooks: rawHooks,
+        });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+    }
+    if (req.method === 'PUT' && url.pathname === '/api/hooks') {
+      try {
+        const body = await readBody(req);
+        const scope = body?.scope === 'global'
+          ? 'global'
+          : body?.scope === 'daily' ? 'daily' : 'coding';
+        const hooks = body?.hooks && typeof body.hooks === 'object' ? body.hooks : {};
+        const saved = scope === 'global'
+          ? await saveGlobalHooks(hooks)
+          : await saveProjectHooks(currentProjectDir || process.cwd(), hooks, scope);
+        if (typeof bridge?.reloadCommandsAndSkills === 'function') {
+          await bridge.reloadCommandsAndSkills().catch(() => null);
+        }
+        jsonResponse(res, { ok: true, scope, hooks: saved });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/api/skills/') && url.pathname.endsWith('/hooks')) {
+      const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length, -'/hooks'.length));
+      try {
+        const targetProjectDir = await resolveRequestProjectDir(url.searchParams.get('projectDir'), currentProjectDir);
+        const entries = await listSkillEntries({ scope: 'all', cwd: targetProjectDir });
+        const skill = entries.find(s => s.name === name);
+        if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
+        const skillRoot = path.dirname(skill.path);
+        const discovered = await discoverSkillHooks({ skillRoot });
+        const editableHooks = await readHooksJsonRaw(path.join(skillRoot, 'hooks', 'hooks.json'));
+        jsonResponse(res, {
+          name,
+          hooks: Object.keys(editableHooks).length > 0 ? editableHooks : discovered.hooks,
+          provenance: discovered.provenance,
+          disableModelInvocation: discovered.disableModelInvocation === true
+        });
+      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      return;
+    }
+    if (req.method === 'PUT' && url.pathname.startsWith('/api/skills/') && url.pathname.endsWith('/hooks')) {
+      const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length, -'/hooks'.length));
+      const { hooks, projectDir } = await readBody(req);
+      try {
+        const targetProjectDir = await resolveRequestProjectDir(projectDir, currentProjectDir);
+        const entries = await listSkillEntries({ scope: 'all', cwd: targetProjectDir });
+        const skill = entries.find(s => s.name === name);
+        if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
+        if (skill.scope === 'builtin') { jsonResponse(res, { error: true, message: 'Cannot edit builtin skill' }, 403); return; }
+        const skillRoot = path.dirname(skill.path);
+        const normalizedHooks = await writeSkillHooksJson(skillRoot, hooks || {});
+        await bridge.reloadConfig();
+        await bridge.reloadCommandsAndSkills();
+        jsonResponse(res, { ok: true, name, hooks: normalizedHooks });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
     }

@@ -115,12 +115,25 @@ function resolveSkillIndexMode(metadata = {}, source = '') {
 }
 
 export function isSkillIndexEligible(command) {
-  if (command?.metadata?.type !== 'skill') return false;
-  return resolveSkillIndexMode(command.metadata, command.source) !== 'manual';
+  return command?.metadata?.type === 'skill';
 }
 
 export function isUserInvocableSkill(command) {
   return command?.metadata?.type === 'skill';
+}
+
+function normalizeBooleanFlag(value) {
+  if (value === true) return true;
+  if (typeof value === 'string') return value.trim().toLowerCase() === 'true';
+  return false;
+}
+
+export function isSkillModelInvocationDisabled(command) {
+  const metadata = command?.metadata || {};
+  return (
+    normalizeBooleanFlag(metadata.disableModelInvocation) ||
+    normalizeBooleanFlag(metadata['disable-model-invocation'])
+  );
 }
 
 function catalogMetadata(catalog, name) {
@@ -130,6 +143,9 @@ function catalogMetadata(catalog, name) {
     ...(entry.description ? { description: String(entry.description) } : {}),
     ...(entry.mode ? { mode: normalizeSkillMode(entry.mode) } : {}),
     ...(entry.enabled !== undefined ? { enabled: entry.enabled !== false } : {}),
+    ...(entry.disableModelInvocation !== undefined
+      ? { disableModelInvocation: normalizeBooleanFlag(entry.disableModelInvocation) }
+      : {}),
     ...(entry.priority !== undefined ? { priority: Number(entry.priority) } : {}),
     ...(entry.source ? { source: String(entry.source) } : {}),
     ...(entry.packageSource ? { packageSource: String(entry.packageSource) } : {}),
@@ -437,7 +453,7 @@ export async function buildSkillIndexPromptBlock(cwd = process.cwd(), config = {
   if (!lines.length) return '';
   return [
     '# Indexed skills',
-    'Agent-requested and always skills installed by the user or project (manual slash-only skills are omitted). Load full instructions with skill({name:"<name>"}). Search with skill({query:"..."}).',
+    'All skills installed by the user or project, including legacy manual and always skills. Load full instructions with skill({name:"<name>"}). Search with skill({query:"..."}).',
     ...lines
   ].join('\n');
 }

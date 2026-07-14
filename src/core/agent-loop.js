@@ -11,6 +11,7 @@ import { markRunCommandSafeModeApproved } from './tools.js';
 import { formatToolDisplayName } from './tool-display.js';
 import { MEMORY_ALWAYS_ALLOW_TOOLS } from './constants.js';
 import { toolRequiresUserApproval } from './approval-policy.js';
+import { fireSkillHookEvent } from './skill-hooks-runtime.js';
 
 /**
  * 安全解析 JSON 字符串。
@@ -654,7 +655,10 @@ export async function runAgentLoop({
   signal,
   skipAnalysisNudge = false,
   config = {},
-  changeTracker = null
+  changeTracker = null,
+  skillHooksSession = null,
+  onSkillLoaded = null,
+  workspaceRoot = config?.workspaceRoot || process.cwd()
 }) {
   const activeToolResultStore = toolResultStore || createToolResultStore();
   const messages = [];
@@ -680,6 +684,26 @@ export async function runAgentLoop({
 
   // Mutable tool list — grows as tool_search loads deferred tools
   const activeTools = [...toolDefinitions];
+
+  let stopHookBlockCount = 0;
+  async function fireStopHooks(lastAssistantMessage = '') {
+    if (!skillHooksSession) return { denied: false };
+    const result = await fireSkillHookEvent({
+      session: skillHooksSession,
+      eventName: 'Stop',
+      input: {
+        stop_hook_active: stopHookBlockCount > 0,
+        last_assistant_message: lastAssistantMessage,
+      },
+      workspaceRoot,
+      onAgentEvent: onEvent
+    }).catch(() => ({ denied: false }));
+    if (result?.denied && stopHookBlockCount < 8) {
+      stopHookBlockCount += 1;
+      return result;
+    }
+    return { ...result, denied: false };
+  }
 
   async function maybeRunAutoDream(stepNumber = 0, { force = false } = {}) {
     const interval = Math.max(1, Number(config?.memory?.auto_dream_check_interval_steps || 20));
@@ -795,6 +819,14 @@ export async function runAgentLoop({
         continue;
       }
       finalText = assistantText;
+      const stopResult = await fireStopHooks(assistantText);
+      if (stopResult?.denied) {
+        messages.push({
+          role: 'user',
+          content: stopResult.reason || 'A Stop hook requires more work before this turn can finish.'
+        });
+        continue;
+      }
       await maybeRunAutoDream(step, { force: true });
       return { text: finalText, messages, steps: step };
     }
@@ -953,7 +985,7 @@ export async function runAgentLoop({
     async function executeOne({ call, args, toolName, displayName, isParallelSafe }) {
       const startedAt = Date.now();
       const approvalState = approvalResults.get(call.id) || { approved: true, args };
-      const effectiveArgs = approvalState.args || args;
+      let effectiveArgs = approvalState.args || args;
 
       if (approvalState.errorContent) {
         const summary = trimInline(approvalState.errorContent, 120);
@@ -1017,6 +1049,104 @@ export async function runAgentLoop({
           summary,
           status: 'error'
         };
+      }
+
+      let preToolContexts = [];
+      if (skillHooksSession) {
+        const preToolUse = await fireSkillHookEvent({
+          session: skillHooksSession,
+          eventName: 'PreToolUse',
+          toolName,
+          input: { tool_name: toolName, tool_input: effectiveArgs },
+          workspaceRoot,
+          onAgentEvent: onEvent
+        });
+        if (preToolUse.denied) {
+          const durationMs = Date.now() - startedAt;
+          const reason = preToolUse.reason || `Blocked by a "${toolName}" pre-tool-use hook.`;
+          const summary = trimInline(reason, 120);
+          if (onEvent) {
+            onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs, summary });
+          }
+          return {
+            callId: call.id,
+            content: clipToolResult({ error: reason }, toolResultMaxChars),
+            error: true,
+            durationMs,
+            summary,
+            status: 'error'
+          };
+        }
+        if (preToolUse.updatedInput && typeof preToolUse.updatedInput === 'object') {
+          effectiveArgs = preToolUse.updatedInput;
+          const updatedRunPolicy = toolName === 'run'
+            ? evaluateCommandPolicy(effectiveArgs?.command || '', config, config?.workspaceRoot || process.cwd())
+            : { allowed: true };
+          if (toolName === 'run' && updatedRunPolicy.reason === 'blocked by dangerous command pattern') {
+            const reason = updatedRunPolicy.reason;
+            return {
+              callId: call.id,
+              content: clipToolResult({ error: reason }, toolResultMaxChars),
+              blocked: true,
+              durationMs: Date.now() - startedAt,
+              summary: reason,
+              status: 'blocked'
+            };
+          }
+          const updatedInputNeedsApproval =
+            preToolUse.decision === 'ask' ||
+            toolRequiresUserApproval({
+              approvalMode: normalizedApprovalMode,
+              projectIsGit,
+              toolName,
+              isSafeModeRun: toolName === 'run'
+                && config?.policy?.safe_mode !== false
+                && (!updatedRunPolicy.allowed || requiresApprovalEvaluation(effectiveArgs?.command || '', config?.shell?.default)),
+              alwaysAllowTools: [...alwaysAllowSet]
+            });
+          if (updatedInputNeedsApproval) {
+            if (typeof requestToolApproval !== 'function') {
+              const reason = 'Hook-modified tool input requires approval.';
+              return {
+                callId: call.id,
+                content: clipToolResult({ error: reason }, toolResultMaxChars),
+                blocked: true,
+                durationMs: Date.now() - startedAt,
+                summary: reason,
+                status: 'blocked'
+              };
+            }
+            const decision = await requestToolApproval({
+              id: call.id,
+              name: toolName,
+              displayName,
+              arguments: effectiveArgs,
+            });
+            if (!decision?.approved) {
+              const reason = 'Hook-modified tool input was not approved.';
+              return {
+                callId: call.id,
+                content: clipToolResult({ error: reason }, toolResultMaxChars),
+                blocked: true,
+                durationMs: Date.now() - startedAt,
+                summary: reason,
+                status: 'blocked'
+              };
+            }
+          }
+        }
+        if (preToolUse.decision === 'defer') {
+          const reason = 'Tool call deferred by a PreToolUse hook.';
+          return {
+            callId: call.id,
+            content: clipToolResult({ error: reason }, toolResultMaxChars),
+            blocked: true,
+            durationMs: Date.now() - startedAt,
+            summary: reason,
+            status: 'blocked'
+          };
+        }
+        preToolContexts = Array.isArray(preToolUse.contexts) ? preToolUse.contexts : [];
       }
 
       let captureScope = null;
@@ -1085,6 +1215,10 @@ export async function runAgentLoop({
         };
       }
 
+      if (toolName === 'skill' && effectiveArgs?.name && typeof onSkillLoaded === 'function') {
+        await onSkillLoaded(String(effectiveArgs.name)).catch(() => null);
+      }
+
       const summary = summarizeToolResult(toolResult);
       const resultMeta = extractToolResultMeta(toolName, toolResult);
       /* 提取文件改动统计 */
@@ -1121,6 +1255,19 @@ export async function runAgentLoop({
         onEvent({ type: 'tool:end', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs, summary, fileChange, fileChanges, resultMeta });
       }
 
+      let postToolContexts = [];
+      if (skillHooksSession) {
+        const postToolUse = await fireSkillHookEvent({
+          session: skillHooksSession,
+          eventName: 'PostToolUse',
+          toolName,
+          input: { tool_name: toolName, tool_input: effectiveArgs, tool_response: toolResult },
+          workspaceRoot,
+          onAgentEvent: onEvent
+        }).catch(() => null);
+        postToolContexts = Array.isArray(postToolUse?.contexts) ? postToolUse.contexts : [];
+      }
+
       if (toolResult && typeof toolResult === 'object' && toolResult.error) {
         const errMsg = String(toolResult.error).slice(0, 120);
         if (isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, errMsg)) {
@@ -1130,6 +1277,10 @@ export async function runAgentLoop({
 
       // P1b: Use per-tool formatter if available, else fallback
       let formatted = formatToolResult(toolResult, toolName, effectiveArgs, toolFormatters, toolResultMaxChars);
+      const hookContexts = [...preToolContexts, ...postToolContexts].filter(Boolean);
+      if (hookContexts.length > 0) {
+        formatted = `${formatted}\n\n[Hook context]\n${hookContexts.join('\n')}`;
+      }
       noteAnalysisEvidence(analysisGuard, toolName, effectiveArgs, toolResult);
 
       // P2: If tool_search loaded deferred tools, inject their schemas into activeTools
@@ -1237,6 +1388,7 @@ export async function runAgentLoop({
     }
     if (workflowCompleteText) {
       await maybeRunAutoDream(step, { force: true });
+      await fireStopHooks(workflowCompleteText);
       return { text: workflowCompleteText, messages, steps: step, workflowComplete: true };
     }
   }
@@ -1254,6 +1406,7 @@ export async function runAgentLoop({
 
   const fallback = lastAssistantText || 'Stopped before final response.';
   await maybeRunAutoDream(step, { force: true });
+  await fireStopHooks(fallback);
   return {
     text: fallback,
     messages,

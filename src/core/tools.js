@@ -64,6 +64,7 @@ import {
 } from "./provider/search-tool-registry.js";
 import {
   isSkillIndexEligible,
+  isSkillModelInvocationDisabled,
   loadIndexedSkills,
   renderCommandPrompt,
 } from "./command-loader.js";
@@ -342,6 +343,7 @@ function summarizeIndexedSkill(command) {
     packageSource:
       command.metadata?.packageSource || command.metadata?.source || "",
     enabled: command.metadata?.enabled !== false,
+    disableModelInvocation: isSkillModelInvocationDisabled(command),
   };
 }
 
@@ -6051,6 +6053,11 @@ export function getBuiltinTools({
           hint: 'Use skill({name:"list"}) to browse indexed skills, or skill({query:"keywords"}) to search by name/description. Do not grep or list skills directories.',
         };
       }
+      if (isSkillModelInvocationDisabled(command)) {
+        return {
+          error: `Skill "${command.name}" disables model invocation. Ask the user to select it manually.`,
+        };
+      }
       if (!isIndexedSkillEnabled(command, config)) {
         return {
           error: `Skill "${command.name}" is disabled in the skill index.`,
@@ -6602,8 +6609,9 @@ export function getBuiltinTools({
                 "Possible matches:",
                 ...result.matches.map((item) => {
                   const disabled = item.enabled === false ? " disabled" : "";
+                  const manualOnly = item.disableModelInvocation ? " manual-only" : "";
                   const desc = item.description ? ` - ${item.description}` : "";
-                  return `/${item.name} [${item.scope}${disabled}]${desc}`;
+                  return `/${item.name} [${item.scope}${disabled}${manualOnly}]${desc}`;
                 }),
               ]
             : [];
@@ -6617,8 +6625,9 @@ export function getBuiltinTools({
         }
         const lines = result.matches.map((item) => {
           const disabled = item.enabled === false ? " disabled" : "";
+          const manualOnly = item.disableModelInvocation ? " manual-only" : "";
           const desc = item.description ? ` - ${item.description}` : "";
-          return `/${item.name} [${item.scope}${disabled}]${desc}`;
+          return `/${item.name} [${item.scope}${disabled}${manualOnly}]${desc}`;
         });
         return [result.message || "Skill search results:", ...lines].join("\n");
       }
@@ -6626,8 +6635,9 @@ export function getBuiltinTools({
         if (result.skills.length === 0) return "No indexed skills found.";
         const lines = result.skills.map((item) => {
           const disabled = item.enabled === false ? " disabled" : "";
+          const manualOnly = item.disableModelInvocation ? " manual-only" : "";
           const desc = item.description ? ` - ${item.description}` : "";
-          return `/${item.name} [${item.scope}${disabled}]${desc}`;
+          return `/${item.name} [${item.scope}${disabled}${manualOnly}]${desc}`;
         });
         return [result.message || "Indexed skills:", ...lines].join("\n");
       }
