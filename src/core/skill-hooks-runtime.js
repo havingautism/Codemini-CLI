@@ -55,9 +55,10 @@ export async function fireSkillHookEvent({
   onAgentEvent,
 } = {}) {
   const contexts = [];
+  const ran = [];
   let updatedInput;
   let decision = 'allow';
-  if (!session || !eventName) return { ok: true, denied: false, contexts };
+  if (!session || !eventName) return { ok: true, denied: false, contexts, ran };
 
   const handlers = listArmedHandlers(session, eventName)
     .filter((entry) => !skillName || entry.skillName === skillName)
@@ -79,6 +80,7 @@ export async function fireSkillHookEvent({
         : source === 'package'
           ? String(entry.provenance?.packageName || 'package').trim() || 'package'
           : skillName;
+    const resolvedSource = source || (skillName === '__project__' ? 'project' : 'skill');
     const summaryParts = [eventName];
     if (toolName) summaryParts.push(String(toolName));
     else if (matcher) summaryParts.push(String(matcher));
@@ -89,7 +91,7 @@ export async function fireSkillHookEvent({
         type: 'hook:start',
         event: eventName,
         skillName,
-        source: source || (skillName === '__project__' ? 'project' : 'skill'),
+        source: resolvedSource,
         name: displayName,
         command,
         matcher: matcher || '',
@@ -139,6 +141,7 @@ export async function fireSkillHookEvent({
         ok: false,
         denied: true,
         contexts,
+        ran,
         updatedInput,
         reason: result.reason || `Blocked because the "${displayName}" hook failed closed.`,
       };
@@ -164,7 +167,14 @@ export async function fireSkillHookEvent({
       updatedInput = result.updatedInput;
     }
 
+    const ranEntry = {
+      name: displayName,
+      source: resolvedSource,
+      decision: result.decision || 'allow',
+    };
+
     if (result.continue === false || result.decision === 'deny' || (eventName === 'Stop' && result.decision === 'block')) {
+      ran.push({ ...ranEntry, decision: result.decision === 'block' ? 'block' : 'deny' });
       if (typeof onAgentEvent === 'function') {
         onAgentEvent({
           type: 'hook:end',
@@ -179,11 +189,13 @@ export async function fireSkillHookEvent({
         ok: true,
         denied: true,
         contexts,
+        ran,
         updatedInput,
         reason: result.stopReason || result.reason || result.systemMessage || `Blocked by "${displayName}" hook.`,
       };
     }
 
+    ran.push(ranEntry);
     if (typeof onAgentEvent === 'function') {
       onAgentEvent({
         type: 'hook:end',
@@ -196,5 +208,21 @@ export async function fireSkillHookEvent({
     }
   }
 
-  return { ok: true, denied: false, contexts, updatedInput, decision };
+  return { ok: true, denied: false, contexts, ran, updatedInput, decision };
+}
+
+/** Lines injected into tool results / prompts so the model can see which hooks ran. */
+export function formatHookContextLines(hookResult, eventName, toolName = '') {
+  const lines = [];
+  const toolPart = toolName ? ` · ${toolName}` : '';
+  for (const item of Array.isArray(hookResult?.ran) ? hookResult.ran : []) {
+    const name = String(item?.name || '').trim() || 'hook';
+    const decision = String(item?.decision || 'allow').trim() || 'allow';
+    lines.push(`[Hook] ${eventName}${toolPart} ← ${name} (${decision})`);
+  }
+  for (const context of Array.isArray(hookResult?.contexts) ? hookResult.contexts : []) {
+    const text = String(context || '').trim();
+    if (text) lines.push(text);
+  }
+  return lines;
 }

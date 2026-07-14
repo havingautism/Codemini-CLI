@@ -11,7 +11,7 @@ import { markRunCommandSafeModeApproved } from './tools.js';
 import { formatToolDisplayName } from './tool-display.js';
 import { MEMORY_ALWAYS_ALLOW_TOOLS } from './constants.js';
 import { toolRequiresUserApproval } from './approval-policy.js';
-import { fireSkillHookEvent } from './skill-hooks-runtime.js';
+import { fireSkillHookEvent, formatHookContextLines } from './skill-hooks-runtime.js';
 
 /**
  * 安全解析 JSON 字符串。
@@ -1014,7 +1014,6 @@ export async function runAgentLoop({
         };
       }
 
-      if (onEvent) onEvent({ type: 'tool:start', name: toolName, displayName, id: call.id, arguments: effectiveArgs });
       const handler = toolHandlers[toolName];
       if (!handler) {
         const available = Object.keys(toolHandlers).join(', ');
@@ -1051,6 +1050,7 @@ export async function runAgentLoop({
         };
       }
 
+      // PreToolUse must run (and appear in the UI) before tool:start.
       let preToolContexts = [];
       if (skillHooksSession) {
         const preToolUse = await fireSkillHookEvent({
@@ -1061,6 +1061,7 @@ export async function runAgentLoop({
           workspaceRoot,
           onAgentEvent: onEvent
         });
+        preToolContexts = formatHookContextLines(preToolUse, 'PreToolUse', toolName);
         if (preToolUse.denied) {
           const durationMs = Date.now() - startedAt;
           const reason = preToolUse.reason || `Blocked by a "${toolName}" pre-tool-use hook.`;
@@ -1146,8 +1147,9 @@ export async function runAgentLoop({
             status: 'blocked'
           };
         }
-        preToolContexts = Array.isArray(preToolUse.contexts) ? preToolUse.contexts : [];
       }
+
+      if (onEvent) onEvent({ type: 'tool:start', name: toolName, displayName, id: call.id, arguments: effectiveArgs });
 
       let captureScope = null;
       if (!isParallelSafe && changeTracker && typeof changeTracker.begin === 'function') {
@@ -1265,7 +1267,7 @@ export async function runAgentLoop({
           workspaceRoot,
           onAgentEvent: onEvent
         }).catch(() => null);
-        postToolContexts = Array.isArray(postToolUse?.contexts) ? postToolUse.contexts : [];
+        postToolContexts = formatHookContextLines(postToolUse, 'PostToolUse', toolName);
       }
 
       if (toolResult && typeof toolResult === 'object' && toolResult.error) {

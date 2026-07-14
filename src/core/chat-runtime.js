@@ -13,7 +13,7 @@ import {
   disarmSkillHooks,
   PROJECT_HOOKS_SKILL_NAME,
 } from './skill-hooks-session.js';
-import { armSkillFromCommand, fireSkillHookEvent } from './skill-hooks-runtime.js';
+import { armSkillFromCommand, fireSkillHookEvent, formatHookContextLines } from './skill-hooks-runtime.js';
 import {
   loadGlobalHooks,
   loadProjectHooks,
@@ -7008,14 +7008,14 @@ export async function createChatRuntime({
           onAgentEvent
         })
           .then((result) => {
-            skillHooksSession.sessionStartContexts = Array.isArray(result?.contexts) ? result.contexts : [];
+            skillHooksSession.sessionStartContexts = formatHookContextLines(result, 'SessionStart');
             sessionStartCompleted = true;
             return result;
           })
           .catch(() => {
             skillHooksSession.sessionStartContexts = [];
             sessionStartCompleted = true;
-            return { ok: false, denied: false, contexts: [] };
+            return { ok: false, denied: false, contexts: [], ran: [] };
           });
       }
       return started;
@@ -7056,8 +7056,13 @@ export async function createChatRuntime({
         workspaceRoot: root,
         onAgentEvent,
       }).catch(() => null);
-      if (Array.isArray(startResult?.contexts) && startResult.contexts.length > 0) {
-        skillHooksSession.sessionStartContexts.push(...startResult.contexts);
+      if (
+        (Array.isArray(startResult?.contexts) && startResult.contexts.length > 0)
+        || (Array.isArray(startResult?.ran) && startResult.ran.length > 0)
+      ) {
+        skillHooksSession.sessionStartContexts.push(
+          ...formatHookContextLines(startResult, 'SessionStart'),
+        );
       }
     }
     return armed;
@@ -7692,8 +7697,13 @@ export async function createChatRuntime({
           skillName: packageArmName,
           onAgentEvent,
         }).catch(() => null);
-        if (Array.isArray(startResult?.contexts) && startResult.contexts.length > 0) {
-          skillHooksSession.sessionStartContexts.push(...startResult.contexts);
+        if (
+          (Array.isArray(startResult?.contexts) && startResult.contexts.length > 0)
+          || (Array.isArray(startResult?.ran) && startResult.ran.length > 0)
+        ) {
+          skillHooksSession.sessionStartContexts.push(
+            ...formatHookContextLines(startResult, 'SessionStart'),
+          );
         }
       }
     }
@@ -7720,7 +7730,7 @@ export async function createChatRuntime({
     }
     const hookContexts = [
       ...(Array.isArray(skillHooksSession.sessionStartContexts) ? skillHooksSession.sessionStartContexts : []),
-      ...userPromptHookResult.contexts
+      ...formatHookContextLines(userPromptHookResult, 'UserPromptSubmit'),
     ];
 
     const autoRoute = classifyAutoRoute(expandedText);

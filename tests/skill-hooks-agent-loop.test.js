@@ -31,11 +31,14 @@ function armHook(session, name, eventName, command, { matcher } = {}) {
 
 function makeCompletionSequence(sequence) {
   let call = 0;
-  return async () => {
+  const fn = async ({ messages } = {}) => {
+    fn.calls.push({ messages });
     const next = sequence[Math.min(call, sequence.length - 1)];
     call += 1;
     return next;
   };
+  fn.calls = [];
+  return fn;
 }
 
 test('PreToolUse deny blocks tool execution without running the handler, and Stop fires once', async () => {
@@ -134,8 +137,18 @@ test('PostToolUse fires after a successful tool execution and does not block on 
     assert.equal(handlerCalled, 1, 'the tool handler should still run once');
     assert.equal(result.text, 'final answer', 'a deny decision from PostToolUse must not block the final answer');
 
+    const toolMessages = requestCompletion.calls
+      .flatMap((call) => call.messages || [])
+      .filter((message) => message.role === 'tool');
+    const hookedToolContent = String(toolMessages[0]?.content || '');
+    assert.match(hookedToolContent, /\[Hook\] PreToolUse · test_tool ← guard/);
+    assert.match(hookedToolContent, /\[Hook\] PostToolUse · test_tool ← logger/);
+
+    const preStartIndex = events.findIndex((e) => e.type === 'hook:start' && e.event === 'PreToolUse');
+    const toolStartIndex = events.findIndex((e) => e.type === 'tool:start');
     const toolEndIndex = events.findIndex((e) => e.type === 'tool:end');
     const postStartIndex = events.findIndex((e) => e.type === 'hook:start' && e.event === 'PostToolUse');
+    assert.ok(preStartIndex >= 0 && toolStartIndex > preStartIndex, 'PreToolUse should fire before tool:start');
     assert.ok(toolEndIndex >= 0 && postStartIndex > toolEndIndex, 'PostToolUse should fire after tool:end');
 
     const postHookEnds = events.filter((e) => e.type === 'hook:end' && e.event === 'PostToolUse');
