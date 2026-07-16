@@ -981,7 +981,12 @@ export function createWebRuntimeApi({
     const directOperations = new Map([
       ['/api/approval', ({ bridge, body }) => ({ ok: bridge.handleApproval(body.id, !!body.approved) })],
       ['/api/user-input', ({ bridge, body }) => {
-        const ok = bridge.handleUserInput(body.id, { status: body.status, answers: body.answers });
+        const customResponse = String(body.custom_response || '').trim();
+        const ok = bridge.handleUserInput(body.id, {
+          status: body.status,
+          answers: body.answers,
+          ...(customResponse ? { custom_response: customResponse } : {})
+        });
         return { ok, status: ok ? 200 : 409 };
       }],
       ['/api/execution-mode', async ({ bridge, body }) => {

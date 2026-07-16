@@ -15,7 +15,12 @@ export class UserInputManager {
     const answers = response?.answers && typeof response.answers === 'object' && !Array.isArray(response.answers)
       ? response.answers
       : {};
-    entry.resolve({ status, answers });
+    const customResponse = String(response?.custom_response || '').trim();
+    entry.resolve({
+      status,
+      answers,
+      ...(customResponse ? { custom_response: customResponse } : {})
+    });
     return true;
   }
 

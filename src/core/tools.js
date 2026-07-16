@@ -4390,7 +4390,7 @@ export function getBuiltinTools({
                       },
                       allow_other: {
                         type: "boolean",
-                        description: "Allow the user to provide a value not listed in options.",
+                        description: "Allow the user to provide a value not listed in options. Defaults to true for choice questions.",
                       },
                       options: {
                         type: "array",
@@ -6126,7 +6126,9 @@ export function getBuiltinTools({
                     : {}),
                   required: question?.required === true,
                   multiline: type === "text" && question?.multiline === true,
-                  allow_other: question?.allow_other === true,
+                  allow_other:
+                    ["select", "radio", "checkbox"].includes(type) &&
+                    question?.allow_other !== false,
                   ...(options.length ? { options } : {}),
                 };
               })

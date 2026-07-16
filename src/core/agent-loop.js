@@ -66,24 +66,31 @@ function buildDeleteCancellationResult(args) {
   };
 }
 
-function buildApprovalBlockedResult(toolName, args = {}) {
+function buildApprovalBlockedResult(toolName, args = {}, approvalReason = '') {
+  const feedback = String(approvalReason || '').trim();
   if (toolName === 'delete') {
-    return buildDeleteCancellationResult(args);
+    return {
+      ...buildDeleteCancellationResult(args),
+      ...(feedback ? { reason: feedback, user_feedback: feedback } : {})
+    };
   }
   if (toolName === 'run') {
     const command = String(args?.command || args?.cmd || '').trim();
     return {
       blocked: true,
       cancelled: true,
-      reason: 'User declined this run command.',
+      reason: feedback || 'User declined this run command.',
+      ...(feedback ? { user_feedback: feedback } : {}),
       ...(command ? { command } : {}),
-      guidance:
-        'Do not retry this command or similar test/build/dev-server verification commands unless the user explicitly asks. If code edits are already complete, treat the implementation task as done: summarize the changes, set Verified to none or deferred, and hand off verification to the user or a later tester step instead of looping on run.'
+      guidance: feedback
+        ? 'Follow the user feedback and do not retry the same command unchanged.'
+        : 'Do not retry this command or similar test/build/dev-server verification commands unless the user explicitly asks. If code edits are already complete, treat the implementation task as done: summarize the changes, set Verified to none or deferred, and hand off verification to the user or a later tester step instead of looping on run.'
     };
   }
   return {
     blocked: true,
-    reason: 'Tool call requires approval in daily mode'
+    reason: feedback || 'Tool call requires approval in daily mode',
+    ...(feedback ? { user_feedback: feedback } : {})
   };
 }
 
@@ -851,6 +858,7 @@ export async function runAgentLoop({
     const approvalResults = new Map();
     for (const { call, toolName, displayName, args } of callsWithMeta) {
       let approved = true;
+      let approvalReason = '';
       let approvalArgs = args;
       let preflightErrorContent = '';
       if (args?._invalid_json && ['create', 'write', 'edit', 'apply_patch', 'delete'].includes(toolName)) {
@@ -970,12 +978,13 @@ export async function runAgentLoop({
               : (toolName === 'run' ? approvalArgs.approval : undefined)
           });
           approved = Boolean(decision?.approved);
+          approvalReason = approved ? '' : String(decision?.reason || '').trim();
           if (approved && toolName === 'run' && isSafeModePolicyBlocked) {
             approvalArgs = markRunCommandSafeModeApproved(approvalArgs);
           }
         }
       }
-      approvalResults.set(call.id, { approved, args: approvalArgs });
+      approvalResults.set(call.id, { approved, args: approvalArgs, reason: approvalReason });
     }
 
     // Collect results keyed by call.id, then write to messages in original order
@@ -1004,7 +1013,7 @@ export async function runAgentLoop({
 
       if (!approvalState.approved) {
         if (onEvent) onEvent({ type: 'tool:blocked', name: toolName, displayName, id: call.id, arguments: effectiveArgs });
-        const blockedPayload = buildApprovalBlockedResult(toolName, effectiveArgs);
+        const blockedPayload = buildApprovalBlockedResult(toolName, effectiveArgs, approvalState.reason);
         return {
           callId: call.id,
           content: JSON.stringify(blockedPayload),

@@ -3273,13 +3273,13 @@ export function AppProvider({ children }) {
         }
       },
 
-      approve: async (id, actionName, ownerSessionId) => {
+      approve: async (id, actionName, ownerSessionId, payload = {}) => {
         const sessionId = ownerSessionId || stateRef.current.currentSessionId;
         try {
           const result = await api.submitChatAction(
             sessionId,
             actionName,
-            { requestId: id },
+            { requestId: id, ...payload },
           );
           if (result?.error) {
             if (result.code === "STALE_INTERACTION") return;

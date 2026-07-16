@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
 import { cn } from '@/lib/utils';
 import { ReviewCommandBlock, ReviewSection } from '@/components/WorkflowReviewDialog.jsx';
 import { t } from '../../i18n/index.js';
@@ -183,6 +184,8 @@ function ApprovalBody({ variant, args, details }) {
 
 export function ApprovalDialog({ request, open, onDecision }) {
   const [submitting, setSubmitting] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedback, setFeedback] = useState('');
   const submittingRef = useRef(false);
 
   useEffect(() => {
@@ -191,6 +194,8 @@ export function ApprovalDialog({ request, open, onDecision }) {
     if (!request?.id) return;
     submittingRef.current = false;
     setSubmitting(false);
+    setFeedbackOpen(false);
+    setFeedback('');
   }, [request?.id]);
 
   if (!request) return null;
@@ -198,11 +203,11 @@ export function ApprovalDialog({ request, open, onDecision }) {
   const variant = detectVariant(toolName, details);
   const hasApprovalShortcuts = ['delete', 'run', 'edit', 'create', 'write', 'apply_patch'].includes(variant);
 
-  const decide = (actionName) => {
+  const decide = (actionName, payload = {}) => {
     if (submittingRef.current) return;
     submittingRef.current = true;
     setSubmitting(true);
-    onDecision(id, actionName);
+    onDecision(id, actionName, payload);
   };
 
   const handleKeyDownCapture = (event) => {
@@ -212,6 +217,10 @@ export function ApprovalDialog({ request, open, onDecision }) {
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
+      if (feedbackOpen) {
+        setFeedbackOpen(false);
+        return;
+      }
       decide(CHAT_ACTION_NAMES.APPROVAL_REJECT);
       return;
     }
@@ -258,27 +267,63 @@ export function ApprovalDialog({ request, open, onDecision }) {
         <div className="min-h-0 overflow-y-auto py-1 pr-1">
           <ApprovalBody variant={variant} args={args} details={details} />
         </div>
-        <DialogFooter className="gap-2">
-          <Button
-            variant="outline"
-            disabled={submitting}
-            onClick={() => decide(CHAT_ACTION_NAMES.APPROVAL_REJECT)}
-          >
-            {t('deny')}
-            {hasApprovalShortcuts && (
-              <span className="ml-1.5 text-[11px] font-mono opacity-70">Esc</span>
+        <div className="flex flex-col gap-3">
+          {feedbackOpen && (
+            <div className="rounded-lg border border-(--border-default) bg-(--bg-secondary) p-3">
+              <label htmlFor="approval-feedback" className="mb-2 block text-[12px] font-medium text-(--text-secondary)">
+                {t('approvalFeedbackPrompt')}
+              </label>
+              <Textarea
+                id="approval-feedback"
+                autoFocus
+                value={feedback}
+                placeholder={t('approvalFeedbackPlaceholder')}
+                onChange={(event) => setFeedback(event.target.value)}
+                className="min-h-20 bg-(--bg-primary)"
+              />
+            </div>
+          )}
+          <DialogFooter className="gap-2">
+            {feedbackOpen ? (
+              <>
+                <Button variant="ghost" disabled={submitting} onClick={() => setFeedbackOpen(false)}>
+                  {t('cancel')}
+                </Button>
+                <Button
+                  disabled={submitting || !feedback.trim()}
+                  onClick={() => decide(CHAT_ACTION_NAMES.APPROVAL_REJECT, { reason: feedback.trim() })}
+                >
+                  {t('approvalFeedbackSubmit')}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  variant="outline"
+                  disabled={submitting}
+                  onClick={() => decide(CHAT_ACTION_NAMES.APPROVAL_REJECT)}
+                >
+                  {t('deny')}
+                  {hasApprovalShortcuts && (
+                    <span className="ml-1.5 text-[11px] font-mono opacity-70">Esc</span>
+                  )}
+                </Button>
+                <Button variant="ghost" disabled={submitting} onClick={() => setFeedbackOpen(true)}>
+                  {t('approvalFeedback')}
+                </Button>
+                <Button
+                  disabled={submitting}
+                  onClick={() => decide(CHAT_ACTION_NAMES.APPROVAL_APPROVE)}
+                >
+                  {t('approve')}
+                  {hasApprovalShortcuts && (
+                    <span className="ml-1.5 text-[13px] leading-none opacity-80">↩︎</span>
+                  )}
+                </Button>
+              </>
             )}
-          </Button>
-          <Button
-            disabled={submitting}
-            onClick={() => decide(CHAT_ACTION_NAMES.APPROVAL_APPROVE)}
-          >
-            {t('approve')}
-            {hasApprovalShortcuts && (
-              <span className="ml-1.5 text-[13px] leading-none opacity-80">↩︎</span>
-            )}
-          </Button>
-        </DialogFooter>
+          </DialogFooter>
+        </div>
       </DialogContent>
     </Dialog>
   );

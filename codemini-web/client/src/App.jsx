@@ -469,8 +469,8 @@ function Shell() {
       <ApprovalDialog
         request={approvalRequest}
         open={!!approvalRequest}
-        onDecision={(id, actionName) =>
-          actions.approve(id, actionName, approvalRequest?.sessionId)
+        onDecision={(id, actionName, payload) =>
+          actions.approve(id, actionName, approvalRequest?.sessionId, payload)
         }
       />
 

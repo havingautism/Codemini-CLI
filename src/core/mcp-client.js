@@ -52,6 +52,7 @@ function normalizeCachedTool(tool = {}) {
   return {
     name: String(tool.name || '').trim(),
     description: String(tool.description || '').trim(),
+    enabled: tool.enabled !== false,
     inputSchema:
       tool.inputSchema && typeof tool.inputSchema === 'object'
         ? tool.inputSchema
@@ -195,7 +196,7 @@ export function getMcpToolBundle(config = {}) {
   const usedNames = new Set();
 
   for (const server of configuredServers(config)) {
-    for (const tool of server.cachedTools) {
+    for (const tool of server.cachedTools.filter((item) => item.enabled !== false)) {
       let name = mcpToolName(server, tool.name);
       let suffix = 2;
       while (usedNames.has(name)) {
@@ -246,4 +247,3 @@ export async function closeMcpClient(serverId) {
   runtimeClients.delete(id);
   await existing?.client?.close().catch(() => {});
 }
-

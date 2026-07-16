@@ -71,6 +71,11 @@ test('builds namespaced agent tools from cached MCP schemas', () => {
                 required: ['repo'],
               },
             },
+            {
+              name: 'delete_issue',
+              enabled: false,
+              inputSchema: { type: 'object', properties: {} },
+            },
           ],
         },
       ],
@@ -111,6 +116,7 @@ test('discovers and invokes tools from a real stdio MCP server', async () => {
   const inspection = await inspectMcpServer(server);
   assert.equal(inspection.ok, true);
   assert.deepEqual(inspection.tools.map((tool) => tool.name), ['echo']);
+  assert.equal(inspection.tools[0].enabled, true);
 
   const configured = { ...server, cachedTools: inspection.tools };
   const bundle = getMcpToolBundle({ mcp: { servers: [configured] } });
