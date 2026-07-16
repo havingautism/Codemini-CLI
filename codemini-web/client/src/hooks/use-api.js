@@ -298,6 +298,35 @@ export async function replaceWebuiActiveProjects(active) {
   return res.json();
 }
 
+// ── MCP ──
+export async function fetchMcpServers() {
+  const res = await api('/api/mcp/servers');
+  return readJsonResponse(res);
+}
+
+export async function testMcpServer(server) {
+  const res = await api('/api/mcp/servers/test', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ server })
+  });
+  return readJsonResponse(res);
+}
+
+export async function saveMcpServer(server, originalId = '') {
+  const res = await api('/api/mcp/servers', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ server, originalId })
+  });
+  return readJsonResponse(res);
+}
+
+export async function deleteMcpServer(id) {
+  const res = await api(`/api/mcp/servers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  return readJsonResponse(res);
+}
+
 export async function fetchProject() {
   const res = await api('/api/project');
   return res.json();

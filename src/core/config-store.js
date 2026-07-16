@@ -126,6 +126,9 @@ const DEFAULT_CONFIG = {
   skills: {
     enabled: {},
     contexts: {}
+  },
+  mcp: {
+    servers: []
   }
 };
 
@@ -227,6 +230,10 @@ function normalizePolicyLists(config) {
     Object.entries(rawContexts).map(([name, value]) => [name, normalizeSkillContexts(value)])
   );
   delete next.skills.applicability;
+  next.mcp = next.mcp || {};
+  next.mcp.servers = Array.isArray(next.mcp.servers)
+    ? next.mcp.servers.filter((server) => isObject(server))
+    : [];
   next.memory = next.memory || {};
   next.memory.enabled = next.memory.enabled !== false;
   next.memory.auto_write = next.memory.auto_write !== false;

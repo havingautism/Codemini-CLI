@@ -96,6 +96,53 @@ test('PreToolUse deny blocks tool execution without running the handler, and Sto
   });
 });
 
+test('PreToolUse ask requests approval even when the hook does not update tool input', async () => {
+  await withFixture(async (root) => {
+    const askScript = path.join(root, 'ask.mjs');
+    await writeHookScript(
+      askScript,
+      "process.stdout.write(JSON.stringify({ hookSpecificOutput: { permissionDecision: 'ask', permissionDecisionReason: 'confirm this action' } }));",
+    );
+
+    const session = createSkillHooksSession();
+    armHook(session, 'guard', 'PreToolUse', `node "${askScript}"`);
+
+    let handlerCalled = 0;
+    const approvalRequests = [];
+    const requestCompletion = makeCompletionSequence([
+      { text: '', toolCalls: [{ id: 'call-ask', name: 'test_tool', arguments: '{"value":1}' }] },
+      { text: 'done', toolCalls: [] },
+    ]);
+
+    const result = await runAgentLoop({
+      systemPrompt: 'sys',
+      userPrompt: 'do it',
+      requestCompletion,
+      toolHandlers: {
+        test_tool: async () => {
+          handlerCalled += 1;
+          return { ok: true };
+        },
+      },
+      toolDefinitions: [],
+      approvalMode: 'full_access',
+      requestToolApproval: async (request) => {
+        approvalRequests.push(request);
+        return { approved: true };
+      },
+      skipAnalysisNudge: true,
+      skillHooksSession: session,
+      workspaceRoot: root,
+    });
+
+    assert.equal(result.text, 'done');
+    assert.equal(handlerCalled, 1);
+    assert.equal(approvalRequests.length, 1);
+    assert.equal(approvalRequests[0].id, 'call-ask');
+    assert.deepEqual(approvalRequests[0].arguments, { value: 1 });
+  });
+});
+
 test('PostToolUse fires after a successful tool execution and does not block on deny', async () => {
   await withFixture(async (root) => {
     const allowScript = path.join(root, 'allow.mjs');

@@ -9,8 +9,10 @@ import {
   listCustomHookProfiles,
   listPackageHookProfiles,
   mergeHookProfileHooks,
+  packageHookInstallRoot,
   packageHooksArmName,
   packageProfileArmEntry,
+  persistPackageHookRoot,
   saveCustomHookProfile,
   savePackageHookProfile,
 } from '../src/core/hook-profiles.js';
@@ -65,11 +67,20 @@ test('package hook profiles persist and arm after workspace, before skills', asy
   const previous = process.env.CODEMINI_GLOBAL_DIR;
   process.env.CODEMINI_GLOBAL_DIR = path.join(cwd, 'global');
   try {
+    const sourceRoot = path.join(cwd, 'package-source');
+    await fs.mkdir(path.join(sourceRoot, 'scripts'), { recursive: true });
+    await fs.writeFile(path.join(sourceRoot, 'scripts', 'start.mjs'), 'console.log("ok");\n');
+    const managedRoot = await persistPackageHookRoot(sourceRoot, {
+      scope: 'project',
+      cwd,
+      id: 'pkg-demo',
+    });
     const saved = await savePackageHookProfile({
       id: 'pkg-demo',
       name: 'Demo Package',
       packageSource: 'https://example.com/demo',
       packageName: 'Demo Package',
+      packageRoot: managedRoot,
       scope: 'project',
       hooks: {
         SessionStart: [{ hooks: [{ type: 'command', command: 'pkg-start.sh' }] }],
@@ -82,13 +93,17 @@ test('package hook profiles persist and arm after workspace, before skills', asy
     const packages = await listPackageHookProfiles(cwd);
     assert.equal(packages.length, 1);
     assert.equal(packages[0].hooks.SessionStart[0].hooks[0].command, 'pkg-start.sh');
+    assert.equal(packages[0].packageRoot, packageHookInstallRoot('project', cwd, 'pkg-demo'));
+    assert.equal(await fs.readFile(path.join(packages[0].packageRoot, 'scripts', 'start.mjs'), 'utf8'), 'console.log("ok");\n');
 
     const session = createSkillHooksSession();
     armSkillHooks(session, {
       name: 'later-skill',
       hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'skill.sh' }] }] },
     });
-    armSkillHooks(session, packageProfileArmEntry(packages[0], cwd));
+    const packageEntry = packageProfileArmEntry(packages[0], cwd);
+    assert.equal(packageEntry.pluginRoot, packages[0].packageRoot);
+    armSkillHooks(session, packageEntry);
     armSkillHooks(session, {
       name: PROJECT_HOOKS_SKILL_NAME,
       hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'workspace.sh' }] }] },
@@ -104,6 +119,8 @@ test('package hook profiles persist and arm after workspace, before skills', asy
       ['project', 'package', 'skill'],
     );
     assert.equal(handlers[1].skillName, packageHooksArmName('pkg-demo'));
+    await deleteCustomHookProfile({ id: 'pkg-demo', scope: 'project' }, cwd);
+    await assert.rejects(fs.access(managedRoot));
   } finally {
     if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = previous;

@@ -14,6 +14,7 @@ import {
   Monitor,
   Moon,
   PencilLine,
+  PlugsConnected,
   Plus,
   Sun,
   User,
@@ -210,6 +211,7 @@ export function Sidebar({
   onSetTheme,
   onOpenSettings,
   onOpenSkills,
+  onOpenMcp,
   onOpenHooks,
   onOpenMemory,
   onOpenSouls,
@@ -540,6 +542,18 @@ export function Sidebar({
             className="text-(--text-secondary) shrink-0"
           />
           <span className="truncate">{t("skills")}</span>
+        </button>
+
+        <button
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          onClick={onOpenMcp}
+        >
+          <PlugsConnected
+            size={15}
+            strokeWidth={2}
+            className="text-(--text-secondary) shrink-0"
+          />
+          <span className="truncate">{t("mcp")}</span>
         </button>
 
         <button

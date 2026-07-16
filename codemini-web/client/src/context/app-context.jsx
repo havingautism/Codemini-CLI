@@ -244,6 +244,7 @@ const initialState = {
   configOpen: false,
   projectOpen: false,
   skillsOpen: false,
+  mcpOpen: false,
   hooksOpen: false,
   memoryOpen: false,
   soulsOpen: false,
@@ -3803,6 +3804,7 @@ export function AppProvider({ children }) {
       },
       setProjectOpen: (open) => update({ projectOpen: open }),
       setSkillsOpen: (open) => update({ skillsOpen: open }),
+      setMcpOpen: (open) => update({ mcpOpen: open }),
       setHooksOpen: (open) => update({ hooksOpen: open }),
       setMemoryOpen: (open) => update({ memoryOpen: open }),
       prepareChatAction: (actionName) => {

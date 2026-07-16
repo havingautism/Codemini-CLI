@@ -60,6 +60,7 @@
   "dependencies": {
     "@ast-grep/napi": "^0.43.0",
     "@cursorless/tree-sitter-wasms": "^0.8.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@vscode/ripgrep": "^1.18.0",
     "cheerio": "^1.1.2",
     "cli-truncate": "^6.0.0",

@@ -157,6 +157,13 @@ description: A bare skill with no hooks of its own.
     assert.equal(packages[0].kind, 'package');
     assert.equal(packages[0].hooks.PreToolUse[0].hooks[0].command, 'pkg.sh');
     assert.equal(packages[0].enabled, true);
+    assert.ok(packages[0].packageRoot.startsWith(path.join(cwd, '.codemini', 'hooks', 'packages')));
+    assert.equal(path.isAbsolute(packages[0].packageRoot), true);
+    assert.equal(
+      JSON.parse(await fs.readFile(path.join(packages[0].packageRoot, 'hooks', 'hooks.json'), 'utf8'))
+        .PreToolUse[0].hooks[0].command,
+      'pkg.sh',
+    );
   });
 });
 

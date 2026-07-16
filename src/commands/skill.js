@@ -16,6 +16,7 @@ import {
 import { discoverSkillHooks, readHooksJson } from '../core/skill-hooks-discover.js';
 import {
   listPackageHookProfiles,
+  persistPackageHookRoot,
   savePackageHookProfile,
 } from '../core/hook-profiles.js';
 
@@ -812,8 +813,8 @@ export async function previewSkillPackageUpdate({
   };
 }
 
-// Skill hooks stay on the skill. Package-level hooks/hooks.json is persisted as a
-// separate package hook profile (session-scoped), not copied into each skill.
+// Skill hooks stay on the skill. Package-level hooks/hooks.json and their runtime
+// root are persisted as a separate scoped package profile, not copied into each skill.
 async function reconcileSkillHooksOnInstall(targetDir, { includeHooks = true } = {}) {
   const disabledMarker = path.join(targetDir, HOOKS_DISABLED_MARKER);
   if (!includeHooks) {
@@ -857,6 +858,12 @@ async function reconcilePackageHooksOnInstall(packageRoot, packageInfo, {
   if (includeHooks === false) enabled = false;
   else if (existing) enabled = existing.enabled !== false;
 
+  const packageInstallRoot = await persistPackageHookRoot(packageRoot, {
+    scope,
+    cwd,
+    id: existing?.id || id,
+  });
+
   return savePackageHookProfile({
     id: existing?.id || id,
     name: packageName || existing?.name || id,
@@ -865,6 +872,7 @@ async function reconcilePackageHooksOnInstall(packageRoot, packageInfo, {
     enabled,
     packageSource: packageSource || existing?.packageSource || '',
     packageName: packageName || existing?.packageName || id,
+    packageRoot: packageInstallRoot,
     hooks,
   }, cwd);
 }

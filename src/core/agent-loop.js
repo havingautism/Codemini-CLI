@@ -1078,6 +1078,7 @@ export async function runAgentLoop({
             status: 'error'
           };
         }
+        let hookRequiresApproval = preToolUse.decision === 'ask';
         if (preToolUse.updatedInput && typeof preToolUse.updatedInput === 'object') {
           effectiveArgs = preToolUse.updatedInput;
           const updatedRunPolicy = toolName === 'run'
@@ -1094,9 +1095,7 @@ export async function runAgentLoop({
               status: 'blocked'
             };
           }
-          const updatedInputNeedsApproval =
-            preToolUse.decision === 'ask' ||
-            toolRequiresUserApproval({
+          hookRequiresApproval = hookRequiresApproval || toolRequiresUserApproval({
               approvalMode: normalizedApprovalMode,
               projectIsGit,
               toolName,
@@ -1105,35 +1104,39 @@ export async function runAgentLoop({
                 && (!updatedRunPolicy.allowed || requiresApprovalEvaluation(effectiveArgs?.command || '', config?.shell?.default)),
               alwaysAllowTools: [...alwaysAllowSet]
             });
-          if (updatedInputNeedsApproval) {
-            if (typeof requestToolApproval !== 'function') {
-              const reason = 'Hook-modified tool input requires approval.';
-              return {
-                callId: call.id,
-                content: clipToolResult({ error: reason }, toolResultMaxChars),
-                blocked: true,
-                durationMs: Date.now() - startedAt,
-                summary: reason,
-                status: 'blocked'
-              };
-            }
-            const decision = await requestToolApproval({
-              id: call.id,
-              name: toolName,
-              displayName,
-              arguments: effectiveArgs,
-            });
-            if (!decision?.approved) {
-              const reason = 'Hook-modified tool input was not approved.';
-              return {
-                callId: call.id,
-                content: clipToolResult({ error: reason }, toolResultMaxChars),
-                blocked: true,
-                durationMs: Date.now() - startedAt,
-                summary: reason,
-                status: 'blocked'
-              };
-            }
+        }
+        if (hookRequiresApproval) {
+          if (typeof requestToolApproval !== 'function') {
+            const reason = preToolUse.decision === 'ask'
+              ? 'A PreToolUse hook requires approval.'
+              : 'Hook-modified tool input requires approval.';
+            return {
+              callId: call.id,
+              content: clipToolResult({ error: reason }, toolResultMaxChars),
+              blocked: true,
+              durationMs: Date.now() - startedAt,
+              summary: reason,
+              status: 'blocked'
+            };
+          }
+          const decision = await requestToolApproval({
+            id: call.id,
+            name: toolName,
+            displayName,
+            arguments: effectiveArgs,
+          });
+          if (!decision?.approved) {
+            const reason = preToolUse.decision === 'ask'
+              ? 'Tool use requested by a PreToolUse hook was not approved.'
+              : 'Hook-modified tool input was not approved.';
+            return {
+              callId: call.id,
+              content: clipToolResult({ error: reason }, toolResultMaxChars),
+              blocked: true,
+              durationMs: Date.now() - startedAt,
+              summary: reason,
+              status: 'blocked'
+            };
           }
         }
         if (preToolUse.decision === 'defer') {

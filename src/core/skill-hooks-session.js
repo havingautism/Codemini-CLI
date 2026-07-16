@@ -24,7 +24,6 @@ export function createSkillHooksSession() {
   return {
     activeSkills: new Map(),
     sessionStartContexts: [],
-    remoteConfirmedPackages: new Set(),
   };
 }
 

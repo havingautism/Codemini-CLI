@@ -48,6 +48,11 @@ const SkillDialog = lazy(() =>
     default: module.SkillDialog,
   })),
 );
+const McpDialog = lazy(() =>
+  import("@/components/McpDialog.jsx").then((module) => ({
+    default: module.McpDialog,
+  })),
+);
 const HooksDialog = lazy(() =>
   import("@/components/HooksDialog.jsx").then((module) => ({
     default: module.HooksDialog,
@@ -185,6 +190,7 @@ function Shell() {
     [actions],
   );
   const openSkills = useCallback(() => actions.setSkillsOpen(true), [actions]);
+  const openMcp = useCallback(() => actions.setMcpOpen(true), [actions]);
   const openHooks = useCallback(() => actions.setHooksOpen(true), [actions]);
   const openMemory = useCallback(() => actions.setMemoryOpen(true), [actions]);
   const openSouls = useCallback(() => actions.setSoulsOpen(true), [actions]);
@@ -236,6 +242,7 @@ function Shell() {
         onSetTheme={actions.setTheme}
         onOpenSettings={openSettings}
         onOpenSkills={openSkills}
+        onOpenMcp={openMcp}
         onOpenHooks={openHooks}
         onOpenMemory={openMemory}
         onOpenSouls={openSouls}
@@ -503,6 +510,13 @@ function Shell() {
             onOpenChange={actions.setSkillsOpen}
             projectDirs={sidebarProjectDirs}
             projectTargets={sidebarProjectTargets}
+          />
+        )}
+
+        {state.mcpOpen && (
+          <McpDialog
+            open={state.mcpOpen}
+            onOpenChange={actions.setMcpOpen}
           />
         )}
 

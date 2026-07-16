@@ -62,6 +62,7 @@ import {
   buildSearchFormatters,
   buildSearchHandlers
 } from "./provider/search-tool-registry.js";
+import { getMcpToolBundle } from "./mcp-client.js";
 import {
   isSkillIndexEligible,
   isSkillModelInvocationDisabled,
@@ -6722,6 +6723,11 @@ export function getBuiltinTools({
         ),
     ]),
   );
+
+  const mcpTools = getMcpToolBundle(config);
+  definitions.push(...mcpTools.definitions);
+  Object.assign(handlers, mcpTools.handlers);
+  Object.assign(formatters, mcpTools.formatters);
 
   async function dispose() {
     if (activeFffAdapter?.dispose) {

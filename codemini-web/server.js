@@ -44,6 +44,12 @@ import { INDEX_SKIP_DIRS } from '../src/core/constants.js';
 import { VERSION } from '../src/core/version.js';
 import { detectPlaywrightStatus } from '../src/core/tools.js';
 import {
+  closeMcpClient,
+  inspectMcpServer,
+  normalizeMcpServer,
+  validateMcpServer,
+} from '../src/core/mcp-client.js';
+import {
   discoverSkillHooks,
   disableSkillHooks,
   readHooksJsonRaw,
@@ -2783,6 +2789,77 @@ async function main() {
       const key = url.pathname.slice('/api/config/get/'.length);
       const value = await getConfigValue(key);
       jsonResponse(res, { key, value });
+      return;
+    }
+
+    // ── MCP server management ──
+    if (req.method === 'GET' && url.pathname === '/api/mcp/servers') {
+      const config = await loadConfig();
+      const servers = Array.isArray(config.mcp?.servers)
+        ? config.mcp.servers.map(normalizeMcpServer)
+        : [];
+      jsonResponse(res, { servers });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/mcp/servers/test') {
+      try {
+        const body = await readBody(req);
+        const result = await inspectMcpServer(body?.server || body || {});
+        jsonResponse(res, result);
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 400);
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/mcp/servers') {
+      try {
+        const body = await readBody(req);
+        const server = validateMcpServer(body?.server || body || {});
+        const originalId = String(body?.originalId || server.id).trim();
+        const config = await loadConfig();
+        config.mcp = config.mcp || {};
+        const servers = Array.isArray(config.mcp.servers) ? config.mcp.servers : [];
+        const duplicate = servers.find((item) => String(item?.id || '').trim() === server.id && String(item?.id || '').trim() !== originalId);
+        if (duplicate) {
+          jsonResponse(res, { error: true, message: `MCP server id already exists: ${server.id}` }, 409);
+          return;
+        }
+        const previous = servers.find((item) => String(item?.id || '').trim() === originalId);
+        const nextServer = {
+          ...server,
+          cachedTools: server.cachedTools.length ? server.cachedTools : (previous?.cachedTools || []),
+          instructions: server.instructions || previous?.instructions || '',
+          lastConnectedAt: server.lastConnectedAt || previous?.lastConnectedAt || '',
+        };
+        config.mcp.servers = [
+          ...servers.filter((item) => String(item?.id || '').trim() !== originalId),
+          nextServer,
+        ];
+        await saveConfig(config);
+        await closeMcpClient(originalId);
+        if (originalId !== server.id) await closeMcpClient(server.id);
+        await pool.reloadConfig();
+        jsonResponse(res, { ok: true, server: normalizeMcpServer(nextServer) });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 400);
+      }
+      return;
+    }
+    if (req.method === 'DELETE' && url.pathname.startsWith('/api/mcp/servers/')) {
+      const id = decodeURIComponent(url.pathname.slice('/api/mcp/servers/'.length));
+      if (!id) { jsonResponse(res, { error: true, message: 'Missing MCP server id' }, 400); return; }
+      try {
+        const config = await loadConfig();
+        config.mcp = config.mcp || {};
+        const servers = Array.isArray(config.mcp.servers) ? config.mcp.servers : [];
+        config.mcp.servers = servers.filter((item) => String(item?.id || '').trim() !== id);
+        await saveConfig(config);
+        await closeMcpClient(id);
+        await pool.reloadConfig();
+        jsonResponse(res, { ok: true, id });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
       return;
     }
 
