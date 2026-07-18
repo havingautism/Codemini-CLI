@@ -3,17 +3,21 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
 
-const GLOBAL_SCHEMA_VERSION = 1;
-const PROJECT_SCHEMA_VERSION = 1;
+const GLOBAL_SCHEMA_VERSION = 2;
+// Version 3 removes an experimental FTS table that was never part of the product feature set.
+const PROJECT_SCHEMA_VERSION = 4;
 const databases = new Map();
 
 function configure(db) {
   db.exec(`
     PRAGMA journal_mode = WAL;
-    PRAGMA synchronous = FULL;
+    PRAGMA synchronous = NORMAL;
     PRAGMA foreign_keys = ON;
     PRAGMA busy_timeout = 5000;
-    PRAGMA wal_autocheckpoint = 1000;
+    PRAGMA wal_autocheckpoint = 4096;
+    PRAGMA journal_size_limit = 67108864;
+    PRAGMA cache_size = -32768;
+    PRAGMA mmap_size = 268435456;
     PRAGMA temp_store = MEMORY;
   `);
 }
@@ -48,7 +52,7 @@ function openDatabase(filePath, schema, version) {
   return db;
 }
 
-function createGlobalSchema(db) {
+function createGlobalSchema(db, currentVersion = 0) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
@@ -62,7 +66,6 @@ function createGlobalSchema(db) {
       message_count INTEGER NOT NULL DEFAULT 0
     ) STRICT;
     CREATE INDEX IF NOT EXISTS sessions_updated_idx ON sessions(updated_at DESC);
-    CREATE INDEX IF NOT EXISTS sessions_project_updated_idx ON sessions(project_dir, updated_at DESC);
 
     CREATE TABLE IF NOT EXISTS session_messages (
       session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -81,7 +84,6 @@ function createGlobalSchema(db) {
       payload_json TEXT NOT NULL,
       PRIMARY KEY(session_id, ordinal)
     ) STRICT;
-    CREATE INDEX IF NOT EXISTS ui_messages_id_idx ON ui_messages(session_id, message_id);
 
     CREATE TABLE IF NOT EXISTS runtime_status (
       session_id TEXT PRIMARY KEY,
@@ -104,7 +106,6 @@ function createGlobalSchema(db) {
       candidate_count INTEGER,
       last_error TEXT
     ) STRICT;
-    CREATE INDEX IF NOT EXISTS memory_review_retry_idx ON memory_review_jobs(status, next_retry_at);
 
     CREATE TABLE IF NOT EXISTS memory_queue_entries (
       id TEXT PRIMARY KEY,
@@ -116,9 +117,9 @@ function createGlobalSchema(db) {
       payload_json TEXT NOT NULL
     ) STRICT;
     CREATE INDEX IF NOT EXISTS memory_queue_list_idx
-      ON memory_queue_entries(bucket, day DESC, created_at DESC);
+      ON memory_queue_entries(bucket, day, created_at, id);
     CREATE INDEX IF NOT EXISTS memory_queue_scope_idx
-      ON memory_queue_entries(bucket, scope, day DESC);
+      ON memory_queue_entries(bucket, scope, day, created_at, id);
     CREATE UNIQUE INDEX IF NOT EXISTS memory_queue_idempotency_idx
       ON memory_queue_entries(idempotency_key) WHERE bucket = 'inbox' AND idempotency_key <> '';
 
@@ -131,9 +132,22 @@ function createGlobalSchema(db) {
       PRIMARY KEY(session_id, id)
     ) STRICT;
   `);
+  if (currentVersion < 2) {
+    db.exec(`
+      DROP INDEX IF EXISTS sessions_project_updated_idx;
+      DROP INDEX IF EXISTS ui_messages_id_idx;
+      DROP INDEX IF EXISTS memory_review_retry_idx;
+      DROP INDEX IF EXISTS memory_queue_list_idx;
+      DROP INDEX IF EXISTS memory_queue_scope_idx;
+      CREATE INDEX memory_queue_list_idx
+        ON memory_queue_entries(bucket, day, created_at, id);
+      CREATE INDEX memory_queue_scope_idx
+        ON memory_queue_entries(bucket, scope, day, created_at, id);
+    `);
+  }
 }
 
-function createProjectSchema(db) {
+function createProjectSchema(db, currentVersion = 0) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS project_metadata (
       key TEXT PRIMARY KEY,
@@ -146,7 +160,6 @@ function createProjectSchema(db) {
       mtime_ms INTEGER NOT NULL DEFAULT 0,
       payload_json TEXT NOT NULL
     ) STRICT;
-    CREATE INDEX IF NOT EXISTS indexed_files_language_idx ON indexed_files(language, file);
     CREATE TABLE IF NOT EXISTS indexed_symbols (
       symbol_id TEXT PRIMARY KEY,
       file TEXT NOT NULL REFERENCES indexed_files(file) ON DELETE CASCADE,
@@ -156,7 +169,6 @@ function createProjectSchema(db) {
       end_line INTEGER NOT NULL DEFAULT 0,
       payload_json TEXT NOT NULL
     ) STRICT;
-    CREATE INDEX IF NOT EXISTS indexed_symbols_name_idx ON indexed_symbols(name);
     CREATE INDEX IF NOT EXISTS indexed_symbols_file_idx ON indexed_symbols(file, start_line);
     CREATE TABLE IF NOT EXISTS change_operations (
       id TEXT PRIMARY KEY,
@@ -169,6 +181,13 @@ function createProjectSchema(db) {
     CREATE INDEX IF NOT EXISTS change_operations_session_idx
       ON change_operations(session_id, created_at DESC);
   `);
+  if (currentVersion < 4) {
+    db.exec(`
+      DROP TABLE IF EXISTS indexed_search;
+      DROP INDEX IF EXISTS indexed_files_language_idx;
+      DROP INDEX IF EXISTS indexed_symbols_name_idx;
+    `);
+  }
 }
 
 export function getGlobalDatabase() {

@@ -4,7 +4,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
+import {
+  closeSqliteDatabasesForTests,
+  getGlobalDatabase,
+  getProjectDatabase
+} from '../src/core/sqlite-database.js';
 import {
   createSession,
   deleteSession,
@@ -153,6 +157,44 @@ test('project index persists files and symbols in per-project SQLite', async () 
     closeSqliteDatabasesForTests();
     await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
+});
+
+test('project SQLite uses performance-oriented WAL pragmas', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-project-pragmas-'));
+  try {
+    const db = getProjectDatabase(root);
+    assert.equal(db.prepare('PRAGMA journal_mode').get().journal_mode, 'wal');
+    assert.equal(db.prepare('PRAGMA synchronous').get().synchronous, 1);
+    assert.equal(db.prepare('PRAGMA wal_autocheckpoint').get().wal_autocheckpoint, 4096);
+    assert.equal(db.prepare('PRAGMA cache_size').get().cache_size, -32768);
+    assert.equal(db.prepare(
+      "SELECT count(*) AS count FROM sqlite_master WHERE name = 'indexed_search'"
+    ).get().count, 0);
+    const indexes = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index'"
+    ).all().map((row) => row.name);
+    assert.equal(indexes.includes('indexed_symbols_file_idx'), true);
+    assert.equal(indexes.includes('indexed_files_language_idx'), false);
+    assert.equal(indexes.includes('indexed_symbols_name_idx'), false);
+  } finally {
+    closeSqliteDatabasesForTests();
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test('global SQLite only keeps indexes used by current query paths', async () => {
+  await withGlobalDir(async () => {
+    const db = getGlobalDatabase();
+    const indexes = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index'"
+    ).all().map((row) => row.name);
+    assert.equal(indexes.includes('sessions_updated_idx'), true);
+    assert.equal(indexes.includes('memory_queue_list_idx'), true);
+    assert.equal(indexes.includes('memory_queue_scope_idx'), true);
+    assert.equal(indexes.includes('sessions_project_updated_idx'), false);
+    assert.equal(indexes.includes('ui_messages_id_idx'), false);
+    assert.equal(indexes.includes('memory_review_retry_idx'), false);
+  });
 });
 
 test('runtime, attachment, and change oplog metadata use SQLite while payload files stay external', async () => {
