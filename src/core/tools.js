@@ -3754,7 +3754,7 @@ export function getBuiltinTools({
   const ensureProjectIndex = async () => {
     const eventId = `project-index:${Date.now()}`;
     const name =
-      "project_index(.codemini/project-map.json,.codemini/file-index.json)";
+      "project_index(.codemini/index.sqlite)";
     try {
       projectIndexPromise ||= initializeProjectIndex(workspaceRoot);
       const result = await projectIndexPromise;

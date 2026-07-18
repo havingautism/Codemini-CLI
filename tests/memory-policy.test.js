@@ -21,6 +21,7 @@ import {
   claimSessionMemoryReview,
   completeSessionMemoryReview
 } from '../src/core/memory-review-store.js';
+import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 
 test('normalizeMemoryKind collapses legacy kinds into four buckets', () => {
   assert.equal(normalizeMemoryKind('interest'), 'preference');
@@ -201,6 +202,7 @@ test('listInbox normalizes legacy repo scope to project', async () => {
     const byRepoAlias = await listInbox({ scope: 'repo' });
     assert.ok(byRepoAlias.some((item) => item.id === entry.id));
   } finally {
+    closeSqliteDatabasesForTests();
     if (prev === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = prev;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -294,6 +296,7 @@ test('captureToInbox is idempotent for session review keys', async () => {
     const items = await listInbox();
     assert.equal(items.length, 1);
   } finally {
+    closeSqliteDatabasesForTests();
     if (prev === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = prev;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -315,6 +318,7 @@ test('concurrent inbox captures do not overwrite each other', async () => {
     const items = await listInbox();
     assert.equal(items.length, 20);
   } finally {
+    closeSqliteDatabasesForTests();
     if (prev === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = prev;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -377,6 +381,7 @@ test('session review state uses content hashes instead of a permanent boolean', 
     });
     assert.equal(changed.claimed, true);
   } finally {
+    closeSqliteDatabasesForTests();
     if (prev === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = prev;
     await fs.rm(tmp, { recursive: true, force: true });

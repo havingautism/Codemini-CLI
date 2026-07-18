@@ -8,10 +8,14 @@ import {
   initializeProjectIndex,
   refreshIndexedFiles,
 } from '../src/core/project-index.js';
+import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 
 test('refreshIndexedFiles batches multiple changed files into one index write per project', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-index-batch-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  t.after(async () => {
+    closeSqliteDatabasesForTests();
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
 
   await fs.writeFile(path.join(root, 'package.json'), '{"type":"module"}\n', 'utf8');
   await fs.mkdir(path.join(root, 'src'));

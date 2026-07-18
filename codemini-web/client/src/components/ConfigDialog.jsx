@@ -37,6 +37,7 @@ import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmente
 import { SettingsChoiceList } from "@/components/settings/SettingsChoiceList.jsx";
 import { SettingsProviderCards } from "@/components/settings/SettingsProviderCards.jsx";
 import { SettingsPercentField } from "@/components/settings/SettingsPercentField.jsx";
+import { SettingsStorage } from "@/components/settings/SettingsStorage.jsx";
 
 function getNestedValue(obj, path) {
   return path.split(".").reduce((o, k) => o?.[k], obj);
@@ -378,6 +379,9 @@ export function ConfigDialog({
   };
 
   const renderTabContent = (tabId) => {
+    if (tabId === "storage") {
+      return <SettingsStorage active={activeTab === "storage"} />;
+    }
     const fields = SETTINGS_FIELDS.filter(
       (field) => field.tab === tabId && shouldShowField(field),
     );

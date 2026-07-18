@@ -1,51 +1,58 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getMemoryDir } from './paths.js';
+import { getGlobalDatabase, transaction } from './sqlite-database.js';
 
-const REVIEW_STATE_VERSION = 1;
-let stateMutation = Promise.resolve();
+const IMPORT_KEY = 'memory_review_json_imported';
 
-function statePath() {
-  return path.join(getMemoryDir(), 'session-review-state.json');
+function toRecord(row) {
+  if (!row) return null;
+  return {
+    contentHash: row.content_hash,
+    reviewerVersion: row.reviewer_version,
+    status: row.status,
+    attempts: row.attempts,
+    ...(row.claimed_at ? { claimedAt: row.claimed_at } : {}),
+    ...(row.lease_until ? { leaseUntil: row.lease_until } : {}),
+    ...(row.reviewed_at ? { reviewedAt: row.reviewed_at } : {}),
+    ...(row.failed_at ? { failedAt: row.failed_at } : {}),
+    ...(row.next_retry_at ? { nextRetryAt: row.next_retry_at } : {}),
+    ...(row.reviewed_message_count != null ? { reviewedMessageCount: row.reviewed_message_count } : {}),
+    ...(row.candidate_count != null ? { candidateCount: row.candidate_count } : {}),
+    ...(row.last_error ? { lastError: row.last_error } : {})
+  };
 }
 
-async function readState() {
+async function ensureLegacyImported() {
+  const db = getGlobalDatabase();
+  if (db.prepare('SELECT 1 FROM schema_meta WHERE key = ?').get(IMPORT_KEY)) return;
+  let sessions = {};
   try {
-    const parsed = JSON.parse(await fs.readFile(statePath(), 'utf8'));
-    return {
-      version: REVIEW_STATE_VERSION,
-      sessions: parsed?.sessions && typeof parsed.sessions === 'object' ? parsed.sessions : {}
-    };
-  } catch {
-    return { version: REVIEW_STATE_VERSION, sessions: {} };
-  }
-}
-
-async function writeState(state) {
-  const entries = Object.entries(state.sessions || {})
-    .sort(([, left], [, right]) => {
-      const leftTime = Date.parse(left?.reviewedAt || left?.failedAt || left?.claimedAt || '') || 0;
-      const rightTime = Date.parse(right?.reviewedAt || right?.failedAt || right?.claimedAt || '') || 0;
-      return rightTime - leftTime;
-    })
-    .slice(0, 5000);
-  state.sessions = Object.fromEntries(entries);
-  const target = statePath();
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  const temp = `${target}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
-  await fs.rename(temp, target);
-}
-
-function mutateState(updater) {
-  const run = stateMutation.then(async () => {
-    const state = await readState();
-    const result = await updater(state);
-    if (result?.changed !== false) await writeState(state);
-    return result?.value;
+    const parsed = JSON.parse(await fs.readFile(path.join(getMemoryDir(), 'session-review-state.json'), 'utf8'));
+    sessions = parsed?.sessions && typeof parsed.sessions === 'object' ? parsed.sessions : {};
+  } catch {}
+  transaction(db, () => {
+    const insert = db.prepare(`
+      INSERT OR IGNORE INTO memory_review_jobs(
+        session_id, content_hash, reviewer_version, status, attempts, claimed_at, lease_until,
+        reviewed_at, failed_at, next_retry_at, reviewed_message_count, candidate_count, last_error
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const [sessionId, record] of Object.entries(sessions)) {
+      insert.run(
+        sessionId, String(record?.contentHash || ''), Number(record?.reviewerVersion || 0),
+        String(record?.status || 'failed'), Number(record?.attempts || 0), record?.claimedAt || null,
+        record?.leaseUntil || null, record?.reviewedAt || null, record?.failedAt || null,
+        record?.nextRetryAt || null, record?.reviewedMessageCount ?? null,
+        record?.candidateCount ?? null, record?.lastError || null
+      );
+    }
+    db.prepare('INSERT INTO schema_meta(key, value) VALUES (?, ?)').run(IMPORT_KEY, new Date().toISOString());
   });
-  stateMutation = run.catch(() => {});
-  return run;
+}
+
+function getJob(sessionId) {
+  return getGlobalDatabase().prepare('SELECT * FROM memory_review_jobs WHERE session_id = ?').get(sessionId);
 }
 
 export async function claimSessionMemoryReview({
@@ -54,33 +61,39 @@ export async function claimSessionMemoryReview({
   reviewerVersion,
   leaseMs = 120000
 }) {
-  return mutateState(async (state) => {
+  await ensureLegacyImported();
+  const db = getGlobalDatabase();
+  return transaction(db, () => {
     const now = Date.now();
-    const existing = state.sessions[sessionId] || null;
+    const existing = getJob(sessionId);
     if (
       existing?.status === 'completed' &&
-      existing.contentHash === contentHash &&
-      Number(existing.reviewerVersion || 0) === reviewerVersion
+      existing.content_hash === contentHash &&
+      Number(existing.reviewer_version || 0) === reviewerVersion
     ) {
-      return { changed: false, value: { claimed: false, reason: 'already-reviewed', record: existing } };
+      return { claimed: false, reason: 'already-reviewed', record: toRecord(existing) };
     }
-    if (existing?.status === 'processing' && Date.parse(existing.leaseUntil || '') > now) {
-      return { changed: false, value: { claimed: false, reason: 'active-lease', record: existing } };
+    if (existing?.status === 'processing' && Date.parse(existing.lease_until || '') > now) {
+      return { claimed: false, reason: 'active-lease', record: toRecord(existing) };
     }
-    if (existing?.nextRetryAt && Date.parse(existing.nextRetryAt) > now) {
-      return { changed: false, value: { claimed: false, reason: 'retry-backoff', record: existing } };
+    if (existing?.next_retry_at && Date.parse(existing.next_retry_at) > now) {
+      return { claimed: false, reason: 'retry-backoff', record: toRecord(existing) };
     }
-    const attempts = existing?.contentHash === contentHash ? Number(existing.attempts || 0) + 1 : 1;
-    const record = {
-      contentHash,
-      reviewerVersion,
-      status: 'processing',
-      attempts,
-      claimedAt: new Date(now).toISOString(),
-      leaseUntil: new Date(now + leaseMs).toISOString()
-    };
-    state.sessions[sessionId] = record;
-    return { value: { claimed: true, record } };
+    const attempts = existing?.content_hash === contentHash ? Number(existing.attempts || 0) + 1 : 1;
+    const claimedAt = new Date(now).toISOString();
+    const leaseUntil = new Date(now + leaseMs).toISOString();
+    db.prepare(`
+      INSERT INTO memory_review_jobs(
+        session_id, content_hash, reviewer_version, status, attempts, claimed_at, lease_until
+      ) VALUES (?, ?, ?, 'processing', ?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        content_hash = excluded.content_hash,
+        reviewer_version = excluded.reviewer_version,
+        status = 'processing', attempts = excluded.attempts,
+        claimed_at = excluded.claimed_at, lease_until = excluded.lease_until,
+        reviewed_at = NULL, failed_at = NULL, next_retry_at = NULL, last_error = NULL
+    `).run(sessionId, contentHash, reviewerVersion, attempts, claimedAt, leaseUntil);
+    return { claimed: true, record: toRecord(getJob(sessionId)) };
   });
 }
 
@@ -91,34 +104,41 @@ export async function completeSessionMemoryReview({
   reviewedMessageCount,
   candidateCount
 }) {
-  return mutateState(async (state) => {
-    state.sessions[sessionId] = {
-      contentHash,
-      reviewerVersion,
-      status: 'completed',
-      attempts: 0,
-      reviewedMessageCount,
-      candidateCount,
-      reviewedAt: new Date().toISOString()
-    };
-    return { value: state.sessions[sessionId] };
-  });
+  await ensureLegacyImported();
+  const reviewedAt = new Date().toISOString();
+  getGlobalDatabase().prepare(`
+    INSERT INTO memory_review_jobs(
+      session_id, content_hash, reviewer_version, status, attempts,
+      reviewed_at, reviewed_message_count, candidate_count
+    ) VALUES (?, ?, ?, 'completed', 0, ?, ?, ?)
+    ON CONFLICT(session_id) DO UPDATE SET
+      content_hash = excluded.content_hash, reviewer_version = excluded.reviewer_version,
+      status = 'completed', attempts = 0, reviewed_at = excluded.reviewed_at,
+      reviewed_message_count = excluded.reviewed_message_count,
+      candidate_count = excluded.candidate_count, claimed_at = NULL, lease_until = NULL,
+      failed_at = NULL, next_retry_at = NULL, last_error = NULL
+  `).run(sessionId, contentHash, reviewerVersion, reviewedAt, reviewedMessageCount, candidateCount);
+  return toRecord(getJob(sessionId));
 }
 
 export async function failSessionMemoryReview({ sessionId, contentHash, reviewerVersion, error }) {
-  return mutateState(async (state) => {
-    const previous = state.sessions[sessionId] || {};
-    const attempts = Math.max(1, Number(previous.attempts || 1));
-    const delayMs = Math.min(6 * 60 * 60 * 1000, 30000 * (2 ** Math.min(8, attempts - 1)));
-    state.sessions[sessionId] = {
-      contentHash,
-      reviewerVersion,
-      status: 'failed',
-      attempts,
-      failedAt: new Date().toISOString(),
-      nextRetryAt: new Date(Date.now() + delayMs).toISOString(),
-      lastError: String(error?.message || error || 'session memory review failed').slice(0, 240)
-    };
-    return { value: state.sessions[sessionId] };
-  });
+  await ensureLegacyImported();
+  const existing = getJob(sessionId);
+  const attempts = Math.max(1, Number(existing?.attempts || 1));
+  const now = Date.now();
+  const delayMs = Math.min(6 * 60 * 60 * 1000, 30000 * (2 ** Math.min(8, attempts - 1)));
+  getGlobalDatabase().prepare(`
+    INSERT INTO memory_review_jobs(
+      session_id, content_hash, reviewer_version, status, attempts, failed_at, next_retry_at, last_error
+    ) VALUES (?, ?, ?, 'failed', ?, ?, ?, ?)
+    ON CONFLICT(session_id) DO UPDATE SET
+      content_hash = excluded.content_hash, reviewer_version = excluded.reviewer_version,
+      status = 'failed', attempts = excluded.attempts, failed_at = excluded.failed_at,
+      next_retry_at = excluded.next_retry_at, last_error = excluded.last_error,
+      claimed_at = NULL, lease_until = NULL
+  `).run(
+    sessionId, contentHash, reviewerVersion, attempts, new Date(now).toISOString(),
+    new Date(now + delayMs).toISOString(), String(error?.message || error || 'session memory review failed').slice(0, 240)
+  );
+  return toRecord(getJob(sessionId));
 }

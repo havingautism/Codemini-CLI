@@ -52,7 +52,7 @@
     "deployment.md"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13.0"
   },
   "publishConfig": {
     "access": "public"

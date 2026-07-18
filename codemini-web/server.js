@@ -40,11 +40,21 @@ import {
 import { runDreamConsolidation } from '../src/core/dream-consolidate.js';
 import { getReplyLanguage } from '../src/core/reply-language.js';
 import { normalizeSkillContexts } from '../src/core/skill-contexts.js';
-import { getBaseConfigDir, getFileIndexPath, getProjectSpecsDir, getSkillsDir } from '../src/core/paths.js';
+import { getBaseConfigDir, getProjectSpecsDir, getSkillsDir } from '../src/core/paths.js';
 import { initializeProjectIndex } from '../src/core/project-index.js';
+import { loadProjectFileIndexFromSqlite } from '../src/core/project-index-sqlite-store.js';
 import { INDEX_SKIP_DIRS } from '../src/core/constants.js';
 import { VERSION } from '../src/core/version.js';
 import { detectPlaywrightStatus } from '../src/core/tools.js';
+import { getSqliteStorageInfo, openSqliteStorageFolder } from '../src/core/storage-info.js';
+import {
+  loadAttachmentMetadata,
+  readRuntimeStatuses,
+  recoverRuntimeStatuses,
+  removeRuntimeStatus,
+  saveAttachmentMetadata,
+  setRuntimeStatus
+} from '../src/core/web-metadata-sqlite-store.js';
 import {
   closeMcpClient,
   inspectMcpServer,
@@ -570,9 +580,16 @@ export function createRuntimeStatusStore(
   filePath = path.join(getBaseConfigDir(), 'web-runtime-status.json')
 ) {
   let writes = Promise.resolve();
+  let legacyLoaded = false;
   const read = async () => {
+    const stored = readRuntimeStatuses();
+    if (Object.keys(stored).length > 0 || legacyLoaded) return stored;
+    legacyLoaded = true;
     try {
       const parsed = JSON.parse(await fs.readFile(filePath, 'utf8'));
+      for (const [sessionId, state] of Object.entries(parsed || {})) {
+        if (state?.status) setRuntimeStatus(sessionId, state.status, state.updatedAt);
+      }
       return parsed && typeof parsed === 'object' ? parsed : {};
     } catch (error) {
       if (error?.code === 'ENOENT') return {};
@@ -583,8 +600,6 @@ export function createRuntimeStatusStore(
     writes = writes.then(async () => {
       const states = await read();
       await mutate(states);
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
-      await fs.writeFile(filePath, `${JSON.stringify(states, null, 2)}\n`, 'utf8');
     });
     return writes;
   };
@@ -596,30 +611,21 @@ export function createRuntimeStatusStore(
           status,
           updatedAt: new Date().toISOString()
         };
+        setRuntimeStatus(sessionId, status, states[sessionId].updatedAt);
       });
     },
     remove(sessionId) {
       return update(states => {
         delete states[sessionId];
+        removeRuntimeStatus(sessionId);
       });
     },
     flush() {
       return writes;
     },
     async recoverInterrupted() {
-      const recovered = [];
-      await update(states => {
-        for (const [sessionId, state] of Object.entries(states)) {
-          if (!RECOVERABLE_RUNTIME_STATUSES.has(state?.status)) continue;
-          states[sessionId] = {
-            ...state,
-            status: 'interrupted',
-            updatedAt: new Date().toISOString()
-          };
-          recovered.push(sessionId);
-        }
-      });
-      return recovered;
+      await writes;
+      return recoverRuntimeStatuses([...RECOVERABLE_RUNTIME_STATUSES]);
     }
   };
 }
@@ -1332,7 +1338,7 @@ async function saveUploadedAttachment({ file, sessionId }) {
     truncated: clipped.truncated,
     uploadedAt: new Date().toISOString()
   };
-  await fs.writeFile(attachmentMetaPath(sessionId, id), `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
+  saveAttachmentMetadata(sessionId, meta);
   return {
     id,
     name: meta.name,
@@ -1356,7 +1362,11 @@ async function loadAttachmentMetas(sessionId, ids = []) {
   for (const id of cleanIds) {
     const metaFile = attachmentMetaPath(sessionId, id);
     try {
-      const parsed = JSON.parse(await fs.readFile(metaFile, 'utf8'));
+      let parsed = loadAttachmentMetadata(sessionId, id);
+      if (!parsed) {
+        parsed = JSON.parse(await fs.readFile(metaFile, 'utf8'));
+        if (parsed?.id === id && parsed?.path) saveAttachmentMetadata(sessionId, parsed);
+      }
       if (parsed?.id === id && parsed?.path) metas.push(parsed);
     } catch {}
   }
@@ -2122,7 +2132,11 @@ async function main() {
       try {
         const sessionId = decodeURIComponent(attachmentFileMatch[1]);
         const id = decodeURIComponent(attachmentFileMatch[2]);
-        const meta = JSON.parse(await fs.readFile(attachmentMetaPath(sessionId, id), 'utf8'));
+        let meta = loadAttachmentMetadata(sessionId, id);
+        if (!meta) {
+          meta = JSON.parse(await fs.readFile(attachmentMetaPath(sessionId, id), 'utf8'));
+          if (meta?.path) saveAttachmentMetadata(sessionId, meta);
+        }
         const filePath = path.resolve(meta.path || '');
         const uploadRoot = path.resolve(ATTACHMENT_UPLOAD_DIR);
         if (!isPathInside(uploadRoot, filePath)) {
@@ -2245,8 +2259,7 @@ async function main() {
         const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
         const initialized = await initializeProjectIndex(codeWikiProjectDir);
         const projectRoot = initialized?.projectRoot || codeWikiProjectDir;
-        const fileIndexPath = getFileIndexPath(projectRoot);
-        const fileIndex = JSON.parse(await fs.readFile(fileIndexPath, 'utf8'));
+        const fileIndex = loadProjectFileIndexFromSqlite(projectRoot);
         const maxNodes = Math.max(12, Math.min(80, Number(url.searchParams.get('max_nodes') || 42)));
         jsonResponse(res, buildCodeWikiSymbolGraph(fileIndex, { maxNodes }));
       } catch (err) {
@@ -2537,6 +2550,24 @@ async function main() {
         jsonResponse(res, await detectPlaywrightStatus());
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/storage') {
+      try {
+        jsonResponse(res, await getSqliteStorageInfo(currentProjectDir));
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/storage/open') {
+      const { target } = await readBody(req);
+      try {
+        jsonResponse(res, await openSqliteStorageFolder(target, currentProjectDir));
+      } catch (err) {
+        const status = String(err?.message || '').includes('Invalid storage target') ? 400 : 500;
+        jsonResponse(res, { error: true, message: err.message }, status);
       }
       return;
     }

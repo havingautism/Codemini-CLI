@@ -3,6 +3,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { normalizePath } from './string-utils.js';
 import { runGit } from './process-run.js';
+import {
+  listChangeOperationsFromSqlite,
+  loadChangeOperationFromSqlite,
+  saveChangeOperationToSqlite
+} from './change-oplog-sqlite-store.js';
 
 const CHANGE_OPLOG_VERSION = 1;
 const FILE_TOOLS = new Set(['edit', 'create', 'write', 'apply_patch', 'delete']);
@@ -186,11 +191,6 @@ async function buildPatchForFile(root, relativePath, before, after) {
   }
 }
 
-async function writeJson(filePath, value) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
-}
-
 async function readJson(filePath) {
   return JSON.parse(await fs.readFile(filePath, 'utf8'));
 }
@@ -293,7 +293,6 @@ export async function captureGitOplogChanges(tracker, capture, { toolName = '', 
   const opId = changeId('op');
   const patch = patches.join('\n');
   const patchPath = path.join(tracker.patchesDir, `${opId}.patch`);
-  const opPath = path.join(tracker.opsDir, `${opId}.json`);
   await fs.writeFile(patchPath, patch, 'utf8');
   const op = {
     version: CHANGE_OPLOG_VERSION,
@@ -307,8 +306,7 @@ export async function captureGitOplogChanges(tracker, capture, { toolName = '', 
     files: files.map(({ diffPreview, ...file }) => file),
     revertedAt: null
   };
-  await writeJson(opPath, op);
-  await fs.appendFile(path.join(tracker.oplogDir, 'ops.jsonl'), `${JSON.stringify({ ...op, patchPath: undefined })}\n`, 'utf8');
+  saveChangeOperationToSqlite(tracker.workspaceRoot, op);
   return files.map((file) => ({
     ...file,
     changeSetId: opId,
@@ -318,17 +316,23 @@ export async function captureGitOplogChanges(tracker, capture, { toolName = '', 
 
 export async function listGitOplogChanges(tracker) {
   if (!isGitOplogChangeTrackerAvailable(tracker)) return [];
+  const stored = listChangeOperationsFromSqlite(tracker.workspaceRoot, tracker.sessionId);
   let entries = [];
   try {
     entries = await fs.readdir(tracker.opsDir, { withFileTypes: true });
   } catch {
-    return [];
+    return stored;
   }
   const out = [];
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
-    try { out.push(await readJson(path.join(tracker.opsDir, entry.name))); } catch {}
+    try {
+      const legacy = await readJson(path.join(tracker.opsDir, entry.name));
+      saveChangeOperationToSqlite(tracker.workspaceRoot, legacy);
+      if (!stored.some((operation) => operation.id === legacy.id)) out.push(legacy);
+    } catch {}
   }
+  out.push(...stored);
   out.sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
   return out;
 }
@@ -337,7 +341,11 @@ export async function readGitOplogChange(tracker, opId) {
   if (!isGitOplogChangeTrackerAvailable(tracker)) throw new Error('Git change oplog is not available for this session');
   const id = String(opId || '').trim();
   if (!id) throw new Error('Missing change id');
-  return readJson(path.join(tracker.opsDir, `${id}.json`));
+  const stored = loadChangeOperationFromSqlite(tracker.workspaceRoot, id);
+  if (stored) return stored;
+  const legacy = await readJson(path.join(tracker.opsDir, `${id}.json`));
+  saveChangeOperationToSqlite(tracker.workspaceRoot, legacy);
+  return legacy;
 }
 
 export async function readGitOplogPatch(tracker, opId) {
@@ -367,7 +375,7 @@ export async function undoGitOplogChange(tracker, opId) {
     timeoutMs: 120_000
   });
   op.revertedAt = new Date().toISOString();
-  await writeJson(path.join(tracker.opsDir, `${op.id}.json`), op);
+  saveChangeOperationToSqlite(tracker.workspaceRoot, op);
   return { ok: true, changeSetId: op.id };
 }
 
@@ -434,7 +442,7 @@ export async function undoGitOplogChanges(tracker, opIds = []) {
   const revertedAt = new Date().toISOString();
   for (const op of ops) {
     op.revertedAt = revertedAt;
-    await writeJson(path.join(tracker.opsDir, `${op.id}.json`), op);
+    saveChangeOperationToSqlite(tracker.workspaceRoot, op);
   }
   return { ok: true, changeSetIds: ops.map((op) => op.id) };
 }

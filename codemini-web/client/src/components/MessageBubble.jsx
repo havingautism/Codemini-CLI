@@ -256,6 +256,7 @@ function ThoughtBlock({ segment }) {
             text={segment.text}
             streaming={segment.isStreaming}
             className="msg-process-thought-body pl-5 text-[13px] italic leading-5"
+            inlineEmbeds={false}
           />
         </div>
       )}

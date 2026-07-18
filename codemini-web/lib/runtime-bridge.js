@@ -23,6 +23,10 @@ import fs from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { getSessionsDir } from '../../src/core/paths.js';
+import {
+  loadUiTranscriptFromSqlite,
+  saveUiTranscriptToSqlite
+} from '../../src/core/session-sqlite-store.js';
 import { CHAT_ACTIONS } from '../../src/core/chat-action-dispatcher.js';
 
 const CODEWIKI_GENERATE_TIMEOUT_MS = 35 * 60 * 1000;
@@ -229,6 +233,7 @@ export class RuntimeBridge {
   #uiTranscriptSessionId = '';
   #uiPersisting = false;
   #uiPersistQueued = false;
+  #uiPersistTimer = null;
   #activeSubmitLine = '';
   #runStatusRecorded = false;
   #submitToken = 0;
@@ -351,44 +356,51 @@ export class RuntimeBridge {
       if (this.#uiMessages.length === 0) return;
     }
     try {
-      const filePath = webTranscriptPath(sessionId);
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
       let messages = this.#uiMessages;
-      try {
-        const raw = await fs.readFile(filePath, 'utf8');
-        const existing = JSON.parse(raw)?.messages;
-        if (Array.isArray(existing) && existing.length > messages.length) {
-          const memIds = new Set(messages.map((message) => message?.id).filter(Boolean));
-          if (existing[0]?.id && !memIds.has(existing[0].id)) {
-            const prefix = existing.filter((message) => message?.id && !memIds.has(message.id));
-            messages = [...prefix, ...messages];
-            this.#uiMessages = messages;
-          }
+      const existing = loadUiTranscriptFromSqlite(sessionId);
+      if (Array.isArray(existing) && existing.length > messages.length) {
+        const memIds = new Set(messages.map((message) => message?.id).filter(Boolean));
+        if (existing[0]?.id && !memIds.has(existing[0].id)) {
+          const prefix = existing.filter((message) => message?.id && !memIds.has(message.id));
+          messages = [...prefix, ...messages];
+          this.#uiMessages = messages;
         }
-      } catch {}
-      await fs.writeFile(filePath, JSON.stringify({
-        sessionId,
-        updatedAt: new Date().toISOString(),
-        messages
-      }), 'utf8');
+      }
+      saveUiTranscriptToSqlite(sessionId, messages);
     } catch {}
   }
 
   #persistUiTranscriptSoon() {
     this.#uiPersistQueued = true;
+    if (this.#uiPersisting || this.#uiPersistTimer) return;
+    this.#uiPersistTimer = setTimeout(() => {
+      this.#uiPersistTimer = null;
+      void this.#drainUiTranscriptPersistence();
+    }, 120);
+  }
+
+  async #drainUiTranscriptPersistence() {
     if (this.#uiPersisting) return;
     this.#uiPersisting = true;
-    (async () => {
+    try {
       while (this.#uiPersistQueued) {
         this.#uiPersistQueued = false;
         await this.#writeUiTranscriptSnapshot();
       }
+    } finally {
       this.#uiPersisting = false;
-    })();
+    }
   }
 
   #hydrateUiTranscriptFromDiskSync() {
     if (this.#uiMessages.length > 0) return;
+    try {
+      const messages = loadUiTranscriptFromSqlite(this.getSessionId());
+      if (Array.isArray(messages) && messages.length > 0) {
+        this.#uiMessages = messages;
+        return;
+      }
+    } catch {}
     const sessionId = this.getSessionId();
     if (!sessionId) return;
     try {
@@ -1481,6 +1493,9 @@ export class RuntimeBridge {
       try { res.end(); } catch {}
     }
     this.#clients.clear();
+    if (this.#uiPersistTimer) clearTimeout(this.#uiPersistTimer);
+    this.#uiPersistTimer = null;
+    if (this.#uiPersistQueued) await this.#drainUiTranscriptPersistence();
     await this.#runtime.dispose?.();
   }
 }

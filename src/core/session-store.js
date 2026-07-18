@@ -5,6 +5,13 @@ import { normalizePlanState } from './plan-state.js';
 import { normalizeSpecState } from './spec-state.js';
 import { normalizeTodos } from './todo-state.js';
 import { ensureSessionTitleEmoji } from './session-title.js';
+import {
+  deleteSessionFromSqlite,
+  listSessionsFromSqlite,
+  loadSessionFromSqlite,
+  pruneSessionsFromSqlite,
+  saveSessionToSqlite
+} from './session-sqlite-store.js';
 
 const ALLOWED_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
 const SESSION_LEGACY_EXT = '.json';
@@ -606,11 +613,39 @@ async function loadSessionPayload(sessionId) {
   }
 }
 
+async function archiveMigratedSessionFiles(sessionId) {
+  const backupDir = path.join(getSessionsDir(), 'legacy-backup');
+  await fs.mkdir(backupDir, { recursive: true });
+  for (const ext of [SESSION_JSONL_EXT, SESSION_LEGACY_EXT]) {
+    const source = sessionPathById(sessionId, ext);
+    const target = path.join(backupDir, `${sessionId}${ext}`);
+    try {
+      await fs.rename(source, target);
+    } catch (error) {
+      if (error?.code !== 'ENOENT' && error?.code !== 'EEXIST') throw error;
+    }
+  }
+}
+
+async function importLegacySessions() {
+  const files = await listSessionFiles();
+  const imported = new Set();
+  for (const file of files) {
+    const id = sessionIdFromFileName(path.basename(file));
+    if (!id || imported.has(id) || loadSessionFromSqlite(id)) continue;
+    try {
+      const parsed = await loadSessionPayload(id);
+      saveSessionToSqlite(sanitizeSession(parsed, id));
+      imported.add(id);
+      await archiveMigratedSessionFiles(id);
+    } catch {
+      // Leave unreadable legacy files untouched for manual recovery.
+    }
+  }
+}
+
 export async function createSession(projectDir = process.cwd()) {
   const sessionId = createSessionId();
-  const dir = getSessionsDir();
-  await fs.mkdir(dir, { recursive: true });
-  const filePath = sessionPathById(sessionId, SESSION_JSONL_EXT);
   let resolvedProjectDir = String(projectDir || process.cwd()).trim() || process.cwd();
   try {
     resolvedProjectDir = path.resolve(resolvedProjectDir);
@@ -625,36 +660,23 @@ export async function createSession(projectDir = process.cwd()) {
     projectDir: resolvedProjectDir,
     messages: []
   };
-  await fs.writeFile(filePath, `${JSON.stringify(payload)}\n`, 'utf8');
-  await upsertSessionIndexEntry(payload, filePath);
+  saveSessionToSqlite(payload);
   return payload;
 }
 
 export async function loadSession(sessionId) {
-  const parsed = await loadSessionPayload(sessionId);
-  return sanitizeSession(parsed, sessionId);
+  const stored = loadSessionFromSqlite(sessionId);
+  if (stored) return sanitizeSession(stored, sessionId);
+  const parsed = sanitizeSession(await loadSessionPayload(sessionId), sessionId);
+  saveSessionToSqlite(parsed);
+  await archiveMigratedSessionFiles(sessionId);
+  return parsed;
 }
 
-const JSONL_COMPACT_THRESHOLD = 5 * 1024 * 1024; // 5 MB
-
 export async function saveSession(session, { preserveUpdatedAt = '' } = {}) {
-  const dir = getSessionsDir();
-  await fs.mkdir(dir, { recursive: true });
   const normalized = sanitizeSession(session);
   normalized.updatedAt = String(preserveUpdatedAt || '').trim() || new Date().toISOString();
-  const filePath = sessionPathById(normalized.id, SESSION_JSONL_EXT);
-  await fs.appendFile(filePath, `${JSON.stringify(normalized)}\n`, 'utf8');
-  await upsertSessionIndexEntry(normalized, filePath);
-
-  // Compact JSONL file when it grows too large — rewrite with only the latest record
-  try {
-    const st = await fs.stat(filePath);
-    if (st.size > JSONL_COMPACT_THRESHOLD) {
-      await fs.writeFile(filePath, `${JSON.stringify(normalized)}\n`, 'utf8');
-    }
-  } catch {
-    // Best-effort compaction; session data is already saved
-  }
+  saveSessionToSqlite(normalized);
 }
 
 export async function resolveSession(sessionId) {
@@ -665,10 +687,8 @@ export async function resolveSession(sessionId) {
 }
 
 export async function listSessions(limit = 30, { includeEmpty = false } = {}) {
-  const index = await getSessionIndex();
-  return [...index.sessions]
-    .filter((s) => includeEmpty || Number(s.messageCount || 0) > 0)
-    .slice(0, limit);
+  await importLegacySessions();
+  return listSessionsFromSqlite(limit, { includeEmpty });
 }
 
 export async function deleteSession(sessionId) {
@@ -684,7 +704,7 @@ export async function deleteSession(sessionId) {
   ];
   for (const file of fallbackTargets) targets.add(file);
 
-  let removed = 0;
+  let removed = deleteSessionFromSqlite(id) ? 1 : 0;
   const removedFileNames = [];
   for (const file of targets) {
     try {
@@ -715,53 +735,14 @@ export async function deleteSession(sessionId) {
     }
   }
 
-  if (removed > 0) {
-    const updated = await removeSessionIndexEntry(id, removedFileNames);
-    if (!updated) {
-      try {
-        await rebuildSessionIndex();
-      } catch {}
-    }
-  }
   return { removed };
 }
 
 export async function pruneSessions(policy = {}) {
-  const maxSessions = Number(policy.max_sessions || 100);
-  const retentionDays = Number(policy.retention_days || 30);
-  const all = await listSessions(10000);
-  const now = Date.now();
-  const expireMs = retentionDays > 0 ? retentionDays * 24 * 60 * 60 * 1000 : 0;
-  const keepIds = new Set();
-
-  const sorted = [...all].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
-  for (let i = 0; i < sorted.length; i += 1) {
-    const s = sorted[i];
-    if (i >= maxSessions) continue;
-    if (expireMs > 0 && s.updatedAt) {
-      const t = Date.parse(s.updatedAt);
-      if (!Number.isNaN(t) && now - t > expireMs) continue;
-    }
-    keepIds.add(s.id);
-  }
-
-  const dir = getSessionsDir();
-  const entries = await fs.readdir(dir, { withFileTypes: true });
-  let removed = 0;
-  for (const e of entries) {
-    if (!e.isFile()) continue;
-    const id = sessionIdFromFileName(e.name);
-    if (!id) continue;
-    if (keepIds.has(id)) continue;
-    try {
-      await fs.unlink(path.join(dir, e.name));
-      removed += 1;
-    } catch {
-      continue;
-    }
-  }
-  try {
-    await rebuildSessionIndex();
-  } catch {}
-  return { removed, kept: keepIds.size };
+  await importLegacySessions();
+  const removed = pruneSessionsFromSqlite({
+    maxSessions: Number(policy.max_sessions || 100),
+    retentionDays: Number(policy.retention_days || 30)
+  });
+  return { removed, kept: listSessionsFromSqlite(10000, { includeEmpty: true }).length };
 }

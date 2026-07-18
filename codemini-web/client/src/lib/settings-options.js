@@ -172,5 +172,6 @@ export const SETTINGS_TABS = [
   { id: "web", labelKey: "webSearch" },
   { id: "context", labelKey: "context" },
   { id: "shell", labelKey: "shell" },
+  { id: "storage", labelKey: "storage" },
   { id: "policy", labelKey: "policy" },
 ];

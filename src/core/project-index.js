@@ -6,6 +6,11 @@ import { sha256 } from './crypto-utils.js';
 import { BoundedCache } from './bounded-cache.js';
 import { trimInline, normalizeRelativePath, escapeRegex } from './string-utils.js';
 import { globFilesUnder } from './workspace-glob.js';
+import {
+  loadProjectFileIndexFromSqlite,
+  loadProjectIndexFromSqlite,
+  saveProjectIndexToSqlite
+} from './project-index-sqlite-store.js';
 
 const PROJECT_MARKER_FILES = new Set([
   'package.json',
@@ -90,14 +95,6 @@ function trimMultiline(value, max = 1800) {
   if (!text) return '';
   if (text.length <= max) return text;
   return `${text.slice(0, max - 3).trimEnd()}...`;
-}
-
-async function writeJson(filePath, value) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
-  for (const key of jsonCache.keys()) {
-    if (String(key).startsWith(`${filePath}:`)) jsonCache.delete(key);
-  }
 }
 
 async function withProjectIndexLock(projectRoot, task) {
@@ -318,11 +315,11 @@ async function findNearestIndexedProjectRoot(startDir, workspaceRoot) {
   let current = path.resolve(startDir);
   const root = path.resolve(workspaceRoot);
   while (current.startsWith(root)) {
-    const [projectMapStat, fileIndexStat] = await Promise.all([
-      safeStat(getProjectMapPath(current)),
+    const [sqliteStat, legacyFileIndexStat] = await Promise.all([
+      safeStat(path.join(getProjectIndexDir(current), 'index.sqlite')),
       safeStat(getFileIndexPath(current))
     ]);
-    if (projectMapStat?.isFile() && fileIndexStat?.isFile()) return current;
+    if (sqliteStat?.isFile() || legacyFileIndexStat?.isFile()) return current;
     if (current === root) break;
     const parent = path.dirname(current);
     if (parent === current) break;
@@ -643,6 +640,16 @@ async function scanProject(cwd) {
 
 async function loadExistingProjectIndex(targetRoot) {
   try {
+    const sqlite = loadProjectIndexFromSqlite(targetRoot);
+    if (sqlite?.projectMap && Array.isArray(sqlite?.fileIndex?.files) && sqlite.fileIndex.files.length > 0) {
+      return {
+        workspaceKind: 'project',
+        projectRoot: targetRoot,
+        projectMap: sqlite.projectMap,
+        fileIndex: sqlite.fileIndex,
+        summary: `loaded ${path.basename(targetRoot) || '.'}/.codemini (${sqlite.fileIndex.files.length} files)`
+      };
+    }
     const [projectMap, fileIndex] = await Promise.all([
       safeReadJson(getProjectMapPath(targetRoot), null),
       safeReadJson(getFileIndexPath(targetRoot), null)
@@ -650,6 +657,7 @@ async function loadExistingProjectIndex(targetRoot) {
     if (!projectMap || !fileIndex || !Array.isArray(fileIndex.files) || fileIndex.files.length === 0) {
       return null;
     }
+    saveProjectIndexToSqlite(targetRoot, { projectMap, fileIndex });
     return {
       workspaceKind: 'project',
       projectRoot: targetRoot,
@@ -684,8 +692,7 @@ export async function initializeProjectIndex(cwd = process.cwd()) {
       };
     }
     await fs.mkdir(getProjectIndexDir(targetRoot), { recursive: true });
-    await writeJson(getProjectMapPath(targetRoot), projectMap);
-    await writeJson(getFileIndexPath(targetRoot), fileIndex);
+    saveProjectIndexToSqlite(targetRoot, { projectMap, fileIndex });
     return {
       workspaceKind,
       projectRoot: targetRoot,
@@ -728,11 +735,8 @@ export async function refreshIndexedFiles(cwd = process.cwd(), relativePaths = [
 
   const projectResults = await Promise.all([...grouped.entries()].map(([projectRoot, targets]) => withProjectIndexLock(projectRoot, async () => {
     await ensureCodeminiGitignore(projectRoot);
-    const fileIndexPath = getFileIndexPath(projectRoot);
-    const [{ combinedRules }, current] = await Promise.all([
-      readProjectIgnoreRules(projectRoot),
-      safeReadJson(fileIndexPath, { updatedAt: '', files: [] })
-    ]);
+    const { combinedRules } = await readProjectIgnoreRules(projectRoot);
+    const current = loadProjectFileIndexFromSqlite(projectRoot);
     const filesByPath = new Map(
       (Array.isArray(current.files) ? current.files : []).map((entry) => [entry.file, entry])
     );
@@ -762,10 +766,10 @@ export async function refreshIndexedFiles(cwd = process.cwd(), relativePaths = [
       else filesByPath.delete(update.path);
     }
     const enrichedFiles = enrichSymbolGraph([...filesByPath.values()]);
-    await writeJson(fileIndexPath, {
+    saveProjectIndexToSqlite(projectRoot, { fileIndex: {
       updatedAt: new Date().toISOString(),
       files: enrichedFiles.sort((left, right) => left.file.localeCompare(right.file))
-    });
+    } });
 
     return {
       projectRoot,
@@ -795,8 +799,9 @@ export async function buildProjectContextSnippet(cwd = process.cwd(), userText =
   const indexedRoot = await findNearestIndexedProjectRoot(cwd, cwd);
   if (!indexedRoot) return '';
 
-  const projectMap = await safeReadJson(getProjectMapPath(indexedRoot), null);
-  const fileIndex = await safeReadJson(getFileIndexPath(indexedRoot), null);
+  const storedIndex = loadProjectIndexFromSqlite(indexedRoot);
+  const projectMap = storedIndex?.projectMap;
+  const fileIndex = storedIndex?.fileIndex;
   if (!projectMap || !Array.isArray(fileIndex?.files)) return '';
 
   const lines = [
@@ -853,8 +858,9 @@ export async function queryProjectIndex(cwd = process.cwd(), args = {}) {
     };
   }
 
-  const projectMap = await safeReadJson(getProjectMapPath(indexedRoot), null);
-  const fileIndex = await safeReadJson(getFileIndexPath(indexedRoot), null);
+  const storedIndex = loadProjectIndexFromSqlite(indexedRoot);
+  const projectMap = storedIndex?.projectMap;
+  const fileIndex = storedIndex?.fileIndex;
   const query = String(args?.query || '').trim();
   const pathPrefix = normalizeRelativePath(args?.path || args?.path_prefix || '');
   const languageFilter = String(args?.language || '').trim().toLowerCase();

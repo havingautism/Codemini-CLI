@@ -6939,7 +6939,7 @@ export async function createChatRuntime({
   if (initialIndex?.summary) {
     startupEvents.unshift({
       type: 'system_tool',
-      name: 'project_index(.codemini/project-map.json,.codemini/file-index.json)',
+      name: 'project_index(.codemini/index.sqlite)',
       status: 'done',
       summary: initialIndex.summary
     });

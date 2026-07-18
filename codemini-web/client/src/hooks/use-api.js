@@ -262,6 +262,20 @@ export async function fetchPlaywrightStatus() {
   return res.json();
 }
 
+export async function fetchStorageInfo() {
+  const res = await api('/api/storage');
+  return readJsonResponse(res);
+}
+
+export async function openStorageFolder(target) {
+  const res = await api('/api/storage/open', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ target }),
+  });
+  return readJsonResponse(res);
+}
+
 export async function setConfig(key, value) {
   const res = await api('/api/config/set', {
     method: 'POST',
