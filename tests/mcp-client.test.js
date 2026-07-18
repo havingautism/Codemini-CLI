@@ -6,11 +6,13 @@ import { fileURLToPath } from 'node:url';
 import {
   getMcpToolBundle,
   closeMcpClient,
+  formatMcpToolDisplayLabel,
   inspectMcpServer,
   mcpToolName,
   normalizeMcpServer,
   validateMcpServer,
 } from '../src/core/mcp-client.js';
+import { formatToolDisplayName } from '../src/core/tool-display.js';
 
 const fixtureDir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
 
@@ -86,6 +88,7 @@ test('builds namespaced agent tools from cached MCP schemas', () => {
   assert.equal(name, 'mcp__git-hub__list_issues');
   assert.equal(bundle.definitions.length, 1);
   assert.equal(bundle.definitions[0].function.name, name);
+  assert.equal(bundle.displayLabels[name], 'MCP/GitHub · list_issues');
   assert.deepEqual(bundle.definitions[0].function.parameters.required, ['repo']);
   assert.equal(typeof bundle.handlers[name], 'function');
   assert.equal(typeof bundle.formatters[name], 'function');
@@ -102,6 +105,32 @@ test('does not expose disabled or untested MCP servers to the agent', () => {
   });
   assert.deepEqual(bundle.definitions, []);
   assert.deepEqual(bundle.handlers, {});
+});
+
+test('formats MCP tool cards as MCP/server · tool', () => {
+  const server = {
+    id: 'fetchMCP',
+    name: 'Fetch网页内容抓取',
+    enabled: true,
+    transport: 'http',
+    url: 'https://example.com/mcp',
+    cachedTools: [{ name: 'fetch', description: 'Fetch a URL' }],
+  };
+  const label = formatMcpToolDisplayLabel(server, 'fetch');
+  assert.equal(label, 'MCP/Fetch网页内容抓取 · fetch');
+
+  const bundle = getMcpToolBundle({ mcp: { servers: [server] } });
+  const name = mcpToolName(server, 'fetch');
+  assert.equal(bundle.displayLabels[name], label);
+  assert.equal(
+    formatToolDisplayName(name, { url: 'https://example.com' }, { displayLabels: bundle.displayLabels }),
+    'MCP/Fetch网页内容抓取 · fetch (https://example.com)',
+  );
+  // Registry synced by getMcpToolBundle — works even without explicit displayLabels.
+  assert.equal(
+    formatToolDisplayName(name, { url: 'https://example.com' }),
+    'MCP/Fetch网页内容抓取 · fetch (https://example.com)',
+  );
 });
 
 test('discovers and invokes tools from a real stdio MCP server', async () => {

@@ -665,9 +665,13 @@ export async function runAgentLoop({
   changeTracker = null,
   skillHooksSession = null,
   onSkillLoaded = null,
+  toolDisplayLabels = {},
   workspaceRoot = config?.workspaceRoot || process.cwd()
 }) {
   const activeToolResultStore = toolResultStore || createToolResultStore();
+  const formatDisplayName = (toolName, args) => (
+    formatToolDisplayName(toolName, args, { displayLabels: toolDisplayLabels })
+  );
   const messages = [];
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt });
@@ -849,7 +853,7 @@ export async function runAgentLoop({
     const callsWithMeta = toolCalls.map((call) => {
       const toolName = normalizeToolCallName(call.name);
       const args = normalizeToolArguments(toolName, safeJsonParse(call.arguments), call.arguments);
-      const displayName = formatToolDisplayName(toolName, args);
+      const displayName = formatDisplayName(toolName, args);
       const isParallelSafe = PARALLEL_SAFE_TOOLS.has(toolName);
       return { call, args, toolName, displayName, isParallelSafe };
     });
@@ -1428,12 +1432,12 @@ export async function runAgentLoop({
   };
 }
 
-function callsToPlanSummary(toolCalls = []) {
+function callsToPlanSummary(toolCalls = [], toolDisplayLabels = {}) {
   return toolCalls
     .slice(0, 8)
     .map((call) => {
       const args = safeJsonParse(call?.arguments);
-      return `- ${formatToolDisplayName(normalizeToolCallName(call?.name), args)}`;
+      return `- ${formatToolDisplayName(normalizeToolCallName(call?.name), args, { displayLabels: toolDisplayLabels })}`;
     });
 }
 

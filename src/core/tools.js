@@ -6739,5 +6739,12 @@ export function getBuiltinTools({
     }
   }
 
-  return { definitions, handlers, formatters, deferredDefinitions: deferredToolCatalog, dispose };
+  return {
+    definitions,
+    handlers,
+    formatters,
+    deferredDefinitions: deferredToolCatalog,
+    displayLabels: mcpTools.displayLabels || {},
+    dispose,
+  };
 }

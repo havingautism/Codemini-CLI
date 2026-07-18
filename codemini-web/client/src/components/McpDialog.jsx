@@ -39,6 +39,7 @@ import {
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 import * as api from '@/hooks/use-api';
+import { syncMcpToolDisplayLabels } from '@/lib/mcp-display-sync.js';
 import { t } from '../../i18n/index.js';
 
 function emptyServer() {
@@ -385,6 +386,7 @@ function McpPanel() {
     try {
       const result = await api.fetchMcpServers();
       const next = Array.isArray(result?.servers) ? result.servers : [];
+      syncMcpToolDisplayLabels(next);
       setServers(next);
       if (preferredId) {
         setExpandedServers((current) => new Set(current).add(preferredId));
@@ -639,7 +641,6 @@ export function McpDialog({ open, onOpenChange }) {
     <ResourceLibraryDialog
       open={open}
       onOpenChange={onOpenChange}
-      icon={PlugsConnected}
       title={t('mcp')}
       description={t('mcpDialogHint')}
     >

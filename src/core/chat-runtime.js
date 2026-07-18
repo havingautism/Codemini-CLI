@@ -4448,7 +4448,7 @@ async function askModel({
     resultDir: path.join(getSessionsDir(), String(session.id))
   });
 
-  const { definitions, handlers, formatters, deferredDefinitions, dispose: disposeTools } = getBuiltinTools({
+  const { definitions, handlers, formatters, deferredDefinitions, displayLabels, dispose: disposeTools } = getBuiltinTools({
     workspaceRoot,
     config: toolConfig,
     sessionId: session.id,
@@ -4909,6 +4909,7 @@ async function askModel({
     toolFormatters: formatters,
     deferredDefinitions: filteredDeferred,
     toolResultStore,
+    toolDisplayLabels: displayLabels || {},
     requestToolApproval,
     signal,
     skipAnalysisNudge,

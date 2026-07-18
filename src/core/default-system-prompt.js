@@ -91,6 +91,10 @@ OS Version: ${os.version || os.release()}
 </env>`;
 }
 
+function getMarkdownImageBlock() {
+  return 'This UI renders Markdown images. When you have a public image URL, embed it with `![description](url)`. Never claim you cannot display images. If no direct URL exists, share the page link instead.';
+}
+
 function normalizePromptBlocks(blocks) {
   if (!blocks) return [];
   if (Array.isArray(blocks)) return blocks.filter(Boolean).map(String);
@@ -102,6 +106,7 @@ export function buildDefaultSystemPrompt(config = {}, options = {}) {
   return [
     getShellSystemPrompt(config?.shell?.default),
     getToolFewShotBlock(config, cwd),
+    getMarkdownImageBlock(),
     getEnvBlock(cwd),
     ...normalizePromptBlocks(options.extraPrompts)
   ].filter(Boolean).join('\n\n');

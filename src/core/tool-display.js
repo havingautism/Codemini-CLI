@@ -32,14 +32,52 @@ export const TOOL_DISPLAY_LABELS = {
   skill: 'Skill'
 };
 
+/** @type {Map<string, string>} MCP tool function name → UI label (browser-safe registry) */
+const mcpToolDisplayLabels = new Map();
+
+export function setMcpToolDisplayLabels(entries = {}) {
+  mcpToolDisplayLabels.clear();
+  for (const [name, label] of Object.entries(entries || {})) {
+    const key = String(name || '').trim();
+    const value = String(label || '').trim();
+    if (key && value) mcpToolDisplayLabels.set(key, value);
+  }
+}
+
+export function resolveMcpToolDisplayLabel(toolName) {
+  const raw = String(toolName || '').trim();
+  if (!raw) return '';
+  if (mcpToolDisplayLabels.has(raw)) return mcpToolDisplayLabels.get(raw);
+  const normalized = raw.toLowerCase();
+  if (mcpToolDisplayLabels.has(normalized)) return mcpToolDisplayLabels.get(normalized);
+  return '';
+}
+
 export function normalizeToolId(name) {
   return String(name || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
 }
 
-export function formatToolLabel(name) {
+function fallbackMcpToolLabel(name) {
+  const raw = String(name || '').trim();
+  const registered = resolveMcpToolDisplayLabel(raw);
+  if (registered) return registered;
+  const match = raw.match(/^mcp__([a-z0-9_-]+?)__([a-z0-9_-]+?)(?:_\d+)?$/i);
+  if (!match) return '';
+  return `MCP/${match[1]} · ${match[2]}`;
+}
+
+export function formatToolLabel(name, options = {}) {
+  const raw = String(name || '').trim();
+  const overrides = options.displayLabels && typeof options.displayLabels === 'object'
+    ? options.displayLabels
+    : null;
+  if (overrides?.[raw]) return String(overrides[raw]);
   const normalized = normalizeToolId(name);
+  if (overrides?.[normalized]) return String(overrides[normalized]);
   if (!normalized) return 'Tool';
   if (TOOL_DISPLAY_LABELS[normalized]) return TOOL_DISPLAY_LABELS[normalized];
+  const mcpLabel = fallbackMcpToolLabel(raw) || fallbackMcpToolLabel(normalized);
+  if (mcpLabel) return mcpLabel;
   return normalized
     .split('_')
     .filter(Boolean)
@@ -63,9 +101,36 @@ function formatToolWithArg(label, arg, { quoted = false } = {}) {
   return `${label} (${quoted ? `"${payload}"` : payload})`;
 }
 
-export function formatToolDisplayName(name, args = {}) {
+function appendPrimaryToolArg(label, args = {}) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return label;
+  const trimInline = (value, max) => trimInlineText(value, max);
+  for (const key of ['url', 'query', 'path', 'command', 'pattern', 'name']) {
+    const value = trimInline(args[key], 96);
+    if (!value) continue;
+    const quoted = key === 'query' || key === 'pattern';
+    return formatToolWithArg(label, value, { quoted });
+  }
+  for (const value of Object.values(args)) {
+    if (typeof value !== 'string') continue;
+    const trimmed = trimInline(value, 96);
+    if (trimmed) return formatToolWithArg(label, trimmed);
+  }
+  return label;
+}
+
+export function formatToolDisplayName(name, args = {}, options = {}) {
+  const rawName = String(name || '').trim();
   const toolName = normalizeToolId(name);
   const trimInline = (value, max) => trimInlineText(value, max);
+  const overrideLabel = options?.displayLabels?.[rawName]
+    || options?.displayLabels?.[toolName]
+    || '';
+  if (overrideLabel || fallbackMcpToolLabel(rawName) || fallbackMcpToolLabel(toolName)) {
+    return appendPrimaryToolArg(
+      overrideLabel || formatToolLabel(rawName, options),
+      args,
+    );
+  }
 
   if (toolName === 'grep') {
     const query = trimInline(args?.pattern || args?.query || args?.symbol || '', 96);
@@ -165,5 +230,5 @@ export function formatToolDisplayName(name, args = {}) {
     const query = trimInline(args?.query || args?.name || '', 96);
     return query ? formatToolWithArg(formatToolLabel('tool_search'), query) : formatToolLabel('tool_search');
   }
-  return formatToolLabel(toolName);
+  return formatToolLabel(toolName, options);
 }

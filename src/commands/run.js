@@ -125,7 +125,7 @@ async function runHarness({ role, task, config, systemPrompt, model }) {
     throw new Error(`Unknown harness role: ${role}. Available: ${HARNESS_ROLES.join(', ')}`);
   }
   const workspaceRoot = process.cwd();
-  const { definitions, handlers, formatters, deferredDefinitions, dispose } = getBuiltinTools({
+  const { definitions, handlers, formatters, deferredDefinitions, displayLabels, dispose } = getBuiltinTools({
     workspaceRoot,
     config
   });
@@ -148,6 +148,7 @@ async function runHarness({ role, task, config, systemPrompt, model }) {
       toolHandlers: filtered.handlers,
       toolFormatters: formatters,
       deferredDefinitions: filtered.deferredDefinitions,
+      toolDisplayLabels: displayLabels || {},
       ...(await buildAgentLoopRuntimeOptions(config, workspaceRoot)),
       requestCompletion: makeCompletionFn(config)
     });
@@ -400,7 +401,7 @@ export async function handleRun(args) {
     return;
   }
 
-  const { definitions, handlers, formatters, deferredDefinitions, dispose } = getBuiltinTools({
+  const { definitions, handlers, formatters, deferredDefinitions, displayLabels, dispose } = getBuiltinTools({
     workspaceRoot,
     config
   });
@@ -413,6 +414,7 @@ export async function handleRun(args) {
       toolHandlers: handlers,
       toolFormatters: formatters,
       deferredDefinitions,
+      toolDisplayLabels: displayLabels || {},
       ...(await buildAgentLoopRuntimeOptions(config, workspaceRoot)),
 
       requestCompletion: makeCompletionFn(config)

@@ -3,6 +3,7 @@ import {
   upsertToolCardInSegments,
 } from "./tool-segments.js";
 import { buildHookSegmentEvent } from "./hook-ui.js";
+import { formatToolLabel as coreFormatToolLabel } from "../../src/core/tool-display.js";
 
 const USAGE_KEYS = [
   "inputTokens",
@@ -309,7 +310,7 @@ function defaultStripText(text) {
 }
 
 function defaultFormatToolLabel(name) {
-  return String(name || "tool");
+  return coreFormatToolLabel(name);
 }
 
 function isCreatePlanToolCard(card) {

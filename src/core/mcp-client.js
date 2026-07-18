@@ -2,6 +2,13 @@ import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import {
+  formatMcpToolDisplayLabel,
+  mcpToolName,
+} from './mcp-tool-display.js';
+import { setMcpToolDisplayLabels } from './tool-display.js';
+
+export { formatMcpToolDisplayLabel, mcpToolName } from './mcp-tool-display.js';
 
 const CLIENT_NAME = 'codemini-cli';
 const CLIENT_VERSION = '0.8.4';
@@ -172,18 +179,6 @@ export async function inspectMcpServer(serverInput) {
   }
 }
 
-function safeToolPart(value, fallback = 'tool') {
-  const normalized = String(value || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]+/g, '_')
-    .replace(/^_+|_+$/g, '');
-  return (normalized || fallback).slice(0, 28);
-}
-
-export function mcpToolName(server, toolName) {
-  return `mcp__${safeToolPart(server.id, 'server')}__${safeToolPart(toolName)}`.slice(0, 64);
-}
-
 function configuredServers(config = {}) {
   const servers = Array.isArray(config?.mcp?.servers) ? config.mcp.servers : [];
   return servers.map(normalizeMcpServer).filter((server) => server.enabled && server.id);
@@ -193,6 +188,7 @@ export function getMcpToolBundle(config = {}) {
   const definitions = [];
   const handlers = {};
   const formatters = {};
+  const displayLabels = {};
   const usedNames = new Set();
 
   for (const server of configuredServers(config)) {
@@ -203,6 +199,7 @@ export function getMcpToolBundle(config = {}) {
         name = `${mcpToolName(server, tool.name).slice(0, 60)}_${suffix++}`;
       }
       usedNames.add(name);
+      displayLabels[name] = formatMcpToolDisplayLabel(server, tool.name);
       definitions.push({
         type: 'function',
         function: {
@@ -238,7 +235,8 @@ export function getMcpToolBundle(config = {}) {
       };
     }
   }
-  return { definitions, handlers, formatters };
+  setMcpToolDisplayLabels(displayLabels);
+  return { definitions, handlers, formatters, displayLabels };
 }
 
 export async function closeMcpClient(serverId) {

@@ -32,6 +32,7 @@ import {
   reduceSessionEvent,
   runSessionOperation,
 } from "../lib/session-state.js";
+import { refreshMcpToolDisplayLabels } from "../lib/mcp-display-sync.js";
 import {
   ACTIVE_SESSION_STATUSES,
   activeSessionIds,
@@ -2791,6 +2792,7 @@ export function AppProvider({ children }) {
 
       await configStatusPromise;
       if (!alive) return;
+      void refreshMcpToolDisplayLabels();
 
       const runtimeSessions = await loadRuntimeSessions({ isAlive });
       if (!alive) return;

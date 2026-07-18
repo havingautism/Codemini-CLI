@@ -12,3 +12,10 @@ test('buildDefaultSystemPrompt uses workspaceRoot instead of process.cwd()', () 
     /codemini-global[\\/]+workspace/i,
   );
 });
+
+test('buildDefaultSystemPrompt tells the model to embed Markdown images', () => {
+  const prompt = buildDefaultSystemPrompt({});
+  assert.match(prompt, /This UI renders Markdown images/);
+  assert.match(prompt, /!\[description\]\(url\)/);
+  assert.match(prompt, /Never claim you cannot display images/);
+});
