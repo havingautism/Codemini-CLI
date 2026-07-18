@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   ArrowClockwise,
-  CaretDown,
-  CaretRight,
   CheckCircle,
   FloppyDisk,
   Folder,
@@ -40,6 +38,7 @@ import {
 import { cn } from '@/lib/utils';
 import * as api from '@/hooks/use-api';
 import { syncMcpToolDisplayLabels } from '@/lib/mcp-display-sync.js';
+import { applyMcpEditorPatch } from '@/lib/mcp-editor-state.js';
 import { t } from '../../i18n/index.js';
 
 function emptyServer() {
@@ -120,7 +119,7 @@ function McpServerEditorDialog({ open, server, onOpenChange, onSaved }) {
   const tools = editor.cachedTools || [];
 
   const update = (patch) => {
-    setEditor((current) => ({ ...current, ...patch }));
+    setEditor((current) => applyMcpEditorPatch(current, patch));
     setError('');
     setNotice('');
   };
@@ -368,7 +367,7 @@ function McpToolSyncDialog({ preview, selectedNames, applying, onSelectedNamesCh
 
 function McpPanel() {
   const [servers, setServers] = useState([]);
-  const [expandedServers, setExpandedServers] = useState(() => new Set());
+  const [selectedServerId, setSelectedServerId] = useState('');
   const [editorServer, setEditorServer] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -388,9 +387,11 @@ function McpPanel() {
       const next = Array.isArray(result?.servers) ? result.servers : [];
       syncMcpToolDisplayLabels(next);
       setServers(next);
-      if (preferredId) {
-        setExpandedServers((current) => new Set(current).add(preferredId));
-      }
+      setSelectedServerId((current) => {
+        if (preferredId && next.some((server) => server.id === preferredId)) return preferredId;
+        if (next.some((server) => server.id === current)) return current;
+        return next[0]?.id || '';
+      });
     } catch (err) {
       setError(err?.message || t('mcpLoadFailed'));
     } finally {
@@ -420,15 +421,6 @@ function McpPanel() {
     await load(server.id);
     setNotice(t('mcpSaved'));
   };
-
-  const toggleExpanded = useCallback((serverId) => {
-    setExpandedServers((current) => {
-      const next = new Set(current);
-      if (next.has(serverId)) next.delete(serverId);
-      else next.add(serverId);
-      return next;
-    });
-  }, []);
 
   const saveServerPatch = async (server, patch) => {
     const previous = servers;
@@ -500,111 +492,132 @@ function McpPanel() {
     }
   };
 
+  const selectedServer = servers.find((server) => server.id === selectedServerId) || null;
+  const selectedTools = selectedServer?.cachedTools || [];
+  const selectedEnabledTools = selectedTools.filter((tool) => tool.enabled !== false).length;
+
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-start justify-between gap-3 border-b border-(--border-default) px-4 py-3 sm:px-6">
-        <div>
-          <div className="text-[13px] font-medium text-(--text-primary)">{t('mcpServers')}</div>
-          <p className="text-[11px] leading-4 text-(--text-muted)">{t('mcpServersHint')}</p>
-        </div>
-        <div className="flex gap-2">
-          <Button variant="ghost" size="icon-sm" onClick={() => load()} disabled={loading || saving} title={t('refresh')}>
-            <ArrowClockwise className={cn(loading && 'animate-spin')} />
-          </Button>
-          <Button size="sm" onClick={() => setEditorServer(emptyServer())} disabled={saving}>
-            <Plus />{t('mcpAddServer')}
-          </Button>
-        </div>
-      </div>
+      <div className="grid h-full min-h-0 grid-cols-1 grid-rows-[minmax(220px,42%)_minmax(0,1fr)] lg:grid-cols-[360px_minmax(0,1fr)] lg:grid-rows-1">
+        <div className="flex min-h-0 flex-col border-b border-(--border-default) lg:border-b-0 lg:border-r">
+          <div className="flex shrink-0 items-start justify-between gap-3 border-b border-(--border-default) px-4 py-3">
+            <div className="min-w-0">
+              <div className="text-[13px] font-medium text-(--text-primary)">{t('mcpServers')}</div>
+              <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-(--text-muted)">{t('mcpServersHint')}</p>
+            </div>
+            <div className="flex shrink-0 items-center gap-1.5">
+              <Button variant="ghost" size="icon-sm" onClick={() => load()} disabled={loading || saving} title={t('refresh')}>
+                <ArrowClockwise className={cn(loading && 'animate-spin')} />
+              </Button>
+              <Button size="sm" onClick={() => setEditorServer(emptyServer())} disabled={saving}>
+                <Plus />{t('mcpAddServer')}
+              </Button>
+            </div>
+          </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6">
-        <div className="mx-auto grid max-w-4xl gap-3">
-          {error ? <Alert variant="destructive"><WarningCircle /><AlertDescription>{error}</AlertDescription></Alert> : null}
-          {notice ? <Alert><CheckCircle /><AlertDescription>{notice}</AlertDescription></Alert> : null}
-          {loading ? (
-            <Empty className="py-16"><EmptyDescription>{t('loading')}...</EmptyDescription></Empty>
-          ) : servers.length === 0 ? (
-            <Empty className="rounded-xl border border-dashed border-(--border-default) py-16">
-              <PlugsConnected size={28} className="text-(--text-muted)" />
-              <EmptyDescription>{t('mcpNoServers')}</EmptyDescription>
-              <Button size="sm" variant="outline" onClick={() => setEditorServer(emptyServer())}><Plus />{t('mcpAddServer')}</Button>
-            </Empty>
-          ) : servers.map((server) => {
-            const collapsed = !expandedServers.has(server.id);
-            const tools = server.cachedTools || [];
-            const enabledTools = tools.filter((tool) => tool.enabled !== false).length;
-            return (
-              <div key={server.id} className="overflow-hidden rounded-xl border border-(--border-default) bg-(--bg-subtle)/20">
-                <div className="flex min-h-14 items-center gap-2 px-3 py-2">
+          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-3 [scrollbar-gutter:stable]">
+            <div className="grid min-w-0 gap-2">
+              {error ? <Alert variant="destructive"><WarningCircle /><AlertDescription>{error}</AlertDescription></Alert> : null}
+              {notice ? <Alert><CheckCircle /><AlertDescription>{notice}</AlertDescription></Alert> : null}
+              {loading ? (
+                <Empty className="py-12"><EmptyDescription>{t('loading')}...</EmptyDescription></Empty>
+              ) : servers.length === 0 ? (
+                <Empty className="rounded-xl border border-dashed border-(--border-default) py-12">
+                  <PlugsConnected size={28} className="text-(--text-muted)" />
+                  <EmptyDescription>{t('mcpNoServers')}</EmptyDescription>
+                  <Button size="sm" variant="outline" onClick={() => setEditorServer(emptyServer())}><Plus />{t('mcpAddServer')}</Button>
+                </Empty>
+              ) : servers.map((server) => {
+                const tools = server.cachedTools || [];
+                const enabledTools = tools.filter((tool) => tool.enabled !== false).length;
+                const selected = server.id === selectedServerId;
+                return (
                   <button
+                    key={server.id}
                     type="button"
-                    onClick={() => toggleExpanded(server.id)}
-                    className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1.5 text-left hover:bg-(--bg-hover)"
-                    aria-expanded={!collapsed}
+                    onClick={() => setSelectedServerId(server.id)}
+                    className={cn(
+                      'flex w-full min-w-0 max-w-full items-start gap-3 rounded-lg border border-transparent px-3 py-3 text-left outline-none transition-[background-color,border-color,box-shadow] focus-visible:shadow-[0_0_0_3px_var(--control-focus-ring)]',
+                      selected ? 'bg-(--bg-active)' : 'hover:bg-(--bg-hover)',
+                      !server.enabled && 'text-(--text-muted)',
+                    )}
+                    aria-pressed={selected}
                     title={serverSubtitle(server)}
                   >
-                    <Folder size={15} className="shrink-0 text-(--text-muted)" />
+                    <span className={cn('mt-1.5 size-2 shrink-0 rounded-full', server.enabled ? 'bg-emerald-500 shadow-[0_0_0_2px_rgba(16,185,129,0.14)]' : 'bg-(--border-default)')} aria-hidden />
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center gap-2">
-                        <span className="truncate text-[13px] font-medium">{server.name}</span>
-                        <Badge variant="outline" className="h-4 px-1.5 text-[10px]">{server.transport === 'http' ? t('mcpHttp') : t('mcpStdio')}</Badge>
+                        <span className="truncate text-[13px] font-semibold text-(--text-primary)">{server.name}</span>
+                        <Badge variant="outline" className="h-5 shrink-0 rounded-md px-1.5 text-[10px]">{server.transport === 'http' ? t('mcpHttp') : t('mcpStdio')}</Badge>
                       </span>
-                      <span className="mt-0.5 block truncate font-mono text-[10px] text-(--text-muted)">{serverSubtitle(server)}</span>
+                      <span className="mt-1 block truncate font-mono text-[10px] text-(--text-muted)">{serverSubtitle(server)}</span>
+                      <span className="mt-1.5 block text-[11px] text-(--text-muted)">{t('mcpEnabledToolCount').replace('{{enabled}}', String(enabledTools)).replace('{{count}}', String(tools.length))}</span>
                     </span>
-                    <span className="shrink-0 text-[11px] text-(--text-muted)">{t('mcpEnabledToolCount').replace('{{enabled}}', String(enabledTools)).replace('{{count}}', String(tools.length))}</span>
-                    {collapsed ? <CaretRight size={13} /> : <CaretDown size={13} />}
                   </button>
-                  <div className="flex shrink-0 items-center gap-1" onClick={(event) => event.stopPropagation()}>
-                    <Switch
-                      checked={server.enabled}
-                      aria-label={`${server.name} ${t('enabled')}`}
-                      onCheckedChange={(enabled) => saveServerPatch(server, { enabled })}
-                      disabled={saving}
-                    />
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      onClick={() => previewToolUpdate(server)}
-                      title={t('mcpUpdateTools')}
-                      disabled={!!syncingServerId || saving}
-                    >
-                      <ArrowClockwise size={14} className={cn(syncingServerId === server.id && 'animate-spin')} />
-                    </Button>
-                    <Button variant="ghost" size="icon-sm" onClick={() => setEditorServer(server)} title={t('edit')}><PencilSimple size={14} /></Button>
-                    <Button variant="ghost" size="icon-sm" className="text-(--accent-red)" onClick={() => setPendingDelete({ id: server.id, name: server.name })} title={t('delete')} disabled={saving}><Trash size={14} /></Button>
-                  </div>
-                </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
 
-                {!collapsed ? (
-                  <div className="border-t border-(--border-default) bg-(--material-elevated) px-3 py-3">
-                    {tools.length ? (
-                      <div className="grid gap-1.5 sm:grid-cols-2">
-                        {tools.map((tool) => (
-                          <div key={tool.name} className="flex min-w-0 items-start gap-3 rounded-lg px-3 py-2.5 hover:bg-(--bg-hover)">
-                            <div className="min-w-0 flex-1">
-                              <div className="truncate font-mono text-[12px] font-medium">{tool.name}</div>
-                              <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-(--text-muted)">{tool.description || t('mcpNoDescription')}</p>
-                            </div>
-                            <Switch
-                              checked={tool.enabled !== false}
-                              aria-label={tool.name}
-                              onCheckedChange={(enabled) => toggleTool(server, tool.name, enabled)}
-                              disabled={!server.enabled || saving}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="flex items-center justify-between gap-3 rounded-lg px-3 py-4 text-[12px] text-(--text-muted)">
-                        <span>{t('mcpTestToDiscover')}</span>
-                        <Button variant="outline" size="sm" onClick={() => setEditorServer(server)}>{t('mcpTestConnection')}</Button>
-                      </div>
-                    )}
+        <div className="flex min-h-0 flex-col bg-(--bg-primary)">
+          {selectedServer ? (
+            <>
+              <div className="flex shrink-0 items-start gap-4 border-b border-(--border-default) px-5 py-4">
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-(--bg-subtle) text-(--text-secondary)">
+                  <Folder size={17} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="truncate text-[17px] font-semibold leading-6 text-(--text-primary)">{selectedServer.name}</h3>
+                    <Badge variant="secondary" className="h-6 rounded-md px-2 text-[11px]">{selectedServer.transport === 'http' ? t('mcpHttp') : t('mcpStdio')}</Badge>
                   </div>
-                ) : null}
+                  <p className="mt-1 truncate font-mono text-[11px] leading-5 text-(--text-muted)" title={serverSubtitle(selectedServer)}>{serverSubtitle(selectedServer)}</p>
+                  <p className="mt-1 text-[11px] text-(--text-muted)">{t('mcpEnabledToolCount').replace('{{enabled}}', String(selectedEnabledTools)).replace('{{count}}', String(selectedTools.length))}</p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <Button variant="outline" onClick={() => previewToolUpdate(selectedServer)} disabled={!!syncingServerId || saving}>
+                    <ArrowClockwise size={14} className={cn(syncingServerId === selectedServer.id && 'animate-spin')} />
+                    {t('mcpUpdateTools')}
+                  </Button>
+                  <Button variant="outline" onClick={() => setEditorServer(selectedServer)}><PencilSimple size={14} />{t('edit')}</Button>
+                  <Button variant="ghost" size="icon-sm" className="text-(--accent-red) hover:bg-(--accent-red-bg) hover:text-(--accent-red)" onClick={() => setPendingDelete({ id: selectedServer.id, name: selectedServer.name })} title={t('delete')} disabled={saving}><Trash size={15} /></Button>
+                  <Switch checked={selectedServer.enabled} aria-label={`${selectedServer.name} ${t('enabled')}`} onCheckedChange={(enabled) => saveServerPatch(selectedServer, { enabled })} disabled={saving} />
+                </div>
               </div>
-            );
-          })}
+
+              <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 [scrollbar-gutter:stable]">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-[13px] font-medium text-(--text-primary)">{t('mcpDiscoveredTools')}</div>
+                    <p className="mt-0.5 text-[11px] leading-4 text-(--text-muted)">{t('mcpDefaultToolsHint')}</p>
+                  </div>
+                  <Badge variant="secondary">{selectedTools.length}</Badge>
+                </div>
+                {selectedTools.length ? (
+                  <div className="grid gap-2 xl:grid-cols-2">
+                    {selectedTools.map((tool) => (
+                      <div key={tool.name} className="flex min-w-0 items-start gap-3 rounded-xl border border-(--border-default) bg-(--bg-subtle)/30 px-3 py-3 transition-colors hover:bg-(--bg-hover)">
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-mono text-[12px] font-medium">{tool.name}</div>
+                          <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-(--text-muted)">{tool.description || t('mcpNoDescription')}</p>
+                        </div>
+                        <Switch checked={tool.enabled !== false} aria-label={tool.name} onCheckedChange={(enabled) => toggleTool(selectedServer, tool.name, enabled)} disabled={!selectedServer.enabled || saving} />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <Empty className="rounded-xl border border-dashed border-(--border-default) py-14">
+                    <PlugsConnected size={26} className="text-(--text-muted)" />
+                    <EmptyDescription>{t('mcpTestToDiscover')}</EmptyDescription>
+                    <Button variant="outline" size="sm" onClick={() => setEditorServer(selectedServer)}>{t('mcpTestConnection')}</Button>
+                  </Empty>
+                )}
+              </div>
+            </>
+          ) : (
+            <Empty className="h-full"><PlugsConnected size={28} className="text-(--text-muted)" /><EmptyDescription>{t('mcpSelectServer')}</EmptyDescription></Empty>
+          )}
         </div>
       </div>
 

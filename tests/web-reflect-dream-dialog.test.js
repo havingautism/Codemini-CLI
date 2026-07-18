@@ -10,6 +10,7 @@ const app = source('codemini-web/client/src/App.jsx');
 const context = source('codemini-web/client/src/context/app-context.jsx');
 const inputBar = source('codemini-web/client/src/components/InputBar.jsx');
 const reflectDialog = source('codemini-web/client/src/components/ReflectApprovalDialog.jsx');
+const chatRuntime = source('src/core/chat-runtime.js');
 const dreamDialog = source('codemini-web/client/src/components/DreamDialog.jsx');
 const activities = source('codemini-web/client/src/components/RuntimeActivityStrip.jsx');
 const messages = source('codemini-web/client/src/components/MessageBubble.jsx');
@@ -23,6 +24,15 @@ test('reflect and dream actions open dedicated result dialogs', () => {
   assert.match(reflectDialog, /reflectNoCandidateTitle/);
   assert.match(dreamDialog, /dreamStepScreen/);
   assert.match(dreamDialog, /dreamCompleteTitle/);
+});
+
+test('reflect output selects global/coding/daily index context and persists it on approval', () => {
+  assert.match(reflectDialog, /SelectItem value="global"/);
+  assert.match(reflectDialog, /SelectItem value="coding"/);
+  assert.match(reflectDialog, /SelectItem value="daily"/);
+  assert.match(reflectDialog, /onUpdate\?\.\(\{ \.\.\.draft, context \}\)/);
+  assert.match(chatRuntime, /nextConfig\.skills\.contexts\[written\.draft\.name\]/);
+  assert.match(chatRuntime, /reflectContext === 'global'[\s\S]*?\['coding', 'daily'\]/);
 });
 
 test('action palette closes before an action starts', () => {

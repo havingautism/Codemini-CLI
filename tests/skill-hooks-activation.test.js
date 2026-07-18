@@ -12,6 +12,7 @@ import {
 import { buildAlwaysSkillPromptBlock } from '../src/core/chat-runtime.js';
 import { composeSelectedSkills } from '../src/core/chat-message.js';
 import { getBuiltinTools } from '../src/core/tools.js';
+import { getSkillsDir } from '../src/core/paths.js';
 
 async function withTempCwd(fn) {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-skill-activation-cwd-'));
@@ -28,8 +29,8 @@ async function withTempCwd(fn) {
   }
 }
 
-async function writeProjectSkill(cwd, name, { catalogEntry = {}, frontmatter = '' } = {}) {
-  const skillsDir = path.join(cwd, '.codemini', 'skills');
+async function writeGlobalSkill(name, { catalogEntry = {}, frontmatter = '' } = {}) {
+  const skillsDir = getSkillsDir();
   const skillDir = path.join(skillsDir, name);
   await fs.mkdir(skillDir, { recursive: true });
   await fs.writeFile(
@@ -47,18 +48,20 @@ async function writeProjectSkill(cwd, name, { catalogEntry = {}, frontmatter = '
   await fs.writeFile(catalogPath, JSON.stringify(catalog, null, 2), 'utf8');
 }
 
-test('skill index omits manual skills but includes agent-requested and always skills', () => {
+test('skill index includes only agent-requested skills', () => {
   const manualSkill = { metadata: { type: 'skill', mode: 'manual' } };
   const alwaysSkill = { metadata: { type: 'skill', mode: 'always' } };
+  const agentRequestedSkill = { metadata: { type: 'skill', mode: 'agent_requested' } };
   const notASkill = { metadata: { type: 'command', mode: 'manual' } };
   assert.equal(isSkillIndexEligible(manualSkill), false);
-  assert.equal(isSkillIndexEligible(alwaysSkill), true);
+  assert.equal(isSkillIndexEligible(alwaysSkill), false);
+  assert.equal(isSkillIndexEligible(agentRequestedSkill), true);
   assert.equal(isSkillIndexEligible(notASkill), false);
 });
 
 test('buildSkillIndexPreview returns raw debug JSON including frontmatter triggers', async () => {
   await withTempCwd(async (cwd) => {
-    await writeProjectSkill(cwd, 'with-triggers', {
+    await writeGlobalSkill('with-triggers', {
       catalogEntry: { mode: 'agent_requested' },
       frontmatter: 'triggers: [review since X, code review]\n',
     });
@@ -80,13 +83,23 @@ test('buildSkillIndexPreview returns raw debug JSON including frontmatter trigge
 
 test('buildSkillIndexPreview global bucket lists skills bound to both contexts', async () => {
   await withTempCwd(async (cwd) => {
-    await writeProjectSkill(cwd, 'everywhere', {
+    await writeGlobalSkill('everywhere', {
       catalogEntry: { mode: 'agent_requested' },
+    });
+    await writeGlobalSkill('always-full-body', {
+      catalogEntry: { mode: 'always' },
+    });
+    await writeGlobalSkill('manual-only', {
+      catalogEntry: { mode: 'manual' },
     });
     const preview = await buildSkillIndexPreview(cwd, {
       skills: {
         enabled: { everywhere: true },
-        contexts: { everywhere: ['coding', 'daily'] },
+        contexts: {
+          everywhere: ['coding', 'daily'],
+          'always-full-body': ['coding', 'daily'],
+          'manual-only': ['coding', 'daily'],
+        },
       },
     });
     assert.equal(preview.global.count, 1);
@@ -97,6 +110,8 @@ test('buildSkillIndexPreview global bucket lists skills bound to both contexts',
     // Runtime indexes still include them.
     assert.match(preview.coding.executionPrompt, /everywhere/);
     assert.match(preview.daily.executionPrompt, /everywhere/);
+    assert.doesNotMatch(preview.coding.executionPrompt, /always-full-body|manual-only/);
+    assert.doesNotMatch(preview.daily.executionPrompt, /always-full-body|manual-only/);
   });
 });
 
@@ -160,8 +175,8 @@ test('composeExplicitSkillPrompt is not gated by disableModelInvocation', () => 
 
 test('skill tool blocks loading a skill by name when disableModelInvocation is true, but still lists it', async () => {
   await withTempCwd(async (cwd) => {
-    await writeProjectSkill(cwd, 'locked-skill', { catalogEntry: { disableModelInvocation: true } });
-    await writeProjectSkill(cwd, 'open-skill', { catalogEntry: { disableModelInvocation: false } });
+    await writeGlobalSkill('locked-skill', { catalogEntry: { disableModelInvocation: true } });
+    await writeGlobalSkill('open-skill', { catalogEntry: { disableModelInvocation: false } });
 
     const config = { execution: { mode: 'plan' } };
     const { handlers } = getBuiltinTools({ workspaceRoot: cwd, config });

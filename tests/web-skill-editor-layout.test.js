@@ -22,6 +22,10 @@ const zhSource = readFileSync(
   new URL('../codemini-web/client/i18n/zh.js', import.meta.url),
   'utf8',
 );
+const serverSource = readFileSync(
+  new URL('../codemini-web/server.js', import.meta.url),
+  'utf8',
+);
 
 test('skill routing settings use a separate detail button from content edit', () => {
   assert.match(skillPanelSource, /SKILL_MODES/);
@@ -213,4 +217,14 @@ test('skill delete from coding/daily tab is context-scoped before full delete', 
   assert.match(skillPanelSource, /deleteSkillPackageDescriptionFromTab/);
   assert.match(enSource, /deleteSkillDescriptionFromTab:/);
   assert.match(zhSource, /deleteSkillDescriptionFromTab:/);
+  assert.match(skillPanelSource, /api\.deleteSkill\(skill\.name\)/);
+  assert.doesNotMatch(skillPanelSource, /skill\.projectDir/);
+  assert.doesNotMatch(serverSource, /getProjectSkillsDir/);
+  assert.match(serverSource, /fs\.rm\(path\.join\(getSkillsDir\(\), name\)/);
+});
+
+test('saving untested MCP connection changes cannot inherit old discovery', () => {
+  assert.doesNotMatch(serverSource, /previous\?\.cachedTools/);
+  assert.doesNotMatch(serverSource, /previous\?\.instructions/);
+  assert.doesNotMatch(serverSource, /previous\?\.lastConnectedAt/);
 });

@@ -405,11 +405,8 @@ function withProjectDirQuery(path, projectDir) {
   return `${path}?${params.toString()}`;
 }
 
-export async function fetchSkills(projectDirs = []) {
-  const params = new URLSearchParams();
-  appendProjectDirs(params, projectDirs);
-  const query = params.toString();
-  const res = await api(query ? `/api/skills?${query}` : '/api/skills');
+export async function fetchSkills() {
+  const res = await api('/api/skills');
   return res.json();
 }
 
@@ -418,16 +415,16 @@ export async function fetchSkillIndex(projectDir) {
   return readJsonResponse(res);
 }
 
-export async function fetchSkillContent(name, projectDir) {
-  const res = await api(withProjectDirQuery(`/api/skills/${encodeURIComponent(name)}/content`, projectDir));
+export async function fetchSkillContent(name) {
+  const res = await api(`/api/skills/${encodeURIComponent(name)}/content`);
   return readJsonResponse(res);
 }
 
-export async function createSkill({ name, description, content, scope, projectDir, contexts }) {
+export async function createSkill({ name, description, content, contexts }) {
   const res = await api('/api/skills/create', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ name, description, content, scope, projectDir, contexts })
+    body: JSON.stringify({ name, description, content, contexts })
   });
   return readJsonResponse(res);
 }
@@ -441,27 +438,26 @@ export async function previewSkillSource(source) {
   return readJsonResponse(res);
 }
 
-export async function installSkill({ source, scope, projectDir, contexts, includeHooks = false, skillNames = null }) {
+export async function installSkill({ source, contexts, includeHooks = false, skillNames = null }) {
   const res = await api('/api/skills/install', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ source, scope, projectDir, contexts, includeHooks, skillNames })
+    body: JSON.stringify({ source, contexts, includeHooks, skillNames })
   });
   return readJsonResponse(res);
 }
 
-export async function previewSkillPackageUpdate({ name, projectDir }) {
+export async function previewSkillPackageUpdate({ name }) {
   const res = await api('/api/skills/update/preview', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ name, projectDir })
+    body: JSON.stringify({ name })
   });
   return readJsonResponse(res);
 }
 
 export async function updateSkillPackage({
   name,
-  projectDir,
   skillNames = null,
   includeHooks,
   defaultContexts,
@@ -469,59 +465,55 @@ export async function updateSkillPackage({
   const res = await api('/api/skills/update', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ name, projectDir, skillNames, includeHooks, defaultContexts })
+    body: JSON.stringify({ name, skillNames, includeHooks, defaultContexts })
   });
   return readJsonResponse(res);
 }
 
-export async function updateSkillContent(name, content, projectDir) {
+export async function updateSkillContent(name, content) {
   const res = await api(`/api/skills/${encodeURIComponent(name)}/content`, {
     method: 'PUT',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ content, projectDir })
+    body: JSON.stringify({ content })
   });
   return res.json();
 }
 
-export async function updateSkillMetadata(name, metadata, projectDir) {
+export async function updateSkillMetadata(name, metadata) {
   const res = await api(`/api/skills/${encodeURIComponent(name)}/metadata`, {
     method: 'PUT',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ ...(metadata || {}), projectDir })
+    body: JSON.stringify(metadata || {})
   });
   return res.json();
 }
 
-export async function deleteSkill(name, projectDir, projectDirs = []) {
-  const params = new URLSearchParams();
-  if (projectDir) params.set('projectDir', projectDir);
-  if (projectDirs.length > 0) params.set('projects', JSON.stringify(projectDirs));
-  const query = params.toString();
-  const res = await api(`/api/skills/${encodeURIComponent(name)}${query ? `?${query}` : ''}`, {
+export async function deleteSkill(name) {
+  const res = await api(`/api/skills/${encodeURIComponent(name)}`, {
     method: 'DELETE'
   });
   return res.json();
 }
 
-export async function toggleSkill(name, enabled, projectDir) {
+export async function toggleSkill(name, enabled) {
   const res = await api(`/api/skills/${encodeURIComponent(name)}/toggle`, {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ enabled, projectDir })
+    body: JSON.stringify({ enabled })
   });
   return res.json();
 }
 
-export async function fetchSkillHooks(name, projectDir) {
-  const res = await api(withProjectDirQuery(`/api/skills/${encodeURIComponent(name)}/hooks`, projectDir));
+export async function fetchSkillHooks(name) {
+  const res = await api(`/api/skills/${encodeURIComponent(name)}/hooks`);
   return readJsonResponse(res);
 }
 
-export async function updateSkillHooks(name, hooks, projectDir) {
+export async function updateSkillHooks(name, hooks) {
   const res = await api(`/api/skills/${encodeURIComponent(name)}/hooks`, {
     method: 'PUT',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ hooks, projectDir })
+    body: JSON.stringify({ hooks })
   });
   return readJsonResponse(res);
 }

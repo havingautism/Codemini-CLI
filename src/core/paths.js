@@ -66,10 +66,6 @@ export function getProjectCommandsDir(cwd = process.cwd()) {
   return path.join(getProjectWorkspaceDir(cwd), 'commands');
 }
 
-export function getProjectSkillsDir(cwd = process.cwd()) {
-  return path.join(getProjectWorkspaceDir(cwd), 'skills');
-}
-
 export function getProjectHooksDir(cwd = process.cwd()) {
   return path.join(getProjectWorkspaceDir(cwd), 'hooks');
 }

@@ -524,7 +524,7 @@ function ActionSkillPalette({
     let cancelled = false;
     if (visible) {
       api
-        .fetchSkills(projectDirs)
+        .fetchSkills()
         .then((list) => {
           if (cancelled) return;
           setSkills(

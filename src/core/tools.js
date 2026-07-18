@@ -324,7 +324,6 @@ function normalizeSkillToolName(value) {
 
 function skillScopeFromSource(source = "") {
   if (source === "bundled-skill") return "builtin";
-  if (source === "project-skill") return "project";
   if (source === "global-skill" || source === "registry-skill") return "global";
   return source || "unknown";
 }

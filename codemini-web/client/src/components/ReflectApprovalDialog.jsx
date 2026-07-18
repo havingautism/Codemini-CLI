@@ -9,6 +9,14 @@ import {
 } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Dialog,
@@ -70,9 +78,6 @@ export function ReflectApprovalCard({
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-(--text-muted)">
             <span>
-              {t("reflectScope")}: {draft.scope || "project"}
-            </span>
-            <span>
               {t("reflectConfidence")}: {confidenceLabel(draft.confidence)}
             </span>
           </div>
@@ -80,6 +85,27 @@ export function ReflectApprovalCard({
       </div>
 
       <FieldGroup className="gap-2">
+        <Field className="flex-col items-stretch gap-1.5">
+          <FieldTitle>{t("skillContext")}</FieldTitle>
+          <FieldContent>
+            <Select
+              value={draft.context || "global"}
+              disabled={disabled}
+              onValueChange={(context) => onUpdate?.({ ...draft, context })}
+            >
+              <SelectTrigger className="h-9 w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="start">
+                <SelectGroup>
+                  <SelectItem value="global">{t("skillContextGlobal")}</SelectItem>
+                  <SelectItem value="coding">{t("skillContextCoding")}</SelectItem>
+                  <SelectItem value="daily">{t("skillContextDaily")}</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </FieldContent>
+        </Field>
         {editMode ? (
           <>
             <Field className="flex-col items-stretch gap-1.5">

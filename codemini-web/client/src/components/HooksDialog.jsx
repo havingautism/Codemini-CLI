@@ -49,7 +49,7 @@ const CUSTOM_MATCHER = '__custom__';
 const ANY_MATCHER = '__any__';
 
 function skillKey(skill) {
-  return `${skill?.scope || 'unknown'}:${skill?.projectDir || ''}:${skill?.name || ''}`;
+  return `${skill?.scope === 'builtin' ? 'builtin' : 'installed'}:${skill?.name || ''}`;
 }
 
 function scopeLabel(scope) {
@@ -451,7 +451,7 @@ function SkillHooksListItem({ skill, selected, hookCount, onSelect }) {
   );
 }
 
-function SkillHooksPane({ projectDirs = [], onDirtyChange }) {
+function SkillHooksPane({ onDirtyChange }) {
   const [skills, setSkills] = useState([]);
   const [hookCounts, setHookCounts] = useState({});
   const [selectedKey, setSelectedKey] = useState('');
@@ -468,17 +468,6 @@ function SkillHooksPane({ projectDirs = [], onDirtyChange }) {
   const [metadataDirty, setMetadataDirty] = useState(false);
   const [provenance, setProvenance] = useState('');
 
-  const projectKey = useMemo(
-    () =>
-      Array.isArray(projectDirs)
-        ? projectDirs.map((item) => String(item || '').trim()).filter(Boolean).join('\n')
-        : '',
-    [projectDirs],
-  );
-  const requestProjectDirs = useMemo(
-    () => (projectKey ? projectKey.split('\n') : []),
-    [projectKey],
-  );
 
   const editableSkills = useMemo(
     () => skills.filter((skill) => skill?.scope !== 'builtin'),
@@ -503,7 +492,7 @@ function SkillHooksPane({ projectDirs = [], onDirtyChange }) {
     setListLoading(true);
     setError('');
     try {
-      const list = await api.fetchSkills(requestProjectDirs);
+      const list = await api.fetchSkills();
       const next = Array.isArray(list) ? list : [];
       setSkills(next);
       const editable = next.filter((skill) => skill?.scope !== 'builtin');
@@ -526,7 +515,7 @@ function SkillHooksPane({ projectDirs = [], onDirtyChange }) {
     } finally {
       setListLoading(false);
     }
-  }, [requestProjectDirs]);
+  }, []);
 
   useEffect(() => {
     loadSkills();
@@ -545,7 +534,7 @@ function SkillHooksPane({ projectDirs = [], onDirtyChange }) {
     setError('');
     setNotice('');
     api
-      .fetchSkillHooks(selectedSkill.name, selectedSkill.projectDir)
+      .fetchSkillHooks(selectedSkill.name)
       .then((data) => {
         if (cancelled) return;
         const nextState = hooksObjectToState(data?.hooks || {});
@@ -582,19 +571,16 @@ function SkillHooksPane({ projectDirs = [], onDirtyChange }) {
       const hookData = await api.updateSkillHooks(
         selectedSkill.name,
         hooksStateToObject(hooksState),
-        selectedSkill.projectDir,
       );
       try {
         await api.updateSkillMetadata(
           selectedSkill.name,
           { disableModelInvocation },
-          selectedSkill.projectDir,
         );
       } catch (metadataError) {
         await api.updateSkillHooks(
           selectedSkill.name,
           originalHooks,
-          selectedSkill.projectDir,
         ).catch(() => null);
         throw metadataError;
       }

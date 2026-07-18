@@ -18,7 +18,7 @@ Usage:
   codemini --web [--port <port>] [--project <path>] [--session <id>] [--model <name>] [--no-open]
   codemini config set|get|list <key> [value]
   codemini doctor
-  codemini skill list|install|enable|disable|inspect|reindex [--scope=project|global]
+  codemini skill list|install|enable|disable|inspect|reindex
   codemini --version
   codemini --help`);
 }

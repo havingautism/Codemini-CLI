@@ -59,18 +59,8 @@ const FILTERS = ["all", "custom", "remote"];
 const SKILL_TABS = ["global", "coding", "daily"];
 const SKILL_MODES = ["always", "agent_requested", "manual"];
 
-function scopeLabel(scope) {
-  if (scope === "builtin") return t("builtin");
-  if (scope === "global") return t("globalScope");
-  return t("projectScope");
-}
-
 function skillKey(skill) {
-  return `${skill?.scope || "unknown"}:${skill?.projectDir || ""}:${skill?.name || ""}`;
-}
-
-function projectDisplayName(value) {
-  return value === "__codemini_general__" ? t("generalChat") : value;
+  return `${skill?.scope === "builtin" ? "builtin" : "installed"}:${skill?.name || ""}`;
 }
 
 function projectDirsKey(projectDirs = []) {
@@ -191,7 +181,7 @@ function SkillEditor({ skill, onSave, onValidate, defaultContext = "global" }) {
     }
     setLoading(true);
     api
-      .fetchSkillContent(skill.name, skill.projectDir)
+      .fetchSkillContent(skill.name)
       .then((contentData) => {
         setContent(contentData?.content || "");
       })
@@ -217,15 +207,14 @@ function SkillEditor({ skill, onSave, onValidate, defaultContext = "global" }) {
         name,
         description,
         content,
-        scope: "global",
         contexts: metadata.contexts,
       });
-      await api.updateSkillMetadata(name, metadata, undefined);
+      await api.updateSkillMetadata(name, metadata);
     } else {
       if (!contentReadOnly) {
-        await api.updateSkillContent(skill.name, content, skill.projectDir);
+        await api.updateSkillContent(skill.name, content);
       }
-      await api.updateSkillMetadata(skill.name, metadata, skill.projectDir);
+      await api.updateSkillMetadata(skill.name, metadata);
     }
     onSave();
   };
@@ -445,7 +434,6 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
               : [],
           priority: Number(routePriority) || 0,
         },
-        skill.projectDir,
       );
       await onSave?.();
       onCancel?.();
@@ -558,7 +546,7 @@ function SkillDetailPane({
     if (!skill) return;
     setLoading(true);
     api
-      .fetchSkillContent(skill.name, skill.projectDir)
+      .fetchSkillContent(skill.name)
       .then((data) => {
         const next = data.content || "";
         setContent(next);
@@ -587,7 +575,7 @@ function SkillDetailPane({
     if (!skill || builtin) return;
     setSaving(true);
     try {
-      await api.updateSkillContent(skill.name, draftContent, skill.projectDir);
+      await api.updateSkillContent(skill.name, draftContent);
       setContent(draftContent);
       setModeView("view");
       await onSave?.();
@@ -605,12 +593,14 @@ function SkillDetailPane({
               <h3 className="min-w-0 truncate text-[17px] font-semibold leading-6 text-(--text-primary)">
                 {skill.name}
               </h3>
-              <Badge
-                variant={builtin ? "secondary" : "outline"}
-                className="h-6 rounded-md px-2 text-[11px]"
-              >
-                {scopeLabel(skill.scope)}
-              </Badge>
+              {builtin ? (
+                <Badge
+                  variant="secondary"
+                  className="h-6 rounded-md px-2 text-[11px]"
+                >
+                  {t("builtin")}
+                </Badge>
+              ) : null}
               <span
                 className={cn(
                   "inline-flex h-6 items-center rounded-md px-2 text-[11px] font-medium",
@@ -1356,11 +1346,11 @@ export function SkillPanel({ projectDirs = [] }) {
   const loadSkills = useCallback(async () => {
     setLoading(true);
     try {
-      const list = await api.fetchSkills(requestProjectDirs);
+      const list = await api.fetchSkills();
       setSkills(Array.isArray(list) ? list : []);
     } catch {}
     setLoading(false);
-  }, [requestProjectDirs]);
+  }, []);
 
   useEffect(() => {
     loadSkills();
@@ -1372,7 +1362,7 @@ export function SkillPanel({ projectDirs = [] }) {
       prev.map((s) => (s.name === skill.name ? { ...s, enabled } : s)),
     );
     try {
-      await api.toggleSkill(skill.name, enabled, skill.projectDir);
+      await api.toggleSkill(skill.name, enabled);
     } catch {
       // 请求失败时回滚
       setSkills((prev) =>
@@ -1383,7 +1373,7 @@ export function SkillPanel({ projectDirs = [] }) {
     }
     // 闈欓粯鍚庡彴鍒锋柊锛屼笉瑙﹀彂 loading
     try {
-      const list = await api.fetchSkills(requestProjectDirs);
+      const list = await api.fetchSkills();
       setSkills(Array.isArray(list) ? list : []);
     } catch {}
   };
@@ -1432,10 +1422,9 @@ export function SkillPanel({ projectDirs = [] }) {
           await api.updateSkillMetadata(
             skill.name,
             { contexts: remaining },
-            skill.projectDir,
           );
         } else {
-          await api.deleteSkill(skill.name, skill.projectDir, requestProjectDirs);
+          await api.deleteSkill(skill.name);
         }
       }
       setPendingDelete(null);
@@ -1493,7 +1482,6 @@ export function SkillPanel({ projectDirs = [] }) {
       if (skillSelect.mode === "update") {
         const result = await api.updateSkillPackage({
           name: skillSelect.name,
-          projectDir: skillSelect.projectDir,
           skillNames,
           includeHooks: installHooks,
           // Only used for newly added skills in the package; existing keep prior contexts.
@@ -1506,7 +1494,6 @@ export function SkillPanel({ projectDirs = [] }) {
       } else {
         const result = await api.installSkill({
           source: skillSelect.source,
-          scope: "global",
           includeHooks: installHooks,
           skillNames,
           contexts: skillSelect.contexts,
@@ -1535,7 +1522,6 @@ export function SkillPanel({ projectDirs = [] }) {
     try {
       const preview = await api.previewSkillPackageUpdate({
         name: skill.name,
-        projectDir: skill.projectDir,
       });
       if (preview?.error) {
         throw new Error(preview.message || t("updateSkillPackageFailed"));
@@ -1555,7 +1541,6 @@ export function SkillPanel({ projectDirs = [] }) {
       setSkillSelect({
         mode: "update",
         name: skill.name,
-        projectDir: skill.projectDir,
         packageName:
           preview.packageName ||
           skill.packageName ||
@@ -1584,7 +1569,7 @@ export function SkillPanel({ projectDirs = [] }) {
           disableModelInvocation: false,
         };
         if (patch.enabled !== undefined) metadata.enabled = patch.enabled;
-        await api.updateSkillMetadata(skill.name, metadata, skill.projectDir);
+        await api.updateSkillMetadata(skill.name, metadata);
       }
       setPendingBatchPackage(null);
       await loadSkills();
@@ -1613,10 +1598,7 @@ export function SkillPanel({ projectDirs = [] }) {
         String(skill.packageName || "")
           .toLowerCase()
           .includes(needle) ||
-        String(skillAuthorLabel(skill)).toLowerCase().includes(needle) ||
-        String(projectDisplayName(skill.projectName || ""))
-          .toLowerCase()
-          .includes(needle)
+        String(skillAuthorLabel(skill)).toLowerCase().includes(needle)
       );
     });
   }, [skills, query, filter, activeTab]);

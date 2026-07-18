@@ -9,7 +9,7 @@ import {
   snapshotSkillHooksDir,
   restoreSkillHooksDir
 } from '../src/commands/skill.js';
-import { getProjectSkillsDir } from '../src/core/paths.js';
+import { getSkillsDir } from '../src/core/paths.js';
 import { discoverSkillHooks } from '../src/core/skill-hooks-discover.js';
 
 const SKILL_CATALOG_FILE = 'codemini.skills.json';
@@ -31,8 +31,8 @@ async function withTempCwd(fn) {
   }
 }
 
-async function readCatalog(cwd) {
-  const catalogPath = path.join(getProjectSkillsDir(cwd), SKILL_CATALOG_FILE);
+async function readCatalog() {
+  const catalogPath = path.join(getSkillsDir(), SKILL_CATALOG_FILE);
   return JSON.parse(await fs.readFile(catalogPath, 'utf8'));
 }
 
@@ -57,7 +57,7 @@ hooks:
       'utf8'
     );
 
-    const name = await installSkill(skillDir, { scope: 'project', cwd, sourceLabel: skillDir });
+    const name = await installSkill(skillDir, { cwd, sourceLabel: skillDir });
     assert.equal(name, 'frontmatter-skill');
 
     const catalog = await readCatalog(cwd);
@@ -87,7 +87,7 @@ priority: 80
       'utf8',
     );
 
-    const name = await installSkill(skillDir, { scope: 'project', cwd, sourceLabel: skillDir });
+    const name = await installSkill(skillDir, { cwd, sourceLabel: skillDir });
     const catalog = await readCatalog(cwd);
     const entry = catalog.skills[name];
     assert.equal(entry.mode, 'always');
@@ -123,13 +123,12 @@ hooks:
     );
 
     await installSkill(skillDir, {
-      scope: 'project',
       cwd,
       sourceLabel: skillDir,
       includeHooks: false,
     });
 
-    const installedDir = path.join(getProjectSkillsDir(cwd), 'no-hooks-skill');
+    const installedDir = path.join(getSkillsDir(), 'no-hooks-skill');
     await assert.rejects(fs.access(path.join(installedDir, 'hooks', 'hooks.json')));
     await fs.access(path.join(installedDir, '.codemini-hooks-disabled'));
     const discovered = await discoverSkillHooks({ skillRoot: installedDir });
@@ -164,10 +163,10 @@ description: A bare skill with no hooks of its own.
       'utf8'
     );
 
-    const installedNames = await installSkillSource(packageRoot, { scope: 'project', cwd, includeHooks: true });
+    const installedNames = await installSkillSource(packageRoot, { cwd, includeHooks: true });
     assert.deepEqual(installedNames, ['bare-skill']);
 
-    const installedDir = path.join(getProjectSkillsDir(cwd), 'bare-skill');
+    const installedDir = path.join(getSkillsDir(), 'bare-skill');
     await assert.rejects(fs.access(path.join(installedDir, 'hooks', 'hooks.json')));
 
     const discovered = await discoverSkillHooks({ skillRoot: installedDir });
@@ -185,7 +184,7 @@ description: A bare skill with no hooks of its own.
     assert.equal(packages[0].kind, 'package');
     assert.equal(packages[0].hooks.PreToolUse[0].hooks[0].command, 'pkg.sh');
     assert.equal(packages[0].enabled, true);
-    assert.ok(packages[0].packageRoot.startsWith(path.join(cwd, '.codemini', 'hooks', 'packages')));
+    assert.ok(packages[0].packageRoot.startsWith(path.join(process.env.CODEMINI_GLOBAL_DIR, 'hooks', 'packages')));
     assert.equal(path.isAbsolute(packages[0].packageRoot), true);
     assert.equal(
       JSON.parse(await fs.readFile(path.join(packages[0].packageRoot, 'hooks', 'hooks.json'), 'utf8'))
@@ -227,9 +226,9 @@ description: Already has its own hooks.
       'utf8'
     );
 
-    await installSkillSource(packageRoot, { scope: 'project', cwd, includeHooks: true });
+    await installSkillSource(packageRoot, { cwd, includeHooks: true });
 
-    const installedHooksPath = path.join(getProjectSkillsDir(cwd), 'self-contained-skill', 'hooks', 'hooks.json');
+    const installedHooksPath = path.join(getSkillsDir(), 'self-contained-skill', 'hooks', 'hooks.json');
     const installedHooks = JSON.parse(await fs.readFile(installedHooksPath, 'utf8'));
     assert.equal(installedHooks.Stop[0].hooks[0].command, 'own.sh');
 
@@ -265,8 +264,8 @@ description: Has local hooks that the update flow should preserve.
       'utf8'
     );
 
-    await installSkill(skillDir, { scope: 'project', cwd, sourceLabel: skillDir });
-    const installedDir = path.join(getProjectSkillsDir(cwd), 'local-hooks-skill');
+    await installSkill(skillDir, { cwd, sourceLabel: skillDir });
+    const installedDir = path.join(getSkillsDir(), 'local-hooks-skill');
 
     // Simulate the preservation flow used by updateSkillPackage: snapshot the
     // locally-customized hooks/ dir before a package reinstall wipes it.
@@ -297,7 +296,7 @@ description: Has local hooks that the update flow should preserve.
       'utf8'
     );
 
-    await installSkillSource(packageRoot, { scope: 'project', cwd });
+    await installSkillSource(packageRoot, { cwd });
 
     const reinstalledHooksPath = path.join(installedDir, 'hooks', 'hooks.json');
     await assert.rejects(

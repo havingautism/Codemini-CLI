@@ -5,7 +5,7 @@ import { spawn, execFile } from 'node:child_process';
 import { copyRecursive } from '../core/fs-utils.js';
 import { loadConfig, saveConfig } from '../core/config-store.js';
 import { loadCommandsAndSkills } from '../core/command-loader.js';
-import { getProjectSkillsDir, getSkillsDir } from '../core/paths.js';
+import { getSkillsDir } from '../core/paths.js';
 import { normalizeSkillContexts, skillAppliesToExecutionMode } from '../core/skill-contexts.js';
 import {
   computeFileSha256,
@@ -23,7 +23,7 @@ import {
 const SKILL_CATALOG_FILE = 'codemini.skills.json';
 const HOOKS_DISABLED_MARKER = '.codemini-hooks-disabled';
 
-function parseScopeArgs(args = [], { defaultScope = 'project', allowAll = false } = {}) {
+function parseScopeArgs(args = [], { defaultScope = 'global', allowAll = false } = {}) {
   let scope = defaultScope;
   const rest = [];
   for (let index = 0; index < args.length; index += 1) {
@@ -32,13 +32,9 @@ function parseScopeArgs(args = [], { defaultScope = 'project', allowAll = false 
       scope = 'global';
       continue;
     }
-    if (arg === '--project') {
-      scope = 'project';
-      continue;
-    }
     if (arg === '--scope') {
       const next = String(args[index + 1] || '').toLowerCase();
-      if (['project', 'global', ...(allowAll ? ['all', 'builtin'] : [])].includes(next)) {
+      if (['global', ...(allowAll ? ['all', 'builtin'] : [])].includes(next)) {
         scope = next;
         index += 1;
         continue;
@@ -46,7 +42,7 @@ function parseScopeArgs(args = [], { defaultScope = 'project', allowAll = false 
     }
     if (arg.startsWith('--scope=')) {
       const value = arg.slice('--scope='.length).toLowerCase();
-      if (['project', 'global', ...(allowAll ? ['all', 'builtin'] : [])].includes(value)) {
+      if (['global', ...(allowAll ? ['all', 'builtin'] : [])].includes(value)) {
         scope = value;
         continue;
       }
@@ -54,10 +50,6 @@ function parseScopeArgs(args = [], { defaultScope = 'project', allowAll = false 
     rest.push(arg);
   }
   return { scope, rest };
-}
-
-function baseDirForScope(scope, cwd = process.cwd()) {
-  return scope === 'global' ? getSkillsDir() : getProjectSkillsDir(cwd);
 }
 
 function isGitLikeSource(value = '') {
@@ -192,7 +184,6 @@ async function runGitClone(source, destDir) {
 
 function scopeFromSource(source = '') {
   if (source === 'bundled-skill') return 'builtin';
-  if (source === 'project-skill') return 'project';
   if (source === 'global-skill' || source === 'registry-skill') return 'global';
   return source || 'unknown';
 }
@@ -254,7 +245,7 @@ export async function listSkillEntries({ scope = 'all', cwd = process.cwd() } = 
       hooksImported: command.metadata?.hooksImported !== false,
       contexts: config.skills?.contexts?.[command.name]
         ? normalizeSkillContexts(config.skills.contexts[command.name])
-        : ['project', 'builtin'].includes(itemScope)
+        : itemScope === 'builtin'
           ? ['coding']
           : ['coding', 'daily'],
       scope: itemScope,
@@ -519,14 +510,14 @@ async function upsertSkillCatalogEntry(baseDir, name, entry) {
   await writeSkillCatalog(baseDir, catalog);
 }
 
-async function ensureSkillContextsConfig(name, scope, contexts) {
+async function ensureSkillContextsConfig(name, contexts) {
   const config = await loadConfig();
   config.skills = config.skills || {};
   config.skills.contexts = config.skills.contexts || {};
   if (!config.skills.contexts[name]) {
     config.skills.contexts[name] = contexts !== undefined
       ? normalizeSkillContexts(contexts)
-      : (scope === 'project' ? ['coding'] : ['coding', 'daily']);
+      : ['coding', 'daily'];
     await saveConfig(config);
   }
 }
@@ -546,18 +537,16 @@ async function removeSkillCatalogEntries(baseDir, names) {
   await writeSkillCatalog(baseDir, catalog);
 }
 
-async function removeInstalledSkillEntries(baseDir, names, scope) {
+async function removeInstalledSkillEntries(baseDir, names) {
   if (names.length === 0) return;
   for (const name of names) {
     await fs.rm(path.join(baseDir, name), { recursive: true, force: true });
   }
   await removeSkillCatalogEntries(baseDir, names);
-  if (scope === 'global') {
-    const staleNames = new Set(names);
-    const registry = await readSkillRegistry();
-    registry.skills = registry.skills.filter((item) => !staleNames.has(item.name));
-    await writeSkillRegistry(undefined, registry);
-  }
+  const staleNames = new Set(names);
+  const registry = await readSkillRegistry();
+  registry.skills = registry.skills.filter((item) => !staleNames.has(item.name));
+  await writeSkillRegistry(undefined, registry);
 }
 
 async function resolveSkillSourceDir(sourcePath) {
@@ -810,23 +799,17 @@ export async function previewSkillSource(source, { cwd = process.cwd() } = {}) {
 export async function previewSkillPackageUpdate({
   name = '',
   packageSource = '',
-  scope = '',
   cwd = process.cwd(),
 } = {}) {
   const entries = await listSkillEntries({ scope: 'all', cwd });
   let skill = null;
   let source = String(packageSource || '').trim();
-  let targetScope = String(scope || '').trim();
 
   if (name) {
     skill = entries.find((item) => item.name === name);
     if (!skill) throw new Error(`skill not found: ${name}`);
     if (skill.scope === 'builtin') throw new Error(`cannot update builtin skill: ${name}`);
     source = getSkillPackageUpdateSource(skill);
-    targetScope = skill.scope;
-  }
-  if (!['global', 'project'].includes(targetScope)) {
-    throw new Error('skill package update requires scope=project|global');
   }
   if (!packageSourceKey(source)) {
     throw new Error(`skill package source is not updatable: ${source || '(empty)'}`);
@@ -835,13 +818,12 @@ export async function previewSkillPackageUpdate({
   const preview = await previewSkillSource(source, { cwd });
   const installedNames = new Set(
     entries
-      .filter((item) => item.scope === targetScope && skillBelongsToPackageUpdate(item, source))
+      .filter((item) => item.scope === 'global' && skillBelongsToPackageUpdate(item, source))
       .map((item) => item.name),
   );
 
   return {
     ...preview,
-    scope: targetScope,
     packageName: skill?.packageName || preview.packageName || '',
     skills: preview.skills.map((item) => ({
       ...item,
@@ -864,7 +846,6 @@ async function reconcileSkillHooksOnInstall(targetDir, { includeHooks = true } =
 }
 
 async function reconcilePackageHooksOnInstall(packageRoot, packageInfo, {
-  scope = 'project',
   cwd = process.cwd(),
   includeHooks = true,
 } = {}) {
@@ -896,7 +877,7 @@ async function reconcilePackageHooksOnInstall(packageRoot, packageInfo, {
   else if (existing) enabled = existing.enabled !== false;
 
   const packageInstallRoot = await persistPackageHookRoot(packageRoot, {
-    scope,
+    scope: 'global',
     cwd,
     id: existing?.id || id,
   });
@@ -904,7 +885,7 @@ async function reconcilePackageHooksOnInstall(packageRoot, packageInfo, {
   return savePackageHookProfile({
     id: existing?.id || id,
     name: packageName || existing?.name || id,
-    scope: scope === 'global' ? 'global' : 'project',
+    scope: 'global',
     activation: existing?.activation || 'always',
     enabled,
     packageSource: packageSource || existing?.packageSource || '',
@@ -930,7 +911,6 @@ export async function restoreSkillHooksDir(skillDir, snapshotDir) {
 }
 
 export async function installSkill(sourcePath, {
-  scope = 'project',
   cwd = process.cwd(),
   sourceLabel = sourcePath,
   packageInfo = null,
@@ -947,7 +927,8 @@ export async function installSkill(sourcePath, {
   if (bundled) {
     throw new Error(`cannot install over builtin skill: ${folderName}`);
   }
-  const targetDir = path.join(baseDirForScope(scope, cwd), folderName);
+  const baseDir = getSkillsDir();
+  const targetDir = path.join(baseDir, folderName);
   await fs.rm(targetDir, { recursive: true, force: true });
   await copyRecursive(resolved.dir, targetDir);
 
@@ -979,25 +960,21 @@ export async function installSkill(sourcePath, {
     hooksProvenance: discoveredHooks.provenance,
     hooksImported: includeHooks !== false,
   };
-  if (scope === 'global') {
-    await upsertSkillRegistryEntry(undefined, {
-      name: folderName,
-      version,
-      description,
-      enabled: true,
-      source: sourceLabel,
-      packageSource: packageMetadata.packageSource || sourceLabel,
-      packageName: packageMetadata.packageName || '',
-      entryFile,
-      sha256: hash,
-      installedAt: packageMetadata.installedAt || new Date().toISOString()
-    });
-    await upsertSkillCatalogEntry(baseDirForScope(scope, cwd), folderName, catalogEntry);
-  } else {
-    await upsertSkillCatalogEntry(baseDirForScope(scope, cwd), folderName, catalogEntry);
-  }
+  await upsertSkillRegistryEntry(undefined, {
+    name: folderName,
+    version,
+    description,
+    enabled: true,
+    source: sourceLabel,
+    packageSource: packageMetadata.packageSource || sourceLabel,
+    packageName: packageMetadata.packageName || '',
+    entryFile,
+    sha256: hash,
+    installedAt: packageMetadata.installedAt || new Date().toISOString()
+  });
+  await upsertSkillCatalogEntry(baseDir, folderName, catalogEntry);
   await setSkillEnabledConfig(folderName, true);
-  await ensureSkillContextsConfig(folderName, scope, contexts);
+  await ensureSkillContextsConfig(folderName, contexts);
 
   if (resolved.cleanupDir) {
     await fs.rm(resolved.cleanupDir, { recursive: true, force: true });
@@ -1007,7 +984,6 @@ export async function installSkill(sourcePath, {
 }
 
 async function installSkillDirs(skillDirs, {
-  scope,
   cwd,
   sourceLabel,
   packageInfo,
@@ -1022,7 +998,6 @@ async function installSkillDirs(skillDirs, {
   for (const dir of selectedDirs) {
     try {
       installed.push(await installSkill(dir, {
-        scope,
         cwd,
         sourceLabel,
         packageInfo,
@@ -1043,7 +1018,6 @@ async function installSkillDirs(skillDirs, {
   }
   if (packageRoot && installed.length > 0) {
     await reconcilePackageHooksOnInstall(packageRoot, packageInfo, {
-      scope,
       cwd,
       includeHooks,
     });
@@ -1052,7 +1026,6 @@ async function installSkillDirs(skillDirs, {
 }
 
 export async function installSkillSource(source, {
-  scope = 'project',
   cwd = process.cwd(),
   includeHooks = false,
   skillNames = null,
@@ -1075,7 +1048,6 @@ export async function installSkillSource(source, {
         }
       }
       return [await installSkill(skillDirs[0], {
-        scope,
         cwd,
         sourceLabel,
         packageInfo,
@@ -1085,7 +1057,6 @@ export async function installSkillSource(source, {
       })];
     }
     return installSkillDirs(skillDirs, {
-      scope,
       cwd,
       sourceLabel,
       packageInfo,
@@ -1100,7 +1071,6 @@ export async function installSkillSource(source, {
 export async function updateSkillPackage({
   name = '',
   packageSource = '',
-  scope = '',
   cwd = process.cwd(),
   resetHooks = false,
   includeHooks,
@@ -1110,7 +1080,6 @@ export async function updateSkillPackage({
   const entries = await listSkillEntries({ scope: 'all', cwd });
   let skill = null;
   let source = String(packageSource || '').trim();
-  let targetScope = String(scope || '').trim();
 
   if (name) {
     skill = entries.find((item) => item.name === name);
@@ -1121,18 +1090,13 @@ export async function updateSkillPackage({
       throw new Error(`cannot update builtin skill: ${name}`);
     }
     source = getSkillPackageUpdateSource(skill);
-    targetScope = skill.scope;
-  }
-
-  if (!['global', 'project'].includes(targetScope)) {
-    throw new Error('skill package update requires scope=project|global');
   }
   if (!packageSourceKey(source)) {
     throw new Error(`skill package source is not updatable: ${source || '(empty)'}`);
   }
 
-  const baseDir = baseDirForScope(targetScope, cwd);
-  const scopedEntries = await listSkillEntries({ scope: targetScope, cwd });
+  const baseDir = getSkillsDir();
+  const scopedEntries = await listSkillEntries({ scope: 'global', cwd });
   const before = scopedEntries.filter((item) => skillBelongsToPackageUpdate(item, source));
   const config = await loadConfig();
   const preferences = getSkillRoutingPreferences(before, config.skills);
@@ -1146,7 +1110,7 @@ export async function updateSkillPackage({
     : (
       preferences.get(skill?.name)?.contexts
       || [...preferences.values()].find((item) => Array.isArray(item.contexts) && item.contexts.length)?.contexts
-      || (targetScope === 'project' ? ['coding'] : ['coding'])
+      || ['coding', 'daily']
     );
 
   const preserveHooks = resetHooks !== true;
@@ -1161,7 +1125,6 @@ export async function updateSkillPackage({
 
   try {
     const installed = await installSkillSource(source, {
-      scope: targetScope,
       cwd,
       includeHooks: resolvedIncludeHooks,
       skillNames: selectedNames ? [...selectedNames] : null,
@@ -1171,7 +1134,7 @@ export async function updateSkillPackage({
     // explicit selection. Partial selection leaves unchecked locals untouched.
     if (!selectedNames) {
       const stale = getStaleSkillPackageNames(before, installed);
-      await removeInstalledSkillEntries(baseDir, stale, targetScope);
+      await removeInstalledSkillEntries(baseDir, stale);
     }
 
     for (const skillName of installed) {
@@ -1215,12 +1178,10 @@ export async function updateSkillPackage({
         } else {
           await setSkillContextsConfig(skillName, fallbackContexts);
         }
-        if (targetScope === 'global') {
-          await upsertSkillRegistryEntry(undefined, {
-            name: skillName,
-            enabled: prior.enabled,
-          });
-        }
+        await upsertSkillRegistryEntry(undefined, {
+          name: skillName,
+          enabled: prior.enabled,
+        });
       } else {
         await setSkillContextsConfig(skillName, fallbackContexts);
       }
@@ -1230,7 +1191,6 @@ export async function updateSkillPackage({
       installed,
       packageSource: source,
       packageName: skill?.packageName || before[0]?.packageName || '',
-      scope: targetScope,
       previouslyInstalled: before.map((item) => item.name),
       removed: selectedNames ? [] : getStaleSkillPackageNames(before, installed),
     };
@@ -1259,8 +1219,8 @@ async function setEnabled(name, enabled, { cwd = process.cwd() } = {}) {
   }
 }
 
-async function reindexSkills({ scope = 'global', cwd = process.cwd() } = {}) {
-  const baseDir = baseDirForScope(scope, cwd);
+async function reindexSkills() {
+  const baseDir = getSkillsDir();
   await fs.mkdir(baseDir, { recursive: true });
   const entries = await fs.readdir(baseDir, { withFileTypes: true });
   const registry = await readSkillRegistry();
@@ -1311,28 +1271,24 @@ async function reindexSkills({ scope = 'global', cwd = process.cwd() } = {}) {
       triggers: Array.isArray(catalog.skills[item.name]?.triggers) ? catalog.skills[item.name].triggers : []
     };
   }
-  if (scope === 'global') {
-    await writeSkillRegistry(undefined, {
-      version: 1,
-      skills: rebuilt
-    });
-    await writeSkillCatalog(baseDir, catalog);
-  } else if (scope === 'project') {
-    await writeSkillCatalog(baseDir, catalog);
-  }
+  await writeSkillRegistry(undefined, {
+    version: 1,
+    skills: rebuilt
+  });
+  await writeSkillCatalog(baseDir, catalog);
 
   return rebuilt.length;
 }
 
 function usage() {
   console.log(`Usage:
-  codemini skill list [--scope=all|project|global|builtin]
-  codemini skill install [--scope=project|global] [--no-hooks] <path>
+  codemini skill list [--scope=all|global|builtin]
+  codemini skill install [--no-hooks] <path>
   codemini skill update <name>
   codemini skill enable <name>
   codemini skill disable <name>
-  codemini skill inspect [--scope=all|project|global|builtin] <name>
-  codemini skill reindex [--scope=project|global]`);
+  codemini skill inspect [--scope=all|global|builtin] <name>
+  codemini skill reindex`);
 }
 
 export async function handleSkill(args) {
@@ -1358,14 +1314,13 @@ export async function handleSkill(args) {
 
   if (sub === 'install') {
     const includeHooks = !rest.includes('--no-hooks');
-    const installArgs = rest.filter((arg) => arg !== '--no-hooks');
-    const { scope, rest: positional } = parseScopeArgs(installArgs, { defaultScope: 'project' });
+    const positional = rest.filter((arg) => arg !== '--no-hooks');
     const sourcePath = positional.join(' ').trim();
     if (!sourcePath) {
       throw new Error('skill install requires <path>');
     }
-    const installedNames = await installSkillSource(sourcePath, { scope, includeHooks });
-    console.log(`Installed skill${installedNames.length === 1 ? '' : 's'}: ${installedNames.join(', ')} (${scope})`);
+    const installedNames = await installSkillSource(sourcePath, { includeHooks });
+    console.log(`Installed skill${installedNames.length === 1 ? '' : 's'}: ${installedNames.join(', ')}`);
     return;
   }
 
@@ -1376,7 +1331,7 @@ export async function handleSkill(args) {
     }
     const result = await updateSkillPackage({ name, cwd: process.cwd() });
     console.log(
-      `Updated skill package${result.packageName ? ` ${result.packageName}` : ''}: ${result.installed.join(', ')} (${result.scope})`
+      `Updated skill package${result.packageName ? ` ${result.packageName}` : ''}: ${result.installed.join(', ')}`
     );
     return;
   }
@@ -1418,9 +1373,8 @@ export async function handleSkill(args) {
   }
 
   if (sub === 'reindex') {
-    const { scope } = parseScopeArgs(rest, { defaultScope: 'global' });
-    const count = await reindexSkills({ scope });
-    console.log(`Reindexed skills: ${count} (${scope})`);
+    const count = await reindexSkills();
+    console.log(`Reindexed skills: ${count}`);
     return;
   }
 

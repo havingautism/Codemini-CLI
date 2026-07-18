@@ -7,7 +7,7 @@ import {
   installSkillSource,
   previewSkillSource,
 } from '../src/commands/skill.js';
-import { getProjectSkillsDir } from '../src/core/paths.js';
+import { getSkillsDir } from '../src/core/paths.js';
 
 async function withTempCwd(fn) {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-skill-select-cwd-'));
@@ -60,7 +60,7 @@ test('previewSkillSource lists package skills without installing', async () => {
       preview.skills.map((skill) => skill.name).sort(),
       ['alpha-skill', 'beta-skill'],
     );
-    await assert.rejects(fs.access(path.join(getProjectSkillsDir(cwd), 'alpha-skill')));
+    await assert.rejects(fs.access(path.join(getSkillsDir(), 'alpha-skill')));
   });
 });
 
@@ -68,14 +68,13 @@ test('installSkillSource can install a subset of package skills', async () => {
   await withTempCwd(async ({ cwd, fixtures }) => {
     const packageRoot = await writePackage(fixtures);
     const installed = await installSkillSource(packageRoot, {
-      scope: 'project',
       cwd,
       includeHooks: false,
       skillNames: ['beta-skill'],
     });
     assert.deepEqual(installed, ['beta-skill']);
-    await fs.access(path.join(getProjectSkillsDir(cwd), 'beta-skill', 'SKILL.md'));
-    await assert.rejects(fs.access(path.join(getProjectSkillsDir(cwd), 'alpha-skill')));
+    await fs.access(path.join(getSkillsDir(), 'beta-skill', 'SKILL.md'));
+    await assert.rejects(fs.access(path.join(getSkillsDir(), 'alpha-skill')));
   });
 });
 
@@ -101,7 +100,7 @@ description: Hooked skill
       'utf8',
     );
 
-    await installSkillSource(packageRoot, { scope: 'project', cwd });
+    await installSkillSource(packageRoot, { cwd });
     const { listPackageHookProfiles } = await import('../src/core/hook-profiles.js');
     const packages = await listPackageHookProfiles(cwd);
     assert.equal(packages.length, 1);

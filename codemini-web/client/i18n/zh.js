@@ -671,10 +671,10 @@ export const zh = {
   previewSkillIndexHint:
     "开发者调试视图：按 全局 / 编码 / 日常 导出可索引技能的原始 JSON。全局绑定会同时进入编码与日常执行索引；面板列表里三个 tab 互斥不重叠。",
   skillIndexEmpty:
-    "没有可索引技能。需要已启用、模式为 agent_requested/always、且上下文匹配 Coding 或 Daily 的技能；manual 技能不会进入索引。",
+    "没有可索引技能。只有已启用、模式为 agent_requested、且上下文匹配编码或日常的技能会进入索引；always 和 manual 都不会进入索引。",
   skillIndexEmptyForContext: "该上下文下没有可索引技能。",
   skillIndexEmptyGlobal:
-    "全局索引为空。只有适用场景为「全局」（同时绑定编码+日常）的技能会出现在这里。「始终」只是加载模式，不会自动进全局。",
+    "全局索引为空。只有模式为 agent_requested 且适用场景为「全局」（同时绑定编码+日常）的技能会出现在这里。",
   skillIndexEmptyCoding:
     "编码索引为空。这里只列出编码-only 技能；全局绑定的技能请看「全局」tab。",
   skillIndexEmptyDaily:

@@ -3,7 +3,6 @@ import path from 'node:path';
 import {
   getCommandsDir,
   getProjectCommandsDir,
-  getProjectSkillsDir,
   getSkillsDir
 } from './paths.js';
 import { readSkillRegistry } from './skill-registry.js';
@@ -108,7 +107,7 @@ function normalizeSkillMode(value) {
 function resolveSkillIndexMode(metadata = {}, source = '') {
   const mode = normalizeSkillMode(metadata.mode);
   if (mode === 'manual' || mode === 'always' || mode === 'agent_requested') return mode;
-  if (source === 'registry-skill' || source === 'global-skill' || source === 'project-skill') {
+  if (source === 'registry-skill' || source === 'global-skill') {
     return 'agent_requested';
   }
   return mode || 'agent_requested';
@@ -116,7 +115,7 @@ function resolveSkillIndexMode(metadata = {}, source = '') {
 
 export function isSkillIndexEligible(command) {
   if (command?.metadata?.type !== 'skill') return false;
-  return resolveSkillIndexMode(command.metadata, command.source) !== 'manual';
+  return resolveSkillIndexMode(command.metadata, command.source) === 'agent_requested';
 }
 
 export function isUserInvocableSkill(command) {
@@ -402,12 +401,9 @@ function substituteVariables(text, args = []) {
 export async function loadCommandsAndSkills(cwd = process.cwd()) {
   const commands = new Map();
 
-  applySkillCatalogPatches(getProjectSkillsDir(cwd), commands);
   loadMarkdownCommandsFromDir(getCommandsDir(), 'global', commands);
   loadMarkdownCommandsFromDir(getProjectCommandsDir(cwd), 'project', commands);
   loadLegacySkillsFromDir(getSkillsDir(), 'global', commands);
-  loadLegacySkillsFromDir(getProjectSkillsDir(cwd), 'project', commands);
-  applySkillCatalogPatches(getProjectSkillsDir(cwd), commands);
   const registry = await readSkillRegistry();
   loadInstalledSkillsFromRegistry(getSkillsDir(), registry, commands);
 
@@ -417,7 +413,6 @@ export async function loadCommandsAndSkills(cwd = process.cwd()) {
 export async function loadIndexedSkills(cwd = process.cwd()) {
   const commands = new Map();
 
-  loadIndexedSkillsFromCatalog(getProjectSkillsDir(cwd), 'project-skill', commands);
   loadIndexedSkillsFromCatalog(getSkillsDir(), 'global-skill', commands);
 
   const registry = await readSkillRegistry();
@@ -433,7 +428,6 @@ export async function loadIndexedSkills(cwd = process.cwd()) {
 
 function skillScopeLabel(source = '') {
   if (source === 'bundled-skill') return 'builtin';
-  if (source === 'project-skill') return 'project';
   if (source === 'global-skill' || source === 'registry-skill') return 'global';
   return source || 'unknown';
 }
@@ -454,7 +448,7 @@ function skillIndexConfiguredContexts(config = {}, command) {
   const stored = config?.skills?.contexts?.[command?.name];
   if (stored !== undefined) return normalizeSkillContexts(stored);
   const source = String(command?.source || '');
-  if (source.startsWith('bundled') || source.startsWith('project')) return ['coding'];
+  if (source.startsWith('bundled')) return ['coding'];
   return ['coding', 'daily'];
 }
 
@@ -495,7 +489,7 @@ function formatSkillIndexPromptBlock(entries = []) {
   if (!lines.length) return '';
   return [
     '# Indexed skills',
-    'Agent-requested and always skills installed by the user or project (manual slash-only skills are omitted). Load full instructions with skill({name:"<name>"}). Search with skill({query:"..."}).',
+    'Agent-requested skills installed by the user are listed here. Always skills are injected in full and manual skills require explicit invocation, so neither appears in this index. Load full instructions with skill({name:"<name>"}). Search with skill({query:"..."}).',
     ...lines
   ].join('\n');
 }

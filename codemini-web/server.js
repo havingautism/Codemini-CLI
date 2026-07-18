@@ -39,7 +39,7 @@ import {
 import { runDreamConsolidation } from '../src/core/dream-consolidate.js';
 import { getReplyLanguage } from '../src/core/reply-language.js';
 import { normalizeSkillContexts } from '../src/core/skill-contexts.js';
-import { getBaseConfigDir, getFileIndexPath, getProjectSkillsDir, getProjectSpecsDir, getSkillsDir } from '../src/core/paths.js';
+import { getBaseConfigDir, getFileIndexPath, getProjectSpecsDir, getSkillsDir } from '../src/core/paths.js';
 import { initializeProjectIndex } from '../src/core/project-index.js';
 import { INDEX_SKIP_DIRS } from '../src/core/constants.js';
 import { VERSION } from '../src/core/version.js';
@@ -77,12 +77,7 @@ const GENERAL_PROJECT_DIR = (() => {
 
 const SKILL_CATALOG_FILE = 'codemini.skills.json';
 const SKILL_MODES = new Set(['always', 'agent_requested', 'manual']);
-const SKILL_SCOPES = new Set(['project', 'global']);
 const MEMORY_SCOPES = new Set(['user', 'global', 'project']);
-
-function normalizeSkillScope(scope) {
-  return SKILL_SCOPES.has(scope) ? scope : 'project';
-}
 
 function normalizeMemoryScope(scope) {
   const value = String(scope || '').trim().toLowerCase();
@@ -91,10 +86,6 @@ function normalizeMemoryScope(scope) {
 
 function isSafeSkillName(name = '') {
   return /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name);
-}
-
-function skillBaseDirForScope(scope, projectDir) {
-  return scope === 'global' ? getSkillsDir() : getProjectSkillsDir(projectDir);
 }
 
 export function normalizeSkillMetadataPatch(input = {}) {
@@ -220,10 +211,6 @@ function metadataPatchFromSkillMarkdown(raw = '') {
   return normalizeSkillMetadataPatch(parsed.metadata || {});
 }
 
-async function readProjectSkillCatalog(projectDir) {
-  return readSkillCatalogFromDir(getProjectSkillsDir(projectDir));
-}
-
 async function readSkillCatalogFromDir(skillBaseDir) {
   const catalogPath = path.join(skillBaseDir, SKILL_CATALOG_FILE);
   try {
@@ -234,10 +221,6 @@ async function readSkillCatalogFromDir(skillBaseDir) {
   }
 }
 
-async function writeProjectSkillCatalog(projectDir, catalog) {
-  return writeSkillCatalogToDir(getProjectSkillsDir(projectDir), catalog);
-}
-
 async function writeSkillCatalogToDir(skillBaseDir, catalog) {
   const catalogPath = path.join(skillBaseDir, SKILL_CATALOG_FILE);
   await fs.mkdir(path.dirname(catalogPath), { recursive: true });
@@ -246,10 +229,6 @@ async function writeSkillCatalogToDir(skillBaseDir, catalog) {
     skills: catalog?.skills && typeof catalog.skills === 'object' ? catalog.skills : {}
   };
   await fs.writeFile(catalogPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-}
-
-async function upsertProjectSkillMetadata(projectDir, name, patch) {
-  return upsertSkillCatalogMetadata(getProjectSkillsDir(projectDir), name, patch);
 }
 
 async function upsertSkillCatalogMetadata(skillBaseDir, name, patch) {
@@ -1770,34 +1749,12 @@ async function enrichSkillWithHookMetadata(entry) {
 }
 
 async function listSkillsForProjectDirs(projectDirs, fallbackDir) {
-  const dirs = projectDirs.length > 0 ? projectDirs : [fallbackDir];
-  const seen = new Set();
-  const results = [];
-  for (let index = 0; index < dirs.length; index += 1) {
-    const projectDir = dirs[index];
-    const entries = await listSkillEntries({ scope: 'all', cwd: projectDir });
-    for (const entry of entries) {
-      if (entry.scope !== 'project') {
-        const globalKey = `${entry.scope}:${entry.name}:${entry.path || ''}`;
-        if (seen.has(globalKey)) continue;
-        seen.add(globalKey);
-        results.push(entry);
-        continue;
-      }
-      const projectKey = `project:${projectDir}:${entry.name}:${entry.path || ''}`;
-      if (seen.has(projectKey)) continue;
-      seen.add(projectKey);
-      results.push({
-        ...entry,
-        projectDir,
-        projectName: projectNameForDir(projectDir)
-      });
-    }
-  }
-  const enriched = await Promise.all(results.map(enrichSkillWithHookMetadata));
+  void projectDirs;
+  const entries = await listSkillEntries({ scope: 'all', cwd: fallbackDir });
+  const enriched = await Promise.all(entries.map(enrichSkillWithHookMetadata));
   return enriched.sort((a, b) => {
-    const left = `${a.scope}:${a.projectName || ''}:${a.name}`;
-    const right = `${b.scope}:${b.projectName || ''}:${b.name}`;
+    const left = `${a.scope}:${a.name}`;
+    const right = `${b.scope}:${b.name}`;
     return left.localeCompare(right);
   });
 }
@@ -2830,13 +2787,7 @@ async function main() {
           jsonResponse(res, { error: true, message: `MCP server id already exists: ${server.id}` }, 409);
           return;
         }
-        const previous = servers.find((item) => String(item?.id || '').trim() === originalId);
-        const nextServer = {
-          ...server,
-          cachedTools: server.cachedTools.length ? server.cachedTools : (previous?.cachedTools || []),
-          instructions: server.instructions || previous?.instructions || '',
-          lastConnectedAt: server.lastConnectedAt || previous?.lastConnectedAt || '',
-        };
+        const nextServer = server;
         config.mcp.servers = [
           ...servers.filter((item) => String(item?.id || '').trim() !== originalId),
           nextServer,
@@ -2978,8 +2929,7 @@ async function main() {
     // ── Skills management ──
     if (req.method === 'GET' && url.pathname === '/api/skills') {
       try {
-        const projectDirs = await parseProjectDirsParam(url, currentProjectDir);
-        const skills = await listSkillsForProjectDirs(projectDirs, currentProjectDir);
+        const skills = await listSkillsForProjectDirs([], currentProjectDir);
         jsonResponse(res, skills);
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
@@ -3004,25 +2954,20 @@ async function main() {
     if (req.method === 'GET' && url.pathname.startsWith('/api/skills/') && url.pathname.endsWith('/content')) {
       const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length, -'/content'.length));
       try {
-        const targetProjectDir = await resolveRequestProjectDir(url.searchParams.get('projectDir'), currentProjectDir);
-        const entries = await listSkillEntries({ scope: 'all', cwd: targetProjectDir });
+        const entries = await listSkillEntries({ scope: 'all', cwd: currentProjectDir });
         const skill = entries.find(s => s.name === name);
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
         const content = await fs.readFile(skill.path, 'utf8');
-        jsonResponse(res, { name: skill.name, content, scope: skill.scope });
+        jsonResponse(res, { name: skill.name, content });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/skills/create') {
-      const { name, description, content, scope: rawScope, projectDir, contexts } = await readBody(req);
+      const { name, description, content, contexts } = await readBody(req);
       if (!name || !content) { jsonResponse(res, { error: true, message: 'Missing name or content' }, 400); return; }
       if (!isSafeSkillName(name)) { jsonResponse(res, { error: true, message: 'Invalid skill name' }, 400); return; }
       try {
-        const scope = normalizeSkillScope(rawScope);
-        const targetProjectDir = scope === 'project'
-          ? await resolveRequestProjectDir(projectDir, currentProjectDir)
-          : currentProjectDir;
-        const skillBaseDir = skillBaseDirForScope(scope, targetProjectDir);
+        const skillBaseDir = getSkillsDir();
         const skillDir = path.join(skillBaseDir, name);
         await fs.mkdir(skillDir, { recursive: true });
         const skillFile = path.join(skillDir, 'SKILL.md');
@@ -3035,21 +2980,17 @@ async function main() {
           enabled: markdownMeta.enabled !== false,
           ...(markdownMeta.priority !== undefined ? { priority: markdownMeta.priority } : { priority: 50 }),
         };
-        if (scope === 'global') {
-          await upsertSkillRegistryEntry(undefined, {
-            name,
-            version: '0.0.0',
-            description: catalogSeed.description,
-            enabled: catalogSeed.enabled,
-            source: 'web-create',
-            entryFile: 'SKILL.md',
-            sha256: await computeFileSha256(skillFile),
-            installedAt: new Date().toISOString()
-          });
-          await upsertSkillCatalogMetadata(getSkillsDir(), name, catalogSeed);
-        } else {
-          await upsertProjectSkillMetadata(targetProjectDir, name, catalogSeed);
-        }
+        await upsertSkillRegistryEntry(undefined, {
+          name,
+          version: '0.0.0',
+          description: catalogSeed.description,
+          enabled: catalogSeed.enabled,
+          source: 'web-create',
+          entryFile: 'SKILL.md',
+          sha256: await computeFileSha256(skillFile),
+          installedAt: new Date().toISOString()
+        });
+        await upsertSkillCatalogMetadata(getSkillsDir(), name, catalogSeed);
         const config = await loadConfig();
         config.skills = config.skills || {};
         config.skills.enabled = config.skills.enabled || {};
@@ -3057,11 +2998,11 @@ async function main() {
         config.skills.enabled[name] = true;
         config.skills.contexts[name] = contexts !== undefined
           ? normalizeSkillContexts(contexts)
-          : scope === 'project' ? ['coding'] : ['coding', 'daily'];
+          : ['coding', 'daily'];
         await saveConfig(config);
         await bridge.reloadConfig();
         await bridge.reloadCommandsAndSkills();
-        jsonResponse(res, { ok: true, name, scope, projectDir: scope === 'project' ? targetProjectDir : '' });
+        jsonResponse(res, { ok: true, name });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
     }
@@ -3077,21 +3018,14 @@ async function main() {
     if (req.method === 'POST' && url.pathname === '/api/skills/install') {
       const {
         source,
-        scope: rawScope,
-        projectDir,
         contexts,
         includeHooks = false,
         skillNames = null,
       } = await readBody(req);
       if (!source) { jsonResponse(res, { error: true, message: 'Missing source' }, 400); return; }
       try {
-        const scope = normalizeSkillScope(rawScope);
-        const targetProjectDir = scope === 'project'
-          ? await resolveRequestProjectDir(projectDir, currentProjectDir)
-          : currentProjectDir;
         const installed = await installSkillSource(source, {
-          scope,
-          cwd: targetProjectDir,
+          cwd: currentProjectDir,
           includeHooks: includeHooks === true,
           skillNames: Array.isArray(skillNames) ? skillNames : null,
           contexts: contexts !== undefined ? normalizeSkillContexts(contexts) : undefined,
@@ -3106,7 +3040,7 @@ async function main() {
         }
         await bridge.reloadConfig();
         await bridge.reloadCommandsAndSkills();
-        jsonResponse(res, { ok: true, installed, scope, projectDir: scope === 'project' ? targetProjectDir : '' });
+        jsonResponse(res, { ok: true, installed });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
     }
@@ -3140,37 +3074,30 @@ async function main() {
           previouslyInstalled: result.previouslyInstalled,
           packageSource: result.packageSource,
           packageName: result.packageName,
-          scope: result.scope,
-          projectDir: result.scope === 'project' ? targetProjectDir : '',
         });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
     }
     if (req.method === 'PUT' && url.pathname.startsWith('/api/skills/') && url.pathname.endsWith('/content')) {
       const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length, -'/content'.length));
-      const { content, projectDir } = await readBody(req);
+      const { content } = await readBody(req);
       if (!content) { jsonResponse(res, { error: true, message: 'Missing content' }, 400); return; }
       try {
-        const targetProjectDir = await resolveRequestProjectDir(projectDir, currentProjectDir);
-        const entries = await listSkillEntries({ scope: 'all', cwd: targetProjectDir });
+        const entries = await listSkillEntries({ scope: 'all', cwd: currentProjectDir });
         const skill = entries.find(s => s.name === name);
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
         if (skill.scope === 'builtin') { jsonResponse(res, { error: true, message: 'Cannot edit builtin skill' }, 403); return; }
         await fs.writeFile(skill.path, content, 'utf8');
         const markdownPatch = metadataPatchFromSkillMarkdown(content);
         if (Object.keys(markdownPatch).length > 0) {
-          if (skill.scope === 'global') {
-            await upsertSkillRegistryEntry(undefined, {
-              name,
-              ...(markdownPatch.description !== undefined ? { description: markdownPatch.description } : {}),
-              ...(markdownPatch.enabled !== undefined ? { enabled: markdownPatch.enabled } : {}),
-              sha256: await computeFileSha256(skill.path)
-            });
-            await upsertSkillCatalogMetadata(getSkillsDir(), name, markdownPatch);
-          } else if (skill.scope === 'project') {
-            await upsertProjectSkillMetadata(targetProjectDir, name, markdownPatch);
-          }
-        } else if (skill.scope === 'global') {
+          await upsertSkillRegistryEntry(undefined, {
+            name,
+            ...(markdownPatch.description !== undefined ? { description: markdownPatch.description } : {}),
+            ...(markdownPatch.enabled !== undefined ? { enabled: markdownPatch.enabled } : {}),
+            sha256: await computeFileSha256(skill.path)
+          });
+          await upsertSkillCatalogMetadata(getSkillsDir(), name, markdownPatch);
+        } else {
           await upsertSkillRegistryEntry(undefined, {
             name,
             sha256: await computeFileSha256(skill.path)
@@ -3185,17 +3112,11 @@ async function main() {
     if (req.method === 'DELETE' && url.pathname.startsWith('/api/skills/')) {
       const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length));
       try {
-        const targetProjectDir = await resolveRequestProjectDir(url.searchParams.get('projectDir'), currentProjectDir);
-        const projectDirs = await parseProjectDirsParam(url, targetProjectDir);
-        const entries = await listSkillEntries({ scope: 'all', cwd: targetProjectDir });
+        const entries = await listSkillEntries({ scope: 'all', cwd: currentProjectDir });
         const skill = entries.find(s => s.name === name);
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
         if (skill.scope === 'builtin') { jsonResponse(res, { error: true, message: 'Cannot delete builtin skill' }, 403); return; }
         await fs.rm(path.join(getSkillsDir(), name), { recursive: true, force: true });
-        for (const projectDir of projectDirs) {
-          await fs.rm(path.join(getProjectSkillsDir(projectDir), name), { recursive: true, force: true });
-          await deleteSkillCatalogMetadata(getProjectSkillsDir(projectDir), name);
-        }
         const registry = await readSkillRegistry();
         registry.skills = (registry.skills || []).filter(s => s.name !== name);
         await writeSkillRegistry(undefined, registry);
@@ -3214,91 +3135,37 @@ async function main() {
       const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length, -'/metadata'.length));
       const body = await readBody(req);
       try {
-        const targetProjectDir = await resolveRequestProjectDir(body?.projectDir, currentProjectDir);
-        const requestedProjectDir = body?.targetProjectDir
-          ? await resolveRequestProjectDir(body.targetProjectDir, currentProjectDir)
-          : targetProjectDir;
-        const entries = await listSkillEntries({ scope: 'all', cwd: targetProjectDir });
+        const entries = await listSkillEntries({ scope: 'all', cwd: currentProjectDir });
         const skill = entries.find(s => s.name === name);
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
-        if (skill.scope === 'builtin' && body?.scope && body.scope !== 'builtin') {
-          jsonResponse(res, { error: true, message: 'Cannot move builtin skill' }, 403);
-          return;
-        }
         const normalizedPatch = normalizeSkillMetadataPatch(body || {});
         const contexts = normalizedPatch.contexts;
         const metadataPatch = { ...normalizedPatch };
         delete metadataPatch.contexts;
         let metadata = metadataPatch;
-        const requestedScope = body?.scope ? normalizeSkillScope(body.scope) : skill.scope;
-        let nextScope = skill.scope;
-        let nextProjectDir = targetProjectDir;
-
-        if (
-          skill.scope !== 'builtin' &&
-          (requestedScope !== skill.scope || (requestedScope === 'project' && requestedProjectDir !== targetProjectDir))
-        ) {
-          const sourceDir = path.dirname(skill.path);
-          const targetBaseDir = skillBaseDirForScope(requestedScope, requestedProjectDir);
-          const targetDir = path.join(targetBaseDir, name);
-          await fs.rm(targetDir, { recursive: true, force: true });
-          await fs.mkdir(path.dirname(targetDir), { recursive: true });
-          await fs.cp(sourceDir, targetDir, { recursive: true, force: true });
-          await fs.rm(sourceDir, { recursive: true, force: true });
-          if (requestedScope === 'global') {
-            await deleteSkillCatalogMetadata(getProjectSkillsDir(targetProjectDir), name);
-            await upsertSkillRegistryEntry(undefined, {
-              name,
-              version: skill.version || '0.0.0',
-              description: metadataPatch.description ?? skill.description ?? '',
-              enabled: metadataPatch.enabled !== undefined ? metadataPatch.enabled : skill.enabled !== false,
-              source: skill.source || 'web-move',
-              packageSource: skill.packageSource || skill.source || '',
-              packageName: skill.packageName || '',
-              entryFile: 'SKILL.md',
-              sha256: await computeFileSha256(path.join(targetDir, 'SKILL.md')),
-              installedAt: skill.installedAt || new Date().toISOString()
-            });
-          } else {
-            const registry = await readSkillRegistry();
-            registry.skills = (registry.skills || []).filter(s => s.name !== name);
-            await writeSkillRegistry(undefined, registry);
-            await deleteSkillCatalogMetadata(getSkillsDir(), name);
-            if (requestedProjectDir !== targetProjectDir) {
-              await deleteSkillCatalogMetadata(getProjectSkillsDir(targetProjectDir), name);
-            }
-          }
-          nextScope = requestedScope;
-          nextProjectDir = requestedScope === 'project' ? requestedProjectDir : targetProjectDir;
+        if (skill.scope === 'builtin' && Object.keys(metadataPatch).length > 0) {
+          jsonResponse(res, { error: true, message: 'Cannot edit builtin skill metadata' }, 403);
+          return;
         }
-
-        if (nextScope === 'global') {
+        if (skill.scope !== 'builtin') {
           await upsertSkillRegistryEntry(undefined, {
             name,
             ...(metadataPatch.description !== undefined ? { description: metadataPatch.description } : {}),
             ...(metadataPatch.enabled !== undefined ? { enabled: metadataPatch.enabled } : {})
           });
           metadata = await upsertSkillCatalogMetadata(getSkillsDir(), name, body || {});
-        } else if (nextScope === 'project') {
-          metadata = await upsertProjectSkillMetadata(nextProjectDir, name, body || {});
-        } else if (skill.scope !== 'builtin') {
-          metadata = await upsertProjectSkillMetadata(targetProjectDir, name, body || {});
-        } else {
-          metadata = await upsertProjectSkillMetadata(targetProjectDir, name, body || {});
         }
-        if (nextScope !== 'builtin' && Object.keys(metadataPatch).length > 0) {
-          const skillPath = path.join(skillBaseDirForScope(nextScope, nextProjectDir), name, 'SKILL.md');
+        if (skill.scope !== 'builtin' && Object.keys(metadataPatch).length > 0) {
+          const skillPath = path.join(getSkillsDir(), name, 'SKILL.md');
           const currentContent = await fs.readFile(skillPath, 'utf8');
           const nextContent = patchSkillMarkdownMetadata(currentContent, metadataPatch, name);
           if (nextContent !== currentContent) {
             await fs.writeFile(skillPath, nextContent, 'utf8');
           }
-          if (nextScope === 'global') {
-            await upsertSkillRegistryEntry(undefined, {
-              name,
-              sha256: await computeFileSha256(skillPath)
-            });
-          }
+          await upsertSkillRegistryEntry(undefined, {
+            name,
+            sha256: await computeFileSha256(skillPath)
+          });
         }
         if (skill.scope !== 'builtin' && body?.enabled !== undefined) {
           const config = await loadConfig();
@@ -3325,10 +3192,9 @@ async function main() {
     }
     if (req.method === 'POST' && url.pathname.startsWith('/api/skills/') && url.pathname.endsWith('/toggle')) {
       const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length, -'/toggle'.length));
-      const { enabled, projectDir } = await readBody(req);
+      const { enabled } = await readBody(req);
       try {
-        const targetProjectDir = await resolveRequestProjectDir(projectDir, currentProjectDir);
-        const entries = await listSkillEntries({ scope: 'all', cwd: targetProjectDir });
+        const entries = await listSkillEntries({ scope: 'all', cwd: currentProjectDir });
         const skill = entries.find(s => s.name === name);
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
         const config = await loadConfig();
@@ -3411,7 +3277,7 @@ async function main() {
             ? 'always'
             : skillContexts.includes('daily') ? 'daily' : 'coding';
           profiles.push({
-            id: `skill:${skill.scope}:${skill.name}:${skill.projectDir || ''}`,
+            id: `skill:${skill.scope}:${skill.name}`,
             name: skill.name,
             kind: 'skill',
             scope: skill.scope,
@@ -3420,7 +3286,6 @@ async function main() {
             editable: skill.scope !== 'builtin',
             hooks,
             skillName: skill.name,
-            projectDir: skill.projectDir || '',
             provenance: discovered.provenance || {},
           });
         }
@@ -3452,9 +3317,7 @@ async function main() {
           saved = profile;
         } else if (profile?.kind === 'skill') {
           const entries = await listSkillEntries({ scope: 'all', cwd });
-          const skill = entries.find((item) =>
-            item.name === profile.skillName &&
-            (!profile.projectDir || item.projectDir === profile.projectDir));
+          const skill = entries.find((item) => item.name === profile.skillName);
           if (!skill || skill.scope === 'builtin') throw new Error('Skill hook profile is not editable');
           await writeSkillHooksJson(path.dirname(skill.path), profile.hooks || {});
           saved = profile;
@@ -3527,8 +3390,7 @@ async function main() {
     if (req.method === 'GET' && url.pathname.startsWith('/api/skills/') && url.pathname.endsWith('/hooks')) {
       const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length, -'/hooks'.length));
       try {
-        const targetProjectDir = await resolveRequestProjectDir(url.searchParams.get('projectDir'), currentProjectDir);
-        const entries = await listSkillEntries({ scope: 'all', cwd: targetProjectDir });
+        const entries = await listSkillEntries({ scope: 'all', cwd: currentProjectDir });
         const skill = entries.find(s => s.name === name);
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
         const skillRoot = path.dirname(skill.path);
@@ -3545,10 +3407,9 @@ async function main() {
     }
     if (req.method === 'PUT' && url.pathname.startsWith('/api/skills/') && url.pathname.endsWith('/hooks')) {
       const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length, -'/hooks'.length));
-      const { hooks, projectDir } = await readBody(req);
+      const { hooks } = await readBody(req);
       try {
-        const targetProjectDir = await resolveRequestProjectDir(projectDir, currentProjectDir);
-        const entries = await listSkillEntries({ scope: 'all', cwd: targetProjectDir });
+        const entries = await listSkillEntries({ scope: 'all', cwd: currentProjectDir });
         const skill = entries.find(s => s.name === name);
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
         if (skill.scope === 'builtin') { jsonResponse(res, { error: true, message: 'Cannot edit builtin skill' }, 403); return; }

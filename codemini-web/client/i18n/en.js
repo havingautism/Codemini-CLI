@@ -700,10 +700,10 @@ export const en = {
   previewSkillIndexHint:
     "Developer debug dump: raw JSON of indexable skills for Global / Coding / Daily. Global bindings appear in both execution-mode indexes; the skills panel tabs are mutually exclusive.",
   skillIndexEmpty:
-    "No indexable skills. Index requires enabled agent_requested/always skills whose context matches Coding or Daily. Manual skills never appear here.",
+    "No indexable skills. Only enabled agent_requested skills whose context matches Coding or Daily enter the index. Always and Manual skills never appear here.",
   skillIndexEmptyForContext: "No indexable skills for this context.",
   skillIndexEmptyGlobal:
-    "Global index is empty. Only skills bound to Global (coding+daily) appear here. Always is a load mode — it does not move a skill into Global.",
+    "Global index is empty. Only agent_requested skills bound to Global (coding+daily) appear here.",
   skillIndexEmptyCoding:
     "Coding index is empty. This lists coding-only skills; global-bound skills appear under Global.",
   skillIndexEmptyDaily:

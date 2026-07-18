@@ -55,7 +55,7 @@ import {
   retrySessionTitleRequest,
   shouldReplaceSessionTitle
 } from './session-title.js';
-import { loadConfig, setConfigValue } from './config-store.js';
+import { loadConfig, saveConfig, setConfigValue } from './config-store.js';
 import { evaluateCommandPolicy } from './command-policy.js';
 import { loadInputHistory } from './input-history-store.js';
 import {
@@ -4040,7 +4040,6 @@ function buildPendingReflectSkillMessage(reflectState) {
   }
   const lines = [
     'Reflect skill draft pending.',
-    `Scope: ${reflectState?.targetScope || 'project'}`
   ];
   for (const candidate of candidates) {
     lines.push('');
@@ -4060,7 +4059,8 @@ function buildPendingReflectSkillSnapshot(reflectState) {
   const candidate = candidates[0] || null;
   if (!candidate) return null;
   return {
-    scope: reflectState?.targetScope || 'project',
+    scope: 'global',
+    context: candidate.context || reflectState?.targetContext || 'global',
     request: reflectState?.request || '',
     name: candidate.name || '',
     description: candidate.description || '',
@@ -4086,7 +4086,7 @@ function buildPendingSpecSnapshot(specState) {
 
 function updatePendingReflectState(session, patch = {}, workspaceRoot = process.cwd()) {
   if (!hasPendingReflectSkill(session)) return null;
-  const scope = session.planState.targetScope || patch.scope || 'project';
+  const scope = 'global';
   const draft = normalizeReflectDraft({
     ...(Array.isArray(session.planState.candidates) ? session.planState.candidates[0] : {}),
     ...patch
@@ -4094,6 +4094,7 @@ function updatePendingReflectState(session, patch = {}, workspaceRoot = process.
   const candidates = attachReflectTargets({ candidates: [draft], scope, workspaceRoot });
   session.planState = {
     ...session.planState,
+    targetContext: draft.context || 'global',
     candidates
   };
   return buildPendingReflectSkillSnapshot(session.planState);
@@ -7530,7 +7531,7 @@ export async function createChatRuntime({
         return { type: 'system', text: 'Spec draft revised.' };
       }
       if (name === CHAT_ACTIONS.REFLECT) {
-        const scope = payload.scope || 'project';
+        const scope = 'global';
         const request = String(payload.request || '').trim();
         const drafts = await buildReflectSkillDraft({
           request,
@@ -7546,6 +7547,7 @@ export async function createChatRuntime({
           status: 'pending_reflect_skill',
           source: 'reflect',
           targetScope: scope,
+          targetContext: 'global',
           request,
           candidates
         };
@@ -7557,10 +7559,19 @@ export async function createChatRuntime({
         const candidate = Array.isArray(state.candidates) ? state.candidates[0] : null;
         if (!candidate) throw new Error('No reflect skill draft to write');
         const written = await writeReflectSkillDraft({
-          draft: candidate,
-          scope: state.targetScope || 'project',
-          workspaceRoot: root
+          draft: candidate
         });
+        const reflectContext = ['global', 'coding', 'daily'].includes(candidate.context)
+          ? candidate.context
+          : state.targetContext || 'global';
+        const nextConfig = await loadConfig();
+        nextConfig.skills = nextConfig.skills || {};
+        nextConfig.skills.contexts = nextConfig.skills.contexts || {};
+        nextConfig.skills.contexts[written.draft.name] = reflectContext === 'global'
+          ? ['coding', 'daily']
+          : [reflectContext];
+        await saveConfig(nextConfig);
+        config = attachRuntimeState(await loadConfig());
         currentSession.planState = null;
         restoreConfiguredExecutionMode();
         await saveSession(currentSession);
@@ -7572,7 +7583,7 @@ export async function createChatRuntime({
         const previousDraft = Array.isArray(state.candidates) ? state.candidates[0] : null;
         const drafts = await buildReflectSkillDraft({
           request: state.request || '',
-          scope: state.targetScope || 'project',
+          scope: 'global',
           session: currentSession,
           config,
           model,
@@ -7583,9 +7594,10 @@ export async function createChatRuntime({
         currentSession.planState = {
           ...state,
           candidates: attachReflectTargets({
-            candidates: drafts,
-            scope: state.targetScope || 'project',
-            workspaceRoot: root
+            candidates: drafts.map((draft) => ({
+              ...draft,
+              context: previousDraft?.context || state.targetContext || 'global'
+            }))
           })
         };
         await saveSession(currentSession);

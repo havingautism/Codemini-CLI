@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { getProjectSkillsDir, getSkillsDir } from './paths.js';
+import { getSkillsDir } from './paths.js';
+import { computeFileSha256, upsertSkillRegistryEntry } from './skill-registry.js';
 import { createChatCompletion } from './provider/index.js';
 import { appendStructuredOutputLanguageRule } from './reply-language.js';
 
@@ -91,6 +92,10 @@ function hasReflectDraftSignal(raw = {}) {
   return listFields.some((field) => normalizeList(raw[field]).length > 0);
 }
 
+function normalizeReflectContext(value) {
+  return ['global', 'coding', 'daily'].includes(value) ? value : 'global';
+}
+
 export function normalizeReflectDraft(raw = {}) {
   const name = slugifySkillName(raw.name || raw.skillName || raw.title);
   const description = String(raw.description || raw.summary || `Use when the ${name} workflow applies.`).trim();
@@ -101,39 +106,35 @@ export function normalizeReflectDraft(raw = {}) {
     name,
     description,
     confidence,
+    context: normalizeReflectContext(raw.context),
     content: renderSkillContent({ name, description, content: raw.content || raw.markdown || raw.body || structuredBody })
   };
 }
 
-export function buildReflectTargetPath({ scope = 'project', name, workspaceRoot = process.cwd() } = {}) {
+export function buildReflectTargetPath({ name } = {}) {
   const safeName = slugifySkillName(name);
-  const baseDir = String(scope || '').toLowerCase() === 'global'
-    ? getSkillsDir()
-    : getProjectSkillsDir(workspaceRoot);
-  return path.join(baseDir, safeName, 'SKILL.md');
+  return path.join(getSkillsDir(), safeName, 'SKILL.md');
 }
 
 export function parseReflectScope(args = []) {
-  let scope = 'project';
   const requestParts = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = String(args[index] || '');
     if (arg === '--scope') {
       const next = String(args[index + 1] || '').toLowerCase();
       if (next === 'global' || next === 'project') {
-        scope = next;
         index += 1;
       }
       continue;
     }
     if (arg.startsWith('--scope=')) {
       const value = arg.slice('--scope='.length).toLowerCase();
-      if (value === 'global' || value === 'project') scope = value;
+      if (value === 'global' || value === 'project') continue;
       continue;
     }
     requestParts.push(arg);
   }
-  return { scope, request: requestParts.join(' ').trim() };
+  return { scope: 'global', request: requestParts.join(' ').trim() };
 }
 
 function parseJsonObject(rawValue) {
@@ -187,7 +188,7 @@ function recentContext(session, limit = 10) {
 
 export async function buildReflectSkillDraft({
   request = '',
-  scope = 'project',
+  scope = 'global',
   session,
   config = {},
   model,
@@ -266,21 +267,31 @@ export async function buildReflectSkillDraft({
   return parseToolDrafts(result?.toolCalls) ?? parseReflectModelDrafts(result?.text || '');
 }
 
-export function attachReflectTargets({ candidates = [], scope = 'project', workspaceRoot = process.cwd() } = {}) {
+export function attachReflectTargets({ candidates = [] } = {}) {
   return candidates.map((candidate, index) => {
     const draft = normalizeReflectDraft({ id: index + 1, ...candidate });
     return {
       ...draft,
-      targetPath: buildReflectTargetPath({ scope, name: draft.name, workspaceRoot })
+      targetPath: buildReflectTargetPath({ name: draft.name })
     };
   });
 }
 
-export async function writeReflectSkillDraft({ draft, scope = 'project', workspaceRoot = process.cwd() } = {}) {
+export async function writeReflectSkillDraft({ draft } = {}) {
   const normalized = normalizeReflectDraft(draft);
-  const filePath = buildReflectTargetPath({ scope, name: normalized.name, workspaceRoot });
+  const filePath = buildReflectTargetPath({ name: normalized.name });
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, normalized.content, 'utf8');
+  await upsertSkillRegistryEntry(undefined, {
+    name: normalized.name,
+    version: '0.0.0',
+    description: normalized.description,
+    enabled: true,
+    source: 'reflect',
+    entryFile: 'SKILL.md',
+    sha256: await computeFileSha256(filePath),
+    installedAt: new Date().toISOString()
+  });
   return { filePath, draft: normalized };
 }
 

@@ -39,7 +39,7 @@ export function skillPackageGroupKey(skill = {}) {
   if (!skillPackageIsUpdatable(skill)) return "";
   const sourceKey = packageSourceKey(skill.packageSource || skill.source);
   if (!sourceKey) return "";
-  return `${skill.scope || "global"}:${skill.projectDir || ""}:${sourceKey}`;
+  return sourceKey;
 }
 
 export function groupSkillsByPackage(skills = []) {
@@ -67,7 +67,6 @@ export function groupSkillsByPackage(skills = []) {
         key,
       packageSource: skill.packageSource || skill.source || "",
       scope: skill.scope,
-      projectDir: skill.projectDir || "",
       author: skillAuthorLabel(skill),
       representative: skill,
       items: [skill],
@@ -104,10 +103,8 @@ export function skillPackageIsUpdatable(skill = {}) {
 export function skillsInSamePackage(skills = [], skill = {}) {
   if (!skillPackageIsUpdatable(skill)) return [];
   const key = packageSourceKey(skill.packageSource || skill.source);
-  const projectDir = skill.projectDir || "";
   return skills.filter((item) => {
-    if (item.scope !== skill.scope) return false;
-    if ((item.projectDir || "") !== projectDir) return false;
+    if (item.scope === "builtin") return false;
     return packageSourceKey(item.packageSource || item.source) === key;
   });
 }
