@@ -32,6 +32,9 @@ test('skill routing settings use a separate detail button from content edit', ()
   assert.match(skillPanelSource, /t\("skillRoutingSettings"\)/);
   assert.match(skillPanelSource, /routeMode === "agent_requested"/);
   assert.match(skillPanelSource, /routeMode === "always"/);
+  assert.match(skillPanelSource, /routeContext/);
+  assert.match(skillPanelSource, /contexts: contextsFromTab\(routeContext\)/);
+  assert.match(skillPanelSource, /skillIndexEmptyGlobal/);
   assert.doesNotMatch(
     skillPanelSource,
     /modeView === "edit" \? \([\s\S]*?skill-detail-mode[\s\S]*?MarkdownEditor/,
@@ -48,6 +51,40 @@ test('skill content editing uses the same bottom action bar as routing', () => {
     /modeView === "routing"/,
   );
 });
+test('skill panel can open a read-only skill index preview from the list footer', () => {
+  assert.match(skillPanelSource, /previewSkillIndex/);
+  assert.match(skillPanelSource, /SkillIndexPreviewDialog/);
+  assert.match(skillPanelSource, /fetchSkillIndex/);
+  assert.match(skillPanelSource, /setIndexPreviewOpen\(true\)/);
+  assert.match(skillPanelSource, /context=\{activeTab\}/);
+  assert.match(skillPanelSource, /previewTab/);
+  // Raw <pre> dump — Streamdown link cards break owner/repo strings inside JSON.
+  assert.match(skillPanelSource, /JSON\.stringify\(payload, null, 2\)/);
+  assert.match(skillPanelSource, /<pre className="[^"]*font-mono/);
+  assert.doesNotMatch(
+    skillPanelSource,
+    /SkillIndexPreviewDialog[\s\S]*StreamdownRenderer/,
+  );
+  assert.match(enSource, /previewSkillIndex:/);
+  assert.match(zhSource, /previewSkillIndex:/);
+  assert.match(enSource, /Developer debug dump/);
+  assert.match(zhSource, /开发者调试视图/);
+});
+
+test('skill detail preview shows routing triggers separately from markdown body', () => {
+  assert.match(skillPanelSource, /t\("skillTriggers"\)/);
+  assert.match(skillPanelSource, /skill\.triggers\.map/);
+  assert.match(
+    skillPanelSource,
+    /modeView === "edit" \?[\s\S]*?<MarkdownEditor[\s\S]*?: \(\s*<div className="flex min-h-0 flex-1 flex-col gap-4/,
+  );
+  assert.match(
+    skillPanelSource,
+    /<MarkdownPreview[\s\S]*?value=\{content\}[\s\S]*?className="skill-md-preview min-h-0 flex-1"[\s\S]*?\/>/,
+  );
+  assert.doesNotMatch(skillPanelSource, /showFrontmatter/);
+});
+
 test('skill Markdown preview is tighter and has a scoped transparent surface', () => {
   assert.match(
     skillPanelSource,
@@ -55,7 +92,7 @@ test('skill Markdown preview is tighter and has a scoped transparent surface', (
   );
   assert.match(
     skillPanelSource,
-    /<MarkdownPreview[\s\S]*?value=\{content\}[\s\S]*?className="skill-md-preview flex-1"[\s\S]*?\/>/,
+    /<MarkdownPreview[\s\S]*?value=\{content\}[\s\S]*?className="skill-md-preview min-h-0 flex-1"[\s\S]*?\/>/,
   );
   assert.match(
     webStyles,
@@ -63,23 +100,41 @@ test('skill Markdown preview is tighter and has a scoped transparent surface', (
   );
 });
 
-test('the package/context browse toggle has been removed in favor of coding/daily tabs', () => {
+test('the package/context browse toggle has been removed in favor of global/coding/daily tabs', () => {
   assert.doesNotMatch(skillPanelSource, /BROWSE_MODES/);
   assert.doesNotMatch(skillPanelSource, /skillBrowse_/);
   assert.doesNotMatch(skillPanelSource, /browseMode/);
 });
 
-test('SkillPanel renders coding/daily Tabs and always folds skills by package', () => {
+test('SkillPanel renders global/coding/daily Tabs and always folds skills by package', () => {
   assert.match(
     skillPanelSource,
     /import \{ Tabs, TabsContent, TabsList, TabsTrigger \} from "@\/components\/ui\/tabs"/,
   );
   assert.match(skillPanelSource, /<Tabs\s/);
   assert.match(skillPanelSource, /<TabsTrigger key=\{tabValue\} value=\{tabValue\}>/);
-  assert.match(skillPanelSource, /SKILL_TABS = \["coding", "daily"\]/);
+  assert.match(skillPanelSource, /SKILL_TABS = \["global", "coding", "daily"\]/);
+  assert.match(skillPanelSource, /contextsFromTab/);
+  assert.match(skillPanelSource, /skillMatchesTab/);
+  assert.match(skillPanelSource, /skillTabLabel/);
+  assert.match(skillPanelSource, /skillContextGlobal/);
   assert.match(skillPanelSource, /skillContextCoding/);
   assert.match(skillPanelSource, /skillContextDaily/);
   assert.match(skillPanelSource, /groupSkillsByPackage\(filteredSkills\)/);
+  // Install / update / create must map the active tab to contexts explicitly.
+  assert.match(skillPanelSource, /contextsFromTab\(installTarget \|\| activeTab/);
+  assert.match(skillPanelSource, /contextsFromTab\(activeTab\)/);
+  assert.match(skillPanelSource, /defaultContext=\{activeTab/);
+  // Delete / update must not cascade into siblings on other context tabs.
+  assert.match(
+    skillPanelSource,
+    /skillsInSamePackage\(skills, skill\)\.filter\(\(item\) =>\s*skillMatchesTab\(item, activeTab\)/,
+  );
+  assert.match(skillPanelSource, /packagePreviewSkillsForTab/);
+  assert.match(
+    skillPanelSource,
+    /packagePreviewSkillsForTab\(rawSkills, skills, activeTab\)/,
+  );
   // The old context-grouped browse list (SkillContextGlobal/CodingMode/DailyMode
   // group headers) must no longer be rendered.
   assert.doesNotMatch(skillPanelSource, /skillContextCodingMode/);
@@ -145,4 +200,17 @@ test('sidebar and App expose a Hooks dialog entry below Skills', () => {
   assert.match(sidebarSource, /t\("hooks"\)/);
   assert.match(appSource, /HooksDialog/);
   assert.match(appSource, /setHooksOpen/);
+});
+
+test('skill delete from coding/daily tab is context-scoped before full delete', () => {
+  assert.match(skillPanelSource, /remainingContextsAfterTabRemove/);
+  assert.match(
+    skillPanelSource,
+    /remaining\.length > 0[\s\S]*?updateSkillMetadata[\s\S]*?deleteSkill/,
+  );
+  assert.match(skillPanelSource, /if \(tab === "global"\) return \[\]/);
+  assert.match(skillPanelSource, /deleteSkillDescriptionFromTab/);
+  assert.match(skillPanelSource, /deleteSkillPackageDescriptionFromTab/);
+  assert.match(enSource, /deleteSkillDescriptionFromTab:/);
+  assert.match(zhSource, /deleteSkillDescriptionFromTab:/);
 });

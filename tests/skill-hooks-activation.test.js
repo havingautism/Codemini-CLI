@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  buildSkillIndexPreview,
   composeExplicitSkillPrompt,
   isSkillIndexEligible,
   isSkillModelInvocationDisabled
@@ -53,6 +54,50 @@ test('skill index omits manual skills but includes agent-requested and always sk
   assert.equal(isSkillIndexEligible(manualSkill), false);
   assert.equal(isSkillIndexEligible(alwaysSkill), true);
   assert.equal(isSkillIndexEligible(notASkill), false);
+});
+
+test('buildSkillIndexPreview returns raw debug JSON including frontmatter triggers', async () => {
+  await withTempCwd(async (cwd) => {
+    await writeProjectSkill(cwd, 'with-triggers', {
+      catalogEntry: { mode: 'agent_requested' },
+      frontmatter: 'triggers: [review since X, code review]\n',
+    });
+    const preview = await buildSkillIndexPreview(cwd, {
+      skills: {
+        enabled: { 'with-triggers': true },
+        contexts: { 'with-triggers': ['coding'] },
+      },
+    });
+    assert.equal(preview.coding.context, 'coding');
+    assert.equal(preview.coding.count, 1);
+    assert.equal(preview.coding.skills[0].name, 'with-triggers');
+    assert.deepEqual(preview.coding.skills[0].triggers, ['review since X', 'code review']);
+    assert.match(preview.coding.prompt, /# Indexed skills/);
+    assert.equal(preview.daily.count, 0);
+    assert.equal(preview.global.count, 0);
+  });
+});
+
+test('buildSkillIndexPreview global bucket lists skills bound to both contexts', async () => {
+  await withTempCwd(async (cwd) => {
+    await writeProjectSkill(cwd, 'everywhere', {
+      catalogEntry: { mode: 'agent_requested' },
+    });
+    const preview = await buildSkillIndexPreview(cwd, {
+      skills: {
+        enabled: { everywhere: true },
+        contexts: { everywhere: ['coding', 'daily'] },
+      },
+    });
+    assert.equal(preview.global.count, 1);
+    assert.equal(preview.global.skills[0].name, 'everywhere');
+    // Panel coding/daily tabs must not list global-bound skills.
+    assert.equal(preview.coding.count, 0);
+    assert.equal(preview.daily.count, 0);
+    // Runtime indexes still include them.
+    assert.match(preview.coding.executionPrompt, /everywhere/);
+    assert.match(preview.daily.executionPrompt, /everywhere/);
+  });
 });
 
 test('isSkillModelInvocationDisabled recognizes camelCase and kebab-case, boolean and string forms', () => {

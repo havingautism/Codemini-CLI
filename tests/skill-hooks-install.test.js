@@ -69,6 +69,34 @@ hooks:
   });
 });
 
+test('installSkill writes frontmatter mode and triggers into codemini.skills.json', async () => {
+  await withTempCwd(async ({ cwd, fixtures }) => {
+    const skillDir = path.join(fixtures, 'routing-skill');
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(
+      path.join(skillDir, 'SKILL.md'),
+      `---
+name: routing-skill
+description: Routed remote skill.
+mode: always
+triggers: [deploy, release]
+priority: 80
+---
+# Routing Skill
+`,
+      'utf8',
+    );
+
+    const name = await installSkill(skillDir, { scope: 'project', cwd, sourceLabel: skillDir });
+    const catalog = await readCatalog(cwd);
+    const entry = catalog.skills[name];
+    assert.equal(entry.mode, 'always');
+    assert.deepEqual(entry.triggers, ['deploy', 'release']);
+    assert.equal(entry.priority, 80);
+    assert.equal(entry.description, 'Routed remote skill.');
+  });
+});
+
 test('installSkill can exclude bundled and frontmatter hooks', async () => {
   await withTempCwd(async ({ cwd, fixtures }) => {
     const skillDir = path.join(fixtures, 'no-hooks-skill');

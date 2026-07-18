@@ -413,6 +413,11 @@ export async function fetchSkills(projectDirs = []) {
   return res.json();
 }
 
+export async function fetchSkillIndex(projectDir) {
+  const res = await api(withProjectDirQuery('/api/skills/index', projectDir));
+  return readJsonResponse(res);
+}
+
 export async function fetchSkillContent(name, projectDir) {
   const res = await api(withProjectDirQuery(`/api/skills/${encodeURIComponent(name)}/content`, projectDir));
   return readJsonResponse(res);
@@ -454,11 +459,17 @@ export async function previewSkillPackageUpdate({ name, projectDir }) {
   return readJsonResponse(res);
 }
 
-export async function updateSkillPackage({ name, projectDir, skillNames = null, includeHooks }) {
+export async function updateSkillPackage({
+  name,
+  projectDir,
+  skillNames = null,
+  includeHooks,
+  defaultContexts,
+}) {
   const res = await api('/api/skills/update', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ name, projectDir, skillNames, includeHooks })
+    body: JSON.stringify({ name, projectDir, skillNames, includeHooks, defaultContexts })
   });
   return readJsonResponse(res);
 }

@@ -696,6 +696,19 @@ export const en = {
   deleteMemoryDescription: 'Delete memory "{{summary}}"? This cannot be undone.',
   addSkill: "Add",
   installSkill: "Install",
+  previewSkillIndex: "Preview skill index",
+  previewSkillIndexHint:
+    "Developer debug dump: raw JSON of indexable skills for Global / Coding / Daily. Global bindings appear in both execution-mode indexes; the skills panel tabs are mutually exclusive.",
+  skillIndexEmpty:
+    "No indexable skills. Index requires enabled agent_requested/always skills whose context matches Coding or Daily. Manual skills never appear here.",
+  skillIndexEmptyForContext: "No indexable skills for this context.",
+  skillIndexEmptyGlobal:
+    "Global index is empty. Only skills bound to Global (coding+daily) appear here. Always is a load mode — it does not move a skill into Global.",
+  skillIndexEmptyCoding:
+    "Coding index is empty. This lists coding-only skills; global-bound skills appear under Global.",
+  skillIndexEmptyDaily:
+    "Daily index is empty. This lists daily-only skills; global-bound skills appear under Global.",
+  skillIndexLoadFailed: "Failed to load skill index.",
   installing: "Installing...",
   updateSkillPackage: "Update package",
   updatingSkillPackage: "Updating...",
@@ -710,6 +723,8 @@ export const en = {
   deleteSkillPackageConfirm: "Delete skill package?",
   deleteSkillPackageDescription:
     'Delete package "{{package}}" and all of its skills ({{skills}})? This cannot be undone.',
+  deleteSkillPackageDescriptionFromTab:
+    'Remove package "{{package}}" and its skills ({{skills}}) from the {{context}} context? Global deletes permanently; Coding/Daily only drop that binding and keep skills still bound elsewhere.',
   skillPackageApplyAll: "Apply to all",
   skillPackageBatchEdit: "Batch settings",
   skillPackageBatchEditHint:
@@ -728,6 +743,8 @@ export const en = {
   skillContextGlobal: "Global",
   skillContextCoding: "Coding",
   skillContextDaily: "Daily",
+  skillContextHint:
+    "Global = usable in coding and daily (panel lists it under Global only). Coding/Daily = that context only. Independent of Always/On-demand load mode.",
   skillContextCodingMode: "Coding mode",
   skillContextDailyMode: "Daily mode",
   noSkills: "No skills yet",
@@ -849,7 +866,7 @@ export const en = {
   skillMode_always: "Always",
   skillMode_agent_requested: "Agent Requested",
   skillMode_manual: "Manual",
-  skillModeHint: "Always skills auto-load only in coding mode",
+  skillModeHint: "Always is a load mode (auto-inject body in coding mode), not the Global context",
   skillPriority: "Priority",
   skillTriggers: "Triggers",
   skillInstallHooks: "Include Hooks configuration",
@@ -877,6 +894,8 @@ export const en = {
   confirmDeleteSkill: 'Delete skill "{{name}}"?',
   deleteSkillConfirm: "Delete skill?",
   deleteSkillDescription: 'Permanently delete "{{name}}"? Its global copy, all known project copies, and routing configuration will be removed. This cannot be undone.',
+  deleteSkillDescriptionFromTab:
+    'Remove "{{name}}" from the {{context}} context? Global deletes permanently; Coding/Daily only drop that binding and keep the skill if it remains bound elsewhere.',
   confirmDeleteSoul: 'Delete soul "{{name}}"?',
   deleteSoulConfirm: "Delete soul?",
   deleteSoulDescription: 'Delete soul "{{name}}"? This cannot be undone.',

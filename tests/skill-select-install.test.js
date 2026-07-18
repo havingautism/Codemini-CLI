@@ -108,3 +108,39 @@ description: Hooked skill
     assert.equal(packages[0].enabled, false);
   });
 });
+
+test('installSkill respects explicit coding-only contexts for global skills', async () => {
+  await withTempCwd(async ({ cwd, fixtures }) => {
+    const { loadConfig } = await import('../src/core/config-store.js');
+    const skillDir = path.join(fixtures, 'coding-only');
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(
+      path.join(skillDir, 'SKILL.md'),
+      `---
+name: coding-only
+description: Coding only skill
+---
+# Coding only
+`,
+      'utf8',
+    );
+
+    await installSkillSource(skillDir, {
+      scope: 'global',
+      cwd,
+      contexts: ['coding'],
+    });
+    const config = await loadConfig();
+    assert.deepEqual(config.skills.contexts['coding-only'], ['coding']);
+  });
+});
+
+test('getSkillRoutingPreferences preserves stored coding-only contexts', async () => {
+  const { getSkillRoutingPreferences } = await import('../src/commands/skill.js');
+  const prefs = getSkillRoutingPreferences(
+    [{ name: 'alpha', mode: 'agent_requested', enabled: true, triggers: [] }],
+    { contexts: { alpha: ['coding'] } },
+  );
+  assert.deepEqual(prefs.get('alpha').contexts, ['coding']);
+  assert.equal(prefs.get('alpha').mode, 'agent_requested');
+});

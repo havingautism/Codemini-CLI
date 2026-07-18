@@ -7,7 +7,7 @@ import {
   getSkillsDir
 } from './paths.js';
 import { readSkillRegistry } from './skill-registry.js';
-import { skillIsEligible } from './skill-contexts.js';
+import { normalizeSkillContexts, skillIsEligible } from './skill-contexts.js';
 
 const SKILL_CATALOG_FILE = 'codemini.skills.json';
 const FRONTMATTER_READ_BYTES = 16 * 1024;
@@ -140,20 +140,23 @@ export function isSkillModelInvocationDisabled(command) {
 function catalogMetadata(catalog, name) {
   const entry = catalog?.[name];
   if (!entry || typeof entry !== 'object') return {};
+  const has = (key) => Object.prototype.hasOwnProperty.call(entry, key);
   return {
     ...(entry.description ? { description: String(entry.description) } : {}),
-    ...(entry.mode ? { mode: normalizeSkillMode(entry.mode) } : {}),
-    ...(entry.enabled !== undefined ? { enabled: entry.enabled !== false } : {}),
-    ...(entry.disableModelInvocation !== undefined
+    ...(has('mode') && entry.mode ? { mode: normalizeSkillMode(entry.mode) } : {}),
+    ...(has('enabled') ? { enabled: entry.enabled !== false } : {}),
+    ...(has('disableModelInvocation')
       ? { disableModelInvocation: normalizeBooleanFlag(entry.disableModelInvocation) }
       : {}),
-    ...(entry.hooksImported !== undefined ? { hooksImported: entry.hooksImported !== false } : {}),
-    ...(entry.priority !== undefined ? { priority: Number(entry.priority) } : {}),
+    ...(has('hooksImported') ? { hooksImported: entry.hooksImported !== false } : {}),
+    ...(has('priority') && entry.priority !== undefined ? { priority: Number(entry.priority) } : {}),
     ...(entry.source ? { source: String(entry.source) } : {}),
     ...(entry.packageSource ? { packageSource: String(entry.packageSource) } : {}),
     ...(entry.packageName ? { packageName: String(entry.packageName) } : {}),
     ...(entry.installedAt ? { installedAt: String(entry.installedAt) } : {}),
-    triggers: normalizeStringArray(entry.triggers)
+    // Only overlay triggers when the catalog explicitly stores them, so a missing
+    // key does not wipe SKILL.md frontmatter triggers with [].
+    ...(has('triggers') ? { triggers: normalizeStringArray(entry.triggers) } : {}),
   };
 }
 
@@ -439,25 +442,121 @@ function isIndexedSkillEnabledForPrompt(command, config = {}, executionMode = co
   return skillIsEligible(config?.skills, command?.name, executionMode, command);
 }
 
-export async function buildSkillIndexPromptBlock(cwd = process.cwd(), config = {}, executionMode = config?.execution?.mode) {
+function formatSkillIndexPromptLine(command) {
+  const scope = skillScopeLabel(command.source);
+  const mode = resolveSkillIndexMode(command.metadata, command.source);
+  const desc = String(command.metadata?.description || '').trim().replace(/\s+/g, ' ');
+  const label = mode === 'agent_requested' ? `${scope}|agent_requested` : scope;
+  return desc ? `- /${command.name} [${label}] - ${desc}` : `- /${command.name} [${label}]`;
+}
+
+function skillIndexConfiguredContexts(config = {}, command) {
+  const stored = config?.skills?.contexts?.[command?.name];
+  if (stored !== undefined) return normalizeSkillContexts(stored);
+  const source = String(command?.source || '');
+  if (source.startsWith('bundled') || source.startsWith('project')) return ['coding'];
+  return ['coding', 'daily'];
+}
+
+/** Debug-oriented index entries (frontmatter + runtime routing fields). */
+export async function buildSkillIndexDebugEntries(cwd = process.cwd(), config = {}, executionMode = config?.execution?.mode) {
   const indexed = await loadIndexedSkills(cwd);
-  const lines = Array.from(indexed.values())
+  return Array.from(indexed.values())
     .filter((command) => isSkillIndexEligible(command))
     .filter((command) => isIndexedSkillEnabledForPrompt(command, config, executionMode))
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((command) => {
-      const scope = skillScopeLabel(command.source);
-      const mode = resolveSkillIndexMode(command.metadata, command.source);
-      const desc = String(command.metadata?.description || '').trim().replace(/\s+/g, ' ');
-      const label = mode === 'agent_requested' ? `${scope}|agent_requested` : scope;
-      return desc ? `- /${command.name} [${label}] - ${desc}` : `- /${command.name} [${label}]`;
+      const metadata = { ...(command.metadata || {}) };
+      const mode = resolveSkillIndexMode(metadata, command.source);
+      return {
+        name: command.name,
+        source: command.source,
+        path: command.path,
+        scope: skillScopeLabel(command.source),
+        mode,
+        contexts: skillIndexConfiguredContexts(config, command),
+        enabled: config?.skills?.enabled?.[command.name] !== false,
+        disableModelInvocation: isSkillModelInvocationDisabled(command),
+        description: metadata.description || '',
+        triggers: Array.isArray(metadata.triggers) ? metadata.triggers : [],
+        metadata,
+        promptLine: formatSkillIndexPromptLine(command),
+      };
     });
+}
+
+export async function buildSkillIndexPromptBlock(cwd = process.cwd(), config = {}, executionMode = config?.execution?.mode) {
+  const entries = await buildSkillIndexDebugEntries(cwd, config, executionMode);
+  return formatSkillIndexPromptBlock(entries);
+}
+
+function formatSkillIndexPromptBlock(entries = []) {
+  const lines = entries.map((entry) => entry.promptLine);
   if (!lines.length) return '';
   return [
     '# Indexed skills',
     'Agent-requested and always skills installed by the user or project (manual slash-only skills are omitted). Load full instructions with skill({name:"<name>"}). Search with skill({query:"..."}).',
     ...lines
   ].join('\n');
+}
+
+/** Developer debug preview of the index for global / coding / daily panel tabs. */
+export async function buildSkillIndexPreview(cwd = process.cwd(), config = {}) {
+  const codingExecution = await buildSkillIndexDebugEntries(cwd, config, 'code');
+  const dailyExecution = await buildSkillIndexDebugEntries(cwd, config, 'normal');
+
+  const isGlobalBound = (entry) => {
+    const contexts = Array.isArray(entry.contexts) ? entry.contexts : [];
+    return contexts.includes('coding') && contexts.includes('daily');
+  };
+  const isCodingOnly = (entry) => {
+    const contexts = Array.isArray(entry.contexts) ? entry.contexts : [];
+    return contexts.includes('coding') && !contexts.includes('daily');
+  };
+  const isDailyOnly = (entry) => {
+    const contexts = Array.isArray(entry.contexts) ? entry.contexts : [];
+    return contexts.includes('daily') && !contexts.includes('coding');
+  };
+
+  // Panel tabs are mutually exclusive (same as SkillPanel).
+  const globalSkills = codingExecution.filter(isGlobalBound);
+  const codingOnly = codingExecution.filter(isCodingOnly);
+  const dailyOnly = dailyExecution.filter(isDailyOnly);
+
+  return {
+    global: {
+      context: 'global',
+      note: 'Panel global tab only. Runtime: still injected into both coding and daily execution indexes.',
+      count: globalSkills.length,
+      skills: globalSkills,
+      promptCoding: formatSkillIndexPromptBlock(
+        codingExecution.filter((entry) => globalSkills.some((item) => item.name === entry.name)),
+      ),
+      promptDaily: formatSkillIndexPromptBlock(
+        dailyExecution.filter((entry) => globalSkills.some((item) => item.name === entry.name)),
+      ),
+    },
+    coding: {
+      context: 'coding',
+      note: 'Panel coding tab (coding-only). Global-bound skills are excluded from this list.',
+      count: codingOnly.length,
+      skills: codingOnly,
+      prompt: formatSkillIndexPromptBlock(codingOnly),
+      executionPrompt: formatSkillIndexPromptBlock(codingExecution),
+    },
+    daily: {
+      context: 'daily',
+      note: 'Panel daily tab (daily-only). Global-bound skills are excluded from this list.',
+      count: dailyOnly.length,
+      skills: dailyOnly,
+      prompt: formatSkillIndexPromptBlock(dailyOnly),
+      executionPrompt: formatSkillIndexPromptBlock(dailyExecution),
+    },
+    empty:
+      globalSkills.length === 0 &&
+      codingOnly.length === 0 &&
+      dailyOnly.length === 0,
+  };
 }
 
 export function renderCommandPrompt(command, args) {

@@ -3,7 +3,10 @@ import MDEditor from "@uiw/react-md-editor";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
 
-function stripMarkdownMetadata(value) {
+const INLINE_META_KEY =
+  /^(name|description|version|author|license|entry|mode|triggers|priority|enabled)\s*:/i;
+
+export function splitMarkdownFrontmatter(value) {
   const text = String(value || "").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
   const lines = text.split("\n");
   let index = 0;
@@ -14,22 +17,35 @@ function stripMarkdownMetadata(value) {
     while (end < lines.length) {
       const marker = lines[end].trim();
       if (marker === "---" || marker === "...") {
-        return lines.slice(end + 1).join("\n").trim();
+        const frontmatter = lines.slice(index + 1, end).join("\n").trim();
+        const body = lines.slice(end + 1).join("\n").replace(/^\n+/, "");
+        return {
+          frontmatter: frontmatter || null,
+          body: body.trim() ? body : "",
+        };
       }
       end += 1;
     }
   }
 
   const metadataStart = index;
-  while (/^(name|description|version|author|license|entry)\s*:/i.test(lines[index]?.trim() || "")) {
+  while (INLINE_META_KEY.test(lines[index]?.trim() || "")) {
     index += 1;
   }
   if (index > metadataStart) {
+    const frontmatter = lines.slice(metadataStart, index).join("\n").trim();
     while (index < lines.length && !lines[index].trim()) index += 1;
-    return lines.slice(index).join("\n").trim();
+    return {
+      frontmatter: frontmatter || null,
+      body: lines.slice(index).join("\n"),
+    };
   }
 
-  return text.trim();
+  return { frontmatter: null, body: text };
+}
+
+function stripMarkdownMetadata(value) {
+  return splitMarkdownFrontmatter(value).body.trim();
 }
 
 function useColorMode() {

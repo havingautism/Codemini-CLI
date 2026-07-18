@@ -667,6 +667,19 @@ export const zh = {
   deleteMemoryDescription: '确定删除记忆「{{summary}}」？此操作不可撤销。',
   addSkill: "添加",
   installSkill: "安装",
+  previewSkillIndex: "预览技能索引",
+  previewSkillIndexHint:
+    "开发者调试视图：按 全局 / 编码 / 日常 导出可索引技能的原始 JSON。全局绑定会同时进入编码与日常执行索引；面板列表里三个 tab 互斥不重叠。",
+  skillIndexEmpty:
+    "没有可索引技能。需要已启用、模式为 agent_requested/always、且上下文匹配 Coding 或 Daily 的技能；manual 技能不会进入索引。",
+  skillIndexEmptyForContext: "该上下文下没有可索引技能。",
+  skillIndexEmptyGlobal:
+    "全局索引为空。只有适用场景为「全局」（同时绑定编码+日常）的技能会出现在这里。「始终」只是加载模式，不会自动进全局。",
+  skillIndexEmptyCoding:
+    "编码索引为空。这里只列出编码-only 技能；全局绑定的技能请看「全局」tab。",
+  skillIndexEmptyDaily:
+    "日常索引为空。这里只列日常-only 技能；全局绑定的技能请看「全局」tab。",
+  skillIndexLoadFailed: "加载技能索引失败。",
   installing: "安装中...",
   updateSkillPackage: "更新技能包",
   updatingSkillPackage: "更新中...",
@@ -681,6 +694,8 @@ export const zh = {
   deleteSkillPackageConfirm: "删除技能包？",
   deleteSkillPackageDescription:
     '确定删除技能包「{{package}}」及其全部技能（{{skills}}）？此操作不可撤销。',
+  deleteSkillPackageDescriptionFromTab:
+    '确定从「{{context}}」场景移除技能包「{{package}}」及其技能（{{skills}}）？全局会彻底删除；编码/日常仅去掉当前绑定，仍绑定另一场景的会保留。',
   skillPackageApplyAll: "应用到全部",
   skillPackageBatchEdit: "批量设置",
   skillPackageBatchEditHint:
@@ -699,6 +714,8 @@ export const zh = {
   skillContextGlobal: "全局",
   skillContextCoding: "编码",
   skillContextDaily: "日常",
+  skillContextHint:
+    "全局=编码和日常都能用（面板只在「全局」显示）；编码/日常=仅对应场景。与「始终/按需」加载模式无关。",
   skillContextCodingMode: "编码模式",
   skillContextDailyMode: "日常模式",
   noSkills: "暂无技能",
@@ -810,7 +827,7 @@ export const zh = {
   skillMode_always: "始终",
   skillMode_agent_requested: "Agent 请求",
   skillMode_manual: "手动",
-  skillModeHint: "“始终”只在编码模式生效",
+  skillModeHint: "“始终”是加载模式（编码模式下自动注入正文），不是「全局」适用场景",
   skillPriority: "优先级",
   skillTriggers: "触发器",
   skillInstallHooks: "同时拉取 Hooks 配置",
@@ -838,6 +855,8 @@ export const zh = {
   confirmDeleteSkill: '确定删除技能 "{{name}}"？',
   deleteSkillConfirm: "删除技能？",
   deleteSkillDescription: '确定彻底删除「{{name}}」？其全局副本、所有已知项目副本和路由配置都会被移除，此操作不可撤销。',
+  deleteSkillDescriptionFromTab:
+    '确定从「{{context}}」场景移除「{{name}}」？全局会彻底删除；编码/日常仅去掉当前绑定，若仍绑定另一场景则保留文件。',
   confirmDeleteSoul: '确定删除灵魂 "{{name}}"？',
   deleteSoulConfirm: "删除灵魂？",
   deleteSoulDescription: '确定删除灵魂「{{name}}」？此操作不可撤销。',

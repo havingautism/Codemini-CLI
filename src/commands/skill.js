@@ -146,18 +146,27 @@ export function getStaleSkillPackageNames(before = [], installed = []) {
     .filter((name) => name && !installedNames.has(name));
 }
 
-export function getSkillRoutingPreferences(entries = []) {
+export function getSkillRoutingPreferences(entries = [], skillsConfig = {}) {
+  const contextsMap = skillsConfig?.contexts && typeof skillsConfig.contexts === 'object'
+    ? skillsConfig.contexts
+    : {};
   return new Map(
-    entries.map((item) => [
-      item.name,
-      {
-        mode: item.mode || 'agent_requested',
-        triggers: Array.isArray(item.triggers) ? [...item.triggers] : [],
-        ...(item.priority !== undefined ? { priority: item.priority } : {}),
-        enabled: item.enabled !== false,
-        hooksImported: item.hooksImported !== false,
-      },
-    ])
+    entries.map((item) => {
+      const storedContexts = contextsMap[item.name];
+      return [
+        item.name,
+        {
+          mode: item.mode || 'agent_requested',
+          triggers: Array.isArray(item.triggers) ? [...item.triggers] : [],
+          ...(item.priority !== undefined ? { priority: item.priority } : {}),
+          enabled: item.enabled !== false,
+          hooksImported: item.hooksImported !== false,
+          ...(storedContexts !== undefined
+            ? { contexts: normalizeSkillContexts(storedContexts) }
+            : {}),
+        },
+      ];
+    }),
   );
 }
 
@@ -452,12 +461,30 @@ async function readSkillDocumentMeta(skillRoot, entryFile = 'SKILL.md') {
   try {
     const raw = await fs.readFile(entryPath, 'utf8');
     const parsed = parseSkillFrontmatter(raw);
+    const modeRaw = String(parsed.metadata.mode || '').trim();
+    const mode = modeRaw === 'auto_attach'
+      ? 'agent_requested'
+      : (['manual', 'always', 'agent_requested'].includes(modeRaw) ? modeRaw : '');
+    const triggers = Array.isArray(parsed.metadata.triggers)
+      ? parsed.metadata.triggers.map((item) => String(item || '').trim()).filter(Boolean)
+      : String(parsed.metadata.triggers || '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+    const priorityRaw = Number(parsed.metadata.priority);
+    const enabledRaw = parsed.metadata.enabled;
     return {
       name: normalizeSkillName(parsed.metadata.name),
       version: parsed.metadata.version ? String(parsed.metadata.version) : '',
       description: parsed.metadata.description
         ? cleanDescriptionText(parsed.metadata.description)
-        : inferDescriptionFromSkillMarkdown(parsed.content)
+        : inferDescriptionFromSkillMarkdown(parsed.content),
+      ...(mode ? { mode } : {}),
+      ...(triggers.length ? { triggers } : {}),
+      ...(Number.isFinite(priorityRaw) ? { priority: Math.max(0, Math.min(100, Math.round(priorityRaw))) } : {}),
+      ...(enabledRaw !== undefined
+        ? { enabled: !(enabledRaw === false || String(enabledRaw).trim().toLowerCase() === 'false') }
+        : {}),
     };
   } catch {
     return { name: '', version: '', description: '' };
@@ -492,14 +519,24 @@ async function upsertSkillCatalogEntry(baseDir, name, entry) {
   await writeSkillCatalog(baseDir, catalog);
 }
 
-async function ensureSkillContextsConfig(name, scope) {
+async function ensureSkillContextsConfig(name, scope, contexts) {
   const config = await loadConfig();
   config.skills = config.skills || {};
   config.skills.contexts = config.skills.contexts || {};
   if (!config.skills.contexts[name]) {
-    config.skills.contexts[name] = scope === 'project' ? ['coding'] : ['coding', 'daily'];
+    config.skills.contexts[name] = contexts !== undefined
+      ? normalizeSkillContexts(contexts)
+      : (scope === 'project' ? ['coding'] : ['coding', 'daily']);
     await saveConfig(config);
   }
+}
+
+async function setSkillContextsConfig(name, contexts) {
+  const config = await loadConfig();
+  config.skills = config.skills || {};
+  config.skills.contexts = config.skills.contexts || {};
+  config.skills.contexts[name] = normalizeSkillContexts(contexts);
+  await saveConfig(config);
 }
 
 async function removeSkillCatalogEntries(baseDir, names) {
@@ -899,6 +936,7 @@ export async function installSkill(sourcePath, {
   packageInfo = null,
   packageRoot = null,
   includeHooks = true,
+  contexts,
 } = {}) {
   const resolved = await resolveSkillSourceDir(sourcePath);
   const manifest = await readManifestSafe(resolved.dir);
@@ -929,8 +967,10 @@ export async function installSkill(sourcePath, {
   const discoveredHooks = await reconcileSkillHooksOnInstall(targetDir, { includeHooks });
   const catalogEntry = {
     description,
-    mode: 'agent_requested',
-    enabled: true,
+    mode: documentMeta.mode || 'agent_requested',
+    enabled: documentMeta.enabled !== false,
+    ...(Array.isArray(documentMeta.triggers) ? { triggers: documentMeta.triggers } : { triggers: [] }),
+    ...(documentMeta.priority !== undefined ? { priority: documentMeta.priority } : {}),
     source: sourceLabel,
     packageSource: packageMetadata.packageSource || sourceLabel,
     packageName: packageMetadata.packageName || '',
@@ -957,7 +997,7 @@ export async function installSkill(sourcePath, {
     await upsertSkillCatalogEntry(baseDirForScope(scope, cwd), folderName, catalogEntry);
   }
   await setSkillEnabledConfig(folderName, true);
-  await ensureSkillContextsConfig(folderName, scope);
+  await ensureSkillContextsConfig(folderName, scope, contexts);
 
   if (resolved.cleanupDir) {
     await fs.rm(resolved.cleanupDir, { recursive: true, force: true });
@@ -974,6 +1014,7 @@ async function installSkillDirs(skillDirs, {
   packageRoot,
   includeHooks,
   skillNames,
+  contexts,
 }) {
   const selectedDirs = await filterSkillDirsByNames(skillDirs, skillNames);
   const installed = [];
@@ -987,6 +1028,7 @@ async function installSkillDirs(skillDirs, {
         packageInfo,
         packageRoot,
         includeHooks,
+        contexts,
       }));
     } catch (err) {
       if (/cannot install over builtin skill:/i.test(err.message || '')) {
@@ -1014,6 +1056,7 @@ export async function installSkillSource(source, {
   cwd = process.cwd(),
   includeHooks = false,
   skillNames = null,
+  contexts,
 } = {}) {
   return withResolvedSkillPackage(source, async ({ packageRoot, packageInfo, skillDirs, source: sourceLabel }) => {
     // Single local skill path that resolveSkillSourceDir handled as one dir:
@@ -1038,6 +1081,7 @@ export async function installSkillSource(source, {
         packageInfo,
         packageRoot: null,
         includeHooks,
+        contexts,
       })];
     }
     return installSkillDirs(skillDirs, {
@@ -1048,6 +1092,7 @@ export async function installSkillSource(source, {
       packageRoot,
       includeHooks,
       skillNames,
+      contexts,
     });
   });
 }
@@ -1060,6 +1105,7 @@ export async function updateSkillPackage({
   resetHooks = false,
   includeHooks,
   skillNames = null,
+  defaultContexts,
 } = {}) {
   const entries = await listSkillEntries({ scope: 'all', cwd });
   let skill = null;
@@ -1088,12 +1134,20 @@ export async function updateSkillPackage({
   const baseDir = baseDirForScope(targetScope, cwd);
   const scopedEntries = await listSkillEntries({ scope: targetScope, cwd });
   const before = scopedEntries.filter((item) => skillBelongsToPackageUpdate(item, source));
-  const preferences = getSkillRoutingPreferences(before);
+  const config = await loadConfig();
+  const preferences = getSkillRoutingPreferences(before, config.skills);
   const selectedNames = normalizeSkillNameFilter(skillNames);
   // Default includeHooks: preserve prior import preference when omitted.
   const resolvedIncludeHooks = includeHooks === undefined
     ? before.some((item) => item.hooksImported !== false)
     : includeHooks === true;
+  const fallbackContexts = defaultContexts !== undefined
+    ? normalizeSkillContexts(defaultContexts)
+    : (
+      preferences.get(skill?.name)?.contexts
+      || [...preferences.values()].find((item) => Array.isArray(item.contexts) && item.contexts.length)?.contexts
+      || (targetScope === 'project' ? ['coding'] : ['coding'])
+    );
 
   const preserveHooks = resetHooks !== true;
   const hooksSnapshots = new Map();
@@ -1111,6 +1165,7 @@ export async function updateSkillPackage({
       cwd,
       includeHooks: resolvedIncludeHooks,
       skillNames: selectedNames ? [...selectedNames] : null,
+      contexts: fallbackContexts,
     });
     // Only remove stale skills when updating the full package without an
     // explicit selection. Partial selection leaves unchecked locals untouched.
@@ -1123,7 +1178,10 @@ export async function updateSkillPackage({
       const skillDir = path.join(baseDir, skillName);
       const hasHooksSnapshot = preserveHooks && hooksSnapshots.has(skillName);
       const prior = preferences.get(skillName);
-      if (!prior && !hasHooksSnapshot) continue;
+      if (!prior && !hasHooksSnapshot) {
+        await setSkillContextsConfig(skillName, fallbackContexts);
+        continue;
+      }
 
       if (hasHooksSnapshot) {
         await restoreSkillHooksDir(skillDir, hooksSnapshots.get(skillName));
@@ -1152,12 +1210,19 @@ export async function updateSkillPackage({
         if (prior.priority !== undefined) patch.priority = prior.priority;
         await upsertSkillCatalogEntry(baseDir, skillName, patch);
         await setSkillEnabledConfig(skillName, prior.enabled);
+        if (prior.contexts) {
+          await setSkillContextsConfig(skillName, prior.contexts);
+        } else {
+          await setSkillContextsConfig(skillName, fallbackContexts);
+        }
         if (targetScope === 'global') {
           await upsertSkillRegistryEntry(undefined, {
             name: skillName,
             enabled: prior.enabled,
           });
         }
+      } else {
+        await setSkillContextsConfig(skillName, fallbackContexts);
       }
     }
 

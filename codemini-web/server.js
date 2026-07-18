@@ -27,6 +27,7 @@ import {
 import { resolveGitCwd, shouldAdoptGitCwd } from './lib/git-project.js';
 import { resolveEmbed } from './lib/embed-resolver.js';
 import { installSkillSource, listSkillEntries, previewSkillPackageUpdate, previewSkillSource, updateSkillPackage } from '../src/commands/skill.js';
+import { buildSkillIndexPreview } from '../src/core/command-loader.js';
 import { computeFileSha256, readSkillRegistry, upsertSkillRegistryEntry, writeSkillRegistry } from '../src/core/skill-registry.js';
 import {
   archiveEntry,
@@ -2983,6 +2984,23 @@ async function main() {
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
     }
+    if (req.method === 'GET' && url.pathname === '/api/skills/index') {
+      try {
+        const targetProjectDir = await resolveRequestProjectDir(
+          url.searchParams.get('projectDir'),
+          currentProjectDir,
+        );
+        const config = await loadConfig();
+        const preview = await buildSkillIndexPreview(targetProjectDir, config);
+        jsonResponse(res, {
+          ...preview,
+          projectDir: targetProjectDir,
+        });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+    }
     if (req.method === 'GET' && url.pathname.startsWith('/api/skills/') && url.pathname.endsWith('/content')) {
       const name = decodeURIComponent(url.pathname.slice('/api/skills/'.length, -'/content'.length));
       try {
@@ -3009,30 +3027,28 @@ async function main() {
         await fs.mkdir(skillDir, { recursive: true });
         const skillFile = path.join(skillDir, 'SKILL.md');
         await fs.writeFile(skillFile, content, 'utf8');
+        const markdownMeta = metadataPatchFromSkillMarkdown(content);
+        const catalogSeed = {
+          description: description || markdownMeta.description || '',
+          mode: markdownMeta.mode || 'agent_requested',
+          triggers: Array.isArray(markdownMeta.triggers) ? markdownMeta.triggers : [],
+          enabled: markdownMeta.enabled !== false,
+          ...(markdownMeta.priority !== undefined ? { priority: markdownMeta.priority } : { priority: 50 }),
+        };
         if (scope === 'global') {
           await upsertSkillRegistryEntry(undefined, {
             name,
             version: '0.0.0',
-            description: description || '',
-            enabled: true,
+            description: catalogSeed.description,
+            enabled: catalogSeed.enabled,
             source: 'web-create',
             entryFile: 'SKILL.md',
             sha256: await computeFileSha256(skillFile),
             installedAt: new Date().toISOString()
           });
-          await upsertSkillCatalogMetadata(getSkillsDir(), name, {
-            description: description || '',
-            triggers: [],
-            enabled: true,
-            priority: 50
-          });
+          await upsertSkillCatalogMetadata(getSkillsDir(), name, catalogSeed);
         } else {
-          await upsertProjectSkillMetadata(targetProjectDir, name, {
-            description: description || '',
-            triggers: [],
-            enabled: true,
-            priority: 50
-          });
+          await upsertProjectSkillMetadata(targetProjectDir, name, catalogSeed);
         }
         const config = await loadConfig();
         config.skills = config.skills || {};
@@ -3078,6 +3094,7 @@ async function main() {
           cwd: targetProjectDir,
           includeHooks: includeHooks === true,
           skillNames: Array.isArray(skillNames) ? skillNames : null,
+          contexts: contexts !== undefined ? normalizeSkillContexts(contexts) : undefined,
         });
         if (contexts !== undefined) {
           const config = await loadConfig();
@@ -3104,7 +3121,7 @@ async function main() {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/skills/update') {
-      const { name, projectDir, skillNames = null, includeHooks } = await readBody(req);
+      const { name, projectDir, skillNames = null, includeHooks, defaultContexts } = await readBody(req);
       if (!name) { jsonResponse(res, { error: true, message: 'Missing skill name' }, 400); return; }
       try {
         const targetProjectDir = await resolveRequestProjectDir(projectDir, currentProjectDir);
@@ -3113,6 +3130,7 @@ async function main() {
           cwd: targetProjectDir,
           skillNames: Array.isArray(skillNames) ? skillNames : null,
           includeHooks,
+          defaultContexts,
         });
         await bridge.reloadConfig();
         await bridge.reloadCommandsAndSkills();
