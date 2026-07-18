@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { memo, useEffect, useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
 import { PlanToolCard } from "./PlanToolCard.jsx";
 import { isCreatePlanCard } from "@/lib/plan-ui-state.js";
@@ -42,7 +42,10 @@ import {
 import * as api from "@/hooks/use-api.js";
 import { useRotatingLabel } from "@/hooks/use-rotating-label.js";
 import { executionModeSkillContext } from "@/lib/skill-visibility.js";
-import { useApp } from "@/context/app-context.jsx";
+import {
+  useCurrentSessionId,
+  useRuntimeMode,
+} from "@/context/app-context.jsx";
 import { getMessageModelIdentity } from "@/lib/message-model-identity.js";
 import { ROLE_BADGE_CLASS, ROLE_PILLS } from "./PlanProgress.jsx";
 import { PlanStepStatusGlyph } from "@/components/plan-step-icons.jsx";
@@ -213,11 +216,11 @@ function RotatingStatusLabel({ phrases, active }) {
 
 function ThoughtBlock({ segment }) {
   const [open, setOpen] = useState(false);
-  const { state } = useApp();
+  const runtimeMode = useRuntimeMode();
   const streaming = Boolean(segment.isStreaming);
   const thinkingPhrases = resolveModeHintPhrases(
     "thinking",
-    state.runtimeState?.mode,
+    runtimeMode,
   );
 
   return (
@@ -509,14 +512,14 @@ function DreamNotice({ notice }) {
 
 function ToolGroup({ cards }) {
   const [expanded, setExpanded] = useState(false);
-  const { state } = useApp();
+  const runtimeMode = useRuntimeMode();
   const planCards = cards.filter(isCreatePlanCard);
   const otherCards = cards.filter((card) => !isCreatePlanCard(card));
   const total = otherCards.length;
   const hasRunningTool = otherCards.some((card) => card.status === "running");
   const toolingPhrases = resolveModeHintPhrases(
     "tooling",
-    state.runtimeState?.mode,
+    runtimeMode,
   );
   const shouldUseSummaryHeader = total > TOOL_COLLAPSE_THRESHOLD;
   const runCount = otherCards.filter((card) => {
@@ -1137,7 +1140,7 @@ function FileChangesOverviewBar({ changes }) {
 }
 
 function FileChangesSummary({ changes }) {
-  const { state } = useApp();
+  const currentSessionId = useCurrentSessionId();
   const [openFiles, setOpenFiles] = useState(() => new Set());
   const [undoing, setUndoing] = useState(() => new Set());
   const [revertedUndoKeys, setRevertedUndoKeys] = useState(() => new Set());
@@ -1160,9 +1163,9 @@ function FileChangesSummary({ changes }) {
     try {
       const result =
         changeSetIds.length > 1
-          ? await api.undoSessionChanges(state.currentSessionId, changeSetIds)
+          ? await api.undoSessionChanges(currentSessionId, changeSetIds)
           : await api.undoSessionChange(
-              state.currentSessionId,
+              currentSessionId,
               changeSetIds[0],
             );
       if (result?.error || result?.ok === false)
@@ -1915,7 +1918,7 @@ function AnswerProcessFold({ groups, durationMs }) {
   );
 }
 
-export function MessageBubble({
+export const MessageBubble = memo(function MessageBubble({
   message,
   skills = [],
   sessionLive = false,
@@ -2302,4 +2305,4 @@ export function MessageBubble({
       )}
     </div>
   );
-}
+});

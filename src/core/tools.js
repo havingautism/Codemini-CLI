@@ -27,6 +27,7 @@ import {
   initializeProjectIndex,
   queryProjectIndex,
   refreshIndexedFile,
+  refreshIndexedFiles,
 } from "./project-index.js";
 import { createToolResultStore } from "./tool-result-store.js";
 import {
@@ -3809,6 +3810,34 @@ export function getBuiltinTools({
       return null;
     }
   };
+  const refreshProjectFiles = async (filePaths = []) => {
+    const paths = [...new Set(
+      (Array.isArray(filePaths) ? filePaths : [filePaths])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean),
+    )];
+    if (paths.length === 0) return null;
+    try {
+      const result = await refreshIndexedFiles(workspaceRoot, paths);
+      for (const entry of result.files || []) {
+        emitSystemTool({
+          type: "system_tool:end",
+          id: `file-index:${entry.path}:${Date.now()}`,
+          name: `file_index(${entry.path})`,
+          summary: entry.summary,
+        });
+      }
+      return result;
+    } catch (error) {
+      emitSystemTool({
+        type: "system_tool:error",
+        id: `file-index:batch:${Date.now()}`,
+        name: `file_index_batch(${paths.length})`,
+        summary: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
   const codeWikiCommentToolDefinitions = [
     {
       type: "function",
@@ -5743,9 +5772,7 @@ export function getBuiltinTools({
       for (const target of observedTargets) {
         await observeFile(target.target);
       }
-      for (const changedPath of result?.files || []) {
-        await refreshProjectFile(changedPath);
-      }
+      await refreshProjectFiles(result?.files || []);
       return attachBackups(result, backups);
     },
     delete: Object.assign(

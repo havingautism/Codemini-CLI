@@ -45,7 +45,25 @@ async function safeStat(filePath) {
   }
 }
 
+async function mapAsyncLimit(values, concurrency, mapper) {
+  const items = Array.isArray(values) ? values : [];
+  const results = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from(
+    { length: Math.min(Math.max(1, concurrency), items.length) },
+    async () => {
+      while (cursor < items.length) {
+        const index = cursor++;
+        results[index] = await mapper(items[index], index);
+      }
+    }
+  );
+  await Promise.all(workers);
+  return results;
+}
+
 const jsonCache = new BoundedCache({ maxSize: 64, ttlMs: 30 * 1000 });
+const indexUpdateLocks = new Map();
 
 async function safeReadJson(filePath, fallback) {
   try {
@@ -77,6 +95,20 @@ function trimMultiline(value, max = 1800) {
 async function writeJson(filePath, value) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  for (const key of jsonCache.keys()) {
+    if (String(key).startsWith(`${filePath}:`)) jsonCache.delete(key);
+  }
+}
+
+async function withProjectIndexLock(projectRoot, task) {
+  const previous = indexUpdateLocks.get(projectRoot) || Promise.resolve();
+  const current = previous.catch(() => {}).then(task);
+  indexUpdateLocks.set(projectRoot, current);
+  try {
+    return await current;
+  } finally {
+    if (indexUpdateLocks.get(projectRoot) === current) indexUpdateLocks.delete(projectRoot);
+  }
 }
 
 function gitignorePatternToRegex(pattern) {
@@ -255,10 +287,10 @@ export async function ensureCodeminiGitignore(projectRoot) {
 async function detectWorkspaceKind(cwd) {
   const gitDir = await safeStat(path.join(cwd, '.git'));
   if (gitDir?.isDirectory()) return 'project';
-  for (const marker of PROJECT_MARKER_FILES) {
-    const stat = await safeStat(path.join(cwd, marker));
-    if (stat?.isFile()) return 'project';
-  }
+  const markerStats = await Promise.all(
+    [...PROJECT_MARKER_FILES].map((marker) => safeStat(path.join(cwd, marker)))
+  );
+  if (markerStats.some((stat) => stat?.isFile())) return 'project';
   return 'directory';
 }
 
@@ -286,8 +318,10 @@ async function findNearestIndexedProjectRoot(startDir, workspaceRoot) {
   let current = path.resolve(startDir);
   const root = path.resolve(workspaceRoot);
   while (current.startsWith(root)) {
-    const projectMapStat = await safeStat(getProjectMapPath(current));
-    const fileIndexStat = await safeStat(getFileIndexPath(current));
+    const [projectMapStat, fileIndexStat] = await Promise.all([
+      safeStat(getProjectMapPath(current)),
+      safeStat(getFileIndexPath(current))
+    ]);
     if (projectMapStat?.isFile() && fileIndexStat?.isFile()) return current;
     if (current === root) break;
     const parent = path.dirname(current);
@@ -536,8 +570,11 @@ async function scanProject(cwd) {
   const relativeFiles = allFiles.map((filePath) => rel(cwd, filePath));
   const sourceFiles = allFiles.filter((filePath) => SOURCE_EXTENSIONS.has(path.extname(filePath).toLowerCase()));
 
-  const packageJson = await safeReadJson(path.join(cwd, 'package.json'), null);
-  const tsconfigExists = Boolean(await safeStat(path.join(cwd, 'tsconfig.json')));
+  const [packageJson, tsconfigStat] = await Promise.all([
+    safeReadJson(path.join(cwd, 'package.json'), null),
+    safeStat(path.join(cwd, 'tsconfig.json'))
+  ]);
+  const tsconfigExists = Boolean(tsconfigStat);
   const sourceRoots = clipList(relativeFiles.filter((value) => /^(src|app|apps)\b/.test(value)).map((value) => value.split('/')[0]), 12);
   const testRoots = clipList(relativeFiles.filter((value) => /^(tests|test|__tests__)\b/.test(value)).map((value) => value.split('/')[0]), 12);
   const entryCandidates = clipList(
@@ -570,12 +607,13 @@ async function scanProject(cwd) {
     if (!(dir in directories)) directories[dir] = categorizeDirectory(dir);
   }
 
-  let files = [];
-  for (const filePath of sourceFiles) {
-    const content = await fs.readFile(filePath, 'utf8');
-    const stat = await fs.stat(filePath);
-    files.push(buildFileEntry(rel(cwd, filePath), content, stat));
-  }
+  let files = await mapAsyncLimit(sourceFiles, 32, async (filePath) => {
+    const [content, stat] = await Promise.all([
+      fs.readFile(filePath, 'utf8'),
+      fs.stat(filePath)
+    ]);
+    return buildFileEntry(rel(cwd, filePath), content, stat);
+  });
   files = enrichSymbolGraph(files);
 
   return {
@@ -665,58 +703,92 @@ export async function initializeProjectIndex(cwd = process.cwd()) {
   }
 }
 
-export async function refreshIndexedFile(cwd = process.cwd(), relativePath = '') {
-  if (!relativePath) return null;
-  const workspaceDir = getProjectWorkspaceDir(cwd);
-  await fs.mkdir(workspaceDir, { recursive: true });
-  const projectRoot = await findProjectRootFromFile(cwd, relativePath);
-  if (projectRoot) await ensureCodeminiGitignore(projectRoot);
-  if (!projectRoot) return null;
-  const fileIndexPath = getFileIndexPath(projectRoot);
-  const { combinedRules } = await readProjectIgnoreRules(projectRoot);
-  const absolutePath = path.join(cwd, relativePath);
-  const stat = await safeStat(absolutePath);
-  let action = 'updated';
-  const projectRelativePath = path.relative(projectRoot, absolutePath).replace(/\\/g, '/');
-  const current = await safeReadJson(fileIndexPath, { updatedAt: '', files: [] });
-  const files = Array.isArray(current.files) ? [...current.files] : [];
-  const index = files.findIndex((entry) => entry.file === projectRelativePath);
-
-  if (shouldIgnorePath(projectRelativePath, Boolean(stat?.isDirectory?.()), combinedRules)) {
-    if (index >= 0) files.splice(index, 1);
-    action = 'removed';
-  } else if (!stat || !stat.isFile()) {
-    if (index >= 0) files.splice(index, 1);
-    action = 'removed';
-  } else {
-    const ext = path.extname(relativePath).toLowerCase();
-    if (!SOURCE_EXTENSIONS.has(ext)) {
-      if (index >= 0) files.splice(index, 1);
-      action = 'removed';
-    } else {
-      const content = await fs.readFile(absolutePath, 'utf8');
-      const nextEntry = buildFileEntry(projectRelativePath, content, stat);
-      if (index >= 0) {
-        files[index] = nextEntry;
-      } else {
-        files.push(nextEntry);
-        action = 'added';
-      }
-    }
+export async function refreshIndexedFiles(cwd = process.cwd(), relativePaths = []) {
+  const requestedPaths = [...new Set(
+    (Array.isArray(relativePaths) ? relativePaths : [relativePaths])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+  )];
+  if (requestedPaths.length === 0) {
+    return { updatedProjects: 0, indexWrites: 0, files: [] };
   }
 
-  const enrichedFiles = enrichSymbolGraph(files);
-  await writeJson(fileIndexPath, {
-    updatedAt: new Date().toISOString(),
-    files: enrichedFiles.sort((left, right) => left.file.localeCompare(right.file))
-  });
+  await fs.mkdir(getProjectWorkspaceDir(cwd), { recursive: true });
+  const resolved = await Promise.all(requestedPaths.map(async (relativePath) => ({
+    relativePath,
+    absolutePath: path.resolve(cwd, relativePath),
+    projectRoot: await findProjectRootFromFile(cwd, relativePath)
+  })));
+  const grouped = new Map();
+  for (const target of resolved) {
+    if (!target.projectRoot) continue;
+    if (!grouped.has(target.projectRoot)) grouped.set(target.projectRoot, []);
+    grouped.get(target.projectRoot).push(target);
+  }
+
+  const projectResults = await Promise.all([...grouped.entries()].map(([projectRoot, targets]) => withProjectIndexLock(projectRoot, async () => {
+    await ensureCodeminiGitignore(projectRoot);
+    const fileIndexPath = getFileIndexPath(projectRoot);
+    const [{ combinedRules }, current] = await Promise.all([
+      readProjectIgnoreRules(projectRoot),
+      safeReadJson(fileIndexPath, { updatedAt: '', files: [] })
+    ]);
+    const filesByPath = new Map(
+      (Array.isArray(current.files) ? current.files : []).map((entry) => [entry.file, entry])
+    );
+
+    const updates = await Promise.all(targets.map(async ({ absolutePath }) => {
+      const stat = await safeStat(absolutePath);
+      const projectRelativePath = path.relative(projectRoot, absolutePath).replace(/\\/g, '/');
+      const ignored = shouldIgnorePath(
+        projectRelativePath,
+        Boolean(stat?.isDirectory?.()),
+        combinedRules
+      );
+      const supported = SOURCE_EXTENSIONS.has(path.extname(projectRelativePath).toLowerCase());
+      if (ignored || !stat?.isFile() || !supported) {
+        return { path: projectRelativePath, action: 'removed', entry: null };
+      }
+      const content = await fs.readFile(absolutePath, 'utf8');
+      return {
+        path: projectRelativePath,
+        action: filesByPath.has(projectRelativePath) ? 'updated' : 'added',
+        entry: buildFileEntry(projectRelativePath, content, stat)
+      };
+    }));
+
+    for (const update of updates) {
+      if (update.entry) filesByPath.set(update.path, update.entry);
+      else filesByPath.delete(update.path);
+    }
+    const enrichedFiles = enrichSymbolGraph([...filesByPath.values()]);
+    await writeJson(fileIndexPath, {
+      updatedAt: new Date().toISOString(),
+      files: enrichedFiles.sort((left, right) => left.file.localeCompare(right.file))
+    });
+
+    return {
+      projectRoot,
+      files: updates.map(({ path: filePath, action }) => ({
+        path: filePath,
+        projectRoot,
+        action,
+        summary: `${action} ${path.basename(projectRoot) || '.'}/.codemini for ${filePath}`
+      }))
+    };
+  })));
 
   return {
-    path: projectRelativePath,
-    projectRoot,
-    action,
-    summary: `${action} ${path.basename(projectRoot) || '.'}/.codemini for ${projectRelativePath}`
+    updatedProjects: projectResults.length,
+    indexWrites: projectResults.length,
+    files: projectResults.flatMap((result) => result.files)
   };
+}
+
+export async function refreshIndexedFile(cwd = process.cwd(), relativePath = '') {
+  if (!relativePath) return null;
+  const result = await refreshIndexedFiles(cwd, [relativePath]);
+  return result.files[0] || null;
 }
 
 export async function buildProjectContextSnippet(cwd = process.cwd(), userText = '') {

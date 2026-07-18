@@ -194,6 +194,7 @@ function Shell() {
   const openHooks = useCallback(() => actions.setHooksOpen(true), [actions]);
   const openMemory = useCallback(() => actions.setMemoryOpen(true), [actions]);
   const openSouls = useCallback(() => actions.setSoulsOpen(true), [actions]);
+  const retryMessage = useCallback((prompt) => actions.submit(prompt), [actions]);
   const openAbout = useCallback(() => actions.setAboutOpen(true), [actions]);
   const openProjectSelector = useCallback(
     () => actions.setProjectOpen(true),
@@ -392,7 +393,7 @@ function Shell() {
               messagesLoading={state.messagesLoading}
               sessionLive={state.live}
               isGeneral={state.isGeneral}
-              onRetryMessage={(prompt) => actions.submit(prompt)}
+              onRetryMessage={retryMessage}
             />
 
             {/* Plan Review / Input Area */}
@@ -498,8 +499,10 @@ function Shell() {
             status={state.configStatus}
             reasoningSyncKey={reasoningSyncKey}
             onSaved={async () => {
-              await actions.refreshConfigStatus();
-              await actions.refreshRuntimeState();
+              await Promise.all([
+                actions.refreshConfigStatus(),
+                actions.refreshRuntimeState(),
+              ]);
             }}
           />
         )}

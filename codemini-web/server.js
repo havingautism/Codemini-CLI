@@ -1,9 +1,8 @@
 import http from 'node:http';
 import fs from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync, execSync } from 'node:child_process';
+import { execSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { Readable } from 'node:stream';
@@ -25,6 +24,8 @@ import {
   startRuntimeEvictionTimer
 } from './lib/runtime-pool.js';
 import { resolveGitCwd, shouldAdoptGitCwd } from './lib/git-project.js';
+import { createGitInfoReader, readGitDiffData, readGitInfoBatch } from './lib/git-status.js';
+import { createPooledSessionEnsurer } from './lib/pooled-session-ensurer.js';
 import { resolveEmbed } from './lib/embed-resolver.js';
 import { installSkillSource, listSkillEntries, previewSkillPackageUpdate, previewSkillSource, updateSkillPackage } from '../src/commands/skill.js';
 import { buildSkillIndexPreview } from '../src/core/command-loader.js';
@@ -692,8 +693,10 @@ export function createWebRuntimeApi({
       const limit = Number.isFinite(requestedLimit)
         ? Math.max(1, Math.min(1000, Math.round(requestedLimit)))
         : 200;
-      const sessions = await listStoredSessions(limit);
-      const { active } = await loadActiveProjects();
+      const [sessions, { active }] = await Promise.all([
+        listStoredSessions(limit),
+        loadActiveProjects(),
+      ]);
       const activeSet = new Set(active);
       jsonResponse(res, sessions
         .map(session => ({
@@ -1508,191 +1511,6 @@ function projectNameForDir(projectDir) {
   return path.basename(path.resolve(projectDir || '')) || projectDir || '';
 }
 
-function getGitBranch(cwd) {
-  try {
-    return execSync('git symbolic-ref --quiet --short HEAD', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-  } catch {
-    try {
-      const branch = execSync('git rev-parse --abbrev-ref HEAD', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
-      return branch === 'HEAD' ? null : branch;
-    } catch {
-      return null;
-    }
-  }
-}
-
-function execGitStdout(command, cwd) {
-  try {
-    return execSync(command, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
-  } catch (err) {
-    return String(err.stdout || '');
-  }
-}
-
-function execGitFileStdout(args, cwd) {
-  try {
-    return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
-  } catch (err) {
-    return String(err.stdout || '');
-  }
-}
-
-function splitNulRecords(text) {
-  return String(text || '').split('\0').filter(Boolean);
-}
-
-function hasGitHead(cwd) {
-  try {
-    execSync('git rev-parse --verify HEAD', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function parseGitNumstat(text) {
-  let linesAdded = 0;
-  let linesRemoved = 0;
-  for (const line of String(text || '').split('\n')) {
-    if (!line.trim()) continue;
-    const [addedRaw, removedRaw] = line.split('\t');
-    if (addedRaw !== '-') linesAdded += Number(addedRaw) || 0;
-    if (removedRaw !== '-') linesRemoved += Number(removedRaw) || 0;
-  }
-  return { linesAdded, linesRemoved };
-}
-
-function countUntrackedLineStats(cwd) {
-  const untrackedRaw = execGitFileStdout(['ls-files', '--others', '--exclude-standard', '-z'], cwd);
-  let linesAdded = 0;
-  for (const relPath of splitNulRecords(untrackedRaw)) {
-    try {
-      const fullPath = path.join(cwd, relPath);
-      const content = readFileSync(fullPath, 'utf8');
-      linesAdded += content ? content.split('\n').length : 0;
-    } catch {
-      // Skip binary or unreadable files.
-    }
-  }
-  return { linesAdded, linesRemoved: 0 };
-}
-
-function readGitLineStats(cwd) {
-  const hasHead = hasGitHead(cwd);
-  if (hasHead) {
-    const stats = parseGitNumstat(execGitStdout('git diff HEAD --numstat', cwd));
-    const untracked = countUntrackedLineStats(cwd);
-    return {
-      linesAdded: stats.linesAdded + untracked.linesAdded,
-      linesRemoved: stats.linesRemoved + untracked.linesRemoved
-    };
-  }
-  const cached = parseGitNumstat(execGitStdout('git diff --cached --numstat', cwd));
-  const unstaged = parseGitNumstat(execGitStdout('git diff --numstat', cwd));
-  const untracked = countUntrackedLineStats(cwd);
-  return {
-    linesAdded: cached.linesAdded + unstaged.linesAdded + untracked.linesAdded,
-    linesRemoved: cached.linesRemoved + unstaged.linesRemoved + untracked.linesRemoved
-  };
-}
-
-function readGitStatusEntries(cwd) {
-  const records = splitNulRecords(execGitFileStdout(['status', '--porcelain=v1', '-z'], cwd));
-  const statusByPath = new Map();
-  for (let index = 0; index < records.length; index += 1) {
-    const line = records[index];
-    if (line.length < 4) continue;
-    const x = line[0];
-    const y = line[1];
-    const filePath = line.slice(3);
-    let status;
-    if (x === '?' && y === '?') status = '?';
-    else if (x === 'A' || y === 'A') status = 'A';
-    else if (x === 'D' || y === 'D') status = 'D';
-    else status = 'M';
-    const staged = (x !== ' ' && x !== '?');
-    statusByPath.set(filePath, { path: filePath, status, staged });
-    if (x === 'R' || y === 'R' || x === 'C' || y === 'C') {
-      index += 1;
-    }
-  }
-  return statusByPath;
-}
-
-function appendUntrackedDiffPatches(cwd, patch) {
-  const untrackedRaw = execGitFileStdout(['ls-files', '--others', '--exclude-standard', '-z'], cwd);
-  const parts = [];
-  const nullPath = process.platform === 'win32' ? 'NUL' : '/dev/null';
-  for (const relPath of splitNulRecords(untrackedRaw)) {
-    const diff = execGitFileStdout(['diff', '--no-index', '--no-color', '--', nullPath, relPath], cwd).trim();
-    if (diff) parts.push(diff);
-  }
-  return [patch, ...parts].filter(Boolean).join('\n');
-}
-
-function readGitDiffPatch(cwd) {
-  const hasHead = hasGitHead(cwd);
-  let patch = '';
-  if (hasHead) {
-    patch = execGitStdout('git diff HEAD --no-color', cwd).trim();
-  } else {
-    patch = [
-      execGitStdout('git diff --cached --no-color', cwd).trim(),
-      execGitStdout('git diff --no-color', cwd).trim()
-    ].filter(Boolean).join('\n');
-  }
-  return appendUntrackedDiffPatches(cwd, patch);
-}
-
-function readGitDiffData(cwd) {
-  const patch = readGitDiffPatch(cwd);
-  const patchFiles = [];
-  const seenPatchFiles = new Set();
-  for (const line of patch.split('\n')) {
-    const match = line.match(/^diff --git a\/(.+) b\/(.+)$/);
-    if (!match) continue;
-    const filePath = match[2] || match[1];
-    if (!filePath || seenPatchFiles.has(filePath)) continue;
-    seenPatchFiles.add(filePath);
-    patchFiles.push(filePath);
-  }
-  const statusByPath = readGitStatusEntries(cwd);
-  const files = patchFiles.map((filePath) => statusByPath.get(filePath) || { path: filePath, status: 'M', staged: false });
-  for (const [filePath, entry] of statusByPath.entries()) {
-    if (entry.status === '?' && !seenPatchFiles.has(filePath)) {
-      files.push(entry);
-    }
-  }
-  return { patch, files, ...readGitLineStats(cwd) };
-}
-
-function readGitInfo(cwd, { includeCounts = true } = {}) {
-  execSync('git rev-parse --is-inside-work-tree', { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
-  const branch = getGitBranch(cwd);
-  if (!includeCounts) return { isGit: true, branch };
-
-  const porcelain = execGitStdout('git status --porcelain', cwd).trim();
-  const lines = porcelain ? porcelain.split('\n') : [];
-  let staged = 0, modified = 0, untracked = 0;
-  for (const line of lines) {
-    const x = line[0], y = line[1];
-    if (x === '?' && y === '?') { untracked++; continue; }
-    if (x !== ' ' && x !== '?') staged++;
-    if (y === 'M' || y === 'D') modified++;
-  }
-  const { linesAdded, linesRemoved } = readGitLineStats(cwd);
-  return {
-    isGit: true,
-    branch,
-    dirty: lines.length > 0,
-    staged,
-    modified,
-    untracked,
-    linesAdded,
-    linesRemoved
-  };
-}
-
 async function validProjectDir(value) {
   const normalized = normalizeProjectPath(value);
   if (!normalized) return '';
@@ -2108,9 +1926,11 @@ async function findPreferredSessionForProject(projectDir) {
 }
 
 export async function buildRuntimeForSession({ sessionId, model, projectDir }) {
-  const config = await loadConfig();
   const resolvedDir = normalizeProjectPath(projectDir || process.cwd());
-  const session = sessionId ? await loadSession(sessionId) : await createSession(resolvedDir);
+  const [config, session] = await Promise.all([
+    loadConfig(),
+    sessionId ? loadSession(sessionId) : createSession(resolvedDir),
+  ]);
   const sessionProjectDir = normalizeProjectPath(
     (projectDir ? projectDir : await inferSessionProjectDir(session)) || resolvedDir
   );
@@ -2132,6 +1952,7 @@ export async function buildRuntimeForSession({ sessionId, model, projectDir }) {
 
 async function main() {
   const args = parseArgs(process.argv);
+  const readGitInfoAsync = createGitInfoReader();
 
   // Ensure general workspace directory exists
   await fs.mkdir(GENERAL_PROJECT_DIR, { recursive: true });
@@ -2252,31 +2073,26 @@ async function main() {
   }
   let bridge = initialEntry.bridge;
   let currentProjectDir = process.cwd();
-  const ensurePooledSession = async (sessionId) => {
-    const session = await loadSession(sessionId);
-    const alreadyLoaded = Boolean(pool.getSessionState(sessionId));
-    const resolvedProjectDir =
-      normalizeProjectPath(session.projectDir) || session.projectDir || currentProjectDir;
-    // Keep the stored session cwd absolute so later pool lookups / git cwd
-    // never fall back to the general workspace by accident.
-    if (resolvedProjectDir && session.projectDir !== resolvedProjectDir) {
-      session.projectDir = resolvedProjectDir;
-      try {
-        await saveSession(session);
-      } catch {}
-    }
-    const entry = await pool.ensureSession({
-      sessionId,
-      projectDir: resolvedProjectDir,
-      model: args.model
-    });
-    if (!alreadyLoaded && recoveredSessionIds.has(sessionId)) {
-      entry.status = 'interrupted';
-    } else if (!alreadyLoaded) {
-      await runtimeStatusStore.set(sessionId, 'idle');
-    }
-    return entry;
-  };
+  const ensurePooledSession = createPooledSessionEnsurer({
+    pool,
+    loadSession,
+    model: args.model,
+    resolveProjectDir: (session) =>
+      normalizeProjectPath(session.projectDir) || session.projectDir || currentProjectDir,
+    prepareSession: async (session, resolvedProjectDir) => {
+      // Keep the stored session cwd absolute so later pool lookups / git cwd
+      // never fall back to the general workspace by accident.
+      if (resolvedProjectDir && session.projectDir !== resolvedProjectDir) {
+        session.projectDir = resolvedProjectDir;
+        await saveSession(session).catch(() => {});
+      }
+      return session;
+    },
+    onCreated: async (entry, session) => {
+      if (recoveredSessionIds.has(session.id)) entry.status = 'interrupted';
+      else await runtimeStatusStore.set(session.id, 'idle');
+    },
+  });
   const runtimeApi = createWebRuntimeApi({
     pool,
     eventBroker,
@@ -2576,7 +2392,7 @@ async function main() {
           fallbackDir: currentProjectDir
         });
         if (shouldAdoptGitCwd(gitCwd, currentProjectDir)) currentProjectDir = gitCwd;
-        jsonResponse(res, readGitInfo(gitCwd || currentProjectDir));
+        jsonResponse(res, await readGitInfoAsync(gitCwd || currentProjectDir));
       } catch {
         jsonResponse(res, { isGit: false, branch: null, dirty: false, staged: 0, modified: 0, untracked: 0, linesAdded: 0, linesRemoved: 0 });
       }
@@ -2594,7 +2410,7 @@ async function main() {
           fallbackDir: currentProjectDir
         });
         if (shouldAdoptGitCwd(gitCwd, currentProjectDir)) currentProjectDir = gitCwd;
-        jsonResponse(res, readGitDiffData(gitCwd || currentProjectDir));
+        jsonResponse(res, await readGitDiffData(gitCwd || currentProjectDir));
       } catch {
         jsonResponse(res, { patch: '', files: [], linesAdded: 0, linesRemoved: 0 });
       }
@@ -2602,15 +2418,11 @@ async function main() {
     }
     if (req.method === 'POST' && url.pathname === '/api/git-batch') {
       const { dirs } = await readBody(req);
-      const result = {};
-      for (const dir of (Array.isArray(dirs) ? dirs : [])) {
-        try {
-          const resolved = path.resolve(dir);
-          result[dir] = readGitInfo(resolved, { includeCounts: false });
-        } catch {
-          result[dir] = { isGit: false, branch: null };
-        }
-      }
+      const result = await readGitInfoBatch(dirs, {
+        reader: readGitInfoAsync,
+        concurrency: 4,
+        includeCounts: false,
+      });
       jsonResponse(res, result);
       return;
     }

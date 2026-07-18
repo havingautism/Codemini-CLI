@@ -4370,6 +4370,9 @@ async function askModel({
   const shouldGenerateTitle = text
     ? !session.messages.some((msg) => msg?.role === 'user')
     : false;
+  const projectContextPromise = (config.context?.project_context_enabled !== false)
+    ? buildProjectContextSnippet(workspaceRoot, modelInputText).catch(() => '')
+    : Promise.resolve('');
   if (text) {
     const modelExtra =
       typeof modelText === 'string' && modelText && modelText !== text
@@ -4403,9 +4406,6 @@ async function askModel({
     }
   }
 
-  const projectContextPromise = (config.context?.project_context_enabled !== false)
-    ? buildProjectContextSnippet(workspaceRoot, modelInputText).catch(() => '')
-    : Promise.resolve('');
   const projectContextGuidance =
     'Use this project context as lightweight guidance and verify important details with fresh reads when needed.';
   const normalizedExecutionMode = normalizeExecutionMode(executionMode || config.execution?.mode || 'normal');
@@ -6875,15 +6875,7 @@ export async function createChatRuntime({
   let onTitleUpdateCallback = null;
   let onTitleStatusCallback = null;
   const startupEvents = [];
-  const initialIndex = await initializeProjectIndex(root).catch(() => null);
-  if (initialIndex?.summary) {
-    startupEvents.push({
-      type: 'system_tool',
-      name: 'project_index(.codemini/project-map.json,.codemini/file-index.json)',
-      status: 'done',
-      summary: initialIndex.summary
-    });
-  }
+  const initialIndexPromise = initializeProjectIndex(root).catch(() => null);
   const initialTodos = normalizeTodos(session?.todos);
   if (initialTodos.length > 0) {
     startupEvents.push({
@@ -6940,13 +6932,38 @@ export async function createChatRuntime({
     }
     await reloadWorkspaceHooks();
   };
-  const commands = await loadCommandsAndSkills(root);
-  const reloadCommandsAndSkills = async () => {
-    const next = await loadCommandsAndSkills(root);
-    commands.clear();
-    for (const [name, command] of next.entries()) {
-      commands.set(name, command);
-    }
+  const [initialIndex, commands] = await Promise.all([
+    initialIndexPromise,
+    loadCommandsAndSkills(root),
+  ]);
+  if (initialIndex?.summary) {
+    startupEvents.unshift({
+      type: 'system_tool',
+      name: 'project_index(.codemini/project-map.json,.codemini/file-index.json)',
+      status: 'done',
+      summary: initialIndex.summary
+    });
+  }
+  const COMMAND_RELOAD_TTL_MS = 5_000;
+  let commandsReloadedAt = Date.now();
+  let commandsReloadPromise = null;
+  let skillIndexPromptCache = null;
+  const reloadCommandsAndSkills = async ({ force = false } = {}) => {
+    if (!force && Date.now() - commandsReloadedAt < COMMAND_RELOAD_TTL_MS) return false;
+    if (commandsReloadPromise) return commandsReloadPromise;
+    commandsReloadPromise = (async () => {
+      const next = await loadCommandsAndSkills(root);
+      commands.clear();
+      for (const [name, command] of next.entries()) {
+        commands.set(name, command);
+      }
+      commandsReloadedAt = Date.now();
+      skillIndexPromptCache = null;
+      return true;
+    })().finally(() => {
+      commandsReloadPromise = null;
+    });
+    return commandsReloadPromise;
   };
   // Skill hooks (SessionStart/UserPromptSubmit/PreToolUse/...) are armed per skill
   // as skills get selected or loaded, then fired against this session's active set.
@@ -7316,12 +7333,23 @@ export async function createChatRuntime({
   const buildActiveSystemPrompt = async () => {
     const memoryGuide =
       `Persistent memory is for self-evolution: when the user asks you to remember something lasting, call save_memory. Use scope="user" kind="preference" for tastes/interests, scope="project" kind="convention" for project rules, and kind="lesson" for reusable learnings. Write memory content and summary in ${getReplyLanguageName(config)}. Verify changeable details from files; never store secrets. Do not duplicate an equivalent fact already present in Persistent Memory.`;
-    const skillIndexPrompt = await buildSkillIndexPromptBlock(root, config, executionMode);
+    const skillIndexCacheKey = `${executionMode}:${JSON.stringify(config.skills || {})}`;
+    if (
+      !skillIndexPromptCache
+      || skillIndexPromptCache.key !== skillIndexCacheKey
+      || Date.now() >= skillIndexPromptCache.expiresAt
+    ) {
+      skillIndexPromptCache = {
+        key: skillIndexCacheKey,
+        expiresAt: Date.now() + COMMAND_RELOAD_TTL_MS,
+        value: buildSkillIndexPromptBlock(root, config, executionMode),
+      };
+    }
     return composeSystemPrompt({
       shellRulesPrompt: baseSystemPrompt,
       config,
       workspaceRoot: root,
-      skillsPrompt: skillIndexPrompt,
+      skillsPrompt: skillIndexPromptCache.value,
       extraPrompts: [memoryGuide]
     });
   };
@@ -7575,7 +7603,7 @@ export async function createChatRuntime({
         currentSession.planState = null;
         restoreConfiguredExecutionMode();
         await saveSession(currentSession);
-        await reloadCommandsAndSkills();
+        await reloadCommandsAndSkills({ force: true });
         return { type: 'system', text: `Reflect skill written and loaded: /${written.draft.name}\nPath: ${written.filePath}` };
       }
       if (name === CHAT_ACTIONS.REFLECT_REVISE) {
@@ -7760,36 +7788,19 @@ export async function createChatRuntime({
     const alwaysSkillPrompt = injectAlwaysSkills
       ? buildAlwaysSkillPromptBlock(commands, config, dismissedAlwaysSkills, executionMode)
       : '';
+    const appendPromptParts = (prompt, parts) => buildSystemPromptWithReplyLanguage(
+      [stripReplyLanguageDirective(prompt || ''), ...parts.filter(Boolean)].join('\n\n'),
+      config,
+    );
     const skillPrompt = alwaysSkillPrompt
-      ? await composeSystemPrompt({
-          shellRulesPrompt: activeReplySystemPrompt,
-          config,
-          workspaceRoot: root,
-          skillsPrompt: alwaysSkillPrompt,
-          includeSoul: false,
-          includeMemory: false,
-        })
+      ? appendPromptParts(activeReplySystemPrompt, [alwaysSkillPrompt])
       : activeReplySystemPrompt;
     const routedSystemPrompt =
       autoRoute.mode === 'direct_medium'
-        ? await composeSystemPrompt({
-            shellRulesPrompt: skillPrompt,
-            config,
-            workspaceRoot: root,
-            skillsPrompt: buildMediumTaskPromptBlock(),
-            includeSoul: false,
-            includeMemory: false
-          })
+        ? appendPromptParts(skillPrompt, [buildMediumTaskPromptBlock()])
         : skillPrompt;
     const systemPromptWithHookContext = hookContexts.length > 0
-      ? await composeSystemPrompt({
-          shellRulesPrompt: routedSystemPrompt,
-          config,
-          workspaceRoot: root,
-          extraPrompts: hookContexts,
-          includeSoul: false,
-          includeMemory: false
-        })
+      ? appendPromptParts(routedSystemPrompt, hookContexts)
       : routedSystemPrompt;
     const result = await askModel({
       text: expandedText,
@@ -7981,7 +7992,7 @@ export async function createChatRuntime({
       return config;
     },
     reloadCommandsAndSkills: async () => {
-      await reloadCommandsAndSkills();
+      await reloadCommandsAndSkills({ force: true });
       await reloadArmedHooks();
       return true;
     },

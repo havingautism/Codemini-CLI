@@ -20,6 +20,7 @@ import {
   finishInitialization,
   hydrateBeforeConnect,
 } from "../lib/async-lifecycle.js";
+import { createStreamEventBatcher } from "../lib/stream-event-batcher.js";
 import {
   activateSession,
   alignSessionAssistantMessages,
@@ -65,6 +66,8 @@ import { buildHookSegmentEvent } from "../../../shared/hook-ui.js";
 import { skillBadgesFromSessionMessage } from "../lib/user-skill-prompt.js";
 
 const AppContext = createContext(null);
+const RuntimeModeContext = createContext("normal");
+const CurrentSessionIdContext = createContext(null);
 
 function isAbortRelatedText(text = "") {
   const trimmed = String(text || "").trim();
@@ -1070,6 +1073,7 @@ export function AppProvider({ children }) {
   const planParentMsgRef = useRef(null);
   const activityTimersRef = useRef(new Map());
   const sseRef = useRef(null);
+  const sseBatcherRef = useRef(null);
   const reconnectRef = useRef(null);
   const operationWaitersRef = useRef(new Map());
   const earlyOperationResultsRef = useRef(new Map());
@@ -2747,16 +2751,20 @@ export function AppProvider({ children }) {
 
   const connectSSE = useCallback(() => {
     if (sseRef.current) sseRef.current.close();
+    sseBatcherRef.current?.dispose();
+    const batcher = createStreamEventBatcher({ handleEvent });
+    sseBatcherRef.current = batcher;
     const es = new EventSource("/api/events");
     es.onmessage = (e) => {
       try {
-        handleEvent(JSON.parse(e.data));
+        batcher.push(JSON.parse(e.data));
       } catch (err) {
         console.error("SSE:", err);
       }
     };
     es.onerror = () => {
       es.close();
+      batcher.flush();
       clearTimeout(reconnectRef.current);
       reconnectRef.current = setTimeout(() => {
         hydrateBeforeConnect({
@@ -2777,6 +2785,11 @@ export function AppProvider({ children }) {
         openIfRequired: true,
         isAlive,
       });
+      const runtimeSessionsPromise = loadRuntimeSessions({ isAlive });
+      const routedStatePromise =
+        route.view === "chat" && route.sessionId
+          ? loadState(route.sessionId, { isAlive })
+          : null;
       if (!alive) return;
       update({
         currentView: route.view,
@@ -2790,18 +2803,20 @@ export function AppProvider({ children }) {
         if (!alive) return;
       }
 
-      await configStatusPromise;
+      const [, runtimeSessions] = await Promise.all([
+        configStatusPromise,
+        runtimeSessionsPromise,
+      ]);
       if (!alive) return;
       void refreshMcpToolDisplayLabels();
-
-      const runtimeSessions = await loadRuntimeSessions({ isAlive });
-      if (!alive) return;
       let preferredSessionId = route.sessionId || stateRef.current.currentSessionId;
       if (!preferredSessionId) {
         preferredSessionId = Object.keys(runtimeSessions || {})[0] || null;
       }
       let rs = preferredSessionId
-        ? await loadState(preferredSessionId, { isAlive })
+        ? routedStatePromise && preferredSessionId === route.sessionId
+          ? await routedStatePromise
+          : await loadState(preferredSessionId, { isAlive })
         : null;
       if (!alive) return;
       if (!rs) {
@@ -2817,26 +2832,28 @@ export function AppProvider({ children }) {
           : null;
       }
       if (!alive) return;
-      try {
-        const startupEvents = rs?.sessionId
-          ? await api.fetchStartupEvents(rs.sessionId)
-          : [];
-        if (!alive) return;
-        for (const ev of startupEvents) {
-          if (!ev || isProjectIndexEvent(ev)) continue;
-          if (ev.type === "system_tool" || ev.type === "tool") {
-            const summary = ev.summary || "";
-            if (summary || ev.name) {
-              addMessage({
-                role: "system",
-                text: summary ? `${ev.name}: ${summary}` : ev.name,
-                timestamp: new Date().toISOString(),
-                startupTodos: ev.arguments?.todos,
-              });
+      const startupEventsTask = (async () => {
+        try {
+          const startupEvents = rs?.sessionId
+            ? await api.fetchStartupEvents(rs.sessionId)
+            : [];
+          if (!alive) return;
+          for (const ev of startupEvents) {
+            if (!ev || isProjectIndexEvent(ev)) continue;
+            if (ev.type === "system_tool" || ev.type === "tool") {
+              const summary = ev.summary || "";
+              if (summary || ev.name) {
+                addMessage({
+                  role: "system",
+                  text: summary ? `${ev.name}: ${summary}` : ev.name,
+                  timestamp: new Date().toISOString(),
+                  startupTodos: ev.arguments?.todos,
+                });
+              }
             }
           }
-        }
-      } catch {}
+        } catch {}
+      })();
       if (route.view === "chat" && rs?.sessionId) {
         updateRoute("chat", rs.sessionId, { replace: true });
       } else if (route.view === "codewiki") {
@@ -2847,6 +2864,7 @@ export function AppProvider({ children }) {
       }
       await finishInitialization({
         tasks: [
+        startupEventsTask,
         loadSessionMessages(null, { isAlive, sessionId: rs?.sessionId }),
         loadHistory({ isAlive, sessionId: rs?.sessionId }),
         loadSessions({ isAlive }),
@@ -2879,8 +2897,10 @@ export function AppProvider({ children }) {
           if (stateRef.current.currentSessionId !== route.sessionId) {
             update({ messagesLoading: true });
             activateSessionView(route.sessionId);
-            await loadState(route.sessionId);
-            await loadSessionMessages(null, { sessionId: route.sessionId });
+            await Promise.all([
+              loadState(route.sessionId),
+              loadSessionMessages(null, { sessionId: route.sessionId }),
+            ]);
             loadSessions();
             loadGitInfo({ sessionId: route.sessionId });
           }
@@ -2902,6 +2922,7 @@ export function AppProvider({ children }) {
     return () => {
       alive = false;
       if (sseRef.current) sseRef.current.close();
+      sseBatcherRef.current?.dispose({ flush: false });
       clearTimeout(reconnectRef.current);
       for (const timer of activityTimersRef.current.values())
         clearTimeout(timer);
@@ -3889,11 +3910,29 @@ export function AppProvider({ children }) {
     () => ({ state: projectedState, actions }),
     [projectedState, actions],
   );
-  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+  return (
+    <AppContext.Provider value={value}>
+      <RuntimeModeContext.Provider
+        value={projectedState.runtimeState?.mode || "normal"}
+      >
+        <CurrentSessionIdContext.Provider value={projectedState.currentSessionId}>
+          {children}
+        </CurrentSessionIdContext.Provider>
+      </RuntimeModeContext.Provider>
+    </AppContext.Provider>
+  );
 }
 
 export function useApp() {
   const ctx = useContext(AppContext);
   if (!ctx) throw new Error("useApp must be used within AppProvider");
   return ctx;
+}
+
+export function useRuntimeMode() {
+  return useContext(RuntimeModeContext);
+}
+
+export function useCurrentSessionId() {
+  return useContext(CurrentSessionIdContext);
 }
