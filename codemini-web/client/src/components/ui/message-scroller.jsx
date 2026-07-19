@@ -3,6 +3,10 @@ import { ArrowDown } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import {
+  isViewportAtEnd,
+  syncViewportAfterResize,
+} from "@/components/ui/message-scroller-follow";
 
 const MessageScrollerContext = React.createContext(null);
 
@@ -10,25 +14,41 @@ function MessageScrollerProvider({ children }) {
   const [viewport, setViewport] = React.useState(null);
   const [atStart, setAtStart] = React.useState(true);
   const [atEnd, setAtEnd] = React.useState(true);
+  const followEndRef = React.useRef(true);
 
-  const measure = React.useCallback((node = viewport) => {
+  const measure = React.useCallback((node, { updateFollow = true } = {}) => {
     if (!node) return;
     setAtStart(node.scrollTop <= 2);
-    setAtEnd(node.scrollHeight - node.clientHeight - node.scrollTop <= 4);
+    const nextAtEnd = isViewportAtEnd(node);
+    setAtEnd(nextAtEnd);
+    if (updateFollow) followEndRef.current = nextAtEnd;
+  }, []);
+
+  const scrollTo = React.useCallback((direction = "end") => {
+    if (!viewport) return;
+    const toEnd = direction !== "start";
+    followEndRef.current = toEnd;
+    viewport.scrollTo({
+      top: toEnd ? viewport.scrollHeight : 0,
+      behavior: "smooth",
+    });
   }, [viewport]);
 
   React.useEffect(() => {
     if (!viewport) return;
     measure(viewport);
-    const observer = new ResizeObserver(() => measure(viewport));
+    const observer = new ResizeObserver(() => {
+      syncViewportAfterResize(viewport, followEndRef.current);
+      measure(viewport, { updateFollow: false });
+    });
     observer.observe(viewport);
     if (viewport.firstElementChild) observer.observe(viewport.firstElementChild);
     return () => observer.disconnect();
   }, [viewport, measure]);
 
   const value = React.useMemo(
-    () => ({ viewport, setViewport, atStart, atEnd, measure }),
-    [viewport, atStart, atEnd, measure],
+    () => ({ viewport, setViewport, atStart, atEnd, measure, scrollTo }),
+    [viewport, atStart, atEnd, measure, scrollTo],
   );
 
   return (
@@ -67,11 +87,12 @@ const MessageScrollerViewport = React.forwardRef(function MessageScrollerViewpor
   forwardedRef,
 ) {
   const context = useMessageScroller();
+  const setViewport = context?.setViewport;
   const setRef = React.useCallback((node) => {
-    context?.setViewport(node);
+    setViewport?.(node);
     if (typeof forwardedRef === "function") forwardedRef(node);
     else if (forwardedRef) forwardedRef.current = node;
-  }, [context, forwardedRef]);
+  }, [setViewport, forwardedRef]);
 
   return (
     <div
@@ -113,7 +134,7 @@ function MessageScrollerButton({ direction = "end", className, children, variant
       variant={variant}
       size={size}
       className={cn("absolute inset-s-1/2 -translate-x-1/2 rounded-full border border-(--border-default) bg-(--material-elevated) text-(--text-primary) shadow-(--shadow-elevated) transition-[transform,opacity] duration-200 data-[active=false]:pointer-events-none data-[active=false]:translate-y-2 data-[active=false]:scale-95 data-[active=false]:opacity-0 data-[direction=end]:bottom-4 data-[direction=start]:top-4 data-[direction=start]:[&_svg]:rotate-180", className)}
-      onClick={() => context?.viewport?.scrollTo({ top: direction === "start" ? 0 : context.viewport.scrollHeight, behavior: "smooth" })}
+      onClick={() => context?.scrollTo(direction)}
       {...props}
     >
       {children ?? <><ArrowDown /><span className="sr-only">{direction === "end" ? "Scroll to end" : "Scroll to start"}</span></>}

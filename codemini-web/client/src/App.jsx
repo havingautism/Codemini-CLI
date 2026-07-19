@@ -386,6 +386,7 @@ function Shell() {
             <div className="codemini-chat-session flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden">
             {/* Chat Panel */}
             <ChatPanel
+              key={state.currentSessionId || "new-chat"}
               messages={state.messages}
               projectCwd={state.projectCwd}
               skills={state.skills}

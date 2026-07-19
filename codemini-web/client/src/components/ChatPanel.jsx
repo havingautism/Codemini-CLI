@@ -238,7 +238,7 @@ export function ChatPanel({
       )}
       <MessageScrollerProvider>
         <MessageScroller>
-          <MessageScrollerViewport ref={scrollRef} className="scroll-smooth">
+          <MessageScrollerViewport ref={scrollRef}>
             <MessageScrollerContent className="gap-0 py-[32px_0_24px]">
               <div className="w-[calc(100%_-_32px)] max-w-[920px] sm:w-[calc(100%_-_64px)] mx-auto">
             <Suspense fallback={null}>
