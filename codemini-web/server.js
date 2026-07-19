@@ -76,6 +76,7 @@ import {
 } from '../src/core/project-hooks.js';
 import {
   deleteCustomHookProfile,
+  hookActivationFromContexts,
   listCustomHookProfiles,
   saveCustomHookProfile,
   savePackageHookProfile,
@@ -3172,10 +3173,9 @@ async function main() {
           const raw = await readHooksJsonRaw(path.join(skillRoot, 'hooks', 'hooks.json'));
           const hooks = Object.keys(raw).length > 0 ? raw : discovered.hooks;
           if (Object.keys(hooks).length === 0) continue;
-          const skillContexts = Array.isArray(skill.contexts) ? skill.contexts : [];
-          const activation = skillContexts.includes('coding') && skillContexts.includes('daily')
-            ? 'always'
-            : skillContexts.includes('daily') ? 'daily' : 'coding';
+          const activation = hookActivationFromContexts(
+            Array.isArray(skill.contexts) ? skill.contexts : [],
+          );
           profiles.push({
             id: `skill:${skill.scope}:${skill.name}`,
             name: skill.name,

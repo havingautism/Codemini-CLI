@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   deleteCustomHookProfile,
+  hookActivationFromContexts,
   hookProfileIsActive,
   listCustomHookProfiles,
   listPackageHookProfiles,
@@ -22,6 +23,13 @@ import {
   listArmedHandlers,
   PROJECT_HOOKS_SKILL_NAME,
 } from '../src/core/skill-hooks-session.js';
+
+test('hookActivationFromContexts mirrors global/coding/daily skill tabs', () => {
+  assert.equal(hookActivationFromContexts(['coding', 'daily']), 'always');
+  assert.equal(hookActivationFromContexts(['coding']), 'coding');
+  assert.equal(hookActivationFromContexts(['daily']), 'daily');
+  assert.equal(hookActivationFromContexts([]), 'always');
+});
 
 test('custom hook profiles persist, filter by mode, and stack handlers', async () => {
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-hook-profiles-'));

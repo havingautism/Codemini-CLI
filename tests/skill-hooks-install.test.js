@@ -281,6 +281,206 @@ hooks:
   });
 });
 
+test('reinstall with includeHooks:true enables a previously disabled package profile', async () => {
+  // Web UI defaults includeHooks to false on first install (creates a disabled
+  // package profile), then the user reinstalls with the hooks checkbox checked.
+  await withTempCwd(async ({ cwd, fixtures }) => {
+    const packageRoot = path.join(fixtures, 'package');
+    const skillDir = path.join(packageRoot, 'skills', 'bare-skill');
+    await fs.mkdir(path.join(packageRoot, 'hooks'), { recursive: true });
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(
+      path.join(packageRoot, 'hooks', 'hooks.json'),
+      JSON.stringify({
+        SessionStart: [{ hooks: [{ type: 'command', command: 'pkg.sh' }] }],
+      }),
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(skillDir, 'SKILL.md'),
+      `---
+name: bare-skill
+description: Companion skill.
+---
+# Bare Skill
+`,
+      'utf8',
+    );
+
+    await installSkillSource(packageRoot, { cwd, includeHooks: false });
+    const { listPackageHookProfiles } = await import('../src/core/hook-profiles.js');
+    let packages = await listPackageHookProfiles(cwd);
+    assert.equal(packages.length, 1);
+    assert.equal(packages[0].enabled, false);
+
+    await installSkillSource(packageRoot, { cwd, includeHooks: true });
+    packages = await listPackageHookProfiles(cwd);
+    assert.equal(packages.length, 1);
+    assert.equal(packages[0].enabled, true);
+    assert.equal(packages[0].hooks.SessionStart[0].hooks[0].command, 'pkg.sh');
+  });
+});
+
+test('package hooks follow install contexts into coding/daily/global activation', async () => {
+  await withTempCwd(async ({ cwd, fixtures }) => {
+    const packageRoot = path.join(fixtures, 'package');
+    const skillDir = path.join(packageRoot, 'skills', 'ctx-skill');
+    await fs.mkdir(path.join(packageRoot, 'hooks'), { recursive: true });
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(
+      path.join(packageRoot, 'hooks', 'hooks.json'),
+      JSON.stringify({
+        SessionStart: [{ hooks: [{ type: 'command', command: 'pkg.sh' }] }],
+      }),
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(skillDir, 'SKILL.md'),
+      `---
+name: ctx-skill
+description: Companion skill.
+---
+# Ctx Skill
+`,
+      'utf8',
+    );
+
+    await installSkillSource(packageRoot, {
+      cwd,
+      includeHooks: true,
+      contexts: ['coding'],
+    });
+    const { listPackageHookProfiles } = await import('../src/core/hook-profiles.js');
+    let packages = await listPackageHookProfiles(cwd);
+    assert.equal(packages.length, 1);
+    assert.equal(packages[0].activation, 'coding');
+
+    await installSkillSource(packageRoot, {
+      cwd,
+      includeHooks: true,
+      contexts: ['daily'],
+    });
+    packages = await listPackageHookProfiles(cwd);
+    assert.equal(packages[0].activation, 'daily');
+
+    await installSkillSource(packageRoot, {
+      cwd,
+      includeHooks: true,
+      contexts: ['coding', 'daily'],
+    });
+    packages = await listPackageHookProfiles(cwd);
+    assert.equal(packages[0].activation, 'always');
+  });
+});
+
+test('installing a marketplace-style nested plugin imports its package hooks', async () => {
+  // Claude Code marketplace repos put each plugin under plugins/<name>/ with its
+  // own hooks/hooks.json. Installing the repo root must still pick those up.
+  await withTempCwd(async ({ cwd, fixtures }) => {
+    const marketplaceRoot = path.join(fixtures, 'marketplace');
+    const pluginRoot = path.join(marketplaceRoot, 'plugins', 'nested-plugin');
+    const skillDir = path.join(pluginRoot, 'skills', 'nested-skill');
+    await fs.mkdir(path.join(marketplaceRoot, '.claude-plugin'), { recursive: true });
+    await fs.mkdir(path.join(pluginRoot, '.claude-plugin'), { recursive: true });
+    await fs.mkdir(path.join(pluginRoot, 'hooks'), { recursive: true });
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(
+      path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+      JSON.stringify({
+        name: 'demo-marketplace',
+        plugins: [{ name: 'nested-plugin', source: './plugins/nested-plugin' }],
+      }),
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(pluginRoot, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'nested-plugin', skills: './skills' }),
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(pluginRoot, 'hooks', 'hooks.json'),
+      JSON.stringify({
+        SessionStart: [{ hooks: [{ type: 'command', command: 'nested.sh' }] }],
+      }),
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(skillDir, 'SKILL.md'),
+      `---
+name: nested-skill
+description: Nested marketplace skill.
+---
+# Nested Skill
+`,
+      'utf8',
+    );
+
+    const installed = await installSkillSource(marketplaceRoot, { cwd, includeHooks: true });
+    assert.deepEqual(installed, ['nested-skill']);
+
+    const { listPackageHookProfiles } = await import('../src/core/hook-profiles.js');
+    const packages = await listPackageHookProfiles(cwd);
+    assert.equal(packages.length, 1);
+    assert.equal(packages[0].enabled, true);
+    assert.equal(packages[0].hooks.SessionStart[0].hooks[0].command, 'nested.sh');
+    assert.ok(
+      await fs.access(path.join(packages[0].packageRoot, 'hooks', 'hooks.json')).then(() => true, () => false),
+    );
+  });
+});
+
+test('installing a plugin with custom hooks path from plugin.json imports package hooks', async () => {
+  // Ponytail-style: .claude-plugin/plugin.json points at hooks/claude-codex-hooks.json
+  // instead of the conventional hooks/hooks.json.
+  await withTempCwd(async ({ cwd, fixtures }) => {
+    const packageRoot = path.join(fixtures, 'ponytail-like');
+    const skillDir = path.join(packageRoot, 'skills', 'ponytail-review');
+    await fs.mkdir(path.join(packageRoot, '.claude-plugin'), { recursive: true });
+    await fs.mkdir(path.join(packageRoot, 'hooks'), { recursive: true });
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(
+      path.join(packageRoot, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({
+        name: 'ponytail-like',
+        skills: './skills',
+        hooks: './hooks/claude-codex-hooks.json',
+      }),
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(packageRoot, 'hooks', 'claude-codex-hooks.json'),
+      JSON.stringify({
+        hooks: {
+          SessionStart: [{ hooks: [{ type: 'command', command: 'node activate.js' }] }],
+          UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'node track.js' }] }],
+        },
+      }),
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(skillDir, 'SKILL.md'),
+      `---
+name: ponytail-review
+description: Review skill from a ponytail-like plugin.
+---
+# Review
+`,
+      'utf8',
+    );
+
+    const installed = await installSkillSource(packageRoot, { cwd, includeHooks: true });
+    assert.deepEqual(installed, ['ponytail-review']);
+
+    const { listPackageHookProfiles } = await import('../src/core/hook-profiles.js');
+    const packages = await listPackageHookProfiles(cwd);
+    assert.equal(packages.length, 1);
+    assert.equal(packages[0].enabled, true);
+    assert.equal(packages[0].packageName, 'ponytail-like');
+    assert.equal(packages[0].hooks.SessionStart[0].hooks[0].command, 'node activate.js');
+    assert.equal(packages[0].hooks.UserPromptSubmit[0].hooks[0].command, 'node track.js');
+  });
+});
+
 test('installing a package saves package hooks as a profile, not into the skill', async () => {
   await withTempCwd(async ({ cwd, fixtures }) => {
     const packageRoot = path.join(fixtures, 'package');

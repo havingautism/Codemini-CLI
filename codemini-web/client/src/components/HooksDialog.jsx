@@ -1083,7 +1083,11 @@ function HookProfilesPane({ onDirtyChange }) {
                 <Input value={draft.nameKey ? t(draft.nameKey) : draft.name} disabled={draft.kind !== 'custom'} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} />
               </SettingsField>
               <SettingsField id="hook-profile-activation" label={t('hooksProfileScope')}>
-                <Select value={draft.activation} disabled={draft.kind !== 'custom'} onValueChange={(activation) => setDraft((current) => ({ ...current, activation }))}>
+                <Select
+                  value={draft.activation}
+                  disabled={draft.kind !== 'custom' && draft.kind !== 'package'}
+                  onValueChange={(activation) => setDraft((current) => ({ ...current, activation }))}
+                >
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="always">{t('hooksProfileAlways')}</SelectItem>

@@ -15,6 +15,7 @@ import {
 } from '../core/skill-registry.js';
 import { discoverSkillHooks, readHooksJson } from '../core/skill-hooks-discover.js';
 import {
+  hookActivationFromContexts,
   listPackageHookProfiles,
   persistPackageHookRoot,
   savePackageHookProfile,
@@ -973,25 +974,85 @@ async function reconcileSkillHooksOnInstall(targetDir, { includeHooks = true } =
   return await discoverSkillHooks({ skillRoot: targetDir });
 }
 
-async function reconcilePackageHooksOnInstall(packageRoot, packageInfo, {
-  cwd = process.cwd(),
-  includeHooks = true,
-} = {}) {
-  if (!packageRoot) return null;
-  const packageHooksPath = path.join(packageRoot, 'hooks', 'hooks.json');
-  if (!(await pathExists(packageHooksPath))) return null;
-  const hooks = await readHooksJson(packageHooksPath);
-  if (Object.keys(hooks).length === 0) return null;
+function isPathInsideOrEqual(candidate, parent) {
+  const relative = path.relative(path.resolve(parent), path.resolve(candidate));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
 
-  const packageSource = String(packageInfo?.packageSource || packageInfo?.source || '').trim();
-  const packageName = String(packageInfo?.packageName || '').trim() || derivePackageName(packageSource);
-  const idBase = packageSource || packageName || path.basename(packageRoot);
-  const id = `pkg-${String(idBase)
+/**
+ * Resolve the package/plugin hooks file. Claude plugins may declare a custom
+ * path via plugin.json `"hooks": "./hooks/claude-codex-hooks.json"` (ponytail);
+ * otherwise fall back to conventional hooks/hooks.json.
+ */
+async function resolvePackageHooksFile(hookRoot) {
+  const plugin = await readPluginManifestSafe(hookRoot);
+  const relative = normalizeRelativePath(plugin?.hooks);
+  if (relative) {
+    const candidate = path.join(hookRoot, relative);
+    if (await pathExists(candidate)) return candidate;
+  }
+  const conventional = path.join(hookRoot, 'hooks', 'hooks.json');
+  if (await pathExists(conventional)) return conventional;
+  return null;
+}
+
+/**
+ * Locate package/plugin roots that own a hooks file for the installed skills.
+ * Claude marketplace repos nest plugins under plugins/<name>/; walk ancestors of
+ * each skill (skipping the skill dir itself) so nested plugin hooks are found.
+ */
+async function findPackageHookRoots(packageRoot, skillDirs = []) {
+  const roots = new Map();
+  const consider = async (dir) => {
+    const resolved = path.resolve(dir);
+    if (roots.has(resolved)) return;
+    if (await resolvePackageHooksFile(resolved)) {
+      roots.set(resolved, resolved);
+    }
+  };
+
+  await consider(packageRoot);
+  const stopAt = path.resolve(packageRoot);
+  for (const skillDir of skillDirs) {
+    let dir = path.dirname(path.resolve(skillDir));
+    while (isPathInsideOrEqual(dir, stopAt)) {
+      await consider(dir);
+      if (path.resolve(dir) === stopAt) break;
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  return [...roots.values()];
+}
+
+function packageHookProfileId(packageSource = '', packageName = '', hookRoot = '') {
+  const idBase = packageSource || packageName || path.basename(hookRoot);
+  return `pkg-${String(idBase)
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 72)}`;
+}
+
+async function reconcileOnePackageHookRoot(hookRoot, packageInfo, {
+  cwd = process.cwd(),
+  includeHooks = true,
+  contexts,
+} = {}) {
+  const packageHooksPath = await resolvePackageHooksFile(hookRoot);
+  if (!packageHooksPath) return null;
+  const hooks = await readHooksJson(packageHooksPath);
+  if (Object.keys(hooks).length === 0) return null;
+
+  const localInfo = await readSkillPackageInfo(hookRoot, packageInfo?.source || hookRoot);
+  const packageSource = String(
+    localInfo.packageSource || packageInfo?.packageSource || packageInfo?.source || '',
+  ).trim();
+  const packageName = String(localInfo.packageName || packageInfo?.packageName || '').trim()
+    || derivePackageName(packageSource || hookRoot);
+  const id = packageHookProfileId(packageSource, packageName, hookRoot);
 
   const existing = (await listPackageHookProfiles(cwd)).find(
     (profile) =>
@@ -1000,11 +1061,21 @@ async function reconcilePackageHooksOnInstall(packageRoot, packageInfo, {
       (packageName && profile.packageName === packageName),
   );
 
+  // Explicit include/exclude from the install checkbox is authoritative.
+  // Previously, includeHooks:true preserved an existing disabled profile, so a
+  // Web UI reinstall after the default unchecked install never enabled hooks.
   let enabled = true;
   if (includeHooks === false) enabled = false;
+  else if (includeHooks === true) enabled = true;
   else if (existing) enabled = existing.enabled !== false;
 
-  const packageInstallRoot = await persistPackageHookRoot(packageRoot, {
+  // Follow the skill install tab (全局/编码/日常). Previously always hard-coded
+  // activation:'always', so coding-tab installs still showed under 始终.
+  const activation = contexts !== undefined
+    ? hookActivationFromContexts(normalizeSkillContexts(contexts))
+    : (existing?.activation || 'always');
+
+  const packageInstallRoot = await persistPackageHookRoot(hookRoot, {
     scope: 'global',
     cwd,
     id: existing?.id || id,
@@ -1014,13 +1085,33 @@ async function reconcilePackageHooksOnInstall(packageRoot, packageInfo, {
     id: existing?.id || id,
     name: packageName || existing?.name || id,
     scope: 'global',
-    activation: existing?.activation || 'always',
+    activation,
     enabled,
     packageSource: packageSource || existing?.packageSource || '',
     packageName: packageName || existing?.packageName || id,
     packageRoot: packageInstallRoot,
     hooks,
   }, cwd);
+}
+
+async function reconcilePackageHooksOnInstall(packageRoot, packageInfo, {
+  cwd = process.cwd(),
+  includeHooks = true,
+  skillDirs = [],
+  contexts,
+} = {}) {
+  if (!packageRoot) return null;
+  const hookRoots = await findPackageHookRoots(packageRoot, skillDirs);
+  const saved = [];
+  for (const hookRoot of hookRoots) {
+    const profile = await reconcileOnePackageHookRoot(hookRoot, packageInfo, {
+      cwd,
+      includeHooks,
+      contexts,
+    });
+    if (profile) saved.push(profile);
+  }
+  return saved.length > 0 ? saved : null;
 }
 
 export async function snapshotSkillHooksDir(skillDir) {
@@ -1168,6 +1259,8 @@ async function installSkillDirs(skillDirs, {
     await reconcilePackageHooksOnInstall(packageRoot, packageInfo, {
       cwd,
       includeHooks,
+      skillDirs: selectedDirs,
+      contexts,
     });
   }
   return installed;

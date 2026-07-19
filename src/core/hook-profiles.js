@@ -80,6 +80,18 @@ function normalizeActivation(value = 'always') {
   return ['always', 'coding', 'daily'].includes(value) ? value : 'always';
 }
 
+/** Map skill contexts (coding/daily) → hook profile activation. Both → always (UI: 全局). */
+export function hookActivationFromContexts(contexts) {
+  const list = Array.isArray(contexts) ? contexts : [];
+  const hasCoding = list.includes('coding');
+  const hasDaily = list.includes('daily');
+  if (hasCoding && hasDaily) return 'always';
+  if (hasDaily && !hasCoding) return 'daily';
+  if (hasCoding) return 'coding';
+  // Empty / unknown → global (same default as normalizeSkillContexts).
+  return 'always';
+}
+
 function normalizeProfileKind(value = 'custom') {
   if (value === 'package') return 'package';
   return 'custom';

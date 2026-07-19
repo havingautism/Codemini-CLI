@@ -7021,6 +7021,10 @@ export async function createChatRuntime({
   // skill may still carry hooks. Only explicitly selected/model-loaded skills arm
   // their hooks under the new lifecycle.
   let sessionStartCompleted = false;
+  // Boot-time SessionStart already ran before any chat turn. Keep a copy of the
+  // hook UI events and replay them on the first submit so they appear at the top
+  // of that reply — without putting messages into an empty chat.
+  const sessionStartUiEvents = [];
   const runSessionStartHooksOnce = (() => {
     let started = null;
     return (onAgentEvent) => {
@@ -7048,6 +7052,13 @@ export async function createChatRuntime({
   })();
   await runSessionStartHooksOnce((event) => {
     startupEvents.push(event);
+    if (
+      event?.type === 'hook:start'
+      || event?.type === 'hook:end'
+      || event?.type === 'hook:error'
+    ) {
+      sessionStartUiEvents.push(event);
+    }
   });
   // Arms hooks for a skill by name, looking it up first in the manual-selection
   // command map, then falling back to the agent-facing indexed skill catalog
@@ -7762,6 +7773,11 @@ export async function createChatRuntime({
     )];
     for (const skillName of selectedSkillNamesForHooks) {
       await armSkillHooksByName(skillName, { onAgentEvent });
+    }
+    if (sessionStartUiEvents.length > 0 && typeof onAgentEvent === 'function') {
+      for (const event of sessionStartUiEvents.splice(0, sessionStartUiEvents.length)) {
+        onAgentEvent(event);
+      }
     }
     const userPromptHookResult = await fireSkillHookEvent({
       session: skillHooksSession,

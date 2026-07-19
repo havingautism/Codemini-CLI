@@ -818,7 +818,7 @@ export const en = {
   hooksDialogHint:
     "Configure workspace-wide hooks and per-skill hooks in one place.",
   hooksProfiles: "Hook Profiles",
-  hooksProfilesHint: "Profiles stack by activation condition, regardless of source.",
+  hooksProfilesHint: "Profiles stack by activation: Global / Coding / Daily do not overlap.",
   hooksNewProfile: "New profile",
   hooksProfileScope: "Scope",
   hooksProfileCustom: "Custom profile",
@@ -826,7 +826,7 @@ export const en = {
   hooksNoProfilesInScope: "No profiles in this scope",
   hooksSelectProfile: "Select or create a Hook Profile.",
   hooksProfileActivation: "Activation",
-  hooksProfileAlways: "Always",
+  hooksProfileAlways: "Global",
   hooksProfileSkill: "Skill",
   hooksProfilePackage: "Package",
   hooksProfilePackageHint: "Session-scoped package hooks",

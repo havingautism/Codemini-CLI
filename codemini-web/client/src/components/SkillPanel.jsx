@@ -1377,7 +1377,7 @@ export function SkillPanel({ projectDirs = [] }) {
   const [installOpen, setInstallOpen] = useState(false);
   const [skillSelect, setSkillSelect] = useState(null);
   const [selectedSkillNames, setSelectedSkillNames] = useState(() => new Set());
-  const [updating, setUpdating] = useState(false);
+  const [updatingPackageKey, setUpdatingPackageKey] = useState("");
   const [pendingDelete, setPendingDelete] = useState(null);
   const [pendingBatchPackage, setPendingBatchPackage] = useState(null);
   const [deleting, setDeleting] = useState(false);
@@ -1522,7 +1522,6 @@ export function SkillPanel({ projectDirs = [] }) {
   const handleConfirmSkillSelect = async () => {
     if (!skillSelect || selectedSkillNames.size === 0) return;
     const skillNames = [...selectedSkillNames];
-    setUpdating(true);
     setInstalling(true);
     setActionError("");
     setInstallError("");
@@ -1558,14 +1557,13 @@ export function SkillPanel({ projectDirs = [] }) {
         setInstallError(err.message || "Install failed");
       }
     } finally {
-      setUpdating(false);
       setInstalling(false);
     }
   };
 
-  const handleUpdatePackage = async (skill) => {
-    if (!skill || updating || installing) return;
-    setUpdating(true);
+  const handleUpdatePackage = async (skill, packageKey = "") => {
+    if (!skill || updatingPackageKey || installing) return;
+    setUpdatingPackageKey(packageKey || skill.name);
     setActionError("");
     try {
       const preview = await api.previewSkillPackageUpdate({
@@ -1585,7 +1583,9 @@ export function SkillPanel({ projectDirs = [] }) {
             .map((item) => item.name),
         ),
       );
-      setInstallHooks(false);
+      setInstallHooks(
+        tabSkills.some((item) => item.installed && item.hooksImported !== false),
+      );
       setSkillSelect({
         mode: "update",
         name: skill.name,
@@ -1601,7 +1601,7 @@ export function SkillPanel({ projectDirs = [] }) {
     } catch (err) {
       setActionError(err.message || t("updateSkillPackageFailed"));
     } finally {
-      setUpdating(false);
+      setUpdatingPackageKey("");
     }
   };
 
@@ -1730,16 +1730,20 @@ export function SkillPanel({ projectDirs = [] }) {
                         <Button
                           variant="ghost"
                           size="icon-sm"
-                          disabled={updating}
+                          disabled={!!updatingPackageKey || installing}
                           onClick={() =>
-                            handleUpdatePackage(pkg.representative)
+                            handleUpdatePackage(pkg.representative, pkg.key)
                           }
                           aria-label={t("updateSkillPackage")}
                           title={t("updateSkillPackage")}
                         >
                           <ArrowsClockwise
                             size={13}
-                            className={updating ? "animate-spin" : undefined}
+                            className={
+                              updatingPackageKey === pkg.key
+                                ? "animate-spin"
+                                : undefined
+                            }
                           />
                         </Button>
                         <Button
@@ -1940,10 +1944,10 @@ export function SkillPanel({ projectDirs = [] }) {
         includeHooks={installHooks}
         setIncludeHooks={setInstallHooks}
         loading={false}
-        confirming={installing || updating}
+        confirming={installing || !!updatingPackageKey}
         error={skillSelect?.mode === "update" ? actionError : installError}
         onOpenChange={(open) => {
-          if (!open && !installing && !updating) {
+          if (!open && !installing && !updatingPackageKey) {
             setSkillSelect(null);
             setInstallError("");
             setActionError("");
