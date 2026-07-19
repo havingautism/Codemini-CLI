@@ -2,6 +2,7 @@ import {
   modelUsesFixedKimiSampling,
   resolveOpenAICompatibleReasoning
 } from './reasoning-effort.js';
+import { isCompletionTruncated } from './completion-status.js';
 
 function extractTextContent(content) {
   if (typeof content === 'string') return content;
@@ -98,7 +99,8 @@ async function* iterateSseEvents(stream) {
       .filter((line) => line.startsWith('data:'))
       .map((line) => line.slice(5).trimStart());
     const dataText = dataLines.join('\n');
-    if (!dataText || dataText === '[DONE]') return null;
+    if (!dataText) return null;
+    if (dataText === '[DONE]') return { __codemini_stream_done: true };
     return JSON.parse(dataText);
   };
 
@@ -175,6 +177,13 @@ function sanitizeGatewayMessages(messages) {
   return source
     .filter((message) => message && typeof message === 'object')
     .map((message) => {
+      if (message.role === 'tool') {
+        return {
+          role: 'tool',
+          content: message.content,
+          tool_call_id: message.tool_call_id
+        };
+      }
       if (!Array.isArray(message.tool_calls) || message.tool_calls.length === 0) {
         return message;
       }
@@ -289,13 +298,15 @@ function hasTrailingToolContext(messages) {
   return false;
 }
 
-function buildFinalStreamResult(text, toolCallsByIndex, usage, messages) {
+function buildFinalStreamResult(text, toolCallsByIndex, usage, messages, finishReason = '', streamDone = false) {
+  const argumentsComplete = (Boolean(finishReason) || streamDone) && !isCompletionTruncated(finishReason);
   const toolCalls = Array.from(toolCallsByIndex.entries())
     .sort((a, b) => a[0] - b[0])
     .map(([, tc], i) => ({
       id: tc.id || `tc-${i + 1}`,
       name: tc.name,
-      arguments: tc.arguments || '{}'
+      arguments: tc.arguments || '{}',
+      argumentsComplete
     }))
     .filter((tc) => tc.name);
   const normalizedText = String(text || '').trim();
@@ -306,7 +317,8 @@ function buildFinalStreamResult(text, toolCallsByIndex, usage, messages) {
         text: '',
         toolCalls: [],
         usage,
-        incomplete: true
+        incomplete: true,
+        finishReason: finishReason || ''
       };
     }
     throw new Error('Gateway stream returned empty assistant response');
@@ -316,7 +328,8 @@ function buildFinalStreamResult(text, toolCallsByIndex, usage, messages) {
     text,
     toolCalls,
     usage,
-    incomplete: false
+    incomplete: false,
+    finishReason: finishReason || ''
   };
 }
 
@@ -403,12 +416,14 @@ export async function createChatCompletion({
   }, { maxRetries });
   const data = await parseJsonResponse(response);
   const message = data?.choices?.[0]?.message || {};
+  const finishReason = String(data?.choices?.[0]?.finish_reason || '');
   const text = sanitizeMiniMaxText(model, extractTextContent(message.content));
   const reasoningContent = extractReasoningContent(message.reasoning_content);
   const toolCalls = (message.tool_calls || []).map((tc) => ({
     id: tc.id,
     name: tc.function?.name,
-    arguments: normalizeIncomingToolCallArguments(tc.function?.arguments)
+    arguments: normalizeIncomingToolCallArguments(tc.function?.arguments),
+    argumentsComplete: !isCompletionTruncated(finishReason)
   }));
   const normalizedText = String(text || '').trim();
 
@@ -428,6 +443,7 @@ export async function createChatCompletion({
     text,
     toolCalls,
     usage: extractUsageObject(data),
+    finishReason,
     assistantMessage: buildAssistantMessage({
       text,
       toolCalls,
@@ -496,10 +512,16 @@ export async function createChatCompletionStream({
   let reasoningContent = '';
   const toolCallsByIndex = new Map();
   let usage = null;
+  let finishReason = '';
+  let streamDone = false;
   let miniMaxStreamState = { rawContent: '', visibleText: '' };
 
   try {
     for await (const chunk of iterateSseEvents(response.body)) {
+    if (chunk?.__codemini_stream_done) {
+      streamDone = true;
+      continue;
+    }
     usage = extractUsageObject(chunk) || usage;
     const choice0 = chunk?.choices?.[0] || {};
     const delta = choice0?.delta || {};
@@ -548,6 +570,7 @@ export async function createChatCompletionStream({
     }
 
     if (choice0?.finish_reason) {
+      finishReason = String(choice0.finish_reason || '');
       break;
     }
     }
@@ -556,7 +579,7 @@ export async function createChatCompletionStream({
     if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
   }
 
-  const result = buildFinalStreamResult(text, toolCallsByIndex, usage, messages);
+  const result = buildFinalStreamResult(text, toolCallsByIndex, usage, messages, finishReason, streamDone);
   return {
     ...result,
     assistantMessage: buildAssistantMessage({

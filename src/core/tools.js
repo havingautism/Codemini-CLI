@@ -88,12 +88,17 @@ import {
   normalizeWebSearchArgs,
   normalizeWriteArgs,
 } from "./tool-args.js";
+import {
+  atomicWriteUtf8,
+  createStagedWriteStore,
+} from "./staged-write.js";
 const BACKGROUND_TASK_RECENT_OUTPUT_LIMIT = 80;
 const BACKGROUND_TASK_POLL_MS = 150;
 const MAX_AST_ENCLOSING_BYTES = 300_000;
 const MAX_AST_ENCLOSING_LINES = 5_000;
 const SKILL_ALIASES = new Map();
 const RUN_COMMAND_SAFE_MODE_APPROVED = Symbol("runCommandSafeModeApproved");
+const OUTSIDE_WORKSPACE_MUTATION_APPROVED = Symbol("outsideWorkspaceMutationApproved");
 const backgroundTaskRegistry = new Map();
 let backgroundTaskCounter = 0;
 let backgroundTaskLogCursorCounter = 0;
@@ -109,6 +114,33 @@ export function markRunCommandSafeModeApproved(args = {}) {
 
 export function hasRunCommandSafeModeApproval(args = {}) {
   return Boolean(args?.[RUN_COMMAND_SAFE_MODE_APPROVED]);
+}
+
+export function markOutsideWorkspaceMutationApproved(args = {}, approval = {}) {
+  const next = { ...(args && typeof args === "object" ? args : {}) };
+  const paths = Array.isArray(approval?.paths)
+    ? approval.paths.map((item) => String(item || "").trim()).filter(Boolean).map((item) => path.resolve(item))
+    : [];
+  Object.defineProperty(next, OUTSIDE_WORKSPACE_MUTATION_APPROVED, {
+    value: { paths: [...new Set(paths)] },
+    enumerable: false,
+  });
+  return next;
+}
+
+function configWithApprovedMutationPaths(config = {}, args = {}) {
+  const approved = args?.[OUTSIDE_WORKSPACE_MUTATION_APPROVED];
+  if (!Array.isArray(approved?.paths) || approved.paths.length === 0) return config;
+  return {
+    ...config,
+    policy: {
+      ...(config?.policy || {}),
+      allowed_paths: [
+        ...(Array.isArray(config?.policy?.allowed_paths) ? config.policy.allowed_paths : []),
+        ...approved.paths,
+      ],
+    },
+  };
 }
 
 async function realpathIfExists(targetPath) {
@@ -139,10 +171,21 @@ async function getAllowedRealRoots(root, config = {}) {
     .filter(Boolean);
   const out = [];
   for (const item of roots) {
-    try {
-      out.push(await fs.realpath(path.resolve(item)));
-    } catch {
+    const absolute = path.resolve(item);
+    const existing = await realpathIfExists(absolute);
+    if (existing) {
+      out.push(existing);
       continue;
+    }
+    let probe = path.dirname(absolute);
+    while (!(await realpathIfExists(probe))) {
+      const parent = path.dirname(probe);
+      if (parent === probe) break;
+      probe = parent;
+    }
+    const resolvedProbe = await realpathIfExists(probe);
+    if (resolvedProbe) {
+      out.push(path.resolve(resolvedProbe, path.relative(probe, absolute)));
     }
   }
   return out;
@@ -3653,6 +3696,10 @@ export function getBuiltinTools({
     : config?.runtime?.fileObservations instanceof Map
       ? config.runtime.fileObservations
       : new Map();
+  const stagedWrites = createStagedWriteStore({
+    maxChunkChars: Number(config?.tools?.write_chunk_max_chars) || undefined,
+    maxTotalChars: Number(config?.tools?.staged_write_max_chars) || undefined,
+  });
   const hashFileOrNull = async (target) => {
     try {
       return createHash("sha256").update(await fs.readFile(target)).digest("hex");
@@ -4026,7 +4073,7 @@ export function getBuiltinTools({
       function: {
         name: "edit",
         description:
-          'Edit an existing file after reading enough surrounding code. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. Use exactly one canonical shape: {path, old_text, new_text} for text replacement; {path, new_content} for full-file rewrite; {path, anchor_text, content, position:"before"|"after"} for inserts; or {path, kind:"replace_block", target|ast_target, new_content} for structural replacement. If old_text is repeated, use path:"file:10-30" or rely on the most recent read range. Set replace_all=true to replace every match.',
+          'Edit an existing file after reading enough surrounding code. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. Use exactly one canonical shape: {path, old_text, new_text} for text replacement; {path, new_content} for a small full-file rewrite; {path, anchor_text, content, position:"before"|"after"} for inserts; or {path, kind:"replace_block", target|ast_target, new_content} for structural replacement. Keep generated content fields near the end of the object. For a long whole-file rewrite, use begin_write/write_chunk/commit_write instead. If old_text is repeated, use path:"file:10-30" or rely on the most recent read range. Set replace_all=true to replace every match.',
         parameters: {
           type: "object",
           properties: {
@@ -4035,7 +4082,6 @@ export function getBuiltinTools({
               description:
                 "File path to edit. Inline ranges like src/app.js:10-30 are accepted.",
             },
-            new_content: { type: "string", description: "Full-file replacement content for existing files. In JSON text, encode newlines as \\n." },
             old_text: { type: "string", description: "Exact text to replace" },
             new_text: { type: "string", description: "Replacement text for old_text" },
             replace_all: {
@@ -4054,10 +4100,6 @@ export function getBuiltinTools({
               type: "string",
               description: "Anchor text for inserts",
             },
-            content: {
-              type: "string",
-              description: "Content to insert with anchor_text/position, or block content for kind:\"replace_block\". Use new_text with old_text replacements, and new_content for full-file rewrites.",
-            },
             position: { type: "string", description: "before or after" },
             kind: {
               type: "string",
@@ -4075,8 +4117,13 @@ export function getBuiltinTools({
             },
             symbol: { type: "string", description: "Symbol to target" },
             line: { type: "number", description: "Line to target" },
+            content: {
+              type: "string",
+              description: "Content to insert with anchor_text/position, placed near the end. Use new_text with old_text replacements, and new_content for full-file rewrites.",
+            },
+            new_content: { type: "string", description: "Small full-file or structural-block replacement content. Keep this field last. For long whole-file output, use the staged write tools. In JSON text, encode newlines as \\n." },
           },
-          required: [],
+          required: ["path"],
         },
       },
     },
@@ -4085,7 +4132,7 @@ export function getBuiltinTools({
       function: {
         name: "write",
         description:
-          "Write an entire file. Use for new files, or for an intentional full-file overwrite of an existing file with overwrite=true. Always include exactly {path, content}. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. For small changes in existing files, prefer edit with {path, old_text, new_text}.",
+          "Write an entire small file. Use for new files, or for an intentional full-file overwrite of an existing file with overwrite=true. Always include exactly {path, overwrite?, content}, with content last. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. For long content that might approach the model output limit, use begin_write, sequential write_chunk calls, then commit_write. For small changes in existing files, prefer edit with {path, old_text, new_text}.",
         parameters: {
           type: "object",
           properties: {
@@ -4094,17 +4141,115 @@ export function getBuiltinTools({
               description:
                 "Required file path like src/app.js or pages/index.html.",
             },
-            content: {
-              type: "string",
-              description: "Complete file content. In JSON text, encode newlines as \\n.",
-            },
             overwrite: {
               type: "boolean",
               description:
                 "Set true to intentionally replace an existing file. Defaults to false.",
             },
+            content: {
+              type: "string",
+              description: "Complete file content. Keep this field last. In JSON text, encode newlines as \\n.",
+            },
           },
           required: ["path", "content"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "begin_write",
+        description:
+          "Begin a transactional whole-file write for long content. This validates and snapshots the target but does not modify it. Follow with sequential write_chunk calls and exactly one commit_write. Use abort_write to discard the staging state.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: "Target file path inside the workspace.",
+            },
+            overwrite: {
+              type: "boolean",
+              description: "Set true to intentionally replace an existing file. Defaults to false.",
+            },
+          },
+          required: ["path"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "write_chunk",
+        description:
+          "Stage one bounded content chunk without modifying the target file. Send sequence values contiguously from 0. Repeating the same sequence with identical content is idempotent. Keep content as the final JSON field. If a call is truncated or invalid, retry that sequence with a smaller chunk.",
+        parameters: {
+          type: "object",
+          properties: {
+            write_id: {
+              type: "string",
+              description: "Transaction id returned by begin_write.",
+            },
+            sequence: {
+              type: "integer",
+              minimum: 0,
+              description: "Zero-based contiguous chunk sequence.",
+            },
+            content: {
+              type: "string",
+              description: "Chunk content, placed last. Keep each chunk below the max_chunk_chars returned by begin_write.",
+            },
+          },
+          required: ["write_id", "sequence", "content"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "commit_write",
+        description:
+          "Atomically commit a staged whole-file write. The target remains unchanged unless every chunk is present, the optional sha256 matches, the target has not changed since begin_write, and the final rename succeeds.",
+        parameters: {
+          type: "object",
+          properties: {
+            write_id: {
+              type: "string",
+              description: "Transaction id returned by begin_write.",
+            },
+            path: {
+              type: "string",
+              description: "Target path originally passed to begin_write. Repeated here for approval and audit visibility.",
+            },
+            total_chunks: {
+              type: "integer",
+              minimum: 0,
+              description: "Exact number of chunks staged for this transaction.",
+            },
+            expected_sha256: {
+              type: "string",
+              description: "Optional SHA-256 hex digest of the assembled UTF-8 content.",
+            },
+          },
+          required: ["write_id", "path", "total_chunks"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "abort_write",
+        description:
+          "Discard an unfinished staged write. This never modifies the target file.",
+        parameters: {
+          type: "object",
+          properties: {
+            write_id: {
+              type: "string",
+              description: "Transaction id returned by begin_write.",
+            },
+          },
+          required: ["write_id"],
         },
       },
     },
@@ -4312,14 +4457,10 @@ export function getBuiltinTools({
       function: {
         name: "run",
         description:
-          "Run a shell command. Use this for one-shot commands like install/build/test, and also for long-running commands by setting run_in_background=true. Long-running commands may also be backgrounded automatically.",
+          "Run a compact shell command. Use this for one-shot commands like install/build/test, and also for long-running commands by setting run_in_background=true. Long-running commands may also be backgrounded automatically. Put command last. Do not embed long scripts or generated file content; stage/write the file first, then run a short command that invokes it.",
         parameters: {
           type: "object",
           properties: {
-            command: {
-              type: "string",
-              description: "Shell command to execute",
-            },
             timeout: { type: "number", description: "Timeout in milliseconds" },
             run_in_background: {
               type: "boolean",
@@ -4348,6 +4489,10 @@ export function getBuiltinTools({
               },
               description:
                 "Optional HTTP readiness probe for a background task",
+            },
+            command: {
+              type: "string",
+              description: "Compact shell command to execute. Keep this field last.",
             },
           },
           required: ["command"],
@@ -5632,6 +5777,7 @@ export function getBuiltinTools({
     },
     edit: async (args) => {
       await ensureProjectIndex();
+      const mutationConfig = configWithApprovedMutationPaths(config, args);
       const normalizedKind = String(args?.kind || "").trim();
       const hasReplaceTextArgs =
         args?.old_text != null;
@@ -5663,7 +5809,10 @@ export function getBuiltinTools({
           }
         : {};
       const observedPath = editPath || astTarget?.path || lastReadPath;
-      const editTargetPath = await resolveInWorkspace(workspaceRoot, observedPath, config);
+      if (!editPath && !astTarget?.path) {
+        throw new Error("edit requires an explicit path so the mutation target can be reviewed");
+      }
+      const editTargetPath = await resolveInWorkspace(workspaceRoot, observedPath, mutationConfig);
       const result = await commitManagedMutation({
         targets: [{ target: editTargetPath, path: observedPath }],
         operation: "edit",
@@ -5679,7 +5828,7 @@ export function getBuiltinTools({
                   recent_file: lastReadPath,
                 }
               : { ...args, ...rangeArgs, recent_file: lastReadPath },
-            config,
+            mutationConfig,
           ),
           backup,
         ),
@@ -5689,17 +5838,18 @@ export function getBuiltinTools({
     },
     create: async (args) => {
       await ensureProjectIndex();
+      const mutationConfig = configWithApprovedMutationPaths(config, args);
       const createPath = normalizeFilePathValue(
         args?.path || "",
         { stripInlineRange: true },
       ).trim();
-      const createTarget = await resolveInWorkspace(workspaceRoot, createPath, config);
+      const createTarget = await resolveInWorkspace(workspaceRoot, createPath, mutationConfig);
       const result = await commitManagedMutation({
         targets: [{ target: createTarget, path: createPath }],
         operation: "create",
         prepare: () => backupNonGitPathOnce(createPath),
         mutate: async (backup) => attachBackup(
-          await writeFile(workspaceRoot, args, config),
+          await writeFile(workspaceRoot, args, mutationConfig),
           backup,
         ),
       });
@@ -5708,36 +5858,140 @@ export function getBuiltinTools({
     },
     write: async (args) => {
       await ensureProjectIndex();
+      const mutationConfig = configWithApprovedMutationPaths(config, args);
       const writePath = normalizeFilePathValue(
         args?.path || "",
         { stripInlineRange: true },
       ).trim();
-      const writeTarget = await resolveInWorkspace(workspaceRoot, writePath, config);
+      const writeTarget = await resolveInWorkspace(workspaceRoot, writePath, mutationConfig);
       const result = await commitManagedMutation({
         targets: [{ target: writeTarget, path: writePath }],
         operation: "write",
         prepare: () => backupNonGitPathOnce(writePath),
         mutate: async (backup) => attachBackup(
-          await writeAnyFile(workspaceRoot, args, config),
+          await writeAnyFile(workspaceRoot, args, mutationConfig),
           backup,
         ),
       });
       if (result?.path) await refreshProjectFile(result.path);
       return result;
     },
+    begin_write: async (args) => {
+      const rawPath = normalizeFilePathValue(args?.path || "", {
+        stripInlineRange: true,
+      }).trim();
+      if (!rawPath || rawPath === "." || rawPath === "./") {
+        throw new Error("begin_write requires a file path, not the workspace root");
+      }
+      const overwrite = semanticBoolean(args?.overwrite, false);
+      let target;
+      try {
+        target = await resolveInWorkspace(workspaceRoot, rawPath, config);
+      } catch (error) {
+        if (!/^Path escapes workspace:/i.test(String(error?.message || ""))) throw error;
+        // Staging does not mutate the target. The exact resolved path is
+        // reviewed and one-shot authorized by commit_write before atomic I/O.
+        target = path.resolve(workspaceRoot, rawPath);
+      }
+      let existed = false;
+      try {
+        const stat = await fs.stat(target);
+        if (stat.isDirectory()) {
+          throw new Error(`begin_write target is a directory: ${rawPath}`);
+        }
+        existed = true;
+      } catch (error) {
+        if (error?.code && error.code !== "ENOENT") throw error;
+      }
+      if (existed && !overwrite) {
+        throw new Error(
+          `begin_write target already exists: ${rawPath}. Set overwrite=true for an intentional full-file replacement, or use edit for a small change.`,
+        );
+      }
+      if (fileObservations.has(target)) {
+        await assertObservedVersion(target, rawPath);
+      } else {
+        await observeFile(target);
+      }
+      return stagedWrites.begin({
+        path: rawPath,
+        target,
+        overwrite,
+        existed,
+      });
+    },
+    write_chunk: async (args) => stagedWrites.append({
+      writeId: args?.write_id,
+      sequence: args?.sequence,
+      content: args?.content,
+    }),
+    commit_write: async (args) => {
+      await ensureProjectIndex();
+      const prepared = stagedWrites.prepareCommit({
+        writeId: args?.write_id,
+        totalChunks: args?.total_chunks,
+        expectedSha256: args?.expected_sha256,
+      });
+      const { transaction, content, sha256: contentHash } = prepared;
+      const commitPath = normalizeFilePathValue(args?.path || "", {
+        stripInlineRange: true,
+      }).trim();
+      if (commitPath !== transaction.path) {
+        throw new Error(
+          `commit_write path mismatch: transaction targets ${transaction.path}, received ${commitPath || "(missing path)"}`,
+        );
+      }
+      const result = await commitManagedMutation({
+        targets: [{ target: transaction.target, path: transaction.path }],
+        operation: transaction.existed ? "write" : "create",
+        prepare: () => backupNonGitPathOnce(transaction.path),
+        mutate: async (backup) => {
+          let beforeContent = "";
+          if (transaction.existed) {
+            beforeContent = await fs.readFile(transaction.target, "utf8");
+          }
+          await atomicWriteUtf8(
+            transaction.target,
+            content,
+            transaction.writeId,
+          );
+          const beforeLines = splitLines(beforeContent);
+          const afterLines = splitLines(content);
+          return attachBackup({
+            ok: true,
+            path: transaction.path,
+            action: transaction.existed ? "rewrite_file" : "create",
+            changed_line: 1,
+            diff_preview: buildDiffPreview(beforeContent, content),
+            lines_added: afterLines.length,
+            lines_removed: transaction.existed ? beforeLines.length : 0,
+            overwritten: transaction.existed,
+            chunks_committed: transaction.chunks.length,
+            content_chars: content.length,
+            sha256: contentHash,
+            atomic: true,
+          }, backup);
+        },
+      });
+      stagedWrites.finish(transaction.writeId);
+      if (result?.path) await refreshProjectFile(result.path);
+      return result;
+    },
+    abort_write: async (args) => stagedWrites.abort(args?.write_id),
     apply_patch: async (args) => {
       await ensureProjectIndex();
+      const mutationConfig = configWithApprovedMutationPaths(config, args);
       const patchText = String(
         args?.patch_text ?? "",
       );
       const parsedHunks = parsePatchText(patchText);
       const observedTargets = [];
       for (const hunk of parsedHunks) {
-        const target = await resolveInWorkspace(workspaceRoot, hunk.path, config);
+        const target = await resolveInWorkspace(workspaceRoot, hunk.path, mutationConfig);
         observedTargets.push({ target, path: hunk.path });
         if (hunk.movePath) {
           observedTargets.push({
-            target: await resolveInWorkspace(workspaceRoot, hunk.movePath, config),
+            target: await resolveInWorkspace(workspaceRoot, hunk.movePath, mutationConfig),
             path: hunk.movePath,
           });
         }
@@ -5761,7 +6015,7 @@ export function getBuiltinTools({
       for (const pathValue of backupPaths) {
         backups.push(await backupNonGitPathOnce(pathValue));
       }
-      const result = await applyPatchText(workspaceRoot, args, config, {
+      const result = await applyPatchText(workspaceRoot, args, mutationConfig, {
         beforeMutation: async () => {
           await beforeApplyPatchMutation?.();
           for (const target of observedTargets) {
@@ -5778,17 +6032,18 @@ export function getBuiltinTools({
     delete: Object.assign(
       async (args) => {
         await ensureProjectIndex();
+        const mutationConfig = configWithApprovedMutationPaths(config, args);
         const deletePathValue = normalizeFilePathValue(
           args?.path || args?.file || args?.file_path || args?.target || "",
           { stripInlineRange: true },
         ).trim();
-        const deleteTarget = await resolveInWorkspace(workspaceRoot, deletePathValue, config);
+        const deleteTarget = await resolveInWorkspace(workspaceRoot, deletePathValue, mutationConfig);
         const result = await commitManagedMutation({
           targets: [{ target: deleteTarget, path: deletePathValue }],
           operation: "delete",
           prepare: () => backupNonGitPathOnce(deletePathValue),
           mutate: async (backup) => attachBackup(
-            await deletePath(workspaceRoot, args, config),
+            await deletePath(workspaceRoot, args, mutationConfig),
             backup,
           ),
         });
@@ -6531,6 +6786,44 @@ export function getBuiltinTools({
       return summary;
     },
 
+    write(result) {
+      if (!result || typeof result !== "object") return String(result);
+      const p = result.path || "";
+      const action = result.action || "write";
+      const backup = result.backupPath
+        ? `\nbackup: ${result.backupPath}${result.backupReused ? " (reused)" : ""}`
+        : "";
+      const summary = `${action} ${p}${backup}`;
+      const diffPreview = result.diff_preview || "";
+      return diffPreview
+        ? `${summary}\n${diffPreview.length > 600 ? `${diffPreview.slice(0, 597)}...` : diffPreview}`
+        : summary;
+    },
+
+    begin_write(result) {
+      if (!result || typeof result !== "object") return String(result);
+      return `Staged write ${result.write_id || "?"} opened for ${result.path || "?"}; next sequence ${result.next_sequence ?? 0}, max ${result.max_chunk_chars || "?"} chars/chunk.`;
+    },
+
+    write_chunk(result) {
+      if (!result || typeof result !== "object") return String(result);
+      return `Staged ${result.write_id || "?"} chunk ${result.sequence ?? "?"}${result.duplicate ? " (idempotent duplicate)" : ""}; ${result.total_chars || 0} chars total; next sequence ${result.next_sequence ?? "?"}.`;
+    },
+
+    commit_write(result) {
+      if (!result || typeof result !== "object") return String(result);
+      const summary = `${result.action || "write"} ${result.path || "?"} atomically from ${result.chunks_committed ?? 0} chunk(s); sha256 ${result.sha256 || "?"}`;
+      const diffPreview = result.diff_preview || "";
+      return diffPreview
+        ? `${summary}\n${diffPreview.length > 600 ? `${diffPreview.slice(0, 597)}...` : diffPreview}`
+        : summary;
+    },
+
+    abort_write(result) {
+      if (!result || typeof result !== "object") return String(result);
+      return `Aborted staged write ${result.write_id || "?"} for ${result.path || "?"}; discarded ${result.discarded_chunks || 0} chunk(s).`;
+    },
+
     delete(result) {
       if (!result || typeof result !== "object") return String(result);
       if (result.ok === false) return JSON.stringify(result);
@@ -6758,6 +7051,7 @@ export function getBuiltinTools({
   Object.assign(formatters, mcpTools.formatters);
 
   async function dispose() {
+    stagedWrites.clear();
     if (activeFffAdapter?.dispose) {
       try {
         await activeFffAdapter.dispose();

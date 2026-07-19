@@ -3,7 +3,10 @@ import path from 'node:path';
 import { getConfigFilePath, getLegacyConfigDir } from './paths.js';
 import { normalizeReplyLanguage } from './reply-language.js';
 import { normalizeShellName } from './shell-profile.js';
-import { MEMORY_ALWAYS_ALLOW_TOOLS } from './constants.js';
+import {
+  MEMORY_ALWAYS_ALLOW_TOOLS,
+  STAGED_WRITE_ALWAYS_ALLOW_TOOLS
+} from './constants.js';
 import { normalizeReasoningEffort } from './provider/reasoning-effort.js';
 import { normalizeSkillContexts } from './skill-contexts.js';
 
@@ -60,8 +63,13 @@ const DEFAULT_CONFIG = {
       'search_code',
       'list_background_tasks',
       'get_background_task',
+      ...STAGED_WRITE_ALWAYS_ALLOW_TOOLS,
       ...MEMORY_ALWAYS_ALLOW_TOOLS
     ]
+  },
+  tools: {
+    write_chunk_max_chars: 12000,
+    staged_write_max_chars: 4194304
   },
   sessions: {
     max_sessions: 100,
@@ -216,9 +224,10 @@ function normalizePolicyLists(config) {
       'list_background_tasks',
       'get_background_task',
       ...MEMORY_ALWAYS_ALLOW_TOOLS,
+      ...STAGED_WRITE_ALWAYS_ALLOW_TOOLS,
       ...rawTools
     ].filter((name) => String(name) !== 'list_files')
-      .filter((name) => !['edit', 'create', 'write', 'apply_patch', 'delete', 'run', 'stop_background_task'].includes(String(name)))
+      .filter((name) => !['edit', 'create', 'write', 'commit_write', 'apply_patch', 'delete', 'run', 'stop_background_task'].includes(String(name)))
   );
   next.ui = next.ui || {};
   next.ui.language = normalizeUiLanguage(next.ui.language);

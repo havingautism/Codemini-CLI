@@ -10,7 +10,7 @@ import {
 } from './change-oplog-sqlite-store.js';
 
 const CHANGE_OPLOG_VERSION = 1;
-const FILE_TOOLS = new Set(['edit', 'create', 'write', 'apply_patch', 'delete']);
+const FILE_TOOLS = new Set(['edit', 'create', 'write', 'commit_write', 'apply_patch', 'delete']);
 
 function ensurePatchNewline(patch) {
   const text = String(patch || '');

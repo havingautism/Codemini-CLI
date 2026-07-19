@@ -7,11 +7,24 @@ import { buildRunFailureMessage, getToolOutputSanitizeOptions, sanitizeTextForMo
 import { normalizeToolArguments } from './tool-args.js';
 import { createToolResultStore, summarizeToolResult } from './tool-result-store.js';
 import { applyAggressiveToolPruneBeta } from './context-compact.js';
-import { markRunCommandSafeModeApproved } from './tools.js';
+import {
+  markOutsideWorkspaceMutationApproved,
+  markRunCommandSafeModeApproved
+} from './tools.js';
 import { formatToolDisplayName } from './tool-display.js';
-import { MEMORY_ALWAYS_ALLOW_TOOLS } from './constants.js';
-import { toolRequiresUserApproval } from './approval-policy.js';
+import {
+  MEMORY_ALWAYS_ALLOW_TOOLS,
+  STAGED_WRITE_ALWAYS_ALLOW_TOOLS
+} from './constants.js';
+import {
+  inspectOutsideWorkspaceMutation,
+  toolRequiresUserApproval
+} from './approval-policy.js';
 import { fireSkillHookEvent, formatHookContextLines } from './skill-hooks-runtime.js';
+import {
+  isCompletionTruncated,
+  looksLikeTruncatedJson,
+} from './provider/completion-status.js';
 
 /**
  * 安全解析 JSON 字符串。
@@ -94,20 +107,85 @@ function buildApprovalBlockedResult(toolName, args = {}, approvalReason = '') {
   };
 }
 
+const LARGE_PAYLOAD_TOOLS = new Set([
+  'create',
+  'write',
+  'write_chunk',
+  'edit',
+  'apply_patch',
+  'run',
+  'create_plan',
+  'update_plan',
+  'create_spec',
+  'update_todos',
+  'request_user_input',
+  'save_memory',
+  'add_code_comment',
+  'update_code_comment',
+]);
+
+function suggestionForInvalidToolArgs(toolName, { truncated = false } = {}) {
+  const name = String(toolName || 'tool').trim() || 'tool';
+  if (truncated) {
+    if (name === 'run') {
+      return 'write a script file in small chunks, then run a short command such as powershell -File path.ps1';
+    }
+    if (name === 'apply_patch' || name === 'edit') {
+      return 'apply smaller hunks across multiple tool calls';
+    }
+    if (name === 'create' || name === 'write') {
+      return 'use begin_write, smaller sequential write_chunk calls, then commit_write';
+    }
+    if (name === 'write_chunk') {
+      return 'retry the same sequence with a smaller content chunk';
+    }
+    if (LARGE_PAYLOAD_TOOLS.has(name)) {
+      return 'split the payload across multiple smaller tool calls';
+    }
+    return 'retry with compact JSON arguments';
+  }
+  if (name === 'run') {
+    return 'create/edit a script file, then run a short command';
+  }
+  if (LARGE_PAYLOAD_TOOLS.has(name)) {
+    return 'keep arguments compact; move large text into files via smaller writes/edits';
+  }
+  return 'fix JSON escaping and keep arguments compact';
+}
+
 export function buildInvalidToolArgumentsResult(toolName, args = {}) {
   const parseError = String(args?._parseError || '').trim();
   const name = String(toolName || 'tool').trim() || 'tool';
+  const truncated = args?._truncated === true
+    || looksLikeTruncatedJson(parseError, args?._raw);
+  const suggestion = suggestionForInvalidToolArgs(name, { truncated });
+
+  if (truncated) {
+    const writeHint = LARGE_PAYLOAD_TOOLS.has(name)
+      ? ' The model output was cut off before the tool JSON finished. Do not retry the same giant payload. Use smaller chunks across multiple tool calls.'
+      : ' The model output was cut off before the tool JSON finished. Retry with smaller arguments.';
+    return {
+      error: `Truncated tool arguments for ${name}`,
+      reason: (parseError
+        ? `Tool call JSON was incomplete (likely max output tokens): ${parseError}`
+        : 'Tool call JSON was incomplete (likely max output tokens).') + writeHint,
+      truncated: true,
+      suggestion,
+      raw: String(args?._raw || '')
+    };
+  }
+
   const hint = name === 'run'
     ? ' Do not embed large scripts or file contents in run arguments. Write a file first (create/edit), then run a short command such as `powershell -File path.ps1`.'
-    : ' Retry with valid, compact JSON arguments.';
+    : LARGE_PAYLOAD_TOOLS.has(name)
+      ? ' Keep this tool\'s arguments compact. Prefer multiple smaller calls over one huge JSON payload.'
+      : ' Retry with valid, compact JSON arguments.';
   return {
     error: `Invalid JSON arguments for ${name}`,
     reason: (parseError
       ? `Tool arguments could not be parsed as JSON: ${parseError}`
       : 'Tool arguments could not be parsed as JSON') + hint,
-    suggestion: name === 'run'
-      ? 'create/edit a script file, then run a short command'
-      : 'fix JSON escaping and keep arguments compact',
+    suggestion,
     raw: String(args?._raw || '')
   };
 }
@@ -228,7 +306,7 @@ const PARALLEL_SAFE_TOOLS = new Set([
 // ─── Auto-capture tool errors to dream loop inbox ────────────────────
 
 const DREAM_AUTO_CAPTURE_TOOLS = new Set([
-  'edit', 'create', 'write', 'apply_patch', 'run', 'delete'
+  'edit', 'create', 'write', 'commit_write', 'apply_patch', 'run', 'delete'
 ]);
 
 const DREAM_AUTO_CAPTURE_COOLDOWN_MS = 60_000;
@@ -314,7 +392,7 @@ async function checkAutoDreamThreshold(config) {
 
 function extractFileChange(toolName, result) {
   if (!result || typeof result !== 'object') return null;
-  const FILE_TOOLS = new Set(['edit', 'create', 'write', 'apply_patch', 'delete']);
+  const FILE_TOOLS = new Set(['edit', 'create', 'write', 'commit_write', 'apply_patch', 'delete']);
   if (!FILE_TOOLS.has(toolName)) return null;
 
   /* delete */
@@ -438,7 +516,7 @@ function extractToolResultMeta(toolName, result) {
     };
   }
 
-  if (!['edit', 'create', 'write', 'apply_patch', 'delete'].includes(name)) return null;
+  if (!['edit', 'create', 'write', 'commit_write', 'apply_patch', 'delete'].includes(name)) return null;
   const meta = {};
   for (const key of [
     'path',
@@ -696,6 +774,7 @@ export async function runAgentLoop({
   const analysisGuard = createAnalysisGuardState(userPrompt);
   const alwaysAllowSet = new Set([
     ...MEMORY_ALWAYS_ALLOW_TOOLS,
+    ...STAGED_WRITE_ALWAYS_ALLOW_TOOLS,
     ...(Array.isArray(alwaysAllowTools) ? alwaysAllowTools : []).map((t) => String(t))
   ]);
   let lastAutoDreamCheckStep = 0;
@@ -857,9 +936,33 @@ export async function runAgentLoop({
 
     // ─── P1a: Partition into parallel-safe and serial tool calls ─────
 
+    const completionTruncated = isCompletionTruncated(completion?.finishReason);
     const callsWithMeta = toolCalls.map((call) => {
       const toolName = normalizeToolCallName(call.name);
-      const args = normalizeToolArguments(toolName, safeJsonParse(call.arguments), call.arguments);
+      let args;
+      try {
+        if (call.argumentsComplete === false) {
+          throw Object.assign(
+            new Error('Tool argument stream ended before its completion event'),
+            { code: 'TOOL_ARGUMENT_STREAM_INCOMPLETE' },
+          );
+        }
+        args = normalizeToolArguments(toolName, safeJsonParse(call.arguments), call.arguments);
+      } catch (normalizeError) {
+        args = {
+          _invalid_json: true,
+          _raw: String(call.arguments || ''),
+          _parseError: normalizeError?.message || 'Failed to normalize tool arguments',
+          _truncated: call.argumentsComplete === false
+            || completionTruncated
+            || looksLikeTruncatedJson(normalizeError?.message, call.arguments),
+        };
+      }
+      if (args?._invalid_json) {
+        args._truncated = args._truncated === true
+          || completionTruncated
+          || looksLikeTruncatedJson(args._parseError, args._raw);
+      }
       const displayName = formatDisplayName(toolName, args);
       const isParallelSafe = PARALLEL_SAFE_TOOLS.has(toolName);
       return { call, args, toolName, displayName, isParallelSafe };
@@ -872,6 +975,7 @@ export async function runAgentLoop({
       let approvalReason = '';
       let approvalArgs = args;
       let preflightErrorContent = '';
+      let outsideWorkspaceApproval = null;
       if (args?._invalid_json) {
         approvalResults.set(call.id, {
           approved: false,
@@ -890,11 +994,23 @@ export async function runAgentLoop({
       const isSafeModeRun = toolName === 'run'
         && config?.policy?.safe_mode !== false
         && (isSafeModePolicyBlocked || requiresApprovalEvaluation(args?.command || '', config?.shell?.default));
-      const needsApproval = toolRequiresUserApproval({
+      try {
+        outsideWorkspaceApproval = await inspectOutsideWorkspaceMutation({
+          workspaceRoot,
+          toolName,
+          arguments: args
+        });
+      } catch (error) {
+        preflightErrorContent = clipToolResult({
+          error: `Could not inspect file mutation target: ${error instanceof Error ? error.message : String(error)}`
+        }, toolResultMaxChars);
+      }
+      const needsApproval = Boolean(preflightErrorContent) || toolRequiresUserApproval({
         approvalMode: normalizedApprovalMode,
         projectIsGit,
         toolName,
         isSafeModeRun,
+        isOutsideWorkspaceMutation: Boolean(outsideWorkspaceApproval),
         alwaysAllowTools: [...alwaysAllowSet]
       });
       if (needsApproval) {
@@ -980,16 +1096,31 @@ export async function runAgentLoop({
           continue;
         }
         if (typeof requestToolApproval === 'function') {
+          const normalApprovalDetails = toolName === 'delete'
+            ? approvalArgs.approval
+            : (toolName === 'run' ? approvalArgs.approval : undefined);
           const decision = await requestToolApproval({
             id: call.id,
             name: toolName,
             displayName,
             arguments: approvalArgs,
-            approvalDetails: toolName === 'delete' ? approvalArgs.approval
-              : (toolName === 'run' ? approvalArgs.approval : undefined)
+            approvalDetails: outsideWorkspaceApproval
+              ? {
+                  ...(normalApprovalDetails && typeof normalApprovalDetails === 'object'
+                    ? normalApprovalDetails
+                    : {}),
+                  outsideWorkspaceMutation: outsideWorkspaceApproval
+                }
+              : normalApprovalDetails
           });
           approved = Boolean(decision?.approved);
           approvalReason = approved ? '' : String(decision?.reason || '').trim();
+          if (approved && outsideWorkspaceApproval) {
+            approvalArgs = markOutsideWorkspaceMutationApproved(
+              approvalArgs,
+              outsideWorkspaceApproval
+            );
+          }
           if (approved && toolName === 'run' && isSafeModePolicyBlocked) {
             approvalArgs = markRunCommandSafeModeApproved(approvalArgs);
           }

@@ -83,6 +83,24 @@ function PreviewRow({ label, value }) {
   );
 }
 
+function OutsideWorkspaceNotice({ details }) {
+  const outside = details?.outsideWorkspaceMutation;
+  if (!outside?.outsideWorkspace) return null;
+  const paths = Array.isArray(outside.paths) ? outside.paths.filter(Boolean) : [];
+  return (
+    <div className="mb-3 rounded-lg border border-(--accent-amber) bg-(--bg-secondary) p-3">
+      <div className="mb-1 text-[12px] font-semibold text-(--accent-amber)">
+        {t('outsideWorkspaceApprovalWarning')}
+      </div>
+      <div className="text-[11px] leading-5 text-(--text-secondary)">
+        {t('outsideWorkspaceApprovalDescription')}
+      </div>
+      <DetailRow label={t('approvalFieldProject')} value={outside.workspaceRoot || '-'} />
+      <DetailRow label={t('approvalFieldPath')} value={paths.join('\n') || '-'} />
+    </div>
+  );
+}
+
 function ApprovalBody({ variant, args, details }) {
   const parsed = parseArgs(args);
   if (variant === 'delete') {
@@ -262,9 +280,14 @@ export function ApprovalDialog({ request, open, onDecision }) {
         )}
       >
         <DialogHeader>
-          <DialogTitle>{titles[variant] || t('approveTitle')}</DialogTitle>
+          <DialogTitle>
+            {details?.outsideWorkspaceMutation
+              ? t('outsideWorkspaceApprovalTitle')
+              : (titles[variant] || t('approveTitle'))}
+          </DialogTitle>
         </DialogHeader>
         <div className="min-h-0 overflow-y-auto py-1 pr-1">
+          <OutsideWorkspaceNotice details={details} />
           <ApprovalBody variant={variant} args={args} details={details} />
         </div>
         <div className="flex flex-col gap-3">

@@ -23,6 +23,10 @@ export const TOOL_DISPLAY_LABELS = {
   edit: 'Edit',
   create: 'Create',
   write: 'Write',
+  begin_write: 'Begin Write',
+  write_chunk: 'Write Chunk',
+  commit_write: 'Commit Write',
+  abort_write: 'Abort Write',
   apply_patch: 'Apply Patch',
   delete: 'Delete',
   run: 'Run',
@@ -152,7 +156,7 @@ export function formatToolDisplayName(name, args = {}, options = {}) {
     const target = trimInline(args?.path || '.', 96) || '.';
     return formatToolWithArg(formatToolLabel('list'), target);
   }
-  if (toolName === 'read' || toolName === 'create' || toolName === 'write') {
+  if (toolName === 'read' || toolName === 'create' || toolName === 'write' || toolName === 'begin_write') {
     const target = trimInline(args?.path || '.', 96) || '.';
     if (toolName === 'read') {
       const start = Number(args?.start_line);
@@ -162,6 +166,22 @@ export function formatToolDisplayName(name, args = {}, options = {}) {
       return formatToolWithArg(formatToolLabel('read'), `${target}${suffix}`);
     }
     return formatToolWithArg(formatToolLabel(toolName), target);
+  }
+  if (toolName === 'write_chunk') {
+    const writeId = trimInline(args?.write_id || '', 48);
+    const sequence = Number(args?.sequence);
+    const suffix = Number.isSafeInteger(sequence) ? ` #${sequence}` : '';
+    return writeId
+      ? formatToolWithArg(formatToolLabel('write_chunk'), `${writeId}${suffix}`)
+      : formatToolLabel('write_chunk');
+  }
+  if (toolName === 'commit_write' || toolName === 'abort_write') {
+    const target = toolName === 'commit_write'
+      ? trimInline(args?.path || args?.write_id || '', 96)
+      : trimInline(args?.write_id || '', 64);
+    return target
+      ? formatToolWithArg(formatToolLabel(toolName), target)
+      : formatToolLabel(toolName);
   }
   if (toolName === 'run') {
     const command = trimInline(args?.command || '', 96);

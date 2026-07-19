@@ -225,7 +225,8 @@ export function toOpenAIMessages(sessionMessages, options = {}) {
       mapped.push({
         role: 'tool',
         content: msg.content,
-        tool_call_id: msg.tool_call_id
+        tool_call_id: msg.tool_call_id,
+        ...(msg.tool_status ? { tool_status: msg.tool_status } : {})
       });
       continue;
     }
@@ -573,13 +574,13 @@ function formatLocalDateTimeSlug(date = new Date()) {
 const SUB_AGENT_ROLES = ['planner', 'explorer', 'architect', 'advisor', 'coder', 'refactorer', 'reviewer', 'tester', 'debugger', 'writer', 'summarizer', 'codewiki'];
 const EXECUTOR_AGENT_ROLES = SUB_AGENT_ROLES.filter((role) => !['planner', 'codewiki'].includes(role));
 const CODEWIKI_ROLE_TOOLS = ['read', 'search_code', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'add_code_comment', 'update_code_comment'];
-export const CODEWIKI_GENERATE_TOOLS = ['read', 'search_code', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'skill', 'edit', 'write', 'apply_patch'];
+export const CODEWIKI_GENERATE_TOOLS = ['read', 'search_code', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'skill', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch'];
 export const EXECUTION_MODE_TOOL_POLICY = {
   plan: [
     'read', 'search_code', 'grep', 'ast_grep', 'list', 'glob', 'ast_query', 'read_ast_node',
     'query_project_index', 'tool_search', 'skill', 'web_fetch', 'web_search',
     'read_plan', 'update_plan', 'update_todos',
-    'edit', 'write', 'apply_patch', 'delete', 'run',
+    'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run',
     'create_spec', 'create_plan', 'request_user_input'
   ]
 };
@@ -628,11 +629,11 @@ function buildExecutionModePromptBlock(executionMode) {
       'Tool discipline:',
       '- Prefer dedicated project-index, search, read, edit, and patch tools over raw shell equivalents. Load deferred tools with tool_search only when needed.',
       '- Choose the narrowest relevant project-native verification, and use run for tests, builds, type checks, linters, generators, and version-control inspection—not as the default way to read or search source code.',
-      '- Use edit for precise existing-file changes, apply_patch for coherent multi-file changes, and write only for new files or intentional whole-file output.',
+      '- Use edit for precise existing-file changes, apply_patch for coherent multi-file changes, and write only for small new files or intentional whole-file output. For long whole-file content, use begin_write, bounded sequential write_chunk calls, then commit_write; abort unfinished transactions.',
       '- Search the web for current external documentation, versions, compatibility, or unfamiliar APIs when that information affects correctness; prefer primary sources and link the sources that support material claims.',
       '',
       'Workflow boundaries:',
-      '- Do not claim edit/write/apply_patch/delete/run are unavailable in coding mode; they are available for direct simple tasks.',
+      '- Do not claim edit/write/begin_write/write_chunk/commit_write/apply_patch/delete/run are unavailable in coding mode; they are available for direct tasks.',
       '- Do not call create_plan for a simple localized edit that can be implemented and verified in one coherent pass.',
       '- If you create a spec, do not implement before the user approves it. If you create a plan, execution starts automatically in coding mode.',
       '- Preserve unrelated user changes in a dirty worktree. Never discard, overwrite, or reformat work outside the requested scope.',
@@ -671,8 +672,8 @@ export const ROLE_TOOL_POLICY = {
   explorer: ['read', 'search_code', 'tool_search', 'skill', 'web_fetch', 'web_search', 'read_plan'],
   architect: ['read', 'search_code', 'tool_search', 'skill', 'web_search', 'read_plan'],
   advisor: ['read', 'search_code', 'tool_search', 'skill', 'read_plan'],
-  coder: ['read', 'search_code', 'edit', 'write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
-  refactorer: ['read', 'search_code', 'edit', 'write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill', 'read_plan'],
+  coder: ['read', 'search_code', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
+  refactorer: ['read', 'search_code', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill', 'read_plan'],
   reviewer: ['read', 'search_code', 'tool_search', 'skill', 'read_plan'],
   tester: ['read', 'search_code', 'run', 'tool_search', 'skill', 'read_plan'],
   debugger: ['read', 'search_code', 'run', 'tool_search', 'skill', 'web_search', 'read_plan'],
@@ -1234,7 +1235,7 @@ function registerSubAgentArtifactPath(pathValue, out, seen) {
 
 function extractPathFromToolArguments(toolName, args = {}) {
   const name = String(toolName || '').toLowerCase();
-  if (!['edit', 'create', 'write', 'apply_patch', 'delete'].includes(name)) return '';
+  if (!['edit', 'create', 'write', 'commit_write', 'apply_patch', 'delete'].includes(name)) return '';
   return String(
     args.path ||
     ''
@@ -4953,6 +4954,11 @@ async function askModel({
         payloadExtras: resolveGatewayPayloadExtras(config, { tools }),
         timeoutMs: config.gateway.timeout_ms || 1800000,
         maxRetries: config.gateway.max_retries ?? 2,
+        maxTokens: (() => {
+          const configured = Number(config.model?.max_output_tokens);
+          if (Number.isFinite(configured) && configured > 0) return Math.floor(configured);
+          return config.sdk?.provider === 'anthropic' ? 16384 : undefined;
+        })(),
         signal,
         onTextDelta: (delta) => {
           startAssistantStream();

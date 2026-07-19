@@ -277,7 +277,7 @@ export function buildSubAgentShellRulesPrompt(allowedTools = [], { shell, worksp
       return SUB_AGENT_TOOL_HINTS[name];
     })
     .filter(Boolean);
-  const deferredTools = allowed.filter((name) => !['read', 'search_code', 'read_plan', 'update_plan', 'update_todos', 'edit', 'write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill'].includes(name));
+  const deferredTools = allowed.filter((name) => !['read', 'search_code', 'read_plan', 'update_plan', 'update_todos', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill'].includes(name));
   const lines = [
     `You are Codemini CLI, an AI assistant running as a pipeline sub-agent in a ${profile.label} shell environment.`,
     `Working directory: ${path.resolve(workspaceRoot || process.cwd())}`,

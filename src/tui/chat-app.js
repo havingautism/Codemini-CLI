@@ -316,6 +316,10 @@ const TUI_COPY = {
     },
     fileApproval: {
       title: '确认文件变更？',
+      outsideTitle: '确认在项目外变更文件？',
+      outsideWarning: '目标路径位于当前项目之外，本次批准仅适用于下方目标。',
+      projectLabel: '当前项目',
+      targetsLabel: '项目外目标',
       toolLabel: '工具',
       pathLabel: '路径',
       actionLabel: '操作',
@@ -539,6 +543,10 @@ const TUI_COPY = {
     },
     fileApproval: {
       title: 'Confirm file change?',
+      outsideTitle: 'Confirm file change outside the project?',
+      outsideWarning: 'The target is outside the current project. This approval applies only to the targets below.',
+      projectLabel: 'Project',
+      targetsLabel: 'External targets',
       toolLabel: 'Tool',
       pathLabel: 'Path',
       actionLabel: 'Action',
@@ -1123,13 +1131,19 @@ export function normalizeDeleteApprovalRequest(request) {
   const pathValue = fallbackPath;
   const nameValue = String(details.name || (pathValue ? pathValue.split(/[\\/]/).pop() : '') || '').trim();
   const typeValue = String(details.type || '').trim() === 'directory' ? 'directory' : 'file';
+  const outside = details.outsideWorkspaceMutation;
   if (!pathValue) return null;
   return {
     id: String(request?.id || '').trim(),
     toolName: 'delete',
     path: pathValue,
     name: nameValue || pathValue,
-    type: typeValue
+    type: typeValue,
+    outsideWorkspace: Boolean(outside?.outsideWorkspace),
+    workspaceRoot: String(outside?.workspaceRoot || '').trim(),
+    outsidePaths: Array.isArray(outside?.paths)
+      ? outside.paths.map((item) => String(item || '').trim()).filter(Boolean)
+      : []
   };
 }
 
@@ -1154,10 +1168,14 @@ export function normalizeRunApprovalRequest(request) {
 
 export function normalizeFileApprovalRequest(request) {
   const toolName = String(request?.name || '').trim();
-  if (!['edit', 'create', 'write', 'apply_patch'].includes(toolName)) return null;
+  if (!['edit', 'create', 'write', 'commit_write', 'apply_patch'].includes(toolName)) return null;
   const args = request?.arguments && typeof request.arguments === 'object' && !Array.isArray(request.arguments)
     ? request.arguments
     : {};
+  const approvalDetails = request?.approvalDetails && typeof request.approvalDetails === 'object' && !Array.isArray(request.approvalDetails)
+    ? request.approvalDetails
+    : {};
+  const outside = approvalDetails.outsideWorkspaceMutation;
   let pathValue = String(args.path || '').trim();
   if (!pathValue && toolName === 'apply_patch') {
     const patchText = String(args.patch_text || '');
@@ -1171,7 +1189,12 @@ export function normalizeFileApprovalRequest(request) {
     id: String(request?.id || '').trim(),
     toolName,
     path: pathValue,
-    action: String(args.kind || args.mode || toolName).trim() || toolName
+    action: String(args.kind || args.mode || toolName).trim() || toolName,
+    outsideWorkspace: Boolean(outside?.outsideWorkspace),
+    workspaceRoot: String(outside?.workspaceRoot || '').trim(),
+    outsidePaths: Array.isArray(outside?.paths)
+      ? outside.paths.map((item) => String(item || '').trim()).filter(Boolean)
+      : []
   };
 }
 
@@ -3223,7 +3246,16 @@ function DeleteApprovalPanel({ request, reviewState, copy }) {
       paddingX: 1,
       paddingY: 0
     },
-    h(Text, { color: 'redBright' }, copy.deleteApproval.title),
+    h(Text, { color: 'redBright', bold: true }, details.outsideWorkspace ? copy.fileApproval.outsideTitle : copy.deleteApproval.title),
+    details.outsideWorkspace
+      ? h(Text, { color: 'yellow' }, copy.fileApproval.outsideWarning)
+      : null,
+    details.outsideWorkspace && details.workspaceRoot
+      ? h(Text, { color: 'gray' }, `${copy.fileApproval.projectLabel}: ${details.workspaceRoot}`)
+      : null,
+    details.outsideWorkspace && details.outsidePaths.length > 0
+      ? h(Text, { color: 'yellowBright' }, `${copy.fileApproval.targetsLabel}: ${details.outsidePaths.join(', ')}`)
+      : null,
     h(Text, { color: 'white' }, `${copy.deleteApproval.nameLabel}: ${details.name}`),
     h(Text, { color: 'white' }, `${copy.deleteApproval.pathLabel}: ${pathDisplay}`),
     h(Text, { color: 'white' }, `${copy.deleteApproval.typeLabel}: ${typeLabel}`),
@@ -3273,7 +3305,7 @@ function RunApprovalPanel({ request, reviewState, copy, contentWidth = 72 }) {
 
 function FileApprovalPanel({ request, reviewState, copy }) {
   if (!request) return null;
-  const details = ['edit', 'create', 'write', 'apply_patch'].includes(request?.toolName)
+  const details = ['edit', 'create', 'write', 'commit_write', 'apply_patch'].includes(request?.toolName)
     ? request
     : normalizeFileApprovalRequest(request);
   if (!details) return null;
@@ -3288,7 +3320,16 @@ function FileApprovalPanel({ request, reviewState, copy }) {
       paddingX: 1,
       paddingY: 0
     },
-    h(Text, { color: 'yellowBright' }, c.title),
+    h(Text, { color: 'yellowBright', bold: details.outsideWorkspace }, details.outsideWorkspace ? c.outsideTitle : c.title),
+    details.outsideWorkspace
+      ? h(Text, { color: 'yellow' }, c.outsideWarning)
+      : null,
+    details.outsideWorkspace && details.workspaceRoot
+      ? h(Text, { color: 'gray' }, `${c.projectLabel}: ${details.workspaceRoot}`)
+      : null,
+    details.outsideWorkspace && details.outsidePaths.length > 0
+      ? h(Text, { color: 'yellowBright' }, `${c.targetsLabel}: ${details.outsidePaths.join(', ')}`)
+      : null,
     h(Text, { color: 'white' }, `${c.toolLabel}: ${details.toolName}`),
     h(Text, { color: 'white' }, `${c.pathLabel}: ${details.path}`),
     h(Text, { color: 'white' }, `${c.actionLabel}: ${details.action}`),

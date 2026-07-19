@@ -1,4 +1,5 @@
 import { resolveAnthropicReasoning } from './reasoning-effort.js';
+import { isCompletionTruncated } from './completion-status.js';
 
 function extractTextContent(content) {
   if (typeof content === 'string') return content;
@@ -126,7 +127,10 @@ function normalizeMessages(messages) {
         toolResults.push({
           type: 'tool_result',
           tool_use_id: String(toolMessage.tool_call_id || ''),
-          content: extractTextContent(toolMessage.content)
+          content: extractTextContent(toolMessage.content),
+          ...(['error', 'blocked'].includes(String(toolMessage.tool_status || '').toLowerCase())
+            ? { is_error: true }
+            : {})
         });
         i += 1;
       }
@@ -219,7 +223,7 @@ function normalizeToolChoice(toolChoice) {
   return { type: 'auto' };
 }
 
-function buildPayload({ model, temperature, messages, tools, stream = false, maxTokens = 4096, toolChoice, reasoningEffort }) {
+function buildPayload({ model, temperature, messages, tools, stream = false, maxTokens = 16384, toolChoice, reasoningEffort }) {
   const normalized = normalizeMessages(messages);
   const reasoning = resolveAnthropicReasoning({ model, effort: reasoningEffort, maxTokens });
   const payload = {
@@ -266,11 +270,13 @@ function extractAssistantResult(data, messages) {
     .map((block) => ({
       id: String(block.id || ''),
       name: String(block.name || ''),
-      arguments: normalizeIncomingToolCallArguments(block.input)
+      arguments: normalizeIncomingToolCallArguments(block.input),
+      argumentsComplete: !isCompletionTruncated(data?.stop_reason)
     }))
     .filter((toolCall) => toolCall.name);
   const normalizedText = String(text || '').trim();
 
+  const finishReason = String(data?.stop_reason || '');
   if (!normalizedText && toolCalls.length === 0) {
     if (hasTrailingToolContext(messages)) {
       return {
@@ -278,6 +284,7 @@ function extractAssistantResult(data, messages) {
         toolCalls: [],
         usage: data?.usage || null,
         incomplete: true,
+        finishReason,
         content,
         assistantMessage: buildAssistantMessage({ text: '', toolCalls: [], thinkingBlocks })
       };
@@ -289,6 +296,7 @@ function extractAssistantResult(data, messages) {
     text,
     toolCalls,
     usage: data?.usage || null,
+    finishReason,
     content,
     assistantMessage: buildAssistantMessage({ text, toolCalls, thinkingBlocks })
   };
@@ -331,13 +339,14 @@ function emptyToolCall(index) {
   };
 }
 
-function buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkingBlocks = []) {
+function buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkingBlocks = [], finishReason = '') {
   const toolCalls = Array.from(toolCallsByIndex.entries())
     .sort((a, b) => a[0] - b[0])
     .map(([, tc], i) => ({
       id: tc.id || `tc-${i + 1}`,
       name: tc.name,
-      arguments: tc.arguments || '{}'
+      arguments: tc.arguments || '{}',
+      argumentsComplete: tc.closed === true && !isCompletionTruncated(finishReason)
     }))
     .filter((tc) => tc.name);
   const normalizedText = String(text || '').trim();
@@ -363,6 +372,7 @@ function buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkin
         toolCalls: [],
         usage,
         incomplete: true,
+        finishReason: finishReason || '',
         content: [],
         assistantMessage: buildAssistantMessage({ text: '', toolCalls: [], thinkingBlocks })
       };
@@ -375,6 +385,7 @@ function buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkin
     toolCalls,
     usage,
     incomplete: false,
+    finishReason: finishReason || '',
     content,
     assistantMessage: buildAssistantMessage({ text, toolCalls, thinkingBlocks })
   };
@@ -386,11 +397,14 @@ async function* iterateSseEvents(stream) {
 
   for await (const chunk of stream) {
     buffer += decoder.decode(chunk, { stream: true });
-    while (buffer.includes('\n\n')) {
-      const boundary = buffer.indexOf('\n\n');
+    while (buffer.includes('\n\n') || buffer.includes('\r\n\r\n')) {
+      const crlfBoundary = buffer.indexOf('\r\n\r\n');
+      const lfBoundary = buffer.indexOf('\n\n');
+      const useCrlf = crlfBoundary !== -1 && (lfBoundary === -1 || crlfBoundary < lfBoundary);
+      const boundary = useCrlf ? crlfBoundary : lfBoundary;
       const rawEvent = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      const lines = rawEvent.split('\n');
+      buffer = buffer.slice(boundary + (useCrlf ? 4 : 2));
+      const lines = rawEvent.split(/\r?\n/);
       let event = 'message';
       const dataLines = [];
       for (const line of lines) {
@@ -420,7 +434,7 @@ export async function createChatCompletion({
   toolChoice,
   reasoningEffort,
   timeoutMs = 1800000,
-  maxTokens = 4096,
+  maxTokens = 16384,
   signal: externalSignal
 }) {
   const payload = buildPayload({ model, temperature, messages, tools, maxTokens, toolChoice, reasoningEffort });
@@ -451,7 +465,7 @@ export async function createChatCompletionStream({
   onReasoningDelta,
   onToolCallDelta,
   timeoutMs = 1800000,
-  maxTokens = 4096,
+  maxTokens = 16384,
   signal: externalSignal
 }) {
   // 合并超时信号与外部中止信号
@@ -485,12 +499,19 @@ export async function createChatCompletionStream({
 
     let text = '';
     let usage = null;
+    let finishReason = '';
     const toolCallsByIndex = new Map();
     const thinkingBlocksByIndex = new Map();
 
     for await (const chunk of iterateSseEvents(response.body)) {
       usage = mergeUsage(usage, chunk?.data?.usage);
       usage = mergeUsage(usage, chunk?.data?.message?.usage);
+
+      if (chunk.event === 'message_delta') {
+        const stopReason = chunk?.data?.delta?.stop_reason || chunk?.data?.stop_reason;
+        if (stopReason) finishReason = String(stopReason);
+        continue;
+      }
 
       if (chunk.event === 'content_block_start') {
         const index = Number(chunk?.data?.index ?? 0);
@@ -499,6 +520,7 @@ export async function createChatCompletionStream({
           const current = toolCallsByIndex.get(index) || emptyToolCall(index);
           current.id = String(contentBlock.id || current.id || '');
           current.name = String(contentBlock.name || current.name || '');
+          current.closed = false;
           const initialInput = contentBlock.input && Object.keys(contentBlock.input).length > 0
             ? normalizeIncomingToolCallArguments(contentBlock.input)
             : '';
@@ -516,6 +538,16 @@ export async function createChatCompletionStream({
           const current = cloneAnthropicContentBlock(contentBlock) || { type: contentBlock.type };
           if (current.type === 'thinking' && current.thinking == null) current.thinking = '';
           thinkingBlocksByIndex.set(index, current);
+        }
+        continue;
+      }
+
+      if (chunk.event === 'content_block_stop') {
+        const index = Number(chunk?.data?.index ?? 0);
+        const current = toolCallsByIndex.get(index);
+        if (current) {
+          current.closed = true;
+          toolCallsByIndex.set(index, current);
         }
         continue;
       }
@@ -568,7 +600,7 @@ export async function createChatCompletionStream({
       .map(([, block]) => cloneAnthropicContentBlock(block))
       .filter(Boolean);
 
-    return buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkingBlocks);
+    return buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkingBlocks, finishReason);
   } finally {
     timeoutSignal.removeEventListener('abort', onTimeoutAbort);
     if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);

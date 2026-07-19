@@ -120,7 +120,12 @@ export function ReviewMarkdown({ children, className, bare = false }) {
         className,
       )}
     >
-      <StreamdownRenderer text={text} streaming={false} className="text-[13px] leading-6" />
+      <StreamdownRenderer
+        text={text}
+        streaming={false}
+        inlineEmbeds={false}
+        className="text-[13px] leading-6"
+      />
     </div>
   );
 }
@@ -134,6 +139,7 @@ export function ReviewCommandBlock({ command, language = "bash", className }) {
       <StreamdownRenderer
         text={`\`\`\`${lang}\n${value}\n\`\`\``}
         streaming={false}
+        inlineEmbeds={false}
       />
     </div>
   );

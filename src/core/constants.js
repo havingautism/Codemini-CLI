@@ -12,6 +12,13 @@ export const MEMORY_ALWAYS_ALLOW_TOOLS = [
   'dream_consolidate'
 ];
 
+// ─── 事务写入暂存工具（不修改目标文件，审阅模式下免确认）────────────
+export const STAGED_WRITE_ALWAYS_ALLOW_TOOLS = [
+  'begin_write',
+  'write_chunk',
+  'abort_write'
+];
+
 // ─── 工具遍历跳过的目录（glob / list / grep 等）─────────────────────
 export const TOOL_SKIP_DIRS = new Set([
   '.git',
