@@ -4,7 +4,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { disableSkillHooks, writeSkillHooksJson, discoverSkillHooks } from '../src/core/skill-hooks-discover.js';
-import { normalizeSkillMetadataPatch } from '../codemini-web/server.js';
+import {
+  normalizeSkillMetadataPatch,
+  stripAuthorLockedRoutingPatch,
+} from '../codemini-web/server.js';
 
 async function withFixture(fn) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-hooks-web-api-'));
@@ -84,6 +87,40 @@ test('normalizeSkillMetadataPatch accepts disableModelInvocation boolean', () =>
   assert.deepEqual(normalizeSkillMetadataPatch({ disableModelInvocation: 'true' }), {
     disableModelInvocation: false
   });
+});
+
+test('normalizeSkillMetadataPatch accepts userInvocable and routingAuthorLocked', () => {
+  assert.deepEqual(normalizeSkillMetadataPatch({ userInvocable: false }), {
+    userInvocable: false,
+  });
+  assert.deepEqual(normalizeSkillMetadataPatch({ userInvocable: true }), {
+    userInvocable: true,
+  });
+  assert.deepEqual(normalizeSkillMetadataPatch({ routingAuthorLocked: true }), {
+    routingAuthorLocked: true,
+  });
+});
+
+test('stripAuthorLockedRoutingPatch drops author-owned routing fields', () => {
+  assert.deepEqual(
+    stripAuthorLockedRoutingPatch(
+      {
+        mode: 'manual',
+        triggers: ['x'],
+        priority: 10,
+        disableModelInvocation: true,
+        userInvocable: false,
+        routingAuthorLocked: true,
+        contexts: ['coding'],
+        enabled: true,
+      },
+      { routingAuthorLocked: true },
+    ),
+    {
+      contexts: ['coding'],
+      enabled: true,
+    },
+  );
 });
 
 test('normalizeSkillMetadataPatch still accepts legacy mode for read/compat', () => {

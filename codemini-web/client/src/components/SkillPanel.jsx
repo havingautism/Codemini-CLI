@@ -49,6 +49,7 @@ import {
   groupSkillsByPackage,
   skillAuthorLabel,
   skillPackageIsUpdatable,
+  skillRoutingAuthorLocked,
   skillsInSamePackage,
 } from "@/lib/skill-display.js";
 import * as api from "@/hooks/use-api";
@@ -406,35 +407,48 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
     (skill?.triggers || []).join(", "),
   );
   const [routePriority, setRoutePriority] = useState(skill?.priority ?? 50);
+  const [userInvocable, setUserInvocable] = useState(skill?.userInvocable !== false);
   const [saving, setSaving] = useState(false);
   const builtin = isBuiltin(skill);
+  const authorLocked = skillRoutingAuthorLocked(skill);
+  const modeLocked = builtin || authorLocked;
+  const showUserInvocable =
+    routeMode === "always" || routeMode === "agent_requested";
 
   useEffect(() => {
     setRouteMode(normalizeSkillMode(skill?.mode));
     setRouteContext(skillContextValue(skillContextsOrDefault(skill)));
     setRouteTriggers((skill?.triggers || []).join(", "));
     setRoutePriority(skill?.priority ?? 50);
+    setUserInvocable(skill?.userInvocable !== false);
   }, [skill]);
+
+  const handleModeChange = (nextMode) => {
+    setRouteMode(nextMode);
+    if (nextMode === "manual") setUserInvocable(true);
+  };
 
   const handleSave = async () => {
     if (!skill || builtin) return;
     setSaving(true);
     try {
-      await api.updateSkillMetadata(
-        skill.name,
-        {
-          mode: routeMode,
-          contexts: contextsFromTab(routeContext),
-          triggers:
-            routeMode === "agent_requested"
-              ? routeTriggers
-                  .split(",")
-                  .map((item) => item.trim())
-                  .filter(Boolean)
-              : [],
-          priority: Number(routePriority) || 0,
-        },
-      );
+      const metadata = {
+        contexts: contextsFromTab(routeContext),
+      };
+      if (!authorLocked) {
+        metadata.mode = routeMode;
+        metadata.triggers =
+          routeMode === "agent_requested"
+            ? routeTriggers
+                .split(",")
+                .map((item) => item.trim())
+                .filter(Boolean)
+            : [];
+        metadata.priority = Number(routePriority) || 0;
+        metadata.userInvocable =
+          routeMode === "manual" ? true : userInvocable !== false;
+      }
+      await api.updateSkillMetadata(skill.name, metadata);
       await onSave?.();
       onCancel?.();
     } finally {
@@ -446,6 +460,11 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth pr-1">
         <SettingsSection className="gap-4">
+          {authorLocked ? (
+            <p className="text-[12px] leading-snug text-(--text-muted)">
+              {t("skillRoutingAuthorLockedHint")}
+            </p>
+          ) : null}
           <SettingsField
             id="skill-detail-context"
             label={t("skillContext")}
@@ -482,8 +501,8 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
             <SettingsSegmentedControl
               idPrefix="skill-detail-mode"
               value={routeMode}
-              onValueChange={setRouteMode}
-              disabled={builtin}
+              onValueChange={handleModeChange}
+              disabled={modeLocked}
               options={SKILL_MODES.map((item) => ({
                 value: item,
                 label: t(`skillMode_${item}`),
@@ -497,7 +516,7 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
                 value={routeTriggers}
                 onChange={(event) => setRouteTriggers(event.target.value)}
                 placeholder="react, testing, docs"
-                disabled={builtin}
+                disabled={modeLocked}
               />
             </SettingsField>
           ) : null}
@@ -509,7 +528,22 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
                 max="100"
                 value={routePriority}
                 onChange={(event) => setRoutePriority(event.target.value)}
-                disabled={builtin}
+                disabled={modeLocked}
+              />
+            </SettingsField>
+          ) : null}
+          {showUserInvocable ? (
+            <SettingsField
+              id="skill-detail-user-invocable"
+              label={t("skillUserInvocable")}
+              help={t("skillUserInvocableHint")}
+              inline
+            >
+              <Switch
+                checked={userInvocable}
+                onCheckedChange={setUserInvocable}
+                disabled={modeLocked}
+                aria-label={t("skillUserInvocable")}
               />
             </SettingsField>
           ) : null}
@@ -570,9 +604,11 @@ function SkillDetailPane({
   const mode = normalizeSkillMode(skill.mode);
   const author = skillAuthorLabel(skill);
   const builtin = isBuiltin(skill);
+  const remotePackage = skillPackageIsUpdatable(skill);
+  const contentReadOnly = builtin || remotePackage;
 
   const handleContentSave = async () => {
-    if (!skill || builtin) return;
+    if (!skill || contentReadOnly) return;
     setSaving(true);
     try {
       await api.updateSkillContent(skill.name, draftContent);
@@ -624,7 +660,7 @@ function SkillDetailPane({
           <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
             {modeView === "edit" || modeView === "routing" ? null : (
               <>
-                {!builtin && (
+                {!contentReadOnly && (
                   <Button
                     variant="outline"
                     onClick={() => setModeView("edit")}
@@ -691,7 +727,9 @@ function SkillDetailPane({
           <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
             {(Array.isArray(skill.triggers) && skill.triggers.length > 0)
               || (Number.isFinite(Number(skill.priority)) && Number(skill.priority) !== 50)
-              || skill.disableModelInvocation ? (
+              || skill.disableModelInvocation
+              || skill.userInvocable === false
+              || skillRoutingAuthorLocked(skill) ? (
               <div className="shrink-0 overflow-hidden rounded-lg border border-(--border-default) bg-(--bg-subtle)/50">
                 <div className="border-b border-(--border-default) px-3 py-1.5 text-[11px] font-medium tracking-wide text-(--text-muted)">
                   {t("skillRoutingSettings")}
@@ -724,6 +762,16 @@ function SkillDetailPane({
                   {skill.disableModelInvocation ? (
                     <div className="text-[12px] text-(--text-secondary)">
                       {t("skillDisableModelInvocation")}
+                    </div>
+                  ) : null}
+                  {skill.userInvocable === false ? (
+                    <div className="text-[12px] text-(--text-secondary)">
+                      {t("skillUserInvocableDisabled")}
+                    </div>
+                  ) : null}
+                  {skillRoutingAuthorLocked(skill) ? (
+                    <div className="text-[12px] text-(--text-muted)">
+                      {t("skillRoutingAuthorLockedHint")}
                     </div>
                   ) : null}
                 </div>
@@ -1565,9 +1613,11 @@ export function SkillPanel({ projectDirs = [] }) {
       for (const skill of packageGroup.items) {
         const metadata = {
           contexts: patch.contexts,
-          mode: patch.mode,
-          disableModelInvocation: false,
         };
+        if (!skillRoutingAuthorLocked(skill)) {
+          metadata.mode = patch.mode;
+          metadata.disableModelInvocation = false;
+        }
         if (patch.enabled !== undefined) metadata.enabled = patch.enabled;
         await api.updateSkillMetadata(skill.name, metadata);
       }

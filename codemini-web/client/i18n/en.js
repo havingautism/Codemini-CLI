@@ -776,6 +776,14 @@ export const en = {
   skillDisableModelInvocation: "Disable model auto-invocation",
   skillDisableModelInvocationHint:
     "Blocks the agent from loading this skill via the skill tool. Manual selection still works.",
+  skillUserInvocableDisabled: "Hidden from user slash menu (author: user-invocable false)",
+  skillUserInvocable: "User invocable",
+  skillUserInvocableHint:
+    "When off, the skill stays out of the slash menu and manual picker; the agent can still load it. Only applies to Always and Agent Requested modes.",
+  skillRoutingAuthorLockedHint:
+    "Routing follows the remote package author frontmatter (disable-model-invocation / user-invocable) and cannot be changed here. Context and enable/disable still work.",
+  skillRemoteContentReadOnly:
+    "Remote package skills are read-only. Update the package to change content.",
   hookEvent_SessionStart: "Session start",
   hookEvent_SessionEnd: "Session end",
   hookEvent_UserPromptSubmit: "On prompt submit",

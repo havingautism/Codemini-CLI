@@ -36,6 +36,8 @@ test('skill routing settings use a separate detail button from content edit', ()
   assert.match(skillPanelSource, /t\("skillRoutingSettings"\)/);
   assert.match(skillPanelSource, /routeMode === "agent_requested"/);
   assert.match(skillPanelSource, /routeMode === "always"/);
+  assert.match(skillPanelSource, /skill-detail-user-invocable/);
+  assert.match(skillPanelSource, /showUserInvocable/);
   assert.match(skillPanelSource, /routeContext/);
   assert.match(skillPanelSource, /contexts: contextsFromTab\(routeContext\)/);
   assert.match(skillPanelSource, /skillIndexEmptyGlobal/);
@@ -43,6 +45,13 @@ test('skill routing settings use a separate detail button from content edit', ()
     skillPanelSource,
     /modeView === "edit" \? \([\s\S]*?skill-detail-mode[\s\S]*?MarkdownEditor/,
   );
+});
+
+test('remote package skills hide content edit while local skills keep it', () => {
+  assert.match(skillPanelSource, /skillPackageIsUpdatable\(skill\)/);
+  assert.match(skillPanelSource, /contentReadOnly/);
+  assert.match(skillPanelSource, /!contentReadOnly && \(/);
+  assert.match(serverSource, /Cannot edit remote package skill content/);
 });
 
 test('skill content editing uses the same bottom action bar as routing', () => {
@@ -172,13 +181,16 @@ test('Hook Profiles are grouped by collapsible execution scope with add and dele
 
 test('package batch dialog can restore routing mode for every skill in a package', () => {
   assert.match(skillPanelSource, /package-batch-mode/);
-  assert.match(skillPanelSource, /mode: patch\.mode/);
+  assert.match(skillPanelSource, /metadata\.mode = patch\.mode/);
+  assert.match(skillPanelSource, /skillRoutingAuthorLocked/);
 });
 
 test('hooks i18n keys exist in English and Chinese locales', () => {
   for (const source of [enSource, zhSource]) {
     assert.match(source, /skillHooksSettings:/);
     assert.match(source, /skillDisableModelInvocation:/);
+    assert.match(source, /skillUserInvocable:/);
+    assert.match(source, /skillUserInvocableHint:/);
     assert.match(source, /hookEvent_SessionStart:/);
     assert.match(source, /hookEvent_UserPromptSubmit:/);
     assert.match(source, /hookEvent_PreToolUse:/);

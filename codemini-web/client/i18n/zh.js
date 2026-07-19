@@ -745,6 +745,13 @@ export const zh = {
   skillDisableModelInvocation: "禁止模型自动调用",
   skillDisableModelInvocationHint:
     "阻止 Agent 通过 skill 工具自动加载此技能；你仍可手动选择。",
+  skillUserInvocableDisabled: "对用户隐藏斜杠菜单（作者：user-invocable false）",
+  skillUserInvocable: "允许用户调用",
+  skillUserInvocableHint:
+    "关闭后不会出现在斜杠菜单和手动选择里，Agent 仍可加载。仅在「始终」或「Agent 请求」模式下可用。",
+  skillRoutingAuthorLockedHint:
+    "路由跟随远程包作者的 frontmatter（disable-model-invocation / user-invocable），此处不可修改。适用场景与启停仍可设置。",
+  skillRemoteContentReadOnly: "远程技能包内容只读，如需修改请更新技能包。",
   hookEvent_SessionStart: "会话开始",
   hookEvent_SessionEnd: "会话结束",
   hookEvent_UserPromptSubmit: "提交提示时",

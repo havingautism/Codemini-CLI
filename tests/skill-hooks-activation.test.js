@@ -7,7 +7,8 @@ import {
   buildSkillIndexPreview,
   composeExplicitSkillPrompt,
   isSkillIndexEligible,
-  isSkillModelInvocationDisabled
+  isSkillModelInvocationDisabled,
+  isUserInvocableSkill,
 } from '../src/core/command-loader.js';
 import { buildAlwaysSkillPromptBlock } from '../src/core/chat-runtime.js';
 import { composeSelectedSkills } from '../src/core/chat-message.js';
@@ -76,6 +77,11 @@ test('buildSkillIndexPreview returns raw debug JSON including frontmatter trigge
     assert.equal(preview.coding.skills[0].name, 'with-triggers');
     assert.deepEqual(preview.coding.skills[0].triggers, ['review since X', 'code review']);
     assert.match(preview.coding.prompt, /# Indexed skills/);
+    assert.match(
+      preview.coding.prompt,
+      /- \/with-triggers - Test skill with-triggers \(triggers: review since X, code review\)/,
+    );
+    assert.doesNotMatch(preview.coding.prompt, /\[.*agent_requested.*\]/);
     assert.equal(preview.daily.count, 0);
     assert.equal(preview.global.count, 0);
   });
@@ -125,6 +131,15 @@ test('isSkillModelInvocationDisabled recognizes camelCase and kebab-case, boolea
   assert.equal(isSkillModelInvocationDisabled(null), false);
 });
 
+test('isUserInvocableSkill defaults true and respects user-invocable false', () => {
+  assert.equal(isUserInvocableSkill({ metadata: { type: 'skill' } }), true);
+  assert.equal(isUserInvocableSkill({ metadata: { type: 'skill', userInvocable: true } }), true);
+  assert.equal(isUserInvocableSkill({ metadata: { type: 'skill', userInvocable: false } }), false);
+  assert.equal(isUserInvocableSkill({ metadata: { type: 'skill', 'user-invocable': false } }), false);
+  assert.equal(isUserInvocableSkill({ metadata: { type: 'skill', 'user-invocable': 'false' } }), false);
+  assert.equal(isUserInvocableSkill({ metadata: { type: 'command' } }), false);
+});
+
 test('buildAlwaysSkillPromptBlock injects enabled always-mode skill bodies', () => {
   const commands = new Map([
     [
@@ -139,6 +154,21 @@ test('buildAlwaysSkillPromptBlock injects enabled always-mode skill bodies', () 
   const block = buildAlwaysSkillPromptBlock(commands, {}, null, 'normal');
   assert.match(block, /\[Always skill: my-always-skill\]/);
   assert.match(block, /SECRET ALWAYS SKILL BODY/);
+});
+
+test('composeExplicitSkillPrompt rejects user-invocable false skills', () => {
+  const commands = new Map([
+    [
+      'background-skill',
+      {
+        name: 'background-skill',
+        metadata: { type: 'skill', userInvocable: false, enabled: true },
+        content: 'Should not be user-selected.',
+      },
+    ],
+  ]);
+  const result = composeExplicitSkillPrompt(commands, ['background-skill'], 'do it');
+  assert.match(result.error || '', /Unknown or unavailable skill/);
 });
 
 test('composeSelectedSkills still composes a manually-selected skill even when disableModelInvocation is true', () => {

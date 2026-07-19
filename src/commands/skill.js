@@ -243,6 +243,9 @@ export async function listSkillEntries({ scope = 'all', cwd = process.cwd() } = 
       packageName: command.metadata?.packageName || '',
       installedAt: command.metadata?.installedAt || '',
       hooksImported: command.metadata?.hooksImported !== false,
+      disableModelInvocation: command.metadata?.disableModelInvocation === true,
+      userInvocable: command.metadata?.userInvocable !== false,
+      routingAuthorLocked: command.metadata?.routingAuthorLocked === true,
       contexts: config.skills?.contexts?.[command.name]
         ? normalizeSkillContexts(config.skills.contexts[command.name])
         : itemScope === 'builtin'
@@ -447,6 +450,101 @@ function inferDescriptionFromSkillMarkdown(content) {
   return cleanDescriptionText(paragraph.join(' '));
 }
 
+function isTruthyFrontmatterFlag(metadata = {}, ...keys) {
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(metadata, key)) continue;
+    const value = metadata[key];
+    if (value === true) return true;
+    if (typeof value === 'string' && value.trim().toLowerCase() === 'true') return true;
+  }
+  return false;
+}
+
+function isFalsyFrontmatterFlag(metadata = {}, ...keys) {
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(metadata, key)) continue;
+    const value = metadata[key];
+    if (value === false) return true;
+    if (typeof value === 'string' && value.trim().toLowerCase() === 'false') return true;
+    return false;
+  }
+  return false;
+}
+
+function hasFrontmatterKey(metadata = {}, ...keys) {
+  return keys.some((key) => Object.prototype.hasOwnProperty.call(metadata, key));
+}
+
+/**
+ * Map Claude-compatible frontmatter invocation flags to Codemini skill mode.
+ * disable-model-invocation: true  → manual
+ * user-invocable: false           → agent_requested
+ * disable-model-invocation: false → agent_requested
+ * otherwise keep explicit Codemini mode / default agent_requested
+ */
+export function resolveModeFromClaudeFrontmatter({
+  mode,
+  disableModelInvocation = false,
+  disableModelInvocationPresent = false,
+  userInvocable = true,
+  userInvocablePresent = false,
+} = {}) {
+  if (disableModelInvocationPresent && disableModelInvocation) return 'manual';
+  if (userInvocablePresent && userInvocable === false) return 'agent_requested';
+  if (disableModelInvocationPresent) return 'agent_requested';
+  return mode || 'agent_requested';
+}
+
+/** @deprecated Prefer resolveModeFromClaudeFrontmatter */
+export function resolveModeFromDisableModelInvocation(disableModelInvocation, {
+  mode,
+  flagPresent = false,
+} = {}) {
+  return resolveModeFromClaudeFrontmatter({
+    mode,
+    disableModelInvocation: disableModelInvocation === true,
+    disableModelInvocationPresent: flagPresent,
+  });
+}
+
+export function isSkillRoutingAuthorLocked(documentMeta = {}) {
+  return (
+    documentMeta.disableModelInvocationPresent === true ||
+    documentMeta.userInvocablePresent === true
+  );
+}
+
+/** Prefer fresh Claude routing flags over prior mode on package update. */
+export function buildSkillUpdateCatalogPatch(prior = {}, documentMeta = {}) {
+  const patch = {
+    triggers: Array.isArray(prior.triggers) ? [...prior.triggers] : [],
+    enabled: prior.enabled !== false,
+  };
+  if (prior.priority !== undefined) patch.priority = prior.priority;
+
+  const authorLocked = isSkillRoutingAuthorLocked(documentMeta);
+  patch.routingAuthorLocked = authorLocked;
+  patch.userInvocable = documentMeta.userInvocable !== false;
+
+  if (authorLocked) {
+    const disableModelInvocation = documentMeta.disableModelInvocation === true;
+    patch.disableModelInvocation = disableModelInvocation;
+    patch.mode = resolveModeFromClaudeFrontmatter({
+      mode: documentMeta.mode,
+      disableModelInvocation,
+      disableModelInvocationPresent: documentMeta.disableModelInvocationPresent === true,
+      userInvocable: documentMeta.userInvocable !== false,
+      userInvocablePresent: documentMeta.userInvocablePresent === true,
+    });
+  } else {
+    patch.mode = prior.mode || 'agent_requested';
+    if (documentMeta.disableModelInvocationPresent) {
+      patch.disableModelInvocation = documentMeta.disableModelInvocation === true;
+    }
+  }
+  return patch;
+}
+
 async function readSkillDocumentMeta(skillRoot, entryFile = 'SKILL.md') {
   const entryPath = path.join(skillRoot, entryFile || 'SKILL.md');
   try {
@@ -464,6 +562,24 @@ async function readSkillDocumentMeta(skillRoot, entryFile = 'SKILL.md') {
         .filter(Boolean);
     const priorityRaw = Number(parsed.metadata.priority);
     const enabledRaw = parsed.metadata.enabled;
+    const disableModelInvocation = isTruthyFrontmatterFlag(
+      parsed.metadata,
+      'disableModelInvocation',
+      'disable-model-invocation',
+    );
+    const disableModelInvocationPresent = hasFrontmatterKey(
+      parsed.metadata,
+      'disableModelInvocation',
+      'disable-model-invocation',
+    );
+    const userInvocablePresent = hasFrontmatterKey(
+      parsed.metadata,
+      'userInvocable',
+      'user-invocable',
+    );
+    const userInvocable = userInvocablePresent
+      ? !isFalsyFrontmatterFlag(parsed.metadata, 'userInvocable', 'user-invocable')
+      : true;
     return {
       name: normalizeSkillName(parsed.metadata.name),
       version: parsed.metadata.version ? String(parsed.metadata.version) : '',
@@ -476,9 +592,21 @@ async function readSkillDocumentMeta(skillRoot, entryFile = 'SKILL.md') {
       ...(enabledRaw !== undefined
         ? { enabled: !(enabledRaw === false || String(enabledRaw).trim().toLowerCase() === 'false') }
         : {}),
+      disableModelInvocation,
+      disableModelInvocationPresent,
+      userInvocable,
+      userInvocablePresent,
     };
   } catch {
-    return { name: '', version: '', description: '' };
+    return {
+      name: '',
+      version: '',
+      description: '',
+      disableModelInvocation: false,
+      disableModelInvocationPresent: false,
+      userInvocable: true,
+      userInvocablePresent: false,
+    };
   }
 }
 
@@ -946,9 +1074,27 @@ export async function installSkill(sourcePath, {
     installedAt: new Date().toISOString()
   };
   const discoveredHooks = await reconcileSkillHooksOnInstall(targetDir, { includeHooks });
+  const disableModelInvocation =
+    documentMeta.disableModelInvocation === true ||
+    discoveredHooks.disableModelInvocation === true;
+  const disableModelInvocationPresent =
+    documentMeta.disableModelInvocationPresent === true ||
+    discoveredHooks.disableModelInvocation === true;
+  const userInvocable = documentMeta.userInvocable !== false;
+  const userInvocablePresent = documentMeta.userInvocablePresent === true;
+  const routingAuthorLocked = isSkillRoutingAuthorLocked({
+    disableModelInvocationPresent,
+    userInvocablePresent,
+  });
   const catalogEntry = {
     description,
-    mode: documentMeta.mode || 'agent_requested',
+    mode: resolveModeFromClaudeFrontmatter({
+      mode: documentMeta.mode,
+      disableModelInvocation,
+      disableModelInvocationPresent,
+      userInvocable,
+      userInvocablePresent,
+    }),
     enabled: documentMeta.enabled !== false,
     ...(Array.isArray(documentMeta.triggers) ? { triggers: documentMeta.triggers } : { triggers: [] }),
     ...(documentMeta.priority !== undefined ? { priority: documentMeta.priority } : {}),
@@ -956,7 +1102,9 @@ export async function installSkill(sourcePath, {
     packageSource: packageMetadata.packageSource || sourceLabel,
     packageName: packageMetadata.packageName || '',
     installedAt: packageMetadata.installedAt || new Date().toISOString(),
-    disableModelInvocation: discoveredHooks.disableModelInvocation,
+    disableModelInvocation,
+    userInvocable,
+    routingAuthorLocked,
     hooksProvenance: discoveredHooks.provenance,
     hooksImported: includeHooks !== false,
   };
@@ -1146,11 +1294,19 @@ export async function updateSkillPackage({
         continue;
       }
 
+      const documentMeta = await readSkillDocumentMeta(
+        skillDir,
+        (await readManifestSafe(skillDir))?.entry || 'SKILL.md',
+      );
+
       if (hasHooksSnapshot) {
         await restoreSkillHooksDir(skillDir, hooksSnapshots.get(skillName));
         const discovered = await discoverSkillHooks({ skillRoot: skillDir });
         await upsertSkillCatalogEntry(baseDir, skillName, {
-          disableModelInvocation: discovered.disableModelInvocation,
+          disableModelInvocation:
+            documentMeta.disableModelInvocationPresent
+              ? documentMeta.disableModelInvocation === true
+              : discovered.disableModelInvocation,
           hooksProvenance: discovered.provenance,
         });
       }
@@ -1160,17 +1316,12 @@ export async function updateSkillPackage({
         await upsertSkillCatalogEntry(baseDir, skillName, {
           hooksImported: false,
           hooksProvenance: {},
-          disableModelInvocation: false,
+          disableModelInvocation: documentMeta.disableModelInvocation === true,
         });
       }
 
       if (prior) {
-        const patch = {
-          mode: prior.mode,
-          triggers: prior.triggers,
-          enabled: prior.enabled,
-        };
-        if (prior.priority !== undefined) patch.priority = prior.priority;
+        const patch = buildSkillUpdateCatalogPatch(prior, documentMeta);
         await upsertSkillCatalogEntry(baseDir, skillName, patch);
         await setSkillEnabledConfig(skillName, prior.enabled);
         if (prior.contexts) {

@@ -94,13 +94,20 @@ function buildApprovalBlockedResult(toolName, args = {}, approvalReason = '') {
   };
 }
 
-function buildInvalidToolArgumentsResult(toolName, args = {}) {
+export function buildInvalidToolArgumentsResult(toolName, args = {}) {
   const parseError = String(args?._parseError || '').trim();
+  const name = String(toolName || 'tool').trim() || 'tool';
+  const hint = name === 'run'
+    ? ' Do not embed large scripts or file contents in run arguments. Write a file first (create/edit), then run a short command such as `powershell -File path.ps1`.'
+    : ' Retry with valid, compact JSON arguments.';
   return {
-    error: `Invalid JSON arguments for ${toolName}`,
-    reason: parseError
+    error: `Invalid JSON arguments for ${name}`,
+    reason: (parseError
       ? `Tool arguments could not be parsed as JSON: ${parseError}`
-      : 'Tool arguments could not be parsed as JSON',
+      : 'Tool arguments could not be parsed as JSON') + hint,
+    suggestion: name === 'run'
+      ? 'create/edit a script file, then run a short command'
+      : 'fix JSON escaping and keep arguments compact',
     raw: String(args?._raw || '')
   };
 }
@@ -865,7 +872,7 @@ export async function runAgentLoop({
       let approvalReason = '';
       let approvalArgs = args;
       let preflightErrorContent = '';
-      if (args?._invalid_json && ['create', 'write', 'edit', 'apply_patch', 'delete'].includes(toolName)) {
+      if (args?._invalid_json) {
         approvalResults.set(call.id, {
           approved: false,
           args: approvalArgs,

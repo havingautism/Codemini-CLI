@@ -100,6 +100,11 @@ export function skillPackageIsUpdatable(skill = {}) {
   return Boolean(packageSourceKey(source));
 }
 
+/** Remote package skills whose Claude frontmatter owns routing (DMI / user-invocable). */
+export function skillRoutingAuthorLocked(skill = {}) {
+  return skillPackageIsUpdatable(skill) && skill?.routingAuthorLocked === true;
+}
+
 export function skillsInSamePackage(skills = [], skill = {}) {
   if (!skillPackageIsUpdatable(skill)) return [];
   const key = packageSourceKey(skill.packageSource || skill.source);

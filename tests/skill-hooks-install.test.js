@@ -97,6 +97,149 @@ priority: 80
   });
 });
 
+test('installSkill maps disable-model-invocation true to manual mode', async () => {
+  await withTempCwd(async ({ cwd, fixtures }) => {
+    const skillDir = path.join(fixtures, 'manual-from-flag');
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(
+      path.join(skillDir, 'SKILL.md'),
+      `---
+name: manual-from-flag
+description: Claude manual-only skill.
+disable-model-invocation: true
+---
+# Manual From Flag
+`,
+      'utf8',
+    );
+
+    const name = await installSkill(skillDir, { cwd, sourceLabel: skillDir });
+    const catalog = await readCatalog(cwd);
+    const entry = catalog.skills[name];
+    assert.equal(entry.disableModelInvocation, true);
+    assert.equal(entry.mode, 'manual');
+    assert.equal(entry.routingAuthorLocked, true);
+  });
+});
+
+test('installSkill maps disable-model-invocation false to agent_requested mode', async () => {
+  await withTempCwd(async ({ cwd, fixtures }) => {
+    const skillDir = path.join(fixtures, 'agent-from-flag');
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(
+      path.join(skillDir, 'SKILL.md'),
+      `---
+name: agent-from-flag
+description: Claude agent-invocable skill.
+disable-model-invocation: false
+mode: always
+---
+# Agent From Flag
+`,
+      'utf8',
+    );
+
+    const name = await installSkill(skillDir, { cwd, sourceLabel: skillDir });
+    const catalog = await readCatalog(cwd);
+    const entry = catalog.skills[name];
+    assert.equal(entry.disableModelInvocation, false);
+    assert.equal(entry.mode, 'agent_requested');
+    assert.equal(entry.routingAuthorLocked, true);
+    assert.equal(entry.userInvocable, true);
+  });
+});
+
+test('installSkill maps user-invocable false to agent_requested and locks routing', async () => {
+  await withTempCwd(async ({ cwd, fixtures }) => {
+    const skillDir = path.join(fixtures, 'model-only-skill');
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(
+      path.join(skillDir, 'SKILL.md'),
+      `---
+name: model-only-skill
+description: Background knowledge skill.
+user-invocable: false
+---
+# Model Only Skill
+`,
+      'utf8',
+    );
+
+    const name = await installSkill(skillDir, { cwd, sourceLabel: skillDir });
+    const catalog = await readCatalog(cwd);
+    const entry = catalog.skills[name];
+    assert.equal(entry.userInvocable, false);
+    assert.equal(entry.mode, 'agent_requested');
+    assert.equal(entry.routingAuthorLocked, true);
+    assert.equal(entry.disableModelInvocation, false);
+  });
+});
+
+test('buildSkillUpdateCatalogPatch overlays Claude routing flags over prior mode', async () => {
+  const { buildSkillUpdateCatalogPatch } = await import('../src/commands/skill.js');
+
+  assert.deepEqual(
+    buildSkillUpdateCatalogPatch(
+      { mode: 'agent_requested', triggers: ['old'], enabled: true, priority: 40 },
+      {
+        disableModelInvocationPresent: true,
+        disableModelInvocation: true,
+        userInvocable: true,
+        userInvocablePresent: false,
+        mode: 'always',
+      },
+    ),
+    {
+      triggers: ['old'],
+      enabled: true,
+      priority: 40,
+      routingAuthorLocked: true,
+      userInvocable: true,
+      disableModelInvocation: true,
+      mode: 'manual',
+    },
+  );
+
+  assert.deepEqual(
+    buildSkillUpdateCatalogPatch(
+      { mode: 'manual', triggers: [], enabled: true },
+      {
+        disableModelInvocationPresent: false,
+        disableModelInvocation: false,
+        userInvocablePresent: true,
+        userInvocable: false,
+      },
+    ),
+    {
+      triggers: [],
+      enabled: true,
+      routingAuthorLocked: true,
+      userInvocable: false,
+      disableModelInvocation: false,
+      mode: 'agent_requested',
+    },
+  );
+
+  assert.deepEqual(
+    buildSkillUpdateCatalogPatch(
+      { mode: 'always', triggers: ['keep'], enabled: false },
+      {
+        disableModelInvocationPresent: false,
+        disableModelInvocation: false,
+        userInvocablePresent: false,
+        userInvocable: true,
+      },
+    ),
+    {
+      triggers: ['keep'],
+      enabled: false,
+      routingAuthorLocked: false,
+      userInvocable: true,
+      mode: 'always',
+    },
+  );
+});
+
 test('installSkill can exclude bundled and frontmatter hooks', async () => {
   await withTempCwd(async ({ cwd, fixtures }) => {
     const skillDir = path.join(fixtures, 'no-hooks-skill');

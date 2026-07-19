@@ -119,7 +119,16 @@ export function isSkillIndexEligible(command) {
 }
 
 export function isUserInvocableSkill(command) {
-  return command?.metadata?.type === 'skill';
+  if (command?.metadata?.type !== 'skill') return false;
+  const metadata = command.metadata || {};
+  if (Object.prototype.hasOwnProperty.call(metadata, 'userInvocable')) {
+    return metadata.userInvocable !== false && String(metadata.userInvocable).trim().toLowerCase() !== 'false';
+  }
+  if (Object.prototype.hasOwnProperty.call(metadata, 'user-invocable')) {
+    return metadata['user-invocable'] !== false
+      && String(metadata['user-invocable']).trim().toLowerCase() !== 'false';
+  }
+  return true;
 }
 
 function normalizeBooleanFlag(value) {
@@ -146,6 +155,12 @@ function catalogMetadata(catalog, name) {
     ...(has('enabled') ? { enabled: entry.enabled !== false } : {}),
     ...(has('disableModelInvocation')
       ? { disableModelInvocation: normalizeBooleanFlag(entry.disableModelInvocation) }
+      : {}),
+    ...(has('userInvocable')
+      ? { userInvocable: entry.userInvocable !== false }
+      : {}),
+    ...(has('routingAuthorLocked')
+      ? { routingAuthorLocked: entry.routingAuthorLocked === true }
       : {}),
     ...(has('hooksImported') ? { hooksImported: entry.hooksImported !== false } : {}),
     ...(has('priority') && entry.priority !== undefined ? { priority: Number(entry.priority) } : {}),
@@ -437,11 +452,14 @@ function isIndexedSkillEnabledForPrompt(command, config = {}, executionMode = co
 }
 
 function formatSkillIndexPromptLine(command) {
-  const scope = skillScopeLabel(command.source);
-  const mode = resolveSkillIndexMode(command.metadata, command.source);
   const desc = String(command.metadata?.description || '').trim().replace(/\s+/g, ' ');
-  const label = mode === 'agent_requested' ? `${scope}|agent_requested` : scope;
-  return desc ? `- /${command.name} [${label}] - ${desc}` : `- /${command.name} [${label}]`;
+  const triggers = Array.isArray(command.metadata?.triggers)
+    ? command.metadata.triggers.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  let line = `- /${command.name}`;
+  if (desc) line += ` - ${desc}`;
+  if (triggers.length) line += ` (triggers: ${triggers.join(', ')})`;
+  return line;
 }
 
 function skillIndexConfiguredContexts(config = {}, command) {

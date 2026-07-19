@@ -41,6 +41,7 @@ import {
   hooksStateIsDirty,
   hooksStateToObject,
 } from '@/lib/hooks-editor.js';
+import { skillRoutingAuthorLocked } from '@/lib/skill-display.js';
 import { cn } from '@/lib/utils';
 import * as api from '@/hooks/use-api';
 import { t } from '../../i18n/index.js';
@@ -573,10 +574,12 @@ function SkillHooksPane({ onDirtyChange }) {
         hooksStateToObject(hooksState),
       );
       try {
-        await api.updateSkillMetadata(
-          selectedSkill.name,
-          { disableModelInvocation },
-        );
+        if (!skillRoutingAuthorLocked(selectedSkill)) {
+          await api.updateSkillMetadata(
+            selectedSkill.name,
+            { disableModelInvocation },
+          );
+        }
       } catch (metadataError) {
         await api.updateSkillHooks(
           selectedSkill.name,
@@ -731,7 +734,9 @@ function SkillHooksPane({ onDirtyChange }) {
                     {t('skillDisableModelInvocation')}
                   </div>
                   <p className="text-[11px] leading-4 text-(--text-muted)">
-                    {t('skillDisableModelInvocationHint')}
+                    {skillRoutingAuthorLocked(selectedSkill)
+                      ? t('skillRoutingAuthorLockedHint')
+                      : t('skillDisableModelInvocationHint')}
                   </p>
                 </div>
                 <Switch
@@ -740,7 +745,7 @@ function SkillHooksPane({ onDirtyChange }) {
                     setDisableModelInvocation(checked);
                     setMetadataDirty(true);
                   }}
-                  disabled={detailLoading || saving}
+                  disabled={detailLoading || saving || skillRoutingAuthorLocked(selectedSkill)}
                   aria-label={t('skillDisableModelInvocation')}
                 />
               </div>

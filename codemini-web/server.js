@@ -27,7 +27,7 @@ import { resolveGitCwd, shouldAdoptGitCwd } from './lib/git-project.js';
 import { createGitInfoReader, readGitDiffData, readGitInfoBatch } from './lib/git-status.js';
 import { createPooledSessionEnsurer } from './lib/pooled-session-ensurer.js';
 import { resolveEmbed } from './lib/embed-resolver.js';
-import { installSkillSource, listSkillEntries, previewSkillPackageUpdate, previewSkillSource, updateSkillPackage } from '../src/commands/skill.js';
+import { canUpdateSkillPackage, installSkillSource, listSkillEntries, previewSkillPackageUpdate, previewSkillSource, updateSkillPackage } from '../src/commands/skill.js';
 import { buildSkillIndexPreview } from '../src/core/command-loader.js';
 import { computeFileSha256, readSkillRegistry, upsertSkillRegistryEntry, writeSkillRegistry } from '../src/core/skill-registry.js';
 import {
@@ -122,6 +122,30 @@ export function normalizeSkillMetadataPatch(input = {}) {
   if (input.disableModelInvocation !== undefined) {
     out.disableModelInvocation = input.disableModelInvocation === true;
   }
+  if (input.userInvocable !== undefined) {
+    out.userInvocable = input.userInvocable !== false;
+  }
+  if (input.routingAuthorLocked !== undefined) {
+    out.routingAuthorLocked = input.routingAuthorLocked === true;
+  }
+  return out;
+}
+
+const AUTHOR_LOCKED_ROUTING_KEYS = new Set([
+  'mode',
+  'triggers',
+  'priority',
+  'disableModelInvocation',
+  'userInvocable',
+  'routingAuthorLocked',
+]);
+
+export function stripAuthorLockedRoutingPatch(patch = {}, { routingAuthorLocked = false } = {}) {
+  if (!routingAuthorLocked) return { ...patch };
+  const out = { ...patch };
+  for (const key of AUTHOR_LOCKED_ROUTING_KEYS) {
+    delete out[key];
+  }
   return out;
 }
 
@@ -209,11 +233,22 @@ function serializeSkillMarkdown(metadata = {}, content = '') {
 function patchSkillMarkdownMetadata(raw = '', patch = {}, fallbackName = '') {
   const parsed = parseSkillFrontmatter(raw);
   const normalizedPatch = normalizeSkillMetadataPatch(patch);
+  delete normalizedPatch.routingAuthorLocked;
+  delete normalizedPatch.contexts;
   const metadata = {
     ...(parsed.metadata || {}),
     ...(fallbackName ? { name: parsed.metadata?.name || fallbackName } : {}),
     ...normalizedPatch
   };
+  // Prefer Claude-compatible kebab keys when writing invocation flags.
+  if (Object.prototype.hasOwnProperty.call(metadata, 'userInvocable')) {
+    metadata['user-invocable'] = metadata.userInvocable !== false;
+    delete metadata.userInvocable;
+  }
+  if (Object.prototype.hasOwnProperty.call(metadata, 'disableModelInvocation')) {
+    metadata['disable-model-invocation'] = metadata.disableModelInvocation === true;
+    delete metadata.disableModelInvocation;
+  }
   return serializeSkillMarkdown(metadata, parsed.content);
 }
 
@@ -1562,7 +1597,10 @@ async function enrichSkillWithHookMetadata(entry) {
     const discovered = await discoverSkillHooks({ skillRoot });
     return {
       ...entry,
-      disableModelInvocation: discovered.disableModelInvocation === true,
+      disableModelInvocation:
+        entry.disableModelInvocation === true || discovered.disableModelInvocation === true,
+      userInvocable: entry.userInvocable !== false,
+      routingAuthorLocked: entry.routingAuthorLocked === true,
       hooksProvenance: discovered.provenance || {},
       hookEvents: Object.keys(discovered.hooks || {})
     };
@@ -1570,6 +1608,8 @@ async function enrichSkillWithHookMetadata(entry) {
     return {
       ...entry,
       disableModelInvocation: entry.disableModelInvocation === true,
+      userInvocable: entry.userInvocable !== false,
+      routingAuthorLocked: entry.routingAuthorLocked === true,
       hooksProvenance: {},
       hookEvents: []
     };
@@ -2930,6 +2970,10 @@ async function main() {
         const skill = entries.find(s => s.name === name);
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
         if (skill.scope === 'builtin') { jsonResponse(res, { error: true, message: 'Cannot edit builtin skill' }, 403); return; }
+        if (canUpdateSkillPackage(skill)) {
+          jsonResponse(res, { error: true, message: 'Cannot edit remote package skill content' }, 403);
+          return;
+        }
         await fs.writeFile(skill.path, content, 'utf8');
         const markdownPatch = metadataPatchFromSkillMarkdown(content);
         if (Object.keys(markdownPatch).length > 0) {
@@ -2981,7 +3025,20 @@ async function main() {
         const entries = await listSkillEntries({ scope: 'all', cwd: currentProjectDir });
         const skill = entries.find(s => s.name === name);
         if (!skill) { jsonResponse(res, { error: true, message: 'Skill not found' }, 404); return; }
-        const normalizedPatch = normalizeSkillMetadataPatch(body || {});
+        const routingLocked =
+          canUpdateSkillPackage(skill) && skill.routingAuthorLocked === true;
+        const requestedPatch = normalizeSkillMetadataPatch(body || {});
+        if (routingLocked) {
+          const blocked = Object.keys(requestedPatch).filter((key) => AUTHOR_LOCKED_ROUTING_KEYS.has(key));
+          if (blocked.length > 0) {
+            jsonResponse(res, {
+              error: true,
+              message: 'Remote skill routing is locked to the package author frontmatter',
+            }, 403);
+            return;
+          }
+        }
+        const normalizedPatch = requestedPatch;
         const contexts = normalizedPatch.contexts;
         const metadataPatch = { ...normalizedPatch };
         delete metadataPatch.contexts;
