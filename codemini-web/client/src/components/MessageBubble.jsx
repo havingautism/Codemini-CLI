@@ -9,6 +9,7 @@ import {
   MarkdownLightboxImage,
 } from "./MarkdownLightboxImage.jsx";
 import { collectMessageEmbeds } from "@/lib/message-embeds.js";
+import { isPostCompletionExtrasReady } from "@/lib/message-post-completion.js";
 import { buildRenderGroups } from "@/lib/message-render-groups.js";
 import { layoutAnswerProcessWithPlans } from "@/lib/answer-process.js";
 import { TodoList } from "./TodoList";
@@ -1761,8 +1762,13 @@ function shouldShowMessageActions(message, messageComplete) {
   );
 }
 
-function shouldShowPostCompletionExtras(message, messageComplete, hasContent) {
-  if (!messageComplete || !hasContent) return false;
+/**
+ * Post-completion extras (related links, file diffs) follow this message only.
+ * Do not gate on session-wide live/streaming — that hides finished bubbles' links
+ * for the whole next turn and remounts them when streaming ends.
+ */
+export function shouldShowPostCompletionExtras(message, messageComplete, hasContent) {
+  if (!isPostCompletionExtrasReady({ messageComplete }) || !hasContent) return false;
   const planStep = message?.planStep;
   if (!planStep) return true;
   return String(planStep.role || "").toLowerCase() === "summarizer";
@@ -1922,7 +1928,6 @@ function AnswerProcessFold({ groups, durationMs }) {
 export const MessageBubble = memo(function MessageBubble({
   message,
   skills = [],
-  sessionLive = false,
   onRetry,
 }) {
   const {
@@ -2146,7 +2151,7 @@ export const MessageBubble = memo(function MessageBubble({
     Boolean(retryPrompt) &&
     message.retryable !== false;
   const showActions = shouldShowMessageActions(message, messageComplete);
-  const postCompletionReady = !sessionLive && messageComplete;
+  const postCompletionReady = isPostCompletionExtrasReady({ messageComplete });
   const showFileChanges = shouldShowFileChanges(
     message,
     postCompletionReady,

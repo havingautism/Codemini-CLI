@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   isViewportAtEnd,
+  resolveFollowEnd,
   syncViewportAfterResize,
 } from "@/components/ui/message-scroller-follow";
 
@@ -15,13 +16,17 @@ function MessageScrollerProvider({ children }) {
   const [atStart, setAtStart] = React.useState(true);
   const [atEnd, setAtEnd] = React.useState(true);
   const followEndRef = React.useRef(true);
+  const userScrollRef = React.useRef(false);
 
-  const measure = React.useCallback((node, { updateFollow = true } = {}) => {
+  const measure = React.useCallback((node, { isUserDriven = false } = {}) => {
     if (!node) return;
     setAtStart(node.scrollTop <= 2);
     const nextAtEnd = isViewportAtEnd(node);
     setAtEnd(nextAtEnd);
-    if (updateFollow) followEndRef.current = nextAtEnd;
+    followEndRef.current = resolveFollowEnd(followEndRef.current, {
+      atEnd: nextAtEnd,
+      isUserDriven,
+    });
   }, []);
 
   const scrollTo = React.useCallback((direction = "end") => {
@@ -37,13 +42,46 @@ function MessageScrollerProvider({ children }) {
   React.useEffect(() => {
     if (!viewport) return;
     measure(viewport);
+    let clearUserScrollTimer = 0;
+    const clearUserScroll = () => {
+      userScrollRef.current = false;
+      window.clearTimeout(clearUserScrollTimer);
+    };
+    const markUserScroll = () => {
+      userScrollRef.current = true;
+      // Keep the gesture open across wheel/touch momentum; scrollend clears it.
+      window.clearTimeout(clearUserScrollTimer);
+      clearUserScrollTimer = window.setTimeout(clearUserScroll, 120);
+    };
+    const onScroll = () => {
+      measure(viewport, { isUserDriven: userScrollRef.current });
+    };
+    const onScrollbarPointerDown = (event) => {
+      if (event.target !== viewport) return;
+      if (event.offsetX >= viewport.clientWidth) markUserScroll();
+    };
     const observer = new ResizeObserver(() => {
       syncViewportAfterResize(viewport, followEndRef.current);
-      measure(viewport, { updateFollow: false });
+      measure(viewport, { isUserDriven: false });
     });
     observer.observe(viewport);
     if (viewport.firstElementChild) observer.observe(viewport.firstElementChild);
-    return () => observer.disconnect();
+    viewport.addEventListener("scroll", onScroll, { passive: true });
+    viewport.addEventListener("scrollend", clearUserScroll);
+    viewport.addEventListener("wheel", markUserScroll, { passive: true });
+    viewport.addEventListener("touchmove", markUserScroll, { passive: true });
+    viewport.addEventListener("keydown", markUserScroll);
+    viewport.addEventListener("pointerdown", onScrollbarPointerDown);
+    return () => {
+      observer.disconnect();
+      window.clearTimeout(clearUserScrollTimer);
+      viewport.removeEventListener("scroll", onScroll);
+      viewport.removeEventListener("scrollend", clearUserScroll);
+      viewport.removeEventListener("wheel", markUserScroll);
+      viewport.removeEventListener("touchmove", markUserScroll);
+      viewport.removeEventListener("keydown", markUserScroll);
+      viewport.removeEventListener("pointerdown", onScrollbarPointerDown);
+    };
   }, [viewport, measure]);
 
   const value = React.useMemo(
@@ -99,10 +137,7 @@ const MessageScrollerViewport = React.forwardRef(function MessageScrollerViewpor
       ref={setRef}
       data-slot="message-scroller-viewport"
       className={cn("size-full min-h-0 min-w-0 scroll-fade-b scrollbar-thin scrollbar-gutter-stable overflow-y-auto overscroll-contain contain-content", className)}
-      onScroll={(event) => {
-        context?.measure(event.currentTarget);
-        onScroll?.(event);
-      }}
+      onScroll={onScroll}
       {...props}
     />
   );

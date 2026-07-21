@@ -392,7 +392,6 @@ function Shell() {
               skills={state.skills}
               gitInfo={state.gitInfo}
               messagesLoading={state.messagesLoading}
-              sessionLive={state.live}
               isGeneral={state.isGeneral}
               onRetryMessage={retryMessage}
             />

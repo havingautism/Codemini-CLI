@@ -3,15 +3,17 @@ import { LinkSimple } from "@phosphor-icons/react";
 import { EmbedCard } from "@/components/EmbedCard.jsx";
 import { HorizontalScrollStrip } from "@/components/HorizontalScrollStrip.jsx";
 import { cancelDeferred, deferUntilIdle } from "@/lib/embed-fetch-queue.js";
+import { embedBannerContentKey } from "@/lib/embed-banner-key.js";
 import { t } from "../../i18n/index.js";
 
 export function EmbedBanner({ items = [] }) {
+  const contentKey = embedBannerContentKey(items);
   const links = items.filter((item) => item?.type !== "image");
   const fitsWithoutScroll = links.length <= 3;
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    if (!items.length || !links.length) {
+    if (!contentKey) {
       setReady(false);
       return undefined;
     }
@@ -21,7 +23,7 @@ export function EmbedBanner({ items = [] }) {
     return () => {
       cancelDeferred(idleId);
     };
-  }, [items, links.length]);
+  }, [contentKey]);
 
   if (!links.length) return null;
   if (!ready) return null;
