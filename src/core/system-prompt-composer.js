@@ -23,11 +23,12 @@ export async function composeSystemPrompt({
   projectContextSnippet = '',
   projectContextGuidance = '',
   extraPrompts = [],
-  includeSoul = true
+  includeSoul = true,
+  soulContext,
 } = {}) {
   const [shellAndSoul, memoryPrompt, projectInstructionsPrompt, resolvedSkillsPrompt] = await Promise.all([
     includeSoul
-      ? buildSystemPromptWithSoul(shellRulesPrompt, config)
+      ? buildSystemPromptWithSoul(shellRulesPrompt, config, { context: soulContext })
       : shellRulesPrompt,
     memorySnapshot !== undefined
       ? memorySnapshot

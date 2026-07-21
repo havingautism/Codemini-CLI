@@ -641,11 +641,11 @@ export async function fetchSoulContent(name) {
   return res.json();
 }
 
-export async function createSoul({ name, content }) {
+export async function createSoul({ name, content, category = "daily" }) {
   const res = await api('/api/souls/create', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ name, content })
+    body: JSON.stringify({ name, content, category })
   });
   return res.json();
 }
@@ -666,11 +666,11 @@ export async function deleteSoul(name) {
   return res.json();
 }
 
-export async function activateSoul(name) {
+export async function activateSoul(name, category) {
   const res = await api('/api/souls/activate', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ name })
+    body: JSON.stringify({ name, category })
   });
   return res.json();
 }

@@ -107,7 +107,8 @@ const DEFAULT_CONFIG = {
     }
   },
   soul: {
-    preset: 'default',
+    coding: 'Default',
+    daily: 'Playful',
     custom_path: ''
   },
   web: {
@@ -361,6 +362,18 @@ function setNested(obj, keyPath, rawValue) {
 let cachedConfig = null;
 let cachedConfigStat = null;
 
+function migrateSoulConfig(parsed = {}) {
+  const soul = parsed?.soul;
+  if (!soul || typeof soul !== 'object') return parsed;
+  const legacy = String(soul.preset || '').trim();
+  if (!legacy) return parsed;
+  const hasCoding = Object.prototype.hasOwnProperty.call(soul, 'coding');
+  const hasDaily = Object.prototype.hasOwnProperty.call(soul, 'daily');
+  if (!hasCoding) soul.coding = legacy;
+  if (!hasDaily) soul.daily = legacy;
+  return parsed;
+}
+
 export async function loadConfig() {
   const configPath = getConfigFilePath();
   try {
@@ -371,7 +384,7 @@ export async function loadConfig() {
       return structuredClone(cachedConfig);
     }
     const raw = await fs.readFile(configPath, 'utf8');
-    const parsed = JSON.parse(raw);
+    const parsed = migrateSoulConfig(JSON.parse(raw));
     const config = normalizePolicyLists(deepMerge(DEFAULT_CONFIG, parsed));
     cachedConfig = config;
     cachedConfigStat = { mtime, size };
@@ -385,7 +398,7 @@ export async function loadConfig() {
     try {
       const legacyPath = path.join(getLegacyConfigDir(), 'config.json');
       const raw = await fs.readFile(legacyPath, 'utf8');
-      const parsed = JSON.parse(raw);
+      const parsed = migrateSoulConfig(JSON.parse(raw));
       const config = normalizePolicyLists(deepMerge(DEFAULT_CONFIG, parsed));
       cachedConfig = config;
       // Get the stat of legacy or standard config path to store in cache stats

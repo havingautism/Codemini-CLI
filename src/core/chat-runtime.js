@@ -13,7 +13,12 @@ import {
   disarmSkillHooks,
   PROJECT_HOOKS_SKILL_NAME,
 } from './skill-hooks-session.js';
-import { armSkillFromCommand, fireSkillHookEvent, formatHookContextLines } from './skill-hooks-runtime.js';
+import {
+  armSkillFromCommand,
+  fireSkillHookEvent,
+  formatHookContextLines,
+  reconcileSessionStartAfterActivationChange,
+} from './skill-hooks-runtime.js';
 import {
   loadGlobalHooks,
   loadProjectHooks,
@@ -6925,6 +6930,12 @@ export async function createChatRuntime({
     compactState.threshold = normalizeCompactThreshold(config.context?.preflight_trigger_pct, 60);
   };
   const syncRuntimeFromConfig = async ({ model: nextModel } = {}) => {
+    const previousMode = executionMode;
+    const previouslyArmed = new Set(
+      typeof skillHooksSession?.activeSkills?.keys === 'function'
+        ? [...skillHooksSession.activeSkills.keys()]
+        : [],
+    );
     executionMode = resolveRuntimeExecutionMode(config.execution?.mode || 'normal', config, currentSession);
     syncCompactStateFromConfig();
 
@@ -6936,7 +6947,15 @@ export async function createChatRuntime({
         await saveSession(currentSession).catch(() => {});
       }
     }
-    await reloadWorkspaceHooks();
+    if (typeof reloadWorkspaceHooks === 'function') {
+      await reloadWorkspaceHooks();
+      if (
+        typeof reconcileSessionStartForModeChange === 'function'
+        && normalizeExecutionMode(previousMode) !== normalizeExecutionMode(executionMode)
+      ) {
+        await reconcileSessionStartForModeChange(previouslyArmed);
+      }
+    }
   };
   const [initialIndex, commands] = await Promise.all([
     initialIndexPromise,
@@ -7060,6 +7079,16 @@ export async function createChatRuntime({
       sessionStartUiEvents.push(event);
     }
   });
+  // Coding↔daily changes disarm package/project arms, but boot SessionStart UI/context
+  // was already queued. Drop stale rows and rebuild from arms that still apply.
+  const reconcileSessionStartForModeChange = (previouslyArmed) =>
+    reconcileSessionStartAfterActivationChange({
+      skillHooksSession,
+      sessionStartUiEvents,
+      sessionStartCompleted,
+      previouslyArmed,
+      workspaceRoot: root,
+    });
   // Arms hooks for a skill by name, looking it up first in the manual-selection
   // command map, then falling back to the agent-facing indexed skill catalog
   // (covers skills the model loaded itself via the `skill` tool).
@@ -7367,7 +7396,8 @@ export async function createChatRuntime({
       config,
       workspaceRoot: root,
       skillsPrompt: skillIndexPromptCache.value,
-      extraPrompts: [memoryGuide]
+      extraPrompts: [memoryGuide],
+      soulContext: normalizeExecutionMode(executionMode) === 'plan' ? 'coding' : 'daily',
     });
   };
 
@@ -8022,10 +8052,14 @@ export async function createChatRuntime({
       if (!isExecutionModeInput(next)) return false;
       const normalized = normalizeExecutionMode(next);
       if (!['normal', 'plan'].includes(normalized)) return false;
+      if (normalized === normalizeExecutionMode(executionMode)) return true;
+      const previouslyArmed = new Set([...skillHooksSession.activeSkills.keys()]);
       executionMode = normalized;
       await setConfigValue('execution.mode', normalized);
       config = attachRuntimeState(await loadConfig());
       await reloadWorkspaceHooks();
+      // Drop coding SessionStart UI/context queued before the switch; rebuild for arms that still apply.
+      await reconcileSessionStartForModeChange(previouslyArmed);
       return true;
     },
     setApprovalMode: async (next) => {

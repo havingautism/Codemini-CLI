@@ -81,6 +81,16 @@ import {
   saveCustomHookProfile,
   savePackageHookProfile,
 } from '../src/core/hook-profiles.js';
+import {
+  createSoul,
+  deleteSoul,
+  getActiveSoulName,
+  listSouls,
+  normalizeSoulCategory,
+  readSoulContent,
+  soulNameEquals,
+  updateSoulContent,
+} from '../src/core/soul.js';
 
 const GENERAL_PROJECT_DIR = (() => {
   const base = getBaseConfigDir();
@@ -3323,105 +3333,60 @@ async function main() {
     }
 
     // ── Souls management ──
-    const _BUNDLED_SOULS_DIR = path.resolve(__dirname, '..', 'souls');
-    const _CUSTOM_SOULS_DIR = path.join(getBaseConfigDir(), 'souls');
-    const soulNameEquals = (left, right) =>
-      String(left || '').trim().toLowerCase() === String(right || '').trim().toLowerCase();
-    const resolveSoulFilePath = async (dir, name) => {
-      const requested = String(name || '').trim();
-      if (!requested) return '';
-      const directPath = path.join(dir, `${requested}.md`);
-      try {
-        await fs.access(directPath);
-        return directPath;
-      } catch {}
-      try {
-        const entries = await fs.readdir(dir);
-        const expected = `${requested}.md`.toLowerCase();
-        const match = entries.find(file => file.toLowerCase() === expected);
-        return match ? path.join(dir, match) : '';
-      } catch {
-        return '';
-      }
-    };
-
     if (req.method === 'GET' && url.pathname === '/api/souls') {
       try {
         const config = await loadConfig();
-        const activePreset = config?.soul?.preset || 'default';
-        const souls = [];
-        const bundledEntries = await fs.readdir(_BUNDLED_SOULS_DIR);
-        for (const file of bundledEntries) {
-          if (!file.endsWith('.md')) continue;
-          const sname = file.slice(0, -3);
-          const scontent = await fs.readFile(path.join(_BUNDLED_SOULS_DIR, file), 'utf8');
-          souls.push({ name: sname, scope: 'builtin', preview: scontent.split('\n').slice(0, 3).join('\n').slice(0, 120), active: soulNameEquals(sname, activePreset) });
-        }
-        try {
-          const customEntries = await fs.readdir(_CUSTOM_SOULS_DIR);
-          for (const file of customEntries) {
-            if (!file.endsWith('.md')) continue;
-            const sname = file.slice(0, -3);
-            const scontent = await fs.readFile(path.join(_CUSTOM_SOULS_DIR, file), 'utf8');
-            souls.push({ name: sname, scope: 'custom', preview: scontent.split('\n').slice(0, 3).join('\n').slice(0, 120), active: soulNameEquals(sname, activePreset) });
-          }
-        } catch {}
-        jsonResponse(res, souls);
+        jsonResponse(res, await listSouls(config));
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
     }
     if (req.method === 'GET' && url.pathname.startsWith('/api/souls/') && url.pathname.endsWith('/content')) {
       const sname = decodeURIComponent(url.pathname.slice('/api/souls/'.length, -'/content'.length));
       try {
-        const customPath = await resolveSoulFilePath(_CUSTOM_SOULS_DIR, sname);
-        if (customPath) {
-          const scontent = await fs.readFile(customPath, 'utf8');
-          jsonResponse(res, { name: path.basename(customPath, '.md'), content: scontent, scope: 'custom' });
-          return;
-        }
-        const bundledPath = await resolveSoulFilePath(_BUNDLED_SOULS_DIR, sname);
-        const scontent = await fs.readFile(bundledPath, 'utf8');
-        jsonResponse(res, { name: sname, content: scontent, scope: 'builtin' });
+        jsonResponse(res, await readSoulContent(sname));
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/souls/create') {
-      const { name: rawName, content: soulContent } = await readBody(req);
+      const { name: rawName, content: soulContent, category } = await readBody(req);
       if (!rawName || !soulContent) { jsonResponse(res, { error: true, message: 'Missing name or content' }, 400); return; }
       try {
-        const safeName = String(rawName).replace(/[^a-zA-Z0-9_-]/g, '');
-        if (!safeName) { jsonResponse(res, { error: true, message: 'Invalid name' }, 400); return; }
-        const bundledCheck = await resolveSoulFilePath(_BUNDLED_SOULS_DIR, safeName);
-        if (bundledCheck) { jsonResponse(res, { error: true, message: 'Name conflicts with builtin soul' }, 409); return; }
-        await fs.mkdir(_CUSTOM_SOULS_DIR, { recursive: true });
-        await fs.writeFile(path.join(_CUSTOM_SOULS_DIR, `${safeName}.md`), soulContent, 'utf8');
-        jsonResponse(res, { ok: true, name: safeName });
-      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+        jsonResponse(res, await createSoul({ name: rawName, content: soulContent, category }));
+      } catch (err) {
+        const status = /conflict|already exists|Invalid/i.test(err.message) ? 409 : 500;
+        jsonResponse(res, { error: true, message: err.message }, status);
+      }
       return;
     }
     if (req.method === 'PUT' && url.pathname.startsWith('/api/souls/') && url.pathname.endsWith('/content')) {
       const sname = decodeURIComponent(url.pathname.slice('/api/souls/'.length, -'/content'.length));
       const { content: soulContent } = await readBody(req);
-      if (!soulContent) { jsonResponse(res, { error: true, message: 'Missing content' }, 400); return; }
       try {
-        const customPath = await resolveSoulFilePath(_CUSTOM_SOULS_DIR, sname);
-        if (!customPath) { jsonResponse(res, { error: true, message: 'Custom soul not found' }, 404); return; }
-        await fs.writeFile(customPath, soulContent, 'utf8');
-        jsonResponse(res, { ok: true });
-      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+        jsonResponse(res, await updateSoulContent(sname, soulContent));
+      } catch (err) {
+        const status = /not found/i.test(err.message) ? 404 : 500;
+        jsonResponse(res, { error: true, message: err.message }, status);
+      }
       return;
     }
     if (req.method === 'DELETE' && url.pathname.startsWith('/api/souls/')) {
       const sname = decodeURIComponent(url.pathname.slice('/api/souls/'.length));
       try {
-        const bundledPath = await resolveSoulFilePath(_BUNDLED_SOULS_DIR, sname);
-        if (bundledPath) { jsonResponse(res, { error: true, message: 'Cannot delete builtin soul' }, 403); return; }
-        const customPath = await resolveSoulFilePath(_CUSTOM_SOULS_DIR, sname);
-        await fs.unlink(customPath);
+        await deleteSoul(sname);
         const config = await loadConfig();
-        if (soulNameEquals(config.soul?.preset, sname)) { config.soul.preset = 'Default'; await saveConfig(config); }
+        config.soul = config.soul || {};
+        if (soulNameEquals(config.soul.coding, sname) || soulNameEquals(config.soul.preset, sname)) {
+          config.soul.coding = 'Default';
+        }
+        if (soulNameEquals(config.soul.daily, sname)) {
+          config.soul.daily = 'Playful';
+        }
+        await saveConfig(config);
         jsonResponse(res, { ok: true });
-      } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
+      } catch (err) {
+        const status = /Cannot delete/i.test(err.message) ? 403 : /not found/i.test(err.message) ? 404 : 500;
+        jsonResponse(res, { error: true, message: err.message }, status);
+      }
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/souls/activate') {
@@ -3429,15 +3394,19 @@ async function main() {
         jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
         return;
       }
-      const { name: sname } = await readBody(req);
+      const { name: sname, category } = await readBody(req);
       if (!sname) { jsonResponse(res, { error: true, message: 'Missing name' }, 400); return; }
       try {
+        const soul = await readSoulContent(sname, { preferCategory: category });
+        const resolvedCategory = normalizeSoulCategory(category || soul.category, soul.category);
         const config = await loadConfig();
         config.soul = config.soul || {};
-        config.soul.preset = sname;
+        config.soul[resolvedCategory] = soul.name;
         config.soul.custom_path = '';
+        // Keep legacy preset in sync for older readers.
+        config.soul.preset = getActiveSoulName(config, resolvedCategory);
         await saveConfig(config);
-        jsonResponse(res, { ok: true });
+        jsonResponse(res, { ok: true, category: resolvedCategory, name: soul.name });
       } catch (err) { jsonResponse(res, { error: true, message: err.message }, 500); }
       return;
     }

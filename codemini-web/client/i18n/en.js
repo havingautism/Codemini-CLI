@@ -635,11 +635,12 @@ export const en = {
   newSoul: "New Soul",
   editSoul: "Edit Soul",
   soulEditorHint:
-    "Souls affect response tone only; avoid execution rules or tool policy here.",
+    "Daily souls shape tone only. Coding souls may also shape coding approach (e.g. Ponytail, Caveman).",
   soulPlaceholder: "Describe tone, phrasing, and personality preferences...",
   soulPanelHint:
-    "Choose the default personality. New prompts will use the active soul tone.",
+    "Coding and daily modes each keep their own active soul. Tone (and coding methodology) follow the current mode.",
   soulLibrary: "Soul Library",
+  soulCategory: "Category",
   noActiveSoul: "No soul selected",
   searchSouls: "Search souls by name...",
   create: "Create",
@@ -950,7 +951,7 @@ export const en = {
     "Type questions or instructions in the input box, press Enter to send",
   skillUsage: "Type / to open the skill selection panel",
   soulUsage:
-    "Click the soul button in the input toolbar to switch AI personality",
+    "Coding and daily each keep a soul; switch from the input toolbar for the current mode",
   normalMode: "Daily",
   autoModeAbout: "Auto",
   modeUsage: "requires confirming tool calls, ",

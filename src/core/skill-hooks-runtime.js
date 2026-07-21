@@ -212,3 +212,63 @@ export function formatHookContextLines(hookResult, eventName, toolName = '') {
   }
   return lines;
 }
+
+/** Drop queued SessionStart UI rows for arms that are no longer active after a mode switch. */
+export function pruneSessionStartUiEvents(events, armedSkillNames) {
+  const armed = new Set(
+    (Array.isArray(armedSkillNames) ? armedSkillNames : [...(armedSkillNames || [])])
+      .map((name) => String(name || '').trim())
+      .filter(Boolean),
+  );
+  return (Array.isArray(events) ? events : []).filter(
+    (event) => !event?.skillName || armed.has(String(event.skillName)),
+  );
+}
+
+/**
+ * After coding↔daily activation changes: drop stale SessionStart UI, rebuild contexts
+ * from arms that still apply, and only queue UI for newly armed arms.
+ */
+export async function reconcileSessionStartAfterActivationChange({
+  skillHooksSession,
+  sessionStartUiEvents,
+  sessionStartCompleted = false,
+  previouslyArmed = [],
+  workspaceRoot = '',
+  fireSkillHookEventFn = fireSkillHookEvent,
+} = {}) {
+  const armedNames = [...(skillHooksSession?.activeSkills?.keys?.() || [])];
+  const previously = previouslyArmed instanceof Set
+    ? previouslyArmed
+    : new Set(previouslyArmed || []);
+  const newlyArmed = new Set(armedNames.filter((name) => !previously.has(name)));
+
+  if (Array.isArray(sessionStartUiEvents)) {
+    const kept = pruneSessionStartUiEvents(sessionStartUiEvents, armedNames);
+    sessionStartUiEvents.length = 0;
+    sessionStartUiEvents.push(...kept);
+  }
+
+  if (!sessionStartCompleted || !skillHooksSession) {
+    return { newlyArmed: [...newlyArmed] };
+  }
+
+  const rebuild = await fireSkillHookEventFn({
+    session: skillHooksSession,
+    eventName: 'SessionStart',
+    input: { source: 'startup' },
+    workspaceRoot,
+    onAgentEvent: (event) => {
+      if (!newlyArmed.has(event?.skillName)) return;
+      if (
+        event?.type === 'hook:start'
+        || event?.type === 'hook:end'
+        || event?.type === 'hook:error'
+      ) {
+        sessionStartUiEvents?.push?.(event);
+      }
+    },
+  });
+  skillHooksSession.sessionStartContexts = formatHookContextLines(rebuild, 'SessionStart');
+  return { newlyArmed: [...newlyArmed] };
+}

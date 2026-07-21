@@ -36,6 +36,7 @@ import {
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { USER_ACTION_COMMAND_NAMES } from "@/lib/user-skill-prompt.js";
 import {
+  executionModeSkillContext,
   filterSkillsForExecutionMode,
   skillIsVisibleInExecutionMode,
 } from "@/lib/skill-visibility.js";
@@ -300,21 +301,24 @@ function ApprovalModeSelector({ sessionId, current, disabled = false }) {
   );
 }
 
-function SoulQuickSwitch({ disabled = false }) {
+function SoulQuickSwitch({ disabled = false, mode = "normal" }) {
   const { state, actions } = useApp();
   const [souls, setSouls] = useState([]);
   const [active, setActive] = useState("");
   const [open, setOpen] = useState(false);
+  const category = executionModeSkillContext(mode);
 
   const loadSouls = useCallback(async () => {
     try {
       const list = await api.fetchSouls();
-      const arr = Array.isArray(list) ? list : [];
+      const arr = (Array.isArray(list) ? list : []).filter(
+        (soul) => (soul.category || "coding") === category,
+      );
       setSouls(arr);
       const current = arr.find((s) => s.active);
       setActive(current ? current.name : "");
     } catch {}
-  }, []);
+  }, [category]);
 
   useEffect(() => {
     loadSouls();
@@ -326,10 +330,10 @@ function SoulQuickSwitch({ disabled = false }) {
     }
   }, [state.soulsRevision, loadSouls]);
 
-  const handleActivate = async (name) => {
-    if (disabled) return;
-    await api.activateSoul(name);
-    setActive(name);
+  const handleActivate = async (soul) => {
+    if (disabled || !soul?.name) return;
+    await api.activateSoul(soul.name, soul.category || category);
+    setActive(soul.name);
     setOpen(false);
     await loadSouls();
     actions.notifySoulsChanged();
@@ -360,12 +364,15 @@ function SoulQuickSwitch({ disabled = false }) {
         className="w-52 p-1"
       >
         <div className="text-[11px] text-(--text-muted) px-2 py-1.5 font-medium">
-          {t("switchSoul")}
+          {t("switchSoul")} ·{" "}
+          {category === "daily"
+            ? t("skillContextDaily")
+            : t("skillContextCoding")}
         </div>
         <div className="flex flex-col gap-0.5">
           {souls.map((soul) => (
             <button
-              key={`${soul.scope}-${soul.name}`}
+              key={`${soul.category}-${soul.scope}-${soul.name}`}
               disabled={disabled}
               className={cn(
                 "w-full border-0 rounded-md px-2 py-1.5 text-left text-[12px] cursor-pointer flex items-center gap-2",
@@ -374,7 +381,7 @@ function SoulQuickSwitch({ disabled = false }) {
                   ? "bg-(--bg-active) text-(--text-primary) font-medium"
                   : "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
               )}
-              onClick={() => handleActivate(soul.name)}
+              onClick={() => handleActivate(soul)}
             >
               <span className="truncate flex-1">{soul.name}</span>
               <span className="text-[10px] text-(--text-muted) shrink-0">
@@ -1205,7 +1212,7 @@ export function InputBar({
               current={approvalMode}
               disabled={inputLocked}
             />
-            <SoulQuickSwitch disabled={inputLocked} />
+            <SoulQuickSwitch disabled={inputLocked} mode={mode} />
           </div>
           <div className="flex items-center gap-1.5 ml-auto shrink-0">
             {/* <button type="button" className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)" title="模型">
