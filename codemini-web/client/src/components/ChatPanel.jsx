@@ -8,8 +8,10 @@ import {
   MessageScrollerItem,
   MessageScrollerProvider,
   MessageScrollerViewport,
+  useMessageScroller,
 } from "@/components/ui/message-scroller";
 import { cn } from "@/lib/utils";
+import { hasConversationContent } from "@/lib/chat-empty-state.js";
 import { t } from "../../i18n/index.js";
 import { HomeEmptyVisual } from "./HomeEmptyVisual.jsx";
 import { HomeEmptyCaption } from "./HomeEmptyCaption.jsx";
@@ -98,7 +100,7 @@ function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
   );
 }
 
-export function ChatPanel({
+function ChatPanelContent({
   messages,
   projectCwd,
   skills = [],
@@ -109,6 +111,11 @@ export function ChatPanel({
 }) {
   const scrollRef = useRef(null);
   const [activeNavIndex, setActiveNavIndex] = useState(-1);
+  const { pauseFollowEnd } = useMessageScroller();
+  const hasConversation = useMemo(
+    () => hasConversationContent(messages),
+    [messages],
+  );
 
   const userMessages = useMemo(
     () =>
@@ -131,9 +138,10 @@ export function ChatPanel({
   const scrollToMessage = useCallback((msgId) => {
     const el = scrollRef.current?.querySelector(`[data-message-id="${msgId}"]`);
     if (el) {
+      pauseFollowEnd();
       el.scrollIntoView({ behavior: "smooth", block: "center" });
     }
-  }, []);
+  }, [pauseFollowEnd]);
 
   const updateScrollState = useCallback(() => {
     const el = scrollRef.current;
@@ -175,12 +183,12 @@ export function ChatPanel({
 
   return (
     <div className="flex-1 relative overflow-hidden">
-      {messagesLoading && messages.length === 0 && (
+      {messagesLoading && !hasConversation && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <Spinner />
         </div>
       )}
-      {!messagesLoading && messages.length === 0 && (
+      {!messagesLoading && !hasConversation && (
         <div className="absolute inset-0 pointer-events-none overflow-hidden">
           {isGeneral ? (
             <HomeEmptyVisual mode="general">
@@ -235,33 +243,39 @@ export function ChatPanel({
           )}
         </div>
       )}
-      <MessageScrollerProvider>
-        <MessageScroller>
-          <MessageScrollerViewport ref={scrollRef}>
-            <MessageScrollerContent className="gap-0 py-[32px_0_24px]">
-              <div className="w-[calc(100%_-_32px)] max-w-[920px] sm:w-[calc(100%_-_64px)] mx-auto">
-            <Suspense fallback={null}>
-              {messages.map((msg) => (
-                <MessageScrollerItem key={msg.id}>
-                  <MessageBubble
-                    message={msg}
-                    skills={skills}
-                    onRetry={onRetryMessage}
-                  />
-                </MessageScrollerItem>
-              ))}
-            </Suspense>
-              </div>
-            </MessageScrollerContent>
-          </MessageScrollerViewport>
-          <MessageScrollerButton className="bottom-2" />
-        </MessageScroller>
-      </MessageScrollerProvider>
+      <MessageScroller>
+        <MessageScrollerViewport ref={scrollRef}>
+          <MessageScrollerContent className="gap-0 py-[32px_0_24px]">
+            <div className="w-[calc(100%_-_32px)] max-w-[920px] sm:w-[calc(100%_-_64px)] mx-auto">
+              <Suspense fallback={null}>
+                {messages.map((msg) => (
+                  <MessageScrollerItem key={msg.id}>
+                    <MessageBubble
+                      message={msg}
+                      skills={skills}
+                      onRetry={onRetryMessage}
+                    />
+                  </MessageScrollerItem>
+                ))}
+              </Suspense>
+            </div>
+          </MessageScrollerContent>
+        </MessageScrollerViewport>
+        <MessageScrollerButton className="bottom-2" />
+      </MessageScroller>
       <UserMessageNav
         userMessages={userMessages}
         activeNavIndex={activeNavIndex}
         scrollToMessage={scrollToMessage}
       />
     </div>
+  );
+}
+
+export function ChatPanel(props) {
+  return (
+    <MessageScrollerProvider>
+      <ChatPanelContent {...props} />
+    </MessageScrollerProvider>
   );
 }

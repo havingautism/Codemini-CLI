@@ -3584,6 +3584,12 @@ export function AppProvider({ children }) {
             );
             loadSessions();
             loadGitInfo({ sessionId });
+            if (result.state?.runtimePending) {
+              void loadState(sessionId, {
+                isAlive: () =>
+                  stateRef.current.currentSessionId === sessionId,
+              });
+            }
             await msgPromise;
           } else {
             update({ messagesLoading: false });
@@ -3776,12 +3782,13 @@ export function AppProvider({ children }) {
                     sessionId: result.sessionId,
                   })
                 : Promise.resolve();
-            await Promise.all([
+            const backgroundTasks = [
               loadSessions({ force: true }),
               loadGitInfo({ sessionId: result.sessionId }),
-              msgPromise,
-            ]);
+            ];
+            await msgPromise;
             if (nextView === "chat") update({ messagesLoading: false });
+            await Promise.all(backgroundTasks);
           } else if (nextView === "chat") {
             update({ messagesLoading: false });
           }

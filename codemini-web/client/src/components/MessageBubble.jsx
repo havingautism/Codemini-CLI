@@ -67,7 +67,6 @@ import {
   Hammer,
   Moon,
   Play,
-  Wrench,
   XCircle,
 } from "@phosphor-icons/react";
 
@@ -604,7 +603,7 @@ function resolveHookDisplayFields(badge = {}) {
     return {
       event: String(badge.event || "").trim(),
       sourceLabel: String(badge.sourceLabel || badge.name || "").trim(),
-      toolName: String(badge.toolName || badge.matcher || "").trim(),
+      toolName: String(badge.toolName || "").trim(),
     };
   }
   const legacy = parseLegacyHookSegmentName(badge?.name);
@@ -620,11 +619,10 @@ function formatHookActivityLabel(badge = {}) {
   const fields = resolveHookDisplayFields(badge);
   const eventLabel = localizeHookEventName(fields.event) || fields.event || t("hookActivity");
   const source = fields.sourceLabel || "hook";
-  const tool = fields.toolName;
-  const detail = tool
+  const detail = fields.toolName
     ? t("hookActivityDetailTool")
         .replace("{{event}}", eventLabel)
-        .replace("{{tool}}", tool)
+        .replace("{{tool}}", fields.toolName)
         .replace("{{source}}", source)
     : t("hookActivityDetail")
         .replace("{{event}}", eventLabel)
@@ -660,6 +658,110 @@ function activityKindLabel(badge) {
   return isHookSegment(badge) ? t("hookActivity") : t("skillActivity");
 }
 
+function SkillStatusDot({ status }) {
+  return (
+    <span className={COLLAPSE_ICON_CLASS}>
+      {status === "running" ? (
+        <LinearStatusDot />
+      ) : (
+        <span
+          className={cn(
+            "size-1.5 rounded-full",
+            SKILL_DOT_STYLES[status] || SKILL_DOT_STYLES.done,
+          )}
+        />
+      )}
+    </span>
+  );
+}
+
+function hookDurationLabel(badge = {}) {
+  const startedAt = Date.parse(badge.startedAt || "");
+  const endedAt = Date.parse(badge.endedAt || "");
+  if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt)) return "";
+  return formatProcessDuration(endedAt - startedAt);
+}
+
+function hookResultLabel(status = "done") {
+  if (status === "running") return t("hookDetailsRunning");
+  if (status === "error") return t("hookDetailsFailed");
+  return t("hookDetailsDone");
+}
+
+function HookActivityDisclosure({ badge, className }) {
+  const [open, setOpen] = useState(false);
+  const duration = hookDurationLabel(badge);
+  const hasDetails = Boolean(
+    badge.command || badge.matcher || duration || badge.reason || badge.summary,
+  );
+
+  return (
+    <div className={className}>
+      <button
+        type="button"
+        className={COLLAPSE_ROW_CLASS}
+        onClick={() => hasDetails && setOpen((value) => !value)}
+        aria-expanded={hasDetails ? open : undefined}
+      >
+        <CaretRight
+          size={14}
+          className={cn(
+            COLLAPSE_CHEVRON_CLASS,
+            "transition-transform",
+            open && "rotate-90",
+            !hasDetails && "invisible",
+          )}
+        />
+        <SkillStatusDot status={badge.status} />
+        <span>{activityKindLabel(badge)}</span>
+        <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
+          {skillActivityLabel(badge)}
+        </span>
+      </button>
+      {open && hasDetails ? (
+        <div className="relative ml-4.5 mt-1 border-l border-(--border-default) py-1.5 pl-7 text-[12px] text-(--text-secondary)">
+          <dl className="grid gap-2">
+            {badge.command ? (
+              <div className="grid gap-1">
+                <dt className="text-(--text-muted)">{t("hookDetailsCommand")}</dt>
+                <dd>
+                  <code className="block whitespace-pre-wrap break-all rounded-md bg-(--bg-secondary) px-2.5 py-2 font-mono text-[11px] leading-4 text-(--text-primary)">
+                    {badge.command}
+                  </code>
+                </dd>
+              </div>
+            ) : null}
+            <div className="flex flex-wrap gap-x-5 gap-y-1">
+              <div className="flex gap-2">
+                <dt className="text-(--text-muted)">{t("hookDetailsResult")}</dt>
+                <dd>{hookResultLabel(badge.status)}</dd>
+              </div>
+              {duration ? (
+                <div className="flex gap-2">
+                  <dt className="text-(--text-muted)">{t("hookDetailsDuration")}</dt>
+                  <dd className="font-mono">{duration}</dd>
+                </div>
+              ) : null}
+              {badge.matcher ? (
+                <div className="flex min-w-0 gap-2">
+                  <dt className="shrink-0 text-(--text-muted)">{t("hookDetailsMatcher")}</dt>
+                  <dd className="min-w-0 break-all font-mono">{badge.matcher}</dd>
+                </div>
+              ) : null}
+            </div>
+            {badge.reason ? (
+              <div className="flex gap-2 text-(--accent-red)">
+                <dt className="shrink-0">{t("hookDetailsReason")}</dt>
+                <dd className="break-words">{badge.reason}</dd>
+              </div>
+            ) : null}
+          </dl>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function SkillActivityList({ badges = [] }) {
   const visibleBadges = [];
   const seen = new Set();
@@ -673,30 +775,24 @@ function SkillActivityList({ badges = [] }) {
   return (
     <div className={cn("my-2 flex flex-col gap-2", PROCESS_META_CLASS)}>
       {visibleBadges.map((badge, index) => (
-        <div
-          key={`${badge.name || "skill"}-${badge.status || "done"}-${index}`}
-          className={cn(COLLAPSE_ROW_CLASS, "text-[13px]")}
-        >
-          <span
-            className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}
+        isHookSegment(badge) ? (
+          <HookActivityDisclosure
+            key={`${badge.name || "hook"}-${index}`}
+            badge={badge}
+            className="text-[13px]"
+          />
+        ) : (
+          <div
+            key={`${badge.name || "skill"}-${badge.status || "done"}-${index}`}
+            className={cn(COLLAPSE_ROW_CLASS, "text-[13px]")}
           >
-            <Wrench size={14} />
-          </span>
-          <span>{activityKindLabel(badge)}</span>
-          <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
-            {skillActivityLabel(badge)}
-          </span>
-          {badge.status === "running" ? (
-            <LinearStatusDot className="shrink-0" />
-          ) : (
-            <span
-              className={cn(
-                "size-1.5 shrink-0 rounded-full",
-                SKILL_DOT_STYLES[badge.status] || SKILL_DOT_STYLES.done,
-              )}
-            />
-          )}
-        </div>
+            <SkillStatusDot status={badge.status} />
+            <span>{activityKindLabel(badge)}</span>
+            <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
+              {skillActivityLabel(badge)}
+            </span>
+          </div>
+        )
       ))}
     </div>
   );
@@ -704,28 +800,22 @@ function SkillActivityList({ badges = [] }) {
 
 function SkillActivityRow({ badge }) {
   if (!badge?.name) return null;
+  if (isHookSegment(badge)) {
+    return (
+      <HookActivityDisclosure
+        badge={badge}
+        className={cn("my-2", PROCESS_META_CLASS, "text-[13px]")}
+      />
+    );
+  }
   return (
     <div className={cn("my-2", PROCESS_META_CLASS)}>
       <div className={cn(COLLAPSE_ROW_CLASS, "text-[13px]")}>
-        <span
-          className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}
-        >
-          <Wrench size={14} />
-        </span>
+        <SkillStatusDot status={badge.status} />
         <span>{activityKindLabel(badge)}</span>
         <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
           {skillActivityLabel(badge)}
         </span>
-        {badge.status === "running" ? (
-          <LinearStatusDot className="shrink-0" />
-        ) : (
-          <span
-            className={cn(
-              "size-1.5 shrink-0 rounded-full",
-              SKILL_DOT_STYLES[badge.status] || SKILL_DOT_STYLES.done,
-            )}
-          />
-        )}
       </div>
     </div>
   );
@@ -1857,6 +1947,7 @@ function renderGroupItem(group, i) {
         <StreamdownRenderer
           text={group.text}
           streaming={group.isStreaming}
+          className="codemini-assistant-markdown"
           inlineEmbeds={false}
         />
       </div>

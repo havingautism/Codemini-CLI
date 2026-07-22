@@ -18,7 +18,11 @@ import {
 import { createChatRuntime } from '../src/core/chat-runtime.js';
 import { createSession, loadSession, listSessions, resolveSession, deleteSession, saveSession } from '../src/core/session-store.js';
 import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
-import { RuntimeBridge } from './lib/runtime-bridge.js';
+import {
+  loadPersistedUiMessages,
+  RuntimeBridge,
+  serializeSessionMessages,
+} from './lib/runtime-bridge.js';
 import {
   RuntimePool,
   startRuntimeEvictionTimer
@@ -26,6 +30,7 @@ import {
 import { resolveGitCwd, shouldAdoptGitCwd } from './lib/git-project.js';
 import { createGitInfoReader, readGitDiffData, readGitInfoBatch } from './lib/git-status.js';
 import { createPooledSessionEnsurer } from './lib/pooled-session-ensurer.js';
+import { loadSessionForSwitch } from './lib/session-switch-loader.js';
 import { resolveEmbed } from './lib/embed-resolver.js';
 import { canUpdateSkillPackage, installSkillSource, listSkillEntries, previewSkillPackageUpdate, previewSkillSource, updateSkillPackage } from '../src/commands/skill.js';
 import { buildSkillIndexPreview } from '../src/core/command-loader.js';
@@ -1124,27 +1129,29 @@ export function createWebRuntimeApi({
 
     if (req.method === 'POST' && url.pathname === '/api/sessions/switch') {
       const body = await readBody(req);
-      const bridge = await loadBridge(res, body?.sessionId);
-      if (!bridge) return true;
-      const projectDir = pool.getSessionState(body.sessionId)?.projectDir;
-      const resolvedProjectDir = normalizeProjectPath(projectDir) || projectDir;
-      if (resolvedProjectDir) setDefaultProjectDir?.(resolvedProjectDir);
-      const state = {
-        ...bridge.getState(),
-        cwd: resolvedProjectDir,
-        isGeneral: isGeneralProjectDir(resolvedProjectDir),
-      };
-      jsonResponse(res, {
-        ok: true,
-        sessionId: body.sessionId,
-        cwd: resolvedProjectDir,
-        state,
-        sessionData: {
-          messages: bridge.getSessionMessages(),
-          compact: bridge.getSessionCompactMeta(),
-          uiMessages: await bridge.getUiMessages(body.sessionId)
-        }
-      });
+      const sessionId = requireSessionId(res, body?.sessionId);
+      if (!sessionId) return true;
+      try {
+        const result = await loadSessionForSwitch({
+          sessionId,
+          pool,
+          ensureSession,
+          loadStoredSession: loadSession,
+          loadStoredUiMessages: loadPersistedUiMessages,
+          serializeMessages: serializeSessionMessages,
+          normalizeProjectPath,
+          isGeneralProjectDir,
+          setDefaultProjectDir,
+        });
+        jsonResponse(res, result);
+      } catch (error) {
+        const notFound = error?.code === 'ENOENT' || error?.code === 'SESSION_NOT_FOUND';
+        jsonResponse(res, {
+          error: true,
+          code: notFound ? 'SESSION_NOT_FOUND' : 'SESSION_LOAD_FAILED',
+          message: notFound ? 'Session not found' : (error?.message || 'Failed to load session'),
+        }, notFound ? 404 : 400);
+      }
       return true;
     }
     if (req.method === 'DELETE' && url.pathname.startsWith('/api/sessions/')) {

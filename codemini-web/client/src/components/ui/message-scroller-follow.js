@@ -12,7 +12,8 @@ export function syncViewportAfterResize(node, shouldFollowEnd) {
 }
 
 /** Layout/programmatic scrolls must not clear stick-to-bottom intent. */
-export function resolveFollowEnd(prevFollow, { atEnd, isUserDriven }) {
+export function resolveFollowEnd(prevFollow, { atEnd, isUserDriven, reason = '' }) {
+  if (reason === 'navigation') return false;
   if (!isUserDriven) return prevFollow;
   return atEnd;
 }

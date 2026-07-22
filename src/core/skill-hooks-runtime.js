@@ -95,6 +95,7 @@ export async function fireSkillHookEvent({
       matcher: matcher || '',
       toolName: toolName || '',
       summary,
+      startedAt: new Date().toISOString(),
     };
 
     if (typeof onAgentEvent === 'function') {
@@ -116,6 +117,7 @@ export async function fireSkillHookEvent({
         onAgentEvent({
           type: 'hook:error',
           ...hookEventBase,
+          endedAt: new Date().toISOString(),
           error: String(error?.message || error || 'Hook command failed'),
         });
       }
@@ -127,6 +129,7 @@ export async function fireSkillHookEvent({
         onAgentEvent({
           type: 'hook:end',
           ...hookEventBase,
+          endedAt: new Date().toISOString(),
           ok: false,
           decision: 'deny',
           reason: result.reason,
@@ -147,7 +150,9 @@ export async function fireSkillHookEvent({
         onAgentEvent({
           type: 'hook:end',
           ...hookEventBase,
+          endedAt: new Date().toISOString(),
           ok: false,
+          reason: result.reason,
         });
       }
       continue;
@@ -167,11 +172,14 @@ export async function fireSkillHookEvent({
 
     if (result.continue === false || result.decision === 'deny' || (eventName === 'Stop' && result.decision === 'block')) {
       ran.push({ ...ranEntry, decision: result.decision === 'block' ? 'block' : 'deny' });
+      const blockReason = result.stopReason || result.reason || result.systemMessage || `Blocked by "${displayName}" hook.`;
       if (typeof onAgentEvent === 'function') {
         onAgentEvent({
           type: 'hook:end',
           ...hookEventBase,
+          endedAt: new Date().toISOString(),
           decision: result.decision === 'block' ? 'block' : 'deny',
+          reason: blockReason,
         });
       }
       return {
@@ -180,7 +188,7 @@ export async function fireSkillHookEvent({
         contexts,
         ran,
         updatedInput,
-        reason: result.stopReason || result.reason || result.systemMessage || `Blocked by "${displayName}" hook.`,
+        reason: blockReason,
       };
     }
 
@@ -189,6 +197,7 @@ export async function fireSkillHookEvent({
       onAgentEvent({
         type: 'hook:end',
         ...hookEventBase,
+        endedAt: new Date().toISOString(),
         decision: result.decision || 'allow',
       });
     }

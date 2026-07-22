@@ -114,6 +114,64 @@ function skillBadgesFromSessionMessage(message = {}) {
   return selectedSkillBadgesFromNames(names);
 }
 
+export function serializeSessionMessages(messages) {
+  if (!Array.isArray(messages)) return [];
+  return messages
+    .filter((message) => message.role !== 'system')
+    .map((message) => {
+      const selectedSkillNames = Array.isArray(message.selectedSkillNames)
+        ? message.selectedSkillNames
+        : Array.isArray(message.selected_skill_names)
+          ? message.selected_skill_names
+          : [];
+      return {
+        role: message.role,
+        content: typeof message.content === 'string'
+          ? message.content
+          : (Array.isArray(message.content) ? message.content.map((part) => part.text || '').join('') : ''),
+        reasoningContent: typeof message.reasoning_content === 'string' ? message.reasoning_content : '',
+        reasoningDetails: Array.isArray(message.reasoning_details) ? message.reasoning_details : [],
+        reasoningStartedAt: message.reasoning_started_at || null,
+        reasoningEndedAt: message.reasoning_ended_at || null,
+        reasoningDurationMs: Number.isFinite(Number(message.reasoning_duration_ms)) ? Number(message.reasoning_duration_ms) : null,
+        sdkProvider: typeof message.sdk_provider === 'string' ? message.sdk_provider : '',
+        model: typeof message.model === 'string' ? message.model : '',
+        toolCalls: message.tool_calls || [],
+        fileChanges: Array.isArray(message.file_changes) ? message.file_changes : [],
+        toolCallId: message.tool_call_id || null,
+        toolSummary: message.role === 'tool' ? summarizeHistoricalToolMessage(message) : null,
+        toolDurationMs: Number.isFinite(Number(message.tool_duration_ms)) ? Number(message.tool_duration_ms) : null,
+        toolStatus: message.tool_status || null,
+        toolResultMeta: message.tool_result_meta || null,
+        toolFileChange: message.tool_file_change || null,
+        toolFileChanges: Array.isArray(message.tool_file_changes) ? message.tool_file_changes : [],
+        planTranscript: Array.isArray(message.plan_transcript) ? message.plan_transcript : null,
+        planGoal: typeof message.plan_goal === 'string' ? message.plan_goal : '',
+        planFile: typeof message.plan_file === 'string' ? message.plan_file : '',
+        usage: normalizeUsage(message.usage),
+        responseStatus: typeof message.response_status === 'string' ? message.response_status : '',
+        retryPrompt: typeof message.retry_prompt === 'string' ? message.retry_prompt : '',
+        selectedSkillNames,
+        skillBadges: skillBadgesFromSessionMessage(message),
+        at: message.at || null,
+      };
+    });
+}
+
+export function loadPersistedUiMessages(sessionId) {
+  try {
+    const messages = loadUiTranscriptFromSqlite(sessionId);
+    if (Array.isArray(messages) && messages.length > 0) return messages;
+  } catch {}
+  try {
+    const raw = readFileSync(webTranscriptPath(sessionId), 'utf8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed?.messages) ? parsed.messages : [];
+  } catch {
+    return [];
+  }
+}
+
 function toCodeWikiGenerateProgress(event) {
   if (!event?.type) return null;
   const now = new Date().toISOString();
@@ -391,22 +449,9 @@ export class RuntimeBridge {
 
   #hydrateUiTranscriptFromDiskSync() {
     if (this.#uiMessages.length > 0) return;
-    try {
-      const messages = loadUiTranscriptFromSqlite(this.getSessionId());
-      if (Array.isArray(messages) && messages.length > 0) {
-        this.#uiMessages = messages;
-        return;
-      }
-    } catch {}
     const sessionId = this.getSessionId();
     if (!sessionId) return;
-    try {
-      const raw = readFileSync(webTranscriptPath(sessionId), 'utf8');
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed?.messages) && parsed.messages.length > 0) {
-        this.#uiMessages = parsed.messages;
-      }
-    } catch {}
+    this.#uiMessages = loadPersistedUiMessages(sessionId);
   }
 
   #resetUiTranscriptIfSessionChanged() {
@@ -815,8 +860,8 @@ export class RuntimeBridge {
           command: hookEvent.command || segment.command,
           status,
           summary:
-            event.reason || event.summary || event.command || segment.summary,
-          reason: event.reason || segment.reason,
+            event.error || event.reason || event.summary || event.command || segment.summary,
+          reason: event.reason || event.error || segment.reason,
           endedAt,
         });
         if (this.#uiActiveMsgId) {
@@ -1365,46 +1410,7 @@ export class RuntimeBridge {
   }
 
   getSessionMessages() {
-    const messages = this.#runtime.getSessionMessages();
-    if (!Array.isArray(messages)) return [];
-    return messages
-      .filter(m => m.role !== 'system')
-      .map(m => {
-        const selectedSkillNames = Array.isArray(m.selectedSkillNames)
-          ? m.selectedSkillNames
-          : Array.isArray(m.selected_skill_names)
-            ? m.selected_skill_names
-            : [];
-        return {
-          role: m.role,
-          content: typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(c => c.text || '').join('') : ''),
-          reasoningContent: typeof m.reasoning_content === 'string' ? m.reasoning_content : '',
-          reasoningDetails: Array.isArray(m.reasoning_details) ? m.reasoning_details : [],
-          reasoningStartedAt: m.reasoning_started_at || null,
-          reasoningEndedAt: m.reasoning_ended_at || null,
-          reasoningDurationMs: Number.isFinite(Number(m.reasoning_duration_ms)) ? Number(m.reasoning_duration_ms) : null,
-          sdkProvider: typeof m.sdk_provider === 'string' ? m.sdk_provider : '',
-          model: typeof m.model === 'string' ? m.model : '',
-          toolCalls: m.tool_calls || [],
-          fileChanges: Array.isArray(m.file_changes) ? m.file_changes : [],
-          toolCallId: m.tool_call_id || null,
-          toolSummary: m.role === 'tool' ? summarizeHistoricalToolMessage(m) : null,
-          toolDurationMs: Number.isFinite(Number(m.tool_duration_ms)) ? Number(m.tool_duration_ms) : null,
-          toolStatus: m.tool_status || null,
-          toolResultMeta: m.tool_result_meta || null,
-          toolFileChange: m.tool_file_change || null,
-          toolFileChanges: Array.isArray(m.tool_file_changes) ? m.tool_file_changes : [],
-          planTranscript: Array.isArray(m.plan_transcript) ? m.plan_transcript : null,
-          planGoal: typeof m.plan_goal === 'string' ? m.plan_goal : '',
-          planFile: typeof m.plan_file === 'string' ? m.plan_file : '',
-          usage: normalizeUsage(m.usage),
-          responseStatus: typeof m.response_status === 'string' ? m.response_status : '',
-          retryPrompt: typeof m.retry_prompt === 'string' ? m.retry_prompt : '',
-          selectedSkillNames,
-          skillBadges: skillBadgesFromSessionMessage(m),
-          at: m.at || null
-        };
-      });
+    return serializeSessionMessages(this.#runtime.getSessionMessages());
   }
 
   async regenerateSessionTitle() {

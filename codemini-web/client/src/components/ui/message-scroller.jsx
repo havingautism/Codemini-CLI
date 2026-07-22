@@ -39,6 +39,14 @@ function MessageScrollerProvider({ children }) {
     });
   }, [viewport]);
 
+  const pauseFollowEnd = React.useCallback(() => {
+    followEndRef.current = resolveFollowEnd(followEndRef.current, {
+      atEnd: false,
+      isUserDriven: false,
+      reason: "navigation",
+    });
+  }, []);
+
   React.useEffect(() => {
     if (!viewport) return;
     measure(viewport);
@@ -85,8 +93,8 @@ function MessageScrollerProvider({ children }) {
   }, [viewport, measure]);
 
   const value = React.useMemo(
-    () => ({ viewport, setViewport, atStart, atEnd, measure, scrollTo }),
-    [viewport, atStart, atEnd, measure, scrollTo],
+    () => ({ viewport, setViewport, atStart, atEnd, measure, scrollTo, pauseFollowEnd }),
+    [viewport, atStart, atEnd, measure, scrollTo, pauseFollowEnd],
   );
 
   return (

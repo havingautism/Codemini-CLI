@@ -1179,6 +1179,55 @@ body {
   font-style: normal;
 }
 
+/* Assistant Markdown — refined Apple-leaning reading rhythm (prototype B). */
+.msg-body.codemini-assistant-markdown {
+  font-size: 15.5px;
+  line-height: 1.7;
+  letter-spacing: -0.005em;
+}
+
+.msg-body.codemini-assistant-markdown h1 {
+  margin: 1.3em 0 0.45em;
+  font-size: 1.68em;
+  line-height: 1.25;
+  letter-spacing: -0.018em;
+}
+
+.msg-body.codemini-assistant-markdown h2 {
+  margin: 1.7em 0 0.55em;
+  font-size: 1.23em;
+  line-height: 1.35;
+  letter-spacing: -0.012em;
+}
+
+.msg-body.codemini-assistant-markdown h3 {
+  margin: 1.35em 0 0.45em;
+  font-size: 1em;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+}
+
+.msg-body.codemini-assistant-markdown h4 {
+  margin: 1.2em 0 0.4em;
+  font-size: 0.94em;
+  line-height: 1.45;
+  letter-spacing: -0.005em;
+}
+
+.msg-body.codemini-assistant-markdown :where(p) {
+  margin: 0.7em 0;
+}
+
+.msg-body.codemini-assistant-markdown :where(ul, ol) {
+  margin: 0.65em 0;
+  padding-left: 1.5em;
+}
+
+.msg-body.codemini-assistant-markdown li {
+  margin: 0.18em 0;
+  padding-left: 0.2em;
+}
+
 /* Process metadata: thinking, tools, processed summaries */
 .msg-process-meta {
   color: var(--text-process);
@@ -2067,6 +2116,69 @@ samp {
 .msg-body [data-streamdown="code-block-body"] code>span::before {
   display: none !important;
   content: none !important;
+}
+
+/* Keep the selected renderer treatment scoped to LLM output. */
+.msg-body.codemini-assistant-markdown [data-streamdown="table-wrapper"] {
+  margin: 16px 0;
+}
+
+.msg-body.codemini-assistant-markdown [data-streamdown="table-wrapper"]>div:nth-child(2) {
+  border-radius: 10px !important;
+}
+
+.msg-body.codemini-assistant-markdown th,
+.msg-body.codemini-assistant-markdown td {
+  padding: 10px 12px;
+  font-size: 0.87em;
+  line-height: 1.5;
+}
+
+.msg-body.codemini-assistant-markdown th {
+  font-size: 0.74em;
+}
+
+.msg-body.codemini-assistant-markdown blockquote {
+  margin: 16px 0;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+}
+
+.msg-body.codemini-assistant-markdown :not(pre)>code {
+  margin: 0.12em 0;
+  padding: 0.12em 0.38em;
+}
+
+.msg-body.codemini-assistant-markdown [data-streamdown="code-block"] {
+  margin: 17px 0 !important;
+  border-radius: 10px !important;
+}
+
+.msg-body.codemini-assistant-markdown [data-streamdown="code-block-header"] {
+  min-height: 32px !important;
+  padding: 0 12px !important;
+}
+
+.msg-body.codemini-assistant-markdown [data-streamdown="code-block-body"] pre {
+  padding: 14px !important;
+  line-height: 1.58 !important;
+}
+
+.msg-body.codemini-assistant-markdown hr {
+  margin: 1.8em 0;
+}
+
+@media (max-width: 735px) {
+  .msg-body.codemini-assistant-markdown {
+    font-size: 15px;
+    line-height: 1.68;
+  }
+
+  .msg-body.codemini-assistant-markdown h1 {
+    font-size: 1.55em;
+  }
+
 }
 
 /* ── Home empty-state banner animations ── */

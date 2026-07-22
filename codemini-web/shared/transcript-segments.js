@@ -623,11 +623,12 @@ export function applyStreamEventToMessage(message, event, options = {}) {
             command: hookEvent.command || segment.command,
             status,
             summary:
+              event.error ||
               event.reason ||
               event.summary ||
               event.command ||
               segment.summary,
-            reason: event.reason || segment.reason,
+            reason: event.reason || event.error || segment.reason,
             endedAt,
           }),
         ),

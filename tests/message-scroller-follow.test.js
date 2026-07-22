@@ -36,6 +36,22 @@ test('layout scroll while briefly off-end keeps stick-to-bottom intent', () => {
   );
 });
 
+test('message navigation clears stick-to-bottom intent across the next resize', () => {
+  const node = viewport({ scrollTop: 600, scrollHeight: 1000, clientHeight: 400 });
+  node.scrollTop = 120;
+
+  const followEnd = resolveFollowEnd(true, {
+    atEnd: false,
+    isUserDriven: false,
+    reason: 'navigation',
+  });
+  node.scrollHeight = 1100;
+  syncViewportAfterResize(node, followEnd);
+
+  assert.equal(followEnd, false);
+  assert.equal(node.scrollTop, 120);
+});
+
 test('user scroll away from the end clears stick-to-bottom intent', () => {
   assert.equal(
     resolveFollowEnd(true, { atEnd: false, isUserDriven: true }),

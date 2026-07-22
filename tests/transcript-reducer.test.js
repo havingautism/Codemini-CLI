@@ -20,12 +20,17 @@ test('applyStreamEventToMessage persists hook start/end as skill segments', () =
     name: 'package-hooks-smoke',
     source: 'package',
     command: 'node -e "..."',
+    matcher: 'startup|resume',
+    startedAt: '2026-07-22T12:00:00.000Z',
   });
   assert.equal(message.segments.length, 1);
   assert.equal(message.segments[0].type, 'skill');
   assert.equal(message.segments[0].kind, 'hook');
   assert.equal(message.segments[0].event, 'UserPromptSubmit');
   assert.equal(message.segments[0].sourceLabel, 'package-hooks-smoke');
+  assert.equal(message.segments[0].command, 'node -e "..."');
+  assert.equal(message.segments[0].matcher, 'startup|resume');
+  assert.equal(message.segments[0].startedAt, '2026-07-22T12:00:00.000Z');
   assert.equal(message.segments[0].status, 'running');
 
   message = applyStreamEventToMessage(message, {
@@ -33,10 +38,37 @@ test('applyStreamEventToMessage persists hook start/end as skill segments', () =
     event: 'UserPromptSubmit',
     name: 'package-hooks-smoke',
     source: 'package',
+    matcher: 'startup|resume',
     ok: true,
+    endedAt: '2026-07-22T12:00:03.000Z',
   });
   assert.equal(message.segments[0].status, 'done');
   assert.equal(message.segments[0].event, 'UserPromptSubmit');
+  assert.equal(message.segments[0].endedAt, '2026-07-22T12:00:03.000Z');
+});
+
+test('hook errors preserve their reason for the disclosure details', () => {
+  let message = {
+    id: 'msg-hook-error',
+    role: 'general',
+    segments: [],
+  };
+
+  message = applyStreamEventToMessage(message, {
+    type: 'hook:start',
+    event: 'SessionStart',
+    name: 'quality',
+    command: 'node verify.mjs',
+  });
+  message = applyStreamEventToMessage(message, {
+    type: 'hook:error',
+    event: 'SessionStart',
+    name: 'quality',
+    error: 'spawn failed',
+  });
+
+  assert.equal(message.segments[0].status, 'error');
+  assert.equal(message.segments[0].reason, 'spawn failed');
 });
 
 test('PreToolUse hook end matches start when toolName is present', () => {
