@@ -30,10 +30,7 @@ function isCreatePlanGroup(group) {
   );
 }
 
-/**
- * Like splitAnswerProcessGroups, but keep create_plan cards in chronological
- * order instead of hoisting them in front of the final answer.
- */
+/** Fold process groups; keep create_plan cards in chronological order before the final answer. */
 export function layoutAnswerProcessWithPlans(groups = [], fallbackStartedAt = null) {
   const source = Array.isArray(groups) ? groups : [];
   const finalAnswer = source.at(-1);
@@ -102,39 +99,6 @@ export function layoutAnswerProcessWithPlans(groups = [], fallbackStartedAt = nu
   return {
     hasFold: items.some((item) => item.type === "fold" && item.groups?.length),
     items,
-    durationMs,
-  };
-}
-
-export function splitAnswerProcessGroups(groups = [], fallbackStartedAt = null) {
-  const source = Array.isArray(groups) ? groups : [];
-  const finalAnswer = source.at(-1);
-  const hasFinalAnswer =
-    finalAnswer?.type === "text" && String(finalAnswer.text || "").trim();
-  const hasFold = Boolean(hasFinalAnswer && source.length > 1);
-  if (!hasFold) {
-    return {
-      hasFold: false,
-      processGroups: [],
-      answerGroups: source,
-      durationMs: 0,
-    };
-  }
-
-  const processGroups = source.slice(0, -1);
-  const answerStartedAt = parseTimestamp(finalAnswer.startedAt);
-  const starts = processGroups.map(groupStartedAt).filter(Number.isFinite);
-  const fallback = parseTimestamp(fallbackStartedAt);
-  if (Number.isFinite(fallback)) starts.push(fallback);
-  const durationMs =
-    Number.isFinite(answerStartedAt) && starts.length
-      ? Math.max(0, answerStartedAt - Math.min(...starts))
-      : 0;
-
-  return {
-    hasFold: true,
-    processGroups,
-    answerGroups: [finalAnswer],
     durationMs,
   };
 }

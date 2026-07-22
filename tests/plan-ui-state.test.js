@@ -4,7 +4,6 @@ import assert from 'node:assert/strict';
 import {
   applyPlanEventToMessage,
   applyStreamEventToPlanRun,
-  extractPlanToolGroups,
   findPlanStepMessageId,
   planPhaseTitle,
   planRunFromTranscript,
@@ -81,23 +80,6 @@ test('applyPlanEventToMessage keeps plan progress on create_plan card', () => {
   assert.equal(card.planRun.phase, 'completed');
   assert.equal(card.displayName, 'Plan · 完成');
   assert.equal(card.planRun.steps[1].segments[0].type, 'text');
-});
-
-test('extractPlanToolGroups keeps create_plan out of process fold groups', () => {
-  const { planGroups, rest } = extractPlanToolGroups([
-    {
-      type: 'tools',
-      cards: [
-        { id: '1', name: 'read', status: 'done' },
-        { id: '2', name: 'create_plan', status: 'running', planRun: { phase: 'executing', steps: [] } },
-      ],
-    },
-    { type: 'text', text: 'hello' },
-  ]);
-  assert.equal(planGroups.length, 1);
-  assert.equal(planGroups[0].cards[0].name, 'create_plan');
-  assert.equal(rest[0].cards.length, 1);
-  assert.equal(rest[0].cards[0].name, 'read');
 });
 
 test('planRunFromTranscript builds completed card state', () => {

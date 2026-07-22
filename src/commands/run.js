@@ -2,7 +2,6 @@ import { loadConfig } from '../core/config-store.js';
 import { buildDefaultSystemPrompt } from '../core/default-system-prompt.js';
 import { runAgentLoop } from '../core/agent-loop.js';
 import { createChatCompletion } from '../core/provider/index.js';
-import { resolveGatewayPayloadExtras } from '../core/provider/search-tool-registry.js';
 import { resolveConfiguredReasoningEffort } from '../core/provider/reasoning-effort.js';
 import { getBuiltinTools } from '../core/tools.js';
 import { getSubAgentRolePrompt, ROLE_TOOL_POLICY } from '../core/chat-runtime.js';
@@ -86,7 +85,6 @@ function makeCompletionFn(config) {
         enabled: config.model?.reasoning_enabled,
         effort: config.model?.reasoning_effort
       }),
-      payloadExtras: resolveGatewayPayloadExtras(config, { tools }),
       timeoutMs: config.gateway.timeout_ms || 1800000,
       maxRetries: config.gateway.max_retries ?? 2
     });

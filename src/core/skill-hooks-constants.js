@@ -15,7 +15,3 @@ export const HOOK_SOURCE_PRIORITY = {
   package: 3,
   settings: 4,
 };
-
-export function hookEventI18nKey(eventName) {
-  return `hookEvent_${eventName}`;
-}

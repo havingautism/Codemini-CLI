@@ -37,7 +37,8 @@ import {
 } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 import * as api from '@/hooks/use-api';
-import { syncMcpToolDisplayLabels } from '@/lib/mcp-display-sync.js';
+import { buildMcpToolDisplayLabels } from '../../../../src/core/mcp-tool-display.js';
+import { setMcpToolDisplayLabels } from '../../../../src/core/tool-display.js';
 import { applyMcpEditorPatch } from '@/lib/mcp-editor-state.js';
 import { t } from '../../i18n/index.js';
 
@@ -385,7 +386,7 @@ function McpPanel() {
     try {
       const result = await api.fetchMcpServers();
       const next = Array.isArray(result?.servers) ? result.servers : [];
-      syncMcpToolDisplayLabels(next);
+      setMcpToolDisplayLabels(buildMcpToolDisplayLabels(next));
       setServers(next);
       setSelectedServerId((current) => {
         if (preferredId && next.some((server) => server.id === preferredId)) return preferredId;

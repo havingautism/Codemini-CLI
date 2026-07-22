@@ -2,7 +2,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn, execFile } from 'node:child_process';
-import { copyRecursive } from '../core/fs-utils.js';
 import { loadConfig, saveConfig } from '../core/config-store.js';
 import { loadCommandsAndSkills } from '../core/command-loader.js';
 import { getSkillsDir } from '../core/paths.js';
@@ -1118,7 +1117,7 @@ export async function snapshotSkillHooksDir(skillDir) {
   const hooksDir = path.join(skillDir, 'hooks');
   if (!(await pathExists(hooksDir))) return null;
   const snapshotDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-skill-hooks-snapshot-'));
-  await copyRecursive(hooksDir, snapshotDir);
+  await fs.cp(hooksDir, snapshotDir, { recursive: true });
   return snapshotDir;
 }
 
@@ -1126,7 +1125,7 @@ export async function restoreSkillHooksDir(skillDir, snapshotDir) {
   if (!snapshotDir) return;
   const hooksDir = path.join(skillDir, 'hooks');
   await fs.rm(hooksDir, { recursive: true, force: true });
-  await copyRecursive(snapshotDir, hooksDir);
+  await fs.cp(snapshotDir, hooksDir, { recursive: true });
 }
 
 export async function installSkill(sourcePath, {
@@ -1149,7 +1148,7 @@ export async function installSkill(sourcePath, {
   const baseDir = getSkillsDir();
   const targetDir = path.join(baseDir, folderName);
   await fs.rm(targetDir, { recursive: true, force: true });
-  await copyRecursive(resolved.dir, targetDir);
+  await fs.cp(resolved.dir, targetDir, { recursive: true });
 
   const entryFile = manifestEntry;
   const entryPath = path.join(targetDir, entryFile);

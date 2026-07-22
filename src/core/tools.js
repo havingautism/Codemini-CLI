@@ -56,7 +56,11 @@ import { inferMemoryScope, normalizeMemoryKind } from "./memory-policy.js";
 import { getReplyLanguageName } from "./reply-language.js";
 import { normalizePlanState } from "./plan-state.js";
 import { normalizeTodos } from "./todo-state.js";
-import { normalizeAssumptionItems } from "./tool-args-helpers.js";
+import {
+  normalizeAssumptionItems,
+  normalizeFilePathValue,
+  parseInlineRangePath,
+} from "./tool-args-helpers.js";
 import { createFffAdapter } from "./fff-adapter.js";
 import {
   buildSearchDeferredEntries,
@@ -79,15 +83,13 @@ import {
   summarizeRunOutput,
 } from "./tool-output.js";
 import {
-  normalizeFilePathValue,
   normalizePathArgs,
-  parseInlineRangePath,
   normalizePatternArgs,
   normalizeReadArgs,
   normalizeWebFetchArgs,
   normalizeWebSearchArgs,
   normalizeWriteArgs,
-} from "./tool-args.js";
+} from "./tool-schemas.js";
 import {
   atomicWriteUtf8,
   createStagedWriteStore,
@@ -7034,7 +7036,7 @@ export function getBuiltinTools({
   const formatters = Object.fromEntries(
     Object.entries({
       ...rawFormatters,
-      ...buildSearchFormatters(config)
+      ...buildSearchFormatters()
     }).map(([name, formatter]) => [
       name,
       (result, args) =>

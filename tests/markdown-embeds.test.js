@@ -199,4 +199,14 @@ describe('promoteTableCellImageUrls', () => {
       /\*\*MOMO D2\*\* 👉 !\[图片\]\(https:\/\/cdn\.kpopping\.com\/kpics\/2026\/07\/photo\.jpg\)/,
     );
   });
+
+  it('softens HN-style list meta after the title', () => {
+    const normalized = normalizeMarkdownForDisplay(
+      "19. France's Anssi Will Block PQC — 40 points · 7 comments postquantum.com · 1h ago",
+    );
+    assert.equal(
+      normalized,
+      "19. France's Anssi Will Block PQC *— 40 points · 7 comments postquantum.com · 1h ago*",
+    );
+  });
 });

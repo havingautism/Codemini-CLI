@@ -4,7 +4,7 @@ import { captureToInbox, listInbox } from './memory-store.js';
 import { requiresApprovalEvaluation } from './command-risk.js';
 import { evaluateCommandPolicy } from './command-policy.js';
 import { buildRunFailureMessage, getToolOutputSanitizeOptions, sanitizeTextForModel } from './tool-output.js';
-import { normalizeToolArguments } from './tool-args.js';
+import { normalizeToolArguments } from './tool-schemas.js';
 import { createToolResultStore, summarizeToolResult } from './tool-result-store.js';
 import { applyAggressiveToolPruneBeta } from './context-compact.js';
 import {

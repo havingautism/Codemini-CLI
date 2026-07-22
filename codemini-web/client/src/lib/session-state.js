@@ -2,6 +2,7 @@ import {
   applyStreamEventToMessage,
   isTranscriptStreamEvent,
 } from "../../../shared/transcript-segments.js";
+import { stripPlanProgressText } from "../../../shared/plan-progress-text.js";
 import {
   applyStreamEventToPlanRun,
   findActivePlanParentMessage,
@@ -9,13 +10,6 @@ import {
   isCreatePlanToolEvent,
   messageHasActivePlanRun,
 } from "./plan-ui-state.js";
-
-function stripPlanProgressText(text) {
-  return String(text || "").replace(
-    /(?:^|\n)\[plan\]\s+Step\s+\d+\/\d+\s+->[^\n]*\n?/g,
-    "",
-  );
-}
 
 const PLAN_NESTED_STREAM_EVENTS = new Set([
   "assistant:delta",

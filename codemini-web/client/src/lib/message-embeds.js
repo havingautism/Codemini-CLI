@@ -1,22 +1,7 @@
 import { extractLinksFromMarkdownText, stripLinksFromMarkdownText } from '@/lib/markdown-embeds.js';
+import { extractToolName, parseMaybeJson } from '@/lib/tool-card-display.js';
 
 const MAX_MESSAGE_EMBEDS = 8;
-
-function extractToolName(name) {
-  const match = String(name || '').match(/^(\w+)/);
-  return match ? match[1] : name;
-}
-
-function parseMaybeJson(value) {
-  if (!value) return null;
-  if (typeof value === 'object') return value;
-  if (typeof value !== 'string') return null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
-}
 
 export function getWebEmbedMeta(card, toolName) {
   const meta = card?.resultMeta;

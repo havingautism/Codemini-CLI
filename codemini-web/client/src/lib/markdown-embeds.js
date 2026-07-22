@@ -6,6 +6,9 @@ const STANDALONE_MARKDOWN_IMAGE_RE = /^!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)$/
 const STANDALONE_LINKED_MARKDOWN_IMAGE_RE = /^\[!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)\]\((https?:\/\/[^\s)]+)\)$/i;
 const AUTOLINK_RE = /<(https?:\/\/[^>\s]+)>/gi;
 const IMAGE_PATH_EXT_RE = /\.(?:avif|bmp|gif|ico|jpe?g|png|svg|webp)$/i;
+/** HN-style list meta: "— 40 points · 7 comments domain · 1h ago" */
+const LIST_ITEM_META_RE =
+  /^(\s*(?:\d+\.|[-*+])\s+.+?)( — \d[\d,]*\s+points?\s+·\s+\d[\d,]*\s+comments?\b.*)$/gim;
 
 function trimUrlTrailingPunctuation(url) {
   return String(url || '').replace(/[.,;:!?)]+$/g, '');
@@ -17,6 +20,14 @@ function cleanupMarkdownText(text) {
     .replace(/\n{3,}/g, '\n\n')
     .replace(/[ \t]{2,}/g, ' ')
     .trim();
+}
+
+/** Mute trailing "— N points · N comments …" on list lines for hierarchy. */
+export function softenListItemMeta(text) {
+  return String(text || '').replace(LIST_ITEM_META_RE, (full, head, meta) => {
+    if (meta.includes('*') || meta.includes('`')) return full;
+    return `${head} *${meta.trim()}*`;
+  });
 }
 
 function isMarkdownLinkedUrl(text, startIndex) {
@@ -446,6 +457,7 @@ export function normalizeMarkdownForDisplay(text, { linkFallback = 'Link', image
   if (!source.trim()) return '';
 
   let normalized = promoteBareImageUrls(promoteTableCellImageUrls(source));
+  normalized = softenListItemMeta(normalized);
 
   // Prefer inline images when a markdown link points at an image file.
   normalized = normalized.replace(MARKDOWN_LINK_RE, (_full, label, url) => {

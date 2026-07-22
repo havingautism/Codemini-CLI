@@ -18,7 +18,6 @@ import {
 } from "../lib/chat-operation-waiter.js";
 import {
   finishInitialization,
-  hydrateBeforeConnect,
 } from "../lib/async-lifecycle.js";
 import { createStreamEventBatcher } from "../lib/stream-event-batcher.js";
 import {
@@ -33,7 +32,8 @@ import {
   reduceSessionEvent,
   runSessionOperation,
 } from "../lib/session-state.js";
-import { refreshMcpToolDisplayLabels } from "../lib/mcp-display-sync.js";
+import { buildMcpToolDisplayLabels } from "../../../../src/core/mcp-tool-display.js";
+import { setMcpToolDisplayLabels } from "../../../../src/core/tool-display.js";
 import {
   ACTIVE_SESSION_STATUSES,
   activeSessionIds,
@@ -2767,10 +2767,9 @@ export function AppProvider({ children }) {
       batcher.flush();
       clearTimeout(reconnectRef.current);
       reconnectRef.current = setTimeout(() => {
-        hydrateBeforeConnect({
-          hydrate: loadRuntimeSessions,
-          connect: connectSSE,
-        }).catch(() => {});
+        loadRuntimeSessions()
+          .then(() => connectSSE())
+          .catch(() => {});
       }, 3000);
     };
     sseRef.current = es;
@@ -2808,7 +2807,13 @@ export function AppProvider({ children }) {
         runtimeSessionsPromise,
       ]);
       if (!alive) return;
-      void refreshMcpToolDisplayLabels();
+      void api.fetchMcpServers()
+        .then((result) => {
+          setMcpToolDisplayLabels(buildMcpToolDisplayLabels(result?.servers || []));
+        })
+        .catch(() => {
+          setMcpToolDisplayLabels(buildMcpToolDisplayLabels([]));
+        });
       let preferredSessionId = route.sessionId || stateRef.current.currentSessionId;
       if (!preferredSessionId) {
         preferredSessionId = Object.keys(runtimeSessions || {})[0] || null;

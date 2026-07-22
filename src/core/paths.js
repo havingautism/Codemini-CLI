@@ -26,10 +26,6 @@ export function getBaseConfigDir() {
   return path.join(process.cwd(), '.codemini-global');
 }
 
-export function getLegacyConfigDir() {
-  return getBaseConfigDir();
-}
-
 export function getConfigFilePath() {
   return path.join(getBaseConfigDir(), 'config.json');
 }

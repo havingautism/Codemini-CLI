@@ -28,6 +28,24 @@ export function EmbedBanner({ items = [] }) {
   if (!links.length) return null;
   if (!ready) return null;
 
+  const cards = links.map((item, index) => (
+    <div
+      key={`${item.url || "embed"}-${index}`}
+      className={
+        fitsWithoutScroll
+          ? "min-w-0"
+          : "w-[288px] shrink-0 sm:w-[300px]"
+      }
+    >
+      <EmbedCard
+        url={item.url}
+        embed={item}
+        variant="banner"
+        deferIndex={index}
+      />
+    </div>
+  ));
+
   return (
     <div className="mt-4">
       <div className="mb-2.5 flex items-center gap-1.5 px-0.5 text-[11px] font-medium uppercase tracking-[0.05em] text-(--text-muted)">
@@ -35,27 +53,13 @@ export function EmbedBanner({ items = [] }) {
         <span>{t("relatedLinks")}</span>
       </div>
 
-      <HorizontalScrollStrip
-        contentClassName={fitsWithoutScroll ? "w-full" : undefined}
-      >
-        {links.map((item, index) => (
-          <div
-            key={`${item.url || "embed"}-${index}`}
-            className={
-              fitsWithoutScroll
-                ? "min-w-0 flex-1"
-                : "w-[288px] shrink-0 sm:w-[300px]"
-            }
-          >
-            <EmbedCard
-              url={item.url}
-              embed={item}
-              variant="banner"
-              deferIndex={index}
-            />
-          </div>
-        ))}
-      </HorizontalScrollStrip>
+      {fitsWithoutScroll ? (
+        <div className="grid grid-cols-3 gap-3 px-0.5">
+          {cards}
+        </div>
+      ) : (
+        <HorizontalScrollStrip>{cards}</HorizontalScrollStrip>
+      )}
     </div>
   );
 }

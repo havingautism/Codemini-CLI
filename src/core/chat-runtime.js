@@ -110,9 +110,7 @@ import {
   resolveApprovalProjectIsGit
 } from './approval-policy.js';
 import {
-  assertSearchConfig,
   normalizeToolPolicy,
-  resolveGatewayPayloadExtras
 } from './provider/search-tool-registry.js';
 import { normalizeReasoningEffort, resolveConfiguredReasoningEffort } from './provider/reasoning-effort.js';
 import { appendAttachmentContext, composeSelectedSkills, normalizeChatSubmission } from './chat-message.js';
@@ -4956,7 +4954,6 @@ async function askModel({
           enabled: config.model?.reasoning_enabled,
           effort: config.model?.reasoning_effort
         }),
-        payloadExtras: resolveGatewayPayloadExtras(config, { tools }),
         timeoutMs: config.gateway.timeout_ms || 1800000,
         maxRetries: config.gateway.max_retries ?? 2,
         maxTokens: (() => {
@@ -6862,7 +6859,6 @@ export async function createChatRuntime({
   requestToolApproval,
   workspaceRoot
 }) {
-  assertSearchConfig(initialConfig);
   const root = path.resolve(workspaceRoot || session?.projectDir || process.cwd());
   if (session && typeof session === 'object') session.projectDir = root;
   let requestToolApprovalObserver = typeof requestToolApproval === 'function' ? requestToolApproval : null;

@@ -11,8 +11,3 @@ export async function finishInitialization({
   update({ initialLoading: false });
   return true;
 }
-
-export async function hydrateBeforeConnect({ hydrate, connect, isAlive = () => true }) {
-  await hydrate();
-  if (isAlive()) connect();
-}

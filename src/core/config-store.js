@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { getConfigFilePath, getLegacyConfigDir } from './paths.js';
+import { getConfigFilePath } from './paths.js';
 import { normalizeReplyLanguage } from './reply-language.js';
 import { normalizeShellName } from './shell-profile.js';
 import {
@@ -391,24 +391,8 @@ export async function loadConfig() {
     return structuredClone(config);
   } catch {
     const defaultConfig = normalizePolicyLists(structuredClone(DEFAULT_CONFIG));
-    if (process.env.CODEMINI_GLOBAL_DIR) {
-      await saveConfig(defaultConfig);
-      return defaultConfig;
-    }
-    try {
-      const legacyPath = path.join(getLegacyConfigDir(), 'config.json');
-      const raw = await fs.readFile(legacyPath, 'utf8');
-      const parsed = migrateSoulConfig(JSON.parse(raw));
-      const config = normalizePolicyLists(deepMerge(DEFAULT_CONFIG, parsed));
-      cachedConfig = config;
-      // Get the stat of legacy or standard config path to store in cache stats
-      const finalStat = await fs.stat(configPath).catch(() => null);
-      cachedConfigStat = finalStat ? { mtime: finalStat.mtimeMs, size: finalStat.size } : null;
-      return structuredClone(config);
-    } catch {
-      await saveConfig(defaultConfig);
-      return defaultConfig;
-    }
+    await saveConfig(defaultConfig);
+    return defaultConfig;
   }
 }
 

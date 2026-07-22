@@ -1,11 +1,5 @@
 import { applyStreamEventToMessage } from "../../../shared/transcript-segments.js";
-
-function stripPlanProgressText(text) {
-  return String(text || "").replace(
-    /(?:^|\n)\[plan\]\s+Step\s+\d+\/\d+\s+->[^\n]*\n?/g,
-    "",
-  );
-}
+import { stripPlanProgressText } from "../../../shared/plan-progress-text.js";
 
 export function isCompletedStatus(status) {
   return ["done", "failed", "error", "blocked", "completed"].includes(
@@ -542,27 +536,4 @@ export function updatePlanOverviewStepStatus(message, step, status) {
       ),
     },
   };
-}
-
-/** Pull create_plan tool groups out of process fold into body-level answer groups. */
-export function extractPlanToolGroups(groups = []) {
-  const planGroups = [];
-  const rest = [];
-  let planCard = null;
-  for (const group of Array.isArray(groups) ? groups : []) {
-    if (group?.type !== "tools" || !Array.isArray(group.cards)) {
-      rest.push(group);
-      continue;
-    }
-    const planCards = group.cards.filter(isCreatePlanCard);
-    const otherCards = group.cards.filter((card) => !isCreatePlanCard(card));
-    if (planCards.length && !planCard) {
-      // Prefer the card that already carries planRun state.
-      planCard =
-        planCards.find((card) => card?.planRun) || planCards[0] || null;
-    }
-    if (otherCards.length) rest.push({ ...group, cards: otherCards });
-  }
-  if (planCard) planGroups.push({ type: "tools", cards: [planCard] });
-  return { planGroups, rest };
 }

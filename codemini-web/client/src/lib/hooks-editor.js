@@ -1,22 +1,6 @@
-/** Client-side copy of Codemini hook tool options (keep in sync with src/core/skill-hooks-tool-aliases.js). */
-export const HOOK_TOOL_OPTIONS = [
-  { id: 'run', labelKey: 'hookTool_run' },
-  { id: 'read', labelKey: 'hookTool_read' },
-  { id: 'write', labelKey: 'hookTool_write' },
-  { id: 'edit', labelKey: 'hookTool_edit' },
-  { id: 'apply_patch', labelKey: 'hookTool_apply_patch' },
-  { id: 'delete', labelKey: 'hookTool_delete' },
-  { id: 'grep', labelKey: 'hookTool_grep' },
-  { id: 'glob', labelKey: 'hookTool_glob' },
-  { id: 'list', labelKey: 'hookTool_list' },
-  { id: 'search_code', labelKey: 'hookTool_search_code' },
-  { id: 'query_project_index', labelKey: 'hookTool_query_project_index' },
-  { id: 'skill', labelKey: 'hookTool_skill' },
-  { id: 'web_fetch', labelKey: 'hookTool_web_fetch' },
-  { id: 'web_search', labelKey: 'hookTool_web_search' },
-  { id: 'update_todos', labelKey: 'hookTool_update_todos' },
-  { id: 'update_plan', labelKey: 'hookTool_update_plan' },
-];
+/** Client hook editor state. Tool/event labels live in core + shared/hook-ui. */
+export { CODEMINI_HOOK_TOOLS as HOOK_TOOL_OPTIONS } from '../../../../src/core/skill-hooks-tool-aliases.js';
+export { hookEventI18nKey } from '../../../shared/hook-ui.js';
 
 export const HOOK_EVENTS = [
   'SessionStart',
@@ -25,10 +9,6 @@ export const HOOK_EVENTS = [
   'PostToolUse',
   'Stop',
 ];
-
-export function hookEventI18nKey(eventName) {
-  return `hookEvent_${eventName}`;
-}
 
 export function emptyHooksState() {
   const state = { __rawHooks: {} };

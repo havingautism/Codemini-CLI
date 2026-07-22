@@ -9,7 +9,6 @@ import {
   MarkdownLightboxImage,
 } from "./MarkdownLightboxImage.jsx";
 import { collectMessageEmbeds } from "@/lib/message-embeds.js";
-import { isPostCompletionExtrasReady } from "@/lib/message-post-completion.js";
 import { buildRenderGroups } from "@/lib/message-render-groups.js";
 import { layoutAnswerProcessWithPlans } from "@/lib/answer-process.js";
 import { TodoList } from "./TodoList";
@@ -1768,7 +1767,7 @@ function shouldShowMessageActions(message, messageComplete) {
  * for the whole next turn and remounts them when streaming ends.
  */
 export function shouldShowPostCompletionExtras(message, messageComplete, hasContent) {
-  if (!isPostCompletionExtrasReady({ messageComplete }) || !hasContent) return false;
+  if (!messageComplete || !hasContent) return false;
   const planStep = message?.planStep;
   if (!planStep) return true;
   return String(planStep.role || "").toLowerCase() === "summarizer";
@@ -2151,15 +2150,14 @@ export const MessageBubble = memo(function MessageBubble({
     Boolean(retryPrompt) &&
     message.retryable !== false;
   const showActions = shouldShowMessageActions(message, messageComplete);
-  const postCompletionReady = isPostCompletionExtrasReady({ messageComplete });
   const showFileChanges = shouldShowFileChanges(
     message,
-    postCompletionReady,
+    messageComplete,
     mergedFileChanges,
   );
   const showRelatedLinks = shouldShowPostCompletionExtras(
     message,
-    postCompletionReady,
+    messageComplete,
     messageEmbeds.length > 0,
   );
   const isPlanFlowMessage = !!planStep && role !== "you";
@@ -2184,7 +2182,7 @@ export const MessageBubble = memo(function MessageBubble({
           {specExecutionDetails ? (
             <SpecExecutionCard details={specExecutionDetails} />
           ) : (
-            <div className="codemini-message-surface codemini-user-bubble w-fit max-w-full rounded-2xl px-4 py-3">
+            <div className="codemini-message-surface codemini-user-bubble w-fit max-w-full rounded-2xl px-4 py-2">
               {(userSkillChips.length > 0 || attachments.length > 0) && (
                 <div
                   className={cn(

@@ -11,6 +11,7 @@ import {
   updateSkillInSegments,
 } from '../shared/transcript-segments.js';
 import { buildHookSegmentEvent } from '../shared/hook-ui.js';
+import { stripPlanProgressText } from '../shared/plan-progress-text.js';
 import {
   applyPlanEventToMessage,
   applyStreamEventToPlanRun,
@@ -50,10 +51,6 @@ function summarizeHistoricalToolMessage(message) {
   const explicit = String(message?.tool_summary || '').trim();
   if (explicit) return explicit;
   return summarizeToolResult(parseToolContent(message?.content || ''));
-}
-
-function stripPlanProgressText(text) {
-  return String(text || '').replace(/(?:^|\n)\[plan\]\s+Step\s+\d+\/\d+\s+->[^\n]*\n?/g, '');
 }
 
 function isAbortLikeError(err) {

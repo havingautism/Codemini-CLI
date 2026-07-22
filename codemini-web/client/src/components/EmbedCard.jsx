@@ -278,11 +278,19 @@ function EmbedCardBody({ embed, variant = "default" }) {
       target="_blank"
       rel="noopener noreferrer"
       className={cn(
-        "group block overflow-hidden rounded-xl border border-(--border-default) bg-(--bg-secondary) transition-colors hover:border-(--border-strong) hover:bg-(--bg-hover)",
+        "group block overflow-hidden rounded-xl border bg-(--bg-secondary) transition-colors hover:bg-(--bg-hover)",
         compact
           ? "flex h-full w-full min-w-0 flex-col"
           : "my-3 shadow-[var(--shadow-default)] hover:shadow-md",
+        brand.key === "link" && "border-(--border-default) hover:border-(--border-strong)",
       )}
+      style={
+        brand.key === "link"
+          ? undefined
+          : {
+              borderColor: `color-mix(in srgb, ${brand.accent} 34%, var(--border-default))`,
+            }
+      }
     >
       <EmbedCardHeader brand={brand} url={url} compact={compact} />
 
