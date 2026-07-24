@@ -38,6 +38,9 @@ import {
   refreshIndexedFile
 } from '../src/core/project-index.js';
 import {
+  saveProjectIndexToSqlite
+} from '../src/core/project-index-sqlite-store.js';
+import {
   listChangeOperationsFromSqlite,
   loadChangeOperationFromSqlite,
   saveChangeOperationToSqlite
@@ -153,6 +156,41 @@ test('project index persists files and symbols in per-project SQLite', async () 
     await refreshIndexedFile(root, 'src/hello.js');
     const result = await queryProjectIndex(root, { query: 'renamedHello' });
     assert.equal(result.matches[0].file, 'src/hello.js');
+  } finally {
+    closeSqliteDatabasesForTests();
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test('project index SQLite store tolerates duplicate generated symbol ids', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-project-symbols-'));
+  try {
+    const duplicate = {
+      symbol_id: 'src/example.js::handler',
+      name: 'handler',
+      kind: 'function',
+      range: { start_line: 1, end_line: 1 }
+    };
+    assert.doesNotThrow(() => saveProjectIndexToSqlite(root, {
+      projectMap: { root },
+      fileIndex: {
+        updatedAt: '2026-07-23T00:00:00.000Z',
+        files: [
+          {
+            file: 'src/example.js',
+            language: 'JavaScript',
+            size: 1,
+            mtimeMs: 1,
+            symbols: [duplicate, { ...duplicate, range: { start_line: 2, end_line: 2 } }]
+          }
+        ]
+      }
+    }));
+    const db = getProjectDatabase(root);
+    assert.equal(
+      db.prepare('SELECT count(*) AS count FROM indexed_symbols').get().count,
+      2
+    );
   } finally {
     closeSqliteDatabasesForTests();
     await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });

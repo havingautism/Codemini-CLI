@@ -3,6 +3,7 @@ import {
   resolveOpenAICompatibleReasoning
 } from './reasoning-effort.js';
 import { isCompletionTruncated } from './completion-status.js';
+import { stringifyGatewayJson } from './json-body.js';
 
 function extractTextContent(content) {
   if (typeof content === 'string') return content;
@@ -411,7 +412,7 @@ export async function createChatCompletion({
   const response = await fetchWithRetry(buildChatCompletionsUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
-    body: JSON.stringify(payload),
+    body: stringifyGatewayJson(payload),
     signal: AbortSignal.timeout(timeoutMs)
   }, { maxRetries });
   const data = await parseJsonResponse(response);
@@ -490,7 +491,7 @@ export async function createChatCompletionStream({
   const buildRequest = (bodyPayload) => ({
     method: 'POST',
     headers: createHeaders(apiKey),
-    body: JSON.stringify(bodyPayload),
+    body: stringifyGatewayJson(bodyPayload),
     signal: controller.signal
   });
   let response = await fetchWithRetry(url, buildRequest(payload), { maxRetries });

@@ -253,6 +253,7 @@ function Shell() {
         onUpdate={actions.runUpdate}
         updateStatus={state.updateStatus}
         currentView={state.currentView}
+        codewikiProjectPath={state.codewikiProjectPath}
         onSwitchView={actions.switchView}
         onOpenProject={async (...args) => {
           closeMobileSidebar();
@@ -301,7 +302,7 @@ function Shell() {
             />
           </div>
         ) : state.currentView === "codewiki" ? (
-          <div className="codemini-workspace-panel flex flex-1 flex-col min-h-0 overflow-hidden">
+          <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
             <Suspense fallback={null}>
               <CodeWikiPanel
                 projectCwd={

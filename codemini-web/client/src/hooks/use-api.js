@@ -685,8 +685,15 @@ export async function fetchCodeWikiReports(project = '') {
   return res.json();
 }
 
-export async function fetchCodeWikiSymbolGraph(project = '') {
-  const res = await api(`/api/codewiki/symbol-graph${codeWikiProjectQuery(project)}`);
+export async function fetchCodeWikiSymbolGraph(project = '', options = {}) {
+  const params = new URLSearchParams(project ? { project } : {});
+  for (const [key, value] of Object.entries(options || {})) {
+    if (value === undefined || value === null || value === '') continue;
+    if (Array.isArray(value)) value.forEach((item) => params.append(key, item));
+    else params.set(key, String(value));
+  }
+  const query = params.toString();
+  const res = await api(`/api/codewiki/symbol-graph${query ? `?${query}` : ''}`);
   return res.json();
 }
 

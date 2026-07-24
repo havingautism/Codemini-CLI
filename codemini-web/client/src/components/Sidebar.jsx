@@ -221,6 +221,7 @@ export function Sidebar({
   onUpdate,
   updateStatus,
   currentView,
+  codewikiProjectPath = "",
   onSwitchView,
   onOpenProject,
   onOpenProjectSelector,
@@ -449,10 +450,16 @@ export function Sidebar({
   const openProjectCodeWiki = async (event, projectKey, projectSessions = []) => {
     event.stopPropagation();
     const openPath = getProjectOpenPath(projectKey, projectSessions);
+    const focusKey =
+      currentView === "codewiki" && codewikiProjectPath
+        ? normalizeProjectDirKey(codewikiProjectPath)
+        : activeProjectKey;
+    const targetKey = normalizeProjectDirKey(openPath || projectKey);
     if (
       openPath &&
       projectKey !== "unknown" &&
-      projectKey !== activeProjectKey &&
+      targetKey &&
+      targetKey !== focusKey &&
       onOpenProject
     ) {
       await onOpenProject(openPath, { view: "codewiki" });
@@ -637,7 +644,16 @@ export function Sidebar({
               (sampleSession?.projectKey
                 ? gitBatch?.[sampleSession.projectKey]
                 : null);
-            const isActive = projectKey === activeProjectKey;
+            const isActive =
+              currentView === "codewiki" && codewikiProjectPath
+                ? projectKey === normalizeProjectDirKey(codewikiProjectPath) ||
+                  projectSessions.some(
+                    (session) =>
+                      normalizeProjectDirKey(
+                        session?.projectDir || session?.projectKey || "",
+                      ) === normalizeProjectDirKey(codewikiProjectPath),
+                  )
+                : projectKey === activeProjectKey;
             const canOpenCodeWiki = projectKey !== "unknown";
             return (
               <div key={projectKey}>

@@ -47,7 +47,7 @@ import { getReplyLanguage } from '../src/core/reply-language.js';
 import { normalizeSkillContexts } from '../src/core/skill-contexts.js';
 import { getBaseConfigDir, getProjectSpecsDir, getSkillsDir } from '../src/core/paths.js';
 import { initializeProjectIndex } from '../src/core/project-index.js';
-import { loadProjectFileIndexFromSqlite } from '../src/core/project-index-sqlite-store.js';
+import { queryProjectKnowledgeGraph } from '../src/core/project-knowledge-graph.js';
 import { INDEX_SKIP_DIRS } from '../src/core/constants.js';
 import { VERSION } from '../src/core/version.js';
 import { detectPlaywrightStatus } from '../src/core/tools.js';
@@ -1778,157 +1778,93 @@ function codeWikiReportFormat(fileName) {
   return String(fileName || '').toLowerCase().endsWith('.md') ? 'md' : 'html';
 }
 
-function clipGraphList(values, max = 12) {
-  return [...new Set((Array.isArray(values) ? values : []).filter(Boolean))].slice(0, max);
-}
-
-const CODEWIKI_GRAPH_NOISY_NAMES = new Set([
-  '__init__',
-  '__enter__',
-  '__exit__',
-  '__getitem__',
-  '__setitem__',
-  '__delitem__',
-  '__contains__',
-  '__len__',
-  '__iter__',
-  '__next__',
-  '__call__',
-  'get',
-  'set',
-  'add',
-  'run',
-  'close',
-  'open',
-  'read',
-  'write',
-  'send',
-  'recv',
-  'poll',
-  'update',
-  'copy',
-  'size',
-  'apply'
-]);
-
-function normalizeGraphPath(value = '') {
-  return String(value || '').replace(/\\/g, '/').replace(/^\.\/+/, '');
-}
-
-function isDependencyLikeGraphPath(file = '') {
-  const normalized = normalizeGraphPath(file);
-  const segments = normalized.split('/').filter(Boolean);
-  return segments.some(
-    (segment) =>
-      INDEX_SKIP_DIRS.has(segment) ||
-      /^venv[-_]/i.test(segment) ||
-      /\.egg-info$/i.test(segment) ||
-      /^python\d+(?:\.\d+)?$/i.test(segment)
-  );
-}
-
-function isNoisyGraphSymbol(symbol = {}) {
-  const name = String(symbol.name || symbol.symbol_id || '').split('.').pop();
-  if (!name) return true;
-  if (CODEWIKI_GRAPH_NOISY_NAMES.has(name)) return true;
-  return /^__.*__$/.test(name);
-}
-
-function sourceRootScore(file = '') {
-  const normalized = normalizeGraphPath(file);
-  if (normalized.startsWith('src/')) return 8;
-  if (normalized.startsWith('codemini-web/client/src/')) return 8;
-  if (normalized.startsWith('codemini-web/server.js')) return 7;
-  if (normalized.startsWith('codemini-web/')) return 5;
-  if (normalized.startsWith('tests/')) return 1;
-  return 3;
-}
-
-function buildCodeWikiSymbolGraph(fileIndex, { maxNodes = 42 } = {}) {
-  const files = Array.isArray(fileIndex?.files) ? fileIndex.files : [];
-  const sourceFiles = files.filter((entry) => !isDependencyLikeGraphPath(entry.file));
-  const symbols = sourceFiles
-    .flatMap((entry) =>
-      (Array.isArray(entry.symbols) ? entry.symbols : []).map((symbol) => ({
-        ...symbol,
-        file: symbol.file || entry.file
-      }))
-    )
-    .filter((symbol) => !isDependencyLikeGraphPath(symbol.file) && !isNoisyGraphSymbol(symbol));
-  const ranked = symbols
-    .map((symbol) => {
-      const calls = Array.isArray(symbol.calls) ? symbol.calls.length : 0;
-      const calledBy = Array.isArray(symbol.called_by) ? symbol.called_by.length : 0;
-      const writes = Array.isArray(symbol.writes) ? symbol.writes.length : 0;
-      const emits = Array.isArray(symbol.emits) ? symbol.emits.length : 0;
-      const typeBoost = symbol.type === 'class' ? 8 : symbol.type === 'method' ? 4 : 2;
-      return {
-        symbol,
-        score: sourceRootScore(symbol.file) + typeBoost + calledBy * 4 + calls * 2 + writes * 2 + emits * 2
-      };
-    })
-    .sort((a, b) => b.score - a.score || String(a.symbol.symbol_id).localeCompare(String(b.symbol.symbol_id)))
-    .slice(0, maxNodes)
-    .map((item) => item.symbol);
-
-  const byId = new Map(ranked.map((symbol) => [String(symbol.symbol_id || ''), symbol]));
-  const byShortName = new Map();
-  for (const symbol of ranked) {
-    const shortName = String(symbol.name || '').split('.').pop();
-    if (!shortName) continue;
-    if (!byShortName.has(shortName)) byShortName.set(shortName, []);
-    byShortName.get(shortName).push(symbol);
+// Injected for already-generated HTML shells that only ship light tokens.
+const CODEWIKI_REPORT_THEME_INJECT = `
+<style id="codemini-report-theme">
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #000000;
+    --bg-muted: #1d1d1f;
+    --bg-hover: #2c2c2e;
+    --panel: #1d1d1f;
+    --text: #f5f5f7;
+    --text-secondary: #a1a1a6;
+    --line: rgba(255, 255, 255, 0.1);
+    --line-strong: rgba(255, 255, 255, 0.18);
+    --accent: #2997ff;
+    --accent-hover: #64b5ff;
+    --accent-bg: rgba(41, 151, 255, 0.14);
+    --red: #ff453a;
+    --red-bg: rgba(255, 69, 58, 0.18);
+    --orange: #ff9f0a;
+    --orange-bg: rgba(255, 159, 10, 0.18);
+    --green: #30d158;
+    --green-bg: rgba(48, 209, 88, 0.18);
+    --gray: #98989d;
+    --gray-bg: rgba(152, 152, 157, 0.18);
+    --code: #ff6482;
+    --pre-bg: #1d1d1f;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow-md: 0 12px 32px rgba(0, 0, 0, 0.45);
   }
-
-  const nodes = ranked.map((symbol) => ({
-    id: symbol.symbol_id,
-    label: symbol.name || symbol.symbol_id,
-    type: symbol.type || 'symbol',
-    file: symbol.file || '',
-    range: symbol.range || null,
-    signature: symbol.signature || '',
-    calls: clipGraphList(symbol.calls || [], 8),
-    called_by: clipGraphList(symbol.called_by || [], 8),
-    imports: clipGraphList(symbol.imports || [], 6),
-    writes: clipGraphList(symbol.writes || [], 6),
-    emits: clipGraphList(symbol.emits || [], 6)
-  }));
-
-  const edgeMap = new Map();
-  const addEdge = (source, target, kind, label = '') => {
-    if (!source || !target || source === target) return;
-    if (!byId.has(source) || !byId.has(target)) return;
-    const key = `${source}->${target}:${kind}`;
-    if (!edgeMap.has(key)) edgeMap.set(key, { source, target, kind, label });
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #000000;
+  --bg-muted: #1d1d1f;
+  --bg-hover: #2c2c2e;
+  --panel: #1d1d1f;
+  --text: #f5f5f7;
+  --text-secondary: #a1a1a6;
+  --line: rgba(255, 255, 255, 0.1);
+  --line-strong: rgba(255, 255, 255, 0.18);
+  --accent: #2997ff;
+  --accent-hover: #64b5ff;
+  --accent-bg: rgba(41, 151, 255, 0.14);
+  --red: #ff453a;
+  --red-bg: rgba(255, 69, 58, 0.18);
+  --orange: #ff9f0a;
+  --orange-bg: rgba(255, 159, 10, 0.18);
+  --green: #30d158;
+  --green-bg: rgba(48, 209, 88, 0.18);
+  --gray: #98989d;
+  --gray-bg: rgba(152, 152, 157, 0.18);
+  --code: #ff6482;
+  --pre-bg: #1d1d1f;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-md: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+code { color: var(--code, #c9342d); }
+pre { background: var(--pre-bg, var(--bg-muted, #f5f5f7)); }
+</style>
+<script id="codemini-report-theme-boot">
+(() => {
+  const root = document.documentElement;
+  const apply = (theme) => {
+    if (theme === 'dark' || theme === 'light') root.dataset.theme = theme;
+    else delete root.dataset.theme;
   };
+  try { apply(new URLSearchParams(location.search).get('theme')); } catch {}
+  window.addEventListener('message', (event) => {
+    if (event?.data?.type === 'codewiki-theme') apply(event.data.theme);
+  });
+})();
+</script>
+`.trim();
 
-  for (const symbol of ranked) {
-    const source = String(symbol.symbol_id || '');
-    for (const call of symbol.calls || []) {
-      const shortName = String(call || '').split('.').pop();
-      for (const target of byShortName.get(shortName) || []) {
-        addEdge(source, target.symbol_id, 'calls', call);
-      }
-    }
-    for (const caller of symbol.called_by || []) {
-      addEdge(caller, source, 'called_by');
-    }
+function injectCodeWikiReportTheme(html) {
+  const source = String(html || '');
+  if (
+    source.includes('id="codemini-report-theme"')
+    || source.includes("data?.type === 'codewiki-theme'")
+  ) {
+    return source;
   }
-
-  const edges = [...edgeMap.values()].slice(0, 80);
-
-  return {
-    updatedAt: fileIndex?.updatedAt || '',
-    stats: {
-      files: files.length,
-      source_files: sourceFiles.length,
-      symbols: symbols.length,
-      displayed_nodes: nodes.length,
-      displayed_edges: edges.length
-    },
-    nodes,
-    edges
-  };
+  if (/<\/head>/i.test(source)) {
+    return source.replace(/<\/head>/i, `${CODEWIKI_REPORT_THEME_INJECT}\n</head>`);
+  }
+  return `${CODEWIKI_REPORT_THEME_INJECT}\n${source}`;
 }
 
 function commonPathPrefix(paths) {
@@ -2273,6 +2209,11 @@ async function main() {
     // ── CodeWiki / project requirements reports ──
     if (req.method === 'GET' && url.pathname === '/api/codewiki/reports') {
       const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
+      const initializedGraph = await initializeProjectIndex(codeWikiProjectDir);
+      const graphMetadata = queryProjectKnowledgeGraph(
+        initializedGraph?.projectRoot || codeWikiProjectDir,
+        { operation: 'overview', depth: 0, token_budget: 250 }
+      );
       const requirementsDir = getRequirementsDir(codeWikiProjectDir);
       try {
         const entries = await fs.readdir(requirementsDir, { withFileTypes: true });
@@ -2283,15 +2224,21 @@ async function main() {
           const stat = await fs.stat(reportPath);
           let manifestStatus = '';
           let manifestUpdatedAt = '';
+          let reportGraphVersion = '';
+          let manifestError = '';
           try {
             const baseName = entry.name.replace(/\.(?:html|md)$/i, '');
             const manifestPath = path.join(requirementsDir, `${baseName}.manifest.json`);
             const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
             manifestStatus = typeof manifest?.status === 'string' ? manifest.status : '';
             manifestUpdatedAt = typeof manifest?.updatedAt === 'string' ? manifest.updatedAt : '';
+            reportGraphVersion = typeof manifest?.graphVersion === 'string' ? manifest.graphVersion : '';
+            manifestError = typeof manifest?.error === 'string' ? manifest.error : '';
           } catch {
             manifestStatus = '';
             manifestUpdatedAt = '';
+            reportGraphVersion = '';
+            manifestError = '';
           }
           reports.push({
             file: entry.name,
@@ -2300,11 +2247,22 @@ async function main() {
             size: stat.size,
             mtime: stat.mtime.toISOString(),
             manifestStatus,
-            manifestUpdatedAt
+            manifestUpdatedAt,
+            manifestError,
+            graphVersion: reportGraphVersion,
+            graphFreshness: !reportGraphVersion
+              ? 'unknown'
+              : reportGraphVersion === graphMetadata?.graph_version
+                ? 'fresh'
+                : 'stale'
           });
         }
         reports.sort((a, b) => new Date(b.mtime) - new Date(a.mtime));
-        jsonResponse(res, { reports });
+        jsonResponse(res, {
+          reports,
+          graphVersion: graphMetadata?.graph_version || '',
+          graphBuiltAt: graphMetadata?.built_at || ''
+        });
       } catch (err) {
         if (err?.code === 'ENOENT') jsonResponse(res, { reports: [] });
         else jsonResponse(res, { error: true, message: err.message }, 500);
@@ -2317,9 +2275,19 @@ async function main() {
         const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
         const initialized = await initializeProjectIndex(codeWikiProjectDir);
         const projectRoot = initialized?.projectRoot || codeWikiProjectDir;
-        const fileIndex = loadProjectFileIndexFromSqlite(projectRoot);
-        const maxNodes = Math.max(12, Math.min(80, Number(url.searchParams.get('max_nodes') || 42)));
-        jsonResponse(res, buildCodeWikiSymbolGraph(fileIndex, { maxNodes }));
+        const operation = url.searchParams.get('operation') || 'overview';
+        jsonResponse(res, queryProjectKnowledgeGraph(projectRoot, {
+          operation,
+          query: url.searchParams.get('query') || '',
+          node_id: url.searchParams.get('node_id') || '',
+          from: url.searchParams.get('from') || '',
+          to: url.searchParams.get('to') || '',
+          direction: url.searchParams.get('direction') || 'both',
+          depth: Number(url.searchParams.get('depth') || (operation === 'overview' ? 2 : 2)),
+          token_budget: Number(url.searchParams.get('token_budget') || 6000),
+          include_ambiguous: url.searchParams.get('include_ambiguous') === 'true',
+          files: url.searchParams.getAll('file')
+        }));
       } catch (err) {
         jsonResponse(res, {
           updatedAt: '',
@@ -2343,6 +2311,21 @@ async function main() {
       const reportPath = path.resolve(requirementsDir, fileName);
       if (!reportPath.startsWith(`${requirementsDir}${path.sep}`)) {
         jsonResponse(res, { error: true, message: 'Invalid report path' }, 403);
+        return;
+      }
+      if (codeWikiReportFormat(fileName) === 'html') {
+        try {
+          const raw = await fs.readFile(reportPath, 'utf8');
+          const html = injectCodeWikiReportTheme(raw);
+          res.writeHead(200, {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Cache-Control': 'no-store'
+          });
+          res.end(html);
+        } catch (err) {
+          if (err?.code === 'ENOENT') jsonResponse(res, { error: true, message: 'Report not found' }, 404);
+          else jsonResponse(res, { error: true, message: err.message }, 500);
+        }
         return;
       }
       await serveStatic(res, reportPath);
@@ -2374,15 +2357,22 @@ async function main() {
 
     if (req.method === 'POST' && url.pathname === '/api/codewiki/generate') {
       const { depth, format } = await readBody(req);
-      const normalizedDepth = ['fast', 'standard', 'deep'].includes(String(depth || '').toLowerCase())
-        ? String(depth).toLowerCase()
-        : 'standard';
+      const normalizedDepthRaw = String(depth || '').toLowerCase();
+      const normalizedDepth = normalizedDepthRaw === 'standard' || normalizedDepthRaw === 'deep'
+        ? 'deep'
+        : normalizedDepthRaw === 'fast'
+          ? 'fast'
+          : 'fast';
       const normalizedFormat = ['html', 'md'].includes(String(format || '').toLowerCase())
         ? String(format).toLowerCase()
         : 'html';
       const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
+      const sameProject =
+        normalizeProjectDirKey(codeWikiProjectDir) === normalizeProjectDirKey(currentProjectDir);
+      // Don't block CodeWiki on an in-progress chat: reuse current bridge only when
+      // idle and already on this project; otherwise spin up a dedicated session.
       let codeWikiBridge = bridge;
-      if (codeWikiProjectDir !== currentProjectDir) {
+      if (!sameProject || codeWikiBridge.isBusy()) {
         const session = await createSession(codeWikiProjectDir);
         codeWikiBridge = (await ensurePooledSession(session.id)).bridge;
       }

@@ -11,6 +11,8 @@ import {
   loadProjectIndexFromSqlite,
   saveProjectIndexToSqlite
 } from './project-index-sqlite-store.js';
+import { refreshProjectKnowledgeGraph } from './project-knowledge-graph.js';
+import { extractAstIndexFacts } from './ast.js';
 
 const PROJECT_MARKER_FILES = new Set([
   'package.json',
@@ -400,6 +402,33 @@ function extractSemanticEmits(calls, content) {
   ], 16);
 }
 
+function extractInterfaces(relativePath, content) {
+  const interfaces = [];
+  const seen = new Set();
+  const add = (kind, name, method = '') => {
+    const key = `${kind}:${method}:${name}`;
+    if (!name || seen.has(key)) return;
+    seen.add(key);
+    interfaces.push({ kind, name, method });
+  };
+  const routePatterns = [
+    /req\.method\s*===\s*['"]([A-Z]+)['"][\s\S]{0,240}?url\.pathname\s*===\s*['"]([^'"]+)['"]/g,
+    /req\.method\s*===\s*['"]([A-Z]+)['"][\s\S]{0,240}?url\.pathname\.startsWith\(\s*['"]([^'"]+)['"]/g
+  ];
+  for (const pattern of routePatterns) {
+    for (const match of String(content || '').matchAll(pattern)) add('http', match[2], match[1]);
+  }
+  if (/^src\/commands\/[^/]+\.js$/i.test(normalizeRelativePath(relativePath))) {
+    add('cli', path.posix.basename(relativePath, path.posix.extname(relativePath)));
+  }
+  if (normalizeRelativePath(relativePath) === 'src/core/tools.js') {
+    for (const match of String(content || '').matchAll(/\bname:\s*["']([a-z][a-z0-9_]{2,})["']/g)) {
+      add('tool', match[1]);
+    }
+  }
+  return interfaces.slice(0, 200);
+}
+
 function extractSymbolDefinitions(relativePath, content, imports = []) {
   const definitions = [];
   const patterns = [
@@ -507,7 +536,7 @@ function enrichSymbolGraph(files) {
   return nextFiles;
 }
 
-function buildFileEntry(relativePath, content, stat) {
+async function buildFileEntry(relativePath, content, stat) {
   const ext = path.extname(relativePath).toLowerCase();
   const imports = clipList([
     ...extractMatches(/import\s+(?:[^'"]*from\s+)?['"]([^'"]+)['"]/g, content),
@@ -534,7 +563,15 @@ function buildFileEntry(relativePath, content, stat) {
     ...extractMatches(/\bclass\s+([A-Za-z0-9_$]+)/g, content)
   ]);
   const calls = extractCallNames(content);
-  const symbols = extractSymbolDefinitions(relativePath, content, imports);
+  const interfaces = extractInterfaces(relativePath, content);
+  const astFacts = await extractAstIndexFacts(content, relativePath);
+  const symbols = (astFacts?.symbols?.length ? astFacts.symbols : extractSymbolDefinitions(relativePath, content, imports))
+    .map((symbol) => ({
+      ...symbol,
+      imports: clipList(symbol.imports?.length ? symbol.imports : imports, 12),
+      writes: symbol.writes?.length ? symbol.writes : extractSemanticWrites(symbol.calls || []),
+      emits: symbol.emits?.length ? symbol.emits : extractSemanticEmits(symbol.calls || [], content)
+    }));
 
   return {
     file: relativePath,
@@ -547,7 +584,8 @@ function buildFileEntry(relativePath, content, stat) {
     functions,
     classes,
     calls,
-    symbols
+    symbols,
+    interfaces
   };
 }
 
@@ -642,6 +680,10 @@ async function loadExistingProjectIndex(targetRoot) {
   try {
     const sqlite = loadProjectIndexFromSqlite(targetRoot);
     if (sqlite?.projectMap && Array.isArray(sqlite?.fileIndex?.files) && sqlite.fileIndex.files.length > 0) {
+      refreshProjectKnowledgeGraph(targetRoot, {
+        projectMap: sqlite.projectMap,
+        fileIndex: sqlite.fileIndex
+      });
       return {
         workspaceKind: 'project',
         projectRoot: targetRoot,
@@ -658,6 +700,7 @@ async function loadExistingProjectIndex(targetRoot) {
       return null;
     }
     saveProjectIndexToSqlite(targetRoot, { projectMap, fileIndex });
+    refreshProjectKnowledgeGraph(targetRoot, { projectMap, fileIndex });
     return {
       workspaceKind: 'project',
       projectRoot: targetRoot,
@@ -693,6 +736,7 @@ export async function initializeProjectIndex(cwd = process.cwd()) {
     }
     await fs.mkdir(getProjectIndexDir(targetRoot), { recursive: true });
     saveProjectIndexToSqlite(targetRoot, { projectMap, fileIndex });
+    refreshProjectKnowledgeGraph(targetRoot, { projectMap, fileIndex });
     return {
       workspaceKind,
       projectRoot: targetRoot,
@@ -757,7 +801,7 @@ export async function refreshIndexedFiles(cwd = process.cwd(), relativePaths = [
       return {
         path: projectRelativePath,
         action: filesByPath.has(projectRelativePath) ? 'updated' : 'added',
-        entry: buildFileEntry(projectRelativePath, content, stat)
+        entry: await buildFileEntry(projectRelativePath, content, stat)
       };
     }));
 
@@ -766,10 +810,15 @@ export async function refreshIndexedFiles(cwd = process.cwd(), relativePaths = [
       else filesByPath.delete(update.path);
     }
     const enrichedFiles = enrichSymbolGraph([...filesByPath.values()]);
-    saveProjectIndexToSqlite(projectRoot, { fileIndex: {
+    const nextFileIndex = {
       updatedAt: new Date().toISOString(),
       files: enrichedFiles.sort((left, right) => left.file.localeCompare(right.file))
-    } });
+    };
+    saveProjectIndexToSqlite(projectRoot, { fileIndex: nextFileIndex });
+    refreshProjectKnowledgeGraph(projectRoot, {
+      projectMap: loadProjectIndexFromSqlite(projectRoot)?.projectMap || {},
+      fileIndex: nextFileIndex
+    });
 
     return {
       projectRoot,

@@ -29,6 +29,7 @@ import {
   refreshIndexedFile,
   refreshIndexedFiles,
 } from "./project-index.js";
+import { queryProjectKnowledgeGraph } from "./project-knowledge-graph.js";
 import { createToolResultStore } from "./tool-result-store.js";
 import {
   TOOL_SKIP_DIRS as SKIP_DIRS,
@@ -4899,6 +4900,34 @@ export function getBuiltinTools({
         },
       },
     },
+    query_project_graph: {
+      type: "function",
+      function: {
+        name: "query_project_graph",
+        description:
+          "Query the project knowledge graph before reading many files. Supports relevant subgraphs, neighbors, shortest paths, and change impact with source evidence and confidence labels.",
+        parameters: {
+          type: "object",
+          properties: {
+            operation: {
+              type: "string",
+              enum: ["query", "neighbors", "path", "impact", "overview"],
+            },
+            query: { type: "string", description: "Task, concept, symbol, or flow to locate" },
+            node_id: { type: "string", description: "Exact node ID for neighbors" },
+            from: { type: "string", description: "Node ID or label for path start" },
+            to: { type: "string", description: "Node ID or label for path end" },
+            files: { type: "array", items: { type: "string" }, description: "Changed files for impact analysis" },
+            direction: { type: "string", enum: ["in", "out", "both"] },
+            relations: { type: "array", items: { type: "string" } },
+            depth: { type: "number", minimum: 0, maximum: 6 },
+            max_hops: { type: "number", minimum: 1, maximum: 12 },
+            token_budget: { type: "number", minimum: 250, maximum: 16000 },
+            include_ambiguous: { type: "boolean" },
+          },
+        },
+      },
+    },
     glob: {
       type: "function",
       function: {
@@ -5717,6 +5746,10 @@ export function getBuiltinTools({
     query_project_index: async (args) => {
       await ensureProjectIndex();
       return queryProjectIndex(workspaceRoot, args);
+    },
+    query_project_graph: async (args) => {
+      const initialized = await ensureProjectIndex();
+      return queryProjectKnowledgeGraph(initialized?.projectRoot || workspaceRoot, args);
     },
     grep,
     ast_grep: astGrep,
@@ -6742,6 +6775,23 @@ export function getBuiltinTools({
           `- ${item.file} [score=${item.score}] exports=[${(item.exports || []).join(", ")}] functions=[${(item.functions || []).join(", ")}] classes=[${(item.classes || []).join(", ")}]`,
         );
       }
+      return lines.join("\n");
+    },
+
+    query_project_graph(result) {
+      if (!result || typeof result !== "object") return String(result);
+      const lines = [
+        `[project_graph: ${result.operation || "query"} version=${result.graph_version || "unknown"}]`,
+        `nodes=${result.stats?.displayed_nodes || 0}/${result.stats?.total_nodes || 0} edges=${result.stats?.displayed_edges || 0}/${result.stats?.total_edges || 0}`,
+      ];
+      for (const node of (result.nodes || []).slice(0, 30)) {
+        const range = node.range?.start_line ? `:${node.range.start_line}` : "";
+        lines.push(`- ${node.id} [${node.type}] ${node.file || ""}${range} — ${node.summary || node.label || ""}`);
+      }
+      for (const edge of (result.edges || []).slice(0, 40)) {
+        lines.push(`  ${edge.source} -[${edge.relation}/${edge.confidence}]-> ${edge.target}`);
+      }
+      if (result.truncated) lines.push("... result clipped to token budget");
       return lines.join("\n");
     },
 

@@ -20,6 +20,7 @@ import {
   inspectOutsideWorkspaceMutation,
   toolRequiresUserApproval
 } from './approval-policy.js';
+import { createMutationGraphPreflight } from './mutation-graph-preflight.js';
 import { fireSkillHookEvent, formatHookContextLines } from './skill-hooks-runtime.js';
 import {
   isCompletionTruncated,
@@ -781,6 +782,20 @@ export async function runAgentLoop({
 
   // Mutable tool list — grows as tool_search loads deferred tools
   const activeTools = [...toolDefinitions];
+  const mutationGraphPreflight = createMutationGraphPreflight({
+    queryGraph: typeof toolHandlers.query_project_graph === 'function'
+      ? (args) => toolHandlers.query_project_graph(args)
+      : null,
+    onError: (error, context) => {
+      if (!onEvent) return;
+      onEvent({
+        type: 'system_tool:error',
+        id: `project-graph-preflight:${Date.now()}`,
+        name: 'project_graph_preflight',
+        summary: `Graph preflight degraded for ${(context?.files || []).join(', ')}: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    },
+  });
 
   let stopHookBlockCount = 0;
   async function fireStopHooks(lastAssistantMessage = '') {
@@ -984,6 +999,19 @@ export async function runAgentLoop({
         });
         continue;
       }
+      const graphPreflight = await mutationGraphPreflight.inspect({
+        toolName,
+        args,
+        step,
+      });
+      if (graphPreflight?.required) {
+        approvalResults.set(call.id, {
+          approved: false,
+          args: approvalArgs,
+          graphPreflightContent: clipToolResult(graphPreflight.content, toolResultMaxChars),
+        });
+        continue;
+      }
       const runPolicyCheck = toolName === 'run'
         ? evaluateCommandPolicy(args?.command || '', config, config?.workspaceRoot || process.cwd())
         : { allowed: true };
@@ -1137,6 +1165,28 @@ export async function runAgentLoop({
       const startedAt = Date.now();
       const approvalState = approvalResults.get(call.id) || { approved: true, args };
       let effectiveArgs = approvalState.args || args;
+
+      if (approvalState.graphPreflightContent) {
+        const summary = 'Project graph impact review required before mutation';
+        if (onEvent) {
+          onEvent({
+            type: 'tool:blocked',
+            name: toolName,
+            displayName,
+            id: call.id,
+            arguments: effectiveArgs,
+            summary,
+          });
+        }
+        return {
+          callId: call.id,
+          content: approvalState.graphPreflightContent,
+          blocked: true,
+          durationMs: 0,
+          summary,
+          status: 'blocked',
+        };
+      }
 
       if (approvalState.errorContent) {
         const summary = trimInline(approvalState.errorContent, 120);
@@ -1336,6 +1386,12 @@ export async function runAgentLoop({
       }
 
       const durationMs = Date.now() - startedAt;
+      mutationGraphPreflight.record({
+        toolName,
+        args: effectiveArgs,
+        result: toolResult,
+        step,
+      });
       const runFailureMessage = resolveRunToolFailure(toolName, toolResult);
       if (runFailureMessage) {
         const summary = trimInline(runFailureMessage, 120);

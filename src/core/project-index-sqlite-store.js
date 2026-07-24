@@ -46,6 +46,10 @@ export function saveProjectIndexToSqlite(projectRoot, { projectMap = null, fileI
       INSERT INTO indexed_symbols(symbol_id, file, name, kind, start_line, end_line, payload_json)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
+    const allocatedSymbolIds = new Set(
+      db.prepare('SELECT symbol_id FROM indexed_symbols').all().map((row) => row.symbol_id)
+    );
+    const selectFileSymbolIds = db.prepare('SELECT symbol_id FROM indexed_symbols WHERE file = ?');
     db.exec('CREATE TEMP TABLE IF NOT EXISTS current_index_files(file TEXT PRIMARY KEY) WITHOUT ROWID');
     db.exec('DELETE FROM current_index_files');
     const markCurrent = db.prepare('INSERT INTO current_index_files(file) VALUES (?)');
@@ -60,10 +64,24 @@ export function saveProjectIndexToSqlite(projectRoot, { projectMap = null, fileI
         Math.trunc(Number(entry?.mtimeMs || entry?.mtime_ms || 0)), JSON.stringify(entry)
       );
       if (Number(result.changes || 0) === 0) continue;
+      for (const row of selectFileSymbolIds.all(file)) allocatedSymbolIds.delete(row.symbol_id);
       deleteSymbols.run(file);
       for (let index = 0; index < (entry.symbols || []).length; index += 1) {
         const symbol = entry.symbols[index];
-        const symbolId = String(symbol?.symbol_id || `${file}::${symbol?.name || 'symbol'}::${index}`);
+        const semanticId = String(symbol?.symbol_id || `${file}::${symbol?.name || 'symbol'}::${index}`);
+        let symbolId = semanticId;
+        if (allocatedSymbolIds.has(symbolId)) {
+          const startLine = Number(symbol?.range?.start_line || 0);
+          const endLine = Number(symbol?.range?.end_line || 0);
+          const disambiguatedId = `${semanticId}@${startLine}:${endLine}:${index}`;
+          symbolId = disambiguatedId;
+          let collision = 2;
+          while (allocatedSymbolIds.has(symbolId)) {
+            symbolId = `${disambiguatedId}:${collision}`;
+            collision += 1;
+          }
+        }
+        allocatedSymbolIds.add(symbolId);
         insertSymbol.run(
           symbolId, file, String(symbol?.name || ''), String(symbol?.kind || symbol?.type || ''),
           Number(symbol?.range?.start_line || 0), Number(symbol?.range?.end_line || 0), JSON.stringify(symbol)

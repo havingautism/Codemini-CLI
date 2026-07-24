@@ -2042,13 +2042,14 @@ export const MessageBubble = memo(function MessageBubble({
       (group) => group.type === "text" && group.isStreaming,
     );
     const messageInProgress =
+      Boolean(message?.loading) ||
       message?.isComplete === false ||
       (message?.planStep &&
         !["done", "failed"].includes(String(message.planStep.status || "")));
     return collapseProcessGroups(groups, {
       disabled: hasStreamingText || messageInProgress,
     });
-  }, [message?.isComplete, message?.planStep, segments]);
+  }, [message?.isComplete, message?.loading, message?.planStep, segments]);
 
   const answerLayout = useMemo(
     () =>

@@ -5,7 +5,7 @@ import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
 
 const GLOBAL_SCHEMA_VERSION = 2;
 // Version 3 removes an experimental FTS table that was never part of the product feature set.
-const PROJECT_SCHEMA_VERSION = 4;
+const PROJECT_SCHEMA_VERSION = 5;
 const databases = new Map();
 
 function configure(db) {
@@ -170,6 +170,30 @@ function createProjectSchema(db, currentVersion = 0) {
       payload_json TEXT NOT NULL
     ) STRICT;
     CREATE INDEX IF NOT EXISTS indexed_symbols_file_idx ON indexed_symbols(file, start_line);
+    CREATE TABLE IF NOT EXISTS knowledge_graph_nodes (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      label TEXT NOT NULL DEFAULT '',
+      file TEXT NOT NULL DEFAULT '',
+      graph_version TEXT NOT NULL,
+      payload_json TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS knowledge_graph_nodes_file_idx
+      ON knowledge_graph_nodes(file, type);
+    CREATE TABLE IF NOT EXISTS knowledge_graph_edges (
+      id TEXT PRIMARY KEY,
+      source TEXT NOT NULL REFERENCES knowledge_graph_nodes(id) ON DELETE CASCADE,
+      target TEXT NOT NULL REFERENCES knowledge_graph_nodes(id) ON DELETE CASCADE,
+      relation TEXT NOT NULL,
+      confidence TEXT NOT NULL,
+      source_file TEXT NOT NULL DEFAULT '',
+      graph_version TEXT NOT NULL,
+      payload_json TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS knowledge_graph_edges_source_idx
+      ON knowledge_graph_edges(source, relation);
+    CREATE INDEX IF NOT EXISTS knowledge_graph_edges_target_idx
+      ON knowledge_graph_edges(target, relation);
     CREATE TABLE IF NOT EXISTS change_operations (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,

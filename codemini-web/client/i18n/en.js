@@ -520,8 +520,8 @@ export const en = {
 
   // CodeWikiPanel
   generationDepthFast: "Fast",
-  generationDepthStandard: "Standard",
-  generationDepthDeep: "Deep",
+  generationDepthDeep: "Full",
+  generationDepthStandard: "Full",
   reportFormatHtml: "HTML",
   reportFormatMd: "Markdown",
   startingAnalysis: "Starting project requirements analysis",
@@ -534,8 +534,18 @@ export const en = {
   failedToStart: "Failed to start CodeWiki generation",
   failedToDelete: "Failed to delete CodeWiki report",
   currentProject: "Current Project",
+  reportStudio: "Report Studio",
+  reportStudioDescription:
+    "Choose an analysis depth and reading format, then build a report grounded in the project graph.",
+  generationDepth: "Analysis depth",
+  reportFormat: "Reading format",
+  generationProgress: "CodeWiki generation progress",
+  documents: "Documents",
   generating: "Generating",
   generateNew: "Generate New CodeWiki",
+  reportGenerating: "Filling report",
+  reportGeneratingHint:
+    "The report shell is ready. Codemini is analyzing the project and writing each section; this view refreshes when it finishes.",
   report: "Report",
   refreshReport: "Refresh Report",
   noReportYet:
@@ -544,17 +554,33 @@ export const en = {
   deleteReport: "Delete",
   loadingReport: "Loading Report",
   projectDocs: "Project documentation based on project-requirements",
+  graphWorkspaceDescription:
+    "Explore modules, dependencies, call paths, and change impact",
   generate: "Generate",
   noCodeWiki: "No CodeWiki yet",
   generateRequirements: "Generate requirements for the current project",
   reportWillShow:
     "After generating the report, architecture diagrams, interface requirements, processes, and risk descriptions will be displayed here.",
   reportLoadFailed: "Report failed to load.",
+  reportGenerateFailed: "CodeWiki generation failed",
+  reportGenerateFailedHint:
+    "The report shell was created, but the content was not filled in. Try generating again.",
+  failed: "Failed",
   noQuestionsDuringGeneration:
     "Questions not accepted until CodeWiki generation is complete.",
   tempReadOnlyQa:
     "Temporary CodeWiki Q&A. It only reads files unless you explicitly ask it to add or edit code comments, and it will not save to session history.",
+  askCodeWiki: "Ask CodeWiki",
+  askCodeWikiDescription:
+    "Answers with the project graph, source, and selected report",
   referenceReport: "Current reference",
+  currentContext: "Context",
+  reportContextActive: "Current report and project graph attached",
+  projectContextActive: "Project graph and source index attached",
+  askShortcut: "Enter to send · Shift + Enter for a new line",
+  suggestedCodeWikiQuestion1: "How is this project structured?",
+  suggestedCodeWikiQuestion2: "What risks in this report need attention first?",
+  suggestedCodeWikiQuestion3: "What code is affected if I change this module?",
   processingQuestion: "Processing current question",
   canAskAboutProject: "You can ask about the current project",
   canAskAboutSelectedReport: "You can ask about the selected report",
@@ -570,6 +596,18 @@ export const en = {
   deleteReportConfirm: "Delete CodeWiki Report?",
   deleteReportDescription:
     'Report "{{report}}" will be removed from current project history reports, this action cannot be undone.',
+  projectAtlas: "Project Atlas",
+  graphRelated: "Related Graph",
+  graphPath: "Shortest Path",
+  graphImpact: "Change Impact",
+  graphSearchPlaceholder: "Search modules, files, symbols, or flows…",
+  graphImpactPlaceholder: "Enter changed files separated by commas",
+  graphPathFrom: "Start symbol or node",
+  graphPathTo: "End symbol or node",
+  graphQuery: "Query Graph",
+  graphOverview: "Architecture",
+  graphExpand: "Expand Neighbors",
+  graphStale: "Stale",
 
   // InputBar
   executionMode: "Work Mode",

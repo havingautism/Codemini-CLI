@@ -1367,11 +1367,27 @@ export function AppProvider({ children }) {
       if (currentState?.cwd === projectPath) return currentState;
       const result = await api.openProject(projectPath);
       if (result?.error) return null;
+      if (result?.sessionId) activateSessionView(result.sessionId);
+      if (result?.state) {
+        setState((prev) => ({
+          ...prev,
+          runtimeState: result.state,
+          sessionRuntimeById: {
+            ...prev.sessionRuntimeById,
+            [result.sessionId]: {
+              ...prev.sessionRuntimeById[result.sessionId],
+              ...result.state,
+            },
+          },
+          projectCwd: projectNameFromRuntimeState(result.state),
+          isGeneral: !!result.state.isGeneral,
+        }));
+      }
       return result;
     } catch {
       return null;
     }
-  }, []);
+  }, [activateSessionView]);
 
   const loadSkills = useCallback(async ({ isAlive = () => true } = {}) => {
     try {
@@ -1925,7 +1941,10 @@ export function AppProvider({ children }) {
           }
           return reduced;
         });
-        if (event.sessionId !== s.currentSessionId) return;
+        // CodeWiki generate may run on a dedicated idle session while chat is
+        // busy — still apply its progress/done events in the UI.
+        const isCodeWikiEvent = String(event.type || "").startsWith("codewiki:");
+        if (event.sessionId !== s.currentSessionId && !isCodeWikiEvent) return;
       }
       const activeId = activeMsgRef.current;
 
@@ -3742,11 +3761,12 @@ export function AppProvider({ children }) {
               projectOpen: false,
               codewikiProjectPath: nextCodeWikiProjectPath,
             });
-            if (nextView === "codewiki")
+            if (nextView === "codewiki") {
               updateRoute("codewiki", null, {
                 projectPath: nextCodeWikiProjectPath,
               });
-            else if (result.sessionId) {
+              if (result.sessionId) activateSessionView(result.sessionId);
+            } else if (result.sessionId) {
               updateRoute("chat", result.sessionId);
               activateSessionView(result.sessionId);
             }

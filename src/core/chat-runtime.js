@@ -77,6 +77,7 @@ import { buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
 import { buildSubAgentShellRulesPrompt } from './shell-profile.js';
 import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
+import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
 import { captureToInbox, listInbox } from './memory-store.js';
 import {
   shouldAutoCaptureUserPrompt as shouldAutoCaptureUserPromptShared
@@ -576,12 +577,12 @@ function formatLocalDateTimeSlug(date = new Date()) {
 
 const SUB_AGENT_ROLES = ['planner', 'explorer', 'architect', 'advisor', 'coder', 'refactorer', 'reviewer', 'tester', 'debugger', 'writer', 'summarizer', 'codewiki'];
 const EXECUTOR_AGENT_ROLES = SUB_AGENT_ROLES.filter((role) => !['planner', 'codewiki'].includes(role));
-const CODEWIKI_ROLE_TOOLS = ['read', 'search_code', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'add_code_comment', 'update_code_comment'];
-export const CODEWIKI_GENERATE_TOOLS = ['read', 'search_code', 'grep', 'list', 'glob', 'query_project_index', 'read_plan', 'skill', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch'];
+const CODEWIKI_ROLE_TOOLS = ['read', 'search_code', 'grep', 'list', 'glob', 'query_project_index', 'query_project_graph', 'read_plan', 'add_code_comment', 'update_code_comment'];
+export const CODEWIKI_GENERATE_TOOLS = ['read', 'search_code', 'grep', 'list', 'glob', 'query_project_index', 'query_project_graph', 'read_plan', 'skill', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch'];
 export const EXECUTION_MODE_TOOL_POLICY = {
   plan: [
     'read', 'search_code', 'grep', 'ast_grep', 'list', 'glob', 'ast_query', 'read_ast_node',
-    'query_project_index', 'tool_search', 'skill', 'web_fetch', 'web_search',
+    'query_project_index', 'query_project_graph', 'tool_search', 'skill', 'web_fetch', 'web_search',
     'read_plan', 'update_plan', 'update_todos',
     'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run',
     'create_spec', 'create_plan', 'request_user_input'
@@ -5859,8 +5860,8 @@ function renderAutoPlanMarkdown({
   return lines.join('\n');
 }
 
-function parseProjectRequirementsOptions(args = [], { defaultOutputFormat = 'html' } = {}) {
-  let depth = 'standard';
+export function parseProjectRequirementsOptions(args = [], { defaultOutputFormat = 'html' } = {}) {
+  let depth = 'fast';
   let runner = 'agent';
   let outputFormat = defaultOutputFormat === 'md' ? 'md' : 'html';
   const focusArgs = [];
@@ -5873,11 +5874,12 @@ function parseProjectRequirementsOptions(args = [], { defaultOutputFormat = 'htm
       depth = 'fast';
       continue;
     }
+    // Legacy --standard maps to full/deep; UI only exposes fast vs full.
     if (['--standard', '--balanced', '--默认', '--标准'].includes(normalized)) {
-      depth = 'standard';
+      depth = 'deep';
       continue;
     }
-    if (['--deep', '--full', '--thorough', '--深度'].includes(normalized)) {
+    if (['--deep', '--full', '--thorough', '--深度', '--完整'].includes(normalized)) {
       depth = 'deep';
       continue;
     }
@@ -5953,17 +5955,66 @@ function stripFrontmatter(raw = '') {
   return text.slice(end + 5).trim();
 }
 
-async function renderProjectRequirementsSkillPrompt(custom, options, workspaceRoot = process.cwd()) {
-  if (options?.outputFormat !== 'md') {
-    return expandFileMentions(renderCommandPrompt(custom, options.focusArgs), workspaceRoot);
+async function loadBundledProjectRequirementsSkill(name = 'project-requirements') {
+  const normalized = String(name || '').toLowerCase();
+  if (normalized === 'project-requirements-md') {
+    const raw = await fs.readFile(PROJECT_REQUIREMENTS_MD_INSTRUCTIONS, 'utf8');
+    return {
+      name: 'project-requirements-md',
+      metadata: { type: 'skill', description: 'CodeWiki Markdown report' },
+      content: stripFrontmatter(raw),
+      source: 'bundled-skill'
+    };
   }
-  const raw = await fs.readFile(PROJECT_REQUIREMENTS_MD_INSTRUCTIONS, 'utf8');
-  const mdSkill = {
-    name: 'project-requirements-md',
-    metadata: { type: 'skill' },
-    content: stripFrontmatter(raw)
+  return {
+    name: 'project-requirements',
+    metadata: { type: 'skill', description: 'CodeWiki HTML report' },
+    content: [
+      'Generate a CodeWiki project requirements report into the pre-created HTML shell.',
+      'Inspect the repository first, then fill every REQUIREMENTS_* marker section at the primary report path.',
+      'Do not rewrite unrelated shell CSS, JavaScript, navigation, or metadata.',
+      'Cite evidence file paths. Label claims EXTRACTED, INFERRED, or UNKNOWN.',
+      'Honor user args:',
+      '```text',
+      '{{args}}',
+      '```'
+    ].join('\n'),
+    source: 'bundled-skill'
   };
-  return expandFileMentions(renderCommandPrompt(mdSkill, options.focusArgs), workspaceRoot);
+}
+
+export function renderProjectRequirementsDepthContract(depth = 'fast') {
+  if (depth === 'fast') {
+    return [
+      'Depth: fast.',
+      'Cover entry points and the highest-value APIs/commands only.',
+      'Skip exhaustive edge cases, compliance deep-dives, and full data-ownership mapping.',
+      'Keep the report compact: inventory, key flows, top risks, and open questions.',
+      'If the repo is large, stop after the core surface and list gaps explicitly.'
+    ].join('\n');
+  }
+  return [
+    'Depth: full.',
+    'Cover major HTTP/CLI/tool/MCP/queue/SDK entry points as completely as practical.',
+    'Include validation/permissions, data read/write, core user flows, risks, and acceptance criteria where evidence exists.',
+    'Prefer evidence over speculation; mark UNKNOWN rather than inventing.'
+  ].join('\n');
+}
+
+async function renderProjectRequirementsSkillPrompt(custom, options, workspaceRoot = process.cwd()) {
+  if (options?.outputFormat === 'md') {
+    const raw = await fs.readFile(PROJECT_REQUIREMENTS_MD_INSTRUCTIONS, 'utf8');
+    const mdSkill = {
+      name: 'project-requirements-md',
+      metadata: { type: 'skill' },
+      content: stripFrontmatter(raw)
+    };
+    return expandFileMentions(renderCommandPrompt(mdSkill, options.focusArgs), workspaceRoot);
+  }
+  const skill = custom?.content
+    ? custom
+    : await loadBundledProjectRequirementsSkill('project-requirements');
+  return expandFileMentions(renderCommandPrompt(skill, options.focusArgs), workspaceRoot);
 }
 
 function getProjectRequirementsDefaultOutputFormat(custom) {
@@ -6021,6 +6072,7 @@ function buildProjectRequirementsSteps(renderedSkillPrompt, args = [], config = 
       : 'Keep the Markdown document professional, scannable, PR-friendly, and evidence-backed.',
     'Prioritize API/interface-level business requirements. Every major interface should map to business capability, actor, trigger, inputs, outputs, rules, permissions, data reads/writes, errors, acceptance criteria, and evidence.',
     'Use EXTRACTED, INFERRED, and UNKNOWN labels. Preserve source evidence paths.',
+    'Query query_project_graph before broad raw-file exploration. Use graph paths, confidence labels, and evidence as the fact map; verify uncertain or AMBIGUOUS relationships in source.',
     'Do not invent dates; use the report paths above.'
   ].join('\n');
 
@@ -6259,7 +6311,7 @@ async function createProjectRequirementsShell({
   planFile,
   goal,
   steps,
-  depth = 'standard',
+  depth = 'fast',
   outputFormat = 'html',
   config = {}
 }) {
@@ -6268,6 +6320,14 @@ async function createProjectRequirementsShell({
   const absoluteManifestPath = path.resolve(workspaceRoot, manifestPath);
   await fs.mkdir(path.dirname(absoluteReportPath), { recursive: true });
   const now = new Date().toISOString();
+  const initializedGraph = await initializeProjectIndex(workspaceRoot).catch(() => null);
+  const graphMetadata = initializedGraph?.projectRoot
+    ? queryProjectKnowledgeGraph(initializedGraph.projectRoot, {
+        operation: 'overview',
+        depth: 0,
+        token_budget: 250
+      })
+    : null;
   if (outputFormat === 'md') {
     const template = await fs.readFile(PROJECT_REQUIREMENTS_MD_TEMPLATE, 'utf8');
     const markdown = replaceTemplateVariables(template, {
@@ -6302,6 +6362,8 @@ async function createProjectRequirementsShell({
     plan: planFile,
     createdAt: now,
     updatedAt: now,
+    graphVersion: graphMetadata?.graph_version || '',
+    graphBuiltAt: graphMetadata?.built_at || '',
     sections: Object.fromEntries(PROJECT_REQUIREMENTS_SECTION_NAMES.map((name) => [name, 'pending'])),
     steps: steps.map((step, index) => ({
       step: index + 1,
@@ -6351,7 +6413,7 @@ function buildProjectRequirementsTerminalManifestPatch(status = 'completed', ext
   };
 }
 
-async function readProjectRequirementsReportState(reportPath, outputFormat = 'html', workspaceRoot = process.cwd()) {
+export async function readProjectRequirementsReportState(reportPath, outputFormat = 'html', workspaceRoot = process.cwd()) {
   const absoluteReportPath = path.resolve(workspaceRoot, reportPath);
   const text = await fs.readFile(absoluteReportPath, 'utf8');
   const stat = await fs.stat(absoluteReportPath);
@@ -6362,13 +6424,14 @@ async function readProjectRequirementsReportState(reportPath, outputFormat = 'ht
     looksComplete = text.length > 5000
       && !/PROJECT_REQUIREMENTS_MD_TEMPLATE/.test(text)
       && !/<!--\s*Fill with /i.test(text)
-      && !/\|\s*TBD\s*\|\s*TBD\s*\|\s*TBD\s*\|/i.test(text);
+      && !/\|\s*TBD\s*\|\s*TBD\s*\|\s*TBD\s*\|/i.test(text)
+      && !/等待填写/i.test(text);
   } else {
     const filledMarkers = ['REQUIREMENTS_SUMMARY', 'REQUIREMENTS_INTERFACE_INVENTORY', 'REQUIREMENTS_API_CARDS']
       .filter((marker) => {
         const match = text.match(new RegExp(`<!--\\s*${marker}\\s*-->([\\s\\S]*?)<!--\\s*/${marker}\\s*-->`, 'i'));
         const body = String(match?.[1] || '').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').trim();
-        return body.length > 80 && !/待生成|TODO|TBD/i.test(body);
+        return body.length > 80 && !/待生成|等待填写|TODO|TBD/i.test(body);
       }).length;
     looksComplete = filledMarkers >= 2;
   }
@@ -6598,8 +6661,11 @@ async function runProjectRequirementsSingleAgent({
       ? 'Fill or replace only the named REQUIREMENTS_* marker sections in that shell instead of rewriting unrelated shell CSS, JavaScript, navigation, or metadata.'
       : 'Fill every named REQUIREMENTS_* marker section in the Markdown template at the primary report path. Use headings, tables, lists, and evidence paths. Remove template-only comments before final delivery.',
     renderProjectRequirementsSectionContract(options.ignoredSections),
-    'Use one coherent agent pass: inspect the project, build the evidence map, decompose major APIs/interfaces, write the report, and do a final self-check before answering.',
-    'Prefer a complete, evidence-backed report over a rigid sub-agent handoff. If the project is too large, cover the most important entry points first and clearly list gaps.',
+    renderProjectRequirementsDepthContract(options.depth),
+    'Use one coherent agent pass: inspect the project, build the evidence map, decompose APIs/interfaces, write the report, and self-check before answering.',
+    options.depth === 'fast'
+      ? 'Stay inside the fast budget: finish the core surface, then stop with explicit gaps instead of expanding scope.'
+      : 'Prefer a complete, evidence-backed report. If the project is too large, cover the most important entry points first and clearly list gaps.',
     'Do not invent dates; use the report paths above.'
   ].join('\n');
 
@@ -6630,7 +6696,17 @@ async function runProjectRequirementsSingleAgent({
   }
 
   try {
-    const transientSession = codeWikiGenerate ? structuredClone(currentSession) : currentSession;
+    // CodeWiki must not inherit chat transcript: orphan tool_use / compact
+    // history reliably 400s the gateway and leaves the empty shell behind.
+    const transientSession = codeWikiGenerate
+      ? {
+          ...structuredClone(currentSession),
+          messages: [],
+          compact: null,
+          planState: null,
+          specState: null
+        }
+      : currentSession;
     const agentConfig = codeWikiGenerate
       ? {
           ...config,
@@ -6653,16 +6729,28 @@ async function runProjectRequirementsSingleAgent({
       allowedTools: codeWikiGenerate ? CODEWIKI_GENERATE_TOOLS : undefined,
       alwaysAllowTools: codeWikiGenerate ? CODEWIKI_GENERATE_TOOLS : undefined,
       signal,
-      compactedForModel: codeWikiGenerate ? structuredClone(compactedForModel) : compactedForModel,
+      compactedForModel: codeWikiGenerate ? null : compactedForModel,
       onCompactedUpdate: codeWikiGenerate ? null : onCompactedUpdate,
       persistSession: !codeWikiGenerate,
       titleCoordinator,
       workspaceRoot
     });
+    const reportState = await readProjectRequirementsReportState(
+      reportPath,
+      outputFormat,
+      workspaceRoot
+    ).catch(() => ({ looksComplete: false }));
+    const succeeded = !result?.aborted && reportState.looksComplete;
+    const failureReason = result?.aborted
+      ? (String(result?.text || '').trim() || 'Project requirements generation aborted')
+      : 'Report shell was not filled (still showing placeholders)';
     await updateProjectRequirementsManifest(manifestPath, {
-      ...(result?.aborted
-        ? buildProjectRequirementsTerminalManifestPatch('aborted', { failedCount: 1 })
-        : buildProjectRequirementsTerminalManifestPatch('completed'))
+      ...(succeeded
+        ? buildProjectRequirementsTerminalManifestPatch('completed')
+        : buildProjectRequirementsTerminalManifestPatch(
+          result?.aborted ? 'aborted' : 'failed',
+          { failedCount: 1, error: failureReason }
+        ))
     }, workspaceRoot);
     if (onAgentEvent) {
       onAgentEvent({
@@ -6674,22 +6762,26 @@ async function runProjectRequirementsSingleAgent({
         total: 1,
         role: 'coder',
         title: 'Generate project requirements report',
-        status: result?.aborted ? 'aborted' : 'done',
-        summary: 'Project requirements single-agent generation finished'
+        status: succeeded ? 'done' : (result?.aborted ? 'aborted' : 'failed'),
+        summary: succeeded
+          ? 'Project requirements single-agent generation finished'
+          : failureReason
       });
       onAgentEvent({ type: 'skill:end', name: custom.name });
     }
     const text = [
       result?.text || '',
       '',
-      'Project requirements generation completed.',
+      succeeded
+        ? 'Project requirements generation completed.'
+        : `Project requirements generation failed: ${failureReason}`,
       `Plan File: ${planFile}`,
       `Report Path: ${reportPath}`,
       `Manifest: ${manifestPath}`,
       'Runner: single agent',
       `Output Format: ${outputFormat}`
     ].filter(Boolean).join('\n');
-    return { type: 'assistant', text, planFile, reportPath, manifestPath, aborted: !!result?.aborted };
+    return { type: 'assistant', text, planFile, reportPath, manifestPath, aborted: !succeeded };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await updateProjectRequirementsManifest(manifestPath, {
@@ -7418,6 +7510,36 @@ export async function createChatRuntime({
       : '';
     const readOnlyCodeWiki = options?.readOnlyCodeWiki === true;
     const codeWikiGenerate = options?.codeWikiGenerate === true;
+    if (codeWikiGenerate) {
+      const trimmed = inputText.trim();
+      const slash = trimmed.match(/^\/([^\s]+)(?:\s+([\s\S]*))?$/);
+      const argLine = String(slash?.[2] || '').trim();
+      const args = argLine ? argLine.split(/\s+/).filter(Boolean) : [];
+      const prelim = parseProjectRequirementsOptions(args, { defaultOutputFormat: 'html' });
+      const custom = await loadBundledProjectRequirementsSkill(
+        prelim.outputFormat === 'md' ? 'project-requirements-md' : 'project-requirements'
+      );
+      return runProjectRequirementsSingleAgent({
+        custom,
+        parsedInput: {
+          name: custom.name,
+          args,
+          full: `${custom.name}${args.length ? ` ${args.join(' ')}` : ''}`
+        },
+        currentSession,
+        config,
+        model,
+        systemPrompt: activeReplySystemPrompt,
+        onAgentEvent,
+        requestToolApproval: activeRequestToolApproval,
+        signal,
+        compactedForModel,
+        onCompactedUpdate: setCompactedView,
+        titleCoordinator,
+        codeWikiGenerate: true,
+        workspaceRoot: root
+      });
+    }
     const dismissedAlwaysSkills = new Set(
       (Array.isArray(options?.dismissedAlwaysSkills) ? options.dismissedAlwaysSkills : [])
         .map((name) => String(name || '').trim())

@@ -93,7 +93,7 @@ async function resolvePhysicalPath(targetPath) {
   }
 }
 
-function mutationPaths(toolName, args = {}) {
+export function getFileMutationPaths(toolName, args = {}) {
   const name = String(toolName || '').trim();
   if (!FILE_MUTATION_TOOLS.has(name)) return [];
   if (name === 'apply_patch') {
@@ -122,7 +122,7 @@ export async function inspectOutsideWorkspaceMutation({
   toolName = '',
   arguments: args = {}
 } = {}) {
-  const rawPaths = [...new Set(mutationPaths(toolName, args).map((item) => String(item || '').trim()).filter(Boolean))];
+  const rawPaths = [...new Set(getFileMutationPaths(toolName, args).map((item) => String(item || '').trim()).filter(Boolean))];
   if (rawPaths.length === 0) return null;
 
   const lexicalRoot = path.resolve(workspaceRoot);
