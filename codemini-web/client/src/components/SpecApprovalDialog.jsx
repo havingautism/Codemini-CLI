@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { MarkdownEditor } from "@/components/MarkdownEditor.jsx";
 import {
   ReviewFooter,
   ReviewMarkdown,
@@ -19,6 +20,7 @@ export function SpecApprovalDialog({
   disabled = false,
 }) {
   const [editMode, setEditMode] = useState(false);
+  const [goal, setGoal] = useState("");
   const [content, setContent] = useState("");
   const [saving, setSaving] = useState(false);
   const specSignature = spec
@@ -28,6 +30,7 @@ export function SpecApprovalDialog({
   useEffect(() => {
     if (!open) {
       setEditMode(false);
+      setGoal("");
       setContent("");
       setSaving(false);
     }
@@ -36,6 +39,7 @@ export function SpecApprovalDialog({
   useEffect(() => {
     if (!open) return;
     setEditMode(false);
+    setGoal("");
     setContent("");
   }, [open, specSignature]);
 
@@ -47,17 +51,23 @@ export function SpecApprovalDialog({
   const incomplete = spec.complete === false || missingHeadings.length > 0;
 
   const startEdit = () => {
+    setGoal(spec.goal || "");
     setContent(spec.specText || "");
     setEditMode(true);
   };
 
   const cancelEdit = () => {
     setEditMode(false);
+    setGoal("");
     setContent("");
   };
 
   const saveEdit = async () => {
-    const next = { ...spec, specText: content };
+    const next = {
+      ...spec,
+      goal: String(goal || "").trim(),
+      specText: content,
+    };
     setSaving(true);
     try {
       if (onUpdate) await onUpdate(next);
@@ -153,9 +163,19 @@ export function SpecApprovalDialog({
       badgeVariant={incomplete ? "destructive" : "secondary"}
       footer={footer}
     >
-      {spec.goal ? (
+      {(editMode || spec.goal) ? (
         <ReviewSection label={t("planReviewGoal")}>
-          <ReviewMarkdown>{spec.goal}</ReviewMarkdown>
+          {editMode ? (
+            <Textarea
+              value={goal}
+              onChange={(e) => setGoal(e.target.value)}
+              className="min-h-18 text-sm"
+              placeholder={t("planReviewGoal")}
+              autoFocus
+            />
+          ) : (
+            <ReviewMarkdown>{spec.goal}</ReviewMarkdown>
+          )}
         </ReviewSection>
       ) : null}
 
@@ -172,11 +192,12 @@ export function SpecApprovalDialog({
 
       <ReviewSection label={t("specDocumentBody")}>
         {editMode ? (
-          <Textarea
+          <MarkdownEditor
             value={content}
-            onChange={(e) => setContent(e.target.value)}
-            className="min-h-[320px] font-mono text-xs"
-            autoFocus
+            onChange={setContent}
+            height={420}
+            preview="live"
+            placeholder={t("specDocumentBody")}
           />
         ) : (
           <ReviewMarkdown>{spec.specText || ""}</ReviewMarkdown>

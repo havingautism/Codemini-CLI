@@ -175,3 +175,77 @@ export function shouldAutoCaptureUserPrompt(text) {
     value
   );
 }
+
+/**
+ * Classify a user utterance onto the memory decision graph.
+ * Returns { leaf: 'save_memory'|'dream_inbox'|'ignore', scope?, kind?, content? }.
+ */
+export function classifyMemoryRoute(text) {
+  const direct = classifyDirectMemoryPrompt(text);
+  if (direct) return { leaf: 'save_memory', ...direct };
+  if (shouldAutoCaptureUserPrompt(text)) return { leaf: 'dream_inbox' };
+  return { leaf: 'ignore' };
+}
+
+/**
+ * Decision graph for LLM + maintainers: when to save_memory vs dream inbox vs ignore.
+ * Mirrors classifyDirectMemoryPrompt / shouldAutoCaptureUserPrompt / dream keep-discard.
+ */
+export function buildMemoryDecisionGraphBlock() {
+  return [
+    'Memory / Dream route graph (pick ONE leaf; never store secrets):',
+    '',
+    '  signal / fact',
+    '     │',
+    '     ├─ secret, token, password, credential? ──► ignore (never store)',
+    '     │',
+    '     ├─ one-off / "这次|本次|for now" / transient error / brainstorm only?',
+    '     │     yes ──► ignore',
+    '     │',
+    '     ├─ lasting preference, "请记住|remember that|from now on", or reusable lesson?',
+    '     │     yes ──► save_memory NOW (durable; available next turn)',
+    '     │              ├─ taste / habit / interest ──► scope=user kind=preference',
+    '     │              ├─ this-repo rule / workflow ──► scope=project kind=convention',
+    '     │              ├─ cross-project env / tool fact ──► scope=global kind=convention|lesson',
+    '     │              └─ reusable correction / root cause ──► kind=lesson (+ fitting scope)',
+    '     │',
+    '     ├─ soft task signal (implement/fix/review) without explicit remember?',
+    '     │     yes ──► leave for Dream inbox / session-review (nominate only; NOT durable yet)',
+    '     │',
+    '     └─ otherwise ──► ignore',
+    '',
+    'Dream path (inbox → durable):',
+    '  inbox item ──► grounded durable insight?',
+    '     no  ──► discard (raw tool noise, exit 127, policy blocks, proposed/brainstormed)',
+    '     yes ──► keep → promote into user|project|global with preference|convention|lesson|note',
+    '',
+    'Do not call dream_consolidate mid-task unless the user asks for memory maintenance.',
+    'Do not duplicate an equivalent fact already listed under Persistent Memory.'
+  ].join('\n');
+}
+
+/** Dream-only subgraph for inbox evaluators / session reviewers (no save_memory leaf). */
+export function buildDreamPromotionGraphBlock() {
+  return [
+    'Dream promotion graph (inbox → durable only; never invent save_memory here):',
+    '  inbox / nomination',
+    '     │',
+    '     ├─ secret / one-off / transient / brainstorm / unverified? ──► discard',
+    '     ├─ raw tool noise (exit 127, command not found, policy block)? ──► discard',
+    '     ├─ session-review with durable_score<5 or unaccepted? ──► discard',
+    '     └─ grounded reusable insight ──► keep → user|project|global + preference|convention|lesson|note'
+  ].join('\n');
+}
+
+/** Turn hint when classifyMemoryRoute hits save_memory; empty otherwise. */
+export function buildMemoryRouteHintBlock(route = null) {
+  if (!route || route.leaf !== 'save_memory') return '';
+  const scope = normalizeMemoryScope(route.scope, { fallback: 'user' });
+  const kind = normalizeMemoryKind(route.kind, 'note');
+  return [
+    'Memory route hint for this turn (heuristic; override if the utterance is not durable):',
+    `- Suggested leaf: save_memory(scope="${scope}", kind="${kind}").`,
+    '- Call save_memory once with a concise durable statement; do not wait for Dream.',
+    '- Skip if an equivalent fact is already present in Persistent Memory.'
+  ].join('\n');
+}

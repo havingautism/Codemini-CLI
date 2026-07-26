@@ -64,6 +64,27 @@ class StreamdownErrorBoundary extends Component {
   }
 }
 
+function PersistentMarkdownTable({
+  children,
+  className,
+  node: _node,
+  ...props
+}) {
+  return (
+    <div className="codemini-markdown-table-strip my-4 max-w-full">
+      <HorizontalScrollStrip contentClassName="block min-w-full gap-0 px-0">
+        <table
+          {...props}
+          className={cn('w-max min-w-full border-collapse', className)}
+          data-streamdown="table"
+        >
+          {children}
+        </table>
+      </HorizontalScrollStrip>
+    </div>
+  );
+}
+
 function MarkdownStreamdown({
   content,
   mode,
@@ -86,6 +107,7 @@ function MarkdownStreamdown({
           />
         );
       },
+      table: PersistentMarkdownTable,
     }),
     [inlineImageStartIndex, useGallery],
   );

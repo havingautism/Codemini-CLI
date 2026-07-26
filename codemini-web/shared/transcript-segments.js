@@ -317,7 +317,7 @@ function isCreatePlanToolCard(card) {
   const name = String(card?.name || "")
     .toLowerCase()
     .replace(/\(.*$/, "");
-  return name === "create_plan" || Boolean(card?.planRun);
+  return name === "create_plan" || name === "run_subagent" || Boolean(card?.planRun);
 }
 
 /**

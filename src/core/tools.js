@@ -3684,6 +3684,7 @@ export function getBuiltinTools({
   onPlanStateUpdate,
   onCreatePlan,
   onCreateSpec,
+  onRunSubAgent,
   requestUserInput,
   afterManagedFileBackup,
   beforeApplyPatchMutation,
@@ -4597,89 +4598,80 @@ export function getBuiltinTools({
     : [];
 
   const workflowToolDefinitions = [];
+  if (typeof onRunSubAgent === "function") {
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "run_subagent",
+        description:
+          "Delegate one isolated chunk to a clean-context subagent. You write the full prompt and optional handoff context. Invent a short human name for the worker (e.g. David, Mira). For a dependency DAG, assign task_id and let later calls use depends_on; upstream handoffs are injected automatically. Dependencies must reference earlier calls in the same response. Capability is controlled by tools (default allows edits; pass a read-only list for explore/review). Independent same-response calls run in parallel only when every call has an explicit read-only tools list; default or mutating workers run sequentially because they share one worktree. Subagents cannot call run_subagent/create_plan/create_spec. Do not use for simple localized edits.",
+        parameters: {
+          type: "object",
+          properties: {
+            prompt: {
+              type: "string",
+              description:
+                "Full task prompt for the subagent: goal, targets, success criteria, out-of-scope, and verification intent.",
+            },
+            name: {
+              type: "string",
+              description:
+                "Short invented persona name for this worker (e.g. David, Mira, Kai). Shown on the Subagent card. Do not use preset role enums.",
+            },
+            role: {
+              type: "string",
+              description:
+                "Deprecated alias of name. Prefer name. Known legacy role strings still map to their tool policies if used alone.",
+            },
+            context: {
+              type: "string",
+              description:
+                "Optional durable handoff packet (prior findings, paths, decisions). Keep it short and actionable.",
+            },
+            goal: {
+              type: "string",
+              description: "Optional short label for UI / logging.",
+            },
+            task_id: {
+              type: "string",
+              description:
+                "Optional stable ID for this task within the current response. Required when a later subagent should depend on this result. Use letters, numbers, underscores, or hyphens.",
+            },
+            depends_on: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "Optional task_id list from earlier run_subagent calls in the same response. This worker waits for all of them and automatically receives their successful handoffs.",
+            },
+            tools: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "Optional tool allow-list. Defaults to the coding edit baseline. Use a read-only subset for explore/review. run_subagent/create_plan/create_spec are always forbidden.",
+            },
+          },
+          required: ["prompt"],
+        },
+      },
+    });
+  }
+  // Legacy create_plan / create_spec remain available only when callers still pass handlers
+  // (e.g. older approval flows). Coding mode prefers onRunSubAgent instead.
   if (typeof onCreatePlan === "function") {
     workflowToolDefinitions.push({
       type: "function",
       function: {
         name: "create_plan",
         description:
-          "Create and execute a structured implementation plan in coding mode. Use when the goal, scope, and constraints are already clear enough to break work into sub-agent execution steps. Do not call for simple localized changes; implement those directly with edit/write/apply_patch/delete instead. Do not call if important details are still unknown or if a design spec is still needed. Plan tasks should be independently testable units with clear consumes/produces handoffs, concrete target files/modules, success criteria, and verification. Fold setup, fixtures, and docs into the task whose deliverable needs them instead of creating template-only steps. Assign roles correctly: explorer/architect/advisor are read-only; coder/refactorer/writer implement changes; never assign explorer to implement or edit code.",
+          "Deprecated. Prefer run_subagent (or implement directly). Kept only for legacy callers.",
         parameters: {
           type: "object",
           properties: {
-            goal: {
-              type: "string",
-              description: "Clear, scoped goal for the plan",
-            },
-            readiness: {
-              type: "string",
-              enum: ["ready"],
-              description:
-                'Must be "ready" when requirements are sufficiently clear',
-            },
-            assumptions: {
-              type: "array",
-              items: { type: "string" },
-              description:
-                "Explicit assumptions made because details were inferred",
-            },
-            context_summary: {
-              type: "string",
-              description: "Brief summary of what was learned from exploration",
-            },
-            steps: {
-              type: "array",
-              description:
-                "Optional explicit sub-agent execution steps. Provide this when you can assign concrete roles and tasks directly.",
-              items: {
-                type: "object",
-                properties: {
-                  title: {
-                    type: "string",
-                    description: "Concrete step title tied to the goal",
-                  },
-                  role: {
-                    type: "string",
-                    description:
-                      "explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer, or summarizer",
-                  },
-                  task: {
-                    type: "string",
-                    description:
-                      "Executable handoff task with target files/modules, expected result, and scope boundaries",
-                  },
-                  consumes: {
-                    type: "string",
-                    description:
-                      "Inputs from earlier steps or existing code this step relies on, such as APIs, files, decisions, or verification evidence",
-                  },
-                  produces: {
-                    type: "string",
-                    description:
-                      "Outputs later steps depend on, such as changed files, APIs, behavior, documentation, or verification evidence",
-                  },
-                  target_files: {
-                    type: "array",
-                    items: { type: "string" },
-                    description: "Known target files/modules for this step",
-                  },
-                  success_criteria: {
-                    type: "string",
-                    description: "Observable completion criteria for this step",
-                  },
-                  verification: {
-                    type: "string",
-                    description:
-                      "How this step or a later tester should verify the outcome",
-                  },
-                  handoff: {
-                    type: "string",
-                    description: "What this step must hand to the next step",
-                  },
-                },
-                required: ["title", "role", "task"],
-              },
-            },
+            goal: { type: "string" },
+            readiness: { type: "string", enum: ["ready"] },
+            assumptions: { type: "array", items: { type: "string" } },
+            context_summary: { type: "string" },
+            steps: { type: "array", items: { type: "object" } },
           },
           required: ["goal", "readiness"],
         },
@@ -4735,30 +4727,14 @@ export function getBuiltinTools({
       function: {
         name: "create_spec",
         description:
-          "Create an engineering spec document for user approval. Use when scope, architecture, UX, or constraints still need alignment before implementation. Prefer this over create_plan for large, novel, or cross-cutting work. If details are too unknown to write a reviewable spec, ask one focused clarifying question instead. If trade-offs, constraints, or open risks can be stated clearly, include them in the spec for approval. Populate the structured section fields directly from explored evidence; do not put section content into assumptions.",
+          "Deprecated. Prefer writing markdown under .codemini/workspace/specs/ yourself, then implement. Kept only for legacy callers.",
         parameters: {
           type: "object",
           properties: {
-            topic: {
-              type: "string",
-              description: "Clear, scoped feature or change to specify",
-            },
-            readiness: {
-              type: "string",
-              enum: ["ready"],
-              description:
-                'Must be "ready" when requirements are sufficiently clear',
-            },
-            assumptions: {
-              type: "array",
-              items: { type: "string" },
-              description:
-                "Only explicit assumptions or inferred unknowns. Do not place explored requirements, architecture, or validation details here.",
-            },
-            context_summary: {
-              type: "string",
-              description: "Brief summary of what was learned from exploration",
-            },
+            topic: { type: "string" },
+            readiness: { type: "string", enum: ["ready"] },
+            assumptions: { type: "array", items: { type: "string" } },
+            context_summary: { type: "string" },
             ...specSectionProperties,
           },
           required: ["topic", "readiness"],
@@ -5021,7 +4997,7 @@ export function getBuiltinTools({
       function: {
         name: "save_memory",
         description:
-          `Save a durable fact for future sessions. Use for lasting user preferences/interests, project conventions, or reusable lessons. Do NOT store chatter, one-offs, or secrets. Available immediately after save. Write content and summary in ${replyLanguageName}; keep paths, commands, and identifiers exact.`,
+          `Save a durable fact for future sessions. Route leaf: save_memory — lasting preferences, conventions, or reusable lessons only. Do NOT store chatter, one-offs, this-task constraints, brainstorms, or secrets; leave soft task signals for Dream inbox/session-review. Available immediately after save. Write content and summary in ${replyLanguageName}; keep paths, commands, and identifiers exact.`,
         parameters: {
           type: "object",
           properties: {
@@ -5103,7 +5079,7 @@ export function getBuiltinTools({
       function: {
         name: "dream_consolidate",
         description:
-          "Run a dream loop over inbox entries and memory buckets. Deduplicates inbox items, promotes durable insights into user/global/project memory (preference|convention|lesson|note), then LLM-maintains changed buckets. Writes an audit report. Use during off-hours or explicit maintenance.",
+          "Run Dream consolidation over inbox entries and memory buckets. Route leaf: dream promotion — evaluate inbox (keep/discard), promote durable insights into user/global/project memory (preference|convention|lesson|note), then LLM-maintain changed buckets. Writes an audit report. Use during off-hours or when the user asks for memory maintenance; do not call mid-task to replace save_memory.",
         parameters: {
           type: "object",
           properties: {
@@ -6191,7 +6167,8 @@ export function getBuiltinTools({
       if (typeof onCreatePlan !== "function") {
         return {
           ok: false,
-          error: "create_plan is not available in the current mode.",
+          error:
+            "create_plan is retired. Use run_subagent for isolated chunks, or implement directly. For durable specs, write markdown under .codemini/workspace/specs/.",
         };
       }
       const readiness = String(args?.readiness || "").toLowerCase();
@@ -6212,6 +6189,30 @@ export function getBuiltinTools({
         assumptions,
         contextSummary: String(args?.context_summary || "").trim(),
         steps: Array.isArray(args?.steps) ? args.steps : [],
+      });
+    },
+    run_subagent: async (args = {}, ctx = {}) => {
+      if (typeof onRunSubAgent !== "function") {
+        return {
+          ok: false,
+          error: "run_subagent is not available in the current mode.",
+        };
+      }
+      const prompt = String(args?.prompt || "").trim();
+      if (!prompt) {
+        return { ok: false, error: "prompt is required" };
+      }
+      return onRunSubAgent({
+        prompt,
+        name: String(args?.name || "").trim(),
+        role: String(args?.role || "").trim(),
+        context: String(args?.context || "").trim(),
+        goal: String(args?.goal || "").trim(),
+        toolCallId: String(ctx?.toolCallId || args?.tool_call_id || "").trim(),
+        orchestrationId: String(ctx?.orchestrationId || "").trim(),
+        taskId: String(args?.task_id || "").trim(),
+        dependsOn: Array.isArray(args?.depends_on) ? args.depends_on : [],
+        tools: Array.isArray(args?.tools) ? args.tools : null,
       });
     },
     create_spec: async (args = {}) => {
@@ -6729,6 +6730,14 @@ export function getBuiltinTools({
       if (result.error) return String(result.error);
       if (result.message) return String(result.message);
       if (result.filePath) return `Plan draft created: ${result.filePath}`;
+      return JSON.stringify(result);
+    },
+
+    run_subagent(result) {
+      if (!result || typeof result !== "object") return String(result);
+      if (result.error) return String(result.error);
+      if (result.message) return String(result.message);
+      if (result.text) return String(result.text);
       return JSON.stringify(result);
     },
 

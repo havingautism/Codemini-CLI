@@ -17,17 +17,57 @@ function groupStartedAt(group) {
   return parseTimestamp(group?.startedAt);
 }
 
+function isCreatePlanCard(card) {
+  const name = String(card?.name || "")
+    .toLowerCase()
+    .replace(/\(.*$/, "");
+  return name === "create_plan" || name === "run_subagent" || Boolean(card?.planRun);
+}
+
+/**
+ * Pull create_plan cards out of a tools/process group so they never stay inside a fold.
+ * Returns { planCards, rest } where rest is null when the group is empty after extraction.
+ */
+export function extractCreatePlanFromGroup(group) {
+  if (!group || typeof group !== "object") {
+    return { planCards: [], rest: null };
+  }
+
+  if (group.type === "tools") {
+    const cards = Array.isArray(group.cards) ? group.cards : [];
+    const planCards = cards.filter(isCreatePlanCard);
+    const otherCards = cards.filter((card) => !isCreatePlanCard(card));
+    return {
+      planCards,
+      rest: otherCards.length ? { ...group, cards: otherCards } : null,
+    };
+  }
+
+  if (group.type === "process") {
+    const planCards = [];
+    const restGroups = [];
+    for (const inner of Array.isArray(group.groups) ? group.groups : []) {
+      const extracted = extractCreatePlanFromGroup(inner);
+      planCards.push(...extracted.planCards);
+      if (extracted.rest) restGroups.push(extracted.rest);
+    }
+    return {
+      planCards,
+      rest: restGroups.length ? { ...group, groups: restGroups } : null,
+    };
+  }
+
+  return { planCards: [], rest: group };
+}
+
 function isCreatePlanGroup(group) {
-  return (
-    group?.type === "tools" &&
-    Array.isArray(group.cards) &&
-    group.cards.some((card) => {
-      const name = String(card?.name || "")
-        .toLowerCase()
-        .replace(/\(.*$/, "");
-      return name === "create_plan" || Boolean(card?.planRun);
-    })
-  );
+  if (group?.type === "tools") {
+    return (group.cards || []).some(isCreatePlanCard);
+  }
+  if (group?.type === "process") {
+    return (group.groups || []).some((inner) => extractCreatePlanFromGroup(inner).planCards.length > 0);
+  }
+  return false;
 }
 
 /** Fold process groups; keep create_plan cards in chronological order before the final answer. */
@@ -56,27 +96,17 @@ export function layoutAnswerProcessWithPlans(groups = [], fallbackStartedAt = nu
     pendingProcess = [];
   };
 
+  const pushPlanCards = (planCards) => {
+    if (!planCards.length) return;
+    flushProcess();
+    items.push({ type: "group", group: { type: "tools", cards: planCards } });
+  };
+
   for (const group of beforeAnswer) {
     if (isCreatePlanGroup(group)) {
-      const planCards = (group.cards || []).filter((card) => {
-        const name = String(card?.name || "")
-          .toLowerCase()
-          .replace(/\(.*$/, "");
-        return name === "create_plan" || Boolean(card?.planRun);
-      });
-      const otherCards = (group.cards || []).filter((card) => {
-        const name = String(card?.name || "")
-          .toLowerCase()
-          .replace(/\(.*$/, "");
-        return !(name === "create_plan" || Boolean(card?.planRun));
-      });
-      if (otherCards.length) {
-        pendingProcess.push({ ...group, cards: otherCards });
-      }
-      flushProcess();
-      if (planCards.length) {
-        items.push({ type: "group", group: { type: "tools", cards: planCards } });
-      }
+      const { planCards, rest } = extractCreatePlanFromGroup(group);
+      if (rest) pendingProcess.push(rest);
+      pushPlanCards(planCards);
       continue;
     }
     pendingProcess.push(group);

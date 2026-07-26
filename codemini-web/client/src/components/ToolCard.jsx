@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import {
   Archive,
+  ArrowSquareOut,
   CaretDown,
   CaretRight,
   FileText,
   Folder,
+  FolderOpen,
   Globe,
   ListChecks,
   MagnifyingGlass,
@@ -13,8 +15,9 @@ import {
   Trash,
   Wrench,
 } from "@phosphor-icons/react";
-import { LinearStatusDot } from "@/components/ui/spinner";
+import { LinearRing, LinearStatusDot } from "@/components/ui/spinner";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
+import { openWorkspaceFile } from "@/hooks/use-api.js";
 import { cn } from "@/lib/utils";
 import {
   extractToolName,
@@ -31,6 +34,7 @@ const TOOL_ICONS = {
   write: PencilLine,
   apply_patch: PencilLine,
   create_plan: ListChecks,
+  run_subagent: ListChecks,
   create_spec: FileText,
   delete: Trash,
   run: Terminal,
@@ -231,7 +235,7 @@ const STATUS_STYLES = {
   blocked: "bg-[var(--accent-orange)]",
 };
 const TOOL_ROW_CLASS =
-  "msg-process-row flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-[13px] hover:bg-[var(--bg-hover)]";
+  "msg-process-row flex min-h-10 select-none items-center gap-1 rounded-md px-1.5 py-0 text-[13px] hover:bg-[var(--bg-hover)]";
 const TOOL_CHEVRON_CLASS = "size-[14px] shrink-0 text-(--text-process-detail)";
 const TOOL_ICON_CLASS =
   "flex size-[18px] shrink-0 items-center justify-center rounded text-(--text-process-detail)";
@@ -265,6 +269,8 @@ function FilePathArgument({ path, wrapped = false }) {
 
 export function ToolCard({ card }) {
   const [open, setOpen] = useState(false);
+  const [fileAction, setFileAction] = useState("");
+  const [fileActionError, setFileActionError] = useState("");
   const toolName = extractToolName(card.name);
   const Icon = TOOL_ICONS[toolName] || TOOL_ICONS.default;
   const fileMeta = getFileToolMeta(
@@ -284,6 +290,29 @@ export function ToolCard({ card }) {
   const shouldRenderFileArg =
     Boolean(fileMeta?.path) ||
     (wrapArg && FILE_PATH_ARG_TOOLS.has(toolName) && Boolean(toolArg));
+  const filePath = String(fileMeta?.path || (shouldRenderFileArg ? toolArg : "")).trim();
+  const canOpenFile =
+    Boolean(filePath) &&
+    card.status !== "running" &&
+    card.status !== "blocked" &&
+    toolName !== "delete";
+
+  const handleFileAction = async (event, action) => {
+    event.stopPropagation();
+    if (!canOpenFile || fileAction) return;
+    setFileActionError("");
+    setFileAction(action);
+    try {
+      const result = await openWorkspaceFile(filePath, action);
+      if (result?.error || result?.ok === false) {
+        throw new Error(result?.message || t("openFileFailed"));
+      }
+    } catch (error) {
+      setFileActionError(String(error?.message || t("openFileFailed")));
+    } finally {
+      setFileAction("");
+    }
+  };
 
   const sections = [];
   if (card.arguments != null && card.arguments !== "")
@@ -303,47 +332,90 @@ export function ToolCard({ card }) {
           "after:border-[color:color-mix(in_srgb,var(--accent-orange)_32%,transparent)]",
       )}
     >
-      <div className={TOOL_ROW_CLASS} onClick={() => setOpen(!open)}>
-        {open ? (
-          <CaretDown size={14} className={TOOL_CHEVRON_CLASS} />
-        ) : (
-          <CaretRight size={14} className={TOOL_CHEVRON_CLASS} />
-        )}
-        <span
-          className={toolName === "run" ? RUN_TOOL_ICON_CLASS : TOOL_ICON_CLASS}
+      <div className={TOOL_ROW_CLASS}>
+        <button
+          type="button"
+          className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 text-left focus-visible:relative focus-visible:z-10"
+          onClick={() => setOpen(!open)}
+          aria-expanded={open}
         >
-          <Icon size={toolName === "run" ? 13 : 14} />
-        </span>
-        <span className="flex min-w-0 flex-1 items-center overflow-hidden whitespace-nowrap leading-[18px]">
-          <span className="shrink-0">{toolLabel}</span>
-          {toolArg ? (
-            shouldRenderFileArg ? (
-              <FilePathArgument
-                path={fileMeta?.path || toolArg}
-                wrapped={wrapArg || Boolean(fileMeta?.path)}
-              />
-            ) : wrapArg ? (
-              <span className="msg-process-meta__detail ml-1 flex min-w-0 items-center overflow-hidden text-ellipsis font-mono text-xs font-normal leading-[18px]">
-                ({toolArg})
-              </span>
-            ) : null
-          ) : null}
-        </span>
-        {fileMeta?.added > 0 && (
-          <span className="font-mono text-xs text-(--accent-green)">
-            +{fileMeta.added}
+          {open ? (
+            <CaretDown size={14} className={TOOL_CHEVRON_CLASS} />
+          ) : (
+            <CaretRight size={14} className={TOOL_CHEVRON_CLASS} />
+          )}
+          <span
+            className={toolName === "run" ? RUN_TOOL_ICON_CLASS : TOOL_ICON_CLASS}
+          >
+            <Icon size={toolName === "run" ? 13 : 14} />
           </span>
-        )}
-        {fileMeta?.removed > 0 && (
-          <span className="font-mono text-xs text-(--accent-red)">
-            -{fileMeta.removed}
+          <span className="flex min-w-0 flex-1 items-center overflow-hidden whitespace-nowrap leading-[18px]">
+            <span className="shrink-0">{toolLabel}</span>
+            {toolArg ? (
+              shouldRenderFileArg ? (
+                <FilePathArgument
+                  path={fileMeta?.path || toolArg}
+                  wrapped={wrapArg || Boolean(fileMeta?.path)}
+                />
+              ) : wrapArg ? (
+                <span className="msg-process-meta__detail ml-1 block min-w-0 flex-1 truncate font-mono text-xs font-normal leading-[18px]">
+                  ({toolArg})
+                </span>
+              ) : null
+            ) : null}
           </span>
-        )}
-        {fileMeta?.backupPath && (
-          <span className="inline-flex items-center gap-1 rounded bg-(--accent-blue-bg) px-1.5 py-0.5 text-[10px] font-medium text-(--accent-blue)">
-            <Archive size={11} />
-            {fileMeta.backupReused ? t("backupReusedShort") : t("backupShort")}
-          </span>
+          {fileMeta?.added > 0 && (
+            <span className="font-mono text-xs text-(--accent-green)">
+              +{fileMeta.added}
+            </span>
+          )}
+          {fileMeta?.removed > 0 && (
+            <span className="font-mono text-xs text-(--accent-red)">
+              -{fileMeta.removed}
+            </span>
+          )}
+          {fileMeta?.backupPath && (
+            <span className="inline-flex items-center gap-1 rounded bg-(--accent-blue-bg) px-1.5 py-0.5 text-[10px] font-medium text-(--accent-blue)">
+              <Archive size={11} />
+              {fileMeta.backupReused ? t("backupReusedShort") : t("backupShort")}
+            </span>
+          )}
+        </button>
+        {canOpenFile && (
+          <div
+            className="mr-1 flex h-8 shrink-0 items-center gap-0.5"
+            role="group"
+            aria-label={`${t("openFile")} / ${t("revealFile")}: ${basename(filePath)}`}
+          >
+            <button
+              type="button"
+              className="flex size-8 items-center justify-center rounded-lg text-(--text-muted) opacity-80 transition-[background-color,color,opacity,transform] duration-100 hover:bg-(--bg-tertiary) hover:text-(--accent-blue) hover:opacity-100 active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent-blue) disabled:cursor-wait disabled:opacity-40 motion-reduce:transform-none motion-reduce:transition-none"
+              onClick={(event) => handleFileAction(event, "open")}
+              aria-label={`${t("openFile")}: ${basename(filePath)}`}
+              title={`${t("openFile")}: ${filePath}`}
+              disabled={Boolean(fileAction)}
+            >
+              {fileAction === "open" ? (
+                <LinearRing size="sm" />
+              ) : (
+                <ArrowSquareOut size={15} weight="bold" aria-hidden="true" />
+              )}
+            </button>
+            <button
+              type="button"
+              className="flex size-8 items-center justify-center rounded-lg text-(--text-muted) opacity-80 transition-[background-color,color,opacity,transform] duration-100 hover:bg-(--bg-tertiary) hover:text-(--accent-blue) hover:opacity-100 active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent-blue) disabled:cursor-wait disabled:opacity-40 motion-reduce:transform-none motion-reduce:transition-none"
+              onClick={(event) => handleFileAction(event, "reveal")}
+              aria-label={`${t("revealFile")}: ${basename(filePath)}`}
+              title={`${t("revealFile")}: ${filePath}`}
+              disabled={Boolean(fileAction)}
+            >
+              {fileAction === "reveal" ? (
+                <LinearRing size="sm" />
+              ) : (
+                <FolderOpen size={15} weight="bold" aria-hidden="true" />
+              )}
+            </button>
+          </div>
         )}
         {card.status === "running" ? (
           <LinearStatusDot className="shrink-0" />
@@ -356,6 +428,14 @@ export function ToolCard({ card }) {
           />
         )}
       </div>
+      {fileActionError && (
+        <div
+          role="alert"
+          className="mx-3 mb-2 rounded-md bg-(--accent-red-bg) px-2.5 py-2 text-xs text-(--accent-red)"
+        >
+          {fileActionError}
+        </div>
+      )}
 
       {open && (
         <div className="pb-2 pl-8 pr-2">

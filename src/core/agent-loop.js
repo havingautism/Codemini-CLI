@@ -116,6 +116,7 @@ const LARGE_PAYLOAD_TOOLS = new Set([
   'apply_patch',
   'run',
   'create_plan',
+  'run_subagent',
   'update_plan',
   'create_spec',
   'update_todos',
@@ -301,8 +302,21 @@ const PARALLEL_SAFE_TOOLS = new Set([
   'list_background_tasks', 'get_background_task',
   'read_plan',
   'query_project_index', 'tool_search',
-  'skill'
+  'skill',
 ]);
+
+const PARALLEL_SAFE_SUBAGENT_TOOLS = new Set([
+  'read', 'search_code', 'grep', 'ast_grep', 'glob', 'list',
+  'ast_query', 'read_ast_node', 'web_fetch', 'web_search',
+  'query_project_index', 'query_project_graph', 'tool_search',
+]);
+
+function isParallelSafeToolCall(toolName, args = {}) {
+  if (toolName !== 'run_subagent') return PARALLEL_SAFE_TOOLS.has(toolName);
+  return Array.isArray(args?.tools) && args.tools.every((name) =>
+    PARALLEL_SAFE_SUBAGENT_TOOLS.has(String(name || '').trim().toLowerCase())
+  );
+}
 
 // ─── Auto-capture tool errors to dream loop inbox ────────────────────
 
@@ -979,7 +993,7 @@ export async function runAgentLoop({
           || looksLikeTruncatedJson(args._parseError, args._raw);
       }
       const displayName = formatDisplayName(toolName, args);
-      const isParallelSafe = PARALLEL_SAFE_TOOLS.has(toolName);
+      const isParallelSafe = isParallelSafeToolCall(toolName, args);
       return { call, args, toolName, displayName, isParallelSafe };
     });
 
@@ -1364,7 +1378,11 @@ export async function runAgentLoop({
 
       let toolResult;
       try {
-        toolResult = await handler(effectiveArgs, { rawArguments: call.arguments });
+        toolResult = await handler(effectiveArgs, {
+          rawArguments: call.arguments,
+          toolCallId: call.id,
+          orchestrationId: step,
+        });
       } catch (error) {
         const durationMs = Date.now() - startedAt;
         const message = error instanceof Error ? error.message : String(error);

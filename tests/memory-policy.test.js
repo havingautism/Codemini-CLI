@@ -5,11 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   classifyDirectMemoryPrompt,
+  classifyMemoryRoute,
   chooseMemoryLifecycle,
   inferMemoryScope,
   normalizeMemoryKind,
   normalizeMemoryScope,
-  shouldAutoCaptureUserPrompt
+  shouldAutoCaptureUserPrompt,
+  buildMemoryDecisionGraphBlock,
+  buildDreamPromotionGraphBlock,
+  buildMemoryRouteHintBlock
 } from '../src/core/memory-policy.js';
 import { rememberMemory, listMemories, captureToInbox, listInbox } from '../src/core/memory-store.js';
 import { buildMemorySnapshot } from '../src/core/memory-prompt.js';
@@ -100,6 +104,29 @@ test('classifyDirectMemoryPrompt recognizes global and project conventions indep
 test('shouldAutoCaptureUserPrompt skips direct preference utterances', () => {
   assert.equal(shouldAutoCaptureUserPrompt('我喜欢用中文交流'), false);
   assert.equal(shouldAutoCaptureUserPrompt('请帮我修复登录页的空指针问题'), true);
+});
+
+test('memory decision graph names save_memory and dream leaves', () => {
+  const graph = buildMemoryDecisionGraphBlock();
+  assert.match(graph, /save_memory/);
+  assert.match(graph, /Dream/);
+  assert.match(graph, /never store/);
+  assert.match(buildDreamPromotionGraphBlock(), /keep →/);
+});
+
+test('classifyMemoryRoute maps remember / task / chatter onto leaves', () => {
+  assert.equal(classifyMemoryRoute('请记住本项目测试用 npm test').leaf, 'save_memory');
+  assert.equal(classifyMemoryRoute('请帮我修复登录页的空指针问题').leaf, 'dream_inbox');
+  assert.equal(classifyMemoryRoute('今天天气怎么样').leaf, 'ignore');
+});
+
+test('memory route hint only fires for save_memory leaf', () => {
+  assert.match(
+    buildMemoryRouteHintBlock(classifyMemoryRoute('我喜欢深色主题')),
+    /save_memory\(scope="user", kind="preference"\)/
+  );
+  assert.equal(buildMemoryRouteHintBlock(classifyMemoryRoute('请帮我修复登录页')), '');
+  assert.equal(buildMemoryRouteHintBlock(classifyMemoryRoute('hello')), '');
 });
 
 test('rememberMemory keeps pinned items when trimming budget', async () => {

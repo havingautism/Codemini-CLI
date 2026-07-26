@@ -474,7 +474,10 @@ export class RuntimeBridge {
     this.#hydrateUiTranscriptFromDiskSync();
   }
 
-  #settleCreatePlanToolCard(messageId = this.#uiPlanParentMsgId) {
+  #settleCreatePlanToolCard(
+    messageId = this.#uiPlanParentMsgId,
+    reason = 'aborted'
+  ) {
     const targetId =
       messageId ||
       [...this.#uiMessages]
@@ -484,13 +487,15 @@ export class RuntimeBridge {
             (segment) =>
               segment?.type === 'tools' &&
               (Array.isArray(segment.cards) ? segment.cards : []).some(
-                (card) => card?.name === 'create_plan' && card.status === 'running',
+                (card) =>
+                  (card?.name === 'create_plan' || card?.name === 'run_subagent') &&
+                  card.status === 'running',
               ),
           ),
         )?.id;
     if (!targetId) return;
     this.#updateUiMessage(targetId, (message) =>
-      settleRunningCreatePlanCards(message, { reason: 'aborted' })
+      settleRunningCreatePlanCards(message, { reason })
     );
     this.#uiPlanParentMsgId = null;
   }
@@ -504,7 +509,9 @@ export class RuntimeBridge {
           (segment) =>
             segment?.type === 'tools' &&
             (Array.isArray(segment.cards) ? segment.cards : []).some(
-              (card) => card?.name === 'create_plan' && card.status === 'running',
+              (card) =>
+                (card?.name === 'create_plan' || card?.name === 'run_subagent') &&
+                card.status === 'running',
             ),
         ),
       )?.id || null;
@@ -648,12 +655,12 @@ export class RuntimeBridge {
       case 'tool:error':
       case 'tool:blocked': {
         const toolName = String(event.name || event.toolName || '').trim();
-        if (event.type === 'tool:start' && toolName === 'create_plan' && this.#uiActiveMsgId) {
+        if (event.type === 'tool:start' && (toolName === 'create_plan' || toolName === 'run_subagent') && this.#uiActiveMsgId) {
           this.#uiPlanParentMsgId = this.#uiActiveMsgId;
         }
         const createPlanTargetId =
           ['tool:end', 'tool:result', 'tool:error', 'tool:blocked'].includes(event.type) &&
-          toolName === 'create_plan'
+          (toolName === 'create_plan' || toolName === 'run_subagent')
             ? this.#resolveCreatePlanToolTargetId()
             : null;
         const targetId = createPlanTargetId || this.#uiActiveMsgId;
@@ -661,14 +668,15 @@ export class RuntimeBridge {
 
         // Nest plan-owned streams into the create_plan card / running step.
         if (
-          toolName === 'create_plan' ||
+          (toolName === 'create_plan' || toolName === 'run_subagent') ||
           (this.#uiPlanParentMsgId && targetId === this.#uiPlanParentMsgId)
         ) {
           this.#updateUiMessage(targetId, (message) => {
             if (isCreatePlanToolEvent(event)) {
               return applyStreamEventToPlanRun(message, event, streamOptions);
             }
-            const card = findCreatePlanCard(message);
+            const nestedCardId = String(event.parentToolCallId || event.toolCallId || '').trim();
+            const card = findCreatePlanCard(message, nestedCardId);
             const hasRunningStep = (card?.planRun?.steps || []).some(
               (step) => String(step?.status || '').toLowerCase() === 'running'
             );
@@ -680,7 +688,7 @@ export class RuntimeBridge {
             if (isAssistantEvent && !hasRunningStep) {
               return applyStreamEventToMessage(message, event, streamOptions);
             }
-            if (messageHasActivePlanRun(message) && (hasRunningStep || card?.planRun?.steps?.length)) {
+            if (messageHasActivePlanRun(message) && (hasRunningStep || card?.planRun?.steps?.length || nestedCardId)) {
               return applyStreamEventToPlanRun(message, event, streamOptions);
             }
             return applyStreamEventToMessage(message, event, streamOptions);
@@ -688,10 +696,15 @@ export class RuntimeBridge {
           publishedMessageId = targetId;
           if (
             ['tool:end', 'tool:error', 'tool:blocked'].includes(event.type) &&
-            toolName === 'create_plan'
+            (toolName === 'create_plan' || toolName === 'run_subagent')
           ) {
-            this.#settleCreatePlanToolCard(createPlanTargetId || targetId);
-            this.#uiPlanParentMsgId = null;
+            // One card per tool call — do not abort sibling parallel subagents.
+            const parent = this.#uiMessages.find(
+              (message) => message.id === (createPlanTargetId || targetId)
+            );
+            if (!messageHasActivePlanRun(parent)) {
+              this.#uiPlanParentMsgId = null;
+            }
           }
           break;
         }
@@ -732,10 +745,15 @@ export class RuntimeBridge {
           this.#uiActiveMsgId = parentId;
         }
         if (event.type === 'plan:step_done') {
-          const isFinalPlanStep =
+          // Legacy multi-step plan pipeline: settle when the final/summarizer step ends.
+          // run_subagent is one-step (total=1); settling here would abort sibling parallel cards.
+          // Those cards are completed by their own tool:end instead.
+          const isLegacyFinalPlanStep =
             String(event.role || '').toLowerCase() === 'summarizer' ||
-            (Number(event.total) > 0 && Number(event.step) === Number(event.total));
-          if (isFinalPlanStep) this.#settleCreatePlanToolCard();
+            (Number(event.total) > 1 && Number(event.step) === Number(event.total));
+          if (isLegacyFinalPlanStep) {
+            this.#settleCreatePlanToolCard(undefined, 'completed');
+          }
         }
         break;
       }
@@ -978,7 +996,14 @@ export class RuntimeBridge {
       }
       this.#uiActiveMsgId = null;
       this.#uiPlanStepIds = new Map();
-      this.#settleCreatePlanToolCard();
+      this.#settleCreatePlanToolCard(
+        undefined,
+        result?.aborted
+          ? 'aborted'
+          : result?.type === 'error'
+            ? 'failed'
+            : 'completed'
+      );
       this.#uiPlanParentMsgId = null;
       let suppressDone = false;
       if (result?.aborted) {
@@ -1064,7 +1089,14 @@ export class RuntimeBridge {
       }
       this.#uiActiveMsgId = null;
       this.#uiPlanStepIds = new Map();
-      this.#settleCreatePlanToolCard();
+      this.#settleCreatePlanToolCard(
+        undefined,
+        result?.aborted || result?.type === 'aborted'
+          ? 'aborted'
+          : result?.type === 'error'
+            ? 'failed'
+            : 'completed'
+      );
       this.#uiPlanParentMsgId = null;
       this.#publish({ type: 'submit:done', operationId, result });
       this.#publishLifecycle(result?.aborted || result?.type === 'aborted' ? 'aborted' : 'completed');

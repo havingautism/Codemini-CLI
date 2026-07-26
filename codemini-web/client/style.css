@@ -1894,7 +1894,11 @@ samp {
 
 .codemini-embed-banner-scroll::-webkit-scrollbar,
 .msg-body [data-streamdown="table-wrapper"]>div:nth-child(2)::-webkit-scrollbar,
-.msg-body [data-streamdown="code-block-body"]::-webkit-scrollbar {
+.msg-body [data-streamdown="code-block-body"]::-webkit-scrollbar,
+.codemini-md-preview .wmde-markdown table::-webkit-scrollbar,
+.codemini-md-editor .wmde-markdown table::-webkit-scrollbar,
+.codemini-md-preview .wmde-markdown pre>code::-webkit-scrollbar,
+.codemini-md-editor .wmde-markdown pre>code::-webkit-scrollbar {
   -webkit-appearance: none;
   width: 8px;
   height: 8px;
@@ -1902,21 +1906,33 @@ samp {
 
 .codemini-embed-banner-scroll::-webkit-scrollbar-track,
 .msg-body [data-streamdown="table-wrapper"]>div:nth-child(2)::-webkit-scrollbar-track,
-.msg-body [data-streamdown="code-block-body"]::-webkit-scrollbar-track {
+.msg-body [data-streamdown="code-block-body"]::-webkit-scrollbar-track,
+.codemini-md-preview .wmde-markdown table::-webkit-scrollbar-track,
+.codemini-md-editor .wmde-markdown table::-webkit-scrollbar-track,
+.codemini-md-preview .wmde-markdown pre>code::-webkit-scrollbar-track,
+.codemini-md-editor .wmde-markdown pre>code::-webkit-scrollbar-track {
   border-radius: 4px;
   background: var(--scrollbar-track, color-mix(in srgb, var(--text-muted) 16%, var(--bg-secondary)));
 }
 
 .codemini-embed-banner-scroll::-webkit-scrollbar-thumb,
 .msg-body [data-streamdown="table-wrapper"]>div:nth-child(2)::-webkit-scrollbar-thumb,
-.msg-body [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb {
+.msg-body [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb,
+.codemini-md-preview .wmde-markdown table::-webkit-scrollbar-thumb,
+.codemini-md-editor .wmde-markdown table::-webkit-scrollbar-thumb,
+.codemini-md-preview .wmde-markdown pre>code::-webkit-scrollbar-thumb,
+.codemini-md-editor .wmde-markdown pre>code::-webkit-scrollbar-thumb {
   border-radius: 4px;
   background: var(--scrollbar-thumb, color-mix(in srgb, var(--text-muted) 55%, transparent));
 }
 
 .codemini-embed-banner-scroll::-webkit-scrollbar-thumb:hover,
 .msg-body [data-streamdown="table-wrapper"]>div:nth-child(2)::-webkit-scrollbar-thumb:hover,
-.msg-body [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:hover {
+.msg-body [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:hover,
+.codemini-md-preview .wmde-markdown table::-webkit-scrollbar-thumb:hover,
+.codemini-md-editor .wmde-markdown table::-webkit-scrollbar-thumb:hover,
+.codemini-md-preview .wmde-markdown pre>code::-webkit-scrollbar-thumb:hover,
+.codemini-md-editor .wmde-markdown pre>code::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover, color-mix(in srgb, var(--text-muted) 75%, transparent));
 }
 
@@ -1925,36 +1941,20 @@ samp {
 }
 
 .msg-body [data-streamdown="table-wrapper"]>div:nth-child(2),
-.msg-body [data-streamdown="code-block-body"] {
+.msg-body [data-streamdown="code-block-body"],
+.codemini-md-preview .wmde-markdown table,
+.codemini-md-editor .wmde-markdown table,
+.codemini-md-preview .wmde-markdown pre>code,
+.codemini-md-editor .wmde-markdown pre>code {
+  overflow-x: scroll !important;
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
   overscroll-behavior-x: contain;
 }
 
-/* Custom horizontal scroll strip (related links, image gallery) */
-.codemini-horizontal-scroll-strip__viewport {
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-
-.codemini-horizontal-scroll-strip__viewport::-webkit-scrollbar {
-  display: none;
-}
-
-.codemini-horizontal-scroll-strip__track {
-  position: relative;
-  background: color-mix(in srgb, var(--text-muted) 22%, var(--bg-secondary));
-}
-
-.codemini-horizontal-scroll-strip__thumb {
-  position: absolute;
-  top: 0;
-  left: 0;
-  background: color-mix(in srgb, var(--text-muted) 62%, transparent);
-}
-
-.codemini-horizontal-scroll-strip__thumb:hover {
-  background: color-mix(in srgb, var(--text-muted) 78%, transparent);
+.codemini-markdown-table-strip .codemini-horizontal-scroll-strip__viewport {
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
 }
 
 /* ── Linear loaders (theme + palette aware) ── */
@@ -2190,7 +2190,8 @@ samp {
   border: 0 !important;
   border-radius: var(--radius-lg) !important;
   background: color-mix(in srgb, var(--text-primary) 5%, transparent) !important;
-  overflow: auto !important;
+  overflow-x: scroll !important;
+  overflow-y: hidden !important;
   overscroll-behavior-x: contain;
 }
 
@@ -2495,7 +2496,7 @@ samp {
   border: 0 !important;
   border-radius: 0 !important;
   background: transparent !important;
-  overflow-x: auto !important;
+  overflow-x: scroll !important;
 }
 
 .msg-body [data-streamdown="code-block-body"] pre {

@@ -395,110 +395,6 @@ function SoulQuickSwitch({ disabled = false, mode = "normal" }) {
   );
 }
 
-function SpecQuickSelect({ sessionId, visible, disabled = false, onSelect }) {
-  const [open, setOpen] = useState(false);
-  const [specs, setSpecs] = useState([]);
-  const [loading, setLoading] = useState(false);
-
-  const loadSpecs = useCallback(async () => {
-    if (!visible || disabled) return;
-    setLoading(true);
-    try {
-      const result = await api.fetchSpecs(sessionId);
-      setSpecs(Array.isArray(result?.specs) ? result.specs : []);
-    } catch {
-      setSpecs([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [sessionId, visible, disabled]);
-
-  useEffect(() => {
-    if (open) loadSpecs();
-  }, [open, loadSpecs]);
-
-  if (!visible) return null;
-
-  const handleSelect = (spec) => {
-    if (!spec?.path) return;
-    onSelect?.(spec);
-    setOpen(false);
-  };
-
-  return (
-    <Popover open={open} onOpenChange={(next) => !disabled && setOpen(next)}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            INPUT_PILL_CLASS,
-            "px-2.5",
-            disabled && "opacity-50 pointer-events-none",
-          )}
-          disabled={disabled}
-          title={t("planFromSpec")}
-        >
-          <FileText size={13} />
-          <span className="truncate">{t("specFile")}</span>
-          <CaretDown size={11} />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        side="top"
-        align="start"
-        sideOffset={6}
-        className="w-[420px] max-w-[calc(100vw-32px)] p-1"
-      >
-        <div className="flex items-center justify-between gap-2 px-2 py-1.5">
-          <span className="text-[11px] text-(--text-muted) font-medium">
-            {t("planFromSpec")}
-          </span>
-          <button
-            type="button"
-            className="border-0 bg-transparent text-[11px] text-(--text-muted) hover:text-(--text-primary) cursor-pointer"
-            onClick={loadSpecs}
-          >
-            {t("refresh")}
-          </button>
-        </div>
-        <div className="max-h-72 overflow-y-auto flex flex-col gap-0.5">
-          {loading && (
-            <div className="px-2 py-4 text-center text-[12px] text-(--text-muted)">
-              {t("loading")}
-            </div>
-          )}
-          {!loading && specs.length === 0 && (
-            <div className="px-2 py-4 text-center text-[12px] text-(--text-muted)">
-              {t("noSpecFiles")}
-            </div>
-          )}
-          {!loading &&
-            specs.map((spec) => (
-              <button
-                key={spec.path}
-                type="button"
-                className="w-full border-0 rounded-md px-2 py-2 text-left cursor-pointer grid grid-cols-[22px_minmax(0,1fr)] gap-2 bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
-                onClick={() => handleSelect(spec)}
-              >
-                <span className="mt-0.5 inline-flex size-5 items-center justify-center rounded-md bg-(--accent-purple-bg) text-(--accent-purple)">
-                  <FileText size={12} />
-                </span>
-                <span className="min-w-0">
-                  <span className="block truncate text-[12px] font-medium">
-                    {spec.name || spec.file}
-                  </span>
-                  <span className="block truncate text-[11px] text-(--text-muted) font-mono">
-                    {spec.relativePath || spec.file}
-                  </span>
-                </span>
-              </button>
-            ))}
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
 function ActionSkillPalette({
   query,
   error,
@@ -722,7 +618,6 @@ export function InputBar({
   disabledReason = "",
   runtimeState,
   history: externalHistory,
-  onOpenSpec,
   projectCwd,
   projectDirs = EMPTY_PROJECT_DIRS,
   hasConversation = false,
@@ -1196,16 +1091,6 @@ export function InputBar({
               enabled={reasoningEnabled}
               effort={reasoningEffort}
               disabled={inputLocked}
-            />
-            <SpecQuickSelect
-              sessionId={rs.sessionId}
-              visible={!isGeneralChat}
-              disabled={inputLocked}
-              onSelect={(spec) => {
-                onOpenSpec?.(spec);
-                setPaletteOpen(false);
-                textareaRef.current?.focus();
-              }}
             />
             <ApprovalModeSelector
               sessionId={rs.sessionId}

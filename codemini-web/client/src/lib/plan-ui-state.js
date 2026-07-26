@@ -1,4 +1,5 @@
 import { applyStreamEventToMessage } from "../../../shared/transcript-segments.js";
+import { appendUniqueFileChanges } from "../../../shared/transcript-segments.js";
 import { stripPlanProgressText } from "../../../shared/plan-progress-text.js";
 
 export function isCompletedStatus(status) {
@@ -21,23 +22,27 @@ export function isCreatePlanCard(card) {
   const name = String(card?.name || "")
     .toLowerCase()
     .replace(/\(.*$/, "");
-  return name === "create_plan" || Boolean(card?.planRun);
+  return name === "create_plan" || name === "run_subagent" || Boolean(card?.planRun);
 }
 
 export function planPhaseTitle(phase) {
   switch (String(phase || "").toLowerCase()) {
     case "planning":
-      return "Plan · 规划";
+      return "Subagent · 准备";
     case "executing":
-      return "Plan · 执行";
+      return "Subagent · 运行中";
+    case "waiting":
+      return "Subagent · 等待依赖";
     case "completed":
-      return "Plan · 完成";
+      return "Subagent · 完成";
+    case "blocked":
+      return "Subagent · 依赖阻塞";
     case "failed":
-      return "Plan · 失败";
+      return "Subagent · 失败";
     case "aborted":
-      return "Plan · 已中止";
+      return "Subagent · 已中止";
     default:
-      return "Plan · 规划/执行";
+      return "Subagent · 任务";
   }
 }
 
@@ -54,6 +59,10 @@ export function createEmptyPlanRun({ goal = "", steps = [] } = {}) {
       segments: Array.isArray(step.segments) ? step.segments : [],
       model: step.model || "",
       sdkProvider: step.sdkProvider || "",
+      taskId: step.taskId || "",
+      dependsOn: Array.isArray(step.dependsOn) ? step.dependsOn : [],
+      blockedBy: Array.isArray(step.blockedBy) ? step.blockedBy : [],
+      ...(step.toolCallId ? { toolCallId: step.toolCallId } : {}),
     })),
   };
 }
@@ -90,7 +99,8 @@ export function shouldExpandPlanStep(step, { userExpanded } = {}) {
   return false;
 }
 
-function upsertCreatePlanCard(message, updater) {
+function upsertCreatePlanCard(message, updater, { cardId = "" } = {}) {
+  const targetId = String(cardId || "").trim();
   let found = false;
   const segments = [];
   for (const segment of Array.isArray(message?.segments) ? message.segments : []) {
@@ -104,8 +114,20 @@ function upsertCreatePlanCard(message, updater) {
         cards.push(card);
         continue;
       }
-      // Keep a single create_plan card per message; drop duplicates.
-      if (found) continue;
+      if (targetId) {
+        if (String(card.id || "") !== targetId) {
+          cards.push(card);
+          continue;
+        }
+        found = true;
+        cards.push(updater(card));
+        continue;
+      }
+      // Legacy: no cardId → update the first plan/subagent card only.
+      if (found) {
+        cards.push(card);
+        continue;
+      }
       found = true;
       cards.push(updater(card));
     }
@@ -113,8 +135,8 @@ function upsertCreatePlanCard(message, updater) {
   }
   if (!found) {
     const card = updater({
-      id: `create_plan-${Date.now()}`,
-      name: "create_plan",
+      id: targetId || `run_subagent-${Date.now()}`,
+      name: "run_subagent",
       status: "running",
       arguments: {},
     });
@@ -126,21 +148,36 @@ function upsertCreatePlanCard(message, updater) {
   return { ...message, segments };
 }
 
-export function findCreatePlanCard(message) {
+export function findCreatePlanCard(message, cardId = "") {
+  const targetId = String(cardId || "").trim();
   for (const segment of Array.isArray(message?.segments) ? message.segments : []) {
     if (segment?.type !== "tools") continue;
-    const card = (segment.cards || []).find(isCreatePlanCard);
-    if (card) return card;
+    for (const card of segment.cards || []) {
+      if (!isCreatePlanCard(card)) continue;
+      if (targetId && String(card.id || "") !== targetId) continue;
+      return card;
+    }
   }
   return null;
 }
 
+export function listCreatePlanCards(message) {
+  const cards = [];
+  for (const segment of Array.isArray(message?.segments) ? message.segments : []) {
+    if (segment?.type !== "tools") continue;
+    for (const card of segment.cards || []) {
+      if (isCreatePlanCard(card)) cards.push(card);
+    }
+  }
+  return cards;
+}
+
 export function messageHasActivePlanRun(message) {
-  const card = findCreatePlanCard(message);
-  if (!card) return false;
-  if (String(card.status || "").toLowerCase() === "running") return true;
-  const phase = String(card?.planRun?.phase || "").toLowerCase();
-  return phase === "planning" || phase === "executing";
+  return listCreatePlanCards(message).some((card) => {
+    if (String(card.status || "").toLowerCase() === "running") return true;
+    const phase = String(card?.planRun?.phase || "").toLowerCase();
+    return phase === "planning" || phase === "executing";
+  });
 }
 
 export function findActivePlanParentMessage(messages = []) {
@@ -153,124 +190,156 @@ export function isCreatePlanToolEvent(event) {
   const name = String(event?.name || event?.toolName || event?.toolCall?.name || "")
     .toLowerCase()
     .replace(/\(.*$/, "");
-  return name === "create_plan";
+  return name === "create_plan" || name === "run_subagent";
 }
 
 /** Apply assistant/tool stream events into the currently running plan step. */
 export function applyStreamEventToPlanRun(message, event, options = {}) {
   if (!message || !event?.type) return message;
   if (isCreatePlanToolEvent(event)) {
-    return upsertCreatePlanCard(message, (card) => {
-      const type = String(event.type);
-      if (type === "assistant:tool_call_delta" || type === "tool:start") {
-        return {
-          ...card,
-          id: event.id || event.toolCall?.id || card.id,
-          name: event.name || event.toolCall?.name || card.name || "create_plan",
-          displayName:
-            event.displayName || card.displayName || options.formatToolLabel?.("create_plan"),
-          arguments:
-            event.arguments ||
-            event.toolCall?.arguments ||
-            card.arguments ||
-            {},
-          status: "running",
-          summary: event.summary || card.summary || "",
-          planRun: card.planRun,
-        };
-      }
-      if (type === "tool:result") {
-        return {
-          ...card,
-          id: event.id || card.id,
-          result: event.content || card.result || "",
-          planRun: card.planRun,
-        };
-      }
-      if (type === "tool:blocked") {
-        return {
-          ...card,
-          id: event.id || card.id,
-          status: "blocked",
-          summary: event.summary || card.summary || "Tool blocked",
-          planRun: card.planRun
-            ? { ...card.planRun, phase: "aborted" }
-            : card.planRun,
-          displayName: planPhaseTitle(card.planRun?.phase || "aborted"),
-        };
-      }
-      if (type === "tool:error") {
-        return {
-          ...card,
-          id: event.id || card.id,
-          status: "error",
-          durationMs: event.durationMs,
-          summary: event.summary || card.summary,
-          planRun: card.planRun
-            ? { ...card.planRun, phase: "failed" }
-            : card.planRun,
-          displayName: planPhaseTitle("failed"),
-        };
-      }
-      if (type === "tool:end") {
-        const planRun = card.planRun
-          ? {
-              ...card.planRun,
-              phase:
-                card.planRun.phase === "failed" || card.planRun.phase === "aborted"
-                  ? card.planRun.phase
-                  : isPlanRunComplete(card.planRun)
-                    ? "completed"
-                    : card.planRun.phase || "completed",
-            }
-          : card.planRun;
-        return {
-          ...card,
-          id: event.id || card.id,
-          status:
-            planRun?.phase === "failed"
-              ? "error"
-              : planRun?.phase === "aborted"
-                ? "done"
-                : "done",
-          durationMs: event.durationMs,
-          ...(event.summary ? { summary: event.summary } : {}),
-          planRun,
-          displayName: planPhaseTitle(planRun?.phase || "completed"),
-        };
-      }
-      return card;
-    });
+    const cardId = String(event.id || event.toolCall?.id || event.toolCallId || "").trim();
+    return upsertCreatePlanCard(
+      message,
+      (card) => {
+        const type = String(event.type);
+        if (type === "assistant:tool_call_delta" || type === "tool:start") {
+          return {
+            ...card,
+            id: cardId || card.id,
+            name: event.name || event.toolCall?.name || card.name || "run_subagent",
+            displayName:
+              event.displayName ||
+              card.displayName ||
+              planPhaseTitle("executing") ||
+              options.formatToolLabel?.("run_subagent"),
+            arguments:
+              event.arguments ||
+              event.toolCall?.arguments ||
+              card.arguments ||
+              {},
+            status: "running",
+            summary: event.summary || card.summary || "",
+            planRun: card.planRun || createEmptyPlanRun(),
+          };
+        }
+        if (type === "tool:result") {
+          return {
+            ...card,
+            result: event.content || card.result || "",
+            planRun: card.planRun,
+          };
+        }
+        if (type === "tool:blocked") {
+          return {
+            ...card,
+            status: "blocked",
+            summary: event.summary || card.summary || "Tool blocked",
+            planRun: card.planRun
+              ? { ...card.planRun, phase: "aborted" }
+              : card.planRun,
+            displayName: planPhaseTitle("aborted"),
+          };
+        }
+        if (type === "tool:error") {
+          return {
+            ...card,
+            status: "error",
+            durationMs: event.durationMs,
+            summary: event.summary || card.summary,
+            planRun: card.planRun
+              ? { ...card.planRun, phase: "failed" }
+              : card.planRun,
+            displayName: planPhaseTitle("failed"),
+          };
+        }
+        if (type === "tool:end") {
+          const complete = isPlanRunComplete(card.planRun);
+          const planRun = card.planRun
+            ? {
+                ...card.planRun,
+                phase:
+                  card.planRun.phase === "failed" ||
+                  card.planRun.phase === "aborted" ||
+                  card.planRun.phase === "blocked"
+                    ? card.planRun.phase
+                    : complete
+                      ? "completed"
+                      : card.planRun.phase || "completed",
+              }
+            : card.planRun;
+          const anyFailed = (planRun?.steps || []).some(
+            (step) => String(step.status || "").toLowerCase() === "failed",
+          );
+          return {
+            ...card,
+            status:
+              planRun?.phase === "failed" || anyFailed
+                ? "error"
+                : planRun?.phase === "blocked"
+                  ? "blocked"
+                : planRun?.phase === "aborted"
+                  ? "done"
+                  : "done",
+            durationMs: event.durationMs,
+            ...(event.summary ? { summary: event.summary } : {}),
+            planRun,
+            displayName: planPhaseTitle(planRun?.phase || "completed"),
+          };
+        }
+        return card;
+      },
+      { cardId },
+    );
   }
 
   if (!messageHasActivePlanRun(message)) return message;
 
-  return upsertCreatePlanCard(message, (card) => {
-    const planRun = card.planRun;
-    if (!planRun?.steps?.length) return card;
-    const steps = planRun.steps.map((step) => ({ ...step }));
-    const runningIndex = steps.findIndex(
-      (step) => String(step.status || "").toLowerCase() === "running",
-    );
-    if (runningIndex < 0) return card;
-    const step = steps[runningIndex];
-    const pseudo = applyStreamEventToMessage(
-      { segments: Array.isArray(step.segments) ? step.segments : [] },
-      event,
-      {
-        stripText: stripPlanProgressText,
-        ...options,
-      },
-    );
-    steps[runningIndex] = {
-      ...step,
-      segments: Array.isArray(pseudo.segments) ? pseudo.segments : [],
-    };
-    return {
-      ...card,
-      planRun: { ...planRun, steps },
-    };
-  });
+      const cardId = String(event.parentToolCallId || event.toolCallId || "").trim();
+  let nestedFileChanges = [];
+  const next = upsertCreatePlanCard(
+    message,
+    (card) => {
+      const planRun = card.planRun;
+      if (!planRun?.steps?.length) return card;
+      const steps = planRun.steps.map((step) => ({ ...step }));
+      let stepIndex = -1;
+      if (cardId) {
+        stepIndex = steps.findIndex(
+          (step) => String(step.toolCallId || "") === cardId,
+        );
+      }
+      if (stepIndex < 0) {
+        stepIndex = steps.findIndex(
+          (step) => String(step.status || "").toLowerCase() === "running",
+        );
+      }
+      if (stepIndex < 0) return card;
+      const step = steps[stepIndex];
+      const pseudo = applyStreamEventToMessage(
+        { segments: Array.isArray(step.segments) ? step.segments : [], fileChanges: [] },
+        event,
+        {
+          stripText: stripPlanProgressText,
+          ...options,
+        },
+      );
+      nestedFileChanges = Array.isArray(pseudo.fileChanges) ? pseudo.fileChanges : [];
+      steps[stepIndex] = {
+        ...step,
+        segments: Array.isArray(pseudo.segments) ? pseudo.segments : [],
+      };
+      return {
+        ...card,
+        planRun: { ...planRun, steps },
+      };
+    },
+    { cardId },
+  );
+  if (!nestedFileChanges.length) return next;
+  return {
+    ...next,
+    fileChanges: appendUniqueFileChanges(next.fileChanges, nestedFileChanges),
+  };
 }
 
 export function appendPlanRunStreamingText(message, text) {
@@ -285,6 +354,7 @@ export function appendPlanRunStreamingText(message, text) {
 export function applyPlanEventToMessage(message, event) {
   if (!message || !event?.type) return message;
   const type = String(event.type);
+  const cardId = String(event.toolCallId || event.parentToolCallId || "").trim();
 
   if (type === "plan:steps") {
     const planRun = createEmptyPlanRun({
@@ -294,109 +364,169 @@ export function applyPlanEventToMessage(message, event) {
         role: step.role,
         title: step.title,
         status: step.status || "pending",
+        toolCallId: step.toolCallId || cardId || "",
       })),
     });
     planRun.phase = "executing";
-    return upsertCreatePlanCard(message, (card) => ({
-      ...card,
-      status: "running",
-      displayName: planPhaseTitle("executing"),
-      planRun: {
-        ...planRun,
-        goal:
-          planRun.goal ||
-          String(card.arguments?.goal || card.summary || "").trim(),
-      },
-    }));
+    return upsertCreatePlanCard(
+      message,
+      (card) => ({
+        ...card,
+        status: "running",
+        displayName: planPhaseTitle("executing"),
+        planRun: {
+          ...planRun,
+          goal:
+            planRun.goal ||
+            String(card.arguments?.goal || card.arguments?.prompt || card.summary || "").trim(),
+        },
+      }),
+      { cardId },
+    );
   }
 
   if (type === "plan:step_start" || type === "plan:progress" || type === "plan:step_done") {
+    // Prefer toolCallId targeting (one card per run_subagent). Fall back to step index.
     const stepNumber = Number(event.step);
-    if (!Number.isFinite(stepNumber) || stepNumber < 1) return message;
-    return upsertCreatePlanCard(message, (card) => {
-      const current = card.planRun || createEmptyPlanRun();
-      const steps = [...(current.steps || [])];
-      while (steps.length < stepNumber) {
-        steps.push({
-          index: steps.length + 1,
+    const hasStepNumber = Number.isFinite(stepNumber) && stepNumber >= 1;
+    if (!cardId && !hasStepNumber) return message;
+
+    return upsertCreatePlanCard(
+      message,
+      (card) => {
+        const current = card.planRun || createEmptyPlanRun({ goal: event.goal || "" });
+        const steps = [...(current.steps || [])];
+        let stepIndex = -1;
+        if (cardId) {
+          stepIndex = steps.findIndex((step) => String(step.toolCallId || "") === cardId);
+        }
+        if (stepIndex < 0 && hasStepNumber) {
+          while (steps.length < stepNumber) {
+            steps.push({
+              index: steps.length + 1,
+              role: "general",
+              title: "",
+              status: "pending",
+              summary: "",
+              segments: [],
+            });
+          }
+          stepIndex = stepNumber - 1;
+        }
+        if (stepIndex < 0) {
+          steps.push({
+            index: steps.length + 1,
+            role: event.role || "general",
+            title: event.title || "",
+            status: "pending",
+            summary: "",
+            segments: [],
+            toolCallId: cardId,
+          });
+          stepIndex = steps.length - 1;
+        }
+
+        const existing = steps[stepIndex] || {
+          index: stepIndex + 1,
           role: "general",
           title: "",
           status: "pending",
           summary: "",
           segments: [],
-        });
-      }
-      const existing = steps[stepNumber - 1] || {
-        index: stepNumber,
-        role: "general",
-        title: "",
-        status: "pending",
-        summary: "",
-        segments: [],
-      };
-      const status =
-        event.status ||
-        (type === "plan:step_start"
-          ? "running"
-          : type === "plan:step_done"
-            ? "done"
-            : existing.status);
-      const outputText = String(event.output || "").trim();
-      let segments = Array.isArray(existing.segments) ? [...existing.segments] : [];
-      if (type === "plan:step_done" && outputText) {
-        const already = segments.some(
-          (segment) =>
-            (segment.type === "text" || segment.type === "handoff") &&
-            String(segment.text || "").trim() === outputText,
-        );
-        if (!already) {
-          segments = [
-            ...segments,
-            {
-              type:
-                String(event.role || existing.role || "").toLowerCase() ===
-                "summarizer"
-                  ? "text"
-                  : "handoff",
-              text: outputText,
-              isStreaming: false,
-            },
-          ];
+        };
+        const status =
+          event.status ||
+          (type === "plan:step_start"
+            ? "running"
+            : type === "plan:step_done"
+              ? "done"
+              : existing.status);
+        const outputText = String(event.output || "").trim();
+        let segments = Array.isArray(existing.segments) ? [...existing.segments] : [];
+        if (type === "plan:step_done" && outputText) {
+          const already = segments.some(
+            (segment) =>
+              (segment.type === "text" || segment.type === "handoff") &&
+              String(segment.text || "").trim() === outputText,
+          );
+          if (!already) {
+            segments = [
+              ...segments,
+              {
+                type:
+                  String(event.role || existing.role || "").toLowerCase() ===
+                  "summarizer"
+                    ? "text"
+                    : "handoff",
+                text: outputText,
+                isStreaming: false,
+              },
+            ];
+          }
         }
-      }
-      steps[stepNumber - 1] = {
-        ...existing,
-        index: stepNumber,
-        role: event.role || existing.role,
-        title: event.title || existing.title,
-        status,
-        summary: event.summary ?? existing.summary,
-        model: event.model || existing.model,
-        sdkProvider: event.sdkProvider || existing.sdkProvider,
-        segments,
-      };
+        steps[stepIndex] = {
+          ...existing,
+          index: existing.index || stepIndex + 1,
+          role: event.role || existing.role,
+          title: event.title || existing.title,
+          status,
+          summary: event.summary ?? existing.summary,
+          model: event.model || existing.model,
+          sdkProvider: event.sdkProvider || existing.sdkProvider,
+          taskId: event.taskId || existing.taskId || "",
+          dependsOn: Array.isArray(event.dependsOn)
+            ? event.dependsOn
+            : existing.dependsOn || [],
+          blockedBy: Array.isArray(event.blockedBy)
+            ? event.blockedBy
+            : existing.blockedBy || [],
+          toolCallId: cardId || existing.toolCallId || "",
+          segments,
+        };
 
-      const allDone = steps.length > 0 && steps.every((step) => isCompletedStatus(step.status));
-      const anyFailed = steps.some(
-        (step) => String(step.status || "").toLowerCase() === "failed",
-      );
-      const phase = allDone
-        ? anyFailed
-          ? "failed"
-          : "completed"
-        : "executing";
+        const allDone = steps.length > 0 && steps.every((step) => isCompletedStatus(step.status));
+        const anyFailed = steps.some(
+          (step) => String(step.status || "").toLowerCase() === "failed",
+        );
+        const anyBlocked = steps.some(
+          (step) => String(step.status || "").toLowerCase() === "blocked",
+        );
+        const anyWaiting = steps.some(
+          (step) => String(step.status || "").toLowerCase() === "waiting",
+        );
+        const phase = allDone
+          ? anyFailed
+            ? "failed"
+            : anyBlocked
+              ? "blocked"
+              : "completed"
+          : anyWaiting
+            ? "waiting"
+            : "executing";
 
-      return {
-        ...card,
-        status: allDone ? (anyFailed ? "error" : "done") : "running",
-        displayName: planPhaseTitle(phase),
-        planRun: {
-          ...current,
-          phase,
-          steps,
-        },
-      };
-    });
+        return {
+          ...card,
+          status: allDone
+            ? anyFailed
+              ? "error"
+              : anyBlocked
+                ? "blocked"
+                : "done"
+            : "running",
+          displayName: planPhaseTitle(phase),
+          planRun: {
+            ...current,
+            phase,
+            goal:
+              event.goal ||
+              current.goal ||
+              String(card.arguments?.goal || card.arguments?.prompt || "").trim(),
+            steps,
+          },
+        };
+      },
+      { cardId },
+    );
   }
 
   return message;
@@ -404,13 +534,25 @@ export function applyPlanEventToMessage(message, event) {
 
 export function settleRunningCreatePlanCards(message, { reason = "aborted" } = {}) {
   let changed = false;
-  const settleStatus = reason === "failed" ? "failed" : "aborted";
+  const terminalPhase =
+    reason === "completed"
+      ? "completed"
+      : reason === "failed"
+        ? "failed"
+        : "aborted";
+  const settleStatus = terminalPhase === "completed" ? "done" : "failed";
   const segments = (Array.isArray(message?.segments) ? message.segments : []).map(
     (seg) => {
       if (seg?.type !== "tools" || !Array.isArray(seg.cards)) return seg;
       let cardsChanged = false;
       const cards = seg.cards.map((card) => {
-        if (!isCreatePlanCard(card) || card.status !== "running") return card;
+        if (!isCreatePlanCard(card)) return card;
+        const currentPhase = String(card?.planRun?.phase || "").toLowerCase();
+        const isActive =
+          String(card.status || "").toLowerCase() === "running" ||
+          currentPhase === "planning" ||
+          currentPhase === "executing";
+        if (!isActive) return card;
         cardsChanged = true;
         const currentRun = card.planRun;
         const steps = Array.isArray(currentRun?.steps)
@@ -431,8 +573,14 @@ export function settleRunningCreatePlanCards(message, { reason = "aborted" } = {
                       toolCard?.status === "running"
                         ? {
                             ...toolCard,
-                            status: "error",
-                            summary: toolCard.summary || "Aborted",
+                            status: terminalPhase === "completed" ? "done" : "error",
+                            summary:
+                              toolCard.summary ||
+                              (terminalPhase === "failed"
+                                ? "Failed"
+                                : terminalPhase === "aborted"
+                                  ? "Aborted"
+                                  : ""),
                           }
                         : toolCard,
                     ),
@@ -441,8 +589,14 @@ export function settleRunningCreatePlanCards(message, { reason = "aborted" } = {
               );
               return {
                 ...step,
-                status: settleStatus === "failed" ? "failed" : "failed",
-                summary: step.summary || "Aborted",
+                status: settleStatus,
+                summary:
+                  step.summary ||
+                  (terminalPhase === "failed"
+                    ? "Failed"
+                    : terminalPhase === "aborted"
+                      ? "Aborted"
+                      : ""),
                 segments: stepSegments,
               };
             })
@@ -453,14 +607,14 @@ export function settleRunningCreatePlanCards(message, { reason = "aborted" } = {
               phase:
                 currentRun.phase === "failed" || currentRun.phase === "aborted"
                   ? currentRun.phase
-                  : "aborted",
+                  : terminalPhase,
               steps,
             }
           : currentRun;
         return {
           ...card,
           status: planRun?.phase === "failed" ? "error" : "done",
-          displayName: planPhaseTitle(planRun?.phase || "aborted"),
+          displayName: planPhaseTitle(planRun?.phase || terminalPhase),
           planRun,
         };
       });
@@ -479,7 +633,7 @@ export function settleCompletedPlanToolCards(messages) {
   return list.map((message) => {
     const card = findCreatePlanCard(message);
     if (card?.planRun && isPlanRunComplete(card.planRun)) {
-      return settleRunningCreatePlanCards(message);
+      return settleRunningCreatePlanCards(message, { reason: "completed" });
     }
     if (isPlanOverviewComplete(message)) {
       // Legacy overview path kept for old transcripts.
@@ -508,7 +662,7 @@ export function settleCompletedPlanToolCards(messages) {
       },
     );
     if (!ownedByCompletedOverview) return message;
-    return settleRunningCreatePlanCards(message);
+    return settleRunningCreatePlanCards(message, { reason: "completed" });
   });
 }
 

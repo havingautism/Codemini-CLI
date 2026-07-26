@@ -440,7 +440,6 @@ function Shell() {
                 }
                 runtimeState={state.runtimeState}
                 history={state.history}
-                onOpenSpec={actions.openSpecReview}
                 projectCwd={state.projectCwd}
                 projectDirs={sidebarProjectDirs}
                 hasConversation={hasConversation}

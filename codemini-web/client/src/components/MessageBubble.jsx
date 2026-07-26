@@ -1,6 +1,6 @@
 import { memo, useEffect, useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
-import { PlanToolCard } from "./PlanToolCard.jsx";
+import { PlanToolCardGroup } from "./PlanToolCard.jsx";
 import { isCreatePlanCard } from "@/lib/plan-ui-state.js";
 import { StreamdownRenderer } from "./StreamdownRenderer";
 import { EmbedBanner } from "./EmbedBanner.jsx";
@@ -533,9 +533,7 @@ function ToolGroup({ cards }) {
 
   return (
     <div className={cn("my-2", PROCESS_META_CLASS)}>
-      {planCards.map((card) => (
-        <PlanToolCard key={card.id || "create_plan"} card={card} />
-      ))}
+      <PlanToolCardGroup cards={planCards} />
       {total > 0 && shouldUseSummaryHeader && (
         <button
           type="button"
@@ -823,12 +821,24 @@ function SkillActivityRow({ badge }) {
 
 function ProcessGroup({ group }) {
   const [expanded, setExpanded] = useState(false);
-  const toolCount = group.groups.reduce(
+  const planCards = [];
+  const nestedGroups = (group.groups || [])
+    .map((item) => {
+      if (item?.type !== "tools" || !Array.isArray(item.cards)) return item;
+      const kept = [];
+      for (const card of item.cards) {
+        if (isCreatePlanCard(card)) planCards.push(card);
+        else kept.push(card);
+      }
+      return kept.length ? { ...item, cards: kept } : null;
+    })
+    .filter(Boolean);
+  const toolCount = nestedGroups.reduce(
     (sum, item) =>
       item.type === "tools" ? sum + Math.max(1, item.cards?.length || 0) : sum,
     0,
   );
-  const commandCount = group.groups.reduce((sum, item) => {
+  const commandCount = nestedGroups.reduce((sum, item) => {
     if (item.type !== "tools") return sum;
     return (
       sum +
@@ -838,7 +848,7 @@ function ProcessGroup({ group }) {
       }).length
     );
   }, 0);
-  const thoughtCount = group.groups.filter(
+  const thoughtCount = nestedGroups.filter(
     (item) => item.type === "thinking",
   ).length;
   const label =
@@ -854,41 +864,48 @@ function ProcessGroup({ group }) {
           .replace("{{thoughts}}", thoughtCount)
           .replace("{{tools}}", toolCount);
 
+  if (!planCards.length && !nestedGroups.length) return null;
+
   return (
     <div className={cn("my-2", PROCESS_META_CLASS)}>
-      <button
-        type="button"
-        onClick={() => setExpanded((value) => !value)}
-        className={COLLAPSE_ROW_CLASS}
-        aria-expanded={expanded}
-      >
-        {expanded ? (
-          <CaretDown size={14} className={COLLAPSE_CHEVRON_CLASS} />
-        ) : (
-          <CaretRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
-        )}
-        <span className={COLLAPSE_ICON_CLASS}>
-          <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
-        </span>
-        <span>{label}</span>
-        {details && (
-          <span className="msg-process-meta__detail min-w-0 truncate">
-            {details}
-          </span>
-        )}
-      </button>
-      {expanded && (
-        <div className="relative ml-4.5 mt-2 flex flex-col pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
-          {group.groups.map((item, index) => {
-            if (item.type === "thinking") {
-              return <ThoughtBlock key={`p-th-${index}`} segment={item} />;
-            }
-            if (item.type === "tools") {
-              return <ToolGroup key={`p-tg-${index}`} cards={item.cards} />;
-            }
-            return null;
-          })}
-        </div>
+      <PlanToolCardGroup cards={planCards} />
+      {nestedGroups.length > 0 && (
+        <>
+          <button
+            type="button"
+            onClick={() => setExpanded((value) => !value)}
+            className={COLLAPSE_ROW_CLASS}
+            aria-expanded={expanded}
+          >
+            {expanded ? (
+              <CaretDown size={14} className={COLLAPSE_CHEVRON_CLASS} />
+            ) : (
+              <CaretRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
+            )}
+            <span className={COLLAPSE_ICON_CLASS}>
+              <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
+            </span>
+            <span>{label}</span>
+            {details && (
+              <span className="msg-process-meta__detail min-w-0 truncate">
+                {details}
+              </span>
+            )}
+          </button>
+          {expanded && (
+            <div className="relative ml-4.5 mt-2 flex flex-col pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
+              {nestedGroups.map((item, index) => {
+                if (item.type === "thinking") {
+                  return <ThoughtBlock key={`p-th-${index}`} segment={item} />;
+                }
+                if (item.type === "tools") {
+                  return <ToolGroup key={`p-tg-${index}`} cards={item.cards} />;
+                }
+                return null;
+              })}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

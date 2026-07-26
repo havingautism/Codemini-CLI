@@ -1,5 +1,5 @@
 import { createChatCompletion } from './provider/index.js';
-import { normalizeMemoryKind, normalizeMemoryScope } from './memory-policy.js';
+import { normalizeMemoryKind, normalizeMemoryScope, buildDreamPromotionGraphBlock } from './memory-policy.js';
 import { appendStructuredOutputLanguageRule } from './reply-language.js';
 
 const EVAL_TIMEOUT_MS = 30000;
@@ -28,7 +28,9 @@ Rules:
 - General coding/environment knowledge → scope "global"
 - For source="session-review", discard proposed/brainstormed ideas, durable_score below 5, and candidates without grounded user/verified evidence.
 - Treat session-review items as nominations only; independently confirm they are durable before keeping them.
-- If in doubt, discard. Memory is expensive; only promote what future sessions will genuinely benefit from.`;
+- If in doubt, discard. Memory is expensive; only promote what future sessions will genuinely benefit from.
+
+${buildDreamPromotionGraphBlock()}`;
 
 const MAINTENANCE_SYSTEM_PROMPT = `You are maintaining an existing persistent memory bucket for a coding assistant.
 

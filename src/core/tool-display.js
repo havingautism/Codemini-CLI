@@ -3,6 +3,7 @@ import { trimInline as trimInlineText } from './string-utils.js';
 export const TOOL_DISPLAY_LABELS = {
   create_plan: 'Plan',
   create_spec: 'Create Spec',
+  run_subagent: 'Subagent',
   update_todos: 'Update Todos',
   read_plan: 'Read Plan',
   update_plan: 'Update Plan',
@@ -225,6 +226,12 @@ export function formatToolDisplayName(name, args = {}, options = {}) {
   if (toolName === 'create_plan') {
     const goal = trimInline(args?.goal || '', 96);
     const label = 'Plan · 规划/执行';
+    return goal ? formatToolWithArg(label, goal) : label;
+  }
+  if (toolName === 'run_subagent') {
+    const goal = trimInline(args?.goal || args?.prompt || '', 96);
+    const persona = trimInline(args?.name || args?.role || 'Alex', 24);
+    const label = `Subagent · ${persona || 'Alex'}`;
     return goal ? formatToolWithArg(label, goal) : label;
   }
   if (toolName === 'create_spec') {

@@ -697,6 +697,15 @@ export async function fetchCodeWikiSymbolGraph(project = '', options = {}) {
   return res.json();
 }
 
+export async function openWorkspaceFile(path, action = 'open') {
+  const res = await api('/api/files/open', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ path, action }),
+  });
+  return readJsonResponse(res);
+}
+
 export async function fetchCodeWikiReportText(file, project = '') {
   const res = await api(`/api/codewiki/report/${encodeURIComponent(file)}${codeWikiProjectQuery(project)}`);
   if (!res.ok) {

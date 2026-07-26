@@ -58,3 +58,40 @@ test('layoutAnswerProcessWithPlans keeps plan between process and answer', () =>
   assert.equal(layout.items[1].group.cards[0].name, 'create_plan');
   assert.equal(layout.items[2].group.type, 'text');
 });
+
+test('layoutAnswerProcessWithPlans hoists create_plan out of nested process fold', () => {
+  const layout = layoutAnswerProcessWithPlans([
+    {
+      type: 'process',
+      groups: [
+        { type: 'thinking', text: 'planning' },
+        {
+          type: 'tools',
+          cards: [
+            { id: 'r1', name: 'read', status: 'done' },
+            {
+              id: 'p1',
+              name: 'create_plan',
+              status: 'done',
+              planRun: { phase: 'completed', steps: [] },
+            },
+          ],
+        },
+      ],
+    },
+    { type: 'text', text: 'done' },
+  ]);
+
+  assert.equal(layout.hasFold, true);
+  assert.equal(layout.items[0].type, 'fold');
+  const foldTools = layout.items[0].groups
+    .flatMap((group) => (group.type === 'process' ? group.groups : [group]))
+    .filter((group) => group.type === 'tools')
+    .flatMap((group) => group.cards || []);
+  assert.equal(foldTools.some((card) => card.name === 'create_plan'), false);
+  assert.equal(foldTools.some((card) => card.name === 'read'), true);
+
+  assert.equal(layout.items[1].type, 'group');
+  assert.equal(layout.items[1].group.cards[0].name, 'create_plan');
+  assert.equal(layout.items[2].group.type, 'text');
+});

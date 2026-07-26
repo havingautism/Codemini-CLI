@@ -80,8 +80,18 @@ import { buildProjectContextSnippet, initializeProjectIndex } from './project-in
 import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
 import { captureToInbox, listInbox } from './memory-store.js';
 import {
-  shouldAutoCaptureUserPrompt as shouldAutoCaptureUserPromptShared
+  classifyMemoryRoute,
+  shouldAutoCaptureUserPrompt as shouldAutoCaptureUserPromptShared,
+  buildMemoryDecisionGraphBlock,
+  buildMemoryRouteHintBlock
 } from './memory-policy.js';
+import {
+  buildCleanContextHandoff
+} from './workflow-gates.js';
+import {
+  createSubAgentDependencyCoordinator,
+  formatSubAgentUpstreamContext,
+} from './subagent-orchestrator.js';
 import { runDreamConsolidation } from './dream-consolidate.js';
 import {
   scheduleMemoryReviewBacklog,
@@ -583,9 +593,9 @@ export const EXECUTION_MODE_TOOL_POLICY = {
   plan: [
     'read', 'search_code', 'grep', 'ast_grep', 'list', 'glob', 'ast_query', 'read_ast_node',
     'query_project_index', 'query_project_graph', 'tool_search', 'skill', 'web_fetch', 'web_search',
-    'read_plan', 'update_plan', 'update_todos',
+    'update_todos',
     'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run',
-    'create_spec', 'create_plan', 'request_user_input'
+    'run_subagent', 'request_user_input'
   ]
 };
 
@@ -615,7 +625,7 @@ function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools, con
   return modePolicy;
 }
 
-function buildExecutionModePromptBlock(executionMode) {
+export function buildExecutionModePromptBlock(executionMode) {
   if (normalizeExecutionMode(executionMode) === 'plan') {
     return [
       'Execution Mode: coding',
@@ -624,11 +634,28 @@ function buildExecutionModePromptBlock(executionMode) {
       'Coding workflow:',
       '1. Read project instructions, then use project-index/search/read tools to inspect only the relevant code, tests, configuration, and callers before editing.',
       '2. If requirements have materially different interpretations, use request_user_input when available. Do not interrupt for low-impact details with a safe default.',
-      '3. Implement small and localized changes directly. Use create_spec only when product or architecture decisions need approval; use create_plan only when an already-clear task genuinely benefits from coordinated multi-step execution.',
+      '3. Choose the workflow yourself: implement directly, write a normal Markdown design document for user confirmation, or delegate a bounded task with run_subagent. There is no create_plan/create_spec orchestration tool.',
       '4. Preserve public contracts, local naming, error handling, platform compatibility, and dependency choices unless the request explicitly changes them. Avoid unrelated refactors and speculative abstractions.',
       '5. For bugs, first reproduce or establish a concrete failing signal, inspect evidence, test a falsifiable cause, apply the smallest root-cause fix, and add a regression check when the repository has an appropriate test seam.',
       '6. Verify with the narrowest project-native checks that cover the changed behavior, then inspect the diff. Never claim fixed, passing, or complete without fresh evidence; state what was not verified.',
       '7. Respect task intent: explanation or review requests authorize inspection and reporting, diagnosis requests authorize finding the cause, and explicit build/fix/change requests authorize implementation. Do not turn read-only work into edits without user intent.',
+      '',
+      'Subagent tool (run_subagent):',
+      '- Default: do the work yourself. Call run_subagent only for a bounded, independently verifiable chunk where clean context materially helps, for parallel read-only investigation across unrelated areas, or for an independent review of high-risk work.',
+      '- Do not delegate the whole ambiguous request, use a subagent merely to make a plan, or use one to avoid inspecting the relevant code yourself. The parent agent owns decomposition, integration, and the final answer.',
+      '- Always pass a complete prompt (task + success criteria + out-of-scope). Put durable handoff notes in context.',
+      '- Invent a short human name for each worker (e.g. David, Mira, Kai) via `name` — do not use preset role enums. Capability comes from `tools`, not the name.',
+      '- Default tools allow edits. For read-only explore/review, pass a read-only tools list (e.g. read, search_code, web_search). For verify/test, include run when needed.',
+      '- Subagents run on the configured Lite/Fast model. Keep assignments narrow and provide enough evidence and acceptance criteria for that model to finish without rediscovering the parent task.',
+      '- For parallel read-only work, emit multiple run_subagent calls in the same response and give each an explicit read-only tools list. Workers with default or mutating tools run sequentially because they share one worktree.',
+      '- For dependent work in the same response, give upstream calls a task_id and later calls depends_on. Dependencies must reference earlier task_id values. The runtime waits and injects successful upstream handoffs automatically; do not duplicate them in context.',
+      '- Subagents can never call run_subagent/create_plan/create_spec.',
+      '',
+      'Design documents:',
+      '- Create a design document only when implementation is blocked by a material product/architecture decision, multiple viable approaches have meaningfully different tradeoffs, or the change affects public contracts, data migration, security, cost, or broad scope.',
+      '- Do not create a design document for routine fixes, localized reversible changes, or decisions the user has already made. Inspect enough evidence first, then write the shortest useful Markdown under .codemini/workspace/specs/ (session subdirectory is fine). This is a file, not workflow state or a special tool.',
+      '- Record only the decisions and tradeoffs that need agreement, tell the user the path, and wait for confirmation before implementing those material choices.',
+      '- After confirmation, revise the document if needed and implement directly or with run_subagent.',
       '',
       'Tool discipline:',
       '- Prefer dedicated project-index, search, read, edit, and patch tools over raw shell equivalents. Load deferred tools with tool_search only when needed.',
@@ -638,10 +665,9 @@ function buildExecutionModePromptBlock(executionMode) {
       '',
       'Workflow boundaries:',
       '- Do not claim edit/write/begin_write/write_chunk/commit_write/apply_patch/delete/run are unavailable in coding mode; they are available for direct tasks.',
-      '- Do not call create_plan for a simple localized edit that can be implemented and verified in one coherent pass.',
-      '- If you create a spec, do not implement before the user approves it. If you create a plan, execution starts automatically in coding mode.',
+      '- Do not call run_subagent for a simple localized edit you can finish yourself.',
       '- Preserve unrelated user changes in a dirty worktree. Never discard, overwrite, or reformat work outside the requested scope.',
-      '- If the request is too unknown to act on safely, ask one focused question instead of producing a vague plan or guessing.'
+      '- If the request is too unknown to act on safely, ask one focused question instead of guessing.'
     ].join('\n');
   }
   return [
@@ -673,18 +699,82 @@ function buildExecutionModePromptBlock(executionMode) {
 
 export const ROLE_TOOL_POLICY = {
   planner: ['read', 'read_plan', 'tool_search', 'skill', 'update_plan', 'update_todos'],
-  explorer: ['read', 'search_code', 'tool_search', 'skill', 'web_fetch', 'web_search', 'read_plan'],
-  architect: ['read', 'search_code', 'tool_search', 'skill', 'web_search', 'read_plan'],
-  advisor: ['read', 'search_code', 'tool_search', 'skill', 'read_plan'],
-  coder: ['read', 'search_code', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos', 'read_plan', 'update_plan'],
-  refactorer: ['read', 'search_code', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill', 'read_plan'],
-  reviewer: ['read', 'search_code', 'tool_search', 'skill', 'read_plan'],
-  tester: ['read', 'search_code', 'run', 'tool_search', 'skill', 'read_plan'],
-  debugger: ['read', 'search_code', 'run', 'tool_search', 'skill', 'web_search', 'read_plan'],
-  writer: ['read', 'search_code', 'tool_search', 'skill', 'web_search', 'web_fetch', 'read_plan'],
-  summarizer: ['read', 'read_plan', 'tool_search', 'skill'],
+  explorer: ['read', 'search_code', 'tool_search', 'skill', 'web_fetch', 'web_search'],
+  architect: ['read', 'search_code', 'tool_search', 'skill', 'web_search'],
+  advisor: ['read', 'search_code', 'tool_search', 'skill'],
+  coder: ['read', 'search_code', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos'],
+  refactorer: ['read', 'search_code', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill'],
+  reviewer: ['read', 'search_code', 'tool_search', 'skill'],
+  tester: ['read', 'search_code', 'run', 'tool_search', 'skill'],
+  debugger: ['read', 'search_code', 'run', 'tool_search', 'skill', 'web_search'],
+  writer: ['read', 'search_code', 'tool_search', 'skill', 'web_search', 'web_fetch'],
+  summarizer: ['read', 'tool_search', 'skill'],
   codewiki: CODEWIKI_ROLE_TOOLS
 };
+
+/** Subagents must never spawn nested agents / workflow orchestrators. */
+export const SUBAGENT_FORBIDDEN_TOOLS = ['run_subagent', 'create_plan', 'create_spec'];
+
+const SUBAGENT_MUTATING_TOOLS = new Set([
+  'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'apply_patch', 'delete'
+]);
+
+export function normalizeSubAgentPersonaName(value, fallback = 'Alex') {
+  const text = String(value || '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 32);
+  if (!text) return fallback;
+  // Keep playful names readable; avoid dumping whole sentences into the badge.
+  const first = text.split(' ')[0] || text;
+  return first.charAt(0).toUpperCase() + first.slice(1);
+}
+
+export function getSubAgentPersonaPrompt(name = 'Alex') {
+  const persona = normalizeSubAgentPersonaName(name);
+  return [
+    `You are ${persona}, a focused coding subagent helping the parent agent.`,
+    'Stay lightly in character — competent, direct, and a bit personable — but never theatrical or wasteful.',
+    'Do only the assigned task. Do not invent extra scope. Do not spawn other agents.',
+    'Use tools as needed, then return a concise handoff to the parent agent and stop.',
+    'Choose the clearest format for the work instead of following a fixed template. Headings, bullets, or short prose are all acceptable.',
+    'Include the information the parent needs to continue: the result, material evidence or changes, relevant artifact paths, and any open or unverified items. Add a next step only when one is useful.',
+    'Omit empty sections and irrelevant ceremony. No greeting, full-goal recap, or closing flourish.'
+  ].join('\n');
+}
+
+/**
+ * Role/persona policy ∩ optional parent allow-list, minus forbidden spawn tools.
+ * Unknown persona names (e.g. "David") use the coder tool baseline; parent restricts via `tools`.
+ */
+export function resolveSubAgentToolAllowList({ role = 'coder', tools = null, config } = {}) {
+  const key = String(role || '').trim().toLowerCase();
+  const basePolicy = ROLE_TOOL_POLICY[key] || ROLE_TOOL_POLICY.coder;
+  const roleTools = normalizeToolPolicy(basePolicy, config).filter(
+    (name) => !SUBAGENT_FORBIDDEN_TOOLS.includes(name)
+  );
+  if (!Array.isArray(tools)) return roleTools;
+  const requested = normalizeToolPolicy(tools, config).filter(
+    (name) => !SUBAGENT_FORBIDDEN_TOOLS.includes(name)
+  );
+  const roleSet = new Set(roleTools);
+  return requested.filter((name) => roleSet.has(name));
+}
+
+export function subAgentAllowListMayMutate(tools = []) {
+  return (Array.isArray(tools) ? tools : []).some((name) =>
+    SUBAGENT_MUTATING_TOOLS.has(String(name || '').trim())
+  );
+}
+
+export function subAgentRunFailed(output = {}, signal = null) {
+  return Boolean(
+    signal?.aborted ||
+    output?.hasErrorLine ||
+    !String(output?.text || '').trim()
+  );
+}
 
 /** Approval options for plan pipeline sub-agents (inherit role tool allow-list + workspace git). */
 export function resolvePlanSubAgentApprovalOptions({
@@ -692,9 +782,10 @@ export function resolvePlanSubAgentApprovalOptions({
   config,
   projectIsGit = false,
   changeTrackerEnabled = false,
-  workspaceHasGit = false
+  workspaceHasGit = false,
+  tools = null
 } = {}) {
-  const roleAllowedTools = normalizeToolPolicy(ROLE_TOOL_POLICY[role] || ROLE_TOOL_POLICY.coder, config);
+  const roleAllowedTools = resolveSubAgentToolAllowList({ role, tools, config });
   return {
     projectIsGit: resolveApprovalProjectIsGit({
       projectIsGit,
@@ -1009,7 +1100,7 @@ export function getSubAgentRolePrompt(role) {
       'You are the summarizer in a multi-step agent pipeline.',
       'Your job is to synthesize the results of all prior steps into a concise, actionable final summary.',
       'Primary input: the accumulated plan file context and handoff packets already included in your task.',
-      'Do NOT browse the codebase. Your only tools are read, read_plan, tool_search, and skill.',
+      'Do NOT browse the codebase. Your only tools are read, tool_search, and skill.',
       'Do NOT call list, grep, run, edit, write, apply_patch, delete, or any other tool — they are unavailable and will fail.',
       'Use read ONLY when you have a specific artifact path from handoff/context that is not already covered in the plan file.',
       'If the plan file and handoff evidence are sufficient, produce the summary without any tool calls.',
@@ -1028,6 +1119,10 @@ export function getSubAgentRolePrompt(role) {
       '- <concrete follow-up actions if any>',
       'Do not add greetings, filler, or restate the goal. Deliver the summary and stop.'
     ].join('\n');
+  }
+  const key = String(role || '').trim().toLowerCase();
+  if (!ROLE_TOOL_POLICY[key]) {
+    return getSubAgentPersonaPrompt(role);
   }
   return [
     'You are the coder in a multi-step agent pipeline.',
@@ -1346,6 +1441,9 @@ function collectStepArtifacts(runItems, role) {
 }
 
 function buildStepArtifactPacket(runItems, role) {
+  if (role === 'reviewer' || role === 'tester') {
+    return buildCleanContextHandoff(runItems, role);
+  }
   const collected = collectStepArtifacts(runItems, role);
   if (!collected) return '';
   const { focusPaths, summaries } = collected;
@@ -1357,9 +1455,6 @@ function buildStepArtifactPacket(runItems, role) {
     lines.push('Focus paths first:');
     for (const value of focusPaths.slice(0, SUB_AGENT_HANDOFF_MAX_ITEMS)) {
       lines.push(`- ${value}`);
-    }
-    if (role === 'reviewer' || role === 'tester') {
-      lines.push('Start with these files/directories before exploring unrelated repo areas.');
     }
   }
   if (summaries.length > 0) {
@@ -1858,13 +1953,15 @@ function buildRecentStepResults(content = '', maxEntries = 2) {
   return chunks.slice(-maxEntries).join('\n\n---\n\n');
 }
 
-export function buildPlanWorkingMemoryContext(content = '', maxChars = 6000) {
+export function buildPlanWorkingMemoryContext(content = '', maxChars = 6000, options = {}) {
   const value = String(content || '').trim();
   if (!value) return '';
+  const ledgerOnly = options?.ledgerOnly === true;
 
   const findings = extractManagedPlanSection(value, 'findings');
   const progress = extractManagedPlanSection(value, 'progress');
   if (!findings && !progress) {
+    if (ledgerOnly) return '';
     if (value.length <= maxChars) return value;
     const headSize = Math.floor(maxChars * 0.3);
     const tailSize = maxChars - headSize - 50;
@@ -1873,9 +1970,9 @@ export function buildPlanWorkingMemoryContext(content = '', maxChars = 6000) {
 
   const headLimit = Math.max(600, Math.floor(maxChars * 0.35));
   const head = value.slice(0, headLimit).trimEnd();
-  const recentResults = buildRecentStepResults(value, 2);
+  const recentResults = ledgerOnly ? '' : buildRecentStepResults(value, 2);
   const sections = [
-    head,
+    ledgerOnly ? '' : head,
     '## Working Memory Snapshot',
     '### Findings Ledger',
     findings || '- None recorded yet.',
@@ -1937,11 +2034,11 @@ async function appendStepResultToPlanFile(planFilePath, stepIndex, stepTitle, ro
   }
 }
 
-async function readPlanFileAsContext(planFilePath, maxChars = 6000) {
+async function readPlanFileAsContext(planFilePath, maxChars = 6000, options = {}) {
   if (!planFilePath) return '';
   try {
     const content = await fs.readFile(planFilePath, 'utf8');
-    return buildPlanWorkingMemoryContext(content, maxChars);
+    return buildPlanWorkingMemoryContext(content, maxChars, options);
   } catch {
     return '';
   }
@@ -2115,7 +2212,7 @@ function classifyTaskComplexity(text = '') {
   return 'simple';
 }
 
-function classifyAutoRoute(text = '') {
+export function classifyAutoRoute(text = '') {
   const selectedSkills = selectAutoSkillNames(text);
   const hasBrainstorm = selectedSkills.includes('discussion');
   if (hasBrainstorm) {
@@ -2148,7 +2245,7 @@ function classifyAutoRoute(text = '') {
 function buildMediumTaskPromptBlock() {
   return [
     'Task Mode: medium',
-    '- Give a brief execution outline focused on the affected files and behavior, then proceed directly without create_plan when the task is already clear.',
+    '- Give a brief execution outline focused on the affected files and behavior, then choose whether to work directly or delegate a bounded chunk.',
     '- If material ambiguity appears during implementation, pause for one focused clarification instead of guessing.'
   ].join('\n');
 }
@@ -2722,12 +2819,10 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
   }
 
   if (lightweightGoal) {
-    const sourceHasTester = source.some((step) => step.role === 'tester' && testerStepHasConcreteVerification(step));
-    const includeTester = !plannerSaysSmall || plannerSaysVerification || sourceHasTester;
     return {
       summary,
       steps: finalizePlanWithTerminalRoles([primaryImplementationStep], goal, {
-        includeTester,
+        includeTester: true,
         includeReviewer: false,
         includeSummarizer: true
       })
@@ -2735,11 +2830,10 @@ function enforceAutoPlanGuardrailSteps(plan, goal) {
   }
 
   if (plannerSaysSmall && plannerSaysKnownTarget && implementationSteps.length > 0) {
-    const includeTester = plannerSaysVerification || source.some((step) => step.role === 'tester' && testerStepHasConcreteVerification(step));
     return {
       summary,
       steps: finalizePlanWithTerminalRoles([primaryImplementationStep], goal, {
-        includeTester,
+        includeTester: true,
         includeReviewer: false,
         includeSummarizer: true
       })
@@ -2772,6 +2866,38 @@ function looksLikeSuccessfulStepOutput(text = '') {
   if (acceptanceFailures.length > 0) return false;
   if (nextActionBullet && /^retry\b/i.test(nextActionBullet)) return false;
   return true;
+}
+
+async function capturePlanFailureLesson({
+  goal = '',
+  step = {},
+  stepIndex = 0,
+  totalSteps = 0,
+  config = {}
+} = {}) {
+  if (config?.memory?.enabled === false || config?.memory?.auto_capture === false) return null;
+  const role = String(step?.role || 'step').trim() || 'step';
+  const title = String(step?.title || 'plan step').trim() || 'plan step';
+  const reason = String(step?.failureReason || step?.output || 'plan step failed').trim().slice(0, 400);
+  const summary = `[plan:${role}] ${title}`.slice(0, 120);
+  const details = [
+    `Goal: ${String(goal || '').trim().slice(0, 300)}`,
+    `Step: ${stepIndex + 1}/${Math.max(totalSteps, stepIndex + 1)} [${role}] ${title}`,
+    `Failure: ${reason}`,
+    'Promote only if this is a reusable lesson; discard one-off environment noise during Dream.'
+  ].join('\n');
+  try {
+    return await captureToInbox({
+      scope: 'project',
+      type: 'lesson',
+      summary,
+      details,
+      tags: ['plan-failure', role],
+      source: 'plan-failure'
+    });
+  } catch {
+    return null;
+  }
 }
 
 const IMPLEMENTATION_EVIDENCE_ROLES = new Set(['coder', 'refactorer', 'writer']);
@@ -3349,6 +3475,42 @@ function extractSpecTitle(specText, fallback = 'spec') {
   return String(heading?.[1] || fallback).trim();
 }
 
+/**
+ * Prefer the Goals section goal statement over the document title/topic.
+ * Used for the review "目标" field so it matches ## Goals, not # Title.
+ */
+export function extractSpecDisplayGoal(specText = '', { sections = null, fallback = '' } = {}) {
+  const fromSectionObject = (value) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+    const goal = String(value.goal || '').trim();
+    if (goal) return goal;
+    const summary = String(value.summary || '').trim();
+    if (summary) return summary;
+    return '';
+  };
+
+  const fromSections = fromSectionObject(sections?.goals);
+  if (fromSections) return fromSections;
+
+  const text = String(specText || '');
+  const goalsBody = text.match(/^##\s+Goals\s*#*\s*\r?\n([\s\S]*?)(?=^##\s+|\s*$)/im)?.[1] || '';
+  if (goalsBody.trim()) {
+    const labeled = goalsBody.match(/(?:^|\n)\s*[-*]?\s*目标\s*[：:]\s*(.+)/);
+    if (labeled?.[1]) return labeled[1].trim();
+    const overview = goalsBody.match(/(?:^|\n)\s*[-*]?\s*概述\s*[：:]\s*(.+)/);
+    if (overview?.[1]) return overview[1].trim();
+    for (const line of goalsBody.split(/\r?\n/)) {
+      const bullet = line.replace(/^\s*[-*]\s+/, '').trim();
+      if (!bullet || bullet === '无') continue;
+      if (/^(需求|验收|备注)\s*[：:]/.test(bullet)) continue;
+      return bullet;
+    }
+  }
+
+  const fb = extractSpecTopicTitle(fallback);
+  return fb.replace(/\s+Design$/i, '').trim() || fb;
+}
+
 async function buildSpecWithModel({
   topic,
   config,
@@ -3804,6 +3966,16 @@ function resolveFastModel(config) {
   return String(config?.model?.fast_name || config?.model?.lite_name || config?.model?.name || '').trim();
 }
 
+export function resolveSubAgentModel(config, fallbackModel = '') {
+  return String(
+    config?.model?.fast_name
+      || config?.model?.lite_name
+      || fallbackModel
+      || config?.model?.name
+      || ''
+  ).trim();
+}
+
 export const PLAN_EXECUTION_DEFAULT_MODEL_ROLES = Object.freeze(['architect', 'advisor']);
 
 export function normalizePlanExecutionModel(value) {
@@ -4079,8 +4251,26 @@ function buildPendingSpecSnapshot(specState) {
   const normalized = normalizeSpecState(specState);
   if (!normalized || normalized.status !== 'pending_approval') return null;
   const completeness = analyzeSpecCompleteness(normalized.specText || '');
+  const extractedGoal = extractSpecDisplayGoal(normalized.specText, {
+    fallback: ''
+  });
+  const storedGoal = normalized.goal || '';
+  const title = extractSpecTitle(normalized.specText, normalized.summary || '');
+  const stripDesign = (value) => String(value || '').replace(/\s+Design$/i, '').trim().toLowerCase();
+  // Legacy create_spec stored the document title as goal; prefer Goals extraction then.
+  const storedLooksLikeTitle = Boolean(
+    storedGoal
+    && title
+    && (
+      stripDesign(storedGoal) === stripDesign(title)
+      || (normalized.summary && stripDesign(storedGoal) === stripDesign(normalized.summary))
+    )
+  );
+  const displayGoal = storedLooksLikeTitle || !storedGoal
+    ? (extractedGoal || storedGoal)
+    : storedGoal;
   return {
-    goal: normalized.goal || '',
+    goal: displayGoal || '',
     summary: normalized.summary || '',
     specText: normalized.specText || '',
     filePath: normalized.specPath || '',
@@ -4454,6 +4644,7 @@ async function askModel({
     resultDir: path.join(getSessionsDir(), String(session.id))
   });
 
+  const subAgentDependencies = createSubAgentDependencyCoordinator();
   const { definitions, handlers, formatters, deferredDefinitions, displayLabels, dispose: disposeTools } = getBuiltinTools({
     workspaceRoot,
     config: toolConfig,
@@ -4471,150 +4662,208 @@ async function askModel({
       session.planState = normalizePlanState(planState);
       scheduleSessionSave();
     },
-    onCreatePlan: normalizedExecutionMode === 'plan'
-      ? async ({ goal, assumptions = [], contextSummary = '', steps = [] }) => {
-          let enrichedGoal = String(goal || '').trim();
-          if (contextSummary) {
-            enrichedGoal += `\n\nExploration context:\n${contextSummary}`;
-          }
-          if (assumptions.length > 0) {
-            enrichedGoal += `\n\nAssumptions:\n${normalizeAssumptionItems(assumptions).map((item) => `- ${item}`).join('\n')}`;
-          }
-          const explicitSteps = normalizeStructuredPlanSteps(steps);
-          const auto = explicitSteps.length > 0
-            ? await writeExplicitAutoPlan({
-                goal: enrichedGoal,
-                steps: explicitSteps,
-                sessionId: session.id,
-                workspaceRoot
-              })
-            : await buildAutoPlanArtifact({
-                goal: enrichedGoal,
-                session,
-                config,
-                model,
-                systemPrompt: effectiveSystemPrompt,
-                onAgentEvent,
-                sessionId: session.id,
-                taskClass: classifyPlanTaskClass(goal),
-                workspaceRoot
-              });
-          const planState = {
-            status: 'running',
-            source: 'auto',
-            goal: enrichedGoal,
-            filePath: auto.filePath,
-            summary: auto.summary || '',
-            finalSummary: auto.finalSummary || auto.summary || '',
-            steps: Array.isArray(auto.steps) ? auto.steps : []
+    onRunSubAgent: normalizedExecutionMode === 'plan'
+      ? async ({
+          prompt,
+          name = '',
+          role = '',
+          context = '',
+          goal = '',
+          toolCallId = '',
+          orchestrationId = '',
+          taskId = '',
+          dependsOn = [],
+          tools = null
+        } = {}) => {
+          const identityRaw = String(name || role || '').trim();
+          const identityKey = identityRaw.toLowerCase();
+          const persona = normalizeSubAgentPersonaName(identityRaw, 'Alex');
+          // Soft alias: known pipeline role strings still get that tool policy; freeform names use coder baseline.
+          const policyKey = ROLE_TOOL_POLICY[identityKey] ? identityKey : 'coder';
+          const taskRole = ROLE_TOOL_POLICY[identityKey] ? identityKey : persona;
+          const taskPrompt = String(prompt || '').trim();
+          if (!taskPrompt) return { ok: false, error: 'prompt is required' };
+          const handoff = String(context || '').trim();
+          const declaredGoal = String(goal || '').trim();
+          const title = trimInline(taskPrompt, 72) || persona;
+          const callId = String(toolCallId || `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`).trim();
+          const emit = (evt) => {
+            if (onAgentEvent) onAgentEvent({ ...evt, toolCallId: callId });
           };
-          session.planState = normalizePlanState(planState);
-          if (typeof onExecutionModeSync === 'function') onExecutionModeSync();
-          if (persistSession) await saveSession(session);
-          await recordPlanReviewStatus(session.planState, 'executing');
-          const execution = await executePlanWithSubAgents({
-            planState: session.planState,
-            parentSession: session,
-            config,
-            model,
-            systemPrompt,
-            onAgentEvent,
-            requestToolApproval,
-            signal,
-            changeTracker,
-            backupManager,
-            projectIsGit: resolveApprovalProjectIsGit({
-              projectIsGit,
-              changeTrackerEnabled: Boolean(changeTracker?.enabled),
-              workspaceHasGit: Boolean(config?.runtime?.project_is_git)
-            }),
-            workspaceRoot
+          const dependencyTaskId = String(taskId || '').trim();
+          const dependencyRegistration = subAgentDependencies.register({
+            groupId: orchestrationId || callId,
+            taskId: dependencyTaskId,
+            dependsOn,
+            name: persona,
+            prompt: taskPrompt
           });
-          session.planState = normalizePlanState({
-            ...session.planState,
-            status: execution.aborted ? 'failed' : 'completed',
-            finalSummary: execution.sessionText || execution.text || session.planState.finalSummary
-          });
-          await finalizeApprovedPlanFile(session.planState, execution);
-          if (persistSession) await saveSession(session);
-          return {
-            ok: true,
-            workflowComplete: false,
-            filePath: auto.filePath,
-            summary: execution.sessionText || execution.text || auto.finalSummary || auto.summary,
-            message: [
-              'Plan execution finished. Give the user a short, friendly summary in plain language:',
-              '- what changed',
-              '- what was skipped or left unverified',
-              '- one suggested next step if useful',
-              'Do not paste the internal pipeline summarizer dump.',
-              '',
-              execution.text || buildAutoPlanSystemSummary(auto)
-            ].join('\n')
-          };
-        }
-      : undefined,
-    onCreateSpec: normalizedExecutionMode === 'plan'
-      ? async ({ topic, assumptions = [], contextSummary = '', sections = {} }) => {
-          let enrichedTopic = String(topic || '').trim();
-          if (contextSummary) {
-            enrichedTopic += `\n\nExploration context:\n${contextSummary}`;
-          }
-          if (assumptions.length > 0) {
-            enrichedTopic += `\n\nAssumptions:\n${normalizeAssumptionItems(assumptions).map((item) => `- ${item}`).join('\n')}`;
-          }
-          let content = '';
-          if (hasStructuredSpecSections(sections)) {
-            content = renderStructuredSpec({
-              title: topic,
-              ...(contextSummary && !sections.summary ? { summary: [contextSummary] } : {}),
-              ...sections
-            }, enrichedTopic);
-          } else {
-            try {
-              content = await buildSpecWithModel({
-                topic: enrichedTopic,
-                config,
-                model,
-                systemPrompt: effectiveSystemPrompt
-              });
-            } catch {
-              content = buildFallbackStructuredSpec(enrichedTopic);
-            }
-          }
-          const specTitle = extractSpecTitle(content, enrichedTopic);
-          const specPath = await writeMarkdownInProjectDir(
-            'specs',
-            specTitle,
-            content,
-            'spec',
-            session.id,
-            workspaceRoot
-          );
-          session.specState = {
-            status: 'pending_approval',
-            source: 'spec',
-            goal: enrichedTopic,
-            summary: specTitle,
-            specPath,
-            specText: content
-          };
-          if (session.planState?.status === 'pending_spec_approval') session.planState = null;
-          if (onAgentEvent) {
-            onAgentEvent({
-              type: 'spec:pending_approval',
-              spec: buildPendingSpecSnapshot(session.specState)
+          if (!dependencyRegistration.ok) {
+            emit({
+              type: 'plan:step_done',
+              toolCallId: callId,
+              step: 1,
+              total: 1,
+              role: persona,
+              title,
+              goal: taskPrompt,
+              status: 'failed',
+              taskId: dependencyTaskId,
+              dependsOn: Array.isArray(dependsOn) ? dependsOn : [],
+              summary: dependencyRegistration.error
             });
+            return {
+              ok: false,
+              error: dependencyRegistration.error,
+              text: ''
+            };
           }
-          if (typeof onExecutionModeSync === 'function') onExecutionModeSync();
-          if (persistSession) await saveSession(session);
-          return {
-            ok: true,
-            workflowComplete: true,
-            filePath: specPath,
-            summary: specTitle,
-            message: `Spec draft created: ${specPath}\nReview and approve it to generate an implementation plan.`
-          };
+          const toolAllowList = Array.isArray(tools) ? tools : null;
+          const resolvedTools = resolveSubAgentToolAllowList({
+            role: policyKey,
+            tools: toolAllowList,
+            config
+          });
+          const stepModel = resolveSubAgentModel(config, model);
+          emit({
+            type: 'plan:step_start',
+            toolCallId: callId,
+            step: 1,
+            total: 1,
+            role: persona,
+            title,
+            goal: taskPrompt,
+            status: dependencyRegistration.dependencies.length ? 'waiting' : 'running',
+            taskId: dependencyTaskId,
+            dependsOn: dependencyRegistration.dependencies,
+            model: stepModel
+          });
+          const dependencyResult = await dependencyRegistration.wait();
+          if (!dependencyResult.ok) {
+            const blockedBy = dependencyResult.blockedBy;
+            const blockedMessage = `Blocked because upstream task${blockedBy.length === 1 ? '' : 's'} ${blockedBy.join(', ')} did not complete successfully.`;
+            emit({
+              type: 'plan:step_done',
+              toolCallId: callId,
+              step: 1,
+              total: 1,
+              role: persona,
+              title,
+              status: 'blocked',
+              taskId: dependencyTaskId,
+              dependsOn: dependencyRegistration.dependencies,
+              blockedBy,
+              summary: blockedMessage
+            });
+            const blockedResult = {
+              ok: false,
+              blocked: true,
+              error: blockedMessage,
+              text: ''
+            };
+            dependencyRegistration.settle(blockedResult);
+            return blockedResult;
+          }
+          emit({
+            type: 'plan:progress',
+            toolCallId: callId,
+            step: 1,
+            total: 1,
+            role: persona,
+            title,
+            status: 'running',
+            taskId: dependencyTaskId,
+            dependsOn: dependencyRegistration.dependencies,
+            model: stepModel
+          });
+          const upstreamContext = formatSubAgentUpstreamContext(dependencyResult.upstream);
+          const contextSections = [
+            handoff ? `Handoff context from parent agent:\n${handoff}` : '',
+            upstreamContext
+          ].filter(Boolean);
+          const scopedTask = contextSections.length
+            ? `${contextSections.join('\n\n')}\n\nTask:\n${taskPrompt}`
+            : taskPrompt;
+          try {
+            const output = await runSubAgentTask({
+              role: taskRole,
+              task: scopedTask,
+              goal: declaredGoal,
+              priorSteps: [],
+              parentSession: session,
+              config,
+              model: stepModel,
+              systemPrompt,
+              onAgentEvent,
+              requestToolApproval,
+              signal,
+              changeTracker,
+              backupManager,
+              parentToolCallId: callId,
+              tools: toolAllowList,
+              projectIsGit: resolveApprovalProjectIsGit({
+                projectIsGit,
+                changeTrackerEnabled: Boolean(changeTracker?.enabled),
+                workspaceHasGit: Boolean(config?.runtime?.project_is_git)
+              }),
+              workspaceRoot
+            });
+            const failed = subAgentRunFailed(output, signal);
+            emit({
+              type: 'plan:step_done',
+              toolCallId: callId,
+              step: 1,
+              total: 1,
+              role: persona,
+              title,
+              status: failed ? 'failed' : 'done',
+              taskId: dependencyTaskId,
+              dependsOn: dependencyRegistration.dependencies,
+              summary: trimInline(output.text || '', 160),
+              output: formatPlanStepOutputForDisplay(output.text || '')
+            });
+            const fileChanges = subAgentAllowListMayMutate(resolvedTools)
+              ? collectPlanImplementationFileChanges([
+                  { role: policyKey, messages: output.messages || [] }
+                ])
+              : [];
+            const result = {
+              ok: !failed,
+              workflowComplete: false,
+              name: persona,
+              role: persona,
+              tools: resolvedTools,
+              text: output.text || '',
+              artifactPaths: output.artifactPaths || [],
+              ...(fileChanges.length ? { fileChanges } : {}),
+              message: [
+                'Subagent finished. Summarize for the user in plain language:',
+                '- what the subagent did',
+                '- what remains or was left unverified',
+                'Do not paste the raw subagent dump unless asked.',
+                '',
+                output.text || '(empty)'
+              ].join('\n')
+            };
+            dependencyRegistration.settle(result);
+            return result;
+          } catch (err) {
+            emit({
+              type: 'plan:step_done',
+              toolCallId: callId,
+              step: 1,
+              total: 1,
+              role: persona,
+              title,
+              status: 'failed',
+              taskId: dependencyTaskId,
+              dependsOn: dependencyRegistration.dependencies,
+              summary: String(err?.message || err)
+            });
+            const result = { ok: false, error: String(err?.message || err), text: '' };
+            dependencyRegistration.settle(result);
+            return result;
+          }
         }
       : undefined,
     backupManager
@@ -5020,7 +5269,7 @@ async function askModel({
   return { text: loopResult.text, aborted: !!loopResult.aborted };
 }
 
-async function runSubAgentTask({
+export async function runSubAgentTask({
   role,
   task,
   goal = '',
@@ -5037,13 +5286,17 @@ async function runSubAgentTask({
   planFileContext = '',
   changeTracker = null,
   backupManager = null,
+  parentToolCallId = '',
+  tools = null,
   projectIsGit = Boolean(config?.runtime?.project_is_git),
   workspaceRoot = process.cwd()
 }) {
   const subSession = { id: `sub-${Date.now()}`, messages: [] };
+  const subAgentModel = resolveSubAgentModel(config, model);
   const rolePrompt = getSubAgentRolePrompt(role);
-  const contextPacket = buildSubAgentContextPacket(parentSession, task || goal);
-  const evidencePacket = buildSubAgentEvidencePacket(parentSession);
+  const cleanContextRole = role === 'reviewer' || role === 'tester';
+  const contextPacket = cleanContextRole ? '' : buildSubAgentContextPacket(parentSession, task || goal);
+  const evidencePacket = cleanContextRole ? '' : buildSubAgentEvidencePacket(parentSession);
   const handoffPacket = buildStepArtifactPacket(priorSteps, role);
   const handoffFocusPaths = collectStepArtifacts(priorSteps, role)?.focusPaths || [];
   const focusedTaskNote = buildFocusedTaskNote(role, handoffFocusPaths);
@@ -5052,7 +5305,9 @@ async function runSubAgentTask({
     ? await buildTesterVerificationPacket(handoffFocusPaths, workspaceRoot)
     : '';
   const planFileSection = planFileContext
-    ? `Accumulated plan file context (results from prior steps):\n${planFileContext}`
+    ? cleanContextRole
+      ? `Accumulated plan ledger (clean-context; no executor transcripts):\n${planFileContext}`
+      : `Accumulated plan file context (results from prior steps):\n${planFileContext}`
     : '';
   const scopedTask = [
     contextPacket,
@@ -5081,16 +5336,23 @@ async function runSubAgentTask({
     ) {
       return;
     }
-    if (onAgentEvent) onAgentEvent(evt);
+    if (onAgentEvent) {
+      onAgentEvent(
+        parentToolCallId
+          ? { ...evt, parentToolCallId }
+          : evt
+      );
+    }
   };
-  const roleAllowedTools = normalizeToolPolicy(ROLE_TOOL_POLICY[role] || ROLE_TOOL_POLICY.coder, config);
+  const roleAllowedTools = resolveSubAgentToolAllowList({ role, tools, config });
   const workspaceHasGit = Boolean(config?.runtime?.project_is_git) || Boolean(changeTracker?.enabled);
   const approvalOptions = resolvePlanSubAgentApprovalOptions({
     role,
     config,
     projectIsGit,
     changeTrackerEnabled: Boolean(changeTracker?.enabled),
-    workspaceHasGit
+    workspaceHasGit,
+    tools
   });
   const subShellRulesPrompt = buildSubAgentShellRulesPrompt(roleAllowedTools, {
     shell: config?.shell?.default,
@@ -5110,7 +5372,7 @@ async function runSubAgentTask({
     text: scopedTask,
     session: subSession,
     config,
-    model,
+    model: subAgentModel,
     systemPrompt: subSystemPrompt,
     onAgentEvent: wrappedOnAgentEvent,
     requestToolApproval,
@@ -5366,11 +5628,14 @@ async function executePlanWithSubAgents({
     const planningModel = model || config.model?.name || '';
 
     const stepGuidance = buildPipelineStepGuidance({ role: step.role, stepIndex: i, totalSteps: steps.length, isFirst: i === 0, isLast: i === steps.length - 1, priorSteps });
-    const firstModel = resolvePlanExecutionModel(config, {
-      role: step.role,
-      retryCount: 0,
-      planningModel
-    });
+    const firstModel = resolveSubAgentModel(
+      config,
+      resolvePlanExecutionModel(config, {
+        role: step.role,
+        retryCount: 0,
+        planningModel
+      })
+    );
 
     emitPlanEvent({
       type: 'plan:step_start',
@@ -5401,7 +5666,10 @@ async function executePlanWithSubAgents({
     // Read accumulated plan file context from prior step results (skip for step 0)
     let planFileContext = '';
     if (i > 0 && planFilePath) {
-      planFileContext = await readPlanFileAsContext(planFilePath);
+      const cleanContextRole = step.role === 'reviewer' || step.role === 'tester';
+      planFileContext = await readPlanFileAsContext(planFilePath, 6000, {
+        ledgerOnly: cleanContextRole
+      });
     }
 
     let output = await runSubAgentTask({
@@ -5442,11 +5710,14 @@ ${diffReview}`.trim();
 
     while (stepFailed && retryCount < MAX_STEP_RETRIES && shouldRetryStepFailure(failureType, step.role) && !signal?.aborted) {
       retryCount += 1;
-      const retryModel = resolvePlanExecutionModel(config, {
-        role: step.role,
-        retryCount,
-        planningModel
-      });
+      const retryModel = resolveSubAgentModel(
+        config,
+        resolvePlanExecutionModel(config, {
+          role: step.role,
+          retryCount,
+          planningModel
+        })
+      );
       emitPlanEvent({
         type: 'assistant:delta',
         text: `\n[plan] Step ${i + 1}/${steps.length} retry ${retryCount}/${MAX_STEP_RETRIES} (previous: ${failureReason})\n`
@@ -5586,12 +5857,28 @@ ${diffReview}`.trim();
     });
 
     if (stepRecord.failed && i < steps.length - 1) {
+      await capturePlanFailureLesson({
+        goal,
+        step: stepRecord,
+        stepIndex: i,
+        totalSteps: steps.length,
+        config
+      });
       const summarizerIndex = steps.findIndex((candidate, index) => index > i && candidate.role === 'summarizer');
       if (summarizerIndex > i) {
         i = summarizerIndex - 1;
         continue;
       }
       break;
+    }
+    if (stepRecord.failed && i >= steps.length - 1) {
+      await capturePlanFailureLesson({
+        goal,
+        step: stepRecord,
+        stepIndex: i,
+        totalSteps: steps.length,
+        config
+      });
     }
   }
 
@@ -5612,6 +5899,32 @@ ${diffReview}`.trim();
       summaryLines.push(`Pipeline stopped after exit criteria failed at [${firstFailed.role}] ${firstFailed.title}: ${firstFailed.failureReason}.`);
     }
   }
+
+  const hadImplementation = results.some(
+    (r) => IMPLEMENTATION_EVIDENCE_ROLES.has(r.role) && !r.failed && implementationRoleHasToolEvidence(r.role, r.artifactPaths || [])
+  );
+  const testerPassed = results.some((r) => r.role === 'tester' && !r.failed);
+  const testerRan = results.some((r) => r.role === 'tester');
+  if (hadImplementation && (!testerRan || !testerPassed)) {
+    const reason = !testerRan
+      ? 'Implementation changed files but no tester step ran.'
+      : 'Implementation changed files but tester step failed or left items Not Verified.';
+    summaryLines.push(`[VERIFIER] ${reason}`);
+    await capturePlanFailureLesson({
+      goal,
+      step: {
+        role: 'tester',
+        title: 'Verifier gate',
+        failed: true,
+        failureReason: reason,
+        output: reason
+      },
+      stepIndex: results.length,
+      totalSteps: steps.length,
+      config
+    });
+  }
+
   if (signal?.aborted) {
     const partial = partialDeltaText.trim();
     if (partial) {
@@ -5626,6 +5939,7 @@ ${diffReview}`.trim();
     aborted: !!signal?.aborted,
     results,
     transcript,
+    verificationGap: Boolean(hadImplementation && (!testerRan || !testerPassed)),
     sessionText:
       [...results].reverse().find((r) => r.role === 'summarizer')?.output ||
       summaryLines.join('\n')
@@ -7124,9 +7438,8 @@ export async function createChatRuntime({
   } catch {
     // Workspace hooks are best-effort at startup.
   }
-  // Legacy `always` mode no longer injects prompt content, but an already installed
-  // skill may still carry hooks. Only explicitly selected/model-loaded skills arm
-  // their hooks under the new lifecycle.
+  // `always` skills inject their full prompt content and arm their hooks on every
+  // eligible chat turn. Explicitly selected/model-loaded skills arm hooks on demand.
   let sessionStartCompleted = false;
   // Boot-time SessionStart already ran before any chat turn. Keep a copy of the
   // hook UI events and replay them on the first submit so they appear at the top
@@ -7465,8 +7778,10 @@ export async function createChatRuntime({
   };
 
   const buildActiveSystemPrompt = async () => {
-    const memoryGuide =
-      `Persistent memory is for self-evolution: when the user asks you to remember something lasting, call save_memory. Use scope="user" kind="preference" for tastes/interests, scope="project" kind="convention" for project rules, and kind="lesson" for reusable learnings. Write memory content and summary in ${getReplyLanguageName(config)}. Verify changeable details from files; never store secrets. Do not duplicate an equivalent fact already present in Persistent Memory.`;
+    const memoryGuide = [
+      `Persistent memory is for self-evolution: when the user asks you to remember something lasting, call save_memory. Use scope="user" kind="preference" for tastes/interests, scope="project" kind="convention" for project rules, and kind="lesson" for reusable learnings. Write memory content and summary in ${getReplyLanguageName(config)}. Verify changeable details from files; never store secrets. Do not duplicate an equivalent fact already present in Persistent Memory.`,
+      buildMemoryDecisionGraphBlock()
+    ].join('\n\n');
     const skillIndexCacheKey = `${executionMode}:${JSON.stringify(config.skills || {})}`;
     if (
       !skillIndexPromptCache
@@ -7965,10 +8280,13 @@ export async function createChatRuntime({
     const skillPrompt = alwaysSkillPrompt
       ? appendPromptParts(activeReplySystemPrompt, [alwaysSkillPrompt])
       : activeReplySystemPrompt;
-    const routedSystemPrompt =
-      autoRoute.mode === 'direct_medium'
-        ? appendPromptParts(skillPrompt, [buildMediumTaskPromptBlock()])
-        : skillPrompt;
+    const isCodingMode = normalizeExecutionMode(executionMode) === 'plan';
+    const memoryRoute = classifyMemoryRoute(expandedText);
+    const memoryHint = buildMemoryRouteHintBlock(memoryRoute);
+    const routedSystemPrompt = appendPromptParts(skillPrompt, [
+      isCodingMode && autoRoute.mode === 'direct_medium' ? buildMediumTaskPromptBlock() : '',
+      memoryHint,
+    ]);
     const systemPromptWithHookContext = hookContexts.length > 0
       ? appendPromptParts(routedSystemPrompt, hookContexts)
       : routedSystemPrompt;
@@ -8260,10 +8578,13 @@ export async function createChatRuntime({
       const samePendingSpec =
         existingPath && path.resolve(existingPath) === path.resolve(resolvedPath);
       const title = summary || extractSpecTitle(text, path.basename(resolvedPath, '.md'));
+      const displayGoal = extractSpecDisplayGoal(text, {
+        fallback: goal || (samePendingSpec ? existing.goal : '') || extractSpecTopicTitle(title)
+      });
       currentSession.specState = {
         status: 'pending_approval',
         source: 'spec-file',
-        goal: goal || (samePendingSpec ? existing.goal : '') || title,
+        goal: displayGoal || goal || (samePendingSpec ? existing.goal : '') || title,
         summary: summary || (samePendingSpec ? existing.summary : '') || title,
         specPath: resolvedPath,
         specText: text

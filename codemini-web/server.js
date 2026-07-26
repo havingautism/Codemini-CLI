@@ -52,6 +52,7 @@ import { INDEX_SKIP_DIRS } from '../src/core/constants.js';
 import { VERSION } from '../src/core/version.js';
 import { detectPlaywrightStatus } from '../src/core/tools.js';
 import { getSqliteStorageInfo, openSqliteStorageFolder } from '../src/core/storage-info.js';
+import { launchWorkspacePath } from '../src/core/file-launcher.js';
 import {
   loadAttachmentMetadata,
   readRuntimeStatuses,
@@ -2616,6 +2617,22 @@ async function main() {
       } catch (err) {
         const status = String(err?.message || '').includes('Invalid storage target') ? 400 : 500;
         jsonResponse(res, { error: true, message: err.message }, status);
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/files/open') {
+      const { path: filePath, action = 'open' } = await readBody(req);
+      try {
+        jsonResponse(
+          res,
+          await launchWorkspacePath(filePath, currentProjectDir, { action }),
+        );
+      } catch (err) {
+        const message = String(err?.message || 'Unable to open file');
+        const status = /Missing|Invalid|outside|does not exist|not a file/i.test(message)
+          ? 400
+          : 500;
+        jsonResponse(res, { error: true, message }, status);
       }
       return;
     }

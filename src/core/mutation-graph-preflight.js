@@ -134,14 +134,50 @@ export function createMutationGraphPreflight({
         include_ambiguous: true,
       });
       if (!Array.isArray(result?.nodes) || result.nodes.length === 0) {
-        return { required: false, files };
+        const payload = compactImpact(
+          {
+            graph_version: result?.graph_version || '',
+            nodes: files.map((file) => ({
+              id: `file:${file}`,
+              type: 'file',
+              label: path.basename(file),
+              file,
+              summary: 'No indexed dependents found; verify callers manually before mutating.',
+            })),
+            edges: [],
+            stats: { displayed_nodes: files.length, displayed_edges: 0 },
+          },
+          files,
+        );
+        payload.guidance =
+          'No file was changed. Project graph returned no dependents for these paths. Inspect callers/importers manually, then retry the mutation tool.';
+        attempts.set(signature, { step, payload });
+        return { required: true, files, payload, content: formatPreflightPayload(payload), empty_graph: true };
       }
       const payload = compactImpact(result, files);
       attempts.set(signature, { step, payload });
       return { required: true, files, payload, content: formatPreflightPayload(payload) };
     } catch (error) {
       onError?.(error, { toolName, files });
-      return { required: false, files, degraded: true };
+      const payload = {
+        code: PREFLIGHT_CODE,
+        mutation_applied: false,
+        requires_retry: true,
+        guidance:
+          'No file was changed. Project graph impact lookup failed. Fix indexing/query_project_graph, inspect callers manually, then retry the mutation tool.',
+        files,
+        graph_version: '',
+        impact: { nodes: [], edges: [], truncated: false },
+        error: String(error?.message || error || 'graph query failed'),
+      };
+      attempts.set(signature, { step, payload });
+      return {
+        required: true,
+        files,
+        payload,
+        content: formatPreflightPayload(payload),
+        degraded: true,
+      };
     }
   };
 

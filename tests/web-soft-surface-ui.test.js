@@ -22,8 +22,12 @@ const skillPanel = source('codemini-web/client/src/components/SkillPanel.jsx');
 const badge = source('codemini-web/client/src/components/ui/badge.jsx');
 const bubble = source('codemini-web/client/src/components/ui/bubble.jsx');
 const attachment = source('codemini-web/client/src/components/ui/attachment.jsx');
+const horizontalScrollStrip = source('codemini-web/client/src/components/HorizontalScrollStrip.jsx');
 const messageBubble = source('codemini-web/client/src/components/MessageBubble.jsx');
+const scrollArea = source('codemini-web/client/src/components/ui/scroll-area.jsx');
+const streamdownRenderer = source('codemini-web/client/src/components/StreamdownRenderer.jsx');
 const toolCard = source('codemini-web/client/src/components/ToolCard.jsx');
+const planToolCard = source('codemini-web/client/src/components/PlanToolCard.jsx');
 const webServer = source('codemini-web/server.js');
 
 test('global themes expose a semantic soft-surface hierarchy', () => {
@@ -158,6 +162,73 @@ test('user messages stay flat and the composer stays visually stable on hover', 
 test('shared UI avoids large external focus rings', () => {
   const sharedUi = [input, textarea, select, button, badge, bubble, attachment, tabs, toggleGroup].join('\n');
   assert.doesNotMatch(sharedUi, /0_0_0_3px|ring-\[3px\]|focus-visible:ring-3/);
+});
+
+test('markdown wide content keeps a persistent horizontal scroll affordance', () => {
+  assert.match(streamdownRenderer, /function PersistentMarkdownTable/);
+  assert.match(streamdownRenderer, /<HorizontalScrollStrip contentClassName="block min-w-full gap-0 px-0">/);
+  assert.match(streamdownRenderer, /table:\s*PersistentMarkdownTable/);
+  assert.match(horizontalScrollStrip, /<ScrollArea[\s\S]*?type="auto"[\s\S]*?orientation="horizontal"/);
+  assert.doesNotMatch(horizontalScrollStrip, /ResizeObserver|setPointerCapture/);
+  assert.match(scrollArea, /orientation === "horizontal"[\s\S]*?"h-2 flex-col px-0\.5 py-0\.5"/);
+  assert.match(
+    styles,
+    /\.msg-body \[data-streamdown="table-wrapper"\]>div:nth-child\(2\)\s*\{[\s\S]*?overflow-x:\s*scroll !important;/,
+  );
+  assert.match(
+    styles,
+    /\.msg-body \[data-streamdown="code-block-body"\]\s*\{[\s\S]*?overflow-x:\s*scroll !important;/,
+  );
+  assert.match(
+    styles,
+    /\.codemini-md-preview \.wmde-markdown table,[\s\S]*?\.codemini-md-editor \.wmde-markdown pre>code\s*\{[\s\S]*?overflow-x:\s*scroll !important;/,
+  );
+});
+
+test('expanded sub-agents keep a compact indent and reveal adaptive task details', () => {
+  assert.match(planToolCard, /function SubagentTaskDetails/);
+  assert.match(planToolCard, /\{t\("planStepTask"\)\}/);
+  assert.match(
+    planToolCard,
+    /isSubagent\s*\?\s*card\?\.arguments\?\.prompt\s*\|\|\s*planRun\?\.goal/,
+  );
+  assert.match(planToolCard, /ROW_CLASS,[\s\S]*?"w-full rounded-none text-left"/);
+  assert.doesNotMatch(planToolCard, /rounded-t-xl/);
+  assert.match(
+    planToolCard,
+    /rounded-md bg-\(--bg-tertiary\)[^"]*dark:bg-\(--bg-primary\)[\s\S]*?<ScrollArea[\s\S]*?type="auto"[\s\S]*?className="max-h-28 min-w-0 flex-1"[\s\S]*?viewportClassName="max-h-28/,
+  );
+  assert.doesNotMatch(planToolCard, /h-\[76px\]/);
+  assert.match(
+    planToolCard,
+    /type="auto"[\s\S]*?className="mt-1 h-48 rounded-md bg-\(--bg-tertiary\) dark:bg-\(--bg-primary\)"/,
+  );
+  assert.match(
+    planToolCard,
+    /!open\s*\?\s*\([\s\S]*?min-w-0 flex-1 truncate[\s\S]*?\)\s*:\s*\([\s\S]*?flex-1/,
+  );
+  assert.match(
+    planToolCard,
+    /className="px-3 pb-3 pt-2"[\s\S]*?<SubagentTaskDetails task=\{goal\}/,
+  );
+  assert.doesNotMatch(
+    planToolCard,
+    /border-t border-\(--border-default\) px-3 pb-3 pt-2/,
+  );
+  assert.doesNotMatch(planToolCard, /pl-\[54px\]/);
+  assert.match(planToolCard, /function SubagentDependencyDetails/);
+  assert.match(planToolCard, /subagentDependencyWaiting/);
+  assert.match(planToolCard, /subagentDependencyReceived/);
+  assert.match(planToolCard, /subagentDependencyBlocked/);
+  assert.match(planToolCard, /card\?\.arguments\?\.depends_on/);
+});
+
+test('long tool call arguments end with an ellipsis before the status indicator', () => {
+  assert.match(
+    toolCard,
+    /msg-process-meta__detail ml-1 block min-w-0 flex-1 truncate font-mono/,
+  );
+  assert.match(toolCard, /LinearStatusDot className="shrink-0"/);
 });
 
 test('memory management owns the Inbox experience instead of the action palette', () => {
