@@ -29,6 +29,16 @@ import {
 } from './lib/runtime-pool.js';
 import { resolveGitCwd, shouldAdoptGitCwd } from './lib/git-project.js';
 import { createGitInfoReader, readGitDiffData, readGitInfoBatch } from './lib/git-status.js';
+import {
+  clearTerminal,
+  getTerminalSnapshot,
+  resizeTerminal,
+  restartTerminal,
+  runTerminalCommand,
+  stopTerminal,
+  subscribeTerminal,
+  writeTerminalInput,
+} from './lib/web-terminal.js';
 import { createPooledSessionEnsurer } from './lib/pooled-session-ensurer.js';
 import { loadSessionForSwitch } from './lib/session-switch-loader.js';
 import { resolveEmbed } from './lib/embed-resolver.js';
@@ -2458,6 +2468,110 @@ async function main() {
       } catch {
         jsonResponse(res, { isGit: false, branch: null, dirty: false, staged: 0, modified: 0, untracked: 0, linesAdded: 0, linesRemoved: 0 });
       }
+      return;
+    }
+
+    // ── Project terminal (persistent PTY) ──
+    const resolveTerminalCwd = async (body = {}) => {
+      const sessionId = String(
+        body?.sessionId || url.searchParams.get('sessionId') || ''
+      ).trim();
+      if (sessionId) {
+        try { await ensurePooledSession(sessionId); } catch {}
+      }
+      const cwd = resolveGitCwd({
+        sessionId,
+        getSessionProjectDir: (id) => pool.getSessionState(id)?.projectDir || '',
+        fallbackDir: currentProjectDir
+      }) || currentProjectDir || process.cwd();
+      if (shouldAdoptGitCwd(cwd, currentProjectDir)) currentProjectDir = cwd;
+      return cwd;
+    };
+
+    if (req.method === 'GET' && url.pathname === '/api/terminal') {
+      const config = await loadConfig();
+      const cwd = await resolveTerminalCwd();
+      jsonResponse(res, getTerminalSnapshot(cwd, config.shell?.default));
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/terminal/stream') {
+      const config = await loadConfig();
+      const cwd = await resolveTerminalCwd();
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no'
+      });
+      subscribeTerminal(cwd, res, config.shell?.default);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/terminal/run') {
+      const body = await readBody(req);
+      const config = await loadConfig();
+      const cwd = await resolveTerminalCwd(body);
+      if (isGeneralProjectDir(cwd)) {
+        jsonResponse(res, { ok: false, error: 'Open a project before using the terminal.' }, 400);
+        return;
+      }
+      const result = runTerminalCommand({
+        cwd,
+        command: body?.command,
+        shellDefault: config.shell?.default,
+      });
+      jsonResponse(res, result, result.ok ? 200 : 400);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/terminal/input') {
+      const body = await readBody(req);
+      const config = await loadConfig();
+      const cwd = await resolveTerminalCwd(body);
+      if (isGeneralProjectDir(cwd)) {
+        jsonResponse(res, { ok: false, error: 'Open a project before using the terminal.' }, 400);
+        return;
+      }
+      jsonResponse(
+        res,
+        writeTerminalInput(cwd, body?.data, config.shell?.default),
+      );
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/terminal/resize') {
+      const body = await readBody(req);
+      const config = await loadConfig();
+      const cwd = await resolveTerminalCwd(body);
+      jsonResponse(
+        res,
+        resizeTerminal(cwd, body?.cols, body?.rows, config.shell?.default),
+      );
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/terminal/stop') {
+      const body = await readBody(req);
+      const config = await loadConfig();
+      const cwd = await resolveTerminalCwd(body);
+      jsonResponse(res, stopTerminal(cwd, config.shell?.default));
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/terminal/clear') {
+      const body = await readBody(req);
+      const config = await loadConfig();
+      const cwd = await resolveTerminalCwd(body);
+      jsonResponse(res, { ok: true, snapshot: clearTerminal(cwd, config.shell?.default) });
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/api/terminal/restart') {
+      const body = await readBody(req);
+      const config = await loadConfig();
+      const cwd = await resolveTerminalCwd(body);
+      jsonResponse(res, restartTerminal(cwd, config.shell?.default));
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/git-diff') {

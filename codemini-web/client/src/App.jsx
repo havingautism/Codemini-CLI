@@ -1,4 +1,4 @@
-﻿import React, {
+import React, {
   Component,
   Suspense,
   lazy,
@@ -76,6 +76,11 @@ const AboutDialog = lazy(() =>
 const GitDiffDialog = lazy(() =>
   import("@/components/GitDiffDialog.jsx").then((module) => ({
     default: module.GitDiffDialog,
+  })),
+);
+const TerminalPanel = lazy(() =>
+  import("@/components/TerminalPanel.jsx").then((module) => ({
+    default: module.TerminalPanel,
   })),
 );
 
@@ -178,6 +183,7 @@ function Shell() {
   const approvalRequest = interactiveRequestForSession(state, "approval");
   const userInputRequest = interactiveRequestForSession(state, "userInput");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const rs = state.runtimeState || {};
   const currentId = state.currentSessionId || rs.sessionId;
   const reasoningSyncKey = useMemo(
@@ -377,13 +383,28 @@ function Shell() {
                   </button>
                 )}
               </div>
-              {/* <button className="border-0 bg-transparent text-(--text-muted) rounded-md p-1.5 cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) shrink-0">
-                <DotsThree size={16} />
-              </button> */}
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  type="button"
+                  className={
+                    "inline-flex size-8 items-center justify-center rounded-md border-0 cursor-pointer " +
+                    (terminalOpen
+                      ? "bg-(--bg-hover) text-(--text-primary)"
+                      : "bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)")
+                  }
+                  aria-label={t("terminalTitle")}
+                  title={t("terminalTitle")}
+                  aria-pressed={terminalOpen}
+                  onClick={() => setTerminalOpen((open) => !open)}
+                >
+                  <Terminal size={16} />
+                </button>
+              </div>
             </div>
 
             {/* Plan Progress (during execution) — now rendered as a chat message via plan-overview */}
 
+            <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
             <div className="codemini-chat-session flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden">
             {/* Chat Panel */}
             <ChatPanel
@@ -462,6 +483,19 @@ function Shell() {
                 />
               </div>
             </div>
+            </div>
+            {terminalOpen ? (
+              <Suspense fallback={null}>
+                <TerminalPanel
+                  sessionId={state.currentSessionId || ""}
+                  projectCwd={
+                    state.runtimeState?.cwd || state.projectCwd || ""
+                  }
+                  disabled={Boolean(state.isGeneral)}
+                  onClose={() => setTerminalOpen(false)}
+                />
+              </Suspense>
+            ) : null}
             </div>
           </div>
         )}

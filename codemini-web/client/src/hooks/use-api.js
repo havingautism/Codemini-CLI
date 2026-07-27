@@ -762,3 +762,66 @@ export async function deleteCodeWikiReport(file, project = '') {
   const res = await api(`/api/codewiki/report/${encodeURIComponent(file)}${codeWikiProjectQuery(project)}`, { method: 'DELETE' });
   return res.json();
 }
+
+export function openTerminalStream(sessionId) {
+  return new EventSource(withSessionQuery('/api/terminal/stream', sessionId));
+}
+
+export async function fetchTerminalSnapshot(sessionId) {
+  const res = await api(withSessionQuery('/api/terminal', sessionId));
+  return readJsonResponse(res);
+}
+
+export async function runTerminalCommand(sessionId, command) {
+  const res = await api('/api/terminal/run', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, command }),
+  });
+  return readJsonResponse(res);
+}
+
+export async function stopTerminalCommand(sessionId) {
+  const res = await api('/api/terminal/stop', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId }),
+  });
+  return readJsonResponse(res);
+}
+
+export async function writeTerminalInput(sessionId, data) {
+  const res = await api('/api/terminal/input', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, data }),
+  });
+  return readJsonResponse(res);
+}
+
+export async function resizeTerminalSession(sessionId, cols, rows) {
+  const res = await api('/api/terminal/resize', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, cols, rows }),
+  });
+  return readJsonResponse(res);
+}
+
+export async function clearTerminalSession(sessionId) {
+  const res = await api('/api/terminal/clear', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId }),
+  });
+  return readJsonResponse(res);
+}
+
+export async function restartTerminalSession(sessionId) {
+  const res = await api('/api/terminal/restart', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId }),
+  });
+  return readJsonResponse(res);
+}

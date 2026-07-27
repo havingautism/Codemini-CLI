@@ -1,4 +1,4 @@
-﻿import { Suspense, lazy, useRef, useEffect, useState, useMemo, useCallback } from "react";
+import { Suspense, lazy, useRef, useEffect, useState, useMemo, useCallback } from "react";
 import { GitBranch } from "@phosphor-icons/react";
 import { Spinner } from "@/components/ui/spinner";
 import {

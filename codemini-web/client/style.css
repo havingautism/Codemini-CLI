@@ -3503,6 +3503,61 @@ samp {
   box-shadow: none;
 }
 
+.codemini-terminal-action {
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 0.375rem;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.codemini-terminal-action:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.codemini-terminal-action:focus-visible,
+.codemini-terminal-resizer:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
+}
+
+.codemini-terminal-resizer {
+  color: transparent;
+  transition:
+    color 120ms ease,
+    background-color 120ms ease;
+}
+
+.codemini-terminal-resizer:hover,
+.codemini-terminal-resizer:focus-visible {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--accent-blue) 18%, transparent);
+}
+
+.codemini-terminal-host {
+  padding: 0.625rem 0 0.5rem 0.75rem;
+  overflow: hidden;
+}
+
+.codemini-terminal-host .xterm {
+  height: 100%;
+}
+
+.codemini-terminal-host .xterm-viewport {
+  scrollbar-color: var(--border-default) transparent;
+}
+
+.codemini-terminal-host .xterm-screen canvas {
+  image-rendering: auto;
+}
+
 @media (prefers-contrast: more),
 (forced-colors: active) {
   :where(button, a, input, textarea, select, [role="button"], [role="option"]):focus-visible {
