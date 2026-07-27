@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Tree } from "react-arborist";
 import {
+  ArrowUp,
   CaretDown,
   CaretRight,
   File as FileIcon,
@@ -11,6 +12,7 @@ import {
   fetchWorkspacePreview,
   fetchWorkspaceTree,
 } from "@/hooks/use-api.js";
+import { FilePreviewCode } from "@/components/FilePreviewCode.jsx";
 import { t } from "../../i18n/index.js";
 
 function markUnloaded(nodes = []) {
@@ -43,7 +45,124 @@ function replaceChildren(nodes, targetId, children) {
   });
 }
 
-function NodeRenderer({ node, style, dragHandle }) {
+function normalizeBrowsePath(path = "") {
+  return String(path || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/+|\/+$/g, "");
+}
+
+function parentBrowsePath(path = "") {
+  const normalized = normalizeBrowsePath(path);
+  if (!normalized) return "";
+  const parts = normalized.split("/");
+  parts.pop();
+  return parts.join("/");
+}
+
+function splitBrowseSegments(path = "") {
+  const normalized = normalizeBrowsePath(path);
+  if (!normalized) return [];
+  const parts = normalized.split("/");
+  return parts.map((name, index) => ({
+    name,
+    path: parts.slice(0, index + 1).join("/"),
+  }));
+}
+
+function projectDisplayName(rootPath = "", fallback = "") {
+  const normalized = String(rootPath || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "");
+  if (!normalized) return fallback || "—";
+  const parts = normalized.split("/").filter(Boolean);
+  return parts[parts.length - 1] || fallback || "—";
+}
+
+function joinAbsolutePath(rootPath = "", browsePath = "") {
+  const root = String(rootPath || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "");
+  const rel = normalizeBrowsePath(browsePath);
+  if (!root) return rel || "";
+  if (!rel) return root;
+  return `${root}/${rel}`;
+}
+
+function PathBar({
+  projectName,
+  segments = [],
+  absoluteTitle = "",
+  canGoUp = false,
+  onGoUp,
+  onNavigate,
+}) {
+  const hasDeeper = segments.length > 0;
+
+  return (
+    <div
+      className="flex shrink-0 items-center gap-1 border-b border-(--border-default) px-2 py-1"
+      title={absoluteTitle}
+    >
+      {canGoUp ? (
+        <button
+          type="button"
+          className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+          aria-label={t("workspaceGoUp")}
+          title={t("workspaceGoUp")}
+          onClick={onGoUp}
+        >
+          <ArrowUp size={14} />
+        </button>
+      ) : null}
+      <nav
+        className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto font-mono text-[11px] text-(--text-muted)"
+        aria-label={t("workspaceBreadcrumb")}
+      >
+        {hasDeeper ? (
+          <button
+            type="button"
+            className="shrink-0 rounded px-1 py-0.5 text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+            onClick={() => onNavigate?.("")}
+          >
+            {projectName}
+          </button>
+        ) : (
+          <span className="shrink-0 px-1 py-0.5 text-(--text-primary)">
+            {projectName}
+          </span>
+        )}
+        {segments.map((segment, index) => {
+          const isLast = index === segments.length - 1;
+          return (
+            <span key={segment.path} className="inline-flex shrink-0 items-center gap-0.5">
+              <span className="text-(--text-muted)" aria-hidden="true">
+                /
+              </span>
+              {isLast ? (
+                <span className="px-1 py-0.5 text-(--text-primary)">
+                  {segment.name}
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="rounded px-1 py-0.5 text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                  onClick={() => onNavigate?.(segment.path)}
+                >
+                  {segment.name}
+                </button>
+              )}
+            </span>
+          );
+        })}
+      </nav>
+    </div>
+  );
+}
+
+function NodeRenderer({ node, style, dragHandle, onEnterDirectory }) {
   const isDirectory = node.data.type === "directory";
   const isOpen = node.isOpen;
 
@@ -63,11 +182,19 @@ function NodeRenderer({ node, style, dragHandle }) {
         className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1 py-0.5 text-left"
         onClick={(event) => {
           event.preventDefault();
+          if (event.detail > 1) return;
           if (isDirectory) {
             node.toggle();
             return;
           }
           node.activate();
+        }}
+        onDoubleClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!isDirectory) return;
+          const nextPath = normalizeBrowsePath(node.data.path || node.data.id || "");
+          if (nextPath) onEnterDirectory?.(nextPath);
         }}
       >
         <span className="inline-flex size-3.5 shrink-0 items-center justify-center text-(--text-muted)">
@@ -95,6 +222,7 @@ export function FileTreePanel({
 }) {
   const [treeData, setTreeData] = useState([]);
   const [rootPath, setRootPath] = useState(projectCwd || "");
+  const [browsePath, setBrowsePath] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [mode, setMode] = useState("tree");
@@ -106,7 +234,18 @@ export function FileTreePanel({
   const [treeSize, setTreeSize] = useState({ width: 280, height: 360 });
   const loadingDirsRef = useRef(new Set());
 
-  const loadRoot = useCallback(async () => {
+  useEffect(() => {
+    setBrowsePath("");
+  }, [sessionId, projectCwd, disabled]);
+
+  const exitPreview = useCallback(() => {
+    setMode("tree");
+    setPreview(null);
+    setPreviewError("");
+    setPreviewLoading(false);
+  }, []);
+
+  const loadBrowse = useCallback(async () => {
     if (disabled) {
       setTreeData([]);
       setError("");
@@ -116,8 +255,11 @@ export function FileTreePanel({
     setError("");
     setMode("tree");
     setPreview(null);
+    setPreviewError("");
+    setPreviewLoading(false);
+    loadingDirsRef.current.clear();
     try {
-      const result = await fetchWorkspaceTree(sessionId, "");
+      const result = await fetchWorkspaceTree(sessionId, browsePath);
       if (result?.error) {
         throw new Error(result.message || t("workspaceTreeFailed"));
       }
@@ -129,11 +271,11 @@ export function FileTreePanel({
     } finally {
       setLoading(false);
     }
-  }, [disabled, projectCwd, sessionId]);
+  }, [browsePath, disabled, projectCwd, sessionId]);
 
   useEffect(() => {
-    loadRoot();
-  }, [loadRoot]);
+    loadBrowse();
+  }, [loadBrowse]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -198,6 +340,60 @@ export function FileTreePanel({
     [sessionId],
   );
 
+  const navigateToBrowsePath = useCallback(
+    (path) => {
+      const next = normalizeBrowsePath(path);
+      exitPreview();
+      setBrowsePath((current) => (current === next ? current : next));
+      // Same folder as current browsePath: still leave preview (exitPreview above).
+    },
+    [exitPreview],
+  );
+
+  const handleEnterDirectory = useCallback((path) => {
+    navigateToBrowsePath(path);
+  }, [navigateToBrowsePath]);
+
+  const handleGoUp = useCallback(() => {
+    if (mode === "preview") {
+      const parent = parentBrowsePath(preview?.path || "");
+      navigateToBrowsePath(parent);
+      return;
+    }
+    setBrowsePath((current) => parentBrowsePath(current));
+  }, [mode, navigateToBrowsePath, preview?.path]);
+
+  const projectName = useMemo(
+    () => projectDisplayName(rootPath || projectCwd, t("workspaceProjectRoot")),
+    [projectCwd, rootPath],
+  );
+  const browseSegments = useMemo(
+    () => splitBrowseSegments(browsePath),
+    [browsePath],
+  );
+  const previewSegments = useMemo(
+    () => splitBrowseSegments(preview?.path || ""),
+    [preview?.path],
+  );
+  const absoluteBrowsePath = useMemo(
+    () => joinAbsolutePath(rootPath || projectCwd, browsePath),
+    [browsePath, projectCwd, rootPath],
+  );
+  const absolutePreviewPath = useMemo(
+    () => joinAbsolutePath(rootPath || projectCwd, preview?.path || ""),
+    [preview?.path, projectCwd, rootPath],
+  );
+  const treeCanGoUp = Boolean(normalizeBrowsePath(browsePath));
+  // Show up only when leaving a nested path (not project root / root-level file).
+  const previewCanGoUp = Boolean(parentBrowsePath(preview?.path || ""));
+
+  const renderNode = useCallback(
+    (props) => (
+      <NodeRenderer {...props} onEnterDirectory={handleEnterDirectory} />
+    ),
+    [handleEnterDirectory],
+  );
+
   if (disabled) {
     return (
       <div className="p-3 text-[12px] text-(--text-muted)">
@@ -209,50 +405,34 @@ export function FileTreePanel({
   if (mode === "preview") {
     return (
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="flex shrink-0 items-center gap-2 border-b border-(--border-default) px-3 py-2">
-          <button
-            type="button"
-            className="rounded-md px-2 py-1 text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
-            onClick={() => {
-              setMode("tree");
-              setPreview(null);
-              setPreviewError("");
-            }}
-          >
-            {t("workspaceBackToTree")}
-          </button>
-          <div
-            className="min-w-0 flex-1 truncate font-mono text-[11px] text-(--text-muted)"
-            title={preview?.path || ""}
-          >
-            {preview?.path || t("workspacePreview")}
-          </div>
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto p-3">
+        <PathBar
+          projectName={projectName}
+          segments={previewSegments}
+          absoluteTitle={absolutePreviewPath}
+          canGoUp={previewCanGoUp}
+          onGoUp={handleGoUp}
+          onNavigate={navigateToBrowsePath}
+        />
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           {previewLoading ? (
-            <div className="text-[12px] text-(--text-muted)">
+            <div className="p-3 text-[12px] text-(--text-muted)">
               {t("workspacePreviewLoading")}
             </div>
           ) : null}
           {previewError ? (
-            <div className="text-[12px] text-(--accent-red)">{previewError}</div>
+            <div className="p-3 text-[12px] text-(--accent-red)">{previewError}</div>
           ) : null}
           {!previewLoading && !previewError && preview?.kind === "unsupported" ? (
-            <div className="text-[12px] text-(--text-muted)">
+            <div className="p-3 text-[12px] text-(--text-muted)">
               {preview.message || t("workspacePreviewUnsupported")}
             </div>
           ) : null}
           {!previewLoading && !previewError && preview?.kind === "text" ? (
-            <>
-              {preview.truncated ? (
-                <div className="mb-2 text-[11px] text-(--text-muted)">
-                  {t("workspacePreviewTruncated")}
-                </div>
-              ) : null}
-              <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-(--text-secondary)">
-                {preview.content || ""}
-              </pre>
-            </>
+            <FilePreviewCode
+              path={preview.path}
+              content={preview.content || ""}
+              truncated={Boolean(preview.truncated)}
+            />
           ) : null}
         </div>
       </div>
@@ -261,12 +441,14 @@ export function FileTreePanel({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div
-        className="shrink-0 truncate border-b border-(--border-default) px-3 py-1.5 font-mono text-[11px] text-(--text-muted)"
-        title={rootPath}
-      >
-        {rootPath || projectCwd || "—"}
-      </div>
+      <PathBar
+        projectName={projectName}
+        segments={browseSegments}
+        absoluteTitle={absoluteBrowsePath}
+        canGoUp={treeCanGoUp}
+        onGoUp={handleGoUp}
+        onNavigate={navigateToBrowsePath}
+      />
       {error ? (
         <div className="shrink-0 px-3 py-2 text-[12px] text-(--accent-red)">
           {error}
@@ -306,7 +488,7 @@ export function FileTreePanel({
               node.type === "directory" ? node.children || [] : null
             }
           >
-            {NodeRenderer}
+            {renderNode}
           </Tree>
         ) : null}
       </div>

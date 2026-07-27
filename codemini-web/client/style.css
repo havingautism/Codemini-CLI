@@ -3253,11 +3253,13 @@ samp {
 }
 
 /* Shiki dual-theme syntax highlighting */
-[data-theme="light"] .msg-body [data-streamdown="code-block-body"] span[style*="--shiki-light"] {
+[data-theme="light"] .msg-body [data-streamdown="code-block-body"] span[style*="--shiki-light"],
+[data-theme="light"] .codemini-file-preview-source span[style*="--shiki-light"] {
   color: var(--shiki-light) !important;
 }
 
-[data-theme="dark"] .msg-body [data-streamdown="code-block-body"] span[style*="--shiki-dark"] {
+[data-theme="dark"] .msg-body [data-streamdown="code-block-body"] span[style*="--shiki-dark"],
+[data-theme="dark"] .codemini-file-preview-source span[style*="--shiki-dark"] {
   color: var(--shiki-dark) !important;
 }
 
@@ -3551,7 +3553,30 @@ samp {
 }
 
 .codemini-terminal-host .xterm-viewport {
-  scrollbar-color: var(--border-default) transparent;
+  overflow-y: auto !important;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.codemini-terminal-host .xterm-viewport::-webkit-scrollbar {
+  width: var(--scrollbar-size);
+}
+
+.codemini-terminal-host .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.codemini-terminal-host .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+
+.codemini-terminal-host .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+.codemini-terminal-host .xterm-viewport::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .codemini-terminal-host .xterm-screen canvas {
