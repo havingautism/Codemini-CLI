@@ -3,6 +3,8 @@ import {
   ArrowClockwise,
   BookOpenText,
   Brain,
+  CaretDown,
+  CaretRight,
   DotsThree,
   Folder,
   GearSix,
@@ -16,6 +18,7 @@ import {
   PencilLine,
   PlugsConnected,
   Plus,
+  SidebarSimple,
   Sun,
   User,
   X,
@@ -45,6 +48,28 @@ const PROJECT_SESSION_PREVIEW_LIMIT = 5;
 const GENERAL_SESSION_PREVIEW_LIMIT = 10;
 const LEGACY_PINNED_PROJECTS_KEY = "codemini-sidebar-pinned-projects";
 const LEGACY_HIDDEN_PROJECTS_KEY = "codemini-sidebar-hidden-projects";
+const PROJECTS_SECTION_OPEN_KEY = "codemini-sidebar-projects-open";
+const CONVERSATIONS_SECTION_OPEN_KEY = "codemini-sidebar-conversations-open";
+
+function readBooleanPreference(key, fallback = true) {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    return raw === "1" || raw === "true";
+  } catch {
+    return fallback;
+  }
+}
+
+function writeBooleanPreference(key, value) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch {
+    // Ignore quota / private-mode failures.
+  }
+}
 
 function readLegacySidebarKeys() {
   const pinned = readLegacyProjectKeys(LEGACY_PINNED_PROJECTS_KEY);
@@ -228,6 +253,7 @@ export function Sidebar({
   onRefreshSessions,
   onRegenerateSessionTitle,
   onDeleteSession,
+  onCollapseSidebar,
 }) {
   const [expandedProjects, setExpandedProjects] = useState(new Set());
   const [projectSessionLimits, setProjectSessionLimits] = useState({});
@@ -243,6 +269,12 @@ export function Sidebar({
   const [openProjectMenuKey, setOpenProjectMenuKey] = useState(null);
   const [pendingRemoveActive, setPendingRemoveActive] = useState(null);
   const [removingFromActive, setRemovingFromActive] = useState(false);
+  const [projectsSectionOpen, setProjectsSectionOpen] = useState(() =>
+    readBooleanPreference(PROJECTS_SECTION_OPEN_KEY, true),
+  );
+  const [conversationsSectionOpen, setConversationsSectionOpen] = useState(() =>
+    readBooleanPreference(CONVERSATIONS_SECTION_OPEN_KEY, true),
+  );
   const sawSessionsLoadingRef = useRef(false);
   const [resolvedTheme, setResolvedTheme] = useState(() => {
     if (typeof document === "undefined") return "light";
@@ -511,9 +543,20 @@ export function Sidebar({
             className="size-5 shrink-0 rounded-[5px]"
             draggable={false}
           />
-          <div className="min-w-0 truncate text-[17px] font-semibold leading-5 text-(--text-primary)">
+          <div className="min-w-0 flex-1 truncate text-[17px] font-semibold leading-5 text-(--text-primary)">
             {t("brand")}
           </div>
+          {typeof onCollapseSidebar === "function" ? (
+            <button
+              type="button"
+              className="hidden md:inline-flex size-7 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)"
+              title={t("collapseSidebar")}
+              aria-label={t("collapseSidebar")}
+              onClick={onCollapseSidebar}
+            >
+              <SidebarSimple size={15} />
+            </button>
+          ) : null}
         </div>
         <button
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
@@ -605,10 +648,35 @@ export function Sidebar({
         // style={{ scrollbarWidth: "thin" }}
       >
         {/* Scrollable project history */}
-        <div className="flex items-center gap-1 px-4 pb-1.5">
-          <span className="min-w-0 flex-1 text-[12px] font-medium text-(--text-muted)">
-            {t("projects")}
-          </span>
+        <div className="flex items-center gap-1 px-2.5 pb-1.5">
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 py-0.5 text-left hover:bg-(--bg-hover)"
+            aria-expanded={projectsSectionOpen}
+            title={
+              projectsSectionOpen
+                ? t("collapseProjectsSection")
+                : t("expandProjectsSection")
+            }
+            onClick={() => {
+              setProjectsSectionOpen((open) => {
+                const next = !open;
+                writeBooleanPreference(PROJECTS_SECTION_OPEN_KEY, next);
+                return next;
+              });
+            }}
+          >
+            <span className="inline-flex size-3.5 shrink-0 items-center justify-center text-(--text-muted)">
+              {projectsSectionOpen ? (
+                <CaretDown size={12} />
+              ) : (
+                <CaretRight size={12} />
+              )}
+            </span>
+            <span className="min-w-0 flex-1 text-[12px] font-medium text-(--text-muted)">
+              {t("projects")}
+            </span>
+          </button>
           <button
             type="button"
             className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)"
@@ -619,6 +687,7 @@ export function Sidebar({
             <Plus size={14} strokeWidth={2.1} />
           </button>
         </div>
+        {projectsSectionOpen ? (
         <nav className="flex flex-col px-2.5 pb-1 gap-0.5">
           {showActiveProjectsEmpty && (
             <SidebarEmptyPlaceholder className="mb-1">
@@ -828,13 +897,39 @@ export function Sidebar({
               </SidebarEmptyPlaceholder>
             )}
         </nav>
+        ) : null}
 
         <section className="px-2.5 pb-2">
           <Separator className="my-2 bg-transparent" />
-          <div className="flex items-center gap-2 px-1.5 pb-1.5">
-            <span className="min-w-0 flex-1 text-[12px] font-medium text-(--text-muted)">
-              {t("conversations")}
-            </span>
+          <div className="flex items-center gap-1 px-0.5 pb-1.5">
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 py-0.5 text-left hover:bg-(--bg-hover)"
+              aria-expanded={conversationsSectionOpen}
+              title={
+                conversationsSectionOpen
+                  ? t("collapseConversationsSection")
+                  : t("expandConversationsSection")
+              }
+              onClick={() => {
+                setConversationsSectionOpen((open) => {
+                  const next = !open;
+                  writeBooleanPreference(CONVERSATIONS_SECTION_OPEN_KEY, next);
+                  return next;
+                });
+              }}
+            >
+              <span className="inline-flex size-3.5 shrink-0 items-center justify-center text-(--text-muted)">
+                {conversationsSectionOpen ? (
+                  <CaretDown size={12} />
+                ) : (
+                  <CaretRight size={12} />
+                )}
+              </span>
+              <span className="min-w-0 flex-1 text-[12px] font-medium text-(--text-muted)">
+                {t("conversations")}
+              </span>
+            </button>
             <button
               type="button"
               className="inline-flex size-7 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)"
@@ -846,6 +941,7 @@ export function Sidebar({
             </button>
           </div>
 
+          {conversationsSectionOpen ? (
           <div className="flex flex-col gap-1">
             {sessionsLoading && generalSessions.length === 0 && (
               <div className="flex h-[34px] items-center justify-center px-3 text-(--text-muted)">
@@ -911,6 +1007,7 @@ export function Sidebar({
               </button>
             )}
           </div>
+          ) : null}
         </section>
       </div>
 
