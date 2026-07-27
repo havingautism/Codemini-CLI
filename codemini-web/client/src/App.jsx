@@ -24,7 +24,7 @@ import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
 import { SessionPanel } from "@/components/SessionPanel.jsx";
 import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
-import { DotsThree, GitDiff, List, Terminal } from "@phosphor-icons/react";
+import { DotsThree, FolderSimple, GitDiff, List, Terminal } from "@phosphor-icons/react";
 import "../style.css";
 import "./apple-design.css";
 
@@ -78,9 +78,9 @@ const GitDiffDialog = lazy(() =>
     default: module.GitDiffDialog,
   })),
 );
-const TerminalPanel = lazy(() =>
-  import("@/components/TerminalPanel.jsx").then((module) => ({
-    default: module.TerminalPanel,
+const WorkspaceRail = lazy(() =>
+  import("@/components/WorkspaceRail.jsx").then((module) => ({
+    default: module.WorkspaceRail,
   })),
 );
 
@@ -183,7 +183,8 @@ function Shell() {
   const approvalRequest = interactiveRequestForSession(state, "approval");
   const userInputRequest = interactiveRequestForSession(state, "userInput");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [sideRailOpen, setSideRailOpen] = useState(false);
+  const [sideRailTab, setSideRailTab] = useState("files");
   const rs = state.runtimeState || {};
   const currentId = state.currentSessionId || rs.sessionId;
   const reasoningSyncKey = useMemo(
@@ -388,14 +389,50 @@ function Shell() {
                   type="button"
                   className={
                     "inline-flex size-8 items-center justify-center rounded-md border-0 cursor-pointer " +
-                    (terminalOpen
+                    (sideRailOpen && sideRailTab === "files"
+                      ? "bg-(--bg-hover) text-(--text-primary)"
+                      : "bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)") +
+                    (state.isGeneral ? " opacity-40 cursor-not-allowed" : "")
+                  }
+                  aria-label={t("workspaceFilesTab")}
+                  title={
+                    state.isGeneral
+                      ? t("workspaceNeedsProject")
+                      : t("workspaceFilesTab")
+                  }
+                  aria-pressed={sideRailOpen && sideRailTab === "files"}
+                  disabled={Boolean(state.isGeneral)}
+                  onClick={() => {
+                    if (state.isGeneral) return;
+                    if (sideRailOpen && sideRailTab === "files") {
+                      setSideRailOpen(false);
+                      return;
+                    }
+                    setSideRailTab("files");
+                    setSideRailOpen(true);
+                  }}
+                >
+                  <FolderSimple size={16} />
+                </button>
+                <button
+                  type="button"
+                  className={
+                    "inline-flex size-8 items-center justify-center rounded-md border-0 cursor-pointer " +
+                    (sideRailOpen && sideRailTab === "terminal"
                       ? "bg-(--bg-hover) text-(--text-primary)"
                       : "bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)")
                   }
                   aria-label={t("terminalTitle")}
                   title={t("terminalTitle")}
-                  aria-pressed={terminalOpen}
-                  onClick={() => setTerminalOpen((open) => !open)}
+                  aria-pressed={sideRailOpen && sideRailTab === "terminal"}
+                  onClick={() => {
+                    if (sideRailOpen && sideRailTab === "terminal") {
+                      setSideRailOpen(false);
+                      return;
+                    }
+                    setSideRailTab("terminal");
+                    setSideRailOpen(true);
+                  }}
                 >
                   <Terminal size={16} />
                 </button>
@@ -484,15 +521,17 @@ function Shell() {
               </div>
             </div>
             </div>
-            {terminalOpen ? (
+            {sideRailOpen ? (
               <Suspense fallback={null}>
-                <TerminalPanel
+                <WorkspaceRail
+                  tab={sideRailTab}
+                  onTabChange={setSideRailTab}
                   sessionId={state.currentSessionId || ""}
                   projectCwd={
                     state.runtimeState?.cwd || state.projectCwd || ""
                   }
-                  disabled={Boolean(state.isGeneral)}
-                  onClose={() => setTerminalOpen(false)}
+                  isGeneral={Boolean(state.isGeneral)}
+                  onClose={() => setSideRailOpen(false)}
                 />
               </Suspense>
             ) : null}

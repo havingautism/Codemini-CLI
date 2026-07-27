@@ -825,3 +825,21 @@ export async function restartTerminalSession(sessionId) {
   });
   return readJsonResponse(res);
 }
+
+export async function fetchWorkspaceTree(sessionId, relativePath = '') {
+  const params = new URLSearchParams();
+  if (sessionId) params.set('sessionId', sessionId);
+  const normalized = String(relativePath || '').trim();
+  if (normalized) params.set('path', normalized);
+  const query = params.toString();
+  const res = await api(query ? `/api/workspace/tree?${query}` : '/api/workspace/tree');
+  return readJsonResponse(res);
+}
+
+export async function fetchWorkspacePreview(sessionId, relativePath = '') {
+  const params = new URLSearchParams();
+  if (sessionId) params.set('sessionId', sessionId);
+  params.set('path', String(relativePath || '').trim());
+  const res = await api(`/api/workspace/preview?${params.toString()}`);
+  return readJsonResponse(res);
+}

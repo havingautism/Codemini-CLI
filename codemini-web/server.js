@@ -39,6 +39,10 @@ import {
   subscribeTerminal,
   writeTerminalInput,
 } from './lib/web-terminal.js';
+import {
+  listWorkspaceChildren,
+  previewWorkspaceFile,
+} from './lib/workspace-files.js';
 import { createPooledSessionEnsurer } from './lib/pooled-session-ensurer.js';
 import { loadSessionForSwitch } from './lib/session-switch-loader.js';
 import { resolveEmbed } from './lib/embed-resolver.js';
@@ -2487,6 +2491,44 @@ async function main() {
       if (shouldAdoptGitCwd(cwd, currentProjectDir)) currentProjectDir = cwd;
       return cwd;
     };
+
+    if (req.method === 'GET' && url.pathname === '/api/workspace/tree') {
+      const cwd = await resolveTerminalCwd();
+      if (isGeneralProjectDir(cwd)) {
+        jsonResponse(res, { error: true, message: 'Open a project before browsing files.' }, 400);
+        return;
+      }
+      try {
+        const relativePath = String(url.searchParams.get('path') || '').trim();
+        const result = await listWorkspaceChildren(cwd, relativePath);
+        jsonResponse(res, result);
+      } catch (err) {
+        const message = String(err?.message || 'Unable to list workspace');
+        const status = /outside|does not exist|not a directory/i.test(message) ? 400 : 500;
+        jsonResponse(res, { error: true, message }, status);
+      }
+      return;
+    }
+
+    if (req.method === 'GET' && url.pathname === '/api/workspace/preview') {
+      const cwd = await resolveTerminalCwd();
+      if (isGeneralProjectDir(cwd)) {
+        jsonResponse(res, { error: true, message: 'Open a project before previewing files.' }, 400);
+        return;
+      }
+      try {
+        const relativePath = String(url.searchParams.get('path') || '').trim();
+        const result = await previewWorkspaceFile(cwd, relativePath);
+        jsonResponse(res, result);
+      } catch (err) {
+        const message = String(err?.message || 'Unable to preview file');
+        const status = /outside|does not exist|not a file|requires a file path/i.test(message)
+          ? 400
+          : 500;
+        jsonResponse(res, { error: true, message }, status);
+      }
+      return;
+    }
 
     if (req.method === 'GET' && url.pathname === '/api/terminal') {
       const config = await loadConfig();

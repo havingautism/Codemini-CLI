@@ -53,6 +53,7 @@ export function TerminalPanel({
   sessionId = "",
   projectCwd = "",
   disabled = false,
+  embedded = false,
   onClose,
 }) {
   const [shell, setShell] = useState("pwsh");
@@ -268,49 +269,52 @@ export function TerminalPanel({
         ? t("terminalConnecting")
         : t("terminalDisconnected");
 
-  return (
-    <aside
-      className="codemini-terminal-panel relative flex shrink-0 flex-col border-l border-(--border-default) bg-(--bg-primary) min-h-0 max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:z-40 max-md:w-full! max-md:shadow-xl"
-      style={{ width: `${panelWidth}px` }}
-      aria-label={t("terminalTitle")}
-    >
-      <div
-        className="codemini-terminal-resizer absolute inset-y-0 -left-1 z-10 flex w-2 cursor-col-resize items-center justify-center max-md:hidden"
-        role="separator"
-        aria-label={t("terminalResize")}
-        aria-orientation="vertical"
-        aria-valuemin={MIN_PANEL_WIDTH}
-        aria-valuenow={panelWidth}
-        tabIndex={0}
-        onDoubleClick={() => setPanelWidth(DEFAULT_PANEL_WIDTH)}
-        onPointerDown={(event) => {
-          resizingRef.current = true;
-          event.currentTarget.setPointerCapture(event.pointerId);
-          updatePanelWidth(event.clientX);
-        }}
-        onPointerMove={(event) => {
-          if (resizingRef.current) updatePanelWidth(event.clientX);
-        }}
-        onPointerUp={(event) => {
-          resizingRef.current = false;
-          event.currentTarget.releasePointerCapture(event.pointerId);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowLeft") {
-            event.preventDefault();
-            setPanelWidth((value) => value + 24);
-          } else if (event.key === "ArrowRight") {
-            event.preventDefault();
-            setPanelWidth((value) =>
-              Math.max(MIN_PANEL_WIDTH, value - 24),
-            );
-          }
-        }}
-      >
-        <DotsSixVertical size={12} weight="bold" />
-      </div>
+  const content = (
+    <>
+      {!embedded ? (
+        <div
+          className="codemini-terminal-resizer absolute inset-y-0 -left-1 z-10 flex w-2 cursor-col-resize items-center justify-center max-md:hidden"
+          role="separator"
+          aria-label={t("terminalResize")}
+          aria-orientation="vertical"
+          aria-valuemin={MIN_PANEL_WIDTH}
+          aria-valuenow={panelWidth}
+          tabIndex={0}
+          onDoubleClick={() => setPanelWidth(DEFAULT_PANEL_WIDTH)}
+          onPointerDown={(event) => {
+            resizingRef.current = true;
+            event.currentTarget.setPointerCapture(event.pointerId);
+            updatePanelWidth(event.clientX);
+          }}
+          onPointerMove={(event) => {
+            if (resizingRef.current) updatePanelWidth(event.clientX);
+          }}
+          onPointerUp={(event) => {
+            resizingRef.current = false;
+            event.currentTarget.releasePointerCapture(event.pointerId);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowLeft") {
+              event.preventDefault();
+              setPanelWidth((value) => value + 24);
+            } else if (event.key === "ArrowRight") {
+              event.preventDefault();
+              setPanelWidth((value) =>
+                Math.max(MIN_PANEL_WIDTH, value - 24),
+              );
+            }
+          }}
+        >
+          <DotsSixVertical size={12} weight="bold" />
+        </div>
+      ) : null}
 
-      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-(--border-default) px-3">
+      <div
+        className={
+          "flex shrink-0 items-center gap-2 border-b border-(--border-default) px-3 " +
+          (embedded ? "h-10" : "h-12")
+        }
+      >
         <TerminalIcon size={15} className="text-(--text-muted)" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 truncate text-[13px] font-medium text-(--text-primary)">
@@ -371,15 +375,17 @@ export function TerminalPanel({
         >
           <ArrowCounterClockwise size={14} />
         </button>
-        <button
-          type="button"
-          className="codemini-terminal-action"
-          title={t("close")}
-          aria-label={t("close")}
-          onClick={onClose}
-        >
-          <X size={14} />
-        </button>
+        {!embedded ? (
+          <button
+            type="button"
+            className="codemini-terminal-action"
+            title={t("close")}
+            aria-label={t("close")}
+            onClick={onClose}
+          >
+            <X size={14} />
+          </button>
+        ) : null}
       </div>
 
       {disabled ? (
@@ -407,6 +413,20 @@ export function TerminalPanel({
           {error}
         </div>
       ) : null}
+    </>
+  );
+
+  if (embedded) {
+    return <div className="flex min-h-0 flex-1 flex-col">{content}</div>;
+  }
+
+  return (
+    <aside
+      className="codemini-terminal-panel relative flex shrink-0 flex-col border-l border-(--border-default) bg-(--bg-primary) min-h-0 max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:z-40 max-md:w-full! max-md:shadow-xl"
+      style={{ width: `${panelWidth}px` }}
+      aria-label={t("terminalTitle")}
+    >
+      {content}
     </aside>
   );
 }
