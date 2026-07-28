@@ -24,7 +24,28 @@ import { t } from "../../i18n/index.js";
 
 const DEFAULT_PANEL_WIDTH = 500;
 const MIN_PANEL_WIDTH = 340;
+const PANEL_WIDTH_KEY = "codemini:terminal-panel-width";
 const INPUT_BATCH_MS = 12;
+const RESIZE_SYNC_MS = 120;
+
+function getInitialPanelWidth() {
+  if (typeof window === "undefined") return DEFAULT_PANEL_WIDTH;
+  const stored = Number(window.localStorage.getItem(PANEL_WIDTH_KEY));
+  return Number.isFinite(stored)
+    ? clampPanelWidth(stored)
+    : DEFAULT_PANEL_WIDTH;
+}
+
+function clampPanelWidth(width) {
+  if (typeof window === "undefined") {
+    return Math.max(MIN_PANEL_WIDTH, width);
+  }
+  const maxWidth = Math.max(
+    MIN_PANEL_WIDTH,
+    Math.floor(window.innerWidth * 0.72),
+  );
+  return Math.max(MIN_PANEL_WIDTH, Math.min(maxWidth, width));
+}
 
 function readTheme() {
   const styles = window.getComputedStyle(document.documentElement);
@@ -60,14 +81,23 @@ export function TerminalPanel({
   const [connection, setConnection] = useState("connecting");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
-  const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
+  const [panelWidth, setPanelWidth] = useState(getInitialPanelWidth);
+  const [panelResizing, setPanelResizing] = useState(false);
   const hostRef = useRef(null);
+  const panelElRef = useRef(null);
   const terminalRef = useRef(null);
   const fitAddonRef = useRef(null);
   const inputBufferRef = useRef("");
   const inputTimerRef = useRef(null);
   const inputChainRef = useRef(Promise.resolve());
-  const resizingRef = useRef(false);
+  const resizeSyncTimerRef = useRef(null);
+  const lastSyncedSizeRef = useRef({ cols: 0, rows: 0 });
+  const panelResizingRef = useRef(false);
+  const livePanelWidthRef = useRef(panelWidth);
+  const panelResizeRef = useRef({
+    startX: 0,
+    startWidth: DEFAULT_PANEL_WIDTH,
+  });
 
   const flushInput = useCallback(() => {
     inputTimerRef.current = null;
@@ -99,12 +129,21 @@ export function TerminalPanel({
   const fitAndSync = useCallback(() => {
     const terminal = terminalRef.current;
     const fitAddon = fitAddonRef.current;
-    if (!terminal || !fitAddon || disabled) return;
+    // Skip xterm reflow while the user is dragging the panel width.
+    if (!terminal || !fitAddon || disabled || panelResizingRef.current) return;
     try {
       fitAddon.fit();
-      resizeTerminalSession(sessionId, terminal.cols, terminal.rows).catch(
-        () => {},
-      );
+      if (resizeSyncTimerRef.current) {
+        window.clearTimeout(resizeSyncTimerRef.current);
+      }
+      resizeSyncTimerRef.current = window.setTimeout(() => {
+        resizeSyncTimerRef.current = null;
+        const size = { cols: terminal.cols, rows: terminal.rows };
+        const previous = lastSyncedSizeRef.current;
+        if (size.cols === previous.cols && size.rows === previous.rows) return;
+        lastSyncedSizeRef.current = size;
+        resizeTerminalSession(sessionId, size.cols, size.rows).catch(() => {});
+      }, RESIZE_SYNC_MS);
     } catch {
       // The panel can briefly have zero dimensions during responsive layout.
     }
@@ -113,6 +152,10 @@ export function TerminalPanel({
   useEffect(() => {
     const host = hostRef.current;
     if (!host || disabled) return undefined;
+
+    // A new browser terminal maps to a different server-side PTY. Its default
+    // size must be synchronized even when it matches the previous UI terminal.
+    lastSyncedSizeRef.current = { cols: 0, rows: 0 };
 
     const terminal = new Terminal({
       allowTransparency: false,
@@ -188,13 +231,30 @@ export function TerminalPanel({
       resizeObserver.disconnect();
       inputDisposable.dispose();
       if (inputTimerRef.current) window.clearTimeout(inputTimerRef.current);
+      if (resizeSyncTimerRef.current) {
+        window.clearTimeout(resizeSyncTimerRef.current);
+      }
       inputTimerRef.current = null;
+      resizeSyncTimerRef.current = null;
       inputBufferRef.current = "";
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
     };
   }, [disabled, fitAndSync, projectCwd, queueInput, sessionId]);
+
+  useEffect(() => {
+    livePanelWidthRef.current = panelWidth;
+    window.localStorage.setItem(PANEL_WIDTH_KEY, String(panelWidth));
+  }, [panelWidth]);
+
+  useEffect(
+    () => () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    },
+    [],
+  );
 
   const copyAll = useCallback(async () => {
     const terminal = terminalRef.current;
@@ -251,15 +311,47 @@ export function TerminalPanel({
     terminalRef.current?.focus();
   }, [sessionId]);
 
-  const updatePanelWidth = (clientX) => {
-    const maxWidth = Math.max(
-      MIN_PANEL_WIDTH,
-      Math.floor(window.innerWidth * 0.72),
-    );
-    setPanelWidth(
-      Math.max(MIN_PANEL_WIDTH, Math.min(maxWidth, window.innerWidth - clientX)),
-    );
-  };
+  const handlePanelResizeStart = useCallback(
+    (event) => {
+      event.preventDefault();
+      panelResizingRef.current = true;
+      livePanelWidthRef.current = panelWidth;
+      setPanelResizing(true);
+      panelResizeRef.current = {
+        startX: event.clientX,
+        startWidth: panelWidth,
+      };
+
+      const handleMove = (moveEvent) => {
+        const delta = panelResizeRef.current.startX - moveEvent.clientX;
+        const nextWidth = clampPanelWidth(
+          panelResizeRef.current.startWidth + delta,
+        );
+        livePanelWidthRef.current = nextWidth;
+        if (panelElRef.current) {
+          panelElRef.current.style.width = `${nextWidth}px`;
+        }
+      };
+
+      const handleEnd = () => {
+        panelResizingRef.current = false;
+        const nextWidth = livePanelWidthRef.current;
+        setPanelWidth(nextWidth);
+        setPanelResizing(false);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        window.removeEventListener("mousemove", handleMove);
+        window.removeEventListener("mouseup", handleEnd);
+        window.requestAnimationFrame(() => fitAndSync());
+      };
+
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+      window.addEventListener("mousemove", handleMove);
+      window.addEventListener("mouseup", handleEnd);
+    },
+    [fitAndSync, panelWidth],
+  );
 
   const statusLabel =
     connection === "connected"
@@ -270,12 +362,15 @@ export function TerminalPanel({
 
   return (
     <aside
+      ref={panelElRef}
       className="codemini-terminal-panel relative flex shrink-0 flex-col border-l border-(--border-default) bg-(--bg-primary) min-h-0 max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:z-40 max-md:w-full! max-md:shadow-xl"
-      style={{ width: `${panelWidth}px` }}
+      style={{
+        width: `${panelResizing ? livePanelWidthRef.current : panelWidth}px`,
+      }}
       aria-label={t("terminalTitle")}
     >
       <div
-        className="codemini-terminal-resizer absolute inset-y-0 -left-1 z-10 flex w-2 cursor-col-resize items-center justify-center max-md:hidden"
+        className="codemini-terminal-resizer absolute inset-y-0 left-0 z-10 -translate-x-1/2 max-md:hidden"
         role="separator"
         aria-label={t("terminalResize")}
         aria-orientation="vertical"
@@ -283,31 +378,20 @@ export function TerminalPanel({
         aria-valuenow={panelWidth}
         tabIndex={0}
         onDoubleClick={() => setPanelWidth(DEFAULT_PANEL_WIDTH)}
-        onPointerDown={(event) => {
-          resizingRef.current = true;
-          event.currentTarget.setPointerCapture(event.pointerId);
-          updatePanelWidth(event.clientX);
-        }}
-        onPointerMove={(event) => {
-          if (resizingRef.current) updatePanelWidth(event.clientX);
-        }}
-        onPointerUp={(event) => {
-          resizingRef.current = false;
-          event.currentTarget.releasePointerCapture(event.pointerId);
-        }}
+        onMouseDown={handlePanelResizeStart}
         onKeyDown={(event) => {
           if (event.key === "ArrowLeft") {
             event.preventDefault();
-            setPanelWidth((value) => value + 24);
+            setPanelWidth((value) => clampPanelWidth(value + 24));
           } else if (event.key === "ArrowRight") {
             event.preventDefault();
-            setPanelWidth((value) =>
-              Math.max(MIN_PANEL_WIDTH, value - 24),
-            );
+            setPanelWidth((value) => clampPanelWidth(value - 24));
           }
         }}
       >
-        <DotsSixVertical size={12} weight="bold" />
+        <span className="codewiki-resizer-handle">
+          <DotsSixVertical size={14} aria-hidden="true" />
+        </span>
       </div>
 
       <div className="flex h-12 shrink-0 items-center gap-2 border-b border-(--border-default) px-3">
@@ -407,6 +491,7 @@ export function TerminalPanel({
           {error}
         </div>
       ) : null}
+      {panelResizing && <div className="codemini-terminal-resize-overlay" />}
     </aside>
   );
 }

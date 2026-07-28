@@ -3906,7 +3906,6 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     model: model || config.model?.name || '',
     mainModel: config.model?.name || '',
     fastModel: config.model?.fast_name || config.model?.name || '',
-    planExecutionModel: normalizePlanExecutionModel(config.execution?.plan_execution_model),
     maxContextTokens,
     alwaysSkillNames: visibleAlwaysSkillNames,
     reasoningEnabled: config.model?.reasoning_enabled !== false,
@@ -3974,35 +3973,6 @@ export function resolveSubAgentModel(config, fallbackModel = '') {
       || config?.model?.name
       || ''
   ).trim();
-}
-
-export const PLAN_EXECUTION_DEFAULT_MODEL_ROLES = Object.freeze(['architect', 'advisor']);
-
-export function normalizePlanExecutionModel(value) {
-  const mode = String(value || 'default').toLowerCase();
-  return ['default', 'fast', 'role'].includes(mode) ? mode : 'default';
-}
-
-/**
- * Resolve which model a plan sub-agent step should use.
- * "Default" means the same model as planning (planningModel), not necessarily config.model.name.
- */
-export function resolvePlanExecutionModel(config, {
-  role = 'coder',
-  retryCount = 0,
-  planningModel = ''
-} = {}) {
-  const fallback = String(planningModel || resolveDefaultModel(config) || '').trim();
-  const fast = resolveFastModel(config);
-  const hasDistinctFast = Boolean(fast && fast !== fallback);
-  const mode = normalizePlanExecutionModel(config?.execution?.plan_execution_model);
-
-  if (!hasDistinctFast || mode === 'default') return fallback;
-  if (Number(retryCount) > 0) return fallback;
-  if (mode === 'fast') return fast;
-  return PLAN_EXECUTION_DEFAULT_MODEL_ROLES.includes(String(role || ''))
-    ? fallback
-    : fast;
 }
 
 async function generateSessionTitle({ userText, assistantText = '', config, signal }) {
@@ -5628,14 +5598,7 @@ async function executePlanWithSubAgents({
     const planningModel = model || config.model?.name || '';
 
     const stepGuidance = buildPipelineStepGuidance({ role: step.role, stepIndex: i, totalSteps: steps.length, isFirst: i === 0, isLast: i === steps.length - 1, priorSteps });
-    const firstModel = resolveSubAgentModel(
-      config,
-      resolvePlanExecutionModel(config, {
-        role: step.role,
-        retryCount: 0,
-        planningModel
-      })
-    );
+    const firstModel = resolveSubAgentModel(config, planningModel);
 
     emitPlanEvent({
       type: 'plan:step_start',
@@ -5710,14 +5673,7 @@ ${diffReview}`.trim();
 
     while (stepFailed && retryCount < MAX_STEP_RETRIES && shouldRetryStepFailure(failureType, step.role) && !signal?.aborted) {
       retryCount += 1;
-      const retryModel = resolveSubAgentModel(
-        config,
-        resolvePlanExecutionModel(config, {
-          role: step.role,
-          retryCount,
-          planningModel
-        })
-      );
+      const retryModel = resolveSubAgentModel(config, planningModel);
       emitPlanEvent({
         type: 'assistant:delta',
         text: `\n[plan] Step ${i + 1}/${steps.length} retry ${retryCount}/${MAX_STEP_RETRIES} (previous: ${failureReason})\n`

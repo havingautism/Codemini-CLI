@@ -47,9 +47,12 @@ import {
   useRuntimeMode,
 } from "@/context/app-context.jsx";
 import { getMessageModelIdentity } from "@/lib/message-model-identity.js";
+import {
+  collectFileChangePatch,
+  resolveFileChangePreviewLines,
+} from "@/lib/file-change-preview.js";
 import { ROLE_BADGE_CLASS, ROLE_PILLS } from "./PlanProgress.jsx";
 import { PlanStepStatusGlyph } from "@/components/plan-step-icons.jsx";
-import { PatchDiff } from "@pierre/diffs/react";
 import {
   Tooltip,
   TooltipContent,
@@ -57,6 +60,7 @@ import {
 } from "@/components/ui/tooltip";
 import {
   ArrowCounterClockwise,
+  ArrowSquareOut,
   Brain,
   CaretDown,
   CaretRight,
@@ -64,6 +68,7 @@ import {
   CheckCircle,
   Copy,
   FileText,
+  FolderOpen,
   Hammer,
   Moon,
   Play,
@@ -994,8 +999,9 @@ function mergeFileChanges(fileChanges = []) {
                   Number(change.linesRemoved || 0),
               ),
               linesRemoved: 0,
-              diffPreview: "",
-              changes: [],
+              // Keep last preview so expand still has content after create→edit merge.
+              diffPreview: String(lastChange?.diffPreview || change.diffPreview || ""),
+              changes: lastChange?.diffPreview ? [lastChange] : [],
             }
           : {}),
         changeSetId:
@@ -1030,100 +1036,12 @@ function basename(pathText) {
   return value.split("/").filter(Boolean).pop() || value || "file";
 }
 
-function isUnifiedPatch(text) {
-  const value = String(text || "");
-  return (
-    value.startsWith("diff --git ") ||
-    value.includes("\ndiff --git ") ||
-    value.includes("\n@@ ")
-  );
+function changeHasExpandablePreview(change) {
+  if (collectFileChangePatch(change)) return true;
+  return getFileChangeSetIds(change).length > 0;
 }
 
-function splitUnifiedPatches(patch) {
-  const text = String(patch || "").trim();
-  if (!text) return [];
-  const matches = [...text.matchAll(/^diff --git /gm)];
-  if (matches.length <= 1) return [text];
-  return matches
-    .map((match, index) => {
-      const start = match.index || 0;
-      const end =
-        index + 1 < matches.length ? matches[index + 1].index : text.length;
-      return text.slice(start, end).trim();
-    })
-    .filter(Boolean);
-}
-
-function usePatchThemeType() {
-  const getIsDark = () =>
-    document.documentElement.classList.contains("dark") ||
-    document.documentElement.dataset.theme === "dark";
-  const [isDark, setIsDark] = useState(() =>
-    typeof document === "undefined" ? true : getIsDark(),
-  );
-  useEffect(() => {
-    if (typeof document === "undefined") return undefined;
-    const ob = new MutationObserver(() => setIsDark(getIsDark()));
-    ob.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class", "data-theme"],
-    });
-    return () => ob.disconnect();
-  }, []);
-  return isDark ? "dark" : "light";
-}
-
-function buildFileChangePreviewLines(change) {
-  return String(change?.diffPreview || "")
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => {
-      const signedMatch = line.match(/^([+-])(\d+)?\|\s?(.*)$/);
-      if (signedMatch) {
-        return {
-          number: signedMatch[2] || "",
-          text: signedMatch[3] || "",
-          type: signedMatch[1] === "-" ? "remove" : "add",
-        };
-      }
-      const match = line.match(/^(\d+)\|\s?(.*)$/);
-      return {
-        number: match ? match[1] : "",
-        text: match ? match[2] : line,
-        type: change.action === "delete" ? "remove" : "add",
-      };
-    });
-}
-
-function FileChangePreview({ change }) {
-  const patch =
-    Array.isArray(change?.changes) && change.changes.length
-      ? change.changes
-          .map((item) => item.diffPreview || "")
-          .filter(Boolean)
-          .join("\n")
-      : String(change?.diffPreview || "");
-  const themeType = usePatchThemeType();
-  if (isUnifiedPatch(patch)) {
-    const patches = splitUnifiedPatches(patch);
-    return (
-      <div className="max-h-[520px] overflow-auto bg-(--bg-primary) text-xs">
-        {patches.map((singlePatch, index) => (
-          <PatchDiff
-            key={index}
-            patch={singlePatch}
-            options={{
-              theme: { dark: "pierre-dark", light: "pierre-light" },
-              themeType,
-              diffStyle: "unified",
-            }}
-          />
-        ))}
-      </div>
-    );
-  }
-  const lines = buildFileChangePreviewLines(change);
-  if (!lines.length) return null;
+function renderFileChangePreviewLines(lines) {
   return (
     <div className="overflow-hidden bg-(--bg-primary)">
       <div className="max-h-[420px] overflow-auto font-mono text-xs leading-6">
@@ -1131,22 +1049,112 @@ function FileChangePreview({ change }) {
           <div
             key={idx}
             className={cn(
-              "grid min-w-full grid-cols-[52px_max-content] border-l-3",
+              "grid min-w-full grid-cols-[44px_44px_24px_max-content] border-l-3",
               line.type === "remove"
                 ? "border-(--accent-red) bg-(--accent-red-bg)"
-                : "border-(--accent-green) bg-(--accent-green-bg)",
+                : line.type === "add"
+                  ? "border-(--accent-green) bg-(--accent-green-bg)"
+                  : "border-transparent bg-transparent",
             )}
           >
-            <span className="select-none pr-3 text-right text-(--text-muted)">
-              {line.number}
+            <span className="select-none border-r border-(--border-default) pr-2 text-right text-(--text-muted)">
+              {line.oldNumber ?? (line.type === "remove" ? line.number : "")}
             </span>
-            <span className="whitespace-pre pr-4 text-(--text-primary)">
+            <span className="select-none border-r border-(--border-default) pr-2 text-right text-(--text-muted)">
+              {line.newNumber ?? (line.type === "add" ? line.number : "")}
+            </span>
+            <span
+              className={cn(
+                "select-none text-center font-semibold",
+                line.type === "remove"
+                  ? "text-(--accent-red)"
+                  : line.type === "add"
+                    ? "text-(--accent-green)"
+                    : "text-(--text-muted)",
+              )}
+            >
+              {line.marker ?? (line.type === "remove" ? "-" : line.type === "add" ? "+" : " ")}
+            </span>
+            <span
+              className={cn(
+                "whitespace-pre pr-4",
+                line.type === "context"
+                  ? "text-(--text-muted)"
+                  : "text-(--text-primary)",
+              )}
+            >
               {line.text || " "}
             </span>
           </div>
         ))}
       </div>
     </div>
+  );
+}
+
+function FileChangePreview({ change }) {
+  const currentSessionId = useCurrentSessionId();
+  const localPatch = collectFileChangePatch(change);
+  const [loadedPatch, setLoadedPatch] = useState("");
+  const [loadingPatch, setLoadingPatch] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const changeSetIds = getFileChangeSetIds(change);
+
+  useEffect(() => {
+    setLoadedPatch("");
+    setLoadError("");
+    if (localPatch || !changeSetIds.length || !currentSessionId) {
+      setLoadingPatch(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setLoadingPatch(true);
+    (async () => {
+      try {
+        let patchText = "";
+        for (const id of changeSetIds) {
+          const result = await api.fetchSessionChangePatch(currentSessionId, id);
+          const next = String(result?.patch || "").trim();
+          if (!next) continue;
+          patchText = patchText ? `${patchText}\n${next}` : next;
+        }
+        if (cancelled) return;
+        if (!patchText) throw new Error(t("noPreview"));
+        setLoadedPatch(patchText);
+      } catch (error) {
+        if (!cancelled) {
+          setLoadError(String(error?.message || t("noPreview")));
+        }
+      } finally {
+        if (!cancelled) setLoadingPatch(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [localPatch, currentSessionId, changeSetIds.join("|")]);
+
+  const patch = localPatch || loadedPatch;
+  if (loadingPatch && !patch) {
+    return (
+      <div className="flex items-center gap-2 px-3 py-3 text-xs text-(--text-muted)">
+        <LinearRing size="sm" />
+        <span>{t("loading")}</span>
+      </div>
+    );
+  }
+  if (!patch) {
+    return (
+      <div className="px-3 py-3 text-xs text-(--text-muted)">
+        {loadError || t("noPreview")}
+      </div>
+    );
+  }
+
+  const lines = resolveFileChangePreviewLines(patch, change.action);
+  if (lines.length) return renderFileChangePreviewLines(lines);
+  return (
+    <div className="px-3 py-3 text-xs text-(--text-muted)">{t("noPreview")}</div>
   );
 }
 
@@ -1254,10 +1262,31 @@ function FileChangesSummary({ changes }) {
   const [revertedUndoKeys, setRevertedUndoKeys] = useState(() => new Set());
   const [undoErrors, setUndoErrors] = useState(() => new Map());
   const [pendingUndo, setPendingUndo] = useState(null);
+  const [fileAction, setFileAction] = useState("");
+  const [fileActionError, setFileActionError] = useState(null);
   const actionColors = {
     edit: "bg-(--accent-blue-bg) text-(--accent-blue)",
     create: "bg-(--accent-green-bg) text-(--accent-green)",
     delete: "bg-(--accent-red-bg) text-(--accent-red)",
+  };
+  const handleFileAction = async (event, filePath, action) => {
+    event.stopPropagation();
+    if (!filePath || fileAction) return;
+    setFileActionError(null);
+    setFileAction(`${filePath}:${action}`);
+    try {
+      const result = await api.openWorkspaceFile(filePath, action);
+      if (result?.error || result?.ok === false) {
+        throw new Error(result?.message || t("openFileFailed"));
+      }
+    } catch (error) {
+      setFileActionError({
+        path: filePath,
+        message: String(error?.message || t("openFileFailed")),
+      });
+    } finally {
+      setFileAction("");
+    }
   };
   const confirmUndoChange = async () => {
     if (!pendingUndo || undoing.has(pendingUndo.undoKey)) return;
@@ -1302,13 +1331,12 @@ function FileChangesSummary({ changes }) {
         {changes.map((c, i) => {
           const key = `${c.path}-${i}`;
           const fileOpen = openFiles.has(key);
-          const hasPreview = Boolean(
-            c.diffPreview || (Array.isArray(c.changes) && c.changes.length),
-          );
+          const hasPreview = changeHasExpandablePreview(c);
           const changeSetIds = getFileChangeSetIds(c);
           const undoKey = changeSetIds.join("|");
           const isReverted =
             undoKey && (revertedUndoKeys.has(undoKey) || Boolean(c.revertedAt));
+          const canOpenFile = Boolean(c.path) && c.action !== "delete";
           return (
             <div
               key={key}
@@ -1371,6 +1399,42 @@ function FileChangesSummary({ changes }) {
                     -{c.linesRemoved}
                   </span>
                 )}
+                {canOpenFile && (
+                  <div
+                    className="flex h-6 shrink-0 items-center gap-0.5"
+                    role="group"
+                    aria-label={`${t("openFile")} / ${t("revealFile")}: ${basename(c.path)}`}
+                  >
+                    <button
+                      type="button"
+                      className="flex size-6 items-center justify-center rounded-md text-(--text-muted) opacity-80 transition-[background-color,color,opacity,transform] duration-100 hover:bg-(--bg-hover) hover:text-(--accent-blue) hover:opacity-100 active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent-blue) disabled:cursor-wait disabled:opacity-40 motion-reduce:transform-none motion-reduce:transition-none"
+                      onClick={(event) => handleFileAction(event, c.path, "open")}
+                      aria-label={`${t("openFile")}: ${basename(c.path)}`}
+                      title={`${t("openFile")}: ${c.path}`}
+                      disabled={Boolean(fileAction)}
+                    >
+                      {fileAction === `${c.path}:open` ? (
+                        <LinearRing size="sm" />
+                      ) : (
+                        <ArrowSquareOut size={13} weight="bold" aria-hidden="true" />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      className="flex size-6 items-center justify-center rounded-md text-(--text-muted) opacity-80 transition-[background-color,color,opacity,transform] duration-100 hover:bg-(--bg-hover) hover:text-(--accent-blue) hover:opacity-100 active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent-blue) disabled:cursor-wait disabled:opacity-40 motion-reduce:transform-none motion-reduce:transition-none"
+                      onClick={(event) => handleFileAction(event, c.path, "reveal")}
+                      aria-label={`${t("revealFile")}: ${basename(c.path)}`}
+                      title={`${t("revealFile")}: ${c.path}`}
+                      disabled={Boolean(fileAction)}
+                    >
+                      {fileAction === `${c.path}:reveal` ? (
+                        <LinearRing size="sm" />
+                      ) : (
+                        <FolderOpen size={13} weight="bold" aria-hidden="true" />
+                      )}
+                    </button>
+                  </div>
+                )}
                 {changeSetIds.length > 0 && (
                   <span
                     role="button"
@@ -1392,7 +1456,7 @@ function FileChangesSummary({ changes }) {
                       });
                     }}
                     className={cn(
-                      "ml-1 inline-flex h-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+                      "inline-flex h-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)",
                       isReverted
                         ? "pointer-events-none gap-1 px-2 text-[11px] text-(--accent-green)"
                         : "w-6",
@@ -1415,6 +1479,14 @@ function FileChangesSummary({ changes }) {
               {undoKey && undoErrors.has(undoKey) && (
                 <div className="border-t border-(--border-default) px-3 py-2 text-xs text-(--accent-red)">
                   {undoErrors.get(undoKey)}
+                </div>
+              )}
+              {fileActionError?.path === c.path && (
+                <div
+                  role="alert"
+                  className="border-t border-(--border-default) px-3 py-2 text-xs text-(--accent-red)"
+                >
+                  {fileActionError.message}
                 </div>
               )}
               {fileOpen && (

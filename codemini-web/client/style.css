@@ -3525,25 +3525,39 @@ samp {
 .codemini-terminal-action:focus-visible,
 .codemini-terminal-resizer:focus-visible {
   outline: 2px solid var(--accent-blue);
-  outline-offset: -2px;
+  outline-offset: 2px;
 }
 
 .codemini-terminal-resizer {
-  color: transparent;
-  transition:
-    color 120ms ease,
-    background-color 120ms ease;
+  position: absolute;
+  min-width: 9px;
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+  border-left: 1px solid color-mix(in srgb, var(--text-primary) 6%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--text-primary) 6%, transparent);
 }
 
-.codemini-terminal-resizer:hover,
-.codemini-terminal-resizer:focus-visible {
-  color: var(--text-muted);
-  background: color-mix(in srgb, var(--accent-blue) 18%, transparent);
+.codemini-terminal-resizer:hover .codewiki-resizer-handle,
+.codemini-terminal-resizer:active .codewiki-resizer-handle,
+.codemini-terminal-resizer:focus-visible .codewiki-resizer-handle {
+  border-color: color-mix(in srgb, var(--text-primary) 16%, transparent);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.codemini-terminal-resize-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  cursor: col-resize;
+  user-select: none;
 }
 
 .codemini-terminal-host {
-  padding: 0.625rem 0 0.5rem 0.75rem;
+  box-sizing: border-box;
   overflow: hidden;
+  padding: 10px 10px 12px 12px;
 }
 
 .codemini-terminal-host .xterm {
@@ -3551,7 +3565,13 @@ samp {
 }
 
 .codemini-terminal-host .xterm-viewport {
-  scrollbar-color: var(--border-default) transparent;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.codemini-terminal-host .xterm-viewport::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .codemini-terminal-host .xterm-screen canvas {

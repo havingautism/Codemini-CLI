@@ -418,11 +418,11 @@ export function ToolCard({ card }) {
           </div>
         )}
         {card.status === "running" ? (
-          <LinearStatusDot className="shrink-0" />
+          <LinearStatusDot className="mr-1.5 shrink-0" />
         ) : (
           <span
             className={cn(
-              "w-1.5 h-1.5 rounded-full shrink-0",
+              "mr-1.5 h-1.5 w-1.5 shrink-0 rounded-full",
               STATUS_STYLES[card.status] || "bg-[var(--muted)]",
             )}
           />

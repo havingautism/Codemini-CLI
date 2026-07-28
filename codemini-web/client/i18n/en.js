@@ -373,18 +373,6 @@ export const en = {
   mode: "Mode",
   executionModeHelp:
     "Daily: general chat and lighter tasks. Coding: code-focused work with direct editing and optional subagents.",
-  planExecutionModel: "Plan Execution Model",
-  planExecutionModelHelp:
-    "Controls which model runs Plan sub-agent steps. Spec/plan creation and the main chat loop still use the session default model. Changes apply to the next Plan run, not an in-progress one. If Fast Model is empty, Fast and By Role fall back to the planning model.",
-  planExecutionModelDefault: "Default",
-  planExecutionModelDefaultDesc:
-    "All Plan steps use the same model as planning (current behavior).",
-  planExecutionModelFast: "Fast",
-  planExecutionModelFastDesc:
-    "All Plan steps use the Fast Model. Failed steps retry with the planning model.",
-  planExecutionModelRole: "By Role",
-  planExecutionModelRoleDesc:
-    "architect/advisor use the planning model; other steps use Fast. Failed steps retry with the planning model.",
   maxSteps: "Max Steps",
   webSearch: "Web Search",
   webSearchEnabled: "Enable Web Search",

@@ -631,6 +631,8 @@ export function CodeWikiPanel({
   const chatScrollRef = useRef(null);
   const questionInputRef = useRef(null);
   const reportFrameRef = useRef(null);
+  const layoutElRef = useRef(null);
+  const liveQaWidthRef = useRef(qaWidth);
   const generationStartedAtRef = useRef(0);
   const qaResizeRef = useRef({
     startX: 0,
@@ -904,12 +906,22 @@ export function CodeWikiPanel({
   }, [projectKey, selected?.file, selectedIsMarkdown]);
 
   useEffect(() => {
+    liveQaWidthRef.current = qaWidth;
     window.localStorage.setItem(CODEWIKI_QA_WIDTH_KEY, String(qaWidth));
   }, [qaWidth]);
+
+  useEffect(
+    () => () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    },
+    [],
+  );
 
   const handleQaResizeStart = useCallback(
     (event) => {
       event.preventDefault();
+      liveQaWidthRef.current = qaWidth;
       setQaResizing(true);
       qaResizeRef.current = {
         startX: event.clientX,
@@ -929,10 +941,15 @@ export function CodeWikiPanel({
             qaResizeRef.current.startWidth + delta,
           ),
         );
-        setQaWidth(nextWidth);
+        liveQaWidthRef.current = nextWidth;
+        layoutElRef.current?.style.setProperty(
+          "--codewiki-qa-width",
+          `${nextWidth}px`,
+        );
       };
 
       const handleEnd = () => {
+        setQaWidth(liveQaWidthRef.current);
         setQaResizing(false);
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
@@ -1077,8 +1094,11 @@ export function CodeWikiPanel({
 
   return (
     <div
+      ref={layoutElRef}
       className="codewiki-layout h-full min-h-0 flex-1"
-      style={{ "--codewiki-qa-width": `${qaWidth}px` }}
+      style={{
+        "--codewiki-qa-width": `${qaResizing ? liveQaWidthRef.current : qaWidth}px`,
+      }}
     >
         <aside className="codewiki-sidebar min-h-0 flex flex-col max-lg:hidden">
           <div className="px-4 pb-4 pt-5">

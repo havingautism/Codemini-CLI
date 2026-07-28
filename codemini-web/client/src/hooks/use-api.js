@@ -368,6 +368,13 @@ export async function fetchSessionChanges(sessionId) {
   return res.json();
 }
 
+export async function fetchSessionChangePatch(sessionId, id) {
+  const res = await api(
+    withSessionQuery(`/api/session-changes/${encodeURIComponent(id)}/patch`, sessionId),
+  );
+  return res.json();
+}
+
 export async function undoSessionChanges(sessionId, ids) {
   const res = await api('/api/session-changes/undo', {
     method: 'POST',

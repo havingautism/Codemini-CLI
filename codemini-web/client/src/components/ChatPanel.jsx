@@ -54,7 +54,7 @@ function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
 
   return (
     <div
-      className="fixed right-5 top-1/2 -translate-y-1/2 pointer-events-auto z-30 flex items-center gap-1"
+      className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-auto z-30 flex items-center gap-1"
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >

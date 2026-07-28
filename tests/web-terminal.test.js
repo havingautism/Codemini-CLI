@@ -6,9 +6,11 @@ import {
   _resetTerminalSessionsForTests,
   formatTerminalPlainText,
   getTerminalSnapshot,
+  resizeTerminal,
   restartTerminal,
   runTerminalCommand,
   stopTerminal,
+  writeTerminalInput,
   stripAnsi,
 } from '../codemini-web/lib/web-terminal.js';
 
@@ -118,6 +120,44 @@ test('web terminal preserves shell state between commands', async () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     assert.match(stripAnsi(snap?.data), /STATE=kept/);
+  });
+});
+
+test('rapid terminal resizes do not duplicate a hand-typed command', async () => {
+  await withTempCwd(async (cwd) => {
+    const shellDefault = process.platform === 'win32' ? 'powershell' : 'bash';
+    const marker = 'codemini_resize_marker';
+    const command =
+      process.platform === 'win32'
+        ? `$${marker} = 1`
+        : `${marker}=1`;
+
+    writeTerminalInput(cwd, `${command}\r`, shellDefault);
+    for (let index = 0; index < 24; index += 1) {
+      resizeTerminal(
+        cwd,
+        index % 2 === 0 ? 54 : 92,
+        24,
+        shellDefault,
+      );
+    }
+
+    let text = '';
+    for (let index = 0; index < 40; index += 1) {
+      text = stripAnsi(getTerminalSnapshot(cwd, shellDefault).data);
+      if (text.includes(marker)) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        text = stripAnsi(getTerminalSnapshot(cwd, shellDefault).data);
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    assert.equal(
+      text.match(new RegExp(marker, 'g'))?.length || 0,
+      1,
+      'expected one terminal echo for one submitted command',
+    );
   });
 });
 

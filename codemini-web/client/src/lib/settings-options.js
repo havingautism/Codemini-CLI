@@ -28,29 +28,6 @@ export function getExecutionModeOptions() {
   ];
 }
 
-export function getPlanExecutionModelOptions() {
-  return [
-    {
-      value: "default",
-      label: t("planExecutionModelDefault"),
-      description: t("planExecutionModelDefaultDesc"),
-      icon: Code,
-    },
-    {
-      value: "fast",
-      label: t("planExecutionModelFast"),
-      description: t("planExecutionModelFastDesc"),
-      icon: Sparkle,
-    },
-    {
-      value: "role",
-      label: t("planExecutionModelRole"),
-      description: t("planExecutionModelRoleDesc"),
-      icon: TerminalWindow,
-    },
-  ];
-}
-
 export function getApprovalModeOptions() {
   return [
     {
@@ -152,7 +129,6 @@ export function getReplyLanguageOptions() {
 
 const OPTION_GETTERS = {
   executionMode: getExecutionModeOptions,
-  planExecutionModel: getPlanExecutionModelOptions,
   approvalMode: getApprovalModeOptions,
   provider: getProviderOptions,
   searchProvider: getSearchProviderOptions,

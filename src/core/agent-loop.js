@@ -1453,6 +1453,7 @@ export async function runAgentLoop({
       const resultMeta = extractToolResultMeta(toolName, toolResult);
       /* 提取文件改动统计 */
       const declaredFileChange = extractFileChange(toolName, toolResult);
+      const declaredChanges = normalizeFileChanges(declaredFileChange);
       let fileChanges = [];
       let fileChange = null;
       if (!isParallelSafe && changeTracker && typeof changeTracker.capture === 'function' && captureScope) {
@@ -1462,11 +1463,18 @@ export async function runAgentLoop({
             toolCallId: call.id,
             summary,
             args: effectiveArgs,
-            declaredFileChanges: normalizeFileChanges(declaredFileChange)
+            declaredFileChanges: declaredChanges
           });
           const capturedChanges = normalizeFileChanges(captured);
           if (capturedChanges.length) {
-            fileChanges = capturedChanges;
+            // Prefer oplog rows (undo ids), but keep tool diff_preview when capture omitted it.
+            fileChanges = capturedChanges.map((change) => {
+              if (String(change.diffPreview || '').trim()) return change;
+              const declared = declaredChanges.find((item) => item.path === change.path);
+              return declared?.diffPreview
+                ? { ...change, diffPreview: declared.diffPreview }
+                : change;
+            });
             fileChange = fileChanges[0] || null;
           }
         } catch (error) {
@@ -1480,6 +1488,10 @@ export async function runAgentLoop({
             });
           }
         }
+      }
+      if (!fileChanges.length && declaredChanges.length) {
+        fileChanges = declaredChanges;
+        fileChange = fileChanges[0] || null;
       }
       if (onEvent) {
         onEvent({ type: 'tool:end', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs, summary, fileChange, fileChanges, resultMeta });
