@@ -1,6 +1,6 @@
 {
   "name": "codemini-cli",
-  "version": "0.8.5",
+  "version": "0.8.6",
   "description": "An extremely restrained coding + tasks CLI. Every platform. Every terminal. Minimal by design.",
   "keywords": [
     "cli",
@@ -43,6 +43,7 @@
     "codemini-web/lib",
     "codemini-web/shared",
     "codemini-web/client/src/lib/plan-ui-state.js",
+    "codemini-web/client/src/lib/message-context-parsers.js",
     "codemini-web/dist",
     "codemini-web/codemini_logo.png",
     "codemini-codewiki-web",
