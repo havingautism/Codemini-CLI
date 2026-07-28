@@ -10,7 +10,7 @@ import React, {
 import { t } from "../../i18n/index.js";
 import * as api from "../hooks/use-api.js";
 import { extractReasoningRuntimePatch } from "../lib/reasoning-controls.js";
-import { parseAttachmentsFromModelContent } from "../lib/message-attachments.js";
+import { parseUserBannerAttachmentsFromModelContent, enrichUiMessagesWithScrapbookAttachments, pickScrapbookAttachments } from "../lib/message-attachments.js";
 import { CHAT_ACTION_NAMES, LOCAL_SPEC_REVIEW_ACTIONS } from "../lib/chat-action-names.js";
 import {
   operationKey,
@@ -176,9 +176,17 @@ function parseRoute() {
   const path = window.location.pathname.replace(/\/+$/, "") || "/";
   const params = new URLSearchParams(window.location.search);
   const chatMatch = path.match(/^\/chat\/([^/]+)$/);
+  const scrapbookMatch = path.match(/^\/scrapbook\/([^/]+)$/);
   if (chatMatch)
     return { view: "chat", sessionId: decodeURIComponent(chatMatch[1]) };
   if (path === "/sessions") return { view: "sessions" };
+  if (scrapbookMatch) {
+    return {
+      view: "scrapbook",
+      scrapbookEntryId: decodeURIComponent(scrapbookMatch[1]),
+    };
+  }
+  if (path === "/scrapbook") return { view: "scrapbook" };
   if (path === "/codewiki")
     return { view: "codewiki", projectPath: params.get("project") || "" };
   return { view: "chat" };
@@ -186,6 +194,12 @@ function parseRoute() {
 
 function routeFor(view, sessionId, options = {}) {
   if (view === "sessions") return "/sessions";
+  if (view === "scrapbook") {
+    const scrapbookEntryId = String(options.scrapbookEntryId || "").trim();
+    return scrapbookEntryId
+      ? `/scrapbook/${encodeURIComponent(scrapbookEntryId)}`
+      : "/scrapbook";
+  }
   if (view === "codewiki") {
     const projectPath = String(options.projectPath || "").trim();
     return projectPath
@@ -198,14 +212,15 @@ function routeFor(view, sessionId, options = {}) {
 function updateRoute(
   view,
   sessionId,
-  { replace = false, projectPath = "" } = {},
+  { replace = false, projectPath = "", scrapbookEntryId = "" } = {},
 ) {
-  const next = routeFor(view, sessionId, { projectPath });
+  const next = routeFor(view, sessionId, { projectPath, scrapbookEntryId });
   if (`${window.location.pathname}${window.location.search}` === next) return;
   const st = {
     view,
     sessionId: sessionId || null,
     projectPath: projectPath || null,
+    scrapbookEntryId: scrapbookEntryId || null,
   };
   if (replace) window.history.replaceState(st, "", next);
   else window.history.pushState(st, "", next);
@@ -221,6 +236,8 @@ const initialState = {
   stage: "idle",
   busy: false,
   currentView: "chat",
+  scrapbookEntryId: null,
+  pendingScrapbookContext: null,
   runtimeState: null,
   currentSessionId: null,
   sessionRuntimeById: {},
@@ -1523,7 +1540,10 @@ export function AppProvider({ children }) {
                 ?.changes || [];
           if (!isAlive()) return;
           const restored = sanitizeManualAbortMessages(
-            settleCompletedPlanToolCards(uiMessages),
+            enrichUiMessagesWithScrapbookAttachments(
+              settleCompletedPlanToolCards(uiMessages),
+              messages,
+            ),
           );
           const overview = [...restored]
             .reverse()
@@ -1577,7 +1597,7 @@ export function AppProvider({ children }) {
               segments: [
                 { type: "text", text: visibleContent, isStreaming: false },
               ],
-              attachments: parseAttachmentsFromModelContent(msg.model_content),
+              attachments: parseUserBannerAttachmentsFromModelContent(msg.model_content),
               skillBadges: skillBadgesFromSessionMessage(msg),
               fileChanges: [],
             });
@@ -2811,6 +2831,10 @@ export function AppProvider({ children }) {
       if (!alive) return;
       update({
         currentView: route.view,
+        scrapbookEntryId:
+          route.view === "scrapbook"
+            ? route.scrapbookEntryId || null
+            : stateRef.current.scrapbookEntryId,
         codewikiProjectPath:
           route.view === "codewiki"
             ? route.projectPath || ""
@@ -2911,6 +2935,10 @@ export function AppProvider({ children }) {
       const route = parseRoute();
       update({
         currentView: route.view,
+        scrapbookEntryId:
+          route.view === "scrapbook"
+            ? route.scrapbookEntryId || null
+            : stateRef.current.scrapbookEntryId,
         codewikiProjectPath:
           route.view === "codewiki"
             ? route.projectPath || ""
@@ -2985,7 +3013,7 @@ export function AppProvider({ children }) {
   const actions = useMemo(
     () => ({
       submit: async (input, options = {}) => {
-        const sessionId = stateRef.current.currentSessionId;
+        const sessionId = options.sessionId || stateRef.current.currentSessionId;
         return runSessionOperation(sessionOperationsRef.current, sessionId, async () => {
         const message = typeof input === "string"
           ? { text: input, skillNames: [], attachmentIds: [], dismissedAlwaysSkills: [] }
@@ -3067,6 +3095,14 @@ export function AppProvider({ children }) {
             dismissedAlwaysSkills: Array.isArray(message.dismissedAlwaysSkills)
               ? message.dismissedAlwaysSkills
               : [],
+            attachments: pickScrapbookAttachments(
+              Array.isArray(options.attachments)
+                ? options.attachments
+                : Array.isArray(message.attachments)
+                  ? message.attachments
+                  : [],
+            ),
+            ...(message.modelText ? { modelText: message.modelText } : {}),
           });
           const result = await res.json().catch(() => ({}));
           if (result?.code === "CONFIG_REQUIRED") {
@@ -3730,6 +3766,61 @@ export function AppProvider({ children }) {
         }
       },
 
+      askScrapbookEntry: async (entryId) => {
+        update({ currentView: "chat", messagesLoading: true, gitInfo: null });
+        try {
+          const payloadResult = await api.buildScrapbookAskPayload(entryId);
+          if (payloadResult?.error || !payloadResult?.payload) {
+            throw new Error(payloadResult?.message || "Could not prepare scrapbook context");
+          }
+          const result = await api.openProject("__codemini_general__", { newSession: true });
+          if (!result?.ok || !result?.sessionId) {
+            throw new Error(result?.message || "Could not create a new session");
+          }
+          updateRoute("chat", result.sessionId);
+          activateSessionView(result.sessionId);
+          if (result.state) {
+            setState((prev) => ({
+              ...prev,
+              runtimeState: result.state,
+              sessionRuntimeById: {
+                ...prev.sessionRuntimeById,
+                [result.sessionId]: {
+                  ...prev.sessionRuntimeById[result.sessionId],
+                  ...result.state,
+                },
+              },
+              projectCwd: projectNameFromRuntimeState(result.state),
+              isGeneral: !!result.state.isGeneral,
+              live: !!result.state.busy,
+              stageLabel: result.state.busy ? t("waitingResponse") : "",
+            }));
+          } else {
+            await loadState(result.sessionId);
+            update({ live: false, stageLabel: "" });
+          }
+          if (result.sessionData) {
+            await loadSessionMessages(result.sessionData, { sessionId: result.sessionId });
+          }
+          await loadSessions({ force: true });
+          update({
+            messagesLoading: false,
+            pendingScrapbookContext: Array.isArray(payloadResult.payload.attachments)
+              && payloadResult.payload.attachments[0]
+              ? {
+                  entryId,
+                  attachment: payloadResult.payload.attachments[0],
+                  modelText: payloadResult.payload.modelText || "",
+                }
+              : null,
+          });
+          return { ok: true, sessionId: result.sessionId };
+        } catch (err) {
+          update({ messagesLoading: false });
+          return { error: true, message: String(err?.message || "Could not ask about scrapbook entry") };
+        }
+      },
+
       openProject: async (projectPath, options = {}) => {
         const nextView = options.view || "chat";
         const openingGeneral =
@@ -3825,15 +3916,31 @@ export function AppProvider({ children }) {
               stateRef.current.runtimeState?.cwd ||
               ""
             : stateRef.current.codewikiProjectPath;
-        update({ currentView: view, codewikiProjectPath });
+        const scrapbookEntryId =
+          view === "scrapbook" ? options.scrapbookEntryId || null : null;
+        update({ currentView: view, codewikiProjectPath, scrapbookEntryId });
         if (view === "codewiki") {
           updateRoute(view, null, { projectPath: codewikiProjectPath });
         }
         if (view === "sessions") updateRoute(view, null);
+        if (view === "scrapbook") {
+          updateRoute(view, null, { scrapbookEntryId });
+        }
         if (view === "chat") {
           const rs = stateRef.current.runtimeState;
           updateRoute("chat", rs?.sessionId);
         }
+      },
+
+      openScrapbookHome: () => {
+        update({ currentView: "scrapbook", scrapbookEntryId: null });
+        updateRoute("scrapbook", null, { scrapbookEntryId: "" });
+      },
+
+      openScrapbookEntry: (entryId) => {
+        const scrapbookEntryId = String(entryId || "").trim();
+        update({ currentView: "scrapbook", scrapbookEntryId });
+        updateRoute("scrapbook", null, { scrapbookEntryId });
       },
 
       toggleTheme: () => {
@@ -3862,6 +3969,7 @@ export function AppProvider({ children }) {
       setMcpOpen: (open) => update({ mcpOpen: open }),
       setHooksOpen: (open) => update({ hooksOpen: open }),
       setMemoryOpen: (open) => update({ memoryOpen: open }),
+      clearPendingScrapbookContext: () => update({ pendingScrapbookContext: null }),
       prepareChatAction: (actionName) => {
         if (actionName === CHAT_ACTION_NAMES.REFLECT) {
           update({

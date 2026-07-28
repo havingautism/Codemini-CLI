@@ -3,8 +3,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
 
-const GLOBAL_SCHEMA_VERSION = 2;
-// Version 3 removes an experimental FTS table that was never part of the product feature set.
+const GLOBAL_SCHEMA_VERSION = 4;
 const PROJECT_SCHEMA_VERSION = 5;
 const databases = new Map();
 
@@ -131,6 +130,34 @@ function createGlobalSchema(db, currentVersion = 0) {
       payload_json TEXT NOT NULL,
       PRIMARY KEY(session_id, id)
     ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS scrapbook_entries (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      source_type TEXT NOT NULL DEFAULT 'manual',
+      source_url TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL DEFAULT '',
+      content_text TEXT NOT NULL DEFAULT '',
+      summary TEXT NOT NULL DEFAULT '',
+      tags_json TEXT NOT NULL DEFAULT '[]',
+      fetch_status TEXT NOT NULL DEFAULT 'ready'
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS scrapbook_entries_updated_idx
+      ON scrapbook_entries(updated_at DESC, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS scrapbook_summary_jobs (
+      id TEXT PRIMARY KEY,
+      entry_id TEXT NOT NULL REFERENCES scrapbook_entries(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      partial_text TEXT NOT NULL DEFAULT '',
+      result_summary TEXT NOT NULL DEFAULT '',
+      error_text TEXT NOT NULL DEFAULT ''
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS scrapbook_summary_jobs_entry_idx
+      ON scrapbook_summary_jobs(entry_id, created_at DESC);
   `);
   if (currentVersion < 2) {
     db.exec(`
@@ -144,6 +171,18 @@ function createGlobalSchema(db, currentVersion = 0) {
       CREATE INDEX memory_queue_scope_idx
         ON memory_queue_entries(bucket, scope, day, created_at, id);
     `);
+  }
+  if (currentVersion < 4) {
+    const columns = db
+      .prepare(`SELECT name FROM pragma_table_info('scrapbook_summary_jobs')`)
+      .all()
+      .map((row) => String(row.name || ''));
+    if (columns.length > 0 && !columns.includes('error_text')) {
+      db.exec(`
+        ALTER TABLE scrapbook_summary_jobs
+        ADD COLUMN error_text TEXT NOT NULL DEFAULT '';
+      `);
+    }
   }
 }
 

@@ -24,7 +24,7 @@ import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
 import { SessionPanel } from "@/components/SessionPanel.jsx";
 import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
-import { DotsThree, GitDiff, List, Terminal } from "@phosphor-icons/react";
+import { DotsThree, FolderSimple, GitDiff, List, SidebarSimple, Terminal } from "@phosphor-icons/react";
 import "../style.css";
 import "./apple-design.css";
 
@@ -63,6 +63,11 @@ const MemoryDialog = lazy(() =>
     default: module.MemoryDialog,
   })),
 );
+const ScrapbookPanel = lazy(() =>
+  import("@/components/ScrapbookPanel.jsx").then((module) => ({
+    default: module.ScrapbookPanel,
+  })),
+);
 const SoulDialog = lazy(() =>
   import("@/components/SoulDialog.jsx").then((module) => ({
     default: module.SoulDialog,
@@ -78,9 +83,9 @@ const GitDiffDialog = lazy(() =>
     default: module.GitDiffDialog,
   })),
 );
-const TerminalPanel = lazy(() =>
-  import("@/components/TerminalPanel.jsx").then((module) => ({
-    default: module.TerminalPanel,
+const WorkspaceRail = lazy(() =>
+  import("@/components/WorkspaceRail.jsx").then((module) => ({
+    default: module.WorkspaceRail,
   })),
 );
 
@@ -183,7 +188,27 @@ function Shell() {
   const approvalRequest = interactiveRequestForSession(state, "approval");
   const userInputRequest = interactiveRequestForSession(state, "userInput");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
-  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      const raw = localStorage.getItem("codemini-sidebar-collapsed");
+      return raw === "1" || raw === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [sideRailOpen, setSideRailOpen] = useState(false);
+  const [sideRailTab, setSideRailTab] = useState("files");
+
+  const setSidebarCollapsedAndPersist = useCallback((collapsed) => {
+    const value = !!collapsed;
+    setSidebarCollapsed(value);
+    try {
+      localStorage.setItem("codemini-sidebar-collapsed", value ? "1" : "0");
+    } catch {
+      // Ignore storage failures.
+    }
+  }, []);
   const rs = state.runtimeState || {};
   const currentId = state.currentSessionId || rs.sessionId;
   const reasoningSyncKey = useMemo(
@@ -199,6 +224,7 @@ function Shell() {
   const openMcp = useCallback(() => actions.setMcpOpen(true), [actions]);
   const openHooks = useCallback(() => actions.setHooksOpen(true), [actions]);
   const openMemory = useCallback(() => actions.setMemoryOpen(true), [actions]);
+  const openScrapbook = useCallback(() => actions.switchView("scrapbook"), [actions]);
   const openSouls = useCallback(() => actions.setSoulsOpen(true), [actions]);
   const retryMessage = useCallback((prompt) => actions.submit(prompt), [actions]);
   const openAbout = useCallback(() => actions.setAboutOpen(true), [actions]);
@@ -252,6 +278,7 @@ function Shell() {
         onOpenMcp={openMcp}
         onOpenHooks={openHooks}
         onOpenMemory={openMemory}
+        onOpenScrapbook={openScrapbook}
         onOpenSouls={openSouls}
         onOpenAbout={openAbout}
         gitBatch={state.gitBatch}
@@ -269,14 +296,17 @@ function Shell() {
         onRefreshSessions={actions.loadSessions}
         onRegenerateSessionTitle={actions.regenerateSessionTitle}
         onDeleteSession={actions.deleteSession}
+        onCollapseSidebar={() => setSidebarCollapsedAndPersist(true)}
       />
   );
 
   return (
     <div className="codemini-app-shell flex h-screen overflow-hidden text-(--text-primary)">
-      <div className="hidden md:flex h-full shrink-0 py-2 pl-2 pr-0">
-        {sidebar}
-      </div>
+      {!sidebarCollapsed ? (
+        <div className="hidden md:flex h-full shrink-0 py-2 pl-2 pr-0">
+          {sidebar}
+        </div>
+      ) : null}
       <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
         <SheetContent
           side="left"
@@ -306,6 +336,12 @@ function Shell() {
               onAbort={actions.abortSession}
               onAbortAll={actions.abortAllSessions}
             />
+          </div>
+        ) : state.currentView === "scrapbook" ? (
+          <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
+            <Suspense fallback={null}>
+              <ScrapbookPanel />
+            </Suspense>
           </div>
         ) : state.currentView === "codewiki" ? (
           <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
@@ -341,6 +377,17 @@ function Shell() {
                 >
                   <List size={17} />
                 </button>
+                {sidebarCollapsed ? (
+                  <button
+                    type="button"
+                    className="hidden md:inline-flex size-8 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                    aria-label={t("expandSidebar")}
+                    title={t("expandSidebar")}
+                    onClick={() => setSidebarCollapsedAndPersist(false)}
+                  >
+                    <SidebarSimple size={16} />
+                  </button>
+                ) : null}
                 <span className="font-medium text-[14px] text-(--text-primary) truncate">
                   {state.isGeneral
                     ? t("generalChat")
@@ -388,14 +435,50 @@ function Shell() {
                   type="button"
                   className={
                     "inline-flex size-8 items-center justify-center rounded-md border-0 cursor-pointer " +
-                    (terminalOpen
+                    (sideRailOpen && sideRailTab === "files"
+                      ? "bg-(--bg-hover) text-(--text-primary)"
+                      : "bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)") +
+                    (state.isGeneral ? " opacity-40 cursor-not-allowed" : "")
+                  }
+                  aria-label={t("workspaceFilesTab")}
+                  title={
+                    state.isGeneral
+                      ? t("workspaceNeedsProject")
+                      : t("workspaceFilesTab")
+                  }
+                  aria-pressed={sideRailOpen && sideRailTab === "files"}
+                  disabled={Boolean(state.isGeneral)}
+                  onClick={() => {
+                    if (state.isGeneral) return;
+                    if (sideRailOpen && sideRailTab === "files") {
+                      setSideRailOpen(false);
+                      return;
+                    }
+                    setSideRailTab("files");
+                    setSideRailOpen(true);
+                  }}
+                >
+                  <FolderSimple size={16} />
+                </button>
+                <button
+                  type="button"
+                  className={
+                    "inline-flex size-8 items-center justify-center rounded-md border-0 cursor-pointer " +
+                    (sideRailOpen && sideRailTab === "terminal"
                       ? "bg-(--bg-hover) text-(--text-primary)"
                       : "bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)")
                   }
                   aria-label={t("terminalTitle")}
                   title={t("terminalTitle")}
-                  aria-pressed={terminalOpen}
-                  onClick={() => setTerminalOpen((open) => !open)}
+                  aria-pressed={sideRailOpen && sideRailTab === "terminal"}
+                  onClick={() => {
+                    if (sideRailOpen && sideRailTab === "terminal") {
+                      setSideRailOpen(false);
+                      return;
+                    }
+                    setSideRailTab("terminal");
+                    setSideRailOpen(true);
+                  }}
                 >
                   <Terminal size={16} />
                 </button>
@@ -484,15 +567,17 @@ function Shell() {
               </div>
             </div>
             </div>
-            {terminalOpen ? (
+            {sideRailOpen ? (
               <Suspense fallback={null}>
-                <TerminalPanel
+                <WorkspaceRail
+                  tab={sideRailTab}
+                  onTabChange={setSideRailTab}
                   sessionId={state.currentSessionId || ""}
                   projectCwd={
                     state.runtimeState?.cwd || state.projectCwd || ""
                   }
-                  disabled={Boolean(state.isGeneral)}
-                  onClose={() => setTerminalOpen(false)}
+                  isGeneral={Boolean(state.isGeneral)}
+                  onClose={() => setSideRailOpen(false)}
                 />
               </Suspense>
             ) : null}

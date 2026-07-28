@@ -3253,11 +3253,13 @@ samp {
 }
 
 /* Shiki dual-theme syntax highlighting */
-[data-theme="light"] .msg-body [data-streamdown="code-block-body"] span[style*="--shiki-light"] {
+[data-theme="light"] .msg-body [data-streamdown="code-block-body"] span[style*="--shiki-light"],
+[data-theme="light"] .codemini-file-preview-source span[style*="--shiki-light"] {
   color: var(--shiki-light) !important;
 }
 
-[data-theme="dark"] .msg-body [data-streamdown="code-block-body"] span[style*="--shiki-dark"] {
+[data-theme="dark"] .msg-body [data-streamdown="code-block-body"] span[style*="--shiki-dark"],
+[data-theme="dark"] .codemini-file-preview-source span[style*="--shiki-dark"] {
   color: var(--shiki-dark) !important;
 }
 
@@ -3498,6 +3500,19 @@ samp {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 13%, transparent);
 }
 
+.scrapbook-picker-search-shell:focus-within {
+  outline: none;
+}
+
+.scrapbook-picker-search,
+.scrapbook-picker-search:focus,
+.scrapbook-picker-search:focus-visible {
+  border: 0 !important;
+  outline: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+}
+
 .codemini-input-shell textarea:focus-visible {
   background: transparent;
   box-shadow: none;
@@ -3565,13 +3580,30 @@ samp {
 }
 
 .codemini-terminal-host .xterm-viewport {
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  overflow-y: auto !important;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
 .codemini-terminal-host .xterm-viewport::-webkit-scrollbar {
-  width: 0;
-  height: 0;
+  width: var(--scrollbar-size);
+}
+
+.codemini-terminal-host .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.codemini-terminal-host .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+
+.codemini-terminal-host .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+.codemini-terminal-host .xterm-viewport::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .codemini-terminal-host .xterm-screen canvas {

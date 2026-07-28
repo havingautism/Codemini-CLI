@@ -28,6 +28,7 @@
     "pdf-parse": "1.1.1",
     "radix-ui": "^1.5.0",
     "react": "^19.2.5",
+    "react-arborist": "^3.16.0",
     "react-dom": "^19.2.5",
     "sharp": "^0.35.3",
     "shiki": "^4.0.2",

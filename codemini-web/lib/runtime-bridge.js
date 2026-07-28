@@ -153,6 +153,9 @@ export function serializeSessionMessages(messages) {
         retryPrompt: typeof message.retry_prompt === 'string' ? message.retry_prompt : '',
         selectedSkillNames,
         skillBadges: skillBadgesFromSessionMessage(message),
+        ...(message.role === 'user' && typeof message.model_content === 'string' && message.model_content
+          ? { model_content: message.model_content }
+          : {}),
         at: message.at || null,
       };
     });
