@@ -18,6 +18,7 @@ import {
   MagnifyingGlass,
   Minus,
   Moon,
+  NotePencil,
   Paperclip,
   Plus,
   Sparkle,
@@ -110,6 +111,24 @@ function compactBytes(bytes = 0) {
   if (value < 1024) return `${Math.round(value)} B`;
   if (value < 1024 * 1024) return `${Math.round(value / 102.4) / 10} KB`;
   return `${Math.round(value / 1024 / 102.4) / 10} MB`;
+}
+
+function getScrapbookPreviewText(entry) {
+  return String(
+    entry?.summary || entry?.contentText || entry?.sourceUrl || t("scrapbookNoContent"),
+  )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getScrapbookSourceLabel(entry) {
+  const raw = String(entry?.sourceUrl || "").trim();
+  if (!raw) return "";
+  try {
+    return new URL(raw).hostname.replace(/^www\./, "");
+  } catch {
+    return raw;
+  }
 }
 
 async function compressImageFile(file) {
@@ -622,6 +641,7 @@ export function InputBar({
   projectDirs = EMPTY_PROJECT_DIRS,
   hasConversation = false,
 }) {
+  const { state, actions } = useApp();
   const [value, setValue] = useState("");
   const [history, setHistory] = useState([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -635,6 +655,11 @@ export function InputBar({
   );
   const [attachments, setAttachments] = useState([]);
   const [selectedSkills, setSelectedSkills] = useState([]);
+  const [scrapbookContext, setScrapbookContext] = useState(null);
+  const [scrapbookPickerOpen, setScrapbookPickerOpen] = useState(false);
+  const [scrapbookEntries, setScrapbookEntries] = useState([]);
+  const [scrapbookLoading, setScrapbookLoading] = useState(false);
+  const [scrapbookQuery, setScrapbookQuery] = useState("");
   const [dismissedDefaultSkills, setDismissedDefaultSkills] = useState(
     new Set(),
   );
@@ -660,6 +685,21 @@ export function InputBar({
     () => defaultSkillNames.filter((name) => !dismissedDefaultSkills.has(name)),
     [defaultSkillNames, dismissedDefaultSkills],
   );
+  const filteredScrapbookEntries = useMemo(() => {
+    const query = scrapbookQuery.trim().toLowerCase();
+    if (!query) return scrapbookEntries;
+    return scrapbookEntries.filter((entry) => {
+      const haystack = [
+        entry?.title,
+        entry?.summary,
+        entry?.contentText,
+        entry?.sourceUrl,
+      ]
+        .map((item) => String(item || "").toLowerCase())
+        .join("\n");
+      return haystack.includes(query);
+    });
+  }, [scrapbookEntries, scrapbookQuery]);
   const removeDefaultSkill = useCallback((name) => {
     setDismissedDefaultSkills((prev) => new Set([...prev, name]));
   }, []);
@@ -683,6 +723,17 @@ export function InputBar({
   }, [externalHistory]);
 
   useEffect(() => {
+    const pendingScrapbookContext = state?.pendingScrapbookContext || null;
+    if (!pendingScrapbookContext?.attachment) return;
+    setScrapbookContext({
+      entryId: pendingScrapbookContext.entryId,
+      attachment: pendingScrapbookContext.attachment,
+      modelText: pendingScrapbookContext.modelText || "",
+    });
+    actions.clearPendingScrapbookContext?.();
+  }, [actions, state?.pendingScrapbookContext]);
+
+  useEffect(() => {
     if (!inputLocked || actionSubmitting) return;
     setPaletteOpen(false);
   }, [inputLocked, actionSubmitting]);
@@ -691,11 +742,12 @@ export function InputBar({
     const val = value.trim();
     const hasText = val.length > 0;
     const hasAttachments = attachments.length > 0;
+    const hasScrapbookContext = Boolean(scrapbookContext);
     const hasSkills = selectedSkills.length > 0;
-    if ((!hasText && !hasAttachments && !hasSkills) || inputLocked) return;
+    if ((!hasText && !hasAttachments && !hasScrapbookContext && !hasSkills) || inputLocked) return;
 
     let fallbackText = val;
-    if (!hasText && hasAttachments) {
+    if (!hasText && (hasAttachments || hasScrapbookContext)) {
       fallbackText = t("attachmentFallbackPrompt");
     }
 
@@ -705,14 +757,16 @@ export function InputBar({
         text: fallbackText,
         skillNames: selectedSkillNames,
         attachmentIds: attachments.map((item) => item.id).filter(Boolean),
-        attachments,
+        attachments: scrapbookContext ? [...attachments, scrapbookContext.attachment] : attachments,
         dismissedAlwaysSkills: dismissedSkills,
+        ...(scrapbookContext?.modelText ? { modelText: scrapbookContext.modelText } : {}),
       });
     } catch {
       return;
     }
     setValue("");
     setAttachments([]);
+    setScrapbookContext(null);
     setSelectedSkills([]);
     setDismissedDefaultSkills(new Set());
     setAttachmentError("");
@@ -722,6 +776,7 @@ export function InputBar({
   }, [
     value,
     attachments,
+    scrapbookContext,
     selectedSkills,
     selectedSkillNames,
     dismissedDefaultSkills,
@@ -916,6 +971,40 @@ export function InputBar({
     setAttachments((current) => current.filter((item) => item.id !== id));
   }, []);
 
+  const loadScrapbookEntries = useCallback(async () => {
+    setScrapbookLoading(true);
+    try {
+      const result = await api.fetchScrapbookEntries("");
+      setScrapbookEntries(Array.isArray(result?.entries) ? result.entries : []);
+    } catch {
+      setScrapbookEntries([]);
+    } finally {
+      setScrapbookLoading(false);
+    }
+  }, []);
+
+  const selectScrapbookEntry = useCallback(async (entryId) => {
+    const result = await api.buildScrapbookAskPayload(entryId);
+    if (result?.error || !result?.payload) return;
+    const attachment = Array.isArray(result.payload.attachments)
+      ? result.payload.attachments[0]
+      : null;
+    setScrapbookContext(
+      attachment
+        ? {
+            entryId,
+            attachment,
+            modelText: result.payload.modelText || "",
+          }
+        : null,
+    );
+    setScrapbookPickerOpen(false);
+  }, []);
+
+  const removeScrapbookContext = useCallback(() => {
+    setScrapbookContext(null);
+  }, []);
+
   return (
     <div className="w-full relative">
       <ActionSkillPalette
@@ -934,6 +1023,7 @@ export function InputBar({
         {(selectedSkills.length > 0 ||
           visibleDefaultSkillNames.length > 0 ||
           attachments.length > 0 ||
+          scrapbookContext ||
           attachmentError ||
           uploadingAttachments) && (
           <div className="flex flex-wrap items-center gap-1.5">
@@ -1005,6 +1095,26 @@ export function InputBar({
                 </span>
               );
             })}
+            {scrapbookContext?.attachment ? (
+              <span
+                className="codemini-input-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px] text-(--text-secondary)"
+                title={scrapbookContext.attachment.name}
+              >
+                <NotePencil size={14} className="shrink-0" />
+                <span className="max-w-[180px] truncate">
+                  {scrapbookContext.attachment.name}
+                </span>
+                <button
+                  type="button"
+                  className="ml-0.5 inline-flex size-4 items-center justify-center rounded hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                  onClick={removeScrapbookContext}
+                  title={t("removeAttachment")}
+                  disabled={inputLocked}
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            ) : null}
             {uploadingAttachments && (
               <span className="text-[12px] text-(--text-muted)">
                 {t("attachmentUploading")}
@@ -1074,6 +1184,119 @@ export function InputBar({
             >
               <Paperclip size={18} />
             </button>
+            <Popover
+              open={scrapbookPickerOpen}
+              onOpenChange={(open) => {
+                if (inputLocked) return;
+                setScrapbookPickerOpen(open);
+                if (open) {
+                  setScrapbookQuery("");
+                  loadScrapbookEntries();
+                }
+              }}
+            >
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className="border-0 bg-transparent text-(--text-secondary) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                  title={t("scrapbook")}
+                  aria-label={t("scrapbook")}
+                  disabled={inputLocked}
+                >
+                  <NotePencil size={18} />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent
+                side="top"
+                align="start"
+                sideOffset={8}
+                className="w-96 overflow-hidden rounded-xl p-0"
+              >
+                <div className="border-b border-(--border-default) bg-(--bg-primary) px-3 py-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-[13px] font-medium text-(--text-primary)">
+                        {t("scrapbook")}
+                      </div>
+                      <div className="mt-1 text-[11px] text-(--text-muted)">
+                        {t("scrapbookPickerHelp")}
+                      </div>
+                    </div>
+                    <div className="shrink-0 rounded-full border border-(--border-default) bg-(--bg-subtle) px-2 py-0.5 text-[10px] font-medium text-(--text-muted)">
+                      {filteredScrapbookEntries.length}
+                    </div>
+                  </div>
+                  <label className="group scrapbook-picker-search-shell mt-3 flex items-center gap-2.5 rounded-xl border border-(--border-default) bg-(--bg-secondary) px-3 py-0.5 transition-[border-color,background-color,box-shadow] hover:border-(--border-strong) hover:bg-(--bg-primary) focus-within:border-(--border-strong) focus-within:bg-(--bg-primary) focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--text-primary)_7%,transparent)]">
+                    <MagnifyingGlass
+                      size={14}
+                      className="shrink-0 text-(--text-muted) transition-colors group-focus-within:text-(--text-secondary)"
+                    />
+                    <input
+                      type="text"
+                      inputMode="search"
+                      autoComplete="off"
+                      value={scrapbookQuery}
+                      onChange={(event) => setScrapbookQuery(event.target.value)}
+                      placeholder={t("scrapbookSearchPlaceholder")}
+                      aria-label={t("scrapbookSearchPlaceholder")}
+                      className="scrapbook-picker-search h-9 min-w-0 flex-1 appearance-none border-0 bg-transparent p-0 text-[12px] text-(--text-primary) shadow-none outline-none ring-0 placeholder:text-(--text-muted) focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0"
+                    />
+                  </label>
+                </div>
+                <div className="flex max-h-96 flex-col gap-2 overflow-y-auto p-2">
+                  {scrapbookLoading ? (
+                    <div className="rounded-lg border border-dashed border-(--border-default) px-3 py-6 text-center text-[12px] text-(--text-muted)">
+                      {t("scrapbookLoading")}
+                    </div>
+                  ) : filteredScrapbookEntries.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-(--border-default) px-3 py-6 text-center text-[12px] text-(--text-muted)">
+                      {t("scrapbookEmpty")}
+                    </div>
+                  ) : (
+                    filteredScrapbookEntries.map((entry) => (
+                      <button
+                        key={entry.id}
+                        type="button"
+                        className={cn(
+                          "group relative flex w-full flex-col items-start gap-2 overflow-hidden rounded-xl border px-3 py-3 text-left transition-[background-color,border-color,box-shadow,transform] duration-150",
+                          scrapbookContext?.entryId === entry.id
+                            ? "border-(--border-strong) bg-(--bg-subtle) shadow-[inset_3px_0_0_0_var(--border-strong),inset_0_0_0_1px_var(--border-strong)]"
+                            : "border-transparent hover:-translate-y-px hover:border-(--border-strong) hover:bg-(--bg-subtle)/95 hover:shadow-[0_14px_30px_color-mix(in_srgb,var(--text-primary)_14%,transparent)]",
+                        )}
+                        onClick={() => selectScrapbookEntry(entry.id)}
+                      >
+                        <span className="absolute inset-y-3 left-0 w-1 rounded-r-full bg-transparent transition-colors group-hover:bg-(--border-strong)" />
+                        <div className="flex w-full items-start justify-between gap-2">
+                          <span className="line-clamp-2 min-w-0 flex-1 break-all text-[12px] font-medium text-(--text-primary) transition-colors group-hover:text-(--text-primary)">
+                            {entry.title || entry.sourceUrl || t("scrapbookUntitled")}
+                          </span>
+                          {scrapbookContext?.entryId === entry.id ? (
+                            <span className="shrink-0 rounded-full bg-(--bg-hover) px-2 py-0.5 text-[10px] font-medium text-(--text-secondary)">
+                              {t("scrapbookPickerActive")}
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-(--text-muted)">
+                          {getScrapbookSourceLabel(entry) ? (
+                            <span className="rounded-full border border-(--border-default) bg-(--bg-secondary) px-2 py-0.5 transition-[background-color,border-color,color] group-hover:border-(--border-strong) group-hover:bg-(--bg-primary) group-hover:text-(--text-secondary)">
+                              {getScrapbookSourceLabel(entry)}
+                            </span>
+                          ) : null}
+                          <span className="rounded-full border border-(--border-default) bg-(--bg-secondary) px-2 py-0.5 transition-[background-color,border-color,color] group-hover:border-(--border-strong) group-hover:bg-(--bg-primary) group-hover:text-(--text-secondary)">
+                            {entry.summary
+                              ? t("scrapbookPickerSummary")
+                              : t("scrapbookPickerRaw")}
+                          </span>
+                        </div>
+                        <span className="line-clamp-3 break-all text-[11px] leading-5 text-(--text-muted) transition-colors group-hover:text-(--text-secondary)">
+                          {getScrapbookPreviewText(entry)}
+                        </span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </PopoverContent>
+            </Popover>
             <input
               ref={fileInputRef}
               type="file"

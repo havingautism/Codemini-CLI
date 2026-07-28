@@ -1,25 +1,36 @@
-export function parseAttachmentsFromModelContent(modelContent) {
-  const text = String(modelContent || "");
-  if (!text.includes("<uploaded_attachments>")) return [];
+import {
+  parseScrapbookAttachmentFromModelContent,
+  pickScrapbookAttachments,
+} from "./message-context-parsers.js";
 
-  const blockMatch = text.match(
-    /<uploaded_attachments>([\s\S]*?)<\/uploaded_attachments>/,
+export {
+  parseAttachmentsFromModelContent,
+  parseScrapbookAttachmentFromModelContent,
+  parseUserBannerAttachmentsFromModelContent,
+  normalizeScrapbookAttachment,
+  pickScrapbookAttachments,
+} from "./message-context-parsers.js";
+
+export function enrichUiMessagesWithScrapbookAttachments(uiMessages = [], coreMessages = []) {
+  const coreUsers = (Array.isArray(coreMessages) ? coreMessages : []).filter(
+    (message) => message?.role === "user",
   );
-  if (!blockMatch) return [];
+  let coreUserIndex = 0;
 
-  const attachments = [];
-  for (const block of blockMatch[1].split(/\n---\n/)) {
-    const nameMatch = block.match(/^Attachment \d+: (.+)$/m);
-    if (!nameMatch) continue;
-    const name = nameMatch[1].trim();
-    const typeMatch = block.match(/^Type: (image|file)/m);
-    const sizeMatch = block.match(/^Size: (\d+) bytes$/m);
-    attachments.push({
-      id: `hist-${attachments.length}-${name}`,
-      name,
-      kind: typeMatch?.[1] === "image" ? "image" : "file",
-      size: Number(sizeMatch?.[1] || 0),
-    });
-  }
-  return attachments;
+  return (Array.isArray(uiMessages) ? uiMessages : []).map((message) => {
+    if (message?.role !== "you" || message.transientKey) return message;
+
+    const coreMessage = coreUsers[coreUserIndex++];
+    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+    const hasScrapbook = pickScrapbookAttachments(attachments).length > 0;
+    if (hasScrapbook || !coreMessage) return message;
+
+    const scrapbook = parseScrapbookAttachmentFromModelContent(coreMessage.model_content);
+    if (!scrapbook) return message;
+
+    return {
+      ...message,
+      attachments: [...attachments, scrapbook],
+    };
+  });
 }

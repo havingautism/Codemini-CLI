@@ -43,6 +43,21 @@ import {
   listWorkspaceChildren,
   previewWorkspaceFile,
 } from './lib/workspace-files.js';
+import {
+  parseScrapbookAttachmentFromModelContent,
+  pickScrapbookAttachments,
+} from './lib/message-context-parsers.js';
+import {
+  buildScrapbookAskPayload,
+  createManualScrapbookEntry,
+  createUrlScrapbookEntry,
+  deleteScrapbookEntryForApi,
+  getScrapbookEntryForApi,
+  getScrapbookSummaryJobForApi,
+  listScrapbookEntriesForApi,
+  startScrapbookSummaryJob,
+  subscribeScrapbookSummaryJob,
+} from './lib/scrapbook-service.js';
 import { createPooledSessionEnsurer } from './lib/pooled-session-ensurer.js';
 import { loadSessionForSwitch } from './lib/session-switch-loader.js';
 import { resolveEmbed } from './lib/embed-resolver.js';
@@ -916,6 +931,21 @@ export function createWebRuntimeApi({
           body.text,
           body.attachmentIds
         );
+        const mergedModelText = mergeExtraModelText(
+          body.text,
+          [body.modelText, attachmentData.modelText],
+        );
+        const scrapbookAttachment =
+          pickScrapbookAttachments(body.attachments)[0] ||
+          parseScrapbookAttachmentFromModelContent(mergedModelText);
+        const attachments = scrapbookAttachment
+          ? [
+              ...attachmentData.attachments.filter(
+                (item) => !pickScrapbookAttachments([item]).length,
+              ),
+              scrapbookAttachment,
+            ]
+          : attachmentData.attachments;
         const accepted = submitOperation(body.sessionId, target =>
           target.handleSubmitMessage({
             text: body.text,
@@ -923,7 +953,9 @@ export function createWebRuntimeApi({
             skillNames: body.skillNames,
             attachmentIds: body.attachmentIds,
             dismissedAlwaysSkills: body.dismissedAlwaysSkills,
-            ...attachmentData
+            attachments,
+            modelImages: attachmentData.modelImages,
+            ...(mergedModelText ? { modelText: mergedModelText } : {})
           })
         );
         jsonResponse(res, accepted, accepted.accepted ? 202 : 409);
@@ -1471,6 +1503,36 @@ function buildAttachmentModelText(line, metas = []) {
     '<uploaded_attachments>',
     blocks.join('\n\n---\n\n'),
     '</uploaded_attachments>'
+  ].join('\n');
+}
+
+function mergeExtraModelText(line, values = []) {
+  const blocks = [];
+  const passthrough = [];
+  for (const value of values) {
+    const text = String(value || '').trim();
+    if (!text) continue;
+    let matchedAttachment = false;
+    for (const match of text.matchAll(/<uploaded_attachments>([\s\S]*?)<\/uploaded_attachments>/g)) {
+      const block = String(match[1] || '').trim();
+      if (block) {
+        blocks.push(block);
+        matchedAttachment = true;
+      }
+    }
+    if (!matchedAttachment) passthrough.push(text);
+  }
+  if (!blocks.length && !passthrough.length) return '';
+  if (!blocks.length) {
+    return [String(line || '').trim(), ...passthrough].filter(Boolean).join('\n\n');
+  }
+  return [
+    String(line || '').trim(),
+    '',
+    '<uploaded_attachments>',
+    blocks.join('\n\n---\n\n'),
+    '</uploaded_attachments>',
+    ...passthrough,
   ].join('\n');
 }
 
@@ -2987,6 +3049,89 @@ async function main() {
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
+      return;
+    }
+
+    // ── Scrapbook ──
+    if (req.method === 'GET' && url.pathname === '/api/scrapbook/entries') {
+      const query = String(url.searchParams.get('q') || '').trim();
+      jsonResponse(res, listScrapbookEntriesForApi({ query }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/scrapbook/entries/manual') {
+      const body = await readBody(req);
+      try {
+        jsonResponse(res, { ok: true, entry: createManualScrapbookEntry(body || {}) });
+      } catch (error) {
+        jsonResponse(res, { error: true, message: error?.message || 'Failed to create scrapbook entry' }, 400);
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/scrapbook/entries/url') {
+      const body = await readBody(req);
+      try {
+        jsonResponse(res, { ok: true, entry: createUrlScrapbookEntry(body || {}) });
+      } catch (error) {
+        jsonResponse(res, { error: true, message: error?.message || 'Failed to import scrapbook URL' }, 400);
+      }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/api/scrapbook/entries/')) {
+      const askSuffix = '/ask-payload';
+      const summarizeSuffix = '/summarize';
+      if (url.pathname.endsWith(askSuffix) || url.pathname.endsWith(summarizeSuffix)) {
+        // handled below
+      } else {
+        const entryId = decodeURIComponent(url.pathname.slice('/api/scrapbook/entries/'.length));
+        const entry = getScrapbookEntryForApi(entryId);
+        if (!entry) jsonResponse(res, { error: true, message: 'Scrapbook entry not found' }, 404);
+        else jsonResponse(res, { ok: true, entry });
+        return;
+      }
+    }
+    if (req.method === 'DELETE' && url.pathname.startsWith('/api/scrapbook/entries/')) {
+      const entryId = decodeURIComponent(url.pathname.slice('/api/scrapbook/entries/'.length));
+      const result = deleteScrapbookEntryForApi(entryId);
+      if (!result.ok) jsonResponse(res, { error: true, message: 'Scrapbook entry not found' }, 404);
+      else jsonResponse(res, result);
+      return;
+    }
+    if (req.method === 'POST' && url.pathname.startsWith('/api/scrapbook/entries/') && url.pathname.endsWith('/summarize')) {
+      const entryId = decodeURIComponent(
+        url.pathname.slice('/api/scrapbook/entries/'.length, -'/summarize'.length),
+      );
+      try {
+        jsonResponse(res, { ok: true, job: startScrapbookSummaryJob(entryId) });
+      } catch (error) {
+        jsonResponse(res, { error: true, message: error?.message || 'Failed to summarize scrapbook entry' }, 400);
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname.startsWith('/api/scrapbook/entries/') && url.pathname.endsWith('/ask-payload')) {
+      const entryId = decodeURIComponent(
+        url.pathname.slice('/api/scrapbook/entries/'.length, -'/ask-payload'.length),
+      );
+      try {
+        jsonResponse(res, { ok: true, payload: buildScrapbookAskPayload(entryId) });
+      } catch (error) {
+        jsonResponse(res, { error: true, message: error?.message || 'Failed to prepare scrapbook payload' }, 400);
+      }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/api/scrapbook/summary-jobs/') && url.pathname.endsWith('/stream')) {
+      const jobId = decodeURIComponent(
+        url.pathname.slice('/api/scrapbook/summary-jobs/'.length, -'/stream'.length),
+      );
+      const job = getScrapbookSummaryJobForApi(jobId);
+      if (!job) jsonResponse(res, { error: true, message: 'Scrapbook summary job not found' }, 404);
+      else subscribeScrapbookSummaryJob(jobId, res);
+      return;
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/api/scrapbook/summary-jobs/')) {
+      const jobId = decodeURIComponent(url.pathname.slice('/api/scrapbook/summary-jobs/'.length));
+      const job = getScrapbookSummaryJobForApi(jobId);
+      if (!job) jsonResponse(res, { error: true, message: 'Scrapbook summary job not found' }, 404);
+      else jsonResponse(res, { ok: true, job });
       return;
     }
 

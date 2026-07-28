@@ -53,5 +53,9 @@ export function appendAttachmentContext(modelText, suppliedModelText) {
   const attachmentStart = supplied.indexOf('<uploaded_attachments>');
   return attachmentStart >= 0
     ? `${base}\n\n${supplied.slice(attachmentStart)}`
-    : base;
+    : supplied
+      ? base
+        ? `${base}\n\n${supplied}`
+        : supplied
+      : base;
 }

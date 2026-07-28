@@ -66,6 +66,7 @@ import {
   FileText,
   Hammer,
   Moon,
+  NotePencil,
   Play,
   XCircle,
 } from "@phosphor-icons/react";
@@ -1536,10 +1537,22 @@ function UserAttachments({ attachments = [], className }) {
 
   return (
     <AttachmentGroup className={cn("max-w-full", className)}>
-      {items.map((item) =>
-        item?.kind === "image" && item.url ? (
-          <UserImageAttachment key={item.id || item.url} item={item} />
-        ) : (
+      {items.map((item) => {
+        if (item?.kind === "image" && item.url) {
+          return <UserImageAttachment key={item.id || item.url} item={item} />;
+        }
+        if (item?.kind === "scrapbook" || String(item?.id || "").startsWith("scrapbook:")) {
+          return (
+            <span
+              key={item.id || item.name}
+              className="codemini-status-chip inline-flex max-w-full items-center gap-1.5 border-(--border-default) bg-(--bg-secondary) px-2 py-1 text-[12px] text-(--text-secondary)"
+            >
+              <NotePencil size={14} className="shrink-0" />
+              <span className="max-w-55 truncate">{item.name}</span>
+            </span>
+          );
+        }
+        return (
           <Attachment key={item.id || item.name} size="sm">
             <AttachmentMedia>
               <FileText />
@@ -1551,8 +1564,8 @@ function UserAttachments({ attachments = [], className }) {
               </AttachmentDescription>
             </AttachmentContent>
           </Attachment>
-        ),
-      )}
+        );
+      })}
     </AttachmentGroup>
   );
 }

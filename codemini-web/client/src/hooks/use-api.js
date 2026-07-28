@@ -630,6 +630,68 @@ export async function runInboxDream(scope = 'all') {
   return res.json();
 }
 
+// ── Scrapbook ──
+export async function fetchScrapbookEntries(query = '') {
+  const params = new URLSearchParams();
+  if (String(query || '').trim()) params.set('q', String(query).trim());
+  const queryString = params.toString();
+  const res = await api(`/api/scrapbook/entries${queryString ? `?${queryString}` : ''}`);
+  return res.json();
+}
+
+export async function createManualScrapbookEntry(payload) {
+  const res = await api('/api/scrapbook/entries/manual', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(payload || {}),
+  });
+  return res.json();
+}
+
+export async function createUrlScrapbookEntry(payload) {
+  const res = await api('/api/scrapbook/entries/url', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(payload || {}),
+  });
+  return res.json();
+}
+
+export async function fetchScrapbookEntry(entryId) {
+  const res = await api(`/api/scrapbook/entries/${encodeURIComponent(entryId)}`);
+  return res.json();
+}
+
+export async function deleteScrapbookEntry(entryId) {
+  const res = await api(`/api/scrapbook/entries/${encodeURIComponent(entryId)}`, {
+    method: 'DELETE',
+  });
+  return res.json();
+}
+
+export async function summarizeScrapbookEntry(entryId) {
+  const res = await api(`/api/scrapbook/entries/${encodeURIComponent(entryId)}/summarize`, {
+    method: 'POST',
+  });
+  return res.json();
+}
+
+export async function fetchScrapbookSummaryJob(jobId) {
+  const res = await api(`/api/scrapbook/summary-jobs/${encodeURIComponent(jobId)}`);
+  return res.json();
+}
+
+export function openScrapbookSummaryJobStream(jobId) {
+  return new EventSource(`/api/scrapbook/summary-jobs/${encodeURIComponent(jobId)}/stream`);
+}
+
+export async function buildScrapbookAskPayload(entryId) {
+  const res = await api(`/api/scrapbook/entries/${encodeURIComponent(entryId)}/ask-payload`, {
+    method: 'POST',
+  });
+  return res.json();
+}
+
 // ── Souls ──
 export async function fetchSouls() {
   const res = await api('/api/souls');

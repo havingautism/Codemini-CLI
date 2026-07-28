@@ -15,6 +15,7 @@ import {
   MaskHappy,
   Monitor,
   Moon,
+  NotePencil,
   PencilLine,
   PlugsConnected,
   Plus,
@@ -239,6 +240,7 @@ export function Sidebar({
   onOpenMcp,
   onOpenHooks,
   onOpenMemory,
+  onOpenScrapbook,
   onOpenSouls,
   onOpenAbout,
   gitBatch,
@@ -639,6 +641,17 @@ export function Sidebar({
             className="text-(--text-secondary) shrink-0"
           />
           <span className="truncate">{t("memory")}</span>
+        </button>
+        <button
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          onClick={onOpenScrapbook}
+        >
+          <NotePencil
+            size={15}
+            strokeWidth={2}
+            className="text-(--text-secondary) shrink-0"
+          />
+          <span className="truncate">{t("scrapbook")}</span>
         </button>
         <Separator className="my-1.5 bg-transparent" />
       </div>

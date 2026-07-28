@@ -63,6 +63,11 @@ const MemoryDialog = lazy(() =>
     default: module.MemoryDialog,
   })),
 );
+const ScrapbookPanel = lazy(() =>
+  import("@/components/ScrapbookPanel.jsx").then((module) => ({
+    default: module.ScrapbookPanel,
+  })),
+);
 const SoulDialog = lazy(() =>
   import("@/components/SoulDialog.jsx").then((module) => ({
     default: module.SoulDialog,
@@ -219,6 +224,7 @@ function Shell() {
   const openMcp = useCallback(() => actions.setMcpOpen(true), [actions]);
   const openHooks = useCallback(() => actions.setHooksOpen(true), [actions]);
   const openMemory = useCallback(() => actions.setMemoryOpen(true), [actions]);
+  const openScrapbook = useCallback(() => actions.switchView("scrapbook"), [actions]);
   const openSouls = useCallback(() => actions.setSoulsOpen(true), [actions]);
   const retryMessage = useCallback((prompt) => actions.submit(prompt), [actions]);
   const openAbout = useCallback(() => actions.setAboutOpen(true), [actions]);
@@ -272,6 +278,7 @@ function Shell() {
         onOpenMcp={openMcp}
         onOpenHooks={openHooks}
         onOpenMemory={openMemory}
+        onOpenScrapbook={openScrapbook}
         onOpenSouls={openSouls}
         onOpenAbout={openAbout}
         gitBatch={state.gitBatch}
@@ -329,6 +336,12 @@ function Shell() {
               onAbort={actions.abortSession}
               onAbortAll={actions.abortAllSessions}
             />
+          </div>
+        ) : state.currentView === "scrapbook" ? (
+          <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
+            <Suspense fallback={null}>
+              <ScrapbookPanel />
+            </Suspense>
           </div>
         ) : state.currentView === "codewiki" ? (
           <div className="flex flex-1 flex-col min-h-0 overflow-hidden">

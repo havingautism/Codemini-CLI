@@ -3500,6 +3500,19 @@ samp {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 13%, transparent);
 }
 
+.scrapbook-picker-search-shell:focus-within {
+  outline: none;
+}
+
+.scrapbook-picker-search,
+.scrapbook-picker-search:focus,
+.scrapbook-picker-search:focus-visible {
+  border: 0 !important;
+  outline: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+}
+
 .codemini-input-shell textarea:focus-visible {
   background: transparent;
   box-shadow: none;

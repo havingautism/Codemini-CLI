@@ -624,7 +624,7 @@ async function buildPlaywrightLaunchEnv() {
   };
 }
 
-async function webFetchPage(args = {}) {
+export async function webFetchPage(args = {}) {
   const normalizedArgs = normalizeWebFetchArgs(args);
   const url = normalizeWebUrl(normalizedArgs.url);
   const timeoutMs = clampNumber(
