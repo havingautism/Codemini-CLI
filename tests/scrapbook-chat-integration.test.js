@@ -24,6 +24,11 @@ test('input bar supports selecting scrapbook context alongside normal attachment
   assert.match(source, /PopoverContent[\s\S]{0,120}w-96|max-h-96|rounded-xl/);
   assert.match(source, /line-clamp-2|line-clamp-3|break-all/);
   assert.match(source, /appearance-none|inputMode="search"|type="text"/);
+  const pickerCard = source.match(
+    /filteredScrapbookEntries\.map\(\(entry\) => \([\s\S]*?onClick=\{\(\) => selectScrapbookEntry\(entry\.id\)\}/,
+  )?.[0] || '';
+  assert.doesNotMatch(pickerCard, /hover:border-\(--border-strong\)/);
+  assert.match(pickerCard, /border-transparent hover:-translate-y-px hover:bg-\(--bg-subtle\)\/80/);
 });
 
 test('chat submission forwards extra modelText context for scrapbook attachments', async () => {

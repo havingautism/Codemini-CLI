@@ -13,22 +13,90 @@ import {
 import { webFetchPage } from '../../src/core/tools.js';
 import { loadConfig } from '../../src/core/config-store.js';
 import { createChatCompletionStream } from '../../src/core/provider/index.js';
+import { appendStructuredOutputLanguageRule } from '../../src/core/reply-language.js';
 
 const summaryJobClients = new Map();
 const SCRAPBOOK_SUMMARY_SYSTEM_PROMPT = [
   'You are writing a detailed scrapbook summary for later follow-up questions.',
   'Summarize only the provided source material.',
+  'Your first line must be exactly `Title: <one relevant emoji> <concise title>`.',
+  'Keep the generated title specific, natural, and under 36 characters.',
+  'After the title, write a line containing exactly `Summary:` and then the summary.',
   'Be comprehensive and concrete: capture the main thesis, important details, key facts, structure, and useful context.',
   'Prefer a well-structured markdown summary with short paragraphs and concise bullets when helpful.',
   'If the source includes meaningful images and you want to reference them, preserve their markdown image references.',
   'Do not invent facts that are not present in the source.',
-  'Prefer the source language when it is obvious.',
 ].join(' ');
+
+export function buildScrapbookSummarySystemPrompt(config = {}) {
+  return appendStructuredOutputLanguageRule(SCRAPBOOK_SUMMARY_SYSTEM_PROMPT, config, {
+    fields: 'the generated title and summary',
+  });
+}
 
 function normalizeTags(tags = []) {
   return [...new Set((Array.isArray(tags) ? tags : [])
     .map((tag) => String(tag || '').trim())
     .filter(Boolean))];
+}
+
+function normalizeGeneratedTitle(rawTitle) {
+  let title = String(rawTitle || '')
+    .replace(/^#+\s*/, '')
+    .replace(/\*\*/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!title) return '';
+  if (!/\p{Extended_Pictographic}/u.test(title)) {
+    title = `📝 ${title}`;
+  }
+  return Array.from(title).slice(0, 64).join('').trim();
+}
+
+export function parseGeneratedScrapbookResult(rawResult) {
+  const raw = String(rawResult || '').trim();
+  if (!raw) return { title: '', summary: '' };
+
+  const lines = raw.split(/\r?\n/);
+  const titlePattern = /^(?:#{1,6}\s*)?(?:\*\*)?Title(?:\*\*)?:\s*(?:\*\*)?\s*/i;
+  const summaryPattern = /^(?:#{1,6}\s*)?(?:\*\*)?Summary(?:\*\*)?:\s*(?:\*\*)?\s*$/i;
+  const titleIndex = lines.findIndex((line) => titlePattern.test(line.trim()));
+  const summaryIndex = lines.findIndex((line) => summaryPattern.test(line.trim()));
+  const title =
+    titleIndex >= 0
+      ? normalizeGeneratedTitle(lines[titleIndex].trim().replace(titlePattern, ''))
+      : '';
+
+  let summary = raw;
+  if (summaryIndex >= 0) {
+    summary = lines.slice(summaryIndex + 1).join('\n').trim();
+  } else if (titleIndex >= 0) {
+    summary = lines
+      .filter((_, index) => index !== titleIndex)
+      .join('\n')
+      .trim();
+  }
+
+  return { title, summary };
+}
+
+function fallbackGeneratedTitle({ title, sourceUrl, contentText }) {
+  const explicit = String(title || '').trim();
+  if (explicit && explicit !== String(sourceUrl || '').trim()) {
+    return normalizeGeneratedTitle(explicit);
+  }
+  const firstContentLine = String(contentText || '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^#+\s*/, '').trim())
+    .find(Boolean);
+  if (firstContentLine) {
+    return normalizeGeneratedTitle(Array.from(firstContentLine).slice(0, 36).join(''));
+  }
+  try {
+    return normalizeGeneratedTitle(new URL(sourceUrl).hostname.replace(/^www\./, ''));
+  } catch {
+    return normalizeGeneratedTitle(sourceUrl);
+  }
 }
 
 function buildScrapbookContextText(entry, summary) {
@@ -145,7 +213,7 @@ async function generateSummaryWithModel({ title, sourceUrl, contentText, onTextD
     apiKey: config.gateway.api_key,
     model,
     messages: [
-      { role: 'system', content: SCRAPBOOK_SUMMARY_SYSTEM_PROMPT },
+      { role: 'system', content: buildScrapbookSummarySystemPrompt(config) },
       {
         role: 'user',
         content: [
@@ -234,14 +302,20 @@ async function runSummaryJob(jobId, options = {}) {
             },
           });
         };
-    const finalSummary = String(await generateSummary({
+    const generatedText = String(await generateSummary({
       title: title || entry.title,
       sourceUrl: entry.sourceUrl,
       contentText: contentText || entry.contentText,
     }) || '').trim();
+    const generated = parseGeneratedScrapbookResult(generatedText);
+    const finalSummary = generated.summary;
     if (!finalSummary) throw new Error('Empty scrapbook summary');
     updateScrapbookEntry(entry.id, {
-      title: title || entry.title,
+      title: generated.title || fallbackGeneratedTitle({
+        title: title || entry.title,
+        sourceUrl: entry.sourceUrl,
+        contentText: contentText || entry.contentText,
+      }),
       contentText: contentText || entry.contentText,
       summary: finalSummary,
       fetchStatus: contentText || entry.contentText ? 'ready' : entry.fetchStatus,

@@ -12,6 +12,13 @@ test('app wires scrapbook as an independent view without project props', async (
     /<ScrapbookPanel[\s\S]{0,220}projectCwd=|<ScrapbookPanel[\s\S]{0,220}isGeneral=/,
     'ScrapbookPanel should not receive project props',
   );
+  const scrapbookBranch = source.match(
+    /state\.currentView === "scrapbook"[\s\S]*?state\.currentView === "codewiki"/,
+  )?.[0] || '';
+  assert.match(scrapbookBranch, /codemini-workspace-panel/);
+  assert.match(scrapbookBranch, /sidebarCollapsed/);
+  assert.match(scrapbookBranch, /setSidebarCollapsedAndPersist\(false\)/);
+  assert.match(scrapbookBranch, /border-b border-\(--border-default\)/);
 });
 
 test('sidebar exposes a scrapbook entry point distinct from projects', async () => {
@@ -50,9 +57,10 @@ test('scrapbook panel refreshes entry details after summary completion', async (
 
 test('scrapbook cards expose hover delete and open-link actions', async () => {
   const source = await fs.readFile('codemini-web/client/src/components/ScrapbookPanel.jsx', 'utf8');
-  assert.match(source, /group-hover:opacity-100/);
-  assert.match(source, /window\.open\(entry\.sourceUrl,\s*"_blank"/);
-  assert.match(source, /requestDelete\(entry\)|deleteScrapbookEntry\(deleteTarget\.id\)/);
+  assert.match(source, /ScrapbookLibraryCard/);
+  assert.match(source, /DotsThreeVertical/);
+  assert.match(source, /window\.open\(sourceUrl,\s*"_blank"/);
+  assert.match(source, /requestDelete\(target\)|deleteScrapbookEntry\(deleteTarget\.id\)/);
 });
 
 test('scrapbook panel uses ConfirmDialog and clamps overflowing card text', async () => {
@@ -69,4 +77,25 @@ test('scrapbook detail prioritizes summary and collapses raw content by default'
   assert.match(source, /StreamdownRenderer/);
   assert.match(source, /contentExpanded|setContentExpanded/);
   assert.match(source, /summaryText/);
+  assert.match(source, /inlineEmbeds=\{false\}/);
+});
+
+test('scrapbook library follows notebook layout and creates entries in a modal', async () => {
+  const source = await fs.readFile('codemini-web/client/src/components/ScrapbookPanel.jsx', 'utf8');
+  assert.match(source, /scrapbookLibraryTitle/);
+  assert.match(source, /GridFour/);
+  assert.match(source, /ListBullets/);
+  assert.match(source, /sortMode/);
+  assert.match(source, /activeFilter/);
+  assert.match(source, /<Dialog[\s\S]{0,120}composerOpen/);
+  assert.match(source, /scrapbookAiTitleDescription/);
+  assert.doesNotMatch(source, /const composer =/);
+});
+
+test('scrapbook cards lift a generated title emoji into the top-left visual', async () => {
+  const source = await fs.readFile('codemini-web/client/src/components/ScrapbookPanel.jsx', 'utf8');
+  assert.match(source, /function splitEmojiTitle/);
+  assert.match(source, /Intl\.Segmenter/);
+  assert.match(source, /titleParts\.emoji/);
+  assert.match(source, /titleParts\.title/);
 });

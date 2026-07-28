@@ -18,7 +18,7 @@ import {
   MagnifyingGlass,
   Minus,
   Moon,
-  NotePencil,
+  Notebook,
   Paperclip,
   Plus,
   Sparkle,
@@ -1100,7 +1100,7 @@ export function InputBar({
                 className="codemini-input-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px] text-(--text-secondary)"
                 title={scrapbookContext.attachment.name}
               >
-                <NotePencil size={14} className="shrink-0" />
+                <Notebook size={14} className="shrink-0" />
                 <span className="max-w-[180px] truncate">
                   {scrapbookContext.attachment.name}
                 </span>
@@ -1203,7 +1203,7 @@ export function InputBar({
                   aria-label={t("scrapbook")}
                   disabled={inputLocked}
                 >
-                  <NotePencil size={18} />
+                  <Notebook size={18} />
                 </button>
               </PopoverTrigger>
               <PopoverContent
@@ -1258,14 +1258,13 @@ export function InputBar({
                         key={entry.id}
                         type="button"
                         className={cn(
-                          "group relative flex w-full flex-col items-start gap-2 overflow-hidden rounded-xl border px-3 py-3 text-left transition-[background-color,border-color,box-shadow,transform] duration-150",
+                          "group relative flex w-full flex-col items-start gap-2 overflow-hidden rounded-xl border px-3 py-3 text-left transition-[background-color,box-shadow,transform] duration-150",
                           scrapbookContext?.entryId === entry.id
                             ? "border-(--border-strong) bg-(--bg-subtle) shadow-[inset_3px_0_0_0_var(--border-strong),inset_0_0_0_1px_var(--border-strong)]"
-                            : "border-transparent hover:-translate-y-px hover:border-(--border-strong) hover:bg-(--bg-subtle)/95 hover:shadow-[0_14px_30px_color-mix(in_srgb,var(--text-primary)_14%,transparent)]",
+                            : "border-transparent hover:-translate-y-px hover:bg-(--bg-subtle)/80 hover:shadow-[0_10px_24px_color-mix(in_srgb,var(--text-primary)_10%,transparent)]",
                         )}
                         onClick={() => selectScrapbookEntry(entry.id)}
                       >
-                        <span className="absolute inset-y-3 left-0 w-1 rounded-r-full bg-transparent transition-colors group-hover:bg-(--border-strong)" />
                         <div className="flex w-full items-start justify-between gap-2">
                           <span className="line-clamp-2 min-w-0 flex-1 break-all text-[12px] font-medium text-(--text-primary) transition-colors group-hover:text-(--text-primary)">
                             {entry.title || entry.sourceUrl || t("scrapbookUntitled")}
@@ -1278,11 +1277,11 @@ export function InputBar({
                         </div>
                         <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-(--text-muted)">
                           {getScrapbookSourceLabel(entry) ? (
-                            <span className="rounded-full border border-(--border-default) bg-(--bg-secondary) px-2 py-0.5 transition-[background-color,border-color,color] group-hover:border-(--border-strong) group-hover:bg-(--bg-primary) group-hover:text-(--text-secondary)">
+                            <span className="rounded-full border border-(--border-default) bg-(--bg-secondary) px-2 py-0.5 transition-[background-color,color] group-hover:bg-(--bg-primary) group-hover:text-(--text-secondary)">
                               {getScrapbookSourceLabel(entry)}
                             </span>
                           ) : null}
-                          <span className="rounded-full border border-(--border-default) bg-(--bg-secondary) px-2 py-0.5 transition-[background-color,border-color,color] group-hover:border-(--border-strong) group-hover:bg-(--bg-primary) group-hover:text-(--text-secondary)">
+                          <span className="rounded-full border border-(--border-default) bg-(--bg-secondary) px-2 py-0.5 transition-[background-color,color] group-hover:bg-(--bg-primary) group-hover:text-(--text-secondary)">
                             {entry.summary
                               ? t("scrapbookPickerSummary")
                               : t("scrapbookPickerRaw")}

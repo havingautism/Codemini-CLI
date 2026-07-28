@@ -15,7 +15,7 @@ import {
   MaskHappy,
   Monitor,
   Moon,
-  NotePencil,
+  Notebook,
   PencilLine,
   PlugsConnected,
   Plus,
@@ -646,7 +646,7 @@ export function Sidebar({
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
           onClick={onOpenScrapbook}
         >
-          <NotePencil
+          <Notebook
             size={15}
             strokeWidth={2}
             className="text-(--text-secondary) shrink-0"

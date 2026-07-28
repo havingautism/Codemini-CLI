@@ -338,7 +338,31 @@ function Shell() {
             />
           </div>
         ) : state.currentView === "scrapbook" ? (
-          <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
+          <div className="codemini-workspace-panel flex flex-1 flex-col min-h-0 overflow-hidden">
+            <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-(--border-default) px-3 sm:px-5">
+              <button
+                type="button"
+                className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) md:hidden"
+                aria-label="Open sidebar"
+                onClick={() => setMobileSidebarOpen(true)}
+              >
+                <List size={17} />
+              </button>
+              {sidebarCollapsed ? (
+                <button
+                  type="button"
+                  className="hidden size-8 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) md:inline-flex"
+                  aria-label={t("expandSidebar")}
+                  title={t("expandSidebar")}
+                  onClick={() => setSidebarCollapsedAndPersist(false)}
+                >
+                  <SidebarSimple size={16} />
+                </button>
+              ) : null}
+              <span className="truncate text-[14px] font-medium text-(--text-primary)">
+                {t("scrapbook")}
+              </span>
+            </div>
             <Suspense fallback={null}>
               <ScrapbookPanel />
             </Suspense>

@@ -7,10 +7,12 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import {
+  buildScrapbookSummarySystemPrompt,
   createManualScrapbookEntry,
   createUrlScrapbookEntry,
   getScrapbookEntryForApi,
   listScrapbookEntriesForApi,
+  parseGeneratedScrapbookResult,
   parseJinaReaderResponse,
   startScrapbookSummaryJob,
 } from '../codemini-web/lib/scrapbook-service.js';
@@ -25,6 +27,39 @@ import {
   listScrapbookSummaryJobs,
   updateScrapbookEntry,
 } from '../codemini-web/lib/scrapbook-store.js';
+
+test('scrapbook generation parser separates an emoji title from the summary', () => {
+  assert.deepEqual(
+    parseGeneratedScrapbookResult([
+      'Title: 🧭 Agent 协作指南',
+      'Summary:',
+      'A structured summary.',
+    ].join('\n')),
+    {
+      title: '🧭 Agent 协作指南',
+      summary: 'A structured summary.',
+    },
+  );
+  assert.equal(
+    parseGeneratedScrapbookResult('Title: Research notes\nSummary:\nDetails').title,
+    '📝 Research notes',
+  );
+  assert.deepEqual(
+    parseGeneratedScrapbookResult('**Title:** 🌊 Ocean notes\n**Summary:**\nDetails'),
+    { title: '🌊 Ocean notes', summary: 'Details' },
+  );
+});
+
+test('scrapbook summary prompt follows the configured reply language', () => {
+  assert.match(
+    buildScrapbookSummarySystemPrompt({ ui: { reply_language: 'zh' } }),
+    /Simplified Chinese/,
+  );
+  assert.match(
+    buildScrapbookSummarySystemPrompt({ ui: { reply_language: 'en' } }),
+    /English/,
+  );
+});
 
 async function withGlobalDir(task) {
   closeSqliteDatabasesForTests();
@@ -50,6 +85,7 @@ test('scrapbook entry store supports create, update, list and delete', async () 
       tags: ['alpha'],
       fetchStatus: 'ready',
     });
+    await new Promise((resolve) => setTimeout(resolve, 2));
     const second = createScrapbookEntry({
       sourceType: 'url',
       sourceUrl: 'https://example.com/article',
@@ -148,7 +184,7 @@ test('scrapbook summary job uses model-generated summary and stores it back on t
     const started = startScrapbookSummaryJob(entry.id, {
       generateSummary: async ({ title, contentText }) => {
         seenPrompts.push({ title, contentText });
-        return 'Model-made summary';
+        return 'Title: 🧪 Async summary note\nSummary:\nModel-made summary';
       },
     });
     assert.equal(started.status, 'pending');
@@ -165,6 +201,7 @@ test('scrapbook summary job uses model-generated summary and stores it back on t
     assert.match(String(seenPrompts[0].contentText || ''), /First line/);
     assert.equal(String(latest?.resultSummary || ''), 'Model-made summary');
     assert.equal(String(getScrapbookEntry(entry.id)?.summary || ''), 'Model-made summary');
+    assert.equal(String(getScrapbookEntry(entry.id)?.title || ''), '🧪 Async summary note');
   });
 });
 
@@ -269,7 +306,7 @@ test('url scrapbook summary replaces the placeholder url title with fetched titl
     }
 
     const refreshed = getScrapbookEntry(entry.id);
-    assert.equal(refreshed?.title, 'Fetched article title');
+    assert.equal(refreshed?.title, '📝 Fetched article title');
     assert.equal(refreshed?.contentText, 'Fetched body content');
   });
 });

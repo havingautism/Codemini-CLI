@@ -71,7 +71,7 @@ import {
   FolderOpen,
   Hammer,
   Moon,
-  NotePencil,
+  Notebook,
   Play,
   XCircle,
 } from "@phosphor-icons/react";
@@ -1619,7 +1619,7 @@ function UserAttachments({ attachments = [], className }) {
               key={item.id || item.name}
               className="codemini-status-chip inline-flex max-w-full items-center gap-1.5 border-(--border-default) bg-(--bg-secondary) px-2 py-1 text-[12px] text-(--text-secondary)"
             >
-              <NotePencil size={14} className="shrink-0" />
+              <Notebook size={14} className="shrink-0" />
               <span className="max-w-55 truncate">{item.name}</span>
             </span>
           );

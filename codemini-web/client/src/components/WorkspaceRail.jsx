@@ -44,12 +44,12 @@ export function WorkspaceRail({
 
   return (
     <aside
-      className="codemini-workspace-rail relative flex shrink-0 flex-col border-l border-(--border-default) bg-(--bg-primary) min-h-0 max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:z-40 max-md:w-full! max-md:shadow-xl"
+      className="codemini-workspace-rail relative flex min-h-0 shrink-0 flex-col bg-(--bg-primary) max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:z-40 max-md:w-full! max-md:shadow-xl"
       style={{ width: `${panelWidth}px` }}
       aria-label={t("workspaceRailTitle")}
     >
       <div
-        className="codemini-terminal-resizer absolute inset-y-0 -left-1 z-10 flex w-2 cursor-col-resize items-center justify-center max-md:hidden"
+        className="codemini-terminal-resizer absolute inset-y-0 -left-2 z-10 flex w-4 cursor-col-resize touch-none select-none items-center justify-center border-0! max-md:hidden"
         role="separator"
         aria-label={t("workspaceRailResize")}
         aria-orientation="vertical"
@@ -79,10 +79,12 @@ export function WorkspaceRail({
           }
         }}
       >
-        <DotsSixVertical size={12} weight="bold" />
+        <span className="codewiki-resizer-handle">
+          <DotsSixVertical size={14} aria-hidden="true" />
+        </span>
       </div>
 
-      <div className="flex h-12 shrink-0 items-center gap-1 border-b border-(--border-default) px-2">
+      <div className="flex h-12 shrink-0 items-center gap-1 px-2">
         <div className="flex min-w-0 flex-1 items-center gap-1">
           <button
             type="button"
