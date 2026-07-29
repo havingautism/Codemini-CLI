@@ -94,6 +94,7 @@ const INPUT_PILL_CLASS =
 const ATTACHMENT_ACCEPT =
   "image/png,image/jpeg,image/webp,image/gif,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.png,.jpg,.jpeg,.webp,.gif,.pdf,.docx";
 const IMAGE_MAX_EDGE = 1600;
+const SCRAPBOOK_PICKER_PAGE_SIZE = 8;
 const IMAGE_JPEG_QUALITY = 0.82;
 
 function isImageFile(file) {
@@ -650,6 +651,9 @@ export function InputBar({
   const [scrapbookEntries, setScrapbookEntries] = useState([]);
   const [scrapbookLoading, setScrapbookLoading] = useState(false);
   const [scrapbookQuery, setScrapbookQuery] = useState("");
+  const [scrapbookVisibleCount, setScrapbookVisibleCount] = useState(
+    SCRAPBOOK_PICKER_PAGE_SIZE,
+  );
   const [dismissedDefaultSkills, setDismissedDefaultSkills] = useState(
     new Set(),
   );
@@ -690,6 +694,12 @@ export function InputBar({
       return haystack.includes(query);
     });
   }, [scrapbookEntries, scrapbookQuery]);
+  const visibleScrapbookEntries = useMemo(
+    () => filteredScrapbookEntries.slice(0, scrapbookVisibleCount),
+    [filteredScrapbookEntries, scrapbookVisibleCount],
+  );
+  const hasMoreScrapbookEntries =
+    filteredScrapbookEntries.length > visibleScrapbookEntries.length;
   const removeDefaultSkill = useCallback((name) => {
     setDismissedDefaultSkills((prev) => new Set([...prev, name]));
   }, []);
@@ -1181,6 +1191,7 @@ export function InputBar({
                 setScrapbookPickerOpen(open);
                 if (open) {
                   setScrapbookQuery("");
+                  setScrapbookVisibleCount(SCRAPBOOK_PICKER_PAGE_SIZE);
                   loadScrapbookEntries();
                 }
               }}
@@ -1203,18 +1214,16 @@ export function InputBar({
                 className="w-96 overflow-hidden rounded-xl p-0"
               >
                 <div className="border-b border-(--border-default) bg-(--bg-primary) px-3 py-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="text-[13px] font-medium text-(--text-primary)">
-                        {t("scrapbook")}
-                      </div>
-                      <div className="mt-1 text-[11px] text-(--text-muted)">
-                        {t("scrapbookPickerHelp")}
-                      </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[13px] font-medium text-(--text-primary)">
+                      {t("scrapbook")}
                     </div>
                     <div className="shrink-0 rounded-full border border-(--border-default) bg-(--bg-subtle) px-2 py-0.5 text-[10px] font-medium text-(--text-muted)">
                       {filteredScrapbookEntries.length}
                     </div>
+                  </div>
+                  <div className="mt-1 text-[11px] leading-5 text-(--text-muted)">
+                    {t("scrapbookPickerHelp")}
                   </div>
                   <label className="group scrapbook-picker-search-shell mt-3 flex items-center gap-2.5 rounded-xl border border-(--border-default) bg-(--bg-secondary) px-3 py-0.5 transition-[border-color,background-color,box-shadow] hover:border-(--border-strong) hover:bg-(--bg-primary) focus-within:border-(--border-strong) focus-within:bg-(--bg-primary) focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--text-primary)_7%,transparent)]">
                     <MagnifyingGlass
@@ -1226,7 +1235,10 @@ export function InputBar({
                       inputMode="search"
                       autoComplete="off"
                       value={scrapbookQuery}
-                      onChange={(event) => setScrapbookQuery(event.target.value)}
+                      onChange={(event) => {
+                        setScrapbookQuery(event.target.value);
+                        setScrapbookVisibleCount(SCRAPBOOK_PICKER_PAGE_SIZE);
+                      }}
                       placeholder={t("scrapbookSearchPlaceholder")}
                       aria-label={t("scrapbookSearchPlaceholder")}
                       className="scrapbook-picker-search h-9 min-w-0 flex-1 appearance-none border-0 bg-transparent p-0 text-[12px] text-(--text-primary) shadow-none outline-none ring-0 placeholder:text-(--text-muted) focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0"
@@ -1243,7 +1255,8 @@ export function InputBar({
                       {t("scrapbookEmpty")}
                     </div>
                   ) : (
-                    filteredScrapbookEntries.map((entry) => (
+                    <>
+                      {visibleScrapbookEntries.map((entry) => (
                       <button
                         key={entry.id}
                         type="button"
@@ -1269,7 +1282,22 @@ export function InputBar({
                           {getScrapbookPreviewText(entry)}
                         </div>
                       </button>
-                    ))
+                      ))}
+                      {hasMoreScrapbookEntries ? (
+                        <button
+                          type="button"
+                          className="shrink-0 rounded-xl px-3 py-2 text-[12px] text-(--text-secondary) transition-colors hover:bg-(--bg-subtle) hover:text-(--text-primary)"
+                          onClick={() =>
+                            setScrapbookVisibleCount(
+                              (current) => current + SCRAPBOOK_PICKER_PAGE_SIZE,
+                            )
+                          }
+                        >
+                          {t("scrapbookShowMore")}
+                          {` · ${filteredScrapbookEntries.length - visibleScrapbookEntries.length}`}
+                        </button>
+                      ) : null}
+                    </>
                   )}
                 </div>
               </PopoverContent>

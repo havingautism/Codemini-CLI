@@ -1152,6 +1152,7 @@ export const en = {
   scrapbookPickerActive: "Active",
   scrapbookPickerSummary: "Summary",
   scrapbookPickerRaw: "Raw",
+  scrapbookShowMore: "Show more",
   scrapbookItems: "items",
   scrapbookSearchPlaceholder: "Search scrapbook",
   scrapbookLibraryTitle: "My notebooks",

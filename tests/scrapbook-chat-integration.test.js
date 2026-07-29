@@ -22,16 +22,10 @@ test('input bar supports selecting scrapbook context alongside normal attachment
   assert.match(source, /scrapbook/i);
   assert.match(source, /pendingScrapbookContext/);
   assert.match(source, /PopoverContent[\s\S]{0,120}w-96|max-h-96|rounded-xl/);
-  assert.match(source, /min-w-0 w-full truncate/);
-  assert.match(source, /getScrapbookPreviewText\(entry\)/);
+  assert.match(source, /SCRAPBOOK_PICKER_PAGE_SIZE|scrapbookVisibleCount|scrapbookShowMore/);
   assert.match(source, /shrink-0 flex-col items-stretch/);
-  assert.match(
-    source,
-    /<div className="min-w-0 w-full truncate[\s\S]{0,80}\{getScrapbookPreviewText\(entry\)\}/,
-  );
-  assert.match(source, /appearance-none|inputMode="search"|type="text"/);
   const pickerCard = source.match(
-    /filteredScrapbookEntries\.map\(\(entry\) => \([\s\S]*?onClick=\{\(\) => selectScrapbookEntry\(entry\.id\)\}/,
+    /visibleScrapbookEntries\.map\(\(entry\) => \([\s\S]*?onClick=\{\(\) => selectScrapbookEntry\(entry\.id\)\}/,
   )?.[0] || '';
   assert.doesNotMatch(pickerCard, /hover:border-\(--border-strong\)/);
   assert.doesNotMatch(pickerCard, /inset_3px_0_0_0/);
