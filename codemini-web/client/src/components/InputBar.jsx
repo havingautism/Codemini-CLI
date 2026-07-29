@@ -1248,7 +1248,7 @@ export function InputBar({
                         key={entry.id}
                         type="button"
                         className={cn(
-                          "group relative flex w-full min-w-0 flex-col items-start gap-2 overflow-hidden rounded-xl border px-3 py-3 text-left transition-[background-color,box-shadow,transform] duration-150",
+                          "group relative flex w-full min-w-0 shrink-0 flex-col items-stretch gap-1.5 overflow-hidden rounded-xl border px-3 py-3 text-left transition-[background-color,box-shadow,transform] duration-150",
                           scrapbookContext?.entryId === entry.id
                             ? "border-(--border-strong) bg-(--bg-subtle)"
                             : "border-transparent hover:-translate-y-px hover:bg-(--bg-subtle)/80 hover:shadow-[0_10px_24px_color-mix(in_srgb,var(--text-primary)_10%,transparent)]",
@@ -1256,18 +1256,18 @@ export function InputBar({
                         onClick={() => selectScrapbookEntry(entry.id)}
                       >
                         <div className="flex w-full min-w-0 items-start justify-between gap-2">
-                          <span className="line-clamp-2 min-w-0 flex-1 break-words text-[12px] font-medium text-(--text-primary) transition-colors group-hover:text-(--text-primary)">
+                          <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-5 text-(--text-primary)">
                             {entry.title || entry.sourceUrl || t("scrapbookUntitled")}
                           </span>
                           {scrapbookContext?.entryId === entry.id ? (
-                            <span className="shrink-0 rounded-full bg-(--bg-hover) px-2 py-0.5 text-[10px] font-medium text-(--text-secondary)">
+                            <span className="shrink-0 rounded-full bg-(--bg-hover) px-2 py-0.5 text-[10px] font-medium leading-5 text-(--text-secondary)">
                               {t("scrapbookPickerActive")}
                             </span>
                           ) : null}
                         </div>
-                        <span className="line-clamp-2 min-w-0 w-full break-words text-[11px] leading-5 text-(--text-muted) transition-colors group-hover:text-(--text-secondary)">
+                        <div className="min-w-0 w-full truncate text-[12px] leading-5 text-(--text-muted)">
                           {getScrapbookPreviewText(entry)}
-                        </span>
+                        </div>
                       </button>
                     ))
                   )}
